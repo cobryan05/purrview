@@ -1,0 +1,18 @@
+services:
+  whiskerwatcher:
+    container_name: whiskerwatcher
+    build:
+      context: .
+      dockerfile: Dockerfile
+    volumes:
+      - ./apps:/app/apps
+      - ./conf:/app/conf
+      - ./logs:/app/logs
+      - ./templates:/app/templates
+      - ./static:/app/static
+      - ./.vscode_container:/app/.vscode
+    ports:
+      - "8000:8000"
+      - "9001:9001"
+      - "9997:9997"
+    restart: unless-stopped

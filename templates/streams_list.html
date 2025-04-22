@@ -1,0 +1,15 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Streams List</title>
+</head>
+<body>
+    <h1>List of Streams</h1>
+    <ul>
+        {% for stream in streams %}
+            <li>ID: {{ stream.id }} | Name: {{ stream.name }}</li>
+        {% endfor %}
+    </ul>
+</body>
+</html>

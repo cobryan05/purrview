@@ -1,0 +1,7 @@
+fastapi
+uvicorn
+jinja2
+openapi-generator-cli[jdk4py]
+requests
+debugpy
+ffmpeg-python

@@ -1,0 +1,9 @@
+api: yes
+apiAddress: :9997
+
+authInternalUsers:
+- user: any
+  pass:
+  ips: []
+  permissions:
+  - action: api

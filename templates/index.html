@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>MediaMTX Web Interface</title>
+    <script src="/static/js/htmx.min.js"></script>
+</head>
+<body>
+    <h1>Welcome to the MediaMTX Web Interface</h1>
+
+    <p>Use the following buttons to interact with the MediaMTX API:</p>
+
+    <!-- Button to load streams -->
+    <button hx-get="/list-streams" hx-target="#streams-list" hx-swap="outerHTML">Load Streams</button>
+    <div id="streams-list"></div>
+
+    <!-- Button to load configuration -->
+    <button hx-get="/list-config" hx-target="#config-list" hx-swap="outerHTML">Load Configuration</button>
+    <div id="config-list"></div>
+</body>
+</html>
