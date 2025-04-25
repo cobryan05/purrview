@@ -7,3 +7,4 @@ authInternalUsers:
   ips: []
   permissions:
   - action: api
+  - action: read

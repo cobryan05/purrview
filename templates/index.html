@@ -1,21 +1,21 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8">
-    <title>MediaMTX Web Interface</title>
+    <title>{{ app_name }}</title>
     <script src="/static/js/htmx.min.js"></script>
+    <link rel="stylesheet" href="/static/css/styles.css">
 </head>
+
 <body>
-    <h1>Welcome to the MediaMTX Web Interface</h1>
-
-    <p>Use the following buttons to interact with the MediaMTX API:</p>
-
-    <!-- Button to load streams -->
-    <button hx-get="/list-streams" hx-target="#streams-list" hx-swap="outerHTML">Load Streams</button>
-    <div id="streams-list"></div>
-
-    <!-- Button to load configuration -->
-    <button hx-get="/list-config" hx-target="#config-list" hx-swap="outerHTML">Load Configuration</button>
-    <div id="config-list"></div>
+    <h1>Welcome to the {{ app_name }} Web Interface</h1>
+    <div id="button-bar" class="boxed-div">
+        <button hx-get="/create-stream-form" hx-target="#output-div" hx-swap="innerHTML">CreateStream</button>
+        <button hx-get="/list-streams" hx-target="#output-div" hx-swap="innerHTML">Load Streams</button>
+        <button hx-get="/list-config" hx-target="#output-div" hx-swap="innerHTML">Load Configuration</button>
+    </div>
+    <div id="output-div" class="boxed-div"></div>
 </body>
+
 </html>

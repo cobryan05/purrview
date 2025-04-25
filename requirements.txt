@@ -1,7 +1,8 @@
+debugpy
 fastapi
-uvicorn
+ffmpeg-python
 jinja2
 openapi-generator-cli[jdk4py]
+python-multipart
 requests
-debugpy
-ffmpeg-python
+uvicorn

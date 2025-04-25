@@ -1,15 +1,13 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <title>Streams List</title>
-</head>
-<body>
-    <h1>List of Streams</h1>
-    <ul>
-        {% for stream in streams %}
-            <li>ID: {{ stream.id }} | Name: {{ stream.name }}</li>
-        {% endfor %}
-    </ul>
-</body>
-</html>
+<h1>List of Streams</h1>
+<ul>
+    {% for stream in streams %}
+        <li>
+            Name: {{ stream.name }} | {{ stream.text }}
+            <!-- Inline form to stop the stream -->
+            <form hx-post="/destroy-stream" hx-target="#output-div" hx-swap="innerHTML" style="display: inline;">
+                <input type="hidden" name="stream_name" value="{{ stream.name }}">
+                <button type="submit">Stop Stream</button>
+            </form>
+        </li>
+    {% endfor %}
+</ul>

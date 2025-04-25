@@ -13,6 +13,7 @@ services:
       - ./.vscode_container:/app/.vscode
     ports:
       - "8000:8000"
+      - "8553:8554"
       - "9001:9001"
       - "9997:9997"
     restart: unless-stopped
