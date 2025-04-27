@@ -11,6 +11,7 @@ services:
       - ./templates:/app/templates
       - ./static:/app/static
       - ./.vscode_container:/app/.vscode
+      - ./pyproject.toml:/app/pyproject.toml
     ports:
       - "8000:8000"
       - "8553:8554"

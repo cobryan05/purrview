@@ -1,5 +1,8 @@
 api: yes
 apiAddress: :9997
+rtspAddress: :8554
+logLevel: debug
+protocols: [tcp]
 
 authInternalUsers:
 - user: any
