@@ -13,6 +13,7 @@ from typing import Dict, List
 
 import sys
 import logging
+
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger(__file__)
 logger.setLevel(logging.DEBUG)
@@ -90,26 +91,22 @@ class WebApp:
                 source_url: str = form_data.get("source_url")  # Source URL for the stream
                 destination_name: str = form_data.get("destination_name")  # Destination name for the stream
                 delay: float = float(form_data.get("delay", "0"))  # Delay for the stream
-                overwrite: bool = bool(strtobool(form_data.get("overwrite", "false")))  # Overwrite existing?
 
                 logging.info(
-                    f"Creating stream with Source URL: {source_url}, Destination Name: {destination_name}, Delay: {delay}, Overwrite: {overwrite}"
+                    f"Creating stream with Source URL: {source_url}, Destination Name: {destination_name}, Delay: {delay}"
                 )
-                await self._manager.create_relay_stream(
-                    src=source_url, stream_name=destination_name, delay=delay, overwrite=overwrite
-                )
+                await self._manager.create_rtsp_relay_stream(rtsp_url=source_url, stream_name=destination_name)
+                if delay > 0:
+                    streams = self._manager.get_streams()
+                    stream = streams.get(destination_name, None)
+                    if stream is None:
+                        raise Exception(f"Failed to create delated stream, stream {destination_name} was not in stream list")
+                    await self._manager.create_delay_stream(stream.url, f"{destination_name}_delayed", delay)
+
+
             except Exception as e:
                 return self._error_response(request, f"Failed to create stream: {e}")
-
-            # Return a success message or redirect to another page
-            return self._templates.TemplateResponse(
-                "display_text.html",
-                {
-                    "request": request,
-                    "text": "Stream created successfully",
-                    **self._dflt_args,
-                },
-            )
+            return await list_streams(request)
 
         @self._app.post("/destroy-stream", response_class=HTMLResponse)
         async def destroy_stream(request: Request):
@@ -123,16 +120,7 @@ class WebApp:
                 logging.info(f"Destroying stream {stream_name}")
 
                 await self._manager.destroy_stream(stream_name=stream_name)
-
-                # Return a success message or redirect to another page
-                return self._templates.TemplateResponse(
-                    "display_text.html",
-                    {
-                        "request": request,
-                        "text": "Stream destroyed successfully",
-                        **self._dflt_args,
-                    },
-                )
+                return await list_streams(request)
             except Exception as e:
                 return self._error_response(request, f"Failed to destroy stream: {e}")
 
@@ -140,7 +128,7 @@ class WebApp:
         async def list_streams(request: Request):
             """List all available streams"""
             try:
-                streams = await self._manager.get_streams()  # Fetch the list of streams
+                streams = self._manager.get_streams()  # Fetch the list of streams
                 stream_info: List[Dict[str, str]] = []
                 for info in streams.values():
                     stream_info.append({"name": info.name, "text": str(info)})  # Format stream information

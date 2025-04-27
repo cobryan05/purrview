@@ -2,6 +2,7 @@ debugpy
 fastapi
 ffmpeg-python
 jinja2
+numpy
 openapi-generator-cli[jdk4py]
 python-multipart
 requests

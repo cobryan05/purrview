@@ -23,17 +23,17 @@ class FFmpegStreamerOut:
         self._stop_event: Event = Event()
         self._extra_args: Dict[str, str] = {}
 
-        if isinstance(dest, str):
-            # If destination is a string, check if it's a URL or file path
-            if dest.startswith("http://") or dest.startswith("rtsp://") or dest.startswith("https://"):
-                self._extra_args = {"rtsp_transport": "tcp", "format": "rtsp"}
+        # if isinstance(dest, str):
+        #     # If destination is a string, check if it's a URL or file path
+        #     if dest.startswith("http://") or dest.startswith("rtsp://") or dest.startswith("https://"):
+        #         self._extra_args = {"rtsp_transport": "tcp", "format": "rtsp"}
 
     def start(self):
         """
         Start the output stream
         """
         self._ffmpeg_out = (
-            ffmpeg.input("pipe:", format="nut")
+            ffmpeg.input("pipe:")
             .output(self._dest, format="nut", codec="copy", *self._extra_args)
             .global_args("-nostats")  # , "-loglevel", "debug")
         )
