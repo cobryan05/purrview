@@ -1,57 +1,87 @@
-from collections import deque
-import numpy as np
-import threading
-from typing import Deque, Optional
 from .ffmpegStreamerIn import FFmpegStreamerIn
 from .ffmpegStreamerOut import FFmpegStreamerOut
+from dataclasses import dataclass
+from subprocess import Popen
+import ffmpeg
+from typing import Callable, Optional
+import asyncio
+import logging
+import time
+from concurrent.futures import ThreadPoolExecutor
 
+logging.basicConfig()
+logger = logging.getLogger(__file__)
+logger.setLevel(logging.DEBUG)
+
+# During initial delay the maximum amount of time between frames
+MAX_NO_FRAME_TIME = 5.0
+DELAY_STEP_SIZE = 0.1
 
 class DelayedStreamer:
-    def __init__(
-        self, source: FFmpegStreamerIn, dest: FFmpegStreamerOut, delay: float
-    ) -> None:
+    @dataclass
+    class QueueItem:
+        data: bytes
+        target_time: float
+
+    def __init__(self, source: FFmpegStreamerIn, dest: FFmpegStreamerOut, delay: float) -> None:
         self._source: FFmpegStreamerIn = source
         self._dest: FFmpegStreamerOut = dest
         self._delay: float = delay
-        self._frame_queue: Optional[Deque[bytes]] = None
-        self._stop_event: threading.Event = threading.Event()
-        self._thread: threading.Thread = threading.Thread(
-            target=self._delay_thread, daemon=True
-        )
+        self._data_queue: asyncio.Queue[DelayedStreamer.QueueItem] = asyncio.Queue()
+        self._stop_event: asyncio.Event = asyncio.Event()
+        self._task: Optional[asyncio.Task] = None
+        self._thread_executor: ThreadPoolExecutor = ThreadPoolExecutor(max_workers=1)
+        self._event_loop: Optional[asyncio.AbstractEventLoop] = None
 
     def start(self) -> None:
-        """Starts the background thread to manage frame reading and buffering."""
-        self._thread.start()
+        """Starts the background task to manage frame reading and buffering."""
+        self._event_loop = asyncio.get_running_loop()
+        self._task = self._event_loop.create_task(self._worker_task())  # Schedule a new task
 
-    def _delay_thread(self) -> None:
+    def stop(self) -> None:
+        """Stops the background task"""
+        self._stop_event.set()
+
+    async def _await_in_thread(self, func: Callable, *args, **kwargs):
+        """Run a blocking function on the background thread"""
+        return await self._event_loop.run_in_executor(self._thread_executor, func, *args, **kwargs)
+
+    async def _worker_task(self) -> None:
         """Reads frames from the source and pushes them into the frame queue."""
         self._source.start()
         self._dest.start()
-        fps = self._source.get_fps()
-        delay_frame_cnt = int(
-            self._delay * fps
-        )  # Calculate buffer size based on FPS and delay
-        self._frame_queue = deque(maxlen=2 * delay_frame_cnt)
+
+        self._data_queue = asyncio.Queue()
+
+        next_item: Optional[DelayedStreamer.QueueItem] = None
+        last_write_timestamp: float = 0.0
+
+        # Slowly up the delay to the target delay
+        current_delay: float = 0.0
+
 
         while not self._stop_event.is_set():
-            frame = self._source.read()
-            if frame is not None:
-                self._frame_queue.append(frame)
+            data = await self._source.read_async()
+            if data is not None:
+                item = DelayedStreamer.QueueItem(data=data, target_time=time.time() + current_delay)
+                if next_item is None:
+                    next_item = item
+                else:
+                    await self._data_queue.put(item)
 
-            # Wait until the buffer is full or we've accumulated enough frames
-            if len(self._frame_queue) >= delay_frame_cnt:
-                self._write_to_dest()
+            now = time.time()
+            if next_item and (now >= next_item.target_time or now > last_write_timestamp + MAX_NO_FRAME_TIME):
+                await self._await_in_thread(self._dest.write, next_item.data)
+                last_write_timestamp = time.time()
+
+                # Slowly ramp up delay so that there are some initial frames
+                if current_delay < self._delay:
+                    current_delay = min(self._delay, current_delay + DELAY_STEP_SIZE)
+
+                try:
+                    next_item = self._data_queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    next_item = None
 
         self._source.stop()
         self._dest.stop()
-
-    def _write_to_dest(self) -> None:
-        """Writes frames from the buffer to the destination stream."""
-        while len(self._frame_queue) > 0:
-            frame: bytes = self._frame_queue.popleft()  # Pop the oldest frame
-            self._dest.write(frame)  # Write frame to the destination
-
-    def stop(self) -> None:
-        """Stops the background thread and stops the process."""
-        self._stop_event.set()
-        self._thread.join()

@@ -11,3 +11,4 @@ authInternalUsers:
   permissions:
   - action: api
   - action: read
+  - action: publish

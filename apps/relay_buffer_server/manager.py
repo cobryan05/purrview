@@ -26,6 +26,7 @@ class Manager:
         active: bool = False
         owned: bool = False  # True if Manager created this
         streamer: Optional[DelayedStreamer] = None
+        mtx_path: Optional[MtxPath] = None
 
     POLLING_INTERVAL: float = 30.0  # Interval in seconds for periodic tasks
 
@@ -37,27 +38,6 @@ class Manager:
         self._api_port: int = 9997
         self._rtsp_port: int = 8554
         self._task: Optional[asyncio.Task] = None  # Background task for periodic operations
-
-    def start(self):
-        """Start the periodic worker task, should be called from the event loop to run on"""
-        if self._task and not self._task.done():
-            self._task.cancel()  # Cancel the existing task if it's still running
-        self._task = asyncio.get_running_loop().create_task(self._worker_task())  # Schedule a new task
-
-    async def create_rtsp_relay_stream(self, rtsp_url: str, stream_name: str, overwrite: bool = True) -> None:
-        """Create a new stream with the given source and name, overwriting any existing stream"""
-        if stream_name in self._streams:
-            if overwrite:
-                await self.destroy_stream(stream_name)
-            else:
-                raise Exception(f"Stream named {stream_name} already exists")
-        path_conf: PathConf = PathConf(name=stream_name, source=rtsp_url)  # Define the stream configuration
-        api: ConfigurationApi = ConfigurationApi(self._api_client)
-
-        # Add the stream configuration using the API
-        self._streams[stream_name] = Manager.StreamInfo(stream_name)
-        await asyncio.to_thread(api.config_paths_add, name=stream_name, path_conf=path_conf)
-        await self.refresh_streams()  # Update stream info
 
     async def create_delay_stream(self, rtsp_url: str, stream_name: str, delay: float, overwrite: bool = True) -> None:
         """Create a new stream that replays source_stream with a delay, overwriting any existing stream"""
@@ -78,13 +58,34 @@ class Manager:
 
         await self.destroy_stream(stream_name)
 
-        path_conf: PathConf = PathConf(name=stream_name, source="publisher")  # Define the stream configuration
+        path_conf: PathConf = PathConf(name=stream_name, source="publisher", sourceOnDemand=False)  # Define the stream configuration
         api: ConfigurationApi = ConfigurationApi(self._api_client)
 
         # Add the stream configuration using the API
         self._streams[stream_name] = Manager.StreamInfo(stream_name)
         await asyncio.to_thread(api.config_paths_add, name=stream_name, path_conf=path_conf)
         await self.refresh_streams()  # Update stream info
+
+    async def create_rtsp_relay_stream(self, rtsp_url: str, stream_name: str, overwrite: bool = True) -> None:
+        """Create a new stream with the given source and name, overwriting any existing stream"""
+        if stream_name in self._streams:
+            if overwrite:
+                await self.destroy_stream(stream_name)
+            else:
+                raise Exception(f"Stream named {stream_name} already exists")
+        path_conf: PathConf = PathConf(name=stream_name, source=rtsp_url)  # Define the stream configuration
+        api: ConfigurationApi = ConfigurationApi(self._api_client)
+
+        # Add the stream configuration using the API
+        self._streams[stream_name] = Manager.StreamInfo(stream_name)
+        await asyncio.to_thread(api.config_paths_add, name=stream_name, path_conf=path_conf)
+        await self.refresh_streams()  # Update stream info
+
+
+    async def destroy_all_streams(self) -> None:
+        """Destroys all streams on the server"""
+        for name in list(self.get_streams().keys()):
+            await self.destroy_stream(name)
 
     async def destroy_stream(self, stream_name: str) -> None:
         """Destroy a stream with the given name"""
@@ -99,6 +100,12 @@ class Manager:
             logger.warning(f"Failed to destroy stream: {e}")
         await self.refresh_streams()
 
+    async def get_config(self) -> str:
+        """Retrieve the global configuration as a string"""
+        api: ConfigurationApi = ConfigurationApi(self._api_client)
+        config = await asyncio.to_thread(api.config_global_get)  # Fetch the global configuration
+        return config.to_str()  # Convert the configuration to a string
+
     def get_streams(self) -> Dict[str, StreamInfo]:
         return dict(self._streams)
 
@@ -112,16 +119,28 @@ class Manager:
 
         self._update_streams(stream_dict)
 
-    async def get_config(self) -> str:
-        """Retrieve the global configuration as a string"""
-        api: ConfigurationApi = ConfigurationApi(self._api_client)
-        config = await asyncio.to_thread(api.config_global_get)  # Fetch the global configuration
-        return config.to_str()  # Convert the configuration to a string
+    def start(self):
+        """Start the periodic worker task, should be called from the event loop to run on"""
+        if self._task and not self._task.done():
+            self._task.cancel()  # Cancel the existing task if it's still running
+        self._task = asyncio.get_running_loop().create_task(self._worker_task())  # Schedule a new task
+
+    async def _init(self):
+        config_api: ConfigurationApi = ConfigurationApi(self._api_client)
+        config = await asyncio.to_thread(config_api.config_global_get)
+        host_url = self._api_client.configuration.host
+        host = host_url.split("://")[1]
+        host_name, host_port = host.split(":")
+        self._hostname = host_name
+        self._api_port = host_port
+        self._rtsp_port = config.rtsp_address.split(":")[1]
+        await self.refresh_streams()
+        await self.destroy_all_streams()
 
     def _update_streams(self, streams: Dict[str, MtxPath]):
         """Update the internal stream list to match reported streams"""
         # Add new streams
-        for name, stream in streams.items():
+        for name, mtx_path in streams.items():
             if name not in self._streams:
                 logger.info(f"Unexpected new stream on server: {name}")
                 self._streams[name] = Manager.StreamInfo(name, owned=False)  # Add the new stream to self._streams
@@ -130,36 +149,25 @@ class Manager:
                 logger.info(f"Stream {name} marked active")
                 stream_info.active = True
                 stream_info.url = f"rtsp://{self._hostname}:{self._rtsp_port}/{name}"
+            stream_info.mtx_path = mtx_path
 
         # Remove unexpectedly closed streams
         for name in list(self._streams.keys()):
             if name not in streams:
-                stream = self._streams[name]
-                if stream.active:
+                mtx_path = self._streams[name]
+                if mtx_path.active:
                     logger.warning(f"Stream unexpectedly removed: {name}")
                 else:
                     logger.info(f"Confirming removal of {name}")
                 self._streams.pop(name)
 
-    def _init(self):
-        config_api: ConfigurationApi = ConfigurationApi(self._api_client)
-        config = config_api.config_global_get()
-        host_url = self._api_client.configuration.host
-        host = host_url.split("://")[1]
-        host_name, host_port = host.split(':')
-        self._hostname = host_name
-        self._api_port = host_port
-        self._rtsp_port = config.rtsp_address.split(':')[1]
-
-
     async def _worker_task(self):
         """Periodic worker task that runs at regular intervals"""
         try:
-            self._init()
+            await self._init()
             while True:
-                # Placeholder for periodic operations (e.g., monitoring or maintenance tasks)
-                await self.refresh_streams()
                 await asyncio.sleep(Manager.POLLING_INTERVAL)  # Wait for the polling interval
+                await self.refresh_streams()
         except asyncio.CancelledError:
             print("Periodic task was cancelled.")  # Handle task cancellation
         finally:

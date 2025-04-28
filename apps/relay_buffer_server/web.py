@@ -7,7 +7,7 @@ from distutils.util import strtobool
 
 from mediamtx_client.api_client import ApiClient
 
-from apps.stream_manager.manager import Manager
+from apps.relay_buffer_server.manager import Manager
 
 from typing import Dict, List
 
@@ -128,6 +128,7 @@ class WebApp:
         async def list_streams(request: Request):
             """List all available streams"""
             try:
+                await self._manager.refresh_streams()
                 streams = self._manager.get_streams()  # Fetch the list of streams
                 stream_info: List[Dict[str, str]] = []
                 for info in streams.values():
