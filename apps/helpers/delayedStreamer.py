@@ -56,32 +56,42 @@ class DelayedStreamer:
         next_item: Optional[DelayedStreamer.QueueItem] = None
         last_write_timestamp: float = 0.0
 
-        # Slowly up the delay to the target delay
+        # Slowly increase the delay to the target delay
         current_delay: float = 0.0
 
+        error_cnt: int = 0
 
         while not self._stop_event.is_set():
-            data = await self._source.read_async()
-            if data is not None:
-                item = DelayedStreamer.QueueItem(data=data, target_time=time.time() + current_delay)
-                if next_item is None:
-                    next_item = item
-                else:
-                    await self._data_queue.put(item)
+            try:
+                data = await self._source.read_async()
+                if data is not None:
+                    item = DelayedStreamer.QueueItem(data=data, target_time=time.time() + current_delay)
+                    if next_item is None:
+                        next_item = item
+                    else:
+                        await self._data_queue.put(item)
 
-            now = time.time()
-            if next_item and (now >= next_item.target_time or now > last_write_timestamp + MAX_NO_FRAME_TIME):
-                await self._await_in_thread(self._dest.write, next_item.data)
-                last_write_timestamp = time.time()
+                now = time.time()
+                if next_item and (now >= next_item.target_time or now > last_write_timestamp + MAX_NO_FRAME_TIME):
+                    await self._await_in_thread(self._dest.write, next_item.data)
+                    last_write_timestamp = time.time()
 
-                # Slowly ramp up delay so that there are some initial frames
-                if current_delay < self._delay:
-                    current_delay = min(self._delay, current_delay + DELAY_STEP_SIZE)
+                    # Slowly ramp up delay so that there are some initial frames
+                    if current_delay < self._delay:
+                        current_delay = min(self._delay, current_delay + DELAY_STEP_SIZE)
 
-                try:
-                    next_item = self._data_queue.get_nowait()
-                except asyncio.QueueEmpty:
-                    next_item = None
+                    try:
+                        next_item = self._data_queue.get_nowait()
+                    except asyncio.QueueEmpty:
+                        next_item = None
+            except Exception as e:
+                # TODO: Streamer reset API for manager to reset?
+                error_cnt += 1
+                logger.error(f"Error {error_cnt}: {e}")
+                self._source.stop()
+                self._dest.stop()
+                self._source.start()
+                self._dest.start()
 
         self._source.stop()
         self._dest.stop()

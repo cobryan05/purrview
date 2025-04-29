@@ -1,6 +1,5 @@
 import asyncio
 import ffmpeg
-import numpy as np
 from subprocess import Popen
 import logging
 from fractions import Fraction

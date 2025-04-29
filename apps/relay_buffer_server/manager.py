@@ -24,11 +24,12 @@ class Manager:
         name: str
         url: Optional[str] = None
         active: bool = False
+        expected_active: Optional[bool] = None
         owned: bool = False  # True if Manager created this
         streamer: Optional[DelayedStreamer] = None
         mtx_path: Optional[MtxPath] = None
 
-    POLLING_INTERVAL: float = 30.0  # Interval in seconds for periodic tasks
+    POLLING_INTERVAL: float = 5.0  # Interval in seconds for periodic tasks
 
     def __init__(self, api_client: ApiClient):
         """Initialize the Manager with an API client"""
@@ -117,7 +118,34 @@ class Manager:
             raise Exception("Failed to get stream list from server")
         stream_dict: Dict[str, MtxPath] = {str(stream.name): stream for stream in streams.items}
 
-        self._update_streams(stream_dict)
+        # Add new streams
+        for name, mtx_path in stream_dict.items():
+            if name not in self._streams:
+                logger.info(f"Unexpected new stream on server: {name}")
+                self._streams[name] = Manager.StreamInfo(name, owned=False)  # Add the new stream to self._streams
+            stream_info = self._streams[name]
+
+            stream_info.mtx_path = mtx_path
+            stream_info.url = f"rtsp://{self._hostname}:{self._rtsp_port}/{name}"
+            if mtx_path.ready != stream_info.active:
+                logger.info(f"Stream {name} set to url: {stream_info.url}  active: {mtx_path.ready}")
+                stream_info.active = mtx_path.ready
+                if stream_info.expected_active is None and stream_info.active:
+                    # Once active expect it to stay active
+                    stream_info.expected_active = True
+                elif not stream_info.active and stream_info.expected_active:
+                    logger.warning(f"Stream {name} expected active but is not!")
+
+        # Remove unexpectedly closed streams
+        for name in list(self._streams.keys()):
+            if name not in stream_dict:
+                mtx_path = self._streams[name]
+                if mtx_path.active:
+                    logger.warning(f"Stream unexpectedly removed: {name}")
+                else:
+                    logger.info(f"Confirming removal of {name}")
+                self._streams.pop(name)
+
 
     def start(self):
         """Start the periodic worker task, should be called from the event loop to run on"""
@@ -136,30 +164,6 @@ class Manager:
         self._rtsp_port = config.rtsp_address.split(":")[1]
         await self.refresh_streams()
         await self.destroy_all_streams()
-
-    def _update_streams(self, streams: Dict[str, MtxPath]):
-        """Update the internal stream list to match reported streams"""
-        # Add new streams
-        for name, mtx_path in streams.items():
-            if name not in self._streams:
-                logger.info(f"Unexpected new stream on server: {name}")
-                self._streams[name] = Manager.StreamInfo(name, owned=False)  # Add the new stream to self._streams
-            stream_info = self._streams[name]
-            if not stream_info.active:
-                logger.info(f"Stream {name} marked active")
-                stream_info.active = True
-                stream_info.url = f"rtsp://{self._hostname}:{self._rtsp_port}/{name}"
-            stream_info.mtx_path = mtx_path
-
-        # Remove unexpectedly closed streams
-        for name in list(self._streams.keys()):
-            if name not in streams:
-                mtx_path = self._streams[name]
-                if mtx_path.active:
-                    logger.warning(f"Stream unexpectedly removed: {name}")
-                else:
-                    logger.info(f"Confirming removal of {name}")
-                self._streams.pop(name)
 
     async def _worker_task(self):
         """Periodic worker task that runs at regular intervals"""
