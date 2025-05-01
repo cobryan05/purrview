@@ -23,11 +23,12 @@ class Manager:
     class StreamInfo:
         name: str
         url: Optional[str] = None
+        streamer: Optional[DelayedStreamer] = None
+        mtx_path: Optional[MtxPath] = None
+
         active: bool = False
         expected_active: Optional[bool] = None
         owned: bool = False  # True if Manager created this
-        streamer: Optional[DelayedStreamer] = None
-        mtx_path: Optional[MtxPath] = None
 
     POLLING_INTERVAL: float = 5.0  # Interval in seconds for periodic tasks
 
@@ -41,21 +42,24 @@ class Manager:
         self._task: Optional[asyncio.Task] = None  # Background task for periodic operations
 
     async def create_delay_stream(self, rtsp_url: str, stream_name: str, delay: float, overwrite: bool = True) -> None:
-        """Create a new stream that replays source_stream with a delay, overwriting any existing stream"""
+        """Create a new stream that replays source_stream with a delay"""
         await self.create_new_publish_stream(stream_name, overwrite)
-        input = FFmpegStreamerIn(rtsp_url)
+        input_stream = FFmpegStreamerIn(rtsp_url)
         delayed_stream = self._streams[stream_name]
+        if delayed_stream.url is None:
+            raise ValueError("Publish URL is missing. Failed to create publish stream?")
         output = FFmpegStreamerOut(delayed_stream.url)
-        delayed_stream.streamer = DelayedStreamer(input, output, delay)
+        delayed_stream.streamer = DelayedStreamer(input_stream, output, delay)
         delayed_stream.streamer.start()
 
+
     async def create_new_publish_stream(self, stream_name: str, overwrite: bool = True):
-        """Create a new stream with the given source and name, overwriting any existing stream"""
+        """Create a new stream with the given source and name"""
         if stream_name in self._streams:
             if overwrite:
                 await self.destroy_stream(stream_name)
             else:
-                raise Exception(f"Stream named {stream_name} already exists")
+                raise KeyError(f"Stream named {stream_name} already exists")
 
         await self.destroy_stream(stream_name)
 
@@ -68,12 +72,12 @@ class Manager:
         await self.refresh_streams()  # Update stream info
 
     async def create_rtsp_relay_stream(self, rtsp_url: str, stream_name: str, overwrite: bool = True) -> None:
-        """Create a new stream with the given source and name, overwriting any existing stream"""
+        """Create a new stream with the given source and name"""
         if stream_name in self._streams:
             if overwrite:
                 await self.destroy_stream(stream_name)
             else:
-                raise Exception(f"Stream named {stream_name} already exists")
+                raise KeyError(f"Stream named {stream_name} already exists")
         path_conf: PathConf = PathConf(name=stream_name, source=rtsp_url)  # Define the stream configuration
         api: ConfigurationApi = ConfigurationApi(self._api_client)
 

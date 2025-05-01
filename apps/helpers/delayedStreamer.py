@@ -13,9 +13,12 @@ logging.basicConfig()
 logger = logging.getLogger(__file__)
 logger.setLevel(logging.DEBUG)
 
-# During initial delay the maximum amount of time between frames
-MAX_NO_FRAME_TIME = 5.0
-DELAY_STEP_SIZE = 0.1
+
+STREAM_START_TIMEOUT = 60.0  # Timeout for initial stream read
+READ_TIMEOUT = 10.0  # Timeout for subsequent stream reads
+MAX_NO_FRAME_TIME = 5.0  # Max time between frames even during initial delay
+DELAY_STEP_SIZE = 0.1  # Increment step for increasing delay up to target delay
+
 
 class DelayedStreamer:
     @dataclass
@@ -59,11 +62,28 @@ class DelayedStreamer:
         # Slowly increase the delay to the target delay
         current_delay: float = 0.0
 
-        error_cnt: int = 0
+        write_error_cnt: int = 0
+        read_error_cnt: int = 0
+        read_stream_timeout: Optional[float] = time.time() + STREAM_START_TIMEOUT
+        data: Optional[bytes] = None
 
         while not self._stop_event.is_set():
             try:
-                data = await self._source.read_async()
+                try:
+                    if read_stream_timeout is None:
+                        read_stream_timeout = time.time() + READ_TIMEOUT
+                    data = await self._source.read_async(timeout=min(MAX_NO_FRAME_TIME, MAX_NO_FRAME_TIME))
+                    read_stream_timeout = None
+                except asyncio.TimeoutError:
+                    data = None
+                    now = time.time()
+                    if now > read_stream_timeout:
+                        read_error_cnt += 1
+                        logger.warning(f"Read stream failed (cnt: {read_error_cnt}).")
+                        self._source.stop()
+                        self._source.start()
+                        read_stream_timeout = now + STREAM_START_TIMEOUT
+
                 if data is not None:
                     item = DelayedStreamer.QueueItem(data=data, target_time=time.time() + current_delay)
                     if next_item is None:
@@ -73,8 +93,17 @@ class DelayedStreamer:
 
                 now = time.time()
                 if next_item and (now >= next_item.target_time or now > last_write_timestamp + MAX_NO_FRAME_TIME):
-                    await self._await_in_thread(self._dest.write, next_item.data)
-                    last_write_timestamp = time.time()
+                    try:
+                        await self._await_in_thread(self._dest.write, next_item.data)
+                    except BrokenPipeError:
+                        write_error_cnt += 1
+                        logger.warning(f"Publish stream failed (cnt: {write_error_cnt}).")
+                        self._dest.stop()
+                        self._dest.start()
+                        current_delay = 0.0
+
+                    now = time.time()
+                    last_write_timestamp = now
 
                     # Slowly ramp up delay so that there are some initial frames
                     if current_delay < self._delay:
@@ -82,16 +111,12 @@ class DelayedStreamer:
 
                     try:
                         next_item = self._data_queue.get_nowait()
+                        self._data_queue.task_done()
                     except asyncio.QueueEmpty:
                         next_item = None
             except Exception as e:
                 # TODO: Streamer reset API for manager to reset?
-                error_cnt += 1
-                logger.error(f"Error {error_cnt}: {e}")
-                self._source.stop()
-                self._dest.stop()
-                self._source.start()
-                self._dest.start()
+                logger.error(f"Error  {e}")
 
         self._source.stop()
         self._dest.stop()

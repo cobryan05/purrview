@@ -7,6 +7,7 @@ from typing import Any, Dict, Optional, Tuple, List
 
 logging.basicConfig()
 logger = logging.getLogger(__file__)
+logger.setLevel(logging.DEBUG)
 
 READ_CHUNK_SIZE = 16 * 1024
 
@@ -57,29 +58,33 @@ class FFmpegStreamerIn:
             raise RuntimeError("Frame size not available yet.")
         return self._pixel_format
 
-    async def read_async(self) -> bytes:
+    async def read_async(self, timeout: Optional[float] = None) -> Optional[bytes]:
         """Returns the next frame from the queue"""
-        return await self._frame_queue.get()
+        item = await asyncio.wait_for(self._frame_queue.get(), timeout=timeout)
+        self._frame_queue.task_done()
+        return item
 
     def read(self, timeout: Optional[float] = None) -> Optional[bytes]:
         """Returns the next frame from the queue, or None if no frame is available within the timeout."""
         try:
-            future = asyncio.run_coroutine_threadsafe(self.read_async, self._event_loop)
-            return future.result(timeout=timeout)
+            assert self._event_loop is not None
+            future = asyncio.run_coroutine_threadsafe(self.read_async(timeout=timeout), self._event_loop)
+            return future.result()
         except asyncio.TimeoutError:
-            return None
-        except RuntimeError as e:
-            logger.error(f"Error in read: {e}")
             return None
 
     def stop(self) -> None:
         """Stops the streamer and terminates the process."""
         self._stop_event.set()
-        # if self._process:
-        #     self._process.terminate()
+        self._process.terminate()
+        self._process.wait()
+        self._process = None
 
     def start(self) -> None:
         """Starts the FFmpeg process and the background task."""
+        if self._process:
+            raise RuntimeError("Can't start new process while old process is running!")
+
         input_kwargs = dict()
         for i in range(0, len(self._input_args), 2):
             key = self._input_args[i].lstrip("-")
@@ -93,6 +98,8 @@ class FFmpegStreamerIn:
             .run_async(pipe_stdout=True, pipe_stderr=True)
         )
 
+        self._stop_event.clear()
+        self._metadata_event.clear()
         # Save the event loop and kick off the reading task
         self._event_loop = asyncio.get_running_loop()
         self._task = self._event_loop.create_task(self._worker_task())
@@ -129,7 +136,12 @@ class FFmpegStreamerIn:
 
     async def _worker_task(self) -> None:
         """Reads frames from the source and puts them into the frame queue."""
-        assert self._process is not None and self._process.stdout is not None and self._process.stderr is not None
+        assert (
+            self._process is not None
+            and self._process.stdout is not None
+            and self._process.stderr is not None
+            and self._event_loop is not None
+        )
 
         # Extract metadata from stderr
         await asyncio.to_thread(self._extract_metadata_from_stderr)
@@ -138,11 +150,16 @@ class FFmpegStreamerIn:
         protocol = asyncio.StreamReaderProtocol(reader)
         await self._event_loop.connect_read_pipe(lambda: protocol, self._process.stdout)
 
-        logger.info(f"Starting stream {self._width}x{self._height}@{self._fps}fps")
+        logger.info(f"Starting stream [{self._source}] {self._width}x{self._height}@{self._fps}fps")
 
         # Read frames from stdout
         while not self._stop_event.is_set():
-            in_bytes = await reader.read(READ_CHUNK_SIZE)
+            try:
+                in_bytes = await reader.read(READ_CHUNK_SIZE)
+            except Exception as e:
+                logger.error(e)
+                raise
             if not in_bytes:
+                logger.error(f"No bytes returned, exiting worker for {self._source}")
                 break
             await self._frame_queue.put(in_bytes)
