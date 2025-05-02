@@ -1,22 +1,26 @@
+"""Manages streams on the MediaMTX server"""
+from ..helpers.delayedStreamer import DelayedStreamer
+from ..helpers.ffmpegStreamerIn import FFmpegStreamerIn
+from ..helpers.ffmpegStreamerOut import FFmpegStreamerOut
+from dataclasses import dataclass
 from mediamtx_client.api_client import ApiClient
-from mediamtx_client.api.paths_api import PathsApi
 from mediamtx_client.api.configuration_api import ConfigurationApi
-from mediamtx_client.models.path_conf import PathConf
+from mediamtx_client.api.paths_api import PathsApi
 from mediamtx_client.models.path import Path as MtxPath
-from apps.helpers.delayedStreamer import DelayedStreamer
-from apps.helpers.ffmpegStreamerIn import FFmpegStreamerIn
-from apps.helpers.ffmpegStreamerOut import FFmpegStreamerOut
+from mediamtx_client.models.path_conf import PathConf
+from typing import Any, Optional, Dict
 import asyncio
 import logging
-from dataclasses import dataclass
-from typing import Any, Optional, Dict
 import sys
-
 
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger(__file__)
 logger.setLevel(logging.DEBUG)
 
+
+#TODO:
+# When restarting streams should check if even still exists on mediamtx, maybe it was stopped?
+#   If we didn't stop it (it was externally stopped) we should probably just start it back up
 
 class Manager:
     @dataclass

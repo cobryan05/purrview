@@ -1,15 +1,13 @@
 import uvicorn
 import mediamtx_client
 
-from apps.relay_buffer_server.web import WebApp
-from apps.relay_buffer_server.manager import Manager
+from .manager import Manager
+from .web import WebApp
 
- # Defining the host is optional and defaults to http://localhost:9997
+# Defining the host is optional and defaults to http://localhost:9997
 # See configuration.py for a list of all supported configuration parameters.
 app_name = "RTSP Relay/Buffer Server"
-mediamtx_conf = mediamtx_client.Configuration(
-    host = "http://localhost:9997"
-)
+mediamtx_conf = mediamtx_client.Configuration(host="http://localhost:9997")
 api_client = mediamtx_client.ApiClient(mediamtx_conf)
 
 manager = Manager(api_client)

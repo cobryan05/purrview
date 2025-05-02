@@ -21,6 +21,11 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Fetch the minimized version of HTMX
+RUN mkdir -p /app/logs /app/static/js \
+    && curl -L -o /app/static/js/htmx.min.js https://unpkg.com/htmx.org@${HTMX_VERSION}/dist/htmx.min.js
+
+
 # Copy MediaMTX binary
 COPY --from=mediamtx /mediamtx /app/mediamtx
 
@@ -31,16 +36,19 @@ RUN curl -L -o /openapi.yaml \
     && pip install --no-cache-dir /tmp/openapi-client \
     && rm  -rf /tmp/openapi-client
 
-
-# Fetch the minimized version of HTMX
-RUN mkdir -p /app/logs /app/static/js \
-    && curl -L -o /app/static/js/htmx.min.js https://unpkg.com/htmx.org@${HTMX_VERSION}/dist/htmx.min.js
-
 # Copy required files
 COPY conf ./conf
 COPY templates ./templates
 COPY static ./static
 COPY apps ./apps
+
+# Generates python clients for internal apps
+RUN python -m apps.generate_openapi_jsons \
+    && openapi-generator-cli generate -i relay_buffer_server_openapi.json -g python -o /tmp/relay_buffer_client --package-name relay_buffer_client \
+    && pip install --no-cache-dir /tmp/relay_buffer_client \
+    && rm -rf /tmp/relay_buffer_client
+
+
 # Expose ports (FastAPI + MediaMTX)
 EXPOSE 8000 8554 8888 1935 9001 9997
 
