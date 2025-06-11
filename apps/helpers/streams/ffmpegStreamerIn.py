@@ -16,7 +16,8 @@ class FFmpegStreamerIn:
     def __init__(
         self,
         source: str,
-        input_args: Optional[List[str]] = None,
+        input_args: Optional[Dict[str, str]] = None,
+        output_args: Optional[Dict[str, str]] = None,
     ) -> None:
 
         self._extra_args: Dict[str, Any] = {}
@@ -24,7 +25,8 @@ class FFmpegStreamerIn:
             self._extra_args = {"rtsp_transport": "tcp", "format": "rtsp", "use_wallclock_as_timestamps": 1}
 
         self._source: str = source
-        self._input_args: List[str] = input_args or []
+        self._input_args: Dict[str, str] = input_args or {}
+        self._output_args: Dict[str, str] = output_args or {}
 
         self._pixel_format: Optional[str] = None
         self._width: Optional[int] = None
@@ -38,25 +40,30 @@ class FFmpegStreamerIn:
         self._task: Optional[asyncio.Task] = None
         self._event_loop: Optional[asyncio.AbstractEventLoop] = None
 
+    def __repr__(self):
+        return f"FFmpegStreamerIn [{self._source}]"
+
     def get_fps(self) -> float:
-        """Returns the FPS of the source stream (waits until it's available)."""
-        # self._metadata_event.wait()
+        """Returns the FPS of the source stream, if available."""
         if self._fps is None:
             raise RuntimeError("FPS not available yet.")
         return self._fps
 
     def get_frame_size(self) -> Tuple[int, int]:
-        """Returns the frame size (width, height) of the source stream (waits until it's available)."""
-        # self._metadata_event.wait()
+        """Returns the frame size (width, height) of the source stream, if available"""
         if self._width is None or self._height is None:
             raise RuntimeError("Frame size not available yet.")
         return self._width, self._height
 
     def get_pixel_format(self) -> str:
-        # self._metadata_event.wait()
+        """Returns the pixel format of the stream, if available"""
         if self._pixel_format is None:
             raise RuntimeError("Frame size not available yet.")
         return self._pixel_format
+
+    async def wait_for_metadata(self) -> None:
+        """Waits for metadata to become available"""
+        await self._metadata_event.wait()
 
     async def read_async(self, timeout: Optional[float] = None) -> Optional[bytes]:
         """Returns the next frame from the queue"""
@@ -85,15 +92,11 @@ class FFmpegStreamerIn:
         if self._process:
             raise RuntimeError("Can't start new process while old process is running!")
 
-        input_kwargs = dict()
-        for i in range(0, len(self._input_args), 2):
-            key = self._input_args[i].lstrip("-")
-            value = self._input_args[i + 1] if i + 1 < len(self._input_args) else None
-            input_kwargs[key] = value
+        output_args = self._output_args or {"codec": "copy", "format": "nut"}
 
         self._process = (
-            ffmpeg.input(self._source, **input_kwargs, **self._extra_args)
-            .output("pipe:1", codec="copy", format="nut")
+            ffmpeg.input(self._source, **self._input_args, **self._extra_args)
+            .output("pipe:1", **output_args)
             .global_args("-nostats", "-loglevel", "info")  # Set loglevel to info to ensure dimensions and fps present
             .run_async(pipe_stdout=True, pipe_stderr=True)
         )

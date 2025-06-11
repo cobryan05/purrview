@@ -1,13 +1,13 @@
 from .ffmpegStreamerIn import FFmpegStreamerIn
 from .ffmpegStreamerOut import FFmpegStreamerOut
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from subprocess import Popen
-import ffmpeg
 from typing import Callable, Optional
 import asyncio
+import ffmpeg
 import logging
 import time
-from concurrent.futures import ThreadPoolExecutor
 
 logging.basicConfig()
 logger = logging.getLogger(__file__)

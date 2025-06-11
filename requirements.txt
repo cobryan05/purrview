@@ -4,6 +4,9 @@ ffmpeg-python
 jinja2
 numpy
 openapi-generator-cli[jdk4py]
+opencv-python
+paho-mqtt
+pillow
 pydantic
 python-multipart
 requests
