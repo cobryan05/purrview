@@ -3,6 +3,7 @@ fastapi
 ffmpeg-python
 jinja2
 numpy
+onnxruntime-gpu
 openapi-generator-cli[jdk4py]
 opencv-python
 paho-mqtt

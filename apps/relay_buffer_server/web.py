@@ -74,7 +74,7 @@ class WebApp:
         @self._app.get("/", response_class=HTMLResponse)
         def index(request: Request):
             """Render the index page"""
-            return self._templates.TemplateResponse("index.html", {"request": request, **self._dflt_args})
+            return self._templates.TemplateResponse("relay_buffer_index.html", {"request": request, **self._dflt_args})
 
         @self._app.post(
             "/api/create-stream",

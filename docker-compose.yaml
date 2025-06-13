@@ -4,18 +4,41 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: [ '0' ]
+              capabilities: [ gpu ]
     volumes:
       - ./apps:/app/apps
       - ./conf:/app/conf
       - ./logs:/app/logs
       - ./templates:/app/templates
       - ./static:/app/static
+      - ./models:/app/models
       - ./.vscode_container:/app/.vscode
       - ./requirements.txt:/app/requirements.txt
       - ./pyproject.toml:/app/pyproject.toml
     ports:
       - "8000:8000"
+      - "8001:8001"
       - "8553:8554"
       - "9001:9001"
       - "9997:9997"
     restart: unless-stopped
+
+  # To convert models put them in the 'models' directory and run, eg:
+  # > docker compose --profile yolo2onnx run yolo2onnx /models/yolov5.pt v5
+  # > docker compose --profile yolo2onnx run yolo2onnx /models/yolov7.pt v7
+  yolo2onnx:
+    build:
+      context: ./apps/yolo2onnx
+      dockerfile: Dockerfile
+    image: yolo2onnx
+    entrypoint: ["python", "convert.py"]
+    volumes:
+      - ./models:/models
+      - ./yolo2onnx.pip_cache:/root/.cache/pip
+    profiles: ["yolo2onnx"] # Don't build unless requested

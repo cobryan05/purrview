@@ -12,8 +12,9 @@ api_client = mediamtx_client.ApiClient(mediamtx_conf)
 
 manager = Manager(api_client)
 web_app = WebApp(manager=manager, app_name=app_name)
+app_port = 8000
 
 # Get the uvicorn app
 app = web_app.app()
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host="0.0.0.0", port=app_port)
