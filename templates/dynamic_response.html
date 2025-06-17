@@ -1,0 +1,32 @@
+<h1>{{ title }}</h1>
+
+<div id="response-container">
+    {% for key, value in response_data.items() %}
+        <div class="response-item">
+            <strong>{{ key }}:</strong>
+            {% if value is string and value.startswith("data:image/") %}
+                <!-- Render Base64-encoded image -->
+                <div>
+                    <img src="{{ value }}" alt="{{ key }}" style="max-width: 100%; height: auto;">
+                </div>
+            {% elif value is string %}
+                <span>{{ value }}</span>
+            {% elif value is sequence %}
+                <ul>
+                    {% for item in value %}
+                        <li>{{ item }}</li>
+                    {% endfor %}
+                </ul>
+            {% elif value is mapping %}
+                <ul>
+                    {% for sub_key, sub_value in value.items() %}
+                        <li><strong>{{ sub_key }}:</strong> {{ sub_value }}</li>
+                    {% endfor %}
+                </ul>
+            {% else %}
+                <span>{{ value }}</span>
+            {% endif %}
+        </div>
+        <hr>
+    {% endfor %}
+</div>

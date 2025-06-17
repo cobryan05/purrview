@@ -7,7 +7,7 @@ from .web import WebApp
 # See configuration.py for a list of all supported configuration parameters.
 app_name = "Inference Server"
 app_port = 8001
-manager = Manager()
+manager = Manager("/app/models/")
 web_app = WebApp(app_name=app_name, manager=manager)
 
 # Get the uvicorn app

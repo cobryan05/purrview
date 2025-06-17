@@ -21,12 +21,12 @@ class InferenceResult:
     """Represents the inference result for an image."""
 
     detections: List[DetectionResult]  # List of detection results
-    annotated_image: Optional[np.array] = None  # Annotated image (optional)
+    annotated_image: Optional[np.ndarray] = None  # Annotated image (optional)
     inference_time: Optional[float] = None  # Time taken for inference (in seconds)
-    source_image: Optional[np.array] = None  # Original source image (optional)
+    source_image: Optional[np.ndarray] = None  # Original source image (optional)
 
 
 class InferenceProvider:
-    async def processImage(self, image: np.array) -> InferenceResult:
+    async def processImage(self, image: np.ndarray, **kwargs) -> InferenceResult:
         """Retrieves the next image for processing from the image source"""
         raise NotImplementedError()

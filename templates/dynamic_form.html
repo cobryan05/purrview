@@ -1,0 +1,37 @@
+<h1>{{ title }}</h1>
+
+<form hx-post="{{ action_url }}" hx-target="#output-div" hx-swap="innerHTML" enctype="multipart/form-data">
+    {% for field_name, field_data in fields.items() %}
+        <label for="{{ field_name }}">{{ field_data.label }}</label><br>
+
+        {% if field_data.type == "text" %}
+            <input type="text" id="{{ field_name }}" name="{{ field_name }}" required><br><br>
+
+        {% elif field_data.type == "radio" %}
+            {% for option in field_data.options %}
+                <input type="radio" id="{{ field_name }}_{{ option }}" name="{{ field_name }}" value="{{ option }}">
+                <label for="{{ field_name }}_{{ option }}">{{ option }}</label><br>
+            {% endfor %}
+            <br>
+
+        {% elif field_data.type == "checkbox" %}
+            {% for option in field_data.options %}
+                <input type="checkbox" id="{{ field_name }}_{{ option }}" name="{{ field_name }}" value="{{ option }}">
+                <label for="{{ field_name }}_{{ option }}">{{ option }}</label><br>
+            {% endfor %}
+            <br>
+
+        {% elif field_data.type == "select" %}
+            <select id="{{ field_name }}" name="{{ field_name }}" {% if field_data.multiple %}multiple{% endif %}>
+                {% for option in field_data.options %}
+                    <option value="{{ option }}">{{ option }}</option>
+                {% endfor %}
+            </select><br><br>
+
+        {% elif field_data.type == "file" %}
+            <input type="file" id="{{ field_name }}" name="{{ field_name }}" accept="image/*"><br><br>
+        {% endif %}
+    {% endfor %}
+
+    <button type="submit">{{ submit_label }}</button>
+</form>

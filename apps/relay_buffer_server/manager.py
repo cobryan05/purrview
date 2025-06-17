@@ -1,17 +1,19 @@
 """Manages streams on the MediaMTX server"""
-from ..helpers.streams.delayedStreamer import DelayedStreamer
-from ..helpers.streams.ffmpegStreamerIn import FFmpegStreamerIn
-from ..helpers.streams.ffmpegStreamerOut import FFmpegStreamerOut
-from dataclasses import dataclass
-from mediamtx_client.api_client import ApiClient
-from mediamtx_client.api.configuration_api import ConfigurationApi
-from mediamtx_client.api.paths_api import PathsApi
-from mediamtx_client.models.path import Path as MtxPath
-from mediamtx_client.models.path_conf import PathConf
-from typing import Any, Optional, Dict
 import asyncio
 import logging
 import sys
+from dataclasses import dataclass
+from typing import Any, Dict, Optional
+
+from mediamtx_client.api.configuration_api import ConfigurationApi
+from mediamtx_client.api.paths_api import PathsApi
+from mediamtx_client.api_client import ApiClient
+from mediamtx_client.models.path import Path as MtxPath
+from mediamtx_client.models.path_conf import PathConf
+
+from apps.helpers.streams.delayedStreamer import DelayedStreamer
+from apps.helpers.streams.ffmpegStreamerIn import FFmpegStreamerIn
+from apps.helpers.streams.ffmpegStreamerOut import FFmpegStreamerOut
 
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger(__file__)
@@ -162,6 +164,7 @@ class Manager:
         self._task = asyncio.get_running_loop().create_task(self._worker_task())  # Schedule a new task
 
     async def _init(self):
+        """Initialization that should run on event loop"""
         config_api: ConfigurationApi = ConfigurationApi(self._api_client)
         config = await asyncio.to_thread(config_api.config_global_get)
         host_url = self._api_client.configuration.host

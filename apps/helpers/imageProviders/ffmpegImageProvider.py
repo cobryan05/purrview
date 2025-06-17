@@ -1,10 +1,13 @@
 """FFMpeg-backed Image Provider class"""
 
-from .imageProvider import ImageProvider
-from helpers.streams.ffmpegStreamerIn import FFmpegStreamerIn
-from typing import Optional, Tuple
 import logging
+from typing import Optional, Tuple
+
 import numpy as np
+
+from apps.helpers.streams.ffmpegStreamerIn import FFmpegStreamerIn
+
+from .imageProvider import ImageProvider
 
 logging.basicConfig()
 logger = logging.getLogger(__file__)

@@ -1,8 +1,20 @@
+from pathlib import Path
 from typing import Tuple
 
 import cv2
+import json
+import logging
 import numpy as np
 import onnxruntime as ort
+import sys
+
+from apps.helpers.inferenceProviders.inferenceProvider import InferenceProvider
+from apps.helpers.inferenceProviders.yolov8OnnxInferenceProvider import YOLOv8ONNXInferenceProvider
+
+
+logging.basicConfig(stream=sys.stdout)
+logger = logging.getLogger(__file__)
+logger.setLevel(logging.DEBUG)
 
 
 def sigmoid(x):
@@ -12,6 +24,17 @@ def sigmoid(x):
 def get_input_shape(session: ort.InferenceSession) -> Tuple[int, int]:
     input_shape = session.get_inputs()[0].shape  # e.g. [1, 3, 640, 640]
     return int(input_shape[2]), int(input_shape[3])  # height, width
+
+def load_yolo_onnx(model_path: str) -> InferenceProvider:
+    json_path = Path(model_path).with_suffix(".json")
+    with open(json_path, "r") as f:
+        metadata = json.load(f)
+    classes: list[str] = metadata.get("classes", [])
+    yolo_version: int = metadata.get("yolo", 8)
+
+    if yolo_version == 8:
+        return YOLOv8ONNXInferenceProvider(model_path, classes)
+    raise Exception("Unhandled YOLO version")
 
 
 def preprocess_image(image: np.ndarray, input_shape: Tuple[int, int]) -> Tuple[np.ndarray, float, Tuple[int, int]]:
