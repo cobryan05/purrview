@@ -85,22 +85,15 @@ class WebApp:
         """
         return self._app
 
+
     def _error_response(self, request: Request, message: str):
-        """
-        Render an error response using a text template.
-
-        Args:
-            request (Request): The FastAPI request object.
-            message (str): The error message to display.
-
-        Returns:
-            TemplateResponse: Rendered error response.
-        """
+        """Render an error response using the dynamic response template"""
         return self._templates.TemplateResponse(
-            "display_text.html",
+            "dynamic_response.html",
             {
                 "request": request,
-                "text": message,
+                "title": "Error",
+                "response_data": {self.ERROR_KEY: message},
                 **self._dflt_args,
             },
         )

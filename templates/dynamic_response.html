@@ -14,7 +14,25 @@
             {% elif value is sequence %}
                 <ul>
                     {% for item in value %}
-                        <li>{{ item }}</li>
+                        <li>
+                            {% if item.name and item.text %}
+                                <strong>{{ item.name }}</strong>: {{ item.text }}
+                            {% else %}
+                                {{ item }}
+                            {% endif %}
+
+                            {% if item.actions %}
+                                <!-- Render buttons for actions -->
+                                {% for action in item.actions %}
+                                    <form hx-post="{{ action.url }}" hx-target="#output-div" hx-swap="innerHTML" style="display: inline;">
+                                        {% for param_name, param_value in action.params.items() %}
+                                            <input type="hidden" name="{{ param_name }}" value="{{ param_value }}">
+                                        {% endfor %}
+                                        <button type="submit">{{ action.label }}</button>
+                                    </form>
+                                {% endfor %}
+                            {% endif %}
+                        </li>
                     {% endfor %}
                 </ul>
             {% elif value is mapping %}

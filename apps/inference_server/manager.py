@@ -77,7 +77,6 @@ class Manager:
 
             # Update the available models cache
             self._avail_models = {os.path.splitext(os.path.basename(f))[0]: f for f in model_files}
-            logger.info(f"Available models: {list(self._avail_models.keys())}")
             return list(self._avail_models.keys())
         except Exception as e:
             logger.error(f"Error listing models: {str(e)}")
