@@ -2,12 +2,16 @@
 ARG MEDIAMTX_VERSION=1.12.0
 ARG HTMX_VERSION=1.9.12
 ARG CUDA_VERSION=12.8.1
+ARG PICO_CSS_VERSION=2.1.1
+ARG KONVA_VERSION=9.3.20
 
 FROM bluenviron/mediamtx:${MEDIAMTX_VERSION} AS mediamtx
 FROM nvidia/cuda:${CUDA_VERSION}-cudnn-runtime-ubuntu22.04 AS base
 
 ARG MEDIAMTX_VERSION
 ARG HTMX_VERSION
+ARG PICO_CSS_VERSION
+ARG KONVA_VERSION
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -23,8 +27,10 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Fetch minimized version of HTMX
-RUN mkdir -p /app/logs /app/static/js \
-    && curl -L -o /app/static/js/htmx.min.js https://unpkg.com/htmx.org@${HTMX_VERSION}/dist/htmx.min.js
+RUN mkdir -p /app/logs /app/static/js /app/static/css\
+    && curl -L -o /app/static/js/htmx.min.js https://unpkg.com/htmx.org@${HTMX_VERSION}/dist/htmx.min.js \
+    && curl -L -o /app/static/css/pico.min.css https://cdn.jsdelivr.net/npm/@picocss/pico@${PICO_CSS_VERSION}/css/pico.blue.min.css \
+    && curl -L -o /app/static/js/konva.min.js https://cdn.jsdelivr.net/npm/konva@${KONVA_VERSION}/konva.min.js
 
 COPY --from=mediamtx /mediamtx /app/mediamtx
 

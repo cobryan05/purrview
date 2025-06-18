@@ -1,3 +1,6 @@
+static/js/htmx
+static/css/pico.min.css
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]

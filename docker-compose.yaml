@@ -16,14 +16,13 @@ services:
       - ./conf:/app/conf
       - ./logs:/app/logs
       - ./templates:/app/templates
-      - ./static:/app/static
+      - ./static/images:/app/static/images
       - ./models:/app/models
       - ./.vscode_container:/app/.vscode
       - ./requirements.txt:/app/requirements.txt
       - ./pyproject.toml:/app/pyproject.toml
     ports:
-      - "8000:8000"
-      - "8001:8001"
+      - "8000-8002:8000-8002"
       - "8553:8554"
       - "9001:9001"
       - "9997:9997"

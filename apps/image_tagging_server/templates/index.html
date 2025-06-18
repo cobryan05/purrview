@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <title>Annotation Tool</title>
+  <link rel="stylesheet" href="/static/css/pico.min.css" />
+  <style>
+    #toolbar button.selected {
+      background-color: #ff0033;
+      color: white;
+    }
+
+    #draw-container {
+      width: 100%;
+      height: 80vh;
+      border: 1px solid #ccc;
+      overflow: hidden;
+    }
+
+    #image-loader {
+      margin-right: 1em;
+      width: 200px;
+    }
+  </style>
+  <script src="/static/js/konva.min.js"></script>
+</head>
+
+<body>
+  <main class="container">
+    <nav id="toolbar">
+      <input id="imageNameInput" type="text" placeholder="Enter image name" />
+      <button onclick="loadImageFromInput()">Load Image</button>
+
+      <button data-tool="select" onclick="setTool('select')">Select</button>
+      <button data-tool="rect" onclick="setTool('rect')">Rectangle</button>
+      <button onclick="deleteSelected()">Delete Selected</button>
+      <!-- <button onclick="undo()">Undo</button>
+      <button onclick="redo()">Redo</button> -->
+      <button onclick="saveAnnotations()">Save</button>
+    </nav>
+    <div id="draw-container"></div>
+  </main>
+
+  <script type="module" src="/app-static/js/canvas/main.js"></script>
+</body>
+
+</html>
