@@ -50,6 +50,20 @@ export function initStage() {
     height: container.clientHeight,
   });
 
+  transformer = new Konva.Transformer({
+    rotateEnabled: false,
+    borderStroke: 'yellow',
+    borderDash: [4, 4],
+    anchorStroke: 'red',
+    anchorFill: 'white',
+    anchorSize: 10,
+    anchorCornerRadius: 5,
+    enabledAnchors: ['top-left', 'top-right', 'bottom-left', 'bottom-right'],
+    keepRatio: false,
+  });
+  setTransformer(transformer);
+
   layer = new Konva.Layer();
+  layer.add(transformer)
   stage.add(layer);
 }

@@ -1,5 +1,3 @@
-// interaction.js
-
 import { getCurrentTool, setCurrentTool, getStage, getLayer } from './state.js';
 import { clearSelection, setTool } from './tools.js';
 import { createShape } from './drawing.js';
@@ -72,8 +70,10 @@ export function handleMouseMove(e) {
   const dy = pos.y - startPos.y;
 
   if (tempShape instanceof Konva.Rect) {
-    tempShape.width(dx);
-    tempShape.height(dy);
+    tempShape.x(dx < 0 ? pos.x : startPos.x);
+    tempShape.y(dy < 0 ? pos.y : startPos.y);
+    tempShape.width(Math.abs(dx));
+    tempShape.height(Math.abs(dy));
   } else if (tempShape instanceof Konva.Circle) {
     tempShape.radius(Math.sqrt(dx * dx + dy * dy));
   } else if (tempShape instanceof Konva.Line) {

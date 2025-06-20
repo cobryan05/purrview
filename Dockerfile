@@ -56,7 +56,10 @@ COPY apps ./apps
 RUN python -m apps.generate_openapi_jsons \
     && openapi-generator-cli generate -i relay_buffer_server_openapi.json -g python -o /tmp/relay_buffer_client --package-name relay_buffer_client \
     && pip install --no-cache-dir /tmp/relay_buffer_client \
-    && rm -rf /tmp/relay_buffer_client
+    && rm -rf /tmp/relay_buffer_client \
+    && openapi-generator-cli generate -i inference_server_openapi.json -g python -o /tmp/inference_client --package-name inference_client \
+    && pip install --no-cache-dir /tmp/inference_client \
+    && rm -rf /tmp/inference_client
 
 EXPOSE 8000 8001 8554 8888 1935 9001 9997
 

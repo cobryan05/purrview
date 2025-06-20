@@ -13,6 +13,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from pydantic import BaseModel
 
 from .manager import Manager
 
@@ -118,7 +119,12 @@ class WebApp:
                 },
             )
 
-        @self._app.get("/api/list-models", response_class=JSONResponse, tags=[WebApp.MODELS_API_TAG_NAME])
+        @self._app.get(
+            "/api/list-models",
+            response_class=JSONResponse,
+            tags=[WebApp.MODELS_API_TAG_NAME],
+            operation_id="list_models_api",
+        )
         async def list_models_api(request: Request) -> JSONResponse:
             """
             API endpoint to return a list of models.
@@ -168,7 +174,12 @@ class WebApp:
             except Exception as e:
                 return self._error_response(request, f"Internal server error: {str(e)}")
 
-        @self._app.post("/api/pin-model", response_class=JSONResponse, tags=[WebApp.MODELS_API_TAG_NAME])
+        @self._app.post(
+            "/api/pin-model",
+            response_class=JSONResponse,
+            tags=[WebApp.MODELS_API_TAG_NAME],
+            operation_id="pin_model_api",
+        )
         async def pin_model_api(
             request: Request, model_name: str = Body(...), duration: float = Body(...)
         ) -> JSONResponse:
@@ -178,7 +189,7 @@ class WebApp:
             Args:
                 request (Request): The FastAPI request object.
                 model_name (str): Name of the model to pin.
-                duration (str): Duration for which the model should be pinned.
+                duration (str): Duration in seconds for which the model should be pinned.
 
             Returns:
                 JSONResponse: JSON response containing the pin ID for use in unpin_model.
@@ -262,11 +273,68 @@ class WebApp:
                 },
             )
 
-        @self._app.post("/api/recognize", response_class=JSONResponse, tags=[WebApp.INFERENCE_API_TAG_NAME])
+        async def recognize_core(
+            manager: Manager,
+            model_name: str,
+            image: np.ndarray,
+            conf_thresh: float,
+            return_annotated: bool,
+        ) -> dict:
+            detections, annotated_image = await manager.recognize(
+                model_name=model_name,
+                image=image,
+                conf_thresh=conf_thresh,
+                return_annotated=return_annotated,
+            )
+
+            response = {"detections": detections}
+            if return_annotated and annotated_image is not None:
+                _, buffer = cv2.imencode(".jpg", annotated_image)
+                image_base64 = base64.b64encode(buffer).decode("utf-8")
+                response["annotated_image"] = image_base64
+
+            return response
+
+        class RecognizeRequest(BaseModel):
+            model_name: str
+            conf_thresh: float
+            return_annotated: bool = False
+            image_base64: str  # base64 encoded image string
+
+        @self._app.post(
+            "/api/recognize-json",
+            tags=[WebApp.INFERENCE_API_TAG_NAME],
+            operation_id="recognize_json",
+            response_class=JSONResponse,
+        )
+        async def recognize_json_api(payload: RecognizeRequest):
+            try:
+                np_bytes = base64.b64decode(payload.image_base64)
+                np_image = np.frombuffer(np_bytes, np.uint8)
+                image_array = cv2.imdecode(np_image, cv2.IMREAD_COLOR)
+
+                return JSONResponse(
+                    content=await recognize_core(
+                        self._manager,
+                        model_name=payload.model_name,
+                        image=image_array,
+                        conf_thresh=payload.conf_thresh,
+                        return_annotated=payload.return_annotated,
+                    )
+                )
+            except Exception as e:
+                raise HTTPException(status_code=400, detail=f"Invalid input: {e}")
+
+        @self._app.post(
+            "/api/recognize",
+            response_class=JSONResponse,
+            tags=[WebApp.INFERENCE_API_TAG_NAME],
+            operation_id="recognize_formdata",
+        )
         async def recognize_api(
-            model_name: str = Body(..., description="Name of the model to use for recognition"),
-            conf_thresh: float = Body(..., description="Confidence threshold for detections"),
-            return_annotated: bool = Body(False, description="Whether to return the annotated image"),
+            model_name: str = Form(..., description="Name of the model to use for recognition"),
+            conf_thresh: float = Form(..., description="Confidence threshold for detections"),
+            return_annotated: bool = Form(False, description="Whether to return the annotated image"),
             image: UploadFile = File(..., description="Image file to process"),
             request: Request = None,
         ) -> JSONResponse:
@@ -283,12 +351,10 @@ class WebApp:
                 JSONResponse: A JSON response containing detected bounding boxes and optionally the annotated image.
             """
             try:
-                # Read the uploaded image
                 file_bytes = await image.read()
                 np_image = np.frombuffer(file_bytes, np.uint8)
                 image_array = cv2.imdecode(np_image, cv2.IMREAD_COLOR)
 
-                # Call the recognize function
                 detections, annotated_image = await self._manager.recognize(
                     model_name=model_name,
                     image=image_array,
@@ -296,7 +362,6 @@ class WebApp:
                     return_annotated=return_annotated,
                 )
 
-                # Prepare the response
                 response = {"detections": detections}
                 if return_annotated and annotated_image is not None:
                     _, buffer = cv2.imencode(".jpg", annotated_image)
@@ -314,36 +379,28 @@ class WebApp:
 
         @self._app.post("/recognize", response_class=HTMLResponse, include_in_schema=False)
         async def recognize_html(
-            model_name: str = Form(..., description="Name of the model to use for recognition"),
-            conf_thresh: float = Form(..., description="Confidence threshold for detections"),
-            return_annotated: bool = Form(False, description="Whether to return the annotated image"),
-            image: UploadFile = File(..., description="Image file to process"),
+            model_name: str = Form(...),
+            conf_thresh: float = Form(...),
+            return_annotated: bool = Form(False),
+            image: UploadFile = File(...),
             request: Request = None,
-        ) -> HTMLResponse:
-            """
-            HTML endpoint to recognize objects in an image using a specified model.
-
-            Returns:
-                HTMLResponse: An HTML response containing detected bounding boxes and optionally the annotated image.
-            """
+        ):
             try:
-                # Call the recognize_api endpoint
-                response: JSONResponse = await recognize_api(
+                file_bytes = await image.read()
+                np_image = np.frombuffer(file_bytes, np.uint8)
+                image_array = cv2.imdecode(np_image, cv2.IMREAD_COLOR)
+
+                response_data = await recognize_core(
+                    self._manager,
                     model_name=model_name,
+                    image=image_array,
                     conf_thresh=conf_thresh,
                     return_annotated=return_annotated,
-                    image=image,
-                    request=request,
                 )
 
-                # Extract data from the JSON response
-                response_data = json.loads(response.body.decode("utf-8"))
-
-                # Add the correct prefix for the Base64-encoded image if it exists
                 if "annotated_image" in response_data:
                     response_data["annotated_image"] = f"data:image/jpeg;base64,{response_data['annotated_image']}"
 
-                # Render the HTML response using the dynamic template
                 return self._templates.TemplateResponse(
                     "dynamic_response.html",
                     {
@@ -352,22 +409,11 @@ class WebApp:
                         "response_data": response_data,
                     },
                 )
-            except HTTPException as e:
-                return self._error_response(request, f"Error: {e.detail}")
             except Exception as e:
                 return self._error_response(request, f"Internal server error: {str(e)}")
 
         @self._app.get("/recognize-form", response_class=HTMLResponse)
         async def recognize_form(request: Request) -> HTMLResponse:
-            """
-            Render the form for pinning a model in memory.
-
-            Args:
-                request (Request): The FastAPI request object.
-
-            Returns:
-                HTMLResponse: Rendered form for pinning a model.
-            """
             model_list = await self._manager.list_models()
             fields = {
                 "model_name": {
@@ -383,7 +429,6 @@ class WebApp:
                     "options": ["Yes"],
                 },
             }
-
             return self._templates.TemplateResponse(
                 "dynamic_form.html",
                 {

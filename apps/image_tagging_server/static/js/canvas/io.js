@@ -1,5 +1,4 @@
-// io.js
-import { getLayer, getTransformer } from './state.js';
+import { getLayer, getTransformer, getStage } from './state.js';
 import { createShape } from './drawing.js';
 import { debug } from './utils.js';
 import { setCurrentImageName, getCurrentImageName } from './state.js';
@@ -7,14 +6,7 @@ import { setCurrentImageName, getCurrentImageName } from './state.js';
 const undoStack = [];
 const redoStack = [];
 
-/**
- * Load image and metadata for given image name.
- * Clears current canvas and redraws background + shapes.
- * @param {string} imageName - Base name without extension
- */
 export async function loadImageAndMetadata(imageName) {
-  let transformer = getTransformer();
-  let layer = getLayer();
   debug('loadImageAndMetadata called with imageName:', imageName);
   if (!imageName) {
     alert('Please enter an image name!');
@@ -22,28 +14,30 @@ export async function loadImageAndMetadata(imageName) {
   }
 
   try {
+    const transformer = getTransformer();
+    const layer = getLayer();
     setCurrentImageName(imageName);
 
-    // Load image
     const imageUrl = `/images/${imageName}.jpg`;
     const img = new Image();
     img.src = imageUrl;
 
     await new Promise((resolve, reject) => {
-      img.onload = () => resolve();
+      img.onload = resolve;
       img.onerror = () => reject(new Error(`Failed to load image: ${imageUrl}`));
     });
 
-    // Clear previous shapes (including background image)
-    layer.destroyChildren();
+    // Clear selection (remove nodes from transformer)
+    transformer.nodes([]);
 
-    // Re-add transformer to layer if it's defined
-    let transformer = getTransformer()
-    if (transformer && !transformer.getLayer()) {
-      layer.add(transformer);
-    }
+    // Destroy all shapes except transformer
+    layer.getChildren().forEach(child => {
+      if (child !== transformer) {
+        child.destroy();
+      }
+    });
 
-    // Add background image to bottom
+    // Add background image
     const bg = new Konva.Image({
       image: img,
       x: 0,
@@ -51,11 +45,12 @@ export async function loadImageAndMetadata(imageName) {
       width: img.width,
       height: img.height,
       listening: false,
+      name: 'background',
     });
     layer.add(bg);
     layer.moveToBottom();
 
-    // Fetch metadata JSON
+    // Fetch metadata with cache busting timestamp
     const metadataUrl = `/metadata/${imageName}.json?t=${Date.now()}`;
     let metadata = { annotations: [] };
     const res = await fetch(metadataUrl);
@@ -75,17 +70,7 @@ export async function loadImageAndMetadata(imageName) {
           shape.width(ann.width);
           shape.height(ann.height);
           break;
-
-        case 'circle':
-          shape = createShape('circle', ann.x, ann.y);
-          shape.radius(ann.radius);
-          break;
-
-        case 'line':
-          shape = createShape('line', 0, 0);
-          shape.points(ann.points);
-          break;
-
+        // Add more shape types here as needed
         default:
           debug('Unknown annotation type:', ann.type);
           continue;
@@ -93,6 +78,14 @@ export async function loadImageAndMetadata(imageName) {
 
       if (shape) {
         shape.metadata = ann.metadata || {};
+        shape.name('annotation');
+
+        shape.on('click', () => {
+          transformer.nodes([shape]);
+          transformer.moveToTop();
+          layer.draw();
+        });
+
         layer.add(shape);
       }
     }
@@ -105,9 +98,6 @@ export async function loadImageAndMetadata(imageName) {
   }
 }
 
-/**
- * Load the image from the textbox
- */
 export function loadImageFromInput() {
   const input = document.getElementById('imageNameInput');
   if (!input) {
@@ -122,9 +112,19 @@ export function loadImageFromInput() {
   loadImageAndMetadata(imageName);
 }
 
-/**
- * Save current annotations to server for currently loaded image.
- */
+export function clearAnnotations() {
+  const layer = getStage().findOne('Layer');
+  const transformer = getTransformer();
+  transformer.nodes([]);
+  const children = [...layer.getChildren()];
+  children.forEach(child => {
+    if (child.name() === 'annotation') {
+      child.destroy();
+    }
+  });
+  layer.draw();
+}
+
 export async function saveAnnotations() {
   let layer = getLayer();
   const imageName = getCurrentImageName();
@@ -134,11 +134,8 @@ export async function saveAnnotations() {
   }
 
   try {
-    // Convert shapes to annotation data
     const shapes = layer.getChildren();
-
-    // Skip background image (first child)
-    const data = shapes.slice(1).map(shape => {
+    const data = shapes.filter(shape => shape.name() === 'annotation').map(shape => {
       switch (shape.className) {
         case 'Rect':
           return {
@@ -147,20 +144,6 @@ export async function saveAnnotations() {
             y: shape.y(),
             width: shape.width(),
             height: shape.height(),
-            metadata: shape.metadata || {},
-          };
-        case 'Circle':
-          return {
-            type: 'circle',
-            x: shape.x(),
-            y: shape.y(),
-            radius: shape.radius(),
-            metadata: shape.metadata || {},
-          };
-        case 'Line':
-          return {
-            type: 'line',
-            points: shape.points(),
             metadata: shape.metadata || {},
           };
         default:
@@ -183,12 +166,9 @@ export async function saveAnnotations() {
   }
 }
 
-/**
- * Delete the currently selected shape.
- * Also pushes the deleted shape onto undo stack.
- */
 export function deleteSelected() {
-  let transformer = getTransformer()
+  let transformer = getTransformer();
+  let layer = getLayer();
   if (!transformer) {
     debug('No transformer available for deleteSelected');
     return;
@@ -202,7 +182,7 @@ export function deleteSelected() {
 
   const shape = selectedNodes[0];
   undoStack.push({ action: 'delete', shape });
-  redoStack.length = 0; // clear redo stack on new action
+  redoStack.length = 0;
 
   shape.destroy();
   transformer.nodes([]);
@@ -210,10 +190,8 @@ export function deleteSelected() {
   debug('Deleted selected shape');
 }
 
-/**
- * Undo the last action (only supports delete for now).
- */
 export function undo() {
+  let layer = getLayer();
   if (!undoStack.length) {
     debug('Nothing to undo');
     return;
@@ -223,23 +201,19 @@ export function undo() {
 
   switch (lastAction.action) {
     case 'delete':
-      // Restore the deleted shape
       layer.add(lastAction.shape);
       lastAction.shape.show();
       redoStack.push(lastAction);
       layer.draw();
       debug('Undo: restored deleted shape');
       break;
-
     default:
       debug('Undo: Unknown action', lastAction.action);
   }
 }
 
-/**
- * Redo the last undone action.
- */
 export function redo() {
+  let layer = getLayer();
   if (!redoStack.length) {
     debug('Nothing to redo');
     return;
@@ -249,13 +223,11 @@ export function redo() {
 
   switch (lastUndone.action) {
     case 'delete':
-      // Remove the shape again
       lastUndone.shape.destroy();
       undoStack.push(lastUndone);
       layer.draw();
       debug('Redo: deleted shape again');
       break;
-
     default:
       debug('Redo: Unknown action', lastUndone.action);
   }

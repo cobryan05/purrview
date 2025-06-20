@@ -1,13 +1,12 @@
 import { setCurrentTool, getCurrentTool, getStage } from './state.js';
+import { getTransformer } from './state.js';
 
-// Clear selection implementation (adapt or import your existing logic)
+// Clear selection implementation
 export function clearSelection() {
-  if (window.selectedShape) {
-    window.selectedShape = null;
-  }
-  if (window.transformer) {
-    window.transformer.nodes([]);
-    window.transformer.getLayer()?.draw();
+  const transformer = getTransformer();
+  if (transformer) {
+    transformer.nodes([]);
+    transformer.getLayer()?.draw();
   }
   getStage().batchDraw();
 }

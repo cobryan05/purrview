@@ -11,6 +11,7 @@ import {
 import {
   loadImageAndMetadata,
   loadImageFromInput,
+  clearAnnotations,
   saveAnnotations,
   deleteSelected,
   undo,
@@ -23,6 +24,7 @@ setTool('select');
 
 // Expose functions globally for HTML onclick handlers
 window.setTool = setTool;
+window.clearAnnotations = clearAnnotations;
 window.saveAnnotations = saveAnnotations;
 window.deleteSelected = deleteSelected;
 window.undo = undo;
