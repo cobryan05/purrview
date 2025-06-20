@@ -56,7 +56,7 @@ export async function loadImageAndMetadata(imageName) {
     layer.moveToBottom();
 
     // Fetch metadata JSON
-    const metadataUrl = `/metadata/${imageName}.json`;
+    const metadataUrl = `/metadata/${imageName}.json?t=${Date.now()}`;
     let metadata = { annotations: [] };
     const res = await fetch(metadataUrl);
     if (res.ok) {

@@ -25,6 +25,7 @@ function getPointerPosition() {
 // Mouse down event handler
 export function handleMouseDown(e) {
   let stage = getStage();
+  let layer = getLayer();
   if (e.evt.button === 1) { // Middle click = start panning
     isPanning = true;
     lastPanPos = { x: e.evt.clientX, y: e.evt.clientY };
@@ -50,6 +51,7 @@ export function handleMouseDown(e) {
 // Mouse move event handler
 export function handleMouseMove(e) {
   let stage = getStage();
+  let layer = getLayer();
   if (isPanning) {
     const dx = e.evt.clientX - lastPanPos.x;
     const dy = e.evt.clientY - lastPanPos.y;
@@ -125,6 +127,7 @@ export function handleWheel(e) {
 // Click event to clear selection if clicking empty area
 export function handleClick(e) {
   let stage = getStage();
+  let layer = getLayer();
   if (e.target === stage) {
     clearSelection();
     layer.draw();
@@ -133,6 +136,7 @@ export function handleClick(e) {
 
 // Right-click event handler to clear selection and switch tool
 export function handleContextMenu(e) {
+  let layer = getLayer();
   e.evt.preventDefault();
   clearSelection();
   setTool('select');
