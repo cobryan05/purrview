@@ -15,6 +15,7 @@ import cv2
 
 from apps.helpers.inferenceProviders.inferenceProvider import InferenceProvider, InferenceResult
 from apps.helpers.yoloUtils import load_yolo_onnx
+from apps.helpers.imageUtils import annotate_image
 
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger(__file__)
@@ -27,6 +28,7 @@ class Pin:
 
     pin_id: str
     expiry: float
+    timeout: float
 
 
 @dataclass
@@ -43,6 +45,7 @@ class Manager:
     """Manages inference models, including loading, pinning, and unpinning."""
 
     POLLING_INTERVAL: float = 5.0  # Interval in seconds for periodic tasks
+    MODEL_PIN_TIME: float = 10.0 * 60  # Default timeout in seconds before unloading model from GPU
 
     def __init__(self, models_path: str):
         """
@@ -82,14 +85,13 @@ class Manager:
             logger.error(f"Error listing models: {str(e)}")
             return []
 
-    async def pin_model(self, model_name: str, timeout: float, refresh: bool = False) -> str:
+    async def pin_model(self, model_name: str, timeout: float = MODEL_PIN_TIME) -> str:
         """
         Pin a model into memory, keeping it loaded until unpinned.
 
         Args:
             model_name (str): Name of the model to pin.
             timeout (float): Timeout in seconds for the pin.
-            refresh (bool): If True, refresh the timeout for an existing pin.
 
         Returns:
             str: A unique pin ID that can be used to unpin the model.
@@ -107,19 +109,10 @@ class Manager:
             self._pinned_models[model_name] = new_model
             logger.info(f"Model '{model_name}' loaded into memory.")
 
-        # Generate a unique pin ID
         pin_id = str(uuid.uuid4())
         expiry = time.time() + timeout
-
-        # Refresh timeout if requested
-        if refresh:
-            for pin in self._pinned_models[model_name].pins.values():
-                pin.expiry = expiry
-            logger.info(f"Timeout for model '{model_name}' refreshed.")
-        else:
-            # Add a new pin
-            self._pinned_models[model_name].pins[pin_id] = Pin(pin_id=pin_id, expiry=expiry)
-            logger.info(f"Model '{model_name}' pinned with ID '{pin_id}' and timeout {timeout}s.")
+        self._pinned_models[model_name].pins[pin_id] = Pin(pin_id=pin_id, expiry=expiry, timeout=timeout)
+        logger.info(f"Model '{model_name}' pinned with ID '{pin_id}' and timeout {timeout}s.")
 
         return pin_id
 
@@ -152,8 +145,9 @@ class Manager:
         image: np.ndarray,
         conf_thresh: float,
         return_annotated: bool = False,
+        pin_id: Optional[str] = None,
         **kwargs,
-    ) -> Tuple[List[Dict[str, Any]], Optional[np.ndarray]]:
+    ) -> InferenceResult:
         """
         Recognize objects in an image using a specified model.
 
@@ -161,95 +155,41 @@ class Manager:
             model_name (str): Name of the model to use for recognition.
             image (np.ndarray): The input image in BGR format.
             conf_thresh (float): Confidence threshold for detections.
+            pin_id (str): pin_id to refresh if using a pinned model
             return_annotated (bool): Whether to return the annotated image.
             **kwargs: Additional parameters to pass to the inference backend.
 
         Returns:
-            Tuple[List[Dict[str, Any]], Optional[np.ndarray]]:
-                - A list of labeled bounding boxes detected in the image.
-                  Each bounding box is represented as a dictionary with keys:
-                  'label', 'confidence', 'x_min', 'y_min', 'x_max', 'y_max'.
-                - Optionally, the annotated image if `return_annotated` is True.
+            Tuple[InferenceResult, Optional[np.ndarray]]:
+                - An InferenceResult with information from the recognition
         """
         if model_name not in self._avail_models:
             raise ValueError(f"Model '{model_name}' is not available. Please check the model name.")
 
         # Temporarily pin the model
-        pin_id = await self.pin_model(model_name, timeout=60)  # Pin for 60 seconds
+        tmp_pin_id = await self.pin_model(model_name)
         try:
             # Ensure the model is loaded
             model = self._pinned_models.get(model_name)
             if not model or not model.inference:
                 raise ValueError(f"Model '{model_name}' is not properly loaded or initialized.")
 
-            # Run inference
-            inference_result: InferenceResult = await model.inference.processImage(image, conf_thresh=conf_thresh, **kwargs)
+            inference_result: InferenceResult = await model.inference.processImage(
+                image, conf_thresh=conf_thresh, **kwargs
+            )
 
-            # Prepare detections
-            detections = [
-                {
-                    "label": class_name,
-                    "confidence": float(confidence),
-                    "x_min": int(box[0]),
-                    "y_min": int(box[1]),
-                    "x_max": int(box[2]),
-                    "y_max": int(box[3]),
-                }
-                for box, confidence, class_name in zip(
-                    inference_result.boxes,
-                    inference_result.confidences,
-                    inference_result.class_names or inference_result.class_ids,
-                )
-            ]
-
-            # Annotate the image if requested
-            annotated_image = None
             if return_annotated:
-                annotated_image = self._annotate_image(image, detections)
+                inference_result.annotated_image = annotate_image(image, inference_result.detections)
 
-            return detections, annotated_image
+            if pin_id in model.pins:
+                logger.info(f"Refreshing timeout for pin {pin_id}")
+                model.pins[pin_id].expiry = time.time() + model.pins[pin_id].timeout
+
+            return inference_result
 
         finally:
             # Unpin the model after inference
-            await self.unpin_model(model_name, pin_id)
-
-    # TODO: Move this
-    def _annotate_image(self, image: np.ndarray, detections: List[Dict[str, Any]]) -> np.ndarray:
-        """
-        Annotate the image with bounding boxes and labels.
-
-        Args:
-            image (np.ndarray): The original image in BGR format.
-            detections (List[Dict[str, Any]]): The detected bounding boxes.
-
-        Returns:
-            np.ndarray: The annotated image.
-        """
-        for detection in detections:
-            x_min, y_min, x_max, y_max = (
-                detection["x_min"],
-                detection["y_min"],
-                detection["x_max"],
-                detection["y_max"],
-            )
-            label = detection["label"]
-            confidence = detection["confidence"]
-
-            # Draw the bounding box
-            cv2.rectangle(image, (x_min, y_min), (x_max, y_max), (0, 255, 0), 2)
-
-            # Put the label and confidence
-            text = f"{label}: {confidence:.2f}"
-            cv2.putText(
-                image,
-                text,
-                (x_min, y_min - 10),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.5,
-                (0, 255, 0),
-                2,
-            )
-        return image
+            await self.unpin_model(model_name, tmp_pin_id)
 
     def _cleanup_expired_pins(self):
         """

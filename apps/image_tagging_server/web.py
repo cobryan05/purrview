@@ -126,7 +126,7 @@ class WebApp:
 
                 if return_annotated and annotated_image is not None:
                     # Encode annotated_image as base64 JPEG string
-                    success, buffer = cv2.imencode(".jpg", annotated_image)
+                    success, buffer = cv2.imencode(".png", annotated_image)
                     if success:
                         annotated_base64 = base64.b64encode(buffer).decode("utf-8")
                         response_content["annotated_image"] = annotated_base64

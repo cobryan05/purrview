@@ -5,7 +5,7 @@
         <label for="{{ field_name }}">{{ field_data.label }}</label><br>
 
         {% if field_data.type == "text" %}
-            <input type="text" id="{{ field_name }}" name="{{ field_name }}" required><br><br>
+            <input type="text" id="{{ field_name }}" name="{{ field_name }}"{% if not field_data.optional %} required{% endif %}><br><br>
 
         {% elif field_data.type == "radio" %}
             {% for option in field_data.options %}

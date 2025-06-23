@@ -63,7 +63,10 @@ class Manager:
                 List of detections and optionally the annotated image
         """
         # Ensure model is pinned
+        model_api = ModelsApi(self._api_client)
+        post_info = BodyPinModelApi(model_name=model_name, duration=self.PIN_DURATION)
         pin_id = self._model_pins.get(model_name)
+
         if pin_id is None:
             model_api = ModelsApi(self._api_client)
             post_info = BodyPinModelApi(model_name=model_name, duration=self.PIN_DURATION)
@@ -74,8 +77,8 @@ class Manager:
                 raise RuntimeError(f"Failed to pin model '{model_name}': {pin_response}")
             self._model_pins[model_name] = pin_response.get("pin_id")
 
-        # Encode image to JPEG and base64 encode
-        success, buffer = cv2.imencode(".jpg", image)
+        # Encode image to PNG and base64 encode
+        success, buffer = cv2.imencode(".png", image)
         if not success:
             raise RuntimeError("Failed to encode image")
 
@@ -87,6 +90,7 @@ class Manager:
             model_name=model_name,
             conf_thresh=conf_thresh,
             return_annotated=return_annotated,
+            pin_id=pin_id,
             image_base64=image_base64,
         )
 

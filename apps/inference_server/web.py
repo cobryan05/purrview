@@ -5,6 +5,7 @@ import json
 import logging
 import sys
 from contextlib import asynccontextmanager
+from typing import Optional
 
 import cv2
 import numpy as np
@@ -14,6 +15,8 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
+
+from apps.helpers.inferenceProviders.inferenceProvider import InferenceResult
 
 from .manager import Manager
 
@@ -85,7 +88,6 @@ class WebApp:
             FastAPI: The FastAPI application instance.
         """
         return self._app
-
 
     def _error_response(self, request: Request, message: str):
         """Render an error response using the dynamic response template"""
@@ -279,26 +281,23 @@ class WebApp:
             image: np.ndarray,
             conf_thresh: float,
             return_annotated: bool,
+            pin_id: Optional[str] = None
         ) -> dict:
-            detections, annotated_image = await manager.recognize(
+            inference_result: InferenceResult = await manager.recognize(
                 model_name=model_name,
                 image=image,
                 conf_thresh=conf_thresh,
                 return_annotated=return_annotated,
+                pind_id=pin_id
             )
 
-            response = {"detections": detections}
-            if return_annotated and annotated_image is not None:
-                _, buffer = cv2.imencode(".jpg", annotated_image)
-                image_base64 = base64.b64encode(buffer).decode("utf-8")
-                response["annotated_image"] = image_base64
-
-            return response
+            return inference_result.serialize(include_annotated=return_annotated)
 
         class RecognizeRequest(BaseModel):
             model_name: str
             conf_thresh: float
             return_annotated: bool = False
+            pin_id: Optional[str] = None
             image_base64: str  # base64 encoded image string
 
         @self._app.post(
@@ -320,6 +319,7 @@ class WebApp:
                         image=image_array,
                         conf_thresh=payload.conf_thresh,
                         return_annotated=payload.return_annotated,
+                        pin_id=payload.pin_id
                     )
                 )
             except Exception as e:
@@ -335,6 +335,7 @@ class WebApp:
             model_name: str = Form(..., description="Name of the model to use for recognition"),
             conf_thresh: float = Form(..., description="Confidence threshold for detections"),
             return_annotated: bool = Form(False, description="Whether to return the annotated image"),
+            pin_id: str = Form(None, description="Optional pin id to refresh timeout for"),
             image: UploadFile = File(..., description="Image file to process"),
             request: Request = None,
         ) -> JSONResponse:
@@ -359,6 +360,7 @@ class WebApp:
                     model_name=model_name,
                     image=image_array,
                     conf_thresh=conf_thresh,
+                    pin_id=pin_id,
                     return_annotated=return_annotated,
                 )
 
@@ -382,6 +384,7 @@ class WebApp:
             model_name: str = Form(...),
             conf_thresh: float = Form(...),
             return_annotated: bool = Form(False),
+            pin_id: Optional[str] = Form(None, description="Optional pin id to refresh timeout for"),
             image: UploadFile = File(...),
             request: Request = None,
         ):
@@ -395,6 +398,7 @@ class WebApp:
                     model_name=model_name,
                     image=image_array,
                     conf_thresh=conf_thresh,
+                    pin_id=pin_id,
                     return_annotated=return_annotated,
                 )
 
@@ -422,6 +426,7 @@ class WebApp:
                     "options": model_list,
                 },
                 "conf_thresh": {"label": "Confidence Threshold", "type": "text"},
+                "pin_id": {"label": "Optional Pin ID To refresh", "type": "text", "optional": True},
                 "image": {"label": "Upload Image", "type": "file"},
                 "return_annotated": {
                     "label": "Return Annotated Image",

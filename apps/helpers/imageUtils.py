@@ -1,7 +1,11 @@
-""" Image utilities """
+"""Image utilities"""
+
+from typing import List
 
 import cv2
 import numpy as np
+from apps.helpers.inferenceProviders.inferenceProvider import DetectionResult
+
 
 def letterbox(image, size=640, color=(114, 114, 114)):
     """
@@ -86,3 +90,40 @@ def nms(boxes, scores, iou_threshold):
         idxs = idxs[1:][ious <= iou_threshold]  # Suppress boxes with IoU > threshold
 
     return keep
+
+
+def annotate_image(image: np.ndarray, detections: List[DetectionResult]) -> np.ndarray:
+    """
+    Annotate the image with bounding boxes and labels.
+
+    Args:
+        image (np.ndarray): The original image in BGR format.
+        detections (List[DetectionResult]): The detected bounding boxes.
+
+    Returns:
+        np.ndarray: The annotated image.
+    """
+    imgH, imgW = image.shape[:2]
+    for detection in detections:
+        # DetectionResult now uses a BBox object for bounding_box
+        bbox = detection.bounding_box
+        x1, y1, w, h = bbox.asX1Y1WH(imgW, imgH)
+        x2, y2 = x1 + w, y1 + h
+        label = detection.class_name if detection.class_name is not None else str(detection.class_id)
+        confidence = detection.confidence
+
+        # Draw the bounding box
+        cv2.rectangle(image, (x1, y1), (x2, y2), (0, 255, 0), 2)
+
+        # Put the label and confidence
+        text = f"{label}: {confidence:.2f}"
+        cv2.putText(
+            image,
+            text,
+            (x1, y1 - 10),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.5,
+            (0, 255, 0),
+            2,
+        )
+    return image

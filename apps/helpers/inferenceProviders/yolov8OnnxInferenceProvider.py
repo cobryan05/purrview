@@ -5,17 +5,9 @@ import numpy as np
 import onnxruntime as ort
 
 import apps.helpers.yoloUtils as YoloUtils
+from apps.helpers.bboxUtils import BBox
 
-from .inferenceProvider import InferenceProvider
-
-class InferenceResult:
-    def __init__(
-        self, boxes: np.ndarray, confidences: np.ndarray, class_ids: np.ndarray, class_names: Optional[List[str]] = None
-    ):
-        self.boxes = boxes
-        self.confidences = confidences
-        self.class_ids = class_ids
-        self.class_names = class_names
+from .inferenceProvider import DetectionResult, InferenceProvider, InferenceResult
 
 
 class YOLOv8ONNXInferenceProvider(InferenceProvider):
@@ -39,8 +31,9 @@ class YOLOv8ONNXInferenceProvider(InferenceProvider):
 
     async def processImage(self, image: np.ndarray, **kwargs) -> InferenceResult:
         original_shape = image.shape[:2]
-        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-        img, scale, pad = YoloUtils.preprocess_image(image, self.input_shape)
+        imgH, imgW = original_shape
+        image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        img, scale, pad = YoloUtils.preprocess_image(image_rgb, self.input_shape)
         preds = self.session.run(None, {self.input_name: img})[0]
 
         # Handle (batch, classes, boxes) -> (batch, boxes, classes)
@@ -56,9 +49,26 @@ class YOLOv8ONNXInferenceProvider(InferenceProvider):
             original_shape=original_shape,
         )
 
+        detection_results: List[DetectionResult] = []
+        for det in detections:
+            x_min, y_min, x_max, y_max = map(float, det[:4])
+            confidence = float(det[4])
+            class_id = int(det[5])
+            class_name = self.class_names[class_id + 1] if self.class_names else None
+
+            # Convert absolute xyxy to relative x1y1wh for BBox
+            rel_bbox = BBox.fromX1Y1X2Y2(x_min, y_min, x_max, y_max, imgW, imgH)
+            detection_results.append(
+                DetectionResult(
+                    bounding_box=rel_bbox,
+                    confidence=confidence,
+                    class_id=class_id,
+                    class_name=class_name,
+                )
+            )
+
         return InferenceResult(
-            boxes=detections[:, :4],
-            confidences=detections[:, 4],
-            class_ids=detections[:, 5].astype(int),
-            class_names=[self.class_names[i+1] for i in detections[:, 5].astype(int)] if self.class_names else None,
+            detections=detection_results,
+            inference_time=None,
+            source_image=image,
         )
