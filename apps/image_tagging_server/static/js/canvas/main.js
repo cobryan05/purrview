@@ -9,6 +9,7 @@ import {
   handleContextMenu,
 } from './interaction.js';
 import {
+  exportAnnotations,
   loadImageAndMetadata,
   loadImageFromInput,
   clearAnnotations,
@@ -31,6 +32,7 @@ window.undo = undo;
 window.redo = redo;
 window.loadImageAndMetadata = loadImageAndMetadata;
 window.loadImageFromInput = loadImageFromInput;
+window.refreshAnnotations = exportAnnotations;
 
 let stage = getStage()
 // Attach stage event listeners

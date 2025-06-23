@@ -96,8 +96,9 @@
 
       <div id="sidebar">
         <div class="tab-header">
-          <span class="tab-button active" data-tab="models">Models</span>
-          <span class="tab-button" data-tab="info">Info</span>
+          <span class="tab-button active" data-tab="tab-models">Models</span>
+          <span class="tab-button" data-tab="tab-annotations">Annotations</span>
+          <span class="tab-button" data-tab="tab-inspector">Inspector</span>
         </div>
 
         <div id="tab-models" class="tab-pane active">
@@ -106,8 +107,20 @@
           <div id="model-list"></div>
         </div>
 
-        <div id="tab-info" class="tab-pane">
-          <p>This is some placeholder info tab content.</p>
+        <div id="tab-annotations" class="tab-pane">
+          <button onclick="refreshAnnotations()">Refresh JSON</button>
+          <pre id="annotation-json" style="max-height: 40vh; overflow-y: auto; font-size: 0.8em;"></pre>
+        </div>
+
+        <div id="tab-inspector" class="tab-pane">
+          <label>
+            Label:
+            <input type="text" id="labelInput" />
+          </label>
+          <label>
+            Tags (comma-separated):
+            <input type="text" id="tagsInput" />
+          </label>
         </div>
       </div>
     </div>

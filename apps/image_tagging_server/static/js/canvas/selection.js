@@ -8,10 +8,19 @@ export function selectShape(shape) {
   transformer.nodes([shape]);
   layer.draw();
 
-  // const label = prompt('Label:', shape._metadata?.label || '');
-  // const tags = prompt('Tags (comma-separated):', shape._metadata?.tags?.join(', ') || '');
-  // shape._metadata = {
-  //   label: label || '',
-  //   tags: tags.split(',').map(t => t.trim()).filter(Boolean),
-  // };
+  const labelInput = document.getElementById('labelInput');
+  const tagsInput = document.getElementById('tagsInput');
+
+  labelInput.value = shape.metadata?.label || '';
+  tagsInput.value = (shape.metadata?.tags || []).join(', ');
+
+  labelInput.oninput = () => {
+    shape.metadata = shape.metadata || {};
+    shape.metadata.label = labelInput.value;
+  };
+
+  tagsInput.oninput = () => {
+    shape.metadata = shape.metadata || {};
+    shape.metadata.tags = tagsInput.value.split(',').map(t => t.trim()).filter(Boolean);
+  };
 }

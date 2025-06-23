@@ -1,8 +1,8 @@
 import { getCurrentImageName } from '/app-static/js/canvas/state.js';
-
+import { addRecognizedBoxes } from '/app-static/js/canvas/io.js';
 document.addEventListener('DOMContentLoaded', () => {
   const tabs = document.querySelectorAll('.tab-button');
-  const tabContents = document.querySelectorAll('.tab-content');
+  const tabContents = document.querySelectorAll('.tab-pane');
 
   tabs.forEach(tab => {
     tab.addEventListener('click', () => {
@@ -92,6 +92,9 @@ async function recognizeImage() {
 
     const result = await response.json();
     console.log('Recognize response:', result);
+    if (result.status === 'success') {
+      addRecognizedBoxes(result.results);
+    }
   } catch (err) {
     console.error('Failed to recognize image:', err);
   }

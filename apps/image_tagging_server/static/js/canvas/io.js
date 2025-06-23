@@ -232,3 +232,78 @@ export function redo() {
       debug('Redo: Unknown action', lastUndone.action);
   }
 }
+
+export function exportAnnotations() {
+  const layer = getLayer();
+  const shapes = layer.getChildren().filter(s => s.name() === 'annotation');
+
+  const annotations = shapes.map(shape => {
+    const base = {
+      type: shape.className.toLowerCase(),
+      metadata: shape.metadata || {},
+    };
+
+    if (shape instanceof Konva.Rect) {
+      return {
+        ...base,
+        x: shape.x(),
+        y: shape.y(),
+        width: shape.width(),
+        height: shape.height(),
+      };
+    }
+    // Add more shape types here if needed
+
+    return base;
+  });
+
+  const pre = document.getElementById('annotation-json');
+  if (pre) pre.textContent = JSON.stringify(annotations, null, 2);
+}
+
+export function addRecognizedBoxes(results) {
+  const layer = getLayer();
+  const stage = getStage();
+
+  // Find background image to get actual size
+  const bg = layer.findOne(node => node.name() === 'background' && node instanceof Konva.Image);
+  if (!bg) {
+    alert('No background image found!');
+    return;
+  }
+
+  const imageWidth = bg.width();
+  const imageHeight = bg.height();
+
+  results.forEach(obj => {
+    const [x_norm, y_norm, w_norm, h_norm] = obj.bounding_box;
+
+    const x = x_norm * imageWidth;
+    const y = y_norm * imageHeight;
+    const width = w_norm * imageWidth;
+    const height = h_norm * imageHeight;
+
+    const shape = createShape('rect', x, y, {
+      width,
+      height,
+    });
+
+    shape.metadata = {
+      label: obj.class_name,
+      confidence: obj.confidence,
+    };
+
+    shape.name('annotation');
+
+    shape.on('click', () => {
+      const transformer = layer.findOne('Transformer');
+      transformer.nodes([shape]);
+      transformer.moveToTop();
+      layer.draw();
+    });
+
+    layer.add(shape);
+  });
+
+  layer.draw();
+}
