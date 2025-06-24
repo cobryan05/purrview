@@ -1,20 +1,123 @@
+import { getLayer, getTransformer } from './state.js';
+import { selectShape } from './selection.js';
 
-import { setupShape } from './shape_utils.js';
+/**
+ * Create a bounding box group with a rectangle, label, confidence,
+ * and set up all relevant event handlers here.
+ */
+export function createBoundingBox(x, y, props = {}) {
+  const width = props.width ?? 50;
+  const height = props.height ?? 50;
+  const label = props.metadata?.label ?? '';
+  const confidence = props.metadata?.confidence;
 
-export function createShape(tool, x, y, props = {}) {
-  const common = {
+  const group = new Konva.Group({
+    x,
+    y,
+    draggable: true,
+    name: 'annotation',
+  });
+
+  const rect = new Konva.Rect({
+    name: 'box',
+    width,
+    height,
     stroke: 'red',
     strokeWidth: 2,
-    draggable: true,
-    ...props,  // allow override
+  });
+
+  const labelText = `${label}${confidence != null ? ` (${(confidence * 100).toFixed(1)}%)` : ''}`;
+
+  const text = new Konva.Text({
+    name: 'label',
+    text: labelText,
+    fontSize: 14,
+    fill: 'red',
+    y: -18,
+    x: 0,
+  });
+
+  group.metadata = {
+    label,
+    confidence,
+    ...props.metadata,
   };
 
-  let shape;
-  if (tool === 'rect') {
-    shape = new Konva.Rect({ ...common, x, y, width: common.width ?? 1, height: common.height ?? 1 });
-  } else {
-    return null;
-  }
+  group.add(rect);
+  group.add(text);
 
-  return setupShape(shape);
+  // --- Event handlers setup ---
+
+  // Disable dragging with middle mouse button down
+  group.on('mousedown', e => {
+    if (e.evt.button === 1) group.draggable(false);
+    else group.draggable(true);
+  });
+
+  // Restore draggable on mouseup or dragend
+  group.on('mouseup dragend', () => group.draggable(true));
+
+  // On click, select the shape and attach transformer only to the rectangle
+  group.on('click', e => {
+    if (e.evt.button !== 0) return;
+    e.cancelBubble = true;
+
+    const transformer = getTransformer();
+    transformer.nodes([rect]);
+    transformer.moveToTop();
+
+    selectShape(group);
+    getLayer().draw();
+  });
+
+  rect.on('transform', () => {
+    const layer = getLayer();
+
+    const scaleX = rect.scaleX();
+    const scaleY = rect.scaleY();
+
+    let newWidth = rect.width() * scaleX;
+    let newHeight = rect.height() * scaleY;
+
+    const MIN_SIZE = 10;
+
+    // Clamp sizes to MIN_SIZE, avoid negative or too small values
+    newWidth = Math.max(newWidth, MIN_SIZE);
+    newHeight = Math.max(newHeight, MIN_SIZE);
+
+    // Compute left and top edge relative to group + rect position + scale
+    // rect.x() and rect.y() are relative to group coords
+    const rectLeft = rect.x();
+    const rectTop = rect.y();
+
+    // Calculate group's new position to always be at the top-left corner of the bounding box
+    let newGroupX = group.x() + rectLeft;
+    let newGroupY = group.y() + rectTop;
+
+    // Reset rect position inside group to zero (top-left)
+    rect.x(0);
+    rect.y(0);
+
+    // Apply new size to rect
+    rect.width(newWidth);
+    rect.height(newHeight);
+
+    // Update group's position
+    group.position({
+      x: newGroupX,
+      y: newGroupY,
+    });
+
+    // Reset scale
+    rect.scaleX(1);
+    rect.scaleY(1);
+
+    // Keep label fixed relative to rect top-left
+    text.x(0);
+    text.y(-18);
+
+    layer.batchDraw();
+  });
+
+  return group;
 }

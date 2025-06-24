@@ -1,26 +1,32 @@
 import { getLayer, getTransformer } from './state.js';
 
-export function selectShape(shape) {
+export function selectShape(group) {
   const layer = getLayer();
-  let transformer = getTransformer();
+  const transformer = getTransformer();
 
-  if (!shape || !layer) return;
-  transformer.nodes([shape]);
-  layer.draw();
+  if (!group || !layer) return;
 
+  // Update metadata UI
   const labelInput = document.getElementById('labelInput');
   const tagsInput = document.getElementById('tagsInput');
 
-  labelInput.value = shape.metadata?.label || '';
-  tagsInput.value = (shape.metadata?.tags || []).join(', ');
+  const metadata = group.metadata ?? {};
+  labelInput.value = metadata.label ?? '';
+  tagsInput.value = (metadata.tags ?? []).join(', ');
 
   labelInput.oninput = () => {
-    shape.metadata = shape.metadata || {};
-    shape.metadata.label = labelInput.value;
+    metadata.label = labelInput.value;
+    group.metadata = metadata;
+    const labelNode = group.findOne('.label');
+    if (labelNode) {
+      const conf = metadata.confidence;
+      labelNode.text(`${metadata.label}${conf != null ? ` (${(conf * 100).toFixed(1)}%)` : ''}`);
+      layer.batchDraw();
+    }
   };
 
   tagsInput.oninput = () => {
-    shape.metadata = shape.metadata || {};
-    shape.metadata.tags = tagsInput.value.split(',').map(t => t.trim()).filter(Boolean);
+    metadata.tags = tagsInput.value.split(',').map(s => s.trim()).filter(Boolean);
+    group.metadata = metadata;
   };
 }

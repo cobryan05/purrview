@@ -1,17 +1,15 @@
 import { getCurrentTool, setCurrentTool, getStage, getLayer } from './state.js';
 import { clearSelection, setTool } from './tools.js';
-import { createShape } from './drawing.js';
+import { createBoundingBox } from './drawing.js';
 import { selectShape } from './selection.js';
 
-// State variables for interaction
-let tempShape = null;
+let tempGroup = null;
 let startPos = null;
 let isPanning = false;
 let lastPanPos = null;
 
-// Helper to get pointer position relative to stage with transforms
 function getPointerPosition() {
-  let stage = getStage();
+  const stage = getStage();
   const pos = stage.getPointerPosition();
   if (!pos) return null;
   return {
@@ -20,11 +18,10 @@ function getPointerPosition() {
   };
 }
 
-// Mouse down event handler
 export function handleMouseDown(e) {
-  let stage = getStage();
-  let layer = getLayer();
-  if (e.evt.button === 1) { // Middle click = start panning
+  const stage = getStage();
+  const layer = getLayer();
+  if (e.evt.button === 1) {
     isPanning = true;
     lastPanPos = { x: e.evt.clientX, y: e.evt.clientY };
     stage.container().style.cursor = 'move';
@@ -32,7 +29,7 @@ export function handleMouseDown(e) {
     return;
   }
 
-  if (e.evt.button !== 0) return; // Only left click beyond this
+  if (e.evt.button !== 0) return;
   if (isPanning) return;
 
   const currentTool = getCurrentTool();
@@ -42,26 +39,24 @@ export function handleMouseDown(e) {
   if (!pos) return;
 
   startPos = pos;
-  tempShape = createShape(currentTool, pos.x, pos.y);
-  if (tempShape) layer.add(tempShape);
+  tempGroup = createBoundingBox(pos.x, pos.y, { width: 1, height: 1, label: '' });
+  if (tempGroup) layer.add(tempGroup);
 }
 
-// Mouse move event handler
 export function handleMouseMove(e) {
-  let stage = getStage();
-  let layer = getLayer();
+  const stage = getStage();
+  const layer = getLayer();
   if (isPanning) {
     const dx = e.evt.clientX - lastPanPos.x;
     const dy = e.evt.clientY - lastPanPos.y;
     lastPanPos = { x: e.evt.clientX, y: e.evt.clientY };
-
     stage.x(stage.x() + dx);
     stage.y(stage.y() + dy);
     stage.batchDraw();
     return;
   }
 
-  if (!tempShape) return;
+  if (!tempGroup) return;
 
   const pos = getPointerPosition();
   if (!pos) return;
@@ -69,35 +64,46 @@ export function handleMouseMove(e) {
   const dx = pos.x - startPos.x;
   const dy = pos.y - startPos.y;
 
-  if (tempShape instanceof Konva.Rect) {
-    tempShape.x(dx < 0 ? pos.x : startPos.x);
-    tempShape.y(dy < 0 ? pos.y : startPos.y);
-    tempShape.width(Math.abs(dx));
-    tempShape.height(Math.abs(dy));
-  } else if (tempShape instanceof Konva.Circle) {
-    tempShape.radius(Math.sqrt(dx * dx + dy * dy));
-  } else if (tempShape instanceof Konva.Line) {
-    tempShape.points([startPos.x, startPos.y, pos.x, pos.y]);
-  }
+  const box = tempGroup.findOne('.box');
+  const label = tempGroup.findOne('.label');
+
+  if (!box || !label) return;
+
+  const newX = dx < 0 ? pos.x : startPos.x;
+  const newY = dy < 0 ? pos.y : startPos.y;
+  const newWidth = Math.abs(dx);
+  const newHeight = Math.abs(dy);
+
+  tempGroup.position({ x: newX, y: newY });
+  box.size({ width: newWidth, height: newHeight });
+  label.y(newHeight + 2);
 
   layer.batchDraw();
 }
 
-// Mouse up event handler
 export function handleMouseUp(e) {
   const currentTool = getCurrentTool();
   getStage().container().style.cursor = currentTool === 'select' ? 'default' : 'crosshair';
 
-  if (e.evt.button === 1) { // middle button up ends panning
+  if (e.evt.button === 1) {
     isPanning = false;
     return;
   }
-  tempShape = null;
+
+  if (tempGroup) {
+    const box = tempGroup.findOne('.box');
+    if (box.width() < 3 || box.height() < 3) {
+      tempGroup.destroy();
+    } else {
+      selectShape(tempGroup);
+    }
+    getLayer().draw();
+    tempGroup = null;
+  }
 }
 
-// Mouse wheel zoom handler
 export function handleWheel(e) {
-  let stage = getStage();
+  const stage = getStage();
   e.evt.preventDefault();
 
   const oldScale = stage.scaleX();
@@ -124,19 +130,17 @@ export function handleWheel(e) {
   stage.batchDraw();
 }
 
-// Click event to clear selection if clicking empty area
 export function handleClick(e) {
-  let stage = getStage();
-  let layer = getLayer();
+  const stage = getStage();
+  const layer = getLayer();
   if (e.target === stage) {
     clearSelection();
     layer.draw();
   }
 }
 
-// Right-click event handler to clear selection and switch tool
 export function handleContextMenu(e) {
-  let layer = getLayer();
+  const layer = getLayer();
   e.evt.preventDefault();
   clearSelection();
   setTool('select');

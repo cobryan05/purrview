@@ -1,5 +1,5 @@
 import { getLayer, getTransformer, getStage } from './state.js';
-import { createShape } from './drawing.js';
+import { createBoundingBox } from './drawing.js';
 import { debug } from './utils.js';
 import { setCurrentImageName, getCurrentImageName } from './state.js';
 
@@ -27,17 +27,14 @@ export async function loadImageAndMetadata(imageName) {
       img.onerror = () => reject(new Error(`Failed to load image: ${imageUrl}`));
     });
 
-    // Clear selection (remove nodes from transformer)
     transformer.nodes([]);
 
-    // Destroy all shapes except transformer
     layer.getChildren().forEach(child => {
       if (child !== transformer) {
         child.destroy();
       }
     });
 
-    // Add background image
     const bg = new Konva.Image({
       image: img,
       x: 0,
@@ -50,7 +47,6 @@ export async function loadImageAndMetadata(imageName) {
     layer.add(bg);
     layer.moveToBottom();
 
-    // Fetch metadata with cache busting timestamp
     const metadataUrl = `/metadata/${imageName}.json?t=${Date.now()}`;
     let metadata = { annotations: [] };
     const res = await fetch(metadataUrl);
@@ -60,34 +56,25 @@ export async function loadImageAndMetadata(imageName) {
       debug(`No metadata found for ${imageName}, starting with empty annotations.`);
     }
 
-    // Recreate shapes from metadata
     for (const ann of metadata.annotations) {
       let shape = null;
 
       switch (ann.type) {
         case 'rect':
-          shape = createShape('rect', ann.x, ann.y);
-          shape.width(ann.width);
-          shape.height(ann.height);
+          shape = createBoundingBox(ann.x, ann.y, {
+            width: ann.width,
+            height: ann.height,
+            metadata: ann.metadata,
+            label: ann.metadata?.label ?? '',
+          });
           break;
-        // Add more shape types here as needed
         default:
           debug('Unknown annotation type:', ann.type);
           continue;
       }
 
-      if (shape) {
-        shape.metadata = ann.metadata || {};
-        shape.name('annotation');
-
-        shape.on('click', () => {
-          transformer.nodes([shape]);
-          transformer.moveToTop();
-          layer.draw();
-        });
-
-        layer.add(shape);
-      }
+      shape.name('annotation');
+      layer.add(shape);
     }
 
     layer.draw();
@@ -135,20 +122,17 @@ export async function saveAnnotations() {
 
   try {
     const shapes = layer.getChildren();
-    const data = shapes.filter(shape => shape.name() === 'annotation').map(shape => {
-      switch (shape.className) {
-        case 'Rect':
-          return {
-            type: 'rect',
-            x: shape.x(),
-            y: shape.y(),
-            width: shape.width(),
-            height: shape.height(),
-            metadata: shape.metadata || {},
-          };
-        default:
-          return null;
-      }
+    const data = shapes.filter(shape => shape.name() === 'annotation').map(group => {
+      const rect = group.findOne('.box');
+      if (!rect) return null;
+      return {
+        type: 'rect',
+        x: group.x(),
+        y: group.y(),
+        width: rect.width(),
+        height: rect.height(),
+        metadata: group.metadata || {},
+      };
     }).filter(Boolean);
 
     const res = await fetch('/save-annotations', {
@@ -237,25 +221,19 @@ export function exportAnnotations() {
   const layer = getLayer();
   const shapes = layer.getChildren().filter(s => s.name() === 'annotation');
 
-  const annotations = shapes.map(shape => {
-    const base = {
-      type: shape.className.toLowerCase(),
-      metadata: shape.metadata || {},
+  const annotations = shapes.map(group => {
+    const rect = group.findOne('.box');
+    if (!rect) return null;
+
+    return {
+      type: 'rect',
+      x: group.x(),
+      y: group.y(),
+      width: rect.width(),
+      height: rect.height(),
+      metadata: group.metadata || {},
     };
-
-    if (shape instanceof Konva.Rect) {
-      return {
-        ...base,
-        x: shape.x(),
-        y: shape.y(),
-        width: shape.width(),
-        height: shape.height(),
-      };
-    }
-    // Add more shape types here if needed
-
-    return base;
-  });
+  }).filter(Boolean);
 
   const pre = document.getElementById('annotation-json');
   if (pre) pre.textContent = JSON.stringify(annotations, null, 2);
@@ -265,7 +243,6 @@ export function addRecognizedBoxes(results) {
   const layer = getLayer();
   const stage = getStage();
 
-  // Find background image to get actual size
   const bg = layer.findOne(node => node.name() === 'background' && node instanceof Konva.Image);
   if (!bg) {
     alert('No background image found!');
@@ -283,25 +260,16 @@ export function addRecognizedBoxes(results) {
     const width = w_norm * imageWidth;
     const height = h_norm * imageHeight;
 
-    const shape = createShape('rect', x, y, {
+    const shape = createBoundingBox(x, y, {
       width,
       height,
+      metadata: {
+        label: obj.class_name,
+        confidence: obj.confidence,
+      },
     });
-
-    shape.metadata = {
-      label: obj.class_name,
-      confidence: obj.confidence,
-    };
 
     shape.name('annotation');
-
-    shape.on('click', () => {
-      const transformer = layer.findOne('Transformer');
-      transformer.nodes([shape]);
-      transformer.moveToTop();
-      layer.draw();
-    });
-
     layer.add(shape);
   });
 

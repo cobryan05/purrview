@@ -5,8 +5,6 @@ let transformer = null;
 let currentTool = 'select';
 let currentImageName = null;
 
-// === Getters and setters for state variables ===
-
 export function getCurrentTool() {
   return currentTool;
 }
@@ -40,7 +38,6 @@ export function getLayer() {
   return layer;
 }
 
-// === Initialization functions ===
 export function initStage() {
   const container = document.getElementById('draw-container');
 
@@ -60,10 +57,23 @@ export function initStage() {
     anchorCornerRadius: 5,
     enabledAnchors: ['top-left', 'top-right', 'bottom-left', 'bottom-right'],
     keepRatio: false,
+
+    // Prevent flip and tiny shapes
+    boundBoxFunc: (oldBox, newBox) => {
+      const minSize = 10;
+      if (Math.abs(newBox.width) < minSize || Math.abs(newBox.height) < minSize) {
+        return oldBox;
+      }
+      if (newBox.width < 0 || newBox.height < 0) {
+        return oldBox;
+      }
+      return newBox;
+    },
   });
+
   setTransformer(transformer);
 
   layer = new Konva.Layer();
-  layer.add(transformer)
+  layer.add(transformer);
   stage.add(layer);
 }
