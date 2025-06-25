@@ -2,9 +2,6 @@ import { createBoundingBox } from './drawing.js';
 import { getCurrentImageName, getLayer, getStage, getTransformer, setCurrentImageName } from './state.js';
 import { debug } from './utils.js';
 
-const undoStack = [];
-const redoStack = [];
-
 export async function loadImageAndMetadata(imageName) {
   debug('loadImageAndMetadata called with imageName:', imageName);
   if (!imageName) {
@@ -168,56 +165,10 @@ export function deleteSelected() {
   }
 
   const shape = selectedNodes[0];
-  undoStack.push({ action: 'delete', shape });
-  redoStack.length = 0;
-
   shape.destroy();
   transformer.nodes([]);
   layer.draw();
   debug('Deleted selected shape');
-}
-
-export function undo() {
-  let layer = getLayer();
-  if (!undoStack.length) {
-    debug('Nothing to undo');
-    return;
-  }
-
-  const lastAction = undoStack.pop();
-
-  switch (lastAction.action) {
-    case 'delete':
-      layer.add(lastAction.shape);
-      lastAction.shape.show();
-      redoStack.push(lastAction);
-      layer.draw();
-      debug('Undo: restored deleted shape');
-      break;
-    default:
-      debug('Undo: Unknown action', lastAction.action);
-  }
-}
-
-export function redo() {
-  let layer = getLayer();
-  if (!redoStack.length) {
-    debug('Nothing to redo');
-    return;
-  }
-
-  const lastUndone = redoStack.pop();
-
-  switch (lastUndone.action) {
-    case 'delete':
-      lastUndone.shape.destroy();
-      undoStack.push(lastUndone);
-      layer.draw();
-      debug('Redo: deleted shape again');
-      break;
-    default:
-      debug('Redo: Unknown action', lastUndone.action);
-  }
 }
 
 export function exportAnnotations() {

@@ -15,8 +15,6 @@ import {
   clearAnnotations,
   saveAnnotations,
   deleteSelected,
-  undo,
-  redo,
 } from './io.js';
 
 // Initialize stage and set default tool
@@ -28,8 +26,6 @@ window.setTool = setTool;
 window.clearAnnotations = clearAnnotations;
 window.saveAnnotations = saveAnnotations;
 window.deleteSelected = deleteSelected;
-window.undo = undo;
-window.redo = redo;
 window.loadImageAndMetadata = loadImageAndMetadata;
 window.loadImageFromInput = loadImageFromInput;
 window.refreshAnnotations = exportAnnotations;
