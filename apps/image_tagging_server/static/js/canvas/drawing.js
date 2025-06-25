@@ -1,6 +1,6 @@
-import { getLayer, getTransformer } from './state.js';
+import { getLayer, getTransformer, getCurrentTool } from './state.js';
 import { selectShape } from './selection.js';
-
+import { generateUUID } from './utils.js';
 /**
  * Create a bounding box group with a rectangle, label, confidence,
  * and set up all relevant event handlers here.
@@ -10,6 +10,7 @@ export function createBoundingBox(x, y, props = {}) {
   const height = props.height ?? 50;
   const label = props.metadata?.label ?? '';
   const confidence = props.metadata?.confidence;
+  const uuid = generateUUID();
 
   const group = new Konva.Group({
     x,
@@ -41,6 +42,7 @@ export function createBoundingBox(x, y, props = {}) {
     label,
     confidence,
     ...props.metadata,
+    uuid,
   };
 
   group.add(rect);
@@ -50,8 +52,11 @@ export function createBoundingBox(x, y, props = {}) {
 
   // Disable dragging with middle mouse button down
   group.on('mousedown', e => {
-    if (e.evt.button === 1) group.draggable(false);
-    else group.draggable(true);
+    if (e.evt.button === 1) {
+      group.draggable(false);
+    } else {
+      group.draggable(getCurrentTool() === 'select');
+    }
   });
 
   // Restore draggable on mouseup or dragend
@@ -59,7 +64,9 @@ export function createBoundingBox(x, y, props = {}) {
 
   // On click, select the shape and attach transformer only to the rectangle
   group.on('click', e => {
-    if (e.evt.button !== 0) return;
+    if (e.evt.button !== 0) {
+      return;
+    }
     e.cancelBubble = true;
 
     const transformer = getTransformer();
@@ -69,6 +76,15 @@ export function createBoundingBox(x, y, props = {}) {
     selectShape(group);
     getLayer().draw();
   });
+
+  function updateBoundingBoxLayout() {
+    // Always keep rect at (0,0) in group
+    rect.x(0);
+    rect.y(0);
+    // Keep label at top-left, above the box
+    text.x(0);
+    text.y(-18);
+  }
 
   rect.on('transform', () => {
     const layer = getLayer();
@@ -94,10 +110,6 @@ export function createBoundingBox(x, y, props = {}) {
     let newGroupX = group.x() + rectLeft;
     let newGroupY = group.y() + rectTop;
 
-    // Reset rect position inside group to zero (top-left)
-    rect.x(0);
-    rect.y(0);
-
     // Apply new size to rect
     rect.width(newWidth);
     rect.height(newHeight);
@@ -112,12 +124,9 @@ export function createBoundingBox(x, y, props = {}) {
     rect.scaleX(1);
     rect.scaleY(1);
 
-    // Keep label fixed relative to rect top-left
-    text.x(0);
-    text.y(-18);
-
+    updateBoundingBoxLayout();
     layer.batchDraw();
   });
-
+  updateBoundingBoxLayout();
   return group;
 }

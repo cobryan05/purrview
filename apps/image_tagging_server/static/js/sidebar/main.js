@@ -46,7 +46,9 @@ async function refreshModelList() {
     });
 
     const firstRadio = modelListContainer.querySelector('input[type="radio"]');
-    if (firstRadio) firstRadio.checked = true;
+    if (firstRadio) {
+      firstRadio.checked = true;
+    }
   } catch (err) {
     console.error('Failed to fetch models:', err);
   }

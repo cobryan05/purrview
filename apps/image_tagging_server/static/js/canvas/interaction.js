@@ -1,7 +1,7 @@
-import { getCurrentTool, setCurrentTool, getStage, getLayer } from './state.js';
-import { clearSelection, setTool } from './tools.js';
 import { createBoundingBox } from './drawing.js';
 import { selectShape } from './selection.js';
+import { getCurrentTool, getLayer, getStage, setCurrentTool } from './state.js';
+import { clearSelection, setTool } from './tools.js';
 
 let tempGroup = null;
 let startPos = null;
@@ -39,8 +39,11 @@ export function handleMouseDown(e) {
   if (!pos) return;
 
   startPos = pos;
-  tempGroup = createBoundingBox(pos.x, pos.y, { width: 1, height: 1, label: '' });
-  if (tempGroup) layer.add(tempGroup);
+  tempGroup = createBoundingBox(
+    pos.x, pos.y, { width: 1, height: 1, metadata: { label: 'New Box' } });
+  if (tempGroup) {
+    layer.add(tempGroup);
+  }
 }
 
 export function handleMouseMove(e) {
@@ -76,14 +79,15 @@ export function handleMouseMove(e) {
 
   tempGroup.position({ x: newX, y: newY });
   box.size({ width: newWidth, height: newHeight });
-  label.y(newHeight + 2);
+  label.y(-18);
 
   layer.batchDraw();
 }
 
 export function handleMouseUp(e) {
   const currentTool = getCurrentTool();
-  getStage().container().style.cursor = currentTool === 'select' ? 'default' : 'crosshair';
+  getStage().container().style.cursor =
+    currentTool === 'select' ? 'default' : 'crosshair';
 
   if (e.evt.button === 1) {
     isPanning = false;
@@ -143,6 +147,10 @@ export function handleContextMenu(e) {
   const layer = getLayer();
   e.evt.preventDefault();
   clearSelection();
-  setTool('select');
+  if (getCurrentTool() === 'select') {
+    setTool('rect');
+  } else {
+    setTool('select');
+  }
   layer.draw();
 }

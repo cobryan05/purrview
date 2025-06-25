@@ -1,7 +1,6 @@
-import { getLayer, getTransformer, getStage } from './state.js';
 import { createBoundingBox } from './drawing.js';
+import { getCurrentImageName, getLayer, getStage, getTransformer, setCurrentImageName } from './state.js';
 import { debug } from './utils.js';
-import { setCurrentImageName, getCurrentImageName } from './state.js';
 
 const undoStack = [];
 const redoStack = [];
@@ -24,7 +23,8 @@ export async function loadImageAndMetadata(imageName) {
 
     await new Promise((resolve, reject) => {
       img.onload = resolve;
-      img.onerror = () => reject(new Error(`Failed to load image: ${imageUrl}`));
+      img.onerror = () =>
+        reject(new Error(`Failed to load image: ${imageUrl}`));
     });
 
     transformer.nodes([]);
@@ -65,7 +65,6 @@ export async function loadImageAndMetadata(imageName) {
             width: ann.width,
             height: ann.height,
             metadata: ann.metadata,
-            label: ann.metadata?.label ?? '',
           });
           break;
         default:
@@ -122,18 +121,22 @@ export async function saveAnnotations() {
 
   try {
     const shapes = layer.getChildren();
-    const data = shapes.filter(shape => shape.name() === 'annotation').map(group => {
-      const rect = group.findOne('.box');
-      if (!rect) return null;
-      return {
-        type: 'rect',
-        x: group.x(),
-        y: group.y(),
-        width: rect.width(),
-        height: rect.height(),
-        metadata: group.metadata || {},
-      };
-    }).filter(Boolean);
+    const data = shapes.filter(shape => shape.name() === 'annotation')
+      .map(group => {
+        const rect = group.findOne('.box');
+        if (!rect) return null;
+        const { uuid, ...metadataWithoutUuid } =
+          group.metadata || {};
+        return {
+          type: 'rect',
+          x: group.x(),
+          y: group.y(),
+          width: rect.width(),
+          height: rect.height(),
+          metadata: metadataWithoutUuid
+        };
+      })
+      .filter(Boolean);
 
     const res = await fetch('/save-annotations', {
       method: 'POST',
@@ -221,29 +224,34 @@ export function exportAnnotations() {
   const layer = getLayer();
   const shapes = layer.getChildren().filter(s => s.name() === 'annotation');
 
-  const annotations = shapes.map(group => {
-    const rect = group.findOne('.box');
-    if (!rect) return null;
+  const annotations = shapes
+    .map(group => {
+      const rect = group.findOne('.box');
+      if (!rect) return null;
 
-    return {
-      type: 'rect',
-      x: group.x(),
-      y: group.y(),
-      width: rect.width(),
-      height: rect.height(),
-      metadata: group.metadata || {},
-    };
-  }).filter(Boolean);
+      return {
+        type: 'rect',
+        x: group.x(),
+        y: group.y(),
+        width: rect.width(),
+        height: rect.height(),
+        metadata: group.metadata || {},
+      };
+    })
+    .filter(Boolean);
 
   const pre = document.getElementById('annotation-json');
-  if (pre) pre.textContent = JSON.stringify(annotations, null, 2);
+  if (pre) {
+    pre.textContent = JSON.stringify(annotations, null, 2);
+  }
 }
 
 export function addRecognizedBoxes(results) {
   const layer = getLayer();
   const stage = getStage();
 
-  const bg = layer.findOne(node => node.name() === 'background' && node instanceof Konva.Image);
+  const bg = layer.findOne(
+    node => node.name() === 'background' && node instanceof Konva.Image);
   if (!bg) {
     alert('No background image found!');
     return;
