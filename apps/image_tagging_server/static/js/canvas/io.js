@@ -73,6 +73,26 @@ export async function loadImageAndMetadata(imageName) {
       layer.add(shape);
     }
 
+    // === Zoom to fit the image with padding ===
+    const stage = getStage();
+    const container = stage.container();
+    const padding = 20;
+
+    const scaleX = (container.clientWidth - padding * 2) / img.width;
+    const scaleY = (container.clientHeight - padding * 2) / img.height;
+    const scale = Math.min(scaleX, scaleY);
+
+    // Center the image
+    const newWidth = img.width * scale;
+    const newHeight = img.height * scale;
+
+    const offsetX = (container.clientWidth - newWidth) / 2;
+    const offsetY = (container.clientHeight - newHeight) / 2;
+
+    stage.scale({ x: scale, y: scale });
+    stage.position({ x: offsetX, y: offsetY });
+    stage.batchDraw();
+
     layer.draw();
     debug(`Loaded image and metadata for ${imageName}`);
   } catch (err) {
