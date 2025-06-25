@@ -171,24 +171,29 @@ export async function saveAnnotations() {
 }
 
 export function deleteSelected() {
-  let transformer = getTransformer();
-  let layer = getLayer();
-  if (!transformer) {
-    debug('No transformer available for deleteSelected');
-    return;
-  }
+  const transformer = getTransformer();
+  const layer = getLayer();
+  if (!transformer) return;
 
   const selectedNodes = transformer.nodes();
-  if (!selectedNodes.length) {
-    debug('No shape selected to delete');
-    return;
+  if (!selectedNodes.length) return;
+
+  let node = selectedNodes[0];
+  let group = node.getParent();
+
+  // Walk up until we find the group named "annotation"
+  while (group && group.name() !== 'annotation') {
+    group = group.getParent();
   }
 
-  const shape = selectedNodes[0];
-  shape.destroy();
+  if (group && group.name() === 'annotation') {
+    group.destroy();
+  } else {
+    node.destroy(); // fallback
+  }
+
   transformer.nodes([]);
   layer.draw();
-  debug('Deleted selected shape');
 }
 
 export function exportAnnotations() {
