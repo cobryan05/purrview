@@ -11,7 +11,6 @@ export function debug(...args) {
   }
 }
 
-
 export function generateUUID() {
   if (window.crypto && typeof window.crypto.randomUUID === 'function') {
     return window.crypto.randomUUID();

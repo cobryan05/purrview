@@ -101,3 +101,26 @@ async function recognizeImage() {
     console.error('Failed to recognize image:', err);
   }
 }
+
+export function openInspectorTab() {
+  const tabs = document.querySelectorAll('.tab-button');
+  const panes = document.querySelectorAll('.tab-pane');
+
+  tabs.forEach(tab => {
+    const tabName = tab.getAttribute('data-tab');
+    const isInspector = tabName === 'tab-inspector';
+    tab.classList.toggle('active', isInspector);
+  });
+
+  panes.forEach(pane => {
+    pane.style.display = pane.id === 'tab-inspector' ? 'block' : 'none';
+  });
+
+  document.getElementById('labelInput')?.focus();
+
+  const inspector = document.getElementById('tab-inspector');
+  if (inspector) {
+    inspector.style.outline = '2px solid #ff0033';
+    setTimeout(() => inspector.style.outline = '', 1000);
+  }
+}

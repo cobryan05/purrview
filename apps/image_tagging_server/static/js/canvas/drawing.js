@@ -1,6 +1,8 @@
 import { getLayer, getTransformer, getCurrentTool } from './state.js';
 import { selectShape } from './selection.js';
 import { generateUUID } from './utils.js';
+import { openInspectorTab } from '../sidebar/main.js';
+
 /**
  * Create a bounding box group with a rectangle, label, confidence,
  * and set up all relevant event handlers here.
@@ -75,6 +77,11 @@ export function createBoundingBox(x, y, props = {}) {
 
     selectShape(group);
     getLayer().draw();
+  });
+
+    group.on('dblclick', () => {
+    selectShape(group);
+    openInspectorTab();
   });
 
   function updateBoundingBoxLayout() {
