@@ -1,3 +1,5 @@
+import { debug, warn, error, toast, notify } from './utils.js';
+
 let stage = null;
 let layer = null;
 let transformer = null;
@@ -10,7 +12,7 @@ export function getCurrentTool() {
 }
 
 export function setCurrentTool(tool) {
-  console.debug("[DEBUG] setTool called with", tool);
+  debug("setTool called with", tool);
   currentTool = tool;
 }
 

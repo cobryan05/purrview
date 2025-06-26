@@ -1,11 +1,11 @@
 import { createBoundingBox } from './drawing.js';
 import { getCurrentImageName, getLayer, getStage, getTransformer, setCurrentImageName } from './state.js';
-import { debug } from './utils.js';
+import { debug, warn, error, notify } from './utils.js';
 
 export async function loadImageAndMetadata(imageName) {
   debug('loadImageAndMetadata called with imageName:', imageName);
   if (!imageName) {
-    alert('Please enter an image name!');
+    toast('Please enter an image name!');
     return;
   }
 
@@ -65,7 +65,7 @@ export async function loadImageAndMetadata(imageName) {
           });
           break;
         default:
-          debug('Unknown annotation type:', ann.type);
+          warn('Unknown annotation type:', ann.type);
           continue;
       }
 
@@ -94,22 +94,21 @@ export async function loadImageAndMetadata(imageName) {
     stage.batchDraw();
 
     layer.draw();
-    debug(`Loaded image and metadata for ${imageName}`);
+    notify(`Loaded image and metadata for ${imageName}`);
   } catch (err) {
-    debug('Error loading image and metadata:', err);
-    alert('Failed to load image or annotations.');
+    error('Failed to load image or annotations:', err);
   }
 }
 
 export function loadImageFromInput() {
   const input = document.getElementById('imageNameInput');
   if (!input) {
-    alert('Image name input not found!');
+    toast('Image name input not found!');
     return;
   }
   const imageName = input.value.trim();
   if (!imageName) {
-    alert('Please enter an image name');
+    toast('Please enter an image name');
     return;
   }
   loadImageAndMetadata(imageName);
@@ -132,7 +131,7 @@ export async function saveAnnotations() {
   let layer = getLayer();
   const imageName = getCurrentImageName();
   if (!imageName) {
-    alert('No image loaded to save annotations!');
+    toast('No image loaded to save annotations!');
     return;
   }
 
@@ -163,10 +162,9 @@ export async function saveAnnotations() {
 
     if (!res.ok) throw new Error(`Save failed with status ${res.status}`);
 
-    debug(`Annotations saved successfully for image ${imageName}`);
+    notify(`Annotations saved successfully for image ${imageName}`);
   } catch (err) {
-    debug('Failed to save annotations:', err);
-    alert('Failed to save annotations.');
+    error('Failed to save annotations:', err);
   }
 }
 
@@ -229,7 +227,7 @@ export function addRecognizedBoxes(results) {
   const bg = layer.findOne(
     node => node.name() === 'background' && node instanceof Konva.Image);
   if (!bg) {
-    alert('No background image found!');
+    error('No background image found!');
     return;
   }
 
