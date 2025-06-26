@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import sys
+from contextlib import asynccontextmanager
 
 from fastapi import Body, FastAPI, File, Form, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -30,7 +31,7 @@ class WebApp:
     def __init__(self, app_name: str, manager: Manager):
         """Initialize the WebApp with the application name"""
         self._app_name: str = app_name
-        self._app: FastAPI = FastAPI()
+        self._app: FastAPI = FastAPI(lifespan=self._lifespan)
         self._templates: Jinja2Templates = Jinja2Templates(directory=os.path.join(SCRIPT_DIR, "templates"))
         self._manager: Manager = manager
 
@@ -46,6 +47,21 @@ class WebApp:
     def app(self) -> FastAPI:
         """Return the FastAPI application instance"""
         return self._app
+
+    @asynccontextmanager
+    async def _lifespan(self, app: FastAPI):
+        """
+        Lifespan event handler for startup and shutdown logic.
+
+        Args:
+            app (FastAPI): The FastAPI application instance.
+        """
+        logging.info("Application is starting up...")
+
+        self._manager.start()  # Start the manager's periodic task
+        yield  # This allows the app to run
+
+        logging.info("Application is shutting down...")
 
     def _register_routes(self):
         """Register all routes for the application"""
@@ -73,6 +89,49 @@ class WebApp:
             try:
                 model_list = await self._manager.list_models()
                 response_data = {"status": "success", "models": model_list}
+                return JSONResponse(content=response_data)
+            except Exception as e:
+                logger.exception(e)
+                return JSONResponse(
+                    content={"status": "failure", "message": str(e)},
+                    status_code=500,
+                )
+
+        class AddLabelRequest(BaseModel):
+            name: str
+            color: str
+
+        @self._app.post("/api/add-label", response_class=JSONResponse, tags=[WebApp.MODELS_API_TAG_NAME])
+        async def add_label_api(request: AddLabelRequest) -> JSONResponse:
+            """
+            API endpoint to add a new label.
+            """
+            try:
+                label = await self._manager.add_label(request.name, request.color)
+                return JSONResponse(content={"status": "success", "label": label.__dict__})
+            except Exception as e:
+                logger.exception(e)
+                return JSONResponse(
+                    content={"status": "failure", "message": str(e)},
+                    status_code=500,
+                )
+
+        @self._app.get("/api/list-labels", response_class=JSONResponse, tags=[WebApp.MODELS_API_TAG_NAME])
+        async def list_labels_api(request: Request) -> JSONResponse:
+            """
+            API endpoint to return a list of labels with metadata.
+
+            Args:
+                request (Request): The FastAPI request object.
+
+            Returns:
+                JSONResponse: A JSON response containing the list of labels.
+            """
+            try:
+                label_list = await self._manager.list_labels()
+                # Convert dataclass objects to dicts
+                labels = [label.__dict__ for label in label_list]
+                response_data = {"status": "success", "labels": labels}
                 return JSONResponse(content=response_data)
             except Exception as e:
                 logger.exception(e)

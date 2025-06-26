@@ -12,6 +12,7 @@ services:
               device_ids: [ '0' ]
               capabilities: [ gpu ]
     volumes:
+      - ./db/:/app/db
       - ./apps:/app/apps
       - ./conf:/app/conf
       - ./logs:/app/logs

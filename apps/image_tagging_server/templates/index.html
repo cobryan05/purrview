@@ -24,6 +24,9 @@
       border-radius: 4px;
       margin: 0;
       box-sizing: border-box;
+      white-space: normal;
+      line-height: 1.2;
+      height: auto;
     }
 
     #draw-container {
@@ -31,6 +34,8 @@
       height: 80vh;
       border: 1px solid #ccc;
       overflow: hidden;
+      flex-grow: 1;
+      font-size: 0.95em;
     }
 
     #image-loader {
@@ -41,19 +46,9 @@
     #sidebar {
       border-left: 1px solid #ccc;
       padding-left: 1em;
-      width: 300px;
-    }
-
-    .tab-button.active {
-      font-weight: bold;
-    }
-
-    .tab-pane {
-      display: none;
-    }
-
-    .tab-pane.active {
-      display: block;
+      width: 20%;
+      min-width: 220px;
+      box-sizing: border-box;
     }
 
     .sidebar-container {
@@ -66,25 +61,26 @@
       min-width: 0;
     }
 
-    #sidebar {
-      width: 20%;
-      min-width: 220px;
-      border-left: 1px solid #ccc;
-      padding-left: 1em;
-    }
-
-    #draw-container {
-      flex-grow: 1;
-    }
-
-    .tab-header {
+    .primay-tab-header,
+    .primary-tab-header {
       display: flex;
       border-bottom: 1px solid #ccc;
       margin-bottom: 0.5em;
     }
 
+    .tab-header {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      grid-template-rows: 1fr 1fr;
+      gap: 0.2em;
+      border-bottom: 1px solid #ccc;
+      margin-bottom: 0.5em;
+    }
+
     .tab-button {
-      padding: 0.3em 1em;
+      width: 100%;
+      text-align: center;
+      padding: 0.3em 0;
       cursor: pointer;
       border: none;
       background: none;
@@ -92,6 +88,8 @@
       color: #333;
       border-bottom: 2px solid transparent;
       transition: border-color 0.2s;
+      box-sizing: border-box;
+      font-size: 0.95em;
     }
 
     .tab-button:hover {
@@ -103,11 +101,87 @@
       border-bottom: 2px solid #ff0033;
     }
 
-  .model-buttons {
-    display: flex;
-    gap: 0.5em;
-    margin-bottom: 0.5em;
-  }
+    .tab-pane {
+      display: none;
+    }
+
+    .tab-pane.active {
+      display: block;
+    }
+
+    .model-buttons {
+      display: flex;
+      gap: 0.5em;
+      margin-bottom: 0.5em;
+    }
+
+    #labels-list {
+      margin-bottom: 1em;
+    }
+
+    .label-row {
+      display: flex;
+      align-items: center;
+      gap: 0.5em;
+      margin-bottom: 0.3em;
+      font-size: 0.95em;
+    }
+
+    .label-color {
+      width: 1.2em;
+      height: 1.2em;
+      border-radius: 3px;
+      border: 1px solid #ccc;
+      display: inline-block;
+    }
+
+    .label-name {
+      flex: 1;
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .label-remove-btn {
+      background: #ffdddd;
+      color: #c0392b;
+      border: none;
+      border-radius: 3px;
+      width: 2em;
+      height: 2em;
+      font-size: 1.2em;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+
+    .label-remove-btn:hover {
+      background: #ff0033;
+      color: #fff;
+    }
+
+    /* Responsive: stack sidebar below main-stage on small screens */
+    @media (max-width: 900px) {
+      .sidebar-container {
+        flex-direction: column;
+      }
+
+      #main-stage,
+      #sidebar {
+        width: 100%;
+        min-width: 0;
+      }
+
+      #sidebar {
+        border-left: none;
+        border-top: 1px solid #ccc;
+        padding-left: 0;
+        padding-top: 1em;
+      }
+    }
   </style>
   <script src="/static/js/konva.min.js"></script>
 </head>
@@ -117,7 +191,7 @@
     <input id="imageNameInput" type="text" placeholder="Enter image name" />
     <div class="sidebar-container">
       <div id="main-stage">
-        <div class="tab-header">
+        <div class="primary-tab-header">
           <span class="tab-button active" data-tab="tab-canvas">Canvas</span>
           <span class="tab-button" data-tab="tab-files">Files</span>
         </div>
@@ -143,6 +217,7 @@
       <div id="sidebar">
         <div class="tab-header">
           <span class="tab-button active" data-tab="tab-models">Models</span>
+          <span class="tab-button" data-tab="tab-labels">Labels</span>
           <span class="tab-button" data-tab="tab-annotations">Annotations</span>
           <span class="tab-button" data-tab="tab-inspector">Inspector</span>
         </div>
@@ -158,6 +233,18 @@
         <div id="tab-annotations" class="tab-pane">
           <button onclick="refreshAnnotations()">Refresh JSON</button>
           <pre id="annotation-json" style="max-height: 40vh; overflow-y: auto; font-size: 0.8em;"></pre>
+        </div>
+
+        <div id="tab-labels" class="tab-pane">
+          <h4>Labels</h4>
+          <div id="labels-list"></div>
+          <form id="add-label-form" style="display: flex; align-items: center; gap: 0.5em; margin-top: 1em;">
+            <input type="text" id="new-label-name" placeholder="Label name" required style="width: 8em; flex: 1;">
+            <input type="color" id="new-label-color" value="#ff0033" title="Pick label color"
+              style="width: 2em; height: 2em; padding: 0; border: none;">
+            <button type="submit"
+              style="padding: 0.2em 0.7em; font-size: 1.2em; width: 2em; height: 2em; display: flex; align-items: center; justify-content: center;">+</button>
+          </form>
         </div>
 
         <div id="tab-inspector" class="tab-pane">

@@ -2,7 +2,7 @@ import { getCurrentImageName } from '/app-static/js/canvas/state.js';
 import { addRecognizedBoxes } from '/app-static/js/canvas/io.js';
 
 document.addEventListener('DOMContentLoaded', () => {
-  document.querySelectorAll('.tab-header').forEach(tabHeader => {
+  document.querySelectorAll('.tab-header, .primary-tab-header').forEach(tabHeader => {
     const tabs = tabHeader.querySelectorAll('.tab-button');
     const tabContainer = tabHeader.parentElement;
     const tabPanes = tabContainer.querySelectorAll('.tab-pane');
@@ -15,12 +15,37 @@ document.addEventListener('DOMContentLoaded', () => {
         tabPanes.forEach(tc => {
           tc.classList.toggle('active', tc.id === tabName);
         });
+        // Call refreshLabelList when Labels tab is activated
+        if (tabName === 'tab-labels') {
+          refreshLabelList();
+        }
       });
     });
   });
 
   refreshModelList();
   document.getElementById('recognize-button').addEventListener('click', recognizeImage);
+
+  const addLabelForm = document.getElementById('add-label-form');
+  if (addLabelForm) {
+    addLabelForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const name = document.getElementById('new-label-name').value.trim();
+      const color = document.getElementById('new-label-color').value;
+      if (!name) return;
+      const res = await fetch('/api/add-label', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, color })
+      });
+      if (res.ok) {
+        document.getElementById('new-label-name').value = '';
+        refreshLabelList();
+      } else {
+        error('Failed to add label');
+      }
+    });
+  }
 });
 
 async function refreshModelList() {
@@ -55,6 +80,39 @@ async function refreshModelList() {
     }
   } catch (err) {
     console.error('Failed to fetch models:', err);
+  }
+}
+
+async function refreshLabelList() {
+  try {
+    const res = await fetch('/api/list-labels');
+    const data = await res.json();
+    const labelListContainer = document.getElementById('labels-list');
+    if (!labelListContainer) {
+      console.error("labelListContainer is null");
+      return;
+    }
+    labelListContainer.innerHTML = '';
+    data.labels.forEach(label => {
+      const row = document.createElement('div');
+      row.className = 'label-row';
+      row.innerHTML = `
+        <span class="label-color" style="background:${label.color}"></span>
+        <span class="label-name">${label.name}</span>
+        <button class="label-remove-btn" title="Delete label" data-uuid="${label.uuid}">−</button>
+      `;
+      labelListContainer.appendChild(row);
+    });
+    // Attach remove handlers (if you implement deletion)
+    labelListContainer.querySelectorAll('.label-remove-btn').forEach(btn => {
+      btn.onclick = async () => {
+        const uuid = btn.getAttribute('data-uuid');
+        await fetch(`/api/labels/${uuid}`, { method: 'DELETE' });
+        refreshLabelList();
+      };
+    });
+  } catch (err) {
+    console.error('Failed to fetch labels:', err);
   }
 }
 

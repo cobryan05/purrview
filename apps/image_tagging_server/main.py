@@ -2,7 +2,7 @@ import inference_client
 import uvicorn
 
 from apps.inference_server.main import app_port as inference_port
-
+from apps.helpers.db.db_client import DbClient
 from .manager import Manager
 from .web import WebApp
 
@@ -11,7 +11,8 @@ APP_NAME = "Image Tagging Server"
 APP_PORT = 8002
 inference_client_conf = inference_client.Configuration(f"http://localhost:{inference_port}")
 api_client = inference_client.ApiClient(inference_client_conf)
-manager = Manager(api_client=api_client)
+db_client = DbClient("/app/db/db.sqlite")
+manager = Manager(api_client=api_client, db_client=db_client)
 web_app = WebApp(app_name=APP_NAME, manager=manager)
 
 # Get the uvicorn app

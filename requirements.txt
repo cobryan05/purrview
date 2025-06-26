@@ -1,3 +1,4 @@
+aiosqlite
 debugpy
 fastapi
 ffmpeg-python

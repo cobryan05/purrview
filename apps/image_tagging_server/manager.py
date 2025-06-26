@@ -4,6 +4,7 @@ import asyncio
 import base64
 import logging
 import sys
+from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
 import cv2
@@ -11,12 +12,24 @@ import numpy as np
 from inference_client.api.inference_api import InferenceApi
 from inference_client.api.models_api import ModelsApi
 from inference_client.api_client import ApiClient
-from inference_client.models.body_pin_model_api import BodyPinModelApi  # from updated schema
+from inference_client.models.body_pin_model_api import (
+    BodyPinModelApi,  # from updated schema
+)
 from inference_client.models.recognize_request import RecognizeRequest
+
+from apps.helpers.db.db_client import DbClient
 
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger(__file__)
 logger.setLevel(logging.DEBUG)
+
+
+@dataclass
+class LabelInfo:
+    id: int
+    name: str
+    color: str
+    uuid: str
 
 
 class Manager:
@@ -25,9 +38,10 @@ class Manager:
     POLLING_INTERVAL: float = 5.0  # Interval in seconds for periodic tasks
     PIN_DURATION: float = 30 * 60  # Timeout before unloading model
 
-    def __init__(self, api_client: ApiClient):
+    def __init__(self, api_client: ApiClient, db_client: DbClient):
         """Initialize the Manager"""
         self._api_client: ApiClient = api_client
+        self._db_client: DbClient = db_client
         self._task: Optional[asyncio.Task] = None  # Background task for periodic operations
         self._model_pins: Dict[str, str] = {}
 
@@ -42,6 +56,26 @@ class Manager:
         # Use the new method matching operationId "list_models_api"
         response: Dict[str, Any] = await asyncio.to_thread(api.list_models_api)
         return response.get("models", [])
+
+    async def add_label(self, name: str, color: str) -> LabelInfo:
+        """
+        Adds a new label to the database
+
+        Returns:
+            LabelInfo: Label metadata added to database
+        """
+        row = await self._db_client.add_label(name, color)
+        return LabelInfo(**row)
+
+    async def list_labels(self) -> List[LabelInfo]:
+        """
+        List all labels from the database.
+
+        Returns:
+            List[LabelInfo]: List of label metadata (id, name)
+        """
+        rows = await self._db_client.list_labels()
+        return [LabelInfo(id=row["id"], name=row["name"], color=row["color"], uuid=row["uuid"]) for row in rows]
 
     async def recognize(
         self,
@@ -96,9 +130,7 @@ class Manager:
 
         # Call the /api/recognize-json endpoint, operationId: "recognize_json"
         inference_api = InferenceApi(self._api_client)
-        response: Dict[str, Any] = await asyncio.to_thread(
-            inference_api.recognize_json, recognize_request=request
-        )
+        response: Dict[str, Any] = await asyncio.to_thread(inference_api.recognize_json, recognize_request=request)
 
         if "detections" not in response:
             raise RuntimeError(f"Recognition failed: {response}")
@@ -121,7 +153,11 @@ class Manager:
 
     async def _init(self):
         """Initialization that should run on event loop"""
-        pass
+        try:
+            await self._db_client.init_db()
+        except Exception as e:
+            logger.exception(e)
+            raise
 
     async def _worker_task(self):
         """
