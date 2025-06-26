@@ -1,16 +1,20 @@
 import { getCurrentImageName } from '/app-static/js/canvas/state.js';
 import { addRecognizedBoxes } from '/app-static/js/canvas/io.js';
-document.addEventListener('DOMContentLoaded', () => {
-  const tabs = document.querySelectorAll('.tab-button');
-  const tabContents = document.querySelectorAll('.tab-pane');
 
-  tabs.forEach(tab => {
-    tab.addEventListener('click', () => {
-      tabs.forEach(t => t.classList.remove('active'));
-      tab.classList.add('active');
-      const tabName = tab.getAttribute('data-tab');
-      tabContents.forEach(tc => {
-        tc.style.display = tc.id === tabName ? 'block' : 'none';
+document.addEventListener('DOMContentLoaded', () => {
+  document.querySelectorAll('.tab-header').forEach(tabHeader => {
+    const tabs = tabHeader.querySelectorAll('.tab-button');
+    const tabContainer = tabHeader.parentElement;
+    const tabPanes = tabContainer.querySelectorAll('.tab-pane');
+
+    tabs.forEach(tab => {
+      tab.addEventListener('click', () => {
+        tabs.forEach(t => t.classList.remove('active'));
+        tab.classList.add('active');
+        const tabName = tab.getAttribute('data-tab');
+        tabPanes.forEach(tc => {
+          tc.classList.toggle('active', tc.id === tabName);
+        });
       });
     });
   });
@@ -103,8 +107,12 @@ async function recognizeImage() {
 }
 
 export function openInspectorTab() {
-  const tabs = document.querySelectorAll('.tab-button');
-  const panes = document.querySelectorAll('.tab-pane');
+  // Scope tab switching to the sidebar tab group only
+  const sidebar = document.getElementById('sidebar');
+  if (!sidebar) return;
+
+  const tabs = sidebar.querySelectorAll('.tab-button');
+  const panes = sidebar.querySelectorAll('.tab-pane');
 
   tabs.forEach(tab => {
     const tabName = tab.getAttribute('data-tab');
@@ -113,7 +121,7 @@ export function openInspectorTab() {
   });
 
   panes.forEach(pane => {
-    pane.style.display = pane.id === 'tab-inspector' ? 'block' : 'none';
+    pane.classList.toggle('active', pane.id === 'tab-inspector');
   });
 
   document.getElementById('labelInput')?.focus();

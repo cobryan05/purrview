@@ -6,9 +6,24 @@
   <title>Annotation Tool</title>
   <link rel="stylesheet" href="/static/css/pico.min.css" />
   <style>
-    #toolbar button.selected {
-      background-color: #ff0033;
-      color: white;
+    #tab-canvas toolbar {}
+
+    #toolbar {
+      display: flex;
+      gap: 0.5em;
+      margin-bottom: 0.5em;
+      width: 100%;
+    }
+
+    #toolbar button {
+      flex: 1 1 0;
+      font-size: 0.95em;
+      padding: 0.2em 0.7em;
+      min-height: 2em;
+      min-width: 0;
+      border-radius: 4px;
+      margin: 0;
+      box-sizing: border-box;
     }
 
     #draw-container {
@@ -46,6 +61,18 @@
       gap: 1em;
     }
 
+    #main-stage {
+      width: 80%;
+      min-width: 0;
+    }
+
+    #sidebar {
+      width: 20%;
+      min-width: 220px;
+      border-left: 1px solid #ccc;
+      padding-left: 1em;
+    }
+
     #draw-container {
       flex-grow: 1;
     }
@@ -75,24 +102,43 @@
       font-weight: bold;
       border-bottom: 2px solid #ff0033;
     }
+
+  .model-buttons {
+    display: flex;
+    gap: 0.5em;
+    margin-bottom: 0.5em;
+  }
   </style>
   <script src="/static/js/konva.min.js"></script>
 </head>
 
 <body>
   <main class="container">
-    <nav id="toolbar">
-      <input id="imageNameInput" type="text" placeholder="Enter image name" />
-      <button onclick="loadImageFromInput()">Load Image</button>
-      <button data-tool="select" onclick="setTool('select')">Select</button>
-      <button data-tool="rect" onclick="setTool('rect')">Rectangle</button>
-      <button onclick="clearAnnotations()">Clear Annotations</button>
-      <button onclick="deleteSelected()">Delete Selected</button>
-      <button onclick="saveAnnotations()">Save</button>
-    </nav>
-
+    <input id="imageNameInput" type="text" placeholder="Enter image name" />
     <div class="sidebar-container">
-      <div id="draw-container"></div>
+      <div id="main-stage">
+        <div class="tab-header">
+          <span class="tab-button active" data-tab="tab-canvas">Canvas</span>
+          <span class="tab-button" data-tab="tab-files">Files</span>
+        </div>
+
+        <div id="tab-canvas" class="tab-pane active">
+          <nav id="toolbar">
+            <button onclick="loadImageFromInput()">Load Image</button>
+            <button data-tool="select" onclick="setTool('select')">Select</button>
+            <button data-tool="rect" onclick="setTool('rect')">Rectangle</button>
+            <button onclick="clearAnnotations()">Clear Annotations</button>
+            <button onclick="deleteSelected()">Delete Selected</button>
+            <button onclick="saveAnnotations()">Save</button>
+          </nav>
+
+          <div id="draw-container"></div>
+        </div>
+
+        <div id="tab-files" class="tab-pane">
+          Files
+        </div>
+      </div>
 
       <div id="sidebar">
         <div class="tab-header">
@@ -102,8 +148,10 @@
         </div>
 
         <div id="tab-models" class="tab-pane active">
-          <button id="recognize-button">Recognize</button>
-          <button id="refresh-models">Refresh Models</button>
+          <div class="model-buttons">
+            <button id="recognize-button">Recognize</button>
+            <button id="refresh-models">Refresh Models</button>
+          </div>
           <div id="model-list"></div>
         </div>
 
