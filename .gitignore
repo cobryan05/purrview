@@ -1,5 +1,7 @@
 static/js/htmx
 static/css/pico.min.css
+storage/
+image_datasets/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

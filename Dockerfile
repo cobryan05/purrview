@@ -27,7 +27,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Fetch minimized version of HTMX
-RUN mkdir -p /app/logs /app/static/js /app/static/css\
+RUN mkdir -p /logs /app/static/js /app/static/css \
   && curl -L -o /app/static/js/htmx.min.js https://unpkg.com/htmx.org@${HTMX_VERSION}/dist/htmx.min.js \
   && curl -L -o /app/static/css/pico.min.css https://cdn.jsdelivr.net/npm/@picocss/pico@${PICO_CSS_VERSION}/css/pico.blue.min.css \
   && curl -L -o /app/static/js/konva.min.js https://cdn.jsdelivr.net/npm/konva@${KONVA_VERSION}/konva.min.js
@@ -47,7 +47,7 @@ RUN apt-get update \
   && rm -rf /var/lib/apt/lists/*
 
 # Copy required files
-COPY conf ./conf
+COPY conf /conf
 COPY templates ./templates
 COPY static ./static
 COPY apps ./apps
@@ -65,4 +65,4 @@ RUN python -m apps.generate_openapi_jsons \
 
 EXPOSE 8000 8001 8554 8888 1935 9001 9997
 
-CMD ["/usr/bin/supervisord", "-c", "/app/conf/supervisord.conf"]
+CMD ["/usr/bin/supervisord", "-c", "/conf/supervisord.conf"]

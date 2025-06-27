@@ -8,9 +8,10 @@ import aiosqlite
 
 class DbClient:
     def __init__(self, db_path: Union[str, Path]):
-        self._db_path = str(Path(db_path))
+        self._db_path: Path = Path(db_path)
 
     async def init_db(self) -> None:
+        self._db_path.parent.mkdir(parents=True, exist_ok=True)
         async with aiosqlite.connect(self._db_path) as conn:
             conn.row_factory = aiosqlite.Row
             await conn.executescript(
