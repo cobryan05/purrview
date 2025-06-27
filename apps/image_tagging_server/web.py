@@ -3,10 +3,13 @@ import json
 import logging
 import os
 import sys
-from contextlib import asynccontextmanager
+import mimetypes
 
-from fastapi import Body, FastAPI, File, Form, Request, UploadFile
-from fastapi.responses import HTMLResponse, JSONResponse
+from contextlib import asynccontextmanager
+from typing import List
+
+from fastapi import Body, FastAPI, File, Form, Query, Request, UploadFile, HTTPException
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
@@ -27,6 +30,7 @@ class WebApp:
 
     MODELS_API_TAG_NAME = "models"
     INFERENCE_API_TAG_NAME = "inference"
+    IMAGES_API_TAG_NAME = "images"
 
     def __init__(self, app_name: str, manager: Manager):
         """Initialize the WebApp with the application name"""
@@ -38,8 +42,6 @@ class WebApp:
         # Mount static files
         self._app.mount("/static", StaticFiles(directory="static"), name="static")
         self._app.mount("/app-static", StaticFiles(directory=os.path.join(SCRIPT_DIR, "static")), name="app-static")
-        self._app.mount("/images", StaticFiles(directory="static/images"), name="images")
-        self._app.mount("/metadata", StaticFiles(directory="static/images/metadata"), name="metadata")
 
         # Register routes
         self._register_routes()
@@ -75,7 +77,95 @@ class WebApp:
             """Render the home page"""
             return self._templates.TemplateResponse("index.html", {"request": request})
 
-        @self._app.get("/api/list-models", response_class=JSONResponse, tags=[WebApp.MODELS_API_TAG_NAME])
+        @self._app.get("/api/list-files", response_class=JSONResponse, tags=[WebApp.MODELS_API_TAG_NAME])
+        async def list_files(
+            request: Request,
+            rel_path: str = Query("/", alias="path"),
+            glob_pattern: str = Query("*", alias="pattern"),
+            recursive: bool = Query(False, alias="recursive"),
+        ) -> JSONResponse:
+            """
+            API endpoint to return a list of files.
+
+            Query Parameters:
+                rel_path (str): Relative path under the root directory (default: "/").
+                glob (str): Glob pattern to filter files (default: "*").
+                recursive (bool): Whether to search directories recursively (default: False).
+
+            Returns:
+                JSONResponse: A JSON response containing the list of files.
+            """
+            try:
+                file_list: List[Manager.FileEntry] = await self._manager.list_files(
+                    rel_path=rel_path, glob_pattern=glob_pattern, recursive=recursive
+                )
+                response_data = {"status": "success", "files": [entry.__dict__ for entry in file_list]}
+                return JSONResponse(content=response_data)
+            except Exception as e:
+                logger.exception(e)
+                return JSONResponse(
+                    content={"status": "failure", "message": str(e)},
+                    status_code=500,
+                )
+
+        @self._app.get("/api/get-file", tags=[WebApp.MODELS_API_TAG_NAME])
+        async def get_file(
+            rel_path: str = Query(..., alias="path", description="Relative path to the file under root"),
+            raw: bool = Query(False, description="If true, return as raw file response instead of base64 JSON")
+        ):
+            """
+            Retrieve a file either as base64 JSON (default) or as a browser-friendly image file (raw=true).
+
+            Args:
+                rel_path (str): Relative file path.
+                raw (bool): If true, return as image; otherwise return base64 JSON.
+
+            Returns:
+                JSONResponse or Response
+            """
+            try:
+                result = await self._manager.open_file(rel_path)
+                if not result:
+                    if raw:
+                        raise HTTPException(status_code=404, detail="File not found")
+                    else:
+                        return JSONResponse({
+                            "status": "failure",
+                            "message": f"File {rel_path} not found"
+                        })
+
+                file_obj, filename = result
+                content = await file_obj.read()
+                await file_obj.close()
+
+                mime_type, _ = mimetypes.guess_type(filename)
+                mime_type = mime_type or "application/octet-stream"
+
+                if raw:
+                    return Response(
+                        content=content,
+                        media_type=mime_type,
+                        headers={"Content-Disposition": f'inline; filename="{filename}"'},
+                    )
+
+                encoded = base64.b64encode(content).decode("utf-8")
+                return JSONResponse({
+                    "status": "success",
+                    "filename": filename,
+                    "mime_type": mime_type,
+                    "content": encoded,
+                })
+
+            except HTTPException:
+                raise
+            except Exception as e:
+                logger.exception("Error retrieving file")
+                return JSONResponse(
+                    status_code=500,
+                    content={"status": "failure", "message": str(e)},
+                )
+
+        @self._app.get("/api/list-models", response_class=JSONResponse, tags=[WebApp.IMAGES_API_TAG_NAME])
         async def list_models_api(request: Request) -> JSONResponse:
             """
             API endpoint to return a list of models.

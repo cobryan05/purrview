@@ -2,10 +2,14 @@
 
 import asyncio
 import base64
+import glob
 import logging
+import os
 import sys
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+import aiofiles
 
 import cv2
 import numpy as np
@@ -38,12 +42,109 @@ class Manager:
     POLLING_INTERVAL: float = 5.0  # Interval in seconds for periodic tasks
     PIN_DURATION: float = 30 * 60  # Timeout before unloading model
 
-    def __init__(self, api_client: ApiClient, db_client: DbClient):
+    def __init__(self, api_client: ApiClient, db_client: DbClient, files_root: Path):
         """Initialize the Manager"""
         self._api_client: ApiClient = api_client
         self._db_client: DbClient = db_client
         self._task: Optional[asyncio.Task] = None  # Background task for periodic operations
+        self._files_root: Path = files_root
         self._model_pins: Dict[str, str] = {}
+
+    @dataclass
+    class FileEntry:
+        name: str
+        type: str  # "file" or "dir"
+        path: str  # relative path from root
+
+    async def list_files(
+        self, rel_path: str = "/", glob_pattern: str = "*", recursive: bool = False
+    ) -> List[FileEntry]:
+        """
+        List all files and directories in the given relative path under the root directory.
+
+        Args:
+            rel_path (str): Relative path from the root directory (default: "/").
+            glob_pattern (str): Glob pattern to filter files (default: "*").
+            recursive (bool): Whether to list files recursively (default: False).
+
+        Returns:
+            List[FileEntry]: List of FileEntry instances.
+        """
+        if not self._files_root or not os.path.isdir(self._files_root):
+            logger.warning("Root directory is not set or does not exist.")
+            return []
+
+        try:
+            # Normalize and join with root, prevent directory traversal
+            safe_path = os.path.normpath(os.path.join(self._files_root, rel_path.lstrip("/")))
+            if not safe_path.startswith(str(self._files_root)):
+                logger.warning(f"Directory traversal attempt: {rel_path}")
+                return []
+
+            if not os.path.exists(safe_path) or not os.path.isdir(safe_path):
+                logger.warning(f"Directory not found: {safe_path}")
+                return []
+
+            # Construct glob pattern path
+            glob_path = (
+                os.path.join(safe_path, "**", glob_pattern) if recursive else os.path.join(safe_path, glob_pattern)
+            )
+            matched_paths = glob.glob(glob_path, recursive=recursive)
+
+            entries: List[Manager.FileEntry] = []
+            for full_path in sorted(matched_paths):
+                # Skip hidden files/folders
+                basename = os.path.basename(full_path)
+                if basename.startswith("."):
+                    continue
+
+                # Must be under the root
+                if not os.path.commonpath([self._files_root, full_path]).startswith(str(self._files_root)):
+                    continue
+
+                entry_type = "dir" if os.path.isdir(full_path) else "file"
+                rel_entry_path = os.path.relpath(full_path, self._files_root)
+                entries.append(Manager.FileEntry(name=basename, type=entry_type, path=rel_entry_path))
+
+            return entries
+
+        except Exception as e:
+            logger.error(f"Error listing files: {str(e)}")
+            return []
+
+    async def open_file(self, rel_path: str) -> Optional[Tuple[aiofiles.threadpool.binary.AsyncBufferedReader, str]]:
+        """
+        Securely open a file under the root and return an aiofiles stream and filename.
+
+        Args:
+            rel_path (str): Relative path under the image root.
+
+        Returns:
+            Tuple[aiofiles.AsyncBufferedReader, str] or None
+        """
+        if not self._files_root or not os.path.isdir(self._files_root):
+            logger.warning("Root directory not set or invalid")
+            return None
+
+        try:
+            abs_path = os.path.normpath(os.path.join(self._files_root, rel_path.lstrip("/")))
+
+            # Prevent directory traversal
+            if not abs_path.startswith(str(self._files_root)):
+                logger.warning(f"Blocked directory traversal attempt: {rel_path}")
+                return None
+
+            if not os.path.exists(abs_path) or not os.path.isfile(abs_path):
+                logger.warning(f"File not found: {abs_path}")
+                return None
+
+            f = await aiofiles.open(abs_path, mode="rb")
+            filename = os.path.basename(abs_path)
+            return f, filename
+
+        except Exception as e:
+            logger.error(f"Failed to open file {rel_path}: {e}")
+            return None
 
     async def list_models(self) -> List[str]:
         """

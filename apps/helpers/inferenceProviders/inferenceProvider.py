@@ -44,7 +44,7 @@ class InferenceResult:
             result["inference_time"] = self.inference_time
         if include_annotated and self.annotated_image is not None:
             import cv2, base64
-            _, buffer = cv2.imencode(".jpg", self.annotated_image)
+            _, buffer = cv2.imencode(".png", self.annotated_image)
             result["annotated_image"] = base64.b64encode(buffer).decode("utf-8")
         return result
 

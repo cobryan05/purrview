@@ -366,7 +366,7 @@ class WebApp:
 
                 response = {"detections": detections}
                 if return_annotated and annotated_image is not None:
-                    _, buffer = cv2.imencode(".jpg", annotated_image)
+                    _, buffer = cv2.imencode(".png", annotated_image)
                     image_base64 = base64.b64encode(buffer).decode("utf-8")
                     response["annotated_image"] = image_base64
 

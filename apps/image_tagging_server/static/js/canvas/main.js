@@ -11,7 +11,6 @@ import {
 import {
   exportAnnotations,
   loadImageAndMetadata,
-  loadImageFromInput,
   clearAnnotations,
   saveAnnotations,
   deleteSelected,
@@ -27,7 +26,6 @@ window.clearAnnotations = clearAnnotations;
 window.saveAnnotations = saveAnnotations;
 window.deleteSelected = deleteSelected;
 window.loadImageAndMetadata = loadImageAndMetadata;
-window.loadImageFromInput = loadImageFromInput;
 window.refreshAnnotations = exportAnnotations;
 
 let stage = getStage()

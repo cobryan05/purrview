@@ -14,14 +14,21 @@ export async function loadImageAndMetadata(imageName) {
     const layer = getLayer();
     setCurrentImageName(imageName);
 
-    const imageUrl = `/images/${imageName}.jpg`;
-    const img = new Image();
-    img.src = imageUrl;
+    // === Load image blob via API as base64 ===
+    const imageRes = await fetch(`/api/get-file?path=${encodeURIComponent(imageName)}`);
+    if (!imageRes.ok) throw new Error(`Failed to load image via API for ${imageName}`);
 
+    const imageJson = await imageRes.json();
+    if (imageJson.status !== 'success' || !imageJson.content) {
+      throw new Error(`Invalid image API response for ${imageName}`);
+    }
+
+    const img = new Image();
+    img.src = `data:${imageJson.content_type};base64,${imageJson.content}`;
     await new Promise((resolve, reject) => {
       img.onload = resolve;
       img.onerror = () =>
-        reject(new Error(`Failed to load image: ${imageUrl}`));
+        reject(new Error(`Failed to decode base64 image for ${imageName}`));
     });
 
     transformer.nodes([]);
@@ -44,13 +51,20 @@ export async function loadImageAndMetadata(imageName) {
     layer.add(bg);
     layer.moveToBottom();
 
-    const metadataUrl = `/metadata/${imageName}.json?t=${Date.now()}`;
+    // === Load metadata JSON via API ===
+    const metaPath = `${imageName}.json`;
     let metadata = { annotations: [] };
-    const res = await fetch(metadataUrl);
-    if (res.ok) {
-      metadata = await res.json();
+
+    const metaRes = await fetch(`/api/get-file?path=${encodeURIComponent(metaPath)}`);
+    if (metaRes.ok) {
+      const metaJson = await metaRes.json();
+      if (metaJson.status === 'success' && metaJson.content) {
+        metadata = JSON.parse(atob(metaJson.content));
+      } else {
+        debug(`Metadata for ${metaPath} is empty or missing`);
+      }
     } else {
-      debug(`No metadata found for ${imageName}, starting with empty annotations.`);
+      debug(`No metadata file for ${metaPath}, starting with empty annotations.`);
     }
 
     for (const ann of metadata.annotations) {
@@ -98,20 +112,6 @@ export async function loadImageAndMetadata(imageName) {
   } catch (err) {
     error('Failed to load image or annotations:', err);
   }
-}
-
-export function loadImageFromInput() {
-  const input = document.getElementById('imageNameInput');
-  if (!input) {
-    toast('Image name input not found!');
-    return;
-  }
-  const imageName = input.value.trim();
-  if (!imageName) {
-    toast('Please enter an image name');
-    return;
-  }
-  loadImageAndMetadata(imageName);
 }
 
 export function clearAnnotations() {
