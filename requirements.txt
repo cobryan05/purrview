@@ -1,5 +1,6 @@
 aiofiles
 aiosqlite
+dacite
 debugpy
 fastapi
 ffmpeg-python

@@ -59,13 +59,13 @@ class Manager:
         self._avail_models: Dict[str, str] = {}  # {basename (no .onnx): full_path}
         self._pinned_models: Dict[str, InferenceModel] = {}  # {model_name: PinnedModel}
 
-    async def list_models(self, glob_pattern: Optional[str] = "*.onnx") -> List[str]:
+    async def list_models(self, pattern: Optional[str] = "*.onnx") -> List[str]:
         """
         List all files in the models directory, optionally filtered by a glob pattern.
         Updates the available models cache.
 
         Args:
-            glob_pattern (Optional[str]): A glob pattern to filter files (default: "*.onnx").
+            pattern (Optional[str]): A glob pattern to filter files (default: "*.onnx").
 
         Returns:
             List[str]: A list of filenames in the models directory.
@@ -75,7 +75,7 @@ class Manager:
             return []
 
         try:
-            search_path = os.path.join(self._models_path, glob_pattern)
+            search_path = os.path.join(self._models_path, pattern)
             model_files = [f for f in glob(search_path) if os.path.isfile(f)]
 
             # Update the available models cache

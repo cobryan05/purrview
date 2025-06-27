@@ -14,6 +14,7 @@ import {
   clearAnnotations,
   saveAnnotations,
   deleteSelected,
+  reloadImage,
 } from './io.js';
 
 // Initialize stage and set default tool
@@ -22,6 +23,7 @@ setTool('select');
 
 // Expose functions globally for HTML onclick handlers
 window.setTool = setTool;
+window.reloadImage = reloadImage;
 window.clearAnnotations = clearAnnotations;
 window.saveAnnotations = saveAnnotations;
 window.deleteSelected = deleteSelected;

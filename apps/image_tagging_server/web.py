@@ -5,8 +5,9 @@ import os
 import sys
 import mimetypes
 
+from dataclasses import asdict
 from contextlib import asynccontextmanager
-from typing import List
+from typing import List, Optional
 
 from fastapi import Body, FastAPI, File, Form, Query, Request, UploadFile, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse, Response
@@ -14,7 +15,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 
-from .manager import Manager
+from .manager import Manager, ImageMetadata, BoundingBoxMetadata
 
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger(__file__)
@@ -77,11 +78,11 @@ class WebApp:
             """Render the home page"""
             return self._templates.TemplateResponse("index.html", {"request": request})
 
-        @self._app.get("/api/list-files", response_class=JSONResponse, tags=[WebApp.MODELS_API_TAG_NAME])
+        @self._app.get("/api/images/list", response_class=JSONResponse, tags=[WebApp.MODELS_API_TAG_NAME])
         async def list_files(
             request: Request,
             rel_path: str = Query("/", alias="path"),
-            glob_pattern: str = Query("*", alias="pattern"),
+            pattern: str = Query("*", alias="pattern"),
             recursive: bool = Query(False, alias="recursive"),
         ) -> JSONResponse:
             """
@@ -97,7 +98,7 @@ class WebApp:
             """
             try:
                 file_list: List[Manager.FileEntry] = await self._manager.list_files(
-                    rel_path=rel_path, glob_pattern=glob_pattern, recursive=recursive
+                    rel_path=rel_path, patterns=pattern, recursive=recursive
                 )
                 response_data = {"status": "success", "files": [entry.__dict__ for entry in file_list]}
                 return JSONResponse(content=response_data)
@@ -108,10 +109,10 @@ class WebApp:
                     status_code=500,
                 )
 
-        @self._app.get("/api/get-file", tags=[WebApp.MODELS_API_TAG_NAME])
+        @self._app.get("/api/images/get", tags=[WebApp.MODELS_API_TAG_NAME])
         async def get_file(
             rel_path: str = Query(..., alias="path", description="Relative path to the file under root"),
-            raw: bool = Query(False, description="If true, return as raw file response instead of base64 JSON")
+            raw: bool = Query(False, description="If true, return as raw file response instead of base64 JSON"),
         ):
             """
             Retrieve a file either as base64 JSON (default) or as a browser-friendly image file (raw=true).
@@ -129,10 +130,7 @@ class WebApp:
                     if raw:
                         raise HTTPException(status_code=404, detail="File not found")
                     else:
-                        return JSONResponse({
-                            "status": "failure",
-                            "message": f"File {rel_path} not found"
-                        })
+                        return JSONResponse({"status": "failure", "message": f"File {rel_path} not found"})
 
                 file_obj, filename = result
                 content = await file_obj.read()
@@ -148,13 +146,17 @@ class WebApp:
                         headers={"Content-Disposition": f'inline; filename="{filename}"'},
                     )
 
+                metadata: ImageMetadata = await self._manager.get_image_metadata(rel_path)
                 encoded = base64.b64encode(content).decode("utf-8")
-                return JSONResponse({
-                    "status": "success",
-                    "filename": filename,
-                    "mime_type": mime_type,
-                    "content": encoded,
-                })
+                return JSONResponse(
+                    {
+                        "status": "success",
+                        "filename": filename,
+                        "mime_type": mime_type,
+                        "content": encoded,
+                        **asdict(metadata),
+                    }
+                )
 
             except HTTPException:
                 raise
@@ -165,7 +167,7 @@ class WebApp:
                     content={"status": "failure", "message": str(e)},
                 )
 
-        @self._app.get("/api/list-models", response_class=JSONResponse, tags=[WebApp.IMAGES_API_TAG_NAME])
+        @self._app.get("/api/models/list", response_class=JSONResponse, tags=[WebApp.IMAGES_API_TAG_NAME])
         async def list_models_api(request: Request) -> JSONResponse:
             """
             API endpoint to return a list of models.
@@ -191,13 +193,71 @@ class WebApp:
             name: str
             color: str
 
-        @self._app.post("/api/add-label", response_class=JSONResponse, tags=[WebApp.MODELS_API_TAG_NAME])
+        class BoundingBoxInput(BaseModel):
+            id: Optional[int]
+            x: float
+            y: float
+            width: float
+            height: float
+            labels: Optional[List[int]] = []  # List of label IDs
+            extra: Optional[dict] = {}
+
+        class UpdateMetadataRequest(BaseModel):
+            image_path: str
+            boxes: List[BoundingBoxInput]
+            extra: Optional[dict] = {}
+
+        @self._app.get("/api/images/metadata/get", response_class=JSONResponse, tags=[WebApp.IMAGES_API_TAG_NAME])
+        async def get_metadata(rel_path: str = Query("/", alias="path")):
+            metadata: Optional[ImageMetadata] = await self._manager.get_image_metadata(rel_path)
+            if metadata is None:
+                raise HTTPException(status_code=404, detail="Image not found")
+            # convert to dict for JSONResponse
+            return JSONResponse(content=asdict(metadata))
+
+        @self._app.post("/api/images/metadata/update", response_class=JSONResponse, tags=[WebApp.IMAGES_API_TAG_NAME])
+        async def update_metadata(req: UpdateMetadataRequest) -> JSONResponse:
+            image_path = req.image_path
+            metadata = await self._manager.get_image_metadata(image_path)
+            if metadata is None:
+                raise HTTPException(status_code=404, detail="Image not found")
+
+            # Build new bounding box list from input
+            new_boxes = []
+            for b in req.boxes:
+                # Resolve label info for each label ID
+                labels = []
+                for label_id in b.labels or []:
+                    # Here, you might want to fetch label info by ID from DB or cache
+                    # Let's assume manager._db_client has get_label_by_id
+                    label_row = await self._manager._db_client.get_label_by_id(label_id)
+                    if label_row:
+                        labels.append(Label(id=label_row["id"], name=label_row["name"], color=label_row["color"]))
+                new_boxes.append(
+                    BoundingBoxMetadata(
+                        id=b.id,
+                        x=b.x,
+                        y=b.y,
+                        width=b.width,
+                        height=b.height,
+                        labels=labels,
+                        extra=b.extra or {},
+                    )
+                )
+
+            metadata.boxes = new_boxes
+            metadata.extra = req.extra or {}
+
+            await self._manager.update_image_metadata(image_path, metadata)
+            return JSONResponse(content={"status": "success"})
+
+        @self._app.post("/api/labels/add", response_class=JSONResponse, tags=[WebApp.MODELS_API_TAG_NAME])
         async def add_label_api(request: AddLabelRequest) -> JSONResponse:
             """
             API endpoint to add a new label.
             """
             try:
-                label = await self._manager.add_label(request.name, request.color)
+                label = await self._manager.create_new_label(request.name, request.color)
                 return JSONResponse(content={"status": "success", "label": label.__dict__})
             except Exception as e:
                 logger.exception(e)
@@ -206,7 +266,7 @@ class WebApp:
                     status_code=500,
                 )
 
-        @self._app.get("/api/list-labels", response_class=JSONResponse, tags=[WebApp.MODELS_API_TAG_NAME])
+        @self._app.get("/api/labels/list", response_class=JSONResponse, tags=[WebApp.MODELS_API_TAG_NAME])
         async def list_labels_api(request: Request) -> JSONResponse:
             """
             API endpoint to return a list of labels with metadata.

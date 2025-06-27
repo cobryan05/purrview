@@ -1,4 +1,5 @@
 import argparse
+import os
 from pathlib import Path
 
 import inference_client
@@ -14,23 +15,14 @@ from .web import WebApp
 APP_NAME = "Image Tagging Server"
 APP_PORT = 8002
 
-def main(args: argparse.Namespace):
-    inference_client_conf = inference_client.Configuration(f"http://localhost:{inference_port}")
-    api_client = inference_client.ApiClient(inference_client_conf)
-    db_client = DbClient("/storage/db/db.sqlite")
-    manager = Manager(api_client=api_client, db_client=db_client, files_root=args.files_root)
-    web_app = WebApp(app_name=APP_NAME, manager=manager)
+FILES_ROOT = Path(os.environ.get("FILES_ROOT", "/app/image_datasets"))
 
-    app = web_app.app()
-    uvicorn.run(app, host="0.0.0.0", port=APP_PORT)
+inference_client_conf = inference_client.Configuration(f"http://localhost:{inference_port}")
+api_client = inference_client.ApiClient(inference_client_conf)
+db_client = DbClient("/storage/db/db.sqlite")
+manager = Manager(api_client=api_client, db_client=db_client, files_root=FILES_ROOT)
+web_app = WebApp(app_name=APP_NAME, manager=manager)
 
+app = web_app.app()
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Run the Image Tagging Server")
-    parser.add_argument(
-        "--files-root",
-        type=Path,
-        default=Path("/app/image_datasets"),
-        help="Root path to image files",
-    )
-    args = parser.parse_args()
-    main(args)
+    uvicorn.run(app, host="0.0.0.0", port=APP_PORT)

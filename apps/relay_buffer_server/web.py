@@ -88,7 +88,7 @@ class WebApp:
             )
 
         @self._app.post(
-            "/api/create-stream",
+            "/api/streams/create",
             response_class=JSONResponse,
             operation_id="createStream",
             tags=[WebApp.STREAM_API_TAG_NAME],
@@ -155,7 +155,7 @@ class WebApp:
             )
 
         @self._app.post(
-            "/api/destroy-stream",
+            "/api/streams/destroy",
             response_class=JSONResponse,
             operation_id="destroyStream",
             tags=[WebApp.STREAM_API_TAG_NAME],
@@ -187,7 +187,7 @@ class WebApp:
                 )
 
         @self._app.get(
-            "/api/list-config",
+            "/api/config/list",
             response_class=JSONResponse,
             operation_id="listConfig",
             tags=[WebApp.CONFIG_API_TAG_NAME],
@@ -222,7 +222,7 @@ class WebApp:
                 )
 
         @self._app.get(
-            "/api/list-streams",
+            "/api/streams/list",
             response_class=JSONResponse,
             operation_id="listStreams",
             tags=[WebApp.STREAM_API_TAG_NAME],

@@ -36,7 +36,7 @@ document.addEventListener('DOMContentLoaded', () => {
       const name = document.getElementById('new-label-name').value.trim();
       const color = document.getElementById('new-label-color').value;
       if (!name) return;
-      const res = await fetch('/api/add-label', {
+      const res = await fetch('/api/labels/add', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name, color })
@@ -55,7 +55,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
 async function refreshModelList() {
   try {
-    const res = await fetch('/api/list-models');
+    const res = await fetch('/api/models/list');
     const data = await res.json();
     const modelListContainer = document.getElementById('model-list');
 
@@ -90,7 +90,7 @@ async function refreshModelList() {
 
 async function refreshLabelList() {
   try {
-    const res = await fetch('/api/list-labels');
+    const res = await fetch('api/labels/list');
     const data = await res.json();
     const labelListContainer = document.getElementById('labels-list');
     if (!labelListContainer) {
@@ -112,7 +112,7 @@ async function refreshLabelList() {
     labelListContainer.querySelectorAll('.label-remove-btn').forEach(btn => {
       btn.onclick = async () => {
         const uuid = btn.getAttribute('data-uuid');
-        await fetch(`/api/labels/${uuid}`, { method: 'DELETE' });
+        await fetch(`/api/labels/delete ${uuid}`, { method: 'DELETE' });
         refreshLabelList();
       };
     });
@@ -239,7 +239,7 @@ async function loadFileBrowser(path) {
   browser.innerHTML = 'Loading...';
 
   try {
-    const res = await fetch(`/api/list-files?path=${encodeURIComponent(path)}`);
+    const res = await fetch(`/api/images/list?path=${encodeURIComponent(path)}`);
     if (!res.ok) throw new Error('Failed to fetch file list');
     const data = await res.json();
 

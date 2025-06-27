@@ -2,6 +2,15 @@ import { createBoundingBox } from './drawing.js';
 import { getCurrentImageName, getLayer, getStage, getTransformer, setCurrentImageName } from './state.js';
 import { debug, warn, error, notify } from './utils.js';
 
+export async function reloadImage() {
+  const imageName = getCurrentImageName();
+  if (!imageName) {
+    notify('No image loaded to reload');
+    return;
+  }
+  await loadImageAndMetadata(imageName);
+}
+
 export async function loadImageAndMetadata(imageName) {
   debug('loadImageAndMetadata called with imageName:', imageName);
   if (!imageName) {
@@ -14,8 +23,8 @@ export async function loadImageAndMetadata(imageName) {
     const layer = getLayer();
     setCurrentImageName(imageName);
 
-    // === Load image blob via API as base64 ===
-    const imageRes = await fetch(`/api/get-file?path=${encodeURIComponent(imageName)}`);
+    // === Load image blob + metadata via unified API ===
+    const imageRes = await fetch(`/api/images/get?path=${encodeURIComponent(imageName)}`);
     if (!imageRes.ok) throw new Error(`Failed to load image via API for ${imageName}`);
 
     const imageJson = await imageRes.json();
@@ -23,8 +32,9 @@ export async function loadImageAndMetadata(imageName) {
       throw new Error(`Invalid image API response for ${imageName}`);
     }
 
+    // === Decode image ===
     const img = new Image();
-    img.src = `data:${imageJson.content_type};base64,${imageJson.content}`;
+    img.src = `data:${imageJson.mime_type};base64,${imageJson.content}`;
     await new Promise((resolve, reject) => {
       img.onload = resolve;
       img.onerror = () =>
@@ -32,11 +42,8 @@ export async function loadImageAndMetadata(imageName) {
     });
 
     transformer.nodes([]);
-
     layer.getChildren().forEach(child => {
-      if (child !== transformer) {
-        child.destroy();
-      }
+      if (child !== transformer) child.destroy();
     });
 
     const bg = new Konva.Image({
@@ -51,42 +58,26 @@ export async function loadImageAndMetadata(imageName) {
     layer.add(bg);
     layer.moveToBottom();
 
-    // === Load metadata JSON via API ===
-    const metaPath = `${imageName}.json`;
-    let metadata = { annotations: [] };
+    // === Load metadata from imageJson.boxes ===
+    for (const box of imageJson.boxes || []) {
+      const absX = box.x * img.width;
+      const absY = box.y * img.height;
+      const absWidth = box.width * img.width;
+      const absHeight = box.height * img.height;
 
-    const metaRes = await fetch(`/api/get-file?path=${encodeURIComponent(metaPath)}`);
-    if (metaRes.ok) {
-      const metaJson = await metaRes.json();
-      if (metaJson.status === 'success' && metaJson.content) {
-        metadata = JSON.parse(atob(metaJson.content));
-      } else {
-        debug(`Metadata for ${metaPath} is empty or missing`);
-      }
-    } else {
-      debug(`No metadata file for ${metaPath}, starting with empty annotations.`);
-    }
-
-    for (const ann of metadata.annotations) {
-      let shape = null;
-
-      switch (ann.type) {
-        case 'rect':
-          shape = createBoundingBox(ann.x, ann.y, {
-            width: ann.width,
-            height: ann.height,
-            metadata: ann.metadata,
-          });
-          break;
-        default:
-          warn('Unknown annotation type:', ann.type);
-          continue;
-      }
+      const shape = createBoundingBox(absX, absY, {
+        width: absWidth,
+        height: absHeight,
+        metadata: {
+          id: box.id,
+          labels: box.labels?.map(l => l.id) ?? [],
+          extra: box.extra ?? {}
+        }
+      });
 
       shape.name('annotation');
       layer.add(shape);
     }
-
     // === Zoom to fit the image with padding ===
     const stage = getStage();
     const container = stage.container();
@@ -128,41 +119,54 @@ export function clearAnnotations() {
 }
 
 export async function saveAnnotations() {
-  let layer = getLayer();
-  const imageName = getCurrentImageName();
-  if (!imageName) {
+  const layer = getLayer();
+  const imagePath = getCurrentImageName();
+  const image = layer.findOne('.background')?.image();
+  if (!imagePath || !image) {
     toast('No image loaded to save annotations!');
     return;
   }
 
+  const imgWidth = image.width;
+  const imgHeight = image.height;
+
   try {
-    const shapes = layer.getChildren();
-    const data = shapes.filter(shape => shape.name() === 'annotation')
+    const boxes = layer.getChildren()
+      .filter(shape => shape.name() === 'annotation')
       .map(group => {
         const rect = group.findOne('.box');
         if (!rect) return null;
-        const { uuid, ...metadataWithoutUuid } =
-          group.metadata || {};
+
+        const meta = group.metadata || {};
+        const boxId = meta.id ?? null;
+        const labels = meta.labels ?? [];
+
         return {
-          type: 'rect',
-          x: group.x(),
-          y: group.y(),
-          width: rect.width(),
-          height: rect.height(),
-          metadata: metadataWithoutUuid
+          id: boxId,
+          x: group.x() / imgWidth,
+          y: group.y() / imgHeight,
+          width: rect.width() / imgWidth,
+          height: rect.height() / imgHeight,
+          labels: labels,  // List of label IDs
+          extra: meta.extra || {}  // Arbitrary key-value pairs
         };
       })
       .filter(Boolean);
 
-    const res = await fetch('/save-annotations', {
+    const payload = {
+      image_path: imagePath,
+      boxes: boxes,
+      extra: {}  // optional image-level metadata (e.g., tags, reviewer, etc.)
+    };
+
+    const res = await fetch('/api/images/metadata/update', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ image: imageName, annotations: data }),
+      body: JSON.stringify(payload)
     });
 
     if (!res.ok) throw new Error(`Save failed with status ${res.status}`);
-
-    notify(`Annotations saved successfully for image ${imageName}`);
+    notify(`Annotations saved successfully for image ${imagePath}`);
   } catch (err) {
     error('Failed to save annotations:', err);
   }

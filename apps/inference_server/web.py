@@ -122,7 +122,7 @@ class WebApp:
             )
 
         @self._app.get(
-            "/api/list-models",
+            "/api/models/list",
             response_class=JSONResponse,
             tags=[WebApp.MODELS_API_TAG_NAME],
             operation_id="list_models_api",
@@ -177,7 +177,7 @@ class WebApp:
                 return self._error_response(request, f"Internal server error: {str(e)}")
 
         @self._app.post(
-            "/api/pin-model",
+            "/api/models/pin",
             response_class=JSONResponse,
             tags=[WebApp.MODELS_API_TAG_NAME],
             operation_id="pin_model_api",
