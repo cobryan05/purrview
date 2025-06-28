@@ -97,23 +97,118 @@ async function refreshLabelList() {
       console.error("labelListContainer is null");
       return;
     }
+
     labelListContainer.innerHTML = '';
+
     data.labels.forEach(label => {
       const row = document.createElement('div');
       row.className = 'label-row';
-      row.innerHTML = `
-        <span class="label-color" style="background:${label.color}"></span>
-        <span class="label-name">${label.name}</span>
-        <button class="label-remove-btn" title="Delete label" data-uuid="${label.uuid}">−</button>
-      `;
+      row.dataset.labelId = label.id;
+
+      const colorSwatch = document.createElement('span');
+      colorSwatch.className = 'label-color';
+      colorSwatch.style.background = label.color;
+
+      const nameSpan = document.createElement('span');
+      nameSpan.className = 'label-name';
+      nameSpan.textContent = label.name;
+
+      const editBtn = document.createElement('button');
+      editBtn.className = 'label-edit-btn';
+      editBtn.title = 'Edit label';
+      editBtn.textContent = '✏️';
+      editBtn.className = 'emoji-button';
+
+      const deleteBtn = document.createElement('button');
+      deleteBtn.className = 'label-remove-btn';
+      deleteBtn.title = 'Delete label';
+      deleteBtn.textContent = '🗑️';
+      deleteBtn.className = 'emoji-button';
+
+      row.appendChild(editBtn);
+      row.appendChild(deleteBtn);
+      row.appendChild(colorSwatch);
+      row.appendChild(nameSpan);
+
       labelListContainer.appendChild(row);
-    });
-    // Attach remove handlers (if you implement deletion)
-    labelListContainer.querySelectorAll('.label-remove-btn').forEach(btn => {
-      btn.onclick = async () => {
-        const uuid = btn.getAttribute('data-uuid');
-        await fetch(`/api/labels/delete ${uuid}`, { method: 'DELETE' });
-        refreshLabelList();
+
+      // DELETE handler with confirmation
+      deleteBtn.onclick = async () => {
+        const confirmed = window.confirm(`Are you sure you want to delete label "${label.name}"?`);
+        if (!confirmed) return;
+        const response = await fetch('/api/labels/delete', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ label_id: label.id })
+        });
+        if (response.ok) {
+          refreshLabelList();
+        } else {
+          alert('Failed to delete label');
+        }
+      };
+
+      // EDIT handler
+      editBtn.onclick = () => {
+        row.innerHTML = ''; // clear row
+
+        // Color input
+        const colorInput = document.createElement('input');
+        colorInput.type = 'color';
+        colorInput.value = label.color;
+        colorInput.className = 'label-color';
+        colorInput.style.width = '3em';  // Shrink the color picker
+        colorInput.style.height = '3em';  // Shrink the color picker
+
+        // Text input
+        const nameInput = document.createElement('input');
+        nameInput.type = 'text';
+        nameInput.value = label.name;  // ✅ prefill value
+        nameInput.className = 'label-name';
+        nameInput.style.flex = '1';
+        nameInput.style.minWidth = '5em'; // Make it visible
+        nameInput.style.height = '2em';
+        nameInput.style.marginRight = '0.5em';
+
+        // Save / Discard
+        const saveBtn = document.createElement('button');
+        saveBtn.title = 'Save';
+        saveBtn.textContent = '✅';
+        saveBtn.className = 'emoji-button';
+
+        const discardBtn = document.createElement('button');
+        discardBtn.title = 'Discard';
+        discardBtn.textContent = '❌';
+        discardBtn.className = 'emoji-button';
+
+        row.appendChild(saveBtn);
+        row.appendChild(discardBtn);
+        row.appendChild(colorInput);
+        row.appendChild(nameInput);
+
+        saveBtn.onclick = async () => {
+          const updatedLabel = {
+            label_id: label.id,
+            name: nameInput.value.trim(),
+            color: colorInput.value
+          };
+
+          const response = await fetch('/api/labels/update', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(updatedLabel)
+          });
+
+          if (response.ok) {
+            refreshLabelList();
+          } else {
+            alert('Failed to update label');
+          }
+        };
+
+        discardBtn.onclick = () => {
+          refreshLabelList();
+        };
       };
     });
   } catch (err) {

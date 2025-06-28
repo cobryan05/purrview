@@ -43,12 +43,13 @@ class Manager:
     POLLING_INTERVAL: float = 5.0  # Interval in seconds for periodic tasks
     PIN_DURATION: float = 30 * 60  # Timeout before unloading model
 
-    def __init__(self, api_client: ApiClient, db_client: DbClient, files_root: Path):
+    def __init__(self, api_client: ApiClient, db_client: DbClient, files_root: Path, labels_json: Path):
         """Initialize the Manager"""
         self._api_client: ApiClient = api_client
         self._db_client: DbClient = db_client
         self._task: Optional[asyncio.Task] = None  # Background task for periodic operations
         self._files_root: Path = files_root
+        self._labels_json: Path = labels_json
         self._model_pins: Dict[str, str] = {}
 
     @dataclass
@@ -172,7 +173,19 @@ class Manager:
         Returns:
             LabelMetaData: Label metadata added to database
         """
-        return await self._db_client.add_label(name, color)
+        ret = await self._db_client.add_label(name, color)
+        await self._db_client.save_labels_metadata_db_to_json(str(self._labels_json))
+        return ret
+
+    async def delete_label(self, label_id: int) -> None:
+        """
+        Adds a new label to the database
+
+        Returns:
+            LabelMetaData: Label metadata added to database
+        """
+        await self._db_client.delete_label(label_id)
+        await self._db_client.save_labels_metadata_db_to_json(str(self._labels_json))
 
     async def list_labels(self) -> List[LabelMetaData]:
         """
@@ -182,6 +195,18 @@ class Manager:
             List[LabelMetaData]: List of label metadata (id, name)
         """
         return await self._db_client.list_labels()
+
+    async def update_label(self, label_id: int, name: Optional[str] = None, color: Optional[str] = None) -> None:
+        """
+        Update a label's name and/or color.
+
+        Args:
+            label_id (int): ID of the label to update.
+            name (Optional[str]): New name for the label.
+            color (Optional[str]): New color for the label.
+        """
+        await self._db_client.update_label(label_id=label_id, name=name, color=color)
+        await self._db_client.save_labels_metadata_db_to_json(str(self._labels_json))
 
     async def get_image_metadata(self, image_rel_path: str) -> Optional[ImageMetadata]:
         """
@@ -200,7 +225,7 @@ class Manager:
         image_id = await self._db_client.get_image_id_by_filename(img_path)
         if image_id is None:
             image_id = await self._db_client.add_image(img_path)
-            await self._db_client.read_json_into_db_entry(img_path)
+            await self._db_client.read_image_metadata_json_to_db(img_path)
         return await self._db_client.read_metadata(image_id)
 
     async def update_image_metadata(self, image_rel_path: str, metadata: ImageMetadata) -> None:
@@ -218,7 +243,7 @@ class Manager:
         img_path = str(safe_path)
         image_id = await self._db_client.add_image(img_path)
         await self._db_client.write_metadata(image_id, metadata)
-        await self._db_client.save_db_entry_to_json(img_path)
+        await self._db_client.save_image_metadata_db_to_json(img_path)
 
     async def create_box(
         self,
@@ -454,7 +479,9 @@ class Manager:
     async def _init(self):
         """Initialization that should run on event loop"""
         try:
-            await self._db_client.init_db()
+            if not self._db_client.db_exists():
+                await self._db_client.init_db()
+                await self._db_client.read_labels_metadata_json_to_db(str(self._labels_json))
         except Exception as e:
             logger.exception(e)
             raise

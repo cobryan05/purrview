@@ -58,6 +58,10 @@ class DbClient:
         """
         self._db_path = db_path
 
+    def db_exists(self) -> bool:
+        """Checks if the database file exists"""
+        return os.path.exists(self._db_path)
+
     async def init_db(self) -> None:
         """
         Initiaize the database schema if it does not exist.
@@ -448,7 +452,60 @@ class DbClient:
 
                 await db.commit()
 
-    async def save_db_entry_to_json(self, abs_path: str) -> None:
+    async def save_labels_metadata_db_to_json(self, json_path: Optional[str] = None) -> None:
+        """
+        Save all labels from the database into a JSON file.
+
+        Args:
+            json_path (str): Optional override path. Default: <db_dir>/labels.json
+        """
+        json_path = json_path or os.path.join(os.path.dirname(self._db_path), "labels.json")
+        labels = await self.list_labels()
+        data = [asdict(label) for label in labels]
+
+        async with aiofiles.open(json_path, "w", encoding="utf-8") as f:
+            await f.write(json.dumps(data, indent=2))
+
+    async def read_labels_metadata_json_to_db(
+        self, json_path: Optional[str] = None, overwrite_existing: bool = False
+    ) -> None:
+        """
+        Load labels from a JSON file and insert into database if they don't exist.
+
+        Args:
+            json_path (str): Optional override path. Default: <db_dir>/labels.json
+            overwrite_existing (bool): If True, delete existing labels first.
+        """
+        json_path = json_path or os.path.join(os.path.dirname(self._db_path), "labels.json")
+
+        try:
+            async with aiofiles.open(json_path, "r", encoding="utf-8") as f:
+                raw = await f.read()
+                label_list = json.loads(raw)
+
+            async with aiosqlite.connect(self._db_path) as db:
+                if overwrite_existing:
+                    await db.execute("DELETE FROM bbox_labels")
+                    await db.execute("DELETE FROM labels")
+
+                for label in label_list:
+                    # Insert or replace based on unique name
+                    await db.execute(
+                        """
+                        INSERT OR REPLACE INTO labels (id, name, color, uuid)
+                        VALUES (?, ?, ?, ?)
+                        """,
+                        (label["id"], label["name"], label["color"], label.get("uuid") or str(uuid4())),
+                    )
+
+                await db.commit()
+
+        except FileNotFoundError:
+            logger.warning(f"Label JSON file not found: {json_path}")
+        except Exception as e:
+            logger.error(f"Failed to load labels from JSON: {e}")
+
+    async def save_image_metadata_db_to_json(self, abs_path: str) -> None:
         """
         Sync metadata from the database into the image's .json side file.
 
@@ -473,7 +530,7 @@ class DbClient:
         async with aiofiles.open(json_path, "w", encoding="utf-8") as f:
             await f.write(json.dumps(asdict(metadata), indent=2))
 
-    async def read_json_into_db_entry(self, abs_path: str) -> Optional[ImageMetadata]:
+    async def read_image_metadata_json_to_db(self, abs_path: str) -> Optional[ImageMetadata]:
         """
         Load metadata from an image's .json side file and update the database.
 

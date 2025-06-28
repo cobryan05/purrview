@@ -29,6 +29,7 @@ class WebApp:
     ERROR_KEY = "error"
     RESULT_KEY = "results"
 
+    LABELS_API_TAG_NAME = "labels"
     MODELS_API_TAG_NAME = "models"
     INFERENCE_API_TAG_NAME = "inference"
     IMAGES_API_TAG_NAME = "images"
@@ -193,6 +194,9 @@ class WebApp:
             name: str
             color: str
 
+        class DeleteLabelRequest(BaseModel):
+            label_id: int
+
         class BoundingBoxInput(BaseModel):
             id: Optional[int]
             x: float
@@ -251,7 +255,7 @@ class WebApp:
             await self._manager.update_image_metadata(image_path, metadata)
             return JSONResponse(content={"status": "success"})
 
-        @self._app.post("/api/labels/add", response_class=JSONResponse, tags=[WebApp.MODELS_API_TAG_NAME])
+        @self._app.post("/api/labels/add", response_class=JSONResponse, tags=[WebApp.LABELS_API_TAG_NAME])
         async def add_label_api(request: AddLabelRequest) -> JSONResponse:
             """
             API endpoint to add a new label.
@@ -266,7 +270,22 @@ class WebApp:
                     status_code=500,
                 )
 
-        @self._app.get("/api/labels/list", response_class=JSONResponse, tags=[WebApp.MODELS_API_TAG_NAME])
+        @self._app.post("/api/labels/delete", response_class=JSONResponse, tags=[WebApp.LABELS_API_TAG_NAME])
+        async def delete_label_api(request: DeleteLabelRequest) -> JSONResponse:
+            """
+            API endpoint to add a new label.
+            """
+            try:
+                await self._manager.delete_label(request.label_id)
+                return JSONResponse(content={"status": "success"})
+            except Exception as e:
+                logger.exception(e)
+                return JSONResponse(
+                    content={"status": "failure", "message": str(e)},
+                    status_code=500,
+                )
+
+        @self._app.get("/api/labels/list", response_class=JSONResponse, tags=[WebApp.LABELS_API_TAG_NAME])
         async def list_labels_api(request: Request) -> JSONResponse:
             """
             API endpoint to return a list of labels with metadata.
@@ -283,6 +302,26 @@ class WebApp:
                 labels = [label.__dict__ for label in label_list]
                 response_data = {"status": "success", "labels": labels}
                 return JSONResponse(content=response_data)
+            except Exception as e:
+                logger.exception(e)
+                return JSONResponse(
+                    content={"status": "failure", "message": str(e)},
+                    status_code=500,
+                )
+
+        class UpdateLabelRequest(BaseModel):
+            label_id: int
+            name: Optional[str] = None
+            color: Optional[str] = None
+
+        @self._app.post("/api/labels/update", response_class=JSONResponse, tags=[WebApp.LABELS_API_TAG_NAME])
+        async def update_label_api(request: UpdateLabelRequest) -> JSONResponse:
+            """
+            API endpoint to update an existing label's name and/or color.
+            """
+            try:
+                await self._manager.update_label(label_id=request.label_id, name=request.name, color=request.color)
+                return JSONResponse(content={"status": "success"})
             except Exception as e:
                 logger.exception(e)
                 return JSONResponse(
