@@ -15,9 +15,9 @@ from .web import WebApp
 APP_NAME = "Image Tagging Server"
 APP_PORT = 8002
 
-DB_PATH = Path(os.environ.get("DB_PATH", "/storage/db/db.sqlite"))
+DB_PATH = Path(os.environ.get("DB_PATH", "/data/db/db.sqlite"))
 FILES_ROOT = Path(os.environ.get("FILES_ROOT", "/app/image_datasets"))
-LABEL_JSON_PATH = Path(os.environ.get("LABELS_JSON", "/storage/db/labels.json"))
+LABEL_JSON_PATH = Path(os.environ.get("LABELS_JSON", "/data/db/labels.json"))
 
 inference_client_conf = inference_client.Configuration(f"http://localhost:{inference_port}")
 api_client = inference_client.ApiClient(inference_client_conf)
