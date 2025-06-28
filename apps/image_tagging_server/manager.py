@@ -28,21 +28,13 @@ from apps.helpers.db.db_client import (
     BoundingBoxMetadata,
     DbClient,
     ImageMetadata,
-    Label,
+    LabelMetaData,
 )
 from apps.helpers.fileUtils import get_safe_path
 
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger(__file__)
 logger.setLevel(logging.DEBUG)
-
-
-@dataclass
-class LabelInfo:
-    id: int
-    name: str
-    color: str
-    uuid: str
 
 
 class Manager:
@@ -173,25 +165,23 @@ class Manager:
         response: Dict[str, Any] = await asyncio.to_thread(api.list_models_api)
         return response.get("models", [])
 
-    async def create_new_label(self, name: str, color: str) -> LabelInfo:
+    async def create_new_label(self, name: str, color: str) -> LabelMetaData:
         """
         Adds a new label to the database
 
         Returns:
-            LabelInfo: Label metadata added to database
+            LabelMetaData: Label metadata added to database
         """
-        row = await self._db_client.add_label(name, color)
-        return LabelInfo(id=row["id"], name=row["name"], color=row["color"], uuid=row.get("uuid", ""))
+        return await self._db_client.add_label(name, color)
 
-    async def list_labels(self) -> List[LabelInfo]:
+    async def list_labels(self) -> List[LabelMetaData]:
         """
         List all labels from the database.
 
         Returns:
-            List[LabelInfo]: List of label metadata (id, name)
+            List[LabelMetaData]: List of label metadata (id, name)
         """
-        rows = await self._db_client.list_labels()
-        return [LabelInfo(id=row["id"], name=row["name"], color=row["color"], uuid=row.get("uuid", "")) for row in rows]
+        return await self._db_client.list_labels()
 
     async def get_image_metadata(self, image_rel_path: str) -> Optional[ImageMetadata]:
         """
@@ -204,19 +194,13 @@ class Manager:
             Optional[ImageMetadata]: Full metadata object or None.
         """
         safe_path = get_safe_path(self._files_root, image_rel_path)
-        if not safe_path or not os.path.exists(safe_path):
+        if not safe_path or not safe_path.exists():
             return None
-
-        image_id = await self._db_client.get_image_id_by_filename(str(safe_path))
-        # TODO: Check if json newer?
+        img_path = str(safe_path)
+        image_id = await self._db_client.get_image_id_by_filename(img_path)
         if image_id is None:
-            image_id = await self._db_client.add_image(str(safe_path))
-            # Wasn't in DB so read from JSON
-            if image_id is not None:
-                await self.sync_from_json(str(safe_path))
-
-        if image_id is None:
-            return None
+            image_id = await self._db_client.add_image(img_path)
+            await self._db_client.read_json_into_db_entry(img_path)
         return await self._db_client.read_metadata(image_id)
 
     async def update_image_metadata(self, image_rel_path: str, metadata: ImageMetadata) -> None:
@@ -228,11 +212,13 @@ class Manager:
             metadata (ImageMetadata): New metadata to write.
         """
         safe_path = get_safe_path(self._files_root, image_rel_path)
-        image_id = await self._db_client.add_image(str(safe_path))
-        if image_id is None:
-            raise ValueError(f"Image '{safe_path}' not found")
+        if safe_path is None or not safe_path.exists():
+            logger.warning(f"Path not found or inaccessible: {image_rel_path}")
+            return
+        img_path = str(safe_path)
+        image_id = await self._db_client.add_image(img_path)
         await self._db_client.write_metadata(image_id, metadata)
-        await self.flush_to_json(image_rel_path)
+        await self._db_client.save_db_entry_to_json(img_path)
 
     async def create_box(
         self,
@@ -241,7 +227,7 @@ class Manager:
         y: float,
         width: float,
         height: float,
-        labels: List[Label] = None,
+        labels: List[LabelMetaData] = None,
         extra: dict = None,
     ) -> None:
         """
@@ -283,7 +269,7 @@ class Manager:
         y: float,
         width: float,
         height: float,
-        labels: List[Label] = None,
+        labels: List[LabelMetaData] = None,
         extra: dict = None,
     ) -> None:
         """
@@ -339,7 +325,7 @@ class Manager:
         self,
         image_rel_path: str,
         box_id: int,
-        label: Label,
+        label: LabelMetaData,
     ) -> None:
         """
         Add a label to a bounding box in the image metadata.
@@ -390,59 +376,6 @@ class Manager:
 
         await self.update_image_metadata(image_rel_path, image_meta)
 
-    async def flush_to_json(self, image_rel_path: str) -> None:
-        """
-        Sync metadata from the database into the image's .json side file.
-
-        Args:
-            image_rel_path (str): Relative path to the image under the file root.
-        """
-        try:
-            safe_path = get_safe_path(self._files_root, image_rel_path)
-            metadata: ImageMetadata = await self.get_image_metadata(image_rel_path)
-            json_path = safe_path.with_suffix(".json")
-
-            os.makedirs(json_path.parent, exist_ok=True)
-
-            async with aiofiles.open(json_path, "w", encoding="utf-8") as f:
-                await f.write(json.dumps(asdict(metadata), indent=2))
-
-        except Exception as e:
-            logger.exception(f"Failed to flush metadata to JSON for {image_rel_path}: {e}")
-
-    async def sync_from_json(self, image_rel_path: str) -> None:
-        """
-        Load metadata from an image's .json side file and update the database.
-
-        Args:
-            image_rel_path (str): Relative path to the image under the file root.
-        """
-        try:
-            safe_path = get_safe_path(self._files_root, image_rel_path)
-            if safe_path is None:
-                return
-            json_path = safe_path.with_suffix(".json")
-
-            if not json_path.exists():
-                logger.warning(f"No JSON metadata file found for: {image_rel_path}")
-                return
-
-            image_id = await self._db_client.get_image_id_by_filename(str(safe_path))
-            if image_id is None:
-                logger.warning(f"No database entry for {str(safe_path)}")
-                return
-
-            async with aiofiles.open(json_path, "r", encoding="utf-8") as f:
-                raw = await f.read()
-                parsed = json.loads(raw)
-
-            # Convert parsed dict into ImageMetadata dataclass
-            image_meta: ImageMetadata = from_dict(data_class=ImageMetadata, data=parsed)
-
-            await self._db_client.write_metadata(image_id, image_meta)
-
-        except Exception as e:
-            logger.exception(f"Failed to sync metadata from JSON for {image_rel_path}: {e}")
 
     async def recognize(
         self,

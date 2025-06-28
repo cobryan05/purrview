@@ -1,16 +1,29 @@
 import json
+import logging
 import os
+import sys
+from uuid import uuid4
 from dataclasses import asdict, dataclass, field
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+import aiofiles
 import aiosqlite
+from dacite import from_dict
+
+from apps.helpers.fileUtils import get_safe_path
+
+logging.basicConfig(stream=sys.stdout)
+logger = logging.getLogger(__file__)
+logger.setLevel(logging.DEBUG)
 
 
 @dataclass
-class Label:
+class LabelMetaData:
     id: int
     name: str
     color: str
+    uuid: str
 
 
 @dataclass
@@ -20,7 +33,7 @@ class BoundingBoxMetadata:
     y: float
     width: float
     height: float
-    labels: List[Label] = field(default_factory=list)
+    labels: List[LabelMetaData] = field(default_factory=list)
     extra: Dict[str, str] = field(default_factory=dict)
 
 
@@ -121,7 +134,7 @@ class DbClient:
             await db.commit()
             return cursor.lastrowid
 
-    async def list_labels(self) -> List[Dict[str, Any]]:
+    async def list_labels(self) -> List[LabelMetaData]:
         """
         List all labels.
 
@@ -132,9 +145,9 @@ class DbClient:
             cursor = await db.execute("SELECT id, name, color, uuid FROM labels")
             rows = await cursor.fetchall()
             await cursor.close()
-            return [{"id": r[0], "name": r[1], "color": r[2], "uuid": r[3]} for r in rows]
+            return [LabelMetaData(id=r[0], name=r[1], color=r[2], uuid=r[3]) for r in rows]
 
-    async def add_label(self, name: str, color: str, uuid: Optional[str] = None) -> Dict[str, Any]:
+    async def add_label(self, name: str, color: str, uuid: Optional[str] = None) -> LabelMetaData:
         """
         Add a label or return existing one by name.
 
@@ -146,11 +159,12 @@ class DbClient:
         Returns:
             Dict: Label data with id, name, color, uuid.
         """
+        uuid = uuid or str(uuid4())
         async with aiosqlite.connect(self._db_path) as db:
             cursor = await db.execute("SELECT id, name, color, uuid FROM labels WHERE name = ?", (name,))
             row = await cursor.fetchone()
             if row:
-                return {"id": row[0], "name": row[1], "color": row[2], "uuid": row[3]}
+                return LabelMetaData(id=row[0], name=row[1], color=row[2], uuid=row[3])
 
             cursor = await db.execute(
                 "INSERT INTO labels (name, color, uuid) VALUES (?, ?, ?)",
@@ -158,9 +172,11 @@ class DbClient:
             )
             await db.commit()
             label_id = cursor.lastrowid
-            return {"id": label_id, "name": name, "color": color, "uuid": uuid}
+            if label_id is None:
+                raise Exception(f"Failed to insert label: {name}")
+            return LabelMetaData(id=label_id, name=name, color=color, uuid=uuid)
 
-    async def get_label_by_name(self, name: str) -> Optional[Dict[str, Any]]:
+    async def get_label_by_name(self, name: str) -> Optional[LabelMetaData]:
         """
         Retrieve a label by its name.
 
@@ -175,7 +191,7 @@ class DbClient:
             row = await cursor.fetchone()
             await cursor.close()
             if row:
-                return {"id": row[0], "name": row[1], "color": row[2], "uuid": row[3]}
+                return LabelMetaData(id=row[0], name=row[1], color=row[2], uuid=row[3])
             return None
 
     async def update_label(self, label_id: int, name: Optional[str] = None, color: Optional[str] = None) -> None:
@@ -371,7 +387,7 @@ class DbClient:
                 label_rows = await label_cursor.fetchall()
                 await label_cursor.close()
 
-                labels = [Label(id=l[0], name=l[1], color=l[2]) for l in label_rows]
+                labels = [LabelMetaData(id=l[0], name=l[1], color=l[2]) for l in label_rows]
 
                 boxes.append(
                     BoundingBoxMetadata(
@@ -430,5 +446,52 @@ class DbClient:
                     )
                     new_bbox_id = cursor.lastrowid
 
-
                 await db.commit()
+
+    async def save_db_entry_to_json(self, abs_path: str) -> None:
+        """
+        Sync metadata from the database into the image's .json side file.
+
+        Args:
+            abs_path (str):Absolute path to the json file to write
+        """
+
+        # TODO: Check if json newer?
+        image_id = await self.get_image_id_by_filename(abs_path)
+        if image_id is None:
+            logger.warning(f"No database entry found for image: {abs_path}")
+            return
+
+        metadata: Optional[ImageMetadata] = await self.read_metadata(image_id)
+        if metadata is None:
+            logger.warning(f"No metadata found for image: {abs_path}")
+            return
+
+        json_path = Path(abs_path).with_suffix(".json")
+        os.makedirs(json_path.parent, exist_ok=True)
+
+        async with aiofiles.open(json_path, "w", encoding="utf-8") as f:
+            await f.write(json.dumps(asdict(metadata), indent=2))
+
+    async def read_json_into_db_entry(self, abs_path: str) -> Optional[ImageMetadata]:
+        """
+        Load metadata from an image's .json side file and update the database.
+
+        Args:
+            abs_path (str): Absolute path to the image
+        """
+        try:
+            json_path = Path(abs_path).with_suffix(".json")
+            async with aiofiles.open(json_path, "r", encoding="utf-8") as f:
+                raw = await f.read()
+                parsed = json.loads(raw)
+            image_id = await self.add_image(abs_path)
+
+            # Convert parsed dict into ImageMetadata dataclass
+            image_meta: ImageMetadata = from_dict(data_class=ImageMetadata, data=parsed)
+            image_meta.id = image_id
+            await self.write_metadata(image_id, image_meta)
+            return image_meta
+        except FileNotFoundError:
+            logger.warning(f"JSON file not found: {json_path}")
+            return None
