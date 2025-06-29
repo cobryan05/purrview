@@ -8,7 +8,7 @@ import json
 import logging
 import os
 import sys
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -166,14 +166,14 @@ class Manager:
         response: Dict[str, Any] = await asyncio.to_thread(api.list_models_api)
         return response.get("models", [])
 
-    async def create_new_label(self, name: str, color: str) -> LabelMetaData:
+    async def create_new_label(self, name: str, color: str, parent_id: Optional[int] = None) -> LabelMetaData:
         """
         Adds a new label to the database
 
         Returns:
             LabelMetaData: Label metadata added to database
         """
-        ret = await self._db_client.add_label(name, color)
+        ret = await self._db_client.add_label(name, color, parent_id=parent_id)
         await self._db_client.save_labels_metadata_db_to_json(str(self._labels_json))
         return ret
 
@@ -187,14 +187,29 @@ class Manager:
         await self._db_client.delete_label(label_id)
         await self._db_client.save_labels_metadata_db_to_json(str(self._labels_json))
 
-    async def list_labels(self) -> List[LabelMetaData]:
-        """
-        List all labels from the database.
+    @dataclass
+    class LabelData:
+        metadata: LabelMetaData
+        children: List["LabelData"] = field(default_factory=list)
 
-        Returns:
-            List[LabelMetaData]: List of label metadata (id, name)
+    async def get_labels(self) -> List[LabelData]:
         """
-        return await self._db_client.list_labels()
+        Gets a list of all labels
+        """
+        flat_list: List[LabelMetaData] = await self._db_client.list_labels()
+        id_to_node: Dict[int, Manager.LabelData] = {label.id: Manager.LabelData(metadata=label) for label in flat_list}
+
+        roots: List[Manager.LabelData] = []
+
+        for label in flat_list:
+            node = id_to_node[label.id]
+            if label.parent_id and label.parent_id in id_to_node:
+                parent_node = id_to_node[label.parent_id]
+                parent_node.children.append(node)
+            else:
+                roots.append(node)
+
+        return roots
 
     async def update_label(self, label_id: int, name: Optional[str] = None, color: Optional[str] = None) -> None:
         """
@@ -400,7 +415,6 @@ class Manager:
             raise ValueError(f"Box ID {box_id} not found for image '{image_rel_path}'")
 
         await self.update_image_metadata(image_rel_path, image_meta)
-
 
     async def recognize(
         self,

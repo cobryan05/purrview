@@ -24,6 +24,7 @@ class LabelMetaData:
     name: str
     color: str
     uuid: str
+    parent_id: Optional[int]
 
 
 @dataclass
@@ -80,7 +81,8 @@ class DbClient:
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     name TEXT UNIQUE NOT NULL,
                     color TEXT,
-                    uuid TEXT
+                    uuid TEXT,
+                    parent_id INTEGER REFERENCES labels(id)
                 );
                 CREATE TABLE IF NOT EXISTS bounding_boxes (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -146,12 +148,12 @@ class DbClient:
             List[Dict]: List of label dictionaries with keys: id, name, color, uuid.
         """
         async with aiosqlite.connect(self._db_path) as db:
-            cursor = await db.execute("SELECT id, name, color, uuid FROM labels")
+            cursor = await db.execute("SELECT id, name, color, uuid, parent_id FROM labels")
             rows = await cursor.fetchall()
             await cursor.close()
-            return [LabelMetaData(id=r[0], name=r[1], color=r[2], uuid=r[3]) for r in rows]
+            return [LabelMetaData(id=r[0], name=r[1], color=r[2], uuid=r[3], parent_id=r[4]) for r in rows]
 
-    async def add_label(self, name: str, color: str, uuid: Optional[str] = None) -> LabelMetaData:
+    async def add_label(self, name: str, color: str, uuid: Optional[str] = None, parent_id: Optional[int] = None) -> LabelMetaData:
         """
         Add a label or return existing one by name.
 
@@ -165,20 +167,20 @@ class DbClient:
         """
         uuid = uuid or str(uuid4())
         async with aiosqlite.connect(self._db_path) as db:
-            cursor = await db.execute("SELECT id, name, color, uuid FROM labels WHERE name = ?", (name,))
+            cursor = await db.execute("SELECT id, name, color, uuid, parent_id FROM labels WHERE name = ?", (name,))
             row = await cursor.fetchone()
             if row:
-                return LabelMetaData(id=row[0], name=row[1], color=row[2], uuid=row[3])
+                return LabelMetaData(id=row[0], name=row[1], color=row[2], uuid=row[3], parent_id=row[4])
 
             cursor = await db.execute(
-                "INSERT INTO labels (name, color, uuid) VALUES (?, ?, ?)",
-                (name, color, uuid),
+                "INSERT INTO labels (name, color, uuid, parent_id) VALUES (?, ?, ?, ?)",
+                (name, color, uuid, parent_id),
             )
             await db.commit()
             label_id = cursor.lastrowid
             if label_id is None:
                 raise Exception(f"Failed to insert label: {name}")
-            return LabelMetaData(id=label_id, name=name, color=color, uuid=uuid)
+            return LabelMetaData(id=label_id, name=name, color=color, uuid=uuid, parent_id=parent_id)
 
     async def get_label_by_name(self, name: str) -> Optional[LabelMetaData]:
         """

@@ -90,8 +90,9 @@ async function refreshModelList() {
 
 async function refreshLabelList() {
   try {
-    const res = await fetch('api/labels/list');
+    const res = await fetch('/api/labels/list');
     const data = await res.json();
+
     const labelListContainer = document.getElementById('labels-list');
     if (!labelListContainer) {
       console.error("labelListContainer is null");
@@ -100,77 +101,77 @@ async function refreshLabelList() {
 
     labelListContainer.innerHTML = '';
 
-    data.labels.forEach(label => {
+    const renderLabel = (label, indentLevel = 0) => {
+      const { id, name, color } = label.metadata;
+
       const row = document.createElement('div');
       row.className = 'label-row';
-      row.dataset.labelId = label.id;
+      row.dataset.labelId = id;
+      row.style.paddingLeft = `${indentLevel * 1.5}em`;
 
       const colorSwatch = document.createElement('span');
       colorSwatch.className = 'label-color';
-      colorSwatch.style.background = label.color;
+      colorSwatch.style.background = color;
 
       const nameSpan = document.createElement('span');
       nameSpan.className = 'label-name';
-      nameSpan.textContent = label.name;
+      nameSpan.textContent = name;
 
       const editBtn = document.createElement('button');
-      editBtn.className = 'label-edit-btn';
+      editBtn.className = 'label-edit-btn emoji-button';
       editBtn.title = 'Edit label';
       editBtn.textContent = '✏️';
-      editBtn.className = 'emoji-button';
 
       const deleteBtn = document.createElement('button');
-      deleteBtn.className = 'label-remove-btn';
+      deleteBtn.className = 'label-remove-btn emoji-button';
       deleteBtn.title = 'Delete label';
       deleteBtn.textContent = '🗑️';
-      deleteBtn.className = 'emoji-button';
+
+      const addChildBtn = document.createElement('button');
+      addChildBtn.className = 'label-add-child emoji-button';
+      addChildBtn.title = 'Add sublabel';
+      addChildBtn.textContent = '➕';
 
       row.appendChild(editBtn);
       row.appendChild(deleteBtn);
+      row.appendChild(addChildBtn);
       row.appendChild(colorSwatch);
       row.appendChild(nameSpan);
-
       labelListContainer.appendChild(row);
 
-      // DELETE handler with confirmation
+      // DELETE handler
       deleteBtn.onclick = async () => {
-        const confirmed = window.confirm(`Are you sure you want to delete label "${label.name}"?`);
+        const confirmed = window.confirm(`Delete label "${name}"?`);
         if (!confirmed) return;
         const response = await fetch('/api/labels/delete', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ label_id: label.id })
+          body: JSON.stringify({ label_id: id })
         });
-        if (response.ok) {
-          refreshLabelList();
-        } else {
-          alert('Failed to delete label');
-        }
+        if (response.ok) refreshLabelList();
+        else alert('Failed to delete label');
       };
 
       // EDIT handler
       editBtn.onclick = () => {
-        row.innerHTML = ''; // clear row
+        row.innerHTML = '';
 
-        // Color input
         const colorInput = document.createElement('input');
         colorInput.type = 'color';
-        colorInput.value = label.color;
+        colorInput.value = color;
         colorInput.className = 'label-color';
-        colorInput.style.width = '3em';  // Shrink the color picker
-        colorInput.style.height = '3em';  // Shrink the color picker
+        colorInput.style.width = '3em';
+        colorInput.style.height = '3em';
 
-        // Text input
         const nameInput = document.createElement('input');
         nameInput.type = 'text';
-        nameInput.value = label.name;  // ✅ prefill value
+        nameInput.value = name;
         nameInput.className = 'label-name';
         nameInput.style.flex = '1';
-        nameInput.style.minWidth = '5em'; // Make it visible
+        nameInput.style.minWidth = '5em';
         nameInput.style.height = '2em';
         nameInput.style.marginRight = '0.5em';
 
-        // Save / Discard
         const saveBtn = document.createElement('button');
         saveBtn.title = 'Save';
         saveBtn.textContent = '✅';
@@ -188,29 +189,96 @@ async function refreshLabelList() {
 
         saveBtn.onclick = async () => {
           const updatedLabel = {
-            label_id: label.id,
+            label_id: id,
             name: nameInput.value.trim(),
             color: colorInput.value
           };
-
           const response = await fetch('/api/labels/update', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(updatedLabel)
           });
 
+          if (response.ok) refreshLabelList();
+          else alert('Failed to update label');
+        };
+
+        discardBtn.onclick = () => refreshLabelList();
+      };
+
+      // SUBLABEL handler
+      addChildBtn.onclick = () => {
+        const childRow = document.createElement('div');
+        childRow.className = 'label-row';
+        childRow.style.paddingLeft = `${(indentLevel + 1) * 1.5}em`;
+
+        const nameInput = document.createElement('input');
+        nameInput.type = 'text';
+        nameInput.placeholder = 'New label name';
+        nameInput.className = 'label-name';
+        nameInput.style.minWidth = '5em';
+        nameInput.style.height = '2em';
+        nameInput.style.marginRight = '0.5em';
+
+        const colorInput = document.createElement('input');
+        colorInput.type = 'color';
+        colorInput.value = '#cccccc';
+        colorInput.className = 'label-color';
+        colorInput.style.width = '3em';
+        colorInput.style.height = '3em';
+
+        const saveBtn = document.createElement('button');
+        saveBtn.title = 'Create';
+        saveBtn.textContent = '✅';
+        saveBtn.className = 'emoji-button';
+
+        const cancelBtn = document.createElement('button');
+        cancelBtn.title = 'Cancel';
+        cancelBtn.textContent = '❌';
+        cancelBtn.className = 'emoji-button';
+
+        childRow.appendChild(saveBtn);
+        childRow.appendChild(cancelBtn);
+        childRow.appendChild(colorInput);
+        childRow.appendChild(nameInput);
+        row.after(childRow);
+
+        saveBtn.onclick = async () => {
+          const newName = nameInput.value.trim();
+          if (!newName) {
+            alert("Name required");
+            return;
+          }
+
+          const newLabel = {
+            name: newName,
+            color: colorInput.value,
+            parent_id: id
+          };
+
+          const response = await fetch('/api/labels/add', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(newLabel)
+          });
+
           if (response.ok) {
             refreshLabelList();
           } else {
-            alert('Failed to update label');
+            alert('Failed to create label');
           }
         };
 
-        discardBtn.onclick = () => {
-          refreshLabelList();
+        cancelBtn.onclick = () => {
+          childRow.remove();
         };
       };
-    });
+
+      // Recurse into children
+      label.children.forEach(child => renderLabel(child, indentLevel + 1));
+    };
+
+    data.labels.forEach(label => renderLabel(label, 0));
   } catch (err) {
     console.error('Failed to fetch labels:', err);
   }

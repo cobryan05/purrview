@@ -193,6 +193,7 @@ class WebApp:
         class AddLabelRequest(BaseModel):
             name: str
             color: str
+            parent_id: Optional[int] = None
 
         class DeleteLabelRequest(BaseModel):
             label_id: int
@@ -261,8 +262,8 @@ class WebApp:
             API endpoint to add a new label.
             """
             try:
-                label = await self._manager.create_new_label(request.name, request.color)
-                return JSONResponse(content={"status": "success", "label": label.__dict__})
+                label = await self._manager.create_new_label(request.name, request.color, parent_id=request.parent_id)
+                return JSONResponse(content={"status": "success", "label": asdict(label)})
             except Exception as e:
                 logger.exception(e)
                 return JSONResponse(
@@ -297,9 +298,8 @@ class WebApp:
                 JSONResponse: A JSON response containing the list of labels.
             """
             try:
-                label_list = await self._manager.list_labels()
-                # Convert dataclass objects to dicts
-                labels = [label.__dict__ for label in label_list]
+                label_list = await self._manager.get_labels()
+                labels = [asdict(label) for label in label_list]
                 response_data = {"status": "success", "labels": labels}
                 return JSONResponse(content=response_data)
             except Exception as e:
