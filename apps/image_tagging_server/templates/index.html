@@ -6,62 +6,38 @@
   <title>Annotation Tool</title>
   <link rel="stylesheet" href="/static/css/pico.min.css" />
   <style>
-    #tab-canvas toolbar {}
-
-    #toolbar {
-      display: flex;
-      gap: 0.5em;
-      margin-bottom: 0.5em;
-      width: 100%;
-    }
-
-    #toolbar button {
-      flex: 1 1 0;
-      font-size: 0.95em;
-      padding: 0.2em 0.7em;
-      min-height: 2em;
-      min-width: 0;
-      border-radius: 4px;
+    body {
       margin: 0;
-      box-sizing: border-box;
-      white-space: normal;
-      line-height: 1.2;
-      height: auto;
     }
 
-    #draw-container {
-      width: 100%;
-      height: 80vh;
-      border: 1px solid #ccc;
-      overflow: hidden;
-      flex-grow: 1;
-      font-size: 0.95em;
-    }
-
-    #image-loader {
-      margin-right: 1em;
-      width: 200px;
-    }
-
-    #sidebar {
-      border-left: 1px solid #ccc;
-      padding-left: 1em;
-      width: 20%;
-      min-width: 220px;
+    main.container {
+      max-width: 100%;
+      padding: 0.5em 1em;
       box-sizing: border-box;
     }
 
     .sidebar-container {
       display: flex;
-      gap: 1em;
+      flex-direction: row;
+      width: 100%;
+      gap: 0;
+      margin: 0;
     }
 
     #main-stage {
       width: 80%;
       min-width: 0;
+      padding: 0;
+      margin: 0;
     }
 
-    .primay-tab-header,
+    #sidebar {
+      width: 20%;
+      padding: 0.5em;
+      border-left: 1px solid #ccc;
+      box-sizing: border-box;
+    }
+
     .primary-tab-header {
       display: flex;
       border-bottom: 1px solid #ccc;
@@ -109,6 +85,36 @@
       display: block;
     }
 
+    #toolbar {
+      display: flex;
+      gap: 0.5em;
+      margin-bottom: 0.5em;
+      width: 100%;
+    }
+
+    #toolbar button {
+      flex: 1 1 0;
+      font-size: 0.95em;
+      padding: 0.2em 0.7em;
+      min-height: 2em;
+      min-width: 0;
+      border-radius: 4px;
+      margin: 0;
+      box-sizing: border-box;
+      white-space: normal;
+      line-height: 1.2;
+      height: auto;
+    }
+
+    #draw-container {
+      width: 100%;
+      height: 80vh;
+      border: 1px solid #ccc;
+      overflow: hidden;
+      flex-grow: 1;
+      font-size: 0.95em;
+    }
+
     .model-buttons {
       display: flex;
       gap: 0.5em;
@@ -143,26 +149,6 @@
       white-space: nowrap;
     }
 
-    /* Responsive: stack sidebar below main-stage on small screens */
-    @media (max-width: 900px) {
-      .sidebar-container {
-        flex-direction: column;
-      }
-
-      #main-stage,
-      #sidebar {
-        width: 100%;
-        min-width: 0;
-      }
-
-      #sidebar {
-        border-left: none;
-        border-top: 1px solid #ccc;
-        padding-left: 0;
-        padding-top: 1em;
-      }
-    }
-
     .emoji-button {
       font-size: 0.8em;
       padding: 0.2em 0.4em;
@@ -181,7 +167,7 @@
         <div class="primary-tab-header">
           <span class="tab-button active" data-tab="tab-canvas">Canvas</span>
           <span class="tab-button" data-tab="tab-files">Files</span>
-          <span class="tab-button" data-tab="tab-labels">Labels</span>
+          <span class="tab-button" data-tab="tab-labels">Edit Labels</span>
         </div>
 
         <div id="tab-canvas" class="tab-pane active">
@@ -193,38 +179,23 @@
             <button onclick="deleteSelected()">Delete Selected</button>
             <button onclick="saveAnnotations()">Save</button>
           </nav>
-
           <div id="draw-container"></div>
         </div>
 
-        <div id="tab-files" class="tab-pane">
-          Files
-        </div>
+        <div id="tab-files" class="tab-pane">Files</div>
 
         <div id="tab-labels" class="tab-pane">
           <div style="display: flex; gap: 1em; align-items: flex-start; flex-wrap: wrap;">
-
             <!-- Left side: Label management -->
             <div style="flex: 1 1 300px; min-width: 250px;">
               <h4>Labels</h4>
               <div id="labels-list"></div>
-              <form id="add-label-form" style="display: flex; align-items: center; gap: 0.5em; margin-top: 1em;">
-                <input type="text" id="new-label-name" placeholder="Label name" required style="width: 8em; flex: 1;">
-                <input type="color" id="new-label-color" value="#ff0033" title="Pick label color"
-                  style="width: 2em; height: 2em; padding: 0; border: none;">
-                <button type="submit"
-                  style="padding: 0.2em 0.7em; font-size: 1.2em; width: 2em; height: 2em; display: flex; align-items: center; justify-content: center;">+</button>
-              </form>
             </div>
-
             <!-- Right side: Preset groups placeholder -->
             <div style="flex: 1 1 300px; min-width: 250px;">
               <h4>Presets</h4>
-              <div id="presets-placeholder">
-                <p>Coming soon…</p>
-              </div>
+              <div id="presets-placeholder"></div>
             </div>
-
           </div>
         </div>
       </div>
@@ -232,6 +203,7 @@
       <div id="sidebar">
         <div class="tab-header">
           <span class="tab-button active" data-tab="tab-models">Models</span>
+          <span class="tab-button" data-tab="tab-labels-tool">Labels</span>
           <span class="tab-button" data-tab="tab-annotations">Annotations</span>
           <span class="tab-button" data-tab="tab-inspector">Inspector</span>
         </div>
@@ -247,6 +219,11 @@
         <div id="tab-annotations" class="tab-pane">
           <button onclick="refreshAnnotations()">Refresh JSON</button>
           <pre id="annotation-json" style="max-height: 40vh; overflow-y: auto; font-size: 0.8em;"></pre>
+        </div>
+
+        <div id="tab-labels-tool" class="tab-pane">
+          <h4>Labels</h4>
+          <div id="labels-tool-list"></div>
         </div>
 
         <div id="tab-inspector" class="tab-pane">

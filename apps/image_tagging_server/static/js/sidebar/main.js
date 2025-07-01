@@ -1,58 +1,6 @@
 import { getLayer } from '/app-static/js/canvas/state.js';
 import { addRecognizedBoxes, loadImageAndMetadata } from '/app-static/js/canvas/io.js';
 
-document.addEventListener('DOMContentLoaded', () => {
-  document.querySelectorAll('.tab-header, .primary-tab-header').forEach(tabHeader => {
-    const tabs = tabHeader.querySelectorAll('.tab-button');
-    const tabContainer = tabHeader.parentElement;
-    const tabPanes = tabContainer.querySelectorAll('.tab-pane');
-
-    tabs.forEach(tab => {
-      tab.addEventListener('click', () => {
-        tabs.forEach(t => t.classList.remove('active'));
-        tab.classList.add('active');
-        const tabName = tab.getAttribute('data-tab');
-        tabPanes.forEach(tc => {
-          tc.classList.toggle('active', tc.id === tabName);
-        });
-        // Call refreshLabelList when Labels tab is activated
-        if (tabName === 'tab-labels') {
-          refreshLabelList();
-        } else if (tabName === 'tab-files' && !fileBrowserInitialized) {
-          loadFileBrowser(currentFileBrowserPath);
-          fileBrowserInitialized = true;
-        }
-      });
-    });
-  });
-
-  refreshModelList();
-  document.getElementById('recognize-button').addEventListener('click', recognizeImage);
-
-  const addLabelForm = document.getElementById('add-label-form');
-  if (addLabelForm) {
-    addLabelForm.addEventListener('submit', async (e) => {
-      e.preventDefault();
-      const name = document.getElementById('new-label-name').value.trim();
-      const color = document.getElementById('new-label-color').value;
-      if (!name) return;
-      const res = await fetch('/api/labels/add', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name, color })
-      });
-      if (res.ok) {
-        document.getElementById('new-label-name').value = '';
-        refreshLabelList();
-      } else {
-        error('Failed to add label');
-      }
-    });
-  }
-
-  setupFilesTab()
-});
-
 async function refreshModelList() {
   try {
     const res = await fetch('/api/models/list');
@@ -88,26 +36,158 @@ async function refreshModelList() {
   }
 }
 
-async function refreshLabelList() {
+async function refreshLabelList({ target = "labels-list", editable = true }) {
   try {
     const res = await fetch('/api/labels/list');
     const data = await res.json();
 
-    const labelListContainer = document.getElementById('labels-list');
+    const labelListContainer = document.getElementById(target);
     if (!labelListContainer) {
       console.error("labelListContainer is null");
       return;
     }
-
     labelListContainer.innerHTML = '';
 
-    const renderLabel = (label, indentLevel = 0) => {
-      const { id, name, color } = label.metadata;
+    // --- Helper functions ---
+    const createButton = (className, title, text) => {
+      const btn = document.createElement('button');
+      btn.className = className;
+      btn.title = title;
+      btn.textContent = text;
+      return btn;
+    };
 
+    function createInputRow({ defaultName = '', defaultColor = '#cccccc', onSave, onCancel, indentLevel = 0 }) {
       const row = document.createElement('div');
       row.className = 'label-row';
-      row.dataset.labelId = id;
-      row.style.paddingLeft = `${indentLevel * 1.5}em`;
+      if (indentLevel > 0) row.style.paddingLeft = `${indentLevel * 1.5}em`;
+
+      const saveBtn = createButton('emoji-button', onSave ? 'Save' : 'Create', '✅');
+      const cancelBtn = createButton('emoji-button', 'Cancel', '❌');
+
+      // Custom-styled color swatch + hidden color input
+      const colorWrapper = document.createElement('span');
+      colorWrapper.className = 'label-color';
+      colorWrapper.style.position = 'relative';
+      colorWrapper.style.display = 'inline-block';
+      colorWrapper.style.cursor = 'pointer';
+      colorWrapper.style.backgroundColor = defaultColor;
+
+      const colorInput = document.createElement('input');
+      colorInput.type = 'color';
+      colorInput.value = defaultColor;
+      colorInput.style.opacity = '0';
+      colorInput.style.position = 'absolute';
+      colorInput.style.left = '0';
+      colorInput.style.top = '0';
+      colorInput.style.width = '100%';
+      colorInput.style.height = '100%';
+      colorInput.style.cursor = 'pointer';
+
+      colorInput.addEventListener('input', () => {
+        colorWrapper.style.backgroundColor = colorInput.value;
+      });
+
+      colorWrapper.appendChild(colorInput);
+
+      // Label name input
+      const nameInput = document.createElement('input');
+      nameInput.type = 'text';
+      nameInput.value = defaultName;
+      nameInput.placeholder = 'New label name';
+      nameInput.className = 'label-name';
+      nameInput.style.minWidth = '5em';
+      nameInput.style.height = '2em';
+      nameInput.style.marginRight = '0.5em';
+
+      // Append all elements
+      row.appendChild(saveBtn);
+      row.appendChild(cancelBtn);
+      row.appendChild(colorWrapper);  // styled color input
+      row.appendChild(nameInput);
+
+      saveBtn.onclick = () => {
+        const newName = nameInput.value.trim();
+        if (!newName) {
+          alert('Name required');
+          return;
+        }
+        onSave?.(newName, colorInput.value);
+      };
+
+      cancelBtn.onclick = () => {
+        onCancel?.();
+      };
+
+      return row;
+    }
+
+    function renderLabel(label, indentLevel = 0) {
+      const { id, name, color } = label.metadata;
+
+      const labelRow = document.createElement('div');
+      labelRow.className = 'label-row';
+      labelRow.dataset.labelId = id;
+      labelRow.style.paddingLeft = `${indentLevel * 1.5}em`;
+
+      if (editable) {
+        const editBtn = createButton('label-edit-btn emoji-button', 'Edit label', '✏️');
+        const deleteBtn = createButton('label-remove-btn emoji-button', 'Delete label', '🗑️');
+        const addChildBtn = createButton('label-add-child emoji-button', 'Add sublabel', '➕');
+
+        editBtn.onclick = () => {
+          const inputRow = createInputRow({
+            defaultName: name,
+            defaultColor: color,
+            indentLevel,
+            onSave: async (newName, newColor) => {
+              const updatedLabel = { label_id: id, name: newName, color: newColor };
+              const response = await fetch('/api/labels/update', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(updatedLabel),
+              });
+              if (response.ok) refreshLabelList({ target, editable });
+              else alert('Failed to update label');
+            },
+            onCancel: () => refreshLabelList({ target, editable }),
+          });
+          labelRow.replaceWith(inputRow);
+        };
+
+        deleteBtn.onclick = async () => {
+          if (!window.confirm(`Delete label "${name}"?`)) return;
+          const response = await fetch('/api/labels/delete', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ label_id: id }),
+          });
+          if (response.ok) refreshLabelList({ target, editable });
+          else alert('Failed to delete label');
+        };
+
+        addChildBtn.onclick = () => {
+          const childRow = createInputRow({
+            indentLevel: indentLevel + 1,
+            onSave: async (newName, newColor) => {
+              const newLabel = { name: newName, color: newColor, parent_id: id };
+              const response = await fetch('/api/labels/add', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(newLabel),
+              });
+              if (response.ok) refreshLabelList({ target, editable });
+              else alert('Failed to create label');
+            },
+            onCancel: () => childRow.remove(),
+          });
+          labelRow.after(childRow);
+        };
+
+        labelRow.appendChild(editBtn);
+        labelRow.appendChild(deleteBtn);
+        labelRow.appendChild(addChildBtn);
+      }
 
       const colorSwatch = document.createElement('span');
       colorSwatch.className = 'label-color';
@@ -117,172 +197,49 @@ async function refreshLabelList() {
       nameSpan.className = 'label-name';
       nameSpan.textContent = name;
 
-      const editBtn = document.createElement('button');
-      editBtn.className = 'label-edit-btn emoji-button';
-      editBtn.title = 'Edit label';
-      editBtn.textContent = '✏️';
+      labelRow.appendChild(colorSwatch);
+      labelRow.appendChild(nameSpan);
 
-      const deleteBtn = document.createElement('button');
-      deleteBtn.className = 'label-remove-btn emoji-button';
-      deleteBtn.title = 'Delete label';
-      deleteBtn.textContent = '🗑️';
+      labelListContainer.appendChild(labelRow);
 
-      const addChildBtn = document.createElement('button');
-      addChildBtn.className = 'label-add-child emoji-button';
-      addChildBtn.title = 'Add sublabel';
-      addChildBtn.textContent = '➕';
-
-      row.appendChild(editBtn);
-      row.appendChild(deleteBtn);
-      row.appendChild(addChildBtn);
-      row.appendChild(colorSwatch);
-      row.appendChild(nameSpan);
-      labelListContainer.appendChild(row);
-
-      // DELETE handler
-      deleteBtn.onclick = async () => {
-        const confirmed = window.confirm(`Delete label "${name}"?`);
-        if (!confirmed) return;
-        const response = await fetch('/api/labels/delete', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ label_id: id })
-        });
-        if (response.ok) refreshLabelList();
-        else alert('Failed to delete label');
-      };
-
-      // EDIT handler
-      editBtn.onclick = () => {
-        row.innerHTML = '';
-
-        const colorInput = document.createElement('input');
-        colorInput.type = 'color';
-        colorInput.value = color;
-        colorInput.className = 'label-color';
-        colorInput.style.width = '3em';
-        colorInput.style.height = '3em';
-
-        const nameInput = document.createElement('input');
-        nameInput.type = 'text';
-        nameInput.value = name;
-        nameInput.className = 'label-name';
-        nameInput.style.flex = '1';
-        nameInput.style.minWidth = '5em';
-        nameInput.style.height = '2em';
-        nameInput.style.marginRight = '0.5em';
-
-        const saveBtn = document.createElement('button');
-        saveBtn.title = 'Save';
-        saveBtn.textContent = '✅';
-        saveBtn.className = 'emoji-button';
-
-        const discardBtn = document.createElement('button');
-        discardBtn.title = 'Discard';
-        discardBtn.textContent = '❌';
-        discardBtn.className = 'emoji-button';
-
-        row.appendChild(saveBtn);
-        row.appendChild(discardBtn);
-        row.appendChild(colorInput);
-        row.appendChild(nameInput);
-
-        saveBtn.onclick = async () => {
-          const updatedLabel = {
-            label_id: id,
-            name: nameInput.value.trim(),
-            color: colorInput.value
-          };
-          const response = await fetch('/api/labels/update', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(updatedLabel)
-          });
-
-          if (response.ok) refreshLabelList();
-          else alert('Failed to update label');
-        };
-
-        discardBtn.onclick = () => refreshLabelList();
-      };
-
-      // SUBLABEL handler
-      addChildBtn.onclick = () => {
-        const childRow = document.createElement('div');
-        childRow.className = 'label-row';
-        childRow.style.paddingLeft = `${(indentLevel + 1) * 1.5}em`;
-
-        const nameInput = document.createElement('input');
-        nameInput.type = 'text';
-        nameInput.placeholder = 'New label name';
-        nameInput.className = 'label-name';
-        nameInput.style.minWidth = '5em';
-        nameInput.style.height = '2em';
-        nameInput.style.marginRight = '0.5em';
-
-        const colorInput = document.createElement('input');
-        colorInput.type = 'color';
-        colorInput.value = '#cccccc';
-        colorInput.className = 'label-color';
-        colorInput.style.width = '3em';
-        colorInput.style.height = '3em';
-
-        const saveBtn = document.createElement('button');
-        saveBtn.title = 'Create';
-        saveBtn.textContent = '✅';
-        saveBtn.className = 'emoji-button';
-
-        const cancelBtn = document.createElement('button');
-        cancelBtn.title = 'Cancel';
-        cancelBtn.textContent = '❌';
-        cancelBtn.className = 'emoji-button';
-
-        childRow.appendChild(saveBtn);
-        childRow.appendChild(cancelBtn);
-        childRow.appendChild(colorInput);
-        childRow.appendChild(nameInput);
-        row.after(childRow);
-
-        saveBtn.onclick = async () => {
-          const newName = nameInput.value.trim();
-          if (!newName) {
-            alert("Name required");
-            return;
-          }
-
-          const newLabel = {
-            name: newName,
-            color: colorInput.value,
-            parent_id: id
-          };
-
-          const response = await fetch('/api/labels/add', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(newLabel)
-          });
-
-          if (response.ok) {
-            refreshLabelList();
-          } else {
-            alert('Failed to create label');
-          }
-        };
-
-        cancelBtn.onclick = () => {
-          childRow.remove();
-        };
-      };
-
-      // Recurse into children
       label.children.forEach(child => renderLabel(child, indentLevel + 1));
-    };
+    }
 
     data.labels.forEach(label => renderLabel(label, 0));
+
+    const newLabelRow = document.createElement('div');
+    newLabelRow.className = 'label-row';
+    if (editable) {
+      const newLabelBtn = createButton('label-add-child emoji-button', 'Add label', '➕');
+      newLabelRow.appendChild(newLabelBtn);
+      newLabelBtn.onclick = () => {
+        const childRow = createInputRow({
+          onSave: async (newName, newColor) => {
+            const newLabel = { name: newName, color: newColor, parent_id: null };
+            const response = await fetch('/api/labels/add', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(newLabel),
+            });
+            if (response.ok) refreshLabelList({ target, editable });
+            else alert('Failed to create label');
+          },
+          onCancel: () => refreshLabelList({ target, editable }),
+        });
+        newLabelRow.before(childRow);
+      };
+    }
+
+    const refreshBtn = createButton("emoji-button", "Refresh", "🔄");
+    refreshBtn.onclick = () => refreshLabelList({ target, editable });
+    newLabelRow.appendChild(refreshBtn);
+    labelListContainer.appendChild(newLabelRow);
+
   } catch (err) {
     console.error('Failed to fetch labels:', err);
   }
 }
+
 
 async function recognizeImage() {
   try {
@@ -487,3 +444,38 @@ async function loadImageByName(filename, dirPath) {
   // Now load the image
   loadImageAndMetadata(imageName);
 }
+
+
+
+document.addEventListener('DOMContentLoaded', () => {
+  document.querySelectorAll('.tab-header, .primary-tab-header').forEach(tabHeader => {
+    const tabs = tabHeader.querySelectorAll('.tab-button');
+    const tabContainer = tabHeader.parentElement;
+    const tabPanes = tabContainer.querySelectorAll('.tab-pane');
+
+    tabs.forEach(tab => {
+      tab.addEventListener('click', () => {
+        tabs.forEach(t => t.classList.remove('active'));
+        tab.classList.add('active');
+        const tabName = tab.getAttribute('data-tab');
+        tabPanes.forEach(tc => {
+          tc.classList.toggle('active', tc.id === tabName);
+        });
+        // Call refreshLabelList when Labels tab is activated
+        if (tabName === 'tab-labels') {
+          refreshLabelList({ target: "labels-list" })
+        } else if (tabName == "tab-labels-tool") {
+          refreshLabelList({ target: "labels-tool-list", editable: false });
+        } else if (tabName === 'tab-files' && !fileBrowserInitialized) {
+          loadFileBrowser(currentFileBrowserPath);
+          fileBrowserInitialized = true;
+        }
+      });
+    });
+  });
+
+  refreshModelList();
+  document.getElementById('recognize-button').addEventListener('click', recognizeImage);
+
+  setupFilesTab()
+});
