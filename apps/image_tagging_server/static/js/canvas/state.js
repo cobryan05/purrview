@@ -6,14 +6,34 @@ let transformer = null;
 
 let currentTool = 'select';
 let currentImageName = null;
+let currentLabel = null;
 
 export function getCurrentTool() {
   return currentTool;
 }
 
+
+
+/**
+ * Sets the current tool (only the part before colon) and sets the current label (after colon)
+ * Example: "bbox:label123" sets currentTool = "bbox", currentLabel = "label123"
+ */
 export function setCurrentTool(tool) {
-  debug("setTool called with", tool);
-  currentTool = tool;
+  notify("setTool called with", tool);
+  const parts = tool.split(':');
+  currentTool = parts[0];
+  if (parts.length === 2) {
+    setCurrentLabel(parts[1]);
+  } else {
+    setCurrentLabel(null);
+  }
+}
+export function getCurrentLabel() {
+  return currentLabel;
+}
+
+export function setCurrentLabel(label) {
+  currentLabel = label
 }
 
 export function getCurrentImageName() {

@@ -106,6 +106,13 @@
       height: auto;
     }
 
+    #toolbar button.selected {
+      background-color: #ff0033;
+      color: white;
+      font-weight: bold;
+      box-shadow: 0 0 0 2px #aa0011 inset;
+    }
+
     #draw-container {
       width: 100%;
       height: 80vh;
@@ -132,6 +139,14 @@
       margin-bottom: 0.3em;
       font-size: 0.95em;
     }
+
+    .label-row .selected {
+      background-color: #ff0033;
+      color: white;
+      font-weight: bold;
+      box-shadow: 0 0 0 2px #aa0011 inset;
+    }
+
 
     .label-color {
       width: 1.2em;
@@ -174,7 +189,7 @@
           <nav id="toolbar">
             <button onclick="reloadImage()">Reload Image</button>
             <button data-tool="select" onclick="setTool('select')">Select</button>
-            <button data-tool="rect" onclick="setTool('rect')">Rectangle</button>
+            <button data-tool="bbox" onclick="setTool('bbox')">BBox</button>
             <button onclick="clearAnnotations()">Clear Annotations</button>
             <button onclick="deleteSelected()">Delete Selected</button>
             <button onclick="saveAnnotations()">Save</button>
