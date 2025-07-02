@@ -1,6 +1,5 @@
 import { deleteSelected } from './canvas/io.js';
-import { setTool } from './canvas/tools.js';
-import { debug } from './canvas/utils.js';
+import { setTool, selectBboxTool } from './canvas/tools.js';
 
 export function registerKeyboardShortcuts() {
   document.addEventListener('keydown', e => {
@@ -23,7 +22,7 @@ export function registerKeyboardShortcuts() {
         break;
 
       case 'r':
-        setTool('rect');
+        selectBboxTool();
         break;
 
       default:

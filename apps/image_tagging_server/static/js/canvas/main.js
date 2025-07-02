@@ -1,21 +1,21 @@
-import { initStage, getStage } from './state.js';
-import { setTool, updateToolbarButtons } from './tools.js';
 import {
+  handleClick,
+  handleContextMenu,
   handleMouseDown,
   handleMouseMove,
   handleMouseUp,
   handleWheel,
-  handleClick,
-  handleContextMenu,
 } from './interaction.js';
 import {
+  clearAnnotations,
+  deleteSelected,
   exportAnnotations,
   loadImageAndMetadata,
-  clearAnnotations,
-  saveAnnotations,
-  deleteSelected,
   reloadImage,
+  saveAnnotations,
 } from './io.js';
+import { getStage, initStage } from './state.js';
+import { selectBboxTool, setTool, updateToolbarButtons } from './tools.js';
 
 // Initialize stage and set default tool
 initStage();
@@ -25,6 +25,7 @@ setTool('select');
 window.setTool = setTool;
 window.reloadImage = reloadImage;
 window.clearAnnotations = clearAnnotations;
+window.selectBboxTool = selectBboxTool;
 window.saveAnnotations = saveAnnotations;
 window.deleteSelected = deleteSelected;
 window.loadImageAndMetadata = loadImageAndMetadata;

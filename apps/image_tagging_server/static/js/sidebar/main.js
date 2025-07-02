@@ -1,8 +1,8 @@
 // canvas_ui_main.js
 
-import { getLayer } from '/app-static/js/canvas/state.js';
-import { getTool, setTool } from '/app-static/js/canvas/tools.js';
 import { addRecognizedBoxes, loadImageAndMetadata } from '/app-static/js/canvas/io.js';
+import { getCurrentLabelUuid, getLayer } from '/app-static/js/canvas/state.js';
+import { getTool, setTool } from '/app-static/js/canvas/tools.js';
 
 // --- Utility functions ---
 
@@ -145,18 +145,19 @@ export async function refreshLabelList({ target = "labels-list", editable = true
 
     // Recursively render labels and children with indentation
     function renderLabel(label, indentLevel = 0) {
-      const { id, name, color } = label.metadata;
+      const { id, name, color, uuid } = label.metadata;
 
       const labelRow = document.createElement('div');
       labelRow.className = 'label-row';
       labelRow.dataset.labelId = id;
+      labelRow.dataset.uuid = uuid;
       labelRow.style.paddingLeft = `${indentLevel * 1.5}em`;
 
       if (!editable) {
         labelRow.style.cursor = 'pointer';
         labelRow.onclick = () => {
-          setTool(`bbox:${id}`);
-          highlightSelectedLabel(id);
+          setTool(`bbox:${uuid}`);
+          highlightSelectedLabel(uuid);
         };
       }
 
@@ -238,14 +239,14 @@ export async function refreshLabelList({ target = "labels-list", editable = true
 
     /**
      * Highlights the selected label in the labels-tool-list panel
-     * @param {string|null} selectedId Label ID to highlight
+     * @param {string|null} selectedUuid Label ID to highlight
      */
-    function highlightSelectedLabel(selectedId = null) {
+    function highlightSelectedLabel(selectedUuid = null) {
       const currentTool = getTool();
-      const selectedLabelId = selectedId ?? (currentTool.startsWith('bbox:') ? currentTool.split(':')[1] : null);
+      const selectedLabelUuid = selectedUuid ?? (currentTool.startsWith('bbox:') ? currentTool.split(':')[1] : null);
 
       document.querySelectorAll('#labels-tool-list .label-row').forEach(row => {
-        row.style.outline = row.dataset.labelId == selectedLabelId ? '2px solid #ff0033' : '';
+        row.style.outline = row.dataset.uuid == selectedLabelUuid ? '2px solid #ff0033' : '';
       });
     }
 
@@ -280,6 +281,11 @@ export async function refreshLabelList({ target = "labels-list", editable = true
     newLabelRow.appendChild(refreshBtn);
 
     labelListContainer.appendChild(newLabelRow);
+
+    const selectedLabelUuid = getCurrentLabelUuid();
+    if (selectedLabelUuid) {
+      highlightSelectedLabel(selectedLabelUuid);
+    }
 
   } catch (err) {
     console.error('Failed to fetch labels:', err);

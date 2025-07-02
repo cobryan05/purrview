@@ -1,6 +1,6 @@
 import { createBoundingBox } from './drawing.js';
 import { getCurrentImageName, getLayer, getStage, getTransformer, setCurrentImageName } from './state.js';
-import { debug, warn, error, notify } from './utils.js';
+import { debug, error, notify } from './utils.js';
 
 export async function reloadImage() {
   const imageName = getCurrentImageName();

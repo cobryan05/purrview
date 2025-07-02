@@ -1,7 +1,7 @@
 import { createBoundingBox } from './drawing.js';
 import { selectShape } from './selection.js';
-import { getCurrentTool, getLayer, getStage, setCurrentTool } from './state.js';
-import { clearSelection, setTool } from './tools.js';
+import { getCurrentTool, getLayer, getStage } from './state.js';
+import { clearSelection, selectBboxTool, setTool } from './tools.js';
 
 let tempGroup = null;
 let startPos = null;
@@ -148,7 +148,7 @@ export function handleContextMenu(e) {
   e.evt.preventDefault();
   clearSelection();
   if (getCurrentTool() === 'select') {
-    setTool('rect');
+    selectBboxTool();
   } else {
     setTool('select');
   }

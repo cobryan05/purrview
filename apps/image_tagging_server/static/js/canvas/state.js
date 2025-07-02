@@ -1,4 +1,4 @@
-import { debug, warn, error, toast, notify } from './utils.js';
+import { notify } from './utils.js';
 
 let stage = null;
 let layer = null;
@@ -6,34 +6,27 @@ let transformer = null;
 
 let currentTool = 'select';
 let currentImageName = null;
-let currentLabel = null;
+let currentLabelUuid = null;
 
 export function getCurrentTool() {
   return currentTool;
 }
 
-
-
-/**
- * Sets the current tool (only the part before colon) and sets the current label (after colon)
- * Example: "bbox:label123" sets currentTool = "bbox", currentLabel = "label123"
- */
 export function setCurrentTool(tool) {
-  notify("setTool called with", tool);
+  notify("setCurrentTool called with", tool);
   const parts = tool.split(':');
   currentTool = parts[0];
   if (parts.length === 2) {
-    setCurrentLabel(parts[1]);
-  } else {
-    setCurrentLabel(null);
+    setCurrentLabelUuid(parts[1]);
   }
 }
-export function getCurrentLabel() {
-  return currentLabel;
+
+export function getCurrentLabelUuid() {
+  return currentLabelUuid;
 }
 
-export function setCurrentLabel(label) {
-  currentLabel = label
+export function setCurrentLabelUuid(uuid) {
+  currentLabelUuid = uuid
 }
 
 export function getCurrentImageName() {
