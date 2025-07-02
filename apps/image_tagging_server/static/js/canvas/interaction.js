@@ -1,6 +1,6 @@
 import { createBoundingBox } from './drawing.js';
 import { selectShape } from './selection.js';
-import { getCurrentTool, getLayer, getStage } from './state.js';
+import { getCurrentTool, getLayer, getStage , getCurrentLabelUuid} from './state.js';
 import { clearSelection, selectBboxTool, setTool } from './tools.js';
 
 let tempGroup = null;
@@ -39,8 +39,9 @@ export function handleMouseDown(e) {
   if (!pos) return;
 
   startPos = pos;
+  const currentLabelUuid = getCurrentLabelUuid();
   tempGroup = createBoundingBox(
-    pos.x, pos.y, { width: 1, height: 1, metadata: { label: 'New Box' } });
+    pos.x, pos.y, { width: 1, height: 1, metadata: { labelUuid: currentLabelUuid } });
   if (tempGroup) {
     layer.add(tempGroup);
   }

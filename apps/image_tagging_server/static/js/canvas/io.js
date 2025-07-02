@@ -1,3 +1,4 @@
+import { refreshLabelList } from '../sidebar/main.js';
 import { createBoundingBox } from './drawing.js';
 import { getCurrentImageName, getLayer, getStage, getTransformer, setCurrentImageName } from './state.js';
 import { debug, error, notify } from './utils.js';
@@ -22,6 +23,7 @@ export async function loadImageAndMetadata(imageName) {
     const transformer = getTransformer();
     const layer = getLayer();
     setCurrentImageName(imageName);
+    refreshLabelList({})
 
     // === Load image blob + metadata via unified API ===
     const imageRes = await fetch(`/api/images/get?path=${encodeURIComponent(imageName)}`);
@@ -70,7 +72,8 @@ export async function loadImageAndMetadata(imageName) {
         height: absHeight,
         metadata: {
           id: box.id,
-          labels: box.labels?.map(l => l.id) ?? [],
+          labelUuid: box.label_uuid,
+          tags: box.tags?.map(l => l.id) ?? [],
           extra: box.extra ?? {}
         }
       });
@@ -137,18 +140,18 @@ export async function saveAnnotations() {
         const rect = group.findOne('.box');
         if (!rect) return null;
 
-        const meta = group.metadata || {};
-        const boxId = meta.id ?? null;
-        const labels = meta.labels ?? [];
+        const bbox_meta = group.metadata || {};
+        const bbox_id = bbox_meta.id ?? null;
+        const bbox_label_uuid = bbox_meta.label.metadata.uuid;
 
         return {
-          id: boxId,
+          id: bbox_id,
+          label_uuid: bbox_label_uuid,
           x: group.x() / imgWidth,
           y: group.y() / imgHeight,
           width: rect.width() / imgWidth,
           height: rect.height() / imgHeight,
-          labels: labels,  // List of label IDs
-          extra: meta.extra || {}  // Arbitrary key-value pairs
+          extra: bbox_meta.extra || {}  // Arbitrary key-value pairs
         };
       })
       .filter(Boolean);

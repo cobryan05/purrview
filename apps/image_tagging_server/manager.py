@@ -166,25 +166,25 @@ class Manager:
         response: Dict[str, Any] = await asyncio.to_thread(api.list_models_api)
         return response.get("models", [])
 
-    async def create_new_label(self, name: str, color: str, parent_id: Optional[int] = None) -> LabelMetaData:
+    async def create_new_label(self, name: str, color: str, parent_uuid: Optional[str] = None) -> LabelMetaData:
         """
         Adds a new label to the database
 
         Returns:
             LabelMetaData: Label metadata added to database
         """
-        ret = await self._db_client.add_label(name, color, parent_id=parent_id)
+        ret = await self._db_client.add_label(name, color, parent_uuid=parent_uuid)
         await self._db_client.save_labels_metadata_db_to_json(str(self._labels_json))
         return ret
 
-    async def delete_label(self, label_id: int) -> None:
+    async def delete_label(self, label_uuid: str) -> None:
         """
         Adds a new label to the database
 
         Returns:
             LabelMetaData: Label metadata added to database
         """
-        await self._db_client.delete_label(label_id)
+        await self._db_client.delete_label(label_uuid)
         await self._db_client.save_labels_metadata_db_to_json(str(self._labels_json))
 
     @dataclass
@@ -197,30 +197,30 @@ class Manager:
         Gets a list of all labels
         """
         flat_list: List[LabelMetaData] = await self._db_client.list_labels()
-        id_to_node: Dict[int, Manager.LabelData] = {label.id: Manager.LabelData(metadata=label) for label in flat_list}
+        uuid_to_node: Dict[str, Manager.LabelData] = {label.uuid: Manager.LabelData(metadata=label) for label in flat_list}
 
         roots: List[Manager.LabelData] = []
 
         for label in flat_list:
-            node = id_to_node[label.id]
-            if label.parent_id and label.parent_id in id_to_node:
-                parent_node = id_to_node[label.parent_id]
+            node = uuid_to_node[label.uuid]
+            if label.parent_uuid and label.parent_uuid in uuid_to_node:
+                parent_node = uuid_to_node[label.parent_uuid]
                 parent_node.children.append(node)
             else:
                 roots.append(node)
 
         return roots
 
-    async def update_label(self, label_id: int, name: Optional[str] = None, color: Optional[str] = None) -> None:
+    async def update_label(self, label_uuid: str, name: Optional[str] = None, color: Optional[str] = None) -> None:
         """
         Update a label's name and/or color.
 
         Args:
-            label_id (int): ID of the label to update.
+            label_uuid (str): uuid of the label to update.
             name (Optional[str]): New name for the label.
             color (Optional[str]): New color for the label.
         """
-        await self._db_client.update_label(label_id=label_id, name=name, color=color)
+        await self._db_client.update_label(label_uuid=label_uuid, name=name, color=color)
         await self._db_client.save_labels_metadata_db_to_json(str(self._labels_json))
 
     async def get_image_metadata(self, image_rel_path: str) -> Optional[ImageMetadata]:
@@ -257,7 +257,7 @@ class Manager:
             return
         img_path = str(safe_path)
         image_id = await self._db_client.add_image(img_path)
-        await self._db_client.write_metadata(image_id, metadata)
+        await self._db_client.write_metadata_to_db(image_id, metadata)
         await self._db_client.save_image_metadata_db_to_json(img_path)
 
     async def create_box(
@@ -288,13 +288,13 @@ class Manager:
         if extra is None:
             extra = {}
 
+        #TODO labels
         new_box = BoundingBoxMetadata(
             id=None,
             x=x,
             y=y,
             width=width,
             height=height,
-            labels=labels,
             extra=extra,
         )
         image_meta.boxes.append(new_box)
@@ -393,7 +393,7 @@ class Manager:
         self,
         image_rel_path: str,
         box_id: int,
-        label_id: int,
+        label_uuid: str,
     ) -> None:
         """
         Remove a label from a bounding box in the image metadata.
@@ -401,7 +401,7 @@ class Manager:
         Args:
             image_rel_path (str): Relative image path.
             box_id (int): Bounding box ID.
-            label_id (int): Label ID to remove.
+            label_uuid (str): Label uuid to remove.
         """
         image_meta = await self.get_image_metadata(image_rel_path)
         if image_meta is None:
@@ -409,7 +409,7 @@ class Manager:
 
         for box in image_meta.boxes:
             if box.id == box_id:
-                box.labels = [l for l in box.labels if l.id != label_id]
+                box.labels = [l for l in box.labels if l.uuid != label_uuid]
                 break
         else:
             raise ValueError(f"Box ID {box_id} not found for image '{image_rel_path}'")

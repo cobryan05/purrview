@@ -37,7 +37,7 @@ export function toast(message, duration = 5000, type = "info") {
     container.id = 'toast-container';
     Object.assign(container.style, {
       position: 'fixed',
-      bottom: '20px',
+      top: '20px',
       left: '50%',
       transform: 'translateX(-50%)',
       zIndex: 1000,

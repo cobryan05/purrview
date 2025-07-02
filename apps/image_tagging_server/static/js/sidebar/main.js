@@ -1,7 +1,7 @@
 // canvas_ui_main.js
 
 import { addRecognizedBoxes, loadImageAndMetadata } from '/app-static/js/canvas/io.js';
-import { getCurrentLabelUuid, getLayer } from '/app-static/js/canvas/state.js';
+import { getCurrentLabelUuid, getLayer, setLabelList } from '/app-static/js/canvas/state.js';
 import { getTool, setTool } from '/app-static/js/canvas/tools.js';
 
 // --- Utility functions ---
@@ -135,21 +135,22 @@ export async function refreshLabelList({ target = "labels-list", editable = true
     const res = await fetch('/api/labels/list');
     if (!res.ok) throw new Error(`Failed to fetch labels: ${res.status}`);
     const data = await res.json();
-
     const labelListContainer = document.getElementById(target);
     if (!labelListContainer) {
       console.error("labelListContainer is null");
       return;
     }
+
+    setLabelList(data.labels);
+
     labelListContainer.innerHTML = '';
 
     // Recursively render labels and children with indentation
     function renderLabel(label, indentLevel = 0) {
-      const { id, name, color, uuid } = label.metadata;
+      const { name, color, uuid } = label.metadata;
 
       const labelRow = document.createElement('div');
       labelRow.className = 'label-row';
-      labelRow.dataset.labelId = id;
       labelRow.dataset.uuid = uuid;
       labelRow.style.paddingLeft = `${indentLevel * 1.5}em`;
 
@@ -170,7 +171,7 @@ export async function refreshLabelList({ target = "labels-list", editable = true
             defaultColor: color,
             indentLevel,
             onSave: async (newName, newColor) => {
-              const updatedLabel = { label_id: id, name: newName, color: newColor };
+              const updatedLabel = { label_uuid: uuid, name: newName, color: newColor };
               const response = await fetch('/api/labels/update', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -191,7 +192,7 @@ export async function refreshLabelList({ target = "labels-list", editable = true
           const response = await fetch('/api/labels/delete', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ label_id: id }),
+            body: JSON.stringify({ label_uuid: uuid }),
           });
           if (response.ok) refreshLabelList({ target, editable });
           else alert('Failed to delete label');
@@ -203,7 +204,7 @@ export async function refreshLabelList({ target = "labels-list", editable = true
           const childRow = createInputRow({
             indentLevel: indentLevel + 1,
             onSave: async (newName, newColor) => {
-              const newLabel = { name: newName, color: newColor, parent_id: id };
+              const newLabel = { name: newName, color: newColor, parent_uuid: uuid };
               const response = await fetch('/api/labels/add', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },

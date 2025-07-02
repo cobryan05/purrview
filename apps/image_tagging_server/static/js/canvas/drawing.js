@@ -1,4 +1,4 @@
-import { getLayer, getTransformer, getCurrentTool } from './state.js';
+import { getLayer, getTransformer, getCurrentTool, getCurrentLabelUuid, getLabelByUuid } from './state.js';
 import { selectShape } from './selection.js';
 import { generateUUID } from './utils.js';
 import { openInspectorTab } from '../sidebar/main.js';
@@ -10,10 +10,11 @@ import { openInspectorTab } from '../sidebar/main.js';
 export function createBoundingBox(x, y, props = {}) {
   const width = props.width ?? 50;
   const height = props.height ?? 50;
-  const label = props.metadata?.label ?? '';
+  const labelUuid = props.metadata?.labelUuid ?? ''
   const confidence = props.metadata?.confidence;
   const uuid = generateUUID();
-
+  const label = getLabelByUuid(labelUuid)
+  const labelText = label?.metadata?.name ?? 'Unknown';
   const group = new Konva.Group({
     x,
     y,
@@ -21,21 +22,23 @@ export function createBoundingBox(x, y, props = {}) {
     name: 'annotation',
   });
 
+  const color = label?.metadata?.color ?? 'red';
+
   const rect = new Konva.Rect({
     name: 'box',
     width,
     height,
-    stroke: 'red',
+    stroke: color,
     strokeWidth: 2,
   });
 
-  const labelText = `${label}${confidence != null ? ` (${(confidence * 100).toFixed(1)}%)` : ''}`;
+  const bboxText = `${labelText}${confidence != null ? ` (${(confidence * 100).toFixed(1)}%)` : ''}`;
 
   const text = new Konva.Text({
     name: 'label',
-    text: labelText,
+    text: bboxText,
     fontSize: 14,
-    fill: 'red',
+    fill: color,
     y: -18,
     x: 0,
   });
@@ -79,7 +82,7 @@ export function createBoundingBox(x, y, props = {}) {
     getLayer().draw();
   });
 
-    group.on('dblclick', () => {
+  group.on('dblclick', () => {
     selectShape(group);
     openInspectorTab();
   });

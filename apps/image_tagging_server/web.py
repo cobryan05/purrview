@@ -193,18 +193,19 @@ class WebApp:
         class AddLabelRequest(BaseModel):
             name: str
             color: str
-            parent_id: Optional[int] = None
+            parent_uuid: Optional[str] = None
 
         class DeleteLabelRequest(BaseModel):
-            label_id: int
+            label_uuid: str
 
         class BoundingBoxInput(BaseModel):
             id: Optional[int]
+            label_uuid: str
             x: float
             y: float
             width: float
             height: float
-            labels: Optional[List[int]] = []  # List of label IDs
+            tags: Optional[List[str]] = []  # List of tag uuids
             extra: Optional[dict] = {}
 
         class UpdateMetadataRequest(BaseModel):
@@ -231,21 +232,22 @@ class WebApp:
             new_boxes = []
             for b in req.boxes:
                 # Resolve label info for each label ID
-                labels = []
-                for label_id in b.labels or []:
-                    # Here, you might want to fetch label info by ID from DB or cache
-                    # Let's assume manager._db_client has get_label_by_id
-                    label_row = await self._manager._db_client.get_label_by_id(label_id)
-                    if label_row:
-                        labels.append(Label(id=label_row["id"], name=label_row["name"], color=label_row["color"]))
+                # tags = []
+                # for label_id in b.tags or []:
+                #     # Here, you might want to fetch label info by ID from DB or cache
+                #     # Let's assume manager._db_client has get_label_by_id
+                #     label_row = await self._manager._db_client.get_label_by_id(label_id)
+                #     if label_row:
+                #         labels.append(Label(id=label_row["id"], name=label_row["name"], color=label_row["color"]))
+                #TODO TAGS
                 new_boxes.append(
                     BoundingBoxMetadata(
                         id=b.id,
+                        label_uuid=b.label_uuid,
                         x=b.x,
                         y=b.y,
                         width=b.width,
                         height=b.height,
-                        labels=labels,
                         extra=b.extra or {},
                     )
                 )
@@ -262,7 +264,9 @@ class WebApp:
             API endpoint to add a new label.
             """
             try:
-                label = await self._manager.create_new_label(request.name, request.color, parent_id=request.parent_id)
+                label = await self._manager.create_new_label(
+                    request.name, request.color, parent_uuid=request.parent_uuid
+                )
                 return JSONResponse(content={"status": "success", "label": asdict(label)})
             except Exception as e:
                 logger.exception(e)
@@ -277,7 +281,7 @@ class WebApp:
             API endpoint to add a new label.
             """
             try:
-                await self._manager.delete_label(request.label_id)
+                await self._manager.delete_label(request.label_uuid)
                 return JSONResponse(content={"status": "success"})
             except Exception as e:
                 logger.exception(e)
@@ -310,7 +314,7 @@ class WebApp:
                 )
 
         class UpdateLabelRequest(BaseModel):
-            label_id: int
+            label_uuid: str
             name: Optional[str] = None
             color: Optional[str] = None
 
@@ -320,7 +324,7 @@ class WebApp:
             API endpoint to update an existing label's name and/or color.
             """
             try:
-                await self._manager.update_label(label_id=request.label_id, name=request.name, color=request.color)
+                await self._manager.update_label(label_uuid=request.label_uuid, name=request.name, color=request.color)
                 return JSONResponse(content={"status": "success"})
             except Exception as e:
                 logger.exception(e)

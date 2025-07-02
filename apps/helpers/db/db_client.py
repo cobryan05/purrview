@@ -20,21 +20,21 @@ logger.setLevel(logging.DEBUG)
 
 @dataclass
 class LabelMetaData:
-    id: int
     name: str
     color: str
     uuid: str
-    parent_id: Optional[int]
+    parent_uuid: Optional[int]
 
 
 @dataclass
 class BoundingBoxMetadata:
     id: Optional[int]  # may be None for new boxes
+    label_uuid: str
     x: float
     y: float
     width: float
     height: float
-    labels: List[LabelMetaData] = field(default_factory=list)
+    tags: List[LabelMetaData] = field(default_factory=list)
     extra: Dict[str, str] = field(default_factory=dict)
 
 
@@ -78,14 +78,14 @@ class DbClient:
                     metadata TEXT
                 );
                 CREATE TABLE IF NOT EXISTS labels (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    name TEXT UNIQUE NOT NULL,
+                    uuid TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
                     color TEXT,
-                    uuid TEXT,
-                    parent_id INTEGER REFERENCES labels(id)
+                    parent_uuid TEXT REFERENCES labels(uuid)
                 );
                 CREATE TABLE IF NOT EXISTS bounding_boxes (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    label_uuid TEXT NOT NULL,
                     image_id INTEGER NOT NULL,
                     x REAL NOT NULL,
                     y REAL NOT NULL,
@@ -94,12 +94,12 @@ class DbClient:
                     metadata TEXT,
                     FOREIGN KEY(image_id) REFERENCES images(id) ON DELETE CASCADE
                 );
-                CREATE TABLE IF NOT EXISTS bbox_labels (
+                CREATE TABLE IF NOT EXISTS bbox_tags (
                     bbox_id INTEGER NOT NULL,
-                    label_id INTEGER NOT NULL,
-                    PRIMARY KEY (bbox_id, label_id),
+                    label_uuid TEXT NOT NULL,
+                    PRIMARY KEY (bbox_id, label_uuid),
                     FOREIGN KEY(bbox_id) REFERENCES bounding_boxes(id) ON DELETE CASCADE,
-                    FOREIGN KEY(label_id) REFERENCES labels(id) ON DELETE CASCADE
+                    FOREIGN KEY(label_uuid) REFERENCES labels(uuid) ON DELETE CASCADE
                 );
                 """
             )
@@ -148,12 +148,14 @@ class DbClient:
             List[Dict]: List of label dictionaries with keys: id, name, color, uuid.
         """
         async with aiosqlite.connect(self._db_path) as db:
-            cursor = await db.execute("SELECT id, name, color, uuid, parent_id FROM labels")
+            cursor = await db.execute("SELECT name, color, uuid, parent_uuid FROM labels")
             rows = await cursor.fetchall()
             await cursor.close()
-            return [LabelMetaData(id=r[0], name=r[1], color=r[2], uuid=r[3], parent_id=r[4]) for r in rows]
+            return [LabelMetaData(name=r[0], color=r[1], uuid=r[2], parent_uuid=r[3]) for r in rows]
 
-    async def add_label(self, name: str, color: str, uuid: Optional[str] = None, parent_id: Optional[int] = None) -> LabelMetaData:
+    async def add_label(
+        self, name: str, color: str, uuid: Optional[str] = None, parent_uuid: Optional[str] = None
+    ) -> LabelMetaData:
         """
         Add a label or return existing one by name.
 
@@ -167,20 +169,20 @@ class DbClient:
         """
         uuid = uuid or str(uuid4())
         async with aiosqlite.connect(self._db_path) as db:
-            cursor = await db.execute("SELECT id, name, color, uuid, parent_id FROM labels WHERE name = ?", (name,))
+            cursor = await db.execute("SELECT name, color, uuid, parent_uuid FROM labels WHERE name = ?", (name,))
             row = await cursor.fetchone()
             if row:
-                return LabelMetaData(id=row[0], name=row[1], color=row[2], uuid=row[3], parent_id=row[4])
+                return LabelMetaData(name=row[0], color=row[1], uuid=row[2], parent_uuid=row[3])
 
             cursor = await db.execute(
-                "INSERT INTO labels (name, color, uuid, parent_id) VALUES (?, ?, ?, ?)",
-                (name, color, uuid, parent_id),
+                "INSERT INTO labels (name, color, uuid, parent_uuid) VALUES (?, ?, ?, ?)",
+                (name, color, uuid, parent_uuid),
             )
             await db.commit()
-            label_id = cursor.lastrowid
-            if label_id is None:
+            label_uuid = cursor.lastrowid
+            if label_uuid is None:
                 raise Exception(f"Failed to insert label: {name}")
-            return LabelMetaData(id=label_id, name=name, color=color, uuid=uuid, parent_id=parent_id)
+            return LabelMetaData(name=name, color=color, uuid=uuid, parent_uuid=parent_uuid)
 
     async def get_label_by_name(self, name: str) -> Optional[LabelMetaData]:
         """
@@ -193,19 +195,19 @@ class DbClient:
             Optional[Dict]: Label data or None.
         """
         async with aiosqlite.connect(self._db_path) as db:
-            cursor = await db.execute("SELECT id, name, color, uuid FROM labels WHERE name = ?", (name,))
+            cursor = await db.execute("SELECT name, color, uuid FROM labels WHERE name = ?", (name,))
             row = await cursor.fetchone()
             await cursor.close()
             if row:
-                return LabelMetaData(id=row[0], name=row[1], color=row[2], uuid=row[3])
+                return LabelMetaData(name=row[0], color=row[1], uuid=row[2])
             return None
 
-    async def update_label(self, label_id: int, name: Optional[str] = None, color: Optional[str] = None) -> None:
+    async def update_label(self, label_uuid: int, name: Optional[str] = None, color: Optional[str] = None) -> None:
         """
         Update label properties.
 
         Args:
-            label_id (int): Label ID.
+            label_uuid (int): Label ID.
             name (Optional[str]): New name.
             color (Optional[str]): New color.
         """
@@ -221,22 +223,22 @@ class DbClient:
             query_parts.append("color = ?")
             params.append(color)
 
-        params.append(label_id)
+        params.append(label_uuid)
 
         async with aiosqlite.connect(self._db_path) as db:
-            await db.execute(f"UPDATE labels SET {', '.join(query_parts)} WHERE id = ?", tuple(params))
+            await db.execute(f"UPDATE labels SET {', '.join(query_parts)} WHERE uuid = ?", tuple(params))
             await db.commit()
 
-    async def delete_label(self, label_id: int) -> None:
+    async def delete_label(self, label_uuid: str) -> None:
         """
         Delete a label and related entries.
 
         Args:
-            label_id (int): Label ID to delete.
+            label_uuid (int): Label ID to delete.
         """
         async with aiosqlite.connect(self._db_path) as db:
-            await db.execute("DELETE FROM bbox_labels WHERE label_id = ?", (label_id,))
-            await db.execute("DELETE FROM labels WHERE id = ?", (label_id,))
+            await db.execute("DELETE FROM bbox_tags WHERE label_uuid = ?", (label_uuid,))
+            await db.execute("DELETE FROM labels WHERE uuid = ?", (label_uuid,))
             await db.commit()
 
     async def add_box_for_image(
@@ -302,37 +304,37 @@ class DbClient:
             box_id (int): Bounding box ID.
         """
         async with aiosqlite.connect(self._db_path) as db:
-            await db.execute("DELETE FROM bbox_labels WHERE bbox_id = ?", (box_id,))
+            await db.execute("DELETE FROM bbox_tags WHERE bbox_id = ?", (box_id,))
             await db.execute("DELETE FROM bounding_boxes WHERE id = ?", (box_id,))
             await db.commit()
 
-    async def assign_label_to_box(self, bbox_id: int, label_id: int) -> None:
+    async def assign_label_to_box(self, bbox_id: int, label_uuid: int) -> None:
         """
         Assign a label to a bounding box.
 
         Args:
             bbox_id (int): Bounding box ID.
-            label_id (int): Label ID.
+            label_uuid (int): Label ID.
         """
         async with aiosqlite.connect(self._db_path) as db:
             await db.execute(
-                "INSERT OR IGNORE INTO bbox_labels (bbox_id, label_id) VALUES (?, ?)",
-                (bbox_id, label_id),
+                "INSERT OR IGNORE INTO bbox_tags (bbox_id, label_uuid) VALUES (?, ?)",
+                (bbox_id, label_uuid),
             )
             await db.commit()
 
-    async def remove_label_from_box(self, bbox_id: int, label_id: int) -> None:
+    async def remove_label_from_box(self, bbox_id: int, label_uuid: int) -> None:
         """
         Remove a label from a bounding box.
 
         Args:
             bbox_id (int): Bounding box ID.
-            label_id (int): Label ID.
+            label_uuid (int): Label ID.
         """
         async with aiosqlite.connect(self._db_path) as db:
             await db.execute(
-                "DELETE FROM bbox_labels WHERE bbox_id = ? AND label_id = ?",
-                (bbox_id, label_id),
+                "DELETE FROM bbox_tags WHERE bbox_id = ? AND label_uuid = ?",
+                (bbox_id, label_uuid),
             )
             await db.commit()
 
@@ -364,7 +366,7 @@ class DbClient:
 
             # Read bounding boxes
             cursor = await db.execute(
-                "SELECT id, x, y, width, height, metadata FROM bounding_boxes WHERE image_id = ?",
+                "SELECT id, label_uuid, x, y, width, height, metadata FROM bounding_boxes WHERE image_id = ?",
                 (image_id,),
             )
             bbox_rows = await cursor.fetchall()
@@ -372,7 +374,7 @@ class DbClient:
 
             boxes = []
             for bbox_row in bbox_rows:
-                bbox_id, x, y, w, h, bbox_meta_json = bbox_row
+                bbox_id, bbox_label_uuid, x, y, w, h, bbox_meta_json = bbox_row
                 bbox_extra = {}
                 if bbox_meta_json:
                     try:
@@ -380,29 +382,30 @@ class DbClient:
                     except Exception:
                         bbox_extra = {}
 
+                # TODO TAGS
                 # Read labels for this box
-                label_cursor = await db.execute(
+                tag_cursor = await db.execute(
                     """
-                    SELECT labels.id, labels.name, labels.color
+                    SELECT labels.uuid, labels.name, labels.color
                     FROM labels
-                    JOIN bbox_labels ON labels.id = bbox_labels.label_id
-                    WHERE bbox_labels.bbox_id = ?
+                    JOIN bbox_tags ON labels.uuid = bbox_tags.label_uuid
+                    WHERE bbox_tags.bbox_id = ?
                     """,
                     (bbox_id,),
                 )
-                label_rows = await label_cursor.fetchall()
-                await label_cursor.close()
+                tag_rows = await tag_cursor.fetchall()
+                await tag_cursor.close()
 
-                labels = [LabelMetaData(id=l[0], name=l[1], color=l[2]) for l in label_rows]
+                tags = [LabelMetaData(uuid=l[0], name=l[1], color=l[2]) for l in tag_rows]
 
                 boxes.append(
                     BoundingBoxMetadata(
                         id=bbox_id,
+                        label_uuid=bbox_label_uuid,
                         x=x,
                         y=y,
                         width=w,
                         height=h,
-                        labels=labels,
                         extra=bbox_extra,
                     )
                 )
@@ -415,12 +418,9 @@ class DbClient:
                 boxes=boxes,
             )
 
-    async def write_metadata(self, image_id: int, metadata: ImageMetadata) -> None:
+    async def write_metadata_to_db(self, image_id: int, metadata: ImageMetadata) -> None:
         """
         Write image metadata including bounding boxes and labels atomically.
-
-        This will update the image's metadata JSON and last_updated timestamp,
-        then delete and re-insert all bounding boxes.
 
         Args:
             image_id: ID of the image to update.
@@ -436,9 +436,9 @@ class DbClient:
                     (image_meta_json, image_id),
                 )
 
-                # Delete existing bounding boxes and bbox_labels for image
+                # Delete existing bounding boxes and bbox_tags for image
                 await db.execute(
-                    "DELETE FROM bbox_labels WHERE bbox_id IN (SELECT id FROM bounding_boxes WHERE image_id = ?)",
+                    "DELETE FROM bbox_tags WHERE bbox_id IN (SELECT id FROM bounding_boxes WHERE image_id = ?)",
                     (image_id,),
                 )
                 await db.execute("DELETE FROM bounding_boxes WHERE image_id = ?", (image_id,))
@@ -447,8 +447,8 @@ class DbClient:
                 for box in metadata.boxes:
                     bbox_meta_json = json.dumps(box.extra) if box.extra else None
                     cursor = await db.execute(
-                        "INSERT INTO bounding_boxes (image_id, x, y, width, height, metadata) VALUES (?, ?, ?, ?, ?, ?)",
-                        (image_id, box.x, box.y, box.width, box.height, bbox_meta_json),
+                        "INSERT INTO bounding_boxes (image_id, label_uuid, x, y, width, height, metadata) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                        (image_id, box.label_uuid, box.x, box.y, box.width, box.height, bbox_meta_json),
                     )
                     new_bbox_id = cursor.lastrowid
 
@@ -487,17 +487,17 @@ class DbClient:
 
             async with aiosqlite.connect(self._db_path) as db:
                 if overwrite_existing:
-                    await db.execute("DELETE FROM bbox_labels")
+                    await db.execute("DELETE FROM bbox_tags")
                     await db.execute("DELETE FROM labels")
 
                 for label in label_list:
-                    # Insert or replace based on unique name
+                    # Insert or replace based on uuid
                     await db.execute(
                         """
-                        INSERT OR REPLACE INTO labels (id, name, color, uuid)
-                        VALUES (?, ?, ?, ?)
+                        INSERT OR REPLACE INTO labels (uuid, name, color)
+                        VALUES (?, ?, ?)
                         """,
-                        (label["id"], label["name"], label["color"], label.get("uuid") or str(uuid4())),
+                        (label.get("uuid", str(uuid4()), label["name"], label["color"])),
                     )
 
                 await db.commit()
@@ -549,7 +549,7 @@ class DbClient:
             # Convert parsed dict into ImageMetadata dataclass
             image_meta: ImageMetadata = from_dict(data_class=ImageMetadata, data=parsed)
             image_meta.id = image_id
-            await self.write_metadata(image_id, image_meta)
+            await self.write_metadata_to_db(image_id, image_meta)
             return image_meta
         except FileNotFoundError:
             logger.warning(f"JSON file not found: {json_path}")
