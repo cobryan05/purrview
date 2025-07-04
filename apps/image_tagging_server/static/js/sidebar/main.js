@@ -251,7 +251,9 @@ export async function refreshLabelList({ target = "labels-list", editable = true
       });
     }
 
-    data.labels.forEach(label => renderLabel(label, 0));
+    data.labels
+      .filter(label => !label.metadata.parent_uuid)
+      .forEach(label => renderLabel(label, 0));
 
     // Add new label row at bottom
     const newLabelRow = document.createElement('div');

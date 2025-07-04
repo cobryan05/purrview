@@ -225,12 +225,16 @@ class WebApp:
         async def update_metadata(req: UpdateMetadataRequest) -> JSONResponse:
             image_path = req.image_path
             metadata = await self._manager.get_image_metadata(image_path)
+            label_uuid_map = await self._manager.get_label_uuid_map()
+
             if metadata is None:
                 raise HTTPException(status_code=404, detail="Image not found")
 
             # Build new bounding box list from input
             new_boxes = []
             for b in req.boxes:
+                label_data = label_uuid_map.get(b.label_uuid, None)
+                label_text = label_data.metadata.name if label_data else "Unknown"
                 # Resolve label info for each label ID
                 # tags = []
                 # for label_id in b.tags or []:
@@ -244,6 +248,7 @@ class WebApp:
                     BoundingBoxMetadata(
                         id=b.id,
                         label_uuid=b.label_uuid,
+                        label_text=label_text,
                         x=b.x,
                         y=b.y,
                         width=b.width,

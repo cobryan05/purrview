@@ -192,24 +192,25 @@ class Manager:
         metadata: LabelMetaData
         children: List["LabelData"] = field(default_factory=list)
 
-    async def get_labels(self) -> List[LabelData]:
-        """
-        Gets a list of all labels
-        """
+    async def get_label_uuid_map(self) -> Dict[str, LabelData]:
         flat_list: List[LabelMetaData] = await self._db_client.list_labels()
-        uuid_to_node: Dict[str, Manager.LabelData] = {label.uuid: Manager.LabelData(metadata=label) for label in flat_list}
-
-        roots: List[Manager.LabelData] = []
+        uuid_to_node: Dict[str, Manager.LabelData] = {
+            label.uuid: Manager.LabelData(metadata=label) for label in flat_list
+        }
 
         for label in flat_list:
             node = uuid_to_node[label.uuid]
             if label.parent_uuid and label.parent_uuid in uuid_to_node:
                 parent_node = uuid_to_node[label.parent_uuid]
                 parent_node.children.append(node)
-            else:
-                roots.append(node)
 
-        return roots
+        return uuid_to_node
+
+    async def get_labels(self) -> List[LabelData]:
+        """
+        Gets a list of all labels
+        """
+        return list((await self.get_label_uuid_map()).values())
 
     async def update_label(self, label_uuid: str, name: Optional[str] = None, color: Optional[str] = None) -> None:
         """
@@ -288,7 +289,7 @@ class Manager:
         if extra is None:
             extra = {}
 
-        #TODO labels
+        # TODO labels
         new_box = BoundingBoxMetadata(
             id=None,
             x=x,

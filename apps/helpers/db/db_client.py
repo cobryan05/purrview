@@ -30,6 +30,7 @@ class LabelMetaData:
 class BoundingBoxMetadata:
     id: Optional[int]  # may be None for new boxes
     label_uuid: str
+    label_text: str
     x: float
     y: float
     width: float
@@ -366,7 +367,20 @@ class DbClient:
 
             # Read bounding boxes
             cursor = await db.execute(
-                "SELECT id, label_uuid, x, y, width, height, metadata FROM bounding_boxes WHERE image_id = ?",
+                """
+                SELECT
+                    b.id,
+                    b.label_uuid,
+                    l.name AS label_name,
+                    b.x,
+                    b.y,
+                    b.width,
+                    b.height,
+                    b.metadata
+                FROM bounding_boxes b
+                JOIN labels l ON b.label_uuid = l.uuid
+                WHERE b.image_id = ?
+                """,
                 (image_id,),
             )
             bbox_rows = await cursor.fetchall()
@@ -374,7 +388,7 @@ class DbClient:
 
             boxes = []
             for bbox_row in bbox_rows:
-                bbox_id, bbox_label_uuid, x, y, w, h, bbox_meta_json = bbox_row
+                bbox_id, bbox_label_uuid, bbox_label_text, x, y, w, h, bbox_meta_json = bbox_row
                 bbox_extra = {}
                 if bbox_meta_json:
                     try:
@@ -402,6 +416,7 @@ class DbClient:
                     BoundingBoxMetadata(
                         id=bbox_id,
                         label_uuid=bbox_label_uuid,
+                        label_text = bbox_label_text,
                         x=x,
                         y=y,
                         width=w,

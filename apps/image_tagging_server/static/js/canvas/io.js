@@ -22,6 +22,7 @@ export async function loadImageAndMetadata(imageName) {
   try {
     const transformer = getTransformer();
     const layer = getLayer();
+    clearAnnotations();
     setCurrentImageName(imageName);
     refreshLabelList({})
 
