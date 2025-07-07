@@ -26,7 +26,7 @@ services:
       - ./requirements.txt:/app/requirements.txt
       - ./pyproject.toml:/app/pyproject.toml
     ports:
-      - "8000-8002:8000-8002" # Whisker-Watcher apps
+      - "8000-8003:8000-8003" # Whisker-Watcher apps
       - "8553:8554"           # RTSP relay
       - "9001:9001"           # Supervisord
     restart: unless-stopped
@@ -44,3 +44,14 @@ services:
       - ./models:/models
       - ./yolo2onnx.pip_cache:/root/.cache/pip
     profiles: ["yolo2onnx"] # Don't build unless requested
+
+  whiskerwatcher_training:
+    build:
+      context: ./apps/yolo2onnx
+      dockerfile: Dockerfile
+    image: yolo2onnx
+    entrypoint: ["python", "convert.py"]
+    volumes:
+      - ./models:/models
+      - ./yolo2onnx.pip_cache:/root/.cache/pip
+    profiles: ["training"] # Don't build unless requested

@@ -494,8 +494,9 @@ class Manager:
     async def _init(self):
         """Initialization that should run on event loop"""
         try:
-            if not self._db_client.db_exists():
-                await self._db_client.init_db()
+            db_existed: bool = self._db_client.db_exists()
+            await self._db_client.init_db()
+            if not db_existed:
                 await self._db_client.read_labels_metadata_json_to_db(str(self._labels_json))
         except Exception as e:
             logger.exception(e)

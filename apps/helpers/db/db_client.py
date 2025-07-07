@@ -102,6 +102,17 @@ class DbClient:
                     FOREIGN KEY(bbox_id) REFERENCES bounding_boxes(id) ON DELETE CASCADE,
                     FOREIGN KEY(label_uuid) REFERENCES labels(uuid) ON DELETE CASCADE
                 );
+                CREATE TABLE IF NOT EXISTS tasks (
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    params_json TEXT NOT NULL,
+                    resume_data_json TEXT,
+                    result_json TEXT,
+                    error_message TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
                 """
             )
             await db.commit()
