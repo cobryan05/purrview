@@ -4,11 +4,12 @@ import asyncio
 import logging
 import sys
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
-from apps.helpers.db.db_client import DbClient
-from apps.helpers.tasks.Task import Task
+from apps.helpers.db.db_client import DbClient, TaskRecord
 from apps.helpers.tasks.Registry import task_registry
+from apps.helpers.tasks.Task import Task
+
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger(__file__)
 logger.setLevel(logging.DEBUG)
@@ -16,7 +17,7 @@ logger.setLevel(logging.DEBUG)
 
 @dataclass
 class TaskInfo:
-    id: str
+    id: int
     status: str
     task: Task
 
@@ -32,6 +33,7 @@ class Manager:
         """
         self._task: Optional[asyncio.Task] = None  # Background task for periodic operations
         self._db_client: DbClient = db_client
+        self._running_tasks: Dict[str, TaskInfo] = {}
 
     async def list_avail_tasks(self) -> List[str]:
         """
@@ -39,11 +41,32 @@ class Manager:
         """
         return list(task_registry.keys())
 
-    async def list_running_tasks(self) -> List[TaskInfo]:
+    async def list_active_tasks(self) -> Dict[str, TaskInfo]:
         """
         List all tasks managed by the Manager.
         """
-        return []
+        return dict(self._running_tasks)
+
+    async def create_new_task(self, typename: str, params: Dict[str, Any]) -> int:
+        """
+        Start a new task.
+
+        Returns new task id
+        """
+        if typename not in task_registry:
+            raise ValueError(f"Unknown task: {typename}")
+
+        record: TaskRecord = await self._db_client.add_task(
+            typename=typename, params=params
+        )
+        task_instance = task_registry[typename](id=record.id, params=params)
+
+
+        task_info = TaskInfo(id=record.id, status="running", task=task_instance)
+
+        self._running_tasks[task_instance.id] = task_info
+        await task_instance.run() # TODO: Thread?
+        return task_info.id
 
     def start(self):
         """Start the periodic worker task, should be called from the event loop to run on"""

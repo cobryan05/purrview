@@ -9,14 +9,12 @@ from typing import Optional
 
 import cv2
 import numpy as np
-from fastapi import Body, FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi import Body, FastAPI, File, Form, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
-
-from apps.helpers.inferenceProviders.inferenceProvider import InferenceResult
 
 from .manager import Manager
 
@@ -107,7 +105,9 @@ class WebApp:
         async def index(request: Request):
             """Home Page"""
             buttons = [
-                {"label": "List Tasks", "action": "/list-tasks"},
+                {"label": "List Tasks", "action": "/api/tasks/list-active"},
+                {"label": "List Available Tasks", "action": "/api/tasks/list-avail"},
+                {"label": "Create Task", "action": "/create-task-form"},
             ]
             return self._templates.TemplateResponse(
                 "dynamic_index.html",
@@ -172,34 +172,64 @@ class WebApp:
                     status_code=500,
                 )
 
-        @self._app.post("/list-tasks", response_class=HTMLResponse, include_in_schema=False)
-        async def list_tasks(
-            request: Request, model_name: str = Form(...), duration: float = Form(...)
-        ) -> HTMLResponse:
-            """
-            HTML endpoint to list tasks
+        class CreateTaskRequest(BaseModel):
+            """Request model for creating a new task."""
 
-            Args:
-                request (Request): The FastAPI request object.
-                model_name (str): Name of the model to pin.
-                duration (str): Duration for which the model should be pinned.
+            typename: str
+            params: dict
 
-            Returns:
-                HTMLResponse: Rendered HTML response containing the pin ID or an error message.
-            """
+        @self._app.post(
+            "/api/tasks/create",
+            tags=[WebApp.TASKS_API_TAG_NAME],
+            operation_id="create_task",
+            response_class=JSONResponse,
+        )
+        async def create_task_api(req: CreateTaskRequest) -> JSONResponse:
             try:
-                # Call the API function to list tasks
-                response: JSONResponse = await list_tasks_api(request=request)
-                response_data = json.loads(response.body.decode("utf-8"))
+                task_id: int = await self._manager.create_new_task(typename=req.typename, params=req.params)
+                response_data = {"status": "success", "task_id": task_id}
+            except Exception as e:
+                response_data = {"status": "failure", "message": str(e)}
+            return JSONResponse(content=response_data)
 
-                # Render the HTML response using the dynamic template
+        @self._app.post("/create-task", response_class=HTMLResponse, include_in_schema=False)
+        async def create_task(
+            task_name: str = Form(...),
+            params: str = Form(""),
+            request: Request = None,
+        ):
+            try:
+                req: CreateTaskRequest = CreateTaskRequest(typename=task_name, params=json.loads(params) if params else {})
+                response_data = await create_task_api(req)
                 return self._templates.TemplateResponse(
                     "dynamic_response.html",
                     {
-                        "request": request,
-                        "title": "List Tasks Results",
+                        "request": req,
+                        "title": "Create Task Results",
                         "response_data": response_data,
                     },
                 )
             except Exception as e:
                 return self._error_response(request, f"Internal server error: {str(e)}")
+
+        @self._app.get("/create-task-form", response_class=HTMLResponse)
+        async def create_task_form(request: Request) -> HTMLResponse:
+            task_list = await self._manager.list_avail_tasks()
+            fields = {
+                "task_name": {
+                    "label": "Task Name",
+                    "type": "radio",
+                    "options": task_list,
+                },
+                "params": {"label": "Parameters (JSON)", "type": "text", "optional": True},
+            }
+            return self._templates.TemplateResponse(
+                "dynamic_form.html",
+                {
+                    "request": request,
+                    "title": "Create Task",
+                    "action_url": "/create-task",
+                    "fields": fields,
+                    "submit_label": "Submit",
+                },
+            )

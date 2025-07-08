@@ -2,8 +2,8 @@ from abc import ABC, abstractmethod
 from typing import Any
 
 class Task(ABC):
-    def __init__(self, task_id: str, params: dict, resume_data: dict = None):
-        self.task_id = task_id
+    def __init__(self, id: int, params: dict, resume_data: dict = None):
+        self.id = id
         self.params = params
         self.resume_data = resume_data or {}
 
@@ -13,7 +13,7 @@ class Task(ABC):
         pass
 
     @abstractmethod
-    def name(self) -> str:
+    def typename(self) -> str:
         """Return the unique task type name (used in DB)."""
         pass
 

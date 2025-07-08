@@ -1,12 +1,17 @@
-import os
 import asyncio
+import os
 from typing import Dict
-from .Task import Task  # assuming your base class is in base.py
+
 from .Registry import register_task
+from .Task import Task  # assuming your base class is in base.py
+
 
 @register_task(name="list-files")
 class ListFilesTask(Task):
-    def name(self) -> str:
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+    def typename(self) -> str:
         return "ListFiles"
 
     async def run(self) -> Dict:

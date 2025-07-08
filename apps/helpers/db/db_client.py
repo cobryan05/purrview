@@ -48,6 +48,19 @@ class ImageMetadata:
     boxes: List[BoundingBoxMetadata] = field(default_factory=list)
 
 
+@dataclass
+class TaskRecord:
+    id: int
+    name: str
+    status: str
+    params_json: str
+    resume_data_json: Optional[str]
+    result_json: Optional[str]
+    error_message: Optional[str]
+    created_at: Optional[str]
+    updated_at: Optional[str]
+
+
 class DbClient:
     """Helper class for SQLite database interactions for image annotations."""
 
@@ -82,7 +95,7 @@ class DbClient:
                     uuid TEXT PRIMARY KEY,
                     name TEXT NOT NULL,
                     color TEXT,
-                    parent_uuid TEXT REFERENCES labels(uuid)
+                    parent_id TEXT REFERENCES labels(uuid)
                 );
                 CREATE TABLE IF NOT EXISTS bounding_boxes (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -103,7 +116,7 @@ class DbClient:
                     FOREIGN KEY(label_uuid) REFERENCES labels(uuid) ON DELETE CASCADE
                 );
                 CREATE TABLE IF NOT EXISTS tasks (
-                    id TEXT PRIMARY KEY,
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
                     name TEXT NOT NULL,
                     status TEXT NOT NULL,
                     params_json TEXT NOT NULL,
@@ -151,6 +164,47 @@ class DbClient:
             cursor = await db.execute("INSERT INTO images (filename) VALUES (?)", (filename,))
             await db.commit()
             return cursor.lastrowid
+
+    async def add_task(self, typename: str, params: dict) -> TaskRecord:
+        """
+        Insert a new task into the database with an auto-incrementing ID.
+
+        Args:
+            name (str): Task name (from registry).
+            params (dict): Task parameters.
+            resume_data (Optional[dict]): Optional resume state.
+
+        Returns:
+            TaskRecord: The full task record, including auto-generated ID.
+        """
+        params_json = json.dumps(params)
+        status = "pending"
+        resume_data_json = None
+        async with aiosqlite.connect(self._db_path) as db:
+            cursor = await db.execute(
+                """
+                INSERT INTO tasks (name, status, params_json, resume_data_json)
+                VALUES (?, ?, ?, ?)
+                """,
+                (typename, status, params_json, resume_data_json),
+            )
+            await db.commit()
+
+            task_id = cursor.lastrowid
+
+            cursor = await db.execute(
+                """
+                SELECT id, name, status, params_json, resume_data_json,
+                       result_json, error_message, created_at, updated_at
+                FROM tasks WHERE id = ?
+                """,
+                (task_id,),
+            )
+            row = await cursor.fetchone()
+            if not row:
+                raise Exception(f"Failed to retrieve inserted task with ID {task_id}")
+
+            return TaskRecord(*row)
 
     async def list_labels(self) -> List[LabelMetaData]:
         """
@@ -214,12 +268,12 @@ class DbClient:
                 return LabelMetaData(name=row[0], color=row[1], uuid=row[2])
             return None
 
-    async def update_label(self, label_uuid: int, name: Optional[str] = None, color: Optional[str] = None) -> None:
+    async def update_label(self, label_uuid: str, name: Optional[str] = None, color: Optional[str] = None) -> None:
         """
         Update label properties.
 
         Args:
-            label_uuid (int): Label ID.
+            label_uuid (str): Label uuid.
             name (Optional[str]): New name.
             color (Optional[str]): New color.
         """
@@ -427,7 +481,7 @@ class DbClient:
                     BoundingBoxMetadata(
                         id=bbox_id,
                         label_uuid=bbox_label_uuid,
-                        label_text = bbox_label_text,
+                        label_text=bbox_label_text,
                         x=x,
                         y=y,
                         width=w,
