@@ -1,41 +1,39 @@
 import asyncio
 import os
-from typing import Dict
+from typing import Any
 
 from .Registry import register_task
-from .Task import Task  # assuming your base class is in base.py
+from .Task import Task
 
 
-@register_task(name="list-files")
+@register_task()
 class ListFilesTask(Task):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
+    async def _init(self) -> None:
+        """Run any initialization logic for the task."""
+        self._directory = self._params.get("directory", ".")
 
-    def typename(self) -> str:
-        return "ListFiles"
+    async def _run(self) -> dict[str, Any]:
+        """Run the main logic of the task."""
+        if not os.path.exists(self._directory) or not os.path.isdir(self._directory):
+            raise ValueError(f"Directory does not exist: {self._directory}")
 
-    async def run(self) -> Dict:
-        directory = self.params.get("directory", ".")
-        if not os.path.exists(directory) or not os.path.isdir(directory):
-            raise ValueError(f"Directory does not exist: {directory}")
-
-        files = os.listdir(directory)
+        files = os.listdir(self._directory)
         total = len(files)
 
         result = []
         for i, filename in enumerate(files):
-            await asyncio.sleep(0.1)  # simulate some work
+            await asyncio.sleep(1)  # simulate some work
             result.append(filename)
 
             # simulate progress
             progress = (i + 1) / total * 100
-            self.update_progress(progress)
-
-            # optionally save resume data
-            self.resume_data["last_index"] = i
+            self._update_progress(progress)
 
         return {
-            "directory": directory,
+            "directory": self._directory,
             "file_count": total,
             "files": result,
         }
+
+    async def _deinit(self) -> None:
+        pass

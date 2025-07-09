@@ -3,7 +3,7 @@
 import asyncio
 import logging
 import sys
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, asdict
 from typing import Any, Dict, List, Optional
 
 from apps.helpers.db.db_client import DbClient, TaskRecord
@@ -16,10 +16,17 @@ logger.setLevel(logging.DEBUG)
 
 
 @dataclass
-class TaskInfo:
+class TaskMetadata:
     id: int
-    status: str
+    typename: str
+    description: str = ""
+    parameters: Dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class TaskInfo:
     task: Task
+    metadata: TaskMetadata
 
 
 class Manager:
@@ -33,7 +40,7 @@ class Manager:
         """
         self._task: Optional[asyncio.Task] = None  # Background task for periodic operations
         self._db_client: DbClient = db_client
-        self._running_tasks: Dict[str, TaskInfo] = {}
+        self._running_tasks: Dict[int, TaskInfo] = {}
 
     async def list_avail_tasks(self) -> List[str]:
         """
@@ -41,11 +48,18 @@ class Manager:
         """
         return list(task_registry.keys())
 
-    async def list_active_tasks(self) -> Dict[str, TaskInfo]:
+    async def list_active_tasks(self) -> Dict[int, dict[str, Any]]:
         """
         List all tasks managed by the Manager.
         """
-        return dict(self._running_tasks)
+        return {
+            task_id: {
+                **asdict(task_info.metadata),
+                "progress": task_info.task.get_progress(),
+                "result": task_info.task.get_results(),
+            }
+            for task_id, task_info in self._running_tasks.items()
+        }
 
     async def create_new_task(self, typename: str, params: Dict[str, Any]) -> int:
         """
@@ -56,17 +70,21 @@ class Manager:
         if typename not in task_registry:
             raise ValueError(f"Unknown task: {typename}")
 
-        record: TaskRecord = await self._db_client.add_task(
-            typename=typename, params=params
-        )
-        task_instance = task_registry[typename](id=record.id, params=params)
+        record: TaskRecord = await self._db_client.add_task(typename=typename, params=params)
+        task_instance = task_registry[typename](task_id=record.id, params=params)
 
+        task_metadata: TaskMetadata = TaskMetadata(id=record.id, typename=typename, parameters=params)
+        task_info = TaskInfo(task=task_instance, metadata=task_metadata)
+        self._running_tasks[task_metadata.id] = task_info
 
-        task_info = TaskInfo(id=record.id, status="running", task=task_instance)
+        await task_info.task.start()
 
-        self._running_tasks[task_instance.id] = task_info
-        await task_instance.run() # TODO: Thread?
-        return task_info.id
+        return task_info.metadata.id
+
+    async def get_task_schema(self, typename: str) -> dict[str, dict[str, Any]]:
+        if typename not in task_registry:
+            raise ValueError(f"Unknown task: {typename}")
+        return task_registry[typename].params_schema()
 
     def start(self):
         """Start the periodic worker task, should be called from the event loop to run on"""

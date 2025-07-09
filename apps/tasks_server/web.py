@@ -1,10 +1,11 @@
 """Web API for Tasks Server"""
 
-import base64
+import html
 import json
 import logging
 import sys
 from contextlib import asynccontextmanager
+from dataclasses import asdict
 from typing import Optional
 
 import cv2
@@ -16,7 +17,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 
-from .manager import Manager
+from .manager import Manager, TaskInfo
 
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger(__file__)
@@ -105,7 +106,7 @@ class WebApp:
         async def index(request: Request):
             """Home Page"""
             buttons = [
-                {"label": "List Tasks", "action": "/api/tasks/list-active"},
+                {"label": "List Active Tasks", "action": "/api/tasks/list-active"},
                 {"label": "List Available Tasks", "action": "/api/tasks/list-avail"},
                 {"label": "Create Task", "action": "/create-task-form"},
             ]
@@ -199,14 +200,17 @@ class WebApp:
             request: Request = None,
         ):
             try:
-                req: CreateTaskRequest = CreateTaskRequest(typename=task_name, params=json.loads(params) if params else {})
-                response_data = await create_task_api(req)
+                req: CreateTaskRequest = CreateTaskRequest(
+                    typename=task_name, params=json.loads(params) if params else {}
+                )
+                reponse_json = await create_task_api(req)
+                reponse_data = json.loads(reponse_json.body)
                 return self._templates.TemplateResponse(
                     "dynamic_response.html",
                     {
-                        "request": req,
+                        "request": request,
                         "title": "Create Task Results",
-                        "response_data": response_data,
+                        "response_data": reponse_data,
                     },
                 )
             except Exception as e:
@@ -231,5 +235,23 @@ class WebApp:
                     "action_url": "/create-task",
                     "fields": fields,
                     "submit_label": "Submit",
+                    "params_schema_url": "/task_schema",
+                    "enable_dynamic_help": True,
                 },
             )
+
+        @self._app.post(
+            "/task_schema",
+            tags=[WebApp.TASKS_API_TAG_NAME],
+            operation_id="schema",
+            response_class=HTMLResponse,
+        )
+        async def get_task_schema(typename: str = Form(...)) -> HTMLResponse:
+            try:
+                schema = await self._manager.get_task_schema(typename=typename)
+                pretty = json.dumps(schema, indent=2)
+                escaped = html.escape(pretty)
+                html_content = f"<pre>{escaped}</pre>"
+            except Exception as e:
+                html_content = f"<pre>Error: {html.escape(str(e))}</pre>"
+            return HTMLResponse(content=html_content)

@@ -12,9 +12,21 @@
 
         {% elif field_data.type == "radio" %}
             {% for option in field_data.options %}
-                <input type="radio" id="{{ field_name }}_{{ option }}" name="{{ field_name }}" value="{{ option }}">
+                <input type="radio" id="{{ field_name }}_{{ option }}" name="{{ field_name }}" value="{{ option }}"
+                  {% if enable_dynamic_help %}
+                    hx-post="{{ params_schema_url }}"
+                    hx-vals='{"typename": "{{ option }}"}'
+                    hx-target="#params-help-box"
+                    hx-trigger="change"
+                  {% endif %}
+                >
                 <label for="{{ field_name }}_{{ option }}">{{ option }}</label><br>
             {% endfor %}
+            {% if enable_dynamic_help %}
+              <div id="params-help-box" style="border:1px solid #ccc; padding:1em; margin-bottom:1em;">
+                <em></em>
+              </div>
+            {% endif %}
             <br>
 
         {% elif field_data.type == "checkbox" %}
