@@ -61,7 +61,11 @@ RUN python -m apps.generate_openapi_jsons \
   && openapi-generator-cli generate -i inference_server_openapi.json -g python -o /tmp/inference_client --package-name inference_client \
   && sed -i 's/license = "NoLicense"/license = "Apache-2.0"/' /tmp/inference_client/pyproject.toml \
   && pip install --no-cache-dir /tmp/inference_client \
-  && rm -rf /tmp/inference_client
+  && rm -rf /tmp/inference_client \
+  && openapi-generator-cli generate -i tasks_server_openapi.json -g python -o /tmp/tasks_client --package-name tasks_client \
+  && sed -i 's/license = "NoLicense"/license = "Apache-2.0"/' /tmp/tasks_client/pyproject.toml \
+  && pip install --no-cache-dir /tmp/tasks_client \
+  && rm -rf /tmp/tasks_client
 
 EXPOSE 8000 8001 8554 8888 1935 9001 9997
 

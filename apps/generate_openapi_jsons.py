@@ -3,9 +3,13 @@
 import json
 from .relay_buffer_server.main import app as relay_server_app
 from .inference_server.main import app as inference_server_app
+from .tasks_server.main import app as tasks_server_app
 
 with open("relay_buffer_server_openapi.json", "w", encoding="utf-8") as f:
     json.dump(relay_server_app.openapi(), f, indent=2)
 
 with open("inference_server_openapi.json", "w", encoding="utf-8") as f:
     json.dump(inference_server_app.openapi(), f, indent=2)
+
+with open("tasks_server_openapi.json", "w", encoding="utf-8") as f:
+    json.dump(tasks_server_app.openapi(), f, indent=2)
