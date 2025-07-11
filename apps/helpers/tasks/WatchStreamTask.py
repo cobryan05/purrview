@@ -1,6 +1,6 @@
 import asyncio
 import os
-from typing import Any
+from typing import Any, Optional
 
 from .Registry import register_task
 from .Task import Task
@@ -8,7 +8,7 @@ from .Task import Task
 
 @register_task()
 class WatchStreamTask(Task):
-    async def _init(self) -> None:
+    async def _init(self, params: dict[str, Any], resume_data: Optional[dict[str, Any]] = None) -> None:
         """Run any initialization logic for the task."""
         pass
 

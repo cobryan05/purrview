@@ -5,13 +5,15 @@ import sys
 from uuid import uuid4
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 import aiofiles
 import aiosqlite
 from dacite import from_dict
 
 from apps.helpers.fileUtils import get_safe_path
+from apps.helpers.tasks.Task import Task
+
 
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger(__file__)
@@ -51,7 +53,7 @@ class ImageMetadata:
 @dataclass
 class TaskRecord:
     id: int
-    name: str
+    typename: str
     status: str
     params_json: str
     resume_data_json: Optional[str]
@@ -117,7 +119,7 @@ class DbClient:
                 );
                 CREATE TABLE IF NOT EXISTS tasks (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    name TEXT NOT NULL,
+                    typename TEXT NOT NULL,
                     status TEXT NOT NULL,
                     params_json TEXT NOT NULL,
                     resume_data_json TEXT,
@@ -170,7 +172,7 @@ class DbClient:
         Insert a new task into the database with an auto-incrementing ID.
 
         Args:
-            name (str): Task name (from registry).
+            typename (str): Task typename (from registry).
             params (dict): Task parameters.
             resume_data (Optional[dict]): Optional resume state.
 
@@ -178,12 +180,12 @@ class DbClient:
             TaskRecord: The full task record, including auto-generated ID.
         """
         params_json = json.dumps(params)
-        status = "pending"
+        status = Task.Status.PENDING
         resume_data_json = None
         async with aiosqlite.connect(self._db_path) as db:
             cursor = await db.execute(
                 """
-                INSERT INTO tasks (name, status, params_json, resume_data_json)
+                INSERT INTO tasks (typename, status, params_json, resume_data_json)
                 VALUES (?, ?, ?, ?)
                 """,
                 (typename, status, params_json, resume_data_json),
@@ -194,7 +196,7 @@ class DbClient:
 
             cursor = await db.execute(
                 """
-                SELECT id, name, status, params_json, resume_data_json,
+                SELECT id, typename, status, params_json, resume_data_json,
                        result_json, error_message, created_at, updated_at
                 FROM tasks WHERE id = ?
                 """,
@@ -205,6 +207,180 @@ class DbClient:
                 raise Exception(f"Failed to retrieve inserted task with ID {task_id}")
 
             return TaskRecord(*row)
+
+    async def delete_tasks(self, task_ids: Union[int, List[int]]) -> None:
+        """
+        Delete one or more tasks by their ID(s).
+
+        Args:
+            task_ids (Union[int, List[int]]): A single task ID or a list of task IDs to delete.
+
+        Raises:
+            ValueError: If task_ids is an empty list.
+        """
+        if isinstance(task_ids, int):
+            task_ids = [task_ids]
+        elif isinstance(task_ids, list):
+            if not task_ids:
+                raise ValueError("No task IDs provided for deletion.")
+        else:
+            raise TypeError("task_ids must be an int or list of ints.")
+
+        placeholders = ",".join("?" for _ in task_ids)
+
+        async with aiosqlite.connect(self._db_path) as db:
+            await db.execute(f"DELETE FROM tasks WHERE id IN ({placeholders})", tuple(task_ids))
+            await db.commit()
+
+    async def get_tasks(
+        self,
+        task_id: Optional[Union[int, List[int]]] = None,
+        typename: Optional[Union[str, List[str]]] = None,
+        status: Optional[Union[str, List[str]]] = None,
+    ) -> List[TaskRecord]:
+        """
+        Retrieve tasks with optional filtering by id, typename, and/or status.
+        Each filter can be a single value or a list of values.
+
+        Args:
+            task_id (Optional[int or List[int]]): Filter by task ID(s).
+            typename (Optional[str or List[str]]): Filter by task typename(s).
+            status (Optional[str or List[str]]): Filter by task status(es).
+
+        Returns:
+            List[TaskRecord]: List of matching tasks.
+        """
+        query = """
+                SELECT id, typename, status, params_json, resume_data_json,
+                    result_json, error_message, created_at, updated_at
+                FROM tasks
+                WHERE 1=1
+            """
+        params = []
+
+        def add_filter(field, value):
+            nonlocal query, params
+            if value is None:
+                return
+            if isinstance(value, list):
+                if not value:
+                    query += f" AND 1=0"  # No match if list is empty
+                else:
+                    placeholders = ",".join("?" for _ in value)
+                    query += f" AND {field} IN ({placeholders})"
+                    params.extend(value)
+            else:
+                query += f" AND {field} = ?"
+                params.append(value)
+
+        add_filter("id", task_id)
+        add_filter("typename", typename)
+        add_filter("status", status)
+
+        async with aiosqlite.connect(self._db_path) as db:
+            cursor = await db.execute(query, tuple(params))
+            rows = await cursor.fetchall()
+            await cursor.close()
+            return [TaskRecord(*row) for row in rows]
+
+    async def get_task_resume_data(self, task_id: int) -> Optional[dict[str, Any]]:
+        """
+        Retrieve resume data for a given task.
+
+        Args:
+            task_id (int): Task ID
+
+        Returns:
+            dict[str, Any] or None if not found or empty
+        """
+        async with aiosqlite.connect(self._db_path) as db:
+            cursor = await db.execute("SELECT resume_data_json FROM tasks WHERE id = ?", (task_id,))
+            row = await cursor.fetchone()
+            await cursor.close()
+
+            if not row or not row[0]:
+                return None
+
+            try:
+                return json.loads(row[0])
+            except Exception as e:
+                logger.warning(f"Invalid JSON in resume_data for task {task_id}: {e}")
+                return None
+
+    async def set_task_result(
+        self,
+        task_id: int,
+        result: dict[str, Any],
+        status: Optional[str] = None,
+        error_message: Optional[str] = None,
+    ) -> None:
+        """
+        Set the result of a task, optionally updating its status and error message.
+
+        Args:
+            task_id (int): ID of the task.
+            result (dict): Result dictionary to store as JSON.
+            status (Optional[str]): New status to set (e.g., "done", "error").
+            error_message (Optional[str]): Optional error message.
+        """
+        result_json = json.dumps(result)
+        parts = ["result_json = ?", "updated_at = CURRENT_TIMESTAMP"]
+        params: list[Any] = [result_json]
+
+        if status is not None:
+            parts.append("status = ?")
+            params.append(status)
+
+        if error_message is not None:
+            parts.append("error_message = ?")
+            params.append(error_message)
+
+        params.append(task_id)
+
+        query = f"UPDATE tasks SET {', '.join(parts)} WHERE id = ?"
+
+        async with aiosqlite.connect(self._db_path) as db:
+            await db.execute(query, tuple(params))
+            await db.commit()
+
+    async def set_task_resume_data(self, task_id: int, resume_data: dict[str, Any]) -> None:
+        """
+        Update the resume_data_json field for a task.
+
+        Args:
+            task_id (int): Task ID
+            resume_data (dict): Resume state data
+        """
+        resume_data_json = json.dumps(resume_data)
+        async with aiosqlite.connect(self._db_path) as db:
+            await db.execute(
+                """
+                UPDATE tasks
+                SET resume_data_json = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                """,
+                (resume_data_json, task_id),
+            )
+            await db.commit()
+
+    async def set_task_status(self, task_id: int, new_status: str) -> None:
+        """
+        Update the status of a task.
+
+        Args:
+            task_id (int): The ID of the task to update.
+            new_status (str): The new status string (e.g., "pending", "running", "done", "error").
+        """
+        async with aiosqlite.connect(self._db_path) as db:
+            await db.execute(
+                """
+                UPDATE tasks
+                SET status = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                """,
+                (new_status, task_id),
+            )
+            await db.commit()
 
     async def list_labels(self) -> List[LabelMetaData]:
         """

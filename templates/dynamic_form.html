@@ -1,6 +1,11 @@
 <h1>{{ title }}</h1>
 
 <form hx-post="{{ action_url }}" hx-target="#output-div" hx-swap="innerHTML" enctype="multipart/form-data">
+    {% if hidden_fields %}
+          {% for name, value in hidden_fields.items() %}
+              <input type="hidden" name="{{ name }}" value="{{ value }}">
+          {% endfor %}
+    {% endif %}
     {% for field_name, field_data in fields.items() %}
         <label for="{{ field_name }}">{{ field_data.label }}</label><br>
 
@@ -46,9 +51,24 @@
 
         {% elif field_data.type == "checkbox" %}
             {% for option in field_data.options %}
+            <div>
                 <input type="checkbox" id="{{ field_name }}_{{ option }}" name="{{ field_name }}" value="{{ option }}">
-                <label for="{{ field_name }}_{{ option }}">{{ option }}</label><br>
+                <label for="{{ field_name }}_{{ option }}">
+                    {% if field_data.option_labels and field_data.option_labels[option] %}
+                        {{ field_data.option_labels[option] }}
+                    {% else %}
+                        {{ option }}
+                    {% endif %}
+                </label><br>
+            </div>
             {% endfor %}
+            {% if extra_buttons %}
+                <div style="margin-bottom:1em;">
+                    {% for btn in extra_buttons %}
+                        <button type="submit" formaction="{{ btn.action }}" formmethod="{{ btn.method|default('post') }}">{{ btn.label }}</button>
+                    {% endfor %}
+                </div>
+            {% endif %}
             <br>
 
         {% elif field_data.type == "select" %}
