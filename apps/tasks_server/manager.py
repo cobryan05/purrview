@@ -48,17 +48,22 @@ class Manager:
         """
         return list(task_registry.keys())
 
-    async def list_active_tasks(self) -> Dict[int, dict[str, Any]]:
+    async def get_tasks_status(self, task_ids: Optional[List[int]] = None) -> Dict[int, dict[str, Any]]:
         """
-        List all tasks managed by the Manager.
+        Returns status about a specified task, or all tasks
         """
+        tasks = (
+            self._running_tasks
+            if task_ids is None
+            else {task_id: self._running_tasks.get(task_id, None) for task_id in task_ids}
+        )
         return {
             task_id: {
                 **asdict(task_info.metadata),
                 "progress": task_info.task.get_progress(),
                 "result": task_info.task.get_results(),
             }
-            for task_id, task_info in self._running_tasks.items()
+            for task_id, task_info in tasks.items()
         }
 
     async def create_new_task(self, typename: str, params: Dict[str, Any]) -> int:

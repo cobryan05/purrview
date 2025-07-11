@@ -6,7 +6,7 @@ import logging
 import sys
 from contextlib import asynccontextmanager
 from dataclasses import asdict
-from typing import Optional
+from typing import Optional, List
 
 import cv2
 import numpy as np
@@ -106,7 +106,7 @@ class WebApp:
         async def index(request: Request):
             """Home Page"""
             buttons = [
-                {"label": "List Active Tasks", "action": "/api/tasks/list-active"},
+                {"label": "Task Status", "action": "/task-status-form"},
                 {"label": "List Available Tasks", "action": "/api/tasks/list-avail"},
                 {"label": "Create Task", "action": "/create-task-form"},
             ]
@@ -119,32 +119,92 @@ class WebApp:
                 },
             )
 
-        @self._app.get(
-            "/api/tasks/list-active",
-            response_class=JSONResponse,
+        class TaskStatusRequest(BaseModel):
+            """Request model for creating a new task."""
+
+            task_ids: Optional[List[int]] = None
+
+        @self._app.post(
+            "/api/tasks/status",
             tags=[WebApp.TASKS_API_TAG_NAME],
-            operation_id="list_active_tasks_api",
+            operation_id="get_task_status",
+            response_class=JSONResponse,
         )
-        async def list_active_tasks_api(request: Request) -> JSONResponse:
-            """
-            API endpoint to return a list of active tasks.
-
-            Args:
-                request (Request): The FastAPI request object.
-
-            Returns:
-                JSONResponse: A JSON response containing the list of models.
-            """
+        async def task_status_api(req: TaskStatusRequest) -> JSONResponse:
             try:
-                task_list = await self._manager.list_active_tasks()
-                response_data = {"status": "success", "tasks": task_list}
-                return JSONResponse(content=response_data)
+                tasks_status = await self._manager.get_tasks_status(req.task_ids)
+                response_data = {"status": "success", "tasks": json.dumps(tasks_status)}
             except Exception as e:
-                logger.exception(e)
-                return JSONResponse(
-                    content={"status": "failure", "message": str(e)},
-                    status_code=500,
+                response_data = {"status": "failure", "message": str(e)}
+            return JSONResponse(content=response_data)
+
+        @self._app.post("/task-status", response_class=HTMLResponse, include_in_schema=False)
+        async def task_status(
+            task_ids: str = Form(...),
+            request: Request = None,
+        ):
+            try:
+                # Parse task_ids: empty string -> None, else list of ints
+                if not task_ids.strip():
+                    parsed_task_ids = None
+                else:
+                    parsed_task_ids = [int(tid.strip()) for tid in task_ids.split(",") if tid.strip()]
+
+                req: TaskStatusRequest = TaskStatusRequest(task_ids=parsed_task_ids)
+                reponse_json = await task_status_api(req)
+                reponse_data = json.loads(reponse_json.body)
+                tasks = json.loads(reponse_data.get("tasks", "{}"))
+
+                # Prepare fields for dynamic_form.html
+                fields = {
+                    "selected_task": {
+                        "label": "Select a Task",
+                        "type": "radio",
+                        "options": list(tasks.keys()),
+                        "option_labels": {
+                            k: f"Task {k} — {v.get('typename', '')} (progress: {v.get('progress', 0)}%, status: {v.get('result', {}).get('status', 'unknown')})"
+                            for k, v in tasks.items()
+                        },
+                    }
+                }
+
+                # Define extra buttons (actions) at the end of the form
+                extra_buttons = [
+                    {"label": "Status", "action": "/task-status", "method": "post"},
+                    {"label": "Pause", "action": "/task-pause", "method": "post"},
+                    {"label": "Resume", "action": "/task-resume", "method": "post"},
+                    {"label": "Clear", "action": "/task-clear", "method": "post"},
+                ]
+
+                return self._templates.TemplateResponse(
+                    "dynamic_form.html",
+                    {
+                        "request": request,
+                        "title": "Task Status",
+                        "action_url": "/task-status",  # Default action for the form
+                        "fields": fields,
+                        "submit_label": "Submit",
+                        "extra_buttons": extra_buttons,
+                    },
                 )
+            except Exception as e:
+                return self._error_response(request, f"Internal server error: {str(e)}")
+
+        @self._app.get("/task-status-form", response_class=HTMLResponse)
+        async def task_status_form(request: Request) -> HTMLResponse:
+            fields = {
+                "task_ids": {"type": "text", "label": "Task ids (comma separated) or empty", "optional": True},
+            }
+            return self._templates.TemplateResponse(
+                "dynamic_form.html",
+                {
+                    "request": request,
+                    "title": "Task Status",
+                    "action_url": "/task-status",
+                    "fields": fields,
+                    "submit_label": "Submit",
+                },
+            )
 
         @self._app.get(
             "/api/tasks/list-avail",
