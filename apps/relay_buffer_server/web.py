@@ -104,13 +104,10 @@ class WebApp:
                 logging.info(
                     f"Creating stream with Source URL: {source_url}, Destination Name: {stream_name}, Delay: {delay}"
                 )
-                await self._manager.create_rtsp_relay_stream(rtsp_url=source_url, stream_name=stream_name)
                 if delay > 0:
-                    streams = self._manager.get_streams()
-                    stream = streams.get(stream_name)
-                    if stream is None:
-                        raise Exception(f"Stream '{stream_name}' not found")
-                    await self._manager.create_delay_stream(stream.url, f"{stream_name}_delayed", delay)
+                    await self._manager.create_delay_stream(rtsp_url=source_url, stream_name=stream_name, delay=delay)
+                else:
+                    await self._manager.create_rtsp_relay_stream(rtsp_url=source_url, stream_name=stream_name)
                 return JSONResponse(content={WebApp.SUCCESS_KEY: True})
             except Exception as e:
                 logging.exception(f"Stream creation failed: {str(e)}")
