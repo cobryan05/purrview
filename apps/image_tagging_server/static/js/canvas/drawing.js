@@ -10,11 +10,12 @@ import { openInspectorTab } from '../sidebar/main.js';
 export function createBoundingBox(x, y, props = {}) {
   const width = props.width ?? 50;
   const height = props.height ?? 50;
-  const labelUuid = props.metadata?.labelUuid ?? ''
+  const labelUuid = props.metadata?.labelUuid ?? '';
   const confidence = props.metadata?.confidence;
   const uuid = generateUUID();
-  const label = getLabelByUuid(labelUuid) ;
+  const label = getLabelByUuid(labelUuid);
   const labelText = (label?.metadata?.name ?? props.metadata?.label) ?? 'Unknown';
+
   const group = new Konva.Group({
     x,
     y,
@@ -84,17 +85,7 @@ export function createBoundingBox(x, y, props = {}) {
 
   group.on('dblclick', () => {
     selectShape(group);
-    openInspectorTab();
   });
-
-  function updateBoundingBoxLayout() {
-    // Always keep rect at (0,0) in group
-    rect.x(0);
-    rect.y(0);
-    // Keep label at top-left, above the box
-    text.x(0);
-    text.y(-18);
-  }
 
   rect.on('transform', () => {
     const layer = getLayer();
@@ -134,9 +125,61 @@ export function createBoundingBox(x, y, props = {}) {
     rect.scaleX(1);
     rect.scaleY(1);
 
-    updateBoundingBoxLayout();
+    applyBoundingBoxLayout(group);
     layer.batchDraw();
   });
-  updateBoundingBoxLayout();
+
+  applyBoundingBoxLayout(group);
   return group;
+}
+
+/**
+ * Update an existing bounding box with new metadata, such as label or color.
+ */
+export function updateBoundingBox(group, props = {}) {
+  const rect = group.findOne('.box');
+  const text = group.findOne('.label');
+  if (!rect || !text) return;
+
+  const oldMetadata = group.metadata ?? {};
+  const newMetadata = { ...oldMetadata, ...props.metadata };
+
+  const labelUuid = newMetadata.labelUuid ?? '';
+  const label = getLabelByUuid(labelUuid);
+  const confidence = newMetadata.confidence;
+
+  const color = label?.metadata?.color ?? 'red';
+  const labelText = (label?.metadata?.name ?? props.metadata?.label) ?? 'Unknown';
+
+  // Update metadata
+  group.metadata = {
+    ...newMetadata,
+    label,
+    confidence,
+  };
+
+  // Update label text
+  const bboxText = `${labelText}${confidence != null ? ` (${(confidence * 100).toFixed(1)}%)` : ''}`;
+  text.text(bboxText);
+  text.fill(color);
+
+  // Update stroke color
+  rect.stroke(color);
+
+  applyBoundingBoxLayout(group);
+  getLayer().batchDraw();
+}
+
+/**
+ * Keep rect at (0,0) and label positioned just above.
+ */
+function applyBoundingBoxLayout(group) {
+  const rect = group.findOne('.box');
+  const text = group.findOne('.label');
+  if (!rect || !text) return;
+
+  rect.x(0);
+  rect.y(0);
+  text.x(0);
+  text.y(-18);
 }

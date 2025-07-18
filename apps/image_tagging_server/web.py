@@ -400,22 +400,6 @@ class WebApp:
                     content={"status": "failure", "message": str(e)},
                     status_code=500,
                 )
-
-        @self._app.post("/save-annotations", response_class=JSONResponse)
-        async def save_annotations(request: AnnotationRequest) -> JSONResponse:
-            """Save annotations with associated image name"""
-            try:
-                logger.info(f"Received annotations for image {request.image}")
-                filename = f"{request.image}.json"
-                filepath = os.path.join("static/images/metadata", filename)
-                os.makedirs(os.path.dirname(filepath), exist_ok=True)
-                with open(filepath, "w") as f:
-                    json.dump({"annotations": request.annotations}, f, indent=2)
-                return JSONResponse(content={"status": "ok"})
-            except Exception as e:
-                logger.exception("Failed to save annotations")
-                return JSONResponse(status_code=500, content={"status": "error", "message": str(e)})
-
         @self._app.post("/api/recognize", response_class=JSONResponse, tags=[WebApp.INFERENCE_API_TAG_NAME])
         async def recognize_api(
             model_name: str = Form(..., description="Name of the model to use for recognition"),

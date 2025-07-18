@@ -16,6 +16,7 @@ export function selectShape(group) {
 
   labelInput.oninput = () => {
     metadata.label = labelInput.value;
+    metadata.labelUuid = null;
     group.metadata = metadata;
     const labelNode = group.findOne('.label');
     if (labelNode) {
@@ -29,4 +30,23 @@ export function selectShape(group) {
     metadata.tags = tagsInput.value.split(',').map(s => s.trim()).filter(Boolean);
     group.metadata = metadata;
   };
+}
+
+export function findGroupAtPoint(pos) {
+  const layer = getLayer();
+  const children = layer.getChildren(node => node.name() === 'annotation');
+
+  for (const group of children) {
+    const rect = group.getClientRect({ relativeTo: layer });
+    if (
+      pos.x >= rect.x &&
+      pos.x <= rect.x + rect.width &&
+      pos.y >= rect.y &&
+      pos.y <= rect.y + rect.height
+    ) {
+      return group;
+    }
+  }
+
+  return null;
 }

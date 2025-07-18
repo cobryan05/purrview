@@ -1,12 +1,16 @@
-import { createBoundingBox } from './drawing.js';
-import { selectShape } from './selection.js';
-import { getCurrentTool, getLayer, getStage , getCurrentLabelUuid} from './state.js';
+import { createBoundingBox, updateBoundingBox } from './drawing.js';
+import { selectShape, findGroupAtPoint } from './selection.js';
+import { getCurrentTool, getLayer, getStage, getCurrentLabelUuid } from './state.js';
 import { clearSelection, selectBboxTool, setTool } from './tools.js';
 
-let tempGroup = null;
+let pendingGroup = null;
 let startPos = null;
 let isPanning = false;
 let lastPanPos = null;
+let lastDiscardTime = 0;
+let lastDiscardPos = null;
+const DOUBLE_CLICK_TIME_MS = 400;
+const DOUBLE_CLICK_DISTANCE_PX = 10;
 
 function getPointerPosition() {
   const stage = getStage();
@@ -40,10 +44,10 @@ export function handleMouseDown(e) {
 
   startPos = pos;
   const currentLabelUuid = getCurrentLabelUuid();
-  tempGroup = createBoundingBox(
+  pendingGroup = createBoundingBox(
     pos.x, pos.y, { width: 1, height: 1, metadata: { labelUuid: currentLabelUuid } });
-  if (tempGroup) {
-    layer.add(tempGroup);
+  if (pendingGroup) {
+    layer.add(pendingGroup);
   }
 }
 
@@ -60,7 +64,7 @@ export function handleMouseMove(e) {
     return;
   }
 
-  if (!tempGroup) return;
+  if (!pendingGroup) return;
 
   const pos = getPointerPosition();
   if (!pos) return;
@@ -68,8 +72,8 @@ export function handleMouseMove(e) {
   const dx = pos.x - startPos.x;
   const dy = pos.y - startPos.y;
 
-  const box = tempGroup.findOne('.box');
-  const label = tempGroup.findOne('.label');
+  const box = pendingGroup.findOne('.box');
+  const label = pendingGroup.findOne('.label');
 
   if (!box || !label) return;
 
@@ -78,7 +82,7 @@ export function handleMouseMove(e) {
   const newWidth = Math.abs(dx);
   const newHeight = Math.abs(dy);
 
-  tempGroup.position({ x: newX, y: newY });
+  pendingGroup.position({ x: newX, y: newY });
   box.size({ width: newWidth, height: newHeight });
   label.y(-18);
 
@@ -95,15 +99,37 @@ export function handleMouseUp(e) {
     return;
   }
 
-  if (tempGroup) {
-    const box = tempGroup.findOne('.box');
-    if (box.width() < 3 || box.height() < 3) {
-      tempGroup.destroy();
+  if (pendingGroup) {
+    const box = pendingGroup.findOne('.box');
+    const stage = getStage();
+    const now = Date.now();
+    const pos = getPointerPosition();
+
+    if (box.width() < DOUBLE_CLICK_DISTANCE_PX || box.height() < DOUBLE_CLICK_DISTANCE_PX) {
+      pendingGroup.destroy();
+
+      // Check for double-click-like behavior
+      if (
+        lastDiscardPos &&
+        now - lastDiscardTime < DOUBLE_CLICK_TIME_MS &&
+        Math.hypot(pos.x - lastDiscardPos.x, pos.y - lastDiscardPos.y) < DOUBLE_CLICK_DISTANCE_PX
+      ) {
+        const hitGroup = findGroupAtPoint(pos);
+        if( hitGroup ) {
+            const currentLabelUuid = getCurrentLabelUuid();
+            updateBoundingBox(hitGroup, { metadata: { labelUuid: currentLabelUuid } });
+            selectShape(hitGroup);
+        }
+      }
+
+      lastDiscardTime = now;
+      lastDiscardPos = pos;
     } else {
-      selectShape(tempGroup);
+      selectShape(pendingGroup);
     }
+
     getLayer().draw();
-    tempGroup = null;
+    pendingGroup = null;
   }
 }
 
