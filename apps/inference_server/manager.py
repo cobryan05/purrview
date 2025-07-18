@@ -11,10 +11,10 @@ from glob import glob
 from typing import Any, Dict, List, Tuple, Optional
 
 import numpy as np
-import cv2
 
 from apps.helpers.inferenceProviders.inferenceProvider import InferenceProvider, InferenceResult
 from apps.helpers.yoloUtils import load_yolo_onnx
+from apps.helpers.metadataUtils import get_model_metadata
 from apps.helpers.imageUtils import annotate_image
 
 logging.basicConfig(stream=sys.stdout)

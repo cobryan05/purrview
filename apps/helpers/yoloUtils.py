@@ -1,16 +1,21 @@
-from pathlib import Path
-from typing import Tuple
+"""Utility functions for YOLO models"""
 
-import cv2
 import json
 import logging
-import numpy as np
-import onnxruntime as ort
 import sys
+from pathlib import Path
+from typing import Any, Dict, Tuple
+
+import cv2
+import numpy as np
+import onnx
+import onnxruntime as ort
 
 from apps.helpers.inferenceProviders.inferenceProvider import InferenceProvider
-from apps.helpers.inferenceProviders.yolov8OnnxInferenceProvider import YOLOv8ONNXInferenceProvider
-
+from apps.helpers.inferenceProviders.yolov8OnnxInferenceProvider import (
+    YOLOv8ONNXInferenceProvider,
+)
+import apps.helpers.metadataUtils as metadataUtils
 
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger(__file__)
@@ -25,13 +30,11 @@ def get_input_shape(session: ort.InferenceSession) -> Tuple[int, int]:
     input_shape = session.get_inputs()[0].shape  # e.g. [1, 3, 640, 640]
     return int(input_shape[2]), int(input_shape[3])  # height, width
 
-def load_yolo_onnx(model_path: str) -> InferenceProvider:
-    json_path = Path(model_path).with_suffix(".json")
-    with open(json_path, "r") as f:
-        metadata = json.load(f)
-    classes: list[str] = metadata.get("classes", [])
-    yolo_version: int = metadata.get("yolo", 8)
 
+def load_yolo_onnx(model_path: str) -> InferenceProvider:
+    metadata = metadataUtils.get_model_metadata(model_path, create_json_if_missing=True)
+    classes: list[str] = metadata.get("classes", None)
+    yolo_version: int = metadata.get("yolo", 8)
     if yolo_version == 8:
         return YOLOv8ONNXInferenceProvider(model_path, classes)
     raise Exception("Unhandled YOLO version")
