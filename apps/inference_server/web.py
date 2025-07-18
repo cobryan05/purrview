@@ -109,6 +109,7 @@ class WebApp:
             """Home Page"""
             buttons = [
                 {"label": "List Models", "action": "/list-models"},
+                {"label": "Get Model Labels", "action": "/get-model-labels-form"},
                 {"label": "Pin Model", "action": "/pin-model-form"},
                 {"label": "Recognize", "action": "/recognize-form"},
             ]
@@ -175,6 +176,135 @@ class WebApp:
                 )
             except Exception as e:
                 return self._error_response(request, f"Internal server error: {str(e)}")
+
+
+        class GetModelLabelsRequest(BaseModel):
+            model_name: str
+
+        @self._app.post(
+            "/api/models/labels/get",
+            response_class=JSONResponse,
+            tags=[WebApp.MODELS_API_TAG_NAME],
+            operation_id="get_model_labels_api",
+        )
+        async def get_model_labels_api(
+            payload: GetModelLabelsRequest
+        ) -> JSONResponse:
+            """
+            API endpoint to list labels for a given model.
+
+            Returns:
+                JSONResponse: A dictionary mapping label names to label IDs.
+            """
+            try:
+                label_map: dict[str, str] = await self._manager.get_model_labels(payload.model_name)
+            except Exception as e:
+                logger.exception(e)
+                return JSONResponse(content={"status": "failure", "message": str(e)})
+
+            return JSONResponse(
+                content={
+                    "status": "success",
+                    "labels": label_map,
+                },
+                status_code=200,
+            )
+
+        class AssociateLabelWithModelClassRequest(BaseModel):
+            model_name: str
+            model_class: str
+            label_uuid: str
+
+        @self._app.post(
+            "/api/models/labels/associate",
+            tags=[WebApp.MODELS_API_TAG_NAME],
+            operation_id="associate_label_with_model_class",
+            response_class=JSONResponse,
+        )
+        async def associate_label_with_model_class_api(req: AssociateLabelWithModelClassRequest) -> JSONResponse:
+            """
+            API endpoint to associate a model's class with a label
+
+            Returns:
+                JSONResponse: A JSON response containing the list of labels for the model
+            """
+            try:
+                ret = await self._manager.set_model_label_uuid(
+                    model_name=req.model_name,
+                    model_class=req.model_class,
+                    label_uuid=req.label_uuid
+                )
+                response_data = {"status": "success", "label_set": ret}
+                return JSONResponse(content=response_data)
+            except Exception as e:
+                logger.exception(e)
+                return JSONResponse(
+                    content={"status": "failure", "message": str(e)},
+                    status_code=500,
+                )
+
+
+        @self._app.post("/get-model-labels", response_class=HTMLResponse, include_in_schema=False)
+        async def get_model_labels(
+            request: Request,
+            model_name: str = Form(...),
+        ) -> HTMLResponse:
+            """
+            HTML endpoint to render the labels for a selected model.
+
+            Args:
+                request (Request): The FastAPI request object.
+                model_name (str): Name of the model to query labels for.
+
+            Returns:
+                HTMLResponse: Rendered HTML showing label mappings.
+            """
+            try:
+                req: GetModelLabelsRequest = GetModelLabelsRequest(model_name=model_name)
+                response: JSONResponse = await get_model_labels_api(req)
+                response_data = json.loads(response.body.decode("utf-8"))
+
+                return self._templates.TemplateResponse(
+                    "dynamic_response.html",
+                    {
+                        "request": request,
+                        "title": f"Labels for model '{model_name}'",
+                        "response_data": response_data,
+                    },
+                )
+            except Exception as e:
+                return self._error_response(request, f"Internal server error: {str(e)}")
+
+        @self._app.get("/get-model-labels-form", response_class=HTMLResponse)
+        async def get_model_labels_form(request: Request) -> HTMLResponse:
+            """
+            Render a form to input model name and list its labels.
+
+            Args:
+                request (Request): The FastAPI request object.
+
+            Returns:
+                HTMLResponse: Rendered form for listing model labels.
+            """
+            model_list = await self._manager.list_models()
+            fields = {
+                "model_name": {
+                    "label": "Model Name",
+                    "type": "radio",
+                    "options": model_list,
+                },
+            }
+
+            return self._templates.TemplateResponse(
+                "dynamic_form.html",
+                {
+                    "request": request,
+                    "title": "List Model Labels",
+                    "action_url": "/get-model-labels",
+                    "fields": fields,
+                    "submit_label": "Show Labels",
+                },
+            )
 
         @self._app.post(
             "/api/models/pin",

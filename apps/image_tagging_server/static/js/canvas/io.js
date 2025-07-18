@@ -1,4 +1,4 @@
-import { refreshLabelList } from '../sidebar/main.js';
+import { renderLabelList } from '../sidebar/main.js';
 import { createBoundingBox } from './drawing.js';
 import { getCurrentImageName, getLayer, getStage, getTransformer, setCurrentImageName } from './state.js';
 import { debug, error, notify } from './utils.js';
@@ -24,7 +24,7 @@ export async function loadImageAndMetadata(imageName) {
     const layer = getLayer();
     clearAnnotations();
     setCurrentImageName(imageName);
-    refreshLabelList({})
+    renderLabelList({})
 
     // === Load image blob + metadata via unified API ===
     const imageRes = await fetch(`/api/images/get?path=${encodeURIComponent(imageName)}`);

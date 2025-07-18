@@ -45,9 +45,7 @@ def get_model_metadata(model_path: str, create_json_if_missing: bool = True) -> 
         metadata["classes"] = class_list
 
     if create_json and metadata:
-        json_path = Path(model_path).with_suffix(".json")
-        with open(json_path, "w") as f:
-            json.dump(metadata, f)
+        save_model_json_metadata(model_path, metadata)
 
     return metadata
 
@@ -63,3 +61,9 @@ def get_model_json_metadata(model_path: str) -> Dict[str, Any]:
     with open(json_path, "r") as f:
         metadata = json.load(f)
     return metadata
+
+
+def save_model_json_metadata(model_path: str, metadata: Dict[str, Any]) -> None:
+    json_path = Path(model_path).with_suffix(".json")
+    with open(json_path, "w") as f:
+        f.write(json.dumps(metadata, indent=2))

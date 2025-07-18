@@ -4,24 +4,26 @@ import asyncio
 import base64
 import fnmatch
 import glob
-import json
 import logging
 import os
 import sys
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import aiofiles
 import cv2
 import numpy as np
-from dacite import from_dict
 from inference_client.api.inference_api import InferenceApi
 from inference_client.api.models_api import ModelsApi
 from inference_client.api_client import ApiClient
+from inference_client.models.associate_label_with_model_class_request import (
+    AssociateLabelWithModelClassRequest,
+)
 from inference_client.models.body_pin_model_api import (
     BodyPinModelApi,  # from updated schema
 )
+from inference_client.models.get_model_labels_request import GetModelLabelsRequest
 from inference_client.models.recognize_request import RecognizeRequest
 
 from apps.helpers.db.db_client import (
@@ -162,9 +164,38 @@ class Manager:
             List[str]: list of models
         """
         api = ModelsApi(self._api_client)
-        # Use the new method matching operationId "list_models_api"
         response: Dict[str, Any] = await asyncio.to_thread(api.list_models_api)
         return response.get("models", [])
+
+    async def list_model_labels(self, model_name: str) -> Dict[str, Any]:
+        """
+        Lists the labels for a model
+
+        Returns:
+            Dict[str, Any] dict of label info
+        """
+        api = ModelsApi(self._api_client)
+        request = GetModelLabelsRequest(model_name=model_name)
+        response: Dict[str, Any] = await asyncio.to_thread(api.get_model_labels_api, request)
+        return response.get("labels", {})
+
+
+    async def set_model_label_uuid(self, model_name: str, model_class: str, label_uuid: str) -> bool:
+        """
+        Sets the label UUID that a model's class name should link to
+
+        Params:
+            model_name (str): The name of the model.
+            model_class (str): The name of the class label within the model.
+            label_uuid (str): The UUID of the label to associate.
+
+        Returns:
+            Dict[str, Any] dict of label info
+        """
+        api = ModelsApi(self._api_client)
+        request = AssociateLabelWithModelClassRequest(model_name=model_name , model_class=model_class, label_uuid=label_uuid)
+        response: Dict[str, Any] = await asyncio.to_thread(api.associate_label_with_model_class, request)
+        return response.get("label_set", False)
 
     async def create_new_label(self, name: str, color: str, parent_uuid: Optional[str] = None) -> LabelMetaData:
         """

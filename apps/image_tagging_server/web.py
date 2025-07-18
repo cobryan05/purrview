@@ -190,6 +190,69 @@ class WebApp:
                     status_code=500,
                 )
 
+
+        class AssociateLabelWithModelClassRequest(BaseModel):
+            model_name: str
+            model_class: str
+            label_uuid: str
+
+        @self._app.post(
+            "/api/models/labels/associate",
+            tags=[WebApp.MODELS_API_TAG_NAME],
+            operation_id="associate_label_with_model_class",
+            response_class=JSONResponse,
+        )
+        async def associate_label_with_model_class_api(req: AssociateLabelWithModelClassRequest) -> JSONResponse:
+            """
+            API endpoint to associate a model's class with a label
+
+            Returns:
+                JSONResponse: A JSON response containing the list of labels for the model
+            """
+            try:
+                ret = await self._manager.set_model_label_uuid(
+                    model_name=req.model_name,
+                    model_class=req.model_class,
+                    label_uuid=req.label_uuid
+                )
+                response_data = {"status": "success", "label_set": ret}
+                return JSONResponse(content=response_data)
+            except Exception as e:
+                logger.exception(e)
+                return JSONResponse(
+                    content={"status": "failure", "message": str(e)},
+                    status_code=500,
+                )
+
+
+        class GetModelLabelsRequest(BaseModel):
+            model_name: str
+
+        @self._app.post(
+            "/api/models/labels/get",
+            tags=[WebApp.MODELS_API_TAG_NAME],
+            operation_id="get_labels",
+            response_class=JSONResponse,
+        )
+        async def get_model_labels_api(req: GetModelLabelsRequest) -> JSONResponse:
+            """
+            API endpoint to return a list of labels for a model.
+
+            Returns:
+                JSONResponse: A JSON response containing the list of labels for the model
+            """
+            try:
+                label_info = await self._manager.list_model_labels(model_name=req.model_name)
+                response_data = {"status": "success", "labels": label_info}
+                return JSONResponse(content=response_data)
+            except Exception as e:
+                logger.exception(e)
+                return JSONResponse(
+                    content={"status": "failure", "message": str(e)},
+                    status_code=500,
+                )
+
+
         class AddLabelRequest(BaseModel):
             name: str
             color: str

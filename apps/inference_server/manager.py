@@ -14,7 +14,7 @@ import numpy as np
 
 from apps.helpers.inferenceProviders.inferenceProvider import InferenceProvider, InferenceResult
 from apps.helpers.yoloUtils import load_yolo_onnx
-from apps.helpers.metadataUtils import get_model_metadata
+from apps.helpers.metadataUtils import get_model_metadata, save_model_json_metadata
 from apps.helpers.imageUtils import annotate_image
 
 logging.basicConfig(stream=sys.stdout)
@@ -84,6 +84,64 @@ class Manager:
         except Exception as e:
             logger.error(f"Error listing models: {str(e)}")
             return []
+
+    async def get_model_labels(self, model_name: str) -> Dict[str, Optional[str]]:
+        """
+        Get the labels for a specific model.
+
+        Args:
+            model_name (str): The name of the model to get labels for.
+
+        Returns:
+            Dict[str, str]: A dictionary mapping label names to label IDs.
+        """
+        if model_name in self._avail_models:
+            model_path = self._avail_models[model_name]
+        else:
+            raise FileNotFoundError(f"Model '{model_name}' not found in available models")
+
+        try:
+            metadata = get_model_metadata(model_path)
+        except FileNotFoundError:
+            metadata = {}
+        class_list = metadata.get("classes", [])
+        ret = {name: None for name in class_list}
+
+        class_map = metadata.get("class_map", {})
+        for k, v in class_map.items():
+            ret[k] = v
+
+        return ret
+
+
+    async def set_model_label_uuid(self, model_name: str, model_class: str, label_uuid: str) -> bool:
+        """
+        Associate a model's class label with a label uuid
+
+        Args:
+            model_name (str): The name of the model to set the association on
+            model_class (str): The class label to associate with the UUID
+            label_uuid (str): The UUID of the label to associate
+
+        Returns:
+            bool: True if the association was successful, False otherwise.
+        """
+        if model_name in self._avail_models:
+            model_path = self._avail_models[model_name]
+        else:
+            raise FileNotFoundError(f"Model '{model_name}' not found in available models")
+
+        try:
+            metadata = get_model_metadata(model_path)
+        except FileNotFoundError:
+            metadata = {}
+        if model_class not in metadata.get("classes", {}):
+            raise ValueError(f"Class label '{model_class}' not found in metadata for model '{model_name}'")
+        class_map = metadata.get("class_map", {})
+        class_map[model_class] = label_uuid
+        metadata["class_map"] = class_map
+        save_model_json_metadata(model_path, metadata=metadata)
+        return True
 
     async def pin_model(self, model_name: str, timeout: float = MODEL_PIN_TIME) -> str:
         """

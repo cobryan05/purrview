@@ -130,7 +130,7 @@ export async function refreshModelList() {
  * @param {string} options.target - The id of the container element to render labels into.
  * @param {boolean} options.editable - Whether label editing controls are shown.
  */
-export async function refreshLabelList({ target = "labels-list", editable = true }) {
+export async function renderLabelList({ target = "labels-list", editable = true }) {
   try {
     const res = await fetch('/api/labels/list');
     if (!res.ok) throw new Error(`Failed to fetch labels: ${res.status}`);
@@ -177,10 +177,10 @@ export async function refreshLabelList({ target = "labels-list", editable = true
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(updatedLabel),
               });
-              if (response.ok) refreshLabelList({ target, editable });
+              if (response.ok) renderLabelList({ target, editable });
               else alert('Failed to update label');
             },
-            onCancel: () => refreshLabelList({ target, editable }),
+            onCancel: () => renderLabelList({ target, editable }),
           });
           labelRow.replaceWith(inputRow);
         };
@@ -194,7 +194,7 @@ export async function refreshLabelList({ target = "labels-list", editable = true
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ label_uuid: uuid }),
           });
-          if (response.ok) refreshLabelList({ target, editable });
+          if (response.ok) renderLabelList({ target, editable });
           else alert('Failed to delete label');
         };
 
@@ -210,7 +210,7 @@ export async function refreshLabelList({ target = "labels-list", editable = true
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(newLabel),
               });
-              if (response.ok) refreshLabelList({ target, editable });
+              if (response.ok) renderLabelList({ target, editable });
               else alert('Failed to create label');
             },
             onCancel: () => childRow.remove(),
@@ -269,10 +269,10 @@ export async function refreshLabelList({ target = "labels-list", editable = true
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify(newLabel),
             });
-            if (response.ok) refreshLabelList({ target, editable });
+            if (response.ok) renderLabelList({ target, editable });
             else alert('Failed to create label');
           },
-          onCancel: () => refreshLabelList({ target, editable }),
+          onCancel: () => renderLabelList({ target, editable }),
         });
         newLabelRow.before(childRow);
       };
@@ -280,7 +280,7 @@ export async function refreshLabelList({ target = "labels-list", editable = true
     }
 
     const refreshBtn = createButton("emoji-button", "Refresh", "🔄");
-    refreshBtn.onclick = () => refreshLabelList({ target, editable });
+    refreshBtn.onclick = () => renderLabelList({ target, editable });
     newLabelRow.appendChild(refreshBtn);
 
     labelListContainer.appendChild(newLabelRow);
@@ -513,6 +513,219 @@ export function openInspectorTab() {
   }
 }
 
+// Global cache for labels metadata
+let _cachedLabels = null;
+
+async function renderModelLabelAssignments({ target = "model-labels-box", editable = true, preselectedModel = null } = {}) {
+  const container = document.getElementById(target);
+  container.innerHTML = '';
+
+  // Load and cache labels metadata only once
+  if (!_cachedLabels) {
+    const labelRes = await fetch('/api/labels/list');
+    const { labels } = await labelRes.json();
+    // Create a map from UUID to label metadata for quick lookup
+    _cachedLabels = new Map(labels.map(label => [label.metadata.uuid, label.metadata]));
+  }
+
+  const headerRow = document.createElement('div');
+  headerRow.style.display = 'flex';
+  headerRow.style.alignItems = 'center';
+  headerRow.style.gap = '0.5em';
+  headerRow.style.marginBottom = '1em';
+
+  const modelSelect = document.createElement('select');
+
+  if (!preselectedModel) {
+    const placeholderOption = document.createElement('option');
+    placeholderOption.value = '';
+    placeholderOption.textContent = 'Select a model';
+    placeholderOption.disabled = true;
+    placeholderOption.selected = true;
+    modelSelect.appendChild(placeholderOption);
+  }
+
+  const refreshBtn = createButton('emoji-button', 'Refresh', '🔄');
+  refreshBtn.onclick = () => {
+    _cachedLabels = null; // Clear cache on refresh so new labels are fetched
+    renderModelLabelAssignments({ target, editable });
+  };
+
+  headerRow.appendChild(modelSelect);
+  headerRow.appendChild(refreshBtn);
+  container.appendChild(headerRow);
+
+  // Load models
+  const modelRes = await fetch('/api/models/list');
+  const { models } = await modelRes.json();
+  models.forEach(model => {
+    const opt = document.createElement('option');
+    opt.value = model;
+    opt.textContent = model;
+    modelSelect.appendChild(opt);
+  });
+
+  if (preselectedModel) {
+    modelSelect.value = preselectedModel;
+  }
+
+  modelSelect.onchange = () => {
+    const selectedModel = modelSelect.value;
+    if (!selectedModel) return;
+
+    setTimeout(() => {
+      renderModelLabelAssignments({ target, editable, preselectedModel: selectedModel });
+    }, 0);
+  };
+
+  // Exit early if no model is selected
+  if (!preselectedModel) return;
+
+  const res = await fetch('/api/models/labels/get', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ model_name: preselectedModel }),
+  });
+
+  const { labels: classMap } = await res.json();
+
+  Object.entries(classMap).forEach(([cls, uuid]) => {
+    const row = document.createElement('div');
+    row.style.marginBottom = '0.5em';
+
+    const labelSpan = document.createElement('span');
+    labelSpan.style.marginRight = '0.5em';
+
+    if (uuid && _cachedLabels.has(uuid)) {
+      const labelMeta = _cachedLabels.get(uuid);
+      labelSpan.textContent = cls + ' ';
+      // Create span for assigned label name with color
+      const assignedLabelSpan = document.createElement('span');
+      assignedLabelSpan.textContent = labelMeta.name;
+      assignedLabelSpan.style.color = labelMeta.color || 'inherit';
+      assignedLabelSpan.style.fontWeight = 'bold';
+
+      labelSpan.appendChild(assignedLabelSpan);
+    } else {
+      labelSpan.textContent = cls + ' (unassigned)';
+    }
+
+    const labelRow = document.createElement('div');
+    labelRow.style.display = 'flex';
+    labelRow.style.alignItems = 'center';
+    labelRow.style.gap = '0.5em';
+
+    labelRow.appendChild(labelSpan);
+
+    if (editable) {
+      const editBtn = createButton('emoji-button', 'Edit', '✏️');
+      labelRow.appendChild(editBtn);
+
+      const labelListContainer = document.createElement('div');
+      labelListContainer.style.marginTop = '0.5em';
+
+      editBtn.onclick = async () => {
+        labelListContainer.innerHTML = '';
+
+        const labels = Array.from(_cachedLabels.values());
+
+        const labelList = document.createElement('div');
+        labelList.style.marginTop = '0.5em';
+
+        const helpContainer = document.createElement('div');
+        helpContainer.style.display = 'flex';
+        helpContainer.style.alignItems = 'center';
+        helpContainer.style.marginBottom = '0.5em';
+
+        const closeBtn = document.createElement('button');
+        closeBtn.textContent = 'X';
+        closeBtn.style.cursor = 'pointer';
+        closeBtn.style.background = 'transparent';
+        closeBtn.style.border = 'none';
+        closeBtn.style.color = 'red';
+        closeBtn.style.fontWeight = 'bold';
+        closeBtn.style.fontSize = '1em';
+        closeBtn.style.padding = '0 0.3em';
+        closeBtn.style.lineHeight = '1';
+        closeBtn.style.marginRight = '0.3em';
+
+        closeBtn.onclick = () => {
+          labelListContainer.innerHTML = '';
+        };
+
+        const helpText = document.createElement('div');
+        helpText.textContent = 'Click a label to assign it to ' + cls;
+        helpText.style.fontStyle = 'italic';
+        helpText.style.fontSize = '0.9em';
+
+        helpContainer.appendChild(closeBtn);
+        helpContainer.appendChild(helpText);
+        labelList.appendChild(helpContainer);
+
+        const labelTextContainer = document.createElement('span');
+        labelTextContainer.style.display = 'flex';
+        labelTextContainer.style.flexWrap = 'wrap';
+        labelTextContainer.style.gap = '0.5em';
+        labelTextContainer.style.alignItems = 'center';
+        labelTextContainer.style.marginTop = '0.3em';
+
+        labels.forEach((label, index) => {
+          const labelSpan = document.createElement('span');
+          labelSpan.style.cursor = 'pointer';
+          labelSpan.style.display = 'inline-block';
+
+          if (label.color) {
+            labelSpan.style.color = label.color;
+          }
+
+          labelSpan.textContent = label.name;
+
+          labelSpan.onclick = async () => {
+            await fetch('/api/models/labels/associate', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                model_name: preselectedModel,
+                model_class: cls,
+                label_uuid: label.uuid,
+              }),
+            });
+            renderModelLabelAssignments({ target, editable, preselectedModel });
+          };
+
+          labelTextContainer.appendChild(labelSpan);
+
+          if (index < labels.length - 1) {
+            const comma = document.createElement('span');
+            comma.textContent = ',';
+            labelTextContainer.appendChild(comma);
+          }
+        });
+
+        labelList.appendChild(labelTextContainer);
+        labelListContainer.appendChild(labelList);
+      };
+
+      row.appendChild(labelListContainer);
+    }
+
+    row.appendChild(labelRow);
+    container.appendChild(row);
+  });
+}
+
+// Helper: flatten label tree into flat list with indent info
+function flattenLabels(labels, depth = 0) {
+  let flat = [];
+  for (const label of labels) {
+    flat.push({ ...label, indent: depth });
+    if (label.children?.length) {
+      flat = flat.concat(flattenLabels(label.children, depth + 1));
+    }
+  }
+  return flat;
+}
+
 // --- Initial setup on DOM ready ---
 
 document.addEventListener('DOMContentLoaded', () => {
@@ -530,9 +743,10 @@ document.addEventListener('DOMContentLoaded', () => {
         tabPanes.forEach(tc => tc.classList.toggle('active', tc.id === tabName));
 
         if (tabName === 'tab-labels') {
-          refreshLabelList({ target: "labels-list" });
+          renderLabelList({ target: "labels-list" });
+          renderModelLabelAssignments({ target: "model-labels-box" });
         } else if (tabName === 'tab-labels-tool') {
-          refreshLabelList({ target: "labels-tool-list", editable: false });
+          renderLabelList({ target: "labels-tool-list", editable: false });
         } else if (tabName === 'tab-files' && !fileBrowserInitialized) {
           loadFileBrowser(currentFileBrowserPath);
           fileBrowserInitialized = true;
@@ -544,6 +758,7 @@ document.addEventListener('DOMContentLoaded', () => {
   refreshModelList();
 
   document.getElementById('recognize-button')?.addEventListener('click', recognizeImage);
+  document.getElementById('refresh-models')?.addEventListener('click', refreshModelList);
 
   setupFilesTab();
 });

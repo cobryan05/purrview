@@ -97,7 +97,7 @@ class DbClient:
                     uuid TEXT PRIMARY KEY,
                     name TEXT NOT NULL,
                     color TEXT,
-                    parent_id TEXT REFERENCES labels(uuid)
+                    parent_uuid TEXT REFERENCES labels(uuid)
                 );
                 CREATE TABLE IF NOT EXISTS bounding_boxes (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
