@@ -13,8 +13,8 @@ export function createBoundingBox(x, y, props = {}) {
   const labelUuid = props.metadata?.labelUuid ?? ''
   const confidence = props.metadata?.confidence;
   const uuid = generateUUID();
-  const label = getLabelByUuid(labelUuid)
-  const labelText = label?.metadata?.name ?? 'Unknown';
+  const label = getLabelByUuid(labelUuid) ;
+  const labelText = (label?.metadata?.name ?? props.metadata?.label) ?? 'Unknown';
   const group = new Konva.Group({
     x,
     y,

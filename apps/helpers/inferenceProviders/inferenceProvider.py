@@ -16,6 +16,7 @@ class DetectionResult:
     confidence: float  # Confidence score (0.0 to 1.0)
     class_id: int  # Class ID of the detected object
     class_name: Optional[str] = None  # Human-readable class name (optional)
+    label_uuid: Optional[str] = None  # UUID of label that this class is associated with (optional)
 
 
     def serialize(self) -> dict:
@@ -24,6 +25,7 @@ class DetectionResult:
             "confidence": self.confidence,
             "class_id": self.class_id,
             "class_name": self.class_name,
+            "label_uuid": self.label_uuid,
         }
 
 

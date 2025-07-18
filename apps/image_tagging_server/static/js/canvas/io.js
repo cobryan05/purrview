@@ -256,6 +256,7 @@ export function addRecognizedBoxes(results) {
       metadata: {
         label: obj.class_name,
         confidence: obj.confidence,
+        labelUuid: obj.label_uuid,
       },
     });
 

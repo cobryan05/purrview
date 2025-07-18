@@ -113,7 +113,6 @@ class Manager:
 
         return ret
 
-
     async def set_model_label_uuid(self, model_name: str, model_class: str, label_uuid: str) -> bool:
         """
         Associate a model's class label with a label uuid
@@ -238,6 +237,11 @@ class Manager:
 
             if return_annotated:
                 inference_result.annotated_image = annotate_image(image, inference_result.detections)
+
+            if len(inference_result.detections) > 0:
+                label_uuid_map = await self.get_model_labels(model_name)
+                for det in inference_result.detections:
+                    det.label_uuid = label_uuid_map.get(det.class_name, det.label_uuid)
 
             if pin_id in model.pins:
                 logger.info(f"Refreshing timeout for pin {pin_id}")
