@@ -16,6 +16,47 @@
       box-sizing: border-box;
     }
 
+    /* Styles for the new outer tab headers */
+    .outer-tab-header {
+      display: flex;
+      border-bottom: 1px solid #ccc;
+      margin-bottom: 0.5em;
+    }
+
+    .outer-tab-button {
+      width: 100%;
+      text-align: center;
+      padding: 0.5em 0;
+      /* Slightly more padding for main tabs */
+      cursor: pointer;
+      border: none;
+      background: none;
+      font-weight: normal;
+      color: #333;
+      border-bottom: 2px solid transparent;
+      transition: border-color 0.2s;
+      box-sizing: border-box;
+      font-size: 1.1em;
+      /* Larger font size for main tabs */
+    }
+
+    .outer-tab-button:hover {
+      color: #000;
+    }
+
+    .outer-tab-button.active {
+      font-weight: bold;
+      border-bottom: 2px solid #ff0033;
+    }
+
+    .outer-tab-pane {
+      display: none;
+    }
+
+    .outer-tab-pane.active {
+      display: block;
+    }
+
     .sidebar-container {
       display: flex;
       flex-direction: row;
@@ -177,79 +218,100 @@
 
 <body>
   <main class="container">
-    <div class="sidebar-container">
-      <div id="main-stage">
-        <div class="primary-tab-header">
-          <span class="tab-button active" data-tab="tab-canvas">Canvas</span>
-          <span class="tab-button" data-tab="tab-files">Files</span>
-          <span class="tab-button" data-tab="tab-labels">Label Management</span>
+    <div class="outer-tab-header">
+      <span class="outer-tab-button active" data-tab="outer-tab-image-tagging">Image Tagging</span>
+      <span class="outer-tab-button" data-tab="outer-tab-settings">Configuration</span>
+    </div>
+
+    <div id="outer-tab-image-tagging" class="outer-tab-pane active">
+      <div class="sidebar-container">
+        <div id="main-stage">
+          <div class="primary-tab-header">
+            <span class="tab-button active" data-tab="tab-canvas">Canvas</span>
+            <span class="tab-button" data-tab="tab-files">Files</span>
+          </div>
+
+          <div id="tab-canvas" class="tab-pane active">
+            <nav id="toolbar">
+              <button onclick="reloadImage()">Reload Image</button>
+              <button data-tool="select" onclick="setTool('select')">Select</button>
+              <button data-tool="bbox" onclick="selectBboxTool()">BBox</button>
+              <button onclick="clearAnnotations()">Clear Annotations</button>
+              <button onclick="deleteSelected()">Delete Selected</button>
+              <button onclick="saveAnnotations()">Save</button>
+            </nav>
+            <div id="draw-container"></div>
+          </div>
+
+          <div id="tab-files" class="tab-pane">Files</div>
         </div>
 
-        <div id="tab-canvas" class="tab-pane active">
-          <nav id="toolbar">
-            <button onclick="reloadImage()">Reload Image</button>
-            <button data-tool="select" onclick="setTool('select')">Select</button>
-            <button data-tool="bbox" onclick="selectBboxTool()">BBox</button>
-            <button onclick="clearAnnotations()">Clear Annotations</button>
-            <button onclick="deleteSelected()">Delete Selected</button>
-            <button onclick="saveAnnotations()">Save</button>
-          </nav>
-          <div id="draw-container"></div>
-        </div>
+        <div id="sidebar">
+          <div class="tab-header">
+            <span class="tab-button active" data-tab="tab-models">Models</span>
+            <span class="tab-button" data-tab="tab-labels-tool">Labels</span>
+            <span class="tab-button" data-tab="tab-annotations">Annotations</span>
+          </div>
 
-        <div id="tab-files" class="tab-pane">Files</div>
+          <div id="tab-models" class="tab-pane active">
+            <div class="model-buttons">
+              <button id="recognize-button">Recognize</button>
+              <button id="refresh-models">Refresh Models</button>
+            </div>
+            <div id="model-list"></div>
+          </div>
 
-        <div id="tab-labels" class="tab-pane">
-          <div style="display: flex; gap: 1em; align-items: flex-start; flex-wrap: wrap;">
-            <!-- Left side: Label management -->
-            <div style="flex: 1 1 300px; min-width: 250px;">
-              <h4>Labels</h4>
-              <div id="labels-list"></div>
-            </div>
-            <!-- Right side: Model label associations placeholder -->
-            <div style="flex: 1 1 300px; min-width: 250px;">
-              <h4>Model Label Assignments</h4>
-              <div id="model-labels-box"></div>
-            </div>
+          <div id="tab-annotations" class="tab-pane">
+            <button onclick="refreshAnnotations()">Refresh JSON</button>
+            <pre id="annotation-json" style="max-height: 40vh; overflow-y: auto; font-size: 0.8em;"></pre>
+          </div>
+
+          <div id="tab-labels-tool" class="tab-pane">
+            <h4>Labels</h4>
+            <div id="labels-tool-list"></div>
+          </div>
+
+          <div id="tab-inspector" class="tab-pane">
+            <label>
+              Label:
+              <input type="text" id="labelInput" />
+            </label>
+            <label>
+              Tags (comma-separated):
+              <input type="text" id="tagsInput" />
+            </label>
           </div>
         </div>
       </div>
+    </div>
 
-      <div id="sidebar">
-        <div class="tab-header">
-          <span class="tab-button active" data-tab="tab-models">Models</span>
-          <span class="tab-button" data-tab="tab-labels-tool">Labels</span>
-          <span class="tab-button" data-tab="tab-annotations">Annotations</span>
-          <!--<span class="tab-button" data-tab="tab-inspector">Inspector</span>-->
-        </div>
-
-        <div id="tab-models" class="tab-pane active">
-          <div class="model-buttons">
-            <button id="recognize-button">Recognize</button>
-            <button id="refresh-models">Refresh Models</button>
+    <div id="outer-tab-settings" class="outer-tab-pane">
+      <div class="primary-tab-header">
+        <span class="tab-button active" data-tab="tab-label-management">Label Management</span>
+        <span class="tab-button" data-tab="tab-source-management">Source Management</span>
+      </div>
+      <div id="tab-label-management" class="tab-pane active">
+        <div style="display: flex; gap: 1em; align-items: flex-start; flex-wrap: wrap;">
+          <div style="flex: 1 1 300px; min-width: 250px;">
+            <h4>Labels</h4>
+            <div id="labels-list"></div>
           </div>
-          <div id="model-list"></div>
+          <div style="flex: 1 1 300px; min-width: 250px;">
+            <h4>Model Label Assignments</h4>
+            <div id="model-labels-box"></div>
+          </div>
         </div>
-
-        <div id="tab-annotations" class="tab-pane">
-          <button onclick="refreshAnnotations()">Refresh JSON</button>
-          <pre id="annotation-json" style="max-height: 40vh; overflow-y: auto; font-size: 0.8em;"></pre>
-        </div>
-
-        <div id="tab-labels-tool" class="tab-pane">
-          <h4>Edit Labels</h4>
-          <div id="labels-tool-list"></div>
-        </div>
-
-        <div id="tab-inspector" class="tab-pane">
-          <label>
-            Label:
-            <input type="text" id="labelInput" />
-          </label>
-          <label>
-            Tags (comma-separated):
-            <input type="text" id="tagsInput" />
-          </label>
+      </div>
+      <div id="tab-source-management" class="tab-pane">
+        <div style="display: flex; gap: 1em; align-items: flex-start; flex-wrap: wrap;">
+          <div style="flex: 1 1 300px; min-width: 250px;">
+            <h4>Test</h4>
+            <div id="test-list"></div>
+          </div>
+          <div style="flex: 1 1 300px; min-width: 250px;">
+            <h4>Test Assignments</h4>
+            <div id="test-labels-box"></div>
+          </div>
         </div>
       </div>
     </div>

@@ -467,13 +467,30 @@ function makeBreadcrumbLink(label, path) {
 async function loadImageByName(filename, dirPath) {
   const imageName = (dirPath === '/' ? '' : dirPath + '/') + filename;
 
-  const canvasTabBtn = document.querySelector('.tab-button[data-tab="tab-canvas"]');
-  const canvasPane = document.getElementById('tab-canvas');
-  if (canvasTabBtn && canvasPane) {
-    document.querySelectorAll('.tab-button').forEach(t => t.classList.remove('active'));
-    document.querySelectorAll('.tab-pane').forEach(p => p.classList.remove('active'));
+  // First activate the "Image Tagging" outer tab
+  const imageTaggingOuterTabBtn = document.querySelector('.outer-tab-button[data-tab="outer-tab-image-tagging"]');
+  const imageTaggingOuterPane = document.getElementById('outer-tab-image-tagging');
+  if (imageTaggingOuterTabBtn && imageTaggingOuterPane) {
+    document.querySelectorAll('.outer-tab-button').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.outer-tab-pane').forEach(p => p.classList.remove('active'));
+    imageTaggingOuterTabBtn.classList.add('active');
+    imageTaggingOuterPane.classList.add('active');
+  }
 
+  // Then activate the "Canvas" inner tab within "Image Tagging"
+  // Get the primary-tab-header that contains the canvas and files tabs
+  const primaryTabHeader = document.querySelector('#main-stage .primary-tab-header');
+  const canvasTabBtn = primaryTabHeader.querySelector('.tab-button[data-tab="tab-canvas"]');
+  const canvasPane = document.getElementById('tab-canvas');
+
+  if (canvasTabBtn && canvasPane && primaryTabHeader) {
+    // Deactivate all sibling tabs in the same header (Canvas, Files)
+    primaryTabHeader.querySelectorAll('.tab-button').forEach(t => t.classList.remove('active'));
     canvasTabBtn.classList.add('active');
+
+    // Deactivate all sibling panes (tab-canvas, tab-files, tab-label-management)
+    // These are direct children of #main-stage
+    document.querySelectorAll('#main-stage > .tab-pane').forEach(p => p.classList.remove('active'));
     canvasPane.classList.add('active');
   }
 
@@ -729,9 +746,72 @@ function flattenLabels(labels, depth = 0) {
 // --- Initial setup on DOM ready ---
 
 document.addEventListener('DOMContentLoaded', () => {
-  document.querySelectorAll('.tab-header, .primary-tab-header').forEach(tabHeader => {
+  // New: Outer tab handling
+  document.querySelectorAll('.outer-tab-header').forEach(tabHeader => {
+    const tabs = tabHeader.querySelectorAll('.outer-tab-button');
+    const tabContainer = document.querySelector('main.container'); // The main container holds outer panes
+    const tabPanes = tabContainer.querySelectorAll('.outer-tab-pane');
+
+    tabs.forEach(tab => {
+      tab.addEventListener('click', () => {
+        tabs.forEach(t => t.classList.remove('active'));
+        tab.classList.add('active');
+
+        const tabName = tab.getAttribute('data-tab');
+        tabPanes.forEach(tc => tc.classList.toggle('active', tc.id === tabName));
+
+        // If "Settings" tab is opened, ensure "Label Management" is active within it
+        if (tabName === 'outer-tab-settings') {
+          const labelManagementTabBtn = document.querySelector('#outer-tab-settings .tab-button[data-tab="tab-label-management"]');
+          const labelManagementPane = document.getElementById('tab-label-management');
+          if (labelManagementTabBtn && labelManagementPane) {
+            // Ensure only tabs within this specific tab header are activated
+            labelManagementTabBtn.closest('.primary-tab-header').querySelectorAll('.tab-button').forEach(t => t.classList.remove('active'));
+            labelManagementTabBtn.classList.add('active');
+            labelManagementPane.classList.add('active');
+          }
+          renderLabelList({ target: "labels-list" });
+          renderModelLabelAssignments({ target: "model-labels-box" });
+        }
+      });
+    });
+  });
+
+
+  // Primary tab handling (now within outer panes)
+  document.querySelectorAll('.primary-tab-header').forEach(tabHeader => {
     const tabs = tabHeader.querySelectorAll('.tab-button');
-    const tabContainer = tabHeader.parentElement;
+    const tabContainer = tabHeader.parentElement; // The parent of primary-tab-header is now the main-stage or outer-tab-settings
+    const tabPanes = tabContainer.querySelectorAll('.tab-pane'); // Get panes specific to this tab container
+
+    tabs.forEach(tab => {
+      tab.addEventListener('click', () => {
+        // Deactivate all sibling tabs in the same header
+        tabs.forEach(t => t.classList.remove('active'));
+        tab.classList.add('active');
+
+        const tabName = tab.getAttribute('data-tab');
+        // Deactivate all sibling panes and activate the relevant one
+        tabPanes.forEach(tc => tc.classList.toggle('active', tc.id === tabName));
+
+        // Conditional rendering/loading based on active tab
+        if (tabName === 'tab-label-management') {
+          renderLabelList({ target: "labels-list" });
+          renderModelLabelAssignments({ target: "model-labels-box" });
+        } else if (tabName === 'tab-source-management') {
+          renderSourceManagement({ target: "source-management-box" });
+        } else if (tabName === 'tab-files' && !fileBrowserInitialized) {
+          loadFileBrowser(currentFileBrowserPath);
+          fileBrowserInitialized = true;
+        }
+      });
+    });
+  });
+
+  // Sidebar tab handling
+  document.querySelectorAll('#sidebar .tab-header').forEach(tabHeader => {
+    const tabs = tabHeader.querySelectorAll('.tab-button');
+    const tabContainer = tabHeader.parentElement; // sidebar
     const tabPanes = tabContainer.querySelectorAll('.tab-pane');
 
     tabs.forEach(tab => {
@@ -742,23 +822,21 @@ document.addEventListener('DOMContentLoaded', () => {
         const tabName = tab.getAttribute('data-tab');
         tabPanes.forEach(tc => tc.classList.toggle('active', tc.id === tabName));
 
-        if (tabName === 'tab-labels') {
-          renderLabelList({ target: "labels-list" });
-          renderModelLabelAssignments({ target: "model-labels-box" });
-        } else if (tabName === 'tab-labels-tool') {
+        if (tabName === 'tab-labels-tool') {
           renderLabelList({ target: "labels-tool-list", editable: false });
-        } else if (tabName === 'tab-files' && !fileBrowserInitialized) {
-          loadFileBrowser(currentFileBrowserPath);
-          fileBrowserInitialized = true;
         }
       });
     });
   });
 
+  // Initial load for default active tabs
   refreshModelList();
-
   document.getElementById('recognize-button')?.addEventListener('click', recognizeImage);
   document.getElementById('refresh-models')?.addEventListener('click', refreshModelList);
-
   setupFilesTab();
+
+  // Manually trigger initial rendering for the default active tabs
+  // This will activate 'Image Tagging' and then 'Canvas'
+  document.querySelector('.outer-tab-button[data-tab="outer-tab-image-tagging"]').click();
+  document.querySelector('#outer-tab-image-tagging .tab-button[data-tab="tab-canvas"]').click();
 });
