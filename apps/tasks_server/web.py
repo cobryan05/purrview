@@ -318,8 +318,6 @@ class WebApp:
             except Exception as e:
                 return self._error_response(request, f"Internal server error: {str(e)}")
 
-
-
         class PauseTasksRequest(BaseModel):
             task_ids: List[int]
 
@@ -376,7 +374,6 @@ class WebApp:
 
             except Exception as e:
                 return self._error_response(request, f"Internal server error: {str(e)}")
-
 
         class ResumeTasksRequest(BaseModel):
             task_ids: List[int]
@@ -435,7 +432,6 @@ class WebApp:
             except Exception as e:
                 return self._error_response(request, f"Internal server error: {str(e)}")
 
-
         @self._app.get(
             "/api/tasks/list-avail",
             response_class=JSONResponse,
@@ -444,7 +440,7 @@ class WebApp:
         )
         async def list_avail_tasks_api(request: Request) -> JSONResponse:
             """
-            API endpoint to return a list of active tasks.
+            API endpoint to return a list of available tasks.
 
             Args:
                 request (Request): The FastAPI request object.

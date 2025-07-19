@@ -33,6 +33,7 @@ class WebApp:
     MODELS_API_TAG_NAME = "models"
     INFERENCE_API_TAG_NAME = "inference"
     IMAGES_API_TAG_NAME = "images"
+    SOURCES_API_TAG_NAME = "sources"
 
     def __init__(self, app_name: str, manager: Manager):
         """Initialize the WebApp with the application name"""
@@ -190,7 +191,6 @@ class WebApp:
                     status_code=500,
                 )
 
-
         class AssociateLabelWithModelClassRequest(BaseModel):
             model_name: str
             model_class: str
@@ -211,9 +211,7 @@ class WebApp:
             """
             try:
                 ret = await self._manager.set_model_label_uuid(
-                    model_name=req.model_name,
-                    model_class=req.model_class,
-                    label_uuid=req.label_uuid
+                    model_name=req.model_name, model_class=req.model_class, label_uuid=req.label_uuid
                 )
                 response_data = {"status": "success", "label_set": ret}
                 return JSONResponse(content=response_data)
@@ -223,7 +221,6 @@ class WebApp:
                     content={"status": "failure", "message": str(e)},
                     status_code=500,
                 )
-
 
         class GetModelLabelsRequest(BaseModel):
             model_name: str
@@ -251,7 +248,6 @@ class WebApp:
                     content={"status": "failure", "message": str(e)},
                     status_code=500,
                 )
-
 
         class AddLabelRequest(BaseModel):
             name: str
@@ -306,7 +302,7 @@ class WebApp:
                 #     label_row = await self._manager._db_client.get_label_by_id(label_id)
                 #     if label_row:
                 #         labels.append(Label(id=label_row["id"], name=label_row["name"], color=label_row["color"]))
-                #TODO TAGS
+                # TODO TAGS
                 new_boxes.append(
                     BoundingBoxMetadata(
                         id=b.id,
@@ -400,6 +396,138 @@ class WebApp:
                     content={"status": "failure", "message": str(e)},
                     status_code=500,
                 )
+
+        @self._app.get(
+            "/api/sources/image-providers/list",
+            response_class=JSONResponse,
+            tags=[WebApp.SOURCES_API_TAG_NAME],
+            operation_id="list_image_providers",
+        )
+        async def list_image_providers_api(request: Request) -> JSONResponse:
+            """
+            API endpoint to return a list of available image provider types
+
+            Args:
+                request (Request): The FastAPI request object.
+
+            Returns:
+                JSONResponse: A JSON response containing the list of models.
+            """
+            try:
+                providers_list = await self._manager.list_avail_image_providers()
+                response_data = {"status": "success", "providers": providers_list}
+                return JSONResponse(content=response_data)
+            except Exception as e:
+                logger.exception(e)
+                return JSONResponse(
+                    content={"status": "failure", "message": str(e)},
+                    status_code=500,
+                )
+
+        class GetImageProviderSchemaRequest(BaseModel):
+            image_provider: str
+
+        @self._app.post(
+            "/api/sources/image-providers/schema",
+            tags=[WebApp.SOURCES_API_TAG_NAME],
+            operation_id="image_providers_schema",
+            response_class=JSONResponse,
+        )
+        async def image_providers_schema_api(req: GetImageProviderSchemaRequest) -> JSONResponse:
+            """
+            API endpoint to get the schema for a specific image provider.
+            """
+            try:
+                schema = await self._manager.get_image_provider_schema(req.image_provider)
+                return JSONResponse(content={"status": "success", "schema": schema})
+            except Exception as e:
+                logger.exception(e)
+                return JSONResponse(
+                    content={"status": "failure", "message": str(e)},
+                    status_code=500,
+                )
+
+        class CreateSourceRequest(BaseModel):
+            """Request model for creating a new source."""
+
+            source_name: str
+            image_provider: str
+            params: dict
+
+        @self._app.post(
+            "/api/sources/create",
+            tags=[WebApp.SOURCES_API_TAG_NAME],
+            operation_id="create_source",
+            response_class=JSONResponse,
+        )
+        async def create_source_api(req: CreateSourceRequest) -> JSONResponse:
+            """
+            API endpoint for creating a new source.
+
+            Args:
+                req (CreateSourceRequest): Request object with source type and parameters.
+
+            Returns:
+                JSONResponse: Response with new source ID or error.
+            """
+            try:
+                source_id: int = await self._manager.create_new_source(
+                    typename=req.image_provider, params=req.params, source_name=req.source_name
+                )
+                response_data = {"status": "success", "source_id": source_id}
+            except Exception as e:
+                response_data = {"status": "failure", "message": str(e)}
+            return JSONResponse(content=response_data)
+
+        class DeleteSourceRequest(BaseModel):
+            source_ids: List[int]
+
+        @self._app.post(
+            "/api/sources/delete",
+            tags=[WebApp.SOURCES_API_TAG_NAME],
+            operation_id="delete_sources",
+            response_class=JSONResponse,
+        )
+        async def delete_sources_api(req: DeleteSourceRequest) -> JSONResponse:
+            """
+            API endpoint to delete sources.
+            """
+            try:
+                await self._manager.delete_sources(req.source_ids)
+                return JSONResponse(content={"status": "success"})
+            except Exception as e:
+                logger.exception(e)
+                return JSONResponse(
+                    content={"status": "failure", "message": str(e)},
+                    status_code=500,
+                )
+
+        @self._app.get(
+            "/api/sources/list",
+            response_class=JSONResponse,
+            tags=[WebApp.SOURCES_API_TAG_NAME],
+            operation_id="list_sources",
+        )
+        async def list_sources_api(request: Request) -> JSONResponse:
+            """
+            API endpoint to return a list of available sources
+            Args:
+                request (Request): The FastAPI request object.
+
+            Returns:
+                JSONResponse: A JSON response containing the list of sources
+            """
+            try:
+                sources_list = await self._manager.list_avail_sources()
+                response_data = {"status": "success", "sources": sources_list}
+                return JSONResponse(content=response_data)
+            except Exception as e:
+                logger.exception(e)
+                return JSONResponse(
+                    content={"status": "failure", "message": str(e)},
+                    status_code=500,
+                )
+
         @self._app.post("/api/recognize", response_class=JSONResponse, tags=[WebApp.INFERENCE_API_TAG_NAME])
         async def recognize_api(
             model_name: str = Form(..., description="Name of the model to use for recognition"),
@@ -407,6 +535,18 @@ class WebApp:
             return_annotated: bool = Form(False, description="Whether to return the annotated image"),
             image: UploadFile = File(..., description="Image file to process"),
         ):
+            """
+            API endpoint for recognizing an image with a specific model.
+
+            Args:
+                model_name (str): Name of the model to use for recognition.
+                conf_thresh (float): Confidence threshold for detections.
+                return_annotated (bool): Whether to return the annotated image.
+                image (UploadFile): Image file to process.
+
+            Returns:
+                JSONResponse: Response with new task ID or error.
+            """
             try:
                 image_bytes = await image.read()
 

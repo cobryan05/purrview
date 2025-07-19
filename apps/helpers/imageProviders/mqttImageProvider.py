@@ -3,6 +3,7 @@
 import asyncio
 import io
 import logging
+from typing import Any
 
 import numpy as np
 from PIL import Image
@@ -10,12 +11,13 @@ from PIL import Image
 from apps.helpers.mqttClient import MqttClient
 
 from .imageProvider import ImageProvider
+from .Registry import register_image_provider
 
 logging.basicConfig()
 logger = logging.getLogger(__file__)
 logger.setLevel(logging.DEBUG)
 
-
+@register_image_provider()
 class MqttImageProvider(ImageProvider):
     TIMEOUT = 60
 
@@ -50,3 +52,24 @@ class MqttImageProvider(ImageProvider):
             return await asyncio.wait_for(self._frameQueue.get(), timeout=MqttImageProvider.TIMEOUT)
         except asyncio.TimeoutError:
             raise TimeoutError("No image received within the timeout period.")
+
+
+    @classmethod
+    def params_schema(cls) -> dict[str, dict[str, Any]]:
+        """
+        Return a schema describing the parameters for this Task.
+        Each key is a parameter name, value is a dict with:
+            - type: str
+            - required: bool
+            - default: Any (optional)
+            - help: str (optional)
+            - options: list (optional, for enums)
+            - schema: dict (optional, for nested objects)
+        """
+        return {
+            "topic": {
+                "type": "string",
+                "required": True,
+                "description": "MQTT topic to subscribe to"
+            }
+        }

@@ -710,7 +710,7 @@ class DbClient:
 
                 await db.commit()
 
-    async def save_labels_metadata_db_to_json(self, json_path: Optional[str] = None) -> None:
+    async def export_labels_from_db_to_json(self, json_path: Optional[str] = None) -> None:
         """
         Save all labels from the database into a JSON file.
 
@@ -724,7 +724,7 @@ class DbClient:
         async with aiofiles.open(json_path, "w", encoding="utf-8") as f:
             await f.write(json.dumps(data, indent=2))
 
-    async def read_labels_metadata_json_to_db(
+    async def import_labels_from_json_to_db(
         self, json_path: Optional[str] = None, overwrite_existing: bool = False
     ) -> None:
         """

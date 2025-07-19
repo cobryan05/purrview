@@ -295,6 +295,174 @@ export async function renderLabelList({ target = "labels-list", editable = true 
   }
 }
 
+
+async function renderSourceManager({ target = 'sources-box' }) {
+  const container = document.getElementById(target);
+  container.innerHTML = '';
+
+  const header = document.createElement('h3');
+  header.textContent = 'Sources';
+  container.appendChild(header);
+
+  const list = document.createElement('div');
+  container.appendChild(list);
+
+  async function refreshSources() {
+    list.innerHTML = '';
+    const res = await fetch('/api/sources/list');
+    const data = await res.json();
+
+    data.sources.forEach(src => {
+      const row = document.createElement('div');
+      row.style.display = 'flex';
+      row.style.justifyContent = 'space-between';
+      row.style.alignItems = 'center';
+      row.style.marginBottom = '0.5em';
+
+      const label = document.createElement('span');
+      label.textContent = `${src.name} (${src.provider})`;
+      row.appendChild(label);
+
+      const actions = document.createElement('div');
+
+      const editBtn = createButton('emoji-button', 'Edit', '🖉');
+      // TODO: Hook up edit behavior
+      actions.appendChild(editBtn);
+
+      const deleteBtn = createButton('emoji-button', 'Delete', '🗑️');
+      deleteBtn.onclick = async () => {
+        await fetch(`/api/sources/delete/${src.uuid}`, { method: 'DELETE' });
+        refreshSources();
+      };
+      actions.appendChild(deleteBtn);
+
+      row.appendChild(actions);
+      list.appendChild(row);
+    });
+  }
+
+  await refreshSources();
+
+  // Divider
+  const divider = document.createElement('hr');
+  container.appendChild(divider);
+
+  const formTitle = document.createElement('h4');
+  formTitle.textContent = 'Create New Source';
+  container.appendChild(formTitle);
+
+  const form = document.createElement('form');
+  form.style.display = 'flex';
+  form.style.flexDirection = 'column';
+  form.style.gap = '0.5em';
+
+  const topRow = document.createElement('div');
+  topRow.style.display = 'grid';
+  topRow.style.gridTemplateColumns = '1fr 1fr auto'; // 2 equal columns, 1 auto-sized button
+  topRow.style.gap = '0.5em';
+  topRow.style.alignItems = 'center';
+
+  const providerSelect = document.createElement('select');
+  providerSelect.required = true;
+  providerSelect.style.width = '100%';
+  const defaultOpt = document.createElement('option');
+  defaultOpt.disabled = true;
+  defaultOpt.selected = true;
+  defaultOpt.textContent = 'Select provider';
+  providerSelect.appendChild(defaultOpt);
+  topRow.appendChild(providerSelect);
+
+  const nameInput = document.createElement('input');
+  nameInput.type = 'text';
+  nameInput.placeholder = 'Source name';
+  nameInput.required = true;
+  nameInput.style.width = '100%';
+  topRow.appendChild(nameInput);
+
+  const submitBtn = document.createElement('button');
+  submitBtn.type = 'submit';
+  submitBtn.textContent = '➕';
+  submitBtn.title = 'Create source';
+  submitBtn.style.padding = '0.25em 0.5em';
+  submitBtn.style.fontSize = '1.1em';
+  submitBtn.style.height = '2.2em';
+  topRow.appendChild(submitBtn);
+
+  form.appendChild(topRow);
+
+  const paramsContainer = document.createElement('div');
+  paramsContainer.style.marginTop = '1em';
+  form.appendChild(paramsContainer);
+
+  container.appendChild(form);
+
+  // Load providers
+  const res = await fetch('/api/sources/image-providers/list');
+  const data = await res.json();
+  data.providers.forEach(p => {
+    const opt = document.createElement('option');
+    opt.value = p;
+    opt.textContent = p;
+    providerSelect.appendChild(opt);
+  });
+
+  providerSelect.onchange = async () => {
+    const provider = providerSelect.value;
+    if (!provider) return;
+
+    const schemaRes = await fetch('/api/sources/image-providers/schema', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ image_provider: provider }),
+    });
+    const schema = await schemaRes.json();
+    renderSchemaForm(schema.schema, paramsContainer);
+  };
+
+  form.onsubmit = async e => {
+    e.preventDefault();
+    const provider = providerSelect.value;
+    const name = nameInput.value;
+    const params = {};
+    paramsContainer.querySelectorAll('input, select, textarea').forEach(el => {
+      if (el.name) {
+        params[el.name] = el.value;
+      }
+    });
+    await fetch('/api/sources/create', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ source_name: name, image_provider: provider, params: params }),
+    });
+    nameInput.value = '';
+    providerSelect.value = '';
+    paramsContainer.innerHTML = '';
+    refreshSources();
+  };
+}
+
+function renderSchemaForm(schema, container) {
+  container.innerHTML = '';
+  Object.entries(schema).forEach(([name, field]) => {
+    const wrapper = document.createElement('div');
+    wrapper.style.display = 'flex';
+    wrapper.style.flexDirection = 'column';
+
+    const label = document.createElement('label');
+    label.textContent = field.title || name;
+    label.htmlFor = name;
+    wrapper.appendChild(label);
+
+    const input = document.createElement('input');
+    input.name = name;
+    input.placeholder = field.description || '';
+    if (field.required) input.required = true;
+    wrapper.appendChild(input);
+
+    container.appendChild(wrapper);
+  });
+}
+
 // --- Image recognition ---
 
 /**
@@ -799,7 +967,7 @@ document.addEventListener('DOMContentLoaded', () => {
           renderLabelList({ target: "labels-list" });
           renderModelLabelAssignments({ target: "model-labels-box" });
         } else if (tabName === 'tab-source-management') {
-          renderSourceManagement({ target: "source-management-box" });
+          renderSourceManager({ target: "source-management-box" });
         } else if (tabName === 'tab-files' && !fileBrowserInitialized) {
           loadFileBrowser(currentFileBrowserPath);
           fileBrowserInitialized = true;

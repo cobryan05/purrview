@@ -1,18 +1,22 @@
 """CV2 VideoCapture ImageProvider"""
 
-from .imageProvider import ImageProvider
+import asyncio
+import logging
 from collections.abc import Iterator
 from threading import Event
-import asyncio
+from typing import Any
+
 import cv2
-import logging
 import numpy as np
+
+from .imageProvider import ImageProvider
+from .Registry import register_image_provider
 
 logging.basicConfig()
 logger = logging.getLogger(__file__)
 logger.setLevel(logging.DEBUG)
 
-
+@register_image_provider()
 class Cv2VideoImageProvider(ImageProvider):
 
     def __init__(self, paths: list[str]):
@@ -49,3 +53,27 @@ class Cv2VideoImageProvider(ImageProvider):
                 if not ret:
                     return None
             return frame
+
+
+    @classmethod
+    def params_schema(cls) -> dict[str, dict[str, Any]]:
+        """
+        Return a schema describing the parameters for this Task.
+        Each key is a parameter name, value is a dict with:
+            - type: str
+            - required: bool
+            - default: Any (optional)
+            - help: str (optional)
+            - options: list (optional, for enums)
+            - schema: dict (optional, for nested objects)
+        """
+        return {
+            "paths": {
+                "type": "array",
+                "required": True,
+                "items": {
+                    "type": "string",
+                    "description": "Path to the video file or directory"
+                }
+            }
+        }

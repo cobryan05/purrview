@@ -1,9 +1,24 @@
-''' Image Provider Interface Class '''
+"""Image Provider Interface Class"""
 
 import numpy as np
+from typing import Any
 
 
 class ImageProvider:
     async def getNextImage(self) -> np.array:
         """Retrieves the next image for processing from the image source"""
         raise NotImplementedError()
+
+    @classmethod
+    def params_schema(cls) -> dict[str, dict[str, Any]]:
+        """
+        Return a schema describing the parameters for this Task.
+        Each key is a parameter name, value is a dict with:
+            - type: str
+            - required: bool
+            - default: Any (optional)
+            - help: str (optional)
+            - options: list (optional, for enums)
+            - schema: dict (optional, for nested objects)
+        """
+        return {}

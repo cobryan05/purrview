@@ -1,19 +1,20 @@
 """FFMpeg-backed Image Provider class"""
 
 import logging
-from typing import Optional, Tuple
+from typing import Any, Optional, Tuple
 
 import numpy as np
 
 from apps.helpers.streams.ffmpegStreamerIn import FFmpegStreamerIn
 
 from .imageProvider import ImageProvider
+from .Registry import register_image_provider
 
 logging.basicConfig()
 logger = logging.getLogger(__file__)
 logger.setLevel(logging.DEBUG)
 
-
+@register_image_provider()
 class FfmpegImageProvider(ImageProvider):
     def __init__(self, video_path: str, loop: bool = True):
         output_args = {"format": "rawvideo", "codec": "rawvideo"}  # decode raw frames
@@ -49,3 +50,30 @@ class FfmpegImageProvider(ImageProvider):
 
                 image = np.frombuffer(frame_bytes, dtype=np.uint8).reshape((height, width, 3))
                 return image
+
+
+    @classmethod
+    def params_schema(cls) -> dict[str, dict[str, Any]]:
+        """
+        Return a schema describing the parameters for this Task.
+        Each key is a parameter name, value is a dict with:
+            - type: str
+            - required: bool
+            - default: Any (optional)
+            - help: str (optional)
+            - options: list (optional, for enums)
+            - schema: dict (optional, for nested objects)
+        """
+        return {
+            "video_path": {
+                "type": "string",
+                "required": True,
+                "description": "Path to the video file"
+            },
+            "loop": {
+                "type": "boolean",
+                "required": False,
+                "default": True,
+                "description": "Whether to loop the video"
+            }
+        }

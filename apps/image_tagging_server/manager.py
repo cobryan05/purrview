@@ -7,9 +7,10 @@ import glob
 import logging
 import os
 import sys
+
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import aiofiles
 import cv2
@@ -33,6 +34,7 @@ from apps.helpers.db.db_client import (
     LabelMetaData,
 )
 from apps.helpers.fileUtils import get_safe_path
+from apps.helpers.imageProviders.Registry import image_provider_registry
 
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger(__file__)
@@ -179,7 +181,6 @@ class Manager:
         response: Dict[str, Any] = await asyncio.to_thread(api.get_model_labels_api, request)
         return response.get("labels", {})
 
-
     async def set_model_label_uuid(self, model_name: str, model_class: str, label_uuid: str) -> bool:
         """
         Sets the label UUID that a model's class name should link to
@@ -193,7 +194,9 @@ class Manager:
             Dict[str, Any] dict of label info
         """
         api = ModelsApi(self._api_client)
-        request = AssociateLabelWithModelClassRequest(model_name=model_name , model_class=model_class, label_uuid=label_uuid)
+        request = AssociateLabelWithModelClassRequest(
+            model_name=model_name, model_class=model_class, label_uuid=label_uuid
+        )
         response: Dict[str, Any] = await asyncio.to_thread(api.associate_label_with_model_class, request)
         return response.get("label_set", False)
 
@@ -205,7 +208,7 @@ class Manager:
             LabelMetaData: Label metadata added to database
         """
         ret = await self._db_client.add_label(name, color, parent_uuid=parent_uuid)
-        await self._db_client.save_labels_metadata_db_to_json(str(self._labels_json))
+        await self._db_client.export_labels_from_db_to_json(str(self._labels_json))
         return ret
 
     async def delete_label(self, label_uuid: str) -> None:
@@ -216,7 +219,7 @@ class Manager:
             LabelMetaData: Label metadata added to database
         """
         await self._db_client.delete_label(label_uuid)
-        await self._db_client.save_labels_metadata_db_to_json(str(self._labels_json))
+        await self._db_client.export_labels_from_db_to_json(str(self._labels_json))
 
     @dataclass
     class LabelData:
@@ -253,7 +256,7 @@ class Manager:
             color (Optional[str]): New color for the label.
         """
         await self._db_client.update_label(label_uuid=label_uuid, name=name, color=color)
-        await self._db_client.save_labels_metadata_db_to_json(str(self._labels_json))
+        await self._db_client.export_labels_from_db_to_json(str(self._labels_json))
 
     async def get_image_metadata(self, image_rel_path: str) -> Optional[ImageMetadata]:
         """
@@ -448,6 +451,55 @@ class Manager:
 
         await self.update_image_metadata(image_rel_path, image_meta)
 
+    async def list_avail_image_providers(self) -> List[str]:
+        """
+        List all available image providers.
+        """
+        return list(image_provider_registry.keys())
+
+    async def get_image_provider_schema(self, image_provider: str) -> Dict[str, Any]:
+        """
+        Get the schema for a specific image provider.
+
+        Args:
+            image_provider (str): The name of the image provider.
+
+        Returns:
+            Dict[str, Any]: The schema for the image provider.
+        """
+        if image_provider not in image_provider_registry:
+            raise ValueError(f"Unknown image provider: {image_provider}")
+
+        return image_provider_registry[image_provider].params_schema()
+
+    async def list_avail_sources(self) -> List[str]:
+        """
+        List all sources managed by the Manager.
+        """
+        return []
+
+    async def create_new_source(self, image_provider: str, params: Dict[str, Any], source_name: str) -> None:
+        """
+        Create a new source from an image source as a preset image_provider/params
+
+        Args:
+            provider (str): The image provider for this source
+            params (Dict[str, Any]): The parameters to pass to the image provider
+            source_name (str): The name given for the new source
+        """
+        pass
+        # if typename not in source_registry:
+        #     raise ValueError(f"Unknown source: {typename}")
+
+        # record: SourceRecord = await self._db_client.add_source(typename=typename, params=params)
+        # source_instance = source_registry[typename](source_id=record.id, params=params)
+
+        # source_metadata: SourceMetadata = SourceMetadata(
+        #     id=record.id, typename=typename, parameters=params, status=Source.Status.PENDING
+        # )
+        # source_info = SourceInfo(source=source_instance, metadata=source_metadata)
+        # await self._start_source(source_info)
+
     async def recognize(
         self,
         model_name: str,
@@ -528,7 +580,7 @@ class Manager:
             db_existed: bool = self._db_client.db_exists()
             await self._db_client.init_db()
             if not db_existed:
-                await self._db_client.read_labels_metadata_json_to_db(str(self._labels_json))
+                await self._db_client.import_labels_from_json_to_db(str(self._labels_json))
         except Exception as e:
             logger.exception(e)
             raise
