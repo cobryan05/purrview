@@ -1,0 +1,689 @@
+import { getCurrentLabelUuid, setLabelList } from '/app-static/js/canvas/state.js';
+import { getTool } from '/app-static/js/canvas/tools.js';
+
+// ================= Utility Functions =================
+
+/**
+ * Creates a button DOM element with specified class, title, and text content.
+ * @param {string} className - The CSS class to apply.
+ * @param {string} title - Tooltip/title text.
+ * @param {string} text - Visible button label.
+ * @returns {HTMLButtonElement} The created button element.
+ */
+function createButton(className, title, text) {
+  const btn = document.createElement('button');
+  btn.className = className;
+  btn.title = title;
+  btn.textContent = text;
+  return btn;
+}
+
+/**
+ * Creates a row with editable inputs for a label (name and color),
+ * plus Save/Cancel buttons. Used for both editing and adding labels.
+ * @param {Object} options
+ * @param {string} options.defaultName - Pre-filled name (for edits).
+ * @param {string} options.defaultColor - Pre-filled color (for edits).
+ * @param {Function} options.onSave - Callback for saving input.
+ * @param {Function} options.onCancel - Callback for canceling edit.
+ * @param {number} options.indentLevel - Indentation level (nested labels).
+ * @returns {HTMLDivElement} The constructed row element.
+ */
+function createInputRow({ defaultName = '', defaultColor = '#cccccc', onSave, onCancel, indentLevel = 0 }) {
+  const row = document.createElement('div');
+  row.className = 'label-row';
+  if (indentLevel > 0) row.style.paddingLeft = `${indentLevel * 1.5}em`;
+
+  const saveBtn = createButton('emoji-button', 'Save', '✅');
+  const cancelBtn = createButton('emoji-button', 'Cancel', '❌');
+
+  // Color input (invisible input inside visible swatch)
+  const colorWrapper = document.createElement('span');
+  colorWrapper.className = 'label-color';
+  colorWrapper.style = `position: relative; display: inline-block; cursor: pointer; background-color: ${defaultColor}`;
+
+  const colorInput = document.createElement('input');
+  colorInput.type = 'color';
+  colorInput.value = defaultColor;
+  Object.assign(colorInput.style, {
+    opacity: '0',
+    position: 'absolute',
+    left: '0',
+    top: '0',
+    width: '100%',
+    height: '100%',
+    cursor: 'pointer',
+  });
+  colorInput.addEventListener('input', () => {
+    colorWrapper.style.backgroundColor = colorInput.value;
+  });
+  colorWrapper.appendChild(colorInput);
+
+  // Name text input
+  const nameInput = document.createElement('input');
+  nameInput.type = 'text';
+  nameInput.value = defaultName;
+  nameInput.placeholder = 'New label name';
+  Object.assign(nameInput.style, {
+    minWidth: '5em',
+    height: '2em',
+    marginRight: '0.5em',
+  });
+
+  row.append(saveBtn, cancelBtn, colorWrapper, nameInput);
+
+  saveBtn.onclick = () => {
+    const newName = nameInput.value.trim();
+    if (!newName) {
+      alert('Name required');
+      return;
+    }
+    onSave?.(newName, colorInput.value);
+  };
+
+  cancelBtn.onclick = () => onCancel?.();
+
+  return row;
+}
+
+// ================= Label Rendering =================
+
+/**
+ * Renders the full list of labels from the API into a given DOM container.
+ * Allows nested labels and edit/delete/add operations if editable=true.
+ * @param {Object} options
+ * @param {string} options.target - ID of the container to render into.
+ * @param {boolean} options.editable - Whether editing tools are shown.
+ * @param {Function} [options.onSelectCallback] - callback when a label is clicked (uuid passed).
+ */
+export async function renderLabelList({ target = "labels-list", editable = true, onSelectCallback = null }) {
+  try {
+    const res = await fetch('/api/labels/list');
+    if (!res.ok) throw new Error(`Failed to fetch labels: ${res.status}`);
+    const data = await res.json();
+    const labelListContainer = document.getElementById(target);
+    if (!labelListContainer) {
+      console.error("labelListContainer is null");
+      return;
+    }
+
+    setLabelList(data.labels);
+    labelListContainer.innerHTML = '';
+
+    /**
+     * Recursively renders a single label and its children.
+     * Adds indentation for nested labels.
+     */
+    function renderLabel(label, indentLevel = 0) {
+      const { name, color, uuid } = label.metadata;
+
+      const labelRow = document.createElement('div');
+      labelRow.className = 'label-row';
+      labelRow.dataset.uuid = uuid;
+      labelRow.style.paddingLeft = `${indentLevel * 1.5}em`;
+
+      if (onSelectCallback) {
+        labelRow.style.cursor = 'pointer';
+        labelRow.onclick = () => {
+          onSelectCallback(uuid)
+          highlightSelectedLabel(uuid);
+        };
+      }
+
+      if (editable) {
+        const editBtn = createButton('label-edit-btn emoji-button', 'Edit label', '✏️');
+        editBtn.onclick = () => {
+          const inputRow = createInputRow({
+            defaultName: name,
+            defaultColor: color,
+            indentLevel,
+            onSave: async (newName, newColor) => {
+              const updatedLabel = { label_uuid: uuid, name: newName, color: newColor };
+              const response = await fetch('/api/labels/update', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(updatedLabel),
+              });
+              if (response.ok) renderLabelList({ target, editable });
+              else alert('Failed to update label');
+            },
+            onCancel: () => renderLabelList({ target, editable }),
+          });
+          labelRow.replaceWith(inputRow);
+        };
+
+        const deleteBtn = createButton('label-remove-btn emoji-button', 'Delete label', '🗑️');
+        deleteBtn.onclick = async () => {
+          if (!window.confirm(`Delete label "${name}"?`)) return;
+          const response = await fetch('/api/labels/delete', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ label_uuid: uuid }),
+          });
+          if (response.ok) renderLabelList({ target, editable });
+          else alert('Failed to delete label');
+        };
+
+        const addChildBtn = createButton('label-add-child emoji-button', 'Add sublabel', '➕');
+        addChildBtn.onclick = () => {
+          const childRow = createInputRow({
+            indentLevel: indentLevel + 1,
+            onSave: async (newName, newColor) => {
+              const newLabel = { name: newName, color: newColor, parent_uuid: uuid };
+              const response = await fetch('/api/labels/add', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(newLabel),
+              });
+              if (response.ok) renderLabelList({ target, editable });
+              else alert('Failed to create label');
+            },
+            onCancel: () => childRow.remove(),
+          });
+          labelRow.after(childRow);
+        };
+
+        labelRow.append(editBtn, deleteBtn, addChildBtn);
+      }
+
+      const colorSwatch = document.createElement('span');
+      colorSwatch.className = 'label-color';
+      colorSwatch.style.background = color;
+
+      const nameSpan = document.createElement('span');
+      nameSpan.className = 'label-name';
+      nameSpan.textContent = name;
+
+      labelRow.append(colorSwatch, nameSpan);
+      labelListContainer.appendChild(labelRow);
+
+      label.children.forEach(child => renderLabel(child, indentLevel + 1));
+
+      return labelRow;
+    }
+
+    /**
+     * Highlights a label in the list visually (used for bbox tool).
+     * @param {string|null} selectedUuid
+     */
+    function highlightSelectedLabel(selectedUuid = null) {
+      const currentTool = getTool();
+      const selectedLabelUuid = selectedUuid ?? (currentTool.startsWith('bbox:') ? currentTool.split(':')[1] : null);
+
+      document.querySelectorAll('#labels-tool-list .label-row').forEach(row => {
+        row.style.outline = row.dataset.uuid == selectedLabelUuid ? '2px solid #ff0033' : '';
+      });
+    }
+
+    data.labels
+      .filter(label => !label.metadata.parent_uuid)
+      .forEach(label => renderLabel(label, 0));
+
+    // Add row for creating new root label
+    const newLabelRow = document.createElement('div');
+    newLabelRow.className = 'label-row';
+    if (editable) {
+      const newLabelBtn = createButton('label-add-child emoji-button', 'Add label', '➕');
+      newLabelBtn.onclick = () => {
+        const childRow = createInputRow({
+          onSave: async (newName, newColor) => {
+            const newLabel = { name: newName, color: newColor, parent_id: null };
+            const response = await fetch('/api/labels/add', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(newLabel),
+            });
+            if (response.ok) renderLabelList({ target, editable });
+            else alert('Failed to create label');
+          },
+          onCancel: () => renderLabelList({ target, editable }),
+        });
+        newLabelRow.before(childRow);
+      };
+      newLabelRow.appendChild(newLabelBtn);
+    }
+
+    const refreshBtn = createButton("emoji-button", "Refresh", "🔄");
+    refreshBtn.onclick = () => renderLabelList({ target, editable });
+    newLabelRow.appendChild(refreshBtn);
+    labelListContainer.appendChild(newLabelRow);
+
+    const selectedLabelUuid = getCurrentLabelUuid();
+    if (selectedLabelUuid) {
+      highlightSelectedLabel(selectedLabelUuid);
+    }
+
+  } catch (err) {
+    console.error('Failed to fetch labels:', err);
+  }
+}
+
+// ================= Source Manager =================
+
+/**
+ * Renders the UI for managing sources (list, delete, create).
+ * @param {Object} options
+ * @param {string} options.target - ID of the container to render into.
+ */
+export async function renderSourceManager({ target = 'sources-box' }) {
+  const container = document.getElementById(target);
+  container.innerHTML = '';
+
+  const header = document.createElement('h3');
+  header.textContent = 'Sources';
+  container.appendChild(header);
+
+  const list = document.createElement('div');
+  container.appendChild(list);
+
+  /**
+   * Fetches and renders the list of existing sources.
+   */
+  async function refreshSources() {
+    list.innerHTML = '';
+    const res = await fetch('/api/sources/list');
+    const data = await res.json();
+
+    data.sources.forEach(src => {
+      const row = document.createElement('div');
+      row.style.display = 'flex';
+      row.style.justifyContent = 'space-between';
+      row.style.alignItems = 'center';
+      row.style.marginBottom = '0.5em';
+
+      const label = document.createElement('span');
+      label.textContent = `${src.name} (${src.provider})`;
+      row.appendChild(label);
+
+      const actions = document.createElement('div');
+
+      const editBtn = createButton('emoji-button', 'Edit', '🖉');
+      actions.appendChild(editBtn); // Note: Edit not implemented
+
+      const deleteBtn = createButton('emoji-button', 'Delete', '🗑️');
+      deleteBtn.onclick = async () => {
+        await fetch(`/api/sources/delete/${src.uuid}`, { method: 'DELETE' });
+        refreshSources();
+      };
+      actions.appendChild(deleteBtn);
+
+      row.appendChild(actions);
+      list.appendChild(row);
+    });
+  }
+
+  await refreshSources();
+
+  const divider = document.createElement('hr');
+  container.appendChild(divider);
+
+  const formTitle = document.createElement('h4');
+  formTitle.textContent = 'Create New Source';
+  container.appendChild(formTitle);
+
+  const form = document.createElement('form');
+  form.style.display = 'flex';
+  form.style.flexDirection = 'column';
+  form.style.gap = '0.5em';
+
+  const topRow = document.createElement('div');
+  topRow.style.display = 'grid';
+  topRow.style.gridTemplateColumns = '1fr 1fr auto';
+  topRow.style.gap = '0.5em';
+  topRow.style.alignItems = 'center';
+
+  const providerSelect = document.createElement('select');
+  providerSelect.required = true;
+  providerSelect.style.width = '100%';
+
+  const defaultOpt = document.createElement('option');
+  defaultOpt.disabled = true;
+  defaultOpt.selected = true;
+  defaultOpt.textContent = 'Select provider';
+  providerSelect.appendChild(defaultOpt);
+  topRow.appendChild(providerSelect);
+
+  const nameInput = document.createElement('input');
+  nameInput.type = 'text';
+  nameInput.placeholder = 'Source name';
+  nameInput.required = true;
+  nameInput.style.width = '100%';
+  topRow.appendChild(nameInput);
+
+  const submitBtn = document.createElement('button');
+  submitBtn.type = 'submit';
+  submitBtn.textContent = '➕';
+  submitBtn.title = 'Create source';
+  submitBtn.style.padding = '0.25em 0.5em';
+  submitBtn.style.fontSize = '1.1em';
+  submitBtn.style.height = '2.2em';
+  topRow.appendChild(submitBtn);
+
+  form.appendChild(topRow);
+
+  const paramsContainer = document.createElement('div');
+  paramsContainer.style.marginTop = '1em';
+  form.appendChild(paramsContainer);
+
+  container.appendChild(form);
+
+  // Load available image providers
+  const res = await fetch('/api/sources/image-providers/list');
+  const data = await res.json();
+  data.providers.forEach(p => {
+    const opt = document.createElement('option');
+    opt.value = p;
+    opt.textContent = p;
+    providerSelect.appendChild(opt);
+  });
+
+  providerSelect.onchange = async () => {
+    const provider = providerSelect.value;
+    if (!provider) return;
+
+    const schemaRes = await fetch('/api/sources/image-providers/schema', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ image_provider: provider }),
+    });
+    const schema = await schemaRes.json();
+    renderSchemaForm(schema.schema, paramsContainer);
+  };
+
+  form.onsubmit = async e => {
+    e.preventDefault();
+    const provider = providerSelect.value;
+    const name = nameInput.value;
+    const params = {};
+    paramsContainer.querySelectorAll('input, select, textarea').forEach(el => {
+      if (!el.name) return;
+      if (el.type === 'checkbox') {
+        params[el.name] = el.checked;
+      } else if (el.type === 'number') {
+        params[el.name] = parseFloat(el.value);
+      } else {
+        params[el.name] = el.value;
+      }
+    });
+    await fetch('/api/sources/create', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ source_name: name, image_provider: provider, params: params }),
+    });
+    nameInput.value = '';
+    providerSelect.value = '';
+    paramsContainer.innerHTML = '';
+    refreshSources();
+  };
+}
+
+/**
+ * Renders a form dynamically based on JSON schema input.
+ * Supports string, boolean, and array-of-strings input types.
+ * @param {Object} schema - JSON schema to render.
+ * @param {HTMLElement} container - Container to append form inputs to.
+ */
+function renderSchemaForm(schema, container) {
+  container.innerHTML = '';
+
+  Object.entries(schema).forEach(([name, field]) => {
+    const wrapper = document.createElement('div');
+    wrapper.style.display = 'flex';
+    wrapper.style.flexDirection = 'column';
+    wrapper.style.marginBottom = '1em';
+
+    const label = document.createElement('label');
+    label.textContent = field.title || name;
+    label.htmlFor = name;
+    if (field.required) {
+      label.innerHTML += ' <span style="color: red">*</span>';
+    }
+    wrapper.appendChild(label);
+
+    let input;
+
+    if (field.type === 'boolean') {
+      const checkboxWrapper = document.createElement('label');
+      checkboxWrapper.style.display = 'flex';
+      checkboxWrapper.style.alignItems = 'center';
+      checkboxWrapper.style.gap = '0.5em';
+      checkboxWrapper.style.cursor = 'pointer';
+
+      input = document.createElement('input');
+      input.type = 'checkbox';
+      input.name = name;
+      input.checked = field.default === true;
+      input.style.width = '1.2em';
+      input.style.height = '1.2em';
+      input.style.cursor = 'pointer';
+
+      const checkboxLabel = document.createElement('span');
+      checkboxLabel.textContent = field.description || field.title || name;
+
+      checkboxWrapper.appendChild(input);
+      checkboxWrapper.appendChild(checkboxLabel);
+      wrapper.appendChild(checkboxWrapper);
+    } else if (field.type === 'array' && field.items?.type === 'string') {
+      input = document.createElement('textarea');
+      input.name = name;
+      input.placeholder = (field.items.description || field.description || '') + ' (one per line)';
+      input.rows = 3;
+    } else {
+      input = document.createElement('input');
+      input.type = 'text';
+      input.name = name;
+      input.placeholder = field.description || '';
+      if (field.default !== undefined) {
+        input.value = field.default;
+      }
+    }
+
+    if (field.required) {
+      input.required = true;
+    }
+
+    wrapper.appendChild(input);
+    container.appendChild(wrapper);
+  });
+}
+
+// Global cache for labels metadata
+let _cachedLabels = null;
+
+export async function renderModelLabelAssignments({ target = "model-labels-box", editable = true, preselectedModel = null } = {}) {
+  const container = document.getElementById(target);
+  container.innerHTML = '';
+
+  // Load and cache labels metadata only once
+  if (!_cachedLabels) {
+    const labelRes = await fetch('/api/labels/list');
+    const { labels } = await labelRes.json();
+    // Create a map from UUID to label metadata for quick lookup
+    _cachedLabels = new Map(labels.map(label => [label.metadata.uuid, label.metadata]));
+  }
+
+  const headerRow = document.createElement('div');
+  headerRow.style.display = 'flex';
+  headerRow.style.alignItems = 'center';
+  headerRow.style.gap = '0.5em';
+  headerRow.style.marginBottom = '1em';
+
+  const modelSelect = document.createElement('select');
+
+  if (!preselectedModel) {
+    const placeholderOption = document.createElement('option');
+    placeholderOption.value = '';
+    placeholderOption.textContent = 'Select a model';
+    placeholderOption.disabled = true;
+    placeholderOption.selected = true;
+    modelSelect.appendChild(placeholderOption);
+  }
+
+  const refreshBtn = createButton('emoji-button', 'Refresh', '🔄');
+  refreshBtn.onclick = () => {
+    _cachedLabels = null; // Clear cache on refresh so new labels are fetched
+    renderModelLabelAssignments({ target, editable });
+  };
+
+  headerRow.appendChild(modelSelect);
+  headerRow.appendChild(refreshBtn);
+  container.appendChild(headerRow);
+
+  // Load models
+  const modelRes = await fetch('/api/models/list');
+  const { models } = await modelRes.json();
+  models.forEach(model => {
+    const opt = document.createElement('option');
+    opt.value = model;
+    opt.textContent = model;
+    modelSelect.appendChild(opt);
+  });
+
+  if (preselectedModel) {
+    modelSelect.value = preselectedModel;
+  }
+
+  modelSelect.onchange = () => {
+    const selectedModel = modelSelect.value;
+    if (!selectedModel) return;
+
+    setTimeout(() => {
+      renderModelLabelAssignments({ target, editable, preselectedModel: selectedModel });
+    }, 0);
+  };
+
+  // Exit early if no model is selected
+  if (!preselectedModel) return;
+
+  const res = await fetch('/api/models/labels/get', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ model_name: preselectedModel }),
+  });
+
+  const { labels: classMap } = await res.json();
+
+  Object.entries(classMap).forEach(([cls, uuid]) => {
+    const row = document.createElement('div');
+    row.style.marginBottom = '0.5em';
+
+    const labelSpan = document.createElement('span');
+    labelSpan.style.marginRight = '0.5em';
+
+    if (uuid && _cachedLabels.has(uuid)) {
+      const labelMeta = _cachedLabels.get(uuid);
+      labelSpan.textContent = cls + ' ';
+      // Create span for assigned label name with color
+      const assignedLabelSpan = document.createElement('span');
+      assignedLabelSpan.textContent = labelMeta.name;
+      assignedLabelSpan.style.color = labelMeta.color || 'inherit';
+      assignedLabelSpan.style.fontWeight = 'bold';
+
+      labelSpan.appendChild(assignedLabelSpan);
+    } else {
+      labelSpan.textContent = cls + ' (unassigned)';
+    }
+
+    const labelRow = document.createElement('div');
+    labelRow.style.display = 'flex';
+    labelRow.style.alignItems = 'center';
+    labelRow.style.gap = '0.5em';
+
+    labelRow.appendChild(labelSpan);
+
+    if (editable) {
+      const editBtn = createButton('emoji-button', 'Edit', '✏️');
+      labelRow.appendChild(editBtn);
+
+      const labelListContainer = document.createElement('div');
+      labelListContainer.style.marginTop = '0.5em';
+
+      editBtn.onclick = async () => {
+        labelListContainer.innerHTML = '';
+
+        const labels = Array.from(_cachedLabels.values());
+
+        const labelList = document.createElement('div');
+        labelList.style.marginTop = '0.5em';
+
+        const helpContainer = document.createElement('div');
+        helpContainer.style.display = 'flex';
+        helpContainer.style.alignItems = 'center';
+        helpContainer.style.marginBottom = '0.5em';
+
+        const closeBtn = document.createElement('button');
+        closeBtn.textContent = 'X';
+        closeBtn.style.cursor = 'pointer';
+        closeBtn.style.background = 'transparent';
+        closeBtn.style.border = 'none';
+        closeBtn.style.color = 'red';
+        closeBtn.style.fontWeight = 'bold';
+        closeBtn.style.fontSize = '1em';
+        closeBtn.style.padding = '0 0.3em';
+        closeBtn.style.lineHeight = '1';
+        closeBtn.style.marginRight = '0.3em';
+
+        closeBtn.onclick = () => {
+          labelListContainer.innerHTML = '';
+        };
+
+        const helpText = document.createElement('div');
+        helpText.textContent = 'Click a label to assign it to ' + cls;
+        helpText.style.fontStyle = 'italic';
+        helpText.style.fontSize = '0.9em';
+
+        helpContainer.appendChild(closeBtn);
+        helpContainer.appendChild(helpText);
+        labelList.appendChild(helpContainer);
+
+        const labelTextContainer = document.createElement('span');
+        labelTextContainer.style.display = 'flex';
+        labelTextContainer.style.flexWrap = 'wrap';
+        labelTextContainer.style.gap = '0.5em';
+        labelTextContainer.style.alignItems = 'center';
+        labelTextContainer.style.marginTop = '0.3em';
+
+        labels.forEach((label, index) => {
+          const labelSpan = document.createElement('span');
+          labelSpan.style.cursor = 'pointer';
+          labelSpan.style.display = 'inline-block';
+
+          if (label.color) {
+            labelSpan.style.color = label.color;
+          }
+
+          labelSpan.textContent = label.name;
+
+          labelSpan.onclick = async () => {
+            await fetch('/api/models/labels/associate', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                model_name: preselectedModel,
+                model_class: cls,
+                label_uuid: label.uuid,
+              }),
+            });
+            renderModelLabelAssignments({ target, editable, preselectedModel });
+          };
+
+          labelTextContainer.appendChild(labelSpan);
+
+          if (index < labels.length - 1) {
+            const comma = document.createElement('span');
+            comma.textContent = ',';
+            labelTextContainer.appendChild(comma);
+          }
+        });
+
+        labelList.appendChild(labelTextContainer);
+        labelListContainer.appendChild(labelList);
+      };
+
+      row.appendChild(labelListContainer);
+    }
+
+    row.appendChild(labelRow);
+    container.appendChild(row);
+  });
+}
