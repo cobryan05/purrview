@@ -483,7 +483,7 @@ class Manager:
         Create a new source from an image source as a preset image_provider/params
 
         Args:
-            provider (str): The image provider for this source
+            image_provider (str): The image provider for this source
             params (Dict[str, Any]): The parameters to pass to the image provider
             source_name (str): The name given for the new source
         """

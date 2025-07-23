@@ -425,7 +425,13 @@ async function renderSourceManager({ target = 'sources-box' }) {
     const name = nameInput.value;
     const params = {};
     paramsContainer.querySelectorAll('input, select, textarea').forEach(el => {
-      if (el.name) {
+      if (!el.name) return;
+
+      if (el.type === 'checkbox') {
+        params[el.name] = el.checked;
+      } else if (el.type === 'number') {
+        params[el.name] = parseFloat(el.value);
+      } else {
         params[el.name] = el.value;
       }
     });
@@ -443,22 +449,64 @@ async function renderSourceManager({ target = 'sources-box' }) {
 
 function renderSchemaForm(schema, container) {
   container.innerHTML = '';
+
   Object.entries(schema).forEach(([name, field]) => {
     const wrapper = document.createElement('div');
     wrapper.style.display = 'flex';
     wrapper.style.flexDirection = 'column';
+    wrapper.style.marginBottom = '1em';
 
     const label = document.createElement('label');
     label.textContent = field.title || name;
     label.htmlFor = name;
+    if (field.required) {
+      label.innerHTML += ' <span style="color: red">*</span>';
+    }
     wrapper.appendChild(label);
 
-    const input = document.createElement('input');
-    input.name = name;
-    input.placeholder = field.description || '';
-    if (field.required) input.required = true;
-    wrapper.appendChild(input);
+    let input;
 
+    if (field.type === 'boolean') {
+      const checkboxWrapper = document.createElement('label');
+      checkboxWrapper.style.display = 'flex';
+      checkboxWrapper.style.alignItems = 'center';
+      checkboxWrapper.style.gap = '0.5em';
+      checkboxWrapper.style.cursor = 'pointer';
+
+      input = document.createElement('input');
+      input.type = 'checkbox';
+      input.name = name;
+      input.checked = field.default === true;
+      input.style.width = '1.2em';
+      input.style.height = '1.2em';
+      input.style.cursor = 'pointer';
+
+      const checkboxLabel = document.createElement('span');
+      checkboxLabel.textContent = field.description || field.title || name;
+
+      checkboxWrapper.appendChild(input);
+      checkboxWrapper.appendChild(checkboxLabel);
+      wrapper.appendChild(checkboxWrapper);
+    } else if (field.type === 'array' && field.items?.type === 'string') {
+      input = document.createElement('textarea');
+      input.name = name;
+      input.placeholder = (field.items.description || field.description || '') + ' (one per line)';
+      input.rows = 3;
+    } else {
+      input = document.createElement('input');
+      input.type = 'text';
+      input.name = name;
+      input.placeholder = field.description || '';
+      if (field.default !== undefined) {
+        input.value = field.default;
+      }
+    }
+
+    if (field.required) {
+      input.required = true;
+    }
+
+    wrapper.appendChild(input);
     container.appendChild(wrapper);
   });
 }

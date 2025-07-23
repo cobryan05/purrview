@@ -16,10 +16,11 @@ logger.setLevel(logging.DEBUG)
 
 @register_image_provider()
 class FfmpegImageProvider(ImageProvider):
-    def __init__(self, video_path: str, loop: bool = True):
+    def __init__(self, video_path: str, loop: bool = True, rtsp_relay: bool = True):
         output_args = {"format": "rawvideo", "codec": "rawvideo"}  # decode raw frames
         self._stream: FFmpegStreamerIn = FFmpegStreamerIn(video_path, output_args=output_args)
         self._loop: bool = loop
+        self._rtsp_relay: bool = rtsp_relay
         self._stream.start()
         self._frame_size: Optional[Tuple[int, int]] = None
         self._buffer: bytes = b""
@@ -68,7 +69,13 @@ class FfmpegImageProvider(ImageProvider):
             "video_path": {
                 "type": "string",
                 "required": True,
-                "description": "Path to the video file"
+                "description": "Path to pass to ffmpeg (eg, rtsp://, local url. etc)"
+            },
+            "rtsp_relay": {
+                "type": "boolean",
+                "required": False,
+                "default": True,
+                "description": "Proxy RTSP streams through MediaMTX"
             },
             "loop": {
                 "type": "boolean",

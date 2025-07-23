@@ -472,7 +472,7 @@ class WebApp:
             """
             try:
                 source_id: int = await self._manager.create_new_source(
-                    typename=req.image_provider, params=req.params, source_name=req.source_name
+                    image_provider=req.image_provider, params=req.params, source_name=req.source_name
                 )
                 response_data = {"status": "success", "source_id": source_id}
             except Exception as e:
