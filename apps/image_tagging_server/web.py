@@ -471,10 +471,10 @@ class WebApp:
                 JSONResponse: Response with new source ID or error.
             """
             try:
-                source_id: int = await self._manager.create_new_source(
+                source_metadata = await self._manager.create_new_source(
                     image_provider=req.image_provider, params=req.params, source_name=req.source_name
                 )
-                response_data = {"status": "success", "source_id": source_id}
+                response_data = {"status": "success", "source_id": source_metadata.uuid}
             except Exception as e:
                 response_data = {"status": "failure", "message": str(e)}
             return JSONResponse(content=response_data)

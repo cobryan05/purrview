@@ -49,6 +49,13 @@ class ImageMetadata:
     extra: Dict[str, str] = field(default_factory=dict)
     boxes: List[BoundingBoxMetadata] = field(default_factory=list)
 
+@dataclass
+class SourceMetaData:
+    name: str
+    typename: str
+    params_json: str
+    uuid: str
+
 
 @dataclass
 class TaskRecord:
@@ -127,6 +134,12 @@ class DbClient:
                     error_message TEXT,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+                CREATE TABLE IF NOT EXISTS sources (
+                    uuid TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    typename TEXT NOT NULL,
+                    params_json TEXT NOT NULL
                 );
                 """
             )
@@ -382,6 +395,119 @@ class DbClient:
             )
             await db.commit()
 
+
+    async def _get_source_by_name(self, name: str) -> Optional[SourceMetaData]:
+        """
+        Internal helper to retrieve a source by name.
+
+        Args:
+            name (str): Source name.
+
+        Returns:
+            Optional[SourceMetaData]: Matching source or None.
+        """
+        async with aiosqlite.connect(self._db_path) as db:
+            cursor = await db.execute("SELECT name, typename, params_json, uuid FROM sources WHERE name = ?", (name,))
+            row = await cursor.fetchone()
+            await cursor.close()
+            if row:
+                return SourceMetaData(name=row[0], typename=row[1], params_json=row[2], uuid=row[3])
+            return None
+
+    async def list_sources(self) -> List[SourceMetaData]:
+        """
+        List all sources.
+
+        Returns:
+            List[SourceMetaData]: All source entries.
+        """
+        async with aiosqlite.connect(self._db_path) as db:
+            cursor = await db.execute("SELECT name, typename, params_json, uuid FROM sources")
+            rows = await cursor.fetchall()
+            await cursor.close()
+            return [SourceMetaData(name=r[0], typename=r[1], params_json=r[2], uuid=r[3]) for r in rows]
+
+    async def add_source(
+        self, name: str, typename: str, params: dict, uuid: Optional[str] = None
+    ) -> SourceMetaData:
+        """
+        Add a source or return existing one by name.
+
+        Args:
+            name (str): Source name.
+            typename (str): Type of the image provider.
+            params_json (str): Serialized parameters.
+            uuid (Optional[str]): Optional UUID.
+
+        Returns:
+            SourceMetaData: Source data.
+        """
+        existing = await self._get_source_by_name(name)
+        if existing:
+            return existing
+
+        uuid = uuid or str(uuid4())
+        params_json = json.dumps(params)
+        async with aiosqlite.connect(self._db_path) as db:
+            await db.execute(
+                "INSERT INTO sources (name, typename, params_json, uuid) VALUES (?, ?, ?, ?)",
+                (name, typename, params_json, uuid),
+            )
+            await db.commit()
+            return SourceMetaData(name=name, typename=typename, params_json=params_json, uuid=uuid)
+
+    async def update_source(
+        self,
+        source_uuid: str,
+        name: Optional[str] = None,
+        typename: Optional[str] = None,
+        params_json: Optional[str] = None,
+    ) -> None:
+        """
+        Update source properties.
+
+        Args:
+            source_uuid (str): UUID of the source.
+            name (Optional[str]): New name.
+            typename (Optional[str]): New typename.
+            params_json (Optional[str]): New parameters as JSON string.
+        """
+        if not any([name, typename, params_json]):
+            return
+
+        query_parts = []
+        params = []
+
+        if name:
+            query_parts.append("name = ?")
+            params.append(name)
+        if typename:
+            query_parts.append("typename = ?")
+            params.append(typename)
+        if params_json:
+            query_parts.append("params_json = ?")
+            params.append(params_json)
+
+        params.append(source_uuid)
+
+        async with aiosqlite.connect(self._db_path) as db:
+            await db.execute(
+                f"UPDATE sources SET {', '.join(query_parts)} WHERE uuid = ?",
+                tuple(params),
+            )
+            await db.commit()
+
+    async def delete_source(self, source_uuid: str) -> None:
+        """
+        Delete a source.
+
+        Args:
+            source_uuid (str): UUID of the source to delete.
+        """
+        async with aiosqlite.connect(self._db_path) as db:
+            await db.execute("DELETE FROM sources WHERE uuid = ?", (source_uuid,))
+            await db.commit()
+
     async def list_labels(self) -> List[LabelMetaData]:
         """
         List all labels.
@@ -580,7 +706,7 @@ class DbClient:
             )
             await db.commit()
 
-    async def read_metadata(self, image_id: int) -> Optional[ImageMetadata]:
+    async def read_image_metadata_from_db(self, image_id: int) -> Optional[ImageMetadata]:
         """
         Read image metadata including bounding boxes and labels.
 
@@ -674,7 +800,7 @@ class DbClient:
                 boxes=boxes,
             )
 
-    async def write_metadata_to_db(self, image_id: int, metadata: ImageMetadata) -> None:
+    async def write_image_metadata_to_db(self, image_id: int, metadata: ImageMetadata) -> None:
         """
         Write image metadata including bounding boxes and labels atomically.
 
@@ -777,7 +903,7 @@ class DbClient:
             logger.warning(f"No database entry found for image: {abs_path}")
             return
 
-        metadata: Optional[ImageMetadata] = await self.read_metadata(image_id)
+        metadata: Optional[ImageMetadata] = await self.read_image_metadata_from_db(image_id)
         if metadata is None:
             logger.warning(f"No metadata found for image: {abs_path}")
             return
@@ -805,7 +931,7 @@ class DbClient:
             # Convert parsed dict into ImageMetadata dataclass
             image_meta: ImageMetadata = from_dict(data_class=ImageMetadata, data=parsed)
             image_meta.id = image_id
-            await self.write_metadata_to_db(image_id, image_meta)
+            await self.write_image_metadata_to_db(image_id, image_meta)
             return image_meta
         except FileNotFoundError:
             logger.warning(f"JSON file not found: {json_path}")

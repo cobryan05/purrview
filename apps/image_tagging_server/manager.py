@@ -27,12 +27,7 @@ from inference_client.models.body_pin_model_api import (
 from inference_client.models.get_model_labels_request import GetModelLabelsRequest
 from inference_client.models.recognize_request import RecognizeRequest
 
-from apps.helpers.db.db_client import (
-    BoundingBoxMetadata,
-    DbClient,
-    ImageMetadata,
-    LabelMetaData,
-)
+from apps.helpers.db.db_client import BoundingBoxMetadata, DbClient, ImageMetadata, LabelMetaData, SourceMetaData
 from apps.helpers.fileUtils import get_safe_path
 from apps.helpers.imageProviders.Registry import image_provider_registry
 
@@ -276,7 +271,7 @@ class Manager:
         if image_id is None:
             image_id = await self._db_client.add_image(img_path)
             await self._db_client.read_image_metadata_json_to_db(img_path)
-        return await self._db_client.read_metadata(image_id)
+        return await self._db_client.read_image_metadata_from_db(image_id)
 
     async def update_image_metadata(self, image_rel_path: str, metadata: ImageMetadata) -> None:
         """
@@ -292,7 +287,7 @@ class Manager:
             return
         img_path = str(safe_path)
         image_id = await self._db_client.add_image(img_path)
-        await self._db_client.write_metadata_to_db(image_id, metadata)
+        await self._db_client.write_image_metadata_to_db(image_id, metadata)
         await self._db_client.save_image_metadata_db_to_json(img_path)
 
     async def create_box(
@@ -476,9 +471,10 @@ class Manager:
         """
         List all sources managed by the Manager.
         """
-        return []
+        sources = await self._db_client.list_sources()
+        return [source.name for source in sources]
 
-    async def create_new_source(self, image_provider: str, params: Dict[str, Any], source_name: str) -> None:
+    async def create_new_source(self, image_provider: str, params: Dict[str, Any], source_name: str) -> SourceMetaData:
         """
         Create a new source from an image source as a preset image_provider/params
 
@@ -487,9 +483,14 @@ class Manager:
             params (Dict[str, Any]): The parameters to pass to the image provider
             source_name (str): The name given for the new source
         """
-        pass
-        # if typename not in source_registry:
-        #     raise ValueError(f"Unknown source: {typename}")
+        if image_provider not in image_provider_registry:
+            raise ValueError(f"Unknown image provider: {image_provider}")
+
+        provider = image_provider_registry[image_provider](**params)
+        print(provider)
+
+        ret: SourceMetadata = await self._db_client.add_source(name=source_name, typename=image_provider, params=params)
+        return ret
 
         # record: SourceRecord = await self._db_client.add_source(typename=typename, params=params)
         # source_instance = source_registry[typename](source_id=record.id, params=params)
