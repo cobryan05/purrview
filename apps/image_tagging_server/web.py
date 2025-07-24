@@ -15,7 +15,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 
-from .manager import Manager, ImageMetadata, BoundingBoxMetadata
+from .manager import Manager, ImageMetadata, BoundingBoxMetadata, SourceMetaData
 
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger(__file__)
@@ -471,7 +471,7 @@ class WebApp:
                 JSONResponse: Response with new source ID or error.
             """
             try:
-                source_metadata = await self._manager.create_new_source(
+                source_metadata: SourceMetaData = await self._manager.create_new_source(
                     image_provider=req.image_provider, params=req.params, source_name=req.source_name
                 )
                 response_data = {"status": "success", "source_id": source_metadata.uuid}
@@ -503,12 +503,12 @@ class WebApp:
                 )
 
         @self._app.get(
-            "/api/sources/list",
+            "/api/sources/get",
             response_class=JSONResponse,
             tags=[WebApp.SOURCES_API_TAG_NAME],
-            operation_id="list_sources",
+            operation_id="get_sources",
         )
-        async def list_sources_api(request: Request) -> JSONResponse:
+        async def get_sources_api(request: Request) -> JSONResponse:
             """
             API endpoint to return a list of available sources
             Args:
@@ -518,8 +518,9 @@ class WebApp:
                 JSONResponse: A JSON response containing the list of sources
             """
             try:
-                sources_list = await self._manager.list_avail_sources()
-                response_data = {"status": "success", "sources": sources_list}
+                sources: List[SourceMetaData] = await self._manager.get_avail_sources()
+                sources_dict = {source.uuid: asdict(source) for source in sources}
+                response_data = {"status": "success", "sources": sources_dict}
                 return JSONResponse(content=response_data)
             except Exception as e:
                 logger.exception(e)

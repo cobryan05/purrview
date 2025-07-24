@@ -467,12 +467,12 @@ class Manager:
 
         return image_provider_registry[image_provider].params_schema()
 
-    async def list_avail_sources(self) -> List[str]:
+    async def get_avail_sources(self) -> List[SourceMetaData]:
         """
         List all sources managed by the Manager.
         """
-        sources = await self._db_client.list_sources()
-        return [source.name for source in sources]
+        sources = await self._db_client.get_sources()
+        return sources
 
     async def create_new_source(self, image_provider: str, params: Dict[str, Any], source_name: str) -> SourceMetaData:
         """
@@ -487,19 +487,10 @@ class Manager:
             raise ValueError(f"Unknown image provider: {image_provider}")
 
         provider = image_provider_registry[image_provider](**params)
-        print(provider)
 
-        ret: SourceMetadata = await self._db_client.add_source(name=source_name, typename=image_provider, params=params)
+        ret: SourceMetaData = await self._db_client.add_source(name=source_name, typename=image_provider, params=params)
         return ret
 
-        # record: SourceRecord = await self._db_client.add_source(typename=typename, params=params)
-        # source_instance = source_registry[typename](source_id=record.id, params=params)
-
-        # source_metadata: SourceMetadata = SourceMetadata(
-        #     id=record.id, typename=typename, parameters=params, status=Source.Status.PENDING
-        # )
-        # source_info = SourceInfo(source=source_instance, metadata=source_metadata)
-        # await self._start_source(source_info)
 
     async def recognize(
         self,

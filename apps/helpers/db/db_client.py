@@ -53,7 +53,7 @@ class ImageMetadata:
 class SourceMetaData:
     name: str
     typename: str
-    params_json: str
+    params: dict[str, str]
     uuid: str
 
 
@@ -411,10 +411,10 @@ class DbClient:
             row = await cursor.fetchone()
             await cursor.close()
             if row:
-                return SourceMetaData(name=row[0], typename=row[1], params_json=row[2], uuid=row[3])
+                return SourceMetaData(name=row[0], typename=row[1], params=json.loads(row[2]), uuid=row[3])
             return None
 
-    async def list_sources(self) -> List[SourceMetaData]:
+    async def get_sources(self) -> List[SourceMetaData]:
         """
         List all sources.
 
@@ -425,7 +425,7 @@ class DbClient:
             cursor = await db.execute("SELECT name, typename, params_json, uuid FROM sources")
             rows = await cursor.fetchall()
             await cursor.close()
-            return [SourceMetaData(name=r[0], typename=r[1], params_json=r[2], uuid=r[3]) for r in rows]
+            return [SourceMetaData(name=r[0], typename=r[1], params=json.loads(r[2]), uuid=r[3]) for r in rows]
 
     async def add_source(
         self, name: str, typename: str, params: dict, uuid: Optional[str] = None
@@ -447,14 +447,13 @@ class DbClient:
             return existing
 
         uuid = uuid or str(uuid4())
-        params_json = json.dumps(params)
         async with aiosqlite.connect(self._db_path) as db:
             await db.execute(
                 "INSERT INTO sources (name, typename, params_json, uuid) VALUES (?, ?, ?, ?)",
-                (name, typename, params_json, uuid),
+                (name, typename, json.dumps(params), uuid),
             )
             await db.commit()
-            return SourceMetaData(name=name, typename=typename, params_json=params_json, uuid=uuid)
+            return SourceMetaData(name=name, typename=typename, params=params, uuid=uuid)
 
     async def update_source(
         self,

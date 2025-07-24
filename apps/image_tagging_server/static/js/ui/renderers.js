@@ -1,5 +1,6 @@
 import { getCurrentLabelUuid, setLabelList } from '/app-static/js/canvas/state.js';
 import { getTool } from '/app-static/js/canvas/tools.js';
+import { toast } from '/app-static/js/canvas/utils.js';
 
 // ================= Utility Functions =================
 
@@ -260,66 +261,68 @@ export async function renderLabelList({ target = "labels-list", editable = true,
 
 // ================= Source Manager =================
 
-/**
- * Renders the UI for managing sources (list, delete, create).
- * @param {Object} options
- * @param {string} options.target - ID of the container to render into.
- */
-export async function renderSourceManager({ target = 'sources-box' }) {
-  const container = document.getElementById(target);
-  container.innerHTML = '';
+export async function renderSourceList({ parent, onEdit = () => { }, onDelete = () => { } }) {
+  parent.innerHTML = '';
+  const res = await fetch('/api/sources/get');
+  const data = await res.json();
 
-  const header = document.createElement('h3');
-  header.textContent = 'Sources';
-  container.appendChild(header);
+  Object.values(data.sources).forEach(src => {
+    const row = document.createElement('div');
+    row.style.display = 'flex';
+    row.style.justifyContent = 'space-between';
+    row.style.alignItems = 'center';
+    row.style.marginBottom = '0.5em';
+    row.style.flexWrap = 'wrap';
 
-  const list = document.createElement('div');
-  container.appendChild(list);
+    const label = document.createElement('span');
+    label.textContent = `${src.typename}: ${src.name}`;
+    row.appendChild(label);
 
-  /**
-   * Fetches and renders the list of existing sources.
-   */
-  async function refreshSources() {
-    list.innerHTML = '';
-    const res = await fetch('/api/sources/list');
-    const data = await res.json();
+    const actions = document.createElement('div');
+    actions.style.display = 'flex';
+    actions.style.gap = '0.5em';
 
-    data.sources.forEach(src => {
-      const row = document.createElement('div');
-      row.style.display = 'flex';
-      row.style.justifyContent = 'space-between';
-      row.style.alignItems = 'center';
-      row.style.marginBottom = '0.5em';
+    const editBtn = createButton('emoji-button', 'Edit', '🖉');
+    editBtn.onclick = async () => {
+      const editContainer = document.createElement('div');
+      editContainer.className = 'inline-edit-form';
+      editContainer.style.margin = '1em 0';
+      editContainer.style.padding = '0.5em';
+      editContainer.style.border = '1px solid #ccc';
+      editContainer.style.borderRadius = '0.5em';
 
-      const label = document.createElement('span');
-      label.textContent = `${src.name} (${src.provider})`;
-      row.appendChild(label);
+      row.innerHTML = '';
+      row.appendChild(editContainer);
 
-      const actions = document.createElement('div');
+      await renderSourceForm({
+        parent: editContainer,
+        existingSource: src,
+        onCreate: () => {
+          renderSourceList({ parent, onDelete });
+        },
+        onCancel: () => {
+          renderSourceList({ parent, onDelete });
+        }
+      });
+    };
+    actions.appendChild(editBtn);
 
-      const editBtn = createButton('emoji-button', 'Edit', '🖉');
-      actions.appendChild(editBtn); // Note: Edit not implemented
+    const deleteBtn = createButton('emoji-button', 'Delete', '🗑️');
+    deleteBtn.onclick = async () => {
+      await fetch(`/api/sources/delete/${src.uuid}`, { method: 'DELETE' });
+      onDelete();
+    };
+    actions.appendChild(deleteBtn);
 
-      const deleteBtn = createButton('emoji-button', 'Delete', '🗑️');
-      deleteBtn.onclick = async () => {
-        await fetch(`/api/sources/delete/${src.uuid}`, { method: 'DELETE' });
-        refreshSources();
-      };
-      actions.appendChild(deleteBtn);
+    row.appendChild(actions);
+    parent.appendChild(row);
+  });
+}
 
-      row.appendChild(actions);
-      list.appendChild(row);
-    });
-  }
-
-  await refreshSources();
-
-  const divider = document.createElement('hr');
-  container.appendChild(divider);
-
+export async function renderSourceForm({ parent, onCreate, existingSource = null, onCancel = null }) {
   const formTitle = document.createElement('h4');
-  formTitle.textContent = 'Create New Source';
-  container.appendChild(formTitle);
+  formTitle.textContent = existingSource ? 'Edit Source' : 'Create New Source';
+  parent.appendChild(formTitle);
 
   const form = document.createElement('form');
   form.style.display = 'flex';
@@ -350,14 +353,22 @@ export async function renderSourceManager({ target = 'sources-box' }) {
   nameInput.style.width = '100%';
   topRow.appendChild(nameInput);
 
-  const submitBtn = document.createElement('button');
+  const btnWrapper = document.createElement('div');
+  btnWrapper.style.display = 'flex';
+  btnWrapper.style.flexDirection = 'column';
+  btnWrapper.style.marginBottom = '1em';
+
+  const submitBtn = createButton('emoji-button', 'Save', '✅');
   submitBtn.type = 'submit';
-  submitBtn.textContent = '➕';
-  submitBtn.title = 'Create source';
-  submitBtn.style.padding = '0.25em 0.5em';
-  submitBtn.style.fontSize = '1.1em';
-  submitBtn.style.height = '2.2em';
-  topRow.appendChild(submitBtn);
+  submitBtn.textContent = existingSource ? '✅' : '➕';
+  submitBtn.title = existingSource ? 'Update source' : 'Create source';
+  btnWrapper.appendChild(submitBtn);
+  if (existingSource && onCancel) {
+    const discardBtn = createButton('emoji-button', 'Cancel', '❌');
+    discardBtn.onclick = () => onCancel();
+    btnWrapper.appendChild(discardBtn);
+  }
+  topRow.appendChild(btnWrapper);
 
   form.appendChild(topRow);
 
@@ -365,12 +376,10 @@ export async function renderSourceManager({ target = 'sources-box' }) {
   paramsContainer.style.marginTop = '1em';
   form.appendChild(paramsContainer);
 
-  container.appendChild(form);
+  parent.appendChild(form);
 
-  // Load available image providers
-  const res = await fetch('/api/sources/image-providers/list');
-  const data = await res.json();
-  data.providers.forEach(p => {
+  const providers = await loadImageProviders();
+  providers.forEach(p => {
     const opt = document.createElement('option');
     opt.value = p;
     opt.textContent = p;
@@ -390,31 +399,114 @@ export async function renderSourceManager({ target = 'sources-box' }) {
     renderSchemaForm(schema.schema, paramsContainer);
   };
 
+  if (existingSource) {
+    nameInput.value = existingSource.name;
+    providerSelect.value = existingSource.typename;
+    providerSelect.disabled = true;
+
+    const schemaRes = await fetch('/api/sources/image-providers/schema', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ image_provider: existingSource.typename }),
+    });
+    const schema = await schemaRes.json();
+    renderSchemaForm(schema.schema, paramsContainer);
+
+    setTimeout(() => {
+      Object.entries(existingSource.params || {}).forEach(([key, value]) => {
+        const el = paramsContainer.querySelector(`[name="${key}"]`);
+        if (!el) return;
+        if (el.type === 'checkbox') el.checked = !!value;
+        else el.value = value;
+      });
+    }, 0);
+  }
+
   form.onsubmit = async e => {
     e.preventDefault();
     const provider = providerSelect.value;
     const name = nameInput.value;
-    const params = {};
-    paramsContainer.querySelectorAll('input, select, textarea').forEach(el => {
-      if (!el.name) return;
-      if (el.type === 'checkbox') {
-        params[el.name] = el.checked;
-      } else if (el.type === 'number') {
-        params[el.name] = parseFloat(el.value);
-      } else {
-        params[el.name] = el.value;
-      }
-    });
-    await fetch('/api/sources/create', {
+    const params = getParamsFromForm(paramsContainer);
+
+    const payload = {
+      source_name: name,
+      image_provider: provider,
+      params,
+    };
+
+    const url = existingSource
+      ? `/api/sources/update/${existingSource.uuid}`
+      : '/api/sources/create';
+
+    const res = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ source_name: name, image_provider: provider, params: params }),
+      body: JSON.stringify(payload),
     });
-    nameInput.value = '';
-    providerSelect.value = '';
-    paramsContainer.innerHTML = '';
-    refreshSources();
+
+    const result = await res.json();
+
+    if (result.status === 'success') {
+      if (onCreate) onCreate();
+    } else {
+      toast(result.message || 'Unknown error', 5000, "error");
+    }
   };
+}
+
+export async function loadImageProviders() {
+  const res = await fetch('/api/sources/image-providers/list');
+  const data = await res.json();
+  return data.providers;
+}
+
+export function getParamsFromForm(container) {
+  const params = {};
+  container.querySelectorAll('input, select, textarea').forEach(el => {
+    if (!el.name) return;
+    if (el.type === 'checkbox') {
+      params[el.name] = el.checked;
+    } else if (el.type === 'number') {
+      params[el.name] = parseFloat(el.value);
+    } else {
+      params[el.name] = el.value;
+    }
+  });
+  return params;
+}
+
+
+/**
+ * Renders the UI for managing sources (list, delete, create).
+ * @param {Object} options
+ * @param {string} options.target - ID of the container to render into.
+ */
+/**
+ * Renders the UI for managing sources.
+ * @param {Object} options
+ * @param {string} options.target - ID of the container to render into.
+ */
+export async function renderSourceManager({ target = 'sources-box' }) {
+  const container = document.getElementById(target);
+  container.innerHTML = '';
+
+  const header = document.createElement('h3');
+  header.textContent = 'Sources';
+  container.appendChild(header);
+
+  const list = document.createElement('div');
+  container.appendChild(list);
+
+  const refresh = () => renderSourceList({ parent: list, onDelete: refresh });
+
+  await refresh();
+
+  container.appendChild(document.createElement('hr'));
+
+  await renderSourceForm({
+    parent: container,
+    onCreate: refresh
+  });
 }
 
 /**
