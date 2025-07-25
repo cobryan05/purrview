@@ -7,7 +7,7 @@ from .Task import Task
 
 
 @register_task()
-class ListFilesTask(Task):
+class TestSourceTask(Task):
     async def _init(self, params: dict[str, Any], resume_data: Optional[dict[str, Any]]) -> None:
         """Run any initialization logic for the task."""
         self._directory = self._params.get("directory", ".")
@@ -48,3 +48,20 @@ class ListFilesTask(Task):
     def _update_resume_data(self) -> None:
         self._resume_data = {"files_processed": self._files_processed}
         self._data_ready_flag.set()
+
+    @classmethod
+    def params_schema(cls) -> dict[str, dict[str, Any]]:
+        """
+        Return a schema describing the parameters for this Task.
+        Each key is a parameter name, value is a dict with:
+            - type: str
+            - required: bool
+            - default: Any (optional)
+            - help: str (optional)
+            - options: list (optional, for enums)
+            - schema: dict (optional, for nested objects)
+        """
+        return {
+            "source_uuid": {"type": "string", "required": True, "help": "Source UUID to test"},
+            "delete_source": {"type": "boolean", "required": True, "help": "Delete source when done"},
+        }

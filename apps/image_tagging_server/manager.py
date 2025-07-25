@@ -13,10 +13,11 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 
 import aiofiles
 import cv2
+import inference_client
 import numpy as np
+import tasks_client
 from inference_client.api.inference_api import InferenceApi
 from inference_client.api.models_api import ModelsApi
-from inference_client.api_client import ApiClient
 from inference_client.models.associate_label_with_model_class_request import (
     AssociateLabelWithModelClassRequest,
 )
@@ -47,14 +48,32 @@ class Manager:
     POLLING_INTERVAL: float = 5.0  # Interval in seconds for periodic tasks
     PIN_DURATION: float = 30 * 60  # Timeout before unloading model
 
-    def __init__(self, api_client: ApiClient, db_client: DbClient, files_root: Path, labels_json: Path):
+    def __init__(
+        self,
+        inference_api_client: inference_client.ApiClient,
+        tasks_api_client: tasks_client.ApiClient,
+        db_client: DbClient,
+        files_root: Path,
+        labels_json: Path,
+    ):
         """Initialize the Manager"""
-        self._api_client: ApiClient = api_client
+        self._inference_api_client: inference_client.ApiClient = inference_api_client
+        self._tasks_api_client: tasks_client.ApiClient = tasks_api_client
         self._db_client: DbClient = db_client
         self._task: Optional[asyncio.Task] = None  # Background task for periodic operations
         self._files_root: Path = files_root
         self._labels_json: Path = labels_json
         self._model_pins: Dict[str, str] = {}
+        self._config = {
+            "files_root": str(files_root),
+            "labels_json": str(labels_json),
+            "db_path": db_client.get_path(),
+            "inference_server": inference_api_client.configuration.host,
+            "tasks_server": tasks_api_client.configuration.host
+        }
+
+    async def get_server_config(self) -> Dict[str, Any]:
+        return self._config.copy()
 
     @dataclass
     class FileEntry:
@@ -165,7 +184,7 @@ class Manager:
         Returns:
             List[str]: list of models
         """
-        api = ModelsApi(self._api_client)
+        api = ModelsApi(self._inference_api_client)
         response: Dict[str, Any] = await asyncio.to_thread(api.list_models_api)
         return response.get("models", [])
 
@@ -176,7 +195,7 @@ class Manager:
         Returns:
             Dict[str, Any] dict of label info
         """
-        api = ModelsApi(self._api_client)
+        api = ModelsApi(self._inference_api_client)
         request = GetModelLabelsRequest(model_name=model_name)
         response: Dict[str, Any] = await asyncio.to_thread(api.get_model_labels_api, request)
         return response.get("labels", {})
@@ -193,7 +212,7 @@ class Manager:
         Returns:
             Dict[str, Any] dict of label info
         """
-        api = ModelsApi(self._api_client)
+        api = ModelsApi(self._inference_api_client)
         request = AssociateLabelWithModelClassRequest(
             model_name=model_name, model_class=model_class, label_uuid=label_uuid
         )
@@ -506,7 +525,9 @@ class Manager:
         """
         await self._db_client.delete_sources(uuid_list)
 
-    async def update_source(self, source_uuid: str, image_provider: str, params: Dict[str, Any], source_name: str) -> None:
+    async def update_source(
+        self, source_uuid: str, image_provider: str, params: Dict[str, Any], source_name: str
+    ) -> None:
         """
         Updates sources by their UUIDs.
 
@@ -516,7 +537,12 @@ class Manager:
         # Basic verification that source can be created
         provider = image_provider_registry[image_provider](**params)
 
-        await self._db_client.update_source(source_uuid=source_uuid, name=source_name, typename=image_provider, params=params, )
+        await self._db_client.update_source(
+            source_uuid=source_uuid,
+            name=source_name,
+            typename=image_provider,
+            params=params,
+        )
 
     async def recognize(
         self,
@@ -538,12 +564,12 @@ class Manager:
                 List of detections and optionally the annotated image
         """
         # Ensure model is pinned
-        model_api = ModelsApi(self._api_client)
+        model_api = ModelsApi(self._inference_api_client)
         post_info = BodyPinModelApi(model_name=model_name, duration=self.PIN_DURATION)
         pin_id = self._model_pins.get(model_name)
 
         if pin_id is None:
-            model_api = ModelsApi(self._api_client)
+            model_api = ModelsApi(self._inference_api_client)
             post_info = BodyPinModelApi(model_name=model_name, duration=self.PIN_DURATION)
             pin_response: Dict[str, Any] = await asyncio.to_thread(
                 model_api.pin_model_api, post_info  # matches operationId "pin_model_api"
@@ -570,7 +596,7 @@ class Manager:
         )
 
         # Call the /api/recognize-json endpoint, operationId: "recognize_json"
-        inference_api = InferenceApi(self._api_client)
+        inference_api = InferenceApi(self._inference_api_client)
         response: Dict[str, Any] = await asyncio.to_thread(inference_api.recognize_json, recognize_request=request)
 
         if "detections" not in response:

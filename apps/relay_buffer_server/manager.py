@@ -6,9 +6,9 @@ import sys
 from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
+import mediamtx_client
 from mediamtx_client.api.configuration_api import ConfigurationApi
 from mediamtx_client.api.paths_api import PathsApi
-from mediamtx_client.api_client import ApiClient
 from mediamtx_client.models.path import Path as MtxPath
 from mediamtx_client.models.path_conf import PathConf
 
@@ -45,9 +45,9 @@ class Manager:
 
     POLLING_INTERVAL: float = 5.0  # Interval in seconds for periodic tasks
 
-    def __init__(self, api_client: ApiClient):
+    def __init__(self, media_mtx_api_client: mediamtx_client.ApiClient):
         """Initialize the Manager with an API client"""
-        self._api_client: ApiClient = api_client
+        self._media_mtx_api_client: mediamtx_client.ApiClient = media_mtx_api_client
         self._streams: Dict[str, Manager.StreamInfo] = {}
         self._source_relays: Dict[str, Manager.SourceRelayInfo] = {}
         self._master_stream_counter: int = 0
@@ -55,11 +55,18 @@ class Manager:
         self._api_port: int = 9997
         self._rtsp_port: int = 8554
         self._task: Optional[asyncio.Task] = None  # Background task for periodic operations
+        self._config = { "api_server": f"http://{self._hostname}:{self._api_port}",
+                         "rtsp_server": f"rtsp://{self._hostname}:{self._rtsp_port}",
+                          "mediamtx_server": self._media_mtx_api_client.configuration.host }
+
+
+    async def get_server_config(self) -> Dict[str, Any]:
+        return self._config.copy()
 
     async def _get_or_create_master_stream(self, rtsp_url: str) -> str:
         """Ensure a single MediaMTX stream exists for a given RTSP URL, return master stream name."""
         relay_info = self._source_relays.get(rtsp_url)
-        api: ConfigurationApi = ConfigurationApi(self._api_client)
+        api: ConfigurationApi = ConfigurationApi(self._media_mtx_api_client)
 
         if relay_info:
             relay_info.refcount += 1
@@ -121,7 +128,7 @@ class Manager:
         await self.destroy_stream(stream_name)
 
         path_conf: PathConf = PathConf(name=stream_name, source="publisher", sourceOnDemand=False)
-        api: ConfigurationApi = ConfigurationApi(self._api_client)
+        api: ConfigurationApi = ConfigurationApi(self._media_mtx_api_client)
 
         self._streams[stream_name] = Manager.StreamInfo(name=stream_name)
         await asyncio.to_thread(api.config_paths_add, name=stream_name, path_conf=path_conf)
@@ -139,7 +146,7 @@ class Manager:
         relay_url = f"rtsp://{self._hostname}:{self._rtsp_port}/{master_name}"
 
         path_conf = PathConf(name=stream_name, source=relay_url)
-        api: ConfigurationApi = ConfigurationApi(self._api_client)
+        api: ConfigurationApi = ConfigurationApi(self._media_mtx_api_client)
         await asyncio.to_thread(api.config_paths_add, name=stream_name, path_conf=path_conf)
 
         self._streams[stream_name] = Manager.StreamInfo(
@@ -153,7 +160,7 @@ class Manager:
 
     async def destroy_stream(self, stream_name: str) -> None:
         """Destroy a stream with the given name, and possibly its master relay."""
-        api: ConfigurationApi = ConfigurationApi(self._api_client)
+        api: ConfigurationApi = ConfigurationApi(self._media_mtx_api_client)
         stream_info = self._streams.get(stream_name)
         if stream_info is None:
             logger.warning(f"Destroying unknown stream {stream_name}")
@@ -206,7 +213,7 @@ class Manager:
 
     async def get_config(self) -> str:
         """Retrieve the global configuration as a string"""
-        api: ConfigurationApi = ConfigurationApi(self._api_client)
+        api: ConfigurationApi = ConfigurationApi(self._media_mtx_api_client)
         config = await asyncio.to_thread(api.config_global_get)
         return config.to_str()
 
@@ -215,7 +222,7 @@ class Manager:
 
     async def refresh_streams(self) -> None:
         """Retrieve the current list of streams, updating the cached list"""
-        api: PathsApi = PathsApi(self._api_client)
+        api: PathsApi = PathsApi(self._media_mtx_api_client)
         streams = await asyncio.to_thread(api.paths_list)
         if streams.items is None:
             raise Exception("Failed to get stream list from server")
@@ -255,9 +262,9 @@ class Manager:
 
     async def _init(self):
         """Initialization that should run on event loop"""
-        config_api: ConfigurationApi = ConfigurationApi(self._api_client)
+        config_api: ConfigurationApi = ConfigurationApi(self._media_mtx_api_client)
         config = await asyncio.to_thread(config_api.config_global_get)
-        host_url = self._api_client.configuration.host
+        host_url = self._media_mtx_api_client.configuration.host
         host = host_url.split("://")[1]
         host_name, host_port = host.split(":")
         self._hostname = host_name

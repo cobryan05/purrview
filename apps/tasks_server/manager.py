@@ -43,6 +43,11 @@ class Manager:
         self._task: Optional[asyncio.Task] = None  # Background task for periodic operations
         self._db_client: DbClient = db_client
         self._running_tasks: Dict[int, TaskInfo] = {}
+        self._config = { "db_path": db_client.get_path() }
+
+
+    async def get_server_config(self) -> Dict[str, Any]:
+        return self._config.copy()
 
     async def list_avail_tasks(self) -> List[str]:
         """

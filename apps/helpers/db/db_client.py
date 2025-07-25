@@ -86,6 +86,10 @@ class DbClient:
         """Checks if the database file exists"""
         return os.path.exists(self._db_path)
 
+    def get_path(self) -> str:
+        """Gets the current db_path"""
+        return self._db_path
+
     async def init_db(self) -> None:
         """
         Initiaize the database schema if it does not exist.

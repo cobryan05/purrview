@@ -387,9 +387,17 @@ export async function renderSourceForm({ parent, onCreate, existingSource = null
     discardBtn.onclick = () => onCancel();
     btnWrapper.appendChild(discardBtn);
   }
+
+  const testBtn = createButton('emoji-button', 'Test', '🧪');
+  testBtn.type = 'button';
+  testBtn.title = 'Run source test';
+  btnWrapper.appendChild(testBtn);
+
   topRow.appendChild(btnWrapper);
 
   form.appendChild(topRow);
+  const testResultBox = renderTestResultsBox(form);
+  testResultBox.hidden = true;
 
   if (existingSource?.uuid) {
     const uuidLabel = document.createElement('div');
@@ -449,6 +457,42 @@ export async function renderSourceForm({ parent, onCreate, existingSource = null
       });
     }, 0);
   }
+
+  testBtn.onclick = async () => {
+    try {
+      const provider = providerSelect.value;
+      const name = nameInput.value;
+      const params = getParamsFromForm(paramsContainer);
+
+      if (!provider || !name) {
+        toast("Please fill in provider and name before testing", 3000, "warning");
+        return;
+      }
+
+      testBtn.disabled = true;
+      testResultBox.hidden = false;
+      testResultBox.textContent = 'Creating temporary source...';
+
+      const tempSource = await createTemporarySource({
+        image_provider: provider,
+        params,
+      });
+
+      testResultBox.textContent = 'Starting test task...';
+      const taskUuid = await startSourceTestTask(tempSource.uuid);
+
+      testResultBox.textContent = 'Running test...';
+      pollTaskStatus(taskUuid, testResultBox, async (finalResult) => {
+        testResultBox.textContent += `\nTest ${finalResult.status}: ${finalResult.status_message || ''}`;
+        await cleanupTemporarySource(tempSource.uuid);
+        testBtn.disabled = false;
+      });
+
+    } catch (err) {
+      toast(`Test failed: ${err.message}`, 5000, "error");
+      testBtn.disabled = false;
+    }
+  };
 
   form.onsubmit = async e => {
     e.preventDefault();
@@ -814,4 +858,73 @@ export async function renderModelLabelAssignments({ target = "model-labels-box",
     row.appendChild(labelRow);
     container.appendChild(row);
   });
+}
+
+
+// TODO: Move these utils somewhere?
+async function createTemporarySource(sourceData) {
+  const name = `__temp_test__${Date.now()}`;
+  const payload = { ...sourceData, source_name: name };
+  const res = await fetch('/api/sources/create', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  const result = await res.json();
+  if (result.status !== 'success') throw new Error(result.message);
+  return { ...result.source, source_name: name }; // Assume it returns `source` on success
+}
+
+async function startSourceTestTask(sourceUuid) {
+  const res = await fetch('/api/tasks/create', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      typename: 'TestSourceTask',
+      params: { source_uuid: sourceUuid, delete_source: true },
+    }),
+  });
+  const result = await res.json();
+  if (result.status !== 'success') throw new Error(result.message);
+  return result.task_uuid;
+}
+
+function pollTaskStatus(taskUuid, resultBox, onComplete) {
+  const interval = setInterval(async () => {
+    const res = await fetch('/api/tasks/status', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        typename: 'TestSourceTask',
+        params: { task_ids: [taskUuid] },
+      }),
+    });
+    const result = await res.json();
+    resultBox.textContent = result.status_message;
+
+    if (result.status === 'completed' || result.status === 'error') {
+      clearInterval(interval);
+      onComplete(result);
+    }
+  }, 1000);
+}
+
+async function cleanupTemporarySource(uuid) {
+  await fetch('/api/sources/delete', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ source_ids: [uuid] }),
+  });
+}
+
+function renderTestResultsBox(parent) {
+  const box = document.createElement('div');
+  box.style.border = '1px solid #ccc';
+  box.style.padding = '0.5em';
+  box.style.marginTop = '1em';
+  box.style.fontSize = '0.9em';
+  box.style.whiteSpace = 'pre-wrap';
+  box.textContent = 'No test started.';
+  parent.appendChild(box);
+  return box;
 }

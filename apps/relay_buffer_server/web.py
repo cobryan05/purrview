@@ -34,7 +34,7 @@ class WebApp:
         self._app: FastAPI = FastAPI(lifespan=self._lifespan)
         self._templates: Jinja2Templates = Jinja2Templates(directory="templates")
         self._dflt_args: dict[str, str] = {"app_name": self._app_name}
-        self._api_client: ApiClient = manager._api_client
+        self._api_client: ApiClient = manager._media_mtx_api_client
 
         # Mount static files
         self._app.mount("/static", StaticFiles(directory="static"), name="static")
@@ -86,6 +86,30 @@ class WebApp:
                 "dynamic_index.html",
                 {"request": request, "buttons": buttons, **self._dflt_args},
             )
+
+        @self._app.get(
+            "/server-config",
+            operation_id="server_config",
+            response_class=JSONResponse,
+        )
+        @self._app.get("/server-config", response_class=JSONResponse)
+        async def server_config(request: Request):
+            """
+            Get server configuration params
+
+            Args:
+                request (Request): The incoming request.
+
+            Returns:
+                JSONResponse: Server configuration parameters.
+            """
+            try:
+                server_config = await self._manager.get_server_config()
+                response_data = {"status": "success", "config": json.dumps(server_config)}
+            except Exception as e:
+                response_data = {"status": "failure", "message": str(e)}
+            return JSONResponse(content=response_data)
+
 
         @self._app.post(
             "/api/streams/create",

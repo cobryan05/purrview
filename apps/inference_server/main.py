@@ -1,16 +1,16 @@
 import uvicorn
 
+from apps import APPS_CONFIG, DB_PATH
+
 from .manager import Manager
 from .web import WebApp
+from pathlib import Path
+config = APPS_CONFIG[Path(__file__).parent.name]
 
-# Defining the host is optional and defaults to http://localhost:9997
-# See configuration.py for a list of all supported configuration parameters.
-app_name = "Inference Server"
-app_port = 8001
 manager = Manager("/app/models/")
-web_app = WebApp(app_name=app_name, manager=manager)
+web_app = WebApp(app_name=config.name, manager=manager)
 
 # Get the uvicorn app
 app = web_app.app()
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=app_port)
+    uvicorn.run(app, host="0.0.0.0", port=config.port)

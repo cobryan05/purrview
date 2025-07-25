@@ -58,6 +58,11 @@ class Manager:
         self._models_path: str = models_path  # Store the models directory path
         self._avail_models: Dict[str, str] = {}  # {basename (no .onnx): full_path}
         self._pinned_models: Dict[str, InferenceModel] = {}  # {model_name: PinnedModel}
+        self._config = { "models_path": models_path }
+
+
+    async def get_server_config(self) -> Dict[str, Any]:
+        return self._config.copy()
 
     async def list_models(self, pattern: Optional[str] = "*.onnx") -> List[str]:
         """
