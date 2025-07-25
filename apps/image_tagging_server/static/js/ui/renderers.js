@@ -1,4 +1,4 @@
-import { getCurrentLabelUuid, setLabelList } from '/app-static/js/canvas/state.js';
+import { getCurrentLabelUuid, refreshLabelList, getLabelList } from '/app-static/js/canvas/state.js';
 import { getTool } from '/app-static/js/canvas/tools.js';
 import { toast } from '/app-static/js/canvas/utils.js';
 
@@ -99,16 +99,12 @@ function createInputRow({ defaultName = '', defaultColor = '#cccccc', onSave, on
  */
 export async function renderLabelList({ target = "labels-list", editable = true, onSelectCallback = null }) {
   try {
-    const res = await fetch('/api/labels/list');
-    if (!res.ok) throw new Error(`Failed to fetch labels: ${res.status}`);
-    const data = await res.json();
+    await refreshLabelList();
     const labelListContainer = document.getElementById(target);
     if (!labelListContainer) {
       console.error("labelListContainer is null");
       return;
     }
-
-    setLabelList(data.labels);
     labelListContainer.innerHTML = '';
 
     /**
@@ -216,7 +212,8 @@ export async function renderLabelList({ target = "labels-list", editable = true,
       });
     }
 
-    data.labels
+    const labels = getLabelList();
+    labels
       .filter(label => !label.metadata.parent_uuid)
       .forEach(label => renderLabel(label, 0));
 

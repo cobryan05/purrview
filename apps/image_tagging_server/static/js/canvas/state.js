@@ -25,7 +25,7 @@ export function setCurrentTool(tool) {
   }
 }
 
-export function setLabelList(labels) {
+function setLabelList(labels) {
   labelList = labels;
   labelUuidMap.clear();
   function indexLabels(labels) {
@@ -117,4 +117,15 @@ export function initStage() {
   layer = new Konva.Layer();
   layer.add(transformer);
   stage.add(layer);
+}
+
+export async function refreshLabelList() {
+  try {
+    const res = await fetch('/api/labels/list');
+    if (!res.ok) throw new Error(`Failed to fetch labels: ${res.status}`);
+    const data = await res.json();
+    setLabelList(data.labels);
+  } catch (error) {
+    console.error("Error refreshing label list:", error);
+  }
 }

@@ -1,5 +1,5 @@
 import { createBoundingBox } from './drawing.js';
-import { getCurrentImageName, getLayer, getStage, getTransformer, setCurrentImageName } from './state.js';
+import { getCurrentImageName, getLayer, getStage, getTransformer, setCurrentImageName, refreshLabelList } from './state.js';
 import { debug, error, notify } from './utils.js';
 
 export async function reloadImage() {
@@ -17,6 +17,8 @@ export async function loadImageAndMetadata(imageName) {
     toast('Please enter an image name!');
     return;
   }
+
+  await refreshLabelList();
 
   try {
     const transformer = getTransformer();
