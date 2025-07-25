@@ -447,6 +447,36 @@ class WebApp:
                     status_code=500,
                 )
 
+        class UpdateSourceRequest(BaseModel):
+            """Request model for creating a new source."""
+
+            source_name: str
+            image_provider: str
+            source_uuid: str
+            params: dict
+
+        @self._app.post(
+            "/api/sources/update",
+            tags=[WebApp.SOURCES_API_TAG_NAME],
+            operation_id="update_source",
+            response_class=JSONResponse,
+        )
+        async def update_source_api(req: UpdateSourceRequest) -> JSONResponse:
+            """
+            API endpoint for updating an existing source.
+            """
+            try:
+                await self._manager.update_source(
+                    req.source_uuid, image_provider=req.image_provider, params=req.params, source_name=req.source_name
+                )
+                return JSONResponse(content={"status": "success"})
+            except Exception as e:
+                logger.exception(e)
+                return JSONResponse(
+                    content={"status": "failure", "message": str(e)},
+                    status_code=500,
+                )
+
         class CreateSourceRequest(BaseModel):
             """Request model for creating a new source."""
 
@@ -480,7 +510,7 @@ class WebApp:
             return JSONResponse(content=response_data)
 
         class DeleteSourceRequest(BaseModel):
-            source_ids: List[int]
+            source_uuids: List[str]
 
         @self._app.post(
             "/api/sources/delete",
@@ -493,7 +523,7 @@ class WebApp:
             API endpoint to delete sources.
             """
             try:
-                await self._manager.delete_sources(req.source_ids)
+                await self._manager.delete_sources(req.source_uuids)
                 return JSONResponse(content={"status": "success"})
             except Exception as e:
                 logger.exception(e)

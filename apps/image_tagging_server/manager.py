@@ -7,7 +7,6 @@ import glob
 import logging
 import os
 import sys
-
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
@@ -27,7 +26,13 @@ from inference_client.models.body_pin_model_api import (
 from inference_client.models.get_model_labels_request import GetModelLabelsRequest
 from inference_client.models.recognize_request import RecognizeRequest
 
-from apps.helpers.db.db_client import BoundingBoxMetadata, DbClient, ImageMetadata, LabelMetaData, SourceMetaData
+from apps.helpers.db.db_client import (
+    BoundingBoxMetadata,
+    DbClient,
+    ImageMetadata,
+    LabelMetaData,
+    SourceMetaData,
+)
 from apps.helpers.fileUtils import get_safe_path
 from apps.helpers.imageProviders.Registry import image_provider_registry
 
@@ -486,11 +491,32 @@ class Manager:
         if image_provider not in image_provider_registry:
             raise ValueError(f"Unknown image provider: {image_provider}")
 
+        # Basic verification that source can be created
         provider = image_provider_registry[image_provider](**params)
 
         ret: SourceMetaData = await self._db_client.add_source(name=source_name, typename=image_provider, params=params)
         return ret
 
+    async def delete_sources(self, uuid_list: list[str]) -> None:
+        """
+        Delete sources by their UUIDs.
+
+        Args:
+            uuid_list (list[str]): List of source UUIDs to delete.
+        """
+        await self._db_client.delete_sources(uuid_list)
+
+    async def update_source(self, source_uuid: str, image_provider: str, params: Dict[str, Any], source_name: str) -> None:
+        """
+        Updates sources by their UUIDs.
+
+        Args:
+            uuid_list (list[str]): List of source UUIDs to delete.
+        """
+        # Basic verification that source can be created
+        provider = image_provider_registry[image_provider](**params)
+
+        await self._db_client.update_source(source_uuid=source_uuid, name=source_name, typename=image_provider, params=params, )
 
     async def recognize(
         self,
@@ -573,6 +599,7 @@ class Manager:
             await self._db_client.init_db()
             if not db_existed:
                 await self._db_client.import_labels_from_json_to_db(str(self._labels_json))
+                # TODO: Sync Sources between JSON
         except Exception as e:
             logger.exception(e)
             raise

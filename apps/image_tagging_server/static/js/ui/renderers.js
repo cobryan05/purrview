@@ -284,6 +284,21 @@ export async function renderSourceList({ parent, onEdit = () => { }, onDelete = 
 
     const editBtn = createButton('emoji-button', 'Edit', '🖉');
     editBtn.onclick = async () => {
+      // Re-render the entire list first
+      await renderSourceList({
+        parent,
+        onEdit,
+        onDelete
+      });
+
+      // Then find the correct row again (since DOM has changed)
+      const row = [...parent.children].find(child =>
+        child.textContent?.includes(`${src.typename}: ${src.name}`)
+      );
+
+      if (!row) return;
+
+      // Now inject the inline edit form
       const editContainer = document.createElement('div');
       editContainer.className = 'inline-edit-form';
       editContainer.style.margin = '1em 0';
@@ -297,19 +312,23 @@ export async function renderSourceList({ parent, onEdit = () => { }, onDelete = 
       await renderSourceForm({
         parent: editContainer,
         existingSource: src,
-        onCreate: () => {
-          renderSourceList({ parent, onDelete });
-        },
-        onCancel: () => {
-          renderSourceList({ parent, onDelete });
-        }
+        onCreate: () => renderSourceList({ parent, onEdit, onDelete }),
+        onCancel: () => renderSourceList({ parent, onEdit, onDelete }),
       });
     };
     actions.appendChild(editBtn);
 
     const deleteBtn = createButton('emoji-button', 'Delete', '🗑️');
     deleteBtn.onclick = async () => {
-      await fetch(`/api/sources/delete/${src.uuid}`, { method: 'DELETE' });
+      const confirmed = confirm(`Are you sure you want to delete "${src.name}"?`);
+      if (!confirmed) return;
+
+      await fetch('/api/sources/delete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ source_uuids: [src.uuid] })
+      });
+
       onDelete();
     };
     actions.appendChild(deleteBtn);
@@ -372,6 +391,16 @@ export async function renderSourceForm({ parent, onCreate, existingSource = null
 
   form.appendChild(topRow);
 
+  if (existingSource?.uuid) {
+    const uuidLabel = document.createElement('div');
+    uuidLabel.textContent = `UUID: ${existingSource.uuid}`;
+    uuidLabel.style.fontSize = '0.75em';
+    uuidLabel.style.opacity = '0.6';
+    uuidLabel.style.userSelect = 'text';
+    uuidLabel.style.marginBottom = '0.5em';
+    parent.appendChild(uuidLabel);
+  }
+
   const paramsContainer = document.createElement('div');
   paramsContainer.style.marginTop = '1em';
   form.appendChild(paramsContainer);
@@ -402,7 +431,6 @@ export async function renderSourceForm({ parent, onCreate, existingSource = null
   if (existingSource) {
     nameInput.value = existingSource.name;
     providerSelect.value = existingSource.typename;
-    providerSelect.disabled = true;
 
     const schemaRes = await fetch('/api/sources/image-providers/schema', {
       method: 'POST',
@@ -430,12 +458,16 @@ export async function renderSourceForm({ parent, onCreate, existingSource = null
 
     const payload = {
       source_name: name,
-      image_provider: provider,
       params,
+      image_provider: provider
     };
 
+    if (existingSource?.uuid) {
+      payload.source_uuid = existingSource.uuid;
+    }
+
     const url = existingSource
-      ? `/api/sources/update/${existingSource.uuid}`
+      ? `/api/sources/update`
       : '/api/sources/create';
 
     const res = await fetch(url, {
@@ -448,6 +480,8 @@ export async function renderSourceForm({ parent, onCreate, existingSource = null
 
     if (result.status === 'success') {
       if (onCreate) onCreate();
+      parent.innerHTML = '';  // remove the form
+      renderSourceForm({ parent, onCreate, onCancel });
     } else {
       toast(result.message || 'Unknown error', 5000, "error");
     }
@@ -503,10 +537,12 @@ export async function renderSourceManager({ target = 'sources-box' }) {
 
   container.appendChild(document.createElement('hr'));
 
+  const newFormContainer = document.createElement('div');
   await renderSourceForm({
-    parent: container,
+    parent: newFormContainer,
     onCreate: refresh
   });
+  container.appendChild(newFormContainer);
 }
 
 /**

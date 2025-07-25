@@ -436,7 +436,7 @@ class DbClient:
         Args:
             name (str): Source name.
             typename (str): Type of the image provider.
-            params_json (str): Serialized parameters.
+            params (dict): Parameters
             uuid (Optional[str]): Optional UUID.
 
         Returns:
@@ -460,7 +460,7 @@ class DbClient:
         source_uuid: str,
         name: Optional[str] = None,
         typename: Optional[str] = None,
-        params_json: Optional[str] = None,
+        params: Optional[dict] = None,
     ) -> None:
         """
         Update source properties.
@@ -469,42 +469,44 @@ class DbClient:
             source_uuid (str): UUID of the source.
             name (Optional[str]): New name.
             typename (Optional[str]): New typename.
-            params_json (Optional[str]): New parameters as JSON string.
+            params (Optional[dict]): New parameters
         """
-        if not any([name, typename, params_json]):
+        if not any([name, typename, params]):
             return
 
         query_parts = []
-        params = []
+        query_params = []
 
         if name:
             query_parts.append("name = ?")
-            params.append(name)
+            query_params.append(name)
         if typename:
             query_parts.append("typename = ?")
-            params.append(typename)
-        if params_json:
+            query_params.append(typename)
+            params = params or {}
+        if params:
             query_parts.append("params_json = ?")
-            params.append(params_json)
+            query_params.append(json.dumps(params))
 
-        params.append(source_uuid)
+        query_params.append(source_uuid)
 
         async with aiosqlite.connect(self._db_path) as db:
             await db.execute(
                 f"UPDATE sources SET {', '.join(query_parts)} WHERE uuid = ?",
-                tuple(params),
+                tuple(query_params),
             )
             await db.commit()
 
-    async def delete_source(self, source_uuid: str) -> None:
+    async def delete_sources(self, source_uuids: list[str]) -> None:
         """
-        Delete a source.
+        Delete sources.
 
         Args:
-            source_uuid (str): UUID of the source to delete.
+            source_uuids (list[str]): UUIDs of the sources to delete.
         """
         async with aiosqlite.connect(self._db_path) as db:
-            await db.execute("DELETE FROM sources WHERE uuid = ?", (source_uuid,))
+            for source_uuid in source_uuids:
+                await db.execute("DELETE FROM sources WHERE uuid = ?", (source_uuid,))
             await db.commit()
 
     async def list_labels(self) -> List[LabelMetaData]:
