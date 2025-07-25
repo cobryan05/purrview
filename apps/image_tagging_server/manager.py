@@ -26,6 +26,9 @@ from inference_client.models.body_pin_model_api import (
 )
 from inference_client.models.get_model_labels_request import GetModelLabelsRequest
 from inference_client.models.recognize_request import RecognizeRequest
+from tasks_client.api.tasks_api import TasksApi
+from tasks_client.models.create_task_request import CreateTaskRequest
+from tasks_client.models.task_status_request import TaskStatusRequest
 
 from apps.helpers.db.db_client import (
     BoundingBoxMetadata,
@@ -36,7 +39,7 @@ from apps.helpers.db.db_client import (
 )
 from apps.helpers.fileUtils import get_safe_path
 from apps.helpers.imageProviders.Registry import image_provider_registry
-
+from apps.helpers.imageUtils import base64_encode_png
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger(__file__)
 logger.setLevel(logging.DEBUG)
@@ -69,7 +72,7 @@ class Manager:
             "labels_json": str(labels_json),
             "db_path": db_client.get_path(),
             "inference_server": inference_api_client.configuration.host,
-            "tasks_server": tasks_api_client.configuration.host
+            "tasks_server": tasks_api_client.configuration.host,
         }
 
     async def get_server_config(self) -> Dict[str, Any]:
@@ -314,6 +317,27 @@ class Manager:
         await self._db_client.write_image_metadata_to_db(image_id, metadata)
         await self._db_client.save_image_metadata_db_to_json(img_path)
 
+    async def create_new_task(self, typename: str, params: Dict[str, Any]) -> int:
+        """
+        Start a new task.
+
+        Returns new task id
+        """
+        api = TasksApi(self._tasks_api_client)
+        request = CreateTaskRequest(typename=typename, params=params)
+        response: Dict[str, Any] = await asyncio.to_thread(api.create_task, request)
+        return response.get("task_id")
+
+    async def get_tasks_status(self, task_ids: Optional[Union[List[int], int]] = None) -> Dict[int, dict[str, Any]]:
+        """
+        Returns status about a specified task, or all tasks.
+        Combines DB and running tasks, with running tasks taking precedence.
+        """
+        api = TasksApi(self._tasks_api_client)
+        request = TaskStatusRequest(task_ids=task_ids)
+        response: Dict[str, Any] = await asyncio.to_thread(api.get_task_status, request)
+        return response.get("tasks")
+
     async def create_box(
         self,
         image_rel_path: str,
@@ -510,9 +534,6 @@ class Manager:
         if image_provider not in image_provider_registry:
             raise ValueError(f"Unknown image provider: {image_provider}")
 
-        # Basic verification that source can be created
-        provider = image_provider_registry[image_provider](**params)
-
         ret: SourceMetaData = await self._db_client.add_source(name=source_name, typename=image_provider, params=params)
         return ret
 
@@ -534,9 +555,6 @@ class Manager:
         Args:
             uuid_list (list[str]): List of source UUIDs to delete.
         """
-        # Basic verification that source can be created
-        provider = image_provider_registry[image_provider](**params)
-
         await self._db_client.update_source(
             source_uuid=source_uuid,
             name=source_name,
@@ -578,12 +596,7 @@ class Manager:
                 raise RuntimeError(f"Failed to pin model '{model_name}': {pin_response}")
             self._model_pins[model_name] = pin_response.get("pin_id")
 
-        # Encode image to PNG and base64 encode
-        success, buffer = cv2.imencode(".png", image)
-        if not success:
-            raise RuntimeError("Failed to encode image")
-
-        image_base64 = base64.b64encode(buffer).decode("utf-8")
+        image_base64 = base64_encode_png(image)
 
         # Build the RecognizeRequest Pydantic model
         return_annotated = kwargs.get("return_annotated", False)

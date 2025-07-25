@@ -105,7 +105,7 @@ class WebApp:
             """
             try:
                 server_config = await self._manager.get_server_config()
-                response_data = {"status": "success", "config": json.dumps(server_config)}
+                response_data = {"status": "success", "config": server_config}
             except Exception as e:
                 response_data = {"status": "failure", "message": str(e)}
             return JSONResponse(content=response_data)

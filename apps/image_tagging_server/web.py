@@ -34,6 +34,7 @@ class WebApp:
     INFERENCE_API_TAG_NAME = "inference"
     IMAGES_API_TAG_NAME = "images"
     SOURCES_API_TAG_NAME = "sources"
+    TASKS_API_TAG_NAME = "tasks"
 
     def __init__(self, app_name: str, manager: Manager):
         """Initialize the WebApp with the application name"""
@@ -98,7 +99,7 @@ class WebApp:
             """
             try:
                 server_config = await self._manager.get_server_config()
-                response_data = {"status": "success", "config": json.dumps(server_config)}
+                response_data = {"status": "success", "config": server_config}
             except Exception as e:
                 response_data = {"status": "failure", "message": str(e)}
             return JSONResponse(content=response_data)
@@ -637,3 +638,60 @@ class WebApp:
                     status_code=500,
                     content={"status": "failure", "message": str(e)},
                 )
+
+        class CreateTaskRequest(BaseModel):
+            """Request model for creating a new task."""
+
+            typename: str
+            params: dict
+
+        @self._app.post(
+            "/api/tasks/create",
+            tags=[WebApp.TASKS_API_TAG_NAME],
+            operation_id="create_task",
+            response_class=JSONResponse,
+        )
+        async def create_task_api(req: CreateTaskRequest) -> JSONResponse:
+            """
+            API endpoint for creating a new task.
+
+            Args:
+                req (CreateTaskRequest): Request object with task type and parameters.
+
+            Returns:
+                JSONResponse: Response with new task ID or error.
+            """
+            try:
+                task_id: int = await self._manager.create_new_task(typename=req.typename, params=req.params)
+                response_data = {"status": "success", "task_id": task_id}
+            except Exception as e:
+                response_data = {"status": "failure", "message": str(e)}
+            return JSONResponse(content=response_data)
+
+        class TaskStatusRequest(BaseModel):
+            """Request model for creating a new task."""
+
+            task_ids: Optional[List[int]] = None
+
+        @self._app.post(
+            "/api/tasks/status",
+            tags=[WebApp.TASKS_API_TAG_NAME],
+            operation_id="get_task_status",
+            response_class=JSONResponse,
+        )
+        async def task_status_api(req: TaskStatusRequest) -> JSONResponse:
+            """
+            API endpoint for getting status of one or more tasks.
+
+            Args:
+                req (TaskStatusRequest): Request object with task IDs.
+
+            Returns:
+                JSONResponse: A JSON response containing task statuses.
+            """
+            try:
+                tasks_status = await self._manager.get_tasks_status(req.task_ids)
+                response_data = {"status": "success", "tasks": tasks_status}
+            except Exception as e:
+                response_data = {"status": "failure", "message": str(e)}
+            return JSONResponse(content=response_data)

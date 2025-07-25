@@ -14,7 +14,7 @@ class Task(ABC):
         PENDING = "pending"
         RUNNING = "running"
         PAUSED = "paused"
-        DONE = "done"
+        COMPLETED = "completed"
         ERROR = "error"
 
     def __init__(self, task_id: int, params: dict[str, Any]):
@@ -90,10 +90,10 @@ class Task(ABC):
         await self._init(params=self._params, resume_data=self._resume_data)
         try:
             results = await self._run()
-            self._results = {"status": "success", "data": results}
+            self._results = {"status": Task.Status.COMPLETED, "data": results}
         except Exception as e:
             logger.exception(e)
-            self._results = {"status": "error", "message": str(e)}
+            self._results = {"status": Task.Status.ERROR, "message": str(e)}
         finally:
             self._progress = 100.0
             await self._deinit()
@@ -134,6 +134,10 @@ class Task(ABC):
     def get_resume_data(self) -> dict[str, Any]:
         """Return the resume data for the task."""
         return dict(self._resume_data)
+
+    def get_status_message(self) -> str:
+        """Returns any message to return with task status"""
+        return ""
 
     def get_progress(self) -> float:
         """Return the current progress of the task."""

@@ -3,50 +3,46 @@ import os
 from typing import Any, Optional
 
 from .Registry import register_task
+from apps.helpers.imageProviders.Registry import image_provider_registry
 from .Task import Task
-
+from apps.helpers.imageUtils import base64_encode_png
 
 @register_task()
 class TestSourceTask(Task):
     async def _init(self, params: dict[str, Any], resume_data: Optional[dict[str, Any]]) -> None:
         """Run any initialization logic for the task."""
-        self._directory = self._params.get("directory", ".")
-        self._files_processed: int = 0
+        self._status_msg: str = "Creating Task"
+        self._status: str = "pending"
+        self._provider: str = params.get("provider", "")
+        self._provider_params: dict[str, Any] = params.get("provider_params", {})
 
     async def _run(self) -> dict[str, Any]:
         """Run the main logic of the task."""
-        if not os.path.exists(self._directory) or not os.path.isdir(self._directory):
-            raise ValueError(f"Directory does not exist: {self._directory}")
-
-        files = await asyncio.to_thread(os.listdir, self._directory)
-        total = len(files)
-        status = "success"
-        result = []
-
-        for i, filename in enumerate(files):
-            self._files_processed += 1
-            if self._cancel_flag.is_set():
-                status = "canceled"
-                break
-
-            await asyncio.sleep(1)  # simulate some work
-            result.append(filename)
-
-            # simulate progress
-            progress = (i + 1) / total * 100
-            self._update_progress(progress)
-
-            if i % 10 == 0 or self._data_req_flag.is_set():
-                self._update_resume_data()
+        ret = {}
+        status: str = "success"
+        self._status_msg = "Initializing Provider"
+        provider = image_provider_registry[self._provider](**self._provider_params)
+        if not provider:
+            status = "error"
+        else:
+            self._status_msg = "Waiting for image"
+            image = await provider.getNextImage()
+            image_base64 = base64_encode_png(image)
+            ret["image"] = image_base64
 
         self._update_resume_data()
-        return {"directory": self._directory, "file_count": total, "files": result, "status": status}
+        ret["status"] = status
+        self._status_msg = f"Image received: {status}"
+        return ret
 
     async def _deinit(self) -> None:
         pass
 
+    def get_status_message(self) -> str:
+        return self._status_msg
+
     def _update_resume_data(self) -> None:
-        self._resume_data = {"files_processed": self._files_processed}
+        self._resume_data = {}
         self._data_ready_flag.set()
 
     @classmethod
@@ -62,6 +58,6 @@ class TestSourceTask(Task):
             - schema: dict (optional, for nested objects)
         """
         return {
-            "source_uuid": {"type": "string", "required": True, "help": "Source UUID to test"},
-            "delete_source": {"type": "boolean", "required": True, "help": "Delete source when done"},
+            "image_provider": {"type": "string", "required": True, "help": "Image provider to test"},
+            "params": {"type": "string", "required": False, "help": "Additional parameters json for the image provider"},
         }

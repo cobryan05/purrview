@@ -80,7 +80,7 @@ class Manager:
                     "description": "",
                     "parameters": task.params_json,
                     "progress": None,
-                    "result": task.result_json,
+                    "result": json.loads(task.result_json),
                     "status": task.status,
                 }
                 for task in db_tasks
@@ -91,6 +91,7 @@ class Manager:
                 **asdict(task_info.metadata),
                 "progress": task_info.task.get_progress(),
                 "result": task_info.task.get_results(),
+                "message": task_info.task.get_status_message(),
             }
             for tid, task_info in running_tasks.items()
             if task_info is not None
@@ -138,6 +139,7 @@ class Manager:
         )
         task_info = TaskInfo(task=task_instance, metadata=task_metadata)
         await self._start_task(task_info)
+        return record.id
 
     async def delete_tasks(self, task_ids: Union[List[int], int]) -> None:
         """
@@ -184,7 +186,7 @@ class Manager:
                 logger.warning(f"Timeout while waiting task pause: {e}")
                 task_info.metadata.status = Task.Status.ERROR
             except StopIteration as e:
-                task_info.metadata.status = Task.Status.DONE
+                task_info.metadata.status = Task.Status.COMPLETED
                 logger.info(f"Task finished while waiting for data ready: {e}")
 
             try:
@@ -257,7 +259,7 @@ class Manager:
                 for task_id, task_info in dict(self._running_tasks).items():
                     task_done = task_info.task.is_task_done()
                     if task_done:
-                        task_info.metadata.status = Task.Status.DONE
+                        task_info.metadata.status = Task.Status.COMPLETED
                     await self._save_task_data(task_info)
                     if task_done:
                         tasks_to_remove.add(task_id)

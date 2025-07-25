@@ -30,7 +30,7 @@ function createButton(className, title, text) {
  * @param {number} options.indentLevel - Indentation level (nested labels).
  * @returns {HTMLDivElement} The constructed row element.
  */
-function createInputRow({ defaultName = '', defaultColor = '#cccccc', onSave, onCancel, indentLevel = 0 }) {
+function createInputRow({ defaultName = '', defaultColor = '#cccccc', onSave, onCancel, indentLevel = 0 } = {}) {
   const row = document.createElement('div');
   row.className = 'label-row';
   if (indentLevel > 0) row.style.paddingLeft = `${indentLevel * 1.5}em`;
@@ -97,7 +97,7 @@ function createInputRow({ defaultName = '', defaultColor = '#cccccc', onSave, on
  * @param {boolean} options.editable - Whether editing tools are shown.
  * @param {Function} [options.onSelectCallback] - callback when a label is clicked (uuid passed).
  */
-export async function renderLabelList({ target = "labels-list", editable = true, onSelectCallback = null }) {
+export async function renderLabelList({ target = "labels-list", editable = true, onSelectCallback = null } = {}) {
   try {
     await refreshLabelList();
     const labelListContainer = document.getElementById(target);
@@ -423,6 +423,7 @@ export async function renderSourceForm({ parent, onCreate, existingSource = null
   providerSelect.onchange = async () => {
     const provider = providerSelect.value;
     if (!provider) return;
+    testResultBox.hidden = true;
 
     const schemaRes = await fetch('/api/sources/image-providers/schema', {
       method: 'POST',
@@ -468,21 +469,26 @@ export async function renderSourceForm({ parent, onCreate, existingSource = null
 
       testBtn.disabled = true;
       testResultBox.hidden = false;
-      testResultBox.textContent = 'Creating temporary source...';
-
-      const tempSource = await createTemporarySource({
-        image_provider: provider,
-        params,
-      });
-
       testResultBox.textContent = 'Starting test task...';
-      const taskUuid = await startSourceTestTask(tempSource.uuid);
+      const taskUuid = await startSourceTestTask({
+        image_provider: provider,
+        params
+      });
 
       testResultBox.textContent = 'Running test...';
       pollTaskStatus(taskUuid, testResultBox, async (finalResult) => {
         testResultBox.textContent += `\nTest ${finalResult.status}: ${finalResult.status_message || ''}`;
-        await cleanupTemporarySource(tempSource.uuid);
         testBtn.disabled = false;
+
+        // Check for image
+        if (finalResult.data?.image) {
+          const img = document.createElement('img');
+          img.src = `data:image/png;base64,${finalResult.data.image}`;
+          img.style.maxWidth = '100%';
+          img.alt = 'Test result image';
+          testResultBox.appendChild(document.createElement('br'));
+          testResultBox.appendChild(img);
+        }
       });
 
     } catch (err) {
@@ -858,61 +864,44 @@ export async function renderModelLabelAssignments({ target = "model-labels-box",
 }
 
 
-// TODO: Move these utils somewhere?
-async function createTemporarySource(sourceData) {
-  const name = `__temp_test__${Date.now()}`;
-  const payload = { ...sourceData, source_name: name };
-  const res = await fetch('/api/sources/create', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-  });
-  const result = await res.json();
-  if (result.status !== 'success') throw new Error(result.message);
-  return { ...result.source, source_name: name }; // Assume it returns `source` on success
-}
-
-async function startSourceTestTask(sourceUuid) {
-  const res = await fetch('/api/tasks/create', {
+async function startSourceTestTask({ image_provider, params = {} }) {
+  const res = await fetch(`/api/tasks/create`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       typename: 'TestSourceTask',
-      params: { source_uuid: sourceUuid, delete_source: true },
+      params: {
+        provider: image_provider,
+        provider_params: params
+      }
     }),
   });
   const result = await res.json();
   if (result.status !== 'success') throw new Error(result.message);
-  return result.task_uuid;
+  return result.task_id;
 }
 
 function pollTaskStatus(taskUuid, resultBox, onComplete) {
   const interval = setInterval(async () => {
-    const res = await fetch('/api/tasks/status', {
+    const res = await fetch(`/api/tasks/status`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        typename: 'TestSourceTask',
-        params: { task_ids: [taskUuid] },
+        task_ids: [taskUuid]
       }),
     });
     const result = await res.json();
-    resultBox.textContent = result.status_message;
-
-    if (result.status === 'completed' || result.status === 'error') {
-      clearInterval(interval);
-      onComplete(result);
+    if (result.status === "success") {
+      const taskStatus = result.tasks[taskUuid];
+      resultBox.textContent = taskStatus.message;
+      if (taskStatus.status === 'completed' || taskStatus.status === 'error') {
+        clearInterval(interval);
+        onComplete(taskStatus.result);
+      }
     }
   }, 1000);
 }
 
-async function cleanupTemporarySource(uuid) {
-  await fetch('/api/sources/delete', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ source_ids: [uuid] }),
-  });
-}
 
 function renderTestResultsBox(parent) {
   const box = document.createElement('div');

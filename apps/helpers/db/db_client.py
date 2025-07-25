@@ -337,7 +337,7 @@ class DbClient:
         Args:
             task_id (int): ID of the task.
             result (dict): Result dictionary to store as JSON.
-            status (Optional[str]): New status to set (e.g., "done", "error").
+            status (Optional[str]): New status to set (e.g., "completed", "error").
             error_message (Optional[str]): Optional error message.
         """
         result_json = json.dumps(result)
@@ -386,7 +386,7 @@ class DbClient:
 
         Args:
             task_id (int): The ID of the task to update.
-            new_status (str): The new status string (e.g., "pending", "running", "done", "error").
+            new_status (str): The new status string (e.g., "pending", "running", "completed", "error").
         """
         async with aiosqlite.connect(self._db_path) as db:
             await db.execute(
