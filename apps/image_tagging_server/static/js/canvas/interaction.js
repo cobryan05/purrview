@@ -11,6 +11,36 @@ let lastDiscardTime = 0;
 let lastDiscardPos = null;
 const DOUBLE_CLICK_TIME_MS = 400;
 const DOUBLE_CLICK_DISTANCE_PX = 10;
+let crosshairV = null;
+let crosshairH = null;
+
+function createCrosshairLines() {
+  const layer = getLayer();
+  if (crosshairV && crosshairH) return; // already created
+
+  const stage = getStage();
+  const width = stage.width();
+  const height = stage.height();
+
+  crosshairV = new Konva.Line({
+    points: [0, 0, 0, height],
+    stroke: 'rgba(127,127,127,0.5)',
+    strokeWidth: 1,
+    dash: [4, 4],
+    listening: false,  // don't interfere with events
+  });
+
+  crosshairH = new Konva.Line({
+    points: [0, 0, width, 0],
+    stroke: 'rgba(0,0,0,0.3)',
+    strokeWidth: 1,
+    dash: [4, 4],
+    listening: false,
+  });
+
+  layer.add(crosshairV);
+  layer.add(crosshairH);
+}
 
 function getPointerPosition() {
   const stage = getStage();
@@ -64,10 +94,25 @@ export function handleMouseMove(e) {
     return;
   }
 
-  if (!pendingGroup) return;
-
   const pos = getPointerPosition();
   if (!pos) return;
+
+  const currentTool = getCurrentTool();
+  if (currentTool != 'select') {
+    createCrosshairLines();
+    // Position lines at mouse X,Y spanning full height,width
+    crosshairV.points([pos.x, 0, pos.x, stage.height()]);
+    crosshairH.points([0, pos.y, stage.width(), pos.y]);
+    crosshairV.show();
+    crosshairH.show();
+    layer.batchDraw();
+  } else {
+    if (crosshairV) crosshairV.hide();
+    if (crosshairH) crosshairH.hide();
+    layer.batchDraw();
+  }
+
+  if (!pendingGroup) return;
 
   const dx = pos.x - startPos.x;
   const dy = pos.y - startPos.y;
@@ -115,10 +160,10 @@ export function handleMouseUp(e) {
         Math.hypot(pos.x - lastDiscardPos.x, pos.y - lastDiscardPos.y) < DOUBLE_CLICK_DISTANCE_PX
       ) {
         const hitGroup = findGroupAtPoint(pos);
-        if( hitGroup ) {
-            const currentLabelUuid = getCurrentLabelUuid();
-            updateBoundingBox(hitGroup, { metadata: { labelUuid: currentLabelUuid } });
-            selectShape(hitGroup);
+        if (hitGroup) {
+          const currentLabelUuid = getCurrentLabelUuid();
+          updateBoundingBox(hitGroup, { metadata: { labelUuid: currentLabelUuid } });
+          selectShape(hitGroup);
         }
       }
 
