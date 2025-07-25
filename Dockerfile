@@ -67,6 +67,15 @@ RUN python -m apps.generate_openapi_jsons \
   && pip install --no-cache-dir /tmp/tasks_client \
   && rm -rf /tmp/tasks_client
 
+# Create non-root user
+ARG APPUSER_UID=1001
+ARG APPUSER_GID=1001
+RUN groupadd -g $APPUSER_GID appuser && \
+    useradd -m -u $APPUSER_UID -g appuser -s /bin/bash appuser
+
+# Set permissions on relevant folders
+RUN chown -R appuser:appuser /app /logs /conf
+
 EXPOSE 8000 8001 8554 8888 1935 9001 9997
 
 CMD ["/usr/bin/supervisord", "-c", "/conf/supervisord.conf"]
