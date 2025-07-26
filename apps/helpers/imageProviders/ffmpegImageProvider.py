@@ -9,6 +9,7 @@ from apps.helpers.streams.ffmpegStreamerIn import FFmpegStreamerIn
 
 from .imageProvider import ImageProvider
 from .Registry import register_image_provider
+import asyncio
 
 logging.basicConfig()
 logger = logging.getLogger(__file__)
@@ -17,7 +18,7 @@ logger.setLevel(logging.DEBUG)
 @register_image_provider()
 class FfmpegImageProvider(ImageProvider):
     def __init__(self, video_path: str, loop: bool = True, rtsp_relay: bool = True):
-        output_args = {"format": "rawvideo", "codec": "rawvideo"}  # decode raw frames
+        output_args = {"format": "rawvideo", "pix_fmt": "rgb24", "codec": "rawvideo"}  # decode raw frames
         self._stream: FFmpegStreamerIn = FFmpegStreamerIn(video_path, output_args=output_args)
         self._loop: bool = loop
         self._rtsp_relay: bool = rtsp_relay
@@ -27,6 +28,9 @@ class FfmpegImageProvider(ImageProvider):
 
     def __repr__(self):
         return f"FfmpegImageProvider [{self._stream}]"
+
+    async def stop(self) -> None:
+        await asyncio.to_thread(self._stream.stop)
 
     async def getNextImage(self) -> np.array:
         if self._frame_size is None:

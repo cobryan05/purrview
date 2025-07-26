@@ -33,6 +33,7 @@ class TestSourceTask(Task):
         self._update_resume_data()
         ret["status"] = status
         self._status_msg = f"Image received: {status}"
+        await provider.stop()
         return ret
 
     async def _deinit(self) -> None:
