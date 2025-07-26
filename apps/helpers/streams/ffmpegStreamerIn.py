@@ -119,7 +119,7 @@ class FFmpegStreamerIn:
                 if "Stream #" in line and "Video:" in line:
                     parts = line.split(",")
                     for part in parts:
-                        if "x" in part and "fps" not in part:
+                        if "x" in part and "fps" not in part and ' ' not in part.strip():
                             resolution = part.strip().split(" ")[0]
                             self._width, self._height = map(int, resolution.split("x"))
                         elif "fps" in part:

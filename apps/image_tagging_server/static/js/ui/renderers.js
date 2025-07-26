@@ -895,8 +895,16 @@ function pollTaskStatus(taskUuid, resultBox, onComplete) {
       const taskStatus = result.tasks[taskUuid];
       resultBox.textContent = taskStatus.message;
       if (taskStatus.status === 'completed' || taskStatus.status === 'error') {
+        const taskRes = await fetch(`/api/tasks/result`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            task_id: taskUuid
+          }),
+        });
+        const taskResult = await taskRes.json();
         clearInterval(interval);
-        onComplete(taskStatus.result);
+        onComplete(taskResult.result);
       }
     }
   }, 1000);

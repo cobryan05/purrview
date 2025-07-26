@@ -49,6 +49,7 @@ class ImageMetadata:
     extra: Dict[str, str] = field(default_factory=dict)
     boxes: List[BoundingBoxMetadata] = field(default_factory=list)
 
+
 @dataclass
 class SourceMetaData:
     name: str
@@ -64,7 +65,6 @@ class TaskRecord:
     status: str
     params_json: str
     resume_data_json: Optional[str]
-    result_json: Optional[str]
     error_message: Optional[str]
     created_at: Optional[str]
     updated_at: Optional[str]
@@ -214,7 +214,7 @@ class DbClient:
             cursor = await db.execute(
                 """
                 SELECT id, typename, status, params_json, resume_data_json,
-                       result_json, error_message, created_at, updated_at
+                       error_message, created_at, updated_at
                 FROM tasks WHERE id = ?
                 """,
                 (task_id,),
@@ -254,6 +254,7 @@ class DbClient:
         task_id: Optional[Union[int, List[int]]] = None,
         typename: Optional[Union[str, List[str]]] = None,
         status: Optional[Union[str, List[str]]] = None,
+        resumable: Optional[bool] = None,
     ) -> List[TaskRecord]:
         """
         Retrieve tasks with optional filtering by id, typename, and/or status.
@@ -269,7 +270,7 @@ class DbClient:
         """
         query = """
                 SELECT id, typename, status, params_json, resume_data_json,
-                    result_json, error_message, created_at, updated_at
+                    error_message, created_at, updated_at
                 FROM tasks
                 WHERE 1=1
             """
@@ -294,11 +295,40 @@ class DbClient:
         add_filter("typename", typename)
         add_filter("status", status)
 
+        if resumable is True:
+            query += " AND resume_data_json IS NOT NULL"
+        elif resumable is False:
+            query += " AND (resume_data_json IS NULL OR TRIM(resume_data_json) = '{}')"
+
         async with aiosqlite.connect(self._db_path) as db:
             cursor = await db.execute(query, tuple(params))
             rows = await cursor.fetchall()
             await cursor.close()
             return [TaskRecord(*row) for row in rows]
+
+    async def get_task_result(self, task_id: int) -> Optional[dict[str, Any]]:
+        """
+        Retrieve result data for a given task.
+
+        Args:
+            task_id (int): Task ID
+
+        Returns:
+            dict[str, Any] or None if not found or empty
+        """
+        async with aiosqlite.connect(self._db_path) as db:
+            cursor = await db.execute("SELECT result_json FROM tasks WHERE id = ?", (task_id,))
+            row = await cursor.fetchone()
+            await cursor.close()
+
+            if not row or not row[0]:
+                return None
+
+            try:
+                return json.loads(row[0])
+            except Exception as e:
+                logger.warning(f"Invalid JSON in resume_data for task {task_id}: {e}")
+                return None
 
     async def get_task_resume_data(self, task_id: int) -> Optional[dict[str, Any]]:
         """
@@ -327,7 +357,7 @@ class DbClient:
     async def set_task_result(
         self,
         task_id: int,
-        result: dict[str, Any],
+        result: Optional[dict[str, Any]],
         status: Optional[str] = None,
         error_message: Optional[str] = None,
     ) -> None:
@@ -340,7 +370,7 @@ class DbClient:
             status (Optional[str]): New status to set (e.g., "completed", "error").
             error_message (Optional[str]): Optional error message.
         """
-        result_json = json.dumps(result)
+        result_json = json.dumps(result) if result else None
         parts = ["result_json = ?", "updated_at = CURRENT_TIMESTAMP"]
         params: list[Any] = [result_json]
 
@@ -399,7 +429,6 @@ class DbClient:
             )
             await db.commit()
 
-
     async def _get_source_by_name(self, name: str) -> Optional[SourceMetaData]:
         """
         Internal helper to retrieve a source by name.
@@ -431,9 +460,7 @@ class DbClient:
             await cursor.close()
             return [SourceMetaData(name=r[0], typename=r[1], params=json.loads(r[2]), uuid=r[3]) for r in rows]
 
-    async def add_source(
-        self, name: str, typename: str, params: dict, uuid: Optional[str] = None
-    ) -> SourceMetaData:
+    async def add_source(self, name: str, typename: str, params: dict, uuid: Optional[str] = None) -> SourceMetaData:
         """
         Add a source or return existing one by name.
 

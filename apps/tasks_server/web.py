@@ -196,6 +196,34 @@ class WebApp:
                 response_data = {"status": "failure", "message": str(e)}
             return JSONResponse(content=response_data)
 
+        class TaskResultRequest(BaseModel):
+            """Request result for a specific task."""
+
+            task_id: Optional[int] = None
+
+        @self._app.post(
+            "/api/tasks/result",
+            tags=[WebApp.TASKS_API_TAG_NAME],
+            operation_id="get_task_result",
+            response_class=JSONResponse,
+        )
+        async def task_result_api(req: TaskResultRequest) -> JSONResponse:
+            """
+            API endpoint for getting result of a specific task.
+
+            Args:
+                req (TaskResultRequest): Request object with task ID.
+
+            Returns:
+                JSONResponse: A JSON response containing task result.
+            """
+            try:
+                task_result = await self._manager.get_task_result(req.task_id)
+                response_data = {"status": "success", "result": task_result}
+            except Exception as e:
+                response_data = {"status": "failure", "message": str(e)}
+            return JSONResponse(content=response_data)
+
         @self._app.post("/task-status", response_class=HTMLResponse, include_in_schema=False)
         async def task_status(
             task_ids: str = Form(...),
@@ -221,7 +249,7 @@ class WebApp:
                 req: TaskStatusRequest = TaskStatusRequest(task_ids=parsed_task_ids)
                 reponse_json = await task_status_api(req)
                 reponse_data = json.loads(reponse_json.body)
-                tasks = json.loads(reponse_data.get("tasks", "{}"))
+                tasks = reponse_data.get("tasks", {})
 
                 # Prepare fields for dynamic_form.html
                 fields = {

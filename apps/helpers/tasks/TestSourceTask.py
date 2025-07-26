@@ -12,7 +12,6 @@ class TestSourceTask(Task):
     async def _init(self, params: dict[str, Any], resume_data: Optional[dict[str, Any]]) -> None:
         """Run any initialization logic for the task."""
         self._status_msg: str = "Creating Task"
-        self._status: str = "pending"
         self._provider: str = params.get("provider", "")
         self._provider_params: dict[str, Any] = params.get("provider_params", {})
 
@@ -34,6 +33,7 @@ class TestSourceTask(Task):
         ret["status"] = status
         self._status_msg = f"Image received: {status}"
         await provider.stop()
+        self._status_msg = "Done"
         return ret
 
     async def _deinit(self) -> None:

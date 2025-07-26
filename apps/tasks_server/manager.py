@@ -55,6 +55,23 @@ class Manager:
         """
         return list(task_registry.keys())
 
+    async def get_task_result(self, task_id: int) -> Optional[dict[str, Any]]:
+        """
+        Get the result of a specific task.
+
+        Args:
+            task_id (int): The ID of the task.
+
+        Returns:
+            Optional[dict[str, Any]]: The result of the task, or None if not found.
+        """
+        task_info = self._running_tasks.get(task_id)
+        if task_info:
+            return task_info.task.get_results()
+
+        # If not running, check the database
+        return await self._db_client.get_task_result(task_id)
+
     async def get_tasks_status(self, task_ids: Optional[Union[List[int], int]] = None) -> Dict[int, dict[str, Any]]:
         """
         Returns status about a specified task, or all tasks.
@@ -80,7 +97,6 @@ class Manager:
                     "description": "",
                     "parameters": task.params_json,
                     "progress": None,
-                    "result": json.loads(task.result_json),
                     "status": task.status,
                 }
                 for task in db_tasks
@@ -89,8 +105,8 @@ class Manager:
         running_info = {
             tid: {
                 **asdict(task_info.metadata),
+                "status": task_info.task.get_status(),
                 "progress": task_info.task.get_progress(),
-                "result": task_info.task.get_results(),
                 "message": task_info.task.get_status_message(),
             }
             for tid, task_info in running_tasks.items()
@@ -244,6 +260,12 @@ class Manager:
     async def _init(self):
         """Initialization that should run on event loop"""
         await self._db_client.init_db()
+
+        # Clear any tasks left in DB that can't be resumed
+        stale_tasks: List[TaskRecord] = await self._db_client.get_tasks(resumable=False)
+        if stale_tasks:
+            stale_ids = [info.id for info in stale_tasks]
+            await self._db_client.delete_tasks(stale_ids)
 
     async def _worker_task(self):
         """

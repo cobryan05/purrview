@@ -29,6 +29,7 @@ from inference_client.models.recognize_request import RecognizeRequest
 from tasks_client.api.tasks_api import TasksApi
 from tasks_client.models.create_task_request import CreateTaskRequest
 from tasks_client.models.task_status_request import TaskStatusRequest
+from tasks_client.models.task_result_request import TaskResultRequest
 
 from apps.helpers.db.db_client import (
     BoundingBoxMetadata,
@@ -327,6 +328,15 @@ class Manager:
         request = CreateTaskRequest(typename=typename, params=params)
         response: Dict[str, Any] = await asyncio.to_thread(api.create_task, request)
         return response.get("task_id")
+
+    async def get_task_result(self, task_id: int) ->  Optional[dict[str, Any]]:
+        """
+        Returns result for the specified task, or None
+        """
+        api = TasksApi(self._tasks_api_client)
+        request = TaskResultRequest(task_id=task_id)
+        response: Dict[str, Any] = await asyncio.to_thread(api.get_task_result, request)
+        return response.get("result")
 
     async def get_tasks_status(self, task_ids: Optional[Union[List[int], int]] = None) -> Dict[int, dict[str, Any]]:
         """

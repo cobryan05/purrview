@@ -9,6 +9,7 @@ logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger(__file__)
 logger.setLevel(logging.DEBUG)
 
+
 class Task(ABC):
     class Status(str, Enum):
         PENDING = "pending"
@@ -19,6 +20,7 @@ class Task(ABC):
 
     def __init__(self, task_id: int, params: dict[str, Any]):
         self._task_id = task_id
+        self._status: Task.Status = Task.Status.PENDING
         self._params: dict[str, Any] = params
         self._task: asyncio.Task | None = None
         self._progress: float = 0.0
@@ -89,9 +91,12 @@ class Task(ABC):
     async def _execute(self) -> None:
         await self._init(params=self._params, resume_data=self._resume_data)
         try:
+            self._status = Task.Status.RUNNING
             results = await self._run()
             self._results = {"status": Task.Status.COMPLETED, "data": results}
+            self._status = Task.Status.COMPLETED
         except Exception as e:
+            self._status = Task.Status.ERROR
             logger.exception(e)
             self._results = {"status": Task.Status.ERROR, "message": str(e)}
         finally:
@@ -135,6 +140,10 @@ class Task(ABC):
         """Return the resume data for the task."""
         return dict(self._resume_data)
 
+    def get_status(self) -> Status:
+        """Returns the current status"""
+        return self._status
+
     def get_status_message(self) -> str:
         """Returns any message to return with task status"""
         return ""
@@ -143,8 +152,9 @@ class Task(ABC):
         """Return the current progress of the task."""
         return self._progress
 
-    def get_results(self) -> dict[str, Any]:
-        return dict(self._results)
+    def get_results(self) -> Optional[dict[str, Any]]:
+        """Return results from this task"""
+        return self._results.copy() if self._results else None
 
     def typename(self) -> str:
         """Return the unique task type name"""
