@@ -881,34 +881,44 @@ async function startSourceTestTask({ image_provider, params = {} }) {
   return result.task_id;
 }
 
-function pollTaskStatus(taskUuid, resultBox, onComplete) {
+function pollTaskStatus(taskUuid, resultBox, onComplete, timeoutMs = 30000) {
   const interval = setInterval(async () => {
-    const res = await fetch(`/api/tasks/status`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        task_ids: [taskUuid]
-      }),
-    });
-    const result = await res.json();
-    if (result.status === "success") {
-      const taskStatus = result.tasks[taskUuid];
-      resultBox.textContent = taskStatus.message;
-      if (taskStatus.status === 'completed' || taskStatus.status === 'error') {
-        const taskRes = await fetch(`/api/tasks/result`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            task_id: taskUuid
-          }),
-        });
-        const taskResult = await taskRes.json();
-        clearInterval(interval);
-        onComplete(taskResult.result);
+    try {
+      const res = await fetch(`/api/tasks/status`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ task_ids: [taskUuid] }),
+      });
+      const result = await res.json();
+
+      if (result.status === "success") {
+        const taskStatus = result.tasks[taskUuid];
+        resultBox.textContent = taskStatus.message;
+
+        if (taskStatus.status === 'completed' || taskStatus.status === 'error') {
+          clearInterval(interval);
+          clearTimeout(timeout);
+          const taskRes = await fetch(`/api/tasks/result`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ task_id: taskUuid }),
+          });
+          const taskResult = await taskRes.json();
+          onComplete(taskResult.result);
+        }
       }
+    } catch (err) {
+      console.error("Polling error:", err);
     }
   }, 1000);
+
+  const timeout = setTimeout(() => {
+    clearInterval(interval);
+    resultBox.textContent = "Task timed out.";
+    onComplete({ status: 'timeout', message: 'The task did not complete in time.' });
+  }, timeoutMs);
 }
+
 
 
 function renderTestResultsBox(parent) {

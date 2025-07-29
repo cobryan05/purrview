@@ -21,13 +21,13 @@ logger.setLevel(logging.DEBUG)
 class MqttImageProvider(ImageProvider):
     TIMEOUT = 60
 
-    def __init__(self, mqtt_client: MqttClient, topic: str):
+    def __init__(self, broker_address: str, broker_port:int, topic: str):
         """Initializes the MQTT source."""
         self._topic: str = topic
-        self._mqtt_client: MqttClient = mqtt_client
+        self._mqtt_client: MqttClient = MqttClient(broker_address, "/", int(broker_port))
         self._frameQueue: asyncio.Queue = asyncio.Queue()
         self._loop: asyncio.AbstractEventLoop = asyncio.get_running_loop()
-        mqtt_client.subscribe(self._topic, self._pushFrame, absoluteTopic=True)
+        self._mqtt_client.subscribe(self._topic, self._pushFrame, absoluteTopic=True)
 
     def __del__(self):
         """Unsubscribe from the MQTT topic when deleted."""
@@ -67,6 +67,16 @@ class MqttImageProvider(ImageProvider):
             - schema: dict (optional, for nested objects)
         """
         return {
+            "broker_address": {
+                "type": "string",
+                "required": True,
+                "description": "MQTT broker address"
+            },
+            "broker_port": {
+                "type": "int",
+                "required": True,
+                "description": "MQTT broker port"
+            },
             "topic": {
                 "type": "string",
                 "required": True,
