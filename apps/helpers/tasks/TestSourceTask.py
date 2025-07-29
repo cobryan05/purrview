@@ -24,6 +24,8 @@ class TestSourceTask(Task):
         if not provider:
             status = "error"
         else:
+            self._status_msg = "Starting Provider"
+            await provider.start()
             self._status_msg = "Waiting for image"
             image = await provider.getNextImage()
             image_base64 = base64_encode_png(image)
@@ -37,6 +39,7 @@ class TestSourceTask(Task):
         return ret
 
     async def _deinit(self) -> None:
+        # TODO: Does killing clean up
         pass
 
     def get_status_message(self) -> str:

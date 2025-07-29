@@ -14,15 +14,17 @@ from .web import WebApp
 from apps import APPS_CONFIG, DB_PATH
 
 config = APPS_CONFIG[Path(__file__).parent.name]
+inference_host = APPS_CONFIG["inference_server"].host
 inference_port = APPS_CONFIG["inference_server"].port
+tasks_host = APPS_CONFIG["tasks_server"].host
 tasks_port = APPS_CONFIG["tasks_server"].port
 
 FILES_ROOT = Path(os.environ.get("FILES_ROOT", "/app/image_datasets"))
 LABEL_JSON_PATH = Path(os.environ.get("LABELS_JSON", "/data/db/labels.json"))
 
-inference_client_conf = inference_client.Configuration(f"http://localhost:{inference_port}")
+inference_client_conf = inference_client.Configuration(f"http://{inference_host}:{inference_port}")
 inference_api_client = inference_client.ApiClient(inference_client_conf)
-tasks_client_conf = tasks_client.Configuration(f"http://localhost:{tasks_port}")
+tasks_client_conf = tasks_client.Configuration(f"http://{tasks_host}:{tasks_port}")
 tasks_api_client = tasks_client.ApiClient(tasks_client_conf)
 db_client = DbClient(DB_PATH)
 

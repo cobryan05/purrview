@@ -38,7 +38,7 @@ class FFmpegStreamerIn:
         self._stop_event: asyncio.Event = asyncio.Event()
         self._metadata_event: asyncio.Event = asyncio.Event()
         self._task: Optional[asyncio.Task] = None
-        self._event_loop: Optional[asyncio.AbstractEventLoop] = None
+        self._event_loop: asyncio.AbstractEventLoop = asyncio.get_running_loop()
 
     def __repr__(self):
         return f"FFmpegStreamerIn [{self._source}]"
@@ -103,8 +103,7 @@ class FFmpegStreamerIn:
 
         self._stop_event.clear()
         self._metadata_event.clear()
-        # Save the event loop and kick off the reading task
-        self._event_loop = asyncio.get_running_loop()
+
         self._task = self._event_loop.create_task(self._worker_task())
 
     def _extract_metadata_from_stderr(self) -> None:

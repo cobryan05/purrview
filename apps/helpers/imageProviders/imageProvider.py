@@ -9,6 +9,10 @@ class ImageProvider:
         """Retrieves the next image for processing from the image source"""
         raise NotImplementedError()
 
+    async def start(self) -> None:
+        """Starts the image provider and prepares it for use"""
+        pass
+
     async def stop(self) -> None:
         """Stops the image provider and releases any resources"""
         pass

@@ -9,10 +9,11 @@ from .manager import Manager
 from .web import WebApp
 
 config = APPS_CONFIG[Path(__file__).parent.name]
-
+mediamtx_host = APPS_CONFIG["media_mtx_api"].host
+mediamtx_port = APPS_CONFIG["media_mtx_api"].port
 # Defining the host is optional and defaults to http://localhost:9997
 # See configuration.py for a list of all supported configuration parameters.
-mediamtx_conf = mediamtx_client.Configuration(host="http://localhost:9997")
+mediamtx_conf = mediamtx_client.Configuration(host=f"http://{mediamtx_host}:{mediamtx_port}")
 api_client = mediamtx_client.ApiClient(mediamtx_conf)
 
 manager = Manager(api_client)
