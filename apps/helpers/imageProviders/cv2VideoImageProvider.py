@@ -1,6 +1,7 @@
 """CV2 VideoCapture ImageProvider"""
 
 import asyncio
+import glob
 import logging
 from collections.abc import Iterator
 from threading import Event
@@ -23,7 +24,11 @@ class Cv2VideoImageProvider(ImageProvider):
         if isinstance(paths, str):
             paths = [paths]
 
-        self._paths: list[str] = paths
+        paths_expanded: list[str] = []
+        for pattern in paths:
+            paths_expanded.extend(glob.glob(pattern, recursive=True))
+
+        self._paths: list[str] = paths_expanded
         self._iter: Iterator = iter(self._paths)
         self._vidPath: str = None
         self._vid: cv2.VideoCapture = None
@@ -73,7 +78,7 @@ class Cv2VideoImageProvider(ImageProvider):
                 "required": True,
                 "items": {
                     "type": "string",
-                    "description": "Path to the video file or directory"
+                    "description": "File paths to image or video files, accepts glob patterns."
                 }
             }
         }
