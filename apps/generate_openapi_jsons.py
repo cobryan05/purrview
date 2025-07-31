@@ -1,8 +1,12 @@
 """Retrieve the openapi.json files for generating the API clients"""
 
 import json
-from .relay_buffer_server.main import app as relay_server_app
+import os
+
+os.environ["GENERATING_OPENAPI_CLIENTS"] = "1"
+
 from .inference_server.main import app as inference_server_app
+from .relay_buffer_server.main import app as relay_server_app
 from .tasks_server.main import app as tasks_server_app
 
 with open("relay_buffer_server_openapi.json", "w", encoding="utf-8") as f:

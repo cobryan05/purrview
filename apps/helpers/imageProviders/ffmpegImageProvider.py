@@ -2,12 +2,12 @@
 
 import asyncio
 import logging
+import os
 import time
 import uuid
 from typing import Any, Optional, Tuple
 
 import numpy as np
-import relay_buffer_client
 
 from apps import APPS_CONFIG
 from apps.helpers.streams.ffmpegStreamerIn import FFmpegStreamerIn
@@ -18,6 +18,9 @@ from .Registry import register_image_provider
 logging.basicConfig()
 logger = logging.getLogger(__file__)
 logger.setLevel(logging.DEBUG)
+
+if os.getenv("GENERATING_OPENAPI_CLIENTS") != "1":
+    import relay_buffer_client
 
 
 @register_image_provider()
