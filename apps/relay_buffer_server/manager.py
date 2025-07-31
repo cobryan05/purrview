@@ -3,7 +3,7 @@
 import asyncio
 import logging
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, asdict
 from typing import Any, Dict, Optional
 
 import mediamtx_client
@@ -55,10 +55,11 @@ class Manager:
         self._api_port: int = 9997
         self._rtsp_port: int = 8554
         self._task: Optional[asyncio.Task] = None  # Background task for periodic operations
-        self._config = { "api_server": f"http://{self._hostname}:{self._api_port}",
-                         "rtsp_server": f"rtsp://{self._hostname}:{self._rtsp_port}",
-                          "mediamtx_server": self._media_mtx_api_client.configuration.host }
-
+        self._config = {
+            "api_server": f"http://{self._hostname}:{self._api_port}",
+            "rtsp_server": f"rtsp://{self._hostname}:{self._rtsp_port}",
+            "mediamtx_server": self._media_mtx_api_client.configuration.host,
+        }
 
     async def get_server_config(self) -> Dict[str, Any]:
         return self._config.copy()
@@ -218,7 +219,13 @@ class Manager:
         return config.to_str()
 
     def get_streams(self) -> Dict[str, StreamInfo]:
-        return dict(self._streams)
+        ret = {}
+        for k, v in self._streams.items():
+            d = asdict(v)
+            if d["mtx_path"] is not None:
+                d["mtx_path"] = d["mtx_path"].dict()
+            ret[k] = d
+        return ret
 
     async def refresh_streams(self) -> None:
         """Retrieve the current list of streams, updating the cached list"""

@@ -255,13 +255,13 @@ class WebApp:
                 streams = self._manager.get_streams()
                 stream_info: List[Dict[str, Any]] = [
                     {
-                        "name": info.name,
-                        "text": str(info),
+                        "name": info['name'],
+                        "info": info,
                         "actions": [
                             {
                                 "label": "Stop Stream",
                                 "url": "/destroy-stream",
-                                "params": {"stream_name": info.name},
+                                "params": {"stream_name": info['name']},
                             }
                         ],
                     }

@@ -58,14 +58,15 @@ class FfmpegImageProvider(ImageProvider):
                     streams = await asyncio.to_thread(api.list_streams)
                     for stream in streams.get("results", []):
                         if stream.get("name") == stream_name:
-                            return True
+                            if stream['info']['mtx_path']['bytes_received'] > 0:
+                                return True
+                            break
                     await asyncio.sleep(poll_interval_ms / 1000)
                 return False
 
             stream_found = await wait_for_stream(api, self._relayed_name, timeout_ms=10000)
             if not stream_found:
                 raise TimeoutError(f"Timed out waiting for '{self._relayed_name}' to appear in relay list")
-            await asyncio.sleep(10)  # TODO: Wait until bytes received
             stream_url = (
                 f"rtsp://{APPS_CONFIG['media_mtx_rtsp'].host}:{APPS_CONFIG['media_mtx_rtsp'].port}/{self._relayed_name}"
             )
