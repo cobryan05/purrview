@@ -65,8 +65,10 @@ class FfmpegImageProvider(ImageProvider):
             stream_found = await wait_for_stream(api, self._relayed_name, timeout_ms=10000)
             if not stream_found:
                 raise TimeoutError(f"Timed out waiting for '{self._relayed_name}' to appear in relay list")
-            await asyncio.sleep(10) # TODO: Wait until bytes received
-            stream_url = f"rtsp://{APPS_CONFIG['media_mtx_rtsp'].host}:{APPS_CONFIG['media_mtx_rtsp'].port}/{self._relayed_name}"
+            await asyncio.sleep(10)  # TODO: Wait until bytes received
+            stream_url = (
+                f"rtsp://{APPS_CONFIG['media_mtx_rtsp'].host}:{APPS_CONFIG['media_mtx_rtsp'].port}/{self._relayed_name}"
+            )
         else:
             stream_url = self._video_path
 
@@ -102,7 +104,6 @@ class FfmpegImageProvider(ImageProvider):
 
                 image = np.frombuffer(frame_bytes, dtype=np.uint8).reshape((height, width, 3))
                 return image
-
 
     @classmethod
     def params_schema(cls) -> dict[str, dict[str, Any]]:

@@ -1,11 +1,13 @@
+# TODO: sources json
+
 import json
 import logging
 import os
 import sys
-from uuid import uuid4
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
+from uuid import uuid4
 
 import aiofiles
 import aiosqlite
@@ -13,7 +15,6 @@ from dacite import from_dict
 
 from apps.helpers.fileUtils import get_safe_path
 from apps.helpers.tasks.Task import Task
-
 
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger(__file__)
