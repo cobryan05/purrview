@@ -8,7 +8,7 @@ from .Task import Task
 from apps.helpers.imageUtils import base64_encode_png
 
 @register_task()
-class TestSourceTask(Task):
+class PreviewSourceTask(Task):
     async def _init(self, params: dict[str, Any], resume_data: Optional[dict[str, Any]]) -> None:
         """Run any initialization logic for the task."""
         self._status_msg: str = "Creating Task"

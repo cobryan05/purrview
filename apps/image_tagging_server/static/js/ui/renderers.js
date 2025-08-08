@@ -869,7 +869,7 @@ async function startSourceTestTask({ image_provider, params = {} }) {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      typename: 'TestSourceTask',
+      typename: 'PreviewSourceTask',
       params: {
         provider: image_provider,
         provider_params: params
