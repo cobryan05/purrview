@@ -58,7 +58,7 @@ def compute_iou(box, boxes):
         boxes (np.array): Array of bounding boxes with shape (N, 4).
 
     Returns:
-        np.array: Array of IoU values for the input box against each box in `boxes`.
+        np.ndarray: Array of IoU values for the input box against each box in `boxes`.
     """
     x1 = np.maximum(box[0], boxes[:, 0])  # Intersection top-left x
     y1 = np.maximum(box[1], boxes[:, 1])  # Intersection top-left y

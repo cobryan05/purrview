@@ -27,8 +27,8 @@ class TestSourceTask(Task):
             self._status_msg = "Starting Provider"
             await provider.start()
             self._status_msg = "Waiting for image"
-            image = await provider.getNextImage()
-            image_base64 = base64_encode_png(image)
+            imageInfo = await provider.getNextImage()
+            image_base64 = base64_encode_png(imageInfo.image)
             ret["image"] = image_base64
 
         self._update_resume_data()

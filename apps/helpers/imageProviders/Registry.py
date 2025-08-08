@@ -1,5 +1,5 @@
 """Registry of available ImageProviders"""
-from .imageProvider import ImageProvider
+from .imageProvider import ImageProvider, ImageWithMetadata
 from typing import Type
 
 image_provider_registry: dict[str, Type[ImageProvider]] = {}

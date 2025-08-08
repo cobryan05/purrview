@@ -5,12 +5,12 @@ import glob
 import logging
 from collections.abc import Iterator
 from threading import Event
-from typing import Any
+from typing import Any, Optional
 
 import cv2
 import numpy as np
 
-from .imageProvider import ImageProvider
+from .imageProvider import ImageProvider, ImageWithMetadata
 from .Registry import register_image_provider
 
 logging.basicConfig()
@@ -49,7 +49,7 @@ class Cv2VideoImageProvider(ImageProvider):
         self._vid = cv2.VideoCapture(self._vidPath)
         logger.debug(f"Next video: {self._vidPath}")
 
-    async def getNextImage(self) -> np.array:
+    async def getNextImage(self) -> Optional[ImageWithMetadata]:
         while True:
             ret, frame = await asyncio.to_thread(self._vid.read)
             if not ret:
@@ -57,7 +57,7 @@ class Cv2VideoImageProvider(ImageProvider):
                 ret, frame = await asyncio.to_thread(self._vid.read)
                 if not ret:
                     return None
-            return frame
+            return ImageWithMetadata(frame)
 
 
     @classmethod

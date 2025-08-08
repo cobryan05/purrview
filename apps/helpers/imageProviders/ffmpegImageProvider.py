@@ -12,7 +12,7 @@ import numpy as np
 from apps import APPS_CONFIG
 from apps.helpers.streams.ffmpegStreamerIn import FFmpegStreamerIn
 
-from .imageProvider import ImageProvider
+from .imageProvider import ImageProvider, ImageWithMetadata
 from .Registry import register_image_provider
 
 logging.basicConfig()
@@ -82,7 +82,7 @@ class FfmpegImageProvider(ImageProvider):
             api: relay_buffer_client.StreamsApi = relay_buffer_client.StreamsApi(self._rtsp_relay_api)
             await asyncio.to_thread(api.destroy_stream, self._relayed_name)
 
-    async def getNextImage(self) -> np.array:
+    async def getNextImage(self) -> Optional[ImageWithMetadata]:
         if self._frame_size is None:
             await self._stream.wait_for_metadata()
             self._frame_size = self._stream.get_frame_size()
@@ -104,7 +104,7 @@ class FfmpegImageProvider(ImageProvider):
                 self._buffer = self._buffer[frame_size_bytes:]  # Keep remaining data in the buffer
 
                 image = np.frombuffer(frame_bytes, dtype=np.uint8).reshape((height, width, 3))
-                return image
+                return ImageWithMetadata(image)
 
     @classmethod
     def params_schema(cls) -> dict[str, dict[str, Any]]:

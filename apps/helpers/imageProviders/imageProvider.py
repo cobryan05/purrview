@@ -1,11 +1,21 @@
 """Image Provider Interface Class"""
 
 import numpy as np
-from typing import Any
+from typing import Any, Optional
+from dataclasses import dataclass, field
 
+@dataclass
+class ImageMetadata:
+    source: Optional[str] = None
+    additional_info: dict[str, Any] = field(default_factory=dict)
+
+@dataclass
+class ImageWithMetadata:
+    image: np.ndarray
+    metadata: ImageMetadata = field(default_factory=ImageMetadata)
 
 class ImageProvider:
-    async def getNextImage(self) -> np.array:
+    async def getNextImage(self) -> Optional[ImageWithMetadata]:
         """Retrieves the next image for processing from the image source"""
         raise NotImplementedError()
 

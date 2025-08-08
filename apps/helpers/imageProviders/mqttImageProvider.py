@@ -3,25 +3,26 @@
 import asyncio
 import io
 import logging
-from typing import Any
+from typing import Any, Optional
 
 import numpy as np
 from PIL import Image
 
 from apps.helpers.mqttClient import MqttClient
 
-from .imageProvider import ImageProvider
+from .imageProvider import ImageProvider, ImageWithMetadata
 from .Registry import register_image_provider
 
 logging.basicConfig()
 logger = logging.getLogger(__file__)
 logger.setLevel(logging.DEBUG)
 
+
 @register_image_provider()
 class MqttImageProvider(ImageProvider):
     TIMEOUT = 60
 
-    def __init__(self, broker_address: str, broker_port:int, topic: str):
+    def __init__(self, broker_address: str, broker_port: int, topic: str):
         """Initializes the MQTT source."""
         self._topic: str = topic
         self._mqtt_client: MqttClient = MqttClient(broker_address, "/", int(broker_port))
@@ -46,13 +47,13 @@ class MqttImageProvider(ImageProvider):
         except Exception as e:
             logger.exception(e)
 
-    async def getNextImage(self) -> np.array:
+    async def getNextImage(self) -> Optional[ImageWithMetadata]:
         """Asynchronously retrieves the next image from the queue."""
         try:
-            return await asyncio.wait_for(self._frameQueue.get(), timeout=MqttImageProvider.TIMEOUT)
+            frame: np.ndarray = await asyncio.wait_for(self._frameQueue.get(), timeout=MqttImageProvider.TIMEOUT)
+            return ImageWithMetadata(frame)
         except asyncio.TimeoutError:
             raise TimeoutError("No image received within the timeout period.")
-
 
     @classmethod
     def params_schema(cls) -> dict[str, dict[str, Any]]:
@@ -67,19 +68,7 @@ class MqttImageProvider(ImageProvider):
             - schema: dict (optional, for nested objects)
         """
         return {
-            "broker_address": {
-                "type": "string",
-                "required": True,
-                "description": "MQTT broker address"
-            },
-            "broker_port": {
-                "type": "int",
-                "required": True,
-                "description": "MQTT broker port"
-            },
-            "topic": {
-                "type": "string",
-                "required": True,
-                "description": "MQTT topic to subscribe to"
-            }
+            "broker_address": {"type": "string", "required": True, "description": "MQTT broker address"},
+            "broker_port": {"type": "int", "required": True, "description": "MQTT broker port"},
+            "topic": {"type": "string", "required": True, "description": "MQTT topic to subscribe to"},
         }
