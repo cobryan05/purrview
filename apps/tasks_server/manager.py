@@ -7,7 +7,7 @@ import sys
 from dataclasses import asdict, dataclass, field
 from typing import Any, Dict, List, Optional, Union
 
-from apps.helpers.db.db_client import DbClient, TaskRecord
+from apps.helpers.db.db_client import ActiveTaskMetadata, DbClient, TaskConfigMetadata
 from apps.helpers.tasks.Registry import task_registry
 from apps.helpers.tasks.Task import Task
 
@@ -16,19 +16,20 @@ logger = logging.getLogger(__file__)
 logger.setLevel(logging.DEBUG)
 
 
-@dataclass
-class TaskMetadata:
-    id: int
-    typename: str
-    description: str = ""
-    parameters: Dict[str, Any] = field(default_factory=dict)
-    status: str = ""
+# @dataclass
+# class TaskConfigMetadata:
+#     config_uuid: str
+#     typename: str
+#     description: str = ""
+#     persistent: bool = True
+#     parameters: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
-class TaskInfo:
+class RunningTaskInfo:
     task: Task
-    metadata: TaskMetadata
+    config_metadata: TaskConfigMetadata
+    task_metadata: ActiveTaskMetadata
 
 
 class Manager:
@@ -42,14 +43,13 @@ class Manager:
         """
         self._task: Optional[asyncio.Task] = None  # Background task for periodic operations
         self._db_client: DbClient = db_client
-        self._running_tasks: Dict[int, TaskInfo] = {}
-        self._config = { "db_path": db_client.get_path() }
-
+        self._running_tasks: Dict[int, RunningTaskInfo] = {}
+        self._config = {"db_path": db_client.get_path()}
 
     async def get_server_config(self) -> Dict[str, Any]:
         return self._config.copy()
 
-    async def list_avail_tasks(self) -> List[str]:
+    async def list_task_configs(self) -> List[str]:
         """
         List all tasks managed by the Manager.
         """
@@ -66,11 +66,17 @@ class Manager:
             Optional[dict[str, Any]]: The result of the task, or None if not found.
         """
         task_info = self._running_tasks.get(task_id)
+        delete_on_success = task_info.config_metadata.params.get(Task.InternalKeys.ONESHOT_RESULT, False)
+        results = None
         if task_info:
-            return task_info.task.get_results()
+            results = task_info.task.get_results()
+        else:
+            # If not running, check the database
+            results = await self._db_client.get_task_result(task_id)
+        if results and delete_on_success:
+            await self.delete_tasks(task_ids=task_id)
 
-        # If not running, check the database
-        return await self._db_client.get_task_result(task_id)
+        return results
 
     async def get_tasks_status(self, task_ids: Optional[Union[List[int], int]] = None) -> Dict[int, dict[str, Any]]:
         """
@@ -89,22 +95,25 @@ class Manager:
         missing_ids = None if task_ids is None else [tid for tid in task_ids if tid not in running_tasks]
         info_from_db = {}
         if missing_ids is None or len(missing_ids) > 0:
-            db_tasks = await self._db_client.get_tasks(task_id=missing_ids)
+            db_tasks = await self._db_client.get_active_tasks(task_id=missing_ids)
+            config_uuids = [task.config_uuid for task in db_tasks]
+            config_metadata = await self._db_client.get_task_configs(config_uuids=config_uuids)
             info_from_db = {
                 task.id: {
                     "id": task.id,
                     "typename": task.typename,
                     "description": "",
-                    "parameters": task.params_json,
+                    "config_metadata": config,
+                    "message": "Not Running",
                     "progress": None,
                     "status": task.status,
                 }
-                for task in db_tasks
+                for task, config in zip(db_tasks, config_metadata)
             }
 
         running_info = {
             tid: {
-                **asdict(task_info.metadata),
+                **asdict(task_info.config_metadata),
                 "status": task_info.task.get_status(),
                 "progress": task_info.task.get_progress(),
                 "message": task_info.task.get_status_message(),
@@ -116,48 +125,34 @@ class Manager:
         # Combine with running tasks overriding DB
         return {**info_from_db, **running_info}
 
-    async def get_task_from_db(self, task_id: int) -> Optional[TaskInfo]:
+    async def get_task_config_from_db(self, task_config_uuid: str) -> Optional[TaskConfigMetadata]:
         """
         Retrieve a task's information from the database.
         """
-        task_data = await self._db_client.get_tasks([task_id])
-        if not task_data or not len(task_data) > 0:
+        configs_metadata = await self._db_client.get_task_configs(config_uuids=task_config_uuid)
+        if not configs_metadata or not len(configs_metadata) > 0:
             return None
-        task_data = task_data[0]
+        return configs_metadata[0]
 
-        params = json.loads(task_data.params_json) if task_data.params_json else {}
-        task_instance = task_registry[task_data.typename](task_id=task_data.id, params=params)
-        task_metadata = TaskMetadata(
-            id=task_data.id,
-            typename=task_data.typename,
-            description="",
-            parameters=params,
-            status=task_data.status,
-        )
-        resume_data = json.loads(task_data.resume_data_json) if task_data.resume_data_json else {}
-        task_instance.set_resume_data(resume_data)
-        return TaskInfo(task=task_instance, metadata=task_metadata)
-
-    async def create_new_task(self, typename: str, params: Dict[str, Any]) -> int:
+    async def create_new_task_config(
+        self, typename: str, params: Dict[str, Any], persistent: bool
+    ) -> TaskConfigMetadata:
         """
         Start a new task.
 
-        Returns new task id
+        Returns new task metadata
         """
         if typename not in task_registry:
             raise ValueError(f"Unknown task: {typename}")
 
-        record: TaskRecord = await self._db_client.add_task(typename=typename, params=params)
-        task_instance = task_registry[typename](task_id=record.id, params=params)
-
-        task_metadata: TaskMetadata = TaskMetadata(
-            id=record.id, typename=typename, parameters=params, status=Task.Status.PENDING
+        params[Task.InternalKeys.PERSISTENT] = persistent
+        task_config_metadata: TaskConfigMetadata = await self._db_client.add_task_config(
+            name=f"{typename}_task", typename=typename, params=params
         )
-        task_info = TaskInfo(task=task_instance, metadata=task_metadata)
-        await self._start_task(task_info)
-        return record.id
 
-    async def delete_tasks(self, task_ids: Union[List[int], int]) -> None:
+        return task_config_metadata
+
+    async def delete_task_configs(self, task_ids: Union[List[int], int]) -> None:
         """
         Delete a task by its ID.
 
@@ -172,7 +167,20 @@ class Manager:
                 # TODO: How does a task sync to DB?
                 await self._running_tasks[task_id].task.stop()
                 del self._running_tasks[task_id]
-        await self._db_client.delete_tasks(task_ids)
+        await self._db_client.delete_task_config(task_ids)
+
+    async def delete_tasks(self, task_ids: Union[List[int], int]) -> None:
+        """
+        Delete tasks by their IDs.
+        """
+        if isinstance(task_ids, int):
+            task_ids = [task_ids]
+
+        for task_id in task_ids:
+            if task_id in self._running_tasks:
+                await self._running_tasks[task_id].task.stop()
+                del self._running_tasks[task_id]
+        await self._db_client.delete_active_tasks(task_ids)
 
     async def pause_tasks(self, task_ids: Union[List[int], int]) -> None:
         """
@@ -184,10 +192,11 @@ class Manager:
         if isinstance(task_ids, int):
             task_ids = [task_ids]
 
-        task_infos: list[TaskInfo] = [
+        task_infos: list[RunningTaskInfo] = [
             self._running_tasks[task_id]
             for task_id in task_ids
-            if task_id in self._running_tasks and self._running_tasks[task_id].metadata.status == Task.Status.RUNNING
+            if task_id in self._running_tasks
+            and self._running_tasks[task_id].task_metadata.status == Task.Status.RUNNING
         ]
 
         for task_info in task_infos:
@@ -197,16 +206,16 @@ class Manager:
         for task_info in task_infos:
             try:
                 await task_info.task.wait_for_task_done(timeout=10.0)
-                task_info.metadata.status = Task.Status.PAUSED
+                task_info.config_metadata.status = Task.Status.PAUSED
             except asyncio.TimeoutError as e:
                 logger.warning(f"Timeout while waiting task pause: {e}")
-                task_info.metadata.status = Task.Status.ERROR
+                task_info.config_metadata.status = Task.Status.ERROR
             except StopIteration as e:
-                task_info.metadata.status = Task.Status.COMPLETED
+                task_info.config_metadata.status = Task.Status.COMPLETED
                 logger.info(f"Task finished while waiting for data ready: {e}")
 
             try:
-                del self._running_tasks[task_info.metadata.id]
+                del self._running_tasks[task_info.task_metadata.id]
                 await self._save_task_data(task_info)
             except Exception as e:
                 logger.exception(f"Error while saving task data: {e}")
@@ -225,11 +234,24 @@ class Manager:
             if task_id in self._running_tasks:
                 logger.warning(f"Can't resume task {task_id}: already in running tasks")
             else:
-                task_info = await self.get_task_from_db(task_id)
-                if task_info.metadata.status == Task.Status.PAUSED:
+                task_info = await self.get_task_config_from_db(task_id)
+                if task_info.config_metadata.status == Task.Status.PAUSED:
                     await self._start_task(task_info)
                 else:
-                    logger.warning(f"Can't resume task {task_id} from {task_info.metadata.status}")
+                    logger.warning(f"Can't resume task {task_id} from {task_info.config_metadata.status}")
+
+    async def start_new_task(self, task_config_uuid: str) -> Optional[RunningTaskInfo]:
+        """
+        Start a configured task by its config uuid
+
+        Args:
+            task_config_uuid (str): The UUID of the task configuration to start.
+        """
+        task_config_metadata: TaskConfigMetadata = await self.get_task_config_from_db(task_config_uuid)
+        if task_config_metadata:
+            return await self._start_task(task_config_metadata)
+        else:
+            logger.warning(f"Unknown task configuration: {task_config_uuid}")
 
     async def get_task_schema(self, typename: str) -> dict[str, dict[str, Any]]:
         """Get the schema for a specific task type."""
@@ -237,19 +259,25 @@ class Manager:
             raise ValueError(f"Unknown task: {typename}")
         return task_registry[typename].params_schema()
 
-    async def _save_task_data(self, task_info: TaskInfo) -> None:
+    async def _save_task_data(self, task_info: RunningTaskInfo) -> None:
         """Save the resume data for a task."""
         if task_info.task.is_data_ready():
-            await self._db_client.set_task_resume_data(task_info.metadata.id, task_info.task.get_resume_data())
+            await self._db_client.set_task_resume_data(task_info.task_metadata.id, task_info.task.get_resume_data())
             task_info.task.clear_data_ready()
-        await self._db_client.set_task_result(task_info.metadata.id, task_info.task.get_results())
-        await self._db_client.set_task_status(task_info.metadata.id, task_info.metadata.status)
+        # TODO: Sync metadata and DB?
+        await self._db_client.set_task_result(task_info.task_metadata.id, task_info.task.get_results())
+        await self._db_client.set_task_status(task_info.task_metadata.id, task_info.task_metadata.status)
 
-    async def _start_task(self, task_info: TaskInfo) -> None:
+    async def _start_task(self, config_metadata: TaskConfigMetadata) -> Optional[RunningTaskInfo]:
         """Start a task."""
-        self._running_tasks[task_info.metadata.id] = task_info
+        task_instance = task_registry[config_metadata.typename](task_config_uuid=config_metadata.uuid, params=config_metadata.params)
+        task_metadata: ActiveTaskMetadata = await self._db_client.add_active_task(config_metadata.uuid, config_metadata.typename)
+        task_info: RunningTaskInfo = RunningTaskInfo(task=task_instance, config_metadata=config_metadata, task_metadata=task_metadata)
+
+        self._running_tasks[task_metadata.id] = task_info
         await task_info.task.start()
-        task_info.metadata.status = Task.Status.RUNNING
+        task_info.task_metadata.status = Task.Status.RUNNING
+        return task_info
 
     def start(self):
         """Start the periodic worker task, should be called from the event loop to run on"""
@@ -262,10 +290,10 @@ class Manager:
         await self._db_client.init_db()
 
         # Clear any tasks left in DB that can't be resumed
-        stale_tasks: List[TaskRecord] = await self._db_client.get_tasks(resumable=False)
+        stale_tasks: List[TaskConfigMetadata] = await self._db_client.get_active_tasks(resumable=False)
         if stale_tasks:
             stale_ids = [info.id for info in stale_tasks]
-            await self._db_client.delete_tasks(stale_ids)
+            await self._db_client.delete_task_config(stale_ids)
 
     async def _worker_task(self):
         """
@@ -281,7 +309,7 @@ class Manager:
                 for task_id, task_info in dict(self._running_tasks).items():
                     task_done = task_info.task.is_task_done()
                     if task_done:
-                        task_info.metadata.status = Task.Status.COMPLETED
+                        task_info.config_metadata.status = Task.Status.COMPLETED
                     await self._save_task_data(task_info)
                     if task_done:
                         tasks_to_remove.add(task_id)

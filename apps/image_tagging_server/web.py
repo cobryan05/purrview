@@ -1,21 +1,28 @@
 import base64
 import json
 import logging
+import mimetypes
 import os
 import sys
-import mimetypes
-
-from dataclasses import asdict
 from contextlib import asynccontextmanager
+from dataclasses import asdict
 from typing import List, Optional
 
-from fastapi import Body, FastAPI, File, Form, Query, Request, UploadFile, HTTPException
+from fastapi import Body, FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 
-from .manager import Manager, ImageMetadata, BoundingBoxMetadata, SourceMetaData
+from apps.tasks_server.web import CreateTaskConfigRequest, StartTaskRequest
+
+from .manager import (
+    BoundingBoxMetadata,
+    ImageMetadata,
+    Manager,
+    SourceMetadata,
+    TaskConfigMetadata,
+)
 
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger(__file__)
@@ -525,7 +532,7 @@ class WebApp:
                 JSONResponse: Response with new source ID or error.
             """
             try:
-                source_metadata: SourceMetaData = await self._manager.create_new_source(
+                source_metadata: SourceMetadata = await self._manager.create_new_source(
                     image_provider=req.image_provider, params=req.params, source_name=req.source_name
                 )
                 response_data = {"status": "success", "source_id": source_metadata.uuid}
@@ -572,7 +579,7 @@ class WebApp:
                 JSONResponse: A JSON response containing the list of sources
             """
             try:
-                sources: List[SourceMetaData] = await self._manager.get_avail_sources()
+                sources: List[SourceMetadata] = await self._manager.get_avail_sources()
                 sources_dict = {source.uuid: asdict(source) for source in sources}
                 response_data = {"status": "success", "sources": sources_dict}
                 return JSONResponse(content=response_data)
@@ -639,19 +646,65 @@ class WebApp:
                     content={"status": "failure", "message": str(e)},
                 )
 
-        class CreateTaskRequest(BaseModel):
-            """Request model for creating a new task."""
-
-            typename: str
-            params: dict
-
         @self._app.post(
-            "/api/tasks/create",
+            "/api/tasks/configs/create",
             tags=[WebApp.TASKS_API_TAG_NAME],
-            operation_id="create_task",
+            operation_id="create_task_config",
             response_class=JSONResponse,
         )
-        async def create_task_api(req: CreateTaskRequest) -> JSONResponse:
+        async def create_task_config_api(req: CreateTaskConfigRequest) -> JSONResponse:
+            """
+            API endpoint for creating a new task.
+
+            Args:
+                req (CreateTaskRequest): Request object with task type and parameters.
+
+            Returns:
+                JSONResponse: Response with new config  UUID or error.
+            """
+            try:
+                config_uuid: str = await self._manager.create_new_task_config(
+                    typename=req.typename, params=req.params, persistent=req.persistent
+                )
+                response_data = {"status": "success", "config_uuid": config_uuid}
+            except Exception as e:
+                response_data = {"status": "failure", "message": str(e)}
+            return JSONResponse(content=response_data)
+
+        @self._app.get(
+            "/api/tasks/configs/list",
+            response_class=JSONResponse,
+            tags=[WebApp.TASKS_API_TAG_NAME],
+            operation_id="list_task_configs",
+        )
+        async def get_tasks_api(request: Request) -> JSONResponse:
+            """
+            API endpoint to return a list of configured tasks
+            Args:
+                request (Request): The FastAPI request object.
+
+            Returns:
+                JSONResponse: A JSON response containing the list of configured tasks
+            """
+            try:
+                tasks: List[TaskConfigMetadata] = await self._manager.list_task_configs()
+                tasks_dict = {task.id: asdict(task) for task in tasks}
+                response_data = {"status": "success", "tasks": tasks_dict}
+                return JSONResponse(content=response_data)
+            except Exception as e:
+                logger.exception(e)
+                return JSONResponse(
+                    content={"status": "failure", "message": str(e)},
+                    status_code=500,
+                )
+
+        @self._app.post(
+            "/api/tasks/configs/create",
+            tags=[WebApp.TASKS_API_TAG_NAME],
+            operation_id="create_task_config",
+            response_class=JSONResponse,
+        )
+        async def create_task_config_api(req: CreateTaskConfigRequest) -> JSONResponse:
             """
             API endpoint for creating a new task.
 
@@ -662,7 +715,32 @@ class WebApp:
                 JSONResponse: Response with new task ID or error.
             """
             try:
-                task_id: int = await self._manager.create_new_task(typename=req.typename, params=req.params)
+                task_config_uuid: str = await self._manager.create_new_task_config(
+                    typename=req.typename, params=req.params, persistent=req.persistent
+                )
+                response_data = {"status": "success", "task_uuid": task_config_uuid}
+            except Exception as e:
+                response_data = {"status": "failure", "message": str(e)}
+            return JSONResponse(content=response_data)
+
+        @self._app.post(
+            "/api/tasks/start",
+            tags=[WebApp.TASKS_API_TAG_NAME],
+            operation_id="start_task",
+            response_class=JSONResponse,
+        )
+        async def start_task_api(req: StartTaskRequest) -> JSONResponse:
+            """
+            API endpoint for starting a new task.
+
+            Args:
+                req (StartTaskRequest): Request object with task parameters.
+
+            Returns:
+                JSONResponse: Response with new task ID or error.
+            """
+            try:
+                task_id: int = await self._manager.start_new_task(task_config_uuid=req.config_uuid)
                 response_data = {"status": "success", "task_id": task_id}
             except Exception as e:
                 response_data = {"status": "failure", "message": str(e)}

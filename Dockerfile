@@ -52,6 +52,28 @@ COPY templates ./templates
 COPY static ./static
 COPY apps ./apps
 
+# Create OpenAPI generation script
+RUN echo '#!/bin/bash\n' \
+  'set -e\n' \
+  'python -m apps.generate_openapi_jsons\n' \
+  'openapi-generator-cli generate -i relay_buffer_server_openapi.json -g python -o /tmp/relay_buffer_client --package-name relay_buffer_client\n' \
+  'sed -i "s/license = \"NoLicense\"/license = \"Apache-2.0\"/" /tmp/relay_buffer_client/pyproject.toml\n' \
+  'pip install --no-cache-dir /tmp/relay_buffer_client\n' \
+  'rm -rf /tmp/relay_buffer_client\n' \
+  'openapi-generator-cli generate -i inference_server_openapi.json -g python -o /tmp/inference_client --package-name inference_client\n' \
+  'sed -i "s/license = \"NoLicense\"/license = \"Apache-2.0\"/" /tmp/inference_client/pyproject.toml\n' \
+  'pip install --no-cache-dir /tmp/inference_client\n' \
+  'rm -rf /tmp/inference_client\n' \
+  'openapi-generator-cli generate -i tasks_server_openapi.json -g python -o /tmp/tasks_client --package-name tasks_client\n' \
+  'sed -i "s/license = \"NoLicense\"/license = \"Apache-2.0\"/" /tmp/tasks_client/pyproject.toml\n' \
+  'pip install --no-cache-dir /tmp/tasks_client\n' \
+  'rm -rf /tmp/tasks_client\n' \
+  > /app/generate_openapi_modules.sh \
+  && chmod +x /app/generate_openapi_modules.sh
+
+# Run it once at build time
+RUN /app/generate_openapi_modules.sh
+
 # Generates python clients for internal apps
 RUN python -m apps.generate_openapi_jsons \
   && openapi-generator-cli generate -i relay_buffer_server_openapi.json -g python -o /tmp/relay_buffer_client --package-name relay_buffer_client \

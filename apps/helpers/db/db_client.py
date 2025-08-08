@@ -6,7 +6,7 @@ import os
 import sys
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Union, Tuple, Type, TypeVar
 from uuid import uuid4
 
 import aiofiles
@@ -21,24 +21,91 @@ logger = logging.getLogger(__file__)
 logger.setLevel(logging.DEBUG)
 
 
+LABELS_JSON = "labels.json"
+
+SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS images (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    filename TEXT UNIQUE NOT NULL,
+    last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    metadata_json TEXT CHECK (metadata_json IS NULL OR json_valid(metadata_json))
+);
+CREATE TABLE IF NOT EXISTS labels (
+    uuid TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    color TEXT,
+    parent_uuid TEXT REFERENCES labels(uuid)
+);
+CREATE TABLE IF NOT EXISTS bounding_boxes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    label_uuid TEXT NOT NULL,
+    image_id INTEGER NOT NULL,
+    x REAL NOT NULL,
+    y REAL NOT NULL,
+    width REAL NOT NULL,
+    height REAL NOT NULL,
+    metadata_json TEXT CHECK (metadata_json IS NULL OR json_valid(metadata_json)),
+    FOREIGN KEY(image_id) REFERENCES images(id) ON DELETE CASCADE,
+    FOREIGN KEY(label_uuid) REFERENCES labels(uuid)
+);
+CREATE TABLE IF NOT EXISTS bbox_tags (
+    bbox_id INTEGER NOT NULL,
+    label_uuid TEXT NOT NULL,
+    PRIMARY KEY (bbox_id, label_uuid),
+    FOREIGN KEY(bbox_id) REFERENCES bounding_boxes(id) ON DELETE CASCADE,
+    FOREIGN KEY(label_uuid) REFERENCES labels(uuid) ON DELETE CASCADE
+);
+CREATE TABLE IF NOT EXISTS task_configs (
+    uuid TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    typename TEXT NOT NULL,
+    description TEXT,
+    params_json TEXT CHECK (params_json IS NULL OR json_valid(params_json)) NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS tasks_active (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    config_uuid TEXT NOT NULL,
+    status TEXT NOT NULL,
+    resume_data_json TEXT CHECK (resume_data_json IS NULL OR json_valid(resume_data_json)),
+    result_json TEXT CHECK (result_json IS NULL OR json_valid(result_json)),
+    error_message TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(config_uuid) REFERENCES task_configs(uuid)
+);
+
+CREATE TABLE IF NOT EXISTS sources (
+    uuid TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    typename TEXT NOT NULL,
+    params_json TEXT CHECK (params_json IS NULL OR json_valid(params_json)) NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+"""
+
+
 @dataclass
-class LabelMetaData:
+class LabelMetadata:
     name: str
     color: str
     uuid: str
-    parent_uuid: Optional[int]
+    parent_uuid: Optional[str] = None
 
 
 @dataclass
 class BoundingBoxMetadata:
-    id: Optional[int]  # may be None for new boxes
+    id: int
     label_uuid: str
     label_text: str
     x: float
     y: float
     width: float
     height: float
-    tags: List[LabelMetaData] = field(default_factory=list)
+    tags: List[LabelMetadata] = field(default_factory=list)
     extra: Dict[str, str] = field(default_factory=dict)
 
 
@@ -46,13 +113,13 @@ class BoundingBoxMetadata:
 class ImageMetadata:
     id: int
     filename: str
-    last_updated: Optional[str]
+    last_updated: Optional[str] = None
     extra: Dict[str, str] = field(default_factory=dict)
     boxes: List[BoundingBoxMetadata] = field(default_factory=list)
 
 
 @dataclass
-class SourceMetaData:
+class SourceMetadata:
     name: str
     typename: str
     params: dict[str, str]
@@ -60,94 +127,67 @@ class SourceMetaData:
 
 
 @dataclass
-class TaskRecord:
+class TaskConfigMetadata:
+    uuid: str
+    typename: str
+    params: dict[str, str]
+    name: Optional[str] = None
+    description: Optional[str] = None
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+
+
+@dataclass
+class ActiveTaskMetadata:
     id: int
+    config_uuid: str
     typename: str
     status: str
-    params_json: str
-    resume_data_json: Optional[str]
-    error_message: Optional[str]
-    created_at: Optional[str]
-    updated_at: Optional[str]
+    resume_data: Optional[dict[str, str]] = None
+    result_json: Optional[str] = None
+    error_message: Optional[str] = None
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
 
 
 class DbClient:
     """Helper class for SQLite database interactions for image annotations."""
 
-    def __init__(self, db_path: str):
+    def __init__(self, db_path: Union[str, Path]):
         """
         Initialize DbClient with a path to the SQLite database file.
 
         Args:
             db_path (str): Filesystem path to the SQLite DB.
         """
-        self._db_path = db_path
+        self._db_path: Path = Path(db_path)
 
     def db_exists(self) -> bool:
         """Checks if the database file exists"""
-        return os.path.exists(self._db_path)
+        return self._db_path.exists()
 
-    def get_path(self) -> str:
+    def get_path(self) -> Path:
         """Gets the current db_path"""
         return self._db_path
 
     async def init_db(self) -> None:
-        """
-        Initiaize the database schema if it does not exist.
-        """
-        os.makedirs(os.path.dirname(self._db_path), exist_ok=True)
+        """Initialize DB schema; import labels.json only if DB was just created."""
+        self._db_path.parent.mkdir(parents=True, exist_ok=True)
+
         async with aiosqlite.connect(self._db_path) as db:
-            await db.executescript(
-                """
-                CREATE TABLE IF NOT EXISTS images (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    filename TEXT UNIQUE NOT NULL,
-                    last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    metadata TEXT
-                );
-                CREATE TABLE IF NOT EXISTS labels (
-                    uuid TEXT PRIMARY KEY,
-                    name TEXT NOT NULL,
-                    color TEXT,
-                    parent_uuid TEXT REFERENCES labels(uuid)
-                );
-                CREATE TABLE IF NOT EXISTS bounding_boxes (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    label_uuid TEXT NOT NULL,
-                    image_id INTEGER NOT NULL,
-                    x REAL NOT NULL,
-                    y REAL NOT NULL,
-                    width REAL NOT NULL,
-                    height REAL NOT NULL,
-                    metadata TEXT,
-                    FOREIGN KEY(image_id) REFERENCES images(id) ON DELETE CASCADE
-                );
-                CREATE TABLE IF NOT EXISTS bbox_tags (
-                    bbox_id INTEGER NOT NULL,
-                    label_uuid TEXT NOT NULL,
-                    PRIMARY KEY (bbox_id, label_uuid),
-                    FOREIGN KEY(bbox_id) REFERENCES bounding_boxes(id) ON DELETE CASCADE,
-                    FOREIGN KEY(label_uuid) REFERENCES labels(uuid) ON DELETE CASCADE
-                );
-                CREATE TABLE IF NOT EXISTS tasks (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    typename TEXT NOT NULL,
-                    status TEXT NOT NULL,
-                    params_json TEXT NOT NULL,
-                    resume_data_json TEXT,
-                    result_json TEXT,
-                    error_message TEXT,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                );
-                CREATE TABLE IF NOT EXISTS sources (
-                    uuid TEXT PRIMARY KEY,
-                    name TEXT NOT NULL,
-                    typename TEXT NOT NULL,
-                    params_json TEXT NOT NULL
-                );
-                """
-            )
+            # Acquire exclusive lock so multiple processes don't race the init
+            await db.execute("BEGIN EXCLUSIVE")
+
+            # Create tables if not exist
+            await db.executescript(SCHEMA_SQL)  # your schema string
+
+            # Check if labels table is empty
+            cursor = await db.execute("SELECT COUNT(*) FROM labels")
+            (count,) = await cursor.fetchone()
+
+            if count == 0:
+                await self._import_labels_from_json(db)
+
             await db.commit()
 
     async def get_image_id_by_filename(self, filename: str) -> Optional[int]:
@@ -185,50 +225,95 @@ class DbClient:
             await db.commit()
             return cursor.lastrowid
 
-    async def add_task(self, typename: str, params: dict) -> TaskRecord:
-        """
-        Insert a new task into the database with an auto-incrementing ID.
-
-        Args:
-            typename (str): Task typename (from registry).
-            params (dict): Task parameters.
-            resume_data (Optional[dict]): Optional resume state.
-
-        Returns:
-            TaskRecord: The full task record, including auto-generated ID.
-        """
+    async def add_task_config(
+        self,
+        name: str,
+        typename: str,
+        params: dict,
+        description: Optional[str] = None,
+    ) -> TaskConfigMetadata:
+        config_uuid = str(uuid4())
         params_json = json.dumps(params)
-        status = Task.Status.PENDING
-        resume_data_json = None
+
         async with aiosqlite.connect(self._db_path) as db:
-            cursor = await db.execute(
+            await db.execute(
                 """
-                INSERT INTO tasks (typename, status, params_json, resume_data_json)
-                VALUES (?, ?, ?, ?)
+                INSERT INTO task_configs (uuid, name, typename, description, params_json)
+                VALUES (?, ?, ?, ?, ?)
                 """,
-                (typename, status, params_json, resume_data_json),
+                (config_uuid, name, typename, description, params_json),
             )
             await db.commit()
 
-            task_id = cursor.lastrowid
-
             cursor = await db.execute(
                 """
-                SELECT id, typename, status, params_json, resume_data_json,
-                       error_message, created_at, updated_at
-                FROM tasks WHERE id = ?
+                SELECT uuid, typename, params_json, name, description, created_at, updated_at
+                FROM task_configs WHERE uuid = ?
                 """,
-                (task_id,),
+                (config_uuid,),
             )
             row = await cursor.fetchone()
             if not row:
-                raise Exception(f"Failed to retrieve inserted task with ID {task_id}")
+                raise Exception(f"Failed to retrieve inserted task config with UUID {config_uuid}")
+            return DbClient.row_to_dataclass(cursor, row, TaskConfigMetadata)
 
-            return TaskRecord(*row)
-
-    async def delete_tasks(self, task_ids: Union[int, List[int]]) -> None:
+    async def add_active_task(
+        self,
+        config_uuid: str,
+        typename: str,
+        resume_data: Optional[dict] = None,
+    ) -> ActiveTaskMetadata:
         """
-        Delete one or more tasks by their ID(s).
+        Insert a new active task (runtime task) into the database.
+
+        Args:
+            config_uuid: UUID of the task configuration this task is based on.
+            typename: The task type name (retrieved from the config, but stored here for convenience).
+            resume_data: Optional dict containing serialized resume data. Stored as JSON in the DB.
+
+        Returns:
+            ActiveTaskMetadata: A dataclass instance representing the newly inserted active task,
+            including its auto-generated ID, timestamps, and any provided metadata.
+
+        Raises:
+            Exception: If the inserted row cannot be retrieved from the database.
+        """
+        resume_data_json = json.dumps(resume_data) if resume_data is not None else None
+
+        async with aiosqlite.connect(self._db_path) as db:
+            await db.execute(
+                """
+                INSERT INTO tasks_active (config_uuid, status, resume_data_json, error_message)
+                VALUES (?, ?, ?, ?)
+                """,
+                (config_uuid, Task.Status.NEW, resume_data_json, None),
+            )
+            await db.commit()
+
+            cursor = await db.execute(
+                """
+                SELECT ta.id,
+                    ta.config_uuid,
+                    tc.typename,   -- joined from task_configs
+                    ta.status,
+                    ta.resume_data_json,
+                    ta.error_message,
+                    ta.created_at,
+                    ta.updated_at
+                FROM tasks_active ta
+                JOIN task_configs tc ON ta.config_uuid = tc.uuid
+                WHERE ta.rowid = last_insert_rowid()
+                """
+            )
+            row = await cursor.fetchone()
+            if not row:
+                raise Exception("Failed to retrieve inserted active task")
+
+            return DbClient.row_to_dataclass(cursor, row, ActiveTaskMetadata)
+
+    async def delete_active_tasks(self, task_ids: Union[int, List[int]]) -> None:
+        """
+        Delete one or more tasks by their IDs.
 
         Args:
             task_ids (Union[int, List[int]]): A single task ID or a list of task IDs to delete.
@@ -247,34 +332,57 @@ class DbClient:
         placeholders = ",".join("?" for _ in task_ids)
 
         async with aiosqlite.connect(self._db_path) as db:
-            await db.execute(f"DELETE FROM tasks WHERE id IN ({placeholders})", tuple(task_ids))
+            await db.execute(f"DELETE FROM tasks_active WHERE id IN ({placeholders})", tuple(task_ids))
             await db.commit()
 
-    async def get_tasks(
-        self,
-        task_id: Optional[Union[int, List[int]]] = None,
-        typename: Optional[Union[str, List[str]]] = None,
-        status: Optional[Union[str, List[str]]] = None,
-        resumable: Optional[bool] = None,
-    ) -> List[TaskRecord]:
+
+    async def delete_task_config(self, config_uuids: Union[str, List[str]]) -> None:
         """
-        Retrieve tasks with optional filtering by id, typename, and/or status.
+        Delete one or more task configs by their UUID(s).
+
+        Args:
+            task_uuids (Union[str, List[str]]): A single task UUID or a list of task UUIDs to delete.
+
+        Raises:
+            ValueError: If task_uuids is an empty list.
+        """
+        if isinstance(config_uuids, str):
+            config_uuids = [config_uuids]
+        elif isinstance(config_uuids, list):
+            if not config_uuids:
+                raise ValueError("No task UUIDs provided for deletion.")
+        else:
+            raise TypeError("task_uuids must be a str or list of strs.")
+
+        placeholders = ",".join("?" for _ in config_uuids)
+
+        async with aiosqlite.connect(self._db_path) as db:
+            await db.execute(f"DELETE FROM task_configs WHERE uuid IN ({placeholders})", tuple(config_uuids))
+            await db.commit()
+
+    async def get_task_configs(
+        self,
+        config_uuids: Optional[Union[str, List[str]]] = None,
+        typename: Optional[Union[str, List[str]]] = None,
+        name: Optional[Union[str, List[str]]] = None,
+    ) -> List[TaskConfigMetadata]:
+        """
+        Retrieve task configs from the database with optional filtering by uuid, typename, and/or name.
         Each filter can be a single value or a list of values.
 
         Args:
-            task_id (Optional[int or List[int]]): Filter by task ID(s).
-            typename (Optional[str or List[str]]): Filter by task typename(s).
-            status (Optional[str or List[str]]): Filter by task status(es).
+            uuid (Optional[str or List[str]]): Filter by task config UUID(s).
+            typename (Optional[str or List[str]]): Filter by typename(s).
+            name (Optional[str or List[str]]): Filter by name(s).
 
         Returns:
-            List[TaskRecord]: List of matching tasks.
+            List[TaskConfigMetadata]: List of matching task configs.
         """
         query = """
-                SELECT id, typename, status, params_json, resume_data_json,
-                    error_message, created_at, updated_at
-                FROM tasks
-                WHERE 1=1
-            """
+            SELECT uuid, typename, params_json, name, description, created_at, updated_at
+            FROM task_configs
+            WHERE 1=1
+        """
         params = []
 
         def add_filter(field, value):
@@ -283,7 +391,7 @@ class DbClient:
                 return
             if isinstance(value, list):
                 if not value:
-                    query += f" AND 1=0"  # No match if list is empty
+                    query += " AND 1=0"  # No matches if empty list
                 else:
                     placeholders = ",".join("?" for _ in value)
                     query += f" AND {field} IN ({placeholders})"
@@ -292,20 +400,113 @@ class DbClient:
                 query += f" AND {field} = ?"
                 params.append(value)
 
-        add_filter("id", task_id)
+        add_filter("uuid", config_uuids)
         add_filter("typename", typename)
-        add_filter("status", status)
+        add_filter("name", name)
 
-        if resumable is True:
-            query += " AND resume_data_json IS NOT NULL"
-        elif resumable is False:
-            query += " AND (resume_data_json IS NULL OR TRIM(resume_data_json) = '{}')"
+        query += " ORDER BY created_at DESC"
 
         async with aiosqlite.connect(self._db_path) as db:
             cursor = await db.execute(query, tuple(params))
             rows = await cursor.fetchall()
             await cursor.close()
-            return [TaskRecord(*row) for row in rows]
+
+        return [DbClient.row_to_dataclass(cursor, r, TaskConfigMetadata) for r in rows]
+
+    async def get_active_tasks(
+        self,
+        task_id: Optional[Union[int, List[int]]] = None,
+        config_uuid: Optional[Union[str, List[str]]] = None,
+        typename: Optional[Union[str, List[str]]] = None,
+        status: Optional[Union[str, List[str]]] = None,
+        resumable: Optional[bool] = None,
+    ) -> List[ActiveTaskMetadata]:
+        """
+        Retrieve active tasks with optional filtering by id, config_uuid, typename (via task_configs), and/or status.
+        Each filter can be a single value or a list of values.
+
+        Args:
+            task_id (Optional[int or List[int]]): Filter by tasks_active.id(s).
+            config_uuid (Optional[str or List[str]]): Filter by tasks_active.config_uuid(s).
+            typename (Optional[str or List[str]]): Filter by task_configs.typename(s).
+            status (Optional[str or List[str]]): Filter by tasks_active.status(es).
+            resumable (Optional[bool]): Filter tasks with or without resume data.
+
+        Returns:
+            List[ActiveTaskMetadata]: List of matching active tasks.
+        """
+        query = """
+            SELECT
+                ta.id,
+                ta.config_uuid,
+                tc.typename,
+                ta.status,
+                ta.resume_data_json,
+                ta.error_message,
+                ta.created_at,
+                ta.updated_at
+            FROM tasks_active ta
+            JOIN task_configs tc ON ta.config_uuid = tc.uuid
+            WHERE 1=1
+        """
+        params = []
+
+        def add_filter(field, value):
+            nonlocal query, params
+            if value is None:
+                return
+            if isinstance(value, list):
+                if not value:
+                    query += " AND 1=0"  # No match if list empty
+                else:
+                    placeholders = ",".join("?" for _ in value)
+                    query += f" AND {field} IN ({placeholders})"
+                    params.extend(value)
+            else:
+                query += f" AND {field} = ?"
+                params.append(value)
+
+        add_filter("ta.id", task_id)
+        add_filter("ta.config_uuid", config_uuid)  # <-- added filter here
+        add_filter("tc.typename", typename)
+        add_filter("ta.status", status)
+
+        if resumable is True:
+            query += " AND ta.resume_data_json IS NOT NULL"
+        elif resumable is False:
+            query += " AND (ta.resume_data_json IS NULL OR TRIM(ta.resume_data_json) = '')"
+
+        async with aiosqlite.connect(self._db_path) as db:
+            cursor = await db.execute(query, tuple(params))
+            rows = await cursor.fetchall()
+            await cursor.close()
+
+        return [DbClient.row_to_dataclass(cursor, r, ActiveTaskMetadata) for r in rows]
+
+    async def get_task_has_result(self, task_id: int) -> bool:
+        """
+        Check whether a task has a result stored in the database.
+
+        Args:
+            task_id (int): Task ID
+
+        Returns:
+            bool: True if result_json is non-null and exists, False otherwise
+        """
+        async with aiosqlite.connect(self._db_path) as db:
+            cursor = await db.execute(
+                """
+                SELECT EXISTS(
+                    SELECT 1 FROM tasks_active
+                    WHERE id = ? AND result_json IS NOT NULL
+                )
+                """,
+                (task_id,),
+            )
+            row = await cursor.fetchone()
+            await cursor.close()
+
+            return bool(row[0])
 
     async def get_task_result(self, task_id: int) -> Optional[dict[str, Any]]:
         """
@@ -318,7 +519,7 @@ class DbClient:
             dict[str, Any] or None if not found or empty
         """
         async with aiosqlite.connect(self._db_path) as db:
-            cursor = await db.execute("SELECT result_json FROM tasks WHERE id = ?", (task_id,))
+            cursor = await db.execute("SELECT result_json FROM tasks_active WHERE id = ?", (task_id,))
             row = await cursor.fetchone()
             await cursor.close()
 
@@ -328,7 +529,7 @@ class DbClient:
             try:
                 return json.loads(row[0])
             except Exception as e:
-                logger.warning(f"Invalid JSON in resume_data for task {task_id}: {e}")
+                logger.warning(f"Invalid JSON in result_json for task {task_id}: {e}")
                 return None
 
     async def get_task_resume_data(self, task_id: int) -> Optional[dict[str, Any]]:
@@ -342,7 +543,7 @@ class DbClient:
             dict[str, Any] or None if not found or empty
         """
         async with aiosqlite.connect(self._db_path) as db:
-            cursor = await db.execute("SELECT resume_data_json FROM tasks WHERE id = ?", (task_id,))
+            cursor = await db.execute("SELECT resume_data_json FROM tasks_active WHERE id = ?", (task_id,))
             row = await cursor.fetchone()
             await cursor.close()
 
@@ -352,7 +553,7 @@ class DbClient:
             try:
                 return json.loads(row[0])
             except Exception as e:
-                logger.warning(f"Invalid JSON in resume_data for task {task_id}: {e}")
+                logger.warning(f"Invalid JSON in resume_data_json for task {task_id}: {e}")
                 return None
 
     async def set_task_result(
@@ -385,7 +586,7 @@ class DbClient:
 
         params.append(task_id)
 
-        query = f"UPDATE tasks SET {', '.join(parts)} WHERE id = ?"
+        query = f"UPDATE tasks_active SET {', '.join(parts)} WHERE id = ?"
 
         async with aiosqlite.connect(self._db_path) as db:
             await db.execute(query, tuple(params))
@@ -403,7 +604,7 @@ class DbClient:
         async with aiosqlite.connect(self._db_path) as db:
             await db.execute(
                 """
-                UPDATE tasks
+                UPDATE tasks_active
                 SET resume_data_json = ?, updated_at = CURRENT_TIMESTAMP
                 WHERE id = ?
                 """,
@@ -422,7 +623,7 @@ class DbClient:
         async with aiosqlite.connect(self._db_path) as db:
             await db.execute(
                 """
-                UPDATE tasks
+                UPDATE tasks_active
                 SET status = ?, updated_at = CURRENT_TIMESTAMP
                 WHERE id = ?
                 """,
@@ -430,7 +631,7 @@ class DbClient:
             )
             await db.commit()
 
-    async def _get_source_by_name(self, name: str) -> Optional[SourceMetaData]:
+    async def _get_source_by_name(self, name: str) -> Optional[SourceMetadata]:
         """
         Internal helper to retrieve a source by name.
 
@@ -444,11 +645,11 @@ class DbClient:
             cursor = await db.execute("SELECT name, typename, params_json, uuid FROM sources WHERE name = ?", (name,))
             row = await cursor.fetchone()
             await cursor.close()
-            if row:
-                return SourceMetaData(name=row[0], typename=row[1], params=json.loads(row[2]), uuid=row[3])
-            return None
+            if not row:
+                return None
+            return DbClient.row_to_dataclass(cursor, row, SourceMetadata)
 
-    async def get_sources(self) -> List[SourceMetaData]:
+    async def get_sources(self) -> List[SourceMetadata]:
         """
         List all sources.
 
@@ -459,9 +660,9 @@ class DbClient:
             cursor = await db.execute("SELECT name, typename, params_json, uuid FROM sources")
             rows = await cursor.fetchall()
             await cursor.close()
-            return [SourceMetaData(name=r[0], typename=r[1], params=json.loads(r[2]), uuid=r[3]) for r in rows]
+            return [DbClient.row_to_dataclass(cursor, r, SourceMetadata) for r in rows]
 
-    async def add_source(self, name: str, typename: str, params: dict, uuid: Optional[str] = None) -> SourceMetaData:
+    async def add_source(self, name: str, typename: str, params: dict, uuid: Optional[str] = None) -> SourceMetadata:
         """
         Add a source or return existing one by name.
 
@@ -478,6 +679,7 @@ class DbClient:
         if existing:
             return existing
 
+
         uuid = uuid or str(uuid4())
         async with aiosqlite.connect(self._db_path) as db:
             await db.execute(
@@ -485,7 +687,11 @@ class DbClient:
                 (name, typename, json.dumps(params), uuid),
             )
             await db.commit()
-            return SourceMetaData(name=name, typename=typename, params=params, uuid=uuid)
+
+        ret = await self._get_source_by_name(name)
+        if ret:
+            return ret
+        raise ValueError("Failed to create source")
 
     async def update_source(
         self,
@@ -541,7 +747,7 @@ class DbClient:
                 await db.execute("DELETE FROM sources WHERE uuid = ?", (source_uuid,))
             await db.commit()
 
-    async def list_labels(self) -> List[LabelMetaData]:
+    async def list_labels(self) -> List[LabelMetadata]:
         """
         List all labels.
 
@@ -552,11 +758,11 @@ class DbClient:
             cursor = await db.execute("SELECT name, color, uuid, parent_uuid FROM labels")
             rows = await cursor.fetchall()
             await cursor.close()
-            return [LabelMetaData(name=r[0], color=r[1], uuid=r[2], parent_uuid=r[3]) for r in rows]
+            return [DbClient.row_to_dataclass(cursor, r, LabelMetadata) for r in rows]
 
     async def add_label(
         self, name: str, color: str, uuid: Optional[str] = None, parent_uuid: Optional[str] = None
-    ) -> LabelMetaData:
+    ) -> LabelMetadata:
         """
         Add a label or return existing one by name.
 
@@ -573,7 +779,7 @@ class DbClient:
             cursor = await db.execute("SELECT name, color, uuid, parent_uuid FROM labels WHERE name = ?", (name,))
             row = await cursor.fetchone()
             if row:
-                return LabelMetaData(name=row[0], color=row[1], uuid=row[2], parent_uuid=row[3])
+                return DbClient.row_to_dataclass(cursor, row, LabelMetadata)
 
             cursor = await db.execute(
                 "INSERT INTO labels (name, color, uuid, parent_uuid) VALUES (?, ?, ?, ?)",
@@ -583,9 +789,9 @@ class DbClient:
             label_uuid = cursor.lastrowid
             if label_uuid is None:
                 raise Exception(f"Failed to insert label: {name}")
-            return LabelMetaData(name=name, color=color, uuid=uuid, parent_uuid=parent_uuid)
+            return LabelMetadata(name=name, color=color, uuid=uuid, parent_uuid=parent_uuid)
 
-    async def get_label_by_name(self, name: str) -> Optional[LabelMetaData]:
+    async def get_label_by_name(self, name: str) -> Optional[LabelMetadata]:
         """
         Retrieve a label by its name.
 
@@ -600,7 +806,7 @@ class DbClient:
             row = await cursor.fetchone()
             await cursor.close()
             if row:
-                return LabelMetaData(name=row[0], color=row[1], uuid=row[2])
+                return DbClient.row_to_dataclass(cursor, row, LabelMetadata)
             return None
 
     async def update_label(self, label_uuid: str, name: Optional[str] = None, color: Optional[str] = None) -> None:
@@ -666,7 +872,7 @@ class DbClient:
         meta_json = json.dumps(metadata or {})
         async with aiosqlite.connect(self._db_path) as db:
             cursor = await db.execute(
-                "INSERT INTO bounding_boxes (image_id, x, y, width, height, metadata) VALUES (?, ?, ?, ?, ?, ?)",
+                "INSERT INTO bounding_boxes (image_id, x, y, width, height, metadata_json) VALUES (?, ?, ?, ?, ?, ?)",
                 (image_id, x, y, width, height, meta_json),
             )
             await db.commit()
@@ -692,7 +898,7 @@ class DbClient:
         meta_json = json.dumps(metadata or {})
         async with aiosqlite.connect(self._db_path) as db:
             await db.execute(
-                "UPDATE bounding_boxes SET x = ?, y = ?, width = ?, height = ?, metadata = ? WHERE id = ?",
+                "UPDATE bounding_boxes SET x = ?, y = ?, width = ?, height = ?, metadata_json = ? WHERE id = ?",
                 (x, y, width, height, meta_json, box_id),
             )
             await db.commit()
@@ -749,7 +955,7 @@ class DbClient:
         async with aiosqlite.connect(self._db_path) as db:
             # Read image base info + metadata JSON
             cursor = await db.execute(
-                "SELECT id, filename, last_updated, metadata FROM images WHERE id = ?",
+                "SELECT id, filename, last_updated, metadata_json FROM images WHERE id = ?",
                 (image_id,),
             )
             row = await cursor.fetchone()
@@ -776,7 +982,7 @@ class DbClient:
                     b.y,
                     b.width,
                     b.height,
-                    b.metadata
+                    b.metadata_json
                 FROM bounding_boxes b
                 JOIN labels l ON b.label_uuid = l.uuid
                 WHERE b.image_id = ?
@@ -810,7 +1016,7 @@ class DbClient:
                 tag_rows = await tag_cursor.fetchall()
                 await tag_cursor.close()
 
-                tags = [LabelMetaData(uuid=l[0], name=l[1], color=l[2]) for l in tag_rows]
+                tags = [LabelMetadata(uuid=l[0], name=l[1], color=l[2]) for l in tag_rows]
 
                 boxes.append(
                     BoundingBoxMetadata(
@@ -847,7 +1053,7 @@ class DbClient:
             async with db.execute("BEGIN"):
                 # Update image metadata + last_updated
                 await db.execute(
-                    "UPDATE images SET metadata = ?, last_updated = CURRENT_TIMESTAMP WHERE id = ?",
+                    "UPDATE images SET metadata_json = ?, last_updated = CURRENT_TIMESTAMP WHERE id = ?",
                     (image_meta_json, image_id),
                 )
 
@@ -862,65 +1068,85 @@ class DbClient:
                 for box in metadata.boxes:
                     bbox_meta_json = json.dumps(box.extra) if box.extra else None
                     cursor = await db.execute(
-                        "INSERT INTO bounding_boxes (image_id, label_uuid, x, y, width, height, metadata) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                        "INSERT INTO bounding_boxes (image_id, label_uuid, x, y, width, height, metadata_json) VALUES (?, ?, ?, ?, ?, ?, ?)",
                         (image_id, box.label_uuid, box.x, box.y, box.width, box.height, bbox_meta_json),
                     )
                     new_bbox_id = cursor.lastrowid
 
                 await db.commit()
 
-    async def export_labels_from_db_to_json(self, json_path: Optional[str] = None) -> None:
+    async def export_labels_from_db_to_json(self, json_path: Optional[Path | str] = None) -> None:
         """
         Save all labels from the database into a JSON file.
 
         Args:
             json_path (str): Optional override path. Default: <db_dir>/labels.json
         """
-        json_path = json_path or os.path.join(os.path.dirname(self._db_path), "labels.json")
+        json_path = Path(json_path) if json_path else self._db_path.parent / "labels.json"
         labels = await self.list_labels()
         data = [asdict(label) for label in labels]
 
         async with aiofiles.open(json_path, "w", encoding="utf-8") as f:
             await f.write(json.dumps(data, indent=2))
 
-    async def import_labels_from_json_to_db(
-        self, json_path: Optional[str] = None, overwrite_existing: bool = False
-    ) -> None:
-        """
-        Load labels from a JSON file and insert into database if they don't exist.
-
-        Args:
-            json_path (str): Optional override path. Default: <db_dir>/labels.json
-            overwrite_existing (bool): If True, delete existing labels first.
-        """
-        json_path = json_path or os.path.join(os.path.dirname(self._db_path), "labels.json")
-
-        try:
+    async def _import_labels_from_json(self, db: aiosqlite.Connection) -> None:
+        json_path = self._db_path.parent / LABELS_JSON
+        if json_path.exists():
             async with aiofiles.open(json_path, "r", encoding="utf-8") as f:
                 raw = await f.read()
                 label_list = json.loads(raw)
 
-            async with aiosqlite.connect(self._db_path) as db:
-                if overwrite_existing:
-                    await db.execute("DELETE FROM bbox_tags")
-                    await db.execute("DELETE FROM labels")
+            for label in label_list:
+                await db.execute(
+                    """
+                    INSERT INTO labels (uuid, name, color, parent_uuid)
+                    VALUES (?, ?, ?, ?)
+                    """,
+                    (
+                        label.get("uuid", str(uuid4())),
+                        label["name"],
+                        label.get("color"),
+                        label.get("parent_uuid"),
+                    ),
+                )
+            logger.info(f"Imported {len(label_list)} labels from JSON.")
 
-                for label in label_list:
-                    # Insert or replace based on uuid
-                    await db.execute(
-                        """
-                        INSERT OR REPLACE INTO labels (uuid, name, color)
-                        VALUES (?, ?, ?)
-                        """,
-                        (label.get("uuid", str(uuid4()), label["name"], label["color"])),
-                    )
+    # async def import_labels_from_json_to_db(
+    #     self, json_path: Optional[Path | str] = None, overwrite_existing: bool = False
+    # ) -> None:
+    #     """
+    #     Load labels from a JSON file and insert into database if they don't exist.
 
-                await db.commit()
+    #     Args:
+    #         json_path (str): Optional override path. Default: <db_dir>/labels.json
+    #         overwrite_existing (bool): If True, delete existing labels first.
+    #     """
+    #     try:
+    #         async with aiofiles.open(json_path, "r", encoding="utf-8") as f:
+    #             raw = await f.read()
+    #             label_list = json.loads(raw)
 
-        except FileNotFoundError:
-            logger.warning(f"Label JSON file not found: {json_path}")
-        except Exception as e:
-            logger.error(f"Failed to load labels from JSON: {e}")
+    #         async with aiosqlite.connect(self._db_path) as db:
+    #             if overwrite_existing:
+    #                 await db.execute("DELETE FROM bbox_tags")
+    #                 await db.execute("DELETE FROM labels")
+
+    #             for label in label_list:
+    #                 # Insert or replace based on uuid
+    #                 await db.execute(
+    #                     """
+    #                     INSERT OR REPLACE INTO labels (uuid, name, color)
+    #                     VALUES (?, ?, ?)
+    #                     """,
+    #                     (label.get("uuid", str(uuid4()), label["name"], label["color"])),
+    #                 )
+
+    #             await db.commit()
+
+    #     except FileNotFoundError:
+    #         logger.warning(f"Label JSON file not found: {json_path}")
+    #     except Exception as e:
+    #         logger.error(f"Failed to load labels from JSON: {e}")
 
     async def save_image_metadata_db_to_json(self, abs_path: str) -> None:
         """
@@ -969,3 +1195,39 @@ class DbClient:
         except FileNotFoundError:
             logger.warning(f"JSON file not found: {json_path}")
             return None
+
+    T = TypeVar("T")
+
+    def row_to_dataclass(
+        cursor: aiosqlite.Cursor,
+        row: Tuple[Any, ...],
+        cls_type: Type[T],
+    ) -> T:
+        """
+        Convert a SQLite row into a dataclass instance.
+        - Columns ending with `_json` are json.loads()'d and renamed without `_json`.
+
+        Args:
+            cursor: aiosqlite or sqlite3 cursor after executing a query
+            row: the tuple returned from cursor.fetchone() / fetchall()
+            cls_type: the dataclass type to instantiate
+
+        Returns:
+            An instance of the dataclass `cls_type` populated from row values.
+        """
+        columns: List[str] = [col[0] for col in cursor.description]
+        row_dict: dict[str, Any] = dict(zip(columns, row))
+
+        transformed: dict[str, Any] = {}
+        for key, value in row_dict.items():
+            if key.endswith("_json"):
+                new_key = key[:-5]  # strip "_json"
+                try:
+                    transformed[new_key] = json.loads(value) if value is not None else None
+                except json.JSONDecodeError:
+                    # Fallback: keep raw value if it's not valid JSON
+                    transformed[new_key] = value
+            else:
+                transformed[key] = value
+
+        return cls_type(**transformed)

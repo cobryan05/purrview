@@ -6,7 +6,7 @@ import logging
 import sys
 from contextlib import asynccontextmanager
 from dataclasses import asdict
-from typing import Optional, List
+from typing import List, Optional
 
 import cv2
 import numpy as np
@@ -17,11 +17,49 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 
-from .manager import Manager, TaskInfo
+from .manager import Manager, TaskConfigMetadata, RunningTaskInfo
 
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger(__file__)
 logger.setLevel(logging.DEBUG)
+
+
+class CreateTaskConfigRequest(BaseModel):
+    """Request model for creating a new task configuration."""
+
+    typename: str
+    params: dict
+    persistent: bool = True
+
+
+class DeleteTasksRequest(BaseModel):
+    task_ids: List[int]
+
+
+class PauseTasksRequest(BaseModel):
+    task_ids: List[int]
+
+
+class ResumeTasksRequest(BaseModel):
+    task_ids: List[int]
+
+
+class StartTaskRequest(BaseModel):
+    """Request model for running a new task."""
+
+    config_uuid: str
+
+
+class TaskResultRequest(BaseModel):
+    """Request result for a specific task."""
+
+    task_id: Optional[int] = None
+
+
+class TaskStatusRequest(BaseModel):
+    """Request model for creating a new task."""
+
+    task_ids: Optional[List[int]] = None
 
 
 class WebApp:
@@ -133,8 +171,8 @@ class WebApp:
             """
             buttons = [
                 {"label": "Task Status", "action": "/task-status-form"},
-                {"label": "List Available Tasks", "action": "/api/tasks/list-avail"},
-                {"label": "Create Task", "action": "/create-task-form"},
+                {"label": "List Available Tasks", "action": "/api/tasks/configs/list"},
+                {"label": "Create Task", "action": "/create-task-config-form"},
             ]
             return self._templates.TemplateResponse(
                 "dynamic_index.html",
@@ -168,11 +206,6 @@ class WebApp:
                 response_data = {"status": "failure", "message": str(e)}
             return JSONResponse(content=response_data)
 
-        class TaskStatusRequest(BaseModel):
-            """Request model for creating a new task."""
-
-            task_ids: Optional[List[int]] = None
-
         @self._app.post(
             "/api/tasks/status",
             tags=[WebApp.TASKS_API_TAG_NAME],
@@ -191,15 +224,14 @@ class WebApp:
             """
             try:
                 tasks_status = await self._manager.get_tasks_status(req.task_ids)
+                for task in tasks_status.values():
+                    if isinstance(task.get("config_metadata"), TaskConfigMetadata):
+                        task["config_metadata"] = asdict(task["config_metadata"])
+
                 response_data = {"status": "success", "tasks": tasks_status}
             except Exception as e:
                 response_data = {"status": "failure", "message": str(e)}
             return JSONResponse(content=response_data)
-
-        class TaskResultRequest(BaseModel):
-            """Request result for a specific task."""
-
-            task_id: Optional[int] = None
 
         @self._app.post(
             "/api/tasks/result",
@@ -312,18 +344,15 @@ class WebApp:
                 },
             )
 
-        class DeleteTasksRequest(BaseModel):
-            task_ids: List[int]
-
         @self._app.post(
-            "/api/tasks/delete",
+            "/api/tasks/configs/delete",
             tags=[WebApp.TASKS_API_TAG_NAME],
-            operation_id="delete_tasks",
+            operation_id="delete_task_config",
             response_class=JSONResponse,
         )
-        async def delete_tasks_api(req: DeleteTasksRequest) -> JSONResponse:
+        async def delete_task_configs_api(req: DeleteTasksRequest) -> JSONResponse:
             """
-            API endpoint to delete tasks.
+            API endpoint to delete tasks configs
 
             Args:
                 req (DeleteTasksRequest): Request object with task IDs to delete.
@@ -332,7 +361,7 @@ class WebApp:
                 JSONResponse: JSON response with deletion result.
             """
             try:
-                await self._manager.delete_tasks(req.task_ids)
+                await self._manager.delete_task_configs(req.task_ids)
                 response_data = {"status": "success", "deleted": req.task_ids}
                 return JSONResponse(content=response_data)
             except Exception as e:
@@ -363,14 +392,11 @@ class WebApp:
 
                 task_ids = [int(tid) for tid in selected_task]
                 api_request = DeleteTasksRequest(task_ids=task_ids)
-                response = await delete_tasks_api(api_request)
+                response = await delete_task_configs_api(api_request)
                 return await task_status(task_ids="", request=request)
 
             except Exception as e:
                 return self._error_response(request, f"Internal server error: {str(e)}")
-
-        class PauseTasksRequest(BaseModel):
-            task_ids: List[int]
 
         @self._app.post(
             "/api/tasks/pause",
@@ -425,9 +451,6 @@ class WebApp:
 
             except Exception as e:
                 return self._error_response(request, f"Internal server error: {str(e)}")
-
-        class ResumeTasksRequest(BaseModel):
-            task_ids: List[int]
 
         @self._app.post(
             "/api/tasks/resume",
@@ -484,14 +507,14 @@ class WebApp:
                 return self._error_response(request, f"Internal server error: {str(e)}")
 
         @self._app.get(
-            "/api/tasks/list-avail",
+            "/api/tasks/configs/list",
             response_class=JSONResponse,
             tags=[WebApp.TASKS_API_TAG_NAME],
-            operation_id="list_avail_tasks_api",
+            operation_id="list_task_configs",
         )
-        async def list_avail_tasks_api(request: Request) -> JSONResponse:
+        async def list_task_configs_api(request: Request) -> JSONResponse:
             """
-            API endpoint to return a list of available tasks.
+            API endpoint to return a list of task configurations.
 
             Args:
                 request (Request): The FastAPI request object.
@@ -500,7 +523,7 @@ class WebApp:
                 JSONResponse: A JSON response containing the list of models.
             """
             try:
-                task_list = await self._manager.list_avail_tasks()
+                task_list = await self._manager.list_task_configs()
                 response_data = {"status": "success", "tasks": task_list}
                 return JSONResponse(content=response_data)
             except Exception as e:
@@ -510,21 +533,38 @@ class WebApp:
                     status_code=500,
                 )
 
-        class CreateTaskRequest(BaseModel):
-            """Request model for creating a new task."""
-
-            typename: str
-            params: dict
-
         @self._app.post(
-            "/api/tasks/create",
+            "/api/tasks/start",
             tags=[WebApp.TASKS_API_TAG_NAME],
-            operation_id="create_task",
+            operation_id="start_task",
             response_class=JSONResponse,
         )
-        async def create_task_api(req: CreateTaskRequest) -> JSONResponse:
+        async def start_task_api(req: StartTaskRequest) -> JSONResponse:
             """
-            API endpoint for creating a new task.
+            API endpoint for starting a new task.
+
+            Args:
+                req (StartTaskRequest): Request object with task parameters.
+
+            Returns:
+                JSONResponse: Response with new task ID or error.
+            """
+            try:
+                task_info: RunningTaskInfo = await self._manager.start_new_task(task_config_uuid=req.config_uuid)
+                response_data = {"status": "success", "task_id": task_info.task_metadata.id}
+            except Exception as e:
+                response_data = {"status": "failure", "message": str(e)}
+            return JSONResponse(content=response_data)
+
+        @self._app.post(
+            "/api/tasks/config/create",
+            tags=[WebApp.TASKS_API_TAG_NAME],
+            operation_id="create_task_config",
+            response_class=JSONResponse,
+        )
+        async def create_task_config_api(req: CreateTaskConfigRequest) -> JSONResponse:
+            """
+            API endpoint for creating a new task configuration.
 
             Args:
                 req (CreateTaskRequest): Request object with task type and parameters.
@@ -533,14 +573,16 @@ class WebApp:
                 JSONResponse: Response with new task ID or error.
             """
             try:
-                task_id: int = await self._manager.create_new_task(typename=req.typename, params=req.params)
-                response_data = {"status": "success", "task_id": task_id}
+                task_config: TaskConfigMetadata = await self._manager.create_new_task_config(
+                    typename=req.typename, params=req.params, persistent=req.persistent
+                )
+                response_data = {"status": "success", "config_uuid": task_config.uuid}
             except Exception as e:
                 response_data = {"status": "failure", "message": str(e)}
             return JSONResponse(content=response_data)
 
-        @self._app.post("/create-task", response_class=HTMLResponse, include_in_schema=False)
-        async def create_task(
+        @self._app.post("/create-task-config", response_class=HTMLResponse, include_in_schema=False)
+        async def create_task_config(
             task_name: str = Form(...),
             params: str = Form(""),
             request: Request = None,
@@ -557,10 +599,10 @@ class WebApp:
                 HTMLResponse: Rendered result of task creation.
             """
             try:
-                req: CreateTaskRequest = CreateTaskRequest(
+                req: CreateTaskConfigRequest = CreateTaskConfigRequest(
                     typename=task_name, params=json.loads(params) if params else {}
                 )
-                reponse_json = await create_task_api(req)
+                reponse_json = await create_task_config_api(req)
                 reponse_data = json.loads(reponse_json.body)
                 return self._templates.TemplateResponse(
                     "dynamic_response.html",
@@ -573,8 +615,8 @@ class WebApp:
             except Exception as e:
                 return self._error_response(request, f"Internal server error: {str(e)}")
 
-        @self._app.get("/create-task-form", response_class=HTMLResponse)
-        async def create_task_form(request: Request) -> HTMLResponse:
+        @self._app.get("/create-task-config-form", response_class=HTMLResponse)
+        async def create_task_config_form(request: Request) -> HTMLResponse:
             """
             Display the form for creating a new task.
 
@@ -584,7 +626,7 @@ class WebApp:
             Returns:
                 HTMLResponse: Rendered task creation form.
             """
-            task_list = await self._manager.list_avail_tasks()
+            task_list = await self._manager.list_task_configs()
             fields = {
                 "task_name": {
                     "label": "Task Name",
@@ -598,7 +640,7 @@ class WebApp:
                 {
                     "request": request,
                     "title": "Create Task",
-                    "action_url": "/create-task",
+                    "action_url": "/create-task-config",
                     "fields": fields,
                     "submit_label": "Submit",
                     "params_schema_url": "/task_schema",

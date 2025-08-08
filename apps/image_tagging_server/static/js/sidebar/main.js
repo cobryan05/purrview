@@ -2,7 +2,7 @@
 
 import { addRecognizedBoxes, loadImageAndMetadata } from '/app-static/js/canvas/io.js';
 import { getLayer, } from '/app-static/js/canvas/state.js';
-import { renderLabelList, renderModelLabelAssignments, renderSourceManager } from '/app-static/js/ui/renderers.js';
+import { renderLabelList, renderModelLabelAssignments, renderSourceManager, renderTaskManager } from '/app-static/js/ui/renderers.js';
 import { setTool } from '/app-static/js/canvas/tools.js';
 
 // --- Model list UI ---
@@ -343,6 +343,8 @@ document.addEventListener('DOMContentLoaded', () => {
         } else if (tabName === 'tab-files' && !fileBrowserInitialized) {
           loadFileBrowser(currentFileBrowserPath);
           fileBrowserInitialized = true;
+        } else if ( tabName === 'tab-task-management') {
+          renderTaskManager({ target: 'task-management-box' });
         }
       });
     });

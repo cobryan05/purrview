@@ -14,6 +14,7 @@ class PreviewSourceTask(Task):
         self._status_msg: str = "Creating Task"
         self._provider: str = params.get("provider", "")
         self._provider_params: dict[str, Any] = params.get("provider_params", {})
+        self._params[Task.InternalKeys.ONESHOT_RESULT] = True
 
     async def _run(self) -> dict[str, Any]:
         """Run the main logic of the task."""

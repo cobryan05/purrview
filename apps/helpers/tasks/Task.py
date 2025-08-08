@@ -12,14 +12,20 @@ logger.setLevel(logging.DEBUG)
 
 class Task(ABC):
     class Status(str, Enum):
+        NEW = "new"
         PENDING = "pending"
         RUNNING = "running"
         PAUSED = "paused"
         COMPLETED = "completed"
         ERROR = "error"
 
-    def __init__(self, task_id: int, params: dict[str, Any]):
-        self._task_id = task_id
+    class InternalKeys(str, Enum):
+        PERSISTENT = "_persistent"
+        ONESHOT_RESULT = "_oneshot_result" # delete the task when the result is fetched
+        # TODO: Task *configs* need a way to delete or else Preview tasks can build up
+
+    def __init__(self, task_config_uuid: str, params: dict[str, Any]):
+        self._config_uuid: str = task_config_uuid
         self._status: Task.Status = Task.Status.PENDING
         self._params: dict[str, Any] = params
         self._task: asyncio.Task | None = None

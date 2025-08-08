@@ -1,0 +1,22 @@
+from dataclasses import dataclass
+from pathlib import Path
+import os
+
+
+@dataclass
+class AppConfig:
+    name: str
+    host: str
+    port: int
+
+
+APPS_CONFIG = {
+    "relay_buffer_server": AppConfig("RTSP/Relay Buffer Server", "localhost", 8000),
+    "inference_server": AppConfig("Inference Server", "localhost", 8001),
+    "image_tagging_server": AppConfig("Image Tagging Server", "localhost", 8002),
+    "tasks_server": AppConfig("Tasks Server", "localhost", 8003),
+    "media_mtx_api": AppConfig("MediaMTXApi", "localhost", 9997),
+    "media_mtx_rtsp": AppConfig("MediaMTXRtsp", "localhost", 8554),
+}
+
+DB_PATH = Path(os.environ.get("DB_PATH", "/data/db/db.sqlite"))

@@ -27,20 +27,23 @@ from inference_client.models.body_pin_model_api import (
 from inference_client.models.get_model_labels_request import GetModelLabelsRequest
 from inference_client.models.recognize_request import RecognizeRequest
 from tasks_client.api.tasks_api import TasksApi
-from tasks_client.models.create_task_request import CreateTaskRequest
-from tasks_client.models.task_status_request import TaskStatusRequest
+from tasks_client.models.create_task_config_request import CreateTaskConfigRequest
+from tasks_client.models.start_task_request import StartTaskRequest
 from tasks_client.models.task_result_request import TaskResultRequest
+from tasks_client.models.task_status_request import TaskStatusRequest
 
 from apps.helpers.db.db_client import (
     BoundingBoxMetadata,
     DbClient,
     ImageMetadata,
-    LabelMetaData,
-    SourceMetaData,
+    LabelMetadata,
+    SourceMetadata,
+    TaskConfigMetadata,
 )
 from apps.helpers.fileUtils import get_safe_path
 from apps.helpers.imageProviders.Registry import image_provider_registry
 from apps.helpers.imageUtils import base64_encode_png
+
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger(__file__)
 logger.setLevel(logging.DEBUG)
@@ -223,7 +226,7 @@ class Manager:
         response: Dict[str, Any] = await asyncio.to_thread(api.associate_label_with_model_class, request)
         return response.get("label_set", False)
 
-    async def create_new_label(self, name: str, color: str, parent_uuid: Optional[str] = None) -> LabelMetaData:
+    async def create_new_label(self, name: str, color: str, parent_uuid: Optional[str] = None) -> LabelMetadata:
         """
         Adds a new label to the database
 
@@ -246,11 +249,11 @@ class Manager:
 
     @dataclass
     class LabelData:
-        metadata: LabelMetaData
+        metadata: LabelMetadata
         children: List["LabelData"] = field(default_factory=list)
 
     async def get_label_uuid_map(self) -> Dict[str, LabelData]:
-        flat_list: List[LabelMetaData] = await self._db_client.list_labels()
+        flat_list: List[LabelMetadata] = await self._db_client.list_labels()
         uuid_to_node: Dict[str, Manager.LabelData] = {
             label.uuid: Manager.LabelData(metadata=label) for label in flat_list
         }
@@ -318,16 +321,32 @@ class Manager:
         await self._db_client.write_image_metadata_to_db(image_id, metadata)
         await self._db_client.save_image_metadata_db_to_json(img_path)
 
-    async def create_new_task(self, typename: str, params: Dict[str, Any]) -> int:
+    async def start_new_task(self, task_config_uuid: str) -> int:
+        """
+        Start a configured task by its uuid
+
+        Args:
+            task_config_uuid (str): The UUID of the task configuration to start.
+
+        Returns:
+            int: The ID of the started task.
+        """
+        api = TasksApi(self._tasks_api_client)
+        request = StartTaskRequest(config_uuid=task_config_uuid)
+        response: Dict[str, Any] = await asyncio.to_thread(api.start_task, request)
+        return response.get("task_id")
+
+
+    async def create_new_task_config(self, typename: str, params: Dict[str, Any], persistent: bool = True) -> str:
         """
         Start a new task.
 
         Returns new task id
         """
         api = TasksApi(self._tasks_api_client)
-        request = CreateTaskRequest(typename=typename, params=params)
-        response: Dict[str, Any] = await asyncio.to_thread(api.create_task, request)
-        return response.get("task_id")
+        request = CreateTaskConfigRequest(typename=typename, params=params, persistent=persistent)
+        response: Dict[str, Any] = await asyncio.to_thread(api.create_task_config, request)
+        return response.get("config_uuid")
 
     async def get_task_result(self, task_id: int) ->  Optional[dict[str, Any]]:
         """
@@ -348,6 +367,16 @@ class Manager:
         response: Dict[str, Any] = await asyncio.to_thread(api.get_task_status, request)
         return response.get("tasks")
 
+    async def list_task_configs(self) -> List[TaskConfigMetadata]:
+        """
+        List all configured tasks
+        """
+        task_configs = await self._db_client.get_task_configs()
+        return task_configs
+
+
+    #TODO: Get active tasks
+
     async def create_box(
         self,
         image_rel_path: str,
@@ -355,7 +384,7 @@ class Manager:
         y: float,
         width: float,
         height: float,
-        labels: List[LabelMetaData] = None,
+        labels: List[LabelMetadata] = None,
         extra: dict = None,
     ) -> None:
         """
@@ -397,7 +426,7 @@ class Manager:
         y: float,
         width: float,
         height: float,
-        labels: List[LabelMetaData] = None,
+        labels: List[LabelMetadata] = None,
         extra: dict = None,
     ) -> None:
         """
@@ -453,7 +482,7 @@ class Manager:
         self,
         image_rel_path: str,
         box_id: int,
-        label: LabelMetaData,
+        label: LabelMetadata,
     ) -> None:
         """
         Add a label to a bounding box in the image metadata.
@@ -525,14 +554,14 @@ class Manager:
 
         return image_provider_registry[image_provider].params_schema()
 
-    async def get_avail_sources(self) -> List[SourceMetaData]:
+    async def get_avail_sources(self) -> List[SourceMetadata]:
         """
         List all sources managed by the Manager.
         """
         sources = await self._db_client.get_sources()
         return sources
 
-    async def create_new_source(self, image_provider: str, params: Dict[str, Any], source_name: str) -> SourceMetaData:
+    async def create_new_source(self, image_provider: str, params: Dict[str, Any], source_name: str) -> SourceMetadata:
         """
         Create a new source from an image source as a preset image_provider/params
 
@@ -544,7 +573,7 @@ class Manager:
         if image_provider not in image_provider_registry:
             raise ValueError(f"Unknown image provider: {image_provider}")
 
-        ret: SourceMetaData = await self._db_client.add_source(name=source_name, typename=image_provider, params=params)
+        ret: SourceMetadata = await self._db_client.add_source(name=source_name, typename=image_provider, params=params)
         return ret
 
     async def delete_sources(self, uuid_list: list[str]) -> None:
@@ -644,11 +673,7 @@ class Manager:
     async def _init(self):
         """Initialization that should run on event loop"""
         try:
-            db_existed: bool = self._db_client.db_exists()
             await self._db_client.init_db()
-            if not db_existed:
-                await self._db_client.import_labels_from_json_to_db(str(self._labels_json))
-                # TODO: Sync Sources between JSON
         except Exception as e:
             logger.exception(e)
             raise

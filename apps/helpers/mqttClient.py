@@ -8,7 +8,7 @@ from dataclasses import dataclass
 
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger("MqttClient")
-
+logger.setLevel(logging.DEBUG)
 
 class MqttClient:
     @dataclass
@@ -81,7 +81,7 @@ class MqttClient:
         self._mqtt.subscribe(subscribe_topic)
 
     def unsubscribe(self, topic: str):
-        unsubscribe_topic = "{}/{}}".format(self._prefix, topic)
+        unsubscribe_topic = "{}/{}".format(self._prefix, topic)
         self._mqtt.unsubscribe(unsubscribe_topic)
         self._subMap.pop(topic)
 
@@ -118,7 +118,7 @@ class MqttClient:
         self, client: mqtt.Client, userdata, msg: mqtt.MQTTMessage
     ):
         # print(f"Received topic|message: {msg.topic}|{msg.payload.decode()}")
-        for topic, data in self._subMap.items():
+        for topic, data in self._subMap.copy().items():
             prefixedTopic = f"{self._prefix}/{topic.rstrip('#')}"
             if msg.topic.startswith(prefixedTopic) and callable(data.callback):
                 data.callback(msg)

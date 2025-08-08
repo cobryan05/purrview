@@ -279,7 +279,7 @@ export async function renderSourceList({ parent, editable = false, onEdit = () =
     actions.style.display = 'flex';
     actions.style.gap = '0.5em';
 
-    if( editable ) {
+    if (editable) {
       const editBtn = createButton('emoji-button', 'Edit', '🖉');
       editBtn.onclick = async () => {
         // Re-render the entire list first
@@ -462,19 +462,22 @@ export async function renderSourceForm({ parent, onCreate, existingSource = null
   testBtn.onclick = async () => {
     try {
       const provider = providerSelect.value;
-      const name = nameInput.value;
-      const params = getParamsFromForm(paramsContainer);
-
       if (!provider) {
         toast("Please fill in provider before testing", 3000, "warning");
         return;
       }
 
+      const name = nameInput.value;
+      const providerParams = getParamsFromForm(paramsContainer);
+      const params = {
+        provider: provider,
+        provider_params: providerParams,
+      };
+
       testBtn.disabled = true;
       testResultBox.hidden = false;
       testResultBox.textContent = 'Starting test task...';
-      const taskUuid = await startSourceTestTask({
-        image_provider: provider,
+      const taskUuid = await startPreviewSourceTest({
         params
       });
 
@@ -867,16 +870,26 @@ export async function renderModelLabelAssignments({ target = "model-labels-box",
 }
 
 
-async function startSourceTestTask({ image_provider, params = {} }) {
-  const res = await fetch(`/api/tasks/create`, {
+async function startPreviewSourceTest({ params = {} }) {
+  const configRes = await fetch('/api/tasks/configs/create', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       typename: 'PreviewSourceTask',
-      params: {
-        provider: image_provider,
-        provider_params: params
-      }
+      params: params,
+      persistent: false
+    }),
+  });
+  const configResult = await configRes.json();
+  if (configResult.status !== 'success') throw new Error(configResult.message);
+
+  const taskConfigUuid = configResult.config_uuid;
+
+  const res = await fetch(`/api/tasks/start`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      config_uuid: taskConfigUuid
     }),
   });
   const result = await res.json();
@@ -934,4 +947,204 @@ function renderTestResultsBox(parent) {
   box.textContent = 'No test started.';
   parent.appendChild(box);
   return box;
+}
+
+
+export async function renderTaskList({ parent, editable = false, onEdit = () => {}, onDelete = () => {} }) {
+  parent.innerHTML = '';
+
+  const res = await fetch('/api/tasks/list-avail');
+  const data = await res.json();
+
+  if (data.status !== 'success') {
+    parent.textContent = `Error loading tasks: ${data.message || 'Unknown error'}`;
+    return;
+  }
+
+  data.tasks.forEach(task => {
+    const row = document.createElement('div');
+    row.style.display = 'flex';
+    row.style.justifyContent = 'space-between';
+    row.style.alignItems = 'center';
+    row.style.marginBottom = '0.5em';
+
+    const label = document.createElement('span');
+    label.textContent = `${task.typename}: ${task.name || '(no name)'}`;
+    row.appendChild(label);
+
+    if (editable) {
+      const actions = document.createElement('div');
+      actions.style.display = 'flex';
+      actions.style.gap = '0.5em';
+
+      const editBtn = document.createElement('button');
+      editBtn.textContent = 'Edit';
+      editBtn.onclick = () => onEdit(task);
+      actions.appendChild(editBtn);
+
+      const deleteBtn = document.createElement('button');
+      deleteBtn.textContent = 'Delete';
+      deleteBtn.onclick = async () => {
+        if (!confirm(`Are you sure you want to delete "${task.name}"?`)) return;
+        await fetch('/api/tasks/delete', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ task_ids: [task.id || task.uuid] }),
+        });
+        onDelete();
+      };
+      actions.appendChild(deleteBtn);
+
+      row.appendChild(actions);
+    }
+
+    parent.appendChild(row);
+  });
+}
+
+
+export async function renderTaskForm({ parent, onCreate, existingTask = null, onCancel = null }) {
+  const formTitle = document.createElement('h4');
+  formTitle.textContent = existingTask ? 'Edit Task' : 'Create New Task';
+  parent.appendChild(formTitle);
+
+  const form = document.createElement('form');
+  form.style.display = 'flex';
+  form.style.flexDirection = 'column';
+  form.style.gap = '0.5em';
+
+  const row = document.createElement('div');
+  row.style.display = 'grid';
+  row.style.gridTemplateColumns = '1fr 1fr auto';
+  row.style.gap = '0.5em';
+
+  const typeSelect = document.createElement('select');
+  typeSelect.required = true;
+  row.appendChild(typeSelect);
+
+  const nameInput = document.createElement('input');
+  nameInput.type = 'text';
+  nameInput.placeholder = 'Task name';
+  nameInput.required = true;
+  row.appendChild(nameInput);
+
+  const btnWrapper = document.createElement('div');
+  btnWrapper.style.display = 'flex';
+  btnWrapper.style.flexDirection = 'column';
+
+  const saveBtn = createButton('emoji-button', 'Save', existingTask ? '✅' : '➕');
+  saveBtn.type = 'submit';
+  btnWrapper.appendChild(saveBtn);
+
+  if (existingTask && onCancel) {
+    const cancelBtn = createButton('emoji-button', 'Cancel', '❌');
+    cancelBtn.onclick = () => onCancel();
+    btnWrapper.appendChild(cancelBtn);
+  }
+
+  row.appendChild(btnWrapper);
+  form.appendChild(row);
+
+  const paramContainer = document.createElement('div');
+  paramContainer.style.marginTop = '1em';
+  form.appendChild(paramContainer);
+
+  parent.appendChild(form);
+
+  // Load available task types
+  const res = await fetch('/api/tasks/list-avail');
+  const { types } = await res.json();
+
+  types.forEach(type => {
+    const opt = document.createElement('option');
+    opt.value = type;
+    opt.textContent = type;
+    typeSelect.appendChild(opt);
+  });
+
+  typeSelect.onchange = async () => {
+    const selectedType = typeSelect.value;
+    const schemaRes = await fetch('/api/tasks/schema', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ typename: selectedType }),
+    });
+    const { schema } = await schemaRes.json();
+    renderSchemaForm(schema, paramContainer);
+  };
+
+  // Pre-fill values if editing
+  if (existingTask) {
+    nameInput.value = existingTask.name;
+    typeSelect.value = existingTask.typename;
+    typeSelect.dispatchEvent(new Event('change'));
+
+    setTimeout(() => {
+      Object.entries(existingTask.params || {}).forEach(([key, value]) => {
+        const el = paramContainer.querySelector(`[name="${key}"]`);
+        if (!el) return;
+        if (el.type === 'checkbox') el.checked = !!value;
+        else el.value = value;
+      });
+    }, 100);
+  }
+
+  form.onsubmit = async e => {
+    e.preventDefault();
+
+    const name = nameInput.value;
+    const typename = typeSelect.value;
+    const params = getParamsFromForm(paramContainer);
+
+    const payload = {
+      name,
+      typename,
+      params,
+    };
+
+    if (existingTask?.uuid) {
+      payload.task_uuid = existingTask.uuid;
+    }
+
+    const url = existingTask ? '/api/tasks/configured/update' : '/api/tasks/configured/create';
+
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+
+    const result = await res.json();
+
+    if (result.status === 'success') {
+      if (onCreate) onCreate();
+      parent.innerHTML = '';
+      await renderTaskForm({ parent, onCreate });
+    } else {
+      toast(result.message || 'Unknown error', 5000, 'error');
+    }
+  };
+}
+
+
+export async function renderTaskManager({ target = 'task-management-box' }) {
+  const container = document.getElementById(target);
+  container.innerHTML = '';
+
+  const header = document.createElement('h3');
+  header.textContent = 'Tasks';
+  container.appendChild(header);
+
+  const list = document.createElement('div');
+  container.appendChild(list);
+
+  const refresh = () => renderTaskList({ parent: list, editable: true, onDelete: refresh });
+
+  await refresh();
+
+  container.appendChild(document.createElement('hr'));
+
+  const formContainer = document.createElement('div');
+  await renderTaskForm({ parent: formContainer, onCreate: refresh });
+  container.appendChild(formContainer);
 }

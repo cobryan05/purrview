@@ -30,10 +30,6 @@ class MqttImageProvider(ImageProvider):
         self._loop: asyncio.AbstractEventLoop = asyncio.get_running_loop()
         self._mqtt_client.subscribe(self._topic, self._pushFrame, absoluteTopic=True)
 
-    def __del__(self):
-        """Unsubscribe from the MQTT topic when deleted."""
-        self._mqtt_client.unsubscribe(self._topic)
-
     def __repr__(self):
         return f"MqttImageProvider [{self._topic}]"
 
@@ -51,9 +47,18 @@ class MqttImageProvider(ImageProvider):
         """Asynchronously retrieves the next image from the queue."""
         try:
             frame: np.ndarray = await asyncio.wait_for(self._frameQueue.get(), timeout=MqttImageProvider.TIMEOUT)
-            return ImageWithMetadata(frame)
+            # Swap channel ordering
+            frame_rgb = frame[..., ::-1]
+            return ImageWithMetadata(frame_rgb)
         except asyncio.TimeoutError:
             raise TimeoutError("No image received within the timeout period.")
+
+    async def stop(self) -> None:
+        """Stops the image provider and releases any resources"""
+        if self._mqtt_client:
+            self._mqtt_client.unsubscribe(self._topic)
+            self._mqtt_client.disconnect()
+            self._mqtt_client = None
 
     @classmethod
     def params_schema(cls) -> dict[str, dict[str, Any]]:
