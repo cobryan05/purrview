@@ -258,7 +258,7 @@ export async function renderLabelList({ target = "labels-list", editable = true,
 
 // ================= Source Manager =================
 
-export async function renderSourceList({ parent, onEdit = () => { }, onDelete = () => { } }) {
+export async function renderSourceList({ parent, editable = false, onEdit = () => { }, onDelete = () => { } }) {
   parent.innerHTML = '';
   const res = await fetch('/api/sources/get');
   const data = await res.json();
@@ -279,56 +279,59 @@ export async function renderSourceList({ parent, onEdit = () => { }, onDelete = 
     actions.style.display = 'flex';
     actions.style.gap = '0.5em';
 
-    const editBtn = createButton('emoji-button', 'Edit', '🖉');
-    editBtn.onclick = async () => {
-      // Re-render the entire list first
-      await renderSourceList({
-        parent,
-        onEdit,
-        onDelete
-      });
+    if( editable ) {
+      const editBtn = createButton('emoji-button', 'Edit', '🖉');
+      editBtn.onclick = async () => {
+        // Re-render the entire list first
+        await renderSourceList({
+          parent,
+          editable,
+          onEdit,
+          onDelete
+        });
 
-      // Then find the correct row again (since DOM has changed)
-      const row = [...parent.children].find(child =>
-        child.textContent?.includes(`${src.typename}: ${src.name}`)
-      );
+        // Then find the correct row again (since DOM has changed)
+        const row = [...parent.children].find(child =>
+          child.textContent?.includes(`${src.typename}: ${src.name}`)
+        );
 
-      if (!row) return;
+        if (!row) return;
 
-      // Now inject the inline edit form
-      const editContainer = document.createElement('div');
-      editContainer.className = 'inline-edit-form';
-      editContainer.style.margin = '1em 0';
-      editContainer.style.padding = '0.5em';
-      editContainer.style.border = '1px solid #ccc';
-      editContainer.style.borderRadius = '0.5em';
+        // Now inject the inline edit form
+        const editContainer = document.createElement('div');
+        editContainer.className = 'inline-edit-form';
+        editContainer.style.margin = '1em 0';
+        editContainer.style.padding = '0.5em';
+        editContainer.style.border = '1px solid #ccc';
+        editContainer.style.borderRadius = '0.5em';
 
-      row.innerHTML = '';
-      row.appendChild(editContainer);
+        row.innerHTML = '';
+        row.appendChild(editContainer);
 
-      await renderSourceForm({
-        parent: editContainer,
-        existingSource: src,
-        onCreate: () => renderSourceList({ parent, onEdit, onDelete }),
-        onCancel: () => renderSourceList({ parent, onEdit, onDelete }),
-      });
-    };
-    actions.appendChild(editBtn);
+        await renderSourceForm({
+          parent: editContainer,
+          existingSource: src,
+          onCreate: () => renderSourceList({ parent, editable, onEdit, onDelete }),
+          onCancel: () => renderSourceList({ parent, editable, onEdit, onDelete }),
+        });
+      };
+      actions.appendChild(editBtn);
 
-    const deleteBtn = createButton('emoji-button', 'Delete', '🗑️');
-    deleteBtn.onclick = async () => {
-      const confirmed = confirm(`Are you sure you want to delete "${src.name}"?`);
-      if (!confirmed) return;
+      const deleteBtn = createButton('emoji-button', 'Delete', '🗑️');
+      deleteBtn.onclick = async () => {
+        const confirmed = confirm(`Are you sure you want to delete "${src.name}"?`);
+        if (!confirmed) return;
 
-      await fetch('/api/sources/delete', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ source_uuids: [src.uuid] })
-      });
+        await fetch('/api/sources/delete', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ source_uuids: [src.uuid] })
+        });
 
-      onDelete();
-    };
-    actions.appendChild(deleteBtn);
+        onDelete();
+      };
+      actions.appendChild(deleteBtn);
+    }
 
     row.appendChild(actions);
     parent.appendChild(row);
@@ -462,8 +465,8 @@ export async function renderSourceForm({ parent, onCreate, existingSource = null
       const name = nameInput.value;
       const params = getParamsFromForm(paramsContainer);
 
-      if (!provider || !name) {
-        toast("Please fill in provider and name before testing", 3000, "warning");
+      if (!provider) {
+        toast("Please fill in provider before testing", 3000, "warning");
         return;
       }
 
@@ -578,7 +581,7 @@ export async function renderSourceManager({ target = 'sources-box' }) {
   const list = document.createElement('div');
   container.appendChild(list);
 
-  const refresh = () => renderSourceList({ parent: list, onDelete: refresh });
+  const refresh = () => renderSourceList({ parent: list, editable: true, onDelete: refresh });
 
   await refresh();
 
