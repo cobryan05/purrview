@@ -13,6 +13,7 @@ function createInputRow({
 } = {}) {
   return createGenericRow({
     labelText: defaultName,
+    labelPlaceholder: 'New Label Name',
     colorSwatchColor,
     indentLevel,
     editable: editable,
@@ -193,6 +194,8 @@ export async function renderLabelList({ target = 'labels-list', editable = true,
     if (editable) {
       const newRootRow = createGenericRow({
         labelText: '', // No text for this "add" row
+        labelPlaceholder: 'New Root Label Name',
+        colorSwatchColor: '#cccccc',
         indentLevel: 0,
         editable: true,
         leftButtons: [
@@ -204,10 +207,11 @@ export async function renderLabelList({ target = 'labels-list', editable = true,
           {
             text: 'Add label',
             emoji: '➕',
-            onClick: async ({ row }) => {
+            onClick: async ({ row, colorInput }) => {
               // Try to find an input field in the row
               const input = row.querySelector('input[type="text"]');
               const name = input?.value.trim();
+              const color = colorInput?.value || colorSwatchColor;
 
               if (!name) {
                 toast('Error: Name required', 5000, "error");
@@ -217,7 +221,7 @@ export async function renderLabelList({ target = 'labels-list', editable = true,
               const response = await fetch('/api/labels/add', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ name, color: '#cccccc', parent_uuid: null }),
+                body: JSON.stringify({ name, color, parent_uuid: null }),
               });
 
               response.ok ? renderList() : toast('Failed to create label');
