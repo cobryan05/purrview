@@ -244,6 +244,11 @@ class Manager:
         Returns:
             LabelMetaData: Label metadata added to database
         """
+        # Check if the label has a parent
+        child_uuids = await self._db_client.get_label_children(label_uuid)
+        if child_uuids:
+            raise ValueError(f"Cannot delete label '{label_uuid}' because it has child labels.")
+
         await self._db_client.delete_label(label_uuid)
         await self._db_client.export_labels_from_db_to_json(str(self._labels_json))
 

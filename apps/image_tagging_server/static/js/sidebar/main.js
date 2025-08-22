@@ -3,7 +3,8 @@
 import { addRecognizedBoxes, loadImageAndMetadata } from '/app-static/js/canvas/io.js';
 import { getLayer, } from '/app-static/js/canvas/state.js';
 import { setTool } from '/app-static/js/canvas/tools.js';
-import { renderActiveTasks, renderLabelList, renderModelLabelAssignments, renderSourceManager, renderTaskConfigs } from '/app-static/js/ui/renderers.js';
+import { renderActiveTasks, renderModelLabelAssignments, renderSourceManager, renderTaskConfigs } from '/app-static/js/ui/renderers.js';
+import { renderLabelList } from '/app-static/js/ui/labels.js';
 
 // --- Model list UI ---
 

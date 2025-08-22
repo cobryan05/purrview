@@ -1,260 +1,8 @@
+import { createButton, createGenericRow } from './utils.js'
 import { getCurrentLabelUuid, refreshLabelList, getLabelList } from '/app-static/js/canvas/state.js';
 import { getTool } from '/app-static/js/canvas/tools.js';
 import { toast } from '/app-static/js/canvas/utils.js';
 
-// ================= Utility Functions =================
-
-/**
- * Creates a button DOM element with specified class, title, and text content.
- * @param {string} className - The CSS class to apply.
- * @param {string} title - Tooltip/title text.
- * @param {string} text - Visible button label.
- * @returns {HTMLButtonElement} The created button element.
- */
-function createButton(className, title, text) {
-  const btn = document.createElement('button');
-  btn.className = className;
-  btn.title = title;
-  btn.textContent = text;
-  return btn;
-}
-
-/**
- * Creates a row with editable inputs for a label (name and color),
- * plus Save/Cancel buttons. Used for both editing and adding labels.
- * @param {Object} options
- * @param {string} options.defaultName - Pre-filled name (for edits).
- * @param {string} options.defaultColor - Pre-filled color (for edits).
- * @param {Function} options.onSave - Callback for saving input.
- * @param {Function} options.onCancel - Callback for canceling edit.
- * @param {number} options.indentLevel - Indentation level (nested labels).
- * @returns {HTMLDivElement} The constructed row element.
- */
-function createInputRow({ defaultName = '', defaultColor = '#cccccc', onSave, onCancel, indentLevel = 0 } = {}) {
-  const row = document.createElement('div');
-  row.className = 'label-row';
-  if (indentLevel > 0) row.style.paddingLeft = `${indentLevel * 1.5}em`;
-
-  const saveBtn = createButton('emoji-button', 'Save', '✅');
-  const cancelBtn = createButton('emoji-button', 'Cancel', '❌');
-
-  // Color input (invisible input inside visible swatch)
-  const colorWrapper = document.createElement('span');
-  colorWrapper.className = 'label-color';
-  colorWrapper.style = `position: relative; display: inline-block; cursor: pointer; background-color: ${defaultColor}`;
-
-  const colorInput = document.createElement('input');
-  colorInput.type = 'color';
-  colorInput.value = defaultColor;
-  Object.assign(colorInput.style, {
-    opacity: '0',
-    position: 'absolute',
-    left: '0',
-    top: '0',
-    width: '100%',
-    height: '100%',
-    cursor: 'pointer',
-  });
-  colorInput.addEventListener('input', () => {
-    colorWrapper.style.backgroundColor = colorInput.value;
-  });
-  colorWrapper.appendChild(colorInput);
-
-  // Name text input
-  const nameInput = document.createElement('input');
-  nameInput.type = 'text';
-  nameInput.value = defaultName;
-  nameInput.placeholder = 'New label name';
-  Object.assign(nameInput.style, {
-    minWidth: '5em',
-    height: '2em',
-    marginRight: '0.5em',
-  });
-
-  row.append(saveBtn, cancelBtn, colorWrapper, nameInput);
-
-  saveBtn.onclick = () => {
-    const newName = nameInput.value.trim();
-    if (!newName) {
-      alert('Name required');
-      return;
-    }
-    onSave?.(newName, colorInput.value);
-  };
-
-  cancelBtn.onclick = () => onCancel?.();
-
-  return row;
-}
-
-// ================= Label Rendering =================
-
-/**
- * Renders the full list of labels from the API into a given DOM container.
- * Allows nested labels and edit/delete/add operations if editable=true.
- * @param {Object} options
- * @param {string} options.target - ID of the container to render into.
- * @param {boolean} options.editable - Whether editing tools are shown.
- * @param {Function} [options.onSelectCallback] - callback when a label is clicked (uuid passed).
- */
-export async function renderLabelList({ target = "labels-list", editable = true, onSelectCallback = null } = {}) {
-  try {
-    await refreshLabelList();
-    const labelListContainer = document.getElementById(target);
-    if (!labelListContainer) {
-      console.error("labelListContainer is null");
-      return;
-    }
-    labelListContainer.innerHTML = '';
-
-    /**
-     * Recursively renders a single label and its children.
-     * Adds indentation for nested labels.
-     */
-    function renderLabel(label, indentLevel = 0) {
-      const { name, color, uuid } = label.metadata;
-
-      const labelRow = document.createElement('div');
-      labelRow.className = 'label-row';
-      labelRow.dataset.uuid = uuid;
-      labelRow.style.paddingLeft = `${indentLevel * 1.5}em`;
-
-      if (onSelectCallback) {
-        labelRow.style.cursor = 'pointer';
-        labelRow.onclick = () => {
-          onSelectCallback(uuid)
-          highlightSelectedLabel(uuid);
-        };
-      }
-
-      if (editable) {
-        const editBtn = createButton('label-edit-btn emoji-button', 'Edit label', '✏️');
-        editBtn.onclick = () => {
-          const inputRow = createInputRow({
-            defaultName: name,
-            defaultColor: color,
-            indentLevel,
-            onSave: async (newName, newColor) => {
-              const updatedLabel = { label_uuid: uuid, name: newName, color: newColor };
-              const response = await fetch('/api/labels/update', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(updatedLabel),
-              });
-              if (response.ok) renderLabelList({ target, editable });
-              else alert('Failed to update label');
-            },
-            onCancel: () => renderLabelList({ target, editable }),
-          });
-          labelRow.replaceWith(inputRow);
-        };
-
-        const deleteBtn = createButton('label-remove-btn emoji-button', 'Delete label', '🗑️');
-        deleteBtn.onclick = async () => {
-          if (!window.confirm(`Delete label "${name}"?`)) return;
-          const response = await fetch('/api/labels/delete', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ label_uuid: uuid }),
-          });
-          if (response.ok) renderLabelList({ target, editable });
-          else alert('Failed to delete label');
-        };
-
-        const addChildBtn = createButton('label-add-child emoji-button', 'Add sublabel', '➕');
-        addChildBtn.onclick = () => {
-          const childRow = createInputRow({
-            indentLevel: indentLevel + 1,
-            onSave: async (newName, newColor) => {
-              const newLabel = { name: newName, color: newColor, parent_uuid: uuid };
-              const response = await fetch('/api/labels/add', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(newLabel),
-              });
-              if (response.ok) renderLabelList({ target, editable });
-              else alert('Failed to create label');
-            },
-            onCancel: () => childRow.remove(),
-          });
-          labelRow.after(childRow);
-        };
-
-        labelRow.append(editBtn, deleteBtn, addChildBtn);
-      }
-
-      const colorSwatch = document.createElement('span');
-      colorSwatch.className = 'label-color';
-      colorSwatch.style.background = color;
-
-      const nameSpan = document.createElement('span');
-      nameSpan.className = 'label-name';
-      nameSpan.textContent = name;
-
-      labelRow.append(colorSwatch, nameSpan);
-      labelListContainer.appendChild(labelRow);
-
-      label.children.forEach(child => renderLabel(child, indentLevel + 1));
-
-      return labelRow;
-    }
-
-    /**
-     * Highlights a label in the list visually (used for bbox tool).
-     * @param {string|null} selectedUuid
-     */
-    function highlightSelectedLabel(selectedUuid = null) {
-      const currentTool = getTool();
-      const selectedLabelUuid = selectedUuid ?? (currentTool.startsWith('bbox:') ? currentTool.split(':')[1] : null);
-
-      document.querySelectorAll('#labels-tool-list .label-row').forEach(row => {
-        row.style.outline = row.dataset.uuid == selectedLabelUuid ? '2px solid #ff0033' : '';
-      });
-    }
-
-    const labels = getLabelList();
-    labels
-      .filter(label => !label.metadata.parent_uuid)
-      .forEach(label => renderLabel(label, 0));
-
-    // Add row for creating new root label
-    const newLabelRow = document.createElement('div');
-    newLabelRow.className = 'label-row';
-    if (editable) {
-      const newLabelBtn = createButton('label-add-child emoji-button', 'Add label', '➕');
-      newLabelBtn.onclick = () => {
-        const childRow = createInputRow({
-          onSave: async (newName, newColor) => {
-            const newLabel = { name: newName, color: newColor, parent_id: null };
-            const response = await fetch('/api/labels/add', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify(newLabel),
-            });
-            if (response.ok) renderLabelList({ target, editable });
-            else alert('Failed to create label');
-          },
-          onCancel: () => renderLabelList({ target, editable }),
-        });
-        newLabelRow.before(childRow);
-      };
-      newLabelRow.appendChild(newLabelBtn);
-    }
-
-    const refreshBtn = createButton("emoji-button", "Refresh", "🔄");
-    refreshBtn.onclick = () => renderLabelList({ target, editable });
-    newLabelRow.appendChild(refreshBtn);
-    labelListContainer.appendChild(newLabelRow);
-
-    const selectedLabelUuid = getCurrentLabelUuid();
-    if (selectedLabelUuid) {
-      highlightSelectedLabel(selectedLabelUuid);
-    }
-
-  } catch (err) {
-    console.error('Failed to fetch labels:', err);
-  }
-}
 
 // ================= Source Manager =================
 
@@ -1147,29 +895,6 @@ export async function renderTaskForm({ parent, onCreate, existingTask = null, on
 }
 
 
-export async function renderTaskManager({ target = 'task-management-box' }) {
-  const container = document.getElementById(target);
-  container.innerHTML = '';
-
-  const header = document.createElement('h3');
-  header.textContent = 'Tasks';
-  container.appendChild(header);
-
-  const list = document.createElement('div');
-  container.appendChild(list);
-
-  const refresh = () => renderTaskList({ parent: list, editable: true, onDelete: refresh });
-
-  await refresh();
-
-  container.appendChild(document.createElement('hr'));
-
-  const formContainer = document.createElement('div');
-  await renderTaskForm({ parent: formContainer, onCreate: refresh });
-  container.appendChild(formContainer);
-}
-
-
 // ================= Task Management Tab =================
 
 /**
@@ -1198,7 +923,7 @@ export async function renderTaskConfigs({ target = 'task-config-list' }) {
       return;
     }
 
-    Object.values(data.configs).forEach(task => {
+    data.configs.forEach(task => {
       const row = document.createElement('div');
       row.style.display = 'flex';
       row.style.justifyContent = 'space-between';
@@ -1278,7 +1003,7 @@ export async function renderActiveTasks({ target = 'active-tasks-list' }) {
       return;
     }
 
-    Object.values(data.tasks).forEach(task => {
+    data.tasks.forEach(task => {
       const row = document.createElement('div');
       row.style.display = 'flex';
       row.style.justifyContent = 'space-between';

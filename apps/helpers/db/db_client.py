@@ -776,7 +776,7 @@ class DbClient:
         """
         uuid = uuid or str(uuid4())
         async with aiosqlite.connect(self._db_path) as db:
-            cursor = await db.execute("SELECT name, color, uuid, parent_uuid FROM labels WHERE name = ?", (name,))
+            cursor = await db.execute("SELECT name, color, uuid, parent_uuid FROM labels WHERE uuid = ?", (uuid,))
             row = await cursor.fetchone()
             if row:
                 return DbClient.row_to_dataclass(cursor, row, LabelMetadata)
@@ -791,23 +791,42 @@ class DbClient:
                 raise Exception(f"Failed to insert label: {name}")
             return LabelMetadata(name=name, color=color, uuid=uuid, parent_uuid=parent_uuid)
 
-    async def get_label_by_name(self, name: str) -> Optional[LabelMetadata]:
+    async def get_label_by_uuid(self, uuid: str) -> Optional[LabelMetadata]:
         """
-        Retrieve a label by its name.
+        Retrieve a label by its UUID.
 
         Args:
-            name (str): Label name.
+            uuid (str): Label UUID.
 
         Returns:
             Optional[Dict]: Label data or None.
         """
         async with aiosqlite.connect(self._db_path) as db:
-            cursor = await db.execute("SELECT name, color, uuid FROM labels WHERE name = ?", (name,))
+            cursor = await db.execute("SELECT name, color, uuid FROM labels WHERE uuid = ?", (uuid,))
             row = await cursor.fetchone()
             await cursor.close()
             if row:
                 return DbClient.row_to_dataclass(cursor, row, LabelMetadata)
             return None
+
+    async def get_label_children(self, parent_uuid: str) -> List[str]:
+        """
+        Retrieve the UUIDs of labels that have the given UUID as their parent.
+
+        Args:
+            parent_uuid (str): The UUID of the parent label.
+
+        Returns:
+            List[str]: List of child label UUIDs.
+        """
+        async with aiosqlite.connect(self._db_path) as db:
+            cursor = await db.execute(
+                "SELECT uuid FROM labels WHERE parent_uuid = ?", (parent_uuid,)
+            )
+            rows = await cursor.fetchall()
+            await cursor.close()
+
+            return [row[0] for row in rows]
 
     async def update_label(self, label_uuid: str, name: Optional[str] = None, color: Optional[str] = None) -> None:
         """
