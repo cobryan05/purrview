@@ -207,14 +207,14 @@ class Manager:
         response: Dict[str, Any] = await asyncio.to_thread(api.get_model_labels_api, request)
         return response.get("labels", {})
 
-    async def set_model_label_uuid(self, model_name: str, model_class: str, label_uuid: str) -> bool:
+    async def set_model_label_uuid(self, model_name: str, model_class: str, label_uuid: Optional[str]) -> bool:
         """
         Sets the label UUID that a model's class name should link to
 
         Params:
             model_name (str): The name of the model.
             model_class (str): The name of the class label within the model.
-            label_uuid (str): The UUID of the label to associate.
+            label_uuid (str): The UUID of the label to associate, or None to disassociate.
 
         Returns:
             Dict[str, Any] dict of label info

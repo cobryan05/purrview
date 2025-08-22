@@ -237,7 +237,7 @@ class WebApp:
         class AssociateLabelWithModelClassRequest(BaseModel):
             model_name: str
             model_class: str
-            label_uuid: str
+            label_uuid: Optional[str]
 
         @self._app.post(
             "/api/models/labels/associate",

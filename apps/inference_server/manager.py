@@ -118,14 +118,14 @@ class Manager:
 
         return ret
 
-    async def set_model_label_uuid(self, model_name: str, model_class: str, label_uuid: str) -> bool:
+    async def set_model_label_uuid(self, model_name: str, model_class: str, label_uuid: Optional[str]) -> bool:
         """
         Associate a model's class label with a label uuid
 
         Args:
             model_name (str): The name of the model to set the association on
             model_class (str): The class label to associate with the UUID
-            label_uuid (str): The UUID of the label to associate
+            label_uuid (Optional[str]): The UUID of the label to associate, or to clear if None
 
         Returns:
             bool: True if the association was successful, False otherwise.
@@ -142,7 +142,10 @@ class Manager:
         if model_class not in metadata.get("classes", {}):
             raise ValueError(f"Class label '{model_class}' not found in metadata for model '{model_name}'")
         class_map = metadata.get("class_map", {})
-        class_map[model_class] = label_uuid
+        if label_uuid is None and model_class in class_map:
+            del class_map[model_class]
+        else:
+            class_map[model_class] = label_uuid
         metadata["class_map"] = class_map
         save_model_json_metadata(model_path, metadata=metadata)
         return True

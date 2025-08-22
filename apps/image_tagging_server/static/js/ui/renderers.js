@@ -751,7 +751,8 @@ export async function renderModelLabelAssignments({ target = "model-labels-box",
     const labelSpan = document.createElement('span');
     labelSpan.style.marginRight = '0.5em';
 
-    if (uuid && _cachedLabels.has(uuid)) {
+    const labelAssigned = (uuid && _cachedLabels.has(uuid))
+    if (labelAssigned) {
       const labelMeta = _cachedLabels.get(uuid);
       labelSpan.textContent = cls + ' ';
       // Create span for assigned label name with color
@@ -775,6 +776,25 @@ export async function renderModelLabelAssignments({ target = "model-labels-box",
     if (editable) {
       const editBtn = createButton('emoji-button', 'Edit', '✏️');
       labelRow.appendChild(editBtn);
+
+      // --- Add Clear button ---
+      if (labelAssigned) {
+        const clearBtn = createButton('emoji-button', 'Clear', '🗑️');
+        clearBtn.style.marginLeft = '0.3em';
+        clearBtn.onclick = async () => {
+          await fetch('/api/models/labels/associate', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              model_name: preselectedModel,
+              model_class: cls,
+              label_uuid: null
+            }),
+          });
+          renderModelLabelAssignments({ target, editable, preselectedModel });
+        };
+        labelRow.appendChild(clearBtn);
+      }
 
       const labelListContainer = document.createElement('div');
       labelListContainer.style.marginTop = '0.5em';
@@ -950,7 +970,7 @@ function renderTestResultsBox(parent) {
 }
 
 
-export async function renderTaskList({ parent, editable = false, onEdit = () => {}, onDelete = () => {} }) {
+export async function renderTaskList({ parent, editable = false, onEdit = () => { }, onDelete = () => { } }) {
   parent.innerHTML = '';
 
   const res = await fetch('/api/tasks/list-avail');
