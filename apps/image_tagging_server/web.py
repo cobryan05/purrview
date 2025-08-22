@@ -677,7 +677,7 @@ class WebApp:
             tags=[WebApp.TASKS_API_TAG_NAME],
             operation_id="list_task_configs",
         )
-        async def get_tasks_api(request: Request) -> JSONResponse:
+        async def get_task_configs_api(request: Request) -> JSONResponse:
             """
             API endpoint to return a list of configured tasks
             Args:
@@ -687,9 +687,9 @@ class WebApp:
                 JSONResponse: A JSON response containing the list of configured tasks
             """
             try:
-                tasks: List[TaskConfigMetadata] = await self._manager.list_task_configs()
-                tasks_dict = {task.id: asdict(task) for task in tasks}
-                response_data = {"status": "success", "tasks": tasks_dict}
+                configs: List[TaskConfigMetadata] = await self._manager.list_task_configs()
+                configs_dict = {config.uuid: asdict(config) for config in configs}
+                response_data = {"status": "success", "configs": configs_dict}
                 return JSONResponse(content=response_data)
             except Exception as e:
                 logger.exception(e)

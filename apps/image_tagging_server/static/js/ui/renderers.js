@@ -1168,3 +1168,141 @@ export async function renderTaskManager({ target = 'task-management-box' }) {
   await renderTaskForm({ parent: formContainer, onCreate: refresh });
   container.appendChild(formContainer);
 }
+
+
+// ================= Task Management Tab =================
+
+/**
+ * Renders the task configs (left column).
+ * @param {object} params
+ * @param {string} params.target - ID of the container
+ */
+export async function renderTaskConfigs({ target = 'task-config-list' }) {
+  const container = document.getElementById(target);
+  if (!container) return;
+  container.innerHTML = '';
+
+  const header = document.createElement('h3');
+  header.textContent = 'Task Configs';
+  container.appendChild(header);
+
+  const list = document.createElement('div');
+  container.appendChild(list);
+
+  const refresh = async () => {
+    list.innerHTML = '';
+    const res = await fetch('/api/tasks/configs/list');
+    const data = await res.json();
+    if (data.status !== 'success') {
+      list.textContent = `Error loading configs: ${data.message || 'Unknown'}`;
+      return;
+    }
+
+    Object.values(data.configs).forEach(task => {
+      const row = document.createElement('div');
+      row.style.display = 'flex';
+      row.style.justifyContent = 'space-between';
+      row.style.marginBottom = '0.5em';
+
+      const label = document.createElement('span');
+      label.textContent = `${task.typename}: ${task.name || '(no name)'}`;
+      row.appendChild(label);
+
+      const actions = document.createElement('div');
+      actions.style.display = 'flex';
+      actions.style.gap = '0.5em';
+
+      const editBtn = createButton('emoji-button', 'Edit', '✏️');
+      editBtn.onclick = async () => {
+        await renderTaskForm({
+          parent: container,
+          existingTask: task,
+          onCreate: refresh,
+          onCancel: refresh
+        });
+      };
+      actions.appendChild(editBtn);
+
+      const deleteBtn = createButton('emoji-button', 'Delete', '🗑️');
+      deleteBtn.onclick = async () => {
+        if (!confirm(`Delete task config "${task.name}"?`)) return;
+        await fetch('/api/tasks/configs/delete', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ config_uuids: [task.uuid] }),
+        });
+        await refresh();
+      };
+      actions.appendChild(deleteBtn);
+
+      row.appendChild(actions);
+      list.appendChild(row);
+    });
+
+    // "New Task Config" button
+    const newBtn = createButton('emoji-button', 'New Task Config', '➕');
+    newBtn.onclick = () => renderTaskForm({ parent: container, onCreate: refresh });
+    list.appendChild(newBtn);
+  };
+
+  await refresh();
+}
+
+/**
+ * Renders the active tasks (right column).
+ * @param {object} params
+ * @param {string} params.target - ID of the container
+ */
+export async function renderActiveTasks({ target = 'active-tasks-list' }) {
+  const container = document.getElementById(target);
+  if (!container) return;
+  container.innerHTML = '';
+
+  const header = document.createElement('h3');
+  header.textContent = 'Active Tasks';
+  container.appendChild(header);
+
+  const list = document.createElement('div');
+  container.appendChild(list);
+
+  const refresh = async () => {
+    list.innerHTML = '';
+    const res = await fetch('/api/tasks/status', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ uuids: null }),
+    });
+    const data = await res.json();
+    if (data.status !== 'success') {
+      list.textContent = `Error loading tasks: ${data.message || 'Unknown'}`;
+      return;
+    }
+
+    Object.values(data.tasks).forEach(task => {
+      const row = document.createElement('div');
+      row.style.display = 'flex';
+      row.style.justifyContent = 'space-between';
+      row.style.marginBottom = '0.5em';
+
+      const label = document.createElement('span');
+      label.textContent = `${task.typename}: ${task.name || '(no name)'}`;
+      row.appendChild(label);
+
+      const stopBtn = createButton('emoji-button', 'Stop', '🛑');
+      stopBtn.onclick = async () => {
+        if (!confirm(`Stop task "${task.name}"?`)) return;
+        await fetch('/api/tasks/stop', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ uuids: [task.uuid] }),
+        });
+        await refresh();
+      };
+      row.appendChild(stopBtn);
+
+      list.appendChild(row);
+    });
+  };
+
+  await refresh();
+}
