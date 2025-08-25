@@ -3,9 +3,10 @@
 import { addRecognizedBoxes, loadImageAndMetadata } from '/app-static/js/canvas/io.js';
 import { getLayer, } from '/app-static/js/canvas/state.js';
 import { setTool } from '/app-static/js/canvas/tools.js';
-import { renderActiveTasks, renderModelLabelAssignments, renderTaskConfigs } from '/app-static/js/ui/renderers.js';
-import { renderSourceManager } from '/app-static/js/ui/sources.js'
 import { renderLabelList } from '/app-static/js/ui/labels.js';
+import { renderModelLabelAssignments } from '/app-static/js/ui/models.js';
+import { renderActiveTasks, renderTaskConfigs } from '/app-static/js/ui/renderers.js';
+import { renderSourceManager } from '/app-static/js/ui/sources.js';
 
 // --- Model list UI ---
 

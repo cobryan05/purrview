@@ -1,5 +1,6 @@
 // ================= Sources Manager =================
-import { createButton, createGenericRow, getParamsFromForm, fetchImageProviderList, renderSchemaForm, pollTaskStatus } from './utils.js';
+import { getParamsFromForm, fetchImageProviderList, renderSchemaForm, pollTaskStatus } from './utils.js';
+import { createButton, createGenericRow, TextField } from '/app-static/js/ui/utils/index.js';
 import { toast } from '/app-static/js/canvas/utils.js';
 
 /**
@@ -48,7 +49,7 @@ function createSourceRow({ source, editable = false, renderList, onEdit, onDelet
   };
 
   return createGenericRow({
-    labelText: `${typename}: ${name}`,
+    field: new TextField({ value: `${typename}: ${name}`, placeholder: "New Source Name" }),
     indentLevel: 0,
     editable: false,
     leftButtons: editable ? [editButton, deleteButton] : [],
@@ -77,8 +78,7 @@ export async function renderSourceList({ parent, editable = false, onEdit, onDel
   // Optionally add a "new source" row
   if (editable) {
     const addRow = createGenericRow({
-      labelText: '',
-      labelPlaceholder: 'Create New Source',
+      field: new TextField({ value: '', placeholder: "Create New Source" }),
       leftButtons: [
         {
           text: 'Add Source',
