@@ -7,7 +7,7 @@ import { renderLabelList } from '/app-static/js/ui/labels.js';
 import { renderModelLabelAssignments } from '/app-static/js/ui/models.js';
 import { renderActiveTasks, renderTaskConfigs } from '/app-static/js/ui/renderers.js';
 import { renderSourceManager } from '/app-static/js/ui/sources.js';
-
+import { refreshModelCache, getAllModelNames } from '/app-static/js/ui/utils/index.js'
 // --- Model list UI ---
 
 /**
@@ -17,9 +17,8 @@ import { renderSourceManager } from '/app-static/js/ui/sources.js';
  */
 export async function refreshModelList() {
   try {
-    const res = await fetch('/api/models/list');
-    if (!res.ok) throw new Error(`Failed to fetch models: ${res.status}`);
-    const data = await res.json();
+    await refreshModelCache()
+    const models = getAllModelNames();
 
     const modelListContainer = document.getElementById('model-list');
     if (!modelListContainer) {
@@ -29,7 +28,7 @@ export async function refreshModelList() {
 
     modelListContainer.innerHTML = '';
 
-    data.models.forEach(model => {
+    models.forEach(model => {
       const label = document.createElement('label');
       label.style.display = 'block';
 
