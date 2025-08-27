@@ -1,7 +1,7 @@
 // ================= Sources Manager =================
 import { getParamsFromForm, fetchImageProviderList, renderSchemaForm, pollTaskStatus } from './utils.js';
 import { createButton, createGenericRow, TextField } from '/app-static/js/ui/utils/index.js';
-import { toast } from '/app-static/js/canvas/utils.js';
+import { toast } from '/app-static/js/ui/utils/index.js';
 
 /**
  * Creates a row for a single source with editable buttons

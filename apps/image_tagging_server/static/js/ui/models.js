@@ -1,6 +1,5 @@
-import { createButton, createGenericRow, LabelDropDownField, DropDownField } from './utils/index.js'
+import { createButton, createGenericRow, LabelDropDownField, DropDownField, getLabelByUuid, getAllLabelNames, refreshLabelCache } from './utils/index.js'
 
-let _cachedLabels = null;
 
 export async function renderModelLabelAssignments({
   target = "model-labels-box",
@@ -9,13 +8,6 @@ export async function renderModelLabelAssignments({
 } = {}) {
   const container = document.getElementById(target);
   container.innerHTML = '';
-
-  // Load and cache labels metadata
-  if (!_cachedLabels) {
-    const labelRes = await fetch('/api/labels/list');
-    const { labels } = await labelRes.json();
-    _cachedLabels = new Map(labels.map(l => [l.metadata.uuid, l.metadata]));
-  }
 
   // --- Header row: model selection dropdown ---
   const modelRes = await fetch('/api/models/list');
@@ -39,7 +31,7 @@ export async function renderModelLabelAssignments({
         text: 'Refresh',
         emoji: '🔄',
         onClick: () => {
-          _cachedLabels = null; // clear cache to reload
+          refreshLabelCache();
           renderModelLabelAssignments({ target, editable });
         }
       }
@@ -58,17 +50,17 @@ export async function renderModelLabelAssignments({
   });
   const { labels: classMap } = await res.json();
 
-  Object.entries(classMap).forEach(([cls, uuid]) => {
-    const assignedLabel = uuid && _cachedLabels.has(uuid) ? _cachedLabels.get(uuid) : null;
+  Object.entries(classMap).forEach(async ([cls, uuid]) => {
+    const assignedLabel = await getLabelByUuid(uuid);
 
-    const dropdownOptions = Array.from(_cachedLabels.values()).map(l => l.name);
+    const dropdownOptions = await getAllLabelNames();
     const assignmentField = new LabelDropDownField({
       labelText: cls,
       value: assignedLabel?.name || '',
       options: dropdownOptions,
       placeholder: '(unassigned)',
       onChange: async newLabelName => {
-        const selectedLabel = Array.from(_cachedLabels.values()).find(l => l.name === newLabelName);
+        const selectedLabel = await getLabelByName(newLabelName);
         const labelUuid = selectedLabel?.uuid || null;
 
         await fetch('/api/models/labels/associate', {
@@ -87,30 +79,5 @@ export async function renderModelLabelAssignments({
         renderModelLabelAssignments({ target, editable: true, preselectedModel });
       }
     });
-
-    const row = createGenericRow({
-      field: assignmentField,
-      editable,
-      rightButtons: assignedLabel ? [
-        {
-          text: 'Clear',
-          emoji: '🗑️',
-          onClick: async () => {
-            await fetch('/api/models/labels/associate', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                model_name: preselectedModel,
-                model_class: cls,
-                label_uuid: null,
-              }),
-            });
-            renderModelLabelAssignments({ target, editable, preselectedModel });
-          }
-        }
-      ] : [],
-    });
-
-    container.appendChild(row);
   });
 }

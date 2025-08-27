@@ -1,9 +1,5 @@
-import {  getParamsFromForm } from './utils.js'
-import { createButton, createGenericRow} from '/app-static/js/ui/utils/index.js';
-import { getCurrentLabelUuid, refreshLabelList, getLabelList } from '/app-static/js/canvas/state.js';
-import { getTool } from '/app-static/js/canvas/tools.js';
-import { toast } from '/app-static/js/canvas/utils.js';
-
+import { getParamsFromForm } from './utils.js';
+import { createButton, toast } from '/app-static/js/ui/utils/index.js';
 
 
 export async function renderTaskList({ parent, editable = false, onEdit = () => { }, onDelete = () => { } }) {

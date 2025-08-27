@@ -1,7 +1,8 @@
-import { getLayer, getTransformer, getCurrentTool, getCurrentLabelUuid, getLabelByUuid } from './state.js';
 import { selectShape } from './selection.js';
+import { getCurrentTool, getLayer, getTransformer } from './state.js';
 import { generateUUID } from './utils.js';
-import { openInspectorTab } from '../sidebar/main.js';
+import { getLabelByUuid } from '/app-static/js/ui/utils/index.js';
+
 
 /**
  * Create a bounding box group with a rectangle, label, confidence,

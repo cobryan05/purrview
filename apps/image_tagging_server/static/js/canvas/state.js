@@ -1,4 +1,4 @@
-import { notify } from './utils.js';
+import { notify } from '/app-static/js/ui/utils/index.js';
 
 let stage = null;
 let layer = null;
@@ -8,9 +8,6 @@ let currentTool = 'select';
 let currentImageName = null;
 let currentLabelUuid = null;
 let currentLabelText = null
-
-let labelList = [];
-let labelUuidMap = new Map();
 
 export function getCurrentTool() {
   return currentTool;
@@ -23,28 +20,6 @@ export function setCurrentTool(tool) {
   if (parts.length === 2) {
     setCurrentLabelUuid(parts[1]);
   }
-}
-
-function setLabelList(labels) {
-  labelList = labels;
-  labelUuidMap.clear();
-  function indexLabels(labels) {
-    for (const label of labels) {
-      if (label.metadata?.uuid) {
-        labelUuidMap.set(label.metadata.uuid, label);
-      }
-      if (label.children) indexLabels(label.children);
-    }
-  }
-  indexLabels(labels);
-}
-
-export function getLabelList() {
-  return labelList;
-}
-
-export function getLabelByUuid(uuid) {
-  return labelUuidMap.get(uuid) || null;
 }
 
 export function getCurrentLabelUuid() {
@@ -117,15 +92,4 @@ export function initStage() {
   layer = new Konva.Layer();
   layer.add(transformer);
   stage.add(layer);
-}
-
-export async function refreshLabelList() {
-  try {
-    const res = await fetch('/api/labels/list');
-    if (!res.ok) throw new Error(`Failed to fetch labels: ${res.status}`);
-    const data = await res.json();
-    setLabelList(data.labels);
-  } catch (error) {
-    console.error("Error refreshing label list:", error);
-  }
 }

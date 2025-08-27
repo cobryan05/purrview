@@ -1,8 +1,7 @@
 // labels.js
-import { createButton, createGenericRow, TextField } from '/app-static/js/ui/utils/index.js';
-import { getCurrentLabelUuid, getLabelList, refreshLabelList } from '/app-static/js/canvas/state.js';
+import { getCurrentLabelUuid } from '/app-static/js/canvas/state.js';
 import { getTool } from '/app-static/js/canvas/tools.js';
-import { toast } from '/app-static/js/canvas/utils.js';
+import { createGenericRow, TextField, toast, getAllLabels, refreshLabelCache } from '/app-static/js/ui/utils/index.js';
 
 function createInputRow({
   defaultName = '',
@@ -179,7 +178,7 @@ function renderLabel(label, container, indentLevel, editable, onSelectCallback, 
  */
 export async function renderLabelList({ target = 'labels-list', editable = true, onSelectCallback = null } = {}) {
   try {
-    await refreshLabelList();
+    await refreshLabelCache();
     const container = document.getElementById(target);
     if (!container) {
       console.error('Label container not found');
@@ -187,7 +186,7 @@ export async function renderLabelList({ target = 'labels-list', editable = true,
     }
     container.innerHTML = '';
 
-    const labels = getLabelList();
+    const labels = await getAllLabels();
     const renderList = () => renderLabelList({ target, editable, onSelectCallback });
 
     // Render root labels
