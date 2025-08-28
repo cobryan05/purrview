@@ -1,6 +1,4 @@
-import { refreshModelCache, getAllModelNames, getModelMappings, associateLabel, } from './utils/modelCache.js';
-import { refreshLabelCache, getLabelByUuid, getLabelByName, getAllLabelNames, } from './utils/labelCache.js';
-import { createGenericRow, DropDownField, LabelDropDownField, } from './utils/index.js';
+import { associateLabel, createGenericRow, DropDownField, getAllLabelNames, getAllModelNames, getLabelByName, getLabelByUuid, getModelMappings, LabelDropDownField, refreshLabelCache, refreshModelCache } from './utils/index.js';
 
 export async function renderModelLabelAssignments({
   target = "model-labels-box",

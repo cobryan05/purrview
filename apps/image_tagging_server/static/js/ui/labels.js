@@ -1,7 +1,7 @@
 // labels.js
 import { getCurrentLabelUuid } from '/app-static/js/canvas/state.js';
 import { getTool } from '/app-static/js/canvas/tools.js';
-import { createGenericRow, getAllLabels, refreshLabelCache, TextBoxColorField, toast } from '/app-static/js/ui/utils/index.js';
+import { createGenericRow, createNewLabel, deleteLabel, getAllLabels, refreshLabelCache, TextBoxColorField, toast, updateLabel } from '/app-static/js/ui/utils/index.js';
 
 function createInputRow({
   defaultName = '',
@@ -70,19 +70,19 @@ function createLabelHandlers({ label, indentLevel, editable, renderList }) {
   const editButton = {
     text: 'Edit',
     emoji: '✏️',
-    onClick: ({ nameInput, colorInput, row }) => {
+    onClick: ({ row }) => {
       const inputRow = createInputRow({
         defaultName: name,
         colorSwatchColor: color,
         indentLevel,
         editable: true,
         onSave: async (newName, newColor) => {
-          const response = await fetch('/api/labels/update', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ label_uuid: uuid, name: newName, color: newColor }),
-          });
-          response.ok ? renderList() : alert('Failed to update label');
+          try {
+            await updateLabel(uuid, newName, newColor);
+            renderList();
+          } catch (err) {
+            toast(err.message, 5000, 'error');
+          }
         },
         onCancel: renderList,
       });
@@ -93,14 +93,14 @@ function createLabelHandlers({ label, indentLevel, editable, renderList }) {
   const deleteButton = {
     text: 'Delete',
     emoji: '🗑️',
-    onClick: async ({ row }) => {
+    onClick: async () => {
       if (!window.confirm(`Delete label "${name}"?`)) return;
-      const response = await fetch('/api/labels/delete', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ label_uuid: uuid }),
-      });
-      response.ok ? renderList() : toast((await response.json()).message, 5000, 'error');
+      try {
+        await deleteLabel(uuid);
+        renderList();
+      } catch (err) {
+        toast(err.message, 5000, 'error');
+      }
     },
   };
 
@@ -112,12 +112,12 @@ function createLabelHandlers({ label, indentLevel, editable, renderList }) {
         indentLevel: indentLevel + 1,
         editable: true,
         onSave: async (newName, newColor) => {
-          const response = await fetch('/api/labels/add', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ name: newName, color: newColor, parent_uuid: uuid }),
-          });
-          response.ok ? renderList() : alert('Failed to create label');
+          try {
+            await createNewLabel(newName, newColor, uuid);
+            renderList();
+          } catch (err) {
+            toast(err.message, 5000, 'error');
+          }
         },
         onCancel: () => childRow.remove(),
       });
@@ -130,7 +130,6 @@ function createLabelHandlers({ label, indentLevel, editable, renderList }) {
     rightButtons: [],
   };
 }
-
 
 /**
  * Recursively renders a label and its children
@@ -172,6 +171,7 @@ function renderLabel(label, container, indentLevel, editable, onSelectCallback, 
 /**
  * Renders all labels into a container
  */
+
 export async function renderLabelList({ target = 'labels-list', editable = true, onSelectCallback = null } = {}) {
   try {
     await refreshLabelCache();
@@ -206,7 +206,6 @@ export async function renderLabelList({ target = 'labels-list', editable = true,
             text: 'Add label',
             emoji: '➕',
             onClick: async ({ field }) => {
-              // Read value from the TextBoxColorField instance
               const name = field.textField.value?.trim();
               const color = field.colorSwatchField.color || '#cccccc';
 
@@ -215,15 +214,14 @@ export async function renderLabelList({ target = 'labels-list', editable = true,
                 return;
               }
 
-              const response = await fetch('/api/labels/add', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ name, color, parent_uuid: null }),
-              });
-
-              response.ok ? renderList() : toast('Failed to create label');
+              try {
+                await createNewLabel(name, color);
+                renderList();
+              } catch (err) {
+                toast(err.message, 5000, 'error');
+              }
             },
-          }
+          },
         ],
         rightButtons: [],
       });
