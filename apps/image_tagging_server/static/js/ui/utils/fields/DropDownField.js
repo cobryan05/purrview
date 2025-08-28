@@ -16,11 +16,25 @@ export class DropDownField extends Field {
 
     this.options.forEach(opt => {
       const optionEl = document.createElement('option');
-      optionEl.value = opt;
-      optionEl.textContent = opt;
-      if (this.value && this.value === opt) {
+
+      // Handle flat strings or objects
+      if (typeof opt === 'string') {
+        optionEl.value = opt;
+        optionEl.textContent = opt;
+      } else if (typeof opt === 'object') {
+        const key = opt.key || opt.text; // Use key if provided, otherwise fallback to text
+        optionEl.value = key;
+        optionEl.textContent = opt.text;
+        if (opt.color) {
+          optionEl.style.color = opt.color; // Apply color to the dropdown option
+        }
+      }
+
+      // Mark the selected option
+      if (this.value && this.value === optionEl.value) {
         optionEl.selected = true;
       }
+
       select.appendChild(optionEl);
     });
 
@@ -34,7 +48,30 @@ export class DropDownField extends Field {
 
   renderView() {
     const span = document.createElement('span');
-    span.textContent = this.value || '(none)';
+
+    // Find the selected option
+    const selectedOption = this.options.find(opt => {
+      if (typeof opt === 'string') {
+        return opt === this.value;
+      } else if (typeof opt === 'object') {
+        return (opt.key || opt.text) === this.value;
+      }
+      return false;
+    });
+
+    if (selectedOption) {
+      if (typeof selectedOption === 'string') {
+        span.textContent = selectedOption;
+      } else if (typeof selectedOption === 'object') {
+        span.textContent = selectedOption.text;
+        if (selectedOption.color) {
+          span.style.color = selectedOption.color; // Apply color to the label in view mode
+        }
+      }
+    } else {
+      span.textContent = '(none)';
+    }
+
     return span;
   }
 }

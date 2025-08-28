@@ -1,4 +1,4 @@
-import { associateLabel, createGenericRow, DropDownField, getAllLabelNames, getAllModelNames, getLabelByName, getLabelByUuid, getModelMappings, LabelDropDownField, refreshLabelCache, refreshModelCache } from './utils/index.js';
+import { associateLabel, createGenericRow, DropDownField, getAllLabels, getAllModelNames, getLabelByUuid, getModelMappings, LabelDropDownField, refreshLabelCache, refreshModelCache } from './utils/index.js';
 
 export async function renderModelLabelAssignments({
   target = "model-labels-box",
@@ -43,27 +43,31 @@ export async function renderModelLabelAssignments({
 
   // --- Load model-label assignments ---
   const classMap = await getModelMappings(preselectedModel);
-  const dropdownOptions = await getAllLabelNames();
+  const allLabels = getAllLabels(); // Use the label cache to get all labels
+
+  // Convert labels to the format required by DropDownField
+  const labelItems = Array.from(allLabels.values()).map(label => ({
+    key: label.metadata.uuid,
+    text: label.metadata.name,
+    color: label.metadata.color || '#cccccc'
+  }));
 
   Object.entries(classMap).forEach(async ([cls, uuid]) => {
     const assignedLabel = await getLabelByUuid(uuid);
 
     const assignmentRow = createGenericRow({
       field: new LabelDropDownField({
+        options: labelItems,
         labelText: cls,
-        value: assignedLabel?.name || '',
-        options: dropdownOptions,
-        placeholder: '(unassigned)',
-        onChange: async newLabelName => {
-          const selectedLabel = await getLabelByName(newLabelName);
-          const labelUuid = selectedLabel?.uuid || null;
+        value: assignedLabel?.metadata.uuid || null,
+        editable,
+        onChange: async selectedUuid => {
+          const selectedLabel = labelItems.find(item => item.key === selectedUuid);
+          const labelUuid = selectedLabel?.key || null;
 
           await associateLabel(preselectedModel, cls, labelUuid);
 
           renderModelLabelAssignments({ target, editable, preselectedModel });
-        },
-        onEdit: () => {
-          renderModelLabelAssignments({ target, editable: true, preselectedModel });
         }
       }),
       editable

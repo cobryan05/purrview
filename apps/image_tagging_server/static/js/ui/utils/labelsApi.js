@@ -18,29 +18,11 @@ export function getLabelByUuid(uuid) {
 }
 
 /**
- * Fetch a label's metadata from the cache using its name.
- */
-export function getLabelByName(name) {
-  for (const label of _cache.values()) {
-    if (label.name === name) return label;
-  }
-  return null;
-}
-
-/**
- * Return all labels as an array.
+ * Return the labels map
  */
 export function getAllLabels() {
-  return Array.from(_cache.values());
+  return new Map(_cache);
 }
-
-/**
- * Return all label names (for dropdowns).
- */
-export function getAllLabelNames() {
-  return Array.from(_cache.values()).map(l => l.name);
-}
-
 
 /**
  * Add a new label to the server and refresh the cache.

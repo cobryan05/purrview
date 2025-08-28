@@ -186,7 +186,7 @@ export async function renderLabelList({ target = 'labels-list', editable = true,
     const renderList = () => renderLabelList({ target, editable, onSelectCallback });
 
     // Render root labels
-    labels
+    Array.from(labels.values())
       .filter(l => !l.metadata.parent_uuid)
       .forEach(l => renderLabel(l, container, 0, editable, onSelectCallback, renderList));
 
