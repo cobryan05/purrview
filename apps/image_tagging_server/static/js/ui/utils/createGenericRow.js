@@ -13,7 +13,6 @@
 export function createGenericRow({
   field,
   editable = false,
-  colorSwatchColor = null,
   indentLevel = 0,
   leftButtons = [],
   rightButtons = [],
@@ -88,45 +87,6 @@ export function createGenericRow({
     rightContainer.appendChild(createButtons(rightRow));
   });
 
-  // --- Color swatch ---
-  let colorWrapper, colorInput;
-  if (colorSwatchColor != null) {
-    colorWrapper = document.createElement('span');
-    colorWrapper.className = 'label-color';
-    colorWrapper.style.cssText = `
-      position: relative;
-      display: inline-block;
-      width: 1em;
-      height: 1em;
-      border-radius: 3px;
-      cursor: ${editable ? 'pointer' : 'default'};
-      background-color: ${colorSwatchColor};
-      flex-shrink: 0;
-    `;
-
-    colorInput = document.createElement('input');
-    colorInput.type = 'color';
-    colorInput.value = colorSwatchColor;
-    Object.assign(colorInput.style, {
-      opacity: '0',
-      pointerEvents: editable ? 'auto' : 'none',
-      position: 'absolute',
-      left: 0,
-      top: 0,
-      width: '100%',
-      height: '100%',
-      cursor: editable ? 'pointer' : 'default',
-    });
-    colorInput.disabled = !editable;
-
-    if (editable) {
-      colorInput.addEventListener('input', () => {
-        colorWrapper.style.backgroundColor = colorInput.value;
-      });
-    }
-    colorWrapper.appendChild(colorInput);
-  }
-
   // --- Field ---
   const fieldElement = editable ? field.renderEdit() : field.renderView();
 
@@ -134,9 +94,8 @@ export function createGenericRow({
   fieldWrapper.style.flexGrow = '1';
   fieldWrapper.appendChild(fieldElement);
 
-  // Assemble main row: left buttons, color, field, right buttons
+  // Assemble main row: left buttons, field, right buttons
   if (leftButtons.length) mainRow.appendChild(leftContainer);
-  if (colorSwatchColor != null) mainRow.appendChild(colorWrapper);
   mainRow.appendChild(fieldWrapper);
   if (rightButtons.length) mainRow.appendChild(rightContainer);
 

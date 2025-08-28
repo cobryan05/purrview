@@ -1,7 +1,7 @@
 // labels.js
 import { getCurrentLabelUuid } from '/app-static/js/canvas/state.js';
 import { getTool } from '/app-static/js/canvas/tools.js';
-import { createGenericRow, TextField, toast, getAllLabels, refreshLabelCache } from '/app-static/js/ui/utils/index.js';
+import { createGenericRow, getAllLabels, refreshLabelCache, TextBoxColorField, toast } from '/app-static/js/ui/utils/index.js';
 
 function createInputRow({
   defaultName = '',
@@ -12,26 +12,23 @@ function createInputRow({
   indentLevel = 0,
 } = {}) {
   return createGenericRow({
-    field: new TextField({ value: defaultName, placeholder: "New Label Name" }),
-    colorSwatchColor,
+    field: new TextBoxColorField({ text: defaultName, placeholder: "New Label Name", color: colorSwatchColor }),
     indentLevel,
     editable: editable,
     rightButtons: [
       {
         text: 'Save',
         emoji: '✅',
-        onClick: ({ row, field }) => {
-          const newName = field.value?.trim();
-          if (!newName) {
-            alert('Name required');
-            return;
-          }
+        onClick: async ({ field }) => {
+            const newName = field.textField.value?.trim();
+            const newColor = field.colorSwatchField.color || '#cccccc';
 
-          // Grab color input if it exists
-          const colorInput = row.querySelector('input[type="color"]');
-          const color = colorInput?.value || '#cccccc';
+              if (!newName) {
+                toast('Error: Name required', 5000, "error");
+                return;
+              }
 
-          onSave?.(newName, color);
+          onSave?.(newName, newColor);
         },
       },
       {
@@ -148,8 +145,7 @@ function renderLabel(label, container, indentLevel, editable, onSelectCallback, 
 
   // Create row once, passing the button specs into createGenericRow
   const labelRow = createGenericRow({
-    field: new TextField({ value: name, placeholder: "New Label Name" }),
-    colorSwatchColor: color,
+    field: new TextBoxColorField({ text: name, placeholder: "New Label Name", color: color }),
     indentLevel,
     leftButtons,
     rightButtons,
@@ -197,8 +193,7 @@ export async function renderLabelList({ target = 'labels-list', editable = true,
     // Add "Add new root label" row
     if (editable) {
       const newRootRow = createGenericRow({
-        field: new TextField({ value: '', placeholder: "New Root Label Name" }),
-        colorSwatchColor: '#cccccc',
+        field: new TextBoxColorField({ text: '', placeholder: "New Root Label Name", color: '#cccccc' }),
         indentLevel: 0,
         editable: true,
         leftButtons: [
@@ -210,13 +205,10 @@ export async function renderLabelList({ target = 'labels-list', editable = true,
           {
             text: 'Add label',
             emoji: '➕',
-            onClick: async ({ row, field }) => {
-              // Read value from the field instance
-              const name = field.value?.trim();
-
-              // Read color from the color swatch inside the row
-              const colorInput = row.querySelector('input[type="color"]');
-              const color = colorInput?.value || '#cccccc';
+            onClick: async ({ field }) => {
+              // Read value from the TextBoxColorField instance
+              const name = field.textField.value?.trim();
+              const color = field.colorSwatchField.color || '#cccccc';
 
               if (!name) {
                 toast('Error: Name required', 5000, "error");
