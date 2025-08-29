@@ -155,8 +155,12 @@ export async function renderLabelList({ target = 'labels-list', editable = true,
       .filter(l => !l.metadata.parent_uuid)
       .forEach(l => renderLabel(l, container, 0, editable, onSelectCallback, renderList));
 
+
     // Add "Add new root label" row
     if (editable) {
+      const divider = document.createElement('hr');
+      container.appendChild(divider);
+
       const newRootRow = createGenericRow({
         field: new EditableField({
           field: new TextBoxColorField({ text: '', placeholder: "New Root Label Name", color: DEFAULT_COLOR }),

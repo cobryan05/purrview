@@ -1,58 +1,57 @@
 // ================= Sources Manager =================
-import { getParamsFromForm, fetchImageProviderList, renderSchemaForm, pollTaskStatus } from './utils.js';
-import { createButton, createGenericRow, TextField } from '/app-static/js/ui/utils/index.js';
-import { toast } from '/app-static/js/ui/utils/index.js';
+import { fetchImageProviderList, getParamsFromForm, pollTaskStatus, renderSchemaForm } from './utils.js';
+import { refreshImageProvidersCache } from './utils/sourcesApi.js';
+import { createButton, createGenericRow, deleteSources, EditableField, fetchImageProviderSchema, refreshSourceCache, SourceConfigField, TextField, toast } from '/app-static/js/ui/utils/index.js';
 
 /**
  * Creates a row for a single source with editable buttons
  */
-function createSourceRow({ source, editable = false, renderList, onEdit, onDelete }) {
+async function createSourceRow({ source, editable = false, renderList, onEdit, onDelete }) {
   const { name, typename, uuid } = source;
-
-  const editButton = {
-    text: 'Edit',
-    emoji: '🖉',
-    onClick: async ({ row }) => {
-      // Replace row with inline form
-      const formContainer = document.createElement('div');
-      row.replaceWith(formContainer);
-
-      await renderSourceForm({
-        parent: formContainer,
-        existingSource: source,
-        onCreate: renderList,
-        onCancel: renderList,
-      });
-    },
-  };
 
   const deleteButton = {
     text: 'Delete',
     emoji: '🗑️',
     onClick: async () => {
       if (!window.confirm(`Are you sure you want to delete "${name}"?`)) return;
-
-      const response = await fetch('/api/sources/delete', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ source_uuids: [uuid] }),
-      });
-
-      if (response.ok) {
-        toast(`Deleted ${name}`, 3000, 'success');
+      try {
+        await deleteSources(uuid);
         onDelete?.();
-      } else {
-        const data = await response.json();
-        toast(data.message || 'Failed to delete source', 5000, 'error');
+      } catch (error) {
+        toast(error.message || 'Failed to delete source', 5000, 'error');
       }
-    },
+    }
   };
 
+  let schema = null;
+  try {
+    ({ schema } = await fetchImageProviderSchema(typename))
+  } catch (error) {
+    toast(error.message || 'Failed to fetch provider schema', 5000, 'error');
+  }
   return createGenericRow({
-    field: new TextField({ value: `${typename}: ${name}`, placeholder: "New Source Name" }),
+    field: new EditableField({
+      field: new SourceConfigField({ name, typename, schema }),
+      onSave: async () => {
+        // // Replace row with inline form
+        // const formContainer = document.createElement('div');
+        // row.replaceWith(formContainer);
+
+        // await renderSourceForm({
+        //   parent: formContainer,
+        //   existingSource: source,
+        //   onCreate: renderList,
+        //   onCancel: renderList,
+        // });
+      },
+      onCancel: async () => {
+        // Handle cancel action
+        //field.setValue(`${typename}: ${name}`);
+      },
+    }),
     indentLevel: 0,
     editable: false,
-    leftButtons: editable ? [editButton, deleteButton] : [],
+    leftButtons: editable ? [deleteButton] : [],
   });
 }
 
@@ -60,12 +59,14 @@ function createSourceRow({ source, editable = false, renderList, onEdit, onDelet
  * Renders the list of sources
  */
 export async function renderSourceList({ parent, editable = false, onEdit, onDelete }) {
+  await refreshSourceCache()
+  await refreshImageProvidersCache();
   parent.innerHTML = '';
   const res = await fetch('/api/sources/get');
   const data = await res.json();
 
-  Object.values(data.sources).forEach(src => {
-    const row = createSourceRow({
+  Object.values(data.sources).forEach(async src => {
+    const row = await createSourceRow({
       source: src,
       editable,
       renderList: () => renderSourceList({ parent, editable, onEdit, onDelete }),
@@ -74,41 +75,6 @@ export async function renderSourceList({ parent, editable = false, onEdit, onDel
     });
     parent.appendChild(row);
   });
-
-  // Optionally add a "new source" row
-  if (editable) {
-    const addRow = createGenericRow({
-      field: new TextField({ value: '', placeholder: "Create New Source" }),
-      leftButtons: [
-        {
-          text: 'Add Source',
-          emoji: '➕',
-          onClick: async ({ row }) => {
-            const input = row.querySelector('input[type="text"]');
-            const name = input?.value.trim();
-            if (!name) {
-              toast('Name required', 5000, 'error');
-              return;
-            }
-
-            const response = await fetch('/api/sources/create', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ source_name: name, image_provider: null, params: {} }),
-            });
-
-            if (response.ok) {
-              renderSourceList({ parent, editable, onEdit, onDelete });
-            } else {
-              toast('Failed to create source', 5000, 'error');
-            }
-          },
-        },
-      ],
-    });
-
-    parent.appendChild(addRow);
-  }
 }
 
 /**
@@ -121,174 +87,165 @@ export async function renderSourceForm({ parent, existingSource = null, onCreate
   formTitle.textContent = existingSource ? 'Edit Source' : 'Create New Source';
   parent.appendChild(formTitle);
 
-  const form = document.createElement('form');
-  form.style.display = 'flex';
-  form.style.flexDirection = 'column';
-  form.style.gap = '0.5em';
+  const newSourceField = new SourceConfigField({ name: '', typename: '', schema: {} });
+  parent.appendChild(newSourceField.renderEdit());
+  // const providerSelect = document.createElement('select');
+  // providerSelect.required = true;
+  // providerSelect.style.width = '100%';
+  // topRow.appendChild(providerSelect);
 
-  const topRow = document.createElement('div');
-  topRow.style.display = 'grid';
-  topRow.style.gridTemplateColumns = '1fr 1fr auto';
-  topRow.style.gap = '0.5em';
-  topRow.style.alignItems = 'center';
+  // const nameInput = document.createElement('input');
+  // nameInput.type = 'text';
+  // nameInput.placeholder = 'Source name';
+  // nameInput.required = true;
+  // nameInput.style.width = '100%';
+  // topRow.appendChild(nameInput);
 
-  const providerSelect = document.createElement('select');
-  providerSelect.required = true;
-  providerSelect.style.width = '100%';
-  topRow.appendChild(providerSelect);
+  // const btnWrapper = document.createElement('div');
+  // btnWrapper.style.display = 'flex';
+  // btnWrapper.style.flexDirection = 'column';
 
-  const nameInput = document.createElement('input');
-  nameInput.type = 'text';
-  nameInput.placeholder = 'Source name';
-  nameInput.required = true;
-  nameInput.style.width = '100%';
-  topRow.appendChild(nameInput);
+  // const submitBtn = createButton('emoji-button', 'Save', '✅');
+  // submitBtn.type = 'submit';
+  // btnWrapper.appendChild(submitBtn);
 
-  const btnWrapper = document.createElement('div');
-  btnWrapper.style.display = 'flex';
-  btnWrapper.style.flexDirection = 'column';
+  // if (existingSource && onCancel) {
+  //   const cancelBtn = createButton('emoji-button', 'Cancel', '❌');
+  //   cancelBtn.onclick = () => onCancel();
+  //   btnWrapper.appendChild(cancelBtn);
+  // }
 
-  const submitBtn = createButton('emoji-button', 'Save', '✅');
-  submitBtn.type = 'submit';
-  btnWrapper.appendChild(submitBtn);
+  // const testBtn = createButton('emoji-button', 'Test', '🧪');
+  // testBtn.type = 'button';
+  // btnWrapper.appendChild(testBtn);
 
-  if (existingSource && onCancel) {
-    const cancelBtn = createButton('emoji-button', 'Cancel', '❌');
-    cancelBtn.onclick = () => onCancel();
-    btnWrapper.appendChild(cancelBtn);
-  }
+  // testBtn.onclick = async () => {
+  //   try {
+  //     const provider = providerSelect.value;
+  //     if (!provider) {
+  //       toast("Please fill in provider before testing", 3000, "warning");
+  //       return;
+  //     }
 
-  const testBtn = createButton('emoji-button', 'Test', '🧪');
-  testBtn.type = 'button';
-  btnWrapper.appendChild(testBtn);
+  //     const name = nameInput.value;
+  //     const providerParams = getParamsFromForm(paramsContainer);
+  //     const params = {
+  //       provider: provider,
+  //       provider_params: providerParams,
+  //     };
 
-  testBtn.onclick = async () => {
-    try {
-      const provider = providerSelect.value;
-      if (!provider) {
-        toast("Please fill in provider before testing", 3000, "warning");
-        return;
-      }
+  //     testBtn.disabled = true;
+  //     const testResultBox = renderTestResultsBox(form);
+  //     testResultBox.hidden = false;
+  //     testResultBox.textContent = 'Starting test task...';
+  //     const taskUuid = await startPreviewSourceTest({
+  //       params
+  //     });
 
-      const name = nameInput.value;
-      const providerParams = getParamsFromForm(paramsContainer);
-      const params = {
-        provider: provider,
-        provider_params: providerParams,
-      };
+  //     testResultBox.textContent = 'Running test...';
+  //     pollTaskStatus(taskUuid, testResultBox, async (finalResult) => {
+  //       testResultBox.textContent += `\nTest ${finalResult.status}: ${finalResult.status_message || ''}`;
+  //       testBtn.disabled = false;
 
-      testBtn.disabled = true;
-      const testResultBox = renderTestResultsBox(form);
-      testResultBox.hidden = false;
-      testResultBox.textContent = 'Starting test task...';
-      const taskUuid = await startPreviewSourceTest({
-        params
-      });
+  //       // Check for image
+  //       if (finalResult.data?.image) {
+  //         const img = document.createElement('img');
+  //         img.src = `data:image/png;base64,${finalResult.data.image}`;
+  //         img.style.maxWidth = '100%';
+  //         img.alt = 'Test result image';
+  //         testResultBox.appendChild(document.createElement('br'));
+  //         testResultBox.appendChild(img);
+  //       }
+  //     });
 
-      testResultBox.textContent = 'Running test...';
-      pollTaskStatus(taskUuid, testResultBox, async (finalResult) => {
-        testResultBox.textContent += `\nTest ${finalResult.status}: ${finalResult.status_message || ''}`;
-        testBtn.disabled = false;
+  //   } catch (err) {
+  //     toast(`Test failed: ${err.message}`, 5000, "error");
+  //     testBtn.disabled = false;
+  //   }
+  // };
 
-        // Check for image
-        if (finalResult.data?.image) {
-          const img = document.createElement('img');
-          img.src = `data:image/png;base64,${finalResult.data.image}`;
-          img.style.maxWidth = '100%';
-          img.alt = 'Test result image';
-          testResultBox.appendChild(document.createElement('br'));
-          testResultBox.appendChild(img);
-        }
-      });
+  // topRow.appendChild(btnWrapper);
+  // form.appendChild(topRow);
 
-    } catch (err) {
-      toast(`Test failed: ${err.message}`, 5000, "error");
-      testBtn.disabled = false;
-    }
-  };
+  // const paramsContainer = document.createElement('div');
+  // form.appendChild(paramsContainer);
 
-  topRow.appendChild(btnWrapper);
-  form.appendChild(topRow);
+  // parent.appendChild(form);
 
-  const paramsContainer = document.createElement('div');
-  form.appendChild(paramsContainer);
+  // // Load providers
+  // const providers = await fetchImageProviderList();
+  // providers.forEach(p => {
+  //   const opt = document.createElement('option');
+  //   opt.value = p;
+  //   opt.textContent = p;
+  //   providerSelect.appendChild(opt);
+  // });
 
-  parent.appendChild(form);
+  // providerSelect.onchange = async () => {
+  //   const provider = providerSelect.value;
+  //   if (!provider) return;
 
-  // Load providers
-  const providers = await fetchImageProviderList();
-  providers.forEach(p => {
-    const opt = document.createElement('option');
-    opt.value = p;
-    opt.textContent = p;
-    providerSelect.appendChild(opt);
-  });
+  //   const schemaRes = await fetch('/api/sources/image-providers/schema', {
+  //     method: 'POST',
+  //     headers: { 'Content-Type': 'application/json' },
+  //     body: JSON.stringify({ image_provider: provider }),
+  //   });
+  //   const schema = await schemaRes.json();
+  //   renderSchemaForm(schema.schema, paramsContainer);
+  // };
 
-  providerSelect.onchange = async () => {
-    const provider = providerSelect.value;
-    if (!provider) return;
+  // if (existingSource) {
+  //   nameInput.value = existingSource.name;
+  //   providerSelect.value = existingSource.typename;
 
-    const schemaRes = await fetch('/api/sources/image-providers/schema', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ image_provider: provider }),
-    });
-    const schema = await schemaRes.json();
-    renderSchemaForm(schema.schema, paramsContainer);
-  };
+  //   const schemaRes = await fetch('/api/sources/image-providers/schema', {
+  //     method: 'POST',
+  //     headers: { 'Content-Type': 'application/json' },
+  //     body: JSON.stringify({ image_provider: existingSource.typename }),
+  //   });
+  //   const schema = await schemaRes.json();
+  //   renderSchemaForm(schema.schema, paramsContainer);
 
-  if (existingSource) {
-    nameInput.value = existingSource.name;
-    providerSelect.value = existingSource.typename;
+  //   setTimeout(() => {
+  //     Object.entries(existingSource.params || {}).forEach(([key, value]) => {
+  //       const el = paramsContainer.querySelector(`[name="${key}"]`);
+  //       if (!el) return;
+  //       if (el.type === 'checkbox') el.checked = !!value;
+  //       else el.value = value;
+  //     });
+  //   }, 0);
+  // }
 
-    const schemaRes = await fetch('/api/sources/image-providers/schema', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ image_provider: existingSource.typename }),
-    });
-    const schema = await schemaRes.json();
-    renderSchemaForm(schema.schema, paramsContainer);
+  // form.onsubmit = async e => {
+  //   e.preventDefault();
+  //   const provider = providerSelect.value;
+  //   const name = nameInput.value;
+  //   const params = getParamsFromForm(paramsContainer);
 
-    setTimeout(() => {
-      Object.entries(existingSource.params || {}).forEach(([key, value]) => {
-        const el = paramsContainer.querySelector(`[name="${key}"]`);
-        if (!el) return;
-        if (el.type === 'checkbox') el.checked = !!value;
-        else el.value = value;
-      });
-    }, 0);
-  }
+  //   const payload = {
+  //     source_name: name,
+  //     image_provider: provider,
+  //     params,
+  //   };
 
-  form.onsubmit = async e => {
-    e.preventDefault();
-    const provider = providerSelect.value;
-    const name = nameInput.value;
-    const params = getParamsFromForm(paramsContainer);
+  //   if (existingSource?.uuid) payload.source_uuid = existingSource.uuid;
 
-    const payload = {
-      source_name: name,
-      image_provider: provider,
-      params,
-    };
+  //   const url = existingSource ? '/api/sources/update' : '/api/sources/create';
+  //   const res = await fetch(url, {
+  //     method: 'POST',
+  //     headers: { 'Content-Type': 'application/json' },
+  //     body: JSON.stringify(payload),
+  //   });
+  //   const result = await res.json();
 
-    if (existingSource?.uuid) payload.source_uuid = existingSource.uuid;
-
-    const url = existingSource ? '/api/sources/update' : '/api/sources/create';
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
-    const result = await res.json();
-
-    if (result.status === 'success') {
-      toast('Saved successfully', 3000, 'success');
-      if (onCreate) onCreate();
-      parent.innerHTML = '';
-    } else {
-      toast(result.message || 'Unknown error', 5000, 'error');
-    }
-  };
+  //   if (result.status === 'success') {
+  //     toast('Saved successfully', 3000, 'success');
+  //     if (onCreate) onCreate();
+  //     parent.innerHTML = '';
+  //   } else {
+  //     toast(result.message || 'Unknown error', 5000, 'error');
+  //   }
+  // };
 }
 
 /**

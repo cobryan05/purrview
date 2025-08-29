@@ -32,39 +32,31 @@ export function createGenericRow({
   // Main row
   const mainRow = document.createElement('div');
   mainRow.style.display = 'flex';
-  mainRow.style.alignItems = 'center';
+  mainRow.style.alignItems = 'flex-start'; // top align
   mainRow.style.gap = '0.25em';
   mainRow.style.width = '100%';
 
   // --- Helper to create button sets ---
-  const createButtonsInContainer = btns => {
+  const createButtonsRow = (btns) => {
     const container = document.createElement('div');
     container.style.display = 'flex';
-    container.style.alignItems = 'center';
-    container.style.gap = '0.15em';
-    const inputHeight = 28;
+    container.style.flexDirection = 'row';  // horizontal
+    container.style.alignItems = 'flex-start';
+    container.style.gap = '0.25em';
+
     btns.forEach(({ text, emoji, onClick }) => {
       const btn = createEmojiButton({ text, emoji, onClick: () => onClick?.({ field }) });
       container.appendChild(btn);
     });
+
     return container;
   };
 
-  // --- Left buttons ---
-  const leftContainer = document.createElement('div');
-  leftContainer.style.display = 'flex';
-  leftContainer.style.gap = '0.15em';
-
-  // --- Right buttons ---
-  const rightContainer = document.createElement('div');
-  rightContainer.style.display = 'flex';
-  rightContainer.style.gap = '0.15em';
-
-  leftContainer.appendChild(createButtonsInContainer(leftButtons));
-  rightContainer.appendChild(createButtonsInContainer(rightButtons));
+  const leftContainer = createButtonsRow(leftButtons);
+  const rightContainer = createButtonsRow(rightButtons);
 
   mainRow.appendChild(leftContainer);
-  mainRow.appendChild( field.getEditMode() ? field.renderEdit() : field.renderView());
+  mainRow.appendChild(field.getEditMode() ? field.renderEdit() : field.renderView());
   mainRow.appendChild(rightContainer);
 
   indentContainer.appendChild(mainRow);

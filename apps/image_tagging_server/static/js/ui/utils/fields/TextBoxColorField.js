@@ -13,7 +13,7 @@ export class TextBoxColorField extends Field {
   renderEdit() {
     const container = document.createElement('div');
     container.style.display = 'flex';
-    container.style.alignItems = 'center';
+    container.style.alignItems = 'flex-start'; // align all children to top
     container.style.gap = '0.5em';
 
     container.appendChild(this.colorSwatchField.renderEdit());
@@ -25,7 +25,7 @@ export class TextBoxColorField extends Field {
   renderView() {
     const container = document.createElement('div');
     container.style.display = 'flex';
-    container.style.alignItems = 'center';
+    container.style.alignItems = 'flex-start'; // align all children to top
     container.style.gap = '0.5em';
 
     if (this.textOnLeft) {

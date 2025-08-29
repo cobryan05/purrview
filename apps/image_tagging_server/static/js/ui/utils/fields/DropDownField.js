@@ -1,6 +1,10 @@
 import { Field } from './Field.js';
 
 export class DropDownField extends Field {
+  constructor(params = {}) {
+    super(params);
+  }
+
   renderEdit() {
     const select = document.createElement('select');
 
@@ -17,21 +21,15 @@ export class DropDownField extends Field {
     this.options.forEach(opt => {
       const optionEl = document.createElement('option');
 
-      // Handle flat strings or objects
-      optionEl.dataset.value = opt
       if (typeof opt === 'string') {
-        optionEl.value = opt
+        optionEl.value = opt;
         optionEl.textContent = opt;
       } else if (typeof opt === 'object') {
-        const key = opt.key || opt.text; // Use key if provided, otherwise fallback to text
-        optionEl.value = opt.key
+        optionEl.value = opt.key ?? opt.text;
         optionEl.textContent = opt.text;
-        if (opt.color) {
-          optionEl.style.color = opt.color; // Apply color to the dropdown option
-        }
+        if (opt.color) optionEl.style.color = opt.color;
       }
 
-      // Mark the selected option
       if (this.isMatchingOption(opt, this.value)) {
         optionEl.selected = true;
       }
@@ -49,18 +47,14 @@ export class DropDownField extends Field {
 
   renderView() {
     const span = document.createElement('span');
-
-    // Find the selected option
     const selectedOption = this.options.find(opt => this.isMatchingOption(opt, this.value));
 
     if (selectedOption) {
       if (typeof selectedOption === 'string') {
         span.textContent = selectedOption;
-      } else if (typeof selectedOption === 'object') {
+      } else {
         span.textContent = selectedOption.text;
-        if (selectedOption.color) {
-          span.style.color = selectedOption.color; // Apply color to the label in view mode
-        }
+        if (selectedOption.color) span.style.color = selectedOption.color;
       }
     } else {
       span.textContent = '(none)';
@@ -71,15 +65,9 @@ export class DropDownField extends Field {
 
   getValue() {
     const selectedOption = this.options.find(opt => this.isMatchingOption(opt, this.value));
-    return { option: selectedOption || null }; // Return the current selection or null if no value is selected
+    return { option: selectedOption ?? null };
   }
 
-  /**
- * Checks if an option matches a given value.
- * @param {string|object} option - The option to check (string or object with a `key` property).
- * @param {string|object} value - The value to match (string or object with a `key` property).
- * @returns {boolean} - True if the option matches the value, false otherwise.
- */
   isMatchingOption(option, value) {
     if (typeof option === 'string') {
       return option === value;

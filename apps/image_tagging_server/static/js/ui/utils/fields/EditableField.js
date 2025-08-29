@@ -39,9 +39,10 @@ export class EditableField extends Field {
 
   renderEdit() {
     const container = document.createElement('div');
-    container.style.display = 'flex';
-    container.style.alignItems = 'center';
+    container.style.display = 'grid';
+    container.style.gridTemplateColumns = 'auto 1fr auto'; // left, middle, right
     container.style.gap = '0.5em';
+    container.style.alignItems = 'start'; // top-align buttons
 
     const fieldEdit = this.wrappedField.renderEdit();
 
@@ -53,6 +54,7 @@ export class EditableField extends Field {
         this._rerender(container);
       }
     });
+
     const cancelButton = createEmojiButton({
       text: 'Cancel', emoji: '❌', onClick: () => {
         this.onCancel?.();
@@ -61,17 +63,31 @@ export class EditableField extends Field {
       }
     });
 
-    const elements = [];
-    elements.push(fieldEdit);
+    // Always create placeholders so the grid stays 3 columns
+    const left = document.createElement('div');
+    const middle = document.createElement('div');
+    const right = document.createElement('div');
+
+    // Put the field in the middle column
+    middle.appendChild(fieldEdit);
+
+    // Decide where to put buttons
     if (this.onSave && this.onCancel) {
-      elements.push(saveButton);
-      elements.push(cancelButton);
-    }
-    if (!this.buttonsLast) {
-      elements.push(elements.shift());
+      if (this.buttonsLast) {
+        // Put both buttons to the right of the field
+        right.appendChild(saveButton);
+        right.appendChild(cancelButton);
+      } else {
+        // Put buttons on either side of the field
+        left.appendChild(saveButton);
+        left.appendChild(cancelButton);
+      }
     }
 
-    elements.forEach(el => container.appendChild(el));
+    container.appendChild(left);
+    container.appendChild(middle);
+    container.appendChild(right);
+
     return container;
   }
 
