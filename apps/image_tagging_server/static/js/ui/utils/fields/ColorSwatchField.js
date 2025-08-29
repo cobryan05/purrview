@@ -49,4 +49,10 @@ export class ColorSwatchField extends Field {
     container.style.backgroundColor = this.color;
     return container;
   }
+
+  getValue() {
+    return {
+      color: this.color
+    };
+  }
 }

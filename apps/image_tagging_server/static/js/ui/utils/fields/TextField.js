@@ -18,4 +18,10 @@ export class TextField extends Field {
     span.textContent = this.value || '(empty)';
     return span;
   }
+
+  getValue() {
+    return {
+      text: this.value
+    };
+  }
 }

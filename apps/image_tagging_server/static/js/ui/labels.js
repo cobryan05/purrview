@@ -1,44 +1,9 @@
 // labels.js
 import { getCurrentLabelUuid } from '/app-static/js/canvas/state.js';
 import { getTool } from '/app-static/js/canvas/tools.js';
-import { createGenericRow, createNewLabel, deleteLabel, getAllLabels, refreshLabelCache, TextBoxColorField, toast, updateLabel } from '/app-static/js/ui/utils/index.js';
+import { createGenericRow, createNewLabel, deleteLabel, EditableField, getAllLabels, refreshLabelCache, TextBoxColorField, toast, updateLabel } from '/app-static/js/ui/utils/index.js';
 
-function createInputRow({
-  defaultName = '',
-  colorSwatchColor = '#cccccc',
-  onSave,
-  onCancel,
-  editable = false,
-  indentLevel = 0,
-} = {}) {
-  return createGenericRow({
-    field: new TextBoxColorField({ text: defaultName, placeholder: "New Label Name", color: colorSwatchColor }),
-    indentLevel,
-    editable: editable,
-    rightButtons: [
-      {
-        text: 'Save',
-        emoji: '✅',
-        onClick: async ({ field }) => {
-            const newName = field.textField.value?.trim();
-            const newColor = field.colorSwatchField.color || '#cccccc';
-
-              if (!newName) {
-                toast('Error: Name required', 5000, "error");
-                return;
-              }
-
-          onSave?.(newName, newColor);
-        },
-      },
-      {
-        text: 'Cancel',
-        emoji: '❌',
-        onClick: () => onCancel?.(),
-      },
-    ],
-  });
-}
+const DEFAULT_COLOR = '#cccccc';
 
 /**
  * Highlights a label visually in the list
@@ -67,29 +32,6 @@ function createLabelHandlers({ label, indentLevel, editable, renderList }) {
 
   const { name, color, uuid } = label.metadata;
 
-  const editButton = {
-    text: 'Edit',
-    emoji: '✏️',
-    onClick: ({ row }) => {
-      const inputRow = createInputRow({
-        defaultName: name,
-        colorSwatchColor: color,
-        indentLevel,
-        editable: true,
-        onSave: async (newName, newColor) => {
-          try {
-            await updateLabel(uuid, newName, newColor);
-            renderList();
-          } catch (err) {
-            toast(err.message, 5000, 'error');
-          }
-        },
-        onCancel: renderList,
-      });
-      row.replaceWith(inputRow);
-    },
-  };
-
   const deleteButton = {
     text: 'Delete',
     emoji: '🗑️',
@@ -108,25 +50,32 @@ function createLabelHandlers({ label, indentLevel, editable, renderList }) {
     text: 'Add Child',
     emoji: '➕',
     onClick: ({ row }) => {
-      const childRow = createInputRow({
-        indentLevel: indentLevel + 1,
-        editable: true,
-        onSave: async (newName, newColor) => {
-          try {
-            await createNewLabel(newName, newColor, uuid);
+      const childRow = createGenericRow({
+        field: new EditableField({
+          field:
+            new TextBoxColorField({ placeholder: "New Label Name", color: DEFAULT_COLOR }),
+          editMode: true,
+          buttonsLast: true,
+          onSave: async ({ text: newText, color: newColor }) => {
+            try {
+              await createNewLabel(newText, newColor, uuid);
+              renderList();
+            } catch (err) {
+              toast(err.message, 5000, 'error');
+            }
+          },
+          onCancel: () => {
             renderList();
-          } catch (err) {
-            toast(err.message, 5000, 'error');
           }
-        },
-        onCancel: () => childRow.remove(),
+        }),
+        indentLevel: indentLevel + 1,
       });
       row.after(childRow);
     },
   };
 
   return {
-    leftButtons: [addChildButton, editButton, deleteButton],
+    leftButtons: [addChildButton, deleteButton],
     rightButtons: [],
   };
 }
@@ -134,17 +83,33 @@ function createLabelHandlers({ label, indentLevel, editable, renderList }) {
 /**
  * Recursively renders a label and its children
  */
-function renderLabel(label, container, indentLevel, editable, onSelectCallback, renderList) {
+function renderLabel(label, container, indentLevel, editable, onSelectCallback, rerenderCallback) {
   const { name, color, uuid } = label.metadata;
 
   // Generate left/right buttons objects from handler
   const { leftButtons, rightButtons } = editable
-    ? createLabelHandlers({ label, indentLevel, editable, renderList })
+    ? createLabelHandlers({ label, indentLevel, editable, renderList: rerenderCallback })
     : { leftButtons: [], rightButtons: [] };
 
   // Create row once, passing the button specs into createGenericRow
   const labelRow = createGenericRow({
-    field: new TextBoxColorField({ text: name, placeholder: "New Label Name", color: color }),
+    field: new EditableField({
+      field: new TextBoxColorField({ text: name, placeholder: "New Label Name", color: color }),
+      buttonsLast: true,
+      ...(editable && {
+        onSave: async ({ text: newText, color: newColor }) => {
+          try {
+            await updateLabel(uuid, newText, newColor);
+            rerenderCallback();
+          } catch (err) {
+            toast(err.message, 5000, 'error');
+          }
+        },
+        onCancel: async () => {
+          rerenderCallback();
+        },
+      })
+    }),
     indentLevel,
     leftButtons,
     rightButtons,
@@ -164,7 +129,7 @@ function renderLabel(label, container, indentLevel, editable, onSelectCallback, 
 
   // Render children
   label.children.forEach(child =>
-    renderLabel(child, container, indentLevel + 1, editable, onSelectCallback, renderList)
+    renderLabel(child, container, indentLevel + 1, editable, onSelectCallback, rerenderCallback)
   );
 }
 
@@ -193,9 +158,11 @@ export async function renderLabelList({ target = 'labels-list', editable = true,
     // Add "Add new root label" row
     if (editable) {
       const newRootRow = createGenericRow({
-        field: new TextBoxColorField({ text: '', placeholder: "New Root Label Name", color: '#cccccc' }),
+        field: new EditableField({
+          field: new TextBoxColorField({ text: '', placeholder: "New Root Label Name", color: DEFAULT_COLOR }),
+          editMode: true,
+        }),
         indentLevel: 0,
-        editable: true,
         leftButtons: [
           {
             text: 'Refresh',
@@ -206,8 +173,8 @@ export async function renderLabelList({ target = 'labels-list', editable = true,
             text: 'Add label',
             emoji: '➕',
             onClick: async ({ field }) => {
-              const name = field.textField.value?.trim();
-              const color = field.colorSwatchField.color || '#cccccc';
+              const name = field.getValue().text?.trim();
+              const color = field.getValue().color || DEFAULT_COLOR;
 
               if (!name) {
                 toast('Error: Name required', 5000, "error");

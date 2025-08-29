@@ -30,4 +30,8 @@ export class RadioField extends Field {
     span.textContent = this.value || '(none)';
     return span;
   }
+
+  getValue() {
+    return { option: this.value || null };
+  }
 }

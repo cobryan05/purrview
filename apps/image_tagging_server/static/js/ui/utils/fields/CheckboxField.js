@@ -30,4 +30,8 @@ export class CheckboxField extends Field {
     span.textContent = this.value?.length ? this.value.join(', ') : '(none)';
     return span;
   }
+
+  getValue() {
+    return { options: this.value || [] };
+  }
 }

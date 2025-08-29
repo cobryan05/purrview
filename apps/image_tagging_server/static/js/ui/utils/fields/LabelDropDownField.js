@@ -66,4 +66,8 @@ export class LabelDropDownField extends Field {
 
     return container;
   }
+
+  getValue() {
+    return { option: this.value || null };
+  }
 }

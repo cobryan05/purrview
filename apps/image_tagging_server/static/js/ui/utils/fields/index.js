@@ -6,3 +6,4 @@ export { LabelDropDownField } from './LabelDropDownField.js';
 export { RadioField } from './RadioField.js';
 export { TextBoxColorField } from './TextBoxColorField.js';
 export { TextField } from './TextField.js';
+export { EditableField } from './EditableField.js';

@@ -74,4 +74,8 @@ export class DropDownField extends Field {
 
     return span;
   }
+
+  getValue() {
+    return { option: this.value || null }; // Return the current selection or null if no value is selected
+  }
 }

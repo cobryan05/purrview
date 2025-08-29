@@ -3,10 +3,10 @@ import { TextField } from './TextField.js';
 import { ColorSwatchField } from './ColorSwatchField.js';
 
 export class TextBoxColorField extends Field {
-  constructor({ text = '', color = '#cccccc', editable = false, placeholder = '', textOnLeft = false, onTextChange, onColorChange } = {}) {
+  constructor({ text = '', color = '#cccccc', placeholder = '', textOnLeft = false, onTextChange, onColorChange } = {}) {
     super();
-    this.textField = new TextField({ value: text, editable, placeholder, onChange: onTextChange });
-    this.colorSwatchField = new ColorSwatchField({ color, editable, onChange: onColorChange });
+    this.textField = new TextField({ value: text, placeholder, onChange: onTextChange });
+    this.colorSwatchField = new ColorSwatchField({ color, onChange: onColorChange });
     this.textOnLeft = textOnLeft
   }
 
@@ -37,5 +37,12 @@ export class TextBoxColorField extends Field {
     }
 
     return container;
+  }
+
+  getValue() {
+    return {
+      ...this.textField.getValue(),
+      ...this.colorSwatchField.getValue(),
+    };
   }
 }
