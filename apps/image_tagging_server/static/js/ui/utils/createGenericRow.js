@@ -44,7 +44,7 @@ export function createGenericRow({
     container.style.gap = '0.15em';
     const inputHeight = 28;
     btns.forEach(({ text, emoji, onClick }) => {
-      const btn = createEmojiButton({ text, emoji, onClick: () => onClick?.({ row, field }) });
+      const btn = createEmojiButton({ text, emoji, onClick: () => onClick?.({ field }) });
       container.appendChild(btn);
     });
     return container;

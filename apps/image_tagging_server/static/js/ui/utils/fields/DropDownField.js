@@ -18,12 +18,13 @@ export class DropDownField extends Field {
       const optionEl = document.createElement('option');
 
       // Handle flat strings or objects
+      optionEl.dataset.value = opt
       if (typeof opt === 'string') {
-        optionEl.value = opt;
+        optionEl.value = opt
         optionEl.textContent = opt;
       } else if (typeof opt === 'object') {
         const key = opt.key || opt.text; // Use key if provided, otherwise fallback to text
-        optionEl.value = key;
+        optionEl.value = opt.key
         optionEl.textContent = opt.text;
         if (opt.color) {
           optionEl.style.color = opt.color; // Apply color to the dropdown option
@@ -31,7 +32,7 @@ export class DropDownField extends Field {
       }
 
       // Mark the selected option
-      if (this.value && this.value === optionEl.value) {
+      if (this.isMatchingOption(opt, this.value)) {
         optionEl.selected = true;
       }
 
@@ -50,14 +51,7 @@ export class DropDownField extends Field {
     const span = document.createElement('span');
 
     // Find the selected option
-    const selectedOption = this.options.find(opt => {
-      if (typeof opt === 'string') {
-        return opt === this.value;
-      } else if (typeof opt === 'object') {
-        return (opt.key || opt.text) === this.value;
-      }
-      return false;
-    });
+    const selectedOption = this.options.find(opt => this.isMatchingOption(opt, this.value));
 
     if (selectedOption) {
       if (typeof selectedOption === 'string') {
@@ -76,6 +70,22 @@ export class DropDownField extends Field {
   }
 
   getValue() {
-    return { option: this.value || null }; // Return the current selection or null if no value is selected
+    const selectedOption = this.options.find(opt => this.isMatchingOption(opt, this.value));
+    return { option: selectedOption || null }; // Return the current selection or null if no value is selected
+  }
+
+  /**
+ * Checks if an option matches a given value.
+ * @param {string|object} option - The option to check (string or object with a `key` property).
+ * @param {string|object} value - The value to match (string or object with a `key` property).
+ * @returns {boolean} - True if the option matches the value, false otherwise.
+ */
+  isMatchingOption(option, value) {
+    if (typeof option === 'string') {
+      return option === value;
+    } else if (typeof option === 'object') {
+      return option.key === (typeof value === 'object' ? value?.key : value);
+    }
+    return false;
   }
 }

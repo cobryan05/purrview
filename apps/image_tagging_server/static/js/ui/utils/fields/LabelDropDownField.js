@@ -1,6 +1,4 @@
-import { Field } from './Field.js';
-import { DropDownField } from './DropDownField.js';
-import { createButton } from '../createButton.js';
+import { createButton, DropDownField, Field } from '/app-static/js/ui/utils/index.js';
 
 export class LabelDropDownField extends Field {
   constructor({ labelText, value, options, placeholder, onChange, onEdit }) {
@@ -9,6 +7,13 @@ export class LabelDropDownField extends Field {
     this.value = value;                // currently assigned label
     this.options = options;            // all available labels
     this.placeholder = placeholder;
+    this.dropdown = new DropDownField({
+      value: this.value,
+      options: this.options,
+      placeholder: this.placeholder,
+      onChange: this.onChange
+    })
+
     this.onChange = onChange;
     this.onEdit = onEdit;              // callback when "Edit" button clicked
   }
@@ -24,14 +29,7 @@ export class LabelDropDownField extends Field {
     classSpan.style.fontWeight = 'bold';
     container.appendChild(classSpan);
 
-    const dropdown = new DropDownField({
-      value: this.value,
-      options: this.options,
-      placeholder: this.placeholder,
-      onChange: this.onChange
-    }).renderEdit();
-
-    container.appendChild(dropdown);
+    container.appendChild(this.dropdown.renderEdit());
     return container;
   }
 
@@ -49,12 +47,25 @@ export class LabelDropDownField extends Field {
 
     // Assigned label
     const assignedSpan = document.createElement('span');
-    assignedSpan.textContent = this.value || '(unassigned)';
-    if (this.value && this.options.includes(this.value)) {
-      const labelMeta = _cachedLabels && Array.from(_cachedLabels.values()).find(l => l.name === this.value);
-      if (labelMeta?.color) assignedSpan.style.color = labelMeta.color;
-      assignedSpan.style.fontWeight = 'bold';
+    assignedSpan.textContent = this.value?.text || this.value || '(unassigned)';
+
+    if (this.value) {
+      let matchingOption = null;
+
+      if (typeof this.value === 'object' && this.value.key) {
+        // If value is an object, search for a matching 'key' in options
+        matchingOption = this.options.find(option => option.key === this.value.key);
+      } else if (typeof this.value === 'string') {
+        // If value is a string, search for a matching string in options
+        matchingOption = this.options.find(option => option === this.value);
+      }
+
+      if (matchingOption) {
+        if (matchingOption.color) assignedSpan.style.color = matchingOption.color;
+        assignedSpan.style.fontWeight = 'bold';
+      }
     }
+
     container.appendChild(assignedSpan);
 
     // Edit button
@@ -68,6 +79,6 @@ export class LabelDropDownField extends Field {
   }
 
   getValue() {
-    return { option: this.value || null };
+    return this.dropdown.getValue();
   }
 }
