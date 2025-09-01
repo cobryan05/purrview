@@ -5,16 +5,16 @@ export class RadioField extends Field {
     const container = document.createElement('div');
     const groupName = `radio-${Math.random().toString(36).slice(2)}`;
 
-    this.options.forEach(opt => {
+    this._options.forEach(opt => {
       const label = document.createElement('label');
       const input = document.createElement('input');
       input.type = 'radio';
       input.name = groupName;
       input.value = opt;
-      input.checked = this.value === opt;
+      input.checked = this._value === opt;
       input.addEventListener('change', () => {
-        this.value = opt;
-        this.onChange?.(this.value);
+        this._value = opt;
+        this._onChange?.(this._value);
       });
       label.appendChild(input);
       label.append(opt);
@@ -27,11 +27,11 @@ export class RadioField extends Field {
 
   renderView() {
     const span = document.createElement('span');
-    span.textContent = this.value || '(none)';
+    span.textContent = this._value || '(none)';
     return span;
   }
 
   getValue() {
-    return { option: this.value || null };
+    return { option: this._value || null };
   }
 }

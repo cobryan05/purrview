@@ -1,10 +1,10 @@
 import { Field } from './Field.js';
 
 export class ColorSwatchField extends Field {
-  constructor({ color = '#cccccc', onChange } = {}) {
-    super();
-    this.color = color;
-    this.onChange = onChange;
+  constructor({ color = '#cccccc', onChange, ...rest } = {}) {
+    super(rest);
+    this._color = color;
+    this._onChange = onChange;
   }
 
   renderEdit() {
@@ -13,12 +13,12 @@ export class ColorSwatchField extends Field {
     container.style.width = '1em';
     container.style.height = '1em';
     container.style.borderRadius = '3px';
-    container.style.backgroundColor = this.color;
+    container.style.backgroundColor = this._color;
     container.style.cursor = 'pointer';
 
     const colorInput = document.createElement('input');
     colorInput.type = 'color';
-    colorInput.value = this.color;
+    colorInput.value = this._color;
     colorInput.style.cssText = `
       opacity: 0;
       pointer-events: 'auto';
@@ -32,9 +32,9 @@ export class ColorSwatchField extends Field {
     colorInput.disabled = false;
 
     colorInput.addEventListener('input', () => {
-      this.color = colorInput.value;
-      container.style.backgroundColor = this.color;
-      this.onChange?.(this.color);
+      this._color = colorInput.value;
+      container.style.backgroundColor = this._color;
+      this._onChange?.(this._color);
     });
 
     container.appendChild(colorInput);
@@ -46,13 +46,13 @@ export class ColorSwatchField extends Field {
     container.style.width = '1em';
     container.style.height = '1em';
     container.style.borderRadius = '3px';
-    container.style.backgroundColor = this.color;
+    container.style.backgroundColor = this._color;
     return container;
   }
 
   getValue() {
     return {
-      color: this.color
+      color: this._color
     };
   }
 }

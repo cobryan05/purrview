@@ -1,4 +1,4 @@
-import { createEmojiButton } from '/app-static/js/ui/utils/index.js'
+import { createEmojiButton } from './createButton.js'
 
 /**
  * Creates a generic row with optional color swatch, label/input field, and action buttons.

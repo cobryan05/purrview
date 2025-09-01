@@ -122,7 +122,7 @@ class FfmpegImageProvider(ImageProvider):
             "video_path": {
                 "type": "string",
                 "required": True,
-                "description": "Path to pass to ffmpeg (eg, rtsp://, local url. etc)",
+                "description": "Path to pass to ffmpeg (eg, rtsp://, server-local url path, etc)",
             },
             "rtsp_relay": {
                 "type": "boolean",

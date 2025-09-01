@@ -1,21 +1,19 @@
-import { createButton, DropDownField, Field } from '/app-static/js/ui/utils/index.js';
+import { DropDownField } from './DropDownField.js';
+import { Field } from './Field.js';
+
+import { createButton } from '/app-static/js/ui/utils/index.js';
 
 export class LabelDropDownField extends Field {
-  constructor({ labelText, value, options, placeholder, onChange, onEdit }) {
-    super();
-    this.labelText = labelText;        // model class name
-    this.value = value;                // currently assigned label
-    this.options = options;            // all available labels
-    this.placeholder = placeholder;
-    this.dropdown = new DropDownField({
-      value: this.value,
-      options: this.options,
-      placeholder: this.placeholder,
-      onChange: this.onChange
+  constructor({ labelText, onEdit, ...rest }) {
+    super(rest);
+    this._labelText = labelText;        // model class name
+    this._dropdown = new DropDownField({
+      value: this._value,
+      options: this._options,
+      placeholder: this._placeholder,
+      onChange: this._onChange
     })
-
-    this.onChange = onChange;
-    this.onEdit = onEdit;              // callback when "Edit" button clicked
+    this._onEdit = onEdit;              // callback when "Edit" button clicked
   }
 
   renderEdit() {
@@ -25,11 +23,11 @@ export class LabelDropDownField extends Field {
     container.style.gap = '0.5em';
 
     const classSpan = document.createElement('span');
-    classSpan.textContent = this.labelText;
+    classSpan.textContent = this._labelText;
     classSpan.style.fontWeight = 'bold';
     container.appendChild(classSpan);
 
-    container.appendChild(this.dropdown.renderEdit());
+    container.appendChild(this._dropdown.renderEdit());
     return container;
   }
 
@@ -41,23 +39,23 @@ export class LabelDropDownField extends Field {
 
     // Model class label
     const classSpan = document.createElement('span');
-    classSpan.textContent = this.labelText;
+    classSpan.textContent = this._labelText;
     classSpan.style.fontWeight = 'bold';
     container.appendChild(classSpan);
 
     // Assigned label
     const assignedSpan = document.createElement('span');
-    assignedSpan.textContent = this.value?.text || this.value || '(unassigned)';
+    assignedSpan.textContent = this._value?.text || this._value || '(unassigned)';
 
-    if (this.value) {
+    if (this._value) {
       let matchingOption = null;
 
-      if (typeof this.value === 'object' && this.value.key) {
+      if (typeof this._value === 'object' && this._value.key) {
         // If value is an object, search for a matching 'key' in options
-        matchingOption = this.options.find(option => option.key === this.value.key);
-      } else if (typeof this.value === 'string') {
+        matchingOption = this._options.find(option => option.key === this._value.key);
+      } else if (typeof this._value === 'string') {
         // If value is a string, search for a matching string in options
-        matchingOption = this.options.find(option => option === this.value);
+        matchingOption = this._options.find(option => option === this._value);
       }
 
       if (matchingOption) {
@@ -69,9 +67,9 @@ export class LabelDropDownField extends Field {
     container.appendChild(assignedSpan);
 
     // Edit button
-    if (this.onEdit) {
+    if (this._onEdit) {
       const editBtn = createButton('emoji-button', 'Edit', '✏️');
-      editBtn.onclick = this.onEdit;
+      editBtn.onclick = this._onEdit;
       container.appendChild(editBtn);
     }
 
@@ -79,6 +77,6 @@ export class LabelDropDownField extends Field {
   }
 
   getValue() {
-    return this.dropdown.getValue();
+    return this._dropdown.getValue();
   }
 }

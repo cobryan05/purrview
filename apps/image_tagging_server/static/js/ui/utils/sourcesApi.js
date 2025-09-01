@@ -93,7 +93,7 @@ export async function fetchImageProviderSchema(providerName) {
 /**
  * Create a new source.
  */
-export async function createSource(sourceName, imageProvider = null, params = {}) {
+export async function createSource({ sourceName, imageProvider = null, params = {} }) {
   const res = await fetch('/api/sources/create', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

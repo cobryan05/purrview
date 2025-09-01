@@ -1,13 +1,14 @@
-import { createEmojiButton } from '/app-static/js/ui/utils/index.js';
 import { Field } from './Field.js';
+
+import { createEmojiButton } from '/app-static/js/ui/utils/index.js';
 
 export class EditableField extends Field {
   constructor({ field, onSave = null, onCancel = null, editMode = false, buttonsLast = false } = {}) {
     super({ editMode });
-    this.wrappedField = field;
-    this.onSave = onSave;
-    this.onCancel = onCancel;
-    this.buttonsLast = buttonsLast;
+    this._wrappedField = field;
+    this._onSave = onSave;
+    this._onCancel = onCancel;
+    this._buttonsLast = buttonsLast;
   }
 
   renderView() {
@@ -18,18 +19,18 @@ export class EditableField extends Field {
 
     const editButton = createEmojiButton({
       text: 'Edit', emoji: '✏️', onClick: () => {
-        this.editMode = true;
+        this._editMode = true;
         this._rerender(container);
       }
     });
-    const fieldView = this.wrappedField.renderView();
+    const fieldView = this._wrappedField.renderView();
 
     const elements = [];
-    if (this.onSave && this.onCancel) {
+    if (this._onSave && this._onCancel) {
       elements.push(editButton);
     }
     elements.push(fieldView);
-    if (this.buttonsLast) {
+    if (this._buttonsLast) {
       elements.reverse();
     }
 
@@ -44,21 +45,21 @@ export class EditableField extends Field {
     container.style.gap = '0.5em';
     container.style.alignItems = 'start'; // top-align buttons
 
-    const fieldEdit = this.wrappedField.renderEdit();
+    const fieldEdit = this._wrappedField.renderEdit();
 
     const saveButton = createEmojiButton({
       text: 'Save', emoji: '✅', onClick: () => {
-        const newValue = this.wrappedField.getValue();
-        this.onSave?.(newValue);
-        this.editMode = false;
+        const newValue = this._wrappedField.getValue();
+        this._onSave?.(newValue);
+        this._editMode = false;
         this._rerender(container);
       }
     });
 
     const cancelButton = createEmojiButton({
       text: 'Cancel', emoji: '❌', onClick: () => {
-        this.onCancel?.();
-        this.editMode = false;
+        this._onCancel?.();
+        this._editMode = false;
         this._rerender(container);
       }
     });
@@ -72,8 +73,8 @@ export class EditableField extends Field {
     middle.appendChild(fieldEdit);
 
     // Decide where to put buttons
-    if (this.onSave && this.onCancel) {
-      if (this.buttonsLast) {
+    if (this._onSave && this._onCancel) {
+      if (this._buttonsLast) {
         // Put both buttons to the right of the field
         right.appendChild(saveButton);
         right.appendChild(cancelButton);
@@ -93,11 +94,11 @@ export class EditableField extends Field {
 
   _rerender(container) {
     container.innerHTML = '';
-    const newContent = this.editMode ? this.renderEdit() : this.renderView();
+    const newContent = this._editMode ? this.renderEdit() : this.renderView();
     container.replaceWith(newContent);
   }
 
   getValue() {
-    return this.wrappedField.getValue();
+    return this._wrappedField.getValue();
   }
 }

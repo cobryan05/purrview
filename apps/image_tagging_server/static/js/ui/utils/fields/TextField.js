@@ -4,24 +4,24 @@ export class TextField extends Field {
   renderEdit() {
     const input = document.createElement('input');
     input.type = 'text';
-    input.value = this.value || '';
-    input.placeholder = this.placeholder;
+    input.value = this._value || '';
+    input.placeholder = this._placeholder;
     input.addEventListener('input', () => {
-      this.value = input.value;
-      this.onChange?.(this.value);
+      this._value = input.value;
+      this._onChange?.(this._value);
     });
     return input;
   }
 
   renderView() {
     const span = document.createElement('span');
-    span.textContent = this.value || '(empty)';
+    span.textContent = this._value || '(empty)';
     return span;
   }
 
   getValue() {
     return {
-      text: this.value
+      text: this._value
     };
   }
 }

@@ -1,7 +1,6 @@
 // ================= Sources Manager =================
-import { fetchImageProviderList, getParamsFromForm, pollTaskStatus, renderSchemaForm } from './utils.js';
-import { refreshImageProvidersCache } from './utils/sourcesApi.js';
-import { createButton, createGenericRow, deleteSources, EditableField, fetchImageProviderSchema, refreshSourceCache, SourceConfigField, TextField, toast } from '/app-static/js/ui/utils/index.js';
+import { EditableField, SourceConfigField } from '/app-static/js/ui/utils/fields/index.js';
+import { createSource, createGenericRow, deleteSources, fetchImageProviderSchema, refreshImageProvidersCache, refreshSourceCache, toast } from '/app-static/js/ui/utils/index.js';
 
 /**
  * Creates a row for a single source with editable buttons
@@ -87,7 +86,7 @@ export async function renderSourceForm({ parent, existingSource = null, onCreate
   formTitle.textContent = existingSource ? 'Edit Source' : 'Create New Source';
   parent.appendChild(formTitle);
 
-  const newSourceField = new SourceConfigField({ name: '', typename: '', schema: {} });
+  const newSourceField = new SourceConfigField({ name: '', typename: '', schema: {}, editMode: true });
   parent.appendChild(newSourceField.renderEdit());
   // const providerSelect = document.createElement('select');
   // providerSelect.required = true;
@@ -275,12 +274,46 @@ export async function renderSourceManager({ target = 'sources-box' }) {
 
   container.appendChild(document.createElement('hr'));
 
-  const newFormContainer = document.createElement('div');
-  await renderSourceForm({
-    parent: newFormContainer,
-    onCreate: refresh
-  });
-  container.appendChild(newFormContainer);
+  const saveBtnInfo = {
+    text: 'Save', emoji: '✅', onClick: async ({ field }) => {
+      const {text, typename, schema} = field.getValue()
+      try {
+        await createSource({sourceName:text, imageProvider:typename, params:schema})
+      } catch (error) {
+        console.error('Error saving source:', error)
+      }
+
+      ///export async function createSource(sourceName, imageProvider = null, params = {}) {
+      // Handle save action
+
+      //   const url = existingSource ? '/api/sources/update' : '/api/sources/create';
+      //   const res = await fetch(url, {
+      //     method: 'POST',
+      //     headers: { 'Content-Type': 'application/json' },
+      //     body: JSON.stringify(payload),
+      //   });
+      //   const result = await res.json();
+
+      //   if (result.status === 'success') {
+      //     toast('Saved successfully', 3000, 'success');
+      //     if (onCreate) onCreate();
+      //     parent.innerHTML = '';
+      //   } else {
+      //     toast(result.message || 'Unknown error', 5000, 'error');
+      //   }
+      // };
+      //}
+    }
+  };
+  const testBtnInfo = { text: 'Test Source', emoji: '🧪', onClick: async ({ field }) => { } };
+  const newSourceRow = createGenericRow(
+    {
+      field: new SourceConfigField({ name: '', typename: '', schema: {}, editMode: true }),
+      rightButtons: [saveBtnInfo, testBtnInfo],
+      editMode: true
+    });
+
+  container.appendChild(newSourceRow);
 }
 
 

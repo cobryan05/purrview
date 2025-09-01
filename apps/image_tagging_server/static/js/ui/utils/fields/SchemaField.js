@@ -1,10 +1,11 @@
-import { Field, TextField } from '/app-static/js/ui/utils/index.js';
+import { Field } from './Field.js';
+import { fieldFactories } from './Factories.js';
 
 export class SchemaField extends Field {
   constructor({ schema = {}, values = {}, onChange = null } = {}) {
     super({ onChange });
-    this.schema = schema; // The schema definition
-    this.values = values; // Current values for the fields
+    this._schema = schema; // The schema definition
+    this._values = values; // Current values for the fields
   }
 
   /**
@@ -17,7 +18,7 @@ export class SchemaField extends Field {
     container.style.flexDirection = 'column';
     container.style.gap = '0.5em';
 
-    Object.entries(this.schema).forEach(([fieldName, fieldMeta]) => {
+    Object.entries(this._schema).forEach(([fieldName, fieldMeta]) => {
       const fieldContainer = document.createElement('div');
       fieldContainer.style.display = 'flex';
       fieldContainer.style.flexDirection = 'column';
@@ -29,11 +30,11 @@ export class SchemaField extends Field {
       fieldContainer.appendChild(label);
 
       // Input
-      const input = this.createInputField(fieldName, fieldMeta);
-      input.value = this.values[fieldName] || '';
+      const input = this._createInputField(fieldName, fieldMeta);
+      input.value = this._values[fieldName] || '';
       input.onchange = () => {
-        this.values[fieldName] = input.type === 'checkbox' ? input.checked : input.value;
-        this.onChange?.(this.values);
+        this._values[fieldName] = input.type === 'checkbox' ? input.checked : input.value;
+        this._onChange?.(this._values);
       };
       fieldContainer.appendChild(input);
 
@@ -53,7 +54,7 @@ export class SchemaField extends Field {
     container.style.flexDirection = 'column';
     container.style.gap = '0.5em';
 
-    Object.entries(this.schema).forEach(([fieldName, fieldMeta]) => {
+    Object.entries(this._schema).forEach(([fieldName, fieldMeta]) => {
       const fieldContainer = document.createElement('div');
       fieldContainer.style.display = 'flex';
       fieldContainer.style.flexDirection = 'column';
@@ -66,7 +67,7 @@ export class SchemaField extends Field {
 
       // Value
       const value = document.createElement('span');
-      value.textContent = this.values[fieldName] || '(none)';
+      value.textContent = this._values[fieldName] || '(none)';
       fieldContainer.appendChild(value);
 
       container.appendChild(fieldContainer);
@@ -81,64 +82,35 @@ export class SchemaField extends Field {
    * @param {object} fieldMeta - Metadata for the field (e.g., type, required).
    * @returns {HTMLElement} The input element.
    */
-  createInputField(fieldName, fieldMeta) {
-    let input;
+  _createInputField(fieldName, fieldMeta) {
+    const factory = fieldFactories[fieldMeta.type];
+    let field;
 
-    switch (fieldMeta.type) {
-      case 'text':
-        field = new TextField({
-          placeholder: fieldMeta.placeholder || '',
-          value: this.values[fieldName] || '',
-          onChange: (value) => {
-            this.values[fieldName] = value;
-            this.onChange?.(this.values);
-          }
-        });
-        input = field.renderView();
-        break;
-
-      case 'number':
-        input = document.createElement('input');
-        input.type = 'number';
-        input.placeholder = fieldMeta.placeholder || '';
-        break;
-
-      case 'boolean':
-        input = document.createElement('input');
-        input.type = 'checkbox';
-        input.checked = !!this.values[fieldName];
-        break;
-
-      case 'select':
-        input = document.createElement('select');
-        (fieldMeta.options || []).forEach(option => {
-          const opt = document.createElement('option');
-          opt.value = option.value || option;
-          opt.textContent = option.label || option;
-          input.appendChild(opt);
-        });
-        break;
-
-      default:
-        input = document.createElement('input');
-        input.type = 'text';
-        input.placeholder = fieldMeta.placeholder || '';
-        break;
+    if (factory) {
+      field = factory(fieldName, fieldMeta, this._values, this._onChange);
+    } else {
+      // Fallback generic input
+      field = document.createElement('input');
+      field.type = 'text';
+      field.placeholder = `Unhandled type: ${fieldMeta.type}`;
     }
 
-    if (fieldMeta.required) {
-      input.required = true;
+    if (fieldMeta.required && field instanceof HTMLElement) {
+      field.required = true;
     }
 
-    input.name = fieldName;
-    return input;
+    field.name = fieldName;
+
+    // If it’s a custom field class, render it
+    return field.renderEdit ? field.renderEdit() : field;
   }
+
 
   /**
    * Returns the current values of the form.
    * @returns {object} The current values.
    */
   getValue() {
-    return this.values;
+    return this._values;
   }
 }

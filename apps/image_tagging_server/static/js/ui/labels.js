@@ -1,7 +1,8 @@
 // labels.js
 import { getCurrentLabelUuid } from '/app-static/js/canvas/state.js';
 import { getTool } from '/app-static/js/canvas/tools.js';
-import { createGenericRow, createNewLabel, deleteLabel, EditableField, getAllLabels, refreshLabelCache, TextBoxColorField, toast, updateLabel } from '/app-static/js/ui/utils/index.js';
+import { createGenericRow, createNewLabel, deleteLabel, getAllLabels, refreshLabelCache, toast, updateLabel } from '/app-static/js/ui/utils/index.js';
+import { EditableField, TextBoxColorField } from '/app-static/js/ui/utils/fields/index.js';
 
 const DEFAULT_COLOR = '#cccccc';
 

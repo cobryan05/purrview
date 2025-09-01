@@ -9,16 +9,16 @@ export class DropDownField extends Field {
     const select = document.createElement('select');
 
     // Add placeholder if no value is set
-    if (!this.value) {
+    if (!this._value) {
       const placeholderOption = document.createElement('option');
       placeholderOption.value = '';
-      placeholderOption.textContent = this.placeholder || 'Select...';
+      placeholderOption.textContent = this._placeholder || 'Select...';
       placeholderOption.disabled = true;
       placeholderOption.selected = true;
       select.appendChild(placeholderOption);
     }
 
-    this.options.forEach(opt => {
+    this._options.forEach(opt => {
       const optionEl = document.createElement('option');
 
       if (typeof opt === 'string') {
@@ -30,7 +30,7 @@ export class DropDownField extends Field {
         if (opt.color) optionEl.style.color = opt.color;
       }
 
-      if (this.isMatchingOption(opt, this.value)) {
+      if (this._isMatchingOption(opt, this._value)) {
         optionEl.selected = true;
       }
 
@@ -38,8 +38,8 @@ export class DropDownField extends Field {
     });
 
     select.addEventListener('change', () => {
-      this.value = select.value;
-      this.onChange?.(this.value);
+      this._value = select.value;
+      this._onChange?.(this._value);
     });
 
     return select;
@@ -47,7 +47,7 @@ export class DropDownField extends Field {
 
   renderView() {
     const span = document.createElement('span');
-    const selectedOption = this.options.find(opt => this.isMatchingOption(opt, this.value));
+    const selectedOption = this._options.find(opt => this._isMatchingOption(opt, this._value));
 
     if (selectedOption) {
       if (typeof selectedOption === 'string') {
@@ -64,11 +64,11 @@ export class DropDownField extends Field {
   }
 
   getValue() {
-    const selectedOption = this.options.find(opt => this.isMatchingOption(opt, this.value));
+    const selectedOption = this._options.find(opt => this._isMatchingOption(opt, this._value));
     return { option: selectedOption ?? null };
   }
 
-  isMatchingOption(option, value) {
+  _isMatchingOption(option, value) {
     if (typeof option === 'string') {
       return option === value;
     } else if (typeof option === 'object') {
