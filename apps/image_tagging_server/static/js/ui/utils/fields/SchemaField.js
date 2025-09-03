@@ -30,13 +30,13 @@ export class SchemaField extends Field {
       fieldContainer.appendChild(label);
 
       // Input
-      const input = this._createInputField(fieldName, fieldMeta);
-      input.value = this._values[fieldName] || '';
-      input.onchange = () => {
-        this._values[fieldName] = input.type === 'checkbox' ? input.checked : input.value;
+      const inputField = this._createInputField(fieldName, fieldMeta);
+      //inputField.value = this._values[fieldName] || '';
+      inputField.onChange = () => {
+        this._values[fieldName] = inputField.getValue(); //inputField.type === 'checkbox' ? inputField.checked : inputField.value;
         this._onChange?.(this._values);
       };
-      fieldContainer.appendChild(input);
+      fieldContainer.appendChild(inputField.renderEdit());
 
       container.appendChild(fieldContainer);
     });
@@ -80,7 +80,7 @@ export class SchemaField extends Field {
    * Creates an input field based on the schema metadata.
    * @param {string} fieldName - The name of the field.
    * @param {object} fieldMeta - Metadata for the field (e.g., type, required).
-   * @returns {HTMLElement} The input element.
+   * @returns {Field} The input field
    */
   _createInputField(fieldName, fieldMeta) {
     const factory = fieldFactories[fieldMeta.type];
@@ -102,7 +102,7 @@ export class SchemaField extends Field {
     field.name = fieldName;
 
     // If it’s a custom field class, render it
-    return field.renderEdit ? field.renderEdit() : field;
+    return field
   }
 
 

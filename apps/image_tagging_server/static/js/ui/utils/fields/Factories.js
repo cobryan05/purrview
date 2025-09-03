@@ -1,6 +1,7 @@
 // fieldFactories.js
 import { ArrayField } from './ArrayField.js'
 import { CheckboxField } from './CheckboxField.js';
+import { BooleanCheckboxField } from './BooleanField.js';
 import { TextField } from './TextField.js'
 
 // Factory map
@@ -35,14 +36,14 @@ export const fieldFactories = {
   },
 
   boolean(fieldName, fieldMeta, values, onChange) {
-    const { type, required, description, items, options, ...rest } = fieldMeta;
+    const { type, required, description, ...rest } = fieldMeta;
 
-    return new CheckboxField({
+    return new BooleanCheckboxField({
+      label: description || fieldName,
+      value: !!values[fieldName],
       ...rest,
-      value: values[fieldName] ? [fieldName] : [],
-      options: [{ key: fieldName, text: description || fieldName }],
       onChange: (val) => {
-        values[fieldName] = !!val.length;
+        values[fieldName] = !!val;
         onChange?.(values);
       }
     });
@@ -90,7 +91,7 @@ export const fieldFactories = {
             ...items,
             value: val || '',
             placeholder: `Unhandled array item type: ${itemType}`,
-            onChange: () => {}
+            onChange: () => { }
           });
         }
 
@@ -98,7 +99,7 @@ export const fieldFactories = {
           fieldName,
           { ...items },
           { [fieldName]: val },
-          () => {}
+          () => { }
         );
       }
     });

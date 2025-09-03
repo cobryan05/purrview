@@ -93,15 +93,15 @@ export async function fetchImageProviderSchema(providerName) {
 /**
  * Create a new source.
  */
-export async function createSource({ sourceName, imageProvider = null, params = {} }) {
+export async function createSource({ name, providerName = null, params = {} }) {
   const res = await fetch('/api/sources/create', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ source_name: sourceName, image_provider: imageProvider, params }),
+    body: JSON.stringify({ source_name: name, image_provider: providerName, params }),
   });
 
   if (res.ok) {
-    _sources.add(sourceName);
+    _sources.add(name);
   } else {
     const error = await res.json();
     throw new Error(error.message || 'Failed to create source');
@@ -111,11 +111,11 @@ export async function createSource({ sourceName, imageProvider = null, params = 
 /**
  * Update an existing source.
  */
-export async function updateSource(sourceUuid, sourceName, imageProvider, params) {
+export async function updateSource({uuid, name, providerName, params}) {
   const res = await fetch('/api/sources/update', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ source_uuid: sourceUuid, source_name: sourceName, image_provider: imageProvider, params }),
+    body: JSON.stringify({ source_uuid: uuid, source_name: name, image_provider: providerName, params }),
   });
 
   if (!res.ok) {
@@ -127,19 +127,19 @@ export async function updateSource(sourceUuid, sourceName, imageProvider, params
 /**
  * Delete a source.
  */
-export async function deleteSources(sourceUuids) {
-  if (!Array.isArray(sourceUuids)) {
-    sourceUuids = [sourceUuids];
+export async function deleteSources({uuids}) {
+  if (!Array.isArray(uuids)) {
+    uuids = [uuids];
   }
 
   const res = await fetch('/api/sources/delete', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ source_uuids: [sourceUuid] }),
+    body: JSON.stringify({ source_uuids: uuids }),
   });
 
   if (res.ok) {
-    sourceUuids.forEach(sourceUuid => _sources.delete(sourceUuid));
+    uuids.forEach(sourceUuid => _sources.delete(sourceUuid));
   } else {
     const error = await res.json();
     throw new Error(error.message || 'Failed to delete source');

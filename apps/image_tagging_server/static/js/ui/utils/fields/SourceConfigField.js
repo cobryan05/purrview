@@ -10,7 +10,7 @@ export class SourceConfigField extends Field {
 
     const imageProviders = getImageProviderList();
     this._textField = new TextField({ value: name, placeholder: 'Enter new source name' });
-    this._schemaField = new SchemaField({ schema: schema ?? {} });
+    this._schemaField = new SchemaField({ schema: schema ?? {}, values: this._value });
 
     // Initialize DropDownField with onChange
     this._dropDownField = new DropDownField({
@@ -21,8 +21,8 @@ export class SourceConfigField extends Field {
           const fetchedSchema = await fetchImageProviderSchema(newTypename);
           this._schemaField = new SchemaField({ schema: fetchedSchema });
           this._rerenderSchema();
-        } catch (error) {
-          error('Failed to fetch schema:', error);
+        } catch (err) {
+          error('Failed to fetch schema:', err);
         }
       }
     });

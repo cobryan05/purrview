@@ -1,12 +1,12 @@
 // ================= Sources Manager =================
 import { EditableField, SourceConfigField } from '/app-static/js/ui/utils/fields/index.js';
-import { createSource, createGenericRow, deleteSources, fetchImageProviderSchema, refreshImageProvidersCache, refreshSourceCache, toast } from '/app-static/js/ui/utils/index.js';
+import { createGenericRow, createSource, deleteSources, fetchImageProviderSchema, refreshImageProvidersCache, refreshSourceCache, toast, updateSource } from '/app-static/js/ui/utils/index.js';
 
 /**
  * Creates a row for a single source with editable buttons
  */
 async function createSourceRow({ source, editable = false, renderList, onEdit, onDelete }) {
-  const { name, typename, uuid } = source;
+  const { name, typename, uuid, params } = source;
 
   const deleteButton = {
     text: 'Delete',
@@ -14,7 +14,7 @@ async function createSourceRow({ source, editable = false, renderList, onEdit, o
     onClick: async () => {
       if (!window.confirm(`Are you sure you want to delete "${name}"?`)) return;
       try {
-        await deleteSources(uuid);
+        await deleteSources({ uuids: [uuid] });
         onDelete?.();
       } catch (error) {
         toast(error.message || 'Failed to delete source', 5000, 'error');
@@ -24,28 +24,20 @@ async function createSourceRow({ source, editable = false, renderList, onEdit, o
 
   let schema = null;
   try {
-    ({ schema } = await fetchImageProviderSchema(typename))
+    schema = await fetchImageProviderSchema(typename);
   } catch (error) {
     toast(error.message || 'Failed to fetch provider schema', 5000, 'error');
   }
   return createGenericRow({
     field: new EditableField({
-      field: new SourceConfigField({ name, typename, schema }),
-      onSave: async () => {
-        // // Replace row with inline form
-        // const formContainer = document.createElement('div');
-        // row.replaceWith(formContainer);
-
-        // await renderSourceForm({
-        //   parent: formContainer,
-        //   existingSource: source,
-        //   onCreate: renderList,
-        //   onCancel: renderList,
-        // });
+      field: new SourceConfigField({ name, typename, schema, value: params }),
+      onSave: async ({ text: name, typename, schema: filled_schema }) => {
+        // Save changes
+        await updateSource({ uuid, name, providerName: typename, params: filled_schema });
+        await renderList();
       },
       onCancel: async () => {
-        // Handle cancel action
-        //field.setValue(`${typename}: ${name}`);
+        await renderList();
       },
     }),
     indentLevel: 0,
@@ -76,176 +68,56 @@ export async function renderSourceList({ parent, editable = false, onEdit, onDel
   });
 }
 
-/**
- * Renders a form for creating or editing a source
- */
-export async function renderSourceForm({ parent, existingSource = null, onCreate, onCancel }) {
-  parent.innerHTML = '';
 
-  const formTitle = document.createElement('h4');
-  formTitle.textContent = existingSource ? 'Edit Source' : 'Create New Source';
-  parent.appendChild(formTitle);
+// const testBtn = createButton('emoji-button', 'Test', '🧪');
+// testBtn.type = 'button';
+// btnWrapper.appendChild(testBtn);
 
-  const newSourceField = new SourceConfigField({ name: '', typename: '', schema: {}, editMode: true });
-  parent.appendChild(newSourceField.renderEdit());
-  // const providerSelect = document.createElement('select');
-  // providerSelect.required = true;
-  // providerSelect.style.width = '100%';
-  // topRow.appendChild(providerSelect);
+// testBtn.onclick = async () => {
+//   try {
+//     const provider = providerSelect.value;
+//     if (!provider) {
+//       toast("Please fill in provider before testing", 3000, "warning");
+//       return;
+//     }
 
-  // const nameInput = document.createElement('input');
-  // nameInput.type = 'text';
-  // nameInput.placeholder = 'Source name';
-  // nameInput.required = true;
-  // nameInput.style.width = '100%';
-  // topRow.appendChild(nameInput);
+//     const name = nameInput.value;
+//     const providerParams = getParamsFromForm(paramsContainer);
+//     const params = {
+//       provider: provider,
+//       provider_params: providerParams,
+//     };
 
-  // const btnWrapper = document.createElement('div');
-  // btnWrapper.style.display = 'flex';
-  // btnWrapper.style.flexDirection = 'column';
+//     testBtn.disabled = true;
+//     const testResultBox = renderTestResultsBox(form);
+//     testResultBox.hidden = false;
+//     testResultBox.textContent = 'Starting test task...';
+//     const taskUuid = await startPreviewSourceTest({
+//       params
+//     });
 
-  // const submitBtn = createButton('emoji-button', 'Save', '✅');
-  // submitBtn.type = 'submit';
-  // btnWrapper.appendChild(submitBtn);
+//     testResultBox.textContent = 'Running test...';
+//     pollTaskStatus(taskUuid, testResultBox, async (finalResult) => {
+//       testResultBox.textContent += `\nTest ${finalResult.status}: ${finalResult.status_message || ''}`;
+//       testBtn.disabled = false;
 
-  // if (existingSource && onCancel) {
-  //   const cancelBtn = createButton('emoji-button', 'Cancel', '❌');
-  //   cancelBtn.onclick = () => onCancel();
-  //   btnWrapper.appendChild(cancelBtn);
-  // }
+//       // Check for image
+//       if (finalResult.data?.image) {
+//         const img = document.createElement('img');
+//         img.src = `data:image/png;base64,${finalResult.data.image}`;
+//         img.style.maxWidth = '100%';
+//         img.alt = 'Test result image';
+//         testResultBox.appendChild(document.createElement('br'));
+//         testResultBox.appendChild(img);
+//       }
+//     });
 
-  // const testBtn = createButton('emoji-button', 'Test', '🧪');
-  // testBtn.type = 'button';
-  // btnWrapper.appendChild(testBtn);
+//   } catch (err) {
+//     toast(`Test failed: ${err.message}`, 5000, "error");
+//     testBtn.disabled = false;
+//   }
+// };
 
-  // testBtn.onclick = async () => {
-  //   try {
-  //     const provider = providerSelect.value;
-  //     if (!provider) {
-  //       toast("Please fill in provider before testing", 3000, "warning");
-  //       return;
-  //     }
-
-  //     const name = nameInput.value;
-  //     const providerParams = getParamsFromForm(paramsContainer);
-  //     const params = {
-  //       provider: provider,
-  //       provider_params: providerParams,
-  //     };
-
-  //     testBtn.disabled = true;
-  //     const testResultBox = renderTestResultsBox(form);
-  //     testResultBox.hidden = false;
-  //     testResultBox.textContent = 'Starting test task...';
-  //     const taskUuid = await startPreviewSourceTest({
-  //       params
-  //     });
-
-  //     testResultBox.textContent = 'Running test...';
-  //     pollTaskStatus(taskUuid, testResultBox, async (finalResult) => {
-  //       testResultBox.textContent += `\nTest ${finalResult.status}: ${finalResult.status_message || ''}`;
-  //       testBtn.disabled = false;
-
-  //       // Check for image
-  //       if (finalResult.data?.image) {
-  //         const img = document.createElement('img');
-  //         img.src = `data:image/png;base64,${finalResult.data.image}`;
-  //         img.style.maxWidth = '100%';
-  //         img.alt = 'Test result image';
-  //         testResultBox.appendChild(document.createElement('br'));
-  //         testResultBox.appendChild(img);
-  //       }
-  //     });
-
-  //   } catch (err) {
-  //     toast(`Test failed: ${err.message}`, 5000, "error");
-  //     testBtn.disabled = false;
-  //   }
-  // };
-
-  // topRow.appendChild(btnWrapper);
-  // form.appendChild(topRow);
-
-  // const paramsContainer = document.createElement('div');
-  // form.appendChild(paramsContainer);
-
-  // parent.appendChild(form);
-
-  // // Load providers
-  // const providers = await fetchImageProviderList();
-  // providers.forEach(p => {
-  //   const opt = document.createElement('option');
-  //   opt.value = p;
-  //   opt.textContent = p;
-  //   providerSelect.appendChild(opt);
-  // });
-
-  // providerSelect.onchange = async () => {
-  //   const provider = providerSelect.value;
-  //   if (!provider) return;
-
-  //   const schemaRes = await fetch('/api/sources/image-providers/schema', {
-  //     method: 'POST',
-  //     headers: { 'Content-Type': 'application/json' },
-  //     body: JSON.stringify({ image_provider: provider }),
-  //   });
-  //   const schema = await schemaRes.json();
-  //   renderSchemaForm(schema.schema, paramsContainer);
-  // };
-
-  // if (existingSource) {
-  //   nameInput.value = existingSource.name;
-  //   providerSelect.value = existingSource.typename;
-
-  //   const schemaRes = await fetch('/api/sources/image-providers/schema', {
-  //     method: 'POST',
-  //     headers: { 'Content-Type': 'application/json' },
-  //     body: JSON.stringify({ image_provider: existingSource.typename }),
-  //   });
-  //   const schema = await schemaRes.json();
-  //   renderSchemaForm(schema.schema, paramsContainer);
-
-  //   setTimeout(() => {
-  //     Object.entries(existingSource.params || {}).forEach(([key, value]) => {
-  //       const el = paramsContainer.querySelector(`[name="${key}"]`);
-  //       if (!el) return;
-  //       if (el.type === 'checkbox') el.checked = !!value;
-  //       else el.value = value;
-  //     });
-  //   }, 0);
-  // }
-
-  // form.onsubmit = async e => {
-  //   e.preventDefault();
-  //   const provider = providerSelect.value;
-  //   const name = nameInput.value;
-  //   const params = getParamsFromForm(paramsContainer);
-
-  //   const payload = {
-  //     source_name: name,
-  //     image_provider: provider,
-  //     params,
-  //   };
-
-  //   if (existingSource?.uuid) payload.source_uuid = existingSource.uuid;
-
-  //   const url = existingSource ? '/api/sources/update' : '/api/sources/create';
-  //   const res = await fetch(url, {
-  //     method: 'POST',
-  //     headers: { 'Content-Type': 'application/json' },
-  //     body: JSON.stringify(payload),
-  //   });
-  //   const result = await res.json();
-
-  //   if (result.status === 'success') {
-  //     toast('Saved successfully', 3000, 'success');
-  //     if (onCreate) onCreate();
-  //     parent.innerHTML = '';
-  //   } else {
-  //     toast(result.message || 'Unknown error', 5000, 'error');
-  //   }
-  // };
-}
 
 /**
  * Renders the UI for managing sources (list, delete, create).
@@ -268,51 +140,55 @@ export async function renderSourceManager({ target = 'sources-box' }) {
   const list = document.createElement('div');
   container.appendChild(list);
 
-  const refresh = () => renderSourceList({ parent: list, editable: true, onDelete: refresh });
+  const refresh = () =>
+    renderSourceList({ parent: list, editable: true, onDelete: refresh });
 
   await refresh();
 
   container.appendChild(document.createElement('hr'));
 
-  const saveBtnInfo = {
-    text: 'Save', emoji: '✅', onClick: async ({ field }) => {
-      const {text, typename, schema} = field.getValue()
-      try {
-        await createSource({sourceName:text, imageProvider:typename, params:schema})
-      } catch (error) {
-        console.error('Error saving source:', error)
-      }
+  let newSourceRow; // keep a reference so we can replace it later
 
-      ///export async function createSource(sourceName, imageProvider = null, params = {}) {
-      // Handle save action
-
-      //   const url = existingSource ? '/api/sources/update' : '/api/sources/create';
-      //   const res = await fetch(url, {
-      //     method: 'POST',
-      //     headers: { 'Content-Type': 'application/json' },
-      //     body: JSON.stringify(payload),
-      //   });
-      //   const result = await res.json();
-
-      //   if (result.status === 'success') {
-      //     toast('Saved successfully', 3000, 'success');
-      //     if (onCreate) onCreate();
-      //     parent.innerHTML = '';
-      //   } else {
-      //     toast(result.message || 'Unknown error', 5000, 'error');
-      //   }
-      // };
-      //}
-    }
-  };
-  const testBtnInfo = { text: 'Test Source', emoji: '🧪', onClick: async ({ field }) => { } };
-  const newSourceRow = createGenericRow(
-    {
-      field: new SourceConfigField({ name: '', typename: '', schema: {}, editMode: true }),
+  const makeNewSourceRow = () =>
+    createGenericRow({
+      field: new SourceConfigField({
+        name: '',
+        typename: '',
+        schema: {},
+        editMode: true,
+      }),
       rightButtons: [saveBtnInfo, testBtnInfo],
-      editMode: true
+      editMode: true,
     });
 
+  const saveBtnInfo = {
+    text: 'Save',
+    emoji: '✅',
+    onClick: async ({ field }) => {
+      const { text, typename, schema } = field.getValue();
+      try {
+        await createSource({ name: text, providerName: typename, params: schema });
+        await refresh();
+
+        // Replace the row with a fresh blank one
+        const freshRow = makeNewSourceRow();
+        container.replaceChild(freshRow, newSourceRow);
+        newSourceRow = freshRow;
+      } catch (error) {
+        console.error('Error saving source:', error);
+      }
+    },
+  };
+
+  const testBtnInfo = {
+    text: 'Test Source',
+    emoji: '🧪',
+    onClick: async ({ field }) => {
+      // TODO: implement test
+    },
+  };
+
+  newSourceRow = makeNewSourceRow();
   container.appendChild(newSourceRow);
 }
 
