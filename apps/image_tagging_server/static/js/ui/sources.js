@@ -1,6 +1,6 @@
 // ================= Sources Manager =================
 import { EditableField, SourceConfigField } from '/app-static/js/ui/utils/fields/index.js';
-import { createGenericRow, createSource, deleteSources, fetchImageProviderSchema, refreshImageProvidersCache, refreshSourceCache, toast, updateSource } from '/app-static/js/ui/utils/index.js';
+import { createGenericRow, createSource, createTaskConfig, deleteSources, fetchImageProviderSchema, refreshImageProvidersCache, refreshSourceCache, startTask, toast, updateSource } from '/app-static/js/ui/utils/index.js';
 
 /**
  * Creates a row for a single source with editable buttons
@@ -20,6 +20,15 @@ async function createSourceRow({ source, editable = false, renderList, onEdit, o
         toast(error.message || 'Failed to delete source', 5000, 'error');
       }
     }
+  };
+
+  const testBtnInfo = {
+    text: 'Test Source',
+    emoji: '🧪',
+    onClick: async ({ field }) => {
+      const { text: name, typename, schema } = field.getValue();
+      await startPreviewSourceTest({ providerName: typename, params: schema });
+    },
   };
 
   let schema = null;
@@ -43,6 +52,7 @@ async function createSourceRow({ source, editable = false, renderList, onEdit, o
     indentLevel: 0,
     editable: false,
     leftButtons: editable ? [deleteButton] : [],
+    rightButtons: [testBtnInfo]
   });
 }
 
@@ -69,6 +79,124 @@ export async function renderSourceList({ parent, editable = false, onEdit, onDel
 }
 
 
+/**
+ * Renders the UI for managing sources (list, delete, create).
+ * @param {Object} options
+ * @param {string} options.target - ID of the container to render into.
+ */
+/**
+ * Renders the UI for managing sources.
+ * @param {Object} options
+ * @param {string} options.target - ID of the container to render into.
+ */
+export async function renderSourceManager({ target = 'sources-box' }) {
+  const container = document.getElementById(target);
+  container.innerHTML = '';
+
+  const header = document.createElement('h3');
+  header.textContent = 'Sources';
+  container.appendChild(header);
+
+  const list = document.createElement('div');
+  container.appendChild(list);
+
+  const refresh = () =>
+    renderSourceList({ parent: list, editable: true, onDelete: refresh });
+
+  await refresh();
+
+  container.appendChild(document.createElement('hr'));
+  const createHeader = document.createElement('h3');
+  createHeader.textContent = 'Create Source';
+  container.appendChild(createHeader);
+
+  let newSourceRow; // keep a reference so we can replace it later
+
+  const makeNewSourceRow = () =>
+    createGenericRow({
+      field: new SourceConfigField({
+        name: '',
+        typename: '',
+        schema: {},
+        editMode: true,
+      }),
+      rightButtons: [saveBtnInfo, testBtnInfo],
+      editMode: true,
+    });
+
+  const saveBtnInfo = {
+    text: 'Save',
+    emoji: '✅',
+    onClick: async ({ field }) => {
+      const { text, typename, schema } = field.getValue();
+      try {
+        await createSource({ name: text, providerName: typename, params: schema });
+        await refresh();
+
+        // Replace the row with a fresh blank one
+        const freshRow = makeNewSourceRow();
+        container.replaceChild(freshRow, newSourceRow);
+        newSourceRow = freshRow;
+      } catch (error) {
+        console.error('Error saving source:', error);
+      }
+    },
+  };
+
+  const testBtnInfo = {
+    text: 'Test Source',
+    emoji: '🧪',
+    onClick: async ({ field }) => {
+      const { text: name, typename, schema } = field.getValue();
+      await startPreviewSourceTest({ providerName: typename, params: schema });
+    },
+  };
+
+  newSourceRow = makeNewSourceRow();
+  container.appendChild(newSourceRow);
+}
+
+
+function renderTestResultsBox(parent) {
+  const box = document.createElement('div');
+  box.style.border = '1px solid #ccc';
+  box.style.padding = '0.5em';
+  box.style.marginTop = '1em';
+  box.style.fontSize = '0.9em';
+  box.style.whiteSpace = 'pre-wrap';
+  box.textContent = 'No test started.';
+  parent.appendChild(box);
+  return box;
+}
+
+
+async function startPreviewSourceTest({ providerName, params }) {
+    if (!providerName) {
+      toast("Please fill in provider before testing", 3000, "warning");
+      return;
+    }
+  const configUuid = await createTaskConfig({
+    typename: 'PreviewSourceTask',
+    params: params,
+    persistent: false
+  })
+
+  const taskUuid = startTask({
+    uuid: configUuid
+  });
+//     }),
+//   });
+//   const result = await res.json();
+//   if (result.status !== 'success') throw new Error(result.message);
+//   return result.task_id;
+  // };
+  //   const configRes = await fetch('/api/tasks/configs/create', {
+  //     method: 'POST',
+  //     headers: { 'Content-Type': 'application/json' },
+  //     body: JSON.stringify(),
+  //   });
+  //   const configResult =
+}
 // const testBtn = createButton('emoji-button', 'Test', '🧪');
 // testBtn.type = 'button';
 // btnWrapper.appendChild(testBtn);
@@ -117,118 +245,28 @@ export async function renderSourceList({ parent, editable = false, onEdit, onDel
 //     testBtn.disabled = false;
 //   }
 // };
+//   const configRes = await fetch('/api/tasks/configs/create', {
+//     method: 'POST',
+//     headers: { 'Content-Type': 'application/json' },
+//     body: JSON.stringify({
+//       typename: 'PreviewSourceTask',
+//       params: params,
+//       persistent: false
+//     }),
+//   });
+//   const configResult = await configRes.json();
+//   if (configResult.status !== 'success') throw new Error(configResult.message);
 
+//   const taskConfigUuid = configResult.config_uuid;
 
-/**
- * Renders the UI for managing sources (list, delete, create).
- * @param {Object} options
- * @param {string} options.target - ID of the container to render into.
- */
-/**
- * Renders the UI for managing sources.
- * @param {Object} options
- * @param {string} options.target - ID of the container to render into.
- */
-export async function renderSourceManager({ target = 'sources-box' }) {
-  const container = document.getElementById(target);
-  container.innerHTML = '';
-
-  const header = document.createElement('h3');
-  header.textContent = 'Sources';
-  container.appendChild(header);
-
-  const list = document.createElement('div');
-  container.appendChild(list);
-
-  const refresh = () =>
-    renderSourceList({ parent: list, editable: true, onDelete: refresh });
-
-  await refresh();
-
-  container.appendChild(document.createElement('hr'));
-
-  let newSourceRow; // keep a reference so we can replace it later
-
-  const makeNewSourceRow = () =>
-    createGenericRow({
-      field: new SourceConfigField({
-        name: '',
-        typename: '',
-        schema: {},
-        editMode: true,
-      }),
-      rightButtons: [saveBtnInfo, testBtnInfo],
-      editMode: true,
-    });
-
-  const saveBtnInfo = {
-    text: 'Save',
-    emoji: '✅',
-    onClick: async ({ field }) => {
-      const { text, typename, schema } = field.getValue();
-      try {
-        await createSource({ name: text, providerName: typename, params: schema });
-        await refresh();
-
-        // Replace the row with a fresh blank one
-        const freshRow = makeNewSourceRow();
-        container.replaceChild(freshRow, newSourceRow);
-        newSourceRow = freshRow;
-      } catch (error) {
-        console.error('Error saving source:', error);
-      }
-    },
-  };
-
-  const testBtnInfo = {
-    text: 'Test Source',
-    emoji: '🧪',
-    onClick: async ({ field }) => {
-      // TODO: implement test
-    },
-  };
-
-  newSourceRow = makeNewSourceRow();
-  container.appendChild(newSourceRow);
-}
-
-
-function renderTestResultsBox(parent) {
-  const box = document.createElement('div');
-  box.style.border = '1px solid #ccc';
-  box.style.padding = '0.5em';
-  box.style.marginTop = '1em';
-  box.style.fontSize = '0.9em';
-  box.style.whiteSpace = 'pre-wrap';
-  box.textContent = 'No test started.';
-  parent.appendChild(box);
-  return box;
-}
-
-
-async function startPreviewSourceTest({ params = {} }) {
-  const configRes = await fetch('/api/tasks/configs/create', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      typename: 'PreviewSourceTask',
-      params: params,
-      persistent: false
-    }),
-  });
-  const configResult = await configRes.json();
-  if (configResult.status !== 'success') throw new Error(configResult.message);
-
-  const taskConfigUuid = configResult.config_uuid;
-
-  const res = await fetch(`/api/tasks/start`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      config_uuid: taskConfigUuid
-    }),
-  });
-  const result = await res.json();
-  if (result.status !== 'success') throw new Error(result.message);
-  return result.task_id;
-}
+//   const res = await fetch(`/api/tasks/start`, {
+//     method: 'POST',
+//     headers: { 'Content-Type': 'application/json' },
+//     body: JSON.stringify({
+//       config_uuid: taskConfigUuid
+//     }),
+//   });
+//   const result = await res.json();
+//   if (result.status !== 'success') throw new Error(result.message);
+//   return result.task_id;
+// }
