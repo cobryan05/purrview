@@ -16,15 +16,6 @@ logger = logging.getLogger(__file__)
 logger.setLevel(logging.DEBUG)
 
 
-# @dataclass
-# class TaskConfigMetadata:
-#     config_uuid: str
-#     typename: str
-#     description: str = ""
-#     persistent: bool = True
-#     parameters: Dict[str, Any] = field(default_factory=dict)
-
-
 @dataclass
 class RunningTaskInfo:
     task: Task
@@ -252,6 +243,34 @@ class Manager:
             return await self._start_task(task_config_metadata)
         else:
             logger.warning(f"Unknown task configuration: {task_config_uuid}")
+
+    async def cancel_tasks(self, task_ids: Union[List[int], int], delete: bool = False) -> None:
+        """
+        Stop tasks by id, syncing to db
+
+        Args:
+            task_ids (Union[List[int], int]): The ID(s) of the task(s) to stop.
+            delete (bool): Whether to delete the task(s) from the database.
+        """
+        if isinstance(task_ids, int):
+            task_ids = [task_ids]
+
+        canceled_tasks = []
+        for task_id in task_ids:
+            if task_id not in self._running_tasks:
+                logger.warning(f"Can't stop task {task_id}: not found in running tasks")
+            else:
+                task_info: RunningTaskInfo = self._running_tasks.pop(task_id)
+                task_info.task.cancel_task()
+                canceled_tasks.append(task_info)
+                logger.info(f"Task {task_id} cancel request sent")
+
+        for task_info in canceled_tasks:
+            try:
+                await task_info.task.wait_for_task_done(5.0)
+                await self._db_client.set_task_status(task_info.task_metadata.id, task_info.task.get_status())
+            except TimeoutError:
+                logger.warning(f"Task {task_info.task_metadata.id} did not stop in time")
 
     async def get_task_schema(self, typename: str) -> dict[str, dict[str, Any]]:
         """Get the schema for a specific task type."""

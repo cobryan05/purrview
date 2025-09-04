@@ -2,6 +2,15 @@ let _taskConfigs = new Map();   // uuid -> task config
 let _taskStatuses = new Map();  // taskId -> status
 let _taskResults = new Map();   // taskId -> result
 
+export const TaskStatus = Object.freeze({
+  NEW: "new",
+  PENDING: "pending",
+  RUNNING: "running",
+  PAUSED: "paused",
+  COMPLETED: "completed",
+  ERROR: "error"
+});
+
 /**
  * Refresh the task configs cache from /api/tasks/configs/list.
  * Clears dependent caches.
@@ -9,8 +18,8 @@ let _taskResults = new Map();   // taskId -> result
 export async function refreshTaskConfigsCache() {
   const res = await fetch('/api/tasks/configs/list');
   if (!res.ok) {
-    const error = await res.json();
-    throw new Error(error.message || 'Failed to fetch task configs');
+    const err = await res.json();
+    throw new Error(err.message || 'Failed to fetch task configs');
   }
   const { tasks } = await res.json();
   _taskConfigs.clear();
@@ -53,8 +62,8 @@ export async function deleteTaskConfigs({ uuids }) {
   if (res.ok) {
     uuids.forEach((uuid) => _taskConfigs.delete(uuid));
   } else {
-    const error = await res.json();
-    throw new Error(error.message || 'Failed to delete task configs');
+    const err = await res.json();
+    throw new Error(err.message || 'Failed to delete task configs');
   }
 }
 
@@ -69,8 +78,8 @@ export async function createTaskConfig(config) {
   });
 
   if (!res.ok) {
-    const error = await res.json();
-    throw new Error(error.message || 'Failed to create task config');
+    const err = await res.json();
+    throw new Error(err.message || 'Failed to create task config');
   }
 
   const { config_uuid } = await res.json();
@@ -88,8 +97,8 @@ export async function startTask({ uuid }) {
   });
 
   if (!res.ok) {
-    const error = await res.json();
-    throw new Error(error.message || 'Failed to start task');
+    const err = await res.json();
+    throw new Error(err.message || 'Failed to start task');
   }
 
   const { task_id } = await res.json();
@@ -103,17 +112,26 @@ export async function fetchTaskStatus(taskId) {
   const res = await fetch('/api/tasks/status', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ task_id: taskId }),
+    body: JSON.stringify({ task_ids: [taskId] }),
   });
 
   if (!res.ok) {
-    const error = await res.json();
-    throw new Error(error.message || 'Failed to fetch task status');
+    const err = await res.json();
+    throw new Error(err.message || 'Failed to fetch task status');
   }
 
-  const { status } = await res.json();
-  _taskStatuses.set(taskId, status);
-  return status;
+  const data = await res.json();
+  if (data.status !== 'success') {
+    throw new Error(data.message || 'Failed to fetch task status');
+  }
+
+  const taskStatus = data.tasks?.[taskId];
+  if (!taskStatus) {
+    throw new Error(`Task ${taskId} not found in response`);
+  }
+
+  _taskStatuses.set(taskId, taskStatus);
+  return taskStatus;
 }
 
 /**
@@ -134,8 +152,8 @@ export async function fetchTaskResult(taskId) {
   });
 
   if (!res.ok) {
-    const error = await res.json();
-    throw new Error(error.message || 'Failed to fetch task result');
+    const err = await res.json();
+    throw new Error(err.message || 'Failed to fetch task result');
   }
 
   const { result } = await res.json();
@@ -161,8 +179,8 @@ export async function pauseTask(taskId) {
   });
 
   if (!res.ok) {
-    const error = await res.json();
-    throw new Error(error.message || 'Failed to pause task');
+    const err = await res.json();
+    throw new Error(err.message || 'Failed to pause task');
   }
 }
 
@@ -177,8 +195,8 @@ export async function resumeTask(taskId) {
   });
 
   if (!res.ok) {
-    const error = await res.json();
-    throw new Error(error.message || 'Failed to resume task');
+    const err = await res.json();
+    throw new Error(err.message || 'Failed to resume task');
   }
 }
 
@@ -192,10 +210,10 @@ export async function waitForTaskResult(taskId, { intervalMs = 1000, timeoutMs =
   while (true) {
     const status = await fetchTaskStatus(taskId);
 
-    if (status === 'completed') {
+    if (status === TaskStatus.COMPLETED) {
       return await fetchTaskResult(taskId);
     }
-    if (status === 'failed') {
+    if (status === TaskStatus.ERROR) {
       throw new Error(`Task ${taskId} failed`);
     }
 

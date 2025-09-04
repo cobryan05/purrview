@@ -1,6 +1,6 @@
 // ================= Sources Manager =================
 import { EditableField, SourceConfigField } from '/app-static/js/ui/utils/fields/index.js';
-import { createGenericRow, createSource, createTaskConfig, deleteSources, fetchImageProviderSchema, refreshImageProvidersCache, refreshSourceCache, startTask, toast, updateSource } from '/app-static/js/ui/utils/index.js';
+import { TaskStatus, createGenericRow, createSource, runPreviewSourceTest, deleteSources, fetchImageProviderSchema, fetchTaskResult, fetchTaskStatus, refreshImageProvidersCache, refreshSourceCache, startTask, toast, updateSource } from '/app-static/js/ui/utils/index.js';
 
 /**
  * Creates a row for a single source with editable buttons
@@ -27,7 +27,7 @@ async function createSourceRow({ source, editable = false, renderList, onEdit, o
     emoji: '🧪',
     onClick: async ({ field }) => {
       const { text: name, typename, schema } = field.getValue();
-      await startPreviewSourceTest({ providerName: typename, params: schema });
+      await runPreviewSourceTest({ providerName: typename, params: schema });
     },
   };
 
@@ -148,125 +148,10 @@ export async function renderSourceManager({ target = 'sources-box' }) {
     emoji: '🧪',
     onClick: async ({ field }) => {
       const { text: name, typename, schema } = field.getValue();
-      await startPreviewSourceTest({ providerName: typename, params: schema });
+      await runPreviewSourceTest({ providerName: typename, params: schema });
     },
   };
 
   newSourceRow = makeNewSourceRow();
   container.appendChild(newSourceRow);
 }
-
-
-function renderTestResultsBox(parent) {
-  const box = document.createElement('div');
-  box.style.border = '1px solid #ccc';
-  box.style.padding = '0.5em';
-  box.style.marginTop = '1em';
-  box.style.fontSize = '0.9em';
-  box.style.whiteSpace = 'pre-wrap';
-  box.textContent = 'No test started.';
-  parent.appendChild(box);
-  return box;
-}
-
-
-async function startPreviewSourceTest({ providerName, params }) {
-    if (!providerName) {
-      toast("Please fill in provider before testing", 3000, "warning");
-      return;
-    }
-  const configUuid = await createTaskConfig({
-    typename: 'PreviewSourceTask',
-    params: params,
-    persistent: false
-  })
-
-  const taskUuid = startTask({
-    uuid: configUuid
-  });
-//     }),
-//   });
-//   const result = await res.json();
-//   if (result.status !== 'success') throw new Error(result.message);
-//   return result.task_id;
-  // };
-  //   const configRes = await fetch('/api/tasks/configs/create', {
-  //     method: 'POST',
-  //     headers: { 'Content-Type': 'application/json' },
-  //     body: JSON.stringify(),
-  //   });
-  //   const configResult =
-}
-// const testBtn = createButton('emoji-button', 'Test', '🧪');
-// testBtn.type = 'button';
-// btnWrapper.appendChild(testBtn);
-
-// testBtn.onclick = async () => {
-//   try {
-//     const provider = providerSelect.value;
-//     if (!provider) {
-//       toast("Please fill in provider before testing", 3000, "warning");
-//       return;
-//     }
-
-//     const name = nameInput.value;
-//     const providerParams = getParamsFromForm(paramsContainer);
-//     const params = {
-//       provider: provider,
-//       provider_params: providerParams,
-//     };
-
-//     testBtn.disabled = true;
-//     const testResultBox = renderTestResultsBox(form);
-//     testResultBox.hidden = false;
-//     testResultBox.textContent = 'Starting test task...';
-//     const taskUuid = await startPreviewSourceTest({
-//       params
-//     });
-
-//     testResultBox.textContent = 'Running test...';
-//     pollTaskStatus(taskUuid, testResultBox, async (finalResult) => {
-//       testResultBox.textContent += `\nTest ${finalResult.status}: ${finalResult.status_message || ''}`;
-//       testBtn.disabled = false;
-
-//       // Check for image
-//       if (finalResult.data?.image) {
-//         const img = document.createElement('img');
-//         img.src = `data:image/png;base64,${finalResult.data.image}`;
-//         img.style.maxWidth = '100%';
-//         img.alt = 'Test result image';
-//         testResultBox.appendChild(document.createElement('br'));
-//         testResultBox.appendChild(img);
-//       }
-//     });
-
-//   } catch (err) {
-//     toast(`Test failed: ${err.message}`, 5000, "error");
-//     testBtn.disabled = false;
-//   }
-// };
-//   const configRes = await fetch('/api/tasks/configs/create', {
-//     method: 'POST',
-//     headers: { 'Content-Type': 'application/json' },
-//     body: JSON.stringify({
-//       typename: 'PreviewSourceTask',
-//       params: params,
-//       persistent: false
-//     }),
-//   });
-//   const configResult = await configRes.json();
-//   if (configResult.status !== 'success') throw new Error(configResult.message);
-
-//   const taskConfigUuid = configResult.config_uuid;
-
-//   const res = await fetch(`/api/tasks/start`, {
-//     method: 'POST',
-//     headers: { 'Content-Type': 'application/json' },
-//     body: JSON.stringify({
-//       config_uuid: taskConfigUuid
-//     }),
-//   });
-//   const result = await res.json();
-//   if (result.status !== 'success') throw new Error(result.message);
-//   return result.task_id;
-// }
