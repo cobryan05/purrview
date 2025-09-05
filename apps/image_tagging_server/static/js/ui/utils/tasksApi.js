@@ -148,7 +148,7 @@ export async function fetchTaskResult(taskId) {
   const res = await fetch('/api/tasks/result', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ task_id: taskId }),
+    body: JSON.stringify({ task_ids: [taskId] }),
   });
 
   if (!res.ok) {
@@ -157,8 +157,9 @@ export async function fetchTaskResult(taskId) {
   }
 
   const { result } = await res.json();
-  _taskResults.set(taskId, result);
-  return result;
+  const taskRes = result[taskId];
+  _taskResults.set(taskId, taskRes);
+  return taskRes;
 }
 
 /**
@@ -175,7 +176,7 @@ export async function pauseTask(taskId) {
   const res = await fetch('/api/tasks/pause', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ task_id: taskId }),
+    body: JSON.stringify({ task_ids: [taskId] }),
   });
 
   if (!res.ok) {
@@ -191,7 +192,7 @@ export async function resumeTask(taskId) {
   const res = await fetch('/api/tasks/resume', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ task_id: taskId }),
+    body: JSON.stringify({ task_ids: [taskId] }),
   });
 
   if (!res.ok) {

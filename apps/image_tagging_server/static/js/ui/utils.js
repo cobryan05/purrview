@@ -104,7 +104,7 @@ export function pollTaskStatus(taskUuid, resultBox, onComplete, timeoutMs = 3000
           const taskRes = await fetch(`/api/tasks/result`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ task_id: taskUuid }),
+            body: JSON.stringify({ task_ids: [taskUuid] }),
           });
           const taskResult = await taskRes.json();
           onComplete(taskResult.result);

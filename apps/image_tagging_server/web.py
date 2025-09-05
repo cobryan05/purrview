@@ -14,7 +14,18 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 
-from apps.tasks_server.web import CreateTaskConfigRequest, StartTaskRequest
+from apps.tasks_server.web import (
+    CancelTasksPayload,
+    CreateTaskConfigPayload,
+    StartTasksPayload,
+    TasksStatusPayload,
+    TasksResultPayload
+)
+
+from apps.inference_server.web import (
+    AssociateLabelWithModelClassPayload,
+    GetModelLabelsPayload
+)
 
 from .manager import (
     BoundingBoxMetadata,
@@ -23,6 +34,29 @@ from .manager import (
     SourceMetadata,
     TaskConfigMetadata,
 )
+
+class AddLabelPayload(BaseModel):
+    name: str
+    color: str
+    parent_uuid: Optional[str] = None
+
+class DeleteLabelPayload(BaseModel):
+    label_uuid: str
+
+class BoundingBoxInput(BaseModel):
+    id: Optional[int]
+    label_uuid: str
+    x: float
+    y: float
+    width: float
+    height: float
+    tags: Optional[List[str]] = []  # List of tag uuids
+    extra: Optional[dict] = {}
+
+class UpdateMetadataPayload(BaseModel):
+    image_path: str
+    boxes: List[BoundingBoxInput]
+    extra: Optional[dict] = {}
 
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger(__file__)
@@ -33,8 +67,7 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
 class WebApp:
     SUCCESS_KEY = "success"
-    ERROR_KEY = "error"
-    RESULT_KEY = "results"
+    FAILURE_KEY = "failure"
 
     LABELS_API_TAG_NAME = "labels"
     MODELS_API_TAG_NAME = "models"
@@ -79,10 +112,6 @@ class WebApp:
     def _register_routes(self):
         """Register all routes for the application"""
 
-        class AnnotationRequest(BaseModel):
-            image: str
-            annotations: list
-
         @self._app.get("/", response_class=HTMLResponse)
         async def get_home(request: Request):
             """Render the home page"""
@@ -106,9 +135,9 @@ class WebApp:
             """
             try:
                 server_config = await self._manager.get_server_config()
-                response_data = {"status": "success", "config": server_config}
+                response_data = {"status": WebApp.SUCCESS_KEY, "config": server_config}
             except Exception as e:
-                response_data = {"status": "failure", "message": str(e)}
+                response_data = {"status": WebApp.FAILURE_KEY, "message": str(e)}
             return JSONResponse(content=response_data)
 
         @self._app.get("/api/images/list", response_class=JSONResponse, tags=[WebApp.MODELS_API_TAG_NAME])
@@ -133,12 +162,12 @@ class WebApp:
                 file_list: List[Manager.FileEntry] = await self._manager.list_files(
                     rel_path=rel_path, patterns=pattern, recursive=recursive
                 )
-                response_data = {"status": "success", "files": [entry.__dict__ for entry in file_list]}
+                response_data = {"status": WebApp.SUCCESS_KEY, "files": [entry.__dict__ for entry in file_list]}
                 return JSONResponse(content=response_data)
             except Exception as e:
                 logger.exception(e)
                 return JSONResponse(
-                    content={"status": "failure", "message": str(e)},
+                    content={"status": WebApp.FAILURE_KEY, "message": str(e)},
                     status_code=500,
                 )
 
@@ -163,7 +192,7 @@ class WebApp:
                     if raw:
                         raise HTTPException(status_code=404, detail="File not found")
                     else:
-                        return JSONResponse({"status": "failure", "message": f"File {rel_path} not found"})
+                        return JSONResponse({"status": WebApp.FAILURE_KEY, "message": f"File {rel_path} not found"})
 
                 file_obj, filename = result
                 content = await file_obj.read()
@@ -183,7 +212,7 @@ class WebApp:
                 encoded = base64.b64encode(content).decode("utf-8")
                 return JSONResponse(
                     {
-                        "status": "success",
+                        "status": WebApp.SUCCESS_KEY,
                         "filename": filename,
                         "mime_type": mime_type,
                         "content": encoded,
@@ -197,35 +226,12 @@ class WebApp:
                 logger.exception("Error retrieving file")
                 return JSONResponse(
                     status_code=500,
-                    content={"status": "failure", "message": str(e)},
+                    content={"status": WebApp.FAILURE_KEY, "message": str(e)},
                 )
 
         @self._app.get("/api/models/list", response_class=JSONResponse, tags=[WebApp.IMAGES_API_TAG_NAME])
-        async def list_models_api(request: Request) -> JSONResponse:
-            """
-            API endpoint to return a list of models.
-
-            Args:
-                request (Request): The FastAPI request object.
-
-            Returns:
-                JSONResponse: A JSON response containing the list of models.
-            """
-            try:
-                model_list = await self._manager.list_models()
-                response_data = {"status": "success", "models": model_list}
-                return JSONResponse(content=response_data)
-            except Exception as e:
-                logger.exception(e)
-                return JSONResponse(
-                    content={"status": "failure", "message": str(e)},
-                    status_code=500,
-                )
-
-        class AssociateLabelWithModelClassRequest(BaseModel):
-            model_name: str
-            model_class: str
-            label_uuid: Optional[str]
+        @self._manager.model_api_request("list_models")
+        async def list_models_api(request: Request) -> JSONResponse: ...
 
         @self._app.post(
             "/api/models/labels/associate",
@@ -233,28 +239,8 @@ class WebApp:
             operation_id="associate_label_with_model_class",
             response_class=JSONResponse,
         )
-        async def associate_label_with_model_class_api(req: AssociateLabelWithModelClassRequest) -> JSONResponse:
-            """
-            API endpoint to associate a model's class with a label
-
-            Returns:
-                JSONResponse: A JSON response containing the list of labels for the model
-            """
-            try:
-                ret = await self._manager.set_model_label_uuid(
-                    model_name=req.model_name, model_class=req.model_class, label_uuid=req.label_uuid
-                )
-                response_data = {"status": "success", "label_set": ret}
-                return JSONResponse(content=response_data)
-            except Exception as e:
-                logger.exception(e)
-                return JSONResponse(
-                    content={"status": "failure", "message": str(e)},
-                    status_code=500,
-                )
-
-        class GetModelLabelsRequest(BaseModel):
-            model_name: str
+        @self._manager.task_api_request("associate_label_with_model_class")
+        async def associate_label_with_model_class_api(payload: AssociateLabelWithModelClassPayload) -> JSONResponse: ...
 
         @self._app.post(
             "/api/models/labels/get",
@@ -262,46 +248,8 @@ class WebApp:
             operation_id="get_labels",
             response_class=JSONResponse,
         )
-        async def get_model_labels_api(req: GetModelLabelsRequest) -> JSONResponse:
-            """
-            API endpoint to return a list of labels for a model.
-
-            Returns:
-                JSONResponse: A JSON response containing the list of labels for the model
-            """
-            try:
-                label_info = await self._manager.list_model_labels(model_name=req.model_name)
-                response_data = {"status": "success", "labels": label_info}
-                return JSONResponse(content=response_data)
-            except Exception as e:
-                logger.exception(e)
-                return JSONResponse(
-                    content={"status": "failure", "message": str(e)},
-                    status_code=500,
-                )
-
-        class AddLabelRequest(BaseModel):
-            name: str
-            color: str
-            parent_uuid: Optional[str] = None
-
-        class DeleteLabelRequest(BaseModel):
-            label_uuid: str
-
-        class BoundingBoxInput(BaseModel):
-            id: Optional[int]
-            label_uuid: str
-            x: float
-            y: float
-            width: float
-            height: float
-            tags: Optional[List[str]] = []  # List of tag uuids
-            extra: Optional[dict] = {}
-
-        class UpdateMetadataRequest(BaseModel):
-            image_path: str
-            boxes: List[BoundingBoxInput]
-            extra: Optional[dict] = {}
+        @self._manager.model_api_request("get_model_labels")
+        async def get_model_labels_api(payload: GetModelLabelsPayload) -> JSONResponse: ...
 
         @self._app.get("/api/images/metadata/get", response_class=JSONResponse, tags=[WebApp.IMAGES_API_TAG_NAME])
         async def get_metadata(rel_path: str = Query("/", alias="path")):
@@ -312,8 +260,8 @@ class WebApp:
             return JSONResponse(content=asdict(metadata))
 
         @self._app.post("/api/images/metadata/update", response_class=JSONResponse, tags=[WebApp.IMAGES_API_TAG_NAME])
-        async def update_metadata(req: UpdateMetadataRequest) -> JSONResponse:
-            image_path = req.image_path
+        async def update_metadata(payload: UpdateMetadataPayload) -> JSONResponse:
+            image_path = payload.image_path
             metadata = await self._manager.get_image_metadata(image_path)
             label_uuid_map = await self._manager.get_label_uuid_map()
 
@@ -322,7 +270,7 @@ class WebApp:
 
             # Build new bounding box list from input
             new_boxes = []
-            for b in req.boxes:
+            for b in payload.boxes:
                 label_data = label_uuid_map.get(b.label_uuid, None)
                 label_text = label_data.metadata.name if label_data else "Unknown"
                 # Resolve label info for each label ID
@@ -348,13 +296,13 @@ class WebApp:
                 )
 
             metadata.boxes = new_boxes
-            metadata.extra = req.extra or {}
+            metadata.extra = payload.extra or {}
 
             await self._manager.update_image_metadata(image_path, metadata)
-            return JSONResponse(content={"status": "success"})
+            return JSONResponse(content={"status": WebApp.SUCCESS_KEY})
 
         @self._app.post("/api/labels/add", response_class=JSONResponse, tags=[WebApp.LABELS_API_TAG_NAME])
-        async def add_label_api(request: AddLabelRequest) -> JSONResponse:
+        async def add_label_api(request: AddLabelPayload) -> JSONResponse:
             """
             API endpoint to add a new label.
             """
@@ -362,26 +310,26 @@ class WebApp:
                 label = await self._manager.create_new_label(
                     request.name, request.color, parent_uuid=request.parent_uuid
                 )
-                return JSONResponse(content={"status": "success", "label": asdict(label)})
+                return JSONResponse(content={"status": WebApp.SUCCESS_KEY, "label": asdict(label)})
             except Exception as e:
                 logger.exception(e)
                 return JSONResponse(
-                    content={"status": "failure", "message": str(e)},
+                    content={"status": WebApp.FAILURE_KEY, "message": str(e)},
                     status_code=500,
                 )
 
         @self._app.post("/api/labels/delete", response_class=JSONResponse, tags=[WebApp.LABELS_API_TAG_NAME])
-        async def delete_label_api(request: DeleteLabelRequest) -> JSONResponse:
+        async def delete_label_api(request: DeleteLabelPayload) -> JSONResponse:
             """
             API endpoint to add a new label.
             """
             try:
                 await self._manager.delete_label(request.label_uuid)
-                return JSONResponse(content={"status": "success"})
+                return JSONResponse(content={"status": WebApp.SUCCESS_KEY})
             except Exception as e:
                 logger.exception(e)
                 return JSONResponse(
-                    content={"status": "failure", "message": str(e)},
+                    content={"status": WebApp.FAILURE_KEY, "message": str(e)},
                     status_code=500,
                 )
 
@@ -399,32 +347,32 @@ class WebApp:
             try:
                 label_list = await self._manager.get_labels()
                 labels = [asdict(label) for label in label_list]
-                response_data = {"status": "success", "labels": labels}
+                response_data = {"status": WebApp.SUCCESS_KEY, "labels": labels}
                 return JSONResponse(content=response_data)
             except Exception as e:
                 logger.exception(e)
                 return JSONResponse(
-                    content={"status": "failure", "message": str(e)},
+                    content={"status": WebApp.FAILURE_KEY, "message": str(e)},
                     status_code=500,
                 )
 
-        class UpdateLabelRequest(BaseModel):
+        class UpdateLabelPayload(BaseModel):
             label_uuid: str
             name: Optional[str] = None
             color: Optional[str] = None
 
         @self._app.post("/api/labels/update", response_class=JSONResponse, tags=[WebApp.LABELS_API_TAG_NAME])
-        async def update_label_api(request: UpdateLabelRequest) -> JSONResponse:
+        async def update_label_api(request: UpdateLabelPayload) -> JSONResponse:
             """
             API endpoint to update an existing label's name and/or color.
             """
             try:
                 await self._manager.update_label(label_uuid=request.label_uuid, name=request.name, color=request.color)
-                return JSONResponse(content={"status": "success"})
+                return JSONResponse(content={"status": WebApp.SUCCESS_KEY})
             except Exception as e:
                 logger.exception(e)
                 return JSONResponse(
-                    content={"status": "failure", "message": str(e)},
+                    content={"status": WebApp.FAILURE_KEY, "message": str(e)},
                     status_code=500,
                 )
 
@@ -446,16 +394,16 @@ class WebApp:
             """
             try:
                 providers_list = await self._manager.list_avail_image_providers()
-                response_data = {"status": "success", "providers": providers_list}
+                response_data = {"status": WebApp.SUCCESS_KEY, "providers": providers_list}
                 return JSONResponse(content=response_data)
             except Exception as e:
                 logger.exception(e)
                 return JSONResponse(
-                    content={"status": "failure", "message": str(e)},
+                    content={"status": WebApp.FAILURE_KEY, "message": str(e)},
                     status_code=500,
                 )
 
-        class GetImageProviderSchemaRequest(BaseModel):
+        class GetImagePRoviderSchemaPayload(BaseModel):
             image_provider: str
 
         @self._app.post(
@@ -464,21 +412,21 @@ class WebApp:
             operation_id="image_providers_schema",
             response_class=JSONResponse,
         )
-        async def image_providers_schema_api(req: GetImageProviderSchemaRequest) -> JSONResponse:
+        async def image_providers_schema_api(payload: GetImagePRoviderSchemaPayload) -> JSONResponse:
             """
             API endpoint to get the schema for a specific image provider.
             """
             try:
-                schema = await self._manager.get_image_provider_schema(req.image_provider)
-                return JSONResponse(content={"status": "success", "schema": schema})
+                schema = await self._manager.get_image_provider_schema(payload.image_provider)
+                return JSONResponse(content={"status": WebApp.SUCCESS_KEY, "schema": schema})
             except Exception as e:
                 logger.exception(e)
                 return JSONResponse(
-                    content={"status": "failure", "message": str(e)},
+                    content={"status": WebApp.FAILURE_KEY, "message": str(e)},
                     status_code=500,
                 )
 
-        class UpdateSourceRequest(BaseModel):
+        class UpdateSourcePayload(BaseModel):
             """Request model for creating a new source."""
 
             source_name: str
@@ -492,23 +440,23 @@ class WebApp:
             operation_id="update_source",
             response_class=JSONResponse,
         )
-        async def update_source_api(req: UpdateSourceRequest) -> JSONResponse:
+        async def update_source_api(payload: UpdateSourcePayload) -> JSONResponse:
             """
             API endpoint for updating an existing source.
             """
             try:
                 await self._manager.update_source(
-                    req.source_uuid, image_provider=req.image_provider, params=req.params, source_name=req.source_name
+                    payload.source_uuid, image_provider=payload.image_provider, params=payload.params, source_name=payload.source_name
                 )
-                return JSONResponse(content={"status": "success"})
+                return JSONResponse(content={"status": WebApp.SUCCESS_KEY})
             except Exception as e:
                 logger.exception(e)
                 return JSONResponse(
-                    content={"status": "failure", "message": str(e)},
+                    content={"status": WebApp.FAILURE_KEY, "message": str(e)},
                     status_code=500,
                 )
 
-        class CreateSourceRequest(BaseModel):
+        class CreateSourcePayload(BaseModel):
             """Request model for creating a new source."""
 
             source_name: str
@@ -521,7 +469,7 @@ class WebApp:
             operation_id="create_source",
             response_class=JSONResponse,
         )
-        async def create_source_api(req: CreateSourceRequest) -> JSONResponse:
+        async def create_source_api(payload: CreateSourcePayload) -> JSONResponse:
             """
             API endpoint for creating a new source.
 
@@ -533,14 +481,14 @@ class WebApp:
             """
             try:
                 source_metadata: SourceMetadata = await self._manager.create_new_source(
-                    image_provider=req.image_provider, params=req.params, source_name=req.source_name
+                    image_provider=payload.image_provider, params=payload.params, source_name=payload.source_name
                 )
-                response_data = {"status": "success", "source_id": source_metadata.uuid}
+                response_data = {"status": WebApp.SUCCESS_KEY, "source_id": source_metadata.uuid}
             except Exception as e:
-                response_data = {"status": "failure", "message": str(e)}
+                response_data = {"status": WebApp.FAILURE_KEY, "message": str(e)}
             return JSONResponse(content=response_data)
 
-        class DeleteSourceRequest(BaseModel):
+        class DeleteSourcePayload(BaseModel):
             source_uuids: List[str]
 
         @self._app.post(
@@ -549,17 +497,17 @@ class WebApp:
             operation_id="delete_sources",
             response_class=JSONResponse,
         )
-        async def delete_sources_api(req: DeleteSourceRequest) -> JSONResponse:
+        async def delete_sources_api(payload: DeleteSourcePayload) -> JSONResponse:
             """
             API endpoint to delete sources.
             """
             try:
-                await self._manager.delete_sources(req.source_uuids)
-                return JSONResponse(content={"status": "success"})
+                await self._manager.delete_sources(payload.source_uuids)
+                return JSONResponse(content={"status": WebApp.SUCCESS_KEY})
             except Exception as e:
                 logger.exception(e)
                 return JSONResponse(
-                    content={"status": "failure", "message": str(e)},
+                    content={"status": WebApp.FAILURE_KEY, "message": str(e)},
                     status_code=500,
                 )
 
@@ -581,12 +529,12 @@ class WebApp:
             try:
                 sources: List[SourceMetadata] = await self._manager.get_avail_sources()
                 sources_dict = {source.uuid: asdict(source) for source in sources}
-                response_data = {"status": "success", "sources": sources_dict}
+                response_data = {"status": WebApp.SUCCESS_KEY, "sources": sources_dict}
                 return JSONResponse(content=response_data)
             except Exception as e:
                 logger.exception(e)
                 return JSONResponse(
-                    content={"status": "failure", "message": str(e)},
+                    content={"status": WebApp.FAILURE_KEY, "message": str(e)},
                     status_code=500,
                 )
 
@@ -626,7 +574,7 @@ class WebApp:
                 )
 
                 response_content = {
-                    "status": "success",
+                    "status": WebApp.SUCCESS_KEY,
                     "results": results,
                 }
 
@@ -643,33 +591,8 @@ class WebApp:
                 logger.exception("Recognition failed")
                 return JSONResponse(
                     status_code=500,
-                    content={"status": "failure", "message": str(e)},
+                    content={"status": WebApp.FAILURE_KEY, "message": str(e)},
                 )
-
-        @self._app.post(
-            "/api/tasks/configs/create",
-            tags=[WebApp.TASKS_API_TAG_NAME],
-            operation_id="create_task_config",
-            response_class=JSONResponse,
-        )
-        async def create_task_config_api(req: CreateTaskConfigRequest) -> JSONResponse:
-            """
-            API endpoint for creating a new task.
-
-            Args:
-                req (CreateTaskRequest): Request object with task type and parameters.
-
-            Returns:
-                JSONResponse: Response with new config  UUID or error.
-            """
-            try:
-                config_uuid: str = await self._manager.create_new_task_config(
-                    typename=req.typename, params=req.params, persistent=req.persistent
-                )
-                response_data = {"status": "success", "config_uuid": config_uuid}
-            except Exception as e:
-                response_data = {"status": "failure", "message": str(e)}
-            return JSONResponse(content=response_data)
 
         @self._app.get(
             "/api/tasks/configs/list",
@@ -677,26 +600,8 @@ class WebApp:
             tags=[WebApp.TASKS_API_TAG_NAME],
             operation_id="list_task_configs",
         )
-        async def get_task_configs_api(request: Request) -> JSONResponse:
-            """
-            API endpoint to return a list of configured tasks
-            Args:
-                request (Request): The FastAPI request object.
-
-            Returns:
-                JSONResponse: A JSON response containing the list of configured tasks
-            """
-            try:
-                configs: List[TaskConfigMetadata] = await self._manager.list_task_configs()
-                configs_dict = {config.uuid: asdict(config) for config in configs}
-                response_data = {"status": "success", "configs": configs_dict}
-                return JSONResponse(content=response_data)
-            except Exception as e:
-                logger.exception(e)
-                return JSONResponse(
-                    content={"status": "failure", "message": str(e)},
-                    status_code=500,
-                )
+        @self._manager.task_api_request("list_task_configs")
+        async def get_task_configs_api(request: Request) -> JSONResponse: ...
 
         @self._app.post(
             "/api/tasks/configs/create",
@@ -704,24 +609,8 @@ class WebApp:
             operation_id="create_task_config",
             response_class=JSONResponse,
         )
-        async def create_task_config_api(req: CreateTaskConfigRequest) -> JSONResponse:
-            """
-            API endpoint for creating a new task.
-
-            Args:
-                req (CreateTaskRequest): Request object with task type and parameters.
-
-            Returns:
-                JSONResponse: Response with new task ID or error.
-            """
-            try:
-                task_config_uuid: str = await self._manager.create_new_task_config(
-                    typename=req.typename, params=req.params, persistent=req.persistent
-                )
-                response_data = {"status": "success", "task_uuid": task_config_uuid}
-            except Exception as e:
-                response_data = {"status": "failure", "message": str(e)}
-            return JSONResponse(content=response_data)
+        @self._manager.task_api_request("create_task_config")
+        async def create_task_config_api(payload: CreateTaskConfigPayload) -> JSONResponse: ...
 
         @self._app.post(
             "/api/tasks/start",
@@ -729,75 +618,30 @@ class WebApp:
             operation_id="start_task",
             response_class=JSONResponse,
         )
-        async def start_task_api(req: StartTaskRequest) -> JSONResponse:
-            """
-            API endpoint for starting a new task.
+        @self._manager.task_api_request("start_task")
+        async def start_task_api(payload: StartTasksPayload) -> JSONResponse: ...
 
-            Args:
-                req (StartTaskRequest): Request object with task parameters.
-
-            Returns:
-                JSONResponse: Response with new task ID or error.
-            """
-            try:
-                task_id: int = await self._manager.start_new_task(task_config_uuid=req.config_uuid)
-                response_data = {"status": "success", "task_id": task_id}
-            except Exception as e:
-                response_data = {"status": "failure", "message": str(e)}
-            return JSONResponse(content=response_data)
-
-        class TaskStatusRequest(BaseModel):
-            """Request model for creating a new task."""
-
-            task_ids: Optional[List[int]] = None
+        @self._app.post(
+            "/api/tasks/cancel",
+            tags=[WebApp.TASKS_API_TAG_NAME],
+            operation_id="cancel_tasks",
+            response_class=JSONResponse,
+        )
+        @self._manager.task_api_request("cancel_tasks")
+        async def cancel_task_api(payload: CancelTasksPayload) -> JSONResponse: ...
 
         @self._app.post(
             "/api/tasks/status",
             tags=[WebApp.TASKS_API_TAG_NAME],
-            operation_id="get_task_status",
+            operation_id="get_tasks_status",
             response_class=JSONResponse,
         )
-        async def task_status_api(req: TaskStatusRequest) -> JSONResponse:
-            """
-            API endpoint for getting status of one or more tasks.
-
-            Args:
-                req (TaskStatusRequest): Request object with task IDs.
-
-            Returns:
-                JSONResponse: A JSON response containing task statuses.
-            """
-            try:
-                tasks_status = await self._manager.get_tasks_status(req.task_ids)
-                response_data = {"status": "success", "tasks": tasks_status}
-            except Exception as e:
-                response_data = {"status": "failure", "message": str(e)}
-            return JSONResponse(content=response_data)
-
-        class TaskResultRequest(BaseModel):
-            """Request task result"""
-
-            task_id: Optional[int] = None
-
+        @self._manager.task_api_request("get_tasks_status")
         @self._app.post(
             "/api/tasks/result",
             tags=[WebApp.TASKS_API_TAG_NAME],
-            operation_id="get_task_result",
+            operation_id="get_tasks_result",
             response_class=JSONResponse,
         )
-        async def task_result_api(req: TaskResultRequest) -> JSONResponse:
-            """
-            API endpoint for getting task result
-
-            Args:
-                req (TaskResultRequest): Request object with task ID.
-
-            Returns:
-                JSONResponse: A JSON response containing task result.
-            """
-            try:
-                task_result = await self._manager.get_task_result(req.task_id)
-                response_data = {"status": "success", "result": task_result}
-            except Exception as e:
-                response_data = {"status": "failure", "message": str(e)}
-            return JSONResponse(content=response_data)
+        @self._manager.task_api_request("get_tasks_result")
+        async def task_result_api(payload: TasksResultPayload) -> JSONResponse: ...

@@ -20,6 +20,24 @@ from apps.helpers.inferenceProviders.inferenceProvider import InferenceResult
 
 from .manager import Manager
 
+class AssociateLabelWithModelClassPayload(BaseModel):
+    model_name: str
+    model_class: str
+    label_uuid: Optional[str]
+
+
+class GetModelLabelsPayload(BaseModel):
+    model_name: str
+
+
+class RecognizePayload(BaseModel):
+    model_name: str
+    conf_thresh: float
+    return_annotated: bool = False
+    pin_id: Optional[str] = None
+    image_base64: str  # base64 encoded image string
+
+
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger(__file__)
 logger.setLevel(logging.DEBUG)
@@ -29,8 +47,8 @@ class WebApp:
     """Web application for managing inference models and running recognitions"""
 
     SUCCESS_KEY = "success"
+    FAILURE_KEY = "failure"
     ERROR_KEY = "error"
-    RESULT_KEY = "results"
 
     MODELS_API_TAG_NAME = "models"
     INFERENCE_API_TAG_NAME = "inference"
@@ -140,17 +158,16 @@ class WebApp:
             """
             try:
                 server_config = await self._manager.get_server_config()
-                response_data = {"status": "success", "config": server_config}
+                response_data = {"status": WebApp.SUCCESS_KEY, "config": server_config}
             except Exception as e:
-                response_data = {"status": "failure", "message": str(e)}
+                response_data = {"status": WebApp.FAILURE_KEY, "message": str(e)}
             return JSONResponse(content=response_data)
-
 
         @self._app.get(
             "/api/models/list",
             response_class=JSONResponse,
             tags=[WebApp.MODELS_API_TAG_NAME],
-            operation_id="list_models_api",
+            operation_id="list_models",
         )
         async def list_models_api(request: Request) -> JSONResponse:
             """
@@ -164,12 +181,12 @@ class WebApp:
             """
             try:
                 model_list = await self._manager.list_models()
-                response_data = {"status": "success", "models": model_list}
+                response_data = {"status": WebApp.SUCCESS_KEY, "models": model_list}
                 return JSONResponse(content=response_data)
             except Exception as e:
                 logger.exception(e)
                 return JSONResponse(
-                    content={"status": "failure", "message": str(e)},
+                    content={"status": WebApp.FAILURE_KEY, "message": str(e)},
                     status_code=500,
                 )
 
@@ -201,19 +218,13 @@ class WebApp:
             except Exception as e:
                 return self._error_response(request, f"Internal server error: {str(e)}")
 
-
-        class GetModelLabelsRequest(BaseModel):
-            model_name: str
-
         @self._app.post(
             "/api/models/labels/get",
             response_class=JSONResponse,
             tags=[WebApp.MODELS_API_TAG_NAME],
-            operation_id="get_model_labels_api",
+            operation_id="get_model_labels",
         )
-        async def get_model_labels_api(
-            payload: GetModelLabelsRequest
-        ) -> JSONResponse:
+        async def get_model_labels_api(payload: GetModelLabelsPayload) -> JSONResponse:
             """
             API endpoint to list labels for a given model.
 
@@ -224,20 +235,15 @@ class WebApp:
                 label_map: dict[str, str] = await self._manager.get_model_labels(payload.model_name)
             except Exception as e:
                 logger.exception(e)
-                return JSONResponse(content={"status": "failure", "message": str(e)})
+                return JSONResponse(content={"status": WebApp.FAILURE_KEY, "message": str(e)})
 
             return JSONResponse(
                 content={
-                    "status": "success",
+                    "status": WebApp.SUCCESS_KEY,
                     "labels": label_map,
                 },
                 status_code=200,
             )
-
-        class AssociateLabelWithModelClassRequest(BaseModel):
-            model_name: str
-            model_class: str
-            label_uuid: Optional[str]
 
         @self._app.post(
             "/api/models/labels/associate",
@@ -245,7 +251,7 @@ class WebApp:
             operation_id="associate_label_with_model_class",
             response_class=JSONResponse,
         )
-        async def associate_label_with_model_class_api(req: AssociateLabelWithModelClassRequest) -> JSONResponse:
+        async def associate_label_with_model_class_api(payload: AssociateLabelWithModelClassPayload) -> JSONResponse:
             """
             API endpoint to associate a model's class with a label
 
@@ -254,19 +260,16 @@ class WebApp:
             """
             try:
                 ret = await self._manager.set_model_label_uuid(
-                    model_name=req.model_name,
-                    model_class=req.model_class,
-                    label_uuid=req.label_uuid
+                    model_name=payload.model_name, model_class=payload.model_class, label_uuid=payload.label_uuid
                 )
-                response_data = {"status": "success", "label_set": ret}
+                response_data = {"status": WebApp.SUCCESS_KEY, "label_set": ret}
                 return JSONResponse(content=response_data)
             except Exception as e:
                 logger.exception(e)
                 return JSONResponse(
-                    content={"status": "failure", "message": str(e)},
+                    content={"status": WebApp.FAILURE_KEY, "message": str(e)},
                     status_code=500,
                 )
-
 
         @self._app.post("/get-model-labels", response_class=HTMLResponse, include_in_schema=False)
         async def get_model_labels(
@@ -284,8 +287,8 @@ class WebApp:
                 HTMLResponse: Rendered HTML showing label mappings.
             """
             try:
-                req: GetModelLabelsRequest = GetModelLabelsRequest(model_name=model_name)
-                response: JSONResponse = await get_model_labels_api(req)
+                payload: GetModelLabelsPayload = GetModelLabelsPayload(model_name=model_name)
+                response: JSONResponse = await get_model_labels_api(payload)
                 response_data = json.loads(response.body.decode("utf-8"))
 
                 return self._templates.TemplateResponse(
@@ -334,7 +337,7 @@ class WebApp:
             "/api/models/pin",
             response_class=JSONResponse,
             tags=[WebApp.MODELS_API_TAG_NAME],
-            operation_id="pin_model_api",
+            operation_id="pin_model",
         )
         async def pin_model_api(
             request: Request, model_name: str = Body(...), duration: float = Body(...)
@@ -355,12 +358,12 @@ class WebApp:
                 pin_id = await self._manager.pin_model(model_name, duration)
             except Exception as e:
                 logger.exception(e)
-                return JSONResponse(content={"status": "failure", "message": str(e)})
+                return JSONResponse(content={"status": WebApp.FAILURE_KEY, "message": str(e)})
 
             # Return a JSON response with the model ID
             return JSONResponse(
                 content={
-                    "status": "success",
+                    "status": WebApp.SUCCESS_KEY,
                     "message": "Model pinned successfully.",
                     "pin_id": pin_id,
                 },
@@ -435,24 +438,17 @@ class WebApp:
             image: np.ndarray,
             conf_thresh: float,
             return_annotated: bool,
-            pin_id: Optional[str] = None
+            pin_id: Optional[str] = None,
         ) -> dict:
             inference_result: InferenceResult = await manager.recognize(
                 model_name=model_name,
                 image=image,
                 conf_thresh=conf_thresh,
                 return_annotated=return_annotated,
-                pind_id=pin_id
+                pind_id=pin_id,
             )
 
             return inference_result.serialize(include_annotated=return_annotated)
-
-        class RecognizeRequest(BaseModel):
-            model_name: str
-            conf_thresh: float
-            return_annotated: bool = False
-            pin_id: Optional[str] = None
-            image_base64: str  # base64 encoded image string
 
         @self._app.post(
             "/api/recognize-json",
@@ -460,7 +456,7 @@ class WebApp:
             operation_id="recognize_json",
             response_class=JSONResponse,
         )
-        async def recognize_json_api(payload: RecognizeRequest):
+        async def recognize_json_api(payload: RecognizePayload):
             try:
                 np_bytes = base64.b64decode(payload.image_base64)
                 np_image = np.frombuffer(np_bytes, np.uint8)
@@ -473,7 +469,7 @@ class WebApp:
                         image=image_array,
                         conf_thresh=payload.conf_thresh,
                         return_annotated=payload.return_annotated,
-                        pin_id=payload.pin_id
+                        pin_id=payload.pin_id,
                     )
                 )
             except Exception as e:

@@ -8,8 +8,9 @@ import logging
 import os
 import sys
 from dataclasses import dataclass, field
+from functools import wraps
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Type, Union
 
 import aiofiles
 import cv2
@@ -18,19 +19,12 @@ import numpy as np
 import tasks_client
 from inference_client.api.inference_api import InferenceApi
 from inference_client.api.models_api import ModelsApi
-from inference_client.models.associate_label_with_model_class_request import (
-    AssociateLabelWithModelClassRequest,
-)
-from inference_client.models.body_pin_model_api import (
-    BodyPinModelApi,  # from updated schema
-)
-from inference_client.models.get_model_labels_request import GetModelLabelsRequest
-from inference_client.models.recognize_request import RecognizeRequest
+from inference_client.models.associate_label_with_model_class_payload import AssociateLabelWithModelClassPayload
+from inference_client.models.body_pin_model import BodyPinModel
+from inference_client.models.get_model_labels_payload import GetModelLabelsPayload
+from inference_client.models.recognize_payload import RecognizePayload
+from pydantic import BaseModel
 from tasks_client.api.tasks_api import TasksApi
-from tasks_client.models.create_task_config_request import CreateTaskConfigRequest
-from tasks_client.models.start_task_request import StartTaskRequest
-from tasks_client.models.task_result_request import TaskResultRequest
-from tasks_client.models.task_status_request import TaskStatusRequest
 
 from apps.helpers.db.db_client import (
     BoundingBoxMetadata,
@@ -43,6 +37,7 @@ from apps.helpers.db.db_client import (
 from apps.helpers.fileUtils import get_safe_path
 from apps.helpers.imageProviders.Registry import image_provider_registry
 from apps.helpers.imageUtils import base64_encode_png
+from apps.helpers.webUtils import api_forward_request
 
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger(__file__)
@@ -81,6 +76,24 @@ class Manager:
 
     async def get_server_config(self) -> Dict[str, Any]:
         return self._config.copy()
+
+    def task_api_request(self, api_method_name: str, get: bool = False):
+        """
+        Decorator to forward request to the Task server
+        """
+        return api_forward_request(TasksApi(self._tasks_api_client), api_method_name)
+
+    def inference_api_request(self, api_method_name: str, get: bool = False):
+        """
+        Decorator to forward request to the Inference server
+        """
+        return api_forward_request(InferenceApi(self._inference_api_client), api_method_name)
+
+    def model_api_request(self, api_method_name: str, get: bool = False):
+        """
+        Decorator to forward request to the Model server
+        """
+        return api_forward_request(ModelsApi(self._inference_api_client), api_method_name)
 
     @dataclass
     class FileEntry:
@@ -192,20 +205,8 @@ class Manager:
             List[str]: list of models
         """
         api = ModelsApi(self._inference_api_client)
-        response: Dict[str, Any] = await asyncio.to_thread(api.list_models_api)
+        response: Dict[str, Any] = await asyncio.to_thread(api.list_models)
         return response.get("models", [])
-
-    async def list_model_labels(self, model_name: str) -> Dict[str, Any]:
-        """
-        Lists the labels for a model
-
-        Returns:
-            Dict[str, Any] dict of label info
-        """
-        api = ModelsApi(self._inference_api_client)
-        request = GetModelLabelsRequest(model_name=model_name)
-        response: Dict[str, Any] = await asyncio.to_thread(api.get_model_labels_api, request)
-        return response.get("labels", {})
 
     async def set_model_label_uuid(self, model_name: str, model_class: str, label_uuid: Optional[str]) -> bool:
         """
@@ -220,7 +221,7 @@ class Manager:
             Dict[str, Any] dict of label info
         """
         api = ModelsApi(self._inference_api_client)
-        request = AssociateLabelWithModelClassRequest(
+        request = AssociateLabelWithModelClassPayload(
             model_name=model_name, model_class=model_class, label_uuid=label_uuid
         )
         response: Dict[str, Any] = await asyncio.to_thread(api.associate_label_with_model_class, request)
@@ -325,62 +326,6 @@ class Manager:
         image_id = await self._db_client.add_image(img_path)
         await self._db_client.write_image_metadata_to_db(image_id, metadata)
         await self._db_client.save_image_metadata_db_to_json(img_path)
-
-    async def start_new_task(self, task_config_uuid: str) -> int:
-        """
-        Start a configured task by its uuid
-
-        Args:
-            task_config_uuid (str): The UUID of the task configuration to start.
-
-        Returns:
-            int: The ID of the started task.
-        """
-        api = TasksApi(self._tasks_api_client)
-        request = StartTaskRequest(config_uuid=task_config_uuid)
-        response: Dict[str, Any] = await asyncio.to_thread(api.start_task, request)
-        return response.get("task_id")
-
-
-    async def create_new_task_config(self, typename: str, params: Dict[str, Any], persistent: bool = True) -> str:
-        """
-        Start a new task.
-
-        Returns new task id
-        """
-        api = TasksApi(self._tasks_api_client)
-        request = CreateTaskConfigRequest(typename=typename, params=params, persistent=persistent)
-        response: Dict[str, Any] = await asyncio.to_thread(api.create_task_config, request)
-        return response.get("config_uuid")
-
-    async def get_task_result(self, task_id: int) ->  Optional[dict[str, Any]]:
-        """
-        Returns result for the specified task, or None
-        """
-        api = TasksApi(self._tasks_api_client)
-        request = TaskResultRequest(task_id=task_id)
-        response: Dict[str, Any] = await asyncio.to_thread(api.get_task_result, request)
-        return response.get("result")
-
-    async def get_tasks_status(self, task_ids: Optional[Union[List[int], int]] = None) -> Dict[int, dict[str, Any]]:
-        """
-        Returns status about a specified task, or all tasks.
-        Combines DB and running tasks, with running tasks taking precedence.
-        """
-        api = TasksApi(self._tasks_api_client)
-        request = TaskStatusRequest(task_ids=task_ids)
-        response: Dict[str, Any] = await asyncio.to_thread(api.get_task_status, request)
-        return response.get("tasks")
-
-    async def list_task_configs(self) -> List[TaskConfigMetadata]:
-        """
-        List all configured tasks
-        """
-        task_configs = await self._db_client.get_task_configs()
-        return task_configs
-
-
-    #TODO: Get active tasks
 
     async def create_box(
         self,
@@ -627,14 +572,14 @@ class Manager:
         """
         # Ensure model is pinned
         model_api = ModelsApi(self._inference_api_client)
-        post_info = BodyPinModelApi(model_name=model_name, duration=self.PIN_DURATION)
+        post_info = BodyPinModel(model_name=model_name, duration=self.PIN_DURATION)
         pin_id = self._model_pins.get(model_name)
 
         if pin_id is None:
             model_api = ModelsApi(self._inference_api_client)
-            post_info = BodyPinModelApi(model_name=model_name, duration=self.PIN_DURATION)
+            post_info = BodyPinModel(model_name=model_name, duration=self.PIN_DURATION)
             pin_response: Dict[str, Any] = await asyncio.to_thread(
-                model_api.pin_model_api, post_info  # matches operationId "pin_model_api"
+                model_api.pin_model, post_info
             )
             if pin_response.get("status") != "success":
                 raise RuntimeError(f"Failed to pin model '{model_name}': {pin_response}")
@@ -642,9 +587,9 @@ class Manager:
 
         image_base64 = base64_encode_png(image)
 
-        # Build the RecognizeRequest Pydantic model
+        # Build the RecognizePayload Pydantic model
         return_annotated = kwargs.get("return_annotated", False)
-        request = RecognizeRequest(
+        payload = RecognizePayload(
             model_name=model_name,
             conf_thresh=conf_thresh,
             return_annotated=return_annotated,
@@ -654,7 +599,7 @@ class Manager:
 
         # Call the /api/recognize-json endpoint, operationId: "recognize_json"
         inference_api = InferenceApi(self._inference_api_client)
-        response: Dict[str, Any] = await asyncio.to_thread(inference_api.recognize_json, recognize_request=request)
+        response: Dict[str, Any] = await asyncio.to_thread(inference_api.recognize_json, recognize_payload=payload)
 
         if "detections" not in response:
             raise RuntimeError(f"Recognition failed: {response}")
