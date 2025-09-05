@@ -197,17 +197,6 @@ class Manager:
             logger.error(f"Failed to open file {rel_path}: {e}")
             return None
 
-    async def list_models(self) -> List[str]:
-        """
-        List models available from the inference server
-
-        Returns:
-            List[str]: list of models
-        """
-        api = ModelsApi(self._inference_api_client)
-        response: Dict[str, Any] = await asyncio.to_thread(api.list_models)
-        return response.get("models", [])
-
     async def set_model_label_uuid(self, model_name: str, model_class: str, label_uuid: Optional[str]) -> bool:
         """
         Sets the label UUID that a model's class name should link to

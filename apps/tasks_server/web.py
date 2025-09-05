@@ -37,6 +37,8 @@ class CreateTaskConfigPayload(BaseModel):
 class DeleteTasksPayload(BaseModel):
     task_ids: List[int]
 
+class DeleteTaskConfigsPayload(BaseModel):
+    config_uuids: List[str]
 
 class PauseTasksPayload(BaseModel):
     task_ids: List[int]
@@ -345,10 +347,10 @@ class WebApp:
         @self._app.post(
             "/api/tasks/configs/delete",
             tags=[WebApp.TASKS_API_TAG_NAME],
-            operation_id="delete_tasks_config",
+            operation_id="delete_task_configs",
             response_class=JSONResponse,
         )
-        async def delete_tasks_config_api(payload: DeleteTasksPayload) -> JSONResponse:
+        async def delete_task_configs_api(payload: DeleteTaskConfigsPayload) -> JSONResponse:
             """
             API endpoint to delete tasks configs
 
@@ -359,8 +361,8 @@ class WebApp:
                 JSONResponse: JSON response with deletion result.
             """
             try:
-                await self._manager.delete_task_configs(payload.task_ids)
-                response_data = {"status": WebApp.SUCCESS_KEY, "tasks": payload.task_ids}
+                await self._manager.delete_task_configs(payload.config_uuids)
+                response_data = {"status": WebApp.SUCCESS_KEY, "configs": payload.config_uuids}
                 return JSONResponse(content=response_data)
             except Exception as e:
                 logger.exception(e)
@@ -389,8 +391,8 @@ class WebApp:
                     return self._error_response(request, "No tasks selected for deletion.")
 
                 task_ids = [int(tid) for tid in selected_task]
-                api_request = DeleteTasksPayload(task_ids=task_ids)
-                response = await delete_tasks_config_api(api_request)
+                api_request = DeleteTaskConfigsPayload(task_ids=task_ids)
+                response = await delete_task_configs_api(api_request)
                 return await task_status(task_ids="", request=request)
 
             except Exception as e:
@@ -504,6 +506,33 @@ class WebApp:
                     status_code=500,
                 )
 
+        @self._app.post(
+            "/api/tasks/cancel",
+            tags=[WebApp.TASKS_API_TAG_NAME],
+            operation_id="cancel_tasks",
+            response_class=JSONResponse,
+        )
+        async def cancel_tasks_api(payload: CancelTasksPayload) -> JSONResponse:
+            """
+            API endpoint to cancel tasks.
+
+            Args:
+                req (ResumeTasksRequest): Request object with task IDs to cancel.
+
+            Returns:
+                JSONResponse: JSON response with resume result.
+            """
+            try:
+                await self._manager.cancel_tasks(payload.task_ids)
+                response_data = {"status": WebApp.SUCCESS_KEY, "tasks": payload.task_ids}
+                return JSONResponse(content=response_data)
+            except Exception as e:
+                logger.exception(e)
+                return JSONResponse(
+                    content={"status": WebApp.FAILURE_KEY, "message": str(e)},
+                    status_code=500,
+                )
+
         @self._app.post("/task-resume", response_class=HTMLResponse, include_in_schema=False)
         async def resume_tasks_form(
             request: Request,
@@ -580,6 +609,33 @@ class WebApp:
             except Exception as e:
                 response_data = {"status": WebApp.FAILURE_KEY, "message": str(e)}
             return JSONResponse(content=response_data)
+
+        @self._app.post(
+            "/api/tasks/delete",
+            tags=[WebApp.TASKS_API_TAG_NAME],
+            operation_id="delete_tasks",
+            response_class=JSONResponse,
+        )
+        async def delete_tasks_api(payload: DeleteTasksPayload) -> JSONResponse:
+            """
+            API endpoint to delete tasks.
+
+            Args:
+                req (DeleteTasksRequest): Request object with task IDs to delete.
+
+            Returns:
+                JSONResponse: JSON response with delete result.
+            """
+            try:
+                await self._manager.delete_tasks(payload.task_ids)
+                response_data = {"status": WebApp.SUCCESS_KEY, "tasks": payload.task_ids}
+                return JSONResponse(content=response_data)
+            except Exception as e:
+                logger.exception(e)
+                return JSONResponse(
+                    content={"status": WebApp.FAILURE_KEY, "message": str(e)},
+                    status_code=500,
+                )
 
         @self._app.post(
             "/api/tasks/config/create",

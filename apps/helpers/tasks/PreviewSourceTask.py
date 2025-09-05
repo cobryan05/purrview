@@ -26,11 +26,25 @@ class PreviewSourceTask(Task):
             status = "error"
         else:
             self._status_msg = "Starting Provider"
-            await provider.start()
+
+            await asyncio.create_task(provider.start())
             self._status_msg = "Waiting for image"
-            imageInfo = await provider.getNextImage()
-            image_base64 = base64_encode_png(imageInfo.image)
-            ret["image"] = image_base64
+
+            cancel_task = asyncio.create_task(self._cancel_flag.wait())
+            image_task = asyncio.create_task(provider.getNextImage())
+
+            done, pending = await asyncio.wait(
+                {image_task, cancel_task},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+
+            if image_task in done:
+                image_base64 = base64_encode_png(image_task.result().image)
+                ret["image"] = image_base64
+            elif cancel_task in done:
+                self._status_msg = "Canceled"
+                status = "canceled"
+
 
         self._update_resume_data()
         ret["status"] = status

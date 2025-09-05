@@ -56,7 +56,7 @@ export async function deleteTaskConfigs({ uuids }) {
   const res = await fetch('/api/tasks/configs/delete', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ task_uuids: uuids }),
+    body: JSON.stringify({ config_uuids: uuids }),
   });
 
   if (res.ok) {
@@ -167,6 +167,38 @@ export async function fetchTaskResult(taskId) {
  */
 export function getTaskResult(taskId) {
   return _taskResults.get(taskId) || null;
+}
+
+/**
+ * Cancel a running task.
+ */
+export async function cancelTask(taskId) {
+  const res = await fetch('/api/tasks/cancel', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ task_ids: [taskId] }),
+  });
+
+  if (!res.ok) {
+    const err = await res.json();
+    throw new Error(err.message || 'Failed to cancel task');
+  }
+}
+
+/**
+ * Delete a task
+ */
+export async function deleteTask(taskId) {
+  const res = await fetch('/api/tasks/delete', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ task_ids: [taskId] }),
+  });
+
+  if (!res.ok) {
+    const err = await res.json();
+    throw new Error(err.message || 'Failed to cancel task');
+  }
 }
 
 /**

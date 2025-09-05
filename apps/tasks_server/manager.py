@@ -46,26 +46,33 @@ class Manager:
         """
         return list(task_registry.keys())
 
-    async def get_task_result(self, task_id: int) -> Optional[dict[str, Any]]:
+    async def get_task_result(self, task_ids: List[int]) -> Optional[dict[str, Any]]:
         """
-        Get the result of a specific task.
+        Get the result of specified tasks.
 
         Args:
-            task_id (int): The ID of the task.
+            task_ids (List[int]): The IDs of the tasks.
 
         Returns:
-            Optional[dict[str, Any]]: The result of the task, or None if not found.
+            Optional[dict[str, Any]]: The result of the tasks, or None if not found.
         """
-        task_info = self._running_tasks.get(task_id)
-        delete_on_success = task_info.config_metadata.params.get(Task.InternalKeys.ONESHOT_RESULT, False)
-        results = None
-        if task_info:
-            results = task_info.task.get_results()
-        else:
-            # If not running, check the database
-            results = await self._db_client.get_task_result(task_id)
-        if results and delete_on_success:
-            await self.delete_tasks(task_ids=task_id)
+        tasks_info = {tid: self._running_tasks.get(tid) for tid in task_ids}
+        tasks_to_delete = []
+
+        results = {}
+        for tid, task_info in tasks_info.items():
+            if task_info:
+                result = task_info.task.get_results()
+                if result:
+                    results[tid] = result
+                    delete_on_success = task_info.config_metadata.params.get(Task.InternalKeys.ONESHOT_RESULT, False)
+                    if delete_on_success:
+                        tasks_to_delete.append(tid)
+            else:
+                # If not running, check the database
+                results = await self._db_client.get_task_results(task_ids)
+        if results and tasks_to_delete:
+            asyncio.create_task(self.delete_tasks(task_ids=tasks_to_delete))
 
         return results
 
@@ -143,22 +150,16 @@ class Manager:
 
         return task_config_metadata
 
-    async def delete_task_configs(self, task_ids: Union[List[int], int]) -> None:
+    async def delete_task_configs(self, config_uuids: Union[List[str], str]) -> None:
         """
-        Delete a task by its ID.
+        Delete task configs by their UUIDs.
 
         Args:
-            task_id (int): The ID of the task to delete.
+            config_uuids (Union[List[str], str]): The UUIDs of the task configs to delete.
         """
-        if isinstance(task_ids, int):
-            task_ids = [task_ids]
-
-        for task_id in task_ids:
-            if task_id in self._running_tasks:
-                # TODO: How does a task sync to DB?
-                await self._running_tasks[task_id].task.stop()
-                del self._running_tasks[task_id]
-        await self._db_client.delete_task_config(task_ids)
+        if isinstance(config_uuids, str):
+            config_uuids = [config_uuids]
+        await self._db_client.delete_task_config(config_uuids)
 
     async def delete_tasks(self, task_ids: Union[List[int], int]) -> None:
         """
@@ -244,13 +245,12 @@ class Manager:
         else:
             logger.warning(f"Unknown task configuration: {task_config_uuid}")
 
-    async def cancel_tasks(self, task_ids: Union[List[int], int], delete: bool = False) -> None:
+    async def cancel_tasks(self, task_ids: Union[List[int], int]) -> None:
         """
         Stop tasks by id, syncing to db
 
         Args:
             task_ids (Union[List[int], int]): The ID(s) of the task(s) to stop.
-            delete (bool): Whether to delete the task(s) from the database.
         """
         if isinstance(task_ids, int):
             task_ids = [task_ids]
@@ -290,7 +290,7 @@ class Manager:
     async def _start_task(self, config_metadata: TaskConfigMetadata) -> Optional[RunningTaskInfo]:
         """Start a task."""
         task_instance = task_registry[config_metadata.typename](task_config_uuid=config_metadata.uuid, params=config_metadata.params)
-        task_metadata: ActiveTaskMetadata = await self._db_client.add_active_task(config_metadata.uuid, config_metadata.typename)
+        task_metadata: ActiveTaskMetadata = await self._db_client.insert_new_active_task(config_metadata.uuid)
         task_info: RunningTaskInfo = RunningTaskInfo(task=task_instance, config_metadata=config_metadata, task_metadata=task_metadata)
 
         self._running_tasks[task_metadata.id] = task_info

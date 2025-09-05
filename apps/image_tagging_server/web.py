@@ -14,17 +14,18 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 
+from apps.inference_server.web import (
+    AssociateLabelWithModelClassPayload,
+    GetModelLabelsPayload,
+)
 from apps.tasks_server.web import (
     CancelTasksPayload,
     CreateTaskConfigPayload,
+    DeleteTaskConfigsPayload,
+    DeleteTasksPayload,
     StartTasksPayload,
+    TasksResultPayload,
     TasksStatusPayload,
-    TasksResultPayload
-)
-
-from apps.inference_server.web import (
-    AssociateLabelWithModelClassPayload,
-    GetModelLabelsPayload
 )
 
 from .manager import (
@@ -34,6 +35,7 @@ from .manager import (
     SourceMetadata,
     TaskConfigMetadata,
 )
+
 
 class AddLabelPayload(BaseModel):
     name: str
@@ -613,6 +615,15 @@ class WebApp:
         async def create_task_config_api(payload: CreateTaskConfigPayload) -> JSONResponse: ...
 
         @self._app.post(
+            "/api/tasks/configs/delete",
+            response_class=JSONResponse,
+            tags=[WebApp.TASKS_API_TAG_NAME],
+            operation_id="delete_task_configs",
+        )
+        @self._manager.task_api_request("delete_task_configs")
+        async def delete_task_configs_api(payload: DeleteTaskConfigsPayload) -> JSONResponse: ...
+
+        @self._app.post(
             "/api/tasks/start",
             tags=[WebApp.TASKS_API_TAG_NAME],
             operation_id="start_task",
@@ -637,6 +648,17 @@ class WebApp:
             response_class=JSONResponse,
         )
         @self._manager.task_api_request("get_tasks_status")
+        async def get_tasks_status_api(payload: TasksStatusPayload) -> JSONResponse: ...
+
+        @self._app.post(
+            "/api/tasks/delete",
+            tags=[WebApp.TASKS_API_TAG_NAME],
+            operation_id="delete_tasks",
+            response_class=JSONResponse,
+        )
+        @self._manager.task_api_request("delete_tasks")
+        async def delete_tasks_api(payload: DeleteTasksPayload) -> JSONResponse: ...
+
         @self._app.post(
             "/api/tasks/result",
             tags=[WebApp.TASKS_API_TAG_NAME],

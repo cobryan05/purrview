@@ -5,8 +5,9 @@ import logging
 import os
 import sys
 from dataclasses import asdict, dataclass, field
+from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union, Tuple, Type, TypeVar
+from typing import Any, Dict, List, Optional, Tuple, Type, TypeVar, Union
 from uuid import uuid4
 
 import aiofiles
@@ -28,14 +29,18 @@ CREATE TABLE IF NOT EXISTS images (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     filename TEXT UNIQUE NOT NULL,
     last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    metadata_json TEXT CHECK (metadata_json IS NULL OR json_valid(metadata_json))
+    metadata_json TEXT CHECK (metadata_json IS NULL OR json_valid(metadata_json)),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+
 CREATE TABLE IF NOT EXISTS labels (
     uuid TEXT PRIMARY KEY,
     name TEXT NOT NULL,
     color TEXT,
     parent_uuid TEXT REFERENCES labels(uuid)
 );
+
 CREATE TABLE IF NOT EXISTS bounding_boxes (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     label_uuid TEXT NOT NULL,
@@ -48,6 +53,7 @@ CREATE TABLE IF NOT EXISTS bounding_boxes (
     FOREIGN KEY(image_id) REFERENCES images(id) ON DELETE CASCADE,
     FOREIGN KEY(label_uuid) REFERENCES labels(uuid)
 );
+
 CREATE TABLE IF NOT EXISTS bbox_tags (
     bbox_id INTEGER NOT NULL,
     label_uuid TEXT NOT NULL,
@@ -55,6 +61,7 @@ CREATE TABLE IF NOT EXISTS bbox_tags (
     FOREIGN KEY(bbox_id) REFERENCES bounding_boxes(id) ON DELETE CASCADE,
     FOREIGN KEY(label_uuid) REFERENCES labels(uuid) ON DELETE CASCADE
 );
+
 CREATE TABLE IF NOT EXISTS task_configs (
     uuid TEXT PRIMARY KEY,
     name TEXT NOT NULL,
@@ -62,6 +69,7 @@ CREATE TABLE IF NOT EXISTS task_configs (
     description TEXT,
     params_json TEXT CHECK (params_json IS NULL OR json_valid(params_json)) NOT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    marked_for_delete BOOLEAN DEFAULT FALSE,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -74,7 +82,9 @@ CREATE TABLE IF NOT EXISTS tasks_active (
     error_message TEXT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY(config_uuid) REFERENCES task_configs(uuid)
+    expires_at TIMESTAMP,
+    marked_for_delete BOOLEAN DEFAULT FALSE,
+    FOREIGN KEY(config_uuid) REFERENCES task_configs(uuid) ON DELETE RESTRICT
 );
 
 CREATE TABLE IF NOT EXISTS sources (
@@ -85,7 +95,63 @@ CREATE TABLE IF NOT EXISTS sources (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+
+
+-- Update Timestamp triggers
+CREATE TRIGGER IF NOT EXISTS trg_images_updated_at
+AFTER UPDATE ON images
+FOR EACH ROW
+WHEN NEW.updated_at = OLD.updated_at
+BEGIN
+    UPDATE images
+    SET updated_at = CURRENT_TIMESTAMP
+    WHERE id = OLD.id;
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_task_configs_updated_at
+AFTER UPDATE ON task_configs
+FOR EACH ROW
+WHEN NEW.updated_at = OLD.updated_at
+BEGIN
+    UPDATE task_configs
+    SET updated_at = CURRENT_TIMESTAMP
+    WHERE uuid = OLD.uuid;
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_tasks_active_updated_at
+AFTER UPDATE ON tasks_active
+FOR EACH ROW
+WHEN NEW.updated_at = OLD.updated_at
+BEGIN
+    UPDATE tasks_active
+    SET updated_at = CURRENT_TIMESTAMP
+    WHERE id = OLD.id;
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_sources_updated_at
+AFTER UPDATE ON sources
+FOR EACH ROW
+WHEN NEW.updated_at = OLD.updated_at
+BEGIN
+    UPDATE sources
+    SET updated_at = CURRENT_TIMESTAMP
+    WHERE uuid = OLD.uuid;
+END;
+
+-- Cleanup task configs when marked and unreferenced
+CREATE TRIGGER IF NOT EXISTS cleanup_task_config_after_task_delete
+AFTER DELETE ON tasks_active
+FOR EACH ROW
+BEGIN
+    DELETE FROM task_configs
+    WHERE marked_for_delete = 1
+      AND uuid = OLD.config_uuid
+      AND NOT EXISTS (
+          SELECT 1 FROM tasks_active WHERE config_uuid = OLD.config_uuid
+      );
+END;
 """
+
 
 
 @dataclass
@@ -148,6 +214,7 @@ class ActiveTaskMetadata:
     error_message: Optional[str] = None
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
+    expires_at: Optional[str] = None
 
 
 class DbClient:
@@ -179,7 +246,9 @@ class DbClient:
             await db.execute("BEGIN EXCLUSIVE")
 
             # Create tables if not exist
-            await db.executescript(SCHEMA_SQL)  # your schema string
+            await db.executescript(SCHEMA_SQL)
+
+            await self._migrate_db(db)
 
             # Check if labels table is empty
             cursor = await db.execute("SELECT COUNT(*) FROM labels")
@@ -189,6 +258,33 @@ class DbClient:
                 await self._import_labels_from_json(db)
 
             await db.commit()
+
+    async def _migrate_db(self, db: aiosqlite.Connection) -> None:
+        """
+        Run simple migrations by adding new columns if they do not exist.
+        """
+        # Define desired columns per table
+        migrations: dict[str, dict[str, str]] = {
+            "tasks_active": {
+                "expires_at": "TIMESTAMP",
+                "marked_for_delete": "BOOLEAN DEFAULT FALSE",
+            },
+            "task_configs": {
+                "marked_for_delete": "BOOLEAN DEFAULT FALSE",
+            },
+        }
+
+        for table, new_columns in migrations.items():
+            cursor = await db.execute(f"PRAGMA table_info({table})")
+            rows = await cursor.fetchall()
+            existing_cols = {row[1] for row in rows}
+
+            for col, col_def in new_columns.items():
+                if col not in existing_cols:
+                    print(f"Adding column '{col}' to {table}")
+                    await db.execute(f"ALTER TABLE {table} ADD COLUMN {col} {col_def}")
+
+        await db.commit()
 
     async def get_image_id_by_filename(self, filename: str) -> Optional[int]:
         """
@@ -257,10 +353,10 @@ class DbClient:
                 raise Exception(f"Failed to retrieve inserted task config with UUID {config_uuid}")
             return DbClient.row_to_dataclass(cursor, row, TaskConfigMetadata)
 
-    async def add_active_task(
+    async def insert_new_active_task(
         self,
         config_uuid: str,
-        typename: str,
+        expiry: Optional[Union[datetime, timedelta]] = None,
         resume_data: Optional[dict] = None,
     ) -> ActiveTaskMetadata:
         """
@@ -268,25 +364,37 @@ class DbClient:
 
         Args:
             config_uuid: UUID of the task configuration this task is based on.
-            typename: The task type name (retrieved from the config, but stored here for convenience).
+            expiry: Optional expiration datetime (absolute) or timedelta (relative).
             resume_data: Optional dict containing serialized resume data. Stored as JSON in the DB.
 
         Returns:
             ActiveTaskMetadata: A dataclass instance representing the newly inserted active task,
             including its auto-generated ID, timestamps, and any provided metadata.
-
-        Raises:
-            Exception: If the inserted row cannot be retrieved from the database.
         """
         resume_data_json = json.dumps(resume_data) if resume_data is not None else None
+
+        # Handle relative vs absolute expiry
+        if isinstance(expiry, timedelta):
+            expiry_value = datetime.utcnow() + expiry
+        else:
+            expiry_value = expiry
+
+        # Store as ISO8601 string so SQLite's datetime functions work
+        expiry_sql = expiry_value.isoformat(" ") if expiry_value else None
 
         async with aiosqlite.connect(self._db_path) as db:
             await db.execute(
                 """
-                INSERT INTO tasks_active (config_uuid, status, resume_data_json, error_message)
-                VALUES (?, ?, ?, ?)
+                INSERT INTO tasks_active (
+                    config_uuid,
+                    status,
+                    resume_data_json,
+                    error_message,
+                    expires_at
+                )
+                VALUES (?, ?, ?, ?, ?)
                 """,
-                (config_uuid, Task.Status.NEW, resume_data_json, None),
+                (config_uuid, Task.Status.NEW, resume_data_json, None, expiry_sql),
             )
             await db.commit()
 
@@ -299,7 +407,8 @@ class DbClient:
                     ta.resume_data_json,
                     ta.error_message,
                     ta.created_at,
-                    ta.updated_at
+                    ta.updated_at,
+                    ta.expires_at
                 FROM tasks_active ta
                 JOIN task_configs tc ON ta.config_uuid = tc.uuid
                 WHERE ta.rowid = last_insert_rowid()
@@ -310,6 +419,7 @@ class DbClient:
                 raise Exception("Failed to retrieve inserted active task")
 
             return DbClient.row_to_dataclass(cursor, row, ActiveTaskMetadata)
+
 
     async def delete_active_tasks(self, task_ids: Union[int, List[int]]) -> None:
         """
@@ -338,26 +448,48 @@ class DbClient:
 
     async def delete_task_config(self, config_uuids: Union[str, List[str]]) -> None:
         """
-        Delete one or more task configs by their UUID(s).
+        Delete one or more task configs by their UUID(s). If a config has
+        active tasks, it will be marked for deletion instead.
 
         Args:
-            task_uuids (Union[str, List[str]]): A single task UUID or a list of task UUIDs to delete.
+            config_uuids (Union[str, List[str]]): A single config UUID or a list of UUIDs.
 
         Raises:
-            ValueError: If task_uuids is an empty list.
+            ValueError: If config_uuids is an empty list.
         """
         if isinstance(config_uuids, str):
             config_uuids = [config_uuids]
         elif isinstance(config_uuids, list):
             if not config_uuids:
-                raise ValueError("No task UUIDs provided for deletion.")
+                raise ValueError("No config UUIDs provided for deletion.")
         else:
-            raise TypeError("task_uuids must be a str or list of strs.")
+            raise TypeError("config_uuids must be a str or list of strs.")
 
         placeholders = ",".join("?" for _ in config_uuids)
 
         async with aiosqlite.connect(self._db_path) as db:
-            await db.execute(f"DELETE FROM task_configs WHERE uuid IN ({placeholders})", tuple(config_uuids))
+            # Delete configs with no tasks referencing them
+            await db.execute(
+                f"""
+                DELETE FROM task_configs
+                WHERE uuid IN ({placeholders})
+                AND NOT EXISTS (
+                    SELECT 1 FROM tasks_active ta WHERE ta.config_uuid = task_configs.uuid
+                )
+                """,
+                tuple(config_uuids),
+            )
+
+            # Mark the rest for deletion
+            await db.execute(
+                f"""
+                UPDATE task_configs
+                SET marked_for_delete = 1
+                WHERE uuid IN ({placeholders})
+            """,
+                tuple(config_uuids),
+            )
+
             await db.commit()
 
     async def get_task_configs(
@@ -508,29 +640,38 @@ class DbClient:
 
             return bool(row[0])
 
-    async def get_task_result(self, task_id: int) -> Optional[dict[str, Any]]:
+    async def get_task_results(self, task_ids: Union[List[int], int]) -> Optional[dict[str, Any]]:
         """
-        Retrieve result data for a given task.
+        Retrieve result data for given tasks.
 
         Args:
-            task_id (int): Task ID
+            task_ids (List[int]): List of Task IDs
 
         Returns:
             dict[str, Any] or None if not found or empty
         """
+        if isinstance(task_ids, int):
+            task_ids = [task_ids]
+
         async with aiosqlite.connect(self._db_path) as db:
-            cursor = await db.execute("SELECT result_json FROM tasks_active WHERE id = ?", (task_id,))
-            row = await cursor.fetchone()
+            clause, params = DbClient._make_in_clause('id', task_ids)
+            cursor = await db.execute(f"SELECT result_json FROM tasks_active WHERE {clause}", params)
+            rows = await cursor.fetchall()
             await cursor.close()
 
-            if not row or not row[0]:
+            if not rows:
                 return None
 
-            try:
-                return json.loads(row[0])
-            except Exception as e:
-                logger.warning(f"Invalid JSON in result_json for task {task_id}: {e}")
-                return None
+            result = {}
+            for task_id, row in zip(task_ids, rows):
+                if not row[0]:
+                    continue
+                try:
+                    result[task_id] = json.loads(row[0])
+                except Exception as e:
+                    logger.warning("Failed to parse JSON for task_id=%s: %s", task_id, e)
+                    continue
+            return result
 
     async def get_task_resume_data(self, task_id: int) -> Optional[dict[str, Any]]:
         """
@@ -1250,3 +1391,26 @@ class DbClient:
                 transformed[key] = value
 
         return cls_type(**transformed)
+
+    def _make_in_clause(column: str, values: list[int] | list[str]) -> tuple[str, tuple]:
+        """
+        Build a safe SQL IN clause with placeholders.
+
+        Args:
+            column: The column name for the IN clause.
+            values: A non-empty list of values (ints or strs).
+
+        Returns:
+            (clause, params) where:
+            clause = "column IN (?,?,?)"
+            params = tuple(values)
+
+        Raises:
+            ValueError if values is empty.
+        """
+        if not values:
+            raise ValueError("Values for IN clause cannot be empty")
+
+        placeholders = ",".join("?" for _ in values)
+        clause = f"{column} IN ({placeholders})"
+        return clause, tuple(values)
