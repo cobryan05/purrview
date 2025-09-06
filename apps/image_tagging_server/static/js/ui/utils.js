@@ -25,15 +25,6 @@ export function getParamsFromForm(container) {
 
 
 /**
- * Utility: Fetch list of image providers
- */
-export async function fetchImageProviderList() {
-  const res = await fetch('/api/sources/image-providers/list');
-  const data = await res.json();
-  return data.providers;
-}
-
-/**
  * Renders form inputs from JSON schema
  */
 export function renderSchemaForm(schema, container) {

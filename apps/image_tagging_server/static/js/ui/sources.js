@@ -1,6 +1,6 @@
 // ================= Sources Manager =================
 import { EditableField, SourceConfigField } from '/app-static/js/ui/utils/fields/index.js';
-import { TaskStatus, createGenericRow, createSource, runPreviewSourceTest, deleteSources, fetchImageProviderSchema, fetchTaskResult, fetchTaskStatus, refreshImageProvidersCache, refreshSourceCache, startTask, toast, updateSource } from '/app-static/js/ui/utils/index.js';
+import { createGenericRow, createSource, deleteSources, fetchImageProviderSchema, getAllSources, refreshImageProvidersCache, refreshSourceCache, runPreviewSourceTest, toast, updateSource } from '/app-static/js/ui/utils/index.js';
 
 /**
  * Creates a row for a single source with editable buttons
@@ -60,13 +60,12 @@ async function createSourceRow({ source, editable = false, renderList, onEdit, o
  * Renders the list of sources
  */
 export async function renderSourceList({ parent, editable = false, onEdit, onDelete }) {
-  await refreshSourceCache()
+  await refreshSourceCache();
   await refreshImageProvidersCache();
   parent.innerHTML = '';
-  const res = await fetch('/api/sources/get');
-  const data = await res.json();
+  const sources = getAllSources();
 
-  Object.values(data.sources).forEach(async src => {
+  sources.forEach(async src => {
     const row = await createSourceRow({
       source: src,
       editable,

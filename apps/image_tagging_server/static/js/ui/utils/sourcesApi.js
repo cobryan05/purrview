@@ -1,19 +1,16 @@
-let _sources = new Set(); // just the names
+let _sourcesMap = new Map(); // uuid -> full source data
 let _imageProviders = null; // Cache for image providers
 let _providerSchemas = new Map(); // Cache for provider schemas
 
 /**
- * Refresh the source list cache from /api/sources/get.
- * Clears all related caches.
+ * Refresh the source list cache
  */
 export async function refreshSourceCache() {
   const res = await fetch('/api/sources/get');
   const { sources } = await res.json();
-  _sources = new Set(Object.keys(sources));
 
-  // Clear related caches
-  _imageProviders = null;
-  _providerSchemas.clear();
+  // Store everything as a Map (uuid -> source object)
+  _sourcesMap = new Map(Object.entries(sources));
 }
 
 /**
@@ -28,19 +25,18 @@ export async function refreshImageProvidersCache() {
   if (res.ok) {
     const { providers } = await res.json();
     _imageProviders = providers;
-    return _imageProviders
+    return _imageProviders;
   } else {
     const error = await res.json();
     throw new Error(error.message || 'Failed to fetch image provider list');
   }
 }
 
-
 /**
- * Get all known source names from the cache.
+ * Get the full source cache (Map<uuid, sourceData>).
  */
-export function getAllSourceNames() {
-  return Array.from(_sources);
+export function getAllSources() {
+  return new Map(_sourcesMap);
 }
 
 /**
@@ -49,7 +45,7 @@ export function getAllSourceNames() {
  */
 export function getImageProviderList() {
   if (!_imageProviders) {
-    throw new Error('Image provider list is not cached. Call refreshSourceCache first.');
+    throw new Error('Image provider list is not cached. Call refreshImageProvidersCache first.');
   }
   return _imageProviders;
 }
@@ -60,7 +56,7 @@ export function getImageProviderList() {
  */
 export function getImageProviderSchema(providerName) {
   if (!_providerSchemas.has(providerName)) {
-    throw new Error(`Schema for provider "${providerName}" is not cached. Call refreshSourceCache first.`);
+    throw new Error(`Schema for provider "${providerName}" is not cached. Call fetchImageProviderSchema first.`);
   }
   return _providerSchemas.get(providerName);
 }
@@ -89,7 +85,6 @@ export async function fetchImageProviderSchema(providerName) {
   }
 }
 
-
 /**
  * Create a new source.
  */
@@ -101,7 +96,8 @@ export async function createSource({ name, providerName = null, params = {} }) {
   });
 
   if (res.ok) {
-    _sources.add(name);
+    const { source } = await res.json();
+    _sourcesMap.set(source.uuid, source);
   } else {
     const error = await res.json();
     throw new Error(error.message || 'Failed to create source');
@@ -111,23 +107,26 @@ export async function createSource({ name, providerName = null, params = {} }) {
 /**
  * Update an existing source.
  */
-export async function updateSource({uuid, name, providerName, params}) {
+export async function updateSource({ uuid, name, providerName, params }) {
   const res = await fetch('/api/sources/update', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ source_uuid: uuid, source_name: name, image_provider: providerName, params }),
   });
 
-  if (!res.ok) {
+  if (res.ok) {
+    const { source } = await res.json();
+    _sourcesMap.set(source.uuid, source);
+  } else {
     const error = await res.json();
     throw new Error(error.message || 'Failed to update source');
   }
 }
 
 /**
- * Delete a source.
+ * Delete a source (or multiple sources).
  */
-export async function deleteSources({uuids}) {
+export async function deleteSources({ uuids }) {
   if (!Array.isArray(uuids)) {
     uuids = [uuids];
   }
@@ -139,7 +138,7 @@ export async function deleteSources({uuids}) {
   });
 
   if (res.ok) {
-    uuids.forEach(sourceUuid => _sources.delete(sourceUuid));
+    uuids.forEach(sourceUuid => _sourcesMap.delete(sourceUuid));
   } else {
     const error = await res.json();
     throw new Error(error.message || 'Failed to delete source');
