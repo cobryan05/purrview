@@ -171,7 +171,7 @@ class WebApp:
             """
             buttons = [
                 {"label": "Task Status", "action": "/task-status-form"},
-                {"label": "List Available Tasks", "action": "/api/tasks/configs/list"},
+                {"label": "List Available Tasks", "action": "/api/tasks/types/list"},
                 {"label": "Create Task", "action": "/create-task-config-form"},
             ]
             return self._templates.TemplateResponse(
@@ -506,33 +506,6 @@ class WebApp:
                     status_code=500,
                 )
 
-        @self._app.post(
-            "/api/tasks/cancel",
-            tags=[WebApp.TASKS_API_TAG_NAME],
-            operation_id="cancel_tasks",
-            response_class=JSONResponse,
-        )
-        async def cancel_tasks_api(payload: CancelTasksPayload) -> JSONResponse:
-            """
-            API endpoint to cancel tasks.
-
-            Args:
-                req (ResumeTasksRequest): Request object with task IDs to cancel.
-
-            Returns:
-                JSONResponse: JSON response with resume result.
-            """
-            try:
-                await self._manager.cancel_tasks(payload.task_ids)
-                response_data = {"status": WebApp.SUCCESS_KEY, "tasks": payload.task_ids}
-                return JSONResponse(content=response_data)
-            except Exception as e:
-                logger.exception(e)
-                return JSONResponse(
-                    content={"status": WebApp.FAILURE_KEY, "message": str(e)},
-                    status_code=500,
-                )
-
         @self._app.post("/task-resume", response_class=HTMLResponse, include_in_schema=False)
         async def resume_tasks_form(
             request: Request,
@@ -561,14 +534,14 @@ class WebApp:
                 return self._error_response(request, f"Internal server error: {str(e)}")
 
         @self._app.get(
-            "/api/tasks/configs/list",
+            "/api/tasks/types/list",
             response_class=JSONResponse,
             tags=[WebApp.TASKS_API_TAG_NAME],
-            operation_id="list_task_configs",
+            operation_id="list_task_types",
         )
-        async def list_task_configs_api(request: Request) -> JSONResponse:
+        async def list_task_types_api(request: Request) -> JSONResponse:
             """
-            API endpoint to return a list of task configurations.
+            API endpoint to return a list of task types.
 
             Args:
                 request (Request): The FastAPI request object.
@@ -577,8 +550,8 @@ class WebApp:
                 JSONResponse: A JSON response containing the list of models.
             """
             try:
-                task_list = await self._manager.list_task_configs()
-                response_data = {"status": WebApp.SUCCESS_KEY, "tasks": task_list}
+                types_list = await self._manager.list_task_types()
+                response_data = {"status": WebApp.SUCCESS_KEY, "types": types_list}
                 return JSONResponse(content=response_data)
             except Exception as e:
                 logger.exception(e)
@@ -707,7 +680,7 @@ class WebApp:
             Returns:
                 HTMLResponse: Rendered task creation form.
             """
-            task_list = await self._manager.list_task_configs()
+            task_list = await self._manager.list_task_types()
             fields = {
                 "task_name": {
                     "label": "Task Name",

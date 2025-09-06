@@ -1,6 +1,4 @@
-let _taskConfigs = new Map();   // uuid -> task config
-let _taskStatuses = new Map();  // taskId -> status
-let _taskResults = new Map();   // taskId -> result
+let _taskSchemas = new Map();   // uuid -> task config
 
 export const TaskStatus = Object.freeze({
   NEW: "new",
@@ -12,38 +10,60 @@ export const TaskStatus = Object.freeze({
 });
 
 /**
- * Refresh the task configs cache from /api/tasks/configs/list.
- * Clears dependent caches.
+ * Clears the task caches
  */
-export async function refreshTaskConfigsCache() {
-  const res = await fetch('/api/tasks/configs/list');
+export async function refreshTaskCache() {
+  _taskSchemas.clear();
+
+  const res = await fetch('/api/tasks/types/list');
   if (!res.ok) {
     const err = await res.json();
-    throw new Error(err.message || 'Failed to fetch task configs');
+    throw new Error(err.message || 'Failed to fetch task types');
   }
-  const { tasks } = await res.json();
-  _taskConfigs.clear();
-  for (const task of tasks) {
-    _taskConfigs.set(task.uuid, task);
+  const { types } = await res.json();
+  for (const type of types) {
+    _taskSchemas.set(type, null);
   }
-
-  // Clear dependent caches
-  _taskStatuses.clear();
-  _taskResults.clear();
+  return getTaskTypes();
 }
 
 /**
  * Get all known task configs from the cache.
  */
-export function getAllTaskConfigs() {
-  return Array.from(_taskConfigs.values());
+export function getTaskTypes() {
+  return Array.from(_taskSchemas.keys());
 }
+
+/**
+ * Fetch the schema for a specific image provider, with caching.
+ */
+export async function fetchTaskConfig(configUuid) {
+  if (_providerSchemas.has(providerName)) {
+    return _providerSchemas.get(providerName);
+  }
+
+  const res = await fetch('/api/sources/image-providers/schema', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ image_provider: providerName }),
+  });
+
+  if (res.ok) {
+    const { schema } = await res.json();
+    _providerSchemas.set(providerName, schema);
+    return schema;
+  } else {
+    const error = await res.json();
+    throw new Error(error.message || 'Failed to fetch image provider schema');
+  }
+}
+
 
 /**
  * Get a task config by uuid.
  */
 export function getTaskConfig(uuid) {
-  return _taskConfigs.get(uuid) || null;
+  return _taskSchemas.get(uuid) || null;
 }
 
 /**
@@ -60,7 +80,7 @@ export async function deleteTaskConfigs({ uuids }) {
   });
 
   if (res.ok) {
-    uuids.forEach((uuid) => _taskConfigs.delete(uuid));
+    uuids.forEach((uuid) => _taskSchemas.delete(uuid));
   } else {
     const err = await res.json();
     throw new Error(err.message || 'Failed to delete task configs');

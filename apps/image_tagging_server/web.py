@@ -597,13 +597,13 @@ class WebApp:
                 )
 
         @self._app.get(
-            "/api/tasks/configs/list",
+            "/api/tasks/types/list",
             response_class=JSONResponse,
             tags=[WebApp.TASKS_API_TAG_NAME],
-            operation_id="list_task_configs",
+            operation_id="list_task_types",
         )
-        @self._manager.task_api_request("list_task_configs")
-        async def get_task_configs_api(request: Request) -> JSONResponse: ...
+        @self._manager.task_api_request("list_task_types")
+        async def list_task_types_api(request: Request) -> JSONResponse: ...
 
         @self._app.post(
             "/api/tasks/configs/create",

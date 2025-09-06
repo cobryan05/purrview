@@ -40,7 +40,7 @@ class Manager:
     async def get_server_config(self) -> Dict[str, Any]:
         return self._config.copy()
 
-    async def list_task_configs(self) -> List[str]:
+    async def list_task_types(self) -> List[str]:
         """
         List all tasks managed by the Manager.
         """
