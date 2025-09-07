@@ -1,8 +1,9 @@
 // labels.js
 import { getCurrentLabelUuid } from '/app-static/js/canvas/state.js';
 import { getTool } from '/app-static/js/canvas/tools.js';
-import { createGenericRow, createNewLabel, deleteLabel, getAllLabels, refreshLabelCache, toast, updateLabel } from '/app-static/js/ui/utils/index.js';
+import { createGenericRow, createNewLabel, deleteLabel, fetchLabels, toast, updateLabel } from '/app-static/js/ui/utils/index.js';
 import { EditableField, TextBoxColorField } from '/app-static/js/ui/utils/fields/index.js';
+import { clearLabelCache } from './utils/labelsApi.js';
 
 const DEFAULT_COLOR = '#cccccc';
 
@@ -138,9 +139,8 @@ function renderLabel(label, container, indentLevel, editable, onSelectCallback, 
  * Renders all labels into a container
  */
 
-export async function renderLabelList({ target = 'labels-list', editable = true, onSelectCallback = null } = {}) {
+export function renderLabelList({ target = 'labels-list', editable = true, onSelectCallback = null } = {}) {
   try {
-    await refreshLabelCache();
     const container = document.getElementById(target);
     if (!container) {
       console.error('Label container not found');
@@ -148,62 +148,67 @@ export async function renderLabelList({ target = 'labels-list', editable = true,
     }
     container.innerHTML = '';
 
-    const labels = await getAllLabels();
-    const renderList = () => renderLabelList({ target, editable, onSelectCallback });
-
     // Render root labels
-    Array.from(labels.values())
-      .filter(l => !l.metadata.parent_uuid)
-      .forEach(l => renderLabel(l, container, 0, editable, onSelectCallback, renderList));
+    const rerender = () => renderLabelList({ target, editable, onSelectCallback });
 
+    fetchLabels().then(labels => {
+      [...labels.values()]
+        .filter(l => !l.metadata?.parent_uuid)
+        .forEach(label => {
+          renderLabel(label, container, 0, editable, onSelectCallback, rerender);
+        });
 
-    // Add "Add new root label" row
-    if (editable) {
-      const divider = document.createElement('hr');
-      container.appendChild(divider);
+      // Add "Add new root label" row
+      if (editable) {
+        const divider = document.createElement('hr');
+        container.appendChild(divider);
 
-      const newRootRow = createGenericRow({
-        field: new EditableField({
-          field: new TextBoxColorField({ text: '', placeholder: "New Root Label Name", color: DEFAULT_COLOR }),
-          editMode: true,
-        }),
-        indentLevel: 0,
-        leftButtons: [
-          {
-            text: 'Refresh',
-            emoji: '🔄',
-            onClick: renderList,
-          },
-          {
-            text: 'Add label',
-            emoji: '➕',
-            onClick: async ({ field }) => {
-              const name = field.getValue().text?.trim();
-              const color = field.getValue().color || DEFAULT_COLOR;
-
-              if (!name) {
-                toast('Error: Name required', 5000, "error");
-                return;
-              }
-
-              try {
-                await createNewLabel(name, color);
-                renderList();
-              } catch (err) {
-                toast(err.message, 5000, 'error');
-              }
+        const newRootRow = createGenericRow({
+          field: new EditableField({
+            field: new TextBoxColorField({ text: '', placeholder: "New Root Label Name", color: DEFAULT_COLOR }),
+            editMode: true,
+          }),
+          indentLevel: 0,
+          leftButtons: [
+            {
+              text: 'Refresh',
+              emoji: '🔄',
+              onClick: async () => {
+                clearLabelCache();
+                rerender();
+              },
             },
-          },
-        ],
-        rightButtons: [],
-      });
+            {
+              text: 'Add label',
+              emoji: '➕',
+              onClick: async ({ field }) => {
+                const name = field.getValue().text?.trim();
+                const color = field.getValue().color || DEFAULT_COLOR;
 
-      container.appendChild(newRootRow);
-    }
+                if (!name) {
+                  toast('Error: Name required', 5000, "error");
+                  return;
+                }
 
-    // Highlight selected label if exists
-    const selectedLabelUuid = getCurrentLabelUuid();
-    if (selectedLabelUuid) highlightSelectedLabel(selectedLabelUuid);
+                try {
+                  await createNewLabel(name, color);
+                  rerender();
+                } catch (err) {
+                  toast(err.message, 5000, 'error');
+                }
+              },
+            },
+          ],
+          rightButtons: [],
+        });
+
+        container.appendChild(newRootRow);
+      }
+
+      // Highlight selected label if exists
+      const selectedLabelUuid = getCurrentLabelUuid();
+      if (selectedLabelUuid) highlightSelectedLabel(selectedLabelUuid);
+    });
   } catch (err) {
     console.error('Failed to fetch labels:', err);
   }

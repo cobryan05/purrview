@@ -1,4 +1,7 @@
-let _taskSchemas = new Map();   // uuid -> task config
+let _taskSchemas = new Map();
+let _taskConfigs = new Map();
+let _taskResults = new Map();
+let _taskStatuses = new Map();
 
 export const TaskStatus = Object.freeze({
   NEW: "new",
@@ -37,15 +40,16 @@ export function getTaskTypes() {
 /**
  * Fetch the schema for a specific image provider, with caching.
  */
-export async function fetchTaskConfig(configUuid) {
-  if (_providerSchemas.has(providerName)) {
-    return _providerSchemas.get(providerName);
+export async function fetchTaskSchema(typename) {
+  const schema = _taskSchemas.get(typename);
+  if (schema != null) {
+    return schema;
   }
 
   const res = await fetch('/api/sources/image-providers/schema', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ image_provider: providerName }),
+    body: JSON.stringify({ image_provider: typename }),
   });
 
   if (res.ok) {
@@ -53,8 +57,8 @@ export async function fetchTaskConfig(configUuid) {
     _providerSchemas.set(providerName, schema);
     return schema;
   } else {
-    const error = await res.json();
-    throw new Error(error.message || 'Failed to fetch image provider schema');
+    const err = await res.json();
+    throw new Error(err.message || 'Failed to fetch image provider schema');
   }
 }
 
@@ -63,7 +67,7 @@ export async function fetchTaskConfig(configUuid) {
  * Get a task config by uuid.
  */
 export function getTaskConfig(uuid) {
-  return _taskSchemas.get(uuid) || null;
+  return _taskConfigs.get(uuid) || null;
 }
 
 /**
@@ -110,7 +114,7 @@ export async function createTaskConfig(config) {
  * Start a task from a given config uuid.
  */
 export async function startTask({ uuid }) {
-  const res = await fetch('/api/tasks/start', {
+  const res = await fetch('/api/tasks/instances/start', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ config_uuid: uuid }),
@@ -129,7 +133,7 @@ export async function startTask({ uuid }) {
  * Fetch status for a running task.
  */
 export async function fetchTaskStatus(taskId) {
-  const res = await fetch('/api/tasks/status', {
+  const res = await fetch('/api/tasks/instances/get', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ task_ids: [taskId] }),
@@ -165,7 +169,7 @@ export function getTaskStatus(taskId) {
  * Fetch result for a completed task.
  */
 export async function fetchTaskResult(taskId) {
-  const res = await fetch('/api/tasks/result', {
+  const res = await fetch('/api/tasks/instances/result', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ task_ids: [taskId] }),
@@ -193,7 +197,7 @@ export function getTaskResult(taskId) {
  * Cancel a running task.
  */
 export async function cancelTask(taskId) {
-  const res = await fetch('/api/tasks/cancel', {
+  const res = await fetch('/api/tasks/instances/cancel', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ task_ids: [taskId] }),
@@ -209,7 +213,7 @@ export async function cancelTask(taskId) {
  * Delete a task
  */
 export async function deleteTask(taskId) {
-  const res = await fetch('/api/tasks/delete', {
+  const res = await fetch('/api/tasks/instances/delete', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ task_ids: [taskId] }),
@@ -225,7 +229,7 @@ export async function deleteTask(taskId) {
  * Pause a running task.
  */
 export async function pauseTask(taskId) {
-  const res = await fetch('/api/tasks/pause', {
+  const res = await fetch('/api/tasks/instances/pause', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ task_ids: [taskId] }),
@@ -241,7 +245,7 @@ export async function pauseTask(taskId) {
  * Resume a paused task.
  */
 export async function resumeTask(taskId) {
-  const res = await fetch('/api/tasks/resume', {
+  const res = await fetch('/api/tasks/instances/resume', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ task_ids: [taskId] }),

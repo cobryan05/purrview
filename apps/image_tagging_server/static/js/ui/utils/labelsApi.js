@@ -1,28 +1,31 @@
-let _cache = new Map();
+let _labelCache = null;
+
+export function clearLabelCache() {
+  _labelCache = null;
+}
 
 /**
  * Refresh the label cache by fetching the latest labels from the server.
  * Stores them in a Map keyed by uuid.
  */
-export async function refreshLabelCache() {
+export async function fetchLabels() {
+  if (_labelCache) {
+    return _labelCache;
+  }
   const labelRes = await fetch('/api/labels/list');
   const { labels } = await labelRes.json();
-  _cache = new Map(labels.map(l => [l.metadata.uuid, l]));
+  _labelCache = new Map(labels.map(l => [l.metadata.uuid, l]));
+  return _labelCache;
 }
 
 /**
  * Fetch a label's metadata from the cache using its UUID.
  */
-export function getLabelByUuid(uuid) {
-  return _cache.get(uuid) || null;
+export async function fetchLabelByUuid(uuid) {
+  const labels = await fetchLabels();
+  return labels.get(uuid) || null;
 }
 
-/**
- * Return the labels map
- */
-export function getAllLabels() {
-  return new Map(_cache);
-}
 
 /**
  * Add a new label to the server and refresh the cache.
@@ -41,8 +44,7 @@ export async function createNewLabel(name, color, parentUuid = null) {
     const { message } = await response.json();
     throw new Error(message || 'Failed to add label');
   }
-
-  await refreshLabelCache();
+  await clearLabelCache();
 }
 
 /**
@@ -62,8 +64,7 @@ export async function updateLabel(uuid, name, color) {
     const { message } = await response.json();
     throw new Error(message || 'Failed to update label');
   }
-
-  await refreshLabelCache();
+  await clearLabelCache();
 }
 
 /**
@@ -81,6 +82,5 @@ export async function deleteLabel(uuid) {
     const { message } = await response.json();
     throw new Error(message || 'Failed to delete label');
   }
-
-  await refreshLabelCache();
+  await clearLabelCache();
 }

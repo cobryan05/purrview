@@ -1,21 +1,24 @@
 import { selectShape } from './selection.js';
 import { getCurrentTool, getLayer, getTransformer } from './state.js';
 import { generateUUID } from './utils.js';
-import { getLabelByUuid } from '/app-static/js/ui/utils/index.js';
+import { fetchLabelByUuid } from '/app-static/js/ui/utils/index.js';
 
 
 /**
  * Create a bounding box group with a rectangle, label, confidence,
  * and set up all relevant event handlers here.
  */
+
 export function createBoundingBox(x, y, props = {}) {
   const width = props.width ?? 50;
   const height = props.height ?? 50;
   const labelUuid = props.metadata?.labelUuid ?? '';
   const confidence = props.metadata?.confidence;
   const uuid = generateUUID();
-  const label = getLabelByUuid(labelUuid);
-  const labelText = (label?.metadata?.name ?? props.metadata?.label) ?? 'Unknown';
+
+  // Initial placeholder values
+  let labelText = props.metadata?.label ?? 'Unknown';
+  let color = 'grey';
 
   const group = new Konva.Group({
     x,
@@ -23,8 +26,6 @@ export function createBoundingBox(x, y, props = {}) {
     draggable: true,
     name: 'annotation',
   });
-
-  const color = label?.metadata?.color ?? 'red';
 
   const rect = new Konva.Rect({
     name: 'box',
@@ -46,7 +47,7 @@ export function createBoundingBox(x, y, props = {}) {
   });
 
   group.metadata = {
-    label,
+    label: null, // will be filled in once async fetch completes
     confidence,
     ...props.metadata,
     uuid,
@@ -54,6 +55,27 @@ export function createBoundingBox(x, y, props = {}) {
 
   group.add(rect);
   group.add(text);
+
+  // Kick off async label resolution
+  if (labelUuid) {
+    fetchLabelByUuid(labelUuid).then(label => {
+      if (!label) return;
+
+      group.metadata.label = label;
+      const newColor = label?.metadata?.color ?? 'red';
+      const newLabelText = label?.metadata?.name ?? 'Unknown';
+
+      rect.stroke(newColor);
+
+      text.text(
+        `${newLabelText}${confidence != null ? ` (${(confidence * 100).toFixed(1)}%)` : ''}`
+      );
+      text.fill(newColor);
+
+      applyBoundingBoxLayout(group);
+      getLayer().batchDraw();
+    });
+  }
 
   // --- Event handlers setup ---
 
@@ -98,31 +120,23 @@ export function createBoundingBox(x, y, props = {}) {
     let newHeight = rect.height() * scaleY;
 
     const MIN_SIZE = 10;
-
-    // Clamp sizes to MIN_SIZE, avoid negative or too small values
     newWidth = Math.max(newWidth, MIN_SIZE);
     newHeight = Math.max(newHeight, MIN_SIZE);
 
-    // Compute left and top edge relative to group + rect position + scale
-    // rect.x() and rect.y() are relative to group coords
     const rectLeft = rect.x();
     const rectTop = rect.y();
 
-    // Calculate group's new position to always be at the top-left corner of the bounding box
     let newGroupX = group.x() + rectLeft;
     let newGroupY = group.y() + rectTop;
 
-    // Apply new size to rect
     rect.width(newWidth);
     rect.height(newHeight);
 
-    // Update group's position
     group.position({
       x: newGroupX,
       y: newGroupY,
     });
 
-    // Reset scale
     rect.scaleX(1);
     rect.scaleY(1);
 
@@ -146,30 +160,37 @@ export function updateBoundingBox(group, props = {}) {
   const newMetadata = { ...oldMetadata, ...props.metadata };
 
   const labelUuid = newMetadata.labelUuid ?? '';
-  const label = getLabelByUuid(labelUuid);
   const confidence = newMetadata.confidence;
 
-  const color = label?.metadata?.color ?? 'red';
-  const labelText = (label?.metadata?.name ?? props.metadata?.label) ?? 'Unknown';
+  fetchLabelByUuid(labelUuid)
+    .then(label => {
+      const color = label?.metadata?.color ?? 'red';
+      const labelText = (label?.metadata?.name ?? props.metadata?.label) ?? 'Unknown';
 
-  // Update metadata
-  group.metadata = {
-    ...newMetadata,
-    label,
-    confidence,
-  };
+      // Update metadata
+      group.metadata = {
+        ...newMetadata,
+        label,
+        confidence,
+      };
 
-  // Update label text
-  const bboxText = `${labelText}${confidence != null ? ` (${(confidence * 100).toFixed(1)}%)` : ''}`;
-  text.text(bboxText);
-  text.fill(color);
+      // Update label text
+      const bboxText = `${labelText}${confidence != null ? ` (${(confidence * 100).toFixed(1)}%)` : ''}`;
+      text.text(bboxText);
+      text.fill(color);
 
-  // Update stroke color
-  rect.stroke(color);
+      // Update stroke color
+      rect.stroke(color);
 
-  applyBoundingBoxLayout(group);
-  getLayer().batchDraw();
+      applyBoundingBoxLayout(group);
+      getLayer().batchDraw();
+    })
+    .catch(err => {
+      console.error('Failed to fetch label:', err);
+      // optionally fallback
+    });
 }
+
 
 /**
  * Keep rect at (0,0) and label positioned just above.

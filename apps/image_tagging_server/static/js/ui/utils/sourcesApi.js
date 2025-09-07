@@ -1,41 +1,27 @@
-let _sourcesMap = new Map(); // uuid -> full source data
+let _sourcesMap = null; // uuid -> full source data
 let _imageProviders = null; // Cache for image providers
 let _providerSchemas = new Map(); // Cache for provider schemas
+
+export function clearSourceCache() {
+  _sourcesMap = null;
+}
+
+export function clearImageProviderCache() {
+  _imageProviders = null;
+  _providerSchemas = null;
+}
 
 /**
  * Refresh the source list cache
  */
-export async function refreshSourceCache() {
-  const res = await fetch('/api/sources/get');
-  const { sources } = await res.json();
+export async function fetchSourceList() {
+  if (!_sourcesMap) {
+    const res = await fetch('/api/sources/get');
+    const { sources } = await res.json();
 
-  // Store everything as a Map (uuid -> source object)
-  _sourcesMap = new Map(Object.entries(sources));
-}
-
-/**
- * Fetch the list of available image providers, with caching.
- */
-export async function refreshImageProvidersCache() {
-  if (_imageProviders) {
-    return _imageProviders;
+    // Store everything as a Map (uuid -> source object)
+    _sourcesMap = new Map(Object.entries(sources));
   }
-
-  const res = await fetch('/api/sources/image-providers/list');
-  if (res.ok) {
-    const { providers } = await res.json();
-    _imageProviders = providers;
-    return _imageProviders;
-  } else {
-    const error = await res.json();
-    throw new Error(error.message || 'Failed to fetch image provider list');
-  }
-}
-
-/**
- * Get the full source cache (Map<uuid, sourceData>).
- */
-export function getAllSources() {
   return new Map(_sourcesMap);
 }
 
@@ -43,22 +29,18 @@ export function getAllSources() {
  * Get the list of available image providers from the cache.
  * Throws an error if the cache is not yet populated.
  */
-export function getImageProviderList() {
+export async function fetchImageProviderList() {
   if (!_imageProviders) {
-    throw new Error('Image provider list is not cached. Call refreshImageProvidersCache first.');
+    const res = await fetch('/api/sources/image-providers/list');
+    if (res.ok) {
+      const { providers } = await res.json();
+      _imageProviders = providers;
+    } else {
+      const error = await res.json();
+      throw new Error(error.message || 'Failed to fetch image provider list');
+    }
   }
-  return _imageProviders;
-}
-
-/**
- * Get the schema for a specific image provider from the cache.
- * Throws an error if the schema is not yet cached.
- */
-export function getImageProviderSchema(providerName) {
-  if (!_providerSchemas.has(providerName)) {
-    throw new Error(`Schema for provider "${providerName}" is not cached. Call fetchImageProviderSchema first.`);
-  }
-  return _providerSchemas.get(providerName);
+  return Array.from(_imageProviders);
 }
 
 /**

@@ -25,7 +25,7 @@ from apps.tasks_server.web import (
     DeleteTasksPayload,
     StartTasksPayload,
     TasksResultPayload,
-    TasksStatusPayload,
+    TasksInfoPayload,
 )
 
 from .manager import (
@@ -241,7 +241,7 @@ class WebApp:
             operation_id="associate_label_with_model_class",
             response_class=JSONResponse,
         )
-        @self._manager.task_api_request("associate_label_with_model_class")
+        @self._manager.model_api_request("associate_label_with_model_class")
         async def associate_label_with_model_class_api(payload: AssociateLabelWithModelClassPayload) -> JSONResponse: ...
 
         @self._app.post(
@@ -485,7 +485,7 @@ class WebApp:
                 source_metadata: SourceMetadata = await self._manager.create_new_source(
                     image_provider=payload.image_provider, params=payload.params, source_name=payload.source_name
                 )
-                response_data = {"status": WebApp.SUCCESS_KEY, "source_id": source_metadata.uuid}
+                response_data = {"status": WebApp.SUCCESS_KEY, "source": asdict(source_metadata)}
             except Exception as e:
                 response_data = {"status": WebApp.FAILURE_KEY, "message": str(e)}
             return JSONResponse(content=response_data)
@@ -624,7 +624,7 @@ class WebApp:
         async def delete_task_configs_api(payload: DeleteTaskConfigsPayload) -> JSONResponse: ...
 
         @self._app.post(
-            "/api/tasks/start",
+            "/api/tasks/instances/start",
             tags=[WebApp.TASKS_API_TAG_NAME],
             operation_id="start_task",
             response_class=JSONResponse,
@@ -633,7 +633,7 @@ class WebApp:
         async def start_task_api(payload: StartTasksPayload) -> JSONResponse: ...
 
         @self._app.post(
-            "/api/tasks/cancel",
+            "/api/tasks/instances/cancel",
             tags=[WebApp.TASKS_API_TAG_NAME],
             operation_id="cancel_tasks",
             response_class=JSONResponse,
@@ -642,16 +642,16 @@ class WebApp:
         async def cancel_task_api(payload: CancelTasksPayload) -> JSONResponse: ...
 
         @self._app.post(
-            "/api/tasks/status",
+            "/api/tasks/instances/get",
             tags=[WebApp.TASKS_API_TAG_NAME],
-            operation_id="get_tasks_status",
+            operation_id="get_tasks_info",
             response_class=JSONResponse,
         )
-        @self._manager.task_api_request("get_tasks_status")
-        async def get_tasks_status_api(payload: TasksStatusPayload) -> JSONResponse: ...
+        @self._manager.task_api_request("get_tasks_info")
+        async def get_tasks_info_api(payload: TasksInfoPayload) -> JSONResponse: ...
 
         @self._app.post(
-            "/api/tasks/delete",
+            "/api/tasks/instances/delete",
             tags=[WebApp.TASKS_API_TAG_NAME],
             operation_id="delete_tasks",
             response_class=JSONResponse,
@@ -660,7 +660,7 @@ class WebApp:
         async def delete_tasks_api(payload: DeleteTasksPayload) -> JSONResponse: ...
 
         @self._app.post(
-            "/api/tasks/result",
+            "/api/tasks/instances/result",
             tags=[WebApp.TASKS_API_TAG_NAME],
             operation_id="get_tasks_result",
             response_class=JSONResponse,

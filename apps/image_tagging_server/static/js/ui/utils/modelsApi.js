@@ -1,45 +1,38 @@
-let _models = new Set();                     // just the names
-let _modelLabelMappings = new Map();         // modelName → { class → label_uuid }
+let _modelCache = null;
 
-/**
- * Refresh the model list cache from /api/models/list.
- */
-export async function refreshModelCache() {
+export function clearModelsCache() {
+  _modelCache = null;
+}
+
+export async function fetchModelsList() {
+  if (_modelCache) {
+    return [..._modelCache.keys()];
+  }
+
   const res = await fetch('/api/models/list');
   const { models } = await res.json();
-  _models = new Set(models);
-  // Don't clear mappings; they stay cached until refreshed explicitly
+  _modelCache = new Map(models.map(model => [model, null]));
+  return [..._modelCache.keys()];
 }
 
-/**
- * Return all known model names as an array.
- */
-export function getAllModelNames() {
-  return Array.from(_models);
-}
+export async function fetchModelLabelMappings(modelName) {
+  const models = await fetchModelsList();
+  if (!models.includes(modelName)) {
+    throw new Error(`Model ${modelName} not found`);
+  }
 
-/**
- * Ensure class→label mappings for a model are loaded into cache.
- */
-async function ensureModelMappings(modelName) {
-  if (!_modelLabelMappings.has(modelName)) {
+  let labelMapping = _modelCache.get(modelName);
+  if (labelMapping == null) {
     const res = await fetch('/api/models/labels/get', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ model_name: modelName }),
     });
-    const { labels: classMap } = await res.json(); // { className: label_uuid }
-    _modelLabelMappings.set(modelName, classMap);
+    const { labels } = await res.json();
+    labelMapping = new Map(Object.entries(labels));
+    _modelCache.set(modelName, labelMapping);
   }
-}
-
-/**
- * Get class→label mappings for a given model.
- * Fetches from server if not already cached.
- */
-export async function getModelMappings(modelName) {
-  await ensureModelMappings(modelName);
-  return _modelLabelMappings.get(modelName);
+  return new Map(labelMapping);
 }
 
 /**
@@ -47,6 +40,11 @@ export async function getModelMappings(modelName) {
  * Updates both server and local cache.
  */
 export async function associateLabel(modelName, modelClass, labelUuid) {
+  const models = await fetchModelsList();
+  if (!models.includes(modelName)) {
+    throw new Error(`Model ${modelName} not found`);
+  }
+
   await fetch('/api/models/labels/associate', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -57,8 +55,6 @@ export async function associateLabel(modelName, modelClass, labelUuid) {
     }),
   });
 
-  // Update cache
-  await ensureModelMappings(modelName);
-  const classMap = _modelLabelMappings.get(modelName);
-  classMap[modelClass] = labelUuid;
+  // Invalidate cache
+  _modelCache.set(modelName, null);
 }

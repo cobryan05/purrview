@@ -2,25 +2,29 @@ import { DropDownField } from './DropDownField.js';
 import { Field } from './Field.js';
 import { SchemaField } from './SchemaField.js';
 import { TextField } from './TextField.js';
-import { error, fetchImageProviderSchema, getImageProviderList } from '/app-static/js/ui/utils/index.js';
+import { error, fetchImageProviderList, fetchImageProviderSchema } from '/app-static/js/ui/utils/index.js';
 
 export class SourceConfigField extends Field {
-  constructor({ name = '', typename = '', schema = null, ...rest } = {}) {
+  constructor({ ...rest }) {
     super(rest);
+  }
 
-    const imageProviders = getImageProviderList();
-    this._textField = new TextField({ value: name, placeholder: 'Enter new source name' });
-    this._schemaField = new SchemaField({ schema: schema ?? {}, values: this._value });
+  static async create({ name = '', typename = '', schema = null, ...rest } = {}) {
+    const instance = new SourceConfigField({ ...rest });
+
+    instance._textField = new TextField({ value: name, placeholder: 'Enter new source name' });
+    instance._schemaField = new SchemaField({ schema: schema ?? {}, values: instance._value });
+    const imageProviders = await fetchImageProviderList();
 
     // Initialize DropDownField with onChange
-    this._dropDownField = new DropDownField({
+    instance._dropDownField = new DropDownField({
       options: imageProviders,
       value: typename,
       onChange: async (newTypename) => {
         try {
           const fetchedSchema = await fetchImageProviderSchema(newTypename);
-          this._schemaField = new SchemaField({ schema: fetchedSchema });
-          this._rerenderSchema();
+          instance._schemaField = new SchemaField({ schema: fetchedSchema });
+          instance._rerenderSchema();
         } catch (err) {
           error('Failed to fetch schema:', err);
         }
@@ -31,11 +35,12 @@ export class SourceConfigField extends Field {
     if (!schema && typename) {
       fetchImageProviderSchema(typename)
         .then(fetchedSchema => {
-          this._schemaField = new SchemaField({ schema: fetchedSchema });
-          this._rerenderSchema();
+          instance._schemaField = new SchemaField({ schema: fetchedSchema });
+          instance._rerenderSchema();
         })
         .catch(err => error('Failed to fetch initial schema:', err));
     }
+    return instance;
   }
 
   // Helper to re-render the schemaField in the DOM

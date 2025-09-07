@@ -46,7 +46,7 @@ class Manager:
         """
         return list(task_registry.keys())
 
-    async def get_task_result(self, task_ids: List[int]) -> Optional[dict[str, Any]]:
+    async def get_tasks_result(self, task_ids: Union[List[int], int]) -> Optional[dict[str, Any]]:
         """
         Get the result of specified tasks.
 
@@ -56,6 +56,9 @@ class Manager:
         Returns:
             Optional[dict[str, Any]]: The result of the tasks, or None if not found.
         """
+        if isinstance(task_ids, int):
+            task_ids = [task_ids]
+
         tasks_info = {tid: self._running_tasks.get(tid) for tid in task_ids}
         tasks_to_delete = []
 
@@ -76,7 +79,9 @@ class Manager:
 
         return results
 
-    async def get_tasks_status(self, task_ids: Optional[Union[List[int], int]] = None) -> Dict[int, dict[str, Any]]:
+    async def get_tasks_instance_info(
+        self, task_ids: Optional[Union[List[int], int]] = None
+    ) -> Dict[int, dict[str, Any]]:
         """
         Returns status about a specified task, or all tasks.
         Combines DB and running tasks, with running tasks taking precedence.
@@ -84,6 +89,7 @@ class Manager:
         if isinstance(task_ids, int):
             task_ids = [task_ids]
 
+        # TODO: Ensure this is all merged well
         running_tasks = (
             self._running_tasks
             if task_ids is None
@@ -272,11 +278,17 @@ class Manager:
             except TimeoutError:
                 logger.warning(f"Task {task_info.task_metadata.id} did not stop in time")
 
-    async def get_task_schema(self, typename: str) -> dict[str, dict[str, Any]]:
+    async def get_tasks_type_schema(self, typenames: Union[List[str], str]) -> dict[str, dict[str, Any]]:
         """Get the schema for a specific task type."""
-        if typename not in task_registry:
-            raise ValueError(f"Unknown task: {typename}")
-        return task_registry[typename].params_schema()
+        if isinstance(typenames, str):
+            typenames = [typenames]
+
+        schemas = {}
+        for typename in typenames:
+            if typename not in task_registry:
+                raise ValueError(f"Unknown task: {typename}")
+            schemas[typename] = task_registry[typename].params_schema()
+        return schemas
 
     async def _save_task_data(self, task_info: RunningTaskInfo) -> None:
         """Save the resume data for a task."""
@@ -289,9 +301,13 @@ class Manager:
 
     async def _start_task(self, config_metadata: TaskConfigMetadata) -> Optional[RunningTaskInfo]:
         """Start a task."""
-        task_instance = task_registry[config_metadata.typename](task_config_uuid=config_metadata.uuid, params=config_metadata.params)
+        task_instance = task_registry[config_metadata.typename](
+            task_config_uuid=config_metadata.uuid, params=config_metadata.params
+        )
         task_metadata: ActiveTaskMetadata = await self._db_client.insert_new_active_task(config_metadata.uuid)
-        task_info: RunningTaskInfo = RunningTaskInfo(task=task_instance, config_metadata=config_metadata, task_metadata=task_metadata)
+        task_info: RunningTaskInfo = RunningTaskInfo(
+            task=task_instance, config_metadata=config_metadata, task_metadata=task_metadata
+        )
 
         self._running_tasks[task_metadata.id] = task_info
         await task_info.task.start()

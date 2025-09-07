@@ -1,13 +1,13 @@
 // ================= Sources Manager =================
 import { EditableField, SourceConfigField } from '/app-static/js/ui/utils/fields/index.js';
-import { createGenericRow, createSource, deleteSources, fetchImageProviderSchema, getAllSources, refreshImageProvidersCache, refreshSourceCache, runPreviewSourceTest, toast, updateSource } from '/app-static/js/ui/utils/index.js';
+import { createGenericRow, createSource, deleteSources, fetchImageProviderSchema, fetchSourceList, runPreviewSourceTest, toast, updateSource } from '/app-static/js/ui/utils/index.js';
 
 /**
  * Creates a row for a single source with editable buttons
  */
-async function createSourceRow({ source, editable = false, renderList, onEdit, onDelete }) {
+function createSourceRow({ source, editable = false, renderList, onEdit, onDelete }) {
   const { name, typename, uuid, params } = source;
-
+  const rowDiv = document.createElement('div');
   const deleteButton = {
     text: 'Delete',
     emoji: '🗑️',
@@ -31,49 +31,62 @@ async function createSourceRow({ source, editable = false, renderList, onEdit, o
     },
   };
 
-  let schema = null;
-  try {
-    schema = await fetchImageProviderSchema(typename);
-  } catch (error) {
-    toast(error.message || 'Failed to fetch provider schema', 5000, 'error');
-  }
-  return createGenericRow({
-    field: new EditableField({
-      field: new SourceConfigField({ name, typename, schema, value: params }),
-      onSave: async ({ text: name, typename, schema: filled_schema }) => {
-        // Save changes
-        await updateSource({ uuid, name, providerName: typename, params: filled_schema });
-        await renderList();
-      },
-      onCancel: async () => {
-        await renderList();
-      },
-    }),
-    indentLevel: 0,
-    editable: false,
-    leftButtons: editable ? [deleteButton] : [],
-    rightButtons: [testBtnInfo]
-  });
+
+  fetchImageProviderSchema(typename)
+    .then(
+      fetchedSchema => fetchedSchema, // success: use the fetched schema
+      error => {                       // failure: handle error
+        toast(error.message || 'Failed to fetch provider schema', 5000, 'error');
+        return null;                   // fallback schema
+      }
+    )
+    .then(schema => {
+      // schema is either the fetched value or null if fetch failed
+      return SourceConfigField.create({ name, typename, schema, value: params });
+    })
+    .then(fieldInstance => {
+      const row = createGenericRow({
+        field: new EditableField({
+          field: fieldInstance,
+          onSave: async ({ text: name, typename, schema: filled_schema }) => {
+            await updateSource({ uuid, name, providerName: typename, params: filled_schema });
+            renderList();
+          },
+          onCancel: async () => {
+            renderList();
+          },
+        }),
+        indentLevel: 0,
+        editable: false,
+        leftButtons: editable ? [deleteButton] : [],
+        rightButtons: [testBtnInfo]
+      });
+
+      rowDiv.appendChild(row);
+    })
+    .catch(err => {
+      // Optional: catch errors from SourceConfigField.create or createGenericRow
+      console.error('Failed to create source row:', err);
+    });
+    return rowDiv;
 }
 
 /**
  * Renders the list of sources
  */
-export async function renderSourceList({ parent, editable = false, onEdit, onDelete }) {
-  await refreshSourceCache();
-  await refreshImageProvidersCache();
+export function renderSourceList({ parent, editable = false, onEdit, onDelete }) {
   parent.innerHTML = '';
-  const sources = getAllSources();
-
-  sources.forEach(async src => {
-    const row = await createSourceRow({
-      source: src,
-      editable,
-      renderList: () => renderSourceList({ parent, editable, onEdit, onDelete }),
-      onEdit,
-      onDelete,
+  fetchSourceList().then(sources => {
+    sources.forEach(async src => {
+      const row = createSourceRow({
+        source: src,
+        editable,
+        renderList: () => renderSourceList({ parent, editable, onEdit, onDelete }),
+        onEdit,
+        onDelete,
+      });
+      parent.appendChild(row);
     });
-    parent.appendChild(row);
   });
 }
 
@@ -111,9 +124,9 @@ export async function renderSourceManager({ target = 'sources-box' }) {
 
   let newSourceRow; // keep a reference so we can replace it later
 
-  const makeNewSourceRow = () =>
+  const makeNewSourceRow = async () =>
     createGenericRow({
-      field: new SourceConfigField({
+      field: await SourceConfigField.create({
         name: '',
         typename: '',
         schema: {},
@@ -133,7 +146,7 @@ export async function renderSourceManager({ target = 'sources-box' }) {
         await refresh();
 
         // Replace the row with a fresh blank one
-        const freshRow = makeNewSourceRow();
+        const freshRow = await makeNewSourceRow();
         container.replaceChild(freshRow, newSourceRow);
         newSourceRow = freshRow;
       } catch (error) {
@@ -151,6 +164,6 @@ export async function renderSourceManager({ target = 'sources-box' }) {
     },
   };
 
-  newSourceRow = makeNewSourceRow();
+  newSourceRow = await makeNewSourceRow();
   container.appendChild(newSourceRow);
 }
