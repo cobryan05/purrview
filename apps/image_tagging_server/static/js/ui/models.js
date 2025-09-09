@@ -58,7 +58,7 @@ export function renderModelLabelAssignments({
       color: label.metadata.color || '#cccccc'
     }));
 
-    classMap.forEach(async (assignedUuid, modelClass) => {
+    classMap.forEach((assignedUuid, modelClass) => {
       const assignedLabel = allLabels.get(assignedUuid);
       const labelKey = assignedLabel ? { key: assignedLabel.metadata.uuid, text: assignedLabel.metadata.name } : assignedUuid
       const deleteButton = {
@@ -90,7 +90,7 @@ export function renderModelLabelAssignments({
             }
             renderModelLabelAssignments({ target, editable, preselectedModel: preselectedModel });
           },
-          onCancel: async () => {
+          onCancel: () => {
             renderModelLabelAssignments({ target, editable, preselectedModel: preselectedModel });
           },
         }),

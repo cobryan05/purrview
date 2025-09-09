@@ -6,7 +6,7 @@ import logging
 import sys
 from contextlib import asynccontextmanager
 from dataclasses import asdict
-from typing import List, Optional
+from typing import List, Optional, Union
 
 import cv2
 import numpy as np
@@ -17,9 +17,9 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 
-from .manager import Manager, RunningTaskInfo, TaskConfigMetadata
-
 from apps.helpers.tasks.Task import Task
+
+from .manager import Manager, RunningTaskInfo, TaskConfigMetadata
 
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger(__file__)
@@ -41,6 +41,8 @@ class DeleteTasksPayload(BaseModel):
 class DeleteTaskConfigsPayload(BaseModel):
     config_uuids: List[str]
 
+class GetTaskConfigsPayload(BaseModel):
+    config_uuids: Optional[Union[List[str], str]] = None
 
 class PauseTasksPayload(BaseModel):
     task_ids: List[int]
@@ -493,6 +495,35 @@ class WebApp:
                     content={"status": WebApp.FAILURE_KEY, "message": str(e)},
                     status_code=500,
                 )
+
+        @self._app.post(
+            "/api/tasks/configs/get",
+            tags=[WebApp.TASKS_API_TAG_NAME],
+            operation_id="get_task_configs",
+            response_class=JSONResponse,
+        )
+        async def get_task_configs_api(payload: GetTaskConfigsPayload) -> JSONResponse:
+            """
+            API endpoint to get tasks configs
+
+            Args:
+                req (GetTaskConfigsPayload): Request object with task IDs to get
+
+            Returns:
+                JSONResponse: JSON response with task configs.
+            """
+            try:
+                task_configs = await self._manager.get_task_configs(payload.config_uuids)
+                task_configs_dict = { k: asdict(v) for k,v in task_configs.items() }
+                response_data = {"status": WebApp.SUCCESS_KEY, "configs": task_configs_dict}
+                return JSONResponse(content=response_data)
+            except Exception as e:
+                logger.exception(e)
+                return JSONResponse(
+                    content={"status": WebApp.FAILURE_KEY, "message": str(e)},
+                    status_code=500,
+                )
+
 
         @self._app.post(
             "/task_schema",

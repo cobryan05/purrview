@@ -23,7 +23,9 @@ from apps.tasks_server.web import (
     CreateTaskConfigPayload,
     DeleteTaskConfigsPayload,
     DeleteTasksPayload,
+    GetTaskConfigsPayload,
     StartTasksPayload,
+    TasksTypeSchemaPayload,
     TasksResultPayload,
     TasksInfoPayload,
 )
@@ -605,6 +607,17 @@ class WebApp:
         @self._manager.task_api_request("list_task_types")
         async def list_task_types_api(request: Request) -> JSONResponse: ...
 
+
+        @self._app.post(
+            "/api/tasks/types/schema",
+            tags=[WebApp.TASKS_API_TAG_NAME],
+            operation_id="get_task_type_schema",
+            response_class=JSONResponse,
+        )
+        @self._manager.task_api_request("get_task_type_schema")
+        async def get_task_type_schema_api(payload: TasksTypeSchemaPayload) -> JSONResponse: ...
+
+
         @self._app.post(
             "/api/tasks/configs/create",
             tags=[WebApp.TASKS_API_TAG_NAME],
@@ -622,6 +635,15 @@ class WebApp:
         )
         @self._manager.task_api_request("delete_task_configs")
         async def delete_task_configs_api(payload: DeleteTaskConfigsPayload) -> JSONResponse: ...
+
+        @self._app.post(
+            "/api/tasks/configs/get",
+            tags=[WebApp.TASKS_API_TAG_NAME],
+            operation_id="get_task_configs",
+            response_class=JSONResponse,
+        )
+        @self._manager.task_api_request("get_task_configs")
+        async def get_task_configs_api(payload: GetTaskConfigsPayload) -> JSONResponse: ...
 
         @self._app.post(
             "/api/tasks/instances/start",

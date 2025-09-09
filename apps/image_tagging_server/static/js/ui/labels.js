@@ -107,7 +107,7 @@ function renderLabel(label, container, indentLevel, editable, onSelectCallback, 
             toast(err.message, 5000, 'error');
           }
         },
-        onCancel: async () => {
+        onCancel: () => {
           rerenderCallback();
         },
       })

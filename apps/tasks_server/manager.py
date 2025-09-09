@@ -129,15 +129,6 @@ class Manager:
         # Combine with running tasks overriding DB
         return {**info_from_db, **running_info}
 
-    async def get_task_config_from_db(self, task_config_uuid: str) -> Optional[TaskConfigMetadata]:
-        """
-        Retrieve a task's information from the database.
-        """
-        configs_metadata = await self._db_client.get_task_configs(config_uuids=task_config_uuid)
-        if not configs_metadata or not len(configs_metadata) > 0:
-            return None
-        return configs_metadata[0]
-
     async def create_new_task_config(
         self, typename: str, params: Dict[str, Any], persistent: bool
     ) -> TaskConfigMetadata:
@@ -179,6 +170,19 @@ class Manager:
                 await self._running_tasks[task_id].task.stop()
                 del self._running_tasks[task_id]
         await self._db_client.delete_active_tasks(task_ids)
+
+    async def get_task_configs(self, task_config_uuids: Optional[Union[List[str], str]]) -> dict[str, TaskConfigMetadata]:
+        """
+        Get task configurations by their IDs.
+        """
+        """
+        Retrieve a task's information from the database.
+        """
+        if isinstance(task_config_uuids, str):
+            task_config_uuids = [task_config_uuids]
+
+        configs_metadata = await self._db_client.get_task_configs(config_uuids=task_config_uuids)
+        return {cfg.uuid: cfg for cfg in configs_metadata}
 
     async def pause_tasks(self, task_ids: Union[List[int], int]) -> None:
         """
@@ -232,8 +236,8 @@ class Manager:
             if task_id in self._running_tasks:
                 logger.warning(f"Can't resume task {task_id}: already in running tasks")
             else:
-                task_info = await self.get_task_config_from_db(task_id)
-                if task_info.config_metadata.status == Task.Status.PAUSED:
+                task_info = (await self.get_task_configs(task_id)).get(task_id)
+                if task_info and task_info.config_metadata.status == Task.Status.PAUSED:
                     await self._start_task(task_info)
                 else:
                     logger.warning(f"Can't resume task {task_id} from {task_info.config_metadata.status}")
@@ -245,9 +249,10 @@ class Manager:
         Args:
             task_config_uuid (str): The UUID of the task configuration to start.
         """
-        task_config_metadata: TaskConfigMetadata = await self.get_task_config_from_db(task_config_uuid)
-        if task_config_metadata:
-            return await self._start_task(task_config_metadata)
+        task_config_metadata: dict[str, TaskConfigMetadata] = await self.get_task_configs([task_config_uuid])
+        metadata = task_config_metadata.get(task_config_uuid)
+        if metadata:
+            return await self._start_task(metadata)
         else:
             logger.warning(f"Unknown task configuration: {task_config_uuid}")
 

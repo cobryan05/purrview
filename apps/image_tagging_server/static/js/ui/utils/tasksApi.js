@@ -1,7 +1,6 @@
-let _taskSchemas = new Map();
+let _taskTypeCache = null;
+let _taskSchemaCache = new Map();
 let _taskConfigs = new Map();
-let _taskResults = new Map();
-let _taskStatuses = new Map();
 
 export const TaskStatus = Object.freeze({
   NEW: "new",
@@ -12,62 +11,123 @@ export const TaskStatus = Object.freeze({
   ERROR: "error"
 });
 
-/**
- * Clears the task caches
- */
-export async function refreshTaskCache() {
-  _taskSchemas.clear();
 
-  const res = await fetch('/api/tasks/types/list');
-  if (!res.ok) {
-    const err = await res.json();
-    throw new Error(err.message || 'Failed to fetch task types');
+export function clearTaskTypeCache() {
+  _taskTypeCache = null;
+}
+
+export function clearTaskSchemaCache() {
+  _taskSchemaCache.clear();
+}
+
+export async function fetchTaskTypeList() {
+  if (!_taskTypeCache) {
+    const res = await fetch('/api/tasks/types/list');
+    if (!res.ok) {
+      const err = await res.json();
+      throw new Error(err.message || 'Failed to fetch task types');
+    }
+    const { types } = await res.json();
+    _taskTypeCache = new Map();
+    for (const type of types) {
+      _taskTypeCache.set(type, null);
+    }
   }
-  const { types } = await res.json();
-  for (const type of types) {
-    _taskSchemas.set(type, null);
-  }
-  return getTaskTypes();
+  return Array.from(_taskTypeCache.keys());
 }
 
 /**
- * Get all known task configs from the cache.
+ * Fetch the schema for a specific task type, with caching.
  */
-export function getTaskTypes() {
-  return Array.from(_taskSchemas.keys());
-}
-
-/**
- * Fetch the schema for a specific image provider, with caching.
- */
-export async function fetchTaskSchema(typename) {
-  const schema = _taskSchemas.get(typename);
-  if (schema != null) {
-    return schema;
+export async function fetchTaskTypeSchema(typenames) {
+  if (!Array.isArray(typenames)) {
+    typenames = [typenames];
   }
 
-  const res = await fetch('/api/sources/image-providers/schema', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ image_provider: typename }),
-  });
-
-  if (res.ok) {
-    const { schema } = await res.json();
-    _providerSchemas.set(providerName, schema);
-    return schema;
-  } else {
-    const err = await res.json();
-    throw new Error(err.message || 'Failed to fetch image provider schema');
+  const types = await fetchTaskTypeList();
+  for (const t of typenames) {
+    if (!types.includes(t)) {
+      throw new Error(`Unknown task type: ${t}`);
+    }
   }
-}
 
+  // Gather cached schemas
+  const result = new Map();
+  const missing = [];
+  for (const t of typenames) {
+    const cached = _taskSchemaCache.get(t);
+    if (cached != null) {
+      result.set(t, cached);
+    } else {
+      missing.push(t);
+    }
+  }
+
+  if (missing.length > 0) {
+    const res = await fetch('/api/tasks/types/schema', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ task_typenames: missing }),
+    });
+
+    if (!res.ok) {
+      const err = await res.json();
+      throw new Error(err.message || 'Failed to fetch task schema');
+    }
+
+    const { schemas } = await res.json();
+    for (const [t, schema] of Object.entries(schemas)) {
+      _taskSchemaCache.set(t, schema);
+      result.set(t, schema);
+    }
+  }
+
+  return result;
+}
 
 /**
  * Get a task config by uuid.
  */
-export function getTaskConfig(uuid) {
-  return _taskConfigs.get(uuid) || null;
+export async function fetchTaskConfigs(uuids) {
+  const fetchAll = ( uuids == null );
+  const missing = [];
+  const result = new Map();
+  if( !fetchAll ) {
+    if (!Array.isArray(uuids)) {
+      uuids = uuids ? [uuids] : [];
+    }
+
+    // Gather cached schemas
+    for (const uuid of uuids) {
+      const cached = _taskConfigs.get(uuid);
+      if (cached != null) {
+        result.set(uuid, cached);
+      } else {
+        missing.push(uuid);
+      }
+    }
+  }
+
+  if (missing.length > 0 || fetchAll) {
+    const res = await fetch('/api/tasks/configs/get', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ config_uuids: fetchAll ? null : missing }),
+    });
+
+    if (!res.ok) {
+      const err = await res.json();
+      throw new Error(err.message || 'Failed to fetch task config');
+    }
+
+    const { configs } = await res.json();
+    for (const [t, config] of Object.entries(configs)) {
+      _taskConfigs.set(t, config);
+      result.set(t, config);
+    }
+  }
+
+  return result;
 }
 
 /**

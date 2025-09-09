@@ -1,5 +1,6 @@
 import { Field } from './Field.js';
 import { fieldFactories } from './Factories.js';
+import { TextField } from './TextField.js'
 
 export class SchemaField extends Field {
   constructor({ schema = {}, values = {}, onChange = null } = {}) {
@@ -31,7 +32,7 @@ export class SchemaField extends Field {
 
       // Input
       const inputField = this._createInputField(fieldName, fieldMeta);
-      //inputField.value = this._values[fieldName] || '';
+      inputField.value = this._values[fieldName] || '';
       inputField.onChange = () => {
         this._values[fieldName] = inputField.getValue(); //inputField.type === 'checkbox' ? inputField.checked : inputField.value;
         this._onChange?.(this._values);
@@ -90,9 +91,15 @@ export class SchemaField extends Field {
       field = factory(fieldName, fieldMeta, this._values, this._onChange);
     } else {
       // Fallback generic input
-      field = document.createElement('input');
-      field.type = 'text';
-      field.placeholder = `Unhandled type: ${fieldMeta.type}`;
+      field = new TextField({
+        name: fieldName,
+        placeholder: `Unhandled type: ${fieldMeta.type}`,
+        value: this._values[fieldName],
+        onChange: (value) => {
+          this._values[fieldName] = value;
+          this._onChange?.(this._values);
+        },
+      });
     }
 
     if (fieldMeta.required && field instanceof HTMLElement) {

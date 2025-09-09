@@ -52,7 +52,7 @@ function createSourceRow({ source, editable = false, renderList, onEdit, onDelet
             await updateSource({ uuid, name, providerName: typename, params: filled_schema });
             renderList();
           },
-          onCancel: async () => {
+          onCancel: () => {
             renderList();
           },
         }),
@@ -68,7 +68,7 @@ function createSourceRow({ source, editable = false, renderList, onEdit, onDelet
       // Optional: catch errors from SourceConfigField.create or createGenericRow
       console.error('Failed to create source row:', err);
     });
-    return rowDiv;
+  return rowDiv;
 }
 
 /**
@@ -77,7 +77,7 @@ function createSourceRow({ source, editable = false, renderList, onEdit, onDelet
 export function renderSourceList({ parent, editable = false, onEdit, onDelete }) {
   parent.innerHTML = '';
   fetchSourceList().then(sources => {
-    sources.forEach(async src => {
+    sources.forEach(src => {
       const row = createSourceRow({
         source: src,
         editable,
@@ -101,7 +101,7 @@ export function renderSourceList({ parent, editable = false, onEdit, onDelete })
  * @param {Object} options
  * @param {string} options.target - ID of the container to render into.
  */
-export async function renderSourceManager({ target = 'sources-box' }) {
+export function renderSourceManager({ target = 'sources-box' }) {
   const container = document.getElementById(target);
   container.innerHTML = '';
 
@@ -115,7 +115,7 @@ export async function renderSourceManager({ target = 'sources-box' }) {
   const refresh = () =>
     renderSourceList({ parent: list, editable: true, onDelete: refresh });
 
-  await refresh();
+  refresh();
 
   container.appendChild(document.createElement('hr'));
   const createHeader = document.createElement('h3');
@@ -124,17 +124,20 @@ export async function renderSourceManager({ target = 'sources-box' }) {
 
   let newSourceRow; // keep a reference so we can replace it later
 
-  const makeNewSourceRow = async () =>
-    createGenericRow({
-      field: await SourceConfigField.create({
-        name: '',
-        typename: '',
-        schema: {},
-        editMode: true,
-      }),
-      rightButtons: [saveBtnInfo, testBtnInfo],
+  function makeNewSourceRow() {
+    return SourceConfigField.create({
+      name: '',
+      typename: '',
+      schema: {},
       editMode: true,
+    }).then(fieldInstance => {
+      return createGenericRow({
+        field: fieldInstance,
+        rightButtons: [saveBtnInfo, testBtnInfo],
+        editMode: true,
+      });
     });
+  }
 
   const saveBtnInfo = {
     text: 'Save',
@@ -146,9 +149,10 @@ export async function renderSourceManager({ target = 'sources-box' }) {
         await refresh();
 
         // Replace the row with a fresh blank one
-        const freshRow = await makeNewSourceRow();
-        container.replaceChild(freshRow, newSourceRow);
-        newSourceRow = freshRow;
+        makeNewSourceRow().then(freshRow => {
+          container.replaceChild(freshRow, newSourceRow);
+          newSourceRow = freshRow;
+        });
       } catch (error) {
         console.error('Error saving source:', error);
       }
@@ -164,6 +168,9 @@ export async function renderSourceManager({ target = 'sources-box' }) {
     },
   };
 
-  newSourceRow = await makeNewSourceRow();
-  container.appendChild(newSourceRow);
+  // Create the initial row
+  makeNewSourceRow().then(row => {
+    newSourceRow = row;
+    container.appendChild(newSourceRow);
+  });
 }
