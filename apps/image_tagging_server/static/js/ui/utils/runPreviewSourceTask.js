@@ -1,4 +1,4 @@
-import { TaskStatus, cancelTask, createTaskConfig, deleteTask, deleteTaskConfigs, fetchTaskResult, fetchTaskStatus, startTask, toast } from '/app-static/js/ui/utils/index.js';
+import { TaskStatus, cancelTasks, createTaskConfig, deleteTasks, deleteTaskConfigs, fetchTasksResult, fetchTasksStatus, startTask, toast } from '/app-static/js/ui/utils/index.js';
 
 // Global guard for only one running preview task
 let previewTaskActive = false;
@@ -35,8 +35,8 @@ export async function runPreviewSourceTest({ providerName, params, target = 'sou
     cancelBtn.disabled = true;
     addMessage('⏹ Cancelling task...');
     try {
-      await cancelTask(taskId);
-      await deleteTask(taskId);
+      await cancelTasks(taskId);
+      await deleteTasks(taskId);
       addMessage('❌ Task cancelled by user');
     } catch (err) {
       toast(`Failed to cancel task: ${err.message}`, 5000, 'error');
@@ -76,10 +76,13 @@ export async function runPreviewSourceTest({ providerName, params, target = 'sou
 
     while (true) {
       if (cancelled) break; // stop polling if cancelled
-      taskInfo = await fetchTaskStatus(taskId);
+      const fetchRes = await fetchTasksStatus([taskId])
+      taskInfo = fetchRes[taskId];
       addMessage(`Status update: ${taskInfo.message || taskInfo.status}`);
 
-      if (taskInfo.status === TaskStatus.COMPLETED || taskInfo.status === TaskStatus.ERROR) break;
+      if (taskInfo.status === TaskStatus.COMPLETED || taskInfo.status === TaskStatus.ERROR) {
+        break;
+      }
 
       if (Date.now() - startTime > 30_000) {
         addMessage('❌ Task timed out');
@@ -94,8 +97,8 @@ export async function runPreviewSourceTest({ providerName, params, target = 'sou
     previewTaskActive = false;
 
     if (!cancelled && taskInfo.status === TaskStatus.COMPLETED) {
-      const results = await fetchTaskResult({ taskIds: [taskId], cacheResults: false });
-      const result = results.get(taskId);
+      const results = await fetchTasksResult({ taskIds: [taskId], cacheResults: false });
+      const result = results[taskId];
       addMessage('✅ Task completed');
 
       if (result?.data?.image) {

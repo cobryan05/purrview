@@ -345,8 +345,14 @@ document.addEventListener('DOMContentLoaded', () => {
           loadFileBrowser(currentFileBrowserPath);
           fileBrowserInitialized = true;
         } else if (tabName === 'tab-task-management') {
-          renderActiveTasks({ target: 'active-tasks-list' });
-          renderTaskConfigs({ target: 'task-config-list' });
+          const refreshTaskTab = () => {
+            renderActiveTasks({ target: 'active-tasks-list' });
+            renderTaskConfigs({
+              target: 'task-config-list',
+              onDelete: refreshTaskTab,
+            });
+          };
+          refreshTaskTab();
         }
       });
     });

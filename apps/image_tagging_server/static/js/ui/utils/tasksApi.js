@@ -193,11 +193,11 @@ export async function startTask({ uuid }) {
 /**
  * Fetch status for a running task.
  */
-export async function fetchTaskStatus(taskId) {
+export async function fetchTasksStatus({ taskIds }) {
   const res = await fetch('/api/tasks/instances/get', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ task_ids: [taskId] }),
+    body: JSON.stringify({ task_ids: taskIds }),
   });
 
   if (!res.ok) {
@@ -210,29 +210,25 @@ export async function fetchTaskStatus(taskId) {
     throw new Error(data.message || 'Failed to fetch task status');
   }
 
-  const taskStatus = data.tasks?.[taskId];
-  if (!taskStatus) {
-    throw new Error(`Task ${taskId} not found in response`);
-  }
-
-  return taskStatus;
+  return data.tasks;
 }
 
 
 /**
  * Fetch result for a completed task.
  */
-export async function fetchTaskResult({ taskIds, cacheResults = true }) {
+export async function fetchTasksResult({ taskIds, cacheResults = true }) {
   if (!Array.isArray(taskIds)) {
     taskIds = [taskIds];
   }
 
-  const results = new Map();
+  const results = {};
   const missing = [];
+
   for (const t of taskIds) {
     const cached = _taskResults.get(t);
     if (cached != null) {
-      results.set(t, cached);
+      results[t] = cached;
     } else {
       missing.push(t);
     }
@@ -248,13 +244,14 @@ export async function fetchTaskResult({ taskIds, cacheResults = true }) {
       const err = await res.json();
       throw new Error(err.message || 'Failed to fetch task result');
     }
+
     const { results: fetchedResults } = await res.json();
 
-    for (const [t, res] of Object.entries(fetchedResults)) {
+    for (const [t, r] of Object.entries(fetchedResults)) {
       const tInt = parseInt(t);
-      results.set(tInt, res);
+      results[tInt] = r;
       if (cacheResults) {
-        _taskResults.set(tInt, res);
+        _taskResults.set(tInt, r);
       }
     }
   }
@@ -266,11 +263,11 @@ export async function fetchTaskResult({ taskIds, cacheResults = true }) {
 /**
  * Cancel a running task.
  */
-export async function cancelTask(taskId) {
+export async function cancelTasks({ taskIds }) {
   const res = await fetch('/api/tasks/instances/cancel', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ task_ids: [taskId] }),
+    body: JSON.stringify({ task_ids: taskIds }),
   });
 
   if (!res.ok) {
@@ -282,27 +279,27 @@ export async function cancelTask(taskId) {
 /**
  * Delete a task
  */
-export async function deleteTask(taskId) {
+export async function deleteTasks({ taskIds }) {
   const res = await fetch('/api/tasks/instances/delete', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ task_ids: [taskId] }),
+    body: JSON.stringify({ task_ids: taskIds }),
   });
 
   if (!res.ok) {
     const err = await res.json();
-    throw new Error(err.message || 'Failed to cancel task');
+    throw new Error(err.message || 'Failed to delete task');
   }
 }
 
 /**
  * Pause a running task.
  */
-export async function pauseTask(taskId) {
+export async function pauseTasks({ taskIds }) {
   const res = await fetch('/api/tasks/instances/pause', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ task_ids: [taskId] }),
+    body: JSON.stringify({ task_ids: taskIds }),
   });
 
   if (!res.ok) {
@@ -314,11 +311,11 @@ export async function pauseTask(taskId) {
 /**
  * Resume a paused task.
  */
-export async function resumeTask(taskId) {
+export async function resumeTasks({ taskIds }) {
   const res = await fetch('/api/tasks/instances/resume', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ task_ids: [taskId] }),
+    body: JSON.stringify({ task_ids: taskIds }),
   });
 
   if (!res.ok) {
@@ -335,10 +332,10 @@ export async function waitForTaskResult(taskId, { intervalMs = 1000, timeoutMs =
   const startTime = Date.now();
 
   while (true) {
-    const status = await fetchTaskStatus(taskId);
+    const status = await fetchTasksStatus(taskId);
 
     if (status === TaskStatus.COMPLETED) {
-      return await fetchTaskResult(taskId);
+      return await fetchTasksResult(taskId);
     }
     if (status === TaskStatus.ERROR) {
       throw new Error(`Task ${taskId} failed`);
