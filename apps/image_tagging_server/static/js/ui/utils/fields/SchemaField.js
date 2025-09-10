@@ -32,7 +32,6 @@ export class SchemaField extends Field {
 
       // Input
       const inputField = this._createInputField(fieldName, fieldMeta);
-      inputField.value = this._values[fieldName] || '';
       inputField.onChange = () => {
         this._values[fieldName] = inputField.getValue(); //inputField.type === 'checkbox' ? inputField.checked : inputField.value;
         this._onChange?.(this._values);

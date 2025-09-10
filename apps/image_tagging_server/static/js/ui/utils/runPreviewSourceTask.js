@@ -94,7 +94,8 @@ export async function runPreviewSourceTest({ providerName, params, target = 'sou
     previewTaskActive = false;
 
     if (!cancelled && taskInfo.status === TaskStatus.COMPLETED) {
-      const result = await fetchTaskResult(taskId);
+      const results = await fetchTaskResult({ taskIds: [taskId], cacheResults: false });
+      const result = results.get(taskId);
       addMessage('✅ Task completed');
 
       if (result?.data?.image) {

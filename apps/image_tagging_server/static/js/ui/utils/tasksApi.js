@@ -1,6 +1,7 @@
 let _taskTypeCache = null;
 let _taskSchemaCache = new Map();
 let _taskConfigs = new Map();
+let _taskResults = new Map();
 
 export const TaskStatus = Object.freeze({
   NEW: "new",
@@ -89,10 +90,10 @@ export async function fetchTaskTypeSchema(typenames) {
  * Get a task config by uuid.
  */
 export async function fetchTaskConfigs(uuids) {
-  const fetchAll = ( uuids == null );
+  const fetchAll = (uuids == null);
   const missing = [];
   const result = new Map();
-  if( !fetchAll ) {
+  if (!fetchAll) {
     if (!Array.isArray(uuids)) {
       uuids = uuids ? [uuids] : [];
     }
@@ -144,7 +145,7 @@ export async function deleteTaskConfigs({ uuids }) {
   });
 
   if (res.ok) {
-    uuids.forEach((uuid) => _taskSchemas.delete(uuid));
+    uuids.forEach((uuid) => _taskSchemaCache.delete(uuid));
   } else {
     const err = await res.json();
     throw new Error(err.message || 'Failed to delete task configs');
@@ -214,44 +215,53 @@ export async function fetchTaskStatus(taskId) {
     throw new Error(`Task ${taskId} not found in response`);
   }
 
-  _taskStatuses.set(taskId, taskStatus);
   return taskStatus;
 }
 
-/**
- * Get a cached status (if available).
- */
-export function getTaskStatus(taskId) {
-  return _taskStatuses.get(taskId) || null;
-}
 
 /**
  * Fetch result for a completed task.
  */
-export async function fetchTaskResult(taskId) {
-  const res = await fetch('/api/tasks/instances/result', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ task_ids: [taskId] }),
-  });
-
-  if (!res.ok) {
-    const err = await res.json();
-    throw new Error(err.message || 'Failed to fetch task result');
+export async function fetchTaskResult({ taskIds, cacheResults = true }) {
+  if (!Array.isArray(taskIds)) {
+    taskIds = [taskIds];
   }
 
-  const { result } = await res.json();
-  const taskRes = result[taskId];
-  _taskResults.set(taskId, taskRes);
-  return taskRes;
+  const results = new Map();
+  const missing = [];
+  for (const t of taskIds) {
+    const cached = _taskResults.get(t);
+    if (cached != null) {
+      results.set(t, cached);
+    } else {
+      missing.push(t);
+    }
+  }
+
+  if (missing.length > 0) {
+    const res = await fetch('/api/tasks/instances/result', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ task_ids: missing }),
+    });
+    if (!res.ok) {
+      const err = await res.json();
+      throw new Error(err.message || 'Failed to fetch task result');
+    }
+    const { results: fetchedResults } = await res.json();
+
+    for (const [t, res] of Object.entries(fetchedResults)) {
+      const tInt = parseInt(t);
+      results.set(tInt, res);
+      if (cacheResults) {
+        _taskResults.set(tInt, res);
+      }
+    }
+  }
+
+  return results;
 }
 
-/**
- * Get a cached result (if available).
- */
-export function getTaskResult(taskId) {
-  return _taskResults.get(taskId) || null;
-}
 
 /**
  * Cancel a running task.

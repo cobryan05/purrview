@@ -330,8 +330,8 @@ class WebApp:
                 JSONResponse: A JSON response containing task result.
             """
             try:
-                task_result = await self._manager.get_tasks_result(payload.task_ids)
-                response_data = {"status": WebApp.SUCCESS_KEY, "result": task_result}
+                tasks_result = await self._manager.get_tasks_result(payload.task_ids)
+                response_data = {"status": WebApp.SUCCESS_KEY, "results": tasks_result}
             except Exception as e:
                 response_data = {"status": WebApp.FAILURE_KEY, "message": str(e)}
             return JSONResponse(content=response_data)

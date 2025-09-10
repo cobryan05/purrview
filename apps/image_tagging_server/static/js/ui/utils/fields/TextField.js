@@ -7,8 +7,10 @@ export class TextField extends Field {
 
     if (typeof this._value === 'string') {
       input.value = this._value;
-    } else if (this._value && typeof this._value === 'object') {
+    } else if (typeof this._value === 'object') {
       input.value = JSON.stringify(this._value);
+    } else if(typeof this._value === 'number') {
+      input.value = parseInt(this._value);
     } else {
       input.value = '';
     }
