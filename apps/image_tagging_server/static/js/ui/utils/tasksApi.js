@@ -1,4 +1,5 @@
 import { createCachedFetcher } from "./createCachedFetcher.js";
+import { wrapSingleKey } from './apiUtils.js';
 
 export const TaskStatus = Object.freeze({
   NEW: "new",
@@ -21,7 +22,6 @@ async function fetchTaskTypeListFromServer() {
   return types;
 }
 const taskTypeFetcher = createCachedFetcher(fetchTaskTypeListFromServer);
-
 export async function fetchTaskTypeList() {
   return taskTypeFetcher.fetch('taskTypes'); // single key for list
 }
@@ -31,25 +31,23 @@ export function clearTaskTypeCache() {
 }
 
 /* ---- Task type schemas --- */
-async function fetchTaskSchemaFromServer(typename) {
+async function _fetchTasksSchemaFromServer(typenames) {
   const res = await fetch('/api/tasks/types/schema', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ task_typenames: [typename] }),
+    body: JSON.stringify({ task_typenames: typenames }),
   });
   if (!res.ok) {
     const err = await res.json();
     throw new Error(err.message || 'Failed to fetch task schema');
   }
   const { schemas } = await res.json();
-  return schemas[typename];
+  return schemas;
 }
+const fetchTasksSchemaFromServer = wrapSingleKey(_fetchTasksSchemaFromServer);
 
-const taskSchemaFetcher = createCachedFetcher(fetchTaskSchemaFromServer);
-
-export async function fetchTaskTypeSchema(typenames) {
-  if (!Array.isArray(typenames)) typenames = [typenames];
-
+const taskSchemaFetcher = createCachedFetcher(fetchTasksSchemaFromServer);
+async function _fetchTaskTypeSchema(typenames) {
   const types = await fetchTaskTypeList();
   for (const t of typenames) {
     if (!types.includes(t)) throw new Error(`Unknown task type: ${t}`);
@@ -63,6 +61,7 @@ export async function fetchTaskTypeSchema(typenames) {
 
   return result;
 }
+export const fetchTaskTypeSchema = wrapSingleKey(_fetchTaskTypeSchema);
 
 export function clearTaskSchemaCache() {
   taskSchemaFetcher.clear();
@@ -72,11 +71,11 @@ export function clearTaskSchemaCache() {
  * TASK CONFIGS
  * -----------------------------
  */
-async function fetchTaskConfigFromServer(uuid) {
+async function _fetchTasksConfigFromServer(uuids) {
   const res = await fetch('/api/tasks/configs/get', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ config_uuids: [uuid] }),
+    body: JSON.stringify({ config_uuids: uuids }),
   });
 
   if (!res.ok) {
@@ -85,12 +84,12 @@ async function fetchTaskConfigFromServer(uuid) {
   }
 
   const { configs } = await res.json();
-  return configs[uuid];
+  return configs;
 }
+const fetchTasksConfigFromServer = wrapSingleKey(_fetchTasksConfigFromServer);
 
-export const taskConfigFetcher = createCachedFetcher(fetchTaskConfigFromServer);
-
-export async function fetchTaskConfigs(uuids) {
+const taskConfigFetcher = createCachedFetcher(fetchTasksConfigFromServer);
+async function _fetchTaskConfigs(uuids) {
   const fetchAll = uuids == null;
 
   if (fetchAll) {
@@ -113,8 +112,6 @@ export async function fetchTaskConfigs(uuids) {
     return new Map(Object.entries(configs));
   }
 
-  if (!Array.isArray(uuids)) uuids = [uuids];
-
   const result = new Map();
   for (const uuid of uuids) {
     const config = await taskConfigFetcher.fetch(uuid);
@@ -123,9 +120,9 @@ export async function fetchTaskConfigs(uuids) {
 
   return result;
 }
+export const fetchTaskConfigs = wrapSingleKey(_fetchTaskConfigs);
 
-export async function deleteTaskConfigs({ uuids }) {
-  if (!Array.isArray(uuids)) uuids = [uuids];
+export async function _deleteTaskConfigs({ uuids }) {
   const res = await fetch('/api/tasks/configs/delete', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -139,6 +136,7 @@ export async function deleteTaskConfigs({ uuids }) {
     throw new Error(err.message || 'Failed to delete task configs');
   }
 }
+export const deleteTaskConfigs = wrapSingleKey(_deleteTaskConfigs);
 
 export async function createTaskConfig(config) {
   const res = await fetch('/api/tasks/configs/create', {
@@ -177,11 +175,9 @@ async function fetchTaskResultFromServer(taskId) {
   return results[taskId];
 }
 
-export const taskResultFetcher = createCachedFetcher(fetchTaskResultFromServer);
+const taskResultFetcher = createCachedFetcher(fetchTaskResultFromServer);
 
-export async function fetchTasksResult({ taskIds, cacheResults = true }) {
-  if (!Array.isArray(taskIds)) taskIds = [taskIds];
-
+export async function _fetchTasksResult({ taskIds, cacheResults = true }) {
   const results = {};
   for (const t of taskIds) {
     const r = await taskResultFetcher.fetch(t);
@@ -191,6 +187,7 @@ export async function fetchTasksResult({ taskIds, cacheResults = true }) {
 
   return results;
 }
+export const fetchTasksResult = wrapSingleKey(_fetchTasksResult, "taskIds");
 
 
 /** -----------------------------
@@ -211,7 +208,7 @@ export async function startTask({ uuid }) {
   return task_id;
 }
 
-export async function fetchTasksStatus({ taskIds }) {
+async function _fetchTasksStatus({ taskIds }) {
   const res = await fetch('/api/tasks/instances/get', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -230,8 +227,9 @@ export async function fetchTasksStatus({ taskIds }) {
 
   return data.tasks;
 }
+export const fetchTasksStatus = wrapSingleKey(_fetchTasksStatus);
 
-export async function cancelTasks({ taskIds }) {
+async function _cancelTasks({ taskIds }) {
   const res = await fetch('/api/tasks/instances/cancel', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -242,8 +240,9 @@ export async function cancelTasks({ taskIds }) {
     throw new Error(err.message || 'Failed to cancel task');
   }
 }
+export const cancelTasks = wrapSingleKey(_cancelTasks);
 
-export async function deleteTasks({ taskIds }) {
+async function _deleteTasks({ taskIds }) {
   const res = await fetch('/api/tasks/instances/delete', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -254,8 +253,9 @@ export async function deleteTasks({ taskIds }) {
     throw new Error(err.message || 'Failed to delete task');
   }
 }
+export const deleteTasks = wrapSingleKey(_deleteTasks);
 
-export async function pauseTasks({ taskIds }) {
+async function _pauseTasks({ taskIds }) {
   const res = await fetch('/api/tasks/instances/pause', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -266,8 +266,9 @@ export async function pauseTasks({ taskIds }) {
     throw new Error(err.message || 'Failed to pause task');
   }
 }
+export const pauseTasks = wrapSingleKey(_pauseTasks);
 
-export async function resumeTasks({ taskIds }) {
+async function _resumeTasks({ taskIds }) {
   const res = await fetch('/api/tasks/instances/resume', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -278,6 +279,7 @@ export async function resumeTasks({ taskIds }) {
     throw new Error(err.message || 'Failed to resume task');
   }
 }
+export const resumeTasks = wrapSingleKey(_resumeTasks);
 
 /**
  * Wait for a task to complete and return its result
@@ -286,8 +288,7 @@ export async function waitForTaskResult(taskId, { intervalMs = 1000, timeoutMs =
   const startTime = Date.now();
 
   while (true) {
-    const statusMap = await fetchTasksStatus({ taskIds: [taskId] });
-    const status = statusMap[taskId]?.status;
+    const status = await fetchTasksStatus({ taskIds: taskId });
 
     if (status === TaskStatus.COMPLETED) return await fetchTasksResult({ taskIds: taskId });
     if (status === TaskStatus.ERROR) throw new Error(`Task ${taskId} failed`);

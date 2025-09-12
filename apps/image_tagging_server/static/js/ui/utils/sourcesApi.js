@@ -1,4 +1,5 @@
 import { createCachedFetcher } from './createCachedFetcher.js';
+import { wrapSingleKey } from './apiUtils.js';
 
 /**
  * Caches
@@ -116,11 +117,7 @@ export async function updateSource({ uuid, name, providerName, params }) {
   return source;
 }
 
-export async function deleteSources({ uuids }) {
-  if (!Array.isArray(uuids)) {
-    uuids = [uuids];
-  }
-
+async function _deleteSources({ uuids }) {
   const res = await fetch('/api/sources/delete', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -135,3 +132,4 @@ export async function deleteSources({ uuids }) {
   const map = await sourcesFetcher.fetch('sourcesMap');
   uuids.forEach(uuid => map.delete(uuid));
 }
+export const deleteSources = wrapSingleKey(_deleteSources);

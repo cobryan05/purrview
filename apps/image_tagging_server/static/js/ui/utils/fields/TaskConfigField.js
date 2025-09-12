@@ -15,12 +15,11 @@ export class TaskConfigField extends Field {
 
     // If no schema passed but a typename is provided, fetch the schema now
     if (!schema && typename) {
-      const schemas = await fetchTaskTypeSchema(typename);
-      schema = schemas.get(typename);
+      const schema = await fetchTaskTypeSchema(typename);
     }
 
     instance._textField = new TextField({ value: name, placeholder: 'Enter new task name' });
-    instance._schemaField = new SchemaField({ schema: schema ?? {}, values: instance._value });
+    instance._schemaField = new SchemaField({ schema: schema ?? {}, values: instance._value || {} });
     const taskTypes = await fetchTaskTypeList();
 
     // Initialize DropDownField with onChange
@@ -29,8 +28,11 @@ export class TaskConfigField extends Field {
       value: typename,
       onChange: async (newTypename) => {
         try {
-          const fetchedSchema = await fetchTaskTypeSchema(newTypename);
-          instance._schemaField.schema = fetchedSchema.get(newTypename);
+          const newSchema = await fetchTaskTypeSchema(newTypename);
+          instance._schemaField = new SchemaField({
+            schema: newSchema,
+            values: instance._schemaField.getValue() // preserve current values
+          });
           instance._rerenderSchema();
         } catch (err) {
           error('Failed to fetch schema:', err);
