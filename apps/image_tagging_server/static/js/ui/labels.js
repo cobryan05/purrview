@@ -54,10 +54,10 @@ function createLabelHandlers({ label, indentLevel, editable, renderList }) {
     onClick: ({ field, row }) => {
       const childRow = createGenericRow({
         field: new EditableField({
+          buttonsLast: true,
           field:
             new TextBoxColorField({ placeholder: "New Label Name", color: DEFAULT_COLOR }),
           editMode: true,
-          buttonsLast: true,
           onSave: async ({ text: newText, color: newColor }) => {
             try {
               await createNewLabel(newText, newColor, uuid);
@@ -96,8 +96,8 @@ function renderLabel(label, container, indentLevel, editable, onSelectCallback, 
   // Create row once, passing the button specs into createGenericRow
   const labelRow = createGenericRow({
     field: new EditableField({
-      field: new TextBoxColorField({ text: name, placeholder: "New Label Name", color: color }),
       buttonsLast: true,
+      field: new TextBoxColorField({ text: name, placeholder: "New Label Name", color: color }),
       ...(editable && {
         onSave: async ({ text: newText, color: newColor }) => {
           try {
@@ -113,6 +113,7 @@ function renderLabel(label, container, indentLevel, editable, onSelectCallback, 
       })
     }),
     indentLevel,
+    alignLeftButtons: true,
     leftButtons,
     rightButtons,
   });
@@ -141,13 +142,18 @@ function renderLabel(label, container, indentLevel, editable, onSelectCallback, 
 
 export function renderLabelList({ target = 'labels-list', editable = true, onSelectCallback = null } = {}) {
   try {
-    const container = document.getElementById(target);
-    if (!container) {
+    const targetElement = document.getElementById(target);
+    if (!targetElement) {
       console.error('Label container not found');
       return;
     }
-    container.innerHTML = '';
-
+    targetElement.innerHTML = ''
+    const container = document.createElement('div');
+    container.style.display = 'inline-block';      // shrink-wrap width
+    container.style.verticalAlign = 'top';         // optional, align with top of parent
+    container.style.width = 'max-content';         // shrink to longest content
+    container.style.minWidth = '0';                // prevent overflow issues
+    targetElement.appendChild(container);
     // Render root labels
     const rerender = () => renderLabelList({ target, editable, onSelectCallback });
 
@@ -165,19 +171,12 @@ export function renderLabelList({ target = 'labels-list', editable = true, onSel
 
         const newRootRow = createGenericRow({
           field: new EditableField({
+            buttonsLast: true,
             field: new TextBoxColorField({ text: '', placeholder: "New Root Label Name", color: DEFAULT_COLOR }),
             editMode: true,
           }),
           indentLevel: 0,
           leftButtons: [
-            {
-              text: 'Refresh',
-              emoji: '🔄',
-              onClick: async () => {
-                clearLabelCache();
-                rerender();
-              },
-            },
             {
               text: 'Add label',
               emoji: '➕',
@@ -199,7 +198,16 @@ export function renderLabelList({ target = 'labels-list', editable = true, onSel
               },
             },
           ],
-          rightButtons: [],
+          rightButtons: [
+            {
+              text: 'Refresh',
+              emoji: '🔄',
+              onClick: async () => {
+                clearLabelCache();
+                rerender();
+              },
+            },
+          ],
         });
 
         container.appendChild(newRootRow);

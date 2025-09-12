@@ -1,4 +1,5 @@
 export { ArrayField } from './ArrayField.js';
+export { ActiveTaskField } from './ActiveTaskField.js';
 export { CheckboxField } from './CheckboxField.js';
 export { ColorSwatchField } from './ColorSwatchField.js';
 export { DropDownField } from './DropDownField.js';

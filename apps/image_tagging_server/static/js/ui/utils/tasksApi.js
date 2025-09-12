@@ -71,56 +71,25 @@ export function clearTaskSchemaCache() {
  * TASK CONFIGS
  * -----------------------------
  */
-async function _fetchTasksConfigFromServer(uuids) {
+async function _fetchTaskConfigs(uuids = null) {
+  const fetchAll = uuids == null;
   const res = await fetch('/api/tasks/configs/get', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ config_uuids: uuids }),
+    body: JSON.stringify({ config_uuids: fetchAll ? null : uuids }),
   });
 
   if (!res.ok) {
     const err = await res.json();
-    throw new Error(err.message || 'Failed to fetch task config');
+    throw new Error(err.message || 'Failed to fetch task configs');
   }
 
   const { configs } = await res.json();
-  return configs;
+  return new Map(Object.entries(configs));
 }
-const fetchTasksConfigFromServer = wrapSingleKey(_fetchTasksConfigFromServer);
 
-const taskConfigFetcher = createCachedFetcher(fetchTasksConfigFromServer);
-async function _fetchTaskConfigs(uuids) {
-  const fetchAll = uuids == null;
-
-  if (fetchAll) {
-    const res = await fetch('/api/tasks/configs/get', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ config_uuids: null }),
-    });
-
-    if (!res.ok) {
-      const err = await res.json();
-      throw new Error(err.message || 'Failed to fetch task configs');
-    }
-
-    const { configs } = await res.json();
-    for (const [uuid, config] of Object.entries(configs)) {
-      taskConfigFetcher.set(uuid, config);
-    }
-
-    return new Map(Object.entries(configs));
-  }
-
-  const result = new Map();
-  for (const uuid of uuids) {
-    const config = await taskConfigFetcher.fetch(uuid);
-    result.set(uuid, config);
-  }
-
-  return result;
-}
 export const fetchTaskConfigs = wrapSingleKey(_fetchTaskConfigs);
+export const taskConfigFetcher = createCachedFetcher(fetchTaskConfigs);
 
 export async function _deleteTaskConfigs({ uuids }) {
   const res = await fetch('/api/tasks/configs/delete', {
@@ -208,7 +177,7 @@ export async function startTask({ uuid }) {
   return task_id;
 }
 
-async function _fetchTasksStatus({ taskIds }) {
+async function _fetchTasksStatus({ taskIds } = {}) {
   const res = await fetch('/api/tasks/instances/get', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

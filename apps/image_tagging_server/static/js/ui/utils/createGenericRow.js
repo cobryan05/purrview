@@ -14,33 +14,22 @@ export function createGenericRow({
   field,
   indentLevel = 0,
   leftButtons = [],
-  rightButtons = []
+  rightButtons = [],
+  alignLeftButtons = false,
+  alignRightButtons = false
 } = {}) {
   const row = document.createElement('div');
   row.className = 'label-row';
   row.style.display = 'flex';
-  row.style.flexDirection = 'column';
-  row.style.gap = '0.15em';
+  row.style.flexDirection = 'row';
   row.style.alignItems = 'flex-start';
+  row.style.gap = '0.25em';
+  row.style.width = '100%';
 
-  // Indentation container
-  const indentContainer = document.createElement('div');
-  indentContainer.style.display = 'flex';
-  indentContainer.style.flexDirection = 'column';
-  indentContainer.style.paddingLeft = `${indentLevel * 1.5}em`;
-
-  // Main row
-  const mainRow = document.createElement('div');
-  mainRow.style.display = 'flex';
-  mainRow.style.alignItems = 'flex-start'; // top align
-  mainRow.style.gap = '0.25em';
-  mainRow.style.width = '100%';
-
-  // --- Helper to create button sets ---
   const createButtonsRow = (btns) => {
     const container = document.createElement('div');
     container.style.display = 'flex';
-    container.style.flexDirection = 'row';  // horizontal
+    container.style.flexDirection = 'row';
     container.style.alignItems = 'flex-start';
     container.style.gap = '0.25em';
 
@@ -55,12 +44,33 @@ export function createGenericRow({
   const leftContainer = createButtonsRow(leftButtons);
   const rightContainer = createButtonsRow(rightButtons);
 
-  mainRow.appendChild(leftContainer);
-  mainRow.appendChild(field.getEditMode() ? field.renderEdit() : field.renderView());
-  mainRow.appendChild(rightContainer);
+  // Indented container holds field + (optionally) left/right buttons
+  const indentContainer = document.createElement('div');
+  indentContainer.style.display = 'flex';
+  indentContainer.style.flexDirection = 'row';
+  indentContainer.style.alignItems = 'flex-start';
+  indentContainer.style.gap = '0.25em';
+  indentContainer.style.flex = '1';
+  indentContainer.style.paddingLeft = `${indentLevel * 1.5}em`;
 
-  indentContainer.appendChild(mainRow);
+  // Add left buttons: either flush left or indented with field
+  if (alignLeftButtons) {
+    row.appendChild(leftContainer); // stays left-aligned, outside indent
+  } else if (leftButtons.length > 0) {
+    indentContainer.appendChild(leftContainer); // indented with field
+  }
+
+  // Add field
+  indentContainer.appendChild(field.getEditMode() ? field.renderEdit() : field.renderView());
+
+  // Add right buttons
+  if (rightButtons.length > 0) {
+    if (alignRightButtons) {
+      rightContainer.style.marginLeft = 'auto'; // push to far right
+    }
+    indentContainer.appendChild(rightContainer);
+  }
+
   row.appendChild(indentContainer);
-
   return row;
 }

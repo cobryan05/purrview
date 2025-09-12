@@ -1,6 +1,6 @@
 import { createGenericRow } from '/app-static/js/ui/utils/createGenericRow.js';
 import { EditableField, TaskConfigField } from '/app-static/js/ui/utils/fields/index.js';
-import { fetchTaskConfigs, deleteTasks, deleteTaskConfigs, startTask, toast } from '/app-static/js/ui/utils/index.js';
+import { deleteTaskConfigs, fetchTaskConfigs, fetchTasksStatus, startTask, toast } from '/app-static/js/ui/utils/index.js';
 
 /**
  * Renders the task configs (left column).
@@ -88,4 +88,54 @@ export function renderActiveTasks({ target = 'active-tasks-list' }) {
   const container = document.getElementById(target);
   if (!container) return;
   container.innerHTML = '';
+
+  const configListDiv = document.createElement('div');
+  container.appendChild(configListDiv);
+
+  fetchTasksStatus().then(tasks => {
+    tasks.forEach((config, uuid) => {
+      const deleteButton = {
+        text: 'Delete',
+        emoji: '🗑️',
+        onClick: async ({ field }) => {
+          if (!window.confirm(`Are you sure you want to delete "${field.getValue().text}"?`)) return;
+          try {
+            await deleteTaskConfigs({ uuids: [uuid] });
+            onDelete?.();
+          } catch (error) {
+            toast(error.message || 'Failed to delete task config', 5000, 'error');
+          }
+        }
+      };
+      const stopButton = {
+        text: 'Stop',
+        emoji: '⏹️',
+        onClick: async () => {
+          try {
+            await stopTask({ uuid });
+            onStopTask?.();
+          } catch (error) {
+            toast(error.message || 'Failed to stop task', 5000, 'error');
+          }
+        }
+      };
+      TaskConfigField.create({ value: config.params, ...config }).then(fieldInstance => {
+        const row = createGenericRow({
+          field: new EditableField({
+            field: fieldInstance,
+            onSave: async ({ text: name, typename, schema: filled_schema }) => {
+              //await updateSource({ uuid, name, providerName: typename, params: filled_schema });
+              renderTaskConfigs({ target, onEdit, onDelete, onStartTask });
+            },
+            onCancel: () => {
+              renderTaskConfigs({ target, onEdit, onDelete, onStartTask });
+            },
+          }),
+          leftButtons: [deleteButton],
+          rightButtons: [stopButton]
+        })
+        configListDiv.appendChild(row);
+      });
+    });
+  });
 }
