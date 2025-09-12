@@ -1,74 +1,83 @@
-let _sourcesMap = null; // uuid -> full source data
-let _imageProviders = null; // Cache for image providers
-let _providerSchemas = new Map(); // Cache for provider schemas
-
-export function clearSourceCache() {
-  _sourcesMap = null;
-}
-
-export function clearImageProviderCache() {
-  _imageProviders = null;
-  _providerSchemas = null;
-}
+import { createCachedFetcher } from './createCachedFetcher.js';
 
 /**
- * Refresh the source list cache
+ * Caches
  */
-export async function fetchSourceList() {
-  if (!_sourcesMap) {
-    const res = await fetch('/api/sources/get');
-    const { sources } = await res.json();
-
-    // Store everything as a Map (uuid -> source object)
-    _sourcesMap = new Map(Object.entries(sources));
+export const sourcesFetcher = createCachedFetcher(async () => {
+  const res = await fetch('/api/sources/get');
+  if (!res.ok) {
+    const err = await res.json();
+    throw new Error(err.message || 'Failed to fetch sources');
   }
-  return new Map(_sourcesMap);
-}
+  const { sources } = await res.json();
+  // Store as Map for internal cache
+  const map = new Map(Object.entries(sources));
+  return map;
+});
 
-/**
- * Get the list of available image providers from the cache.
- * Throws an error if the cache is not yet populated.
- */
-export async function fetchImageProviderList() {
-  if (!_imageProviders) {
-    const res = await fetch('/api/sources/image-providers/list');
-    if (res.ok) {
-      const { providers } = await res.json();
-      _imageProviders = providers;
-    } else {
-      const error = await res.json();
-      throw new Error(error.message || 'Failed to fetch image provider list');
-    }
+export const imageProviderFetcher = createCachedFetcher(async () => {
+  const res = await fetch('/api/sources/image-providers/list');
+  if (!res.ok) {
+    const err = await res.json();
+    throw new Error(err.message || 'Failed to fetch image provider list');
   }
-  return Array.from(_imageProviders);
-}
+  const { providers } = await res.json();
+  return Array.from(providers);
+});
 
-/**
- * Fetch the schema for a specific image provider, with caching.
- */
-export async function fetchImageProviderSchema(providerName) {
-  if (_providerSchemas.has(providerName)) {
-    return _providerSchemas.get(providerName);
-  }
-
+export const providerSchemaFetcher = createCachedFetcher(async (providerName) => {
   const res = await fetch('/api/sources/image-providers/schema', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ image_provider: providerName }),
   });
 
-  if (res.ok) {
-    const { schema } = await res.json();
-    _providerSchemas.set(providerName, schema);
-    return schema;
-  } else {
-    const error = await res.json();
-    throw new Error(error.message || 'Failed to fetch image provider schema');
+  if (!res.ok) {
+    const err = await res.json();
+    throw new Error(err.message || 'Failed to fetch image provider schema');
   }
+
+  const { schema } = await res.json();
+  return schema;
+});
+
+
+/** -----------------------------
+ * CACHE CLEAR FUNCTIONS
+ * -----------------------------
+ */
+export function clearSourceCache() {
+  sourcesFetcher.clear();
 }
 
-/**
- * Create a new source.
+export function clearImageProviderCache() {
+  imageProviderFetcher.clear();
+  providerSchemaFetcher.clear();
+}
+
+
+/** -----------------------------
+ * FETCH FUNCTIONS
+ * -----------------------------
+ */
+export async function fetchSourceList() {
+  const map = await sourcesFetcher.fetch('sourcesMap');
+  // Return a copy of the Map to prevent external mutation
+  return new Map(map);
+}
+
+export async function fetchImageProviderList() {
+  return await imageProviderFetcher.fetch('providerList');
+}
+
+export async function fetchImageProviderSchema(providerName) {
+  return await providerSchemaFetcher.fetch(providerName);
+}
+
+
+/** -----------------------------
+ * SOURCE CRUD FUNCTIONS
+ * -----------------------------
  */
 export async function createSource({ name, providerName = null, params = {} }) {
   const res = await fetch('/api/sources/create', {
@@ -77,18 +86,18 @@ export async function createSource({ name, providerName = null, params = {} }) {
     body: JSON.stringify({ source_name: name, image_provider: providerName, params }),
   });
 
-  if (res.ok) {
-    const { source } = await res.json();
-    _sourcesMap.set(source.uuid, source);
-  } else {
+  if (!res.ok) {
     const error = await res.json();
     throw new Error(error.message || 'Failed to create source');
   }
+
+  const { source } = await res.json();
+  // Update the cached Map
+  const map = await sourcesFetcher.fetch('sourcesMap');
+  map.set(source.uuid, source);
+  return source;
 }
 
-/**
- * Update an existing source.
- */
 export async function updateSource({ uuid, name, providerName, params }) {
   const res = await fetch('/api/sources/update', {
     method: 'POST',
@@ -96,18 +105,17 @@ export async function updateSource({ uuid, name, providerName, params }) {
     body: JSON.stringify({ source_uuid: uuid, source_name: name, image_provider: providerName, params }),
   });
 
-  if (res.ok) {
-    const { source } = await res.json();
-    _sourcesMap.set(source.uuid, source);
-  } else {
+  if (!res.ok) {
     const error = await res.json();
     throw new Error(error.message || 'Failed to update source');
   }
+
+  const { source } = await res.json();
+  const map = await sourcesFetcher.fetch('sourcesMap');
+  map.set(source.uuid, source);
+  return source;
 }
 
-/**
- * Delete a source (or multiple sources).
- */
 export async function deleteSources({ uuids }) {
   if (!Array.isArray(uuids)) {
     uuids = [uuids];
@@ -119,10 +127,11 @@ export async function deleteSources({ uuids }) {
     body: JSON.stringify({ source_uuids: uuids }),
   });
 
-  if (res.ok) {
-    uuids.forEach(sourceUuid => _sourcesMap.delete(sourceUuid));
-  } else {
+  if (!res.ok) {
     const error = await res.json();
     throw new Error(error.message || 'Failed to delete source');
   }
+
+  const map = await sourcesFetcher.fetch('sourcesMap');
+  uuids.forEach(uuid => map.delete(uuid));
 }

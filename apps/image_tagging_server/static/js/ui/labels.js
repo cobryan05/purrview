@@ -51,7 +51,7 @@ function createLabelHandlers({ label, indentLevel, editable, renderList }) {
   const addChildButton = {
     text: 'Add Child',
     emoji: '➕',
-    onClick: ({ row }) => {
+    onClick: ({ field, row }) => {
       const childRow = createGenericRow({
         field: new EditableField({
           field:

@@ -35,8 +35,8 @@ export async function runPreviewSourceTest({ providerName, params, target = 'sou
     cancelBtn.disabled = true;
     addMessage('⏹ Cancelling task...');
     try {
-      await cancelTasks(taskId);
-      await deleteTasks(taskId);
+      await cancelTasks({taskIds: [taskId]});
+      await deleteTasks({taskIds: [taskId]});
       addMessage('❌ Task cancelled by user');
     } catch (err) {
       toast(`Failed to cancel task: ${err.message}`, 5000, 'error');
@@ -76,7 +76,7 @@ export async function runPreviewSourceTest({ providerName, params, target = 'sou
 
     while (true) {
       if (cancelled) break; // stop polling if cancelled
-      const fetchRes = await fetchTasksStatus([taskId])
+      const fetchRes = await fetchTasksStatus({taskIds: [taskId]})
       taskInfo = fetchRes[taskId];
       addMessage(`Status update: ${taskInfo.message || taskInfo.status}`);
 

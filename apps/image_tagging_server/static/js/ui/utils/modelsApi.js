@@ -1,51 +1,81 @@
-let _modelCache = null;
+// modelsApi.js
+import { createCachedFetcher } from './createCachedFetcher.js';
 
-export function clearModelsCache() {
-  _modelCache = null;
-}
+/** -----------------------------
+ * MODELS CACHE
+ * -----------------------------
+ */
+export const modelsFetcher = createCachedFetcher(async () => {
+  const res = await fetch('/api/models/list');
+  if (!res.ok) {
+    const err = await res.json();
+    throw new Error(err.message || 'Failed to fetch models list');
+  }
+  const { models } = await res.json();
+  // Store as Map: modelName -> labelMapping (null initially)
+  const map = new Map(models.map(model => [model, null]));
+  return map;
+});
 
-export async function fetchModelsList() {
-  if (_modelCache) {
-    return [..._modelCache.keys()];
+export const modelLabelsFetcher = createCachedFetcher(async (modelName) => {
+  const res = await fetch('/api/models/labels/get', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ model_name: modelName }),
+  });
+
+  if (!res.ok) {
+    const err = await res.json();
+    throw new Error(err.message || `Failed to fetch labels for model ${modelName}`);
   }
 
-  const res = await fetch('/api/models/list');
-  const { models } = await res.json();
-  _modelCache = new Map(models.map(model => [model, null]));
-  return [..._modelCache.keys()];
+  const { labels } = await res.json();
+  return new Map(Object.entries(labels));
+});
+
+
+/** -----------------------------
+ * CACHE CLEAR
+ * -----------------------------
+ */
+export function clearModelsCache() {
+  modelsFetcher.clear();
+  modelLabelsFetcher.clear();
+}
+
+
+/** -----------------------------
+ * FETCH FUNCTIONS
+ * -----------------------------
+ */
+export async function fetchModelsList() {
+  const map = await modelsFetcher.fetch('modelsMap');
+  return [...map.keys()];
 }
 
 export async function fetchModelLabelMappings(modelName) {
   const models = await fetchModelsList();
-  if (!models.includes(modelName)) {
-    throw new Error(`Model ${modelName} not found`);
-  }
+  if (!models.includes(modelName)) throw new Error(`Model ${modelName} not found`);
 
-  let labelMapping = _modelCache.get(modelName);
-  if (labelMapping == null) {
-    const res = await fetch('/api/models/labels/get', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model_name: modelName }),
-    });
-    const { labels } = await res.json();
-    labelMapping = new Map(Object.entries(labels));
-    _modelCache.set(modelName, labelMapping);
-  }
-  return new Map(labelMapping);
+  const labels = await modelLabelsFetcher.fetch(modelName);
+
+  // Ensure we also update the models map with the label mapping
+  const modelsMap = await modelsFetcher.fetch('modelsMap');
+  modelsMap.set(modelName, labels);
+
+  return new Map(labels);
 }
 
-/**
- * Associate a label with a model’s class.
- * Updates both server and local cache.
+
+/** -----------------------------
+ * UPDATE FUNCTION
+ * -----------------------------
  */
 export async function associateLabel(modelName, modelClass, labelUuid) {
   const models = await fetchModelsList();
-  if (!models.includes(modelName)) {
-    throw new Error(`Model ${modelName} not found`);
-  }
+  if (!models.includes(modelName)) throw new Error(`Model ${modelName} not found`);
 
-  await fetch('/api/models/labels/associate', {
+  const res = await fetch('/api/models/labels/associate', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -55,6 +85,14 @@ export async function associateLabel(modelName, modelClass, labelUuid) {
     }),
   });
 
-  // Invalidate cache
-  _modelCache.set(modelName, null);
+  if (!res.ok) {
+    const err = await res.json();
+    throw new Error(err.message || 'Failed to associate label');
+  }
+
+  // Invalidate label mapping cache for this model
+  modelLabelsFetcher.delete(modelName);
+  // Optionally also reset the entry in models map
+  const modelsMap = await modelsFetcher.fetch('modelsMap');
+  modelsMap.set(modelName, null);
 }

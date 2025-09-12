@@ -1,4 +1,5 @@
 export * from './createButton.js';
+export * from './createCachedFetcher.js';
 export * from './createGenericRow.js';
 export * from './labelsApi.js';
 export * from './logging.js';

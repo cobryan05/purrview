@@ -469,7 +469,7 @@ class DbClient:
 
         async with aiosqlite.connect(self._db_path) as db:
             # Delete configs with no tasks referencing them
-            await db.execute(
+            cursor = await db.execute(
                 f"""
                 DELETE FROM task_configs
                 WHERE uuid IN ({placeholders})

@@ -7,7 +7,7 @@ import { renderLabelList } from '/app-static/js/ui/labels.js';
 import { renderModelLabelAssignments } from '/app-static/js/ui/models.js';
 import { renderActiveTasks, renderTaskConfigs } from '/app-static/js/ui/tasks.js';
 import { renderSourceManager } from '/app-static/js/ui/sources.js';
-import { fetchModelsList } from '/app-static/js/ui/utils/index.js'
+import { clearModelsCache, fetchModelsList } from '/app-static/js/ui/utils/index.js'
 // --- Model list UI ---
 
 /**
@@ -17,6 +17,7 @@ import { fetchModelsList } from '/app-static/js/ui/utils/index.js'
  */
 export async function refreshModelList() {
   try {
+    await clearModelsCache();
     const models = await fetchModelsList();
 
     const modelListContainer = document.getElementById('model-list');
