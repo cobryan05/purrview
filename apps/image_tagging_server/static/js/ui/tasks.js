@@ -1,6 +1,6 @@
 import { createGenericRow } from '/app-static/js/ui/utils/createGenericRow.js';
-import { EditableField, TaskConfigField } from '/app-static/js/ui/utils/fields/index.js';
-import { deleteTaskConfigs, fetchTaskConfigs, fetchTasksStatus, startTask, toast } from '/app-static/js/ui/utils/index.js';
+import { ActiveTaskField, EditableField, TaskConfigField } from '/app-static/js/ui/utils/fields/index.js';
+import { cancelTasks, deleteTasks, deleteTaskConfigs, fetchTaskConfigs, fetchTasksStatus, startTask, toast } from '/app-static/js/ui/utils/index.js';
 
 /**
  * Renders the task configs (left column).
@@ -14,6 +14,8 @@ export function renderTaskConfigs({ target = 'task-config-list', onEdit, onDelet
 
   const configListDiv = document.createElement('div');
   container.appendChild(configListDiv);
+
+  const rerender = () => renderTaskConfigs({ target, onEdit, onDelete, onStartTask });
 
   fetchTaskConfigs().then(configs => {
     configs.forEach((config, uuid) => {
@@ -48,10 +50,10 @@ export function renderTaskConfigs({ target = 'task-config-list', onEdit, onDelet
             field: fieldInstance,
             onSave: async ({ text: name, typename, schema: filled_schema }) => {
               //await updateSource({ uuid, name, providerName: typename, params: filled_schema });
-              renderTaskConfigs({ target, onEdit, onDelete, onStartTask });
+              rerender();
             },
             onCancel: () => {
-              renderTaskConfigs({ target, onEdit, onDelete, onStartTask });
+              rerender();
             },
           }),
           leftButtons: [deleteButton],
@@ -92,18 +94,20 @@ export function renderActiveTasks({ target = 'active-tasks-list' }) {
   const configListDiv = document.createElement('div');
   container.appendChild(configListDiv);
 
+  const rerender = () => renderActiveTasks({ target });
+
   fetchTasksStatus().then(tasks => {
-    tasks.forEach((config, uuid) => {
+    tasks.forEach((task, taskId) => {
       const deleteButton = {
         text: 'Delete',
         emoji: '🗑️',
         onClick: async ({ field }) => {
           if (!window.confirm(`Are you sure you want to delete "${field.getValue().text}"?`)) return;
           try {
-            await deleteTaskConfigs({ uuids: [uuid] });
-            onDelete?.();
+            await deleteTasks({ taskIds: taskId });
+            rerender();
           } catch (error) {
-            toast(error.message || 'Failed to delete task config', 5000, 'error');
+            toast(error.message || 'Failed to delete task', 5000, 'error');
           }
         }
       };
@@ -112,14 +116,14 @@ export function renderActiveTasks({ target = 'active-tasks-list' }) {
         emoji: '⏹️',
         onClick: async () => {
           try {
-            await stopTask({ uuid });
-            onStopTask?.();
+            await cancelTasks({ taskIds: taskId });
+            rerender();
           } catch (error) {
             toast(error.message || 'Failed to stop task', 5000, 'error');
           }
         }
       };
-      TaskConfigField.create({ value: config.params, ...config }).then(fieldInstance => {
+      ActiveTaskField.create({ value: task.id, ...task }).then(fieldInstance => {
         const row = createGenericRow({
           field: new EditableField({
             field: fieldInstance,

@@ -8,6 +8,7 @@ export class ActiveTaskField extends Field {
 
   static async create({ name = '', typename = '', schema = null, ...rest } = {}) {
     const instance = new ActiveTaskField({ ...rest });
+    name = name || instance._value;
     instance._textField = new TextField({ value: name, placeholder: 'Enter new task name' });
 
     return instance;
