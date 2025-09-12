@@ -5,9 +5,9 @@ import { getLayer, } from '/app-static/js/canvas/state.js';
 import { setTool } from '/app-static/js/canvas/tools.js';
 import { renderLabelList } from '/app-static/js/ui/labels.js';
 import { renderModelLabelAssignments } from '/app-static/js/ui/models.js';
-import { renderActiveTasks, renderTaskConfigs } from '/app-static/js/ui/tasks.js';
 import { renderSourceManager } from '/app-static/js/ui/sources.js';
-import { clearModelsCache, fetchModelsList } from '/app-static/js/ui/utils/index.js'
+import { renderActiveTasks, renderTaskConfigs } from '/app-static/js/ui/tasks.js';
+import { clearModelsCache, fetchModelsList, toast } from '/app-static/js/ui/utils/index.js';
 // --- Model list UI ---
 
 /**
@@ -91,6 +91,7 @@ export async function recognizeImage() {
     formData.append('return_annotated', 'false');
     formData.append('image', blob, 'canvas_image.png');
 
+    toast("Sending recognition request...");
     // Send recognition request
     const response = await fetch('/api/recognize', {
       method: 'POST',
