@@ -165,3 +165,4 @@ class FFmpegStreamerIn:
                 logger.error(f"No bytes returned, exiting worker for {self._source}")
                 break
             await self._frame_queue.put(in_bytes)
+        logger.info(f"Worker for {self._source} stopped")

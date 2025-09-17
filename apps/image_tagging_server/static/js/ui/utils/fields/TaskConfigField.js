@@ -9,13 +9,13 @@ export class TaskConfigField extends Field {
     super(rest);
   }
 
-  static async create({ name = '', typename = '', schema = null, ...rest } = {}) {
+  static async create({ name = '', typename = null, schema = null, ...rest } = {}) {
     const instance = new TaskConfigField({ ...rest });
 
 
     // If no schema passed but a typename is provided, fetch the schema now
     if (!schema && typename) {
-      const schema = await fetchTaskTypeSchema(typename);
+      schema = await fetchTaskTypeSchema(typename);
     }
 
     instance._textField = new TextField({ value: name, placeholder: 'Enter new task name' });

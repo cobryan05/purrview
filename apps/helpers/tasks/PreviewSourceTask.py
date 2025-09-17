@@ -1,11 +1,19 @@
 import asyncio
+import logging
 import os
 from typing import Any, Optional
 
-from .Registry import register_task
 from apps.helpers.imageProviders.Registry import image_provider_registry
-from .Task import Task
 from apps.helpers.imageUtils import base64_encode_png
+
+from .Registry import register_task
+from .Task import Task
+
+
+logging.basicConfig()
+logger = logging.getLogger(__file__)
+logger.setLevel(logging.DEBUG)
+
 
 @register_task()
 class PreviewSourceTask(Task):
@@ -33,17 +41,32 @@ class PreviewSourceTask(Task):
             cancel_task = asyncio.create_task(self._cancel_flag.wait())
             image_task = asyncio.create_task(provider.getNextImage())
 
-            done, pending = await asyncio.wait(
-                {image_task, cancel_task},
-                return_when=asyncio.FIRST_COMPLETED,
-            )
+            try:
+                done, pending = await asyncio.wait(
+                    {image_task, cancel_task},
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
 
-            if image_task in done:
-                image_base64 = base64_encode_png(image_task.result().image)
-                ret["image"] = image_base64
-            elif cancel_task in done:
-                self._status_msg = "Canceled"
-                status = "canceled"
+                if image_task in done:
+                    try:
+                        image_base64 = base64_encode_png(image_task.result().image)
+                        ret["image"] = image_base64
+                    except Exception as e:
+                        logger.exception(f"Error fetching image")
+                        self._status_msg = "Error"
+                        status = "error"
+                elif cancel_task in done:
+                    self._status_msg = "Canceled"
+                    status = "canceled"
+
+            finally:
+                # Cancel any tasks still pending (cleanup)
+                for task in pending:
+                    task.cancel()
+                    try:
+                        await task
+                    except asyncio.CancelledError:
+                        pass
 
 
         self._update_resume_data()

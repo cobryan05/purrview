@@ -11,6 +11,7 @@ export function renderModelLabelAssignments({
   container.innerHTML = '';
 
   const modelSelectDiv = document.createElement('div');
+  modelSelectDiv.style.display = 'inline-block';
   container.appendChild(modelSelectDiv);
   // --- Header row: model selection dropdown ---
   fetchModelsList().then(models => {

@@ -22,6 +22,9 @@ logger.setLevel(logging.DEBUG)
 if os.getenv("GENERATING_OPENAPI_CLIENTS") != "1":
     import relay_buffer_client
 
+STREAM_START_TIMEOUT = 10.0
+STREAM_READ_TIMEOUT = 10.0
+FFMPEG_START_TIMEOUT = 30.0
 
 @register_image_provider()
 class FfmpegImageProvider(ImageProvider):
@@ -51,9 +54,9 @@ class FfmpegImageProvider(ImageProvider):
             await asyncio.to_thread(api.create_stream, self._video_path, self._relayed_name)
 
             async def wait_for_stream(
-                api, stream_name: str, timeout_ms: int = 10000, poll_interval_ms: int = 250
+                api, stream_name: str, timeout: float = STREAM_START_TIMEOUT, poll_interval: float = 0.5
             ) -> bool:
-                deadline = time.monotonic() + timeout_ms / 1000
+                deadline = time.monotonic() + timeout
                 while time.monotonic() < deadline:
                     streams = await asyncio.to_thread(api.list_streams)
                     for stream in streams.get("results", []):
@@ -61,10 +64,10 @@ class FfmpegImageProvider(ImageProvider):
                             if stream['info']['mtx_path']['bytes_received'] > 0:
                                 return True
                             break
-                    await asyncio.sleep(poll_interval_ms / 1000)
+                    await asyncio.sleep(poll_interval)
                 return False
 
-            stream_found = await wait_for_stream(api, self._relayed_name, timeout_ms=10000)
+            stream_found = await wait_for_stream(api, self._relayed_name, STREAM_START_TIMEOUT)
             if not stream_found:
                 raise TimeoutError(f"Timed out waiting for '{self._relayed_name}' to appear in relay list")
             stream_url = (
@@ -84,19 +87,28 @@ class FfmpegImageProvider(ImageProvider):
 
     async def getNextImage(self) -> Optional[ImageWithMetadata]:
         if self._frame_size is None:
-            await self._stream.wait_for_metadata()
+            try:
+                await asyncio.wait_for(self._stream.wait_for_metadata(), timeout=FFMPEG_START_TIMEOUT)
+            except asyncio.TimeoutError:
+                logger.error(f"FFmpeg metadata wait timed out after {FFMPEG_START_TIMEOUT} seconds")
+                raise
             self._frame_size = self._stream.get_frame_size()
         width, height = self._frame_size
         frame_size_bytes = width * height * 3
         while True:
-            chunk: bytes = await self._stream.read_async()
+            try:
+                chunk: Optional[bytes] = await asyncio.wait_for(self._stream.read_async(), timeout=STREAM_READ_TIMEOUT)
+            except asyncio.TimeoutError:
+                logger.error(f"FFmpeg stream read timed out after {STREAM_READ_TIMEOUT} seconds")
+                chunk = None
             if not chunk and self._loop:  # If no data is returned, restart the stream
                 self._stream.stop()
                 self._stream.start()
                 self._buffer = b""  # Clear the buffer
                 logger.debug(f"Looping stream {self._stream}")
                 continue
-            self._buffer += chunk
+            if chunk:
+                self._buffer += chunk
 
             if len(self._buffer) >= frame_size_bytes:
                 # Extract one full frame from the buffer
