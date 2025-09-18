@@ -13,13 +13,13 @@ export class SchemaField extends Field {
    * Renders the form in edit mode based on the schema.
    * @returns {HTMLElement} The form container.
    */
-  renderEdit() {
+  async renderEdit() {
     const container = document.createElement('div');
     container.style.display = 'flex';
     container.style.flexDirection = 'column';
     container.style.gap = '0.5em';
 
-    Object.entries(this._schema).forEach(([fieldName, fieldMeta]) => {
+    Object.entries(this._schema).forEach(async ([fieldName, fieldMeta]) => {
       const fieldContainer = document.createElement('div');
       fieldContainer.style.display = 'flex';
       fieldContainer.style.flexDirection = 'column';
@@ -31,12 +31,12 @@ export class SchemaField extends Field {
       fieldContainer.appendChild(label);
 
       // Input
-      const inputField = this._createInputField(fieldName, fieldMeta);
+      const inputField = await this._createInputField(fieldName, fieldMeta);
       inputField.onChange = () => {
         this._values[fieldName] = inputField.getValue(); //inputField.type === 'checkbox' ? inputField.checked : inputField.value;
         this._onChange?.(this._values);
       };
-      fieldContainer.appendChild(inputField.renderEdit());
+      fieldContainer.appendChild(await inputField.renderEdit());
 
       container.appendChild(fieldContainer);
     });
@@ -48,7 +48,7 @@ export class SchemaField extends Field {
    * Renders the form in view mode (read-only).
    * @returns {HTMLElement} The form container.
    */
-  renderView() {
+  async renderView() {
     const container = document.createElement('div');
     container.style.display = 'flex';
     container.style.flexDirection = 'column';
@@ -82,12 +82,12 @@ export class SchemaField extends Field {
    * @param {object} fieldMeta - Metadata for the field (e.g., type, required).
    * @returns {Field} The input field
    */
-  _createInputField(fieldName, fieldMeta) {
+  async _createInputField(fieldName, fieldMeta) {
     const factory = fieldFactories[fieldMeta.type];
     let field;
 
     if (factory) {
-      field = factory(fieldName, fieldMeta, this._values, this._onChange);
+      field = await factory(fieldName, fieldMeta, this._values, this._onChange);
     } else {
       // Fallback generic input
       field = new TextField({

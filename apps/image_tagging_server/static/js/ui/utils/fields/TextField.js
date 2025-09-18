@@ -1,7 +1,7 @@
 import { Field } from './Field.js';
 
 export class TextField extends Field {
-  renderEdit() {
+  async renderEdit() {
     const input = document.createElement('input');
     input.type = 'text';
 
@@ -23,7 +23,7 @@ export class TextField extends Field {
     return input;
   }
 
-  renderView() {
+  async renderView() {
     const span = document.createElement('span');
     span.textContent = this._value || '(empty)';
     return span;

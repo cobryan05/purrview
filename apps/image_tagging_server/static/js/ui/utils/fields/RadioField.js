@@ -1,7 +1,7 @@
 import { Field } from './Field.js';
 
 export class RadioField extends Field {
-  renderEdit() {
+  async renderEdit() {
     const container = document.createElement('div');
     const groupName = `radio-${Math.random().toString(36).slice(2)}`;
 
@@ -25,7 +25,7 @@ export class RadioField extends Field {
     return container;
   }
 
-  renderView() {
+  async renderView() {
     const span = document.createElement('span');
     span.textContent = this._value || '(none)';
     return span;

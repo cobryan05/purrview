@@ -7,8 +7,8 @@ export class Field {
     this._editMode = editMode;
   }
 
-  renderEdit() { throw new Error('renderEdit not implemented'); }
-  renderView() { throw new Error('renderView not implemented'); }
+  async renderEdit() { throw new Error('renderEdit not implemented'); }
+  async renderView() { throw new Error('renderView not implemented'); }
   getValue() { return this._value; }
   getEditMode() { return this._editMode; }
 }

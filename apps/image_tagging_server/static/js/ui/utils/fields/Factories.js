@@ -6,7 +6,7 @@ import { TextField } from './TextField.js'
 
 // Factory map
 export const fieldFactories = {
-  string(fieldName, fieldMeta, values, onChange) {
+  async string(fieldName, fieldMeta, values, onChange) {
     const { type, required, description, items, options, ...rest } = fieldMeta;
 
     return new TextField({
@@ -20,7 +20,7 @@ export const fieldFactories = {
     });
   },
 
-  int(fieldName, fieldMeta, values, onChange) {
+  async int(fieldName, fieldMeta, values, onChange) {
     const { type, required, description, items, options, ...rest } = fieldMeta;
 
     return new TextField({
@@ -35,7 +35,7 @@ export const fieldFactories = {
     });
   },
 
-  boolean(fieldName, fieldMeta, values, onChange) {
+  async boolean(fieldName, fieldMeta, values, onChange) {
     const { type, required, description, ...rest } = fieldMeta;
 
     return new BooleanCheckboxField({
@@ -49,29 +49,7 @@ export const fieldFactories = {
     });
   },
 
-  select(fieldName, fieldMeta, values, onChange) {
-    const { type, required, description, items, options = [], ...rest } = fieldMeta;
-
-    const select = document.createElement('select');
-    Object.assign(select, { name: fieldName, ...rest });
-
-    options.forEach(option => {
-      const opt = document.createElement('option');
-      opt.value = option.value || option;
-      opt.textContent = option.label || option;
-      select.appendChild(opt);
-    });
-
-    select.value = values[fieldName] || '';
-    select.addEventListener('change', () => {
-      values[fieldName] = select.value;
-      onChange?.(values);
-    });
-
-    return select;
-  },
-
-  array(fieldName, fieldMeta, values, onChange) {
+  async array(fieldName, fieldMeta, values, onChange) {
     const { type, required, description, items, options, ...rest } = fieldMeta;
 
     return new ArrayField({

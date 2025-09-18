@@ -7,7 +7,7 @@ export class ColorSwatchField extends Field {
     this._onChange = onChange;
   }
 
-  renderEdit() {
+  async renderEdit() {
     const container = document.createElement('div');
     container.style.position = 'relative';
     container.style.width = '1em';
@@ -41,7 +41,7 @@ export class ColorSwatchField extends Field {
     return container;
   }
 
-  renderView() {
+  async renderView() {
     const container = document.createElement('div');
     container.style.width = '1em';
     container.style.height = '1em';

@@ -44,13 +44,13 @@ export class SourceConfigField extends Field {
   }
 
   // Helper to re-render the schemaField in the DOM
-  _rerenderSchema() {
+  async _rerenderSchema() {
     if (!this._schemaContainer) return;
     this._schemaContainer.innerHTML = '';
-    this._schemaContainer.appendChild(this._schemaField.renderEdit());
+    this._schemaContainer.appendChild(await this._schemaField.renderEdit());
   }
 
-  renderEdit() {
+  async renderEdit() {
     const container = document.createElement('div');
     container.style.display = 'flex';
     container.style.flexDirection = 'column';
@@ -60,27 +60,27 @@ export class SourceConfigField extends Field {
     const row1 = document.createElement('div');
     row1.style.display = 'flex';
     row1.style.gap = '0.5em';
-    row1.appendChild(this._dropDownField.renderEdit());
-    row1.appendChild(this._textField.renderEdit());
+    row1.appendChild(await this._dropDownField.renderEdit());
+    row1.appendChild(await this._textField.renderEdit());
 
     // Row 2: schema field
     const row2 = document.createElement('div');
     this._schemaContainer = row2; // remember container for re-render
-    row2.appendChild(this._schemaField.renderEdit());
+    row2.appendChild(await this._schemaField.renderEdit());
 
     container.appendChild(row1);
     container.appendChild(row2);
     return container;
   }
 
-  renderView() {
+  async renderView() {
     const container = document.createElement('div');
     container.style.display = 'flex';
     container.style.alignItems = 'center';
     container.style.gap = '0.5em';
 
-    container.appendChild(this._dropDownField.renderView());
-    container.appendChild(this._textField.renderView());
+    container.appendChild(await this._dropDownField.renderView());
+    container.appendChild(await this._textField.renderView());
 
     return container;
   }

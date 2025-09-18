@@ -10,7 +10,7 @@ export class ArrayField extends Field {
     this._fields = []; // store wrapped subfields
   }
 
-  renderEdit() {
+  async renderEdit() {
     const container = document.createElement('div');
     container.classList.add('array-field');
 
@@ -20,7 +20,7 @@ export class ArrayField extends Field {
     const renderItems = () => {
       container.innerHTML = '';
 
-      this._value.forEach((val, idx) => {
+      this._value.forEach(async (val, idx) => {
         const row = document.createElement('div');
         row.style.display = 'flex';
         row.style.alignItems = 'center';
@@ -29,11 +29,11 @@ export class ArrayField extends Field {
         // Reuse existing subfield if present, else create new
         let subfield = this._fields[idx];
         if (!subfield) {
-          subfield = this._fieldFactory(val);
+          subfield = await this._fieldFactory(val);
           this._fields[idx] = subfield;
         }
 
-        const fieldEdit = subfield.renderEdit();
+        const fieldEdit = await subfield.renderEdit();
 
         const deleteBtn = createEmojiButton({
           text: 'Delete',
@@ -55,10 +55,10 @@ export class ArrayField extends Field {
       const addBtn = createEmojiButton({
         text: 'Add',
         emoji: '➕',
-        onClick: () => {
+        onClick: async () => {
           // push null to value, create a corresponding subfield
           this._value.push(null);
-          this._fields.push(this._fieldFactory(null));
+          this._fields.push(await this._fieldFactory(null));
           renderItems();
           this._onChange?.(this._value);
         }
@@ -72,7 +72,7 @@ export class ArrayField extends Field {
   }
 
 
-  renderView() {
+  async renderView() {
     const container = document.createElement('div');
     if (this._value.length === 0) {
       container.textContent = '(none)';
@@ -80,10 +80,10 @@ export class ArrayField extends Field {
     }
 
     const list = document.createElement('ul');
-    this._value.forEach(val => {
+    this._value.forEach(async val => {
       const li = document.createElement('li');
-      const subfield = this._fieldFactory(val);
-      li.appendChild(subfield.renderView());
+      const subfield = await this._fieldFactory(val);
+      li.appendChild(await subfield.renderView());
       list.appendChild(li);
     });
     container.appendChild(list);

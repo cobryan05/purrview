@@ -1,7 +1,7 @@
 import { Field } from './Field.js';
 
 export class CheckboxField extends Field {
-  renderEdit() {
+  async renderEdit() {
     const container = document.createElement('div');
     this._value = Array.isArray(this._value) ? this._value : [];
 
@@ -52,7 +52,7 @@ export class CheckboxField extends Field {
     return container;
   }
 
-  renderView() {
+  async renderView() {
     const span = document.createElement('span');
 
     if (this._value?.length) {

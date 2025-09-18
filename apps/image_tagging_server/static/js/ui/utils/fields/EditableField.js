@@ -11,7 +11,7 @@ export class EditableField extends Field {
     this._buttonsLast = buttonsLast;
   }
 
-  renderView() {
+  async renderView() {
     const container = document.createElement('div');
     container.style.display = 'flex';
     container.style.alignItems = 'center';
@@ -23,7 +23,7 @@ export class EditableField extends Field {
         this._rerender(container);
       }
     });
-    const fieldView = this._wrappedField.renderView();
+    const fieldView = await this._wrappedField.renderView();
 
     const elements = [];
     if (this._onSave && this._onCancel) {
@@ -38,14 +38,14 @@ export class EditableField extends Field {
     return container;
   }
 
-  renderEdit() {
+  async renderEdit() {
     const container = document.createElement('div');
     container.style.display = 'grid';
     container.style.gridTemplateColumns = 'auto 1fr auto'; // left, middle, right
     container.style.gap = '0.5em';
     container.style.alignItems = 'start'; // top-align buttons
 
-    const fieldEdit = this._wrappedField.renderEdit();
+    const fieldEdit = await this._wrappedField.renderEdit();
 
     const saveButton = createEmojiButton({
       text: 'Save', emoji: '✅', onClick: () => {
@@ -92,10 +92,10 @@ export class EditableField extends Field {
     return container;
   }
 
-  _rerender(container) {
+  async _rerender(container) {
     container.innerHTML = '';
-    const newContent = this._editMode ? this.renderEdit() : this.renderView();
-    container.replaceWith(newContent);
+    const contentPromise = this._editMode ? this.renderEdit() : this.renderView();
+    container.replaceWith(await contentPromise);
   }
 
   getValue() {

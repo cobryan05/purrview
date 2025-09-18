@@ -61,7 +61,12 @@ export function createGenericRow({
   }
 
   // Add field
-  indentContainer.appendChild(field.getEditMode() ? field.renderEdit() : field.renderView());
+  const fieldDiv = document.createElement("div");
+  const renderPromise = field.getEditMode() ? field.renderEdit() : field.renderView();
+  renderPromise.then(renderedField => {
+    fieldDiv.appendChild(renderedField);
+  });
+  indentContainer.appendChild(fieldDiv);
 
   // Add right buttons
   if (rightButtons.length > 0) {

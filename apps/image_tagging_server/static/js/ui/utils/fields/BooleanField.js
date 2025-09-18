@@ -6,7 +6,7 @@ export class BooleanCheckboxField extends Field {
     this._label = label;
   }
 
-  renderEdit() {
+  async renderEdit() {
     const container = document.createElement('div');
 
     const labelEl = document.createElement('label');
@@ -29,7 +29,7 @@ export class BooleanCheckboxField extends Field {
     return container;
   }
 
-  renderView() {
+  async renderView() {
     const span = document.createElement('span');
     span.textContent = this.getValue() ? this._label : '(disabled)';
     return span;

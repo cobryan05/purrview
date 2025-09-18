@@ -5,7 +5,7 @@ export class DropDownField extends Field {
     super(params);
   }
 
-  renderEdit() {
+  async renderEdit() {
     const select = document.createElement('select');
 
     // Add placeholder if no value is set
@@ -45,7 +45,7 @@ export class DropDownField extends Field {
     return select;
   }
 
-  renderView() {
+  async renderView() {
     const span = document.createElement('span');
     const selectedOption = this._options.find(opt => this._isMatchingOption(opt, this._value));
 

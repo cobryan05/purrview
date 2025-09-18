@@ -16,7 +16,7 @@ export class LabelDropDownField extends Field {
     this._onEdit = onEdit;              // callback when "Edit" button clicked
   }
 
-  renderEdit() {
+  async renderEdit() {
     const container = document.createElement('div');
     container.style.display = 'flex';
     container.style.alignItems = 'center';
@@ -27,11 +27,11 @@ export class LabelDropDownField extends Field {
     classSpan.style.fontWeight = 'bold';
     container.appendChild(classSpan);
 
-    container.appendChild(this._dropdown.renderEdit());
+    container.appendChild(await this._dropdown.renderEdit());
     return container;
   }
 
-  renderView() {
+  async renderView() {
     const container = document.createElement('div');
     container.style.display = 'flex';
     container.style.alignItems = 'center';

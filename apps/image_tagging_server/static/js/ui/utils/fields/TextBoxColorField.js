@@ -10,30 +10,33 @@ export class TextBoxColorField extends Field {
     this._textOnLeft = textOnLeft
   }
 
-  renderEdit() {
+  async renderEdit() {
     const container = document.createElement('div');
     container.style.display = 'flex';
     container.style.alignItems = 'flex-start'; // align all children to top
     container.style.gap = '0.5em';
 
-    container.appendChild(this._colorSwatchField.renderEdit());
-    container.appendChild(this._textField.renderEdit());
+    container.appendChild(await this._colorSwatchField.renderEdit());
+    container.appendChild(await this._textField.renderEdit());
 
     return container;
   }
 
-  renderView() {
+  async renderView() {
     const container = document.createElement('div');
     container.style.display = 'flex';
     container.style.alignItems = 'flex-start'; // align all children to top
     container.style.gap = '0.5em';
 
+    const textView = await this._textField.renderView();
+    const swatchView = await this._colorSwatchField.renderView();
+
     if (this._textOnLeft) {
-      container.appendChild(this._textField.renderView());
-      container.appendChild(this._colorSwatchField.renderView());
+      container.appendChild(textView);
+      container.appendChild(swatchView);
     } else {
-      container.appendChild(this._colorSwatchField.renderView());
-      container.appendChild(this._textField.renderView());
+      container.appendChild(swatchView);
+      container.appendChild(textView);
     }
 
     return container;
