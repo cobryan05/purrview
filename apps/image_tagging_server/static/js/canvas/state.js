@@ -1,4 +1,4 @@
-import { debug } from '/app-static/js/ui/utils/index.js';
+import { Logger } from '/app-static/js/ui/utils/index.js';
 
 let stage = null;
 let layer = null;
@@ -14,7 +14,7 @@ export function getCurrentTool() {
 }
 
 export function setCurrentTool(tool) {
-  debug("setCurrentTool called with", tool);
+  Logger.debug("setCurrentTool called with", tool);
   const parts = tool.split(':');
   currentTool = parts[0];
   if (parts.length === 2) {

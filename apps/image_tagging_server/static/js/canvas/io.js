@@ -1,18 +1,18 @@
 import { createBoundingBox } from './drawing.js';
 import { getCurrentImageName, getLayer, getStage, getTransformer, setCurrentImageName } from './state.js';
-import { debug, error, notify, toast } from '/app-static/js/ui/utils/index.js';
+import { Logger } from '/app-static/js/ui/utils/index.js';
 
 export async function reloadImage() {
   const imageName = getCurrentImageName();
   if (!imageName) {
-    notify('No image loaded to reload');
+    Logger.notify('No image loaded to reload');
     return;
   }
   await loadImageAndMetadata(imageName);
 }
 
 export async function loadImageAndMetadata(imageName) {
-  debug('loadImageAndMetadata called with imageName:', imageName);
+  Logger.debug('loadImageAndMetadata called with imageName:', imageName);
   if (!imageName) {
     toast('Please enter an image name!');
     return;
@@ -101,9 +101,9 @@ export async function loadImageAndMetadata(imageName) {
     stage.batchDraw();
 
     layer.draw();
-    notify(`Loaded image and metadata for ${imageName}`);
+    Logger.notify(`Loaded image and metadata for ${imageName}`);
   } catch (err) {
-    error('Failed to load image or annotations:', err);
+    Logger.error('Failed to load image or annotations:', err);
   }
 }
 
@@ -168,9 +168,9 @@ export async function saveAnnotations() {
     });
 
     if (!res.ok) throw new Error(`Save failed with status ${res.status}`);
-    notify(`Annotations saved successfully for image ${imagePath}`);
+    Logger.notify(`Annotations saved successfully for image ${imagePath}`);
   } catch (err) {
-    error('Failed to save annotations:', err);
+    Logger.error('Failed to save annotations:', err);
   }
 }
 
@@ -233,7 +233,7 @@ export function addRecognizedBoxes(results) {
   const bg = layer.findOne(
     node => node.name() === 'background' && node instanceof Konva.Image);
   if (!bg) {
-    error('No background image found!');
+    Logger.error('No background image found!');
     return;
   }
 

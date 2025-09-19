@@ -115,8 +115,10 @@ export async function createTaskConfig(config) {
   });
 
   if (!res.ok) {
-    const err = await res.json();
-    throw new Error(err.message || 'Failed to create task config');
+    const errJson = await res.json();
+    const error = new Error(errJson.message || 'Failed to create task config');
+    error.data = errJson;
+    throw error;
   }
 
   const { config_uuid } = await res.json();

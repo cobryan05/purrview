@@ -2,33 +2,52 @@ const DEBUG_ENABLED = true;
 const WARN_ENABLED = true;
 const ERROR_ENABLED = true;
 
-export function debug(...args) {
-  if (DEBUG_ENABLED) {
-    console.log('[DEBUG]', ...args);
-  }
-}
+export const Logger = {
+  debug(...args) {
+    if (DEBUG_ENABLED) {
+      console.log('[DEBUG]', ...args);
+    }
+  },
 
-export function warn(...args) {
-  if (WARN_ENABLED) {
-    console.warn('[WARN]', ...args);
-  }
-}
+  warn(...args) {
+    if (WARN_ENABLED) {
+      console.warn('[WARN]', ...args);
+    }
+  },
 
-export function notify(...args) {
-  console.log('[NOTIFY]', ...args);
-  if (args.length > 0) {
-    toast(args.map(String).join(' '), 5000);
-  }
-}
-
-export function error(...args) {
-  if (ERROR_ENABLED) {
-    console.error('[ERROR]', ...args);
+  notify(...args) {
+    console.log('[NOTIFY]', ...args);
     if (args.length > 0) {
-      toast(args.map(String).join(' '), 5000, "error");
+      toast(args.map(String).join(' '), 5000);
+    }
+  },
+
+  error(...args) {
+    if (!ERROR_ENABLED) {
+      return;
+    }
+    args.forEach(arg => {
+      if (arg instanceof Error) {
+        console.error('[ERROR]', arg);
+        // Print detail array if present
+        const details = arg.data?.detail || arg.detail;
+        if (details) console.error('[ERROR DETAILS]', details);
+      } else {
+        console.error('[ERROR]', arg);
+      }
+    });
+
+    // Concise toast: show only messages
+    const toastMessage = args
+      .map(arg => arg instanceof Error ? arg.message : String(arg))
+      .join(' ');
+
+    if (toastMessage) {
+      toast(toastMessage, 5000, 'error');
     }
   }
-}
+};
+
 
 export function toast(message, duration = 5000, type = "info") {
   let container = document.getElementById('toast-container');

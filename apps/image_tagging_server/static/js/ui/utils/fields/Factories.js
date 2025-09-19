@@ -1,7 +1,7 @@
 // fieldFactories.js
 import { ArrayField } from './ArrayField.js'
-import { CheckboxField } from './CheckboxField.js';
 import { SourceSelectField } from './SourceSelectField.js';
+import { ImageProviderSelectField } from './ImageProviderSelectField.js';
 import { BooleanCheckboxField } from './BooleanField.js';
 import { TextField } from './TextField.js'
 import { ModelLabelSelectField } from './ModelLabelSelectField.js';
@@ -56,6 +56,18 @@ export const fieldFactories = {
     const { ...rest } = fieldMeta;
 
     return await SourceSelectField.create({
+      onChange: (val) => {
+        values[fieldName] = !!val;
+        onChange?.(values);
+      },
+      ...rest
+    });
+  },
+
+  async image_provider_name(fieldName, fieldMeta, values, onChange) {
+    const { ...rest } = fieldMeta;
+
+    return await ImageProviderSelectField.create({
       onChange: (val) => {
         values[fieldName] = !!val;
         onChange?.(values);

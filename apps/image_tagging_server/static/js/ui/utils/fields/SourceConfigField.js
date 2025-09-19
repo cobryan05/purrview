@@ -2,7 +2,7 @@ import { DropDownField } from './DropDownField.js';
 import { Field } from './Field.js';
 import { SchemaField } from './SchemaField.js';
 import { TextField } from './TextField.js';
-import { error, fetchImageProviderList, fetchImageProviderSchema } from '/app-static/js/ui/utils/index.js';
+import { Logger, fetchImageProviderList, fetchImageProviderSchema } from '/app-static/js/ui/utils/index.js';
 
 export class SourceConfigField extends Field {
   constructor({ ...rest }) {
@@ -26,7 +26,7 @@ export class SourceConfigField extends Field {
           instance._schemaField = new SchemaField({ schema: fetchedSchema });
           instance._rerenderSchema();
         } catch (err) {
-          error('Failed to fetch schema:', err);
+          Logger.error('Failed to fetch schema:', err);
         }
       }
     });
@@ -38,7 +38,7 @@ export class SourceConfigField extends Field {
           instance._schemaField = new SchemaField({ schema: fetchedSchema });
           instance._rerenderSchema();
         })
-        .catch(err => error('Failed to fetch initial schema:', err));
+        .catch(err => Logger.error('Failed to fetch initial schema:', err));
     }
     return instance;
   }

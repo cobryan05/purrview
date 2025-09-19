@@ -1,7 +1,7 @@
 import { DropDownField } from './DropDownField.js';
 import { Field } from './Field.js';
 import { LabelNumberField } from './LabelNumberField.js'
-import { error, fetchModelsList, fetchModelLabelMappings, fetchLabelByUuid } from '/app-static/js/ui/utils/index.js';
+import { fetchModelsList, fetchModelLabelMappings, fetchLabelByUuid } from '/app-static/js/ui/utils/index.js';
 import { createGenericRow } from '/app-static/js/ui/utils/index.js';
 export class ModelLabelSelectField extends Field {
   constructor({ ...rest }) {

@@ -2,7 +2,7 @@ import { DropDownField } from './DropDownField.js';
 import { Field } from './Field.js';
 import { SchemaField } from './SchemaField.js';
 import { TextField } from './TextField.js';
-import { error, fetchTaskTypeList, fetchTaskTypeSchema } from '/app-static/js/ui/utils/index.js';
+import { Logger, fetchTaskTypeList, fetchTaskTypeSchema } from '/app-static/js/ui/utils/index.js';
 
 export class TaskConfigField extends Field {
   constructor({ ...rest }) {
@@ -35,7 +35,7 @@ export class TaskConfigField extends Field {
           });
           await instance._rerenderSchema();
         } catch (err) {
-          error('Failed to fetch schema:', err);
+          Logger.error('Failed to fetch schema:', err);
         }
       }
     });

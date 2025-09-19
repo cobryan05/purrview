@@ -1,5 +1,5 @@
 import { ActiveTaskField, EditableField, TaskConfigField } from '/app-static/js/ui/utils/fields/index.js';
-import { cancelTasks, createEmojiButton, createGenericRow, deleteTaskConfigs, deleteTasks, fetchTaskConfigs, fetchTasksStatus, startTask, toast } from '/app-static/js/ui/utils/index.js';
+import { cancelTasks, createGenericRow, createTaskConfig, deleteTaskConfigs, deleteTasks, fetchTaskConfigs, fetchTasksStatus, Logger, startTask, toast } from '/app-static/js/ui/utils/index.js';
 
 /**
  * Renders the task configs (left column).
@@ -75,10 +75,20 @@ export function renderTaskConfigs({ target = 'task-config-list', onEdit, onDelet
   const saveButton = {
     text: 'Add Config',
     emoji: '➕',
-    onClick: ({ field }) => {
-      const newValue = field.getValue();
-      onCreateTask?.(newValue);
-      rerender();
+    onClick: async ({ field }) => {
+      try {
+        const { text: name, typename, schema } = field.getValue();
+        if (!name) {
+          toast('Error: Name required', 5000, "error");
+          return;
+        }
+        const { provider_params } = schema;
+        const params = JSON.parse(provider_params);
+        await createTaskConfig({ name, typename, params });
+        rerender();
+      } catch (err) {
+        Logger.error('Error creating task config:', err);
+      }
     }
   };
 

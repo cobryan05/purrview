@@ -1,5 +1,5 @@
 import { DropDownField, EditableField, LabelDropDownField } from '/app-static/js/ui/utils/fields/index.js';
-import { associateLabel, clearModelsCache, createGenericRow, error, fetchLabels, fetchModelLabelMappings, fetchModelsList } from '/app-static/js/ui/utils/index.js';
+import { associateLabel, clearModelsCache, createGenericRow, fetchLabels, fetchModelLabelMappings, fetchModelsList, Logger, toast } from '/app-static/js/ui/utils/index.js';
 
 
 export function renderModelLabelAssignments({
@@ -100,5 +100,5 @@ export function renderModelLabelAssignments({
 
       labelAssignmentDiv.appendChild(assignmentRow);
     });
-  }).catch(err => error(err));
+  }).catch(err => Logger.error(err));
 }
