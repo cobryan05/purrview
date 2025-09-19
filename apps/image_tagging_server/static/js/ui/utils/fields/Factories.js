@@ -1,6 +1,7 @@
 // fieldFactories.js
 import { ArrayField } from './ArrayField.js'
 import { CheckboxField } from './CheckboxField.js';
+import { SourceSelectField } from './SourceSelectField.js';
 import { BooleanCheckboxField } from './BooleanField.js';
 import { TextField } from './TextField.js'
 
@@ -46,6 +47,19 @@ export const fieldFactories = {
         values[fieldName] = !!val;
         onChange?.(values);
       }
+    });
+  },
+
+
+  async source_uuid(fieldName, fieldMeta, values, onChange) {
+    const { ...rest } = fieldMeta;
+
+    return await SourceSelectField.create({
+      onChange: (val) => {
+        values[fieldName] = !!val;
+        onChange?.(values);
+      },
+      ...rest
     });
   },
 

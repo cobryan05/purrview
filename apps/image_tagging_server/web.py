@@ -407,7 +407,7 @@ class WebApp:
                     status_code=500,
                 )
 
-        class GetImagePRoviderSchemaPayload(BaseModel):
+        class GetImageProviderSchemaPayload(BaseModel):
             image_provider: str
 
         @self._app.post(
@@ -416,7 +416,7 @@ class WebApp:
             operation_id="image_providers_schema",
             response_class=JSONResponse,
         )
-        async def image_providers_schema_api(payload: GetImagePRoviderSchemaPayload) -> JSONResponse:
+        async def image_providers_schema_api(payload: GetImageProviderSchemaPayload) -> JSONResponse:
             """
             API endpoint to get the schema for a specific image provider.
             """

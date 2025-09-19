@@ -68,7 +68,6 @@ class PreviewSourceTask(Task):
                     except asyncio.CancelledError:
                         pass
 
-
         self._update_resume_data()
         ret["status"] = status
         self._status_msg = f"Image received: {status}"
@@ -100,6 +99,10 @@ class PreviewSourceTask(Task):
             - schema: dict (optional, for nested objects)
         """
         return {
-            "provider": {"type": "string", "required": True, "help": "Image provider to test"},
-            "provider_params": {"type": "string", "required": False, "help": "Additional parameters json for the image provider"},
+            "provider": {"type": "string", "required": True, "description": "Image provider to test"},
+            "provider_params": {
+                "type": "string",
+                "required": False,
+                "description": "Additional parameters json for the image provider",
+            },
         }

@@ -1,5 +1,8 @@
 import { Field } from './Field.js';
 
+// Takes options as an array of strings or objects
+// Each object can have 'key', 'text', and 'color' properties
+
 export class DropDownField extends Field {
   constructor(params = {}) {
     super(params);
