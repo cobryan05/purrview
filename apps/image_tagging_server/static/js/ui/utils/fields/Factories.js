@@ -31,7 +31,7 @@ export const fieldFactories = {
       type: 'number',
       value: values[fieldName] || '',
       onChange: (val) => {
-        values[fieldName] = parseInt(val, 10);
+        values[fieldName] = parseFloat(val);
         onChange?.(values);
       }
     });

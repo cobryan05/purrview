@@ -1,13 +1,12 @@
-import { createGenericRow } from '/app-static/js/ui/utils/createGenericRow.js';
 import { ActiveTaskField, EditableField, TaskConfigField } from '/app-static/js/ui/utils/fields/index.js';
-import { cancelTasks, deleteTasks, deleteTaskConfigs, fetchTaskConfigs, fetchTasksStatus, startTask, toast } from '/app-static/js/ui/utils/index.js';
+import { cancelTasks, createEmojiButton, createGenericRow, deleteTaskConfigs, deleteTasks, fetchTaskConfigs, fetchTasksStatus, startTask, toast } from '/app-static/js/ui/utils/index.js';
 
 /**
  * Renders the task configs (left column).
  * @param {object} params
  * @param {string} params.target - ID of the container
  */
-export function renderTaskConfigs({ target = 'task-config-list', onEdit, onDelete, onStartTask }) {
+export function renderTaskConfigs({ target = 'task-config-list', onEdit, onDelete, onStartTask, onCreateTask }) {
   const container = document.getElementById(target);
   if (!container) return;
   container.innerHTML = '';
@@ -15,7 +14,7 @@ export function renderTaskConfigs({ target = 'task-config-list', onEdit, onDelet
   const configListDiv = document.createElement('div');
   container.appendChild(configListDiv);
 
-  const rerender = () => renderTaskConfigs({ target, onEdit, onDelete, onStartTask });
+  const rerender = () => renderTaskConfigs({ target, onEdit, onDelete, onStartTask, onCreateTask });
 
   fetchTaskConfigs().then(configs => {
     configs.forEach((config, uuid) => {
@@ -72,10 +71,22 @@ export function renderTaskConfigs({ target = 'task-config-list', onEdit, onDelet
 
   const newConfigDiv = document.createElement('div');
   container.appendChild(newConfigDiv);
+
+  const saveButton = {
+    text: 'Add Config',
+    emoji: '➕',
+    onClick: ({ field }) => {
+      const newValue = field.getValue();
+      onCreateTask?.(newValue);
+      rerender();
+    }
+  };
+
   TaskConfigField.create({ editMode: true }).then(fieldInstance => {
     const row = createGenericRow({
       field: fieldInstance,
       editMode: true,
+      rightButtons: [saveButton],
     })
     newConfigDiv.appendChild(row);
   });

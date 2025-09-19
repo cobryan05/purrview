@@ -13,33 +13,48 @@ export class SchemaField extends Field {
    * Renders the form in edit mode based on the schema.
    * @returns {HTMLElement} The form container.
    */
-  async renderEdit() {
+    async renderEdit() {
     const container = document.createElement('div');
     container.style.display = 'flex';
     container.style.flexDirection = 'column';
     container.style.gap = '0.5em';
 
-    Object.entries(this._schema).forEach(async ([fieldName, fieldMeta]) => {
+    const order = this._schema.meta?.order;
+    let fieldEntries;
+
+    if (order && Array.isArray(order)) {
+      const orderedFields = order
+        .filter((field) => field in this._schema)
+        .map((field) => [field, this._schema[field]]);
+
+      const remainingFields = Object.entries(this._schema).filter(
+        ([key]) => key !== 'meta' && !order.includes(key)
+      );
+
+      fieldEntries = [...orderedFields, ...remainingFields];
+    } else {
+      fieldEntries = Object.entries(this._schema).filter(([key]) => key !== 'meta');
+    }
+
+    for (const [fieldName, fieldMeta] of fieldEntries) {
       const fieldContainer = document.createElement('div');
       fieldContainer.style.display = 'flex';
       fieldContainer.style.flexDirection = 'column';
 
-      // Label
       const label = document.createElement('label');
       label.textContent = fieldMeta.label || fieldName;
       label.style.fontWeight = 'bold';
       fieldContainer.appendChild(label);
 
-      // Input
       const inputField = await this._createInputField(fieldName, fieldMeta);
       inputField.onChange = () => {
-        this._values[fieldName] = inputField.getValue(); //inputField.type === 'checkbox' ? inputField.checked : inputField.value;
+        this._values[fieldName] = inputField.getValue();
         this._onChange?.(this._values);
       };
-      fieldContainer.appendChild(await inputField.renderEdit());
 
+      fieldContainer.appendChild(await inputField.renderEdit());
       container.appendChild(fieldContainer);
-    });
+    }
 
     return container;
   }

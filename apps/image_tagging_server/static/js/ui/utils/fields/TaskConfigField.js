@@ -18,7 +18,7 @@ export class TaskConfigField extends Field {
       schema = await fetchTaskTypeSchema(typename);
     }
 
-    instance._textField = new TextField({ value: name, placeholder: 'Enter new task name' });
+    instance._textField = new TextField({ value: name, placeholder: 'Enter new task configuration name' });
     instance._schemaField = new SchemaField({ schema: schema ?? {}, values: instance._value || {} });
     const taskTypes = await fetchTaskTypeList();
 

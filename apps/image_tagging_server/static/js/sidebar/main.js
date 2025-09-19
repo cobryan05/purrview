@@ -352,6 +352,7 @@ document.addEventListener('DOMContentLoaded', () => {
             renderTaskConfigs({
               target: 'task-config-list',
               onDelete: refreshTaskTab,
+              onCreateTask: refreshTaskTab
             });
           };
           refreshTaskTab();

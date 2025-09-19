@@ -1,10 +1,9 @@
 import { DropDownField } from './DropDownField.js';
 import { Field } from './Field.js';
 
-import { createButton } from '/app-static/js/ui/utils/index.js';
 
 export class LabelDropDownField extends Field {
-  constructor({ labelText, onEdit, ...rest }) {
+  constructor({ labelText, ...rest }) {
     super(rest);
     this._labelText = labelText;        // model class name
     this._dropdown = new DropDownField({
@@ -13,7 +12,6 @@ export class LabelDropDownField extends Field {
       placeholder: this._placeholder,
       onChange: this._onChange
     })
-    this._onEdit = onEdit;              // callback when "Edit" button clicked
   }
 
   async renderEdit() {
@@ -65,13 +63,6 @@ export class LabelDropDownField extends Field {
     }
 
     container.appendChild(assignedSpan);
-
-    // Edit button
-    if (this._onEdit) {
-      const editBtn = createButton('emoji-button', 'Edit', '✏️');
-      editBtn.onclick = this._onEdit;
-      container.appendChild(editBtn);
-    }
 
     return container;
   }

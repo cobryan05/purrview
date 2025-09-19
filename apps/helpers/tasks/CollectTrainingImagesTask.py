@@ -51,33 +51,34 @@ class CollectTrainingImagesTask(Task):
             - schema: dict (optional, for nested objects)
         """
         return {
+            "meta": {"order": ["source_uuid", "model_label_config", "output_dir", "min_capture_interval"]},
             "source_uuid": {
                 "type": "source_uuid",
                 "label": "Image Capture Source",
                 "required": True,
                 "description": "UUID of pre-configured Source to use",
             },
-            "model_label": {
-                "type": "model_label",
-                "label": "Model/Label selection",
-                "required": True,
-                "description": "Labels to collect",
+            "model_label_config": {
+                "type": "array",
+                "required": "true",
+                "label": "Model/Label Configuration",
+                "items": {
+                    "type": "model_label",
+                    "label": "Model/Label selection",
+                    "required": True,
+                    "description": "Labels to collect",
+                },
             },
-            # "labels_uuid": {
-            #     "type": "array",
-            #     "required": True,
-            #     "items": {"type": "string", "description": "Label UUIDs to associate with the images, one per line"},
-            # },
             "output_dir": {
                 "type": "string",
                 "label": "Image Output Directory",
                 "required": True,
                 "description": "Directory to save the collected images",
             },
-            "capture_interval": {
+            "min_capture_interval": {
                 "type": "int",
-                "label": "Capture Interval",
+                "label": "Minimum capture Interval",
                 "required": False,
-                "description": "Interval (in seconds) to capture images",
+                "description": "Minimum time (in seconds) between captures",
             },
         }
