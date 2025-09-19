@@ -55,21 +55,25 @@ class UrlImageProvider(ImageProvider):
         return {
             "url": {
                 "type": "string",
+                "label": "URL",
                 "required": True,
                 "description": "URL of the image"
             },
             "user": {
                 "type": "string",
+                "label": "Username",
                 "required": False,
                 "description": "Username for authentication"
             },
             "password": {
                 "type": "string",
+                "label": "Password",
                 "required": False,
                 "description": "Password for authentication"
             },
             "bust_cache": {
                 "type": "boolean",
+                "label": "Bust Cache",
                 "required": False,
                 "description": "Append random number to url to avoid caching"
             }

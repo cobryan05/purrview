@@ -75,6 +75,7 @@ class Cv2VideoImageProvider(ImageProvider):
         return {
             "paths": {
                 "type": "array",
+                "label": "Media Paths",
                 "required": True,
                 "items": {
                     "type": "string",

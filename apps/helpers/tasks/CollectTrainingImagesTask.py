@@ -53,22 +53,30 @@ class CollectTrainingImagesTask(Task):
         return {
             "source_uuid": {
                 "type": "source_uuid",
+                "label": "Image Capture Source",
                 "required": True,
                 "description": "UUID of pre-configured Source to use",
             },
-            "labels_uuid": {
-                "type": "array",
+            "model_label": {
+                "type": "model_label",
+                "label": "Model/Label selection",
                 "required": True,
-                "items": {"type": "string", "description": "Label UUIDs to associate with the images, one per line"},
+                "description": "Labels to collect",
             },
-            "models": {
-                "type": "array",
+            # "labels_uuid": {
+            #     "type": "array",
+            #     "required": True,
+            #     "items": {"type": "string", "description": "Label UUIDs to associate with the images, one per line"},
+            # },
+            "output_dir": {
+                "type": "string",
+                "label": "Image Output Directory",
                 "required": True,
-                "items": {"type": "string", "description": "Model names to use for inference, one per line"},
+                "description": "Directory to save the collected images",
             },
-            "output_dir": {"type": "string", "required": True, "description": "Directory to save the collected images"},
             "capture_interval": {
                 "type": "int",
+                "label": "Capture Interval",
                 "required": False,
                 "description": "Interval (in seconds) to capture images",
             },

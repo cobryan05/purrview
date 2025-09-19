@@ -73,7 +73,17 @@ class MqttImageProvider(ImageProvider):
             - schema: dict (optional, for nested objects)
         """
         return {
-            "broker_address": {"type": "string", "required": True, "description": "MQTT broker address"},
-            "broker_port": {"type": "int", "required": True, "description": "MQTT broker port"},
-            "topic": {"type": "string", "required": True, "description": "MQTT topic to subscribe to"},
+            "broker_address": {
+                "type": "string",
+                "label": "Broker Address",
+                "required": True,
+                "description": "MQTT broker address",
+            },
+            "broker_port": {"type": "int", "label": "Broker Port", "required": True, "description": "MQTT broker port"},
+            "topic": {
+                "type": "string",
+                "label": "Mqtt Topic",
+                "required": True,
+                "description": "MQTT topic to subscribe to",
+            },
         }

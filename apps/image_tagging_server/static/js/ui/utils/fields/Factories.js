@@ -4,6 +4,7 @@ import { CheckboxField } from './CheckboxField.js';
 import { SourceSelectField } from './SourceSelectField.js';
 import { BooleanCheckboxField } from './BooleanField.js';
 import { TextField } from './TextField.js'
+import { ModelLabelSelectField } from './ModelLabelSelectField.js';
 
 // Factory map
 export const fieldFactories = {
@@ -55,6 +56,18 @@ export const fieldFactories = {
     const { ...rest } = fieldMeta;
 
     return await SourceSelectField.create({
+      onChange: (val) => {
+        values[fieldName] = !!val;
+        onChange?.(values);
+      },
+      ...rest
+    });
+  },
+
+  async model_label(fieldName, fieldMeta, values, onChange) {
+    const { ...rest } = fieldMeta;
+
+    return await ModelLabelSelectField.create({
       onChange: (val) => {
         values[fieldName] = !!val;
         onChange?.(values);

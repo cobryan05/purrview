@@ -132,11 +132,13 @@ class FfmpegImageProvider(ImageProvider):
         """
         return {
             "video_path": {
+                "label": "Video Source Path",
                 "type": "string",
                 "required": True,
                 "description": "Path to pass to ffmpeg (eg, rtsp://, server-local url path, etc)",
             },
             "rtsp_relay": {
+                "label": "Use RTSP Proxy Server",
                 "type": "boolean",
                 "required": False,
                 "default": True,

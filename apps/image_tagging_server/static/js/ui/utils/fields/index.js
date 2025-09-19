@@ -1,11 +1,12 @@
-export { ArrayField } from './ArrayField.js';
 export { ActiveTaskField } from './ActiveTaskField.js';
+export { ArrayField } from './ArrayField.js';
 export { CheckboxField } from './CheckboxField.js';
 export { ColorSwatchField } from './ColorSwatchField.js';
 export { DropDownField } from './DropDownField.js';
 export { EditableField } from './EditableField.js';
 export { Field } from './Field.js';
 export { LabelDropDownField } from './LabelDropDownField.js';
+export { ModelLabelSelectField } from './ModelLabelSelectField.js';
 export { RadioField } from './RadioField.js';
 export { SchemaField } from './SchemaField.js';
 export { SourceConfigField } from './SourceConfigField.js';

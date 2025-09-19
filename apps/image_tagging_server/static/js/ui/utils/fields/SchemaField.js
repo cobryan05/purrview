@@ -100,11 +100,6 @@ export class SchemaField extends Field {
         },
       });
     }
-
-    if (fieldMeta.required && field instanceof HTMLElement) {
-      field.required = true;
-    }
-
     field.name = fieldName;
 
     // If it’s a custom field class, render it
