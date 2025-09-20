@@ -66,7 +66,7 @@ export class TaskConfigField extends Field {
     // Row 2: schema field
     const row2 = document.createElement('div');
     this._schemaContainer = row2; // remember container for re-render
-    row2.appendChild(await this._schemaField.renderEdit());
+    await this._rerenderSchema();
 
     container.appendChild(row1);
     container.appendChild(row2);

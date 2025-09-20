@@ -74,7 +74,7 @@ export function renderTaskConfigs({ target = 'task-config-list', onEdit, onDelet
 
   const saveButton = {
     text: 'Add Config',
-    emoji: '➕',
+    emoji: '✅',
     onClick: async ({ field }) => {
       try {
         const { text: name, typename, schema } = field.getValue();
@@ -82,9 +82,7 @@ export function renderTaskConfigs({ target = 'task-config-list', onEdit, onDelet
           toast('Error: Name required', 5000, "error");
           return;
         }
-        const { provider_params } = schema;
-        const params = JSON.parse(provider_params);
-        await createTaskConfig({ name, typename, params });
+        await createTaskConfig({ name, typename, params: schema });
         rerender();
       } catch (err) {
         Logger.error('Error creating task config:', err);

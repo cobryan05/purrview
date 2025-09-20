@@ -46,8 +46,8 @@ export class ArrayField extends Field {
           }
         });
 
-        row.appendChild(fieldEdit);
         row.appendChild(deleteBtn);
+        row.appendChild(fieldEdit);
         container.appendChild(row);
       });
 

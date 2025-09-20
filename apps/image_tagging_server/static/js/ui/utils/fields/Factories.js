@@ -56,8 +56,9 @@ export const fieldFactories = {
     const { ...rest } = fieldMeta;
 
     return await SourceSelectField.create({
+      value: values[fieldName],
       onChange: (val) => {
-        values[fieldName] = !!val;
+        values[fieldName] = val;
         onChange?.(values);
       },
       ...rest
@@ -68,8 +69,9 @@ export const fieldFactories = {
     const { ...rest } = fieldMeta;
 
     return await ImageProviderSelectField.create({
+      value: values[fieldName],
       onChange: (val) => {
-        values[fieldName] = !!val;
+        values[fieldName] = val;
         onChange?.(values);
       },
       ...rest

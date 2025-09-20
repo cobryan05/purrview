@@ -99,7 +99,7 @@ class PreviewSourceTask(Task):
             - schema: dict (optional, for nested objects)
         """
         return {
-            "provider": {"type": "string", "label": "Image Provider", "required": True, "description": "Image provider to test"},
+            "provider": {"type": "image_provider_name", "label": "Image Provider", "required": True, "description": "Image provider to test"},
             "provider_params": {
                 "type": "string",
                 "label": "Provider Parameters",

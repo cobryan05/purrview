@@ -14,6 +14,7 @@ export class ImageProviderSelectField extends Field {
     const providerList = await fetchImageProviderList();
 
     instance._dropDownField = new DropDownField({
+      value: instance._value,
       options: providerList,
       onChange: (val) => {
         instance._value = val;
