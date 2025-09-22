@@ -130,7 +130,7 @@ class Manager:
         return {**info_from_db, **running_info}
 
     async def create_new_task_config(
-        self, typename: str, params: Dict[str, Any], persistent: bool
+        self, name: str, typename: str, params: Dict[str, Any], persistent: bool
     ) -> TaskConfigMetadata:
         """
         Start a new task.
@@ -142,7 +142,7 @@ class Manager:
 
         params[Task.InternalKeys.PERSISTENT] = persistent
         task_config_metadata: TaskConfigMetadata = await self._db_client.add_task_config(
-            name=f"{typename}_task", typename=typename, params=params
+            name=name, typename=typename, params=params
         )
 
         return task_config_metadata

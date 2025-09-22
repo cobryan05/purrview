@@ -29,6 +29,7 @@ logger.setLevel(logging.DEBUG)
 class CreateTaskConfigPayload(BaseModel):
     """Request model for creating a new task configuration."""
 
+    name: str
     typename: str
     params: dict
     persistent: bool = True
@@ -445,7 +446,7 @@ class WebApp:
                 )
 
         @self._app.post(
-            "/api/tasks/config/create",
+            "/api/tasks/configs/create",
             tags=[WebApp.TASKS_API_TAG_NAME],
             operation_id="create_task_config",
             response_class=JSONResponse,
@@ -462,7 +463,7 @@ class WebApp:
             """
             try:
                 task_config: TaskConfigMetadata = await self._manager.create_new_task_config(
-                    typename=payload.typename, params=payload.params, persistent=payload.persistent
+                    name=payload.name, typename=payload.typename, params=payload.params, persistent=payload.persistent
                 )
                 response_data = {"status": WebApp.SUCCESS_KEY, "config_uuid": task_config.uuid}
             except Exception as e:
@@ -514,7 +515,7 @@ class WebApp:
             """
             try:
                 task_configs = await self._manager.get_task_configs(payload.config_uuids)
-                task_configs_dict = { k: asdict(v) for k,v in task_configs.items() }
+                task_configs_dict = {k: asdict(v) for k, v in task_configs.items()}
                 response_data = {"status": WebApp.SUCCESS_KEY, "configs": task_configs_dict}
                 return JSONResponse(content=response_data)
             except Exception as e:
@@ -523,7 +524,6 @@ class WebApp:
                     content={"status": WebApp.FAILURE_KEY, "message": str(e)},
                     status_code=500,
                 )
-
 
         @self._app.post(
             "/task_schema",

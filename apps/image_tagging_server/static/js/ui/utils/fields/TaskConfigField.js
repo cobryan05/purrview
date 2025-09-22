@@ -9,7 +9,7 @@ export class TaskConfigField extends Field {
     super(rest);
   }
 
-  static async create({ name = '', typename = null, schema = null, ...rest } = {}) {
+  static async create({ name = '', typename = null, schema = null, uuid = null, ...rest } = {}) {
     const instance = new TaskConfigField({ ...rest });
 
 
@@ -18,7 +18,8 @@ export class TaskConfigField extends Field {
       schema = await fetchTaskTypeSchema(typename);
     }
 
-    instance._textField = new TextField({ value: name, placeholder: 'Enter new task configuration name' });
+    instance._uuid = uuid
+    instance._textField = new TextField({ value: name, placeholder: 'New Config Name' });
     instance._schemaField = new SchemaField({ schema: schema ?? {}, values: instance._value || {} });
     const taskTypes = await fetchTaskTypeList();
 
@@ -68,7 +69,18 @@ export class TaskConfigField extends Field {
     this._schemaContainer = row2; // remember container for re-render
     await this._rerenderSchema();
 
+    // Row 1b: small UUID info
+    const uuidInfo = document.createElement('div');
+    uuidInfo.textContent = `UUID: ${this._uuid || '(none)'}`;
+    uuidInfo.style.fontSize = '0.75em';
+    uuidInfo.style.color = '#888'; // muted gray
+    uuidInfo.style.marginLeft = '0.25em';
+    uuidInfo.style.userSelect = 'text'; // allow copying
+    uuidInfo.style.fontFamily = 'monospace'; // makes UUIDs easier to read
+    uuidInfo.style.overflowWrap = 'anywhere'; // wrap long UUID if needed
+
     container.appendChild(row1);
+    container.appendChild(uuidInfo);
     container.appendChild(row2);
     return container;
   }

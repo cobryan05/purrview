@@ -61,7 +61,7 @@ export async function runPreviewSourceTest({ providerName, params, target = 'sou
   try {
     const configUuid = await createTaskConfig({
       typename: 'PreviewSourceTask',
-      params: { provider: providerName, provider_params: params },
+      params: { name: "Source Preview: " + providerName, provider: providerName, provider_params: params },
       persistent: false,
     });
 
