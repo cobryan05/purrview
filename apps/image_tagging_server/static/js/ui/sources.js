@@ -42,7 +42,7 @@ function createSourceRow({ source, editable = false, renderList, onEdit, onDelet
     )
     .then(schema => {
       // schema is either the fetched value or null if fetch failed
-      return SourceConfigField.create({ name, typename, schema, value: params });
+      return SourceConfigField.create({ name, typename, schema, uuid, value: params });
     })
     .then(fieldInstance => {
       const row = createGenericRow({

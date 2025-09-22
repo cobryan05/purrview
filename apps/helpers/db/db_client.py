@@ -153,7 +153,6 @@ END;
 """
 
 
-
 @dataclass
 class LabelMetadata:
     name: str
@@ -353,6 +352,57 @@ class DbClient:
                 raise Exception(f"Failed to retrieve inserted task config with UUID {config_uuid}")
             return DbClient.row_to_dataclass(cursor, row, TaskConfigMetadata)
 
+    async def update_task_config(
+        self,
+        config_uuid: str,
+        name: Optional[str] = None,
+        typename: Optional[str] = None,
+        params: Optional[dict] = None,
+        description: Optional[str] = None,
+        marked_for_delete: Optional[bool] = None,
+    ) -> None:
+        """
+        Update properties of a task configuration.
+
+        Args:
+            config_uuid (str): UUID of the task config.
+            name (Optional[str]): New name.
+            typename (Optional[str]): New typename.
+            params (Optional[dict]): New parameters.
+            description (Optional[str]): New description.
+            marked_for_delete (Optional[bool]): Mark this config for deletion.
+        """
+        if not any([name, typename, params, description, marked_for_delete is not None]):
+            return  # Nothing to update
+
+        query_parts: list[str] = []
+        query_params: list = []
+
+        if name is not None:
+            query_parts.append("name = ?")
+            query_params.append(name)
+        if typename is not None:
+            query_parts.append("typename = ?")
+            query_params.append(typename)
+        if params is not None:
+            query_parts.append("params_json = ?")
+            query_params.append(json.dumps(params))
+        if description is not None:
+            query_parts.append("description = ?")
+            query_params.append(description)
+        if marked_for_delete is not None:
+            query_parts.append("marked_for_delete = ?")
+            query_params.append(1 if marked_for_delete else 0)
+
+        query_params.append(config_uuid)
+
+        async with aiosqlite.connect(self._db_path) as db:
+            await db.execute(
+                f"UPDATE task_configs SET {', '.join(query_parts)} WHERE uuid = ?",
+                tuple(query_params),
+            )
+            await db.commit()
+
     async def insert_new_active_task(
         self,
         config_uuid: str,
@@ -420,7 +470,6 @@ class DbClient:
 
             return DbClient.row_to_dataclass(cursor, row, ActiveTaskMetadata)
 
-
     async def delete_active_tasks(self, task_ids: Union[int, List[int]]) -> None:
         """
         Delete one or more tasks by their IDs.
@@ -444,7 +493,6 @@ class DbClient:
         async with aiosqlite.connect(self._db_path) as db:
             await db.execute(f"DELETE FROM tasks_active WHERE id IN ({placeholders})", tuple(task_ids))
             await db.commit()
-
 
     async def delete_task_config(self, config_uuids: Union[str, List[str]]) -> None:
         """
@@ -654,7 +702,7 @@ class DbClient:
             task_ids = [task_ids]
 
         async with aiosqlite.connect(self._db_path) as db:
-            clause, params = DbClient._make_in_clause('id', task_ids)
+            clause, params = DbClient._make_in_clause("id", task_ids)
             cursor = await db.execute(f"SELECT result_json FROM tasks_active WHERE {clause}", params)
             rows = await cursor.fetchall()
             await cursor.close()
@@ -820,7 +868,6 @@ class DbClient:
         if existing:
             return existing
 
-
         uuid = uuid or str(uuid4())
         async with aiosqlite.connect(self._db_path) as db:
             await db.execute(
@@ -961,9 +1008,7 @@ class DbClient:
             List[str]: List of child label UUIDs.
         """
         async with aiosqlite.connect(self._db_path) as db:
-            cursor = await db.execute(
-                "SELECT uuid FROM labels WHERE parent_uuid = ?", (parent_uuid,)
-            )
+            cursor = await db.execute("SELECT uuid FROM labels WHERE parent_uuid = ?", (parent_uuid,))
             rows = await cursor.fetchall()
             await cursor.close()
 

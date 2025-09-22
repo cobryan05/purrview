@@ -171,7 +171,42 @@ class Manager:
                 del self._running_tasks[task_id]
         await self._db_client.delete_active_tasks(task_ids)
 
-    async def get_task_configs(self, task_config_uuids: Optional[Union[List[str], str]]) -> dict[str, TaskConfigMetadata]:
+    async def update_task_config(
+        self,
+        config_uuid: str,
+        name: Optional[str] = None,
+        typename: Optional[str] = None,
+        params: Optional[Dict[str, Any]] = None,
+        description: Optional[str] = None,
+        marked_for_delete: Optional[bool] = None,
+    ) -> None:
+        """
+        Update an existing task configuration.
+
+        Args:
+            config_uuid (str): UUID of the task config to update.
+            name (Optional[str]): New name.
+            typename (Optional[str]): New typename.
+            params (Optional[Dict[str, Any]]): New parameters.
+            description (Optional[str]): New description.
+            marked_for_delete (Optional[bool]): Flag to mark for deletion.
+        """
+        if typename is not None and typename not in task_registry:
+            raise ValueError(f"Unknown task type: {typename}")
+
+        # Update in database
+        await self._db_client.update_task_config(
+            config_uuid=config_uuid,
+            name=name,
+            typename=typename,
+            params=params,
+            description=description,
+            marked_for_delete=marked_for_delete,
+        )
+
+    async def get_task_configs(
+        self, task_config_uuids: Optional[Union[List[str], str]]
+    ) -> dict[str, TaskConfigMetadata]:
         """
         Get task configurations by their IDs.
         """

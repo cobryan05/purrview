@@ -42,8 +42,10 @@ class DeleteTasksPayload(BaseModel):
 class DeleteTaskConfigsPayload(BaseModel):
     config_uuids: List[str]
 
+
 class GetTaskConfigsPayload(BaseModel):
     config_uuids: Optional[Union[List[str], str]] = None
+
 
 class PauseTasksPayload(BaseModel):
     task_ids: List[int]
@@ -71,6 +73,17 @@ class TasksResultPayload(BaseModel):
 
 class TasksInfoPayload(BaseModel):
     task_ids: Optional[List[int]] = None
+
+
+class UpdateTaskConfigPayload(BaseModel):
+    """Request model for updating a task configuration."""
+
+    config_uuid: str
+    name: Optional[str] = None
+    typename: Optional[str] = None
+    params: Optional[dict] = None
+    description: Optional[str] = None
+    marked_for_delete: Optional[bool] = None
 
 
 class WebApp:
@@ -518,6 +531,36 @@ class WebApp:
                 task_configs_dict = {k: asdict(v) for k, v in task_configs.items()}
                 response_data = {"status": WebApp.SUCCESS_KEY, "configs": task_configs_dict}
                 return JSONResponse(content=response_data)
+            except Exception as e:
+                logger.exception(e)
+                return JSONResponse(
+                    content={"status": WebApp.FAILURE_KEY, "message": str(e)},
+                    status_code=500,
+                )
+
+        @self._app.post(
+            "/api/tasks/configs/update",
+            tags=[WebApp.TASKS_API_TAG_NAME],
+            operation_id="update_task_config",
+            response_class=JSONResponse,
+        )
+        async def update_task_config_api(payload: UpdateTaskConfigPayload) -> JSONResponse:
+            """
+            API endpoint for updating an existing task configuration.
+
+            Args:
+                payload (UpdateTaskConfigPayload): Update data.
+            """
+            try:
+                await self._manager.update_task_config(
+                    config_uuid=payload.config_uuid,
+                    name=payload.name,
+                    typename=payload.typename,
+                    params=payload.params,
+                    description=payload.description,
+                    marked_for_delete=payload.marked_for_delete,
+                )
+                return JSONResponse(content={"status": WebApp.SUCCESS_KEY})
             except Exception as e:
                 logger.exception(e)
                 return JSONResponse(

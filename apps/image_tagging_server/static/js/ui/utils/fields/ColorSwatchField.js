@@ -1,10 +1,9 @@
 import { Field } from './Field.js';
 
 export class ColorSwatchField extends Field {
-  constructor({ color = '#cccccc', onChange, ...rest } = {}) {
+  constructor({ color = '#cccccc', ...rest } = {}) {
     super(rest);
     this._color = color;
-    this._onChange = onChange;
   }
 
   async renderEdit() {

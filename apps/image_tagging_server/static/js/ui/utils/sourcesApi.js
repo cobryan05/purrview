@@ -77,7 +77,7 @@ export async function fetchImageProviderSchema(providerName) {
 
 
 /** -----------------------------
- * SOURCE CRUD FUNCTIONS
+ * SOURCE FUNCTIONS
  * -----------------------------
  */
 export async function createSource({ name, providerName = null, params = {} }) {
@@ -110,11 +110,6 @@ export async function updateSource({ uuid, name, providerName, params }) {
     const error = await res.json();
     throw new Error(error.message || 'Failed to update source');
   }
-
-  const { source } = await res.json();
-  const map = await sourcesFetcher.fetch('sourcesMap');
-  map.set(source.uuid, source);
-  return source;
 }
 
 async function _deleteSources({ uuids }) {

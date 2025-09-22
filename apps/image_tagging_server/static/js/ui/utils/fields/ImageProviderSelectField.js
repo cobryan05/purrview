@@ -3,12 +3,12 @@ import { Field } from './Field.js';
 import { fetchImageProviderList } from '/app-static/js/ui/utils/index.js'
 
 export class ImageProviderSelectField extends Field {
-  constructor({ onChange, ...rest }) {
+  constructor({ ...rest }) {
     super(rest);
   }
 
   static async create({ onChange, ...rest } = {}) {
-    const instance = new ImageProviderSelectField({ ...rest });
+    const instance = new ImageProviderSelectField({ ...rest, onChange });
 
     // providerList is just an array of names
     const providerList = await fetchImageProviderList();

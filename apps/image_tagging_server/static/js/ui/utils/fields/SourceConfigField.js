@@ -9,11 +9,12 @@ export class SourceConfigField extends Field {
     super(rest);
   }
 
-  static async create({ name = '', typename = '', schema = null, ...rest } = {}) {
+  static async create({ name = '', typename = '', schema = null, uuid = null, ...rest } = {}) {
     const instance = new SourceConfigField({ ...rest });
 
     instance._textField = new TextField({ value: name, placeholder: 'Enter new source name' });
     instance._schemaField = new SchemaField({ schema: schema ?? {}, values: instance._value });
+    instance._uuid = uuid;
     const imageProviders = await fetchImageProviderList();
 
     // Initialize DropDownField with onChange
@@ -63,12 +64,25 @@ export class SourceConfigField extends Field {
     row1.appendChild(await this._dropDownField.renderEdit());
     row1.appendChild(await this._textField.renderEdit());
 
+    const uuidInfo = document.createElement('div');
+    uuidInfo.textContent = `UUID: ${this._uuid || '(none)'}`;
+    uuidInfo.style.fontSize = '0.75em';
+    uuidInfo.style.color = '#888';
+    uuidInfo.style.marginLeft = '0.25em';
+    uuidInfo.style.userSelect = 'text';
+    uuidInfo.style.fontFamily = 'monospace';
+    uuidInfo.style.overflowWrap = 'anywhere'; // wrap long UUID if needed
+
+
     // Row 2: schema field
     const row2 = document.createElement('div');
     this._schemaContainer = row2; // remember container for re-render
     row2.appendChild(await this._schemaField.renderEdit());
 
     container.appendChild(row1);
+    if (this._uuid) {
+      container.appendChild(uuidInfo);
+    }
     container.appendChild(row2);
     return container;
   }

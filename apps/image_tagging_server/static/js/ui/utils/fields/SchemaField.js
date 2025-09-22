@@ -3,8 +3,8 @@ import { fieldFactories } from './Factories.js';
 import { TextField } from './TextField.js'
 
 export class SchemaField extends Field {
-  constructor({ schema = {}, values = {}, onChange = null } = {}) {
-    super({ onChange });
+  constructor({ schema = {}, values = {}, ...rest } = {}) {
+    super({ ...rest });
     this._schema = schema; // The schema definition
     this._values = values; // Current values for the fields
   }
@@ -13,7 +13,7 @@ export class SchemaField extends Field {
    * Renders the form in edit mode based on the schema.
    * @returns {HTMLElement} The form container.
    */
-    async renderEdit() {
+  async renderEdit() {
     const container = document.createElement('div');
     container.style.display = 'flex';
     container.style.flexDirection = 'column';
@@ -102,7 +102,12 @@ export class SchemaField extends Field {
     let field;
 
     if (factory) {
-      field = await factory(fieldName, fieldMeta, this._values, this._onChange);
+      field = await factory(fieldName, fieldMeta, this._values,
+        (values) => {
+          const value = values[fieldName];
+          this._values[fieldName] = value;
+          this._onChange?.(value);
+        });
     } else {
       // Fallback generic input
       field = new TextField({

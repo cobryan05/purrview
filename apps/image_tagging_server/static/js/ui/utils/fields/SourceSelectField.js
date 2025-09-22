@@ -3,7 +3,7 @@ import { Field } from './Field.js';
 import { fetchSourceList } from '/app-static/js/ui/utils/index.js'
 
 export class SourceSelectField extends Field {
-  constructor({ onChange, ...rest }) {
+  constructor({...rest }) {
     super(rest);
   }
 
@@ -18,7 +18,7 @@ export class SourceSelectField extends Field {
       options,
       onChange: (val) => {
         this._value = val;
-        onChange?.(val);
+        this._onChange?.(val);
       }
     });
     return instance;

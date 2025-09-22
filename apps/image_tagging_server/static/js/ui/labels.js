@@ -97,7 +97,7 @@ function renderLabel(label, container, indentLevel, editable, onSelectCallback, 
   const labelRow = createGenericRow({
     field: new EditableField({
       buttonsLast: true,
-      field: new TextBoxColorField({ text: name, placeholder: "New Label Name", color: color }),
+      field: new TextBoxColorField({ text: name, uuid: uuid, placeholder: "New Label Name", color: color }),
       ...(editable && {
         onSave: async ({ text: newText, color: newColor }) => {
           try {

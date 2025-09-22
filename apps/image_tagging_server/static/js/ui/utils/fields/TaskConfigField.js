@@ -58,30 +58,30 @@ export class TaskConfigField extends Field {
     container.style.width = '100%';
 
     // Row 1: dropdown + text
-    const row1 = document.createElement('div');
-    row1.style.display = 'flex';
-    row1.style.gap = '0.5em';
-    row1.appendChild(await this._dropDownField.renderEdit());
-    row1.appendChild(await this._textField.renderEdit());
+    const topRow = document.createElement('div');
+    topRow.style.display = 'flex';
+    topRow.style.gap = '0.5em';
+    topRow.appendChild(await this._dropDownField.renderEdit());
+    topRow.appendChild(await this._textField.renderEdit());
 
-    // Row 2: schema field
-    const row2 = document.createElement('div');
-    this._schemaContainer = row2; // remember container for re-render
-    await this._rerenderSchema();
-
-    // Row 1b: small UUID info
     const uuidInfo = document.createElement('div');
     uuidInfo.textContent = `UUID: ${this._uuid || '(none)'}`;
     uuidInfo.style.fontSize = '0.75em';
-    uuidInfo.style.color = '#888'; // muted gray
+    uuidInfo.style.color = '#888';
     uuidInfo.style.marginLeft = '0.25em';
-    uuidInfo.style.userSelect = 'text'; // allow copying
-    uuidInfo.style.fontFamily = 'monospace'; // makes UUIDs easier to read
+    uuidInfo.style.userSelect = 'text';
+    uuidInfo.style.fontFamily = 'monospace';
     uuidInfo.style.overflowWrap = 'anywhere'; // wrap long UUID if needed
 
-    container.appendChild(row1);
-    container.appendChild(uuidInfo);
-    container.appendChild(row2);
+    const schemaRow = document.createElement('div');
+    this._schemaContainer = schemaRow; // remember container for re-render
+    await this._rerenderSchema();
+
+    container.appendChild(topRow);
+    if (this._uuid) {
+      container.appendChild(uuidInfo);
+    }
+    container.appendChild(schemaRow);
     return container;
   }
 

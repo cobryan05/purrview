@@ -126,6 +126,19 @@ export async function createTaskConfig(config) {
 }
 
 
+export async function updateTaskConfig(config) {
+  const res = await fetch('/api/tasks/configs/update', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ config_uuid: config.uuid, ...config }),
+  });
+
+  if (!res.ok) {
+    const error = await res.json();
+    throw new Error(error.message || 'Failed to update task config');
+  }
+}
+
 /** -----------------------------
  * TASK RESULTS
  * -----------------------------

@@ -25,9 +25,10 @@ from apps.tasks_server.web import (
     DeleteTasksPayload,
     GetTaskConfigsPayload,
     StartTasksPayload,
-    TasksTypeSchemaPayload,
-    TasksResultPayload,
     TasksInfoPayload,
+    TasksResultPayload,
+    TasksTypeSchemaPayload,
+    UpdateTaskConfigPayload,
 )
 
 from .manager import (
@@ -44,8 +45,10 @@ class AddLabelPayload(BaseModel):
     color: str
     parent_uuid: Optional[str] = None
 
+
 class DeleteLabelPayload(BaseModel):
     label_uuid: str
+
 
 class BoundingBoxInput(BaseModel):
     id: Optional[int]
@@ -57,10 +60,12 @@ class BoundingBoxInput(BaseModel):
     tags: Optional[List[str]] = []  # List of tag uuids
     extra: Optional[dict] = {}
 
+
 class UpdateMetadataPayload(BaseModel):
     image_path: str
     boxes: List[BoundingBoxInput]
     extra: Optional[dict] = {}
+
 
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger(__file__)
@@ -244,7 +249,9 @@ class WebApp:
             response_class=JSONResponse,
         )
         @self._manager.model_api_request("associate_label_with_model_class")
-        async def associate_label_with_model_class_api(payload: AssociateLabelWithModelClassPayload) -> JSONResponse: ...
+        async def associate_label_with_model_class_api(
+            payload: AssociateLabelWithModelClassPayload,
+        ) -> JSONResponse: ...
 
         @self._app.post(
             "/api/models/labels/get",
@@ -450,7 +457,10 @@ class WebApp:
             """
             try:
                 await self._manager.update_source(
-                    payload.source_uuid, image_provider=payload.image_provider, params=payload.params, source_name=payload.source_name
+                    payload.source_uuid,
+                    image_provider=payload.image_provider,
+                    params=payload.params,
+                    source_name=payload.source_name,
                 )
                 return JSONResponse(content={"status": WebApp.SUCCESS_KEY})
             except Exception as e:
@@ -607,7 +617,6 @@ class WebApp:
         @self._manager.task_api_request("list_task_types")
         async def list_task_types_api(request: Request) -> JSONResponse: ...
 
-
         @self._app.post(
             "/api/tasks/types/schema",
             tags=[WebApp.TASKS_API_TAG_NAME],
@@ -617,7 +626,6 @@ class WebApp:
         @self._manager.task_api_request("get_task_type_schema")
         async def get_task_type_schema_api(payload: TasksTypeSchemaPayload) -> JSONResponse: ...
 
-
         @self._app.post(
             "/api/tasks/configs/create",
             tags=[WebApp.TASKS_API_TAG_NAME],
@@ -626,6 +634,15 @@ class WebApp:
         )
         @self._manager.task_api_request("create_task_config")
         async def create_task_config_api(payload: CreateTaskConfigPayload) -> JSONResponse: ...
+
+        @self._app.post(
+            "/api/tasks/configs/update",
+            tags=[WebApp.TASKS_API_TAG_NAME],
+            operation_id="update_task_config",
+            response_class=JSONResponse,
+        )
+        @self._manager.task_api_request("update_task_config")
+        async def update_task_config_api(payload: UpdateTaskConfigPayload) -> JSONResponse: ...
 
         @self._app.post(
             "/api/tasks/configs/delete",

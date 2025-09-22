@@ -1,5 +1,5 @@
 import { ActiveTaskField, EditableField, TaskConfigField } from '/app-static/js/ui/utils/fields/index.js';
-import { cancelTasks, createGenericRow, createTaskConfig, deleteTaskConfigs, deleteTasks, fetchTaskConfigs, fetchTasksStatus, Logger, startTask, toast } from '/app-static/js/ui/utils/index.js';
+import { cancelTasks, createGenericRow, createTaskConfig, deleteTaskConfigs, deleteTasks, fetchTaskConfigs, fetchTasksStatus, Logger, startTask, toast, updateTaskConfig } from '/app-static/js/ui/utils/index.js';
 
 /**
  * Renders the task configs (left column).
@@ -48,7 +48,7 @@ export function renderTaskConfigs({ target = 'task-config-list', onEdit, onDelet
           field: new EditableField({
             field: fieldInstance,
             onSave: async ({ text: name, typename, schema: filled_schema }) => {
-              //await updateSource({ uuid, name, providerName: typename, params: filled_schema });
+              await updateTaskConfig({ uuid, name, typename, params: filled_schema });
               rerender();
             },
             onCancel: () => {

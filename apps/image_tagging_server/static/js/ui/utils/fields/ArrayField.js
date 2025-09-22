@@ -3,8 +3,8 @@ import { Field } from './Field.js';
 import { createEmojiButton } from '/app-static/js/ui/utils/index.js';
 
 export class ArrayField extends Field {
-  constructor({ fieldFactory, value = [], onChange = null } = {}) {
-    super({ value, onChange });
+  constructor({ fieldFactory, value = [], ...rest } = {}) {
+    super({ value, ...rest });
     this._fieldFactory = fieldFactory; // function that returns a new Field instance
     this._value = Array.isArray(value) ? value : [];
     this._fields = []; // store wrapped subfields
