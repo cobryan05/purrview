@@ -820,23 +820,6 @@ class DbClient:
             )
             await db.commit()
 
-    async def _get_source_by_name(self, name: str) -> Optional[SourceMetadata]:
-        """
-        Internal helper to retrieve a source by name.
-
-        Args:
-            name (str): Source name.
-
-        Returns:
-            Optional[SourceMetaData]: Matching source or None.
-        """
-        async with aiosqlite.connect(self._db_path) as db:
-            cursor = await db.execute("SELECT name, typename, params_json, uuid FROM sources WHERE name = ?", (name,))
-            row = await cursor.fetchone()
-            await cursor.close()
-            if not row:
-                return None
-            return DbClient.row_to_dataclass(cursor, row, SourceMetadata)
 
     async def get_sources(self) -> List[SourceMetadata]:
         """
@@ -864,22 +847,30 @@ class DbClient:
         Returns:
             SourceMetaData: Source data.
         """
-        existing = await self._get_source_by_name(name)
-        if existing:
-            return existing
-
         uuid = uuid or str(uuid4())
+        params_json = json.dumps(params)
+
         async with aiosqlite.connect(self._db_path) as db:
             await db.execute(
                 "INSERT INTO sources (name, typename, params_json, uuid) VALUES (?, ?, ?, ?)",
-                (name, typename, json.dumps(params), uuid),
+                (name, typename, params_json, uuid),
             )
             await db.commit()
 
-        ret = await self._get_source_by_name(name)
-        if ret:
-            return ret
-        raise ValueError("Failed to create source")
+            cursor = await db.execute(
+                """
+                SELECT uuid, name, typename, params_json, created_at, updated_at
+                FROM sources
+                WHERE uuid = ?
+                """,
+                (uuid,),
+            )
+            row = await cursor.fetchone()
+            await cursor.close()
+
+        if not row:
+            raise ValueError("Failed to retrieve inserted source")
+        return DbClient.row_to_dataclass(cursor, row, SourceMetadata)
 
     async def update_source(
         self,
@@ -887,7 +878,7 @@ class DbClient:
         name: Optional[str] = None,
         typename: Optional[str] = None,
         params: Optional[dict] = None,
-    ) -> None:
+    ) -> SourceMetadata:
         """
         Update source properties.
 
@@ -897,9 +888,6 @@ class DbClient:
             typename (Optional[str]): New typename.
             params (Optional[dict]): New parameters
         """
-        if not any([name, typename, params]):
-            return
-
         query_parts = []
         query_params = []
 
@@ -917,11 +905,27 @@ class DbClient:
         query_params.append(source_uuid)
 
         async with aiosqlite.connect(self._db_path) as db:
-            await db.execute(
-                f"UPDATE sources SET {', '.join(query_parts)} WHERE uuid = ?",
-                tuple(query_params),
+            if query_parts:
+                await db.execute(
+                    f"UPDATE sources SET {', '.join(query_parts)} WHERE uuid = ?",
+                    tuple(query_params),
+                )
+                await db.commit()
+
+            cursor = await db.execute(
+                """
+                SELECT uuid, name, typename, params_json
+                FROM sources
+                WHERE uuid = ?
+                """,
+                (source_uuid,),
             )
-            await db.commit()
+            row = await cursor.fetchone()
+            await cursor.close()
+
+        if not row:
+            raise ValueError("Failed to retrieve updated source")
+        return DbClient.row_to_dataclass(cursor, row, SourceMetadata)
 
     async def delete_sources(self, source_uuids: list[str]) -> None:
         """

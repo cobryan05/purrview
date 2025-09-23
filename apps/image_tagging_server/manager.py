@@ -526,14 +526,14 @@ class Manager:
 
     async def update_source(
         self, source_uuid: str, image_provider: str, params: Dict[str, Any], source_name: str
-    ) -> None:
+    ) -> SourceMetadata:
         """
         Updates sources by their UUIDs.
 
         Args:
             uuid_list (list[str]): List of source UUIDs to delete.
         """
-        await self._db_client.update_source(
+        return await self._db_client.update_source(
             source_uuid=source_uuid,
             name=source_name,
             typename=image_provider,

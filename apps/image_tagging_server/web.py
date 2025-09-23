@@ -456,13 +456,13 @@ class WebApp:
             API endpoint for updating an existing source.
             """
             try:
-                await self._manager.update_source(
+                source_metadata: SourceMetadata = await self._manager.update_source(
                     payload.source_uuid,
                     image_provider=payload.image_provider,
                     params=payload.params,
                     source_name=payload.source_name,
                 )
-                return JSONResponse(content={"status": WebApp.SUCCESS_KEY})
+                return JSONResponse(content={"status": WebApp.SUCCESS_KEY, "source": asdict(source_metadata)})
             except Exception as e:
                 logger.exception(e)
                 return JSONResponse(
