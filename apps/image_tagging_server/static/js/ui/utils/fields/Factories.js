@@ -16,8 +16,7 @@ export const fieldFactories = {
       placeholder: description || '',
       value: values[fieldName] || '',
       onChange: (val) => {
-        values[fieldName] = val;
-        onChange?.(values);
+        onChange?.(val);
       }
     });
   },
@@ -31,8 +30,7 @@ export const fieldFactories = {
       type: 'number',
       value: values[fieldName] || '',
       onChange: (val) => {
-        values[fieldName] = parseFloat(val);
-        onChange?.(values);
+        onChange?.(parseFloat(val));
       }
     });
   },
@@ -45,8 +43,7 @@ export const fieldFactories = {
       value: !!values[fieldName],
       ...rest,
       onChange: (val) => {
-        values[fieldName] = !!val;
-        onChange?.(values);
+        onChange?.(!!val);
       }
     });
   },
@@ -58,8 +55,7 @@ export const fieldFactories = {
     return await SourceSelectField.create({
       value: values[fieldName],
       onChange: (val) => {
-        values[fieldName] = val;
-        onChange?.(values);
+        onChange?.(val);
       },
       ...rest
     });
@@ -71,8 +67,7 @@ export const fieldFactories = {
     return await ImageProviderSelectField.create({
       value: values[fieldName],
       onChange: (val) => {
-        values[fieldName] = val;
-        onChange?.(values);
+        onChange?.(val);
       },
       ...rest
     });
@@ -98,10 +93,9 @@ export const fieldFactories = {
       description,
       value: values[fieldName] || [],
       onChange: (arr) => {
-        values[fieldName] = arr;
-        onChange?.(values);
+        onChange?.(arr);
       },
-      fieldFactory: (val) => {
+      fieldFactory: (val, onChange) => {
         const itemType = items?.type || 'string';
         const factory = fieldFactories[itemType];
 
@@ -110,7 +104,7 @@ export const fieldFactories = {
             ...items,
             value: val || '',
             placeholder: `Unhandled array item type: ${itemType}`,
-            onChange: () => { }
+            onChange: onChange
           });
         }
 
@@ -118,7 +112,7 @@ export const fieldFactories = {
           fieldName,
           { ...items },
           { [fieldName]: val },
-          () => { }
+          onChange
         );
       }
     });

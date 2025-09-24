@@ -17,10 +17,12 @@ export class ArrayField extends Field {
     // Ensure fields array matches value array
     this._fields = this._fields || [];
 
-    const renderItems = () => {
+    const renderItems = async () => {
       container.innerHTML = '';
 
-      this._value.forEach(async (val, idx) => {
+      for (let idx = 0; idx < this._value.length; idx++) {
+        const val = this._value[idx];
+
         const row = document.createElement('div');
         row.style.display = 'flex';
         row.style.alignItems = 'center';
@@ -29,7 +31,10 @@ export class ArrayField extends Field {
         // Reuse existing subfield if present, else create new
         let subfield = this._fields[idx];
         if (!subfield) {
-          subfield = await this._fieldFactory(val);
+          subfield = await this._fieldFactory(val, (newValue) => {
+            this._value[idx] = newValue;
+            this._onChange?.(this._value);
+          });
           this._fields[idx] = subfield;
         }
 
@@ -49,16 +54,18 @@ export class ArrayField extends Field {
         row.appendChild(deleteBtn);
         row.appendChild(fieldEdit);
         container.appendChild(row);
-      });
+      }
 
-      // Add "Add new item" button
       const addBtn = createEmojiButton({
         text: 'Add',
         emoji: '➕',
         onClick: async () => {
-          // push null to value, create a corresponding subfield
           this._value.push(null);
-          this._fields.push(await this._fieldFactory(null));
+          const idx = this._value.length - 1;
+          this._fields.push(await this._fieldFactory(null, (newValue) => {
+            this._value[idx] = newValue;
+            this._onChange?.(this._value);
+          }));
           renderItems();
           this._onChange?.(this._value);
         }

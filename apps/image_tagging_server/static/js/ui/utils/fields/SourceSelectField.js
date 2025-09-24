@@ -7,7 +7,7 @@ export class SourceSelectField extends Field {
     super(rest);
   }
 
-  static async create({ onChange, ...rest } = {}) {
+  static async create({ ...rest } = {}) {
     const instance = new SourceSelectField({ ...rest });
     const sourceMap = await fetchSourceList();
     const options = [...sourceMap.values()].map(input => ({
@@ -16,9 +16,10 @@ export class SourceSelectField extends Field {
     }));
     instance._dropDownField = new DropDownField({
       options,
+      value: instance._value,
       onChange: (val) => {
-        this._value = val;
-        this._onChange?.(val);
+        instance._value = val;
+        instance._onChange?.(val);
       }
     });
     return instance;

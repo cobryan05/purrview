@@ -103,10 +103,9 @@ export class SchemaField extends Field {
 
     if (factory) {
       field = await factory(fieldName, fieldMeta, this._values,
-        (values) => {
-          const value = values[fieldName];
+        (value) => {
           this._values[fieldName] = value;
-          this._onChange?.(value);
+          this._onChange?.(this._values);
         });
     } else {
       // Fallback generic input

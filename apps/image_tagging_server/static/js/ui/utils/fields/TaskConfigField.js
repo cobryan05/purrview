@@ -19,7 +19,7 @@ export class TaskConfigField extends Field {
     }
 
     instance._uuid = uuid
-    instance._textField = new TextField({ value: name, placeholder: 'New Config Name' });
+    instance._textField = new TextField({ value: name, placeholder: 'Enter new config name' });
     instance._schemaField = new SchemaField({ schema: schema ?? {}, values: instance._value || {} });
     const taskTypes = await fetchTaskTypeList();
 
