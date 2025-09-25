@@ -3,10 +3,23 @@ import { fieldFactories } from './Factories.js';
 import { TextField } from './TextField.js'
 
 export class SchemaField extends Field {
-  constructor({ schema = {}, values = {}, ...rest } = {}) {
-    super({ ...rest });
-    this._schema = schema; // The schema definition
-    this._values = values; // Current values for the fields
+  constructor({ ...rest }) {
+    super(rest);
+  }
+
+  static async create({ schema = {}, values = {}, ...rest } = {}) {
+    const instance = new SchemaField({ ...rest });
+    instance._schema = schema; // The schema definition
+    instance._values = values; // Current values for the fields
+    instance._fields = {};
+
+    for (const [fieldName, fieldMeta] of Object.entries(schema)) {
+      if( fieldName === 'meta' ) continue;
+      const inputField = await instance._createInputField(fieldName, fieldMeta);
+      instance._fields[fieldName] = inputField;
+    }
+
+    return instance;
   }
 
   /**
@@ -21,38 +34,30 @@ export class SchemaField extends Field {
 
     const order = this._schema.meta?.order;
     let fieldEntries;
-
     if (order && Array.isArray(order)) {
       const orderedFields = order
-        .filter((field) => field in this._schema)
-        .map((field) => [field, this._schema[field]]);
+        .filter((field) => field in this._fields)
+        .map((field) => [field, this._fields[field]]);
 
-      const remainingFields = Object.entries(this._schema).filter(
+      const remainingFields = Object.entries(this._fields).filter(
         ([key]) => key !== 'meta' && !order.includes(key)
       );
 
       fieldEntries = [...orderedFields, ...remainingFields];
     } else {
-      fieldEntries = Object.entries(this._schema).filter(([key]) => key !== 'meta');
+      fieldEntries = Object.entries(this._fields).filter(([key]) => key !== 'meta');
     }
 
-    for (const [fieldName, fieldMeta] of fieldEntries) {
+    for (const [fieldName, fieldInstance] of fieldEntries) {
       const fieldContainer = document.createElement('div');
       fieldContainer.style.display = 'flex';
       fieldContainer.style.flexDirection = 'column';
 
       const label = document.createElement('label');
-      label.textContent = fieldMeta.label || fieldName;
+      label.textContent = fieldInstance.label || fieldName;
       label.style.fontWeight = 'bold';
       fieldContainer.appendChild(label);
-
-      const inputField = await this._createInputField(fieldName, fieldMeta);
-      inputField.onChange = () => {
-        this._values[fieldName] = inputField.getValue();
-        this._onChange?.(this._values);
-      };
-
-      fieldContainer.appendChild(await inputField.renderEdit());
+      fieldContainer.appendChild(await fieldInstance.renderEdit());
       container.appendChild(fieldContainer);
     }
 
@@ -120,8 +125,6 @@ export class SchemaField extends Field {
       });
     }
     field.name = fieldName;
-
-    // If it’s a custom field class, render it
     return field
   }
 

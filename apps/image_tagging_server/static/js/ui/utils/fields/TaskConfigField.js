@@ -20,7 +20,7 @@ export class TaskConfigField extends Field {
 
     instance._uuid = uuid
     instance._textField = new TextField({ value: name, placeholder: 'Enter new config name' });
-    instance._schemaField = new SchemaField({ schema: schema ?? {}, values: instance._value || {} });
+    instance._schemaField = await SchemaField.create({ schema: schema ?? {}, values: instance._value || {} });
     const taskTypes = await fetchTaskTypeList();
 
     // Initialize DropDownField with onChange
@@ -30,7 +30,7 @@ export class TaskConfigField extends Field {
       onChange: async (newTypename) => {
         try {
           const newSchema = await fetchTaskTypeSchema(newTypename);
-          instance._schemaField = new SchemaField({
+          instance._schemaField = await SchemaField.create({
             schema: newSchema,
             values: instance._schemaField.getValue() // preserve current values
           });

@@ -98,8 +98,6 @@ export class ArrayField extends Field {
   }
 
   getValue() {
-    // Pull values from subfields
-    const values = this._fields.map(f => f.getValue());
-    return { items: values };
+    return { items: this._fields.map(f => f.getValue()) };
   }
 }

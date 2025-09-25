@@ -13,7 +13,7 @@ export class SourceConfigField extends Field {
     const instance = new SourceConfigField({ ...rest });
 
     instance._textField = new TextField({ value: name, placeholder: 'Enter new source name' });
-    instance._schemaField = new SchemaField({ schema: schema ?? {}, values: instance._value });
+    instance._schemaField = await SchemaField.create({ schema: schema ?? {}, values: instance._value });
     instance._uuid = uuid;
     const imageProviders = await fetchImageProviderList();
 
@@ -24,7 +24,7 @@ export class SourceConfigField extends Field {
       onChange: async (newTypename) => {
         try {
           const fetchedSchema = await fetchImageProviderSchema(newTypename);
-          instance._schemaField = new SchemaField({ schema: fetchedSchema });
+          instance._schemaField = await SchemaField.create({ schema: fetchedSchema });
           instance._rerenderSchema();
         } catch (err) {
           Logger.error('Failed to fetch schema:', err);
@@ -35,8 +35,8 @@ export class SourceConfigField extends Field {
     // If no schema passed but a typename is provided, fetch the schema now
     if (!schema && typename) {
       fetchImageProviderSchema(typename)
-        .then(fetchedSchema => {
-          instance._schemaField = new SchemaField({ schema: fetchedSchema });
+        .then(async fetchedSchema => {
+          instance._schemaField = await SchemaField.create({ schema: fetchedSchema });
           instance._rerenderSchema();
         })
         .catch(err => Logger.error('Failed to fetch initial schema:', err));

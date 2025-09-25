@@ -4,7 +4,7 @@ import json
 import logging
 import os
 import sys
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Type, TypeVar, Union
@@ -1415,6 +1415,7 @@ class DbClient:
         """
         Convert a SQLite row into a dataclass instance.
         - Columns ending with `_json` are json.loads()'d and renamed without `_json`.
+        - Keys not present in the dataclass are skipped.
 
         Args:
             cursor: aiosqlite or sqlite3 cursor after executing a query
@@ -1427,16 +1428,21 @@ class DbClient:
         columns: List[str] = [col[0] for col in cursor.description]
         row_dict: dict[str, Any] = dict(zip(columns, row))
 
+        dataclass_fields = {f.name for f in fields(cls_type)}
+
         transformed: dict[str, Any] = {}
         for key, value in row_dict.items():
             if key.endswith("_json"):
                 new_key = key[:-5]  # strip "_json"
+                if new_key not in dataclass_fields:
+                    continue
                 try:
                     transformed[new_key] = json.loads(value) if value is not None else None
                 except json.JSONDecodeError:
-                    # Fallback: keep raw value if it's not valid JSON
                     transformed[new_key] = value
             else:
+                if key not in dataclass_fields:
+                    continue
                 transformed[key] = value
 
         return cls_type(**transformed)

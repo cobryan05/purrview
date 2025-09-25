@@ -4,26 +4,29 @@ import { LabelNumberField } from './LabelNumberField.js'
 import { fetchModelsList, fetchModelLabelMappings, fetchLabelByUuid } from '/app-static/js/ui/utils/index.js';
 import { createGenericRow } from '/app-static/js/ui/utils/index.js';
 export class ModelLabelSelectField extends Field {
+  static DEFAULT_CONFIDENCE = 0.25;
+
   constructor({ ...rest }) {
     super(rest);
   }
 
-  static async create({ modelName = '', labelMappings = null, ...rest } = {}) {
+  static async create({ modelName = '', labelUuidMapping = null, ...rest } = {}) {
     const instance = new ModelLabelSelectField({ ...rest });
     const models = await fetchModelsList();
 
     // If no mapping passed but a model name was provided, fetch the labels now
-    if (!labelMappings && modelName) {
-      labelMappings = await fetchModelLabelMappings(modelName);
+    if (!labelUuidMapping && modelName) {
+      labelUuidMapping = await fetchModelLabelMappings(modelName);
     }
-    instance._labelMappings = labelMappings || new Map();
-
+    instance._labelUuidMapping = labelUuidMapping || new Map();
+    instance._values = new Map();
     // Initialize DropDownField with onChange
     instance._dropDownField = new DropDownField({
       options: models,
       value: modelName,
       onChange: async (modelName) => {
-        instance._labelMappings = await fetchModelLabelMappings(modelName);
+        instance._labelUuidMapping = await fetchModelLabelMappings(modelName);
+        instance._values = new Map();
         await instance._renderLabelList();
       }
     });
@@ -38,7 +41,7 @@ export class ModelLabelSelectField extends Field {
     this._labelsContainer.innerHTML = '';
 
     const uniqueUuids = [...new Set(
-      [...this._labelMappings.values()].filter(uuid => uuid != null)
+      [...this._labelUuidMapping.values()].filter(uuid => uuid != null)
     )];
 
     const labelInfos = await Promise.all(uniqueUuids.map(fetchLabelByUuid));
@@ -47,6 +50,9 @@ export class ModelLabelSelectField extends Field {
     );
 
     for (const labelInfo of labelInfos) {
+      if( !this._values.has(labelInfo.metadata.name) ) {
+        this._values.set(labelInfo.metadata.name, ModelLabelSelectField.DEFAULT_CONFIDENCE);
+      }
       const row = createGenericRow({
         field: new LabelNumberField({
           label: labelInfo.metadata.name,
@@ -54,10 +60,9 @@ export class ModelLabelSelectField extends Field {
           min: 0,
           max: 1,
           step: 0.01,
-          value: 0.25,
+          value: this._values.get(labelInfo.metadata.name),
           onChange: (val) => {
-            console.log(`Value for ${labelInfo.metadata.name}:`, val);
-            // You could update some internal state here if needed
+            this._values.set(labelInfo.metadata.name, val);
           },
         }),
       });
@@ -125,6 +130,7 @@ export class ModelLabelSelectField extends Field {
   getValue() {
     return {
       typename: this._dropDownField.getValue().option ?? null,
+      labelValues: Object.fromEntries(this._values),
     };
   }
 }

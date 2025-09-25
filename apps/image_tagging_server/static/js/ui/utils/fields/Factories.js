@@ -78,8 +78,7 @@ export const fieldFactories = {
 
     return await ModelLabelSelectField.create({
       onChange: (val) => {
-        values[fieldName] = !!val;
-        onChange?.(values);
+        onChange?.(val);
       },
       ...rest
     });
