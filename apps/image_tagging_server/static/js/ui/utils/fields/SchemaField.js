@@ -10,11 +10,11 @@ export class SchemaField extends Field {
   static async create({ schema = {}, values = {}, ...rest } = {}) {
     const instance = new SchemaField({ ...rest });
     instance._schema = schema; // The schema definition
-    instance._values = values; // Current values for the fields
+    instance._init_values = values; // Current values for the fields
     instance._fields = {};
 
     for (const [fieldName, fieldMeta] of Object.entries(schema)) {
-      if( fieldName === 'meta' ) continue;
+      if (fieldName === 'meta') continue;
       const inputField = await instance._createInputField(fieldName, fieldMeta);
       instance._fields[fieldName] = inputField;
     }
@@ -54,7 +54,7 @@ export class SchemaField extends Field {
       fieldContainer.style.flexDirection = 'column';
 
       const label = document.createElement('label');
-      label.textContent = fieldInstance.label || fieldName;
+      label.textContent = this._schema[fieldName].label || fieldName;
       label.style.fontWeight = 'bold';
       fieldContainer.appendChild(label);
       fieldContainer.appendChild(await fieldInstance.renderEdit());
@@ -87,7 +87,7 @@ export class SchemaField extends Field {
 
       // Value
       const value = document.createElement('span');
-      value.textContent = this._values[fieldName] || '(none)';
+      value.textContent = this._init_values[fieldName] || '(none)';
       fieldContainer.appendChild(value);
 
       container.appendChild(fieldContainer);
@@ -107,20 +107,20 @@ export class SchemaField extends Field {
     let field;
 
     if (factory) {
-      field = await factory(fieldName, fieldMeta, this._values,
+      field = await factory(fieldName, fieldMeta, this._init_values,
         (value) => {
-          this._values[fieldName] = value;
-          this._onChange?.(this._values);
+          this._init_values[fieldName] = value;
+          this._onChange?.(this._init_values);
         });
     } else {
       // Fallback generic input
       field = new TextField({
         name: fieldName,
         placeholder: `Unhandled type: ${fieldMeta.type}`,
-        value: this._values[fieldName],
+        value: this._init_values[fieldName],
         onChange: (value) => {
-          this._values[fieldName] = value;
-          this._onChange?.(this._values);
+          this._init_values[fieldName] = value;
+          this._onChange?.(this._init_values);
         },
       });
     }
@@ -134,6 +134,10 @@ export class SchemaField extends Field {
    * @returns {object} The current values.
    */
   getValue() {
-    return this._values;
+    const values = {};
+    for (const [fieldName, fieldInstance] of Object.entries(this._fields)) {
+      values[fieldName] = fieldInstance.getValue();
+    }
+    return values;
   }
 }

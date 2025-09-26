@@ -68,8 +68,15 @@ export class DropDownField extends Field {
 
   getValue() {
     const selectedOption = this._options.find(opt => this._isMatchingOption(opt, this._value));
-    return { option: selectedOption ?? null };
+    if (typeof selectedOption === 'string') {
+      return selectedOption;
+    }
+    if (selectedOption && typeof selectedOption === 'object') {
+      return selectedOption.key ?? selectedOption.text ?? null;
+    }
+    return null;
   }
+
 
   _isMatchingOption(option, value) {
     if (typeof option === 'string') {

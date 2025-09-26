@@ -73,6 +73,6 @@ export class LabelNumberField extends Field {
   }
 
   getValue() {
-    return this._dropdown.getValue();
+    return this._numberField.getValue();
   }
 }

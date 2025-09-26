@@ -48,8 +48,6 @@ export class ImageProviderSelectField extends Field {
   }
 
   getValue() {
-    return {
-      source_uuid: this._dropDownField.getValue().option ?? null,
-    };
+    return this._dropDownField.getValue() ?? null;
   }
 }

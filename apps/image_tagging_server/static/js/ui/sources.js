@@ -48,8 +48,8 @@ function createSourceRow({ source, editable = false, renderList, onEdit, onDelet
       const row = createGenericRow({
         field: new EditableField({
           field: fieldInstance,
-          onSave: async ({ text: name, typename, schema: filled_schema }) => {
-            await updateSource({ uuid, name, providerName: typename, params: filled_schema });
+          onSave: async ({ source_name, typename, schema: filled_schema }) => {
+            await updateSource({ uuid, name: source_name, providerName: typename, params: filled_schema });
             renderList();
           },
           onCancel: () => {
@@ -143,9 +143,9 @@ export function renderSourceManager({ target = 'sources-box' }) {
     text: 'Save',
     emoji: '✅',
     onClick: async ({ field }) => {
-      const { text, typename, schema } = field.getValue();
+      const { source_name, typename, schema } = field.getValue();
       try {
-        await createSource({ name: text, providerName: typename, params: schema });
+        await createSource({ name: source_name, providerName: typename, params: schema });
         await refresh();
 
         // Replace the row with a fresh blank one

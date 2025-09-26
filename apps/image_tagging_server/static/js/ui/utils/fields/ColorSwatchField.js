@@ -50,8 +50,6 @@ export class ColorSwatchField extends Field {
   }
 
   getValue() {
-    return {
-      color: this._color
-    };
+    return this._color;
   }
 }

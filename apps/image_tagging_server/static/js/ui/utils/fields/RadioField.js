@@ -32,6 +32,6 @@ export class RadioField extends Field {
   }
 
   getValue() {
-    return { option: this._value || null };
+    return this._value ?? null;
   }
 }

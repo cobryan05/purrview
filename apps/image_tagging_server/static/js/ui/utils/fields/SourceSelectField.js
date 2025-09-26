@@ -3,7 +3,7 @@ import { Field } from './Field.js';
 import { fetchSourceList } from '/app-static/js/ui/utils/index.js'
 
 export class SourceSelectField extends Field {
-  constructor({...rest }) {
+  constructor({ ...rest }) {
     super(rest);
   }
 
@@ -47,8 +47,6 @@ export class SourceSelectField extends Field {
   }
 
   getValue() {
-    return {
-      source_uuid: this._dropDownField.getValue().option ?? null,
-    };
+    return this._dropDownField.getValue();
   }
 }

@@ -53,8 +53,6 @@ export class TextField extends Field {
   }
 
   getValue() {
-    return {
-      text: this._value
-    };
+    return this._value;
   }
 }

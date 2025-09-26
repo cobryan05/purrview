@@ -87,7 +87,7 @@ export const fieldFactories = {
   async array(fieldName, fieldMeta, values, onChange) {
     const { type, required, description, items, options, ...rest } = fieldMeta;
 
-    return new ArrayField({
+    return ArrayField.create({
       ...rest,
       description,
       value: values[fieldName] || [],

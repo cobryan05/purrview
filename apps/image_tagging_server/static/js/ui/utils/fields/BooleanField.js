@@ -1,7 +1,7 @@
 import { Field } from './Field.js';
 
 export class BooleanCheckboxField extends Field {
-  constructor({ label = 'Enabled', ...rest  } = {}) {
+  constructor({ label = 'Enabled', ...rest } = {}) {
     super(rest);
     this._label = label;
   }
@@ -36,6 +36,6 @@ export class BooleanCheckboxField extends Field {
   }
 
   getValue() {
-    return this._value
+    return this._value;
   }
 }

@@ -62,8 +62,8 @@ export class TextBoxColorField extends Field {
 
   getValue() {
     return {
-      ...this._textField.getValue(),
-      ...this._colorSwatchField.getValue(),
+      text: this._textField.getValue(),
+      color: this._colorSwatchField.getValue(),
     };
   }
 }

@@ -77,7 +77,7 @@ export function renderTaskConfigs({ target = 'task-config-list', onEdit, onDelet
     emoji: '✅',
     onClick: async ({ field }) => {
       try {
-        const { text: name, typename, schema } = field.getValue();
+        const { name, typename, schema } = field.getValue();
         if (!name) {
           toast('Error: Name required', 5000, "error");
           return;

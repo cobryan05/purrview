@@ -1,13 +1,28 @@
 import { Field } from './Field.js';
+import { fieldFactories } from './Factories.js';
 
 import { createEmojiButton } from '/app-static/js/ui/utils/index.js';
 
 export class ArrayField extends Field {
-  constructor({ fieldFactory, value = [], ...rest } = {}) {
-    super({ value, ...rest });
-    this._fieldFactory = fieldFactory; // function that returns a new Field instance
-    this._value = Array.isArray(value) ? value : [];
-    this._fields = []; // store wrapped subfields
+  constructor({ ...rest }) {
+    super(rest);
+  }
+
+  static async create({ fieldFactory, value = [], ...rest } = {}) {
+    const instance = new ArrayField({ value, ...rest });
+    instance._fieldFactory = fieldFactory; // function that returns a new Field instance
+    instance._value = Array.isArray(value) ? value : [];
+    instance._fields = []; // store wrapped subfields
+
+    for (let idx = 0; idx < instance._value.length; idx++) {
+      const val = instance._value[idx];
+      const subfield = await instance._fieldFactory(val, (newValue) => {
+        instance._value[idx] = newValue;
+        instance._onChange?.(instance._value);
+      });
+      instance._fields[idx] = subfield;
+    }
+    return instance;
   }
 
   async renderEdit() {
@@ -21,25 +36,11 @@ export class ArrayField extends Field {
       container.innerHTML = '';
 
       for (let idx = 0; idx < this._value.length; idx++) {
-        const val = this._value[idx];
-
         const row = document.createElement('div');
         row.style.display = 'flex';
         row.style.alignItems = 'center';
         row.style.gap = '0.5em';
-
-        // Reuse existing subfield if present, else create new
-        let subfield = this._fields[idx];
-        if (!subfield) {
-          subfield = await this._fieldFactory(val, (newValue) => {
-            this._value[idx] = newValue;
-            this._onChange?.(this._value);
-          });
-          this._fields[idx] = subfield;
-        }
-
-        const fieldEdit = await subfield.renderEdit();
-
+        const fieldEdit = await this._fields[idx].renderEdit();
         const deleteBtn = createEmojiButton({
           text: 'Delete',
           emoji: '🗑️',
@@ -50,7 +51,6 @@ export class ArrayField extends Field {
             this._onChange?.(this._value);
           }
         });
-
         row.appendChild(deleteBtn);
         row.appendChild(fieldEdit);
         container.appendChild(row);
@@ -98,6 +98,6 @@ export class ArrayField extends Field {
   }
 
   getValue() {
-    return { items: this._fields.map(f => f.getValue()) };
+    return this._fields.map(f => f.getValue());
   }
 }

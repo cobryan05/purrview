@@ -99,8 +99,8 @@ export class TaskConfigField extends Field {
 
   getValue() {
     return {
-      ...this._textField.getValue(),
-      typename: this._dropDownField.getValue().option ?? null,
+      name: this._textField.getValue(),
+      typename: this._dropDownField.getValue(),
       schema: this._schemaField.getValue()
     };
   }
