@@ -10,16 +10,19 @@ export class ModelLabelSelectField extends Field {
     super(rest);
   }
 
-  static async create({ modelName = '', ...rest } = {}) {
+  static async create({ ...rest } = {}) {
+    const { value } = rest;
+    const { labelValues, modelName } = value || {};
     const instance = new ModelLabelSelectField({ ...rest });
     const models = await fetchModelsList();
-    await instance._handleModelChange(modelName);
+    await instance._handleModelChange(modelName, labelValues);
 
     // Initialize DropDownField with onChange
     instance._dropDownField = new DropDownField({
       options: models,
       value: modelName,
       onChange: async (modelName) => {
+        instance._labelValues = new Map();
         await instance._handleModelChange(modelName);
       }
     });
@@ -27,7 +30,7 @@ export class ModelLabelSelectField extends Field {
     return instance;
   }
 
-  async _handleModelChange(modelName) {
+  async _handleModelChange(modelName, values = {}) {
     this._labelUuidMapping = modelName ? await fetchModelLabelMappings(modelName) : new Map();
     this._fields = new Map();
 
@@ -36,17 +39,14 @@ export class ModelLabelSelectField extends Field {
       const labelInfos = (await Promise.all(uniqueUuids.map(fetchLabelByUuid))).filter((info) => info != null);
 
       for (const labelInfo of labelInfos) {
-        const labelName = labelInfo.metadata.name;
-        this._fields.set(labelInfo.metadata.uuid, new LabelNumberField({
-          label: labelName,
-          color: labelInfo.metadata.color,
+        const { color, name, uuid } = labelInfo.metadata;
+        this._fields.set(uuid, new LabelNumberField({
+          label: name,
+          color: color,
           min: 0,
           max: 1,
           step: 0.01,
-          value: ModelLabelSelectField.DEFAULT_CONFIDENCE,
-          onChange: (val) => {
-            this._values.set(labelName, val);
-          },
+          value: values[uuid] || ModelLabelSelectField.DEFAULT_CONFIDENCE,
         }));
       }
     }

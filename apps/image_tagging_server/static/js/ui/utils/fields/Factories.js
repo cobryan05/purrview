@@ -80,6 +80,7 @@ export const fieldFactories = {
       onChange: (val) => {
         onChange?.(val);
       },
+      value: values[fieldName],
       ...rest
     });
   },
