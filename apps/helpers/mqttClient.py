@@ -19,8 +19,8 @@ class MqttClient:
     KEY_MQTT_RETAIN = "mqtt-retain"
 
     KEEPALIVE_TIME = 60
-    CONNECTION_RETRIES = 10
-    CONNECTION_RETRY_DELAY = 5
+    CONNECTION_RETRIES = 5
+    CONNECTION_RETRY_DELAY = 2
 
     def __init__(
         self, broker_address: str, prefix: str = "myhome/", broker_port: int = 1883
