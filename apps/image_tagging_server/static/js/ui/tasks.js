@@ -47,8 +47,8 @@ export function renderTaskConfigs({ target = 'task-config-list', onEdit, onDelet
         const row = createGenericRow({
           field: new EditableField({
             field: fieldInstance,
-            onSave: async ({ text: name, typename, schema: filled_schema }) => {
-              await updateTaskConfig({ uuid, name, typename, params: filled_schema });
+            onSave: async ({ text: name, typename, params }) => {
+              await updateTaskConfig({ uuid, name, typename, params });
               rerender();
             },
             onCancel: () => {
@@ -77,12 +77,12 @@ export function renderTaskConfigs({ target = 'task-config-list', onEdit, onDelet
     emoji: '✅',
     onClick: async ({ field }) => {
       try {
-        const { name, typename, schema } = field.getValue();
+        const { name, typename, params } = field.getValue();
         if (!name) {
           toast('Error: Name required', 5000, "error");
           return;
         }
-        await createTaskConfig({ name, typename, params: schema });
+        await createTaskConfig({ name, typename, params });
         rerender();
       } catch (err) {
         Logger.error('Error creating task config:', err);

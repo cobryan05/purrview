@@ -36,8 +36,8 @@ function createSourceRow({ source, editable = false, renderList, onEdit, onDelet
     const row = createGenericRow({
       field: new EditableField({
         field: fieldInstance,
-        onSave: async ({ source_name, typename, schema: filled_schema }) => {
-          await updateSource({ uuid, name: source_name, providerName: typename, params: filled_schema });
+        onSave: async ({ source_name, typename: source_typename, schema: source_params }) => {
+          await updateSource({ uuid, name: source_name, providerName: source_typename, params: source_params });
           renderList();
         },
         onCancel: () => {

@@ -11,7 +11,7 @@ export class SourceConfigField extends Field {
 
   static async create({ ...rest } = {}) {
     const instance = new SourceConfigField({ ...rest });
-    const { source_name = '', typename = '', schema: params = {}, uuid = null } = instance._value;
+    const { source_name = '', typename = '', schema: params = {}, uuid = null } = instance._value || {};
 
     instance._uuid = uuid;
     instance._textField = new TextField({ value: source_name, placeholder: 'Enter new source name' });
