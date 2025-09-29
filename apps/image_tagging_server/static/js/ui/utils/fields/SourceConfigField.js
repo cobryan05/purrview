@@ -9,15 +9,14 @@ export class SourceConfigField extends Field {
     super(rest);
   }
 
-  static async create({ name = '', typename = '', schema = null, uuid = null, ...rest } = {}) {
+  static async create({ ...rest } = {}) {
     const instance = new SourceConfigField({ ...rest });
+    const { source_name = '', typename = '', schema: params = {}, uuid = null } = instance._value;
 
-    instance._textField = new TextField({ value: name, placeholder: 'Enter new source name' });
-    instance._schemaField = await SchemaField.create({ schema: schema ?? {}, values: instance._value });
     instance._uuid = uuid;
-    const imageProviders = await fetchImageProviderList();
+    instance._textField = new TextField({ value: source_name, placeholder: 'Enter new source name' });
 
-    // Initialize DropDownField with onChange
+    const imageProviders = await fetchImageProviderList();
     instance._dropDownField = new DropDownField({
       options: imageProviders,
       value: typename,
@@ -32,15 +31,16 @@ export class SourceConfigField extends Field {
       }
     });
 
-    // If no schema passed but a typename is provided, fetch the schema now
-    if (!schema && typename) {
-      fetchImageProviderSchema(typename)
-        .then(async fetchedSchema => {
-          instance._schemaField = await SchemaField.create({ schema: fetchedSchema });
-          instance._rerenderSchema();
-        })
-        .catch(err => Logger.error('Failed to fetch initial schema:', err));
+    let fetchedSchema = {};
+    if (typename) {
+      try {
+        fetchedSchema = await fetchImageProviderSchema(typename);
+      } catch (err) {
+        Logger.error('Failed to fetch schema:', err);
+      }
     }
+    instance._schemaField = await SchemaField.create({ schema: fetchedSchema, values: params });
+
     return instance;
   }
 

@@ -77,22 +77,25 @@ export class ModelLabelSelectField extends Field {
     // Row with model dropdown + help text
     const modelRow = document.createElement('div');
     modelRow.style.display = 'grid';
-    modelRow.style.gridTemplateColumns = 'auto 1fr'; // dropdown on left, help takes remaining space
+    modelRow.style.gridTemplateColumns = 'auto 1fr';
     modelRow.style.alignItems = 'center';
     modelRow.style.gap = '1em';
 
     // Left column: dropdown
-    modelRow.appendChild(await this._dropDownField.renderEdit());
+    const dropDown = await this._dropDownField.renderEdit();
+    dropDown.style.minWidth = '10em'; // keep it readable
+    modelRow.appendChild(dropDown);
 
     // Right column: help text
     const helpText = document.createElement('div');
     helpText.textContent =
-      'Select a model then set non-zero confidence thresholds to enable labels';
+      'Select a model, then set a non-zero confidence threshold to enable labels';
     helpText.style.fontSize = '0.85em';
     helpText.style.color = '#aaa';
     helpText.style.fontStyle = 'italic';
-    helpText.style.whiteSpace = 'nowrap'; // keep it on one line
-    helpText.style.justifySelf = 'start'; // align to left of its cell
+    helpText.style.whiteSpace = 'normal'; // allow wrapping
+    helpText.style.lineHeight = '1.2em'; // make wrapped text look good
+    helpText.style.alignSelf = 'start'; // align text nicely when multi-line
     modelRow.appendChild(helpText);
 
     // Labels grid

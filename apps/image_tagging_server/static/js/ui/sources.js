@@ -32,42 +32,27 @@ function createSourceRow({ source, editable = false, renderList, onEdit, onDelet
   };
 
 
-  fetchImageProviderSchema(typename)
-    .then(
-      fetchedSchema => fetchedSchema, // success: use the fetched schema
-      error => {                       // failure: handle error
-        toast(error.message || 'Failed to fetch provider schema', 5000, 'error');
-        return null;                   // fallback schema
-      }
-    )
-    .then(schema => {
-      // schema is either the fetched value or null if fetch failed
-      return SourceConfigField.create({ name, typename, schema, uuid, value: params });
-    })
-    .then(fieldInstance => {
-      const row = createGenericRow({
-        field: new EditableField({
-          field: fieldInstance,
-          onSave: async ({ source_name, typename, schema: filled_schema }) => {
-            await updateSource({ uuid, name: source_name, providerName: typename, params: filled_schema });
-            renderList();
-          },
-          onCancel: () => {
-            renderList();
-          },
-        }),
-        indentLevel: 0,
-        editable: false,
-        leftButtons: editable ? [deleteButton] : [],
-        rightButtons: [testBtnInfo]
-      });
-
-      rowDiv.appendChild(row);
-    })
-    .catch(err => {
-      // Optional: catch errors from SourceConfigField.create or createGenericRow
-      console.error('Failed to create source row:', err);
+  SourceConfigField.create({ value: { source_name: name, typename, uuid, schema: params } }).then(fieldInstance => {
+    const row = createGenericRow({
+      field: new EditableField({
+        field: fieldInstance,
+        onSave: async ({ source_name, typename, schema: filled_schema }) => {
+          await updateSource({ uuid, name: source_name, providerName: typename, params: filled_schema });
+          renderList();
+        },
+        onCancel: () => {
+          renderList();
+        },
+      }),
+      indentLevel: 0,
+      editable: false,
+      leftButtons: editable ? [deleteButton] : [],
+      rightButtons: [testBtnInfo]
     });
+
+    rowDiv.appendChild(row);
+  });
+
   return rowDiv;
 }
 
@@ -126,9 +111,11 @@ export function renderSourceManager({ target = 'sources-box' }) {
 
   function makeNewSourceRow() {
     return SourceConfigField.create({
-      name: '',
-      typename: '',
-      schema: {},
+      value: {
+        name: '',
+        typename: '',
+        schema: {}
+      },
       editMode: true,
     }).then(fieldInstance => {
       return createGenericRow({

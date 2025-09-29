@@ -1,5 +1,6 @@
 // fieldFactories.js
 import { ArrayField } from './ArrayField.js'
+import { SourceConfigField } from './SourceConfigField.js';
 import { SourceSelectField } from './SourceSelectField.js';
 import { ImageProviderSelectField } from './ImageProviderSelectField.js';
 import { BooleanCheckboxField } from './BooleanField.js';
@@ -8,83 +9,6 @@ import { ModelLabelSelectField } from './ModelLabelSelectField.js';
 
 // Factory map
 export const fieldFactories = {
-  async string(fieldName, fieldMeta, values, onChange) {
-    const { type, required, description, items, options, ...rest } = fieldMeta;
-
-    return new TextField({
-      ...rest,
-      placeholder: description || '',
-      value: values[fieldName] || '',
-      onChange: (val) => {
-        onChange?.(val);
-      }
-    });
-  },
-
-  async int(fieldName, fieldMeta, values, onChange) {
-    const { type, required, description, items, options, ...rest } = fieldMeta;
-
-    return new TextField({
-      ...rest,
-      placeholder: description || '',
-      type: 'number',
-      value: values[fieldName] || '',
-      onChange: (val) => {
-        onChange?.(parseFloat(val));
-      }
-    });
-  },
-
-  async boolean(fieldName, fieldMeta, values, onChange) {
-    const { type, required, description, ...rest } = fieldMeta;
-
-    return new BooleanCheckboxField({
-      label: description || fieldName,
-      value: !!values[fieldName],
-      ...rest,
-      onChange: (val) => {
-        onChange?.(!!val);
-      }
-    });
-  },
-
-
-  async source_uuid(fieldName, fieldMeta, values, onChange) {
-    const { ...rest } = fieldMeta;
-
-    return await SourceSelectField.create({
-      value: values[fieldName],
-      onChange: (val) => {
-        onChange?.(val);
-      },
-      ...rest
-    });
-  },
-
-  async image_provider_name(fieldName, fieldMeta, values, onChange) {
-    const { ...rest } = fieldMeta;
-
-    return await ImageProviderSelectField.create({
-      value: values[fieldName],
-      onChange: (val) => {
-        onChange?.(val);
-      },
-      ...rest
-    });
-  },
-
-  async model_label(fieldName, fieldMeta, values, onChange) {
-    const { ...rest } = fieldMeta;
-
-    return await ModelLabelSelectField.create({
-      onChange: (val) => {
-        onChange?.(val);
-      },
-      value: values[fieldName],
-      ...rest
-    });
-  },
-
   async array(fieldName, fieldMeta, values, onChange) {
     const { type, required, description, items, options, ...rest } = fieldMeta;
 
@@ -114,6 +38,95 @@ export const fieldFactories = {
           { [fieldName]: val },
           onChange
         );
+      }
+    });
+  },
+
+  async boolean(fieldName, fieldMeta, values, onChange) {
+    const { type, required, description, ...rest } = fieldMeta;
+
+    return new BooleanCheckboxField({
+      label: description || fieldName,
+      value: !!values[fieldName],
+      ...rest,
+      onChange: (val) => {
+        onChange?.(!!val);
+      }
+    });
+  },
+
+  async image_provider_name(fieldName, fieldMeta, values, onChange) {
+    const { ...rest } = fieldMeta;
+
+    return await ImageProviderSelectField.create({
+      value: values[fieldName],
+      onChange: (val) => {
+        onChange?.(val);
+      },
+      ...rest
+    });
+  },
+
+  async int(fieldName, fieldMeta, values, onChange) {
+    const { type, required, description, items, options, ...rest } = fieldMeta;
+
+    return new TextField({
+      ...rest,
+      placeholder: description || '',
+      type: 'number',
+      value: values[fieldName] || '',
+      onChange: (val) => {
+        onChange?.(parseFloat(val));
+      }
+    });
+  },
+
+  async model_label(fieldName, fieldMeta, values, onChange) {
+    const { ...rest } = fieldMeta;
+
+    return await ModelLabelSelectField.create({
+      onChange: (val) => {
+        onChange?.(val);
+      },
+      value: values[fieldName],
+      ...rest
+    });
+  },
+
+  async source_config(fieldName, fieldMeta, values, onChange) {
+    const { ...rest } = fieldMeta;
+
+    return await SourceConfigField.create({
+      value: values[fieldName],
+      onChange: (val) => {
+        onChange?.(val);
+      },
+      ...rest
+    });
+  },
+
+
+  async source_uuid(fieldName, fieldMeta, values, onChange) {
+    const { ...rest } = fieldMeta;
+
+    return await SourceSelectField.create({
+      value: values[fieldName],
+      onChange: (val) => {
+        onChange?.(val);
+      },
+      ...rest
+    });
+  },
+
+  async string(fieldName, fieldMeta, values, onChange) {
+    const { type, required, description, items, options, ...rest } = fieldMeta;
+
+    return new TextField({
+      ...rest,
+      placeholder: description || '',
+      value: values[fieldName] || '',
+      onChange: (val) => {
+        onChange?.(val);
       }
     });
   },
