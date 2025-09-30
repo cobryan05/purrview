@@ -100,19 +100,20 @@ class Manager:
         info_from_db = {}
         if missing_ids is None or len(missing_ids) > 0:
             db_tasks = await self._db_client.get_active_tasks(task_id=missing_ids)
-            config_uuids = [task.config_uuid for task in db_tasks]
+            config_uuids = list(set(task.config_uuid for task in db_tasks))
             config_metadata = await self._db_client.get_task_configs(config_uuids=config_uuids)
+            config_map = {config.uuid: config for config in config_metadata}
             info_from_db = {
                 task.id: {
                     "id": task.id,
                     "typename": task.typename,
                     "description": "",
-                    "config_metadata": config,
+                    "config_metadata": config_map.get(task.config_uuid),
                     "message": "Not Running",
                     "progress": None,
                     "status": task.status,
                 }
-                for task, config in zip(db_tasks, config_metadata)
+                for task in db_tasks
             }
 
         running_info = {

@@ -348,11 +348,10 @@ document.addEventListener('DOMContentLoaded', () => {
           fileBrowserInitialized = true;
         } else if (tabName === 'tab-task-management') {
           const refreshTaskTab = () => {
-            renderActiveTasks({ target: 'active-tasks-list' });
+            renderActiveTasks({ target: 'active-tasks-list', refresh: refreshTaskTab });
             renderTaskConfigs({
               target: 'task-config-list',
-              onDelete: refreshTaskTab,
-              onCreateTask: refreshTaskTab
+              refresh: refreshTaskTab
             });
           };
           refreshTaskTab();

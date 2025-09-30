@@ -6,15 +6,13 @@ import { cancelTasks, createGenericRow, createTaskConfig, deleteTaskConfigs, del
  * @param {object} params
  * @param {string} params.target - ID of the container
  */
-export function renderTaskConfigs({ target = 'task-config-list', onEdit, onDelete, onStartTask, onCreateTask }) {
+export function renderTaskConfigs({ target = 'task-config-list', onEdit, onDelete, onStartTask, onCreateTask, refresh = null }) {
   const container = document.getElementById(target);
   if (!container) return;
   container.innerHTML = '';
 
   const configListDiv = document.createElement('div');
   container.appendChild(configListDiv);
-
-  const rerender = () => renderTaskConfigs({ target, onEdit, onDelete, onStartTask, onCreateTask });
 
   fetchTaskConfigs().then(configs => {
     configs.forEach((config, uuid) => {
@@ -26,6 +24,7 @@ export function renderTaskConfigs({ target = 'task-config-list', onEdit, onDelet
           try {
             await deleteTaskConfigs({ uuids: [uuid] });
             onDelete?.();
+            refresh?.();
           } catch (error) {
             toast(error.message || 'Failed to delete task config', 5000, 'error');
           }
@@ -38,6 +37,7 @@ export function renderTaskConfigs({ target = 'task-config-list', onEdit, onDelet
           try {
             await startTask({ uuid });
             onStartTask?.();
+            refresh?.()
           } catch (error) {
             toast(error.message || 'Failed to start task', 5000, 'error');
           }
@@ -49,10 +49,10 @@ export function renderTaskConfigs({ target = 'task-config-list', onEdit, onDelet
             field: fieldInstance,
             onSave: async ({ text: name, typename, params }) => {
               await updateTaskConfig({ uuid, name, typename, params });
-              rerender();
+              refresh?.();
             },
             onCancel: () => {
-              rerender();
+              refresh?.();
             },
           }),
           leftButtons: [deleteButton],
@@ -83,7 +83,7 @@ export function renderTaskConfigs({ target = 'task-config-list', onEdit, onDelet
           return;
         }
         await createTaskConfig({ name, typename, params });
-        rerender();
+        refresh?.();
       } catch (err) {
         Logger.error('Error creating task config:', err);
       }
@@ -105,15 +105,13 @@ export function renderTaskConfigs({ target = 'task-config-list', onEdit, onDelet
  * @param {object} params
  * @param {string} params.target - ID of the container
  */
-export function renderActiveTasks({ target = 'active-tasks-list' }) {
+export function renderActiveTasks({ target = 'active-tasks-list', refresh = null }) {
   const container = document.getElementById(target);
   if (!container) return;
   container.innerHTML = '';
 
   const configListDiv = document.createElement('div');
   container.appendChild(configListDiv);
-
-  const rerender = () => renderActiveTasks({ target });
 
   fetchTasksStatus().then(tasks => {
     tasks.forEach((task, taskId) => {
@@ -124,7 +122,7 @@ export function renderActiveTasks({ target = 'active-tasks-list' }) {
           if (!window.confirm(`Are you sure you want to delete "${field.getValue().text}"?`)) return;
           try {
             await deleteTasks({ taskIds: taskId });
-            rerender();
+            refresh?.();
           } catch (error) {
             toast(error.message || 'Failed to delete task', 5000, 'error');
           }
@@ -136,7 +134,7 @@ export function renderActiveTasks({ target = 'active-tasks-list' }) {
         onClick: async () => {
           try {
             await cancelTasks({ taskIds: taskId });
-            rerender();
+            refresh?.();
           } catch (error) {
             toast(error.message || 'Failed to stop task', 5000, 'error');
           }
@@ -148,10 +146,10 @@ export function renderActiveTasks({ target = 'active-tasks-list' }) {
             field: fieldInstance,
             onSave: async ({ text: name, typename, schema: filled_schema }) => {
               //await updateSource({ uuid, name, providerName: typename, params: filled_schema });
-              renderTaskConfigs({ target, onEdit, onDelete, onStartTask });
+              refresh?.();
             },
             onCancel: () => {
-              renderTaskConfigs({ target, onEdit, onDelete, onStartTask });
+              refresh?.();
             },
           }),
           leftButtons: [deleteButton],
