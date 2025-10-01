@@ -3,13 +3,13 @@ import { TaskStatus, cancelTasks, createTaskConfig, deleteTasks, deleteTaskConfi
 // Global guard for only one running preview task
 let previewTaskActive = false;
 
-export async function runPreviewSourceTest({ providerName, params, target = 'source-preview-box' }) {
+export async function runPreviewSourceTest({ provider, provider_params, target = 'source-preview-box' }) {
   if (previewTaskActive) {
     console.warn("Preview task already running, ignoring request");
     toast("A preview task is already running. Please cancel it first.", 4000, "warning");
     return;
   }
-  if (!providerName) {
+  if (!provider) {
     toast("Please fill in provider before testing", 3000, "warning");
     return;
   }
@@ -61,8 +61,8 @@ export async function runPreviewSourceTest({ providerName, params, target = 'sou
   try {
     const configUuid = await createTaskConfig({
       typename: 'PreviewSourceTask',
-      name: "Source Preview: " + providerName,
-      params: { provider: providerName, provider_params: params },
+      name: "Source Preview: " + provider,
+      params: { source_config: { provider, provider_params } },
       persistent: false,
     });
 

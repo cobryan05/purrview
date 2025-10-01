@@ -441,9 +441,9 @@ class WebApp:
             """Request model for creating a new source."""
 
             source_name: str
-            image_provider: str
             source_uuid: str
-            params: dict
+            image_provider: str
+            provider_params: dict
 
         @self._app.post(
             "/api/sources/update",
@@ -459,7 +459,7 @@ class WebApp:
                 source_metadata: SourceMetadata = await self._manager.update_source(
                     payload.source_uuid,
                     image_provider=payload.image_provider,
-                    params=payload.params,
+                    provider_params=payload.provider_params,
                     source_name=payload.source_name,
                 )
                 return JSONResponse(content={"status": WebApp.SUCCESS_KEY, "source": asdict(source_metadata)})
@@ -475,7 +475,7 @@ class WebApp:
 
             source_name: str
             image_provider: str
-            params: dict
+            provider_params: dict
 
         @self._app.post(
             "/api/sources/create",
@@ -495,7 +495,7 @@ class WebApp:
             """
             try:
                 source_metadata: SourceMetadata = await self._manager.create_new_source(
-                    image_provider=payload.image_provider, params=payload.params, source_name=payload.source_name
+                    image_provider=payload.image_provider, provider_params=payload.provider_params, source_name=payload.source_name
                 )
                 response_data = {"status": WebApp.SUCCESS_KEY, "source": asdict(source_metadata)}
             except Exception as e:

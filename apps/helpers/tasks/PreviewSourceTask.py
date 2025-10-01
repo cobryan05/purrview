@@ -19,9 +19,10 @@ logger.setLevel(logging.DEBUG)
 class PreviewSourceTask(Task):
     async def _init(self, params: dict[str, Any], resume_data: Optional[dict[str, Any]]) -> None:
         """Run any initialization logic for the task."""
+        config = params.get("source_config", {})
         self._status_msg: str = "Creating Task"
-        self._provider: str = params.get("provider", "")
-        self._provider_params: dict[str, Any] = params.get("provider_params", {})
+        self._provider: str = config.get("provider", "")
+        self._provider_params: dict[str, Any] = config.get("provider_params", {})
         self._params[Task.InternalKeys.ONESHOT_RESULT] = True
 
     async def _run(self) -> dict[str, Any]:

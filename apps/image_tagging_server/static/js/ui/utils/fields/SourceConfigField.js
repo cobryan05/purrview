@@ -11,7 +11,7 @@ export class SourceConfigField extends Field {
 
   static async create({ ...rest } = {}) {
     const instance = new SourceConfigField({ ...rest });
-    const { source_name = '', typename = '', schema: params = {}, uuid = null } = instance._value || {};
+    const { source_name = '', provider = '', provider_params = {}, uuid = null } = instance._value || {};
 
     instance._uuid = uuid;
     instance._textField = new TextField({ value: source_name, placeholder: 'Enter new source name' });
@@ -19,10 +19,10 @@ export class SourceConfigField extends Field {
     const imageProviders = await fetchImageProviderList();
     instance._dropDownField = new DropDownField({
       options: imageProviders,
-      value: typename,
-      onChange: async (newTypename) => {
+      value: provider,
+      onChange: async (newProvider) => {
         try {
-          const fetchedSchema = await fetchImageProviderSchema(newTypename);
+          const fetchedSchema = await fetchImageProviderSchema(newProvider);
           instance._schemaField = await SchemaField.create({ schema: fetchedSchema });
           instance._rerenderSchema();
         } catch (err) {
@@ -32,14 +32,14 @@ export class SourceConfigField extends Field {
     });
 
     let fetchedSchema = {};
-    if (typename) {
+    if (provider) {
       try {
-        fetchedSchema = await fetchImageProviderSchema(typename);
+        fetchedSchema = await fetchImageProviderSchema(provider);
       } catch (err) {
         Logger.error('Failed to fetch schema:', err);
       }
     }
-    instance._schemaField = await SchemaField.create({ schema: fetchedSchema, values: params });
+    instance._schemaField = await SchemaField.create({ schema: fetchedSchema, values: provider_params });
 
     return instance;
   }
@@ -102,8 +102,8 @@ export class SourceConfigField extends Field {
   getValue() {
     return {
       source_name: this._textField.getValue(),
-      typename: this._dropDownField.getValue(),
-      schema: this._schemaField.getValue()
+      provider: this._dropDownField.getValue(),
+      provider_params: this._schemaField.getValue()
     };
   }
 }

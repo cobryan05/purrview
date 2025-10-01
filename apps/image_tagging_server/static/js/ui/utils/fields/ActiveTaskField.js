@@ -6,27 +6,20 @@ export class ActiveTaskField extends Field {
     super(rest);
   }
 
-  static async create({ name = '', typename = '', schema = null, ...rest } = {}) {
+  static async create({ ...rest } = {}) {
     const instance = new ActiveTaskField({ ...rest });
-    name = name || instance._value;
-    instance._textField = new TextField({ value: name, placeholder: 'Enter new task name' });
+    const { name = '', id, status, message } = instance._value || {};
+    instance._name = name || instance._value;
+    instance._id = id;
+    instance._status = status;
+    instance._message = message;
 
     return instance;
   }
 
   async renderEdit() {
     const container = document.createElement('div');
-    container.style.display = 'flex';
-    container.style.flexDirection = 'column';
-    container.style.width = '100%';
-
-    // Row 1: dropdown + text
-    const row1 = document.createElement('div');
-    row1.style.display = 'flex';
-    row1.style.gap = '0.5em';
-    row1.appendChild(await this._textField.renderEdit());
-
-    container.appendChild(row1);
+    container.innerHTML = "Not Implemented";
     return container;
   }
 
@@ -36,14 +29,14 @@ export class ActiveTaskField extends Field {
     container.style.alignItems = 'center';
     container.style.gap = '0.5em';
 
-    container.appendChild(await this._textField.renderView());
+    const label = document.createElement('span');
+    label.textContent = `${this._id}: ${this._value.config_metadata?.name} [${this._value.config_metadata?.typename}] - ${this._status} ("${this._message}")`;
+    container.appendChild(label);
 
     return container;
   }
 
   getValue() {
-    return {
-      ...this._textField.getValue(),
-    };
+    return {};
   }
 }

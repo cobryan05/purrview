@@ -500,7 +500,7 @@ class Manager:
         sources = await self._db_client.get_sources()
         return sources
 
-    async def create_new_source(self, image_provider: str, params: Dict[str, Any], source_name: str) -> SourceMetadata:
+    async def create_new_source(self, image_provider: str, provider_params: Dict[str, Any], source_name: str) -> SourceMetadata:
         """
         Create a new source from an image source as a preset image_provider/params
 
@@ -512,7 +512,7 @@ class Manager:
         if image_provider not in image_provider_registry:
             raise ValueError(f"Unknown image provider: {image_provider}")
 
-        ret: SourceMetadata = await self._db_client.add_source(name=source_name, typename=image_provider, params=params)
+        ret: SourceMetadata = await self._db_client.add_source(name=source_name, typename=image_provider, params=provider_params)
         return ret
 
     async def delete_sources(self, uuid_list: list[str]) -> None:
@@ -525,7 +525,7 @@ class Manager:
         await self._db_client.delete_sources(uuid_list)
 
     async def update_source(
-        self, source_uuid: str, image_provider: str, params: Dict[str, Any], source_name: str
+        self, source_uuid: str, image_provider: str, provider_params: Dict[str, Any], source_name: str
     ) -> SourceMetadata:
         """
         Updates sources by their UUIDs.
@@ -537,7 +537,7 @@ class Manager:
             source_uuid=source_uuid,
             name=source_name,
             typename=image_provider,
-            params=params,
+            params=provider_params,
         )
 
     async def recognize(

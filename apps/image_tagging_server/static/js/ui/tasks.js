@@ -35,7 +35,7 @@ export function renderTaskConfigs({ target = 'task-config-list', onEdit, onDelet
         emoji: '▶️',
         onClick: async () => {
           try {
-            await startTask({ uuid });
+            await startTask({ uuid: uuid });
             onStartTask?.();
             refresh?.()
           } catch (error) {
@@ -47,7 +47,7 @@ export function renderTaskConfigs({ target = 'task-config-list', onEdit, onDelet
         const row = createGenericRow({
           field: new EditableField({
             field: fieldInstance,
-            onSave: async ({ text: name, typename, params }) => {
+            onSave: async ({ name, typename, params }) => {
               await updateTaskConfig({ uuid, name, typename, params });
               refresh?.();
             },
@@ -119,7 +119,7 @@ export function renderActiveTasks({ target = 'active-tasks-list', refresh = null
         text: 'Delete',
         emoji: '🗑️',
         onClick: async ({ field }) => {
-          if (!window.confirm(`Are you sure you want to delete "${field.getValue().text}"?`)) return;
+          if (!window.confirm(`Are you sure you want to delete "${taskId}"?`)) return;
           try {
             await deleteTasks({ taskIds: taskId });
             refresh?.();
@@ -140,21 +140,12 @@ export function renderActiveTasks({ target = 'active-tasks-list', refresh = null
           }
         }
       };
-      ActiveTaskField.create({ value: task.id, ...task }).then(fieldInstance => {
+      ActiveTaskField.create({ value: { ...task } }).then(fieldInstance => {
         const row = createGenericRow({
-          field: new EditableField({
-            field: fieldInstance,
-            onSave: async ({ text: name, typename, schema: filled_schema }) => {
-              //await updateSource({ uuid, name, providerName: typename, params: filled_schema });
-              refresh?.();
-            },
-            onCancel: () => {
-              refresh?.();
-            },
-          }),
+          field: fieldInstance,
           leftButtons: [deleteButton],
           rightButtons: [stopButton]
-        })
+        });
         configListDiv.appendChild(row);
       });
     });

@@ -6,13 +6,13 @@ import { createGenericRow, createSource, deleteSources, fetchImageProviderSchema
  * Creates a row for a single source with editable buttons
  */
 function createSourceRow({ source, editable = false, renderList, onEdit, onDelete }) {
-  const { name, typename, uuid, params } = source;
+  const { name: source_name, typename: provider, uuid, params: provider_params } = source;
   const rowDiv = document.createElement('div');
   const deleteButton = {
     text: 'Delete',
     emoji: '🗑️',
     onClick: async () => {
-      if (!window.confirm(`Are you sure you want to delete "${name}"?`)) return;
+      if (!window.confirm(`Are you sure you want to delete "${source_name}"?`)) return;
       try {
         await deleteSources({ uuids: [uuid] });
         onDelete?.();
@@ -26,18 +26,18 @@ function createSourceRow({ source, editable = false, renderList, onEdit, onDelet
     text: 'Test Source',
     emoji: '🧪',
     onClick: async ({ field }) => {
-      const { text: name, typename, schema } = field.getValue();
-      await runPreviewSourceTest({ providerName: typename, params: schema });
+      const { source_name, provider, provider_params } = field.getValue();
+      await runPreviewSourceTest({ provider, provider_params });
     },
   };
 
 
-  SourceConfigField.create({ value: { source_name: name, typename, uuid, schema: params } }).then(fieldInstance => {
+  SourceConfigField.create({ value: { source_name, provider, uuid, provider_params } }).then(fieldInstance => {
     const row = createGenericRow({
       field: new EditableField({
         field: fieldInstance,
-        onSave: async ({ source_name, typename: source_typename, schema: source_params }) => {
-          await updateSource({ uuid, name: source_name, providerName: source_typename, params: source_params });
+        onSave: async ({ source_name, provider, provider_params }) => {
+          await updateSource({ uuid, name: source_name, provider, provider_params });
           renderList();
         },
         onCancel: () => {
@@ -130,9 +130,9 @@ export function renderSourceManager({ target = 'sources-box' }) {
     text: 'Save',
     emoji: '✅',
     onClick: async ({ field }) => {
-      const { source_name, typename, schema } = field.getValue();
+      const { source_name, provider, provider_params } = field.getValue();
       try {
-        await createSource({ name: source_name, providerName: typename, params: schema });
+        await createSource({ name: source_name, provider, params: provider_params });
         await refresh();
 
         // Replace the row with a fresh blank one
@@ -150,8 +150,8 @@ export function renderSourceManager({ target = 'sources-box' }) {
     text: 'Test Source',
     emoji: '🧪',
     onClick: async ({ field }) => {
-      const { text: name, typename, schema } = field.getValue();
-      await runPreviewSourceTest({ providerName: typename, params: schema });
+      const { source_name, provider, provider_params } = field.getValue();
+      await runPreviewSourceTest({ provider, provider_params });
     },
   };
 

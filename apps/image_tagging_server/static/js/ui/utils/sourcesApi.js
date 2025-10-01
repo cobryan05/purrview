@@ -80,11 +80,11 @@ export async function fetchImageProviderSchema(providerName) {
  * SOURCE FUNCTIONS
  * -----------------------------
  */
-export async function createSource({ name, providerName = null, params = {} }) {
+export async function createSource({ name, provider = null, provider_params = {} }) {
   const res = await fetch('/api/sources/create', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ source_name: name, image_provider: providerName, params }),
+    body: JSON.stringify({ source_name: name, image_provider: provider, provider_params }),
   });
 
   if (!res.ok) {
@@ -99,11 +99,11 @@ export async function createSource({ name, providerName = null, params = {} }) {
   return source;
 }
 
-export async function updateSource({ uuid, name, providerName, params }) {
+export async function updateSource({ uuid, name, provider, provider_params }) {
   const res = await fetch('/api/sources/update', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ source_uuid: uuid, source_name: name, image_provider: providerName, params }),
+    body: JSON.stringify({ source_uuid: uuid, source_name: name, image_provider: provider, provider_params }),
   });
 
   if (!res.ok) {
