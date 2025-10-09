@@ -66,6 +66,6 @@ RUN chown -R appuser:appuser /app /logs /conf
 
 USER appuser
 
-EXPOSE 8000 8001 8554 8888 1935 9001 9997
+EXPOSE 1935 8000 8001 8002 8003 8004 8554 9001 9997
 
 CMD ["/usr/bin/supervisord", "-c", "/conf/supervisord.conf"]

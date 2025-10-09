@@ -11,10 +11,11 @@ class AppConfig:
 
 
 APPS_CONFIG = {
-    "relay_buffer_server": AppConfig("RTSP/Relay Buffer Server", "localhost", 8000),
+    "image_tagging_server": AppConfig("Image Tagging Server", "localhost", 8000),
+    "relay_buffer_server": AppConfig("RTSP/Relay Buffer Server", "localhost", 8002),
     "inference_server": AppConfig("Inference Server", "localhost", 8001),
-    "image_tagging_server": AppConfig("Image Tagging Server", "localhost", 8002),
     "tasks_server": AppConfig("Tasks Server", "localhost", 8003),
+    "db_server": AppConfig("DB Server", "localhost", 8004),
     "media_mtx_api": AppConfig("MediaMTXApi", "localhost", 9997),
     "media_mtx_rtsp": AppConfig("MediaMTXRtsp", "localhost", 8554),
 }
