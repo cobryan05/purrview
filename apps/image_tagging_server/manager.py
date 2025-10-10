@@ -10,18 +10,22 @@ import sys
 from dataclasses import dataclass, field
 from functools import wraps
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, Type, Union
+from typing import Any, Dict, List, Optional, Tuple
 
 import aiofiles
 import cv2
+import db_client
 import inference_client
 import numpy as np
 import tasks_client
+from db_client.api.labels_api import LabelsApi
+from db_client.api.sources_api import SourcesApi
 from inference_client.api.inference_api import InferenceApi
 from inference_client.api.models_api import ModelsApi
-from inference_client.models.associate_label_with_model_class_payload import AssociateLabelWithModelClassPayload
+from inference_client.models.associate_label_with_model_class_payload import (
+    AssociateLabelWithModelClassPayload,
+)
 from inference_client.models.body_pin_model import BodyPinModel
-from inference_client.models.get_model_labels_payload import GetModelLabelsPayload
 from inference_client.models.recognize_payload import RecognizePayload
 from pydantic import BaseModel
 from tasks_client.api.tasks_api import TasksApi
@@ -31,11 +35,8 @@ from apps.helpers.db.db_client import (
     DbClient,
     ImageMetadata,
     LabelMetadata,
-    SourceMetadata,
-    TaskConfigMetadata,
 )
 from apps.helpers.fileUtils import get_safe_path
-from apps.helpers.imageProviders.Registry import image_provider_registry
 from apps.helpers.imageUtils import base64_encode_png
 from apps.helpers.webUtils import api_forward_request
 
@@ -54,46 +55,57 @@ class Manager:
         self,
         inference_api_client: inference_client.ApiClient,
         tasks_api_client: tasks_client.ApiClient,
-        db_client: DbClient,
+        db_api_client: db_client.ApiClient,
+        legacy_db_client: DbClient,
         files_root: Path,
-        labels_json: Path,
     ):
         """Initialize the Manager"""
         self._inference_api_client: inference_client.ApiClient = inference_api_client
         self._tasks_api_client: tasks_client.ApiClient = tasks_api_client
-        self._db_client: DbClient = db_client
+        self._db_api_client: db_client.ApiClient = db_api_client
+        self._legacy_db_client: DbClient = legacy_db_client
         self._task: Optional[asyncio.Task] = None  # Background task for periodic operations
         self._files_root: Path = files_root
-        self._labels_json: Path = labels_json
         self._model_pins: Dict[str, str] = {}
         self._config = {
             "files_root": str(files_root),
-            "labels_json": str(labels_json),
-            "db_path": db_client.get_path(),
             "inference_server": inference_api_client.configuration.host,
             "tasks_server": tasks_api_client.configuration.host,
+            "db_server": db_api_client.configuration.host,
         }
 
     async def get_server_config(self) -> Dict[str, Any]:
         return self._config.copy()
 
-    def task_api_request(self, api_method_name: str, get: bool = False):
+    def inference_api_request(self, api_method_name: str):
         """
-        Decorator to forward request to the Task server
-        """
-        return api_forward_request(TasksApi(self._tasks_api_client), api_method_name)
-
-    def inference_api_request(self, api_method_name: str, get: bool = False):
-        """
-        Decorator to forward request to the Inference server
+        Decorator to forward request to the Inference API
         """
         return api_forward_request(InferenceApi(self._inference_api_client), api_method_name)
 
-    def model_api_request(self, api_method_name: str, get: bool = False):
+    def labels_api_request(self, api_method_name: str):
         """
-        Decorator to forward request to the Model server
+        Decorator to forward request to the Labels API
+        """
+        return api_forward_request(LabelsApi(self._db_api_client), api_method_name)
+
+    def model_api_request(self, api_method_name: str):
+        """
+        Decorator to forward request to the Model API
         """
         return api_forward_request(ModelsApi(self._inference_api_client), api_method_name)
+
+    def sources_api_request(self, api_method_name: str):
+        """
+        Decorator to forward request to the Sources API
+        """
+        return api_forward_request(SourcesApi(self._db_api_client), api_method_name)
+
+    def task_api_request(self, api_method_name: str):
+        """
+        Decorator to forward request to the Task API
+        """
+        return api_forward_request(TasksApi(self._tasks_api_client), api_method_name)
 
     @dataclass
     class FileEntry:
@@ -216,69 +228,6 @@ class Manager:
         response: Dict[str, Any] = await asyncio.to_thread(api.associate_label_with_model_class, request)
         return response.get("label_set", False)
 
-    async def create_new_label(self, name: str, color: str, parent_uuid: Optional[str] = None) -> LabelMetadata:
-        """
-        Adds a new label to the database
-
-        Returns:
-            LabelMetaData: Label metadata added to database
-        """
-        ret = await self._db_client.add_label(name, color, parent_uuid=parent_uuid)
-        await self._db_client.export_labels_from_db_to_json(str(self._labels_json))
-        return ret
-
-    async def delete_label(self, label_uuid: str) -> None:
-        """
-        Adds a new label to the database
-
-        Returns:
-            LabelMetaData: Label metadata added to database
-        """
-        # Check if the label has a parent
-        child_uuids = await self._db_client.get_label_children(label_uuid)
-        if child_uuids:
-            raise ValueError(f"Cannot delete label '{label_uuid}' because it has child labels.")
-
-        await self._db_client.delete_label(label_uuid)
-        await self._db_client.export_labels_from_db_to_json(str(self._labels_json))
-
-    @dataclass
-    class LabelData:
-        metadata: LabelMetadata
-        children: List["LabelData"] = field(default_factory=list)
-
-    async def get_label_uuid_map(self) -> Dict[str, LabelData]:
-        flat_list: List[LabelMetadata] = await self._db_client.list_labels()
-        uuid_to_node: Dict[str, Manager.LabelData] = {
-            label.uuid: Manager.LabelData(metadata=label) for label in flat_list
-        }
-
-        for label in flat_list:
-            node = uuid_to_node[label.uuid]
-            if label.parent_uuid and label.parent_uuid in uuid_to_node:
-                parent_node = uuid_to_node[label.parent_uuid]
-                parent_node.children.append(node)
-
-        return uuid_to_node
-
-    async def get_labels(self) -> List[LabelData]:
-        """
-        Gets a list of all labels
-        """
-        return list((await self.get_label_uuid_map()).values())
-
-    async def update_label(self, label_uuid: str, name: Optional[str] = None, color: Optional[str] = None) -> None:
-        """
-        Update a label's name and/or color.
-
-        Args:
-            label_uuid (str): uuid of the label to update.
-            name (Optional[str]): New name for the label.
-            color (Optional[str]): New color for the label.
-        """
-        await self._db_client.update_label(label_uuid=label_uuid, name=name, color=color)
-        await self._db_client.export_labels_from_db_to_json(str(self._labels_json))
-
     async def get_image_metadata(self, image_rel_path: str) -> Optional[ImageMetadata]:
         """
         Get metadata for image by resolving image ID from filename.
@@ -293,11 +242,11 @@ class Manager:
         if not safe_path or not safe_path.exists():
             return None
         img_path = str(safe_path)
-        image_id = await self._db_client.get_image_id_by_filename(img_path)
+        image_id = await self._legacy_db_client.get_image_id_by_filename(img_path)
         if image_id is None:
-            image_id = await self._db_client.add_image(img_path)
-            await self._db_client.read_image_metadata_json_to_db(img_path)
-        return await self._db_client.read_image_metadata_from_db(image_id)
+            image_id = await self._legacy_db_client.add_image(img_path)
+            await self._legacy_db_client.read_image_metadata_json_to_db(img_path)
+        return await self._legacy_db_client.read_image_metadata_from_db(image_id)
 
     async def update_image_metadata(self, image_rel_path: str, metadata: ImageMetadata) -> None:
         """
@@ -312,9 +261,9 @@ class Manager:
             logger.warning(f"Path not found or inaccessible: {image_rel_path}")
             return
         img_path = str(safe_path)
-        image_id = await self._db_client.add_image(img_path)
-        await self._db_client.write_image_metadata_to_db(image_id, metadata)
-        await self._db_client.save_image_metadata_db_to_json(img_path)
+        image_id = await self._legacy_db_client.add_image(img_path)
+        await self._legacy_db_client.write_image_metadata_to_db(image_id, metadata)
+        await self._legacy_db_client.save_image_metadata_db_to_json(img_path)
 
     async def create_box(
         self,
@@ -472,74 +421,6 @@ class Manager:
 
         await self.update_image_metadata(image_rel_path, image_meta)
 
-    async def list_avail_image_providers(self) -> List[str]:
-        """
-        List all available image providers.
-        """
-        return list(image_provider_registry.keys())
-
-    async def get_image_provider_schema(self, image_provider: str) -> Dict[str, Any]:
-        """
-        Get the schema for a specific image provider.
-
-        Args:
-            image_provider (str): The name of the image provider.
-
-        Returns:
-            Dict[str, Any]: The schema for the image provider.
-        """
-        if image_provider not in image_provider_registry:
-            raise ValueError(f"Unknown image provider: {image_provider}")
-
-        return image_provider_registry[image_provider].params_schema()
-
-    async def get_avail_sources(self) -> List[SourceMetadata]:
-        """
-        List all sources managed by the Manager.
-        """
-        sources = await self._db_client.get_sources()
-        return sources
-
-    async def create_new_source(self, image_provider: str, provider_params: Dict[str, Any], source_name: str) -> SourceMetadata:
-        """
-        Create a new source from an image source as a preset image_provider/params
-
-        Args:
-            image_provider (str): The image provider for this source
-            params (Dict[str, Any]): The parameters to pass to the image provider
-            source_name (str): The name given for the new source
-        """
-        if image_provider not in image_provider_registry:
-            raise ValueError(f"Unknown image provider: {image_provider}")
-
-        ret: SourceMetadata = await self._db_client.add_source(name=source_name, typename=image_provider, params=provider_params)
-        return ret
-
-    async def delete_sources(self, uuid_list: list[str]) -> None:
-        """
-        Delete sources by their UUIDs.
-
-        Args:
-            uuid_list (list[str]): List of source UUIDs to delete.
-        """
-        await self._db_client.delete_sources(uuid_list)
-
-    async def update_source(
-        self, source_uuid: str, image_provider: str, provider_params: Dict[str, Any], source_name: str
-    ) -> SourceMetadata:
-        """
-        Updates sources by their UUIDs.
-
-        Args:
-            uuid_list (list[str]): List of source UUIDs to delete.
-        """
-        return await self._db_client.update_source(
-            source_uuid=source_uuid,
-            name=source_name,
-            typename=image_provider,
-            params=provider_params,
-        )
-
     async def recognize(
         self,
         model_name: str,
@@ -567,9 +448,7 @@ class Manager:
         if pin_id is None:
             model_api = ModelsApi(self._inference_api_client)
             post_info = BodyPinModel(model_name=model_name, duration=self.PIN_DURATION)
-            pin_response: Dict[str, Any] = await asyncio.to_thread(
-                model_api.pin_model, post_info
-            )
+            pin_response: Dict[str, Any] = await asyncio.to_thread(model_api.pin_model, post_info)
             if pin_response.get("status") != "success":
                 raise RuntimeError(f"Failed to pin model '{model_name}': {pin_response}")
             self._model_pins[model_name] = pin_response.get("pin_id")
@@ -612,7 +491,7 @@ class Manager:
     async def _init(self):
         """Initialization that should run on event loop"""
         try:
-            await self._db_client.init_db()
+            await self._legacy_db_client.init_db()
         except Exception as e:
             logger.exception(e)
             raise

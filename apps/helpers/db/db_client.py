@@ -1,4 +1,4 @@
-# TODO: sources json
+from __future__ import annotations
 
 import json
 import logging
@@ -162,6 +162,12 @@ class LabelMetadata:
 
 
 @dataclass
+class LabelData:
+    metadata: LabelMetadata
+    children: List[LabelData] = field(default_factory=list)
+
+
+@dataclass
 class BoundingBoxMetadata:
     id: int
     label_uuid: str
@@ -219,14 +225,16 @@ class ActiveTaskMetadata:
 class DbClient:
     """Helper class for SQLite database interactions for image annotations."""
 
-    def __init__(self, db_path: Union[str, Path]):
+    def __init__(self, db_dir: Union[str, Path]):
         """
         Initialize DbClient with a path to the SQLite database file.
 
         Args:
-            db_path (str): Filesystem path to the SQLite DB.
+            db_dir (str): Filesystem path to the directory containing the SQLite DB.
         """
-        self._db_path: Path = Path(db_path)
+        self._db_dir: Path = Path(db_dir)
+        self._db_path: Path = self._db_dir / "db.sqlite"
+        self._labels_json_path: Path = self._db_dir / "labels.json"
 
     def db_exists(self) -> bool:
         """Checks if the database file exists"""
@@ -301,7 +309,7 @@ class DbClient:
             await cursor.close()
             return row[0] if row else None
 
-    async def add_image(self, filename: str) -> int:
+    async def add_image(self, filename: str) -> Optional[int]:
         """
         Add a new image record or return existing ID.
 
@@ -819,7 +827,6 @@ class DbClient:
                 (new_status, task_id),
             )
             await db.commit()
-
 
     async def get_sources(self) -> List[SourceMetadata]:
         """

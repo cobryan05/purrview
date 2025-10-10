@@ -1,6 +1,6 @@
 import uvicorn
 
-from apps import APPS_CONFIG, DB_PATH
+from apps import APPS_CONFIG, DB_DIR
 
 from .manager import Manager
 from .web import WebApp

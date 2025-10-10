@@ -30,24 +30,19 @@ from apps.tasks_server.web import (
     TasksTypeSchemaPayload,
     UpdateTaskConfigPayload,
 )
-
-from .manager import (
-    BoundingBoxMetadata,
-    ImageMetadata,
-    Manager,
-    SourceMetadata,
-    TaskConfigMetadata,
+from apps.db_server.web import (
+    AddLabelPayload,
+    DeleteLabelPayload,
+    UpdateLabelPayload,
+    GetImageProviderSchemaPayload,
+    CreateSourcePayload,
+    DeleteSourcePayload,
+    UpdateSourcePayload,
 )
+from apps.helpers.consts import ApiTags
 
 
-class AddLabelPayload(BaseModel):
-    name: str
-    color: str
-    parent_uuid: Optional[str] = None
-
-
-class DeleteLabelPayload(BaseModel):
-    label_uuid: str
+from .manager import BoundingBoxMetadata, ImageMetadata, Manager
 
 
 class BoundingBoxInput(BaseModel):
@@ -77,13 +72,6 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 class WebApp:
     SUCCESS_KEY = "success"
     FAILURE_KEY = "failure"
-
-    LABELS_API_TAG_NAME = "labels"
-    MODELS_API_TAG_NAME = "models"
-    INFERENCE_API_TAG_NAME = "inference"
-    IMAGES_API_TAG_NAME = "images"
-    SOURCES_API_TAG_NAME = "sources"
-    TASKS_API_TAG_NAME = "tasks"
 
     def __init__(self, app_name: str, manager: Manager):
         """Initialize the WebApp with the application name"""
@@ -149,7 +137,61 @@ class WebApp:
                 response_data = {"status": WebApp.FAILURE_KEY, "message": str(e)}
             return JSONResponse(content=response_data)
 
-        @self._app.get("/api/images/list", response_class=JSONResponse, tags=[WebApp.MODELS_API_TAG_NAME])
+        ################################################################################
+        # Images API
+        ################################################################################
+
+        @self._app.get("/api/images/metadata/get", response_class=JSONResponse, tags=[ApiTags.IMAGES])
+        async def get_metadata(rel_path: str = Query("/", alias="path")):
+            metadata: Optional[ImageMetadata] = await self._manager.get_image_metadata(rel_path)
+            if metadata is None:
+                raise HTTPException(status_code=404, detail="Image not found")
+            # convert to dict for JSONResponse
+            return JSONResponse(content=asdict(metadata))
+
+        @self._app.post("/api/images/metadata/update", response_class=JSONResponse, tags=[ApiTags.IMAGES])
+        async def update_metadata(payload: UpdateMetadataPayload) -> JSONResponse:
+            image_path = payload.image_path
+            metadata = await self._manager.get_image_metadata(image_path)
+            label_uuid_map = await self._manager.get_label_uuid_map()
+
+            if metadata is None:
+                raise HTTPException(status_code=404, detail="Image not found")
+
+            # Build new bounding box list from input
+            new_boxes = []
+            for b in payload.boxes:
+                label_data = label_uuid_map.get(b.label_uuid, None)
+                label_text = label_data.metadata.name if label_data else "Unknown"
+                # Resolve label info for each label ID
+                # tags = []
+                # for label_id in b.tags or []:
+                #     # Here, you might want to fetch label info by ID from DB or cache
+                #     # Let's assume manager._db_client has get_label_by_id
+                #     label_row = await self._manager._db_client.get_label_by_id(label_id)
+                #     if label_row:
+                #         labels.append(Label(id=label_row["id"], name=label_row["name"], color=label_row["color"]))
+                # TODO TAGS
+                new_boxes.append(
+                    BoundingBoxMetadata(
+                        id=b.id,
+                        label_uuid=b.label_uuid,
+                        label_text=label_text,
+                        x=b.x,
+                        y=b.y,
+                        width=b.width,
+                        height=b.height,
+                        extra=b.extra or {},
+                    )
+                )
+
+            metadata.boxes = new_boxes
+            metadata.extra = payload.extra or {}
+
+            await self._manager.update_image_metadata(image_path, metadata)
+            return JSONResponse(content={"status": WebApp.SUCCESS_KEY})
+
+        @self._app.get("/api/images/list", response_class=JSONResponse, tags=[ApiTags.IMAGES])
         async def list_files(
             request: Request,
             rel_path: str = Query("/", alias="path"),
@@ -180,7 +222,7 @@ class WebApp:
                     status_code=500,
                 )
 
-        @self._app.get("/api/images/get", tags=[WebApp.MODELS_API_TAG_NAME])
+        @self._app.get("/api/images/get", tags=[ApiTags.IMAGES])
         async def get_file(
             rel_path: str = Query(..., alias="path", description="Relative path to the file under root"),
             raw: bool = Query(False, description="If true, return as raw file response instead of base64 JSON"),
@@ -238,13 +280,17 @@ class WebApp:
                     content={"status": WebApp.FAILURE_KEY, "message": str(e)},
                 )
 
-        @self._app.get("/api/models/list", response_class=JSONResponse, tags=[WebApp.IMAGES_API_TAG_NAME])
+        ################################################################################
+        # MODELS API
+        ################################################################################
+
+        @self._app.get("/api/models/list", response_class=JSONResponse, tags=[ApiTags.MODELS])
         @self._manager.model_api_request("list_models")
         async def list_models_api(request: Request) -> JSONResponse: ...
 
         @self._app.post(
             "/api/models/labels/associate",
-            tags=[WebApp.MODELS_API_TAG_NAME],
+            tags=[ApiTags.MODELS],
             operation_id="associate_label_with_model_class",
             response_class=JSONResponse,
         )
@@ -255,304 +301,18 @@ class WebApp:
 
         @self._app.post(
             "/api/models/labels/get",
-            tags=[WebApp.MODELS_API_TAG_NAME],
+            tags=[ApiTags.MODELS],
             operation_id="get_labels",
             response_class=JSONResponse,
         )
         @self._manager.model_api_request("get_model_labels")
         async def get_model_labels_api(payload: GetModelLabelsPayload) -> JSONResponse: ...
 
-        @self._app.get("/api/images/metadata/get", response_class=JSONResponse, tags=[WebApp.IMAGES_API_TAG_NAME])
-        async def get_metadata(rel_path: str = Query("/", alias="path")):
-            metadata: Optional[ImageMetadata] = await self._manager.get_image_metadata(rel_path)
-            if metadata is None:
-                raise HTTPException(status_code=404, detail="Image not found")
-            # convert to dict for JSONResponse
-            return JSONResponse(content=asdict(metadata))
+        ################################################################################
+        # RECOGNIZE API
+        ################################################################################
 
-        @self._app.post("/api/images/metadata/update", response_class=JSONResponse, tags=[WebApp.IMAGES_API_TAG_NAME])
-        async def update_metadata(payload: UpdateMetadataPayload) -> JSONResponse:
-            image_path = payload.image_path
-            metadata = await self._manager.get_image_metadata(image_path)
-            label_uuid_map = await self._manager.get_label_uuid_map()
-
-            if metadata is None:
-                raise HTTPException(status_code=404, detail="Image not found")
-
-            # Build new bounding box list from input
-            new_boxes = []
-            for b in payload.boxes:
-                label_data = label_uuid_map.get(b.label_uuid, None)
-                label_text = label_data.metadata.name if label_data else "Unknown"
-                # Resolve label info for each label ID
-                # tags = []
-                # for label_id in b.tags or []:
-                #     # Here, you might want to fetch label info by ID from DB or cache
-                #     # Let's assume manager._db_client has get_label_by_id
-                #     label_row = await self._manager._db_client.get_label_by_id(label_id)
-                #     if label_row:
-                #         labels.append(Label(id=label_row["id"], name=label_row["name"], color=label_row["color"]))
-                # TODO TAGS
-                new_boxes.append(
-                    BoundingBoxMetadata(
-                        id=b.id,
-                        label_uuid=b.label_uuid,
-                        label_text=label_text,
-                        x=b.x,
-                        y=b.y,
-                        width=b.width,
-                        height=b.height,
-                        extra=b.extra or {},
-                    )
-                )
-
-            metadata.boxes = new_boxes
-            metadata.extra = payload.extra or {}
-
-            await self._manager.update_image_metadata(image_path, metadata)
-            return JSONResponse(content={"status": WebApp.SUCCESS_KEY})
-
-        @self._app.post("/api/labels/add", response_class=JSONResponse, tags=[WebApp.LABELS_API_TAG_NAME])
-        async def add_label_api(request: AddLabelPayload) -> JSONResponse:
-            """
-            API endpoint to add a new label.
-            """
-            try:
-                label = await self._manager.create_new_label(
-                    request.name, request.color, parent_uuid=request.parent_uuid
-                )
-                return JSONResponse(content={"status": WebApp.SUCCESS_KEY, "label": asdict(label)})
-            except Exception as e:
-                logger.exception(e)
-                return JSONResponse(
-                    content={"status": WebApp.FAILURE_KEY, "message": str(e)},
-                    status_code=500,
-                )
-
-        @self._app.post("/api/labels/delete", response_class=JSONResponse, tags=[WebApp.LABELS_API_TAG_NAME])
-        async def delete_label_api(request: DeleteLabelPayload) -> JSONResponse:
-            """
-            API endpoint to add a new label.
-            """
-            try:
-                await self._manager.delete_label(request.label_uuid)
-                return JSONResponse(content={"status": WebApp.SUCCESS_KEY})
-            except Exception as e:
-                logger.exception(e)
-                return JSONResponse(
-                    content={"status": WebApp.FAILURE_KEY, "message": str(e)},
-                    status_code=500,
-                )
-
-        @self._app.get("/api/labels/list", response_class=JSONResponse, tags=[WebApp.LABELS_API_TAG_NAME])
-        async def list_labels_api(request: Request) -> JSONResponse:
-            """
-            API endpoint to return a list of labels with metadata.
-
-            Args:
-                request (Request): The FastAPI request object.
-
-            Returns:
-                JSONResponse: A JSON response containing the list of labels.
-            """
-            try:
-                label_list = await self._manager.get_labels()
-                labels = [asdict(label) for label in label_list]
-                response_data = {"status": WebApp.SUCCESS_KEY, "labels": labels}
-                return JSONResponse(content=response_data)
-            except Exception as e:
-                logger.exception(e)
-                return JSONResponse(
-                    content={"status": WebApp.FAILURE_KEY, "message": str(e)},
-                    status_code=500,
-                )
-
-        class UpdateLabelPayload(BaseModel):
-            label_uuid: str
-            name: Optional[str] = None
-            color: Optional[str] = None
-
-        @self._app.post("/api/labels/update", response_class=JSONResponse, tags=[WebApp.LABELS_API_TAG_NAME])
-        async def update_label_api(request: UpdateLabelPayload) -> JSONResponse:
-            """
-            API endpoint to update an existing label's name and/or color.
-            """
-            try:
-                await self._manager.update_label(label_uuid=request.label_uuid, name=request.name, color=request.color)
-                return JSONResponse(content={"status": WebApp.SUCCESS_KEY})
-            except Exception as e:
-                logger.exception(e)
-                return JSONResponse(
-                    content={"status": WebApp.FAILURE_KEY, "message": str(e)},
-                    status_code=500,
-                )
-
-        @self._app.get(
-            "/api/sources/image-providers/list",
-            response_class=JSONResponse,
-            tags=[WebApp.SOURCES_API_TAG_NAME],
-            operation_id="list_image_providers",
-        )
-        async def list_image_providers_api(request: Request) -> JSONResponse:
-            """
-            API endpoint to return a list of available image provider types
-
-            Args:
-                request (Request): The FastAPI request object.
-
-            Returns:
-                JSONResponse: A JSON response containing the list of models.
-            """
-            try:
-                providers_list = await self._manager.list_avail_image_providers()
-                response_data = {"status": WebApp.SUCCESS_KEY, "providers": providers_list}
-                return JSONResponse(content=response_data)
-            except Exception as e:
-                logger.exception(e)
-                return JSONResponse(
-                    content={"status": WebApp.FAILURE_KEY, "message": str(e)},
-                    status_code=500,
-                )
-
-        class GetImageProviderSchemaPayload(BaseModel):
-            image_provider: str
-
-        @self._app.post(
-            "/api/sources/image-providers/schema",
-            tags=[WebApp.SOURCES_API_TAG_NAME],
-            operation_id="image_providers_schema",
-            response_class=JSONResponse,
-        )
-        async def image_providers_schema_api(payload: GetImageProviderSchemaPayload) -> JSONResponse:
-            """
-            API endpoint to get the schema for a specific image provider.
-            """
-            try:
-                schema = await self._manager.get_image_provider_schema(payload.image_provider)
-                return JSONResponse(content={"status": WebApp.SUCCESS_KEY, "schema": schema})
-            except Exception as e:
-                logger.exception(e)
-                return JSONResponse(
-                    content={"status": WebApp.FAILURE_KEY, "message": str(e)},
-                    status_code=500,
-                )
-
-        class UpdateSourcePayload(BaseModel):
-            """Request model for creating a new source."""
-
-            source_name: str
-            source_uuid: str
-            image_provider: str
-            provider_params: dict
-
-        @self._app.post(
-            "/api/sources/update",
-            tags=[WebApp.SOURCES_API_TAG_NAME],
-            operation_id="update_source",
-            response_class=JSONResponse,
-        )
-        async def update_source_api(payload: UpdateSourcePayload) -> JSONResponse:
-            """
-            API endpoint for updating an existing source.
-            """
-            try:
-                source_metadata: SourceMetadata = await self._manager.update_source(
-                    payload.source_uuid,
-                    image_provider=payload.image_provider,
-                    provider_params=payload.provider_params,
-                    source_name=payload.source_name,
-                )
-                return JSONResponse(content={"status": WebApp.SUCCESS_KEY, "source": asdict(source_metadata)})
-            except Exception as e:
-                logger.exception(e)
-                return JSONResponse(
-                    content={"status": WebApp.FAILURE_KEY, "message": str(e)},
-                    status_code=500,
-                )
-
-        class CreateSourcePayload(BaseModel):
-            """Request model for creating a new source."""
-
-            source_name: str
-            image_provider: str
-            provider_params: dict
-
-        @self._app.post(
-            "/api/sources/create",
-            tags=[WebApp.SOURCES_API_TAG_NAME],
-            operation_id="create_source",
-            response_class=JSONResponse,
-        )
-        async def create_source_api(payload: CreateSourcePayload) -> JSONResponse:
-            """
-            API endpoint for creating a new source.
-
-            Args:
-                req (CreateSourceRequest): Request object with source type and parameters.
-
-            Returns:
-                JSONResponse: Response with new source ID or error.
-            """
-            try:
-                source_metadata: SourceMetadata = await self._manager.create_new_source(
-                    image_provider=payload.image_provider, provider_params=payload.provider_params, source_name=payload.source_name
-                )
-                response_data = {"status": WebApp.SUCCESS_KEY, "source": asdict(source_metadata)}
-            except Exception as e:
-                response_data = {"status": WebApp.FAILURE_KEY, "message": str(e)}
-            return JSONResponse(content=response_data)
-
-        class DeleteSourcePayload(BaseModel):
-            source_uuids: List[str]
-
-        @self._app.post(
-            "/api/sources/delete",
-            tags=[WebApp.SOURCES_API_TAG_NAME],
-            operation_id="delete_sources",
-            response_class=JSONResponse,
-        )
-        async def delete_sources_api(payload: DeleteSourcePayload) -> JSONResponse:
-            """
-            API endpoint to delete sources.
-            """
-            try:
-                await self._manager.delete_sources(payload.source_uuids)
-                return JSONResponse(content={"status": WebApp.SUCCESS_KEY})
-            except Exception as e:
-                logger.exception(e)
-                return JSONResponse(
-                    content={"status": WebApp.FAILURE_KEY, "message": str(e)},
-                    status_code=500,
-                )
-
-        @self._app.get(
-            "/api/sources/get",
-            response_class=JSONResponse,
-            tags=[WebApp.SOURCES_API_TAG_NAME],
-            operation_id="get_sources",
-        )
-        async def get_sources_api(request: Request) -> JSONResponse:
-            """
-            API endpoint to return a list of available sources
-            Args:
-                request (Request): The FastAPI request object.
-
-            Returns:
-                JSONResponse: A JSON response containing the list of sources
-            """
-            try:
-                sources: List[SourceMetadata] = await self._manager.get_avail_sources()
-                sources_dict = {source.uuid: asdict(source) for source in sources}
-                response_data = {"status": WebApp.SUCCESS_KEY, "sources": sources_dict}
-                return JSONResponse(content=response_data)
-            except Exception as e:
-                logger.exception(e)
-                return JSONResponse(
-                    content={"status": WebApp.FAILURE_KEY, "message": str(e)},
-                    status_code=500,
-                )
-
-        @self._app.post("/api/recognize", response_class=JSONResponse, tags=[WebApp.INFERENCE_API_TAG_NAME])
+        @self._app.post("/api/recognize", response_class=JSONResponse, tags=[ApiTags.INFERENCE])
         async def recognize_api(
             model_name: str = Form(..., description="Name of the model to use for recognition"),
             conf_thresh: float = Form(..., description="Confidence threshold for detections"),
@@ -608,10 +368,54 @@ class WebApp:
                     content={"status": WebApp.FAILURE_KEY, "message": str(e)},
                 )
 
+        ################################################################################
+        # LABELS API
+        ################################################################################
+
+        @self._app.post(
+            "/api/labels/add",
+            tags=[ApiTags.LABELS],
+            operation_id="add_label",
+            response_class=JSONResponse,
+        )
+        @self._manager.labels_api_request("add_label")
+        async def add_label_api(payload: AddLabelPayload) -> JSONResponse: ...
+
+        @self._app.post(
+            "/api/labels/delete",
+            tags=[ApiTags.LABELS],
+            operation_id="delete_label",
+            response_class=JSONResponse,
+        )
+        @self._manager.labels_api_request("delete_label")
+        async def delete_label_api(payload: DeleteLabelPayload) -> JSONResponse: ...
+
+        @self._app.get(
+            "/api/labels/list",
+            tags=[ApiTags.LABELS],
+            operation_id="list_labels",
+            response_class=JSONResponse,
+        )
+        @self._manager.labels_api_request("list_labels")
+        async def list_labels_api(request: Request) -> JSONResponse: ...
+
+        @self._app.post(
+            "/api/labels/update",
+            tags=[ApiTags.LABELS],
+            operation_id="update_label",
+            response_class=JSONResponse,
+        )
+        @self._manager.labels_api_request("update_label")
+        async def update_label_api(payload: UpdateLabelPayload) -> JSONResponse: ...
+
+        ################################################################################
+        # TASKS API
+        ################################################################################
+
         @self._app.get(
             "/api/tasks/types/list",
             response_class=JSONResponse,
-            tags=[WebApp.TASKS_API_TAG_NAME],
+            tags=[ApiTags.TASKS],
             operation_id="list_task_types",
         )
         @self._manager.task_api_request("list_task_types")
@@ -619,7 +423,7 @@ class WebApp:
 
         @self._app.post(
             "/api/tasks/types/schema",
-            tags=[WebApp.TASKS_API_TAG_NAME],
+            tags=[ApiTags.TASKS],
             operation_id="get_task_type_schema",
             response_class=JSONResponse,
         )
@@ -628,7 +432,7 @@ class WebApp:
 
         @self._app.post(
             "/api/tasks/configs/create",
-            tags=[WebApp.TASKS_API_TAG_NAME],
+            tags=[ApiTags.TASKS],
             operation_id="create_task_config",
             response_class=JSONResponse,
         )
@@ -637,7 +441,7 @@ class WebApp:
 
         @self._app.post(
             "/api/tasks/configs/update",
-            tags=[WebApp.TASKS_API_TAG_NAME],
+            tags=[ApiTags.TASKS],
             operation_id="update_task_config",
             response_class=JSONResponse,
         )
@@ -647,7 +451,7 @@ class WebApp:
         @self._app.post(
             "/api/tasks/configs/delete",
             response_class=JSONResponse,
-            tags=[WebApp.TASKS_API_TAG_NAME],
+            tags=[ApiTags.TASKS],
             operation_id="delete_task_configs",
         )
         @self._manager.task_api_request("delete_task_configs")
@@ -655,7 +459,7 @@ class WebApp:
 
         @self._app.post(
             "/api/tasks/configs/get",
-            tags=[WebApp.TASKS_API_TAG_NAME],
+            tags=[ApiTags.TASKS],
             operation_id="get_task_configs",
             response_class=JSONResponse,
         )
@@ -664,7 +468,7 @@ class WebApp:
 
         @self._app.post(
             "/api/tasks/instances/start",
-            tags=[WebApp.TASKS_API_TAG_NAME],
+            tags=[ApiTags.TASKS],
             operation_id="start_task",
             response_class=JSONResponse,
         )
@@ -673,7 +477,7 @@ class WebApp:
 
         @self._app.post(
             "/api/tasks/instances/cancel",
-            tags=[WebApp.TASKS_API_TAG_NAME],
+            tags=[ApiTags.TASKS],
             operation_id="cancel_tasks",
             response_class=JSONResponse,
         )
@@ -682,7 +486,7 @@ class WebApp:
 
         @self._app.post(
             "/api/tasks/instances/get",
-            tags=[WebApp.TASKS_API_TAG_NAME],
+            tags=[ApiTags.TASKS],
             operation_id="get_tasks_info",
             response_class=JSONResponse,
         )
@@ -691,7 +495,7 @@ class WebApp:
 
         @self._app.post(
             "/api/tasks/instances/delete",
-            tags=[WebApp.TASKS_API_TAG_NAME],
+            tags=[ApiTags.TASKS],
             operation_id="delete_tasks",
             response_class=JSONResponse,
         )
@@ -700,9 +504,67 @@ class WebApp:
 
         @self._app.post(
             "/api/tasks/instances/result",
-            tags=[WebApp.TASKS_API_TAG_NAME],
+            tags=[ApiTags.TASKS],
             operation_id="get_tasks_result",
             response_class=JSONResponse,
         )
         @self._manager.task_api_request("get_tasks_result")
         async def task_result_api(payload: TasksResultPayload) -> JSONResponse: ...
+
+        ################################################################################
+        # SOURCES API
+        ################################################################################
+
+        @self._app.get(
+            "/api/sources/image-providers/list",
+            response_class=JSONResponse,
+            tags=[ApiTags.SOURCES],
+            operation_id="list_image_providers",
+        )
+        @self._manager.sources_api_request("list_image_providers")
+        async def list_image_providers_api(request: Request) -> JSONResponse: ...
+
+        @self._app.post(
+            "/api/sources/image-providers/schema",
+            tags=[ApiTags.SOURCES],
+            operation_id="get_image_provider_schema",
+            response_class=JSONResponse,
+        )
+        @self._manager.sources_api_request("get_image_provider_schema")
+        async def get_image_provider_schema_api(payload: GetImageProviderSchemaPayload) -> JSONResponse: ...
+
+        @self._app.post(
+            "/api/sources/update",
+            tags=[ApiTags.SOURCES],
+            operation_id="update_source",
+            response_class=JSONResponse,
+        )
+        @self._manager.sources_api_request("update_source")
+        async def update_source_api(payload: UpdateSourcePayload) -> JSONResponse: ...
+
+        @self._app.post(
+            "/api/sources/create",
+            tags=[ApiTags.SOURCES],
+            operation_id="create_source",
+            response_class=JSONResponse,
+        )
+        @self._manager.sources_api_request("create_source")
+        async def create_source_api(payload: CreateSourcePayload) -> JSONResponse: ...
+
+        @self._app.post(
+            "/api/sources/delete",
+            tags=[ApiTags.SOURCES],
+            operation_id="delete_sources",
+            response_class=JSONResponse,
+        )
+        @self._manager.sources_api_request("delete_sources")
+        async def delete_sources_api(payload: DeleteSourcePayload) -> JSONResponse: ...
+
+        @self._app.get(
+            "/api/sources/get",
+            response_class=JSONResponse,
+            tags=[ApiTags.SOURCES],
+            operation_id="get_sources",
+        )
+        @self._manager.sources_api_request("get_sources")
+        async def get_sources(payload: Request) -> JSONResponse: ...
