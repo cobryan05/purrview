@@ -151,7 +151,11 @@ async function loadFileBrowser(path) {
   browser.innerHTML = 'Loading...';
 
   try {
-    const res = await fetch(`/api/images/list?path=${encodeURIComponent(path)}`);
+    const res = await fetch(`/api/images/list`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path: path }),
+    });
     if (!res.ok) throw new Error('Failed to fetch file list');
     const data = await res.json();
 

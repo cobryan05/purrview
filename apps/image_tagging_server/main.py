@@ -23,7 +23,7 @@ tasks_port = APPS_CONFIG["tasks_server"].port
 db_host = APPS_CONFIG["db_server"].host
 db_port = APPS_CONFIG["db_server"].port
 
-FILES_ROOT = Path(os.environ.get("FILES_ROOT", "/app/image_datasets"))
+
 
 inference_client_conf = inference_client.Configuration(f"http://{inference_host}:{inference_port}")
 inference_api_client = inference_client.ApiClient(inference_client_conf)
@@ -38,8 +38,7 @@ manager = Manager(
     inference_api_client=inference_api_client,
     db_api_client=db_api_client,
     legacy_db_client=legacy_db_client,
-    tasks_api_client=tasks_api_client,
-    files_root=FILES_ROOT,
+    tasks_api_client=tasks_api_client
 )
 web_app = WebApp(app_name=config.name, manager=manager)
 

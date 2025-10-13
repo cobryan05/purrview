@@ -25,7 +25,11 @@ export async function loadImageAndMetadata(imageName) {
     setCurrentImageName(imageName);
 
     // === Load image blob + metadata via unified API ===
-    const imageRes = await fetch(`/api/images/get?path=${encodeURIComponent(imageName)}`);
+    const imageRes = await fetch(`/api/images/get`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path: imageName }),
+    });
     if (!imageRes.ok) throw new Error(`Failed to load image via API for ${imageName}`);
 
     const imageJson = await imageRes.json();

@@ -1,19 +1,28 @@
 import base64
-import json
 import logging
-import mimetypes
 import os
 import sys
 from contextlib import asynccontextmanager
-from dataclasses import asdict
-from typing import List, Optional
 
-from fastapi import Body, FastAPI, File, Form, HTTPException, Query, Request, UploadFile
-from fastapi.responses import HTMLResponse, JSONResponse, Response
+from fastapi import FastAPI, File, Form, Request, UploadFile
+from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from pydantic import BaseModel
 
+from apps.db_server.web import (
+    AddLabelPayload,
+    CreateSourcePayload,
+    DeleteLabelPayload,
+    DeleteSourcePayload,
+    GetFilePayload,
+    GetImageMetadataPayload,
+    GetImageProviderSchemaPayload,
+    ListFilesPayload,
+    UpdateLabelPayload,
+    UpdateMetadataPayload,
+    UpdateSourcePayload,
+)
+from apps.helpers.consts import ApiTags
 from apps.inference_server.web import (
     AssociateLabelWithModelClassPayload,
     GetModelLabelsPayload,
@@ -30,37 +39,8 @@ from apps.tasks_server.web import (
     TasksTypeSchemaPayload,
     UpdateTaskConfigPayload,
 )
-from apps.db_server.web import (
-    AddLabelPayload,
-    DeleteLabelPayload,
-    UpdateLabelPayload,
-    GetImageProviderSchemaPayload,
-    CreateSourcePayload,
-    DeleteSourcePayload,
-    UpdateSourcePayload,
-)
-from apps.helpers.consts import ApiTags
 
-
-from .manager import BoundingBoxMetadata, ImageMetadata, Manager
-
-
-class BoundingBoxInput(BaseModel):
-    id: Optional[int]
-    label_uuid: str
-    x: float
-    y: float
-    width: float
-    height: float
-    tags: Optional[List[str]] = []  # List of tag uuids
-    extra: Optional[dict] = {}
-
-
-class UpdateMetadataPayload(BaseModel):
-    image_path: str
-    boxes: List[BoundingBoxInput]
-    extra: Optional[dict] = {}
-
+from .manager import Manager
 
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger(__file__)
@@ -136,149 +116,6 @@ class WebApp:
             except Exception as e:
                 response_data = {"status": WebApp.FAILURE_KEY, "message": str(e)}
             return JSONResponse(content=response_data)
-
-        ################################################################################
-        # Images API
-        ################################################################################
-
-        @self._app.get("/api/images/metadata/get", response_class=JSONResponse, tags=[ApiTags.IMAGES])
-        async def get_metadata(rel_path: str = Query("/", alias="path")):
-            metadata: Optional[ImageMetadata] = await self._manager.get_image_metadata(rel_path)
-            if metadata is None:
-                raise HTTPException(status_code=404, detail="Image not found")
-            # convert to dict for JSONResponse
-            return JSONResponse(content=asdict(metadata))
-
-        @self._app.post("/api/images/metadata/update", response_class=JSONResponse, tags=[ApiTags.IMAGES])
-        async def update_metadata(payload: UpdateMetadataPayload) -> JSONResponse:
-            image_path = payload.image_path
-            metadata = await self._manager.get_image_metadata(image_path)
-            label_uuid_map = await self._manager.get_label_uuid_map()
-
-            if metadata is None:
-                raise HTTPException(status_code=404, detail="Image not found")
-
-            # Build new bounding box list from input
-            new_boxes = []
-            for b in payload.boxes:
-                label_data = label_uuid_map.get(b.label_uuid, None)
-                label_text = label_data.metadata.name if label_data else "Unknown"
-                # Resolve label info for each label ID
-                # tags = []
-                # for label_id in b.tags or []:
-                #     # Here, you might want to fetch label info by ID from DB or cache
-                #     # Let's assume manager._db_client has get_label_by_id
-                #     label_row = await self._manager._db_client.get_label_by_id(label_id)
-                #     if label_row:
-                #         labels.append(Label(id=label_row["id"], name=label_row["name"], color=label_row["color"]))
-                # TODO TAGS
-                new_boxes.append(
-                    BoundingBoxMetadata(
-                        id=b.id,
-                        label_uuid=b.label_uuid,
-                        label_text=label_text,
-                        x=b.x,
-                        y=b.y,
-                        width=b.width,
-                        height=b.height,
-                        extra=b.extra or {},
-                    )
-                )
-
-            metadata.boxes = new_boxes
-            metadata.extra = payload.extra or {}
-
-            await self._manager.update_image_metadata(image_path, metadata)
-            return JSONResponse(content={"status": WebApp.SUCCESS_KEY})
-
-        @self._app.get("/api/images/list", response_class=JSONResponse, tags=[ApiTags.IMAGES])
-        async def list_files(
-            request: Request,
-            rel_path: str = Query("/", alias="path"),
-            pattern: str = Query("*", alias="pattern"),
-            recursive: bool = Query(False, alias="recursive"),
-        ) -> JSONResponse:
-            """
-            API endpoint to return a list of files.
-
-            Query Parameters:
-                rel_path (str): Relative path under the root directory (default: "/").
-                glob (str): Glob pattern to filter files (default: "*").
-                recursive (bool): Whether to search directories recursively (default: False).
-
-            Returns:
-                JSONResponse: A JSON response containing the list of files.
-            """
-            try:
-                file_list: List[Manager.FileEntry] = await self._manager.list_files(
-                    rel_path=rel_path, patterns=pattern, recursive=recursive
-                )
-                response_data = {"status": WebApp.SUCCESS_KEY, "files": [entry.__dict__ for entry in file_list]}
-                return JSONResponse(content=response_data)
-            except Exception as e:
-                logger.exception(e)
-                return JSONResponse(
-                    content={"status": WebApp.FAILURE_KEY, "message": str(e)},
-                    status_code=500,
-                )
-
-        @self._app.get("/api/images/get", tags=[ApiTags.IMAGES])
-        async def get_file(
-            rel_path: str = Query(..., alias="path", description="Relative path to the file under root"),
-            raw: bool = Query(False, description="If true, return as raw file response instead of base64 JSON"),
-        ):
-            """
-            Retrieve a file either as base64 JSON (default) or as a browser-friendly image file (raw=true).
-
-            Args:
-                rel_path (str): Relative file path.
-                raw (bool): If true, return as image; otherwise return base64 JSON.
-
-            Returns:
-                JSONResponse or Response
-            """
-            try:
-                result = await self._manager.open_file(rel_path)
-                if not result:
-                    if raw:
-                        raise HTTPException(status_code=404, detail="File not found")
-                    else:
-                        return JSONResponse({"status": WebApp.FAILURE_KEY, "message": f"File {rel_path} not found"})
-
-                file_obj, filename = result
-                content = await file_obj.read()
-                await file_obj.close()
-
-                mime_type, _ = mimetypes.guess_type(filename)
-                mime_type = mime_type or "application/octet-stream"
-
-                if raw:
-                    return Response(
-                        content=content,
-                        media_type=mime_type,
-                        headers={"Content-Disposition": f'inline; filename="{filename}"'},
-                    )
-
-                metadata: ImageMetadata = await self._manager.get_image_metadata(rel_path)
-                encoded = base64.b64encode(content).decode("utf-8")
-                return JSONResponse(
-                    {
-                        "status": WebApp.SUCCESS_KEY,
-                        "filename": filename,
-                        "mime_type": mime_type,
-                        "content": encoded,
-                        **asdict(metadata),
-                    }
-                )
-
-            except HTTPException:
-                raise
-            except Exception as e:
-                logger.exception("Error retrieving file")
-                return JSONResponse(
-                    status_code=500,
-                    content={"status": WebApp.FAILURE_KEY, "message": str(e)},
-                )
 
         ################################################################################
         # MODELS API
@@ -568,3 +405,35 @@ class WebApp:
         )
         @self._manager.sources_api_request("get_sources")
         async def get_sources(payload: Request) -> JSONResponse: ...
+
+        ################################################################################
+        # Images API
+        ################################################################################
+
+        @self._app.post(
+            "/api/images/metadata/get",
+            response_class=JSONResponse,
+            tags=[ApiTags.IMAGES],
+            operation_id="get_image_metadata",
+        )
+        @self._manager.images_api_request("get_image_metadata")
+        async def get_image_metadata(payload: GetImageMetadataPayload) -> JSONResponse: ...
+
+        @self._app.post(
+            "/api/images/metadata/update",
+            response_class=JSONResponse,
+            tags=[ApiTags.IMAGES],
+            operation_id="update_image_metadata",
+        )
+        @self._manager.images_api_request("update_image_metadata")
+        async def update_image_metadata(payload: UpdateMetadataPayload) -> JSONResponse: ...
+
+        @self._app.post(
+            "/api/images/list", response_class=JSONResponse, tags=[ApiTags.IMAGES], operation_id="list_images"
+        )
+        @self._manager.images_api_request("list_images")
+        async def list_files(payload: ListFilesPayload) -> JSONResponse: ...
+
+        @self._app.post("/api/images/get", response_class=JSONResponse, tags=[ApiTags.IMAGES], operation_id="get_image")
+        @self._manager.images_api_request("get_image")
+        async def get_file(payload: GetFilePayload) -> JSONResponse: ...
