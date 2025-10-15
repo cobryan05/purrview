@@ -84,30 +84,40 @@ export async function recognizeImage() {
       throw new Error('Failed to convert canvas image to Blob');
     }
 
-    // Prepare form data for POST
-    const formData = new FormData();
-    formData.append('model_name', modelName);
-    formData.append('conf_thresh', '0.25');
-    formData.append('return_annotated', 'false');
-    formData.append('image', blob, 'canvas_image.png');
+    // Convert Blob to base64
+    const arrayBuffer = await blob.arrayBuffer();
+    const base64String = btoa(
+      new Uint8Array(arrayBuffer).reduce((data, byte) => data + String.fromCharCode(byte), '')
+    );
+
+    // Prepare JSON payload
+    const payload = {
+      model_name: modelName,
+      conf_thresh: 0.25,
+      return_annotated: false,
+      pin_id: null, // optional
+      image_base64: base64String,
+    };
 
     toast("Sending recognition request...");
     // Send recognition request
     const response = await fetch('/api/recognize', {
       method: 'POST',
-      body: formData,
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(payload),
     });
 
     if (!response.ok) {
-      const text = await response.text();
-      throw new Error(`Recognition API error: ${response.status} ${text}`);
+      throw new Error(`Recognition request failed: ${response.statusText}`);
     }
 
     const result = await response.json();
     console.log('Recognize response:', result);
 
     if (result.status === 'success') {
-      addRecognizedBoxes(result.results);
+      addRecognizedBoxes(result.detections);
     }
   } catch (err) {
     console.error('Failed to recognize image:', err);

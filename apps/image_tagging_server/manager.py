@@ -1,38 +1,24 @@
 """Manager for Image Tagging Server"""
 
 import asyncio
-import base64
-
 import logging
 import sys
-from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
-
-import cv2
 import db_client
 import inference_client
-import numpy as np
 import tasks_client
+from db_client.api.images_api import ImagesApi
 from db_client.api.labels_api import LabelsApi
 from db_client.api.sources_api import SourcesApi
-from db_client.api.images_api import ImagesApi
 from inference_client.api.inference_api import InferenceApi
 from inference_client.api.models_api import ModelsApi
 from inference_client.models.associate_label_with_model_class_payload import (
     AssociateLabelWithModelClassPayload,
 )
-from inference_client.models.body_pin_model import BodyPinModel
-from inference_client.models.recognize_payload import RecognizePayload
 from tasks_client.api.tasks_api import TasksApi
 
-from apps.helpers.db.db_client import (
-    BoundingBoxMetadata,
-    DbClient,
-    LabelMetadata,
-)
-
-from apps.helpers.imageUtils import base64_encode_png
+from apps.helpers.db.db_client import BoundingBoxMetadata, DbClient, LabelMetadata
 from apps.helpers.webUtils import api_forward_request
 
 logging.basicConfig(stream=sys.stdout)
@@ -281,66 +267,6 @@ class Manager:
 
         await self.update_image_metadata(image_rel_path, image_meta)
 
-    async def recognize(
-        self,
-        model_name: str,
-        image: np.ndarray,
-        conf_thresh: float = 0.25,
-        **kwargs,
-    ) -> Tuple[List[Dict[str, Any]], Optional[np.ndarray]]:
-        """
-        Recognize objects in an image using a specified model.
-
-        Args:
-            model_name (str): Name of the model to use for recognition.
-            image (np.ndarray): The input image in BGR format.
-            conf_thresh (float): Confidence threshold for detections.
-
-        Returns:
-            Tuple[List[Dict[str, Any]], Optional[np.ndarray]]:
-                List of detections and optionally the annotated image
-        """
-        # Ensure model is pinned
-        model_api = ModelsApi(self._inference_api_client)
-        post_info = BodyPinModel(model_name=model_name, duration=self.PIN_DURATION)
-        pin_id = self._model_pins.get(model_name)
-
-        if pin_id is None:
-            model_api = ModelsApi(self._inference_api_client)
-            post_info = BodyPinModel(model_name=model_name, duration=self.PIN_DURATION)
-            pin_response: Dict[str, Any] = await asyncio.to_thread(model_api.pin_model, post_info)
-            if pin_response.get("status") != "success":
-                raise RuntimeError(f"Failed to pin model '{model_name}': {pin_response}")
-            self._model_pins[model_name] = pin_response.get("pin_id")
-
-        image_base64 = base64_encode_png(image)
-
-        # Build the RecognizePayload Pydantic model
-        return_annotated = kwargs.get("return_annotated", False)
-        payload = RecognizePayload(
-            model_name=model_name,
-            conf_thresh=conf_thresh,
-            return_annotated=return_annotated,
-            pin_id=pin_id,
-            image_base64=image_base64,
-        )
-
-        # Call the /api/recognize-json endpoint, operationId: "recognize_json"
-        inference_api = InferenceApi(self._inference_api_client)
-        response: Dict[str, Any] = await asyncio.to_thread(inference_api.recognize_json, recognize_payload=payload)
-
-        if "detections" not in response:
-            raise RuntimeError(f"Recognition failed: {response}")
-
-        detections = response["detections"]
-        annotated_image = None
-
-        if return_annotated and "annotated_image" in response:
-            annotated_bytes = base64.b64decode(response["annotated_image"])
-            nparr = np.frombuffer(annotated_bytes, np.uint8)
-            annotated_image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-
-        return detections, annotated_image
 
     def start(self):
         """Start the periodic worker task, should be called from the event loop to run on"""

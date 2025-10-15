@@ -26,6 +26,7 @@ from apps.helpers.consts import ApiTags
 from apps.inference_server.web import (
     AssociateLabelWithModelClassPayload,
     GetModelLabelsPayload,
+    RecognizePayload,
 )
 from apps.tasks_server.web import (
     CancelTasksPayload,
@@ -145,65 +146,28 @@ class WebApp:
         @self._manager.model_api_request("get_model_labels")
         async def get_model_labels_api(payload: GetModelLabelsPayload) -> JSONResponse: ...
 
+
+        @self._app.post(
+            "/api/models/labels/get",
+            tags=[ApiTags.MODELS],
+            operation_id="get_labels",
+            response_class=JSONResponse,
+        )
+        @self._manager.model_api_request("get_model_labels")
+        async def get_model_labels_api(payload: GetModelLabelsPayload) -> JSONResponse: ...
+
         ################################################################################
-        # RECOGNIZE API
+        # INFERENCE API
         ################################################################################
 
-        @self._app.post("/api/recognize", response_class=JSONResponse, tags=[ApiTags.INFERENCE])
-        async def recognize_api(
-            model_name: str = Form(..., description="Name of the model to use for recognition"),
-            conf_thresh: float = Form(..., description="Confidence threshold for detections"),
-            return_annotated: bool = Form(False, description="Whether to return the annotated image"),
-            image: UploadFile = File(..., description="Image file to process"),
-        ):
-            """
-            API endpoint for recognizing an image with a specific model.
-
-            Args:
-                model_name (str): Name of the model to use for recognition.
-                conf_thresh (float): Confidence threshold for detections.
-                return_annotated (bool): Whether to return the annotated image.
-                image (UploadFile): Image file to process.
-
-            Returns:
-                JSONResponse: Response with new task ID or error.
-            """
-            try:
-                image_bytes = await image.read()
-
-                import cv2
-                import numpy as np
-
-                nparr = np.frombuffer(image_bytes, np.uint8)
-                image_array = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-
-                results, annotated_image = await self._manager.recognize(
-                    model_name=model_name,
-                    image=image_array,
-                    conf_thresh=conf_thresh,
-                    return_annotated=return_annotated,
-                )
-
-                response_content = {
-                    "status": WebApp.SUCCESS_KEY,
-                    "results": results,
-                }
-
-                if return_annotated and annotated_image is not None:
-                    # Encode annotated_image as base64 JPEG string
-                    success, buffer = cv2.imencode(".png", annotated_image)
-                    if success:
-                        annotated_base64 = base64.b64encode(buffer).decode("utf-8")
-                        response_content["annotated_image"] = annotated_base64
-
-                return JSONResponse(content=response_content)
-
-            except Exception as e:
-                logger.exception("Recognition failed")
-                return JSONResponse(
-                    status_code=500,
-                    content={"status": WebApp.FAILURE_KEY, "message": str(e)},
-                )
+        @self._app.post(
+            "/api/recognize",
+            tags=[ApiTags.INFERENCE],
+            operation_id="recognize",
+            response_class=JSONResponse,
+        )
+        @self._manager.inference_api_request("recognize")
+        async def recognize_api(payload: RecognizePayload) -> JSONResponse: ...
 
         ################################################################################
         # LABELS API
