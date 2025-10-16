@@ -267,7 +267,6 @@ class Manager:
 
         await self.update_image_metadata(image_rel_path, image_meta)
 
-
     def start(self):
         """Start the periodic worker task, should be called from the event loop to run on"""
         if self._task and not self._task.done():

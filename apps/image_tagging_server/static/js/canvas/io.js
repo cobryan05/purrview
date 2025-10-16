@@ -1,6 +1,6 @@
 import { createBoundingBox } from './drawing.js';
 import { getCurrentImageName, getLayer, getStage, getTransformer, setCurrentImageName } from './state.js';
-import { Logger } from '/app-static/js/ui/utils/index.js';
+import { Logger, fetchImage } from '/app-static/js/ui/utils/index.js';
 
 export async function reloadImage() {
   const imageName = getCurrentImageName();
@@ -24,27 +24,7 @@ export async function loadImageAndMetadata(imageName) {
     clearAnnotations();
     setCurrentImageName(imageName);
 
-    // === Load image blob + metadata via unified API ===
-    const imageRes = await fetch(`/api/images/get`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ path: imageName }),
-    });
-    if (!imageRes.ok) throw new Error(`Failed to load image via API for ${imageName}`);
-
-    const imageJson = await imageRes.json();
-    if (imageJson.status !== 'success' || !imageJson.content) {
-      throw new Error(`Invalid image API response for ${imageName}`);
-    }
-
-    // === Decode image ===
-    const img = new Image();
-    img.src = `data:${imageJson.mime_type};base64,${imageJson.content}`;
-    await new Promise((resolve, reject) => {
-      img.onload = resolve;
-      img.onerror = () =>
-        reject(new Error(`Failed to decode base64 image for ${imageName}`));
-    });
+    const { image: img, bboxes } = await fetchImage(imageName);
 
     transformer.nodes([]);
     layer.getChildren().forEach(child => {
@@ -63,8 +43,7 @@ export async function loadImageAndMetadata(imageName) {
     layer.add(bg);
     layer.moveToBottom();
 
-    // === Load metadata from imageJson.boxes ===
-    for (const box of imageJson.boxes || []) {
+    for (const box of bboxes) {
       const absX = box.x * img.width;
       const absY = box.y * img.height;
       const absWidth = box.width * img.width;

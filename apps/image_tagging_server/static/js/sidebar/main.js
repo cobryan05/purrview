@@ -7,7 +7,8 @@ import { renderLabelList } from '/app-static/js/ui/labels.js';
 import { renderModelLabelAssignments } from '/app-static/js/ui/models.js';
 import { renderSourceManager } from '/app-static/js/ui/sources.js';
 import { renderActiveTasks, renderTaskConfigs } from '/app-static/js/ui/tasks.js';
-import { clearModelsCache, fetchModelsList, toast } from '/app-static/js/ui/utils/index.js';
+import { clearModelsCache, fetchImageList, fetchModelsList, toast } from '/app-static/js/ui/utils/index.js';
+
 // --- Model list UI ---
 
 /**
@@ -65,30 +66,17 @@ export async function recognizeImage() {
     }
 
     const modelName = selected.value;
+
     const layer = getLayer();
     const background = layer.findOne('.background');
     if (!background || !background.image()) {
       throw new Error('No background image found on canvas');
     }
-
-    // Draw background image to a temporary canvas
-    const tempCanvas = document.createElement('canvas');
-    tempCanvas.width = background.image().width;
-    tempCanvas.height = background.image().height;
-    const ctx = tempCanvas.getContext('2d');
-    ctx.drawImage(background.image(), 0, 0);
-
-    // Convert to Blob
-    const blob = await new Promise(resolve => tempCanvas.toBlob(resolve, 'image/png'));
-    if (!blob) {
-      throw new Error('Failed to convert canvas image to Blob');
+    const img = background.image();
+    if (!img.src.startsWith("data:")) {
+      throw new Error("Image is not a base64 data URI");
     }
-
-    // Convert Blob to base64
-    const arrayBuffer = await blob.arrayBuffer();
-    const base64String = btoa(
-      new Uint8Array(arrayBuffer).reduce((data, byte) => data + String.fromCharCode(byte), '')
-    );
+    const base64String = img.src.split(',')[1]; // strip "data:image/png;base64,"
 
     // Prepare JSON payload
     const payload = {
@@ -161,14 +149,7 @@ async function loadFileBrowser(path) {
   browser.innerHTML = 'Loading...';
 
   try {
-    const res = await fetch(`/api/images/list`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ path: path }),
-    });
-    if (!res.ok) throw new Error('Failed to fetch file list');
-    const data = await res.json();
-
+    const fileList = await fetchImageList(path);
     const currentPath = path || '/';
     const breadcrumb = document.createElement('div');
     breadcrumb.style.marginBottom = '0.5em';
@@ -189,7 +170,7 @@ async function loadFileBrowser(path) {
     list.style.listStyle = 'none';
     list.style.padding = '0';
 
-    data.files.forEach(entry => {
+    fileList.forEach(entry => {
       const li = document.createElement('li');
       li.style.margin = '0.2em 0';
 
