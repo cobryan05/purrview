@@ -41,7 +41,7 @@ class MqttImageProvider(ImageProvider):
             image_bytes = np.array(image)
             asyncio.run_coroutine_threadsafe(self._frameQueue.put(image_bytes), self._loop)
         except Exception as e:
-            logger.exception(e)
+            logger.error(e, exc_info=True)
 
     async def getNextImage(self) -> Optional[ImageWithMetadata]:
         """Asynchronously retrieves the next image from the queue."""

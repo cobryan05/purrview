@@ -278,7 +278,7 @@ class Manager:
         try:
             await self._legacy_db_client.init_db()
         except Exception as e:
-            logger.exception(e)
+            logger.error(e, exc_info=True)
             raise
 
     async def _worker_task(self):

@@ -179,10 +179,9 @@ class WebApp:
                 response_data = {JsonKeys.STATUS: JsonValues.SUCCESS, "models": model_list}
                 return JSONResponse(content=response_data)
             except Exception as e:
-                logger.exception(e)
+                logger.error(e, exc_info=True)
                 return JSONResponse(
                     content={JsonKeys.STATUS: JsonValues.FAILURE, JsonKeys.MESSAGE: str(e)},
-                    status_code=500,
                 )
 
         @self._app.post(
@@ -201,7 +200,7 @@ class WebApp:
             try:
                 label_map: dict[str, str] = await self._manager.get_model_labels(payload.model_name)
             except Exception as e:
-                logger.exception(e)
+                logger.error(e, exc_info=True)
                 return JSONResponse(content={JsonKeys.STATUS: JsonValues.FAILURE, JsonKeys.MESSAGE: str(e)})
 
             return JSONResponse(
@@ -209,7 +208,6 @@ class WebApp:
                     JsonKeys.STATUS: JsonValues.SUCCESS,
                     "labels": label_map,
                 },
-                status_code=200,
             )
 
         @self._app.post(
@@ -232,10 +230,9 @@ class WebApp:
                 response_data = {JsonKeys.STATUS: JsonValues.SUCCESS, "label_set": ret}
                 return JSONResponse(content=response_data)
             except Exception as e:
-                logger.exception(e)
+                logger.error(e, exc_info=True)
                 return JSONResponse(
                     content={JsonKeys.STATUS: JsonValues.FAILURE, JsonKeys.MESSAGE: str(e)},
-                    status_code=500,
                 )
 
         @self._app.post(
@@ -260,7 +257,7 @@ class WebApp:
                 # Use the payload fields
                 pin_id = await self._manager.pin_model(payload.model_name, payload.duration)
             except Exception as e:
-                logger.exception(e)
+                logger.error(e, exc_info=True)
                 return JSONResponse(content={JsonKeys.STATUS: JsonValues.FAILURE, JsonKeys.MESSAGE: str(e)})
 
             return JSONResponse(
@@ -269,7 +266,6 @@ class WebApp:
                     JsonKeys.MESSAGE: "Model pinned successfully.",
                     "pin_id": pin_id,
                 },
-                status_code=200,
             )
 
         @self._app.post(
@@ -298,8 +294,5 @@ class WebApp:
                     }
                 )
             except Exception as e:
-                logger.exception(e)
-                return JSONResponse(
-                    content={JsonKeys.STATUS: JsonValues.FAILURE, JsonKeys.MESSAGE: str(e)},
-                    status_code=500,
-                )
+                logger.error(e, exc_info=True)
+                return JSONResponse(content={JsonKeys.STATUS: JsonValues.FAILURE, JsonKeys.MESSAGE: str(e)})

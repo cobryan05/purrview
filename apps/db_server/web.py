@@ -171,11 +171,8 @@ class WebApp:
                 )
                 return JSONResponse(content={JsonKeys.STATUS: JsonValues.SUCCESS, "label": asdict(label)})
             except Exception as e:
-                logger.exception(e)
-                return JSONResponse(
-                    content={JsonKeys.STATUS: JsonValues.FAILURE, JsonKeys.MESSAGE: str(e)},
-                    status_code=500,
-                )
+                logger.error(e, exc_info=True)
+                return JSONResponse(content={JsonKeys.STATUS: JsonValues.FAILURE, JsonKeys.MESSAGE: str(e)})
 
         @self._app.post(
             "/api/labels/delete", response_class=JSONResponse, tags=[ApiTags.LABELS], operation_id="delete_label"
@@ -188,11 +185,8 @@ class WebApp:
                 await self._manager.delete_label(request.label_uuid)
                 return JSONResponse(content={JsonKeys.STATUS: JsonValues.SUCCESS})
             except Exception as e:
-                logger.exception(e)
-                return JSONResponse(
-                    content={JsonKeys.STATUS: JsonValues.FAILURE, JsonKeys.MESSAGE: str(e)},
-                    status_code=500,
-                )
+                logger.error(e, exc_info=True)
+                return JSONResponse(content={JsonKeys.STATUS: JsonValues.FAILURE, JsonKeys.MESSAGE: str(e)})
 
         @self._app.get(
             "/api/labels/list", response_class=JSONResponse, tags=[ApiTags.LABELS], operation_id="list_labels"
@@ -213,10 +207,9 @@ class WebApp:
                 response_data = {JsonKeys.STATUS: JsonValues.SUCCESS, "labels": labels}
                 return JSONResponse(content=response_data)
             except Exception as e:
-                logger.exception(e)
+                logger.error(e, exc_info=True)
                 return JSONResponse(
                     content={JsonKeys.STATUS: JsonValues.FAILURE, JsonKeys.MESSAGE: str(e)},
-                    status_code=500,
                 )
 
         @self._app.post(
@@ -230,10 +223,9 @@ class WebApp:
                 await self._manager.update_label(label_uuid=request.label_uuid, name=request.name, color=request.color)
                 return JSONResponse(content={JsonKeys.STATUS: JsonValues.SUCCESS})
             except Exception as e:
-                logger.exception(e)
+                logger.error(e, exc_info=True)
                 return JSONResponse(
                     content={JsonKeys.STATUS: JsonValues.FAILURE, JsonKeys.MESSAGE: str(e)},
-                    status_code=500,
                 )
 
         ################################################################################
@@ -261,10 +253,9 @@ class WebApp:
                 response_data = {JsonKeys.STATUS: JsonValues.SUCCESS, "providers": providers_list}
                 return JSONResponse(content=response_data)
             except Exception as e:
-                logger.exception(e)
+                logger.error(e, exc_info=True)
                 return JSONResponse(
                     content={JsonKeys.STATUS: JsonValues.FAILURE, JsonKeys.MESSAGE: str(e)},
-                    status_code=500,
                 )
 
         @self._app.post(
@@ -281,10 +272,9 @@ class WebApp:
                 schema = await self._manager.get_image_provider_schema(payload.image_provider)
                 return JSONResponse(content={JsonKeys.STATUS: JsonValues.SUCCESS, "schema": schema})
             except Exception as e:
-                logger.exception(e)
+                logger.error(e, exc_info=True)
                 return JSONResponse(
                     content={JsonKeys.STATUS: JsonValues.FAILURE, JsonKeys.MESSAGE: str(e)},
-                    status_code=500,
                 )
 
         @self._app.post(
@@ -306,10 +296,9 @@ class WebApp:
                 )
                 return JSONResponse(content={JsonKeys.STATUS: JsonValues.SUCCESS, "source": asdict(source_metadata)})
             except Exception as e:
-                logger.exception(e)
+                logger.error(e, exc_info=True)
                 return JSONResponse(
                     content={JsonKeys.STATUS: JsonValues.FAILURE, JsonKeys.MESSAGE: str(e)},
-                    status_code=500,
                 )
 
         @self._app.post(
@@ -353,10 +342,9 @@ class WebApp:
                 await self._manager.delete_sources(payload.source_uuids)
                 return JSONResponse(content={JsonKeys.STATUS: JsonValues.SUCCESS})
             except Exception as e:
-                logger.exception(e)
+                logger.error(e, exc_info=True)
                 return JSONResponse(
                     content={JsonKeys.STATUS: JsonValues.FAILURE, JsonKeys.MESSAGE: str(e)},
-                    status_code=500,
                 )
 
         @self._app.get(
@@ -380,10 +368,9 @@ class WebApp:
                 response_data = {JsonKeys.STATUS: JsonValues.SUCCESS, "sources": sources_dict}
                 return JSONResponse(content=response_data)
             except Exception as e:
-                logger.exception(e)
+                logger.error(e, exc_info=True)
                 return JSONResponse(
                     content={JsonKeys.STATUS: JsonValues.FAILURE, JsonKeys.MESSAGE: str(e)},
-                    status_code=500,
                 )
 
         ################################################################################
@@ -415,7 +402,9 @@ class WebApp:
             label_uuid_map = await self._manager.get_label_uuid_map()
 
             if metadata is None:
-                raise HTTPException(status_code=404, detail="Image not found")
+                return JSONResponse(
+                    content={JsonKeys.STATUS: JsonValues.FAILURE, JsonKeys.MESSAGE: "Image not found"},
+                )
 
             # Build new bounding box list from input
             new_boxes = []
@@ -475,10 +464,9 @@ class WebApp:
                 response_data = {JsonKeys.STATUS: JsonValues.SUCCESS, "files": [entry.__dict__ for entry in file_list]}
                 return JSONResponse(content=response_data)
             except Exception as e:
-                logger.exception(e)
+                logger.error(e, exc_info=True)
                 return JSONResponse(
                     content={JsonKeys.STATUS: JsonValues.FAILURE, JsonKeys.MESSAGE: str(e)},
-                    status_code=500,
                 )
 
         @self._app.post(
@@ -533,6 +521,5 @@ class WebApp:
             except Exception as e:
                 logger.exception("Error retrieving file")
                 return JSONResponse(
-                    status_code=500,
                     content={JsonKeys.STATUS: JsonValues.FAILURE, JsonKeys.MESSAGE: str(e)},
                 )

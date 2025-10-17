@@ -340,5 +340,5 @@ class Manager:
             return f, filename
 
         except Exception as e:
-            logger.error(f"Failed to open file {rel_path}: {e}")
+            logger.error(f"Failed to open file {rel_path}: {e}", exc_info=True)
             return None

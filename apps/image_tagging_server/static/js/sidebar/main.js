@@ -7,8 +7,7 @@ import { renderLabelList } from '/app-static/js/ui/labels.js';
 import { renderModelLabelAssignments } from '/app-static/js/ui/models.js';
 import { renderSourceManager } from '/app-static/js/ui/sources.js';
 import { renderActiveTasks, renderTaskConfigs } from '/app-static/js/ui/tasks.js';
-import { clearModelsCache, fetchImageList, fetchModelsList, toast } from '/app-static/js/ui/utils/index.js';
-
+import { Logger, clearModelsCache, fetchImageList, fetchModelsList, toast } from '/app-static/js/ui/utils/index.js';
 // --- Model list UI ---
 
 /**
@@ -102,13 +101,14 @@ export async function recognizeImage() {
     }
 
     const result = await response.json();
-    console.log('Recognize response:', result);
+    Logger.debug('Recognize response:', result);
 
-    if (result.status === 'success') {
-      addRecognizedBoxes(result.detections);
+    if (result.status != 'success') {
+      throw new Error(`Recognition failed: ${result.message}`);
     }
+    addRecognizedBoxes(result.detections);
   } catch (err) {
-    console.error('Failed to recognize image:', err);
+    Logger.error('Failed to recognize image:', err);
   }
 }
 

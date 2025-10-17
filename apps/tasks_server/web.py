@@ -248,10 +248,9 @@ class WebApp:
                 response_data = {"status": WebApp.SUCCESS_KEY, "types": types_list}
                 return JSONResponse(content=response_data)
             except Exception as e:
-                logger.exception(e)
+                logger.error(e, exc_info=True)
                 return JSONResponse(
                     content={"status": WebApp.FAILURE_KEY, "message": str(e)},
-                    status_code=500,
                 )
 
         @self._app.post(
@@ -371,10 +370,9 @@ class WebApp:
                 response_data = {"status": WebApp.SUCCESS_KEY, "tasks": payload.task_ids}
                 return JSONResponse(content=response_data)
             except Exception as e:
-                logger.exception(e)
+                logger.error(e, exc_info=True)
                 return JSONResponse(
                     content={"status": WebApp.FAILURE_KEY, "message": str(e)},
-                    status_code=500,
                 )
 
         @self._app.post(
@@ -398,10 +396,9 @@ class WebApp:
                 response_data = {"status": WebApp.SUCCESS_KEY, "tasks": payload.task_ids}
                 return JSONResponse(content=response_data)
             except Exception as e:
-                logger.exception(e)
+                logger.error(e, exc_info=True)
                 return JSONResponse(
                     content={"status": WebApp.FAILURE_KEY, "message": str(e)},
-                    status_code=500,
                 )
 
         @self._app.post(
@@ -425,10 +422,9 @@ class WebApp:
                 response_data = {"status": WebApp.SUCCESS_KEY, "tasks": payload.task_ids}
                 return JSONResponse(content=response_data)
             except Exception as e:
-                logger.exception(e)
+                logger.error(e, exc_info=True)
                 return JSONResponse(
                     content={"status": WebApp.FAILURE_KEY, "message": str(e)},
-                    status_code=500,
                 )
 
         @self._app.post(
@@ -452,10 +448,9 @@ class WebApp:
                 response_data = {"status": WebApp.SUCCESS_KEY, "tasks": payload.task_ids}
                 return JSONResponse(content=response_data)
             except Exception as e:
-                logger.exception(e)
+                logger.error(e, exc_info=True)
                 return JSONResponse(
                     content={"status": WebApp.FAILURE_KEY, "message": str(e)},
-                    status_code=500,
                 )
 
         @self._app.post(
@@ -504,10 +499,9 @@ class WebApp:
                 response_data = {"status": WebApp.SUCCESS_KEY, "configs": payload.config_uuids}
                 return JSONResponse(content=response_data)
             except Exception as e:
-                logger.exception(e)
+                logger.error(e, exc_info=True)
                 return JSONResponse(
                     content={"status": WebApp.FAILURE_KEY, "message": str(e)},
-                    status_code=500,
                 )
 
         @self._app.post(
@@ -532,10 +526,9 @@ class WebApp:
                 response_data = {"status": WebApp.SUCCESS_KEY, "configs": task_configs_dict}
                 return JSONResponse(content=response_data)
             except Exception as e:
-                logger.exception(e)
+                logger.error(e, exc_info=True)
                 return JSONResponse(
                     content={"status": WebApp.FAILURE_KEY, "message": str(e)},
-                    status_code=500,
                 )
 
         @self._app.post(
@@ -562,10 +555,9 @@ class WebApp:
                 )
                 return JSONResponse(content={"status": WebApp.SUCCESS_KEY})
             except Exception as e:
-                logger.exception(e)
+                logger.error(e, exc_info=True)
                 return JSONResponse(
                     content={"status": WebApp.FAILURE_KEY, "message": str(e)},
-                    status_code=500,
                 )
 
         @self._app.post(

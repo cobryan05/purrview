@@ -21,7 +21,7 @@ class Task(ABC):
 
     class InternalKeys(str, Enum):
         PERSISTENT = "_persistent"
-        ONESHOT_RESULT = "_oneshot_result" # delete the task when the result is fetched
+        ONESHOT_RESULT = "_oneshot_result"  # delete the task when the result is fetched
         # TODO: Task *configs* need a way to delete or else Preview tasks can build up
 
     def __init__(self, task_config_uuid: str, params: dict[str, Any]):
@@ -103,7 +103,7 @@ class Task(ABC):
             self._status = Task.Status.COMPLETED
         except Exception as e:
             self._status = Task.Status.ERROR
-            logger.exception(e)
+            logger.error(e, exc_info=True)
             self._results = {"status": Task.Status.ERROR, "message": str(e)}
         finally:
             self._progress = 100.0
