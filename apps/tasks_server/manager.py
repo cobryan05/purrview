@@ -345,7 +345,7 @@ class Manager:
     async def _start_task(self, config_metadata: TaskConfigMetadata) -> Optional[RunningTaskInfo]:
         """Start a task."""
         task_instance = task_registry[config_metadata.typename](
-            task_config_uuid=config_metadata.uuid, params=config_metadata.params
+            task_config_uuid=config_metadata.uuid, params=config_metadata.params, manager=self
         )
         task_metadata: ActiveTaskMetadata = await self._db_client.insert_new_active_task(config_metadata.uuid)
         task_info: RunningTaskInfo = RunningTaskInfo(

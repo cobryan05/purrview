@@ -1,10 +1,14 @@
+from __future__ import annotations
 import asyncio
 import logging
 import sys
 from abc import ABC, abstractmethod
-from typing import Any, Optional
+from typing import Any, Optional, TYPE_CHECKING
 from enum import Enum
 from apps.helpers.consts import TaskStatus
+if TYPE_CHECKING:
+    from ..manager import Manager
+
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger(__file__)
 logger.setLevel(logging.DEBUG)
@@ -16,7 +20,7 @@ class Task(ABC):
         ONESHOT_RESULT = "_oneshot_result"  # delete the task when the result is fetched
         # TODO: Task *configs* need a way to delete or else Preview tasks can build up
 
-    def __init__(self, task_config_uuid: str, params: dict[str, Any] ):
+    def __init__(self, task_config_uuid: str, params: dict[str, Any], manager: Manager):
         self._config_uuid: str = task_config_uuid
         self._status: TaskStatus = TaskStatus.PENDING
         self._params: dict[str, Any] = params
@@ -29,6 +33,7 @@ class Task(ABC):
         self._pause_flag: asyncio.Event = asyncio.Event()
         self._data_req_flag: asyncio.Event = asyncio.Event()
         self._data_ready_flag: asyncio.Event = asyncio.Event()
+        self._manager: Manager = manager
 
     @abstractmethod
     async def _init(self, params: dict[str, Any], resume_data: Optional[dict[str, Any]]) -> None:
