@@ -106,6 +106,7 @@ export async function recognizeImage() {
     if (result.status != 'success') {
       throw new Error(`Recognition failed: ${result.message}`);
     }
+    toast(`${result.detections.length} objects detected`);
     addRecognizedBoxes(result.detections);
   } catch (err) {
     Logger.error('Failed to recognize image:', err);
