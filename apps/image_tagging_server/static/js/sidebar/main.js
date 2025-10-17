@@ -298,18 +298,17 @@ document.addEventListener('DOMContentLoaded', () => {
         const tabName = tab.getAttribute('data-tab');
         tabPanes.forEach(tc => tc.classList.toggle('active', tc.id === tabName));
 
-        // If "Settings" tab is opened, ensure "Label Management" is active within it
+        // If "Settings" tab is opened, trigger the Label Management tab click
         if (tabName === 'outer-tab-settings') {
-          const labelManagementTabBtn = document.querySelector('#outer-tab-settings .tab-button[data-tab="tab-label-management"]');
-          const labelManagementPane = document.getElementById('tab-label-management');
-          if (labelManagementTabBtn && labelManagementPane) {
-            // Ensure only tabs within this specific tab header are activated
-            labelManagementTabBtn.closest('.primary-tab-header').querySelectorAll('.tab-button').forEach(t => t.classList.remove('active'));
-            labelManagementTabBtn.classList.add('active');
-            labelManagementPane.classList.add('active');
+          const defaultTabBtn = document.querySelector('#outer-tab-settings .tab-button[data-tab="tab-label-management"]');
+          if (defaultTabBtn) {
+            // Only trigger if no tab is currently active inside this header
+            const primaryHeader = defaultTabBtn.closest('.primary-tab-header');
+            const activeInner = primaryHeader.querySelector('.tab-button.active');
+            if (!activeInner) {
+              defaultTabBtn.click(); // trigger the click handler
+            }
           }
-          renderLabelList({ target: "labels-list" });
-          renderModelLabelAssignments({ target: "model-labels-box" });
         }
       });
     });
