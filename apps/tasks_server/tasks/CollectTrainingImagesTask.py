@@ -1,11 +1,14 @@
-import asyncio
-import os
-from typing import Any, Optional
+from typing import Any, Dict, Optional
 
 from .Registry import register_task
-from apps.helpers.imageProviders.Registry import image_provider_registry
 from .Task import Task
-from apps.helpers.imageUtils import base64_encode_png
+from dataclasses import dataclass
+from dacite import from_dict, Config
+
+@dataclass
+class ModelLabelValues:
+    modelName: str
+    labelValues: Dict[str, float]
 
 
 @register_task()
@@ -13,8 +16,15 @@ class CollectTrainingImagesTask(Task):
     async def _init(self, params: dict[str, Any], resume_data: Optional[dict[str, Any]]) -> None:
         """Run any initialization logic for the task."""
         self._status_msg: str = "Creating Task"
-        self._provider: str = params.get("provider", "")
-        self._provider_params: dict[str, Any] = params.get("provider_params", {})
+        self._source_uuid: str = params.get("source_uuid", "")
+        self._output_dir: str = params.get("output_dir", "")
+        self._min_capture_interval: int = int(params.get("min_capture_interval", 0))
+        self._model_label_configs: list[ModelLabelValues] = [
+            from_dict(ModelLabelValues, item, Config(cast=[float])) for item in params.get("model_label_config", [])
+        ]
+
+
+        print("HI")
 
     async def _run(self) -> dict[str, Any]:
         """Run the main logic of the task."""

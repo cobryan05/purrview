@@ -14,8 +14,7 @@ import aiofiles
 import aiosqlite
 from dacite import from_dict
 
-from apps.helpers.fileUtils import get_safe_path
-from apps.helpers.tasks.Task import Task
+from apps.helpers.consts import TaskStatus
 
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger(__file__)
@@ -452,7 +451,7 @@ class DbClient:
                 )
                 VALUES (?, ?, ?, ?, ?)
                 """,
-                (config_uuid, Task.Status.NEW, resume_data_json, None, expiry_sql),
+                (config_uuid, TaskStatus.NEW, resume_data_json, None, expiry_sql),
             )
             await db.commit()
 

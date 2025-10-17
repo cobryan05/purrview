@@ -3,7 +3,6 @@ from pathlib import Path
 
 import uvicorn
 
-import apps.helpers.tasks as _register_tasks  # pylint: disable=unused-import
 from apps import APPS_CONFIG, DB_DIR
 from apps.helpers.db.db_client import DbClient
 

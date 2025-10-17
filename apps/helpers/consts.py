@@ -1,6 +1,9 @@
 """Constants for JSON keys and values"""
 
-class JsonKeys:
+from enum import Enum
+
+
+class JsonKeys(str, Enum):
     STATUS = "status"
     MESSAGE = "message"
     CONFIG = "config"
@@ -9,15 +12,23 @@ class JsonKeys:
     RESULT = "result"
     ERROR = "error"
 
-class JsonValues:
+class JsonValues(str, Enum):
     SUCCESS = "success"
     FAILURE = "failure"
     ERROR = "error"
 
-class ApiTags:
+class ApiTags(str, Enum):
     LABELS = "labels"
     MODELS = "models"
     INFERENCE = "inference"
     IMAGES = "images"
     SOURCES = "sources"
     TASKS = "tasks"
+
+class TaskStatus(str, Enum):
+    NEW = "new"
+    PENDING = "pending"
+    RUNNING = "running"
+    PAUSED = "paused"
+    COMPLETED = "completed"
+    ERROR = "error"

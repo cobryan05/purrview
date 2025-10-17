@@ -63,7 +63,7 @@ class MqttImageProvider(ImageProvider):
     @classmethod
     def params_schema(cls) -> dict[str, dict[str, Any]]:
         """
-        Return a schema describing the parameters for this Task.
+        Return a schema describing the parameters for this Provider
         Each key is a parameter name, value is a dict with:
             - type: str
             - required: bool

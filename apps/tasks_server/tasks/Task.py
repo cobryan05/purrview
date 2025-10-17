@@ -4,29 +4,21 @@ import sys
 from abc import ABC, abstractmethod
 from typing import Any, Optional
 from enum import Enum
-
+from apps.helpers.consts import TaskStatus
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger(__file__)
 logger.setLevel(logging.DEBUG)
 
 
 class Task(ABC):
-    class Status(str, Enum):
-        NEW = "new"
-        PENDING = "pending"
-        RUNNING = "running"
-        PAUSED = "paused"
-        COMPLETED = "completed"
-        ERROR = "error"
-
     class InternalKeys(str, Enum):
         PERSISTENT = "_persistent"
         ONESHOT_RESULT = "_oneshot_result"  # delete the task when the result is fetched
         # TODO: Task *configs* need a way to delete or else Preview tasks can build up
 
-    def __init__(self, task_config_uuid: str, params: dict[str, Any]):
+    def __init__(self, task_config_uuid: str, params: dict[str, Any] ):
         self._config_uuid: str = task_config_uuid
-        self._status: Task.Status = Task.Status.PENDING
+        self._status: TaskStatus = TaskStatus.PENDING
         self._params: dict[str, Any] = params
         self._task: asyncio.Task | None = None
         self._progress: float = 0.0
@@ -95,16 +87,16 @@ class Task(ABC):
         return {}
 
     async def _execute(self) -> None:
-        await self._init(params=self._params, resume_data=self._resume_data)
         try:
-            self._status = Task.Status.RUNNING
+            await self._init(params=self._params, resume_data=self._resume_data)
+            self._status = TaskStatus.RUNNING
             results = await self._run()
-            self._results = {"status": Task.Status.COMPLETED, "data": results}
-            self._status = Task.Status.COMPLETED
+            self._results = {"status": TaskStatus.COMPLETED, "data": results}
+            self._status = TaskStatus.COMPLETED
         except Exception as e:
-            self._status = Task.Status.ERROR
+            self._status = TaskStatus.ERROR
             logger.error(e, exc_info=True)
-            self._results = {"status": Task.Status.ERROR, "message": str(e)}
+            self._results = {"status": TaskStatus.ERROR, "message": str(e)}
         finally:
             self._progress = 100.0
             await self._deinit()
@@ -146,7 +138,7 @@ class Task(ABC):
         """Return the resume data for the task."""
         return dict(self._resume_data)
 
-    def get_status(self) -> Status:
+    def get_status(self) -> TaskStatus:
         """Returns the current status"""
         return self._status
 

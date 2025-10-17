@@ -27,7 +27,7 @@ logger.setLevel(logging.DEBUG)
 
 
 class Manager:
-    """Manages image tagging tasks."""
+    """Manages image tagging frontend"""
 
     POLLING_INTERVAL: float = 5.0  # Interval in seconds for periodic tasks
     PIN_DURATION: float = 30 * 60  # Timeout before unloading model

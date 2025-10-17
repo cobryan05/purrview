@@ -17,8 +17,6 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 
-from apps.helpers.tasks.Task import Task
-
 from .manager import Manager, RunningTaskInfo, TaskConfigMetadata
 
 logging.basicConfig(stream=sys.stdout)

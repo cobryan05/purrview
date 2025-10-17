@@ -7,9 +7,11 @@ import sys
 from dataclasses import asdict, dataclass, field
 from typing import Any, Dict, List, Optional, Union
 
+from apps.helpers.consts import TaskStatus
 from apps.helpers.db.db_client import ActiveTaskMetadata, DbClient, TaskConfigMetadata
-from apps.helpers.tasks.Registry import task_registry
-from apps.helpers.tasks.Task import Task
+
+from .tasks.Registry import task_registry
+from .tasks.Task import Task
 
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger(__file__)
@@ -234,7 +236,7 @@ class Manager:
             self._running_tasks[task_id]
             for task_id in task_ids
             if task_id in self._running_tasks
-            and self._running_tasks[task_id].task_metadata.status == Task.Status.RUNNING
+            and self._running_tasks[task_id].task_metadata.status == TaskStatus.RUNNING
         ]
 
         for task_info in task_infos:
@@ -244,12 +246,12 @@ class Manager:
         for task_info in task_infos:
             try:
                 await task_info.task.wait_for_task_done(timeout=10.0)
-                task_info.config_metadata.status = Task.Status.PAUSED
+                task_info.config_metadata.status = TaskStatus.PAUSED
             except asyncio.TimeoutError as e:
                 logger.warning(f"Timeout while waiting task pause: {e}")
-                task_info.config_metadata.status = Task.Status.ERROR
+                task_info.config_metadata.status = TaskStatus.ERROR
             except StopIteration as e:
-                task_info.config_metadata.status = Task.Status.COMPLETED
+                task_info.config_metadata.status = TaskStatus.COMPLETED
                 logger.info(f"Task finished while waiting for data ready: {e}")
 
             try:
@@ -273,7 +275,7 @@ class Manager:
                 logger.warning(f"Can't resume task {task_id}: already in running tasks")
             else:
                 task_info = (await self.get_task_configs(task_id)).get(task_id)
-                if task_info and task_info.config_metadata.status == Task.Status.PAUSED:
+                if task_info and task_info.config_metadata.status == TaskStatus.PAUSED:
                     await self._start_task(task_info)
                 else:
                     logger.warning(f"Can't resume task {task_id} from {task_info.config_metadata.status}")
@@ -352,7 +354,7 @@ class Manager:
 
         self._running_tasks[task_metadata.id] = task_info
         await task_info.task.start()
-        task_info.task_metadata.status = Task.Status.RUNNING
+        task_info.task_metadata.status = TaskStatus.RUNNING
         return task_info
 
     def start(self):
@@ -385,7 +387,7 @@ class Manager:
                 for task_id, task_info in dict(self._running_tasks).items():
                     task_done = task_info.task.is_task_done()
                     if task_done:
-                        task_info.config_metadata.status = Task.Status.COMPLETED
+                        task_info.config_metadata.status = TaskStatus.COMPLETED
                     await self._save_task_data(task_info)
                     if task_done:
                         tasks_to_remove.add(task_id)
