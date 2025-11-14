@@ -29,18 +29,18 @@ logger = logging.getLogger(__file__)
 logger.setLevel(logging.DEBUG)
 
 
-class AddLabelPayload(BaseModel):
+class AddClassPayload(BaseModel):
     name: str
     color: str
     parent_uuid: Optional[str] = None
 
 
-class DeleteLabelPayload(BaseModel):
-    label_uuid: str
+class DeleteClassPayload(BaseModel):
+    class_uuid: str
 
 
-class UpdateLabelPayload(BaseModel):
-    label_uuid: str
+class UpdateClassPayload(BaseModel):
+    class_uuid: str
     name: Optional[str] = None
     color: Optional[str] = None
 
@@ -68,7 +68,7 @@ class UpdateSourcePayload(BaseModel):
 
 class BoundingBoxInput(BaseModel):
     id: Optional[int]
-    label_uuid: str
+    class_uuid: str
     x: float
     y: float
     width: float
@@ -157,54 +157,54 @@ class WebApp:
         """Register all routes for the application."""
 
         ################################################################################
-        # Labels API
+        # Classes API
         ################################################################################
 
-        @self._app.post("/api/labels/add", response_class=JSONResponse, tags=[ApiTags.LABELS], operation_id="add_label")
-        async def add_label_api(request: AddLabelPayload) -> JSONResponse:
+        @self._app.post("/api/classes/add", response_class=JSONResponse, tags=[ApiTags.CLASSES], operation_id="add_class")
+        async def add_class_api(request: AddClassPayload) -> JSONResponse:
             """
-            API endpoint to add a new label.
+            API endpoint to add a new class.
             """
             try:
-                label = await self._manager.create_new_label(
+                cls = await self._manager.create_new_class(
                     request.name, request.color, parent_uuid=request.parent_uuid
                 )
-                return JSONResponse(content={JsonKeys.STATUS: JsonValues.SUCCESS, "label": asdict(label)})
+                return JSONResponse(content={JsonKeys.STATUS: JsonValues.SUCCESS, "class": asdict(cls)})
             except Exception as e:
                 logger.error(e, exc_info=True)
                 return JSONResponse(content={JsonKeys.STATUS: JsonValues.FAILURE, JsonKeys.MESSAGE: str(e)})
 
         @self._app.post(
-            "/api/labels/delete", response_class=JSONResponse, tags=[ApiTags.LABELS], operation_id="delete_label"
+            "/api/classes/delete", response_class=JSONResponse, tags=[ApiTags.CLASSES], operation_id="delete_class"
         )
-        async def delete_label_api(request: DeleteLabelPayload) -> JSONResponse:
+        async def delete_class_api(request: DeleteClassPayload) -> JSONResponse:
             """
-            API endpoint to delete an existing abel.
+            API endpoint to delete an existing class.
             """
             try:
-                await self._manager.delete_label(request.label_uuid)
+                await self._manager.delete_class(request.class_uuid)
                 return JSONResponse(content={JsonKeys.STATUS: JsonValues.SUCCESS})
             except Exception as e:
                 logger.error(e, exc_info=True)
                 return JSONResponse(content={JsonKeys.STATUS: JsonValues.FAILURE, JsonKeys.MESSAGE: str(e)})
 
         @self._app.get(
-            "/api/labels/list", response_class=JSONResponse, tags=[ApiTags.LABELS], operation_id="list_labels"
+            "/api/classes/list", response_class=JSONResponse, tags=[ApiTags.CLASSES], operation_id="list_classes"
         )
-        async def list_labels_api(request: Request) -> JSONResponse:
+        async def list_classes_api(request: Request) -> JSONResponse:
             """
-            API endpoint to return a list of labels with metadata.
+            API endpoint to return a list of classes with metadata.
 
             Args:
                 request (Request): The FastAPI request object.
 
             Returns:
-                JSONResponse: A JSON response containing the list of labels.
+                JSONResponse: A JSON response containing the list of classes.
             """
             try:
-                label_list = await self._manager.get_labels()
-                labels = [asdict(label) for label in label_list]
-                response_data = {JsonKeys.STATUS: JsonValues.SUCCESS, "labels": labels}
+                class_list = await self._manager.get_classes()
+                classes = [asdict(cls) for cls in class_list]
+                response_data = {JsonKeys.STATUS: JsonValues.SUCCESS, "classes": classes}
                 return JSONResponse(content=response_data)
             except Exception as e:
                 logger.error(e, exc_info=True)
@@ -213,14 +213,14 @@ class WebApp:
                 )
 
         @self._app.post(
-            "/api/labels/update", response_class=JSONResponse, tags=[ApiTags.LABELS], operation_id="update_label"
+            "/api/classes/update", response_class=JSONResponse, tags=[ApiTags.CLASSES], operation_id="update_class"
         )
-        async def update_label_api(request: UpdateLabelPayload) -> JSONResponse:
+        async def update_class_api(request: UpdateClassPayload) -> JSONResponse:
             """
-            API endpoint to update an existing label's name and/or color.
+            API endpoint to update an existing class's name and/or color.
             """
             try:
-                await self._manager.update_label(label_uuid=request.label_uuid, name=request.name, color=request.color)
+                await self._manager.update_class(class_uuid=request.class_uuid, name=request.name, color=request.color)
                 return JSONResponse(content={JsonKeys.STATUS: JsonValues.SUCCESS})
             except Exception as e:
                 logger.error(e, exc_info=True)
@@ -399,7 +399,7 @@ class WebApp:
         async def update_image_metadata(payload: UpdateMetadataPayload) -> JSONResponse:
             image_path = payload.image_path
             metadata = await self._manager.get_image_metadata(image_path)
-            label_uuid_map = await self._manager.get_label_uuid_map()
+            class_uuid_map = await self._manager.get_class_uuid_map()
 
             if metadata is None:
                 return JSONResponse(
@@ -409,9 +409,9 @@ class WebApp:
             # Build new bounding box list from input
             new_boxes = []
             for b in payload.boxes:
-                label_data = label_uuid_map.get(b.label_uuid, None)
-                label_text = label_data.metadata.name if label_data else "Unknown"
-                # Resolve label info for each label ID
+                class_data = class_uuid_map.get(b.class_uuid, None)
+                class_text = class_data.metadata.name if class_data else "Unknown"
+                # Resolve class info for each class ID
                 # tags = []
                 # for label_id in b.tags or []:
                 #     # Here, you might want to fetch label info by ID from DB or cache
@@ -423,8 +423,7 @@ class WebApp:
                 new_boxes.append(
                     BoundingBoxMetadata(
                         id=b.id,
-                        label_uuid=b.label_uuid,
-                        label_text=label_text,
+                        class_uuid=b.class_uuid,
                         x=b.x,
                         y=b.y,
                         width=b.width,

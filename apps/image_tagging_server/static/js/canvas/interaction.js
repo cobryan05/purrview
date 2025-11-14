@@ -1,6 +1,6 @@
 import { createBoundingBox, updateBoundingBox } from './drawing.js';
 import { selectShape, findGroupAtPoint } from './selection.js';
-import { getCurrentTool, getLayer, getStage, getCurrentLabelUuid } from './state.js';
+import { getCurrentTool, getLayer, getStage, getCurrentClassUuid } from './state.js';
 import { clearSelection, selectBboxTool, setTool } from './tools.js';
 
 let pendingGroup = null;
@@ -73,9 +73,9 @@ export function handleMouseDown(e) {
   if (!pos) return;
 
   startPos = pos;
-  const currentLabelUuid = getCurrentLabelUuid();
+  const currentClassUuid = getCurrentClassUuid();
   pendingGroup = createBoundingBox(
-    pos.x, pos.y, { width: 1, height: 1, metadata: { labelUuid: currentLabelUuid } });
+    pos.x, pos.y, { width: 1, height: 1, metadata: { classUuid: currentClassUuid } });
   if (pendingGroup) {
     layer.add(pendingGroup);
   }
@@ -118,9 +118,9 @@ export function handleMouseMove(e) {
   const dy = pos.y - startPos.y;
 
   const box = pendingGroup.findOne('.box');
-  const label = pendingGroup.findOne('.label');
+  const cls = pendingGroup.findOne('.class');
 
-  if (!box || !label) return;
+  if (!box || !cls) return;
 
   const newX = dx < 0 ? pos.x : startPos.x;
   const newY = dy < 0 ? pos.y : startPos.y;
@@ -129,7 +129,7 @@ export function handleMouseMove(e) {
 
   pendingGroup.position({ x: newX, y: newY });
   box.size({ width: newWidth, height: newHeight });
-  label.y(-18);
+  cls.y(-18);
 
   layer.batchDraw();
 }
@@ -161,8 +161,8 @@ export function handleMouseUp(e) {
       ) {
         const hitGroup = findGroupAtPoint(pos);
         if (hitGroup) {
-          const currentLabelUuid = getCurrentLabelUuid();
-          updateBoundingBox(hitGroup, { metadata: { labelUuid: currentLabelUuid } });
+          const currentClassUuid = getCurrentClassUuid();
+          updateBoundingBox(hitGroup, { metadata: { classUuid: currentClassUuid } });
           selectShape(hitGroup);
         }
       }

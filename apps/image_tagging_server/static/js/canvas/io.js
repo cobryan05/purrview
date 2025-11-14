@@ -54,7 +54,7 @@ export async function loadImageAndMetadata(imageName) {
         height: absHeight,
         metadata: {
           id: box.id,
-          labelUuid: box.label_uuid,
+          classUuid: box.class_uuid,
           tags: box.tags?.map(l => l.id) ?? [],
           extra: box.extra ?? {}
         }
@@ -124,11 +124,11 @@ export async function saveAnnotations() {
 
         const bbox_meta = group.metadata || {};
         const bbox_id = bbox_meta.id ?? null;
-        const bbox_label_uuid = bbox_meta.label.metadata.uuid;
+        const bbox_class_uuid = bbox_meta.class.metadata.uuid;
 
         return {
           id: bbox_id,
-          label_uuid: bbox_label_uuid,
+          class_uuid: bbox_class_uuid,
           x: group.x() / imgWidth,
           y: group.y() / imgHeight,
           width: rect.width() / imgWidth,
@@ -237,7 +237,7 @@ export function addRecognizedBoxes(results) {
       metadata: {
         label: obj.class_name,
         confidence: obj.confidence,
-        labelUuid: obj.label_uuid,
+        classUuid: obj.class_uuid,
       },
     });
 

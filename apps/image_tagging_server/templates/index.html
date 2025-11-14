@@ -169,11 +169,11 @@
       margin-bottom: 0.5em;
     }
 
-    #labels-list {
+    #classes-list {
       margin-bottom: 1em;
     }
 
-    .label-row {
+    .class-row {
       display: flex;
       align-items: center;
       gap: 0.5em;
@@ -181,7 +181,7 @@
       font-size: 0.95em;
     }
 
-    .label-row .selected {
+    .class-row .selected {
       background-color: #ff0033;
       color: white;
       font-weight: bold;
@@ -249,7 +249,7 @@
         <div id="sidebar">
           <div class="tab-header">
             <span class="tab-button active" data-tab="tab-models">Models</span>
-            <span class="tab-button" data-tab="tab-labels-tool">Labels</span>
+            <span class="tab-button" data-tab="tab-classes-tool">Classes</span>
             <span class="tab-button" data-tab="tab-annotations">Annotations</span>
           </div>
 
@@ -266,9 +266,9 @@
             <pre id="annotation-json" style="max-height: 40vh; overflow-y: auto; font-size: 0.8em;"></pre>
           </div>
 
-          <div id="tab-labels-tool" class="tab-pane">
-            <h4>Labels</h4>
-            <div id="labels-tool-list"></div>
+          <div id="tab-classes-tool" class="tab-pane">
+            <h4>Classes</h4>
+            <div id="classes-tool-list"></div>
           </div>
 
           <div id="tab-inspector" class="tab-pane">
@@ -294,12 +294,12 @@
       <div id="tab-label-management" class="tab-pane">
         <div style="display: flex; gap: 1em; align-items: flex-start; flex-wrap: wrap;">
           <div style="flex: 1 1 300px; min-width: 250px;">
-            <h4>Labels</h4>
-            <div id="labels-list"></div>
+            <h4>Classes</h4>
+            <div id="classes-list"></div>
           </div>
           <div style="flex: 1 1 300px; min-width: 250px;">
-            <h4>Model Label Assignments</h4>
-            <div id="model-labels-box"></div>
+            <h4>Model Class Assignments</h4>
+            <div id="model-classes-box"></div>
           </div>
         </div>
       </div>

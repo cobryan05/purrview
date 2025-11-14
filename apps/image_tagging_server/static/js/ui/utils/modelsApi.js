@@ -12,13 +12,13 @@ export const modelsFetcher = createCachedFetcher(async () => {
     throw new Error(err.message || 'Failed to fetch models list');
   }
   const { models } = await res.json();
-  // Store as Map: modelName -> labelMapping (null initially)
+  // Store as Map: modelName -> classMapping (null initially)
   const map = new Map(models.map(model => [model, null]));
   return map;
 });
 
-export const modelLabelsFetcher = createCachedFetcher(async (modelName) => {
-  const res = await fetch('/api/models/labels/get', {
+export const modelClassesFetcher = createCachedFetcher(async (modelName) => {
+  const res = await fetch('/api/models/classes/get', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ model_name: modelName }),
@@ -26,11 +26,11 @@ export const modelLabelsFetcher = createCachedFetcher(async (modelName) => {
 
   if (!res.ok) {
     const err = await res.json();
-    throw new Error(err.message || `Failed to fetch labels for model ${modelName}`);
+    throw new Error(err.message || `Failed to fetch classes for model ${modelName}`);
   }
 
-  const { labels } = await res.json();
-  return new Map(Object.entries(labels));
+  const { classes } = await res.json();
+  return new Map(Object.entries(classes));
 });
 
 
@@ -40,7 +40,7 @@ export const modelLabelsFetcher = createCachedFetcher(async (modelName) => {
  */
 export function clearModelsCache() {
   modelsFetcher.clear();
-  modelLabelsFetcher.clear();
+  modelClassesFetcher.clear();
 }
 
 
@@ -53,17 +53,16 @@ export async function fetchModelsList() {
   return [...map.keys()];
 }
 
-export async function fetchModelLabelMappings(modelName) {
+export async function fetchModelClassMappings(modelName) {
   const models = await fetchModelsList();
   if (!models.includes(modelName)) throw new Error(`Model ${modelName} not found`);
 
-  const labels = await modelLabelsFetcher.fetch(modelName);
-
-  // Ensure we also update the models map with the label mapping
+  const classes = await modelClassesFetcher.fetch(modelName);
+  // Ensure we also update the models map with the class mapping
   const modelsMap = await modelsFetcher.fetch('modelsMap');
-  modelsMap.set(modelName, labels);
+  modelsMap.set(modelName, classes);
 
-  return new Map(labels);
+  return new Map(classes);
 }
 
 
@@ -71,27 +70,27 @@ export async function fetchModelLabelMappings(modelName) {
  * UPDATE FUNCTION
  * -----------------------------
  */
-export async function associateLabel(modelName, modelClass, labelUuid) {
+export async function associateClass(modelName, modelClass, classUuid) {
   const models = await fetchModelsList();
   if (!models.includes(modelName)) throw new Error(`Model ${modelName} not found`);
 
-  const res = await fetch('/api/models/labels/associate', {
+  const res = await fetch('/api/models/classes/associate', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       model_name: modelName,
       model_class: modelClass,
-      label_uuid: labelUuid,
+      class_uuid: classUuid,
     }),
   });
 
   if (!res.ok) {
     const err = await res.json();
-    throw new Error(err.message || 'Failed to associate label');
+    throw new Error(err.message || 'Failed to associate class');
   }
 
-  // Invalidate label mapping cache for this model
-  modelLabelsFetcher.delete(modelName);
+  // Invalidate class mapping cache for this model
+  modelClassesFetcher.delete(modelName);
   // Optionally also reset the entry in models map
   const modelsMap = await modelsFetcher.fetch('modelsMap');
   modelsMap.set(modelName, null);

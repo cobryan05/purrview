@@ -3,8 +3,8 @@
 import { addRecognizedBoxes, loadImageAndMetadata } from '/app-static/js/canvas/io.js';
 import { getLayer, } from '/app-static/js/canvas/state.js';
 import { setTool } from '/app-static/js/canvas/tools.js';
-import { renderLabelList } from '/app-static/js/ui/labels.js';
-import { renderModelLabelAssignments } from '/app-static/js/ui/models.js';
+import { renderClassList } from '/app-static/js/ui/classes.js';
+import { renderModelClassAssignments } from '/app-static/js/ui/models.js';
 import { renderSourceManager } from '/app-static/js/ui/sources.js';
 import { renderActiveTasks, renderTaskConfigs } from '/app-static/js/ui/tasks.js';
 import { Logger, clearModelsCache, fetchImageList, fetchModelsList, toast } from '/app-static/js/ui/utils/index.js';
@@ -29,17 +29,17 @@ export async function refreshModelList() {
     modelListContainer.innerHTML = '';
 
     models.forEach(model => {
-      const label = document.createElement('label');
-      label.style.display = 'block';
+      const cls = document.createElement('class');
+      cls.style.display = 'block';
 
       const radio = document.createElement('input');
       radio.type = 'radio';
       radio.name = 'model';
       radio.value = model;
 
-      label.appendChild(radio);
-      label.appendChild(document.createTextNode(` ${model}`));
-      modelListContainer.appendChild(label);
+      cls.appendChild(radio);
+      cls.appendChild(document.createTextNode(` ${model}`));
+      modelListContainer.appendChild(cls);
     });
 
     const firstRadio = modelListContainer.querySelector('input[type="radio"]');
@@ -334,8 +334,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
         // Conditional rendering/loading based on active tab
         if (tabName === 'tab-label-management') {
-          renderLabelList({ target: "labels-list" });
-          renderModelLabelAssignments({ target: "model-labels-box" });
+          renderClassList({ target: "classes-list" });
+          renderModelClassAssignments({ target: "model-classes-box" });
         } else if (tabName === 'tab-source-management') {
           renderSourceManager({ target: "source-management-box" });
         } else if (tabName === 'tab-files' && !fileBrowserInitialized) {
@@ -369,8 +369,8 @@ document.addEventListener('DOMContentLoaded', () => {
         const tabName = tab.getAttribute('data-tab');
         tabPanes.forEach(tc => tc.classList.toggle('active', tc.id === tabName));
 
-        if (tabName === 'tab-labels-tool') {
-          renderLabelList({ target: "labels-tool-list", editable: false, clickable: true, onSelectCallback: (uuid) => { setTool(`bbox:${uuid}`) } });
+        if (tabName === 'tab-classes-tool') {
+          renderClassList({ target: "classes-tool-list", editable: false, clickable: true, onSelectCallback: (uuid) => { setTool(`bbox:${uuid}`) } });
         }
       });
     });

@@ -19,7 +19,7 @@ export function createGenericRow({
   alignRightButtons = false
 } = {}) {
   const row = document.createElement('div');
-  row.className = 'label-row';
+  row.className = 'class-row';
   row.style.display = 'flex';
   row.style.flexDirection = 'row';
   row.style.alignItems = 'flex-start';

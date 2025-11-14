@@ -6,8 +6,8 @@ let transformer = null;
 
 let currentTool = 'select';
 let currentImageName = null;
-let currentLabelUuid = null;
-let currentLabelText = null
+let currentClassUuid = null;
+let currentClassText = null
 
 export function getCurrentTool() {
   return currentTool;
@@ -18,16 +18,16 @@ export function setCurrentTool(tool) {
   const parts = tool.split(':');
   currentTool = parts[0];
   if (parts.length === 2) {
-    setCurrentLabelUuid(parts[1]);
+    setCurrentClassUuid(parts[1]);
   }
 }
 
-export function getCurrentLabelUuid() {
-  return currentLabelUuid;
+export function getCurrentClassUuid() {
+  return currentClassUuid;
 }
 
-export function setCurrentLabelUuid(uuid) {
-  currentLabelUuid = uuid
+export function setCurrentClassUuid(uuid) {
+  currentClassUuid = uuid
 }
 
 export function getCurrentImageName() {

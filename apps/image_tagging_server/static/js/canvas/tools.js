@@ -1,4 +1,4 @@
-import { getCurrentLabelUuid, getCurrentTool, getStage, getTransformer, setCurrentTool } from './state.js';
+import { getCurrentClassUuid, getCurrentTool, getStage, getTransformer, setCurrentTool } from './state.js';
 
 // Clear selection implementation
 export function clearSelection() {
@@ -37,30 +37,30 @@ export function updateToolbarButtons() {
 }
 
 export function selectBboxTool() {
-  // Switch sidebar to Labels tab
-  const labelsTabButton = document.querySelector('[data-tab="tab-labels-tool"]');
-  if (labelsTabButton) {
-    labelsTabButton.click();
+  // Switch sidebar to classes tab
+  const classesTabButton = document.querySelector('[data-tab="tab-classes-tool"]');
+  if (classesTabButton) {
+    classesTabButton.click();
   }
 
   // Click the active tool
-  const selectedLabelUuid = getCurrentLabelUuid();
-  const labelRows = document.querySelectorAll('#labels-tool-list .label-row');
+  const selectedClassUuid = getCurrentClassUuid();
+  const classRows = document.querySelectorAll('#classes-tool-list .class-row');
   let found = false;
-  if (selectedLabelUuid) {
-    for (const labelEl of labelRows) {
-      if (labelEl.dataset.uuid === selectedLabelUuid) {
+  if (selectedClassUuid) {
+    for (const classEl of classRows) {
+      if (classEl.dataset.uuid === selectedClassUuid) {
         found = true;
-        labelEl.click();
+        classEl.click();
         break;
       }
     }
   }
-  if (!found && labelRows.length === 0) {
+  if (!found && classRows.length === 0) {
     setTimeout(() => {
-      const newLabelRows = document.querySelectorAll('#labels-tool-list .label-row');
-      if (newLabelRows.length > 0) {
-        newLabelRows[0].click();
+      const newClassRows = document.querySelectorAll('#classes-tool-list .class-row');
+      if (newClassRows.length > 0) {
+        newClassRows[0].click();
       }
     }, 100);
   }

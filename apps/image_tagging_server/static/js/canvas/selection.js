@@ -16,12 +16,12 @@ export function selectShape(group) {
 
   labelInput.oninput = () => {
     metadata.label = labelInput.value;
-    metadata.labelUuid = null;
+    metadata.classUuid = null;
     group.metadata = metadata;
-    const labelNode = group.findOne('.label');
-    if (labelNode) {
+    const classNode = group.findOne('.class');
+    if (classNode) {
       const conf = metadata.confidence;
-      labelNode.text(`${metadata.label}${conf != null ? ` (${(conf * 100).toFixed(1)}%)` : ''}`);
+      classNode.text(`${metadata.label}${conf != null ? ` (${(conf * 100).toFixed(1)}%)` : ''}`);
       layer.batchDraw();
     }
   };

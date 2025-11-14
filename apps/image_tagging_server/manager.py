@@ -9,16 +9,16 @@ import db_client
 import inference_client
 import tasks_client
 from db_client.api.images_api import ImagesApi
-from db_client.api.labels_api import LabelsApi
+from db_client.api.classes_api import ClassesApi
 from db_client.api.sources_api import SourcesApi
 from inference_client.api.inference_api import InferenceApi
 from inference_client.api.models_api import ModelsApi
-from inference_client.models.associate_label_with_model_class_payload import (
-    AssociateLabelWithModelClassPayload,
+from inference_client.models.associate_class_with_model_class_payload import (
+    AssociateClassWithModelClassPayload,
 )
 from tasks_client.api.tasks_api import TasksApi
 
-from apps.helpers.db.db_client import BoundingBoxMetadata, DbClient, LabelMetadata
+from apps.helpers.db.db_client import BoundingBoxMetadata, DbClient, ClassMetadata
 from apps.helpers.webUtils import api_forward_request
 
 logging.basicConfig(stream=sys.stdout)
@@ -68,11 +68,11 @@ class Manager:
         """
         return api_forward_request(InferenceApi(self._inference_api_client), api_method_name)
 
-    def labels_api_request(self, api_method_name: str):
+    def classes_api_request(self, api_method_name: str):
         """
-        Decorator to forward request to the Labels API
+        Decorator to forward request to the Classes API
         """
-        return api_forward_request(LabelsApi(self._db_api_client), api_method_name)
+        return api_forward_request(ClassesApi(self._db_api_client), api_method_name)
 
     def model_api_request(self, api_method_name: str):
         """

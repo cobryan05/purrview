@@ -1,23 +1,23 @@
 import { selectShape } from './selection.js';
 import { getCurrentTool, getLayer, getTransformer } from './state.js';
 import { generateUUID } from './utils.js';
-import { fetchLabelByUuid } from '/app-static/js/ui/utils/index.js';
+import { fetchClassByUuid } from '/app-static/js/ui/utils/index.js';
 
 
 /**
- * Create a bounding box group with a rectangle, label, confidence,
+ * Create a bounding box group with a rectangle, class, confidence,
  * and set up all relevant event handlers here.
  */
 
 export function createBoundingBox(x, y, props = {}) {
   const width = props.width ?? 50;
   const height = props.height ?? 50;
-  const labelUuid = props.metadata?.labelUuid ?? '';
+  const classUuid = props.metadata?.classUuid ?? '';
   const confidence = props.metadata?.confidence;
   const uuid = generateUUID();
 
   // Initial placeholder values
-  let labelText = props.metadata?.label ?? 'Unknown';
+  let classText = props.metadata?.class ?? 'Unknown';
   let color = 'grey';
 
   const group = new Konva.Group({
@@ -35,10 +35,10 @@ export function createBoundingBox(x, y, props = {}) {
     strokeWidth: 2,
   });
 
-  const bboxText = `${labelText}${confidence != null ? ` (${(confidence * 100).toFixed(1)}%)` : ''}`;
+  const bboxText = `${classText}${confidence != null ? ` (${(confidence * 100).toFixed(1)}%)` : ''}`;
 
   const text = new Konva.Text({
-    name: 'label',
+    name: 'class',
     text: bboxText,
     fontSize: 14,
     fill: color,
@@ -47,7 +47,7 @@ export function createBoundingBox(x, y, props = {}) {
   });
 
   group.metadata = {
-    label: null, // will be filled in once async fetch completes
+    class: null, // will be filled in once async fetch completes
     confidence,
     ...props.metadata,
     uuid,
@@ -56,19 +56,19 @@ export function createBoundingBox(x, y, props = {}) {
   group.add(rect);
   group.add(text);
 
-  // Kick off async label resolution
-  if (labelUuid) {
-    fetchLabelByUuid(labelUuid).then(label => {
-      if (!label) return;
+  // Kick off async class resolution
+  if (classUuid) {
+    fetchClassByUuid(classUuid).then(cls => {
+      if (!cls) return;
 
-      group.metadata.label = label;
-      const newColor = label?.metadata?.color ?? 'red';
-      const newLabelText = label?.metadata?.name ?? 'Unknown';
+      group.metadata.class = cls;
+      const newColor = cls?.metadata?.color ?? 'red';
+      const newClassText = cls?.metadata?.name ?? 'Unknown';
 
       rect.stroke(newColor);
 
       text.text(
-        `${newLabelText}${confidence != null ? ` (${(confidence * 100).toFixed(1)}%)` : ''}`
+        `${newClassText}${confidence != null ? ` (${(confidence * 100).toFixed(1)}%)` : ''}`
       );
       text.fill(newColor);
 
@@ -149,33 +149,33 @@ export function createBoundingBox(x, y, props = {}) {
 }
 
 /**
- * Update an existing bounding box with new metadata, such as label or color.
+ * Update an existing bounding box with new metadata, such as class or color.
  */
 export function updateBoundingBox(group, props = {}) {
   const rect = group.findOne('.box');
-  const text = group.findOne('.label');
+  const text = group.findOne('.class');
   if (!rect || !text) return;
 
   const oldMetadata = group.metadata ?? {};
   const newMetadata = { ...oldMetadata, ...props.metadata };
 
-  const labelUuid = newMetadata.labelUuid ?? '';
+  const classUuid = newMetadata.classUuid ?? '';
   const confidence = newMetadata.confidence;
 
-  fetchLabelByUuid(labelUuid)
-    .then(label => {
-      const color = label?.metadata?.color ?? 'red';
-      const labelText = (label?.metadata?.name ?? props.metadata?.label) ?? 'Unknown';
+  fetchClassByUuid(classUuid)
+    .then(cls => {
+      const color = cls?.metadata?.color ?? 'red';
+      const classText = (cls?.metadata?.name ?? props.metadata?.class) ?? 'Unknown';
 
       // Update metadata
       group.metadata = {
         ...newMetadata,
-        label,
+        class: cls,
         confidence,
       };
 
-      // Update label text
-      const bboxText = `${labelText}${confidence != null ? ` (${(confidence * 100).toFixed(1)}%)` : ''}`;
+      // Update class text
+      const bboxText = `${classText}${confidence != null ? ` (${(confidence * 100).toFixed(1)}%)` : ''}`;
       text.text(bboxText);
       text.fill(color);
 
@@ -186,18 +186,18 @@ export function updateBoundingBox(group, props = {}) {
       getLayer().batchDraw();
     })
     .catch(err => {
-      console.error('Failed to fetch label:', err);
+      console.error('Failed to fetch class:', err);
       // optionally fallback
     });
 }
 
 
 /**
- * Keep rect at (0,0) and label positioned just above.
+ * Keep rect at (0,0) and class positioned just above.
  */
 function applyBoundingBoxLayout(group) {
   const rect = group.findOne('.box');
-  const text = group.findOne('.label');
+  const text = group.findOne('.class');
   if (!rect || !text) return;
 
   rect.x(0);

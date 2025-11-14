@@ -21,7 +21,7 @@ logger = logging.getLogger(__file__)
 logger.setLevel(logging.DEBUG)
 
 
-LABELS_JSON = "labels.json"
+CLASSES_JSON = "classes.json"
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS images (
@@ -33,16 +33,22 @@ CREATE TABLE IF NOT EXISTS images (
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
-CREATE TABLE IF NOT EXISTS labels (
+CREATE TABLE IF NOT EXISTS classes (
     uuid TEXT PRIMARY KEY,
     name TEXT NOT NULL,
     color TEXT,
-    parent_uuid TEXT REFERENCES labels(uuid)
+    parent_uuid TEXT REFERENCES classes(uuid)
 );
 
-CREATE TABLE IF NOT EXISTS bounding_boxes (
+CREATE TABLE IF NOT EXISTS tags (
+    uuid TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    color TEXT
+);
+
+CREATE TABLE IF NOT EXISTS bboxes (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    label_uuid TEXT NOT NULL,
+    class_uuid TEXT NOT NULL,
     image_id INTEGER NOT NULL,
     x REAL NOT NULL,
     y REAL NOT NULL,
@@ -50,15 +56,15 @@ CREATE TABLE IF NOT EXISTS bounding_boxes (
     height REAL NOT NULL,
     metadata_json TEXT CHECK (metadata_json IS NULL OR json_valid(metadata_json)),
     FOREIGN KEY(image_id) REFERENCES images(id) ON DELETE CASCADE,
-    FOREIGN KEY(label_uuid) REFERENCES labels(uuid)
+    FOREIGN KEY(class_uuid) REFERENCES classes(uuid)
 );
 
 CREATE TABLE IF NOT EXISTS bbox_tags (
     bbox_id INTEGER NOT NULL,
-    label_uuid TEXT NOT NULL,
-    PRIMARY KEY (bbox_id, label_uuid),
-    FOREIGN KEY(bbox_id) REFERENCES bounding_boxes(id) ON DELETE CASCADE,
-    FOREIGN KEY(label_uuid) REFERENCES labels(uuid) ON DELETE CASCADE
+    tag_uuid TEXT NOT NULL,
+    PRIMARY KEY (bbox_id, tag_uuid),
+    FOREIGN KEY(bbox_id) REFERENCES bboxes(id) ON DELETE CASCADE,
+    FOREIGN KEY(tag_uuid) REFERENCES tags(uuid) ON DELETE CASCADE
 );
 
 CREATE TABLE IF NOT EXISTS task_configs (
@@ -151,31 +157,35 @@ BEGIN
 END;
 """
 
-
 @dataclass
-class LabelMetadata:
+class TagMetadata:
+    uuid: str
     name: str
     color: str
+
+@dataclass
+class ClassMetadata:
     uuid: str
+    name: str
+    color: str
     parent_uuid: Optional[str] = None
 
 
 @dataclass
-class LabelData:
-    metadata: LabelMetadata
-    children: List[LabelData] = field(default_factory=list)
+class ClassData:
+    metadata: ClassMetadata
+    children: List[ClassData] = field(default_factory=list)
 
 
 @dataclass
 class BoundingBoxMetadata:
     id: int
-    label_uuid: str
-    label_text: str
+    class_uuid: str
     x: float
     y: float
     width: float
     height: float
-    tags: List[LabelMetadata] = field(default_factory=list)
+    tags: List[ClassMetadata] = field(default_factory=list)
     extra: Dict[str, str] = field(default_factory=dict)
 
 
@@ -233,7 +243,7 @@ class DbClient:
         """
         self._db_dir: Path = Path(db_dir)
         self._db_path: Path = self._db_dir / "db.sqlite"
-        self._labels_json_path: Path = self._db_dir / "labels.json"
+        self._classes_json_path: Path = self._db_dir / CLASSES_JSON
 
     def db_exists(self) -> bool:
         """Checks if the database file exists"""
@@ -244,7 +254,7 @@ class DbClient:
         return self._db_path
 
     async def init_db(self) -> None:
-        """Initialize DB schema; import labels.json only if DB was just created."""
+        """Initialize DB schema; import classes.json only if DB was just created."""
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
 
         async with aiosqlite.connect(self._db_path) as db:
@@ -256,12 +266,12 @@ class DbClient:
 
             await self._migrate_db(db)
 
-            # Check if labels table is empty
-            cursor = await db.execute("SELECT COUNT(*) FROM labels")
+            # Check if classes table is empty
+            cursor = await db.execute("SELECT COUNT(*) FROM classes")
             (count,) = await cursor.fetchone()
 
             if count == 0:
-                await self._import_labels_from_json(db)
+                await self._import_classes_from_json(db)
 
             await db.commit()
 
@@ -945,91 +955,91 @@ class DbClient:
                 await db.execute("DELETE FROM sources WHERE uuid = ?", (source_uuid,))
             await db.commit()
 
-    async def list_labels(self) -> List[LabelMetadata]:
+    async def list_classes(self) -> List[ClassMetadata]:
         """
-        List all labels.
+        List all classes.
 
         Returns:
-            List[Dict]: List of label dictionaries with keys: id, name, color, uuid.
+            List[Dict]: List of classes dictionaries with keys: id, name, color, uuid.
         """
         async with aiosqlite.connect(self._db_path) as db:
-            cursor = await db.execute("SELECT name, color, uuid, parent_uuid FROM labels")
+            cursor = await db.execute("SELECT name, color, uuid, parent_uuid FROM classes")
             rows = await cursor.fetchall()
             await cursor.close()
-            return [DbClient.row_to_dataclass(cursor, r, LabelMetadata) for r in rows]
+            return [DbClient.row_to_dataclass(cursor, r, ClassMetadata) for r in rows]
 
-    async def add_label(
+    async def add_class(
         self, name: str, color: str, uuid: Optional[str] = None, parent_uuid: Optional[str] = None
-    ) -> LabelMetadata:
+    ) -> ClassMetadata:
         """
-        Add a label or return existing one by name.
+        Add a class or return existing one by name.
 
         Args:
-            name (str): Label name.
-            color (str): Label color hex string.
+            name (str): Class name.
+            color (str): Class color hex string.
             uuid (Optional[str]): Optional UUID.
 
         Returns:
-            Dict: Label data with id, name, color, uuid.
+            Dict: Class data with id, name, color, uuid.
         """
         uuid = uuid or str(uuid4())
         async with aiosqlite.connect(self._db_path) as db:
-            cursor = await db.execute("SELECT name, color, uuid, parent_uuid FROM labels WHERE uuid = ?", (uuid,))
+            cursor = await db.execute("SELECT name, color, uuid, parent_uuid FROM classes WHERE uuid = ?", (uuid,))
             row = await cursor.fetchone()
             if row:
-                return DbClient.row_to_dataclass(cursor, row, LabelMetadata)
+                return DbClient.row_to_dataclass(cursor, row, ClassMetadata)
 
             cursor = await db.execute(
-                "INSERT INTO labels (name, color, uuid, parent_uuid) VALUES (?, ?, ?, ?)",
+                "INSERT INTO classes (name, color, uuid, parent_uuid) VALUES (?, ?, ?, ?)",
                 (name, color, uuid, parent_uuid),
             )
             await db.commit()
-            label_uuid = cursor.lastrowid
-            if label_uuid is None:
-                raise Exception(f"Failed to insert label: {name}")
-            return LabelMetadata(name=name, color=color, uuid=uuid, parent_uuid=parent_uuid)
+            class_uuid = cursor.lastrowid
+            if class_uuid is None:
+                raise Exception(f"Failed to insert class: {name}")
+            return ClassMetadata(name=name, color=color, uuid=uuid, parent_uuid=parent_uuid)
 
-    async def get_label_by_uuid(self, uuid: str) -> Optional[LabelMetadata]:
+    async def get_class_by_uuid(self, uuid: str) -> Optional[ClassMetadata]:
         """
-        Retrieve a label by its UUID.
+        Retrieve a class by its UUID.
 
         Args:
-            uuid (str): Label UUID.
+            uuid (str): Class UUID.
 
         Returns:
-            Optional[Dict]: Label data or None.
+            Optional[Dict]: Class data or None.
         """
         async with aiosqlite.connect(self._db_path) as db:
-            cursor = await db.execute("SELECT name, color, uuid FROM labels WHERE uuid = ?", (uuid,))
+            cursor = await db.execute("SELECT name, color, uuid FROM classes WHERE uuid = ?", (uuid,))
             row = await cursor.fetchone()
             await cursor.close()
             if row:
-                return DbClient.row_to_dataclass(cursor, row, LabelMetadata)
+                return DbClient.row_to_dataclass(cursor, row, ClassMetadata)
             return None
 
-    async def get_label_children(self, parent_uuid: str) -> List[str]:
+    async def get_class_children(self, parent_uuid: str) -> List[str]:
         """
-        Retrieve the UUIDs of labels that have the given UUID as their parent.
+        Retrieve the UUIDs of classes that have the given UUID as their parent.
 
         Args:
-            parent_uuid (str): The UUID of the parent label.
+            parent_uuid (str): The UUID of the parent class.
 
         Returns:
-            List[str]: List of child label UUIDs.
+            List[str]: List of child class UUIDs.
         """
         async with aiosqlite.connect(self._db_path) as db:
-            cursor = await db.execute("SELECT uuid FROM labels WHERE parent_uuid = ?", (parent_uuid,))
+            cursor = await db.execute("SELECT uuid FROM classes WHERE parent_uuid = ?", (parent_uuid,))
             rows = await cursor.fetchall()
             await cursor.close()
 
             return [row[0] for row in rows]
 
-    async def update_label(self, label_uuid: str, name: Optional[str] = None, color: Optional[str] = None) -> None:
+    async def update_class(self, class_uuid: str, name: Optional[str] = None, color: Optional[str] = None) -> None:
         """
-        Update label properties.
+        Update class properties.
 
         Args:
-            label_uuid (str): Label uuid.
+            class_uuid (str): Class uuid.
             name (Optional[str]): New name.
             color (Optional[str]): New color.
         """
@@ -1045,22 +1055,22 @@ class DbClient:
             query_parts.append("color = ?")
             params.append(color)
 
-        params.append(label_uuid)
+        params.append(class_uuid)
 
         async with aiosqlite.connect(self._db_path) as db:
-            await db.execute(f"UPDATE labels SET {', '.join(query_parts)} WHERE uuid = ?", tuple(params))
+            await db.execute(f"UPDATE classes SET {', '.join(query_parts)} WHERE uuid = ?", tuple(params))
             await db.commit()
 
-    async def delete_label(self, label_uuid: str) -> None:
+    async def delete_class(self, class_uuid: str) -> None:
         """
-        Delete a label and related entries.
+        Delete a class and related entries.
 
         Args:
-            label_uuid (int): Label ID to delete.
+            class_uuid (int): Class ID to delete.
         """
         async with aiosqlite.connect(self._db_path) as db:
-            await db.execute("DELETE FROM bbox_tags WHERE label_uuid = ?", (label_uuid,))
-            await db.execute("DELETE FROM labels WHERE uuid = ?", (label_uuid,))
+            await db.execute("DELETE FROM bbox_tags WHERE class_uuid = ?", (class_uuid,))
+            await db.execute("DELETE FROM classes WHERE uuid = ?", (class_uuid,))
             await db.commit()
 
     async def add_box_for_image(
@@ -1087,7 +1097,7 @@ class DbClient:
         meta_json = json.dumps(metadata or {})
         async with aiosqlite.connect(self._db_path) as db:
             cursor = await db.execute(
-                "INSERT INTO bounding_boxes (image_id, x, y, width, height, metadata_json) VALUES (?, ?, ?, ?, ?, ?)",
+                "INSERT INTO bboxes (image_id, x, y, width, height, metadata_json) VALUES (?, ?, ?, ?, ?, ?)",
                 (image_id, x, y, width, height, meta_json),
             )
             await db.commit()
@@ -1113,56 +1123,56 @@ class DbClient:
         meta_json = json.dumps(metadata or {})
         async with aiosqlite.connect(self._db_path) as db:
             await db.execute(
-                "UPDATE bounding_boxes SET x = ?, y = ?, width = ?, height = ?, metadata_json = ? WHERE id = ?",
+                "UPDATE bboxes SET x = ?, y = ?, width = ?, height = ?, metadata_json = ? WHERE id = ?",
                 (x, y, width, height, meta_json, box_id),
             )
             await db.commit()
 
     async def delete_box(self, box_id: int) -> None:
         """
-        Delete bounding box and associated labels.
+        Delete bounding box and associated classs.
 
         Args:
             box_id (int): Bounding box ID.
         """
         async with aiosqlite.connect(self._db_path) as db:
             await db.execute("DELETE FROM bbox_tags WHERE bbox_id = ?", (box_id,))
-            await db.execute("DELETE FROM bounding_boxes WHERE id = ?", (box_id,))
+            await db.execute("DELETE FROM bboxes WHERE id = ?", (box_id,))
             await db.commit()
 
-    async def assign_label_to_box(self, bbox_id: int, label_uuid: int) -> None:
+    async def assign_class_to_box(self, bbox_id: int, class_uuid: int) -> None:
         """
-        Assign a label to a bounding box.
+        Assign a class to a bounding box.
 
         Args:
             bbox_id (int): Bounding box ID.
-            label_uuid (int): Label ID.
+            class_uuid (int): Class ID.
         """
         async with aiosqlite.connect(self._db_path) as db:
             await db.execute(
-                "INSERT OR IGNORE INTO bbox_tags (bbox_id, label_uuid) VALUES (?, ?)",
-                (bbox_id, label_uuid),
+                "INSERT OR IGNORE INTO bbox_tags (bbox_id, class_uuid) VALUES (?, ?)",
+                (bbox_id, class_uuid),
             )
             await db.commit()
 
-    async def remove_label_from_box(self, bbox_id: int, label_uuid: int) -> None:
+    async def remove_class_from_box(self, bbox_id: int, class_uuid: int) -> None:
         """
-        Remove a label from a bounding box.
+        Remove a class from a bounding box.
 
         Args:
             bbox_id (int): Bounding box ID.
-            label_uuid (int): Label ID.
+            class_uuid (int): Class ID.
         """
         async with aiosqlite.connect(self._db_path) as db:
             await db.execute(
-                "DELETE FROM bbox_tags WHERE bbox_id = ? AND label_uuid = ?",
-                (bbox_id, label_uuid),
+                "DELETE FROM bbox_tags WHERE bbox_id = ? AND classuuid = ?",
+                (bbox_id, class_uuid),
             )
             await db.commit()
 
     async def read_image_metadata_from_db(self, image_id: int) -> Optional[ImageMetadata]:
         """
-        Read image metadata including bounding boxes and labels.
+        Read image metadata including bounding boxes and classes.
 
         Returns:
             ImageMetadata or None if image not found.
@@ -1191,15 +1201,15 @@ class DbClient:
                 """
                 SELECT
                     b.id,
-                    b.label_uuid,
-                    l.name AS label_name,
+                    b.class_uuid,
+                    l.name AS class_name,
                     b.x,
                     b.y,
                     b.width,
                     b.height,
                     b.metadata_json
-                FROM bounding_boxes b
-                JOIN labels l ON b.label_uuid = l.uuid
+                FROM bboxes b
+                JOIN classes l ON b.class_uuid = l.uuid
                 WHERE b.image_id = ?
                 """,
                 (image_id,),
@@ -1209,7 +1219,7 @@ class DbClient:
 
             boxes = []
             for bbox_row in bbox_rows:
-                bbox_id, bbox_label_uuid, bbox_label_text, x, y, w, h, bbox_meta_json = bbox_row
+                bbox_id, bbox_class_uuid, bbox_class_text, x, y, w, h, bbox_meta_json = bbox_row
                 bbox_extra = {}
                 if bbox_meta_json:
                     try:
@@ -1219,25 +1229,24 @@ class DbClient:
 
                 # TODO TAGS
                 # Read labels for this box
-                tag_cursor = await db.execute(
-                    """
-                    SELECT labels.uuid, labels.name, labels.color
-                    FROM labels
-                    JOIN bbox_tags ON labels.uuid = bbox_tags.label_uuid
-                    WHERE bbox_tags.bbox_id = ?
-                    """,
-                    (bbox_id,),
-                )
-                tag_rows = await tag_cursor.fetchall()
-                await tag_cursor.close()
+                # tag_cursor = await db.execute(
+                #     """
+                #     SELECT labels.uuid, labels.name, labels.color
+                #     FROM labels
+                #     JOIN bbox_tags ON labels.uuid = bbox_tags.label_uuid
+                #     WHERE bbox_tags.bbox_id = ?
+                #     """,
+                #     (bbox_id,),
+                # )
+                # tag_rows = await tag_cursor.fetchall()
+                # await tag_cursor.close()
 
-                tags = [LabelMetadata(uuid=l[0], name=l[1], color=l[2]) for l in tag_rows]
+                # tags = [ClassMetadata(uuid=l[0], name=l[1], color=l[2]) for l in tag_rows]
 
                 boxes.append(
                     BoundingBoxMetadata(
                         id=bbox_id,
-                        label_uuid=bbox_label_uuid,
-                        label_text=bbox_label_text,
+                        class_uuid=bbox_class_uuid,
                         x=x,
                         y=y,
                         width=w,
@@ -1256,7 +1265,7 @@ class DbClient:
 
     async def write_image_metadata_to_db(self, image_id: int, metadata: ImageMetadata) -> None:
         """
-        Write image metadata including bounding boxes and labels atomically.
+        Write image metadata including bounding boxes and classes atomically.
 
         Args:
             image_id: ID of the image to update.
@@ -1274,57 +1283,57 @@ class DbClient:
 
                 # Delete existing bounding boxes and bbox_tags for image
                 await db.execute(
-                    "DELETE FROM bbox_tags WHERE bbox_id IN (SELECT id FROM bounding_boxes WHERE image_id = ?)",
+                    "DELETE FROM bbox_tags WHERE bbox_id IN (SELECT id FROM bboxes WHERE image_id = ?)",
                     (image_id,),
                 )
-                await db.execute("DELETE FROM bounding_boxes WHERE image_id = ?", (image_id,))
+                await db.execute("DELETE FROM bboxes WHERE image_id = ?", (image_id,))
 
                 # Insert bounding boxes
                 for box in metadata.boxes:
                     bbox_meta_json = json.dumps(box.extra) if box.extra else None
                     cursor = await db.execute(
-                        "INSERT INTO bounding_boxes (image_id, label_uuid, x, y, width, height, metadata_json) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                        (image_id, box.label_uuid, box.x, box.y, box.width, box.height, bbox_meta_json),
+                        "INSERT INTO bboxes (image_id, class_uuid, x, y, width, height, metadata_json) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                        (image_id, box.class_uuid, box.x, box.y, box.width, box.height, bbox_meta_json),
                     )
                     new_bbox_id = cursor.lastrowid
 
                 await db.commit()
 
-    async def export_labels_from_db_to_json(self, json_path: Optional[Path | str] = None) -> None:
+    async def export_classes_from_db_to_json(self, json_path: Optional[Path | str] = None) -> None:
         """
-        Save all labels from the database into a JSON file.
+        Save all classes from the database into a JSON file.
 
         Args:
-            json_path (str): Optional override path. Default: <db_dir>/labels.json
+            json_path (str): Optional override path. Default: <db_dir>/classes`.json
         """
-        json_path = Path(json_path) if json_path else self._db_path.parent / "labels.json"
-        labels = await self.list_labels()
-        data = [asdict(label) for label in labels]
+        json_path = Path(json_path) if json_path else self._db_path.parent / CLASSES_JSON
+        classes = await self.list_classes()
+        data = [asdict(cls) for cls in classes]
 
         async with aiofiles.open(json_path, "w", encoding="utf-8") as f:
             await f.write(json.dumps(data, indent=2))
 
-    async def _import_labels_from_json(self, db: aiosqlite.Connection) -> None:
-        json_path = self._db_path.parent / LABELS_JSON
+    async def _import_classes_from_json(self, db: aiosqlite.Connection) -> None:
+        json_path = self._db_path.parent / CLASSES_JSON
         if json_path.exists():
             async with aiofiles.open(json_path, "r", encoding="utf-8") as f:
                 raw = await f.read()
-                label_list = json.loads(raw)
+                class_list = json.loads(raw)
 
-            for label in label_list:
+            for cls in class_list:
                 await db.execute(
                     """
-                    INSERT INTO labels (uuid, name, color, parent_uuid)
+                    INSERT INTO classes (uuid, name, color, parent_uuid)
                     VALUES (?, ?, ?, ?)
                     """,
                     (
-                        label.get("uuid", str(uuid4())),
-                        label["name"],
-                        label.get("color"),
-                        label.get("parent_uuid"),
+                        cls.get("uuid", str(uuid4())),
+                        cls["name"],
+                        cls.get("color"),
+                        cls.get("parent_uuid"),
                     ),
                 )
-            logger.info(f"Imported {len(label_list)} labels from JSON.")
+            logger.info(f"Imported {len(class_list)} classes from JSON.")
 
     # async def import_labels_from_json_to_db(
     #     self, json_path: Optional[Path | str] = None, overwrite_existing: bool = False

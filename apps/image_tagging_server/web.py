@@ -10,22 +10,22 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from apps.db_server.web import (
-    AddLabelPayload,
+    AddClassPayload,
     CreateSourcePayload,
-    DeleteLabelPayload,
+    DeleteClassPayload,
     DeleteSourcePayload,
     GetFilePayload,
     GetImageMetadataPayload,
     GetImageProviderSchemaPayload,
     ListFilesPayload,
-    UpdateLabelPayload,
+    UpdateClassPayload,
     UpdateMetadataPayload,
     UpdateSourcePayload,
 )
 from apps.helpers.consts import ApiTags
 from apps.inference_server.web import (
-    AssociateLabelWithModelClassPayload,
-    GetModelLabelsPayload,
+    AssociateClassWithModelClassPayload,
+    GetModelClassesPayload,
     RecognizePayload,
 )
 from apps.tasks_server.web import (
@@ -127,34 +127,34 @@ class WebApp:
         async def list_models_api(request: Request) -> JSONResponse: ...
 
         @self._app.post(
-            "/api/models/labels/associate",
+            "/api/models/classes/associate",
             tags=[ApiTags.MODELS],
-            operation_id="associate_label_with_model_class",
+            operation_id="associate_class_with_model_class",
             response_class=JSONResponse,
         )
-        @self._manager.model_api_request("associate_label_with_model_class")
-        async def associate_label_with_model_class_api(
-            payload: AssociateLabelWithModelClassPayload,
+        @self._manager.model_api_request("associate_class_with_model_class")
+        async def associate_class_with_model_class_api(
+            payload: AssociateClassWithModelClassPayload,
         ) -> JSONResponse: ...
 
         @self._app.post(
-            "/api/models/labels/get",
+            "/api/models/classes/get",
             tags=[ApiTags.MODELS],
-            operation_id="get_labels",
+            operation_id="get_classes",
             response_class=JSONResponse,
         )
-        @self._manager.model_api_request("get_model_labels")
-        async def get_model_labels_api(payload: GetModelLabelsPayload) -> JSONResponse: ...
+        @self._manager.model_api_request("get_model_classes")
+        async def get_model_classes_api(payload: GetModelClassesPayload) -> JSONResponse: ...
 
 
         @self._app.post(
-            "/api/models/labels/get",
+            "/api/models/classes/get",
             tags=[ApiTags.MODELS],
-            operation_id="get_labels",
+            operation_id="get_classes",
             response_class=JSONResponse,
         )
-        @self._manager.model_api_request("get_model_labels")
-        async def get_model_labels_api(payload: GetModelLabelsPayload) -> JSONResponse: ...
+        @self._manager.model_api_request("get_model_classes")
+        async def get_model_classes_api(payload: GetModelClassesPayload) -> JSONResponse: ...
 
         ################################################################################
         # INFERENCE API
@@ -170,44 +170,44 @@ class WebApp:
         async def recognize_api(payload: RecognizePayload) -> JSONResponse: ...
 
         ################################################################################
-        # LABELS API
+        # CLASSES API
         ################################################################################
 
         @self._app.post(
-            "/api/labels/add",
-            tags=[ApiTags.LABELS],
-            operation_id="add_label",
+            "/api/classes/add",
+            tags=[ApiTags.CLASSES],
+            operation_id="add_class",
             response_class=JSONResponse,
         )
-        @self._manager.labels_api_request("add_label")
-        async def add_label_api(payload: AddLabelPayload) -> JSONResponse: ...
+        @self._manager.classes_api_request("add_class")
+        async def add_class_api(payload: AddClassPayload) -> JSONResponse: ...
 
         @self._app.post(
-            "/api/labels/delete",
-            tags=[ApiTags.LABELS],
-            operation_id="delete_label",
+            "/api/classes/delete",
+            tags=[ApiTags.CLASSES],
+            operation_id="delete_class",
             response_class=JSONResponse,
         )
-        @self._manager.labels_api_request("delete_label")
-        async def delete_label_api(payload: DeleteLabelPayload) -> JSONResponse: ...
+        @self._manager.classes_api_request("delete_class")
+        async def delete_class_api(payload: DeleteClassPayload) -> JSONResponse: ...
 
         @self._app.get(
-            "/api/labels/list",
-            tags=[ApiTags.LABELS],
-            operation_id="list_labels",
+            "/api/classes/list",
+            tags=[ApiTags.CLASSES],
+            operation_id="list_classes",
             response_class=JSONResponse,
         )
-        @self._manager.labels_api_request("list_labels")
-        async def list_labels_api(request: Request) -> JSONResponse: ...
+        @self._manager.classes_api_request("list_classes")
+        async def list_classes_api(request: Request) -> JSONResponse: ...
 
         @self._app.post(
-            "/api/labels/update",
-            tags=[ApiTags.LABELS],
-            operation_id="update_label",
+            "/api/classes/update",
+            tags=[ApiTags.CLASSES],
+            operation_id="update_class",
             response_class=JSONResponse,
         )
-        @self._manager.labels_api_request("update_label")
-        async def update_label_api(payload: UpdateLabelPayload) -> JSONResponse: ...
+        @self._manager.classes_api_request("update_class")
+        async def update_class_api(payload: UpdateClassPayload) -> JSONResponse: ...
 
         ################################################################################
         # TASKS API

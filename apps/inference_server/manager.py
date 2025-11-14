@@ -90,15 +90,15 @@ class Manager:
             logger.error(f"Error listing models: {str(e)}")
             return []
 
-    async def get_model_labels(self, model_name: str) -> Dict[str, Optional[str]]:
+    async def get_model_classes(self, model_name: str) -> Dict[str, Optional[str]]:
         """
-        Get the labels for a specific model.
+        Get the classes for a specific model.
 
         Args:
-            model_name (str): The name of the model to get labels for.
+            model_name (str): The name of the model to get classes for.
 
         Returns:
-            Dict[str, str]: A dictionary mapping label names to label IDs.
+            Dict[str, str]: A dictionary mapping class names to class IDs.
         """
         if model_name in self._avail_models:
             model_path = self._avail_models[model_name]
@@ -110,7 +110,7 @@ class Manager:
         except FileNotFoundError:
             metadata = {}
         class_list = metadata.get("classes", [])
-        ret = {name: None for name in class_list}
+        ret: Dict[str, Optional[str]] = {name: None for name in class_list}
 
         class_map = metadata.get("class_map", {})
         for k, v in class_map.items():
@@ -118,14 +118,14 @@ class Manager:
 
         return ret
 
-    async def set_model_label_uuid(self, model_name: str, model_class: str, label_uuid: Optional[str]) -> bool:
+    async def set_model_class_uuid(self, model_name: str, model_class: str, class_uuid: Optional[str]) -> bool:
         """
-        Associate a model's class label with a label uuid
+        Associate a model's class label with a class uuid
 
         Args:
             model_name (str): The name of the model to set the association on
             model_class (str): The class label to associate with the UUID
-            label_uuid (Optional[str]): The UUID of the label to associate, or to clear if None
+            class_uuid (Optional[str]): The UUID of the class to associate, or to clear if None
 
         Returns:
             bool: True if the association was successful, False otherwise.
@@ -140,12 +140,12 @@ class Manager:
         except FileNotFoundError:
             metadata = {}
         if model_class not in metadata.get("classes", {}):
-            raise ValueError(f"Class label '{model_class}' not found in metadata for model '{model_name}'")
+            raise ValueError(f"Class '{model_class}' not found in metadata for model '{model_name}'")
         class_map = metadata.get("class_map", {})
-        if label_uuid is None and model_class in class_map:
+        if class_uuid is None and model_class in class_map:
             del class_map[model_class]
         else:
-            class_map[model_class] = label_uuid
+            class_map[model_class] = class_uuid
         metadata["class_map"] = class_map
         save_model_json_metadata(model_path, metadata=metadata)
         return True
@@ -247,9 +247,9 @@ class Manager:
                 inference_result.annotated_image = annotate_image(image, inference_result.detections)
 
             if len(inference_result.detections) > 0:
-                label_uuid_map = await self.get_model_labels(model_name)
+                class_uuid_map = await self.get_model_classes(model_name)
                 for det in inference_result.detections:
-                    det.label_uuid = label_uuid_map.get(det.class_name, det.label_uuid)
+                    det.class_uuid = class_uuid_map.get(det.class_name, det.class_uuid)
 
             if pin_id in model.pins:
                 logger.info(f"Refreshing timeout for pin {pin_id}")

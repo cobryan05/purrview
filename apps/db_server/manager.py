@@ -15,8 +15,8 @@ from apps.helpers.db.db_client import (
     BoundingBoxMetadata,
     DbClient,
     ImageMetadata,
-    LabelData,
-    LabelMetadata,
+    ClassData,
+    ClassMetadata,
     SourceMetadata,
 )
 from apps.helpers.fileUtils import get_safe_path
@@ -54,7 +54,7 @@ class Manager:
 
     async def _init(self):
         """Initialization that should run on event loop"""
-        pass
+        await self._db_client.init_db()
 
     async def _worker_task(self):
         """Periodic worker task that runs at regular intervals"""
@@ -68,67 +68,67 @@ class Manager:
             print("Periodic task cleanup.")
 
     ################################################################################
-    # LABELS API
+    # CLASSES API
     ################################################################################
 
-    async def create_new_label(self, name: str, color: str, parent_uuid: Optional[str] = None) -> LabelMetadata:
+    async def create_new_class(self, name: str, color: str, parent_uuid: Optional[str] = None) -> ClassMetadata:
         """
-        Adds a new label to the database
+        Adds a new class to the database
 
         Returns:
-            LabelMetaData: Label metadata added to database
+            ClassMetaData: Class metadata added to database
         """
-        ret = await self._db_client.add_label(name, color, parent_uuid=parent_uuid)
+        ret = await self._db_client.add_class(name, color, parent_uuid=parent_uuid)
         # TODO CJO: await self._db_client.export_labels_from_db_to_json(str(self._labels_json))
         return ret
 
-    async def delete_label(self, label_uuid: str) -> None:
+    async def delete_class(self, class_uuid: str) -> None:
         """
-        Adds a new label to the database
+        Deletes a class from the database
 
         Returns:
-            LabelMetaData: Label metadata added to database
+            ClassMetaData: Class metadata deleted from database
         """
-        # Check if the label has a parent
-        child_uuids = await self._db_client.get_label_children(label_uuid)
+        # Check if the class has a parent
+        child_uuids = await self._db_client.get_class_children(class_uuid)
         if child_uuids:
-            raise ValueError(f"Cannot delete label '{label_uuid}' because it has child labels.")
+            raise ValueError(f"Cannot delete class '{class_uuid}' because it has child classes.")
 
-        await self._db_client.delete_label(label_uuid)
+        await self._db_client.delete_class(class_uuid)
         # TODO CJO: await self._db_client.export_labels_from_db_to_json(str(self._labels_json))
 
-    async def update_label(self, label_uuid: str, name: Optional[str] = None, color: Optional[str] = None) -> None:
+    async def update_class(self, class_uuid: str, name: Optional[str] = None, color: Optional[str] = None) -> None:
         """
-        Update a label's name and/or color.
+        Update a class's name and/or color.
 
         Args:
-            label_uuid (str): uuid of the label to update.
-            name (Optional[str]): New name for the label.
-            color (Optional[str]): New color for the label.
+            class_uuid (str): uuid of the class to update.
+            name (Optional[str]): New name for the class.
+            color (Optional[str]): New color for the class.
         """
-        await self._db_client.update_label(label_uuid=label_uuid, name=name, color=color)
+        await self._db_client.update_class(class_uuid=class_uuid, name=name, color=color)
         # TODO CJO: await self._db_client.export_labels_from_db_to_json(str(self._labels_json))
 
-    async def get_label_uuid_map(self) -> Dict[str, LabelData]:
+    async def get_class_uuid_map(self) -> Dict[str, ClassData]:
         """
-        Get a mapping of label UUIDs to their metadata.
+        Get a mapping of class UUIDs to their metadata.
         """
-        flat_list: List[LabelMetadata] = await self._db_client.list_labels()
-        uuid_to_node: Dict[str, LabelData] = {label.uuid: LabelData(metadata=label) for label in flat_list}
+        flat_list: List[ClassMetadata] = await self._db_client.list_classes()
+        uuid_to_node: Dict[str, ClassData] = {cls.uuid: ClassData(metadata=cls) for cls in flat_list}
 
-        for label in flat_list:
-            node = uuid_to_node[label.uuid]
-            if label.parent_uuid and label.parent_uuid in uuid_to_node:
-                parent_node = uuid_to_node[label.parent_uuid]
+        for cls in flat_list:
+            node = uuid_to_node[cls.uuid]
+            if cls.parent_uuid and cls.parent_uuid in uuid_to_node:
+                parent_node = uuid_to_node[cls.parent_uuid]
                 parent_node.children.append(node)
 
         return uuid_to_node
 
-    async def get_labels(self) -> List[LabelData]:
+    async def get_classes(self) -> List[ClassData]:
         """
-        Gets a list of all labels
+        Gets a list of all classes
         """
-        return list((await self.get_label_uuid_map()).values())
+        return list((await self.get_class_uuid_map()).values())
 
     ################################################################################
     # SOURCES API

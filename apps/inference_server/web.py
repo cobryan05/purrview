@@ -22,13 +22,13 @@ from apps.helpers.consts import ApiTags, JsonKeys, JsonValues
 from .manager import Manager
 
 
-class AssociateLabelWithModelClassPayload(BaseModel):
+class AssociateClassWithModelClassPayload(BaseModel):
     model_name: str
     model_class: str
-    label_uuid: Optional[str]
+    class_uuid: Optional[str]
 
 
-class GetModelLabelsPayload(BaseModel):
+class GetModelClassesPayload(BaseModel):
     model_name: str
 
 
@@ -185,20 +185,19 @@ class WebApp:
                 )
 
         @self._app.post(
-            "/api/models/labels/get",
+            "/api/models/classes/get",
             response_class=JSONResponse,
             tags=[ApiTags.MODELS],
-            operation_id="get_model_labels",
+            operation_id="get_model_classes",
         )
-        async def get_model_labels_api(payload: GetModelLabelsPayload) -> JSONResponse:
+        async def get_model_classes_api(payload: GetModelClassesPayload) -> JSONResponse:
             """
-            API endpoint to list labels for a given model.
-
+            API endpoint to list classes for a given model.
             Returns:
-                JSONResponse: A dictionary mapping label names to label IDs.
+                JSONResponse: A dictionary mapping class names to class IDs.
             """
             try:
-                label_map: dict[str, str] = await self._manager.get_model_labels(payload.model_name)
+                class_map: dict[str, str] = await self._manager.get_model_classes(payload.model_name)
             except Exception as e:
                 logger.error(e, exc_info=True)
                 return JSONResponse(content={JsonKeys.STATUS: JsonValues.FAILURE, JsonKeys.MESSAGE: str(e)})
@@ -206,28 +205,28 @@ class WebApp:
             return JSONResponse(
                 content={
                     JsonKeys.STATUS: JsonValues.SUCCESS,
-                    "labels": label_map,
+                    "classes": class_map,
                 },
             )
 
         @self._app.post(
-            "/api/models/labels/associate",
+            "/api/models/classes/associate",
             tags=[ApiTags.MODELS],
-            operation_id="associate_label_with_model_class",
+            operation_id="associate_class_with_model_class",
             response_class=JSONResponse,
         )
-        async def associate_label_with_model_class_api(payload: AssociateLabelWithModelClassPayload) -> JSONResponse:
+        async def associate_class_with_model_class_api(payload: AssociateClassWithModelClassPayload) -> JSONResponse:
             """
-            API endpoint to associate a model's class with a label
+            API endpoint to associate a model's class with a class
 
             Returns:
-                JSONResponse: A JSON response containing the list of labels for the model
+                JSONResponse: A JSON response containing the list of classes for the model
             """
             try:
-                ret = await self._manager.set_model_label_uuid(
-                    model_name=payload.model_name, model_class=payload.model_class, label_uuid=payload.label_uuid
+                ret = await self._manager.set_model_class_uuid(
+                    model_name=payload.model_name, model_class=payload.model_class, class_uuid=payload.class_uuid
                 )
-                response_data = {JsonKeys.STATUS: JsonValues.SUCCESS, "label_set": ret}
+                response_data = {JsonKeys.STATUS: JsonValues.SUCCESS, "class_set": ret}
                 return JSONResponse(content=response_data)
             except Exception as e:
                 logger.error(e, exc_info=True)

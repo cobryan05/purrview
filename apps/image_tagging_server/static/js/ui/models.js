@@ -1,9 +1,9 @@
 import { DropDownField, EditableField, LabelDropDownField } from '/app-static/js/ui/utils/fields/index.js';
-import { associateLabel, clearModelsCache, createGenericRow, fetchLabels, fetchModelLabelMappings, fetchModelsList, Logger, toast } from '/app-static/js/ui/utils/index.js';
+import { associateClass, clearModelsCache, createGenericRow, fetchClasses, fetchModelClassMappings, fetchModelsList, Logger, toast } from '/app-static/js/ui/utils/index.js';
 
 
-export function renderModelLabelAssignments({
-  target = "model-labels-box",
+export function renderModelClassAssignments({
+  target = "model-class-box",
   editable = false,
   preselectedModel = null
 } = {}) {
@@ -24,7 +24,7 @@ export function renderModelLabelAssignments({
         onChange: value => {
           if (!value) return;
           setTimeout(() => {
-            renderModelLabelAssignments({ target, editable, preselectedModel: value });
+            renderModelClassAssignments({ target, editable, preselectedModel: value });
           }, 0);
         }
       }),
@@ -34,7 +34,7 @@ export function renderModelLabelAssignments({
           emoji: '🔄',
           onClick: () => {
             clearModelsCache();
-            renderModelLabelAssignments({ target, editable, preselectedModel: preselectedModel });
+            renderModelClassAssignments({ target, editable, preselectedModel: preselectedModel });
           }
         }
       ]
@@ -44,61 +44,61 @@ export function renderModelLabelAssignments({
 
   if (!preselectedModel) return;
 
-  const labelAssignmentDiv = document.createElement('div');
-  container.appendChild(labelAssignmentDiv);
+  const classAssignmentDiv = document.createElement('div');
+  container.appendChild(classAssignmentDiv);
 
-  // --- Load model-label assignments ---
+  // --- Load model-class assignments ---
   Promise.all([
-    fetchModelLabelMappings(preselectedModel),
-    fetchLabels()
-  ]).then(([classMap, allLabels]) => {
-    // Convert labels to the format required by DropDownField
-    const labelItems = Array.from(allLabels.values()).map(label => ({
-      key: label.metadata.uuid,
-      text: label.metadata.name,
-      color: label.metadata.color || '#cccccc'
+    fetchModelClassMappings(preselectedModel),
+    fetchClasses()
+  ]).then(([classMap, allClasses]) => {
+    // Convert classes to the format required by DropDownField
+    const classItems = Array.from(allClasses.values()).map(cls => ({
+      key: cls.metadata.uuid,
+      text: cls.metadata.name,
+      color: cls.metadata.color || '#cccccc'
     }));
 
     classMap.forEach((assignedUuid, modelClass) => {
-      const assignedLabel = allLabels.get(assignedUuid);
-      const labelKey = assignedLabel ? { key: assignedLabel.metadata.uuid, text: assignedLabel.metadata.name } : assignedUuid
+      const assignedClass = allClasses.get(assignedUuid);
+      const classKey = assignedClass ? { key: assignedClass.metadata.uuid, text: assignedClass.metadata.name } : assignedUuid
       const deleteButton = {
         text: 'Delete',
         emoji: '🗑️',
         onClick: async () => {
           try {
-            await associateLabel(preselectedModel, modelClass, null);
+            await associateClass(preselectedModel, modelClass, null);
           } catch (err) {
             toast(err.message, 5000, 'error');
           }
-          renderModelLabelAssignments({ target, editable, preselectedModel: preselectedModel });
+          renderModelClassAssignments({ target, editable, preselectedModel: preselectedModel });
         },
       };
       const assignmentRow = createGenericRow({
         field: new EditableField({
           field: new LabelDropDownField({
-            options: labelItems,
+            options: classItems,
             labelText: modelClass,
-            value: labelKey
+            value: classKey
           }),
           editable: true,
           editMode: false,
           buttonsLast: true,
           onSave: async uuid => {
-            // Save the selected label
+            // Save the selected class
             if (uuid) {
-              await associateLabel(preselectedModel, modelClass, uuid);
+              await associateClass(preselectedModel, modelClass, uuid);
             }
-            renderModelLabelAssignments({ target, editable, preselectedModel: preselectedModel });
+            renderModelClassAssignments({ target, editable, preselectedModel: preselectedModel });
           },
           onCancel: () => {
-            renderModelLabelAssignments({ target, editable, preselectedModel: preselectedModel });
+            renderModelClassAssignments({ target, editable, preselectedModel: preselectedModel });
           },
         }),
         rightButtons: assignedUuid ? [deleteButton] : []
       });
 
-      labelAssignmentDiv.appendChild(assignmentRow);
+      classAssignmentDiv.appendChild(assignmentRow);
     });
   }).catch(err => Logger.error(err));
 }
