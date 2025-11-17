@@ -18,6 +18,8 @@ from apps.helpers.db.db_client import (
     ClassData,
     ClassMetadata,
     SourceMetadata,
+    TagMetadata,
+    TagKinds,
 )
 from apps.helpers.fileUtils import get_safe_path
 from apps.helpers.imageProviders.Registry import image_provider_registry
@@ -205,6 +207,84 @@ class Manager:
             raise ValueError(f"Unknown image provider: {image_provider}")
 
         return image_provider_registry[image_provider].params_schema()
+
+    ################################################################################
+    # TAGS API
+    ################################################################################
+
+    async def create_new_tag(
+        self,
+        name: str,
+        color: str,
+        protected: bool = False,
+        kind: str = TagKinds.GENERIC,
+        exclusive_group: Optional[str] = None,
+    ) -> TagMetadata:
+        """
+        Adds a new class to the database
+
+        Returns:
+            TagMetadata: Tag metadata added to database
+        """
+        ret = await self._db_client.add_tag(
+            name=name, color=color, protected=protected, kind=kind, exclusive_group=exclusive_group
+        )
+        # TODO CJO: await self._db_client.export_labels_from_db_to_json(str(self._labels_json))
+        return ret
+
+    async def delete_tag(self, tag_uuid: str) -> None:
+        """
+        Deletes a tag from the database
+
+        Returns:
+            TagMetadata: Tag metadata deleted from database
+        """
+        await self._db_client.delete_tag(tag_uuid)
+        # TODO CJO: await self._db_client.export_labels_from_db_to_json(str(self._labels_json))
+
+    async def update_tag(
+        self,
+        tag_uuid: str,
+        name: Optional[str] = None,
+        color: Optional[str] = None,
+        protected: bool = False,
+        kind: Optional[str] = None,
+        exclusive_group: Optional[str] = None,
+    ) -> None:
+        """
+        Update a tag's name and/or color.
+
+        Args:
+            tag_uuid (str): uuid of the tag to update.
+            name (Optional[str]): New name for the tag.
+            color (Optional[str]): New color for the tag.
+            protected (bool): Whether the tag is protected.
+            kind (Optional[str]): The kind of tag.
+            exclusive_group (Optional[str]): The exclusive group of the tag.
+        """
+        await self._db_client.update_tag(
+            tag_uuid=tag_uuid,
+            name=name,
+            color=color,
+            protected=protected,
+            kind=kind,
+            exclusive_group=exclusive_group,
+        )
+        # TODO CJO: await self._db_client.export_labels_from_db_to_json(str(self._labels_json))
+
+    async def get_tag_uuid_map(self) -> Dict[str, TagMetadata]:
+        """
+        Get a mapping of tag UUIDs to their metadata.
+        """
+        flat_list: List[TagMetadata] = await self._db_client.list_tags()
+        uuid_to_node: Dict[str, TagMetadata] = {tag.uuid: tag for tag in flat_list}
+        return uuid_to_node
+
+    async def get_tags(self) -> List[TagMetadata]:
+        """
+        Gets a list of all tags
+        """
+        return list((await self.get_tag_uuid_map()).values())
 
     ################################################################################
     # IMAGES API

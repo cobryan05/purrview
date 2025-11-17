@@ -23,6 +23,7 @@ class ApiTags(str, Enum):
     INFERENCE = "inference"
     IMAGES = "images"
     SOURCES = "sources"
+    TAGS = "tags"
     TASKS = "tasks"
 
 class TaskStatus(str, Enum):

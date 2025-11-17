@@ -4,6 +4,7 @@ import { addRecognizedBoxes, loadImageAndMetadata } from '/app-static/js/canvas/
 import { getLayer, } from '/app-static/js/canvas/state.js';
 import { setTool } from '/app-static/js/canvas/tools.js';
 import { renderClassList } from '/app-static/js/ui/classes.js';
+import { renderTagList } from '/app-static/js/ui/tags.js';
 import { renderModelClassAssignments } from '/app-static/js/ui/models.js';
 import { renderSourceManager } from '/app-static/js/ui/sources.js';
 import { renderActiveTasks, renderTaskConfigs } from '/app-static/js/ui/tasks.js';
@@ -240,7 +241,7 @@ async function loadImageByName(filename, dirPath) {
     primaryTabHeader.querySelectorAll('.tab-button').forEach(t => t.classList.remove('active'));
     canvasTabBtn.classList.add('active');
 
-    // Deactivate all sibling panes (tab-canvas, tab-files, tab-label-management)
+    // Deactivate all sibling panes (tab-canvas, tab-files, tab-tag-management)
     // These are direct children of #main-stage
     document.querySelectorAll('#main-stage > .tab-pane').forEach(p => p.classList.remove('active'));
     canvasPane.classList.add('active');
@@ -301,7 +302,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
         // If "Settings" tab is opened, trigger the Label Management tab click
         if (tabName === 'outer-tab-settings') {
-          const defaultTabBtn = document.querySelector('#outer-tab-settings .tab-button[data-tab="tab-label-management"]');
+          const defaultTabBtn = document.querySelector('#outer-tab-settings .tab-button[data-tab="tab-tag-management"]');
           if (defaultTabBtn) {
             // Only trigger if no tab is currently active inside this header
             const primaryHeader = defaultTabBtn.closest('.primary-tab-header');
@@ -333,8 +334,9 @@ document.addEventListener('DOMContentLoaded', () => {
         tabPanes.forEach(tc => tc.classList.toggle('active', tc.id === tabName));
 
         // Conditional rendering/loading based on active tab
-        if (tabName === 'tab-label-management') {
+        if (tabName === 'tab-tag-management') {
           renderClassList({ target: "classes-list" });
+          renderTagList({ target: "tags-list" });
           renderModelClassAssignments({ target: "model-classes-box" });
         } else if (tabName === 'tab-source-management') {
           renderSourceManager({ target: "source-management-box" });

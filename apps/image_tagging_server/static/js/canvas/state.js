@@ -8,6 +8,7 @@ let currentTool = 'select';
 let currentImageName = null;
 let currentClassUuid = null;
 let currentClassText = null
+let currentTagUuid = null;
 
 export function getCurrentTool() {
   return currentTool;
@@ -28,6 +29,14 @@ export function getCurrentClassUuid() {
 
 export function setCurrentClassUuid(uuid) {
   currentClassUuid = uuid
+}
+
+export function getCurrentTagUuid() {
+  return currentTagUuid;
+}
+
+export function setCurrentTagUuid(uuid) {
+  currentTagUuid = uuid;
 }
 
 export function getCurrentImageName() {

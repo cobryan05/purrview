@@ -11,6 +11,7 @@ import tasks_client
 from db_client.api.images_api import ImagesApi
 from db_client.api.classes_api import ClassesApi
 from db_client.api.sources_api import SourcesApi
+from db_client.api.tags_api import TagsApi
 from inference_client.api.inference_api import InferenceApi
 from inference_client.api.models_api import ModelsApi
 from inference_client.models.associate_class_with_model_class_payload import (
@@ -85,6 +86,12 @@ class Manager:
         Decorator to forward request to the Sources API
         """
         return api_forward_request(SourcesApi(self._db_api_client), api_method_name)
+
+    def tags_api_request(self, api_method_name: str):
+        """
+        Decorator to forward request to the Tags API
+        """
+        return api_forward_request(TagsApi(self._db_api_client), api_method_name)
 
     def task_api_request(self, api_method_name: str):
         """

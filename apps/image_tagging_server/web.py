@@ -11,9 +11,11 @@ from fastapi.templating import Jinja2Templates
 
 from apps.db_server.web import (
     AddClassPayload,
+    AddTagPayload,
     CreateSourcePayload,
     DeleteClassPayload,
     DeleteSourcePayload,
+    DeleteTagPayload,
     GetFilePayload,
     GetImageMetadataPayload,
     GetImageProviderSchemaPayload,
@@ -21,6 +23,7 @@ from apps.db_server.web import (
     UpdateClassPayload,
     UpdateMetadataPayload,
     UpdateSourcePayload,
+    UpdateTagPayload,
 )
 from apps.helpers.consts import ApiTags
 from apps.inference_server.web import (
@@ -209,6 +212,45 @@ class WebApp:
         @self._manager.classes_api_request("update_class")
         async def update_class_api(payload: UpdateClassPayload) -> JSONResponse: ...
 
+        ################################################################################
+        # TAGS API
+        ################################################################################
+
+        @self._app.post(
+            "/api/tags/add",
+            tags=[ApiTags.TAGS],
+            operation_id="add_tag",
+            response_class=JSONResponse,
+        )
+        @self._manager.tags_api_request("add_tag")
+        async def add_tag_api(payload: AddTagPayload) -> JSONResponse: ...
+
+        @self._app.post(
+            "/api/tags/delete",
+            tags=[ApiTags.TAGS],
+            operation_id="delete_tag",
+            response_class=JSONResponse,
+        )
+        @self._manager.tags_api_request("delete_tag")
+        async def delete_tag_api(payload: DeleteTagPayload) -> JSONResponse: ...
+
+        @self._app.get(
+            "/api/tags/list",
+            tags=[ApiTags.TAGS],
+            operation_id="list_tags",
+            response_class=JSONResponse,
+        )
+        @self._manager.tags_api_request("list_tags")
+        async def list_tags_api(request: Request) -> JSONResponse: ...
+
+        @self._app.post(
+            "/api/tags/update",
+            tags=[ApiTags.TAGS],
+            operation_id="update_tag",
+            response_class=JSONResponse,
+        )
+        @self._manager.tags_api_request("update_tag")
+        async def update_tag_api(payload: UpdateTagPayload) -> JSONResponse: ...
         ################################################################################
         # TASKS API
         ################################################################################

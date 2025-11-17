@@ -22,6 +22,7 @@ from .manager import (
     ImageMetadata,
     Manager,
     SourceMetadata,
+    TagKinds
 )
 
 logging.basicConfig(stream=sys.stdout)
@@ -43,6 +44,27 @@ class UpdateClassPayload(BaseModel):
     class_uuid: str
     name: Optional[str] = None
     color: Optional[str] = None
+
+
+class AddTagPayload(BaseModel):
+    name: str
+    color: str
+    protected: bool = False
+    kind: str = TagKinds.GENERIC
+    exclusive_group: Optional[str] = None
+
+
+class DeleteTagPayload(BaseModel):
+    tag_uuid: str
+
+
+class UpdateTagPayload(BaseModel):
+    tag_uuid: str
+    name: Optional[str] = None
+    color: Optional[str] = None
+    protected: Optional[bool] = None
+    kind: Optional[str] = None
+    exclusive_group: Optional[str] = None
 
 
 class GetImageProviderSchemaPayload(BaseModel):
@@ -372,6 +394,78 @@ class WebApp:
                 return JSONResponse(
                     content={JsonKeys.STATUS: JsonValues.FAILURE, JsonKeys.MESSAGE: str(e)},
                 )
+
+        ################################################################################
+        # Tags API
+        ################################################################################
+
+        @self._app.post("/api/tags/add", response_class=JSONResponse, tags=[ApiTags.TAGS], operation_id="add_tag")
+        async def add_tag_api(request: AddTagPayload) -> JSONResponse:
+            """
+            API endpoint to add a new tag.
+            """
+            try:
+                tag = await self._manager.create_new_tag(
+                    request.name, request.color, kind=request.kind, exclusive_group=request.exclusive_group
+                )
+                return JSONResponse(content={JsonKeys.STATUS: JsonValues.SUCCESS, "tag": asdict(tag)})
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return JSONResponse(content={JsonKeys.STATUS: JsonValues.FAILURE, JsonKeys.MESSAGE: str(e)})
+
+        @self._app.post(
+            "/api/tags/delete", response_class=JSONResponse, tags=[ApiTags.TAGS], operation_id="delete_tag"
+        )
+        async def delete_tag_api(request: DeleteTagPayload) -> JSONResponse:
+            """
+            API endpoint to delete an existing tag.
+            """
+            try:
+                await self._manager.delete_tag(request.tag_uuid)
+                return JSONResponse(content={JsonKeys.STATUS: JsonValues.SUCCESS})
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return JSONResponse(content={JsonKeys.STATUS: JsonValues.FAILURE, JsonKeys.MESSAGE: str(e)})
+
+        @self._app.get(
+            "/api/tags/list", response_class=JSONResponse, tags=[ApiTags.TAGS], operation_id="list_tags"
+        )
+        async def list_tags_api(request: Request) -> JSONResponse:
+            """
+            API endpoint to return a list of tags with metadata.
+            Args:
+                request (Request): The FastAPI request object.
+
+            Returns:
+                JSONResponse: A JSON response containing the list of tags.
+            """
+            try:
+                tag_list = await self._manager.get_tags()
+                tags = [asdict(tag) for tag in tag_list]
+                response_data = {JsonKeys.STATUS: JsonValues.SUCCESS, "tags": tags}
+                return JSONResponse(content=response_data)
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return JSONResponse(
+                    content={JsonKeys.STATUS: JsonValues.FAILURE, JsonKeys.MESSAGE: str(e)},
+                )
+
+        @self._app.post(
+            "/api/tags/update", response_class=JSONResponse, tags=[ApiTags.TAGS], operation_id="update_tag"
+        )
+        async def update_tag_api(request: UpdateTagPayload) -> JSONResponse:
+            """
+            API endpoint to update an existing tag's name and/or color.
+            """
+            try:
+                await self._manager.update_tag(tag_uuid=request.tag_uuid, name=request.name, color=request.color)
+                return JSONResponse(content={JsonKeys.STATUS: JsonValues.SUCCESS})
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return JSONResponse(
+                    content={JsonKeys.STATUS: JsonValues.FAILURE, JsonKeys.MESSAGE: str(e)},
+                )
+
 
         ################################################################################
         # Images API

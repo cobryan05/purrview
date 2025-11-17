@@ -23,6 +23,12 @@ logger.setLevel(logging.DEBUG)
 
 CLASSES_JSON = "classes.json"
 
+
+class TagKinds:
+    GENERIC = "generic"
+    SYSTEM = "system"
+
+
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS images (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -42,8 +48,14 @@ CREATE TABLE IF NOT EXISTS classes (
 
 CREATE TABLE IF NOT EXISTS tags (
     uuid TEXT PRIMARY KEY,
-    name TEXT NOT NULL,
-    color TEXT
+    name TEXT NOT NULL UNIQUE,
+    color TEXT,
+    kind TEXT NOT NULL DEFAULT 'generic',
+    protected BOOLEAN NOT NULL DEFAULT FALSE,
+    description TEXT,
+    exclusive_group TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS bboxes (
@@ -157,11 +169,18 @@ BEGIN
 END;
 """
 
+
 @dataclass
 class TagMetadata:
     uuid: str
     name: str
     color: str
+    protected: bool = False
+    kind: Optional[str] = None
+    exclusive_group: Optional[str] = None
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+
 
 @dataclass
 class ClassMetadata:
@@ -234,6 +253,12 @@ class ActiveTaskMetadata:
 class DbClient:
     """Helper class for SQLite database interactions for image annotations."""
 
+    @staticmethod
+    def _cols_from_dataclass(model_cls: Type) -> str:
+        return ", ".join(f.name for f in fields(model_cls))
+
+    TAG_COLUMNS = _cols_from_dataclass(TagMetadata)
+
     def __init__(self, db_dir: Union[str, Path]):
         """
         Initialize DbClient with a path to the SQLite database file.
@@ -275,6 +300,9 @@ class DbClient:
 
             await db.commit()
 
+    ################################################################################
+    # Utils
+    ################################################################################
     async def _migrate_db(self, db: aiosqlite.Connection) -> None:
         """
         Run simple migrations by adding new columns if they do not exist.
@@ -301,6 +329,10 @@ class DbClient:
                     await db.execute(f"ALTER TABLE {table} ADD COLUMN {col} {col_def}")
 
         await db.commit()
+
+    ################################################################################
+    # Images
+    ################################################################################
 
     async def get_image_id_by_filename(self, filename: str) -> Optional[int]:
         """
@@ -336,6 +368,10 @@ class DbClient:
             cursor = await db.execute("INSERT INTO images (filename) VALUES (?)", (filename,))
             await db.commit()
             return cursor.lastrowid
+
+    ################################################################################
+    # Tasks
+    ################################################################################
 
     async def add_task_config(
         self,
@@ -837,6 +873,10 @@ class DbClient:
             )
             await db.commit()
 
+    ################################################################################
+    # Sources
+    ################################################################################
+
     async def get_sources(self) -> List[SourceMetadata]:
         """
         List all sources.
@@ -954,6 +994,10 @@ class DbClient:
             for source_uuid in source_uuids:
                 await db.execute("DELETE FROM sources WHERE uuid = ?", (source_uuid,))
             await db.commit()
+
+    ################################################################################
+    # Classes
+    ################################################################################
 
     async def list_classes(self) -> List[ClassMetadata]:
         """
@@ -1073,6 +1117,129 @@ class DbClient:
             await db.execute("DELETE FROM classes WHERE uuid = ?", (class_uuid,))
             await db.commit()
 
+    ################################################################################
+    # Tags
+    ################################################################################
+
+    async def list_tags(self) -> List[TagMetadata]:
+        """
+        List all tags.
+
+        Returns:
+            List[Dict]: List of tags dictionaries with keys: id, name, color, uuid.
+        """
+        async with aiosqlite.connect(self._db_path) as db:
+            cursor = await db.execute(f"SELECT {DbClient.TAG_COLUMNS} FROM tags")
+            rows = await cursor.fetchall()
+            await cursor.close()
+            return [DbClient.row_to_dataclass(cursor, r, TagMetadata) for r in rows]
+
+    async def add_tag(
+        self,
+        name: str,
+        color: str,
+        uuid: Optional[str] = None,
+        protected: bool = False,
+        kind: str = TagKinds.GENERIC,
+        exclusive_group: Optional[str] = None,
+    ) -> TagMetadata:
+        """
+        Insert a tag, ignoring duplicates by UUID.
+        Always returns the fully populated TagMetadata with DB defaults.
+        """
+        uuid = uuid or str(uuid4())
+
+        async with aiosqlite.connect(self._db_path) as db:
+            # Insert with conflict handling
+            await db.execute(
+                """
+                INSERT INTO tags (uuid, name, color, protected, kind, exclusive_group)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (uuid, name, color, protected, kind, exclusive_group),
+            )
+            await db.commit()
+
+            # Fetch the full row including defaults
+            cursor = await db.execute(f"SELECT {self.TAG_COLUMNS} FROM tags WHERE uuid = ?", (uuid,))
+            row = await cursor.fetchone()
+            await cursor.close()
+
+            if not row:
+                raise RuntimeError("Tag inserted but not found!")
+
+            return self.row_to_dataclass(cursor, row, TagMetadata)
+
+    async def get_tag_by_uuid(self, uuid: str) -> Optional[TagMetadata]:
+        """
+        Retrieve a tag by its UUID.
+
+        Args:
+            uuid (str): Tag UUID.
+
+        Returns:
+            Optional[Dict]: Tag data or None.
+        """
+        async with aiosqlite.connect(self._db_path) as db:
+            cursor = await db.execute(f"SELECT {self.TAG_COLUMNS} FROM tags WHERE uuid = ?", (uuid,))
+            row = await cursor.fetchone()
+            await cursor.close()
+            if row:
+                return self.row_to_dataclass(cursor, row, TagMetadata)
+            return None
+
+    async def update_tag(
+        self,
+        tag_uuid: str,
+        name: Optional[str] = None,
+        color: Optional[str] = None,
+        protected: Optional[bool] = None,
+        kind: Optional[str] = None,
+        exclusive_group: Optional[str] = None,
+    ) -> None:
+        query_parts = []
+        params = []
+
+        if name is not None:
+            query_parts.append("name = ?")
+            params.append(name)
+        if color is not None:
+            query_parts.append("color = ?")
+            params.append(color)
+        if protected is not None:
+            query_parts.append("protected = ?")
+            params.append(protected)
+        if kind is not None:
+            query_parts.append("kind = ?")
+            params.append(kind)
+        if exclusive_group is not None:
+            query_parts.append("exclusive_group = ?")
+            params.append(exclusive_group)
+
+        if not query_parts:
+            return
+
+        params.append(tag_uuid)
+
+        async with aiosqlite.connect(self._db_path) as db:
+            await db.execute(f"UPDATE tags SET {', '.join(query_parts)} WHERE uuid = ?", tuple(params))
+            await db.commit()
+
+    async def delete_tag(self, tag_uuid: str) -> None:
+        """
+        Delete a tag and related entries.
+
+        Args:
+            tag_uuid (int): Tag ID to delete.
+        """
+        async with aiosqlite.connect(self._db_path) as db:
+            await db.execute("DELETE FROM tags WHERE uuid = ?", (tag_uuid,))
+            await db.commit()
+
+    ################################################################################
+    # BBoxes
+    ################################################################################
+
     async def add_box_for_image(
         self,
         image_filename: str,
@@ -1169,6 +1336,10 @@ class DbClient:
                 (bbox_id, class_uuid),
             )
             await db.commit()
+
+    ################################################################################
+    # Unsorted
+    ################################################################################
 
     async def read_image_metadata_from_db(self, image_id: int) -> Optional[ImageMetadata]:
         """
@@ -1422,6 +1593,7 @@ class DbClient:
 
     T = TypeVar("T")
 
+    @staticmethod
     def row_to_dataclass(
         cursor: aiosqlite.Cursor,
         row: Tuple[Any, ...],
@@ -1443,7 +1615,7 @@ class DbClient:
         columns: List[str] = [col[0] for col in cursor.description]
         row_dict: dict[str, Any] = dict(zip(columns, row))
 
-        dataclass_fields = {f.name for f in fields(cls_type)}
+        dataclass_fields = {f.name: f.type for f in fields(cls_type)}
 
         transformed: dict[str, Any] = {}
         for key, value in row_dict.items():
@@ -1458,7 +1630,10 @@ class DbClient:
             else:
                 if key not in dataclass_fields:
                     continue
-                transformed[key] = value
+                if dataclass_fields[key] == bool and value is not None:
+                    transformed[key] = bool(value)
+                else:
+                    transformed[key] = value
 
         return cls_type(**transformed)
 
