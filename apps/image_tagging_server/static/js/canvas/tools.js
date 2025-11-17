@@ -1,4 +1,5 @@
-import { getCurrentClassUuid, getCurrentTool, getStage, getTransformer, setCurrentTool } from './state.js';
+import { getCurrentClassUuid, getCurrentTool, getStage, getTransformer, setCurrentBbox, setCurrentTool } from './state.js';
+import { openInspectorTab, renderBboxInspector } from '/app-static/js/ui/inspector.js';
 
 // Clear selection implementation
 export function clearSelection() {
@@ -7,6 +8,7 @@ export function clearSelection() {
     transformer.nodes([]);
     transformer.getLayer()?.draw();
   }
+  setCurrentBbox(null);
   getStage().batchDraw();
 }
 
@@ -16,6 +18,12 @@ export function setTool(tool) {
   clearSelection();
   updateToolbarButtons();
   getStage().container().style.cursor = tool === 'select' ? 'default' : 'crosshair';
+}
+
+export function selectBbox(bbox) {
+  setCurrentBbox(bbox);
+  renderBboxInspector({ bbox });
+  openInspectorTab();
 }
 
 // Get the current tool
@@ -38,7 +46,7 @@ export function updateToolbarButtons() {
 
 export function selectBboxTool() {
   // Switch sidebar to classes tab
-  const classesTabButton = document.querySelector('[data-tab="tab-classes-tool"]');
+  const classesTabButton = document.querySelector('[data-tab="tab-pane-classes-tool"]');
   if (classesTabButton) {
     classesTabButton.click();
   }

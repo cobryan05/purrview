@@ -1,14 +1,13 @@
 import { createBoundingBox, updateBoundingBox } from './drawing.js';
-import { selectShape, findGroupAtPoint } from './selection.js';
-import { getCurrentTool, getLayer, getStage, getCurrentClassUuid } from './state.js';
-import { clearSelection, selectBboxTool, setTool } from './tools.js';
+import { getCurrentTool, getLayer, getStage, getTransformer, getCurrentClassUuid } from './state.js';
+import { clearSelection, selectBboxTool, setTool, selectBbox } from './tools.js';
 
-let pendingGroup = null;
+let pendingDraggedBbox = null;
 let startPos = null;
 let isPanning = false;
 let lastPanPos = null;
-let lastDiscardTime = 0;
-let lastDiscardPos = null;
+let _lastClickTime = 0;
+let _lastClickPos = null;
 const DOUBLE_CLICK_TIME_MS = 400;
 const DOUBLE_CLICK_DISTANCE_PX = 10;
 let crosshairV = null;
@@ -52,7 +51,7 @@ function getPointerPosition() {
   };
 }
 
-export function handleMouseDown(e) {
+export async function handleMouseDown(e) {
   const stage = getStage();
   const layer = getLayer();
   if (e.evt.button === 1) {
@@ -74,14 +73,14 @@ export function handleMouseDown(e) {
 
   startPos = pos;
   const currentClassUuid = getCurrentClassUuid();
-  pendingGroup = createBoundingBox(
+  pendingDraggedBbox = createBoundingBox(
     pos.x, pos.y, { width: 1, height: 1, metadata: { classUuid: currentClassUuid } });
-  if (pendingGroup) {
-    layer.add(pendingGroup);
+  if (pendingDraggedBbox) {
+    layer.add(pendingDraggedBbox);
   }
 }
 
-export function handleMouseMove(e) {
+export async function handleMouseMove(e) {
   const stage = getStage();
   const layer = getLayer();
   if (isPanning) {
@@ -112,13 +111,13 @@ export function handleMouseMove(e) {
     layer.batchDraw();
   }
 
-  if (!pendingGroup) return;
+  if (!pendingDraggedBbox) return;
 
   const dx = pos.x - startPos.x;
   const dy = pos.y - startPos.y;
 
-  const box = pendingGroup.findOne('.box');
-  const cls = pendingGroup.findOne('.class');
+  const box = pendingDraggedBbox.findOne('.box');
+  const cls = pendingDraggedBbox.findOne('.class');
 
   if (!box || !cls) return;
 
@@ -127,58 +126,66 @@ export function handleMouseMove(e) {
   const newWidth = Math.abs(dx);
   const newHeight = Math.abs(dy);
 
-  pendingGroup.position({ x: newX, y: newY });
+  pendingDraggedBbox.position({ x: newX, y: newY });
   box.size({ width: newWidth, height: newHeight });
   cls.y(-18);
 
   layer.batchDraw();
 }
 
-export function handleMouseUp(e) {
+export async function handleMouseUp(e) {
   const currentTool = getCurrentTool();
+  const isSelectTool = currentTool === 'select';
   getStage().container().style.cursor =
-    currentTool === 'select' ? 'default' : 'crosshair';
+   isSelectTool ? 'default' : 'crosshair';
 
   if (e.evt.button === 1) {
     isPanning = false;
     return;
   }
 
-  if (pendingGroup) {
-    const box = pendingGroup.findOne('.box');
+  if (pendingDraggedBbox) {
+    const box = pendingDraggedBbox.findOne('.box');
     const stage = getStage();
-    const now = Date.now();
-    const pos = getPointerPosition();
 
     if (box.width() < DOUBLE_CLICK_DISTANCE_PX || box.height() < DOUBLE_CLICK_DISTANCE_PX) {
-      pendingGroup.destroy();
-
-      // Check for double-click-like behavior
-      if (
-        lastDiscardPos &&
-        now - lastDiscardTime < DOUBLE_CLICK_TIME_MS &&
-        Math.hypot(pos.x - lastDiscardPos.x, pos.y - lastDiscardPos.y) < DOUBLE_CLICK_DISTANCE_PX
-      ) {
-        const hitGroup = findGroupAtPoint(pos);
-        if (hitGroup) {
-          const currentClassUuid = getCurrentClassUuid();
-          updateBoundingBox(hitGroup, { metadata: { classUuid: currentClassUuid } });
-          selectShape(hitGroup);
-        }
-      }
-
-      lastDiscardTime = now;
-      lastDiscardPos = pos;
+      pendingDraggedBbox.destroy();
     } else {
-      selectShape(pendingGroup);
+      selectShape(pendingDraggedBbox, box);
     }
 
     getLayer().draw();
-    pendingGroup = null;
+    pendingDraggedBbox = null;
   }
+
+  const pos = getPointerPosition();
+  const hitGroup = findGroupAtPoint(pos);
+
+  const now = Date.now();
+  const timeDelta = now - _lastClickTime;
+  const clickDist = _lastClickPos ? Math.hypot(pos.x - _lastClickPos.x, pos.y - _lastClickPos.y) : null;
+  const isDoubleClick = (clickDist != null && timeDelta < DOUBLE_CLICK_TIME_MS && clickDist < DOUBLE_CLICK_DISTANCE_PX);
+  _lastClickTime = now;
+  _lastClickPos = pos;
+
+  if (hitGroup) {
+    if (isDoubleClick) {
+      if (!isSelectTool) {
+        const currentClassUuid = getCurrentClassUuid();
+        updateBoundingBox(hitGroup, { metadata: { classUuid: currentClassUuid } });
+      } else {
+        selectBbox(hitGroup);
+      }
+    } else {
+      const box = hitGroup.findOne('.box');
+      selectShape(hitGroup, box);
+    }
+  }
+
+
 }
 
-export function handleWheel(e) {
+export async function handleWheel(e) {
   const stage = getStage();
   e.evt.preventDefault();
 
@@ -225,4 +232,57 @@ export function handleContextMenu(e) {
     setTool('select');
   }
   layer.draw();
+}
+
+export function selectShape(group, highlight_shape = null) {
+  const layer = getLayer();
+  const transformer = getTransformer();
+  const shape = highlight_shape ?? group;
+  if (!shape || !layer) return;
+
+  transformer.nodes([shape]);
+  transformer.moveToTop();
+
+  // // Update metadata UI
+  // const classInput = document.getElementById('classInput');
+  // const tagsInput = document.getElementById('tagsInput');
+
+  // const metadata = group.metadata ?? {};
+  // classInput.value = metadata.class ?? '';
+  // tagsInput.value = (metadata.tags ?? []).join(', ');
+
+  // classInput.oninput = () => {
+  //   metadata.class = classInput.value;
+  //   metadata.classUuid = null;
+  //   group.metadata = metadata;
+  //   const classNode = group.findOne('.class');
+  //   if (classNode) {
+  //     const conf = metadata.confidence;
+  //     classNode.text(`${metadata.class}${conf != null ? ` (${(conf * 100).toFixed(1)}%)` : ''}`);
+  //     layer.batchDraw();
+  //   }
+  // };
+
+  // tagsInput.oninput = () => {
+  //   metadata.tags = tagsInput.value.split(',').map(s => s.trim()).filter(Boolean);
+  //   group.metadata = metadata;
+  // };
+}
+
+export function findGroupAtPoint(pos) {
+  const layer = getLayer();
+  const children = layer.getChildren(node => node.name() === 'annotation');
+
+  for (const group of children) {
+    const rect = group.getClientRect({ relativeTo: layer });
+    if (
+      pos.x >= rect.x &&
+      pos.x <= rect.x + rect.width &&
+      pos.y >= rect.y &&
+      pos.y <= rect.y + rect.height
+    ) {
+      return group;
+    }
+  }
+  return null;
 }

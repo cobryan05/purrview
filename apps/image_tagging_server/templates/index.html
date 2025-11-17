@@ -248,12 +248,13 @@
 
         <div id="sidebar">
           <div class="tab-header">
-            <span class="tab-button active" data-tab="tab-models">Models</span>
-            <span class="tab-button" data-tab="tab-classes-tool">Classes</span>
-            <span class="tab-button" data-tab="tab-annotations">Annotations</span>
+            <span class="tab-button active" data-tab="tab-pane-models">Models</span>
+            <span class="tab-button" data-tab="tab-pane-classes-tool">Classes</span>
+            <span class="tab-button" data-tab="tab-pane-annotations">Annotations</span>
+            <span class="tab-button" data-tab="tab-pane-inspector">Inspector</span>
           </div>
 
-          <div id="tab-models" class="tab-pane active">
+          <div id="tab-pane-models" class="tab-pane active">
             <div class="model-buttons">
               <button id="recognize-button">Recognize</button>
               <button id="refresh-models">Refresh Models</button>
@@ -261,25 +262,17 @@
             <div id="model-list"></div>
           </div>
 
-          <div id="tab-annotations" class="tab-pane">
+          <div id="tab-pane-annotations" class="tab-pane">
             <button onclick="refreshAnnotations()">Refresh JSON</button>
             <pre id="annotation-json" style="max-height: 40vh; overflow-y: auto; font-size: 0.8em;"></pre>
           </div>
 
-          <div id="tab-classes-tool" class="tab-pane">
+          <div id="tab-pane-classes-tool" class="tab-pane">
             <h4>Classes</h4>
             <div id="classes-tool-list"></div>
           </div>
 
-          <div id="tab-inspector" class="tab-pane">
-            <label>
-              Label:
-              <input type="text" id="labelInput" />
-            </label>
-            <label>
-              Tags (comma-separated):
-              <input type="text" id="tagsInput" />
-            </label>
+          <div id="tab-pane-inspector" class="tab-pane">
           </div>
         </div>
       </div>

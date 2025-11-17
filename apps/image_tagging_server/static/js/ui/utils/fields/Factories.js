@@ -1,5 +1,6 @@
 // fieldFactories.js
 import { ArrayField } from './ArrayField.js'
+import { BboxInfoField } from './BboxInfoField.js';
 import { SourceConfigField } from './SourceConfigField.js';
 import { SourceSelectField } from './SourceSelectField.js';
 import { ImageProviderSelectField } from './ImageProviderSelectField.js';
@@ -38,6 +39,19 @@ export const fieldFactories = {
           { [fieldName]: val },
           onChange
         );
+      }
+    });
+  },
+
+  async bbox_info(fieldName, fieldMeta, values, onChange) {
+    const { ...rest } = fieldMeta;
+
+    return new BboxInfoField({
+      label: fieldName,
+      value: !!values[fieldName],
+      ...rest,
+      onChange: (val) => {
+        onChange?.(!!val);
       }
     });
   },

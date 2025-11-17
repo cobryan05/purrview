@@ -89,7 +89,7 @@ class UpdateSourcePayload(BaseModel):
 
 
 class BoundingBoxInput(BaseModel):
-    id: Optional[int]
+    uuid: str
     class_uuid: str
     x: float
     y: float
@@ -98,6 +98,8 @@ class BoundingBoxInput(BaseModel):
     tags: Optional[List[str]] = []  # List of tag uuids
     extra: Optional[dict] = {}
 
+class GetBoundingBoxInfoPayload(BaseModel):
+    id: int
 
 class UpdateMetadataPayload(BaseModel):
     image_path: str
@@ -516,7 +518,7 @@ class WebApp:
                 # TODO TAGS
                 new_boxes.append(
                     BoundingBoxMetadata(
-                        id=b.id,
+                        uuid=b.uuid,
                         class_uuid=b.class_uuid,
                         x=b.x,
                         y=b.y,

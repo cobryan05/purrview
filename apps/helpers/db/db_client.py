@@ -12,7 +12,7 @@ from uuid import uuid4
 
 import aiofiles
 import aiosqlite
-from dacite import from_dict
+from dacite import from_dict, Config
 
 from apps.helpers.consts import TaskStatus
 
@@ -59,7 +59,7 @@ CREATE TABLE IF NOT EXISTS tags (
 );
 
 CREATE TABLE IF NOT EXISTS bboxes (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    uuid TEXT PRIMARY KEY,
     class_uuid TEXT NOT NULL,
     image_id INTEGER NOT NULL,
     x REAL NOT NULL,
@@ -72,10 +72,10 @@ CREATE TABLE IF NOT EXISTS bboxes (
 );
 
 CREATE TABLE IF NOT EXISTS bbox_tags (
-    bbox_id INTEGER NOT NULL,
+    bbox_uuid TEXT NOT NULL,
     tag_uuid TEXT NOT NULL,
-    PRIMARY KEY (bbox_id, tag_uuid),
-    FOREIGN KEY(bbox_id) REFERENCES bboxes(id) ON DELETE CASCADE,
+    PRIMARY KEY (bbox_uuid, tag_uuid),
+    FOREIGN KEY(bbox_uuid) REFERENCES bboxes(uuid) ON DELETE CASCADE,
     FOREIGN KEY(tag_uuid) REFERENCES tags(uuid) ON DELETE CASCADE
 );
 
@@ -155,6 +155,28 @@ BEGIN
     WHERE uuid = OLD.uuid;
 END;
 
+CREATE TRIGGER IF NOT EXISTS trg_tags_updated_at
+AFTER UPDATE ON tags
+FOR EACH ROW
+WHEN NEW.updated_at = OLD.updated_at
+BEGIN
+    UPDATE tags SET updated_at = CURRENT_TIMESTAMP WHERE uuid = OLD.uuid;
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_classes_updated_at
+AFTER UPDATE ON classes
+FOR EACH ROW
+BEGIN
+    UPDATE classes SET parent_uuid = NEW.parent_uuid WHERE uuid = OLD.uuid;
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_bboxes_updated_at
+AFTER UPDATE ON bboxes
+FOR EACH ROW
+BEGIN
+    UPDATE bboxes SET metadata_json = metadata_json WHERE uuid = OLD.uuid;
+END;
+
 -- Cleanup task configs when marked and unreferenced
 CREATE TRIGGER IF NOT EXISTS cleanup_task_config_after_task_delete
 AFTER DELETE ON tasks_active
@@ -166,6 +188,15 @@ BEGIN
       AND NOT EXISTS (
           SELECT 1 FROM tasks_active WHERE config_uuid = OLD.config_uuid
       );
+END;
+
+CREATE TRIGGER IF NOT EXISTS prevent_delete_parent_class
+BEFORE DELETE ON classes
+WHEN EXISTS (
+    SELECT 1 FROM classes c WHERE c.parent_uuid = OLD.uuid
+)
+BEGIN
+    SELECT RAISE(ABORT, 'Cannot delete class with children');
 END;
 """
 
@@ -198,12 +229,12 @@ class ClassData:
 
 @dataclass
 class BoundingBoxMetadata:
-    id: int
     class_uuid: str
     x: float
     y: float
     width: float
     height: float
+    uuid: Optional[str] = field(default_factory=lambda: str(uuid4()))
     tags: List[ClassMetadata] = field(default_factory=list)
     extra: Dict[str, str] = field(default_factory=dict)
 
@@ -1240,7 +1271,7 @@ class DbClient:
     # BBoxes
     ################################################################################
 
-    async def add_box_for_image(
+    async def add_bbox_for_image(
         self,
         image_filename: str,
         x: float,
@@ -1270,7 +1301,19 @@ class DbClient:
             await db.commit()
             return cursor.lastrowid
 
-    async def update_box(
+    async def get_bbox_info(self, box_id: int) -> BoundingBoxMetadata:
+        async with aiosqlite.connect(self._db_path) as db:
+            cursor = await db.execute(
+                "SELECT id, image_id, x, y, width, height, metadata_json FROM bboxes WHERE id = ?",
+                (box_id,),
+            )
+            row = await cursor.fetchone()
+            await cursor.close()
+            if row:
+                return self.row_to_dataclass(cursor, row, BoundingBoxMetadata)
+            return None
+
+    async def update_bbox(
         self,
         box_id: int,
         x: float,
@@ -1295,7 +1338,7 @@ class DbClient:
             )
             await db.commit()
 
-    async def delete_box(self, box_id: int) -> None:
+    async def delete_bbox(self, box_id: int) -> None:
         """
         Delete bounding box and associated classs.
 
@@ -1303,37 +1346,37 @@ class DbClient:
             box_id (int): Bounding box ID.
         """
         async with aiosqlite.connect(self._db_path) as db:
-            await db.execute("DELETE FROM bbox_tags WHERE bbox_id = ?", (box_id,))
+            await db.execute("DELETE FROM bbox_tags WHERE bbox_uuid = ?", (box_id,))
             await db.execute("DELETE FROM bboxes WHERE id = ?", (box_id,))
             await db.commit()
 
-    async def assign_class_to_box(self, bbox_id: int, class_uuid: int) -> None:
+    async def assign_class_to_bbox(self, bbox_uuid: int, class_uuid: int) -> None:
         """
         Assign a class to a bounding box.
 
         Args:
-            bbox_id (int): Bounding box ID.
+            bbox_uuid (int): Bounding box ID.
             class_uuid (int): Class ID.
         """
         async with aiosqlite.connect(self._db_path) as db:
             await db.execute(
-                "INSERT OR IGNORE INTO bbox_tags (bbox_id, class_uuid) VALUES (?, ?)",
-                (bbox_id, class_uuid),
+                "INSERT OR IGNORE INTO bbox_tags (bbox_uuid, class_uuid) VALUES (?, ?)",
+                (bbox_uuid, class_uuid),
             )
             await db.commit()
 
-    async def remove_class_from_box(self, bbox_id: int, class_uuid: int) -> None:
+    async def remove_class_from_box(self, bbox_uuid: int, class_uuid: int) -> None:
         """
         Remove a class from a bounding box.
 
         Args:
-            bbox_id (int): Bounding box ID.
+            bbox_uuid (int): Bounding box ID.
             class_uuid (int): Class ID.
         """
         async with aiosqlite.connect(self._db_path) as db:
             await db.execute(
-                "DELETE FROM bbox_tags WHERE bbox_id = ? AND classuuid = ?",
-                (bbox_id, class_uuid),
+                "DELETE FROM bbox_tags WHERE bbox_uuid = ? AND classuuid = ?",
+                (bbox_uuid, class_uuid),
             )
             await db.commit()
 
@@ -1371,7 +1414,7 @@ class DbClient:
             cursor = await db.execute(
                 """
                 SELECT
-                    b.id,
+                    b.uuid,
                     b.class_uuid,
                     l.name AS class_name,
                     b.x,
@@ -1390,7 +1433,7 @@ class DbClient:
 
             boxes = []
             for bbox_row in bbox_rows:
-                bbox_id, bbox_class_uuid, bbox_class_text, x, y, w, h, bbox_meta_json = bbox_row
+                bbox_uuid, bbox_class_uuid, bbox_class_text, x, y, w, h, bbox_meta_json = bbox_row
                 bbox_extra = {}
                 if bbox_meta_json:
                     try:
@@ -1405,9 +1448,9 @@ class DbClient:
                 #     SELECT labels.uuid, labels.name, labels.color
                 #     FROM labels
                 #     JOIN bbox_tags ON labels.uuid = bbox_tags.label_uuid
-                #     WHERE bbox_tags.bbox_id = ?
+                #     WHERE bbox_tags.bbox_uuid = ?
                 #     """,
-                #     (bbox_id,),
+                #     (bbox_uuid,),
                 # )
                 # tag_rows = await tag_cursor.fetchall()
                 # await tag_cursor.close()
@@ -1416,7 +1459,7 @@ class DbClient:
 
                 boxes.append(
                     BoundingBoxMetadata(
-                        id=bbox_id,
+                        uuid=bbox_uuid,
                         class_uuid=bbox_class_uuid,
                         x=x,
                         y=y,
@@ -1443,6 +1486,7 @@ class DbClient:
             metadata: ImageMetadata object containing image-level extra data and boxes.
         """
         image_meta_json = json.dumps(metadata.extra)
+        incoming_uuids = [box.uuid for box in metadata.boxes]
 
         async with aiosqlite.connect(self._db_path) as db:
             async with db.execute("BEGIN"):
@@ -1452,22 +1496,35 @@ class DbClient:
                     (image_meta_json, image_id),
                 )
 
-                # Delete existing bounding boxes and bbox_tags for image
-                await db.execute(
-                    "DELETE FROM bbox_tags WHERE bbox_id IN (SELECT id FROM bboxes WHERE image_id = ?)",
-                    (image_id,),
-                )
-                await db.execute("DELETE FROM bboxes WHERE image_id = ?", (image_id,))
-
                 # Insert bounding boxes
                 for box in metadata.boxes:
                     bbox_meta_json = json.dumps(box.extra) if box.extra else None
-                    cursor = await db.execute(
-                        "INSERT INTO bboxes (image_id, class_uuid, x, y, width, height, metadata_json) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                        (image_id, box.class_uuid, box.x, box.y, box.width, box.height, bbox_meta_json),
+                    await db.execute(
+                        """
+                        INSERT INTO bboxes (uuid, image_id, class_uuid, x, y, width, height, metadata_json)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        ON CONFLICT(uuid) DO UPDATE SET
+                            image_id = excluded.image_id,
+                            class_uuid = excluded.class_uuid,
+                            x = excluded.x,
+                            y = excluded.y,
+                            width = excluded.width,
+                            height = excluded.height,
+                            metadata_json = excluded.metadata_json
+                        """,
+                        (box.uuid, image_id, box.class_uuid, box.x, box.y, box.width, box.height, bbox_meta_json),
                     )
-                    new_bbox_id = cursor.lastrowid
 
+                # Delete bboxes that exist in DB but not in incoming list
+                if incoming_uuids:
+                    placeholders = ",".join("?" for _ in incoming_uuids)
+                    await db.execute(
+                        f"DELETE FROM bboxes WHERE image_id = ? AND uuid NOT IN ({placeholders})",
+                        (image_id, *incoming_uuids),
+                    )
+                else:
+                    # If the client sent no bboxes, remove all for this image
+                    await db.execute("DELETE FROM bboxes WHERE image_id = ?", (image_id,))
                 await db.commit()
 
     async def export_classes_from_db_to_json(self, json_path: Optional[Path | str] = None) -> None:
@@ -1582,8 +1639,9 @@ class DbClient:
                 parsed = json.loads(raw)
             image_id = await self.add_image(abs_path)
 
+            config = Config(strict=False)  # ignore unknown fields
             # Convert parsed dict into ImageMetadata dataclass
-            image_meta: ImageMetadata = from_dict(data_class=ImageMetadata, data=parsed)
+            image_meta: ImageMetadata = from_dict(data_class=ImageMetadata, data=parsed, config=config)
             image_meta.id = image_id
             await self.write_image_metadata_to_db(image_id, image_meta)
             return image_meta

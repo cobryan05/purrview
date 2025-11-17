@@ -7,8 +7,8 @@ let transformer = null;
 let currentTool = 'select';
 let currentImageName = null;
 let currentClassUuid = null;
-let currentClassText = null
 let currentTagUuid = null;
+let currentBbox = null;
 
 export function getCurrentTool() {
   return currentTool;
@@ -45,6 +45,14 @@ export function getCurrentImageName() {
 
 export function setCurrentImageName(name) {
   currentImageName = name;
+}
+
+export function setCurrentBbox(bbox) {
+  currentBbox = bbox;
+}
+
+export function getCurrentBbox() {
+  return currentBbox;
 }
 
 export function getTransformer() {

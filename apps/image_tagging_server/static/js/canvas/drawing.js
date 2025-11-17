@@ -1,4 +1,3 @@
-import { selectShape } from './selection.js';
 import { getCurrentTool, getLayer, getTransformer } from './state.js';
 import { generateUUID } from './utils.js';
 import { fetchClassByUuid } from '/app-static/js/ui/utils/index.js';
@@ -90,25 +89,6 @@ export function createBoundingBox(x, y, props = {}) {
 
   // Restore draggable on mouseup or dragend
   group.on('mouseup dragend', () => group.draggable(true));
-
-  // On click, select the shape and attach transformer only to the rectangle
-  group.on('click', e => {
-    if (e.evt.button !== 0) {
-      return;
-    }
-    e.cancelBubble = true;
-
-    const transformer = getTransformer();
-    transformer.nodes([rect]);
-    transformer.moveToTop();
-
-    selectShape(group);
-    getLayer().draw();
-  });
-
-  group.on('dblclick', () => {
-    selectShape(group);
-  });
 
   rect.on('transform', () => {
     const layer = getLayer();

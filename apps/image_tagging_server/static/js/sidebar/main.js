@@ -253,36 +253,6 @@ async function loadImageByName(filename, dirPath) {
   loadImageAndMetadata(imageName);
 }
 
-// --- Inspector tab control ---
-
-/**
- * Opens the inspector tab in the sidebar and highlights it briefly.
- */
-export function openInspectorTab() {
-  const sidebar = document.getElementById('sidebar');
-  if (!sidebar) return;
-
-  const tabs = sidebar.querySelectorAll('.tab-button');
-  const panes = sidebar.querySelectorAll('.tab-pane');
-
-  tabs.forEach(tab => {
-    const tabName = tab.getAttribute('data-tab');
-    tab.classList.toggle('active', tabName === 'tab-inspector');
-  });
-
-  panes.forEach(pane => {
-    pane.classList.toggle('active', pane.id === 'tab-inspector');
-  });
-
-  document.getElementById('labelInput')?.focus();
-
-  const inspector = document.getElementById('tab-inspector');
-  if (inspector) {
-    inspector.style.outline = '2px solid #ff0033';
-    setTimeout(() => inspector.style.outline = '', 1000);
-  }
-}
-
 // --- Initial setup on DOM ready ---
 
 document.addEventListener('DOMContentLoaded', () => {
@@ -371,7 +341,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const tabName = tab.getAttribute('data-tab');
         tabPanes.forEach(tc => tc.classList.toggle('active', tc.id === tabName));
 
-        if (tabName === 'tab-classes-tool') {
+        if (tabName === 'tab-pane-classes-tool') {
           renderClassList({ target: "classes-tool-list", editable: false, clickable: true, onSelectCallback: (uuid) => { setTool(`bbox:${uuid}`) } });
         }
       });

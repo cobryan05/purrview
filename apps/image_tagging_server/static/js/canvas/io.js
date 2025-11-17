@@ -1,6 +1,7 @@
 import { createBoundingBox } from './drawing.js';
 import { getCurrentImageName, getLayer, getStage, getTransformer, setCurrentImageName } from './state.js';
 import { Logger, fetchImage } from '/app-static/js/ui/utils/index.js';
+import { generateUUID } from './utils.js';
 
 export async function reloadImage() {
   const imageName = getCurrentImageName();
@@ -53,9 +54,9 @@ export async function loadImageAndMetadata(imageName) {
         width: absWidth,
         height: absHeight,
         metadata: {
-          id: box.id,
+          uuid: box.uuid,
           classUuid: box.class_uuid,
-          tags: box.tags?.map(l => l.id) ?? [],
+          tags: box.tags?.map(l => l.uuid) ?? [],
           extra: box.extra ?? {}
         }
       });
@@ -123,11 +124,11 @@ export async function saveAnnotations() {
         if (!rect) return null;
 
         const bbox_meta = group.metadata || {};
-        const bbox_id = bbox_meta.id ?? null;
+        const bbox_uuid = bbox_meta.uuid ?? generateUUID();
         const bbox_class_uuid = bbox_meta.class.metadata.uuid;
 
         return {
-          id: bbox_id,
+          uuid: bbox_uuid,
           class_uuid: bbox_class_uuid,
           x: group.x() / imgWidth,
           y: group.y() / imgHeight,
