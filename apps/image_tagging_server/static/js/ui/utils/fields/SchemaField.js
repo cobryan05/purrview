@@ -15,6 +15,12 @@ export class SchemaField extends Field {
 
     for (const [fieldName, fieldMeta] of Object.entries(schema)) {
       if (fieldName === 'meta') continue;
+
+      // If schema specified a default value then set it here.
+      if (fieldMeta.hasOwnProperty('default') && !instance._init_values.hasOwnProperty(fieldName)) {
+        instance._init_values[fieldName] = fieldMeta.default;
+      }
+
       const inputField = await instance._createInputField(fieldName, fieldMeta);
       instance._fields[fieldName] = inputField;
     }
