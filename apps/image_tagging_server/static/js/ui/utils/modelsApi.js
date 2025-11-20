@@ -1,11 +1,11 @@
 // modelsApi.js
 import { createCachedFetcher } from './createCachedFetcher.js';
-
+import { wrapSingleKey, ignoreKeyReturn } from './apiUtils.js';
 /** -----------------------------
  * MODELS CACHE
  * -----------------------------
  */
-export const modelsFetcher = createCachedFetcher(async () => {
+export const modelsFetcher = createCachedFetcher(async (keys) => {
   const res = await fetch('/api/models/list');
   if (!res.ok) {
     const err = await res.json();
@@ -14,14 +14,15 @@ export const modelsFetcher = createCachedFetcher(async () => {
   const { models } = await res.json();
   // Store as Map: modelName -> classMapping (null initially)
   const map = new Map(models.map(model => [model, null]));
-  return map;
+
+  return ignoreKeyReturn(keys, map);
 });
 
-export const modelClassesFetcher = createCachedFetcher(async (modelName) => {
+export const modelClassesFetcher = createCachedFetcher(async (modelNames) => {
   const res = await fetch('/api/models/classes/get', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ model_name: modelName }),
+    body: JSON.stringify({ model_names: modelNames }),
   });
 
   if (!res.ok) {
@@ -29,8 +30,16 @@ export const modelClassesFetcher = createCachedFetcher(async (modelName) => {
     throw new Error(err.message || `Failed to fetch classes for model ${modelName}`);
   }
 
-  const { classes } = await res.json();
-  return new Map(Object.entries(classes));
+  const { models } = await res.json();
+
+  const modelMap = new Map();
+  for (const [modelName, classObj] of Object.entries(models)) {
+    // Convert inner object → Map
+    const innerMap = new Map(Object.entries(classObj));
+    modelMap.set(modelName, innerMap);
+  }
+
+  return modelMap;
 });
 
 
@@ -53,17 +62,23 @@ export async function fetchModelsList() {
   return [...map.keys()];
 }
 
-export async function fetchModelClassMappings(modelName) {
+export async function _fetchModelsClassMappings({modelNames}) {
   const models = await fetchModelsList();
-  if (!models.includes(modelName)) throw new Error(`Model ${modelName} not found`);
+  for (const modelName of modelNames) {
+    if (!models.includes(modelName)) throw new Error(`Model ${modelName} not found`);
+  }
 
-  const classes = await modelClassesFetcher.fetch(modelName);
+  const modelClassMap = await modelClassesFetcher.fetch(modelNames);
   // Ensure we also update the models map with the class mapping
   const modelsMap = await modelsFetcher.fetch('modelsMap');
-  modelsMap.set(modelName, classes);
+  for (const modelName of modelNames) {
+    const classes = modelClassMap.get(modelName);
+    modelsMap.set(modelName, classes);
+  }
 
-  return new Map(classes);
+  return modelsMap;
 }
+export const fetchModelsClassMappings = wrapSingleKey(_fetchModelsClassMappings);
 
 
 /** -----------------------------

@@ -150,15 +150,6 @@ class WebApp:
         async def get_model_classes_api(payload: GetModelClassesPayload) -> JSONResponse: ...
 
 
-        @self._app.post(
-            "/api/models/classes/get",
-            tags=[ApiTags.MODELS],
-            operation_id="get_classes",
-            response_class=JSONResponse,
-        )
-        @self._manager.model_api_request("get_model_classes")
-        async def get_model_classes_api(payload: GetModelClassesPayload) -> JSONResponse: ...
-
         ################################################################################
         # INFERENCE API
         ################################################################################

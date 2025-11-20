@@ -1,5 +1,5 @@
 import { createCachedFetcher } from "./createCachedFetcher.js";
-import { wrapSingleKey } from './apiUtils.js';
+import { wrapSingleKey, ignoreKeyReturn } from './apiUtils.js';
 
 export const TaskStatus = Object.freeze({
   NEW: "new",
@@ -12,14 +12,14 @@ export const TaskStatus = Object.freeze({
 
 
 /* ---- Task type list --- */
-async function fetchTaskTypeListFromServer() {
+async function fetchTaskTypeListFromServer(keys) {
   const res = await fetch('/api/tasks/types/list');
   if (!res.ok) {
     const err = await res.json();
     throw new Error(err.message || 'Failed to fetch task types');
   }
   const { types } = await res.json();
-  return types;
+  return ignoreKeyReturn(keys, types);
 }
 const taskTypeFetcher = createCachedFetcher(fetchTaskTypeListFromServer);
 export async function fetchTaskTypeList() {

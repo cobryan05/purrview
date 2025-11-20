@@ -287,6 +287,23 @@ class Manager:
         return list((await self.get_tag_uuid_map()).values())
 
     ################################################################################
+    # BBOXES API
+    ################################################################################
+
+    async def get_bboxes_info(self, bbox_uuids: List[str]) -> List[BoundingBoxMetadata]:
+        """
+        Get metadata for image by resolving image ID from filename.
+
+        Args:
+            bbox_uuids (List[str]): List of bounding box UUIDs.
+
+        Returns:
+            List[BoundingBoxMetadata]: Metadata or empty list
+        """
+        bboxes_info = await self._db_client.get_bboxes_info(bbox_uuids)
+        return bboxes_info
+
+    ################################################################################
     # IMAGES API
     ################################################################################
 

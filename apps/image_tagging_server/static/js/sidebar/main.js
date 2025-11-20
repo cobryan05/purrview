@@ -1,6 +1,6 @@
 // canvas_ui_main.js
 
-import { addRecognizedBoxes, loadImageAndMetadata } from '/app-static/js/canvas/io.js';
+import { addRecognizedBoxes, loadImageAndMetadata } from '/app-static/js/canvas/imageMetadata.js';
 import { getLayer, } from '/app-static/js/canvas/state.js';
 import { setTool } from '/app-static/js/canvas/tools.js';
 import { renderClassList } from '/app-static/js/ui/classes.js';

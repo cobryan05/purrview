@@ -1,5 +1,5 @@
 import { DropDownField, EditableField, LabelDropDownField } from '/app-static/js/ui/utils/fields/index.js';
-import { associateClass, clearModelsCache, createGenericRow, fetchClasses, fetchModelClassMappings, fetchModelsList, Logger, toast } from '/app-static/js/ui/utils/index.js';
+import { associateClass, clearModelsCache, createGenericRow, fetchClasses, fetchModelsClassMappings, fetchModelsList, Logger, toast } from '/app-static/js/ui/utils/index.js';
 
 
 export function renderModelClassAssignments({
@@ -49,7 +49,7 @@ export function renderModelClassAssignments({
 
   // --- Load model-class assignments ---
   Promise.all([
-    fetchModelClassMappings(preselectedModel),
+    fetchModelsClassMappings({modelNames: preselectedModel}),
     fetchClasses()
   ]).then(([classMap, allClasses]) => {
     // Convert classes to the format required by DropDownField

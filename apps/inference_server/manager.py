@@ -90,7 +90,7 @@ class Manager:
             logger.error(f"Error listing models: {str(e)}")
             return []
 
-    async def get_model_classes(self, model_name: str) -> Dict[str, Optional[str]]:
+    async def get_models_classes(self, model_names: List[str]) -> Dict[str, Dict[str, Optional[str]]]:
         """
         Get the classes for a specific model.
 
@@ -100,22 +100,22 @@ class Manager:
         Returns:
             Dict[str, str]: A dictionary mapping class names to class IDs.
         """
-        if model_name in self._avail_models:
-            model_path = self._avail_models[model_name]
-        else:
-            raise FileNotFoundError(f"Model '{model_name}' not found in available models")
 
-        try:
-            metadata = get_model_metadata(model_path)
-        except FileNotFoundError:
-            metadata = {}
-        class_list = metadata.get("classes", [])
-        ret: Dict[str, Optional[str]] = {name: None for name in class_list}
+        model_paths = {name: self._avail_models[name] for name in model_names if name in self._avail_models}
 
-        class_map = metadata.get("class_map", {})
-        for k, v in class_map.items():
-            ret[k] = v
-
+        # Create metadata but don't entirely fail on get_model_metadata failrule just leave that one out
+        ret = {}
+        for model_name, model_path in model_paths.items():
+            try:
+                metadata = get_model_metadata(model_path)
+                model_classes = metadata.get("classes", [])
+                model_class_mappings = metadata.get("class_map", {})
+                class_uuids: Dict[str, Optional[str]] = {name: None for name in model_classes}
+                for k, v in model_class_mappings.items():
+                    class_uuids[k] = v
+                ret[model_name] = class_uuids
+            except FileNotFoundError:
+                continue
         return ret
 
     async def set_model_class_uuid(self, model_name: str, model_class: str, class_uuid: Optional[str]) -> bool:

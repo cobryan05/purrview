@@ -58,3 +58,18 @@ export function wrapSingleKey(fn, keyArgName) {
   };
 }
 
+
+/**
+ * Normalize returning a single value. If 'keys' is a single key, return the value directly,
+ * otherwise create a map and clone the value to each key.
+
+ @param {Array} keys - The keys for which the value should be returned.
+ @param {*} value - The value to return or clone for each key.
+ */
+export function ignoreKeyReturn(keys, value) {
+  const result = new Map();
+  for (const key of keys) {
+    result.set(key, value);
+  }
+  return result;
+}

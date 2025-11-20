@@ -1,10 +1,11 @@
 import { createCachedFetcher } from './createCachedFetcher.js';
+import { ignoreKeyReturn } from './apiUtils.js';
 
 /** -----------------------------
  * CLASS CACHE
  * -----------------------------
  */
-export const classesFetcher = createCachedFetcher(async () => {
+export const classesFetcher = createCachedFetcher(async (keys) => {
   const res = await fetch('/api/classes/list');
   if (!res.ok) {
     const err = await res.json();
@@ -13,7 +14,8 @@ export const classesFetcher = createCachedFetcher(async () => {
   const { classes } = await res.json();
   // Store as Map keyed by UUID
   const map = new Map(classes.map(l => [l.metadata.uuid, l]));
-  return map;
+
+  return ignoreKeyReturn(keys, map);
 });
 
 

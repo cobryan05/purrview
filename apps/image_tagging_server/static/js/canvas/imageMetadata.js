@@ -1,6 +1,6 @@
 import { createBoundingBox } from './drawing.js';
 import { getCurrentImageName, getLayer, getStage, getTransformer, setCurrentImageName } from './state.js';
-import { Logger, fetchImage } from '/app-static/js/ui/utils/index.js';
+import { Logger, fetchImage, clearBboxInfoCache, fetchBboxesInfo } from '/app-static/js/ui/utils/index.js';
 import { generateUUID } from './utils.js';
 
 export async function reloadImage() {
@@ -23,6 +23,7 @@ export async function loadImageAndMetadata(imageName) {
     const transformer = getTransformer();
     const layer = getLayer();
     clearAnnotations();
+    clearBboxInfoCache();
     setCurrentImageName(imageName);
 
     const { image: img, bboxes } = await fetchImage(imageName);

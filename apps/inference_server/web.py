@@ -5,7 +5,7 @@ import json
 import logging
 import sys
 from contextlib import asynccontextmanager
-from typing import Optional
+from typing import List, Optional
 
 import cv2
 import numpy as np
@@ -29,7 +29,7 @@ class AssociateClassWithModelClassPayload(BaseModel):
 
 
 class GetModelClassesPayload(BaseModel):
-    model_name: str
+    model_names: List[str]
 
 
 class PinModelPayload(BaseModel):
@@ -197,7 +197,9 @@ class WebApp:
                 JSONResponse: A dictionary mapping class names to class IDs.
             """
             try:
-                class_map: dict[str, str] = await self._manager.get_model_classes(payload.model_name)
+                model_class_map: dict[str, dict[str, Optional[str]]] = await self._manager.get_models_classes(
+                    payload.model_names
+                )
             except Exception as e:
                 logger.error(e, exc_info=True)
                 return JSONResponse(content={JsonKeys.STATUS: JsonValues.FAILURE, JsonKeys.MESSAGE: str(e)})
@@ -205,7 +207,7 @@ class WebApp:
             return JSONResponse(
                 content={
                     JsonKeys.STATUS: JsonValues.SUCCESS,
-                    "classes": class_map,
+                    "models": model_class_map,
                 },
             )
 

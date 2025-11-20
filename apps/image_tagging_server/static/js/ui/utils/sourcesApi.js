@@ -1,10 +1,10 @@
+import { ignoreKeyReturn, wrapSingleKey } from './apiUtils.js';
 import { createCachedFetcher } from './createCachedFetcher.js';
-import { wrapSingleKey } from './apiUtils.js';
 
 /**
  * Caches
  */
-export const sourcesFetcher = createCachedFetcher(async () => {
+export const sourcesFetcher = createCachedFetcher(async (keys) => {
   const res = await fetch('/api/sources/get');
   if (!res.ok) {
     const err = await res.json();
@@ -13,35 +13,39 @@ export const sourcesFetcher = createCachedFetcher(async () => {
   const { sources } = await res.json();
   // Store as Map for internal cache
   const map = new Map(Object.entries(sources));
-  return map;
+  return ignoreKeyReturn(keys, map);
 });
 
-export const imageProviderFetcher = createCachedFetcher(async () => {
+export const imageProviderFetcher = createCachedFetcher(async (keys) => {
   const res = await fetch('/api/sources/image-providers/list');
   if (!res.ok) {
     const err = await res.json();
     throw new Error(err.message || 'Failed to fetch image provider list');
   }
   const { providers } = await res.json();
-  return Array.from(providers);
+  return ignoreKeyReturn(keys, Array.from(providers));
 });
 
-export const providerSchemaFetcher = createCachedFetcher(async (providerName) => {
-  const res = await fetch('/api/sources/image-providers/schema', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ image_provider: providerName }),
-  });
+export const providerSchemaFetcher = createCachedFetcher(async (providerNames) => {
+  const results = new Map();
+  for (const name of providerNames) {
+    const res = await fetch('/api/sources/image-providers/schema', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ image_provider: name }),
+    });
 
-  if (!res.ok) {
-    const err = await res.json();
-    throw new Error(err.message || 'Failed to fetch image provider schema');
+    if (!res.ok) {
+      const err = await res.json();
+      throw new Error(err.message || `Failed to fetch image provider schema for ${name}`);
+    }
+
+    const { schema } = await res.json();
+    results.set(name, schema);
   }
 
-  const { schema } = await res.json();
-  return schema;
+  return results
 });
-
 
 /** -----------------------------
  * CACHE CLEAR FUNCTIONS

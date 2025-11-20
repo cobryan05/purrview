@@ -1,4 +1,4 @@
-import { deleteSelected } from './canvas/io.js';
+import { deleteSelected } from './canvas/imageMetadata.js';
 import { setTool, selectBboxTool } from './canvas/tools.js';
 
 export function registerKeyboardShortcuts() {

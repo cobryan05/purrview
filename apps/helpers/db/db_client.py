@@ -1144,7 +1144,6 @@ class DbClient:
             class_uuid (int): Class ID to delete.
         """
         async with aiosqlite.connect(self._db_path) as db:
-            await db.execute("DELETE FROM bbox_tags WHERE class_uuid = ?", (class_uuid,))
             await db.execute("DELETE FROM classes WHERE uuid = ?", (class_uuid,))
             await db.commit()
 
@@ -1301,17 +1300,18 @@ class DbClient:
             await db.commit()
             return cursor.lastrowid
 
-    async def get_bbox_info(self, box_id: int) -> BoundingBoxMetadata:
+    async def get_bboxes_info(self, bbox_uuids: List[str]) -> List[BoundingBoxMetadata]:
         async with aiosqlite.connect(self._db_path) as db:
             cursor = await db.execute(
-                "SELECT id, image_id, x, y, width, height, metadata_json FROM bboxes WHERE id = ?",
-                (box_id,),
+                "SELECT id, image_id, x, y, width, height, metadata_json FROM bboxes WHERE uuid = ?",
+                (bbox_uuid,),
             )
-            row = await cursor.fetchone()
+
+            rows = await cursor.fetchall()
             await cursor.close()
-            if row:
-                return self.row_to_dataclass(cursor, row, BoundingBoxMetadata)
-            return None
+            if rows:
+                return [self.row_to_dataclass(cursor, row, BoundingBoxMetadata) for row in rows]
+            return []
 
     async def update_bbox(
         self,

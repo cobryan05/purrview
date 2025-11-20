@@ -13,7 +13,7 @@ import {
   loadImageAndMetadata,
   reloadImage,
   saveAnnotations,
-} from './io.js';
+} from './imageMetadata.js';
 import { getStage, initStage } from './state.js';
 import { selectBboxTool, setTool, updateToolbarButtons } from './tools.js';
 

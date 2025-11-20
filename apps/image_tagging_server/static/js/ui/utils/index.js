@@ -1,3 +1,4 @@
+export * from './bboxesApi.js';
 export * from './classesApi.js';
 export * from './createButton.js';
 export * from './createCachedFetcher.js';

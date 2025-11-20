@@ -1,10 +1,11 @@
 import { createCachedFetcher } from './createCachedFetcher.js';
+import { ignoreKeyReturn } from './apiUtils.js';
 
 /** -----------------------------
  * TAGS CACHE
  * -----------------------------
  */
-export const tagsFetcher = createCachedFetcher(async () => {
+export const tagsFetcher = createCachedFetcher(async (keys) => {
   const res = await fetch('/api/tags/list');
   if (!res.ok) {
     const err = await res.json();
@@ -12,8 +13,8 @@ export const tagsFetcher = createCachedFetcher(async () => {
   }
   const { tags } = await res.json();
   // Store as Map keyed by UUID
-  const map = new Map(tags.map(l => [l.uuid, l]));
-  return map;
+  const ret = new Map(tags.map(l => [l.uuid, l]));
+  return ignoreKeyReturn(keys, ret);
 });
 
 

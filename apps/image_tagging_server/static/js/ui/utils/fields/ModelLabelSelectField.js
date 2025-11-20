@@ -1,7 +1,7 @@
 import { DropDownField } from './DropDownField.js';
 import { Field } from './Field.js';
 import { LabelNumberField } from './LabelNumberField.js'
-import { fetchModelsList, fetchModelClassMappings, fetchClassByUuid } from '/app-static/js/ui/utils/index.js';
+import { fetchModelsList, fetchModelsClassMappings, fetchClassByUuid } from '/app-static/js/ui/utils/index.js';
 import { createGenericRow } from '/app-static/js/ui/utils/index.js';
 export class ModelLabelSelectField extends Field {
   static DEFAULT_CONFIDENCE = 0.25;
@@ -31,7 +31,7 @@ export class ModelLabelSelectField extends Field {
   }
 
   async _handleModelChange(modelName, values = {}) {
-    this._classUuidMapping = modelName ? await fetchModelClassMappings(modelName) : new Map();
+    this._classUuidMapping = modelName ? await fetchModelsClassMappings({modelNames: [modelName]}) : new Map();
     this._fields = new Map();
 
     if (this._classUuidMapping.size > 0) {

@@ -99,7 +99,7 @@ class BoundingBoxInput(BaseModel):
     extra: Optional[dict] = {}
 
 class GetBoundingBoxInfoPayload(BaseModel):
-    id: int
+    uuids: List[str]
 
 class UpdateMetadataPayload(BaseModel):
     image_path: str
@@ -469,6 +469,23 @@ class WebApp:
                 )
 
 
+
+        ################################################################################
+        # BBox API
+        ################################################################################
+
+        @self._app.get(
+            "/api/bboxes/get",
+            response_class=JSONResponse,
+            tags=[ApiTags.IMAGES],
+            operation_id="get_bbox_info",
+        )
+        async def get_bbox_info(payload: GetBoundingBoxInfoPayload) -> JSONResponse:
+            metadata: List[BoundingBoxMetadata] = await self._manager.get_bboxes_info(payload.uuids)
+            if not metadata:
+                raise HTTPException(status_code=404, detail="Bounding box not found")
+            return JSONResponse(content=[asdict(m) for m in metadata])
+
         ################################################################################
         # Images API
         ################################################################################
@@ -483,7 +500,6 @@ class WebApp:
             metadata: Optional[ImageMetadata] = await self._manager.get_image_metadata(payload.image_path)
             if metadata is None:
                 raise HTTPException(status_code=404, detail="Image not found")
-            # convert to dict for JSONResponse
             return JSONResponse(content=asdict(metadata))
 
         @self._app.post(
