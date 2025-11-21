@@ -3,13 +3,13 @@ import { openInspectorTab, renderBboxInspector } from '/app-static/js/ui/inspect
 
 // Clear selection implementation
 export function clearSelection() {
-  const transformer = state.transformer;
+  const transformer = state.canvas.transformer;
   if (transformer) {
     transformer.nodes([]);
     transformer.getLayer()?.draw();
   }
-  state.setBbox(null);
-  state.stage.batchDraw();
+  state.setSelectedBboxUuid(null);
+  state.canvas.stage.batchDraw();
 }
 
 // Set the current tool, update UI and cursor
@@ -17,18 +17,18 @@ export function setTool(tool) {
   state.setTool(tool);
   clearSelection();
   updateToolbarButtons();
-  state.stage.container().style.cursor = tool === 'select' ? 'default' : 'crosshair';
+  state.canvas.stage.container().style.cursor = tool === 'select' ? 'default' : 'crosshair';
 }
 
-export function selectBbox(bbox) {
-  state.setBbox(bbox);
-  renderBboxInspector({ bbox });
+export function selectBbox(bboxUuid) {
+  state.setSelectedBboxUuid(bboxUuid);
+  renderBboxInspector();
   openInspectorTab();
 }
 
 // Get the current tool
 export function getTool() {
-  return state.tool;
+  return state.selectedTool;
 }
 
 export function parseToolUuid(str) {

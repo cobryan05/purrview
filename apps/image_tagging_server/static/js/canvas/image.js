@@ -1,10 +1,10 @@
 import { createBoundingBox } from './drawing.js';
 import { state } from './state.js'
-import { Logger, fetchImage, clearBboxInfoCache, fetchBboxesInfo } from '/app-static/js/ui/utils/index.js';
+import { Logger, fetchImage } from '/app-static/js/ui/utils/index.js';
 import { generateUUID } from './utils.js';
 
 export async function reloadImage() {
-  const imageName = state.currentImageName;
+  const imageName = state.image.name;
   if (!imageName) {
     Logger.notify('No image loaded to reload');
     return;
@@ -16,33 +16,30 @@ export async function loadImageAndMetadata(imageName) {
   Logger.debug('loadImageAndMetadata called with imageName:', imageName);
 
   const { image: img, bboxes } = await fetchImage(imageName);
-
   state.setImage(imageName, img, bboxes);
   await refreshCanvas();
 }
 
+
 export async function refreshCanvas() {
   clearAnnotations();
 
-  const imageName = state.currentImageName;
-  const img = state.currentImage;
-  const bboxes = state.currentBboxes;
-  const transformer = state.transformer;
-  const layer = state.layer;
-
+  const layer = state.canvas.layer;
   const bg = new Konva.Image({
-    image: img,
+    image: state.image.data,
     x: 0,
     y: 0,
-    width: img.width,
-    height: img.height,
+    width: state.image.data.width,
+    height: state.image.data.height,
     listening: false,
     name: 'background',
   });
   layer.add(bg);
   layer.moveToBottom();
 
-  for (const box of bboxes) {
+  // Create canvas.bboxes from the image.bboxes
+  const img = state.image.data;
+  for (const box of state.image.bboxes) {
     const absX = box.x * img.width;
     const absY = box.y * img.height;
     const absWidth = box.width * img.width;
@@ -64,7 +61,7 @@ export async function refreshCanvas() {
   }
 
   // === Zoom to fit the image with padding ===
-  const stage = state.stage;
+  const stage = state.canvas.stage;
   const container = stage.container();
   const padding = 20;
 
@@ -84,14 +81,15 @@ export async function refreshCanvas() {
   stage.batchDraw();
 
   layer.draw();
-  Logger.notify(`Loaded image and metadata for ${imageName}`);
+  Logger.notify(`Loaded image and metadata for ${state.image.name}`);
 }
 
 
 export function clearAnnotations() {
-  const layer = state.stage.findOne('Layer');
-  const transformer = state.transformer;
-  transformer.nodes([]);
+  const layer = state.canvas.layer;
+  state.clearSelection();
+  state.clearBboxes();
+
   const children = [...layer.getChildren()];
   children.forEach(child => {
     if (child.name() === 'annotation') {
@@ -102,42 +100,31 @@ export function clearAnnotations() {
 }
 
 export async function saveAnnotations() {
-  const layer = state.layer;
-  const imagePath = state.currentImageName;
-  const image = layer.findOne('.background')?.image();
-  if (!imagePath || !image) {
+  if (!state.image.name || !state.image.data) {
     toast('No image loaded to save annotations!');
     return;
   }
 
-  const imgWidth = image.width;
-  const imgHeight = image.height;
-
   try {
-    const boxes = layer.getChildren()
-      .filter(shape => shape.name() === 'annotation')
-      .map(group => {
-        const rect = group.findOne('.box');
-        if (!rect) return null;
+    const boxes = Array.from(state.canvas.bboxes.values()).map(group => {
+      const rect = group.metadata.rect;
+      const uuid =  group.metadata.uuid ?? generateUUID();
+      const bbox_uuid = group.metadata.uuid ?? generateUUID();
+      const bbox_class_uuid = group.metadata.classUuid ?? null;
 
-        const bbox_meta = group.metadata || {};
-        const bbox_uuid = bbox_meta.uuid ?? generateUUID();
-        const bbox_class_uuid = bbox_meta.class.metadata.uuid;
-
-        return {
-          uuid: bbox_uuid,
-          class_uuid: bbox_class_uuid,
-          x: group.x() / imgWidth,
-          y: group.y() / imgHeight,
-          width: rect.width() / imgWidth,
-          height: rect.height() / imgHeight,
-          extra: bbox_meta.extra || {}  // Arbitrary key-value pairs
-        };
-      })
-      .filter(Boolean);
+      return {
+        uuid: bbox_uuid,
+        class_uuid: bbox_class_uuid,
+        x: group.x() / state.image.data.width,
+        y: group.y() / state.image.data.height,
+        width: rect.width() / state.image.data.width,
+        height: rect.height() / state.image.data.height,
+        extra: group.metadata.extra || {}  // Arbitrary key-value pairs
+      };
+    });
 
     const payload = {
-      image_path: imagePath,
+      image_path: state.image.name,
       boxes: boxes,
       extra: {}  // optional image-level metadata (e.g., tags, reviewer, etc.)
     };
@@ -149,15 +136,15 @@ export async function saveAnnotations() {
     });
 
     if (!res.ok) throw new Error(`Save failed with status ${res.status}`);
-    Logger.notify(`Annotations saved successfully for image ${imagePath}`);
+    Logger.notify(`Annotations saved successfully for image ${state.imageName}`);
   } catch (err) {
     Logger.error('Failed to save annotations:', err);
   }
 }
 
 export function deleteSelected() {
-  const transformer = state.transformer;
-  const layer = state.layer;
+  const transformer = state.canvas.transformer;
+  const layer = state.canvas.layer;
   if (!transformer) return;
 
   const selectedNodes = transformer.nodes();
@@ -182,7 +169,7 @@ export function deleteSelected() {
 }
 
 export function exportAnnotations() {
-  const layer = state.layer;
+  const layer = state.canvas.layer;
   const shapes = layer.getChildren().filter(s => s.name() === 'annotation');
 
   const annotations = shapes
@@ -208,8 +195,8 @@ export function exportAnnotations() {
 }
 
 export function addRecognizedBoxes(results) {
-  const layer = state.layer;
-  const stage = state.stage;
+  const layer = state.canvas.layer;
+  const stage = state.canvas.stage;
 
   const bg = layer.findOne(
     node => node.name() === 'background' && node instanceof Konva.Image);

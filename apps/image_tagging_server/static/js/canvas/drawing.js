@@ -12,8 +12,8 @@ export function createBoundingBox(x, y, props = {}) {
   const width = props.width ?? 50;
   const height = props.height ?? 50;
   const classUuid = props.metadata?.classUuid ?? '';
-  const confidence = props.metadata?.confidence;
-  const uuid = generateUUID();
+  const confidence = props.metadata?.confidence ?? null;
+  const uuid = props.metadata?.uuid ?? generateUUID();
 
   // Initial placeholder values
   let classText = props.metadata?.class ?? 'Unknown';
@@ -45,8 +45,12 @@ export function createBoundingBox(x, y, props = {}) {
     x: 0,
   });
 
+  state.setBbox(uuid, group);
+
   group.metadata = {
     class: null, // will be filled in once async fetch completes
+    rect,
+    text: text,
     confidence,
     ...props.metadata,
     uuid,
@@ -55,29 +59,7 @@ export function createBoundingBox(x, y, props = {}) {
   group.add(rect);
   group.add(text);
 
-  // Kick off async class resolution
-  if (classUuid) {
-    fetchClassByUuid(classUuid).then(cls => {
-      if (!cls) return;
-
-      group.metadata.class = cls;
-      const newColor = cls?.metadata?.color ?? 'red';
-      const newClassText = cls?.metadata?.name ?? 'Unknown';
-
-      rect.stroke(newColor);
-
-      text.text(
-        `${newClassText}${confidence != null ? ` (${(confidence * 100).toFixed(1)}%)` : ''}`
-      );
-      text.fill(newColor);
-
-      applyBoundingBoxLayout(group);
-      state.layer.batchDraw();
-    });
-  }
-
   // --- Event handlers setup ---
-
   // Disable dragging with middle mouse button down
   group.on('mousedown', e => {
     if (e.evt.button === 1) {
@@ -91,7 +73,7 @@ export function createBoundingBox(x, y, props = {}) {
   group.on('mouseup dragend', () => group.draggable(true));
 
   rect.on('transform', () => {
-    const layer = state.layer;
+    const layer = state.canvas.layer;
 
     const scaleX = rect.scaleX();
     const scaleY = rect.scaleY();
@@ -124,7 +106,7 @@ export function createBoundingBox(x, y, props = {}) {
     layer.batchDraw();
   });
 
-  applyBoundingBoxLayout(group);
+  updateBoundingBox(group);
   return group;
 }
 
@@ -142,6 +124,7 @@ export function updateBoundingBox(group, props = {}) {
   const classUuid = newMetadata.classUuid ?? '';
   const confidence = newMetadata.confidence;
 
+  // Kick off async class resolution
   fetchClassByUuid(classUuid)
     .then(cls => {
       const color = cls?.metadata?.color ?? 'red';
@@ -163,7 +146,7 @@ export function updateBoundingBox(group, props = {}) {
       rect.stroke(color);
 
       applyBoundingBoxLayout(group);
-      state.layer.batchDraw();
+      state.canvas.layer.batchDraw();
     })
     .catch(err => {
       console.error('Failed to fetch class:', err);

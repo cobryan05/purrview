@@ -1,34 +1,38 @@
 import { Logger } from '/app-static/js/ui/utils/index.js';
 
 export const state = {
-  // Kanvas context
-  stage: null,
-  layer: null,
-  transformer: null,
+  // --- Canvas context ---
+  canvas: {
+    stage: null,
+    layer: null,
+    transformer: null,
+
+    bboxes: null,
+  },
 
   // Current tool + selection
   currentTool: 'select',
   currentClassUuid: null,
   currentTagUuid: null,
-  currentBbox: null,
+  selectedBoxUuid: null,
 
   // Current image context
-  currentImage: null,
-  currentImageName: null,
-  currentBboxes: null,
+  image: {
+    name: null,
+    data: null,
+    bboxes: null
+  },
 
   // --- Getters ---
-  get tool() { return this.currentTool; },
+  get selectedTool() { return this.currentTool; },
+  get selectedBboxUuid() { return this.selectedBoxUuid; },
   get classUuid() { return this.currentClassUuid; },
   get tagUuid() { return this.currentTagUuid; },
-  get image() { return this.currentImage; },
-  get imageName() { return this.currentImageName; },
-  get bboxes() { return this.currentBboxes; },
-  get bbox() { return this.currentBbox; },
-  get stageRef() { return this.stage; },
-  get layerRef() { return this.layer; },
-  get transformerRef() { return this.transformer; },
+  get bboxes() { return this.image.bboxes; },
 
+  getBbox(uuid) {
+    return this.canvas.bboxes?.get(uuid);
+  },
   // --- Setters ---
   setTool(tool) {
     Logger.debug("setCurrentTool:", tool);
@@ -40,22 +44,31 @@ export const state = {
   setClassUuid(uuid) { this.currentClassUuid = uuid; },
   setTagUuid(uuid) { this.currentTagUuid = uuid; },
   setImage(name, img, bboxes) {
-    this.currentImageName = name;
-    this.currentImage = img;
-    this.currentBboxes = bboxes;
+    this.image.name = name;
+    this.image.data = img;
+    this.image.bboxes = bboxes;
   },
-  setBbox(bbox) { this.currentBbox = bbox; },
-  setTransformer(t) { this.transformer = t; },
+  setBbox(uuid, bboxInfo) {
+    if (bboxInfo == null) {
+      this.canvas.bboxes?.delete(uuid);
+    } else {
+      this.canvas.bboxes?.set(uuid, bboxInfo);
+    }
+  },
+  setSelectedBboxUuid(bboxUuid) { this.selectedBoxUuid = bboxUuid; },
+  setTransformer(t) { this.canvas.transformer = t; },
+  clearBboxes() { this.canvas.bboxes?.clear(); },
+  clearSelection() { state.canvas.transformer?.setNodes([]); },
 
   // --- Initialization ---
   initStage(container) {
-    this.stage = new Konva.Stage({
+    this.canvas.stage = new Konva.Stage({
       container: 'draw-container',
       width: container.clientWidth,
       height: container.clientHeight,
     });
 
-    this.transformer = new Konva.Transformer({
+    this.canvas.transformer = new Konva.Transformer({
       rotateEnabled: false,
       borderStroke: 'yellow',
       borderDash: [4, 4],
@@ -76,9 +89,15 @@ export const state = {
         return newBox;
       },
     });
+    this.canvas.layer = new Konva.Layer();
+    if (!(this.canvas.transformer && this.canvas.layer && this.canvas.stage)) {
+      Logger.error("Failed to initialize canvas components");
+      return;
+    }
 
-    this.layer = new Konva.Layer();
-    this.layer.add(this.transformer);
-    this.stage.add(this.layer);
+    this.canvas.layer.add(this.canvas.transformer);
+    this.canvas.stage.add(this.canvas.layer);
+
+    this.canvas.bboxes = new Map();
   },
 };

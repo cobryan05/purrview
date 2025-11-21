@@ -1,6 +1,10 @@
+import { Logger } from '../logging.js';
 import { Field } from './Field.js';
 import { LabelDropDownField } from './LabelDropDownField.js';
-import { fetchClassByUuid, fetchClasses } from '/app-static/js/ui/utils/index.js';
+import { ArrayField } from './ArrayField.js';
+import { TextField } from './TextField.js';
+import { fetchClassByUuid, fetchClasses, fetchTags } from '/app-static/js/ui/utils/index.js';
+import { fieldFactories } from './Factories.js';
 
 // Takes options as an array of strings or objects
 // Each object can have 'key', 'text', and 'color' properties
@@ -8,60 +12,57 @@ import { fetchClassByUuid, fetchClasses } from '/app-static/js/ui/utils/index.js
 export class BboxInfoField extends Field {
   constructor(params = {}) {
     super(params);
-    this._metadata = params.bbox.metadata;
-    this._classField = new LabelDropDownField({ label: 'Class', value: this._metadata.class });
+  }
+
+  static async create({ bbox, classes, value = [], ...rest } = {}) {
+    const instance = new BboxInfoField({ value, ...rest });
+    instance._metadata = bbox.metadata;
+
+    classes = classes ?? await fetchClasses();
+    const classItems = Array.from(classes.values()).map(cls => ({
+      key: cls.metadata.uuid,
+      text: cls.metadata.name,
+      color: cls.metadata.color || '#cccccc'
+    }));
+    const tags = await fetchTags();
+    const tagItems = Array.from(tags.values()).map(tag => ({
+      key: tag.uuid,
+      text: tag.name,
+      color: tag.color || '#cccccc'
+    }));
+    instance._classField = new LabelDropDownField({
+      label: 'Class', value: instance._metadata.classUuid, options: classItems,
+      onChange: async (newProvider) => { Logger.warn(newProvider); }
+    });
+    const tagFactory = (val, onChange) => {
+      return new LabelDropDownField({
+        value: val || '',
+        options: tagItems,
+        placeholder: val,
+        onChange: onChange
+      });
+    };
+    instance._tagArrayField = await ArrayField.create({
+      label: 'Tags', value: instance._metadata.tags || [],
+      fieldFactory: tagFactory
+    });
+    instance._value = Array.isArray(value) ? value : [];
+    return instance;
   }
 
   async renderEdit() {
     const span = document.createElement('span');
+    span.appendChild(document.createElement('br'));
     // add title text element Bounding Box to the span
     const title = document.createElement('span');
     title.textContent = 'Bounding Box Info';
     span.appendChild(title);
 
-    const select = document.createElement('select');
-    fetchClassByUuid(this._metadata.classUuid).then(cls => {
-      if (!cls) return;
+    const classSelect = await this._classField.renderEdit();
+    span.appendChild(classSelect);
 
-      let optionEl = document.createElement('option');
-      optionEl.textContent = cls.metadata.name;
-      select.appendChild(optionEl);
-    });
-
-    // // Add placeholder if no value is set
-    // if (!this._value) {
-    //   const placeholderOption = document.createElement('option');
-    //   placeholderOption.value = '';
-    //   placeholderOption.textContent = this._placeholder || 'Select...';
-    //   placeholderOption.disabled = true;
-    //   placeholderOption.selected = true;
-    //   select.appendChild(placeholderOption);
-    // }
-
-    // this._options.forEach(opt => {
-    //   const optionEl = document.createElement('option');
-
-    //   if (typeof opt === 'string') {
-    //     optionEl.value = opt;
-    //     optionEl.textContent = opt;
-    //   } else if (typeof opt === 'object') {
-    //     optionEl.value = opt.key ?? opt.text;
-    //     optionEl.textContent = opt.text;
-    //     if (opt.color) optionEl.style.color = opt.color;
-    //   }
-
-    //   if (this._isMatchingOption(opt, this._value)) {
-    //     optionEl.selected = true;
-    //   }
-
-    //   select.appendChild(optionEl);
-    // });
-
-    // select.addEventListener('change', () => {
-    //   this._value = select.value;
-    //   this._onChange?.(this._value);
-    // });
-    span.appendChild(select);
+    const tags = await this._tagArrayField.renderEdit();
+    span.appendChild(tags);
     return span;
   }
 

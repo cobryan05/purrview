@@ -14,10 +14,10 @@ let crosshairV = null;
 let crosshairH = null;
 
 function createCrosshairLines() {
-  const layer = state.layer;
+  const layer = state.canvas.layer;
   if (crosshairV && crosshairH) return; // already created
 
-  const stage = state.stage;
+  const stage = state.canvas.stage;
   const width = stage.width();
   const height = stage.height();
 
@@ -42,7 +42,7 @@ function createCrosshairLines() {
 }
 
 function getPointerPosition() {
-  const stage = state.stage;
+  const stage = state.canvas.stage;
   const pos = stage.getPointerPosition();
   if (!pos) return null;
   return {
@@ -52,8 +52,8 @@ function getPointerPosition() {
 }
 
 export async function handleMouseDown(e) {
-  const stage = state.stage;
-  const layer = state.layer;
+  const stage = state.canvas.stage;
+  const layer = state.canvas.layer;
   if (e.evt.button === 1) {
     isPanning = true;
     lastPanPos = { x: e.evt.clientX, y: e.evt.clientY };
@@ -81,8 +81,8 @@ export async function handleMouseDown(e) {
 }
 
 export async function handleMouseMove(e) {
-  const stage = state.stage;
-  const layer = state.layer;
+  const stage = state.canvas.stage;
+  const layer = state.canvas.layer;
   if (isPanning) {
     const dx = e.evt.clientX - lastPanPos.x;
     const dy = e.evt.clientY - lastPanPos.y;
@@ -136,7 +136,7 @@ export async function handleMouseMove(e) {
 export async function handleMouseUp(e) {
   const currentTool = state.currentTool;
   const isSelectTool = currentTool === 'select';
-  state.stage.container().style.cursor =
+  state.canvas.stage.container().style.cursor =
    isSelectTool ? 'default' : 'crosshair';
 
   if (e.evt.button === 1) {
@@ -146,7 +146,7 @@ export async function handleMouseUp(e) {
 
   if (pendingDraggedBbox) {
     const box = pendingDraggedBbox.findOne('.box');
-    const stage = state.stage;
+    const stage = state.canvas.stage;
 
     if (box.width() < DOUBLE_CLICK_DISTANCE_PX || box.height() < DOUBLE_CLICK_DISTANCE_PX) {
       pendingDraggedBbox.destroy();
@@ -154,7 +154,7 @@ export async function handleMouseUp(e) {
       selectShape(pendingDraggedBbox, box);
     }
 
-    state.layer.draw();
+    state.canvas.layer.draw();
     pendingDraggedBbox = null;
   }
 
@@ -174,7 +174,7 @@ export async function handleMouseUp(e) {
         const currentClassUuid = state.currentClassUuid;
         updateBoundingBox(hitGroup, { metadata: { classUuid: currentClassUuid } });
       } else {
-        selectBbox(hitGroup);
+        selectBbox(hitGroup.metadata.uuid);
       }
     } else {
       const box = hitGroup.findOne('.box');
@@ -186,7 +186,7 @@ export async function handleMouseUp(e) {
 }
 
 export async function handleWheel(e) {
-  const stage = state.stage;
+  const stage = state.canvas.stage;
   e.evt.preventDefault();
 
   const oldScale = stage.scaleX();
@@ -214,8 +214,8 @@ export async function handleWheel(e) {
 }
 
 export function handleClick(e) {
-  const stage = state.stage;
-  const layer = state.layer;
+  const stage = state.canvas.stage;
+  const layer = state.canvas.layer;
   if (e.target === stage) {
     clearSelection();
     layer.draw();
@@ -223,7 +223,7 @@ export function handleClick(e) {
 }
 
 export function handleContextMenu(e) {
-  const layer = state.layer;
+  const layer = state.canvas.layer;
   e.evt.preventDefault();
   clearSelection();
   if (state.currentTool === 'select') {
@@ -235,8 +235,8 @@ export function handleContextMenu(e) {
 }
 
 export function selectShape(group, highlight_shape = null) {
-  const layer = state.layer;
-  const transformer = state.transformer;
+  const layer = state.canvas.layer;
+  const transformer = state.canvas.transformer;
   const shape = highlight_shape ?? group;
   if (!shape || !layer) return;
 
@@ -270,7 +270,7 @@ export function selectShape(group, highlight_shape = null) {
 }
 
 export function findGroupAtPoint(pos) {
-  const layer = state.layer;
+  const layer = state.canvas.layer;
   const children = layer.getChildren(node => node.name() === 'annotation');
 
   for (const group of children) {

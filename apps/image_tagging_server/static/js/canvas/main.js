@@ -13,7 +13,7 @@ import {
   loadImageAndMetadata,
   reloadImage,
   saveAnnotations,
-} from './imageMetadata.js';
+} from './image.js';
 import { state } from './state.js';
 import { selectBboxTool, setTool, updateToolbarButtons } from './tools.js';
 
@@ -32,7 +32,7 @@ window.deleteSelected = deleteSelected;
 window.loadImageAndMetadata = loadImageAndMetadata;
 window.refreshAnnotations = exportAnnotations;
 
-let stage = state.stage;
+let stage = state.canvas.stage;
 // Attach stage event listeners
 stage.on('mousedown', handleMouseDown);
 stage.on('mousemove', handleMouseMove);
