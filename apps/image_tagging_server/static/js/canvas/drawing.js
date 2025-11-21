@@ -1,4 +1,4 @@
-import { getCurrentTool, getLayer, getTransformer } from './state.js';
+import { state } from './state.js';
 import { generateUUID } from './utils.js';
 import { fetchClassByUuid } from '/app-static/js/ui/utils/index.js';
 
@@ -72,7 +72,7 @@ export function createBoundingBox(x, y, props = {}) {
       text.fill(newColor);
 
       applyBoundingBoxLayout(group);
-      getLayer().batchDraw();
+      state.layer.batchDraw();
     });
   }
 
@@ -83,7 +83,7 @@ export function createBoundingBox(x, y, props = {}) {
     if (e.evt.button === 1) {
       group.draggable(false);
     } else {
-      group.draggable(getCurrentTool() === 'select');
+      group.draggable(state.currentTool === 'select');
     }
   });
 
@@ -91,7 +91,7 @@ export function createBoundingBox(x, y, props = {}) {
   group.on('mouseup dragend', () => group.draggable(true));
 
   rect.on('transform', () => {
-    const layer = getLayer();
+    const layer = state.layer;
 
     const scaleX = rect.scaleX();
     const scaleY = rect.scaleY();
@@ -163,7 +163,7 @@ export function updateBoundingBox(group, props = {}) {
       rect.stroke(color);
 
       applyBoundingBoxLayout(group);
-      getLayer().batchDraw();
+      state.layer.batchDraw();
     })
     .catch(err => {
       console.error('Failed to fetch class:', err);

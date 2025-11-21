@@ -1,7 +1,7 @@
 // canvas_ui_main.js
 
 import { addRecognizedBoxes, loadImageAndMetadata } from '/app-static/js/canvas/imageMetadata.js';
-import { getLayer, } from '/app-static/js/canvas/state.js';
+import { state } from '/app-static/js/canvas/state.js';
 import { setTool } from '/app-static/js/canvas/tools.js';
 import { renderClassList } from '/app-static/js/ui/classes.js';
 import { renderTagList } from '/app-static/js/ui/tags.js';
@@ -67,7 +67,7 @@ export async function recognizeImage() {
 
     const modelName = selected.value;
 
-    const layer = getLayer();
+    const layer = state.layer;
     const background = layer.findOne('.background');
     if (!background || !background.image()) {
       throw new Error('No background image found on canvas');

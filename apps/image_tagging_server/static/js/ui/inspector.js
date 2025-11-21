@@ -1,5 +1,5 @@
 // bboxes.js
-import { getCurrentClassUuid, getCurrentBbox } from '/app-static/js/canvas/state.js';
+import { state } from '/app-static/js/canvas/state.js';
 import { getTool } from '/app-static/js/canvas/tools.js';
 import { createGenericRow, createNewClass, deleteClass, fetchClasses, toast, updateClass } from '/app-static/js/ui/utils/index.js';
 import { EditableField, BboxInfoField } from '/app-static/js/ui/utils/fields/index.js';
@@ -37,7 +37,7 @@ export function openInspectorTab() {
 
 
 export function renderBboxInspector({ bbox = null, target = 'tab-pane-inspector', editable = true, onSelectCallback = null } = {}) {
-  bbox = bbox ?? getCurrentBbox();
+  bbox = bbox ?? state.bbox;
   try {
     const targetElement = document.getElementById(target);
     if (!targetElement) {

@@ -1,6 +1,6 @@
 // tags.js
 import { clearTagCache } from './utils/tagsApi.js';
-import { getCurrentTagUuid } from '/app-static/js/canvas/state.js';
+import { state } from '/app-static/js/canvas/state.js';
 import { getTool } from '/app-static/js/canvas/tools.js';
 import { EditableField, TextBoxColorField } from '/app-static/js/ui/utils/fields/index.js';
 import { createGenericRow, createNewTag, deleteTag, fetchTags, toast, updateTag } from '/app-static/js/ui/utils/index.js';
@@ -178,7 +178,7 @@ export function renderTagList({ target = 'tags-list', editable = true, onSelectC
       }
 
       // Highlight selected tag if exists
-      const selectedTagUuid = getCurrentTagUuid();
+      const selectedTagUuid = state.tagUuid;
       if (selectedTagUuid) highlightSelectedTag(selectedTagUuid);
     });
   } catch (err) {

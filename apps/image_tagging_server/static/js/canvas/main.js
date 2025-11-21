@@ -14,12 +14,13 @@ import {
   reloadImage,
   saveAnnotations,
 } from './imageMetadata.js';
-import { getStage, initStage } from './state.js';
+import { state } from './state.js';
 import { selectBboxTool, setTool, updateToolbarButtons } from './tools.js';
 
 // Initialize stage and set default tool
-initStage();
-setTool('select');
+const container = document.getElementById('draw-container');
+state.initStage(container);
+state.setTool('select');
 
 // Expose functions globally for HTML onclick handlers
 window.setTool = setTool;
@@ -31,7 +32,7 @@ window.deleteSelected = deleteSelected;
 window.loadImageAndMetadata = loadImageAndMetadata;
 window.refreshAnnotations = exportAnnotations;
 
-let stage = getStage()
+let stage = state.stage;
 // Attach stage event listeners
 stage.on('mousedown', handleMouseDown);
 stage.on('mousemove', handleMouseMove);

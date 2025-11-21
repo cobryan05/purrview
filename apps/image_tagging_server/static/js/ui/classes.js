@@ -1,5 +1,5 @@
 // classes.js
-import { getCurrentClassUuid } from '/app-static/js/canvas/state.js';
+import { state } from '/app-static/js/canvas/state.js';
 import { getTool } from '/app-static/js/canvas/tools.js';
 import { createGenericRow, createNewClass, deleteClass, fetchClasses, toast, updateClass } from '/app-static/js/ui/utils/index.js';
 import { EditableField, TextBoxColorField } from '/app-static/js/ui/utils/fields/index.js';
@@ -214,7 +214,7 @@ export function renderClassList({ target = 'classes-list', editable = true, onSe
       }
 
       // Highlight selected class if exists
-      const selectedClassUuid = getCurrentClassUuid();
+      const selectedClassUuid = state.currentClassUuid;
       if (selectedClassUuid) highlightSelectedClass(selectedClassUuid);
     });
   } catch (err) {

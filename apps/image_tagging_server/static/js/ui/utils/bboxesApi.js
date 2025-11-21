@@ -41,6 +41,7 @@ export function clearBboxInfoCache() {
 
 export async function _fetchBboxesInfo(bboxUuids) {
   const result = new Map();
+  const info = bboxesInfoFetcher.fetch(bboxUuids);
   for (const uuid of bboxUuids) {
     const info = await bboxesInfoFetcher.fetch(uuid);
     result.set(uuid, info);

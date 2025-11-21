@@ -1,10 +1,10 @@
 import { createBoundingBox } from './drawing.js';
-import { getCurrentImageName, getLayer, getStage, getTransformer, setCurrentImageName } from './state.js';
+import { state } from './state.js'
 import { Logger, fetchImage, clearBboxInfoCache, fetchBboxesInfo } from '/app-static/js/ui/utils/index.js';
 import { generateUUID } from './utils.js';
 
 export async function reloadImage() {
-  const imageName = getCurrentImageName();
+  const imageName = state.currentImageName;
   if (!imageName) {
     Logger.notify('No image loaded to reload');
     return;
@@ -14,87 +14,83 @@ export async function reloadImage() {
 
 export async function loadImageAndMetadata(imageName) {
   Logger.debug('loadImageAndMetadata called with imageName:', imageName);
-  if (!imageName) {
-    toast('Please enter an image name!');
-    return;
-  }
 
-  try {
-    const transformer = getTransformer();
-    const layer = getLayer();
-    clearAnnotations();
-    clearBboxInfoCache();
-    setCurrentImageName(imageName);
+  const { image: img, bboxes } = await fetchImage(imageName);
 
-    const { image: img, bboxes } = await fetchImage(imageName);
-
-    transformer.nodes([]);
-    layer.getChildren().forEach(child => {
-      if (child !== transformer) child.destroy();
-    });
-
-    const bg = new Konva.Image({
-      image: img,
-      x: 0,
-      y: 0,
-      width: img.width,
-      height: img.height,
-      listening: false,
-      name: 'background',
-    });
-    layer.add(bg);
-    layer.moveToBottom();
-
-    for (const box of bboxes) {
-      const absX = box.x * img.width;
-      const absY = box.y * img.height;
-      const absWidth = box.width * img.width;
-      const absHeight = box.height * img.height;
-
-      const shape = createBoundingBox(absX, absY, {
-        width: absWidth,
-        height: absHeight,
-        metadata: {
-          uuid: box.uuid,
-          classUuid: box.class_uuid,
-          tags: box.tags?.map(l => l.uuid) ?? [],
-          extra: box.extra ?? {}
-        }
-      });
-
-      shape.name('annotation');
-      layer.add(shape);
-    }
-    // === Zoom to fit the image with padding ===
-    const stage = getStage();
-    const container = stage.container();
-    const padding = 20;
-
-    const scaleX = (container.clientWidth - padding * 2) / img.width;
-    const scaleY = (container.clientHeight - padding * 2) / img.height;
-    const scale = Math.min(scaleX, scaleY);
-
-    // Center the image
-    const newWidth = img.width * scale;
-    const newHeight = img.height * scale;
-
-    const offsetX = (container.clientWidth - newWidth) / 2;
-    const offsetY = (container.clientHeight - newHeight) / 2;
-
-    stage.scale({ x: scale, y: scale });
-    stage.position({ x: offsetX, y: offsetY });
-    stage.batchDraw();
-
-    layer.draw();
-    Logger.notify(`Loaded image and metadata for ${imageName}`);
-  } catch (err) {
-    Logger.error('Failed to load image or annotations:', err);
-  }
+  state.setImage(imageName, img, bboxes);
+  await refreshCanvas();
 }
 
+export async function refreshCanvas() {
+  clearAnnotations();
+
+  const imageName = state.currentImageName;
+  const img = state.currentImage;
+  const bboxes = state.currentBboxes;
+  const transformer = state.transformer;
+  const layer = state.layer;
+
+  const bg = new Konva.Image({
+    image: img,
+    x: 0,
+    y: 0,
+    width: img.width,
+    height: img.height,
+    listening: false,
+    name: 'background',
+  });
+  layer.add(bg);
+  layer.moveToBottom();
+
+  for (const box of bboxes) {
+    const absX = box.x * img.width;
+    const absY = box.y * img.height;
+    const absWidth = box.width * img.width;
+    const absHeight = box.height * img.height;
+
+    const shape = createBoundingBox(absX, absY, {
+      width: absWidth,
+      height: absHeight,
+      metadata: {
+        uuid: box.uuid,
+        classUuid: box.class_uuid,
+        tags: box.tags?.map(l => l.uuid) ?? [],
+        extra: box.extra ?? {}
+      }
+    });
+
+    shape.name('annotation');
+    layer.add(shape);
+  }
+
+  // === Zoom to fit the image with padding ===
+  const stage = state.stage;
+  const container = stage.container();
+  const padding = 20;
+
+  const scaleX = (container.clientWidth - padding * 2) / img.width;
+  const scaleY = (container.clientHeight - padding * 2) / img.height;
+  const scale = Math.min(scaleX, scaleY);
+
+  // Center the image
+  const newWidth = img.width * scale;
+  const newHeight = img.height * scale;
+
+  const offsetX = (container.clientWidth - newWidth) / 2;
+  const offsetY = (container.clientHeight - newHeight) / 2;
+
+  stage.scale({ x: scale, y: scale });
+  stage.position({ x: offsetX, y: offsetY });
+  stage.batchDraw();
+
+  layer.draw();
+  Logger.notify(`Loaded image and metadata for ${imageName}`);
+}
+
+
 export function clearAnnotations() {
-  const layer = getStage().findOne('Layer');
-  const transformer = getTransformer();
+  const layer = state.stage.findOne('Layer');
+  const transformer = state.transformer;
   transformer.nodes([]);
   const children = [...layer.getChildren()];
   children.forEach(child => {
@@ -106,8 +102,8 @@ export function clearAnnotations() {
 }
 
 export async function saveAnnotations() {
-  const layer = getLayer();
-  const imagePath = getCurrentImageName();
+  const layer = state.layer;
+  const imagePath = state.currentImageName;
   const image = layer.findOne('.background')?.image();
   if (!imagePath || !image) {
     toast('No image loaded to save annotations!');
@@ -160,8 +156,8 @@ export async function saveAnnotations() {
 }
 
 export function deleteSelected() {
-  const transformer = getTransformer();
-  const layer = getLayer();
+  const transformer = state.transformer;
+  const layer = state.layer;
   if (!transformer) return;
 
   const selectedNodes = transformer.nodes();
@@ -186,7 +182,7 @@ export function deleteSelected() {
 }
 
 export function exportAnnotations() {
-  const layer = getLayer();
+  const layer = state.layer;
   const shapes = layer.getChildren().filter(s => s.name() === 'annotation');
 
   const annotations = shapes
@@ -212,8 +208,8 @@ export function exportAnnotations() {
 }
 
 export function addRecognizedBoxes(results) {
-  const layer = getLayer();
-  const stage = getStage();
+  const layer = state.layer;
+  const stage = state.stage;
 
   const bg = layer.findOne(
     node => node.name() === 'background' && node instanceof Konva.Image);

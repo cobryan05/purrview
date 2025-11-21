@@ -1,34 +1,34 @@
-import { getCurrentClassUuid, getCurrentTool, getStage, getTransformer, setCurrentBbox, setCurrentTool } from './state.js';
+import { state } from './state.js';
 import { openInspectorTab, renderBboxInspector } from '/app-static/js/ui/inspector.js';
 
 // Clear selection implementation
 export function clearSelection() {
-  const transformer = getTransformer();
+  const transformer = state.transformer;
   if (transformer) {
     transformer.nodes([]);
     transformer.getLayer()?.draw();
   }
-  setCurrentBbox(null);
-  getStage().batchDraw();
+  state.setBbox(null);
+  state.stage.batchDraw();
 }
 
 // Set the current tool, update UI and cursor
 export function setTool(tool) {
-  setCurrentTool(tool);
+  state.setTool(tool);
   clearSelection();
   updateToolbarButtons();
-  getStage().container().style.cursor = tool === 'select' ? 'default' : 'crosshair';
+  state.stage.container().style.cursor = tool === 'select' ? 'default' : 'crosshair';
 }
 
 export function selectBbox(bbox) {
-  setCurrentBbox(bbox);
+  state.setBbox(bbox);
   renderBboxInspector({ bbox });
   openInspectorTab();
 }
 
 // Get the current tool
 export function getTool() {
-  return getCurrentTool();
+  return state.tool;
 }
 
 export function parseToolUuid(str) {
@@ -38,7 +38,7 @@ export function parseToolUuid(str) {
 
 // Highlight toolbar buttons based on current tool
 export function updateToolbarButtons() {
-  const current = getCurrentTool();
+  const current = getTool();
   document.querySelectorAll('#toolbar button[data-tool]').forEach(btn => {
     btn.classList.toggle('selected', btn.dataset.tool === current);
   });
@@ -52,7 +52,7 @@ export function selectBboxTool() {
   }
 
   // Click the active tool
-  const selectedClassUuid = getCurrentClassUuid();
+  const selectedClassUuid = state.currentClassUuid;
   const classRows = document.querySelectorAll('#classes-tool-list .class-row');
   let found = false;
   if (selectedClassUuid) {

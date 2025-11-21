@@ -1,5 +1,5 @@
 import { createBoundingBox, updateBoundingBox } from './drawing.js';
-import { getCurrentTool, getLayer, getStage, getTransformer, getCurrentClassUuid } from './state.js';
+import { state } from './state.js'
 import { clearSelection, selectBboxTool, setTool, selectBbox } from './tools.js';
 
 let pendingDraggedBbox = null;
@@ -14,10 +14,10 @@ let crosshairV = null;
 let crosshairH = null;
 
 function createCrosshairLines() {
-  const layer = getLayer();
+  const layer = state.layer;
   if (crosshairV && crosshairH) return; // already created
 
-  const stage = getStage();
+  const stage = state.stage;
   const width = stage.width();
   const height = stage.height();
 
@@ -42,7 +42,7 @@ function createCrosshairLines() {
 }
 
 function getPointerPosition() {
-  const stage = getStage();
+  const stage = state.stage;
   const pos = stage.getPointerPosition();
   if (!pos) return null;
   return {
@@ -52,8 +52,8 @@ function getPointerPosition() {
 }
 
 export async function handleMouseDown(e) {
-  const stage = getStage();
-  const layer = getLayer();
+  const stage = state.stage;
+  const layer = state.layer;
   if (e.evt.button === 1) {
     isPanning = true;
     lastPanPos = { x: e.evt.clientX, y: e.evt.clientY };
@@ -65,14 +65,14 @@ export async function handleMouseDown(e) {
   if (e.evt.button !== 0) return;
   if (isPanning) return;
 
-  const currentTool = getCurrentTool();
+  const currentTool = state.currentTool;
   if (currentTool === 'select') return;
 
   const pos = getPointerPosition();
   if (!pos) return;
 
   startPos = pos;
-  const currentClassUuid = getCurrentClassUuid();
+  const currentClassUuid = state.currentClassUuid;
   pendingDraggedBbox = createBoundingBox(
     pos.x, pos.y, { width: 1, height: 1, metadata: { classUuid: currentClassUuid } });
   if (pendingDraggedBbox) {
@@ -81,8 +81,8 @@ export async function handleMouseDown(e) {
 }
 
 export async function handleMouseMove(e) {
-  const stage = getStage();
-  const layer = getLayer();
+  const stage = state.stage;
+  const layer = state.layer;
   if (isPanning) {
     const dx = e.evt.clientX - lastPanPos.x;
     const dy = e.evt.clientY - lastPanPos.y;
@@ -96,7 +96,7 @@ export async function handleMouseMove(e) {
   const pos = getPointerPosition();
   if (!pos) return;
 
-  const currentTool = getCurrentTool();
+  const currentTool = state.currentTool;
   if (currentTool != 'select') {
     createCrosshairLines();
     // Position lines at mouse X,Y spanning full height,width
@@ -134,9 +134,9 @@ export async function handleMouseMove(e) {
 }
 
 export async function handleMouseUp(e) {
-  const currentTool = getCurrentTool();
+  const currentTool = state.currentTool;
   const isSelectTool = currentTool === 'select';
-  getStage().container().style.cursor =
+  state.stage.container().style.cursor =
    isSelectTool ? 'default' : 'crosshair';
 
   if (e.evt.button === 1) {
@@ -146,7 +146,7 @@ export async function handleMouseUp(e) {
 
   if (pendingDraggedBbox) {
     const box = pendingDraggedBbox.findOne('.box');
-    const stage = getStage();
+    const stage = state.stage;
 
     if (box.width() < DOUBLE_CLICK_DISTANCE_PX || box.height() < DOUBLE_CLICK_DISTANCE_PX) {
       pendingDraggedBbox.destroy();
@@ -154,7 +154,7 @@ export async function handleMouseUp(e) {
       selectShape(pendingDraggedBbox, box);
     }
 
-    getLayer().draw();
+    state.layer.draw();
     pendingDraggedBbox = null;
   }
 
@@ -171,7 +171,7 @@ export async function handleMouseUp(e) {
   if (hitGroup) {
     if (isDoubleClick) {
       if (!isSelectTool) {
-        const currentClassUuid = getCurrentClassUuid();
+        const currentClassUuid = state.currentClassUuid;
         updateBoundingBox(hitGroup, { metadata: { classUuid: currentClassUuid } });
       } else {
         selectBbox(hitGroup);
@@ -186,7 +186,7 @@ export async function handleMouseUp(e) {
 }
 
 export async function handleWheel(e) {
-  const stage = getStage();
+  const stage = state.stage;
   e.evt.preventDefault();
 
   const oldScale = stage.scaleX();
@@ -214,8 +214,8 @@ export async function handleWheel(e) {
 }
 
 export function handleClick(e) {
-  const stage = getStage();
-  const layer = getLayer();
+  const stage = state.stage;
+  const layer = state.layer;
   if (e.target === stage) {
     clearSelection();
     layer.draw();
@@ -223,10 +223,10 @@ export function handleClick(e) {
 }
 
 export function handleContextMenu(e) {
-  const layer = getLayer();
+  const layer = state.layer;
   e.evt.preventDefault();
   clearSelection();
-  if (getCurrentTool() === 'select') {
+  if (state.currentTool === 'select') {
     selectBboxTool();
   } else {
     setTool('select');
@@ -235,8 +235,8 @@ export function handleContextMenu(e) {
 }
 
 export function selectShape(group, highlight_shape = null) {
-  const layer = getLayer();
-  const transformer = getTransformer();
+  const layer = state.layer;
+  const transformer = state.transformer;
   const shape = highlight_shape ?? group;
   if (!shape || !layer) return;
 
@@ -270,7 +270,7 @@ export function selectShape(group, highlight_shape = null) {
 }
 
 export function findGroupAtPoint(pos) {
-  const layer = getLayer();
+  const layer = state.layer;
   const children = layer.getChildren(node => node.name() === 'annotation');
 
   for (const group of children) {
