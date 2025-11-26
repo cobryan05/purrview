@@ -1,5 +1,64 @@
+// @ts-check
 import { Logger } from '/app-static/js/ui/utils/index.js';
 
+/**
+ * @typedef {import('@konva').default.Stage} Stage
+ * @typedef {import('@konva').default.Layer} Layer
+ * @typedef {import('@konva').default.Transformer} Transformer
+ */
+
+/**
+ * @typedef {Object} BBoxInfo
+ * @property {number} x
+ * @property {number} y
+ * @property {number} width
+ * @property {number} height
+ * @property {string} [classUuid]
+ * @property {string} [tagUuid]
+ */
+
+/**
+ * @typedef {Object} ImageState
+ * @property {string|null} name
+ * @property {HTMLImageElement|ImageBitmap|null} data
+ * @property {Map<string,BBoxInfo>|null} bboxes
+ */
+
+/**
+ * @typedef {Object} CanvasState
+ * @property {Stage|null} stage
+ * @property {Layer|null} layer
+ * @property {Transformer|null} transformer
+ * @property {Map<string,BBoxInfo>|null} bboxes
+ */
+
+/**
+ * @typedef {Object} State
+ * @property {CanvasState} canvas
+ * @property {string} currentTool
+ * @property {string|null} currentClassUuid
+ * @property {string|null} currentTagUuid
+ * @property {string|null} selectedBoxUuid
+ * @property {ImageState} image
+ * @property {string} selectedTool
+ * @property {string|null} selectedBboxUuid
+ * @property {string|null} classUuid
+ * @property {string|null} tagUuid
+ * @property {Map<string,BBoxInfo>|null} bboxes
+ * @property {(uuid:string) => BBoxInfo|undefined} getBbox
+ * @property {(tool:string) => void} setTool
+ * @property {(uuid:string) => void} setClassUuid
+ * @property {(uuid:string) => void} setTagUuid
+ * @property {(name:string, img:any, bboxes:Map<string,BBoxInfo>) => void} setImage
+ * @property {(uuid:string, bboxInfo:BBoxInfo|null) => void} setBbox
+ * @property {(bboxUuid:string) => void} setSelectedBboxUuid
+ * @property {(t:Transformer) => void} setTransformer
+ * @property {() => void} clearBboxes
+ * @property {() => void} clearSelection
+ * @property {(container:HTMLElement) => void} initStage
+ */
+
+/** @type {State} */
 export const state = {
   // --- Canvas context ---
   canvas: {
@@ -78,6 +137,11 @@ export const state = {
       anchorCornerRadius: 5,
       enabledAnchors: ['top-left', 'top-right', 'bottom-left', 'bottom-right'],
       keepRatio: false,
+      /**
+       * @param {KonvaBox} oldBox
+       * @param {KonvaBox} newBox
+       * @returns {KonvaBox}
+       */
       boundBoxFunc: (oldBox, newBox) => {
         const minSize = 10;
         if (Math.abs(newBox.width) < minSize || Math.abs(newBox.height) < minSize) {

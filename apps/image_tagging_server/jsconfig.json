@@ -1,0 +1,27 @@
+{
+  "compilerOptions": {
+    "module": "esnext",
+    "lib": [
+      "dom",
+      "esnext"
+    ],
+    "checkJs": true,
+    "strict": true,
+    "noImplicitAny": true,
+    "moduleResolution": "node",
+    "baseUrl": ".",
+    "paths": {
+      "/app-static/*": [
+        "./static/*"
+      ],
+      "@konva": [
+        "/app/static/js/konva-types/index-types.d.ts"
+      ]
+    }
+  },
+  "include": [
+    "**/*.js",
+    "**/*.ts",
+    "konva-globals.d.ts"
+  ],
+}

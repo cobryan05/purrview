@@ -1,4 +1,3 @@
-// bboxes.js
 import { state } from '/app-static/js/canvas/state.js';
 import { getTool } from '/app-static/js/canvas/tools.js';
 import { createGenericRow, createNewClass, deleteClass, Logger, fetchClasses, toast, updateClass } from '/app-static/js/ui/utils/index.js';

@@ -30,7 +30,15 @@ RUN pip install --no-cache-dir -r requirements.txt
 RUN mkdir -p /logs /app/static/js /app/static/css \
   && curl -L -o /app/static/js/htmx.min.js https://unpkg.com/htmx.org@${HTMX_VERSION}/dist/htmx.min.js \
   && curl -L -o /app/static/css/pico.min.css https://cdn.jsdelivr.net/npm/@picocss/pico@${PICO_CSS_VERSION}/css/pico.blue.min.css \
-  && curl -L -o /app/static/js/konva.min.js https://cdn.jsdelivr.net/npm/konva@${KONVA_VERSION}/konva.min.js
+  \
+  # Download Konva tarball and extract only min.js + .d.ts
+  && curl -L -o /tmp/konva.tgz https://registry.npmjs.org/konva/-/konva-${KONVA_VERSION}.tgz \
+  && mkdir -p /tmp/konva \
+  && tar -xzf /tmp/konva.tgz -C /tmp/konva --strip-components=1 \
+  && cp /tmp/konva/konva.min.js /app/static/js/ \
+  && mkdir -p /app/static/js/konva-types \
+  && cp -r /tmp/konva/lib/* /app/static/js/konva-types/ \
+  && rm -rf /tmp/konva /tmp/konva.tgz
 
 COPY --from=mediamtx /mediamtx /app/mediamtx
 
