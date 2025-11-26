@@ -31,7 +31,7 @@ export class ModelLabelSelectField extends Field {
   }
 
   async _handleModelChange(modelName, values = {}) {
-    this._classUuidMapping = modelName ? await fetchModelsClassMappings({modelNames: [modelName]}) : new Map();
+    this._classUuidMapping = modelName ? (await fetchModelsClassMappings({modelNames: [modelName]})).get(modelName) : new Map();
     this._fields = new Map();
 
     if (this._classUuidMapping.size > 0) {
