@@ -3,7 +3,7 @@ import { getTool } from '/app-static/js/canvas/tools.js';
 import { createGenericRow, createNewClass, deleteClass, Logger, fetchClasses, toast, updateClass } from '/app-static/js/ui/utils/index.js';
 import { EditableField, BboxInfoField } from '/app-static/js/ui/utils/fields/index.js';
 import { clearClassCache } from './utils/classesApi.js';
-
+import { refreshCanvas } from '../canvas/image.js' // TODO: Better way?
 
 
 /**
@@ -37,7 +37,7 @@ export function openInspectorTab() {
 
 export function renderBboxInspector({ bboxUuid = null, target = 'tab-pane-inspector', editable = true, onSelectCallback = null } = {}) {
   bboxUuid = bboxUuid ?? state.selectedBboxUuid;
-  const bbox = state.getBbox(bboxUuid)
+  const bbox = state.getBboxGroup(bboxUuid)
   try {
     const targetElement = document.getElementById(target);
     if (!targetElement) {
@@ -56,16 +56,28 @@ export function renderBboxInspector({ bboxUuid = null, target = 'tab-pane-inspec
       const row = createGenericRow({
         field: new EditableField({
           field: bboxInfoFieldInstance,
-          editMode: true,
+          editMode: false,
           buttonsLast: true,
           onChange: (val) => {
             Logger.warn(val);
           },
           onSave: (val) => {
-            Logger.warn(val);
+            const group = state.getBboxGroup(bboxUuid);
+            if (!group) {
+              Logger.error(`No bbox found for UUID: ${bboxUuid}`);
+              return;
+            }
+
+            group.metadata = {
+              ...group.metadata, // preserve other metadata fields
+              classUuid: val.bbox_info.classUuid,
+              tagUuids: val.bbox_info.tagUuids || [],
+            };
+            state.setBboxGroup(bboxUuid, group);
+            refreshCanvas();
           },
           onCancel: () => {
-            Logger.warn(val);
+            Logger.warn("Canceled");
           }
         }),
       });

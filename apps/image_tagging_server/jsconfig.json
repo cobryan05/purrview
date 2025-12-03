@@ -5,6 +5,7 @@
       "dom",
       "esnext"
     ],
+    "target": "ES2015",
     "checkJs": true,
     "strict": true,
     "noImplicitAny": true,

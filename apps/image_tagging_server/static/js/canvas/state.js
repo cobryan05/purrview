@@ -5,7 +5,9 @@ import { Logger } from '/app-static/js/ui/utils/index.js';
  * @typedef {import('@konva').default.Stage} Stage
  * @typedef {import('@konva').default.Layer} Layer
  * @typedef {import('@konva').default.Transformer} Transformer
+ * @typedef {import('@konva').default.Group} Group
  */
+
 
 /**
  * @typedef {Object} BBoxInfo
@@ -14,7 +16,7 @@ import { Logger } from '/app-static/js/ui/utils/index.js';
  * @property {number} width
  * @property {number} height
  * @property {string} [classUuid]
- * @property {string} [tagUuid]
+ * @property {string[]} [tagUuids]
  */
 
 /**
@@ -29,7 +31,7 @@ import { Logger } from '/app-static/js/ui/utils/index.js';
  * @property {Stage|null} stage
  * @property {Layer|null} layer
  * @property {Transformer|null} transformer
- * @property {Map<string,BBoxInfo>|null} bboxes
+ * @property {Map<string,Group>|null} bboxes
  */
 
 /**
@@ -37,20 +39,16 @@ import { Logger } from '/app-static/js/ui/utils/index.js';
  * @property {CanvasState} canvas
  * @property {string} currentTool
  * @property {string|null} currentClassUuid
- * @property {string|null} currentTagUuid
  * @property {string|null} selectedBoxUuid
  * @property {ImageState} image
  * @property {string} selectedTool
  * @property {string|null} selectedBboxUuid
  * @property {string|null} classUuid
- * @property {string|null} tagUuid
- * @property {Map<string,BBoxInfo>|null} bboxes
- * @property {(uuid:string) => BBoxInfo|undefined} getBbox
+ * @property {(uuid:string) => Group|undefined} getBboxGroup
  * @property {(tool:string) => void} setTool
  * @property {(uuid:string) => void} setClassUuid
- * @property {(uuid:string) => void} setTagUuid
  * @property {(name:string, img:any, bboxes:Map<string,BBoxInfo>) => void} setImage
- * @property {(uuid:string, bboxInfo:BBoxInfo|null) => void} setBbox
+ * @property {(uuid:string, group:Group|null) => void} setBboxGroup
  * @property {(bboxUuid:string) => void} setSelectedBboxUuid
  * @property {(t:Transformer) => void} setTransformer
  * @property {() => void} clearBboxes
@@ -72,7 +70,6 @@ export const state = {
   // Current tool + selection
   currentTool: 'select',
   currentClassUuid: null,
-  currentTagUuid: null,
   selectedBoxUuid: null,
 
   // Current image context
@@ -86,10 +83,8 @@ export const state = {
   get selectedTool() { return this.currentTool; },
   get selectedBboxUuid() { return this.selectedBoxUuid; },
   get classUuid() { return this.currentClassUuid; },
-  get tagUuid() { return this.currentTagUuid; },
-  get bboxes() { return this.image.bboxes; },
 
-  getBbox(uuid) {
+  getBboxGroup(uuid) {
     return this.canvas.bboxes?.get(uuid);
   },
   // --- Setters ---
@@ -101,17 +96,16 @@ export const state = {
   },
 
   setClassUuid(uuid) { this.currentClassUuid = uuid; },
-  setTagUuid(uuid) { this.currentTagUuid = uuid; },
   setImage(name, img, bboxes) {
     this.image.name = name;
     this.image.data = img;
     this.image.bboxes = bboxes;
   },
-  setBbox(uuid, bboxInfo) {
-    if (bboxInfo == null) {
+  setBboxGroup(uuid, group) {
+    if (group == null) {
       this.canvas.bboxes?.delete(uuid);
     } else {
-      this.canvas.bboxes?.set(uuid, bboxInfo);
+      this.canvas.bboxes?.set(uuid, group);
     }
   },
   setSelectedBboxUuid(bboxUuid) { this.selectedBoxUuid = bboxUuid; },

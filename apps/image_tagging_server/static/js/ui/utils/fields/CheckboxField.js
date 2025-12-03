@@ -1,6 +1,20 @@
 import { Field } from './Field.js';
 
 export class CheckboxField extends Field {
+  constructor(params = {}) {
+    super(params);
+    // Generate a key: value map from options
+    this._optionsMap = new Map();
+    this._options.forEach(opt => {
+      if (typeof opt === 'string') {
+        this._optionsMap.set(opt, opt);
+      } else if (typeof opt === 'object') {
+        this._optionsMap.set(opt.key, opt);
+      }
+    });
+  }
+
+
   async renderEdit() {
     const container = document.createElement('div');
     this._value = Array.isArray(this._value) ? this._value : [];
@@ -57,15 +71,7 @@ export class CheckboxField extends Field {
 
     if (this._value?.length) {
       span.innerHTML = this._value
-        .map(v => {
-          if (typeof v === 'string') {
-            return v;
-          } else {
-            const colored = v.color ? `<span style="color:${v.color}">${v.text}</span>` : v.text;
-            return colored;
-          }
-        })
-        .join(', ');
+        .map(v => { return this._getOptionText(v); }).join(', ');
     } else {
       span.textContent = '(none)';
     }
@@ -73,7 +79,18 @@ export class CheckboxField extends Field {
     return span;
   }
 
+  _getOptionText(optionKey) {
+    let retText = null;
+    if (optionKey && typeof optionKey === 'object') {
+      retText = optionKey.text;
+    }
+    if( retText == null && typeof optionKey === 'string') {
+      retText = this._optionsMap.get(optionKey)?.text;
+    }
+    return retText ?? optionKey
+  }
+
   getValue() {
-    return { options: this._value || [] };
+    return (this._value || []).map(v => typeof v === 'string' ? v : v.key);
   }
 }

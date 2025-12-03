@@ -8,19 +8,6 @@ import { createGenericRow, createNewTag, deleteTag, fetchTags, toast, updateTag 
 const DEFAULT_COLOR = '#cccccc';
 
 /**
- * Highlights a tag visually in the list
- * @param {string|null} selectedUuid
- */
-function highlightSelectedTag(selectedUuid = null) {
-  const currentTool = getTool();
-  const selected = selectedUuid ?? (currentTool.startsWith('bbox:') ? currentTool.split(':')[1] : null);
-
-  document.querySelectorAll('#tags-tool-list .tag-row').forEach(row => {
-    row.style.outline = row.dataset.uuid === selected ? '2px solid #ff0033' : '';
-  });
-}
-
-/**
  * Returns button handlers for a tag
  * @param {Object} options
  * @param {Object} options.label - label metadata
@@ -94,7 +81,6 @@ function renderTag(tag, container, editable, onSelectCallback, rerenderCallback)
     tagRow.style.cursor = 'pointer';
     tagRow.onclick = () => {
       onSelectCallback(uuid);
-      highlightSelectedTag(uuid);
     };
   }
 
@@ -176,10 +162,6 @@ export function renderTagList({ target = 'tags-list', editable = true, onSelectC
 
         container.appendChild(newRootRow);
       }
-
-      // Highlight selected tag if exists
-      const selectedTagUuid = state.tagUuid;
-      if (selectedTagUuid) highlightSelectedTag(selectedTagUuid);
     });
   } catch (err) {
     console.error('Failed to fetch tags:', err);

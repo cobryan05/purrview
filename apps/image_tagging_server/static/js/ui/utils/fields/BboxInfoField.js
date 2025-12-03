@@ -21,20 +21,20 @@ export class BboxInfoField extends Field {
     instance._metadata = bbox.metadata;
 
     const schema = {
-      "class_name": {
+      "classUuid": {
         "label": "Class",
         "type": "class",
         "required": true,
         "description": "Class of selected bbox",
       },
-      "tags": {
+      "tagUuids": {
         "label": "Tags",
         "type": "tags",
         "description": "Tag applied to the bbox"
       }
     };
 
-    const schema_values = { class_name: instance._metadata.classUuid };
+    const schema_values = { classUuid: instance._metadata.classUuid, tagUuids: instance._metadata.tagUuids };
     instance._schemaField = await SchemaField.create({ schema: schema ?? {}, values: schema_values });
     return instance;
   }
@@ -54,6 +54,6 @@ export class BboxInfoField extends Field {
   }
 
   getValue() {
-    return this._schemaField.getValue();
+    return { bbox_info:this._schemaField.getValue()};
   }
 }

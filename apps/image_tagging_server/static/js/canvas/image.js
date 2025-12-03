@@ -1,4 +1,4 @@
-import { createBoundingBox } from './drawing.js';
+import { createBboxGroup, updateBoundingBox } from './drawing.js';
 import { state } from './state.js'
 import { Logger, fetchImage, generateUUID } from '/app-static/js/ui/utils/index.js';
 
@@ -14,55 +14,46 @@ export async function reloadImage() {
 export async function loadImageAndMetadata(imageName) {
   Logger.debug('loadImageAndMetadata called with imageName:', imageName);
 
+  clearAnnotations();
   const { image: img, bboxes } = await fetchImage(imageName);
   state.setImage(imageName, img, bboxes);
+
+  // Initialize bounding boxes from the image
+  if (state.image.bboxes) {
+    for (const [uuid, box] of state.image.bboxes.entries()) {
+      const absX = box.x * img.width;
+      const absY = box.y * img.height;
+      const absWidth = box.width * img.width;
+      const absHeight = box.height * img.height;
+
+      const group = createBboxGroup(absX, absY, {
+        width: absWidth,
+        height: absHeight,
+        metadata: {
+          uuid: box.uuid,
+          classUuid: box.class_uuid,
+          tagUuids: box.tagUuids?.map(l => l.uuid) ?? [],
+          extra: box.extra ?? {}
+        }
+      });
+      group.name('annotation');
+      state.setBboxGroup(box.uuid, group);
+    }
+  }
   await refreshCanvas();
+  _recenterImage();
 }
 
-
-export async function refreshCanvas() {
-  clearAnnotations();
-
-  const layer = state.canvas.layer;
-  const bg = new Konva.Image({
-    image: state.image.data,
-    x: 0,
-    y: 0,
-    width: state.image.data.width,
-    height: state.image.data.height,
-    listening: false,
-    name: 'background',
-  });
-  layer.add(bg);
-  layer.moveToBottom();
-
-  // Create canvas.bboxes from the image.bboxes
-  const img = state.image.data;
-  for (const box of state.image.bboxes) {
-    const absX = box.x * img.width;
-    const absY = box.y * img.height;
-    const absWidth = box.width * img.width;
-    const absHeight = box.height * img.height;
-
-    const shape = createBoundingBox(absX, absY, {
-      width: absWidth,
-      height: absHeight,
-      metadata: {
-        uuid: box.uuid,
-        classUuid: box.class_uuid,
-        tags: box.tags?.map(l => l.uuid) ?? [],
-        extra: box.extra ?? {}
-      }
-    });
-
-    shape.name('annotation');
-    layer.add(shape);
-  }
-
+function _recenterImage() {
   // === Zoom to fit the image with padding ===
   const stage = state.canvas.stage;
-  const container = stage.container();
+  const container = stage?.container();
+  const img = state.image.data;
   const padding = 20;
+
+  if (!img || !stage || !container) {
+    return;
+  }
 
   const scaleX = (container.clientWidth - padding * 2) / img.width;
   const scaleY = (container.clientHeight - padding * 2) / img.height;
@@ -78,6 +69,30 @@ export async function refreshCanvas() {
   stage.scale({ x: scale, y: scale });
   stage.position({ x: offsetX, y: offsetY });
   stage.batchDraw();
+}
+
+export async function refreshCanvas() {
+  const layer = state.canvas.layer;
+  layer?.clear();
+
+  const bg = new Konva.Image({
+    image: state.image.data,
+    x: 0,
+    y: 0,
+    width: state.image.data.width,
+    height: state.image.data.height,
+    listening: false,
+    name: 'background',
+  });
+  layer.add(bg);
+  bg.moveToBottom();
+
+  // Create canvas.bboxes from the image.bboxes
+  const img = state.image.data;
+  for (const [key, group] of state.canvas.bboxes) {
+    updateBoundingBox(group);
+    layer.add(group);
+  }
 
   layer.draw();
   Logger.notify(`Loaded image and metadata for ${state.image.name}`);
@@ -107,7 +122,7 @@ export async function saveAnnotations() {
   try {
     const boxes = Array.from(state.canvas.bboxes.values()).map(group => {
       const rect = group.metadata.rect;
-      const uuid =  group.metadata.uuid ?? generateUUID();
+      const uuid = group.metadata.uuid ?? generateUUID();
       const bbox_uuid = group.metadata.uuid ?? generateUUID();
       const bbox_class_uuid = group.metadata.classUuid ?? null;
 
@@ -215,7 +230,7 @@ export function addRecognizedBoxes(results) {
     const width = w_norm * imageWidth;
     const height = h_norm * imageHeight;
 
-    const shape = createBoundingBox(x, y, {
+    const group = createBboxGroup(x, y, {
       width,
       height,
       metadata: {
@@ -225,8 +240,8 @@ export function addRecognizedBoxes(results) {
       },
     });
 
-    shape.name('annotation');
-    layer.add(shape);
+    group.name('annotation');
+    state.setBboxGroup(obj.uuid, group);
   });
 
   layer.draw();

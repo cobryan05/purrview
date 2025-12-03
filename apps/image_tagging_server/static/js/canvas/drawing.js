@@ -7,7 +7,7 @@ import { generateUUID, fetchClassByUuid } from '/app-static/js/ui/utils/index.js
  * and set up all relevant event handlers here.
  */
 
-export function createBoundingBox(x, y, props = {}) {
+export function createBboxGroup(x, y, props = {}) {
   const width = props.width ?? 50;
   const height = props.height ?? 50;
   const classUuid = props.metadata?.classUuid ?? '';
@@ -43,8 +43,6 @@ export function createBoundingBox(x, y, props = {}) {
     y: -18,
     x: 0,
   });
-
-  state.setBbox(uuid, group);
 
   group.metadata = {
     class: null, // will be filled in once async fetch completes

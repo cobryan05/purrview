@@ -1,4 +1,4 @@
-import { createBoundingBox, updateBoundingBox } from './drawing.js';
+import { createBboxGroup, updateBoundingBox } from './drawing.js';
 import { state } from './state.js'
 import { clearSelection, selectBboxTool, setTool, selectBbox } from './tools.js';
 
@@ -73,10 +73,12 @@ export async function handleMouseDown(e) {
 
   startPos = pos;
   const currentClassUuid = state.currentClassUuid;
-  pendingDraggedBbox = createBoundingBox(
+  pendingDraggedBbox = createBboxGroup(
     pos.x, pos.y, { width: 1, height: 1, metadata: { classUuid: currentClassUuid } });
   if (pendingDraggedBbox) {
     layer.add(pendingDraggedBbox);
+    pendingDraggedBbox.name('annotation');
+    state.setBboxGroup(pendingDraggedBbox.metadata.uuid, pendingDraggedBbox);
   }
 }
 
@@ -242,31 +244,6 @@ export function selectShape(group, highlight_shape = null) {
 
   transformer.nodes([shape]);
   transformer.moveToTop();
-
-  // // Update metadata UI
-  // const classInput = document.getElementById('classInput');
-  // const tagsInput = document.getElementById('tagsInput');
-
-  // const metadata = group.metadata ?? {};
-  // classInput.value = metadata.class ?? '';
-  // tagsInput.value = (metadata.tags ?? []).join(', ');
-
-  // classInput.oninput = () => {
-  //   metadata.class = classInput.value;
-  //   metadata.classUuid = null;
-  //   group.metadata = metadata;
-  //   const classNode = group.findOne('.class');
-  //   if (classNode) {
-  //     const conf = metadata.confidence;
-  //     classNode.text(`${metadata.class}${conf != null ? ` (${(conf * 100).toFixed(1)}%)` : ''}`);
-  //     layer.batchDraw();
-  //   }
-  // };
-
-  // tagsInput.oninput = () => {
-  //   metadata.tags = tagsInput.value.split(',').map(s => s.trim()).filter(Boolean);
-  //   group.metadata = metadata;
-  // };
 }
 
 export function findGroupAtPoint(pos) {
