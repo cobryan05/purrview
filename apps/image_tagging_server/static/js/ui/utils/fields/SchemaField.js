@@ -33,6 +33,22 @@ export class SchemaField extends Field {
    * @returns {HTMLElement} The form container.
    */
   async renderEdit() {
+    return this._renderFieldsWith((field) => field.renderEdit());
+  }
+
+  /**
+   * Renders the form in view mode (read-only).
+   * @returns {HTMLElement} The form container.
+   */
+  async renderView() {
+    return this._renderFieldsWith((field) => field.renderView());
+  }
+
+  /**
+ * Renders the form children using the callback for each item
+ * @returns {HTMLElement} The form container.
+ */
+  async _renderFieldsWith(fieldRenderCallback) {
     const container = document.createElement('div');
     container.style.display = 'flex';
     container.style.flexDirection = 'column';
@@ -40,6 +56,7 @@ export class SchemaField extends Field {
 
     const order = this._schema.meta?.order;
     let fieldEntries;
+
     if (order && Array.isArray(order)) {
       const orderedFields = order
         .filter((field) => field in this._fields)
@@ -63,41 +80,11 @@ export class SchemaField extends Field {
       label.textContent = this._schema[fieldName].label || fieldName;
       label.style.fontWeight = 'bold';
       fieldContainer.appendChild(label);
-      fieldContainer.appendChild(await fieldInstance.renderEdit());
+
+      const node = await fieldRenderCallback(fieldInstance);
+      fieldContainer.appendChild(node);
       container.appendChild(fieldContainer);
     }
-
-    return container;
-  }
-
-  /**
-   * Renders the form in view mode (read-only).
-   * @returns {HTMLElement} The form container.
-   */
-  async renderView() {
-    const container = document.createElement('div');
-    container.style.display = 'flex';
-    container.style.flexDirection = 'column';
-    container.style.gap = '0.5em';
-
-    Object.entries(this._schema).forEach(([fieldName, fieldMeta]) => {
-      const fieldContainer = document.createElement('div');
-      fieldContainer.style.display = 'flex';
-      fieldContainer.style.flexDirection = 'column';
-
-      // Label
-      const label = document.createElement('label');
-      label.textContent = fieldMeta.label || fieldName;
-      label.style.fontWeight = 'bold';
-      fieldContainer.appendChild(label);
-
-      // Value
-      const value = document.createElement('span');
-      value.textContent = this._init_values[fieldName] || '(none)';
-      fieldContainer.appendChild(value);
-
-      container.appendChild(fieldContainer);
-    });
 
     return container;
   }

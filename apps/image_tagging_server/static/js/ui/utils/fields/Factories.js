@@ -7,7 +7,10 @@ import { ImageProviderSelectField } from './ImageProviderSelectField.js';
 import { BooleanCheckboxField } from './BooleanField.js';
 import { TextField } from './TextField.js'
 import { ModelLabelSelectField } from './ModelLabelSelectField.js';
-
+import { CheckboxField } from './CheckboxField.js';
+import { DropDownField } from './DropDownField.js';
+import { fetchTags } from '../tagsApi.js';
+import { fetchClasses } from '../classesApi.js';
 // Factory map
 export const fieldFactories = {
   async array(fieldName, fieldMeta, values, onChange) {
@@ -66,6 +69,26 @@ export const fieldFactories = {
       onChange: (val) => {
         onChange?.(!!val);
       }
+    });
+  },
+
+  async class(fieldName, fieldMeta, values, onChange) {
+    const { ...rest } = fieldMeta;
+
+    const classList = await fetchClasses();
+    const classOptions = Array.from(classList.values()).map(cls => ({
+      key: cls.metadata.uuid,
+      text: cls.metadata.name,
+      color: cls.metadata.color || '#cccccc'
+    }))
+
+    return await new DropDownField({
+      value: values[fieldName],
+      onChange: (val) => {
+        onChange?.(val);
+      },
+      options: classOptions,
+      ...rest
     });
   },
 
@@ -142,6 +165,27 @@ export const fieldFactories = {
       onChange: (val) => {
         onChange?.(val);
       }
+    });
+  },
+
+  async tags(fieldName, fieldMeta, values, onChange) {
+    const { ...rest } = fieldMeta;
+
+    const tags = await fetchTags();
+
+    const tagOptions =  Array.from(tags.values()).map(tag => ({
+      key: tag.uuid,
+      text: tag.name,
+      color: tag.color || '#cccccc'
+    }));
+
+    return await new CheckboxField({
+      value: values[fieldName],
+      onChange: (val) => {
+        onChange?.(val);
+      },
+      options: tagOptions,
+      ...rest
     });
   },
 };

@@ -65,7 +65,7 @@ export function renderBboxInspector({ bboxUuid = null, target = 'tab-pane-inspec
             Logger.warn(val);
           },
           onCancel: () => {
-            renderBboxInspector();
+            Logger.warn(val);
           }
         }),
       });
