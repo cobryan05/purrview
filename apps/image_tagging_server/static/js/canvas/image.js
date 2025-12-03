@@ -1,7 +1,6 @@
 import { createBoundingBox } from './drawing.js';
 import { state } from './state.js'
-import { Logger, fetchImage } from '/app-static/js/ui/utils/index.js';
-import { generateUUID } from './utils.js';
+import { Logger, fetchImage, generateUUID } from '/app-static/js/ui/utils/index.js';
 
 export async function reloadImage() {
   const imageName = state.image.name;

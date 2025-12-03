@@ -1,6 +1,5 @@
 import { state } from './state.js';
-import { generateUUID } from './utils.js';
-import { fetchClassByUuid } from '/app-static/js/ui/utils/index.js';
+import { generateUUID, fetchClassByUuid } from '/app-static/js/ui/utils/index.js';
 
 
 /**
