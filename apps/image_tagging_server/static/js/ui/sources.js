@@ -132,7 +132,7 @@ export function renderSourceManager({ target = 'sources-box' }) {
     onClick: async ({ field }) => {
       const { source_name, provider, provider_params } = field.getValue();
       try {
-        await createSource({ name: source_name, provider, params: provider_params });
+        await createSource({ name: source_name, provider, provider_params });
         await refresh();
 
         // Replace the row with a fresh blank one

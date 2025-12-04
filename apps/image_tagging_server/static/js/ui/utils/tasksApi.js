@@ -143,11 +143,11 @@ export async function updateTaskConfig(config) {
  * TASK RESULTS
  * -----------------------------
  */
-async function fetchTaskResultFromServer(taskId) {
+async function fetchTaskResultFromServer(taskIds) {
   const res = await fetch('/api/tasks/instances/result', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ task_ids: [taskId] }),
+    body: JSON.stringify({ task_ids: taskIds }),
   });
 
   if (!res.ok) {
@@ -156,7 +156,8 @@ async function fetchTaskResultFromServer(taskId) {
   }
 
   const { results } = await res.json();
-  return results[taskId];
+  const resultsMap = new Map(Object.entries(results).map(([key, value]) => [Number(key), value]))
+  return resultsMap;
 }
 
 const taskResultFetcher = createCachedFetcher(fetchTaskResultFromServer);
