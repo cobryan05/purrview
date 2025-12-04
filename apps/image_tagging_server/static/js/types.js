@@ -51,6 +51,7 @@
  * @property {(tool:string) => void} setTool
  * @property {(uuid:string) => void} setClassUuid
  * @property {(name:string, img:any, bboxes:Map<string,BBoxInfo>) => void} setImage
+ * @property {(group:Group) => void} removeBboxGroup
  * @property {(group:Group) => void} updateBboxGroup
  * @property {(bboxUuid:string) => void} setSelectedBboxUuid
  * @property {(t:Transformer) => void} setTransformer
@@ -59,4 +60,4 @@
  * @property {(container:HTMLElement) => void} initStage
  */
 
-export {};
+export { };

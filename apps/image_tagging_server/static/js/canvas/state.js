@@ -51,6 +51,9 @@ export const state = {
     this.image.data = img;
     this.image.bboxes = bboxes;
   },
+  removeBboxGroup(group) {
+    this.canvas.bboxes?.delete(group.metadata.uuid);
+  },
   updateBboxGroup(group) {
     this.canvas.bboxes?.set(group.metadata.uuid, group);
   },

@@ -125,11 +125,16 @@ export async function saveAnnotations() {
   }
 
   try {
+
+    let emptyClassCnt = 0;
     const boxes = Array.from(state.canvas.bboxes.values()).map(group => {
+      const bbox_class_uuid = group.metadata.classUuid ?? null;
+      if (!bbox_class_uuid) {
+        return null;
+      }
       const rect = group.metadata.rect;
       const uuid = group.metadata.uuid ?? generateUUID();
       const bbox_uuid = group.metadata.uuid ?? generateUUID();
-      const bbox_class_uuid = group.metadata.classUuid ?? null;
 
       return {
         uuid: bbox_uuid,
@@ -140,6 +145,12 @@ export async function saveAnnotations() {
         height: rect.height() / state.image.data.height,
         extra: group.metadata.extra || {}  // Arbitrary key-value pairs
       };
+    }).filter(box => {
+      if (box === null) {
+        emptyClassCnt++;
+        return false;
+      }
+      return true;
     });
 
     const payload = {
@@ -155,7 +166,10 @@ export async function saveAnnotations() {
     });
 
     if (!res.ok) throw new Error(`Save failed with status ${res.status}`);
-    Logger.notify(`Annotations saved successfully for image ${state.imageName}`);
+    Logger.notify(`Annotations saved successfully for image ${state.image.name}`);
+    if (emptyClassCnt > 0) {
+      Logger.error(`${emptyClassCnt} bounding boxes have no class assigned and were not saved.`);
+    }
   } catch (err) {
     Logger.error('Failed to save annotations:', err);
   }
@@ -178,6 +192,7 @@ export function deleteSelected() {
   }
 
   if (group && group.name() === 'annotation') {
+    state.removeBboxGroup(group);
     group.destroy();
   } else {
     node.destroy(); // fallback
