@@ -2,59 +2,9 @@
 import { Logger } from '/app-static/js/ui/utils/index.js';
 
 /**
- * @typedef {import('@konva').default.Stage} Stage
- * @typedef {import('@konva').default.Layer} Layer
- * @typedef {import('@konva').default.Transformer} Transformer
- * @typedef {import('@konva').default.Group} Group
+ * @typedef {import('../types').State} State
  */
 
-
-/**
- * @typedef {Object} BBoxInfo
- * @property {number} x
- * @property {number} y
- * @property {number} width
- * @property {number} height
- * @property {string} [classUuid]
- * @property {string[]} [tagUuids]
- */
-
-/**
- * @typedef {Object} ImageState
- * @property {string|null} name
- * @property {HTMLImageElement|ImageBitmap|null} data
- * @property {Map<string,BBoxInfo>|null} bboxes
- */
-
-/**
- * @typedef {Object} CanvasState
- * @property {Stage|null} stage
- * @property {Layer|null} layer
- * @property {Transformer|null} transformer
- * @property {Map<string,Group>|null} bboxes
- */
-
-/**
- * @typedef {Object} State
- * @property {CanvasState} canvas
- * @property {string} currentTool
- * @property {string|null} currentClassUuid
- * @property {string|null} selectedBoxUuid
- * @property {ImageState} image
- * @property {string} selectedTool
- * @property {string|null} selectedBboxUuid
- * @property {string|null} classUuid
- * @property {(uuid:string) => Group|undefined} getBboxGroup
- * @property {(tool:string) => void} setTool
- * @property {(uuid:string) => void} setClassUuid
- * @property {(name:string, img:any, bboxes:Map<string,BBoxInfo>) => void} setImage
- * @property {(uuid:string, group:Group|null) => void} setBboxGroup
- * @property {(bboxUuid:string) => void} setSelectedBboxUuid
- * @property {(t:Transformer) => void} setTransformer
- * @property {() => void} clearBboxes
- * @property {() => void} clearSelection
- * @property {(container:HTMLElement) => void} initStage
- */
 
 /** @type {State} */
 export const state = {
@@ -101,12 +51,8 @@ export const state = {
     this.image.data = img;
     this.image.bboxes = bboxes;
   },
-  setBboxGroup(uuid, group) {
-    if (group == null) {
-      this.canvas.bboxes?.delete(uuid);
-    } else {
-      this.canvas.bboxes?.set(uuid, group);
-    }
+  updateBboxGroup(group) {
+    this.canvas.bboxes?.set(group.metadata.uuid, group);
   },
   setSelectedBboxUuid(bboxUuid) { this.selectedBoxUuid = bboxUuid; },
   setTransformer(t) { this.canvas.transformer = t; },

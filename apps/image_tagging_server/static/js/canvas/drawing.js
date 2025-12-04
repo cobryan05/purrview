@@ -14,8 +14,9 @@ export function createBboxGroup(x, y, props = {}) {
   const confidence = props.metadata?.confidence ?? null;
   const uuid = props.metadata?.uuid ?? generateUUID();
 
+  // TODO: Fix this up, why are two places setting the text
   // Initial placeholder values
-  let classText = props.metadata?.class ?? 'Unknown';
+  let labelText = props.metadata?.text ?? 'Unknown';
   let color = 'grey';
 
   const group = new Konva.Group({
@@ -33,7 +34,7 @@ export function createBboxGroup(x, y, props = {}) {
     strokeWidth: 2,
   });
 
-  const bboxText = `${classText}${confidence != null ? ` (${(confidence * 100).toFixed(1)}%)` : ''}`;
+  const bboxText = `${labelText}${confidence != null ? ` (${(confidence * 100).toFixed(1)}%)` : ''}`;
 
   const text = new Konva.Text({
     name: 'class',
@@ -111,40 +112,41 @@ export function createBboxGroup(x, y, props = {}) {
  * Update an existing bounding box with new metadata, such as class or color.
  */
 export function updateBoundingBox(group, props = {}) {
-  const rect = group.findOne('.box');
-  const text = group.findOne('.class');
-  if (!rect || !text) return;
+  const rectRef = group.findOne('.box');
+  const textRef = group.findOne('.class');
+  if (!rectRef || !textRef) return;
 
   const oldMetadata = group.metadata ?? {};
   const newMetadata = { ...oldMetadata, ...props.metadata };
 
-  const classUuid = newMetadata.classUuid ?? '';
+  const classUuid = newMetadata.classUuid ?? null;
   const confidence = newMetadata.confidence;
+  const text = newMetadata.text;
 
   // Kick off async class resolution
-  fetchClassByUuid(classUuid)
-    .then(cls => {
-      const color = cls?.metadata?.color ?? 'red';
-      const classText = (cls?.metadata?.name ?? props.metadata?.class) ?? 'Unknown';
+  (classUuid
+    ? fetchClassByUuid(classUuid)
+    : Promise.resolve(null)
+  ).then(cls => {
+    let bboxText;
+    const classText = (cls?.metadata?.name ?? props.metadata?.class) ?? props.metadata?.text ?? text ?? 'Unknown';
+    const color = cls?.metadata?.color ?? 'grey';
+    bboxText = `${classText}${confidence != null ? ` (${(confidence * 100).toFixed(1)}%)` : ''}`;
 
-      // Update metadata
-      group.metadata = {
-        ...newMetadata,
-        class: cls,
-        confidence,
-      };
+    // Update metadata
+    group.metadata = {
+      ...newMetadata,
+      class: cls,
+      confidence,
+    };
 
-      // Update class text
-      const bboxText = `${classText}${confidence != null ? ` (${(confidence * 100).toFixed(1)}%)` : ''}`;
-      text.text(bboxText);
-      text.fill(color);
+    textRef.text(bboxText);
+    textRef.fill(color);
+    rectRef.stroke(color);
 
-      // Update stroke color
-      rect.stroke(color);
-
-      applyBoundingBoxLayout(group);
-      state.canvas.layer.batchDraw();
-    })
+    applyBoundingBoxLayout(group);
+    state.canvas.layer?.batchDraw();
+  })
     .catch(err => {
       console.error('Failed to fetch class:', err);
       // optionally fallback

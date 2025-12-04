@@ -8,7 +8,8 @@ import { renderTagList } from '/app-static/js/ui/tags.js';
 import { renderModelClassAssignments } from '/app-static/js/ui/models.js';
 import { renderSourceManager } from '/app-static/js/ui/sources.js';
 import { renderActiveTasks, renderTaskConfigs } from '/app-static/js/ui/tasks.js';
-import { Logger, clearModelsCache, fetchImageList, fetchModelsList, toast } from '/app-static/js/ui/utils/index.js';
+import { Logger, clearModelsCache, fetchImageList, fetchModelsList, toast, runInference } from '/app-static/js/ui/utils/index.js';
+
 // --- Model list UI ---
 
 /**
@@ -66,49 +67,14 @@ export async function recognizeImage() {
     }
 
     const modelName = selected.value;
-
     const layer = state.canvas.layer;
     const background = layer.findOne('.background');
     if (!background || !background.image()) {
       throw new Error('No background image found on canvas');
     }
     const img = background.image();
-    if (!img.src.startsWith("data:")) {
-      throw new Error("Image is not a base64 data URI");
-    }
-    const base64String = img.src.split(',')[1]; // strip "data:image/png;base64,"
-
-    // Prepare JSON payload
-    const payload = {
-      model_name: modelName,
-      conf_thresh: 0.25,
-      return_annotated: false,
-      pin_id: null, // optional
-      image_base64: base64String,
-    };
-
-    toast("Sending recognition request...");
-    // Send recognition request
-    const response = await fetch('/api/recognize', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(payload),
-    });
-
-    if (!response.ok) {
-      throw new Error(`Recognition request failed: ${response.statusText}`);
-    }
-
-    const result = await response.json();
-    Logger.debug('Recognize response:', result);
-
-    if (result.status != 'success') {
-      throw new Error(`Recognition failed: ${result.message}`);
-    }
-    toast(`${result.detections.length} objects detected`);
-    addRecognizedBoxes(result.detections);
+    const result = await runInference(modelName, img);
+    await addRecognizedBoxes(result.detections, img);
   } catch (err) {
     Logger.error('Failed to recognize image:', err);
   }

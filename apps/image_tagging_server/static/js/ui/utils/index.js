@@ -3,6 +3,7 @@ export * from './createButton.js';
 export * from './createCachedFetcher.js';
 export * from './createGenericRow.js';
 export * from './imagesApi.js';
+export * from './inferenceApi.js';
 export * from './logging.js';
 export * from './modelsApi.js';
 export * from './runPreviewSourceTask.js';

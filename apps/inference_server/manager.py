@@ -247,8 +247,11 @@ class Manager:
                 inference_result.annotated_image = annotate_image(image, inference_result.detections)
 
             if len(inference_result.detections) > 0:
-                class_uuid_map = await self.get_model_classes(model_name)
+                class_uuid_maps = await self.get_models_classes([model_name])
+                class_uuid_map = class_uuid_maps.get(model_name, {})
                 for det in inference_result.detections:
+                    if not det.class_name:
+                        continue
                     det.class_uuid = class_uuid_map.get(det.class_name, det.class_uuid)
 
             if pin_id in model.pins:

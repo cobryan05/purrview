@@ -73,7 +73,7 @@ export function renderBboxInspector({ bboxUuid = null, target = 'tab-pane-inspec
               classUuid: val.bbox_info.classUuid,
               tagUuids: val.bbox_info.tagUuids || [],
             };
-            state.setBboxGroup(bboxUuid, group);
+            state.updateBboxGroup(group);
             refreshCanvas();
           },
           onCancel: () => {

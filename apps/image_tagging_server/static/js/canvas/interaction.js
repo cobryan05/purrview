@@ -78,7 +78,7 @@ export async function handleMouseDown(e) {
   if (pendingDraggedBbox) {
     layer.add(pendingDraggedBbox);
     pendingDraggedBbox.name('annotation');
-    state.setBboxGroup(pendingDraggedBbox.metadata.uuid, pendingDraggedBbox);
+    state.updateBboxGroup(pendingDraggedBbox);
   }
 }
 

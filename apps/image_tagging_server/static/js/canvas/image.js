@@ -2,6 +2,11 @@ import { createBboxGroup, updateBoundingBox } from './drawing.js';
 import { state } from './state.js'
 import { Logger, fetchImage, generateUUID } from '/app-static/js/ui/utils/index.js';
 
+/**
+ * @typedef {import('../types.js').BBoxInfo} BBoxInfo
+ */
+
+
 export async function reloadImage() {
   const imageName = state.image.name;
   if (!imageName) {
@@ -37,11 +42,12 @@ export async function loadImageAndMetadata(imageName) {
         }
       });
       group.name('annotation');
-      state.setBboxGroup(box.uuid, group);
+      state.updateBboxGroup(group);
     }
   }
   await refreshCanvas();
   _recenterImage();
+  Logger.notify(`Loaded image and metadata for ${state.image.name}`);
 }
 
 function _recenterImage() {
@@ -95,7 +101,6 @@ export async function refreshCanvas() {
   }
 
   layer.draw();
-  Logger.notify(`Loaded image and metadata for ${state.image.name}`);
 }
 
 
@@ -208,41 +213,32 @@ export function exportAnnotations() {
   }
 }
 
-export function addRecognizedBoxes(results) {
-  const layer = state.canvas.layer;
-  const stage = state.canvas.stage;
-
-  const bg = layer.findOne(
-    node => node.name() === 'background' && node instanceof Konva.Image);
-  if (!bg) {
-    Logger.error('No background image found!');
-    return;
-  }
-
-  const imageWidth = bg.width();
-  const imageHeight = bg.height();
+/**
+ * @param {BBoxInfo[]} results
+ * @param {HTMLImageElement} image - base64 image element to run inference on.
+ */
+export async function addRecognizedBoxes(results, image) {
+  const imageWidth = image.width;
+  const imageHeight = image.height;
 
   results.forEach(obj => {
-    const [x_norm, y_norm, w_norm, h_norm] = obj.bounding_box;
-
-    const x = x_norm * imageWidth;
-    const y = y_norm * imageHeight;
-    const width = w_norm * imageWidth;
-    const height = h_norm * imageHeight;
+    const x = obj.x * imageWidth;
+    const y = obj.y * imageHeight;
+    const width = obj.width * imageWidth;
+    const height = obj.height * imageHeight;
 
     const group = createBboxGroup(x, y, {
       width,
       height,
       metadata: {
-        label: obj.class_name,
+        text: obj.text,
         confidence: obj.confidence,
-        classUuid: obj.class_uuid,
+        classUuid: obj.classUuid,
       },
     });
 
     group.name('annotation');
-    state.setBboxGroup(obj.uuid, group);
-  });
-
-  layer.draw();
+    state.updateBboxGroup(group);
+  })
+  await refreshCanvas();
 }
