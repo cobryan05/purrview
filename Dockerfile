@@ -60,8 +60,9 @@ COPY templates ./templates
 COPY static ./static
 COPY apps ./apps
 
-# Generates python clients for internal apps
-RUN apps/generate_openapi_modules.sh
+# Generates python and js clients for internal apps
+COPY generate_openapi_modules.sh ./
+RUN ./generate_openapi_modules.sh ./openapi_jsons
 
 # Create non-root user
 ARG APPUSER_UID=1001
