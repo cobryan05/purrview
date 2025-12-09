@@ -49,11 +49,6 @@ RUN curl -L -o /openapi.yaml \
   && pip install --no-cache-dir /tmp/openapi-client \
   && rm -rf /tmp/openapi-client
 
-# Dependencies for CV2 to display images over X11
-RUN apt-get update \
-  && apt-get install -y --no-install-recommends libgl1 libxext6 libxrender1 libsm6 libx11-6 \
-  && rm -rf /var/lib/apt/lists/*
-
 # Copy required files
 COPY conf /conf
 COPY templates ./templates
@@ -78,3 +73,18 @@ USER appuser
 EXPOSE 1935 8000 8001 8002 8003 8004 8554 9001 9997
 
 CMD ["/usr/bin/supervisord", "-c", "/conf/supervisord.conf"]
+
+
+# -------------------------
+#   Dev-extra layer only
+# -------------------------
+FROM base AS dev
+
+USER root
+
+# Development dependencies (CV2 over X11, git)
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends libgl1 libxext6 libxrender1 libsm6 libx11-6 git \
+  && rm -rf /var/lib/apt/lists/*
+
+USER appuser

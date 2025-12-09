@@ -4,6 +4,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      target: ${BUILD_TARGET:-base}
     deploy:
       resources:
         reservations:
@@ -22,6 +23,9 @@ services:
       - ./apps:/app/apps
       - ./templates:/app/templates
       - ./static/images:/app/static/images
+
+      - ./.git:/app/.git
+      - ./.gitignore:/app/.gitignore
       - ./.vscode_container:/app/.vscode
       - ./requirements.txt:/app/requirements.txt
       - ./pyproject.toml:/app/pyproject.toml
