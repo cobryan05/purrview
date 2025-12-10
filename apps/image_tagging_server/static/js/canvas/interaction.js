@@ -1,4 +1,4 @@
-import { createBboxGroup, updateBoundingBox } from './drawing.js';
+import { createGroupFromBbox, updateGroupMetadata } from './drawing.js';
 import { state } from './state.js'
 import { clearSelection, selectBboxTool, setTool, selectBbox } from './tools.js';
 
@@ -73,7 +73,7 @@ export async function handleMouseDown(e) {
 
   startPos = pos;
   const currentClassUuid = state.currentClassUuid;
-  pendingDraggedBbox = createBboxGroup(
+  pendingDraggedBbox = createGroupFromBbox(
     pos.x, pos.y, { width: 1, height: 1, metadata: { classUuid: currentClassUuid } });
   if (pendingDraggedBbox) {
     layer.add(pendingDraggedBbox);
@@ -174,9 +174,9 @@ export async function handleMouseUp(e) {
     if (isDoubleClick) {
       if (!isSelectTool) {
         const currentClassUuid = state.currentClassUuid;
-        updateBoundingBox(hitGroup, { metadata: { classUuid: currentClassUuid } });
+        updateGroupMetadata(hitGroup, { classUuid: currentClassUuid });
       } else {
-        selectBbox(hitGroup.metadata.uuid);
+        selectBbox(hitGroup.getAttr('metadata').uuid);
       }
     } else {
       const box = hitGroup.findOne('.box');

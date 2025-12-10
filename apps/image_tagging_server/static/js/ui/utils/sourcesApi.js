@@ -22,8 +22,8 @@ export const imageProviderFetcher = createCachedFetcher(async (keys) => {
     const err = await res.json();
     throw new Error(err.message || 'Failed to fetch image provider list');
   }
-  const { providers } = await res.json();
-  return ignoreKeyReturn(keys, Array.from(providers));
+  const { image_providers } = await res.json();
+  return ignoreKeyReturn(keys, Array.from(image_providers));
 });
 
 export const providerSchemaFetcher = createCachedFetcher(async (providerNames) => {
@@ -40,8 +40,8 @@ export const providerSchemaFetcher = createCachedFetcher(async (providerNames) =
       throw new Error(err.message || `Failed to fetch image provider schema for ${name}`);
     }
 
-    const { schema } = await res.json();
-    results.set(name, schema);
+    const { image_provider_schema } = await res.json();
+    results.set(name, image_provider_schema);
   }
 
   return results

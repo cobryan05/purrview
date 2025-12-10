@@ -6,14 +6,19 @@ import { ignoreKeyReturn } from './apiUtils.js';
  * -----------------------------
  */
 export const classesFetcher = createCachedFetcher(async (keys) => {
+  /** @type {import('@web_api').ListClassesPayload} */
+  const payload = {};
+
   const res = await fetch('/api/classes/list');
-  if (!res.ok) {
-    const err = await res.json();
-    throw new Error(err.message || 'Failed to fetch classes');
+
+  /** @type {import('@web_api').ListClassesResponse} */
+  const data = await res.json();
+
+  if (!res.ok || data.status !== 'success') {
+    throw new Error(data.message || 'Failed to fetch classes');
   }
-  const { classes } = await res.json();
   // Store as Map keyed by UUID
-  const map = new Map(classes.map(l => [l.metadata.uuid, l]));
+  const map = new Map(data.classes.map(l => [l.metadata.uuid, l]));
 
   return ignoreKeyReturn(keys, map);
 });

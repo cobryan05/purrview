@@ -5,36 +5,32 @@ import { generateUUID, fetchClassByUuid } from '/app-static/js/ui/utils/index.js
 /**
  * Create a bounding box group with a rectangle, class, confidence,
  * and set up all relevant event handlers here.
+ *
+ * @param {import('@app_types').RuntimeBbox} bbox
  */
 
-export function createBboxGroup(x, y, props = {}) {
-  const width = props.width ?? 50;
-  const height = props.height ?? 50;
-  const classUuid = props.metadata?.classUuid ?? '';
-  const confidence = props.metadata?.confidence ?? null;
-  const uuid = props.metadata?.uuid ?? generateUUID();
-
+export function createGroupFromBbox(bbox) {
   // TODO: Fix this up, why are two places setting the text
   // Initial placeholder values
-  let labelText = props.metadata?.text ?? 'Unknown';
+  let labelText = bbox.text ?? 'Unknown';
   let color = 'grey';
 
   const group = new Konva.Group({
-    x,
-    y,
+    x: bbox.x,
+    y: bbox.y,
     draggable: true,
     name: 'annotation',
   });
 
   const rect = new Konva.Rect({
     name: 'box',
-    width,
-    height,
+    width: bbox.width,
+    height: bbox.height,
     stroke: color,
     strokeWidth: 2,
   });
 
-  const bboxText = `${labelText}${confidence != null ? ` (${(confidence * 100).toFixed(1)}%)` : ''}`;
+  const bboxText = `${labelText}${bbox.confidence != null ? ` (${(bbox.confidence * 100).toFixed(1)}%)` : ''}`;
 
   const text = new Konva.Text({
     name: 'class',
@@ -45,14 +41,14 @@ export function createBboxGroup(x, y, props = {}) {
     x: 0,
   });
 
-  group.metadata = {
+  group.setAttr('metadata', {
+    uuid: bbox.uuid,
+    classUuid: bbox.classUuid,
     class: null, // will be filled in once async fetch completes
     rect,
     text: text,
-    confidence,
-    ...props.metadata,
-    uuid,
-  };
+    confidence: bbox.confidence
+  });
 
   group.add(rect);
   group.add(text);
@@ -101,27 +97,26 @@ export function createBboxGroup(x, y, props = {}) {
     rect.scaleY(1);
 
     applyBoundingBoxLayout(group);
-    layer.batchDraw();
+    layer?.batchDraw();
   });
 
-  updateBoundingBox(group);
+  updateGroupMetadata(group);
   return group;
 }
 
 /**
  * Update an existing bounding box with new metadata, such as class or color.
  */
-export function updateBoundingBox(group, props = {}) {
+export function updateGroupMetadata(group, metadata = {}) {
   const rectRef = group.findOne('.box');
   const textRef = group.findOne('.class');
   if (!rectRef || !textRef) return;
 
-  const oldMetadata = group.metadata ?? {};
-  const newMetadata = { ...oldMetadata, ...props.metadata };
+  const oldMetadata = group.getAttr('metadata') ?? {};
+  const newMetadata = { ...oldMetadata, ...metadata };
 
   const classUuid = newMetadata.classUuid ?? null;
   const confidence = newMetadata.confidence;
-  const text = newMetadata.text;
 
   // Kick off async class resolution
   (classUuid
@@ -129,16 +124,16 @@ export function updateBoundingBox(group, props = {}) {
     : Promise.resolve(null)
   ).then(cls => {
     let bboxText;
-    const classText = (cls?.metadata?.name ?? props.metadata?.class) ?? props.metadata?.text ?? text ?? 'Unknown';
+    const classText = (cls?.metadata?.name ?? newMetadata?.class) ?? newMetadata?.text ?? 'Unknown';
     const color = cls?.metadata?.color ?? 'grey';
     bboxText = `${classText}${confidence != null ? ` (${(confidence * 100).toFixed(1)}%)` : ''}`;
 
     // Update metadata
-    group.metadata = {
+    group.setAttr('metadata', {
       ...newMetadata,
       class: cls,
       confidence,
-    };
+    });
 
     textRef.text(bboxText);
     textRef.fill(color);

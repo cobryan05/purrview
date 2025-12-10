@@ -9,7 +9,7 @@ def api_forward_request(api, api_method_name: str):
     def decorator(func):
         @wraps(func)
         async def wrapper(**kwargs):
-            payload = kwargs.get("payload")
+            payload = kwargs.get("payload", kwargs.get("_payload"))
             if isinstance(payload, BaseModel):
                 args = payload.model_dump()
             else:

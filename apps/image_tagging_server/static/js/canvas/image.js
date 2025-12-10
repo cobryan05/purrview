@@ -1,11 +1,6 @@
-import { createBboxGroup, updateBoundingBox } from './drawing.js';
+import { createGroupFromBbox } from './drawing.js';
 import { state } from './state.js'
 import { Logger, fetchImage, generateUUID } from '/app-static/js/ui/utils/index.js';
-
-/**
- * @typedef {import('../types.js').BBoxInfo} BBoxInfo
- */
-
 
 export async function reloadImage() {
   const imageName = state.image.name;
@@ -20,87 +15,85 @@ export async function loadImageAndMetadata(imageName) {
   Logger.debug('loadImageAndMetadata called with imageName:', imageName);
 
   clearAnnotations();
-  const { image: img, bboxes } = await fetchImage(imageName);
-  state.setImage(imageName, img, bboxes);
+  const imageInfo = await fetchImage(imageName);
+  state.setImage(imageInfo);
 
-  // Initialize bounding boxes from the image
-  if (state.image.bboxes) {
-    for (const [uuid, box] of state.image.bboxes.entries()) {
-      const absX = box.x * img.width;
-      const absY = box.y * img.height;
-      const absWidth = box.width * img.width;
-      const absHeight = box.height * img.height;
+  if (imageInfo.bboxes && imageInfo.img) {
+    const { width, height } = imageInfo.img;
 
-      const group = createBboxGroup(absX, absY, {
+    for (const [uuid, box] of imageInfo.bboxes.entries()) {
+      const absX = box.x * width;
+      const absY = box.y * height;
+      const absWidth = box.width * width;
+      const absHeight = box.height * height;
+
+      /** @type {import('@app_types').RuntimeBbox} */
+      const bbox = {
+        x: absX,
+        y: absY,
         width: absWidth,
         height: absHeight,
-        metadata: {
-          uuid: box.uuid,
-          classUuid: box.class_uuid,
-          tagUuids: box.tagUuids?.map(l => l.uuid) ?? [],
-          extra: box.extra ?? {}
-        }
-      });
+        uuid,
+        classUuid: box.classUuid,
+        tagUuids: box.tagUuids ?? [],
+      };
+      const group = createGroupFromBbox(bbox);
       group.name('annotation');
       state.updateBboxGroup(group);
     }
   }
   await refreshCanvas();
-  _recenterImage();
-  Logger.notify(`Loaded image and metadata for ${state.image.name}`);
 }
 
-function _recenterImage() {
-  // === Zoom to fit the image with padding ===
-  const stage = state.canvas.stage;
-  const container = stage?.container();
-  const img = state.image.data;
-  const padding = 20;
-
-  if (!img || !stage || !container) {
-    return;
-  }
-
-  const scaleX = (container.clientWidth - padding * 2) / img.width;
-  const scaleY = (container.clientHeight - padding * 2) / img.height;
-  const scale = Math.min(scaleX, scaleY);
-
-  // Center the image
-  const newWidth = img.width * scale;
-  const newHeight = img.height * scale;
-
-  const offsetX = (container.clientWidth - newWidth) / 2;
-  const offsetY = (container.clientHeight - newHeight) / 2;
-
-  stage.scale({ x: scale, y: scale });
-  stage.position({ x: offsetX, y: offsetY });
-  stage.batchDraw();
-}
 
 export async function refreshCanvas() {
   const layer = state.canvas.layer;
-  layer?.clear();
+  const img = state.image?.img;
+  if (!layer || !img) {
+    Logger.warn("Can't refresh without a canvas and image");
+    return;
+  }
 
   const bg = new Konva.Image({
-    image: state.image.data,
+    image: img,
     x: 0,
     y: 0,
-    width: state.image.data.width,
-    height: state.image.data.height,
+    width: img.width,
+    height: img.height,
     listening: false,
     name: 'background',
   });
   layer.add(bg);
-  bg.moveToBottom();
+  layer.moveToBottom();
 
-  // Create canvas.bboxes from the image.bboxes
-  const img = state.image.data;
-  for (const [key, group] of state.canvas.bboxes) {
-    updateBoundingBox(group);
+  for (const [key, group] of (state.canvas.bboxes ?? [])) {
     layer.add(group);
   }
 
+  // === Zoom to fit the image with padding ===
+  const stage = state.canvas.stage;
+  const container = stage?.container();
+  if (stage && container) {
+    const padding = 20;
+
+    const scaleX = (container.clientWidth - padding * 2) / img.width;
+    const scaleY = (container.clientHeight - padding * 2) / img.height;
+    const scale = Math.min(scaleX, scaleY);
+
+    // Center the image
+    const newWidth = img.width * scale;
+    const newHeight = img.height * scale;
+
+    const offsetX = (container.clientWidth - newWidth) / 2;
+    const offsetY = (container.clientHeight - newHeight) / 2;
+
+    stage.scale({ x: scale, y: scale });
+    stage.position({ x: offsetX, y: offsetY });
+    stage.batchDraw();
+  }
+
   layer.draw();
+  Logger.notify(`Loaded image and metadata for ${state.image.name}`);
 }
 
 
@@ -125,16 +118,11 @@ export async function saveAnnotations() {
   }
 
   try {
-
-    let emptyClassCnt = 0;
     const boxes = Array.from(state.canvas.bboxes.values()).map(group => {
-      const bbox_class_uuid = group.metadata.classUuid ?? null;
-      if (!bbox_class_uuid) {
-        return null;
-      }
       const rect = group.metadata.rect;
       const uuid = group.metadata.uuid ?? generateUUID();
       const bbox_uuid = group.metadata.uuid ?? generateUUID();
+      const bbox_class_uuid = group.metadata.classUuid ?? null;
 
       return {
         uuid: bbox_uuid,
@@ -145,12 +133,6 @@ export async function saveAnnotations() {
         height: rect.height() / state.image.data.height,
         extra: group.metadata.extra || {}  // Arbitrary key-value pairs
       };
-    }).filter(box => {
-      if (box === null) {
-        emptyClassCnt++;
-        return false;
-      }
-      return true;
     });
 
     const payload = {
@@ -166,10 +148,7 @@ export async function saveAnnotations() {
     });
 
     if (!res.ok) throw new Error(`Save failed with status ${res.status}`);
-    Logger.notify(`Annotations saved successfully for image ${state.image.name}`);
-    if (emptyClassCnt > 0) {
-      Logger.error(`${emptyClassCnt} bounding boxes have no class assigned and were not saved.`);
-    }
+    Logger.notify(`Annotations saved successfully for image ${state.imageName}`);
   } catch (err) {
     Logger.error('Failed to save annotations:', err);
   }
@@ -192,7 +171,6 @@ export function deleteSelected() {
   }
 
   if (group && group.name() === 'annotation') {
-    state.removeBboxGroup(group);
     group.destroy();
   } else {
     node.destroy(); // fallback
@@ -228,32 +206,48 @@ export function exportAnnotations() {
   }
 }
 
-/**
- * @param {BBoxInfo[]} results
- * @param {HTMLImageElement} image - base64 image element to run inference on.
- */
-export async function addRecognizedBoxes(results, image) {
-  const imageWidth = image.width;
-  const imageHeight = image.height;
+export function addRecognizedBoxes(results) {
+  const layer = state.canvas.layer;
+  if (!layer) {
+    Logger.error("Couldn't find layer to add recognition results to");
+    return;
+  }
+
+  const bg = layer.findOne(
+    node => node.name() === 'background' && node instanceof Konva.Image);
+  if (!bg) {
+    Logger.error('No background image found!');
+    return;
+  }
+
+  const imageWidth = bg.width();
+  const imageHeight = bg.height();
 
   results.forEach(obj => {
-    const x = obj.x * imageWidth;
-    const y = obj.y * imageHeight;
-    const width = obj.width * imageWidth;
-    const height = obj.height * imageHeight;
+    const [x_norm, y_norm, w_norm, h_norm] = obj.bounding_box;
 
-    const group = createBboxGroup(x, y, {
+    const x = x_norm * imageWidth;
+    const y = y_norm * imageHeight;
+    const width = w_norm * imageWidth;
+    const height = h_norm * imageHeight;
+    const uuid = generateUUID();
+
+    /** @type {import('@app_types').RuntimeBbox} */
+    const bbox = {
+      uuid,
+      x,
+      y,
       width,
       height,
-      metadata: {
-        text: obj.text,
-        confidence: obj.confidence,
-        classUuid: obj.classUuid,
-      },
-    });
+      classUuid: obj.class_uuid,
+      confidence: obj.confidence,
+      text: obj.class.name
+    };
+    const shape = createGroupFromBbox(bbox);
 
-    group.name('annotation');
-    state.updateBboxGroup(group);
-  })
-  await refreshCanvas();
+    shape.name('annotation');
+    layer.add(shape);
+  });
+
+  layer.draw();
 }

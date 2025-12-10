@@ -17,6 +17,12 @@
       ],
       "@konva": [
         "/app/static/js/konva-types/index-types.d.ts"
+      ],
+      "@web_api": [
+        "/app/static/js/api-types.js"
+      ],
+      "@app_types": [
+        "./static/js/types.js"
       ]
     }
   },

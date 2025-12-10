@@ -5,7 +5,7 @@ import glob
 import logging
 import os
 import sys
-from dataclasses import dataclass
+from pydantic import BaseModel
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 import fnmatch
@@ -29,8 +29,7 @@ logger = logging.getLogger(__file__)
 logger.setLevel(logging.DEBUG)
 
 
-@dataclass
-class FileEntry:
+class FileEntry(BaseModel):
     name: str
     type: str  # "file" or "dir"
     path: str  # relative path from root
@@ -118,6 +117,7 @@ class Manager:
         flat_list: List[ClassMetadata] = await self._db_client.list_classes()
         uuid_to_node: Dict[str, ClassData] = {cls.uuid: ClassData(metadata=cls) for cls in flat_list}
 
+        # Set up parent-child relationships
         for cls in flat_list:
             node = uuid_to_node[cls.uuid]
             if cls.parent_uuid and cls.parent_uuid in uuid_to_node:

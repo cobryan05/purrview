@@ -4,7 +4,6 @@ import json
 import logging
 import os
 import sys
-from dataclasses import asdict, dataclass, field, fields
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Type, TypeVar, Union
@@ -12,7 +11,8 @@ from uuid import uuid4
 
 import aiofiles
 import aiosqlite
-from dacite import from_dict, Config
+from dacite import Config, from_dict
+from pydantic import BaseModel, Field
 
 from apps.helpers.consts import TaskStatus
 
@@ -201,8 +201,7 @@ END;
 """
 
 
-@dataclass
-class TagMetadata:
+class TagMetadata(BaseModel):
     uuid: str
     name: str
     color: str
@@ -213,51 +212,44 @@ class TagMetadata:
     updated_at: Optional[str] = None
 
 
-@dataclass
-class ClassMetadata:
+class ClassMetadata(BaseModel):
     uuid: str
     name: str
     color: str
     parent_uuid: Optional[str] = None
 
 
-@dataclass
-class ClassData:
+class ClassData(BaseModel):
     metadata: ClassMetadata
-    children: List[ClassData] = field(default_factory=list)
+    children: List[ClassData] = Field(default_factory=list)
 
 
-@dataclass
-class BoundingBoxMetadata:
+class BoundingBoxMetadata(BaseModel):
+    uuid: str
     class_uuid: str
     x: float
     y: float
     width: float
     height: float
-    uuid: Optional[str] = field(default_factory=lambda: str(uuid4()))
-    tags: List[ClassMetadata] = field(default_factory=list)
-    extra: Dict[str, str] = field(default_factory=dict)
+    tags: List[ClassMetadata] = Field(default_factory=list)
+    extra: Dict[str, str] = Field(default_factory=dict)
 
-
-@dataclass
-class ImageMetadata:
+class ImageMetadata(BaseModel):
     id: int
     filename: str
     last_updated: Optional[str] = None
-    extra: Dict[str, str] = field(default_factory=dict)
-    boxes: List[BoundingBoxMetadata] = field(default_factory=list)
+    extra: Dict[str, str] = Field(default_factory=dict)
+    boxes: List[BoundingBoxMetadata] = Field(default_factory=list)
 
 
-@dataclass
-class SourceMetadata:
+class SourceMetadata(BaseModel):
     name: str
     typename: str
-    params: dict[str, str]
+    params: dict[str, Any]
     uuid: str
 
 
-@dataclass
-class TaskConfigMetadata:
+class TaskConfigMetadata(BaseModel):
     uuid: str
     typename: str
     params: dict[str, str]
@@ -267,8 +259,7 @@ class TaskConfigMetadata:
     updated_at: Optional[str] = None
 
 
-@dataclass
-class ActiveTaskMetadata:
+class ActiveTaskMetadata(BaseModel):
     id: int
     config_uuid: str
     typename: str
@@ -285,10 +276,10 @@ class DbClient:
     """Helper class for SQLite database interactions for image annotations."""
 
     @staticmethod
-    def _cols_from_dataclass(model_cls: Type) -> str:
-        return ", ".join(f.name for f in fields(model_cls))
+    def _cols_from_basemodel(model_cls: Type) -> str:
+        return ", ".join(model_cls.__fields__.keys())
 
-    TAG_COLUMNS = _cols_from_dataclass(TagMetadata)
+    TAG_COLUMNS = _cols_from_basemodel(TagMetadata)
 
     def __init__(self, db_dir: Union[str, Path]):
         """
@@ -424,17 +415,11 @@ class DbClient:
             )
             await db.commit()
 
-            cursor = await db.execute(
-                """
-                SELECT uuid, typename, params_json, name, description, created_at, updated_at
-                FROM task_configs WHERE uuid = ?
-                """,
-                (config_uuid,),
-            )
+            cursor = await db.execute("SELECT * FROM task_configs WHERE uuid = ?", (uuid,))
             row = await cursor.fetchone()
             if not row:
                 raise Exception(f"Failed to retrieve inserted task config with UUID {config_uuid}")
-            return DbClient.row_to_dataclass(cursor, row, TaskConfigMetadata)
+            return DbClient.row_to_basemodel(cursor, row, TaskConfigMetadata)
 
     async def update_task_config(
         self,
@@ -534,15 +519,7 @@ class DbClient:
 
             cursor = await db.execute(
                 """
-                SELECT ta.id,
-                    ta.config_uuid,
-                    tc.typename,   -- joined from task_configs
-                    ta.status,
-                    ta.resume_data_json,
-                    ta.error_message,
-                    ta.created_at,
-                    ta.updated_at,
-                    ta.expires_at
+                SELECT *
                 FROM tasks_active ta
                 JOIN task_configs tc ON ta.config_uuid = tc.uuid
                 WHERE ta.rowid = last_insert_rowid()
@@ -552,7 +529,7 @@ class DbClient:
             if not row:
                 raise Exception("Failed to retrieve inserted active task")
 
-            return DbClient.row_to_dataclass(cursor, row, ActiveTaskMetadata)
+            return DbClient.row_to_basemodel(cursor, row, ActiveTaskMetadata)
 
     async def delete_active_tasks(self, task_ids: Union[int, List[int]]) -> None:
         """
@@ -643,7 +620,7 @@ class DbClient:
             List[TaskConfigMetadata]: List of matching task configs.
         """
         query = """
-            SELECT uuid, typename, params_json, name, description, created_at, updated_at
+            SELECT *
             FROM task_configs
             WHERE 1=1
         """
@@ -675,7 +652,7 @@ class DbClient:
             rows = await cursor.fetchall()
             await cursor.close()
 
-        return [DbClient.row_to_dataclass(cursor, r, TaskConfigMetadata) for r in rows]
+        return [DbClient.row_to_basemodel(cursor, r, TaskConfigMetadata) for r in rows]
 
     async def get_active_tasks(
         self,
@@ -700,15 +677,7 @@ class DbClient:
             List[ActiveTaskMetadata]: List of matching active tasks.
         """
         query = """
-            SELECT
-                ta.id,
-                ta.config_uuid,
-                tc.typename,
-                ta.status,
-                ta.resume_data_json,
-                ta.error_message,
-                ta.created_at,
-                ta.updated_at
+            SELECT *
             FROM tasks_active ta
             JOIN task_configs tc ON ta.config_uuid = tc.uuid
             WHERE 1=1
@@ -745,7 +714,7 @@ class DbClient:
             rows = await cursor.fetchall()
             await cursor.close()
 
-        return [DbClient.row_to_dataclass(cursor, r, ActiveTaskMetadata) for r in rows]
+        return [DbClient.row_to_basemodel(cursor, r, ActiveTaskMetadata) for r in rows]
 
     async def get_task_has_result(self, task_id: int) -> bool:
         """
@@ -916,10 +885,10 @@ class DbClient:
             List[SourceMetaData]: All source entries.
         """
         async with aiosqlite.connect(self._db_path) as db:
-            cursor = await db.execute("SELECT name, typename, params_json, uuid FROM sources")
+            cursor = await db.execute("SELECT * FROM sources")
             rows = await cursor.fetchall()
             await cursor.close()
-            return [DbClient.row_to_dataclass(cursor, r, SourceMetadata) for r in rows]
+            return [DbClient.row_to_basemodel(cursor, r, SourceMetadata) for r in rows]
 
     async def add_source(self, name: str, typename: str, params: dict, uuid: Optional[str] = None) -> SourceMetadata:
         """
@@ -946,8 +915,7 @@ class DbClient:
 
             cursor = await db.execute(
                 """
-                SELECT uuid, name, typename, params_json, created_at, updated_at
-                FROM sources
+                SELECT * FROM sources
                 WHERE uuid = ?
                 """,
                 (uuid,),
@@ -957,7 +925,7 @@ class DbClient:
 
         if not row:
             raise ValueError("Failed to retrieve inserted source")
-        return DbClient.row_to_dataclass(cursor, row, SourceMetadata)
+        return DbClient.row_to_basemodel(cursor, row, SourceMetadata)
 
     async def update_source(
         self,
@@ -1001,9 +969,7 @@ class DbClient:
 
             cursor = await db.execute(
                 """
-                SELECT uuid, name, typename, params_json
-                FROM sources
-                WHERE uuid = ?
+                SELECT * FROM sources WHERE uuid = ?
                 """,
                 (source_uuid,),
             )
@@ -1012,7 +978,7 @@ class DbClient:
 
         if not row:
             raise ValueError("Failed to retrieve updated source")
-        return DbClient.row_to_dataclass(cursor, row, SourceMetadata)
+        return DbClient.row_to_basemodel(cursor, row, SourceMetadata)
 
     async def delete_sources(self, source_uuids: list[str]) -> None:
         """
@@ -1038,10 +1004,10 @@ class DbClient:
             List[Dict]: List of classes dictionaries with keys: id, name, color, uuid.
         """
         async with aiosqlite.connect(self._db_path) as db:
-            cursor = await db.execute("SELECT name, color, uuid, parent_uuid FROM classes")
+            cursor = await db.execute("SELECT * FROM classes")
             rows = await cursor.fetchall()
             await cursor.close()
-            return [DbClient.row_to_dataclass(cursor, r, ClassMetadata) for r in rows]
+            return [DbClient.row_to_basemodel(cursor, r, ClassMetadata) for r in rows]
 
     async def add_class(
         self, name: str, color: str, uuid: Optional[str] = None, parent_uuid: Optional[str] = None
@@ -1059,10 +1025,10 @@ class DbClient:
         """
         uuid = uuid or str(uuid4())
         async with aiosqlite.connect(self._db_path) as db:
-            cursor = await db.execute("SELECT name, color, uuid, parent_uuid FROM classes WHERE uuid = ?", (uuid,))
+            cursor = await db.execute("SELECT * FROM classes WHERE uuid = ?", (uuid,))
             row = await cursor.fetchone()
             if row:
-                return DbClient.row_to_dataclass(cursor, row, ClassMetadata)
+                return DbClient.row_to_basemodel(cursor, row, ClassMetadata)
 
             cursor = await db.execute(
                 "INSERT INTO classes (name, color, uuid, parent_uuid) VALUES (?, ?, ?, ?)",
@@ -1085,11 +1051,11 @@ class DbClient:
             Optional[Dict]: Class data or None.
         """
         async with aiosqlite.connect(self._db_path) as db:
-            cursor = await db.execute("SELECT name, color, uuid FROM classes WHERE uuid = ?", (uuid,))
+            cursor = await db.execute("SELECT * FROM classes WHERE uuid = ?", (uuid,))
             row = await cursor.fetchone()
             await cursor.close()
             if row:
-                return DbClient.row_to_dataclass(cursor, row, ClassMetadata)
+                return DbClient.row_to_basemodel(cursor, row, ClassMetadata)
             return None
 
     async def get_class_children(self, parent_uuid: str) -> List[str]:
@@ -1159,10 +1125,10 @@ class DbClient:
             List[Dict]: List of tags dictionaries with keys: id, name, color, uuid.
         """
         async with aiosqlite.connect(self._db_path) as db:
-            cursor = await db.execute(f"SELECT {DbClient.TAG_COLUMNS} FROM tags")
+            cursor = await db.execute(f"SELECT * FROM tags")
             rows = await cursor.fetchall()
             await cursor.close()
-            return [DbClient.row_to_dataclass(cursor, r, TagMetadata) for r in rows]
+            return [DbClient.row_to_basemodel(cursor, r, TagMetadata) for r in rows]
 
     async def add_tag(
         self,
@@ -1191,14 +1157,14 @@ class DbClient:
             await db.commit()
 
             # Fetch the full row including defaults
-            cursor = await db.execute(f"SELECT {self.TAG_COLUMNS} FROM tags WHERE uuid = ?", (uuid,))
+            cursor = await db.execute(f"SELECT * FROM tags WHERE uuid = ?", (uuid,))
             row = await cursor.fetchone()
             await cursor.close()
 
             if not row:
                 raise RuntimeError("Tag inserted but not found!")
 
-            return self.row_to_dataclass(cursor, row, TagMetadata)
+            return DbClient.row_to_basemodel(cursor, row, TagMetadata)
 
     async def get_tag_by_uuid(self, uuid: str) -> Optional[TagMetadata]:
         """
@@ -1211,11 +1177,11 @@ class DbClient:
             Optional[Dict]: Tag data or None.
         """
         async with aiosqlite.connect(self._db_path) as db:
-            cursor = await db.execute(f"SELECT {self.TAG_COLUMNS} FROM tags WHERE uuid = ?", (uuid,))
+            cursor = await db.execute(f"SELECT * FROM tags WHERE uuid = ?", (uuid,))
             row = await cursor.fetchone()
             await cursor.close()
             if row:
-                return self.row_to_dataclass(cursor, row, TagMetadata)
+                return self.row_to_basemodel(cursor, row, TagMetadata)
             return None
 
     async def update_tag(
@@ -1303,14 +1269,14 @@ class DbClient:
     async def get_bboxes_info(self, bbox_uuids: List[str]) -> List[BoundingBoxMetadata]:
         async with aiosqlite.connect(self._db_path) as db:
             cursor = await db.execute(
-                "SELECT id, image_id, x, y, width, height, metadata_json FROM bboxes WHERE uuid = ?",
+                "SELECT * FROM bboxes WHERE uuid = ?",
                 (bbox_uuid,),
             )
 
             rows = await cursor.fetchall()
             await cursor.close()
             if rows:
-                return [self.row_to_dataclass(cursor, row, BoundingBoxMetadata) for row in rows]
+                return [self.row_to_basemodel(cursor, row, BoundingBoxMetadata) for row in rows]
             return []
 
     async def update_bbox(
@@ -1563,43 +1529,6 @@ class DbClient:
                 )
             logger.info(f"Imported {len(class_list)} classes from JSON.")
 
-    # async def import_labels_from_json_to_db(
-    #     self, json_path: Optional[Path | str] = None, overwrite_existing: bool = False
-    # ) -> None:
-    #     """
-    #     Load labels from a JSON file and insert into database if they don't exist.
-
-    #     Args:
-    #         json_path (str): Optional override path. Default: <db_dir>/labels.json
-    #         overwrite_existing (bool): If True, delete existing labels first.
-    #     """
-    #     try:
-    #         async with aiofiles.open(json_path, "r", encoding="utf-8") as f:
-    #             raw = await f.read()
-    #             label_list = json.loads(raw)
-
-    #         async with aiosqlite.connect(self._db_path) as db:
-    #             if overwrite_existing:
-    #                 await db.execute("DELETE FROM bbox_tags")
-    #                 await db.execute("DELETE FROM labels")
-
-    #             for label in label_list:
-    #                 # Insert or replace based on uuid
-    #                 await db.execute(
-    #                     """
-    #                     INSERT OR REPLACE INTO labels (uuid, name, color)
-    #                     VALUES (?, ?, ?)
-    #                     """,
-    #                     (label.get("uuid", str(uuid4()), label["name"], label["color"])),
-    #                 )
-
-    #             await db.commit()
-
-    #     except FileNotFoundError:
-    #         logger.warning(f"Label JSON file not found: {json_path}")
-    #     except Exception as e:
-    #         logger.error(f"Failed to load labels from JSON: {e}")
-
     async def save_image_metadata_db_to_json(self, abs_path: str) -> None:
         """
         Sync metadata from the database into the image's .json side file.
@@ -1623,7 +1552,7 @@ class DbClient:
         os.makedirs(json_path.parent, exist_ok=True)
 
         async with aiofiles.open(json_path, "w", encoding="utf-8") as f:
-            await f.write(json.dumps(asdict(metadata), indent=2))
+            await f.write(json.dumps(metadata.model_dump(), indent=2))
 
     async def read_image_metadata_json_to_db(self, abs_path: str) -> Optional[ImageMetadata]:
         """
@@ -1649,49 +1578,60 @@ class DbClient:
             logger.warning(f"JSON file not found: {json_path}")
             return None
 
-    T = TypeVar("T")
+    def basemodel_to_row(model: BaseModel, json_fields: list[str] = None) -> dict[str, Any]:
+        """
+        Convert a BaseModel to a dict suitable for DB insertion,
+        serializing any fields listed in json_fields.
+        """
+        row = model.model_dump()
+        if json_fields:
+            for field in json_fields:
+                if field in row:
+                    row[field] = json.dumps(row[field])
+        return row
 
-    @staticmethod
-    def row_to_dataclass(
-        cursor: aiosqlite.Cursor,
+    T = TypeVar("T", bound=BaseModel)
+
+    def row_to_basemodel(
+        cursor,
         row: Tuple[Any, ...],
         cls_type: Type[T],
     ) -> T:
         """
-        Convert a SQLite row into a dataclass instance.
-        - Columns ending with `_json` are json.loads()'d and renamed without `_json`.
-        - Keys not present in the dataclass are skipped.
-
-        Args:
-            cursor: aiosqlite or sqlite3 cursor after executing a query
-            row: the tuple returned from cursor.fetchone() / fetchall()
-            cls_type: the dataclass type to instantiate
-
-        Returns:
-            An instance of the dataclass `cls_type` populated from row values.
+        Convert a SQLite row into a Pydantic BaseModel instance.
+        Handles columns ending in `_json`, which are JSON-decoded
+        and mapped to the field without the `_json` suffix.
         """
         columns: List[str] = [col[0] for col in cursor.description]
         row_dict: dict[str, Any] = dict(zip(columns, row))
 
-        dataclass_fields = {f.name: f.type for f in fields(cls_type)}
+        model_fields = cls_type.model_fields  # pydantic v2 field set
 
         transformed: dict[str, Any] = {}
+
         for key, value in row_dict.items():
+
+            # Handle JSON columns
             if key.endswith("_json"):
-                new_key = key[:-5]  # strip "_json"
-                if new_key not in dataclass_fields:
+                new_key = key[:-5]
+                if new_key not in model_fields:
                     continue
                 try:
                     transformed[new_key] = json.loads(value) if value is not None else None
                 except json.JSONDecodeError:
                     transformed[new_key] = value
+                continue
+
+            # Skip unknown columns
+            if key not in model_fields:
+                continue
+
+            # SQLite boolean coercion
+            field_type = model_fields[key].annotation
+            if field_type is bool and value is not None:
+                transformed[key] = bool(value)
             else:
-                if key not in dataclass_fields:
-                    continue
-                if dataclass_fields[key] == bool and value is not None:
-                    transformed[key] = bool(value)
-                else:
-                    transformed[key] = value
+                transformed[key] = value
 
         return cls_type(**transformed)
 

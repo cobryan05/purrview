@@ -9,23 +9,9 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from apps.db_server.web import (
-    AddClassPayload,
-    AddTagPayload,
-    CreateSourcePayload,
-    DeleteClassPayload,
-    DeleteSourcePayload,
-    DeleteTagPayload,
-    GetFilePayload,
-    GetImageMetadataPayload,
-    GetImageProviderSchemaPayload,
-    ListFilesPayload,
-    UpdateClassPayload,
-    UpdateMetadataPayload,
-    UpdateSourcePayload,
-    UpdateTagPayload,
-)
+import apps.db_server.web as db_web
 from apps.helpers.consts import ApiTags
+from apps.helpers.types import StatusResponse
 from apps.inference_server.web import (
     AssociateClassWithModelClassPayload,
     GetModelClassesPayload,
@@ -147,7 +133,7 @@ class WebApp:
             response_class=JSONResponse,
         )
         @self._manager.model_api_request("get_model_classes")
-        async def get_model_classes_api(payload: GetModelClassesPayload) -> JSONResponse: ...
+        async def get_model_classes_api(_payload: GetModelClassesPayload) -> JSONResponse: ...
 
 
         ################################################################################
@@ -161,7 +147,7 @@ class WebApp:
             response_class=JSONResponse,
         )
         @self._manager.inference_api_request("recognize")
-        async def recognize_api(payload: RecognizePayload) -> JSONResponse: ...
+        async def recognize_api(_payload: RecognizePayload) -> JSONResponse: ...
 
         ################################################################################
         # CLASSES API
@@ -171,37 +157,37 @@ class WebApp:
             "/api/classes/add",
             tags=[ApiTags.CLASSES],
             operation_id="add_class",
-            response_class=JSONResponse,
+            response_model=db_web.AddClassResponse,
         )
         @self._manager.classes_api_request("add_class")
-        async def add_class_api(payload: AddClassPayload) -> JSONResponse: ...
+        async def add_class_api(_payload: db_web.AddClassPayload) -> db_web.AddClassResponse: ...
 
         @self._app.post(
             "/api/classes/delete",
             tags=[ApiTags.CLASSES],
             operation_id="delete_class",
-            response_class=JSONResponse,
-        )
+            response_model=db_web.DeleteClassResponse,
+            )
         @self._manager.classes_api_request("delete_class")
-        async def delete_class_api(payload: DeleteClassPayload) -> JSONResponse: ...
+        async def delete_class_api(_payload: db_web.DeleteClassPayload) -> db_web.DeleteClassResponse: ...
 
         @self._app.get(
             "/api/classes/list",
             tags=[ApiTags.CLASSES],
             operation_id="list_classes",
-            response_class=JSONResponse,
+            response_model=db_web.ListClassesResponse,
         )
         @self._manager.classes_api_request("list_classes")
-        async def list_classes_api(request: Request) -> JSONResponse: ...
+        async def list_classes_api() -> db_web.ListClassesResponse: ...
 
         @self._app.post(
             "/api/classes/update",
             tags=[ApiTags.CLASSES],
             operation_id="update_class",
-            response_class=JSONResponse,
+            response_model=db_web.UpdateClassResponse,
         )
         @self._manager.classes_api_request("update_class")
-        async def update_class_api(payload: UpdateClassPayload) -> JSONResponse: ...
+        async def update_class_api(_payload: db_web.UpdateClassPayload) -> db_web.UpdateClassResponse: ...
 
         ################################################################################
         # TAGS API
@@ -211,37 +197,36 @@ class WebApp:
             "/api/tags/add",
             tags=[ApiTags.TAGS],
             operation_id="add_tag",
-            response_class=JSONResponse,
+            response_model=db_web.AddTagResponse,
         )
         @self._manager.tags_api_request("add_tag")
-        async def add_tag_api(payload: AddTagPayload) -> JSONResponse: ...
-
+        async def add_tag_api(_payload: db_web.AddTagPayload) -> db_web.AddTagResponse: ...
         @self._app.post(
             "/api/tags/delete",
             tags=[ApiTags.TAGS],
             operation_id="delete_tag",
-            response_class=JSONResponse,
+            response_model=db_web.DeleteTagResponse,
         )
         @self._manager.tags_api_request("delete_tag")
-        async def delete_tag_api(payload: DeleteTagPayload) -> JSONResponse: ...
+        async def delete_tag_api(_payload: db_web.DeleteTagPayload) -> db_web.DeleteTagResponse: ...
 
         @self._app.get(
             "/api/tags/list",
             tags=[ApiTags.TAGS],
             operation_id="list_tags",
-            response_class=JSONResponse,
+            response_model=db_web.ListTagsResponse,
         )
         @self._manager.tags_api_request("list_tags")
-        async def list_tags_api(request: Request) -> JSONResponse: ...
+        async def list_tags_api() -> db_web.ListTagsResponse: ...
 
         @self._app.post(
             "/api/tags/update",
             tags=[ApiTags.TAGS],
             operation_id="update_tag",
-            response_class=JSONResponse,
+            response_model=db_web.UpdateTagResponse,
         )
         @self._manager.tags_api_request("update_tag")
-        async def update_tag_api(payload: UpdateTagPayload) -> JSONResponse: ...
+        async def update_tag_api(_payload: db_web.UpdateTagPayload) -> db_web.UpdateTagResponse: ...
         ################################################################################
         # TASKS API
         ################################################################################
@@ -262,7 +247,7 @@ class WebApp:
             response_class=JSONResponse,
         )
         @self._manager.task_api_request("get_task_type_schema")
-        async def get_task_type_schema_api(payload: TasksTypeSchemaPayload) -> JSONResponse: ...
+        async def get_task_type_schema_api(_payload: TasksTypeSchemaPayload) -> JSONResponse: ...
 
         @self._app.post(
             "/api/tasks/configs/create",
@@ -271,7 +256,7 @@ class WebApp:
             response_class=JSONResponse,
         )
         @self._manager.task_api_request("create_task_config")
-        async def create_task_config_api(payload: CreateTaskConfigPayload) -> JSONResponse: ...
+        async def create_task_config_api(_payload: CreateTaskConfigPayload) -> JSONResponse: ...
 
         @self._app.post(
             "/api/tasks/configs/update",
@@ -280,7 +265,7 @@ class WebApp:
             response_class=JSONResponse,
         )
         @self._manager.task_api_request("update_task_config")
-        async def update_task_config_api(payload: UpdateTaskConfigPayload) -> JSONResponse: ...
+        async def update_task_config_api(_payload: UpdateTaskConfigPayload) -> JSONResponse: ...
 
         @self._app.post(
             "/api/tasks/configs/delete",
@@ -289,7 +274,7 @@ class WebApp:
             operation_id="delete_task_configs",
         )
         @self._manager.task_api_request("delete_task_configs")
-        async def delete_task_configs_api(payload: DeleteTaskConfigsPayload) -> JSONResponse: ...
+        async def delete_task_configs_api(_payload: DeleteTaskConfigsPayload) -> JSONResponse: ...
 
         @self._app.post(
             "/api/tasks/configs/get",
@@ -298,7 +283,7 @@ class WebApp:
             response_class=JSONResponse,
         )
         @self._manager.task_api_request("get_task_configs")
-        async def get_task_configs_api(payload: GetTaskConfigsPayload) -> JSONResponse: ...
+        async def get_task_configs_api(_payload: GetTaskConfigsPayload) -> JSONResponse: ...
 
         @self._app.post(
             "/api/tasks/instances/start",
@@ -307,7 +292,7 @@ class WebApp:
             response_class=JSONResponse,
         )
         @self._manager.task_api_request("start_task")
-        async def start_task_api(payload: StartTasksPayload) -> JSONResponse: ...
+        async def start_task_api(_payload: StartTasksPayload) -> JSONResponse: ...
 
         @self._app.post(
             "/api/tasks/instances/cancel",
@@ -316,7 +301,7 @@ class WebApp:
             response_class=JSONResponse,
         )
         @self._manager.task_api_request("cancel_tasks")
-        async def cancel_task_api(payload: CancelTasksPayload) -> JSONResponse: ...
+        async def cancel_task_api(_payload: CancelTasksPayload) -> JSONResponse: ...
 
         @self._app.post(
             "/api/tasks/instances/get",
@@ -325,7 +310,7 @@ class WebApp:
             response_class=JSONResponse,
         )
         @self._manager.task_api_request("get_tasks_info")
-        async def get_tasks_info_api(payload: TasksInfoPayload) -> JSONResponse: ...
+        async def get_tasks_info_api(_payload: TasksInfoPayload) -> JSONResponse: ...
 
         @self._app.post(
             "/api/tasks/instances/delete",
@@ -334,7 +319,7 @@ class WebApp:
             response_class=JSONResponse,
         )
         @self._manager.task_api_request("delete_tasks")
-        async def delete_tasks_api(payload: DeleteTasksPayload) -> JSONResponse: ...
+        async def delete_tasks_api(_payload: DeleteTasksPayload) -> JSONResponse: ...
 
         @self._app.post(
             "/api/tasks/instances/result",
@@ -343,7 +328,7 @@ class WebApp:
             response_class=JSONResponse,
         )
         @self._manager.task_api_request("get_tasks_result")
-        async def task_result_api(payload: TasksResultPayload) -> JSONResponse: ...
+        async def task_result_api(_payload: TasksResultPayload) -> JSONResponse: ...
 
         ################################################################################
         # SOURCES API
@@ -351,57 +336,57 @@ class WebApp:
 
         @self._app.get(
             "/api/sources/image-providers/list",
-            response_class=JSONResponse,
+            response_model=db_web.ListImageProvidersResponse,
             tags=[ApiTags.SOURCES],
             operation_id="list_image_providers",
         )
         @self._manager.sources_api_request("list_image_providers")
-        async def list_image_providers_api(request: Request) -> JSONResponse: ...
+        async def list_image_providers_api() -> db_web.ListImageProvidersResponse: ...
 
         @self._app.post(
             "/api/sources/image-providers/schema",
             tags=[ApiTags.SOURCES],
             operation_id="get_image_provider_schema",
-            response_class=JSONResponse,
+            response_model=db_web.GetImageProviderSchemaResponse,
         )
         @self._manager.sources_api_request("get_image_provider_schema")
-        async def get_image_provider_schema_api(payload: GetImageProviderSchemaPayload) -> JSONResponse: ...
+        async def get_image_provider_schema_api(_payload: db_web.GetImageProviderSchemaPayload) -> db_web.GetImageProviderSchemaResponse: ...
 
         @self._app.post(
             "/api/sources/update",
             tags=[ApiTags.SOURCES],
             operation_id="update_source",
-            response_class=JSONResponse,
+            response_model=db_web.UpdateSourceResponse,
         )
         @self._manager.sources_api_request("update_source")
-        async def update_source_api(payload: UpdateSourcePayload) -> JSONResponse: ...
+        async def update_source_api(_payload: db_web.UpdateSourcePayload) -> db_web.UpdateSourceResponse: ...
 
         @self._app.post(
             "/api/sources/create",
             tags=[ApiTags.SOURCES],
             operation_id="create_source",
-            response_class=JSONResponse,
+            response_model=db_web.CreateSourceResponse,
         )
         @self._manager.sources_api_request("create_source")
-        async def create_source_api(payload: CreateSourcePayload) -> JSONResponse: ...
+        async def create_source_api(_payload: db_web.CreateSourcePayload) -> db_web.CreateSourceResponse: ...
 
         @self._app.post(
             "/api/sources/delete",
             tags=[ApiTags.SOURCES],
             operation_id="delete_sources",
-            response_class=JSONResponse,
+            response_model=db_web.DeleteSourceResponse,
         )
         @self._manager.sources_api_request("delete_sources")
-        async def delete_sources_api(payload: DeleteSourcePayload) -> JSONResponse: ...
+        async def delete_sources_api(_payload: db_web.DeleteSourcePayload) -> db_web.DeleteSourceResponse: ...
 
         @self._app.get(
             "/api/sources/get",
-            response_class=JSONResponse,
+            response_model=db_web.GetSourcesResponse,
             tags=[ApiTags.SOURCES],
             operation_id="get_sources",
         )
         @self._manager.sources_api_request("get_sources")
-        async def get_sources(payload: Request) -> JSONResponse: ...
+        async def get_sources() -> db_web.GetSourcesResponse: ...
 
         ################################################################################
         # Images API
@@ -409,28 +394,28 @@ class WebApp:
 
         @self._app.post(
             "/api/images/metadata/get",
-            response_class=JSONResponse,
+            response_model=db_web.GetImageMetadataResponse,
             tags=[ApiTags.IMAGES],
             operation_id="get_image_metadata",
         )
         @self._manager.images_api_request("get_image_metadata")
-        async def get_image_metadata(payload: GetImageMetadataPayload) -> JSONResponse: ...
+        async def get_image_metadata(_payload: db_web.GetImageMetadataPayload) -> db_web.GetImageMetadataResponse: ...
 
         @self._app.post(
             "/api/images/metadata/update",
-            response_class=JSONResponse,
+            response_model=db_web.UpdateMetadataResponse,
             tags=[ApiTags.IMAGES],
             operation_id="update_image_metadata",
         )
         @self._manager.images_api_request("update_image_metadata")
-        async def update_image_metadata(payload: UpdateMetadataPayload) -> JSONResponse: ...
+        async def update_image_metadata(_payload: db_web.UpdateMetadataPayload) -> db_web.UpdateMetadataResponse: ...
 
         @self._app.post(
-            "/api/images/list", response_class=JSONResponse, tags=[ApiTags.IMAGES], operation_id="list_images"
+            "/api/images/list", response_model=db_web.ListFilesResponse, tags=[ApiTags.IMAGES], operation_id="list_images"
         )
         @self._manager.images_api_request("list_images")
-        async def list_files(payload: ListFilesPayload) -> JSONResponse: ...
+        async def list_files(_payload: db_web.ListFilesPayload) -> db_web.ListFilesResponse: ...
 
-        @self._app.post("/api/images/get", response_class=JSONResponse, tags=[ApiTags.IMAGES], operation_id="get_image")
+        @self._app.post("/api/images/get", response_model=db_web.GetFileResponse, tags=[ApiTags.IMAGES], operation_id="get_image")
         @self._manager.images_api_request("get_image")
-        async def get_file(payload: GetFilePayload) -> JSONResponse: ...
+        async def get_file(_payload: db_web.GetFilePayload) -> db_web.GetFileResponse: ...

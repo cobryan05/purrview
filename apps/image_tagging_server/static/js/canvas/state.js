@@ -2,7 +2,7 @@
 import { Logger } from '/app-static/js/ui/utils/index.js';
 
 /**
- * @typedef {import('../types').State} State
+ * @typedef {import('@app_types').State} State
  */
 
 
@@ -23,11 +23,7 @@ export const state = {
   selectedBoxUuid: null,
 
   // Current image context
-  image: {
-    name: null,
-    data: null,
-    bboxes: null
-  },
+  image: null,
 
   // --- Getters ---
   get selectedTool() { return this.currentTool; },
@@ -46,16 +42,14 @@ export const state = {
   },
 
   setClassUuid(uuid) { this.currentClassUuid = uuid; },
-  setImage(name, img, bboxes) {
-    this.image.name = name;
-    this.image.data = img;
-    this.image.bboxes = bboxes;
+  setImage(image) {
+    this.image = image
   },
   removeBboxGroup(group) {
-    this.canvas.bboxes?.delete(group.metadata.uuid);
+    this.canvas.bboxes?.delete(group.getAttr('metadata').uuid);
   },
   updateBboxGroup(group) {
-    this.canvas.bboxes?.set(group.metadata.uuid, group);
+    this.canvas.bboxes?.set(group.getAttr('metadata').uuid, group);
   },
   setSelectedBboxUuid(bboxUuid) { this.selectedBoxUuid = bboxUuid; },
   setTransformer(t) { this.canvas.transformer = t; },

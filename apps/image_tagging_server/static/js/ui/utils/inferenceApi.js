@@ -3,8 +3,8 @@
 import { Logger, toast, fetchClassByUuid } from '/app-static/js/ui/utils/index.js';
 
 /**
- * @typedef {import('../../types').BBoxInfo} BBoxInfo
- * @typedef {import('../../types').InferenceResult} InferenceResult
+ * @typedef {import('@app_types').RuntimeBbox} BBoxInfo
+ * @typedef {import('@app_types').InferenceResult} InferenceResult
  */
 
 /**
