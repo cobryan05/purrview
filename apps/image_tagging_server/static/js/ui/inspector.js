@@ -52,7 +52,7 @@ export function renderBboxInspector({ bboxUuid = null, target = 'tab-pane-inspec
     container.style.minWidth = '0';                // prevent overflow issues
     targetElement.appendChild(container);
 
-    BboxInfoField.create({ bbox: bbox }).then(bboxInfoFieldInstance => {
+    BboxInfoField.create({ bboxGroup: bbox }).then(bboxInfoFieldInstance => {
       const row = createGenericRow({
         field: new EditableField({
           field: bboxInfoFieldInstance,
@@ -62,18 +62,17 @@ export function renderBboxInspector({ bboxUuid = null, target = 'tab-pane-inspec
             Logger.warn(val);
           },
           onSave: (val) => {
-            const group = state.getBboxGroup(bboxUuid);
-            if (!group) {
+            const bboxGroup = state.getBboxGroup(bboxUuid);
+            if (!bboxGroup) {
               Logger.error(`No bbox found for UUID: ${bboxUuid}`);
               return;
             }
 
-            group.metadata = {
-              ...group.metadata, // preserve other metadata fields
+            bboxGroup.updateMetadata({
               classUuid: val.bbox_info.classUuid,
-              tagUuids: val.bbox_info.tagUuids || [],
-            };
-            state.updateBboxGroup(group);
+              tagUuids: val.bbox_info.tagUuids,
+            });
+            state.updateBboxGroup(bboxGroup);
             refreshCanvas();
           },
           onCancel: () => {

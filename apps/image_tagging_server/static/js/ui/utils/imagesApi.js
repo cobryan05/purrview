@@ -61,32 +61,36 @@ export async function fetchImage(path) {
   const img = new Image();
   img.src = `data:${imageRes.mime_type};base64,${imageRes.image_base64}`;
 
+  // Block until the image is fully loaded to resolve dimensions
+  await new Promise((resolve, reject) => {
+    img.onload = resolve;
+    img.onerror = () => reject(new Error(`Failed to decode base64 image for ${path}`));
+  });
+
   // Convert web_api format to app_types Map
   /** @type {Map<string,import('@app_types').RuntimeBbox>} */
   const bboxMap = new Map();
   (imageRes.metadata?.boxes || []).forEach(box => {
 
     const tagUuids = (box.tags ?? []).map(tag => tag.uuid);
+    const absX = box.x * img.width;
+    const absY = box.y * img.height;
+    const absHeight = box.height * img.height;
+    const absWidth = box.width * img.width;
 
     /** @type {import('@app_types').RuntimeBbox} */
     const bboxInfo = {
       uuid: box.uuid,
-      x: box.x,
-      y: box.y,
-      width: box.width,
-      height: box.height,
+      x: absX,
+      y: absY,
+      width: absWidth,
+      height: absHeight,
       confidence: undefined,
       text: undefined,
       classUuid: box.class_uuid,
       tagUuids
     };
     bboxMap.set(bboxInfo.uuid, bboxInfo);
-  });
-
-  // Block until the image is fully loaded
-  await new Promise((resolve, reject) => {
-    img.onload = resolve;
-    img.onerror = () => reject(new Error(`Failed to decode base64 image for ${path}`));
   });
 
   /** @type {import('@app_types').RuntimeImage} */

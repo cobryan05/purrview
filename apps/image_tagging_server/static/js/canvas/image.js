@@ -1,4 +1,5 @@
 import { createGroupFromBbox } from './drawing.js';
+import { BboxGroup } from './groups/BboxGroup.js';
 import { state } from './state.js'
 import { Logger, fetchImage, generateUUID } from '/app-static/js/ui/utils/index.js';
 
@@ -22,24 +23,27 @@ export async function loadImageAndMetadata(imageName) {
     const { width, height } = imageInfo.img;
 
     for (const [uuid, box] of imageInfo.bboxes.entries()) {
-      const absX = box.x * width;
-      const absY = box.y * height;
-      const absWidth = box.width * width;
-      const absHeight = box.height * height;
-
-      /** @type {import('@app_types').RuntimeBbox} */
-      const bbox = {
-        x: absX,
-        y: absY,
-        width: absWidth,
-        height: absHeight,
-        uuid,
-        classUuid: box.classUuid,
-        tagUuids: box.tagUuids ?? [],
-      };
-      const group = createGroupFromBbox(bbox);
-      group.name('annotation');
+      const group = createGroupFromBbox(box);
       state.updateBboxGroup(group);
+      // const bboxGroup = new BboxGroup(box);
+
+      // const absX = box.x * width;
+      // const absY = box.y * height;
+      // const absWidth = box.width * width;
+      // const absHeight = box.height * height;
+
+      // /** @type {import('@app_types').RuntimeBbox} */
+      // const bbox = {
+      //   x: absX,
+      //   y: absY,
+      //   width: absWidth,
+      //   height: absHeight,
+      //   uuid,
+      //   classUuid: box.classUuid,
+      //   tagUuids: box.tagUuids ?? [],
+      // };
+      // const group = createGroupFromBbox(bbox);
+      // state.updateBboxGroup(group);
     }
   }
   await refreshCanvas();
@@ -64,10 +68,11 @@ export async function refreshCanvas() {
     name: 'background',
   });
   layer.add(bg);
-  layer.moveToBottom();
+  bg.moveToBottom();
 
   for (const [key, group] of (state.canvas.bboxes ?? [])) {
     layer.add(group);
+    group.moveToTop();
   }
 
   // === Zoom to fit the image with padding ===
@@ -112,26 +117,28 @@ export function clearAnnotations() {
 }
 
 export async function saveAnnotations() {
-  if (!state.image.name || !state.image.data) {
+  if (!state.image?.name || !state.image?.img) {
     toast('No image loaded to save annotations!');
     return;
   }
 
   try {
-    const boxes = Array.from(state.canvas.bboxes.values()).map(group => {
-      const rect = group.metadata.rect;
-      const uuid = group.metadata.uuid ?? generateUUID();
-      const bbox_uuid = group.metadata.uuid ?? generateUUID();
-      const bbox_class_uuid = group.metadata.classUuid ?? null;
+    const boxes = Array.from(state.canvas.bboxes.values()).map(bboxGroup => {
+      const rect = bboxGroup.metadata.rect;
+      const uuid = bboxGroup.metadata.uuid ?? generateUUID();
+      const bbox_uuid = bboxGroup.metadata.uuid ?? generateUUID();
+      const bbox_class_uuid = bboxGroup.metadata.classUuid ?? null;
+
+      const { width, height } = state.image?.img;
 
       return {
         uuid: bbox_uuid,
         class_uuid: bbox_class_uuid,
-        x: group.x() / state.image.data.width,
-        y: group.y() / state.image.data.height,
-        width: rect.width() / state.image.data.width,
-        height: rect.height() / state.image.data.height,
-        extra: group.metadata.extra || {}  // Arbitrary key-value pairs
+        x: bboxGroup.x() / width,
+        y: bboxGroup.y() / height,
+        width: rect.width() / width,
+        height: rect.height() / height,
+        extra: bboxGroup.metadata.extra || {}  // Arbitrary key-value pairs
       };
     });
 
@@ -245,7 +252,7 @@ export function addRecognizedBoxes(results) {
     };
     const shape = createGroupFromBbox(bbox);
 
-    shape.name('annotation');
+
     layer.add(shape);
   });
 

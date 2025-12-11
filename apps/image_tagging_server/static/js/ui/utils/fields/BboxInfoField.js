@@ -10,15 +10,36 @@ import { SchemaField } from '././SchemaField.js';
 // Each object can have 'key', 'text', and 'color' properties
 
 export class BboxInfoField extends Field {
+  /**
+   * @param {Object} [params={}] - Field initialization params.
+   */
   constructor(params = {}) {
     super(params);
     /** @type {SchemaField} */
-    this._schemaField = /** @type {any} */ (null);
+    this._schemaField;
+    /** @type {import('@app_types').BboxGroup} */
+    this._bboxGroup;
   }
 
-  static async create({ bbox, classes, value = [], ...rest } = {}) {
+
+  /**
+   * @typedef {Object} BboxInfoFieldCreateOptions
+   * @property {import('@app_types').BboxGroup} bboxGroup
+   * @property {import('@web_api').ClassMetadata[]} classes
+   * @property {any[]} [value] - Optional initial selected values.
+   *
+   * @property {Object.<string, any>} [rest] - Additional parameters passed to Field.
+   */
+
+  /**
+   * Create a BboxInfoField instance.
+   *
+   * @param {BboxInfoFieldCreateOptions} options
+   * @returns {Promise<BboxInfoField>}
+   */
+  static async create({ bboxGroup, classes, value = [], ...rest }) {
     const instance = new BboxInfoField({ value, ...rest });
-    instance._metadata = bbox.metadata;
+    instance._bboxGroup = bboxGroup;
 
     const schema = {
       "classUuid": {
@@ -30,12 +51,14 @@ export class BboxInfoField extends Field {
       "tagUuids": {
         "label": "Tags",
         "type": "tags",
+
         "description": "Tag applied to the bbox"
       }
     };
 
-    const schema_values = { classUuid: instance._metadata.classUuid, tagUuids: instance._metadata.tagUuids };
+    const schema_values = { classUuid: instance._bboxGroup.metadata.classUuid, tagUuids: instance._bboxGroup.metadata.tagUuids };
     instance._schemaField = await SchemaField.create({ schema: schema ?? {}, values: schema_values });
+
     return instance;
   }
 
@@ -50,10 +73,10 @@ export class BboxInfoField extends Field {
     const span = document.createElement('span');
     span.appendChild(document.createElement('br'));
     span.appendChild(await this._schemaField.renderView());
-    return renderBoxed(span, {fullWidth: true});
+    return renderBoxed(span, { fullWidth: true });
   }
 
   getValue() {
-    return { bbox_info:this._schemaField.getValue()};
+    return { bbox_info: this._schemaField.getValue() };
   }
 }

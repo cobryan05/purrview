@@ -23,6 +23,9 @@
       ],
       "@app_types": [
         "./static/js/types.js"
+      ],
+      "@konva_groups": [
+        "./static/js/canvas/groups/index.js"
       ]
     }
   },

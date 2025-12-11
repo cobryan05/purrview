@@ -4,6 +4,7 @@
  * @typedef {import('@konva').default.Transformer} Transformer
  * @typedef {import('@konva').default.Group} Group
  * @typedef {import('@web_api').ImageMetadata} ImageMetadata
+ * @typedef {import('@konva_groups').BboxGroup} BboxGroup
  */
 
 /**
@@ -31,7 +32,7 @@
  * @property {Stage|null} stage
  * @property {Layer|null} layer
  * @property {Transformer|null} transformer
- * @property {Map<string,Group>|null} bboxes
+ * @property {Map<string,BboxGroup>} bboxes
  */
 
 /**
@@ -49,12 +50,12 @@
  * @property {string} selectedTool
  * @property {string|null} selectedBboxUuid
  * @property {string|null} classUuid
- * @property {(uuid:string) => Group|undefined} getBboxGroup
+ * @property {(uuid:string) => BboxGroup|undefined} getBboxGroup
  * @property {(tool:string) => void} setTool
  * @property {(uuid:string) => void} setClassUuid
  * @property {(image:RuntimeImage) => void} setImage
- * @property {(group:Group) => void} removeBboxGroup
- * @property {(group:Group) => void} updateBboxGroup
+ * @property {(bboxGroup:BboxGroup) => void} removeBboxGroup
+ * @property {(bboxGroup:BboxGroup) => void} updateBboxGroup
  * @property {(bboxUuid:string) => void} setSelectedBboxUuid
  * @property {(t:Transformer) => void} setTransformer
  * @property {() => void} clearBboxes

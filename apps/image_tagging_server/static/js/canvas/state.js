@@ -14,7 +14,7 @@ export const state = {
     layer: null,
     transformer: null,
 
-    bboxes: null,
+    bboxes: new Map(),
   },
 
   // Current tool + selection
@@ -45,11 +45,13 @@ export const state = {
   setImage(image) {
     this.image = image
   },
-  removeBboxGroup(group) {
-    this.canvas.bboxes?.delete(group.getAttr('metadata').uuid);
+  /** @param {import('@konva_groups').BboxGroup} bboxGroup */
+  removeBboxGroup(bboxGroup) {
+    this.canvas.bboxes?.delete(bboxGroup.metadata.uuid);
   },
-  updateBboxGroup(group) {
-    this.canvas.bboxes?.set(group.getAttr('metadata').uuid, group);
+  /** @param {import('@konva_groups').BboxGroup} bboxGroup */
+  updateBboxGroup(bboxGroup) {
+    this.canvas.bboxes?.set(bboxGroup.metadata.uuid, bboxGroup);
   },
   setSelectedBboxUuid(bboxUuid) { this.selectedBoxUuid = bboxUuid; },
   setTransformer(t) { this.canvas.transformer = t; },

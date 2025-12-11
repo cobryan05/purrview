@@ -1,4 +1,5 @@
-import { createGroupFromBbox, updateGroupMetadata } from './drawing.js';
+import { createGroupFromBbox} from './drawing.js';
+import { BboxGroup } from './groups/BboxGroup.js';
 import { state } from './state.js'
 import { clearSelection, selectBboxTool, setTool, selectBbox } from './tools.js';
 
@@ -170,17 +171,16 @@ export async function handleMouseUp(e) {
   _lastClickTime = now;
   _lastClickPos = pos;
 
-  if (hitGroup) {
+  if (hitGroup && hitGroup instanceof BboxGroup) {
     if (isDoubleClick) {
       if (!isSelectTool) {
         const currentClassUuid = state.currentClassUuid;
-        updateGroupMetadata(hitGroup, { classUuid: currentClassUuid });
+        hitGroup.updateMetadata( { classUuid: currentClassUuid });
       } else {
-        selectBbox(hitGroup.getAttr('metadata').uuid);
+        selectBbox(hitGroup.metadata.uuid);
       }
     } else {
-      const box = hitGroup.findOne('.box');
-      selectShape(hitGroup, box);
+      selectShape(hitGroup, hitGroup.metadata.rect);
     }
   }
 
