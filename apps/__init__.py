@@ -11,7 +11,7 @@ class AppConfig:
 
 
 APPS_CONFIG = {
-    "image_tagging_server": AppConfig("Image Tagging Server", "localhost", 8000),
+    "image_tagging_server": AppConfig("Image Tagging Server", "localhost", 7999),
     "inference_server": AppConfig("Inference Server", "localhost", 8001),
     "tasks_server": AppConfig("Tasks Server", "localhost", 8002),
     "db_server": AppConfig("DB Server", "localhost", 8003),

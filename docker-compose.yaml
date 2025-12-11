@@ -30,9 +30,9 @@ services:
       - ./requirements.txt:/app/requirements.txt
       - ./pyproject.toml:/app/pyproject.toml
     ports:
-      - "8000-8003:8000-8003" # Whisker-Watcher apps
-      - "8553:8554"           # RTSP relay
-      - "9001:9001"           # Supervisord
+      - "7999:7999"  # Whisker-Watcher apps
+      - "8553:8554"  # RTSP relay
+      - "9001:9001"  # Supervisord
     restart: unless-stopped
 
   # To convert models put them in the 'models' directory and run, eg:

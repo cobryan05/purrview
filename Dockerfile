@@ -70,7 +70,7 @@ RUN chown -R appuser:appuser /app /logs /conf
 
 USER appuser
 
-EXPOSE 1935 8000 8001 8002 8003 8004 8554 9001 9997
+EXPOSE 1935 7999 8001 8002 8003 8004 8554 9001 9997
 
 CMD ["/usr/bin/supervisord", "-c", "/conf/supervisord.conf"]
 
@@ -84,7 +84,9 @@ USER root
 
 # Development dependencies (CV2 over X11, git)
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends libgl1 libxext6 libxrender1 libsm6 libx11-6 git \
+  && apt-get install -y --no-install-recommends \
+  # libgl1 libxext6 libxrender1 libsm6 libx11-6 \
+    git \
   && rm -rf /var/lib/apt/lists/*
 
 USER appuser
