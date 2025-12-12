@@ -3,6 +3,11 @@ import { BboxGroup } from './groups/BboxGroup.js';
 import { state } from './state.js'
 import { Logger, fetchImage, generateUUID } from '/app-static/js/ui/utils/index.js';
 
+/**
+ * @typedef {import('@app_types').RuntimeBbox} BBoxInfo
+ * @typedef {import('@app_types').InferenceResult} InferenceResult
+ */
+
 export async function reloadImage() {
   const imageName = state.image.name;
   if (!imageName) {
@@ -213,47 +218,21 @@ export function exportAnnotations() {
   }
 }
 
+/**
+ * Adds recognition results to the current canvas
+ * @param {InferenceResult} results - The inference results to add to the current canvas
+ */
 export function addRecognizedBoxes(results) {
   const layer = state.canvas.layer;
-  if (!layer) {
-    Logger.error("Couldn't find layer to add recognition results to");
+  const img = state.image?.img;
+  if (!layer || !img) {
+    Logger.error("Couldn't find image and canvas to add results");
     return;
   }
 
-  const bg = layer.findOne(
-    node => node.name() === 'background' && node instanceof Konva.Image);
-  if (!bg) {
-    Logger.error('No background image found!');
-    return;
-  }
-
-  const imageWidth = bg.width();
-  const imageHeight = bg.height();
-
-  results.forEach(obj => {
-    const [x_norm, y_norm, w_norm, h_norm] = obj.bounding_box;
-
-    const x = x_norm * imageWidth;
-    const y = y_norm * imageHeight;
-    const width = w_norm * imageWidth;
-    const height = h_norm * imageHeight;
-    const uuid = generateUUID();
-
-    /** @type {import('@app_types').RuntimeBbox} */
-    const bbox = {
-      uuid,
-      x,
-      y,
-      width,
-      height,
-      classUuid: obj.class_uuid,
-      confidence: obj.confidence,
-      text: obj.class.name
-    };
-    const shape = createGroupFromBbox(bbox);
-
-
-    layer.add(shape);
+  results.detections.forEach(box => {
+    const bboxGroup = createGroupFromBbox(box);
+    layer.add(bboxGroup);
   });
 
   layer.draw();

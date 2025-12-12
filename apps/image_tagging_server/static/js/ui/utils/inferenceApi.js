@@ -56,10 +56,10 @@ export async function runInference(model_name, image) {
     result.detections.map(async (det) => {
       const [x, y, width, height] = det.bounding_box;
       return {
-        x,
-        y,
-        width,
-        height,
+        x: x*image.width,
+        y: y*image.height,
+        width: width*image.width,
+        height: height*image.height,
         confidence: det.confidence,
         text: (await fetchClassByUuid(det.class_uuid))?.metadata.name || det.class_name,
         classUuid: det.class_uuid || undefined,

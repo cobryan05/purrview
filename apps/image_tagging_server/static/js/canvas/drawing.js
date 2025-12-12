@@ -23,6 +23,7 @@ export function createGroupFromBbox(bbox) {
   // Restore draggable on mouseup or dragend
   bboxGroup.on('mouseup dragend', () => bboxGroup.draggable(true));
 
+  // The following fixes the layout of the bbox when rescaling it.
   const rect = bboxGroup.metadata.rect;
   rect.on('transform', () => {
     const layer = state.canvas.layer;

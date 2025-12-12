@@ -67,14 +67,12 @@ export async function recognizeImage() {
     }
 
     const modelName = selected.value;
-    const layer = state.canvas.layer;
-    const background = layer.findOne('.background');
-    if (!background || !background.image()) {
-      throw new Error('No background image found on canvas');
+    const img = state.image?.img;
+    if (!img) {
+      throw new Error('No image found on canvas');
     }
-    const img = background.image();
     const result = await runInference(modelName, img);
-    await addRecognizedBoxes(result.detections, img);
+    await addRecognizedBoxes(result);
   } catch (err) {
     Logger.error('Failed to recognize image:', err);
   }
