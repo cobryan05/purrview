@@ -1,4 +1,4 @@
-import { generateUUID, fetchClassByUuid } from '/app-static/js/ui/utils/index.js';
+import { generateUUID, fetchClassByUuid, Logger } from '/app-static/js/ui/utils/index.js';
 import { state } from '../state.js';
 /**
  * @typedef {Object} CanvasBboxMetadata
@@ -32,6 +32,8 @@ export class CanvasBboxGroup extends Konva.Group {
       stroke: color,
       strokeWidth: 2,
       name: 'box',
+      draggable: false,
+      strokeScaleEnabled: false
     });
 
     const labelText = bbox.text ?? 'Unknown';
@@ -49,48 +51,28 @@ export class CanvasBboxGroup extends Konva.Group {
 
 
     // Restore draggable on mouseup or dragend
-    rect.on('mouseup dragend', () => this.draggable(true));
+    this.on('mouseup dragend', () => this.draggable(true));
 
     // Disable dragging with middle mouse button down
-    rect.on('mousedown', e => {
+    this.on('mousedown', e => {
       if (e.evt.button === 1) {
-        rect.draggable(false);
+        this.draggable(false);
       } else {
-        rect.draggable(state.currentTool === 'select');
+        this.draggable(state.currentTool === 'select');
       }
     });
 
-    // Fix the layout on resize
-    rect.on('transform', () => {
-      const scaleX = rect.scaleX();
-      const scaleY = rect.scaleY();
+    rect.on('transform', e => {
+      // The transformation happened to the rectangle, so convert it to a transformation
+      // on the whole group and reset the rectangle
+      const newRectPos = {
+        x: this.x() + rect.x(),
+        y: this.y() + rect.y(),
+        width: Math.max(rect.width() * rect.scaleX(), 10),
+        height: Math.max(rect.height() * rect.scaleY(), 10)
+      };
 
-      let newWidth = rect.width() * scaleX;
-      let newHeight = rect.height() * scaleY;
-
-      const MIN_SIZE = 10;
-      newWidth = Math.max(newWidth, MIN_SIZE);
-      newHeight = Math.max(newHeight, MIN_SIZE);
-
-      const rectLeft = rect.x();
-      const rectTop = rect.y();
-
-      let newGroupX = this.x() + rectLeft;
-      let newGroupY = this.y() + rectTop;
-
-      rect.width(newWidth);
-      rect.height(newHeight);
-
-      this.position({
-        x: newGroupX,
-        y: newGroupY,
-      });
-
-      rect.scaleX(1);
-      rect.scaleY(1);
-
-      this.applyBoundingBoxLayout();
-      state.canvas.layer?.batchDraw();
+      this.updatePosition(newRectPos);
     });
 
     this._metadata = {
@@ -102,9 +84,53 @@ export class CanvasBboxGroup extends Konva.Group {
       confidence: bbox.confidence ?? null,
     };
 
-    rect.name('annotation');
+    this.name('annotation');
     // Resolve class name?
     this.updateMetadata();
+  }
+
+  /**
+   * Update the bounding box position and/or size.
+   *
+   * Only properties explicitly provided in `position` are applied; any
+   * omitted properties are left unchanged.
+   *
+   * @param {Object} position
+   * @param {number} [position.x]      New X position of the group (canvas coords)
+   * @param {number} [position.y]      New Y position of the group (canvas coords)
+   * @param {number} [position.width]  New width of the bounding box
+   * @param {number} [position.height] New height of the bounding box
+   */
+  updatePosition(position) {
+    const rect = this.metadata.rect;
+    const text = this.metadata.text;
+
+    // Update group position if provided
+    if (position.x !== undefined || position.y !== undefined) {
+      this.position({
+        x: position.x !== undefined ? position.x : this.x(),
+        y: position.y !== undefined ? position.y : this.y(),
+      });
+    }
+
+    // Update rect size if provided
+    if (position.width !== undefined) {
+      rect.width(position.width);
+    }
+    if (position.height !== undefined) {
+      rect.height(position.height);
+    }
+
+    // Reset any scaling that may exist
+    rect.position({x:0, y:0});
+    rect.scaleX(1);
+    rect.scaleY(1);
+
+    text.setAttrs({
+      x: 0,
+      y: -18
+    });
+    // state.canvas.layer?.batchDraw();
   }
 
   /**
@@ -134,7 +160,7 @@ export class CanvasBboxGroup extends Konva.Group {
       : Promise.resolve(null)
     ).then(resolvedClass => {
       let bboxText;
-      const classText = resolvedClass?.metadata?.name ?? mergedMetadata?.text ?? 'Unknown';
+      const classText = resolvedClass?.metadata?.name ?? 'Unknown';
       const color = resolvedClass?.metadata?.color ?? 'grey';
       bboxText = `${classText}${mergedMetadata.confidence != null ? ` (${(mergedMetadata.confidence * 100).toFixed(1)}%)` : ''}`;
 
@@ -143,24 +169,12 @@ export class CanvasBboxGroup extends Konva.Group {
       textRef.text(bboxText);
       textRef.fill(color);
       rectRef.stroke(color);
-
-      this.applyBoundingBoxLayout();
       state.canvas.layer?.batchDraw();
     })
       .catch(err => {
         console.error('Failed to fetch class:', err);
         // optionally fallback
       });
-  }
-
-  /**
-   * Keep rect at (0,0) and class positioned just above.
-   */
-  applyBoundingBoxLayout() {
-    this._metadata.rect.x(0);
-    this._metadata.rect.y(0);
-    this._metadata.text.x(0);
-    this._metadata.text.y(-18);
   }
 
 

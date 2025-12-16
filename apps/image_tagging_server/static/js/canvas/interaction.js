@@ -1,9 +1,13 @@
-import { createCanvasBboxFromRuntimeBbox} from './drawing.js';
+import { Logger } from '../ui/utils/logging.js';
+import { generateUUID } from '../ui/utils/utils.js';
 import { CanvasBboxGroup } from './groups/CanvasBboxGroup.js';
 import { state } from './state.js'
 import { clearSelection, selectBboxTool, setTool, selectBbox } from './tools.js';
 
+
+/** @type {import('@app_types').CanvasBboxGroup | null} */
 let pendingDraggedBbox = null;
+
 let startPos = null;
 let isPanning = false;
 let lastPanPos = null;
@@ -55,6 +59,10 @@ function getPointerPosition() {
 export async function handleMouseDown(e) {
   const stage = state.canvas.stage;
   const layer = state.canvas.layer;
+  if( !stage || !layer ) {
+    Logger.error("No canvas!");
+    return;
+  }
   if (e.evt.button === 1) {
     isPanning = true;
     lastPanPos = { x: e.evt.clientX, y: e.evt.clientY };
@@ -74,12 +82,13 @@ export async function handleMouseDown(e) {
 
   startPos = pos;
   const currentClassUuid = state.currentClassUuid;
-  pendingDraggedBbox = createCanvasBboxFromRuntimeBbox(
-    pos.x, pos.y, { width: 1, height: 1, metadata: { classUuid: currentClassUuid } });
+
+  /** @type {import('@app_types').RuntimeBbox} */
+  const emptyBbox = { x: pos.x, y: pos.y, width: 1, height: 1, classUuid: currentClassUuid, uuid: generateUUID() };
+  pendingDraggedBbox = new CanvasBboxGroup(emptyBbox);
   if (pendingDraggedBbox) {
-    layer.add(pendingDraggedBbox);
-    pendingDraggedBbox.name('annotation');
     state.updateCanvasBbox(pendingDraggedBbox);
+    layer.add(pendingDraggedBbox);
   }
 }
 
@@ -118,22 +127,12 @@ export async function handleMouseMove(e) {
 
   const dx = pos.x - startPos.x;
   const dy = pos.y - startPos.y;
-
-  const box = pendingDraggedBbox.findOne('.box');
-  const cls = pendingDraggedBbox.findOne('.class');
-
-  if (!box || !cls) return;
-
   const newX = dx < 0 ? pos.x : startPos.x;
   const newY = dy < 0 ? pos.y : startPos.y;
   const newWidth = Math.abs(dx);
   const newHeight = Math.abs(dy);
-
-  pendingDraggedBbox.position({ x: newX, y: newY });
-  box.size({ width: newWidth, height: newHeight });
-  cls.y(-18);
-
-  layer.batchDraw();
+  pendingDraggedBbox.updatePosition({ x: newX, y: newY, width: newWidth, height:newHeight });
+  //layer.batchDraw();
 }
 
 export async function handleMouseUp(e) {
@@ -148,7 +147,7 @@ export async function handleMouseUp(e) {
   }
 
   if (pendingDraggedBbox) {
-    const box = pendingDraggedBbox.findOne('.box');
+    const box = pendingDraggedBbox.metadata.rect;
     const stage = state.canvas.stage;
 
     if (box.width() < DOUBLE_CLICK_DISTANCE_PX || box.height() < DOUBLE_CLICK_DISTANCE_PX) {
@@ -175,7 +174,7 @@ export async function handleMouseUp(e) {
     if (isDoubleClick) {
       if (!isSelectTool) {
         const currentClassUuid = state.currentClassUuid;
-        hitGroup.updateMetadata( { classUuid: currentClassUuid });
+        hitGroup.updateMetadata({ classUuid: currentClassUuid });
       } else {
         selectBbox(hitGroup.metadata.uuid);
       }

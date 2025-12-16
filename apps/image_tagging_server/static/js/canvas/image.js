@@ -1,4 +1,3 @@
-import { createCanvasBboxFromRuntimeBbox } from './drawing.js';
 import { CanvasBboxGroup } from './groups/CanvasBboxGroup.js';
 import { state } from './state.js'
 import { Logger, fetchImage, generateUUID } from '/app-static/js/ui/utils/index.js';
@@ -6,6 +5,7 @@ import { Logger, fetchImage, generateUUID } from '/app-static/js/ui/utils/index.
 /**
  * @typedef {import('@app_types').RuntimeBbox} BBoxInfo
  * @typedef {import('@app_types').InferenceResult} InferenceResult
+
  */
 
 export async function reloadImage() {
@@ -28,7 +28,7 @@ export async function loadImageAndMetadata(imageName) {
     const { width, height } = imageInfo.img;
 
     for (const [uuid, box] of imageInfo.bboxes.entries()) {
-      const canvasBbox = createCanvasBboxFromRuntimeBbox(box);
+      const canvasBbox = new CanvasBboxGroup(box);
       state.updateCanvasBbox(canvasBbox);
     }
   }
@@ -216,7 +216,7 @@ export async function addInferenceResults(results) {
     return;
   }
   results.detections.forEach(box => {
-    const bboxGroup = createCanvasBboxFromRuntimeBbox(box);
+    const bboxGroup = new CanvasBboxGroup(box);
     state.updateCanvasBbox(bboxGroup);
   });
 

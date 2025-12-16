@@ -75,6 +75,7 @@ export const state = {
       anchorSize: 10,
       anchorCornerRadius: 5,
       enabledAnchors: ['top-left', 'top-right', 'bottom-left', 'bottom-right'],
+      ignoreStroke: true,
       keepRatio: false,
       /**
        * @param {KonvaBox} oldBox
