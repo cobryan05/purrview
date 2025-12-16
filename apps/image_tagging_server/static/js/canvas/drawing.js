@@ -1,67 +1,15 @@
 import { state } from './state.js';
 import { generateUUID, fetchClassByUuid } from '/app-static/js/ui/utils/index.js';
-import { BboxGroup } from './groups/BboxGroup.js';
+import { CanvasBboxGroup } from './groups/CanvasBboxGroup.js';
 
 /**
  * Create a bounding box group from a bbox object.
  * @param {import('@app_types').RuntimeBbox} bbox
- * @returns {BboxGroup}
+ * @returns {CanvasBboxGroup}
  */
-export function createGroupFromBbox(bbox) {
-  const bboxGroup = new BboxGroup(bbox);
-
-  // --- Event handlers setup ---
-  // Disable dragging with middle mouse button down
-  bboxGroup.on('mousedown', e => {
-    if (e.evt.button === 1) {
-      bboxGroup.draggable(false);
-    } else {
-      bboxGroup.draggable(state.currentTool === 'select');
-    }
-  });
-
-  // Restore draggable on mouseup or dragend
-  bboxGroup.on('mouseup dragend', () => bboxGroup.draggable(true));
-
-  // The following fixes the layout of the bbox when rescaling it.
-  const rect = bboxGroup.metadata.rect;
-  rect.on('transform', () => {
-    const layer = state.canvas.layer;
-
-    const scaleX = rect.scaleX();
-    const scaleY = rect.scaleY();
-
-    let newWidth = rect.width() * scaleX;
-    let newHeight = rect.height() * scaleY;
-
-    const MIN_SIZE = 10;
-    newWidth = Math.max(newWidth, MIN_SIZE);
-    newHeight = Math.max(newHeight, MIN_SIZE);
-
-    const rectLeft = rect.x();
-    const rectTop = rect.y();
-
-    let newGroupX = bboxGroup.x() + rectLeft;
-    let newGroupY = bboxGroup.y() + rectTop;
-
-    rect.width(newWidth);
-    rect.height(newHeight);
-
-    bboxGroup.position({
-      x: newGroupX,
-      y: newGroupY,
-    });
-
-    rect.scaleX(1);
-    rect.scaleY(1);
-
-    applyBoundingBoxLayout(bboxGroup);
-    layer?.batchDraw();
-  });
-
-  bboxGroup.name('annotation');
-  bboxGroup.updateMetadata();
-  return bboxGroup;
+export function createCanvasBboxFromRuntimeBbox(bbox) {
+  const canvasBbox = new CanvasBboxGroup(bbox);
+  return canvasBbox;
 }
 
 // /**
@@ -110,17 +58,3 @@ export function createGroupFromBbox(bbox) {
 //     });
 // }
 
-
-/**
- * Keep rect at (0,0) and class positioned just above.
- */
-function applyBoundingBoxLayout(group) {
-  const rect = group.findOne('.box');
-  const text = group.findOne('.class');
-  if (!rect || !text) return;
-
-  rect.x(0);
-  rect.y(0);
-  text.x(0);
-  text.y(-18);
-}

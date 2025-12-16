@@ -4,7 +4,7 @@
  * @typedef {import('@konva').default.Transformer} Transformer
  * @typedef {import('@konva').default.Group} Group
  * @typedef {import('@web_api').ImageMetadata} ImageMetadata
- * @typedef {import('@konva_groups').BboxGroup} BboxGroup
+ * @typedef {import('@konva_groups').CanvasBboxGroup} CanvasBboxGroup
  */
 
 /**
@@ -16,7 +16,7 @@
  * @property {number} height
  * @property {number} [confidence]
  * @property {string} [text]
- * @property {string} [classUuid]
+ * @property {string|null} classUuid
  * @property {string[]} [tagUuids]
  */
 
@@ -32,7 +32,7 @@
  * @property {Stage|null} stage
  * @property {Layer|null} layer
  * @property {Transformer|null} transformer
- * @property {Map<string,BboxGroup>} bboxes
+ * @property {Map<string,CanvasBboxGroup>} bboxes
  */
 
 /**
@@ -50,12 +50,12 @@
  * @property {string} selectedTool
  * @property {string|null} selectedBboxUuid
  * @property {string|null} classUuid
- * @property {(uuid:string) => BboxGroup|undefined} getBboxGroup
+ * @property {(uuid:string) => CanvasBboxGroup|undefined} getBboxGroup
  * @property {(tool:string) => void} setTool
  * @property {(uuid:string) => void} setClassUuid
  * @property {(image:RuntimeImage) => void} setImage
- * @property {(bboxGroup:BboxGroup) => void} removeBboxGroup
- * @property {(bboxGroup:BboxGroup) => void} updateBboxGroup
+ * @property {(bboxGroup:CanvasBboxGroup) => void} removeBboxGroup
+ * @property {(bboxGroup:CanvasBboxGroup) => void} updateCanvasBbox
  * @property {(bboxUuid:string) => void} setSelectedBboxUuid
  * @property {(t:Transformer) => void} setTransformer
  * @property {() => void} clearBboxes

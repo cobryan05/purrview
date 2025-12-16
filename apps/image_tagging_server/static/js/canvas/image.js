@@ -1,5 +1,5 @@
-import { createGroupFromBbox } from './drawing.js';
-import { BboxGroup } from './groups/BboxGroup.js';
+import { createCanvasBboxFromRuntimeBbox } from './drawing.js';
+import { CanvasBboxGroup } from './groups/CanvasBboxGroup.js';
 import { state } from './state.js'
 import { Logger, fetchImage, generateUUID } from '/app-static/js/ui/utils/index.js';
 
@@ -28,27 +28,8 @@ export async function loadImageAndMetadata(imageName) {
     const { width, height } = imageInfo.img;
 
     for (const [uuid, box] of imageInfo.bboxes.entries()) {
-      const group = createGroupFromBbox(box);
-      state.updateBboxGroup(group);
-      // const bboxGroup = new BboxGroup(box);
-
-      // const absX = box.x * width;
-      // const absY = box.y * height;
-      // const absWidth = box.width * width;
-      // const absHeight = box.height * height;
-
-      // /** @type {import('@app_types').RuntimeBbox} */
-      // const bbox = {
-      //   x: absX,
-      //   y: absY,
-      //   width: absWidth,
-      //   height: absHeight,
-      //   uuid,
-      //   classUuid: box.classUuid,
-      //   tagUuids: box.tagUuids ?? [],
-      // };
-      // const group = createGroupFromBbox(bbox);
-      // state.updateBboxGroup(group);
+      const canvasBbox = createCanvasBboxFromRuntimeBbox(box);
+      state.updateCanvasBbox(canvasBbox);
     }
   }
   await refreshCanvas();
@@ -128,24 +109,30 @@ export async function saveAnnotations() {
   }
 
   try {
-    const boxes = Array.from(state.canvas.bboxes.values()).map(bboxGroup => {
-      const rect = bboxGroup.metadata.rect;
-      const uuid = bboxGroup.metadata.uuid ?? generateUUID();
-      const bbox_uuid = bboxGroup.metadata.uuid ?? generateUUID();
-      const bbox_class_uuid = bboxGroup.metadata.classUuid ?? null;
+    const boxes = Array.from(state.canvas.bboxes.values())
+      .filter(canvasBbox => canvasBbox.metadata.classUuid != null)
+      .map(canvasBbox => {
+        const rect = canvasBbox.metadata.rect;
+        const uuid = canvasBbox.metadata.uuid ?? generateUUID();
+        const bbox_uuid = canvasBbox.metadata.uuid ?? generateUUID();
+        const bbox_class_uuid = canvasBbox.metadata.classUuid ?? null;
 
-      const { width, height } = state.image?.img;
+        const { width, height } = state.image?.img;
 
-      return {
-        uuid: bbox_uuid,
-        class_uuid: bbox_class_uuid,
-        x: bboxGroup.x() / width,
-        y: bboxGroup.y() / height,
-        width: rect.width() / width,
-        height: rect.height() / height,
-        extra: bboxGroup.metadata.extra || {}  // Arbitrary key-value pairs
-      };
-    });
+        return {
+          uuid: bbox_uuid,
+          class_uuid: bbox_class_uuid,
+          x: canvasBbox.x() / width,
+          y: canvasBbox.y() / height,
+          width: rect.width() / width,
+          height: rect.height() / height,
+          extra: canvasBbox.metadata.extra || {}  // Arbitrary key-value pairs
+        };
+      });
+    const missingCnt = state.canvas.bboxes.size - boxes.length
+    if( missingCnt > 0 ) {
+      Logger.error(`Discarding ${missingCnt} boxes with missing data`);
+    }
 
     const payload = {
       image_path: state.image.name,
@@ -222,18 +209,16 @@ export function exportAnnotations() {
  * Adds recognition results to the current canvas
  * @param {InferenceResult} results - The inference results to add to the current canvas
  */
-export function addRecognizedBoxes(results) {
+export async function addInferenceResults(results) {
   const layer = state.canvas.layer;
-  const img = state.image?.img;
-  if (!layer || !img) {
+  if (!layer) {
     Logger.error("Couldn't find image and canvas to add results");
     return;
   }
-
   results.detections.forEach(box => {
-    const bboxGroup = createGroupFromBbox(box);
-    layer.add(bboxGroup);
+    const bboxGroup = createCanvasBboxFromRuntimeBbox(box);
+    state.updateCanvasBbox(bboxGroup);
   });
 
-  layer.draw();
+  await refreshCanvas();
 }

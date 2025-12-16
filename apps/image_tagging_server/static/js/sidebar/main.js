@@ -1,6 +1,6 @@
 // canvas_ui_main.js
 
-import { addRecognizedBoxes, loadImageAndMetadata } from '/app-static/js/canvas/image.js';
+import { addInferenceResults, loadImageAndMetadata } from '/app-static/js/canvas/image.js';
 import { state } from '/app-static/js/canvas/state.js';
 import { setTool } from '/app-static/js/canvas/tools.js';
 import { renderClassList } from '/app-static/js/ui/classes.js';
@@ -72,7 +72,7 @@ export async function recognizeImage() {
       throw new Error('No image found on canvas');
     }
     const result = await runInference(modelName, img);
-    await addRecognizedBoxes(result);
+    await addInferenceResults(result);
   } catch (err) {
     Logger.error('Failed to recognize image:', err);
   }

@@ -1,5 +1,5 @@
-export { BboxGroup } from './BboxGroup.js'
+export { CanvasBboxGroup } from './CanvasBboxGroup.js'
 
 /**
- * @typedef {import('./BboxGroup.js').BboxGroupMetadata} BboxGroupMetadata
+ * @typedef {import('./CanvasBboxGroup.js').CanvasBboxMetadata} CanvasBboxMetadata
  */

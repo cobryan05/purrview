@@ -45,12 +45,12 @@ export const state = {
   setImage(image) {
     this.image = image
   },
-  /** @param {import('@konva_groups').BboxGroup} bboxGroup */
+  /** @param {import('@konva_groups').CanvasBboxGroup} bboxGroup */
   removeBboxGroup(bboxGroup) {
     this.canvas.bboxes?.delete(bboxGroup.metadata.uuid);
   },
-  /** @param {import('@konva_groups').BboxGroup} bboxGroup */
-  updateBboxGroup(bboxGroup) {
+  /** @param {import('@konva_groups').CanvasBboxGroup} bboxGroup */
+  updateCanvasBbox(bboxGroup) {
     this.canvas.bboxes?.set(bboxGroup.metadata.uuid, bboxGroup);
   },
   setSelectedBboxUuid(bboxUuid) { this.selectedBoxUuid = bboxUuid; },

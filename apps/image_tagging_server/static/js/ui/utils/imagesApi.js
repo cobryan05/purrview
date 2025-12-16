@@ -101,7 +101,10 @@ export async function fetchImage(path) {
 
 /* ---- Metadata Updating --- */
 /**
+ *  *
+ * @param {string} path - Path of the image to update.
  * @param {UpdateMetadataPayload} metadata
+ * @returns {Promise<import('@app_types').RuntimeImage>}
  */
 export async function updateImage(path, metadata) {
   const payload = {
@@ -115,8 +118,6 @@ export async function updateImage(path, metadata) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload)
   });
-
-
 
 
   const imageRes = await fetch('/api/images/get', {

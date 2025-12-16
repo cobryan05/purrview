@@ -1,5 +1,5 @@
-import { createGroupFromBbox} from './drawing.js';
-import { BboxGroup } from './groups/BboxGroup.js';
+import { createCanvasBboxFromRuntimeBbox} from './drawing.js';
+import { CanvasBboxGroup } from './groups/CanvasBboxGroup.js';
 import { state } from './state.js'
 import { clearSelection, selectBboxTool, setTool, selectBbox } from './tools.js';
 
@@ -74,12 +74,12 @@ export async function handleMouseDown(e) {
 
   startPos = pos;
   const currentClassUuid = state.currentClassUuid;
-  pendingDraggedBbox = createGroupFromBbox(
+  pendingDraggedBbox = createCanvasBboxFromRuntimeBbox(
     pos.x, pos.y, { width: 1, height: 1, metadata: { classUuid: currentClassUuid } });
   if (pendingDraggedBbox) {
     layer.add(pendingDraggedBbox);
     pendingDraggedBbox.name('annotation');
-    state.updateBboxGroup(pendingDraggedBbox);
+    state.updateCanvasBbox(pendingDraggedBbox);
   }
 }
 
@@ -171,7 +171,7 @@ export async function handleMouseUp(e) {
   _lastClickTime = now;
   _lastClickPos = pos;
 
-  if (hitGroup && hitGroup instanceof BboxGroup) {
+  if (hitGroup && hitGroup instanceof CanvasBboxGroup) {
     if (isDoubleClick) {
       if (!isSelectTool) {
         const currentClassUuid = state.currentClassUuid;

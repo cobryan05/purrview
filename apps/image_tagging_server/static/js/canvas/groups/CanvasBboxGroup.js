@@ -1,7 +1,7 @@
 import { generateUUID, fetchClassByUuid } from '/app-static/js/ui/utils/index.js';
 import { state } from '../state.js';
 /**
- * @typedef {Object} BboxGroupMetadata
+ * @typedef {Object} CanvasBboxMetadata
  * @property {string} uuid
  * @property {string|null} classUuid
  * @property {string[]|null} tagUuids
@@ -14,14 +14,15 @@ import { state } from '../state.js';
  * A Konva.Group subclass representing a bounding box with metadata.
  * @extends Konva.Group
  */
-export class BboxGroup extends Konva.Group {
-  /** @type {BboxGroupMetadata} */
+export class CanvasBboxGroup extends Konva.Group {
+  /** @type {CanvasBboxMetadata} */
   _metadata;
 
   /**
   * @param {import('@app_types').RuntimeBbox} bbox
    */
   constructor(bbox) {
+    // incoming bbox is not runtime box, it's just a n array
     super({ x: bbox.x, y: bbox.y, draggable: true, name: 'annotation' });
 
     const color = 'grey';
@@ -46,19 +47,69 @@ export class BboxGroup extends Konva.Group {
     this.add(rect);
     this.add(text);
 
+
+    // Restore draggable on mouseup or dragend
+    rect.on('mouseup dragend', () => this.draggable(true));
+
+    // Disable dragging with middle mouse button down
+    rect.on('mousedown', e => {
+      if (e.evt.button === 1) {
+        rect.draggable(false);
+      } else {
+        rect.draggable(state.currentTool === 'select');
+      }
+    });
+
+    // Fix the layout on resize
+    rect.on('transform', () => {
+      const scaleX = rect.scaleX();
+      const scaleY = rect.scaleY();
+
+      let newWidth = rect.width() * scaleX;
+      let newHeight = rect.height() * scaleY;
+
+      const MIN_SIZE = 10;
+      newWidth = Math.max(newWidth, MIN_SIZE);
+      newHeight = Math.max(newHeight, MIN_SIZE);
+
+      const rectLeft = rect.x();
+      const rectTop = rect.y();
+
+      let newGroupX = this.x() + rectLeft;
+      let newGroupY = this.y() + rectTop;
+
+      rect.width(newWidth);
+      rect.height(newHeight);
+
+      this.position({
+        x: newGroupX,
+        y: newGroupY,
+      });
+
+      rect.scaleX(1);
+      rect.scaleY(1);
+
+      this.applyBoundingBoxLayout();
+      state.canvas.layer?.batchDraw();
+    });
+
     this._metadata = {
       uuid: bbox.uuid ?? generateUUID(),
       classUuid: bbox.classUuid,
-      class: null, // fill in later
+      tagUuids: [], // TODO
       rect,
       text,
       confidence: bbox.confidence ?? null,
     };
+
+    rect.name('annotation');
+    // Resolve class name?
+    this.updateMetadata();
   }
 
   /**
    * Update an existing bounding box with new metadata, such as class or color.
-   * @param {Partial<import('@konva_groups').BboxGroupMetadata>} metadata
+   * @param {Partial<import('@konva_groups').CanvasBboxMetadata>} metadata
     */
   updateMetadata(metadata = {}) {
     const rectRef = this._metadata.rect;
@@ -66,7 +117,7 @@ export class BboxGroup extends Konva.Group {
     if (!rectRef || !textRef) return;
 
     // Merge the partial metadata with the current metadata
-    /** @typedef {import('@konva_groups').BboxGroupMetadata} */
+    /** @typedef {import('@konva_groups').CanvasBboxMetadata} */
     const mergedMetadata = { ...this._metadata };
     for (const key in metadata) {
       if (Object.prototype.hasOwnProperty.call(metadata, key)) {
@@ -115,7 +166,7 @@ export class BboxGroup extends Konva.Group {
 
   /**
    * Get metadata associated with this group.
-   * @returns {BboxGroupMetadata}
+   * @returns {CanvasBboxMetadata}
    */
   get metadata() {
     return this._metadata;

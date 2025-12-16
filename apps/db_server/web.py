@@ -202,7 +202,7 @@ class UpdateMetadataPayload(BaseModel):
 
 
 class UpdateMetadataResponse(StatusResponse):
-    pass
+    metadata: Optional[ImageMetadata] = None
 
 
 class ListFilesPayload(BaseModel):
@@ -639,7 +639,7 @@ class WebApp:
             metadata.extra = payload.extra or {}
 
             await self._manager.update_image_metadata(image_path, metadata)
-            return UpdateMetadataResponse()
+            return UpdateMetadataResponse(metadata=metadata)
 
         @self._app.post(
             "/api/images/list",
