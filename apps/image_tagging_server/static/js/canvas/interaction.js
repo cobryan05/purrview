@@ -151,6 +151,7 @@ export async function handleMouseUp(e) {
     const stage = state.canvas.stage;
 
     if (box.width() < DOUBLE_CLICK_DISTANCE_PX || box.height() < DOUBLE_CLICK_DISTANCE_PX) {
+      state.removeBboxGroup(pendingDraggedBbox);
       pendingDraggedBbox.destroy();
     } else {
       selectShape(pendingDraggedBbox, box);
