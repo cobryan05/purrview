@@ -67,10 +67,7 @@ export function renderBboxInspector({ bboxUuid = null, target = 'tab-pane-inspec
               Logger.error(`No bbox found for UUID: ${bboxUuid}`);
               return;
             }
-            const runtimeBbox = bboxGroup.metadata.runtimeBbox;
-            runtimeBbox.classUuid = val.bbox_info.classUuid;
-            runtimeBbox.tagUuids = val.bbox_info.tagUuids;
-            bboxGroup.updateMetadata({ runtimeBbox });
+            bboxGroup.updateMetadata({ classUuid: val.bbox_info.classUuid, tagUuids: val.bbox_info.tagUuids });
             state.updateCanvasBbox(bboxGroup);
             await refreshCanvas();
           },

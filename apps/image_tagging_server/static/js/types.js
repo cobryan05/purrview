@@ -7,8 +7,14 @@
  * @typedef {import('@konva_groups').CanvasBboxGroup} CanvasBboxGroup
  */
 
+
 /**
- * @typedef {Object} RuntimeBbox
+ * @typedef {Object} BboxMetadata
+ * @property {string} uuid
+
+
+/**
+ * @typedef {Object} RuntimeBboxInfo
  * @property {string} uuid
  * @property {number} x
  * @property {number} y
@@ -24,7 +30,7 @@
  * @typedef {Object} RuntimeImage
  * @property {string|null} name
  * @property {HTMLImageElement|null} img
- * @property {Map<string,RuntimeBbox>|null} bboxes
+ * @property {Map<string,RuntimeBboxInfo>|null} bboxes
  */
 
 /**
@@ -37,7 +43,7 @@
 
 /**
  * @typedef {Object} InferenceResult
- * @property {RuntimeBbox[]} detections
+ * @property {RuntimeBboxInfo[]} detections
  */
 
 /**

@@ -3,7 +3,7 @@ import { state } from './state.js'
 import { Logger, fetchImage, generateUUID, updateImage } from '/app-static/js/ui/utils/index.js';
 
 /**
- * @typedef {import('@app_types').RuntimeBbox} RuntimeBbox
+ * @typedef {import('@app_types').RuntimeBboxInfo} RuntimeBboxInfo
  * @typedef {import('@app_types').InferenceResult} InferenceResult
 
  */
@@ -113,7 +113,7 @@ export async function saveAnnotations() {
     state.image.bboxes?.clear();
     for (const [key, canvasGroup] of state.canvas.bboxes) {
       canvasGroup.updatePosition({});
-      state.image.bboxes?.set(key, canvasGroup.metadata.runtimeBbox);
+      state.image.bboxes?.set(key, canvasGroup.metadata.runtimeBboxInfo);
     }
     await updateImage(state.image);
   }

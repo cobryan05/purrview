@@ -47,11 +47,11 @@ export const state = {
   },
   /** @param {import('@konva_groups').CanvasBboxGroup} bboxGroup */
   removeBboxGroup(bboxGroup) {
-    this.canvas.bboxes?.delete(bboxGroup.metadata.runtimeBbox.uuid);
+    this.canvas.bboxes?.delete(bboxGroup.metadata.runtimeBboxInfo.uuid);
   },
   /** @param {import('@konva_groups').CanvasBboxGroup} bboxGroup */
   updateCanvasBbox(bboxGroup) {
-    this.canvas.bboxes?.set(bboxGroup.metadata.runtimeBbox.uuid, bboxGroup);
+    this.canvas.bboxes?.set(bboxGroup.metadata.runtimeBboxInfo.uuid, bboxGroup);
   },
   setSelectedBboxUuid(bboxUuid) { this.selectedBoxUuid = bboxUuid; },
   setTransformer(t) { this.canvas.transformer = t; },

@@ -4,7 +4,7 @@ import { state } from '../state.js';
  * @typedef {Object} CanvasBboxMetadata
  * @property {import('@konva').default.Rect} rect
  * @property {import('@konva').default.Text} text
-  * @property {import('@app_types').RuntimeBbox} runtimeBbox
+ * @property {import('@app_types').RuntimeBboxInfo} runtimeBboxInfo
  */
 
 /**
@@ -16,7 +16,7 @@ export class CanvasBboxGroup extends Konva.Group {
   _metadata;
 
   /**
-  * @param {import('@app_types').RuntimeBbox} bbox
+  * @param {import('@app_types').RuntimeBboxInfo} bbox
    */
   constructor(bbox) {
     super({ x: bbox.x, y: bbox.y, width: bbox.width, height: bbox.height, draggable: true, name: 'annotation' });
@@ -73,7 +73,7 @@ export class CanvasBboxGroup extends Konva.Group {
     this._metadata = {
       rect,
       text,
-      runtimeBbox: bbox
+      runtimeBboxInfo: bbox
     };
 
     // Resolve class name?
@@ -93,7 +93,6 @@ export class CanvasBboxGroup extends Konva.Group {
    * @param {number} [position.height] New height of the bounding box
    */
   updatePosition(position) {
-    const runtimeBbox = this.metadata.runtimeBbox;
     const rect = this.metadata.rect;
     const text = this.metadata.text;
 
@@ -125,44 +124,42 @@ export class CanvasBboxGroup extends Konva.Group {
       y: -18
     });
 
-    runtimeBbox.x = this.x();
-    runtimeBbox.y = this.y();
-    runtimeBbox.width = this.width();
-    runtimeBbox.height = this.height();
+    /** @type {import('@app_types').RuntimeBboxInfo} */
+    this.updateMetadata({ x: this.x(), y: this.y(), width: this.width(), height: this.height() });
   }
 
   /**
    * Update an existing bounding box with new metadata, such as class or color.
-   * @param {Partial<import('@konva_groups').CanvasBboxMetadata>} metadata
+   * @param {Partial<import('@app_types').RuntimeBboxInfo>} bboxInfo
     */
-  updateMetadata(metadata = {}) {
+  updateMetadata(bboxInfo = {}) {
     const rectRef = this._metadata.rect;
     const textRef = this._metadata.text;
     if (!rectRef || !textRef) return;
 
     // Merge the partial metadata with the current metadata
-    /** @typedef {import('@konva_groups').CanvasBboxMetadata} */
-    const mergedMetadata = { ...this._metadata };
-    for (const key in metadata) {
-      if (Object.prototype.hasOwnProperty.call(metadata, key)) {
-        const value = metadata[key];
+    /** @typedef {import('@app_types').RuntimeBboxInfo} */
+    const mergedInfo = { ...this._metadata.runtimeBboxInfo };
+    for (const key in bboxInfo) {
+      if (Object.prototype.hasOwnProperty.call(bboxInfo, key)) {
+        const value = bboxInfo[key];
         if (value !== undefined) {
-          mergedMetadata[key] = value;
+          mergedInfo[key] = value;
         }
       }
     }
 
     // Kick off async class resolution
-    (mergedMetadata.runtimeBbox.classUuid
-      ? fetchClassByUuid(mergedMetadata.runtimeBbox.classUuid)
+    (mergedInfo.classUuid
+      ? fetchClassByUuid(mergedInfo.classUuid)
       : Promise.resolve(null)
     ).then(resolvedClass => {
       let bboxText;
-      const classText = resolvedClass?.metadata?.name ?? this.metadata.runtimeBbox.text ?? 'Unknown';
+      const classText = resolvedClass?.metadata?.name ?? this.metadata.text ?? 'Unknown';
       const color = resolvedClass?.metadata?.color ?? 'grey';
-      bboxText = `${classText}${mergedMetadata.runtimeBbox.confidence != null ? ` (${(mergedMetadata.runtimeBbox.confidence * 100).toFixed(1)}%)` : ''}`;
+      bboxText = `${classText}${mergedInfo.confidence != null ? ` (${(mergedInfo.confidence * 100).toFixed(1)}%)` : ''}`;
 
-      this._metadata = mergedMetadata;
+      this._metadata.runtimeBboxInfo = mergedInfo;
 
       textRef.text(bboxText);
       textRef.fill(color);

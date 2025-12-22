@@ -3,7 +3,7 @@
 import { Logger, toast, fetchClassByUuid, generateUUID } from '/app-static/js/ui/utils/index.js';
 
 /**
- * @typedef {import('@app_types').RuntimeBbox} RuntimeBbox
+ * @typedef {import('@app_types').RuntimeBboxInfo} RuntimeBbox
  * @typedef {import('@app_types').InferenceResult} InferenceResult
  */
 

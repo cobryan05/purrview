@@ -59,7 +59,7 @@ function getPointerPosition() {
 export async function handleMouseDown(e) {
   const stage = state.canvas.stage;
   const layer = state.canvas.layer;
-  if( !stage || !layer ) {
+  if (!stage || !layer) {
     Logger.error("No canvas!");
     return;
   }
@@ -83,7 +83,7 @@ export async function handleMouseDown(e) {
   startPos = pos;
   const currentClassUuid = state.currentClassUuid;
 
-  /** @type {import('@app_types').RuntimeBbox} */
+  /** @type {import('@app_types').RuntimeBboxInfo} */
   const emptyBbox = { x: pos.x, y: pos.y, width: 1, height: 1, classUuid: currentClassUuid, uuid: generateUUID() };
   pendingDraggedBbox = new CanvasBboxGroup(emptyBbox);
   if (pendingDraggedBbox) {
@@ -131,7 +131,7 @@ export async function handleMouseMove(e) {
   const newY = dy < 0 ? pos.y : startPos.y;
   const newWidth = Math.abs(dx);
   const newHeight = Math.abs(dy);
-  pendingDraggedBbox.updatePosition({ x: newX, y: newY, width: newWidth, height:newHeight });
+  pendingDraggedBbox.updatePosition({ x: newX, y: newY, width: newWidth, height: newHeight });
   //layer.batchDraw();
 }
 
@@ -139,7 +139,7 @@ export async function handleMouseUp(e) {
   const currentTool = state.currentTool;
   const isSelectTool = currentTool === 'select';
   state.canvas.stage.container().style.cursor =
-   isSelectTool ? 'default' : 'crosshair';
+    isSelectTool ? 'default' : 'crosshair';
 
   if (e.evt.button === 1) {
     isPanning = false;
@@ -174,10 +174,9 @@ export async function handleMouseUp(e) {
   if (hitGroup && hitGroup instanceof CanvasBboxGroup) {
     if (isDoubleClick) {
       if (!isSelectTool) {
-        const currentClassUuid = state.currentClassUuid;
-        hitGroup.updateMetadata({ classUuid: currentClassUuid });
+        hitGroup.updateMetadata({ classUuid: state.currentClassUuid });
       } else {
-        selectBbox(hitGroup.metadata.runtimeBbox.uuid);
+        selectBbox(hitGroup.metadata.runtimeBboxInfo.uuid);
       }
     } else {
       selectShape(hitGroup, hitGroup.metadata.rect);

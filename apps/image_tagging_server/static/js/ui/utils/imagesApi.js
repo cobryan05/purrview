@@ -68,7 +68,7 @@ export async function fetchImage(path) {
   });
 
   // Convert web_api format to app_types Map
-  /** @type {Map<string,import('@app_types').RuntimeBbox>} */
+  /** @type {Map<string,import('@app_types').RuntimeBboxInfo>} */
   const bboxMap = new Map();
   (imageRes.metadata?.boxes || []).forEach(box => {
 
@@ -78,7 +78,7 @@ export async function fetchImage(path) {
     const absHeight = box.height * img.height;
     const absWidth = box.width * img.width;
 
-    /** @type {import('@app_types').RuntimeBbox} */
+    /** @type {import('@app_types').RuntimeBboxInfo} */
     const bboxInfo = {
       uuid: box.uuid,
       x: absX,
