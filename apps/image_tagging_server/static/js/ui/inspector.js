@@ -61,19 +61,18 @@ export function renderBboxInspector({ bboxUuid = null, target = 'tab-pane-inspec
           onChange: (val) => {
             Logger.warn(val);
           },
-          onSave: (val) => {
+          onSave: async (val) => {
             const bboxGroup = state.getBboxGroup(bboxUuid);
             if (!bboxGroup) {
               Logger.error(`No bbox found for UUID: ${bboxUuid}`);
               return;
             }
-
-            bboxGroup.updateMetadata({
-              classUuid: val.bbox_info.classUuid,
-              tagUuids: val.bbox_info.tagUuids,
-            });
+            const runtimeBbox = bboxGroup.metadata.runtimeBbox;
+            runtimeBbox.classUuid = val.bbox_info.classUuid;
+            runtimeBbox.tagUuids = val.bbox_info.tagUuids;
+            bboxGroup.updateMetadata({ runtimeBbox });
             state.updateCanvasBbox(bboxGroup);
-            refreshCanvas();
+            await refreshCanvas();
           },
           onCancel: () => {
             Logger.warn("Canceled");

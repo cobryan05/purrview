@@ -56,7 +56,10 @@ export class BboxInfoField extends Field {
       }
     };
 
-    const schema_values = { classUuid: instance._bboxGroup.metadata.classUuid, tagUuids: instance._bboxGroup.metadata.tagUuids };
+    const schema_values = {
+      classUuid: instance._bboxGroup.metadata.runtimeBbox.classUuid,
+      tagUuids: instance._bboxGroup.metadata.runtimeBbox.tagUuids
+    };
     instance._schemaField = await SchemaField.create({ schema: schema ?? {}, values: schema_values });
 
     return instance;

@@ -1,9 +1,9 @@
 // inferenceApi.js
 
-import { Logger, toast, fetchClassByUuid } from '/app-static/js/ui/utils/index.js';
+import { Logger, toast, fetchClassByUuid, generateUUID } from '/app-static/js/ui/utils/index.js';
 
 /**
- * @typedef {import('@app_types').RuntimeBbox} BBoxInfo
+ * @typedef {import('@app_types').RuntimeBbox} RuntimeBbox
  * @typedef {import('@app_types').InferenceResult} InferenceResult
  */
 
@@ -50,12 +50,13 @@ export async function runInference(model_name, image) {
   }
   toast(`${result.detections.length} objects detected`);
 
-  // Convert from JSON result to BBoxInfo type
-  /** @type {BBoxInfo[]} */
+  // Convert from JSON result to RuntimeBbox type
+  /** @type {RuntimeBbox[]} */
   const bboxList = await Promise.all(
     result.detections.map(async (det) => {
       const [x, y, width, height] = det.bounding_box;
       return {
+        uuid: generateUUID(),
         x: x*image.width,
         y: y*image.height,
         width: width*image.width,

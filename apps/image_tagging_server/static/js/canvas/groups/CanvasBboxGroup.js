@@ -2,13 +2,9 @@ import { generateUUID, fetchClassByUuid, Logger } from '/app-static/js/ui/utils/
 import { state } from '../state.js';
 /**
  * @typedef {Object} CanvasBboxMetadata
- * @property {string} uuid
- * @property {string|null} classUuid
- * @property {string[]|null} tagUuids
  * @property {import('@konva').default.Rect} rect
  * @property {import('@konva').default.Text} text
- * @property {number|null} confidence
- * @property {import('@app_types').RuntimeBbox} runtimeBbox
+  * @property {import('@app_types').RuntimeBbox} runtimeBbox
  */
 
 /**
@@ -45,7 +41,6 @@ export class CanvasBboxGroup extends Konva.Group {
       y: -18,
       name: 'class',
     });
-
     this.add(rect);
     this.add(text);
 
@@ -76,12 +71,8 @@ export class CanvasBboxGroup extends Konva.Group {
     });
 
     this._metadata = {
-      uuid: bbox.uuid ?? generateUUID(),
-      classUuid: bbox.classUuid,
-      tagUuids: [], // TODO
       rect,
       text,
-      confidence: bbox.confidence ?? null,
       runtimeBbox: bbox
     };
 
@@ -162,14 +153,14 @@ export class CanvasBboxGroup extends Konva.Group {
     }
 
     // Kick off async class resolution
-    (mergedMetadata.classUuid
-      ? fetchClassByUuid(mergedMetadata.classUuid)
+    (mergedMetadata.runtimeBbox.classUuid
+      ? fetchClassByUuid(mergedMetadata.runtimeBbox.classUuid)
       : Promise.resolve(null)
     ).then(resolvedClass => {
       let bboxText;
-      const classText = resolvedClass?.metadata?.name ?? 'Unknown';
+      const classText = resolvedClass?.metadata?.name ?? this.metadata.runtimeBbox.text ?? 'Unknown';
       const color = resolvedClass?.metadata?.color ?? 'grey';
-      bboxText = `${classText}${mergedMetadata.confidence != null ? ` (${(mergedMetadata.confidence * 100).toFixed(1)}%)` : ''}`;
+      bboxText = `${classText}${mergedMetadata.runtimeBbox.confidence != null ? ` (${(mergedMetadata.runtimeBbox.confidence * 100).toFixed(1)}%)` : ''}`;
 
       this._metadata = mergedMetadata;
 

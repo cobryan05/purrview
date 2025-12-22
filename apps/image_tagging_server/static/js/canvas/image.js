@@ -3,7 +3,7 @@ import { state } from './state.js'
 import { Logger, fetchImage, generateUUID, updateImage } from '/app-static/js/ui/utils/index.js';
 
 /**
- * @typedef {import('@app_types').RuntimeBbox} BBoxInfo
+ * @typedef {import('@app_types').RuntimeBbox} RuntimeBbox
  * @typedef {import('@app_types').InferenceResult} InferenceResult
 
  */

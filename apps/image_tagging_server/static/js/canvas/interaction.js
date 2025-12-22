@@ -176,7 +176,7 @@ export async function handleMouseUp(e) {
         const currentClassUuid = state.currentClassUuid;
         hitGroup.updateMetadata({ classUuid: currentClassUuid });
       } else {
-        selectBbox(hitGroup.metadata.uuid);
+        selectBbox(hitGroup.metadata.runtimeBbox.uuid);
       }
     } else {
       selectShape(hitGroup, hitGroup.metadata.rect);
