@@ -1,6 +1,6 @@
 import { CanvasBboxGroup } from './groups/CanvasBboxGroup.js';
 import { state } from './state.js'
-import { Logger, fetchImage, generateUUID } from '/app-static/js/ui/utils/index.js';
+import { Logger, fetchImage, generateUUID, updateImage } from '/app-static/js/ui/utils/index.js';
 
 /**
  * @typedef {import('@app_types').RuntimeBbox} BBoxInfo
@@ -103,52 +103,21 @@ export function clearAnnotations() {
 }
 
 export async function saveAnnotations() {
-  if (!state.image?.name || !state.image?.img) {
+  if (!state.image) {
     toast('No image loaded to save annotations!');
     return;
   }
 
   try {
-    const boxes = Array.from(state.canvas.bboxes.values())
-      .filter(canvasBbox => canvasBbox.metadata.classUuid != null)
-      .map(canvasBbox => {
-        const rect = canvasBbox.metadata.rect;
-        const uuid = canvasBbox.metadata.uuid ?? generateUUID();
-        const bbox_uuid = canvasBbox.metadata.uuid ?? generateUUID();
-        const bbox_class_uuid = canvasBbox.metadata.classUuid ?? null;
-
-        const { width, height } = state.image?.img;
-
-        return {
-          uuid: bbox_uuid,
-          class_uuid: bbox_class_uuid,
-          x: canvasBbox.x() / width,
-          y: canvasBbox.y() / height,
-          width: rect.width() / width,
-          height: rect.height() / height,
-          extra: canvasBbox.metadata.extra || {}  // Arbitrary key-value pairs
-        };
-      });
-    const missingCnt = state.canvas.bboxes.size - boxes.length
-    if( missingCnt > 0 ) {
-      Logger.error(`Discarding ${missingCnt} boxes with missing data`);
+    // Sync the canvas positions to the image
+    state.image.bboxes?.clear();
+    for (const [key, canvasGroup] of state.canvas.bboxes) {
+      canvasGroup.updatePosition({});
+      state.image.bboxes?.set(key, canvasGroup.metadata.runtimeBbox);
     }
-
-    const payload = {
-      image_path: state.image.name,
-      boxes: boxes,
-      extra: {}  // optional image-level metadata (e.g., tags, reviewer, etc.)
-    };
-
-    const res = await fetch('/api/images/metadata/update', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload)
-    });
-
-    if (!res.ok) throw new Error(`Save failed with status ${res.status}`);
-    Logger.notify(`Annotations saved successfully for image ${state.imageName}`);
-  } catch (err) {
+    await updateImage(state.image);
+  }
+  catch (err) {
     Logger.error('Failed to save annotations:', err);
   }
 }
@@ -171,6 +140,7 @@ export function deleteSelected() {
 
   if (group && group.name() === 'annotation') {
     group.destroy();
+    state.removeBboxGroup(group);
   } else {
     node.destroy(); // fallback
   }

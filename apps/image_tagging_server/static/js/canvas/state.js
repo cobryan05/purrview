@@ -55,7 +55,10 @@ export const state = {
   },
   setSelectedBboxUuid(bboxUuid) { this.selectedBoxUuid = bboxUuid; },
   setTransformer(t) { this.canvas.transformer = t; },
-  clearBboxes() { this.canvas.bboxes?.clear(); },
+  clearBboxes() {
+    this.canvas.bboxes?.clear();
+    this.image?.bboxes?.clear();
+  },
   clearSelection() { state.canvas.transformer?.setNodes([]); },
 
   // --- Initialization ---

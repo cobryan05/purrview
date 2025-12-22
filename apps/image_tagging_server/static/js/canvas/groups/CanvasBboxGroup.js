@@ -8,6 +8,7 @@ import { state } from '../state.js';
  * @property {import('@konva').default.Rect} rect
  * @property {import('@konva').default.Text} text
  * @property {number|null} confidence
+ * @property {import('@app_types').RuntimeBbox} runtimeBbox
  */
 
 /**
@@ -22,8 +23,7 @@ export class CanvasBboxGroup extends Konva.Group {
   * @param {import('@app_types').RuntimeBbox} bbox
    */
   constructor(bbox) {
-    // incoming bbox is not runtime box, it's just a n array
-    super({ x: bbox.x, y: bbox.y, draggable: true, name: 'annotation' });
+    super({ x: bbox.x, y: bbox.y, width: bbox.width, height: bbox.height, draggable: true, name: 'annotation' });
 
     const color = 'grey';
     const rect = new Konva.Rect({
@@ -82,15 +82,15 @@ export class CanvasBboxGroup extends Konva.Group {
       rect,
       text,
       confidence: bbox.confidence ?? null,
+      runtimeBbox: bbox
     };
 
-    this.name('annotation');
     // Resolve class name?
     this.updateMetadata();
   }
 
   /**
-   * Update the bounding box position and/or size.
+   * Update the bounding box position and/or size, and update on the runtimeRect
    *
    * Only properties explicitly provided in `position` are applied; any
    * omitted properties are left unchanged.
@@ -102,6 +102,7 @@ export class CanvasBboxGroup extends Konva.Group {
    * @param {number} [position.height] New height of the bounding box
    */
   updatePosition(position) {
+    const runtimeBbox = this.metadata.runtimeBbox;
     const rect = this.metadata.rect;
     const text = this.metadata.text;
 
@@ -116,13 +117,15 @@ export class CanvasBboxGroup extends Konva.Group {
     // Update rect size if provided
     if (position.width !== undefined) {
       rect.width(position.width);
+      this.width(position.width);
     }
     if (position.height !== undefined) {
       rect.height(position.height);
+      this.height(position.height);
     }
 
     // Reset any scaling that may exist
-    rect.position({x:0, y:0});
+    rect.position({ x: 0, y: 0 });
     rect.scaleX(1);
     rect.scaleY(1);
 
@@ -130,7 +133,11 @@ export class CanvasBboxGroup extends Konva.Group {
       x: 0,
       y: -18
     });
-    // state.canvas.layer?.batchDraw();
+
+    runtimeBbox.x = this.x();
+    runtimeBbox.y = this.y();
+    runtimeBbox.width = this.width();
+    runtimeBbox.height = this.height();
   }
 
   /**

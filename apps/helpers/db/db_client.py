@@ -225,14 +225,15 @@ class ClassData(BaseModel):
 
 
 class BoundingBoxMetadata(BaseModel):
-    uuid: str
     class_uuid: str
     x: float
     y: float
     width: float
     height: float
+    uuid: str = Field(default_factory=lambda: str(uuid4()))
     tags: List[ClassMetadata] = Field(default_factory=list)
     extra: Dict[str, str] = Field(default_factory=dict)
+
 
 class ImageMetadata(BaseModel):
     id: int

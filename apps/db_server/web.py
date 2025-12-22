@@ -7,6 +7,7 @@ import sys
 from contextlib import asynccontextmanager
 from dataclasses import asdict
 from typing import List, Optional
+from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
@@ -179,12 +180,12 @@ class UpdateSourceResponse(StatusResponse):
 # Bounding Boxes
 ########
 class BoundingBoxInput(BaseModel):
-    uuid: str
     class_uuid: str
     x: float
     y: float
     width: float
     height: float
+    uuid: str = Field(default_factory=lambda: str(uuid4()))
     tags: Optional[List[str]] = []  # List of tag uuids
     extra: Optional[dict] = {}
 
@@ -610,7 +611,7 @@ class WebApp:
                 return UpdateMetadataResponse(status=JsonValues.FAILURE, message="Image not found")
 
             # Build new bounding box list from input
-            new_boxes = []
+            new_boxes: List[BoundingBoxMetadata] = []
             for b in payload.boxes:
                 class_data = class_uuid_map.get(b.class_uuid, None)
                 class_text = class_data.metadata.name if class_data else "Unknown"

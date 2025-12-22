@@ -101,16 +101,41 @@ export async function fetchImage(path) {
 
 /* ---- Metadata Updating --- */
 /**
- *  *
- * @param {string} path - Path of the image to update.
- * @param {UpdateMetadataPayload} metadata
- * @returns {Promise<import('@app_types').RuntimeImage>}
+
+ * @param {import('@app_types').RuntimeImage} runtimeImage
+ * @throws {Error} If the update fails or the API response is invalid.
  */
-export async function updateImage(path, metadata) {
+export async function updateImage(runtimeImage) {
+  const img = runtimeImage.img;
+  if (!runtimeImage.name || !img || !runtimeImage.bboxes) {
+    throw new Error("No image name provided");
+  }
+  // Convert from runtime type to web api type
+
+  /** @type {import('@web_api').BoundingBoxInput[]} */
+  const boxes = Array.from(runtimeImage.bboxes.values())
+    .filter(bbox => bbox.classUuid != null)
+    .map(bbox => {
+      if (bbox.classUuid == null) {
+        throw new Error("Invalid bbox classUuid");
+      }
+      return {
+        uuid: bbox.uuid,
+        class_uuid: bbox.classUuid,
+        x: bbox.x / img.width,
+        y: bbox.y / img.height,
+        width: bbox.width / img.width,
+        height: bbox.height / img.height,
+        tags: bbox.tagUuids || [],
+        extra: null
+      };
+    });
+
+  /** @type {import('@web_api').UpdateMetadataPayload} */
   const payload = {
-    image_path: state.image.name,
+    image_path: runtimeImage.name,
     boxes: boxes,
-    extra: {}  // optional image-level metadata (e.g., tags, reviewer, etc.)
+    extra: null
   };
 
   const res = await fetch('/api/images/metadata/update', {
@@ -120,24 +145,15 @@ export async function updateImage(path, metadata) {
   });
 
 
-  const imageRes = await fetch('/api/images/get', {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ path: path }),
-  });
-  if (!imageRes.ok) throw new Error(`Failed to load image via API for ${path}`);
-
-  const imageJson = await imageRes.json();
-  if (imageJson.status !== 'success' || !imageJson.content) {
-    throw new Error(`Invalid image API response for ${path}`);
+  if (!res.ok) {
+    const errData = await res.json().catch(() => ({}));
+    throw new Error(errData.message || `Failed to update image via API for ${runtimeImage.name}`);
   }
 
-  const img = new Image();
-  img.src = `data:${imageJson.mime_type};base64,${imageJson.content}`;
-  await new Promise((resolve, reject) => {
-    img.onload = resolve;
-    img.onerror = () =>
-      reject(new Error(`Failed to decode base64 image for ${path}`));
-  });
-  return { image: img, bboxes: imageJson.boxes || [] };
+  /** @type {import('@web_api').UpdateMetadataResponse} */
+  const updatRes = await res.json();
+
+  if (updatRes.status !== 'success') {
+    throw new Error(`${updatRes.message}`);
+  }
 }
