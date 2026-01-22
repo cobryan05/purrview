@@ -120,7 +120,7 @@ class Manager:
 
         running_info = {
             tid: {
-                **asdict(task_info.config_metadata),
+                **task_info.config_metadata.dict(),
                 "status": task_info.task.get_status(),
                 "progress": task_info.task.get_progress(),
                 "message": task_info.task.get_status_message(),

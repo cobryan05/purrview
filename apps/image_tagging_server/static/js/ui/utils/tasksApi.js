@@ -121,7 +121,12 @@ export async function createTaskConfig(config) {
     throw error;
   }
 
-  const { config_uuid } = await res.json();
+  const data = await res.json();
+  if (data.status !== 'success') {
+    throw new Error(data.message || 'Failed to fetch task status');
+  }
+
+  const { config_uuid } = data;
   return config_uuid;
 }
 

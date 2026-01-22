@@ -253,7 +253,7 @@ class SourceMetadata(BaseModel):
 class TaskConfigMetadata(BaseModel):
     uuid: str
     typename: str
-    params: dict[str, str]
+    params: dict[str, Any]
     name: Optional[str] = None
     description: Optional[str] = None
     created_at: Optional[str] = None
@@ -416,11 +416,19 @@ class DbClient:
             )
             await db.commit()
 
-            cursor = await db.execute("SELECT * FROM task_configs WHERE uuid = ?", (uuid,))
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute("SELECT * FROM task_configs WHERE uuid = ?", (config_uuid,))
             row = await cursor.fetchone()
-            if not row:
-                raise Exception(f"Failed to retrieve inserted task config with UUID {config_uuid}")
-            return DbClient.row_to_basemodel(cursor, row, TaskConfigMetadata)
+            await cursor.close()
+
+        if not row:
+            raise Exception(f"Failed to retrieve inserted task config with UUID {config_uuid}")
+
+        data = dict(row)
+        if "params_json" in data:
+            data["params"] = json.loads(data.pop("params_json"))
+
+        return TaskConfigMetadata(**data)
 
     async def update_task_config(
         self,
@@ -649,11 +657,20 @@ class DbClient:
         query += " ORDER BY created_at DESC"
 
         async with aiosqlite.connect(self._db_path) as db:
+            db.row_factory = aiosqlite.Row
             cursor = await db.execute(query, tuple(params))
             rows = await cursor.fetchall()
             await cursor.close()
 
-        return [DbClient.row_to_basemodel(cursor, r, TaskConfigMetadata) for r in rows]
+        results = []
+        for r in rows:
+            data = dict(r)
+            # convert JSON string to dict for Pydantic
+            if "params_json" in data:
+                data["params"] = json.loads(data.pop("params_json"))
+            results.append(TaskConfigMetadata(**data))
+
+        return results
 
     async def get_active_tasks(
         self,
