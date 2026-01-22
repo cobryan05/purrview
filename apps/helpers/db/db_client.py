@@ -231,7 +231,7 @@ class BoundingBoxMetadata(BaseModel):
     width: float
     height: float
     uuid: str = Field(default_factory=lambda: str(uuid4()))
-    tags: List[ClassMetadata] = Field(default_factory=list)
+    tag_uuids: List[str] = Field(default_factory=list)
     extra: Dict[str, str] = Field(default_factory=dict)
 
 
@@ -1383,14 +1383,12 @@ class DbClient:
                 SELECT
                     b.uuid,
                     b.class_uuid,
-                    l.name AS class_name,
                     b.x,
                     b.y,
                     b.width,
                     b.height,
                     b.metadata_json
                 FROM bboxes b
-                JOIN classes l ON b.class_uuid = l.uuid
                 WHERE b.image_id = ?
                 """,
                 (image_id,),
@@ -1398,31 +1396,46 @@ class DbClient:
             bbox_rows = await cursor.fetchall()
             await cursor.close()
 
+            if not bbox_rows:
+                return ImageMetadata(
+                    id=img_id,
+                    filename=filename,
+                    last_updated=last_updated,
+                    extra=image_extra,
+                    boxes=[],
+                )
+
+            bbox_uuids = [row[0] for row in bbox_rows]
+
+            # Read tags for all bboxes in one query
+            placeholders = ",".join("?" for _ in bbox_uuids)
+            cursor = await db.execute(
+                f"""
+                SELECT
+                    bt.bbox_uuid,
+                    bt.tag_uuid
+                FROM bbox_tags bt
+                WHERE bt.bbox_uuid IN ({placeholders})
+                """,
+                tuple(bbox_uuids),
+            )
+            tag_rows = await cursor.fetchall()
+            await cursor.close()
+
+            # Map bbox_uuid -> [tag_uuid, ...]
+            tags_by_bbox: dict[str, list[str]] = {}
+            for bbox_uuid, tag_uuid in tag_rows:
+                tags_by_bbox.setdefault(bbox_uuid, []).append(tag_uuid)
+
             boxes = []
             for bbox_row in bbox_rows:
-                bbox_uuid, bbox_class_uuid, bbox_class_text, x, y, w, h, bbox_meta_json = bbox_row
+                bbox_uuid, bbox_class_uuid, x, y, w, h, bbox_meta_json = bbox_row
                 bbox_extra = {}
                 if bbox_meta_json:
                     try:
                         bbox_extra = json.loads(bbox_meta_json)
                     except Exception:
                         bbox_extra = {}
-
-                # TODO TAGS
-                # Read labels for this box
-                # tag_cursor = await db.execute(
-                #     """
-                #     SELECT labels.uuid, labels.name, labels.color
-                #     FROM labels
-                #     JOIN bbox_tags ON labels.uuid = bbox_tags.label_uuid
-                #     WHERE bbox_tags.bbox_uuid = ?
-                #     """,
-                #     (bbox_uuid,),
-                # )
-                # tag_rows = await tag_cursor.fetchall()
-                # await tag_cursor.close()
-
-                # tags = [ClassMetadata(uuid=l[0], name=l[1], color=l[2]) for l in tag_rows]
 
                 boxes.append(
                     BoundingBoxMetadata(
@@ -1433,6 +1446,7 @@ class DbClient:
                         width=w,
                         height=h,
                         extra=bbox_extra,
+                        tag_uuids=tags_by_bbox.get(bbox_uuid, []),
                     )
                 )
 
@@ -1453,7 +1467,6 @@ class DbClient:
             metadata: ImageMetadata object containing image-level extra data and boxes.
         """
         image_meta_json = json.dumps(metadata.extra)
-        incoming_uuids = [box.uuid for box in metadata.boxes]
 
         async with aiosqlite.connect(self._db_path) as db:
             async with db.execute("BEGIN"):
@@ -1463,9 +1476,10 @@ class DbClient:
                     (image_meta_json, image_id),
                 )
 
-                # Insert bounding boxes
+                # Insert / update bounding boxes and sync tags
                 for box in metadata.boxes:
                     bbox_meta_json = json.dumps(box.extra) if box.extra else None
+
                     await db.execute(
                         """
                         INSERT INTO bboxes (uuid, image_id, class_uuid, x, y, width, height, metadata_json)
@@ -1479,19 +1493,80 @@ class DbClient:
                             height = excluded.height,
                             metadata_json = excluded.metadata_json
                         """,
-                        (box.uuid, image_id, box.class_uuid, box.x, box.y, box.width, box.height, bbox_meta_json),
+                        (
+                            box.uuid,
+                            image_id,
+                            box.class_uuid,
+                            box.x,
+                            box.y,
+                            box.width,
+                            box.height,
+                            bbox_meta_json,
+                        ),
                     )
 
+                    # Sync tags for this bbox
+                    cursor = await db.execute(
+                        "SELECT tag_uuid FROM bbox_tags WHERE bbox_uuid = ?",
+                        (box.uuid,),
+                    )
+                    existing_tags = {row[0] for row in await cursor.fetchall()}
+                    await cursor.close()
+
+                    incoming_tags = set(box.tag_uuids)
+
+                    # Add missing tags
+                    for tag_uuid in incoming_tags - existing_tags:
+                        await db.execute(
+                            """
+                            INSERT INTO bbox_tags (bbox_uuid, tag_uuid)
+                            VALUES (?, ?)
+                            """,
+                            (box.uuid, tag_uuid),
+                        )
+
+                    # Remove stale tags
+                    for tag_uuid in existing_tags - incoming_tags:
+                        await db.execute(
+                            """
+                            DELETE FROM bbox_tags
+                            WHERE bbox_uuid = ? AND tag_uuid = ?
+                            """,
+                            (box.uuid, tag_uuid),
+                        )
+
                 # Delete bboxes that exist in DB but not in incoming list
+                incoming_uuids = [box.uuid for box in metadata.boxes]
+
                 if incoming_uuids:
                     placeholders = ",".join("?" for _ in incoming_uuids)
-                    await db.execute(
-                        f"DELETE FROM bboxes WHERE image_id = ? AND uuid NOT IN ({placeholders})",
+                    cursor = await db.execute(
+                        f"""
+                        SELECT uuid FROM bboxes
+                        WHERE image_id = ? AND uuid NOT IN ({placeholders})
+                        """,
                         (image_id, *incoming_uuids),
                     )
                 else:
-                    # If the client sent no bboxes, remove all for this image
-                    await db.execute("DELETE FROM bboxes WHERE image_id = ?", (image_id,))
+                    cursor = await db.execute(
+                        "SELECT uuid FROM bboxes WHERE image_id = ?",
+                        (image_id,),
+                    )
+
+                bbox_uuids_to_del = [row[0] for row in await cursor.fetchall()]
+                await cursor.close()
+
+                if bbox_uuids_to_del:
+                    placeholders = ",".join("?" for _ in bbox_uuids_to_del)
+                    await db.execute(
+                        f"DELETE FROM bbox_tags WHERE bbox_uuid IN ({placeholders})",
+                        tuple(bbox_uuids_to_del),
+                    )
+                    await db.execute(
+                        f"DELETE FROM bboxes WHERE uuid IN ({placeholders})",
+                        tuple(bbox_uuids_to_del),
+                    )
+
                 await db.commit()
 
     async def export_classes_from_db_to_json(self, json_path: Optional[Path | str] = None) -> None:

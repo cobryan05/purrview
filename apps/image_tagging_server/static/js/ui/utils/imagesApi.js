@@ -1,5 +1,5 @@
 // imagesApi.js
-
+import { Logger, generateUUID } from '/app-static/js/ui/utils/index.js';
 
 /**
  * Fetch a list of files from the API.
@@ -72,7 +72,7 @@ export async function fetchImage(path) {
   const bboxMap = new Map();
   (imageRes.metadata?.boxes || []).forEach(box => {
 
-    const tagUuids = (box.tags ?? []).map(tag => tag.uuid);
+    const tagUuids = (box.tag_uuids ?? []).map(tag => tag);
     const absX = box.x * img.width;
     const absY = box.y * img.height;
     const absHeight = box.height * img.height;
@@ -80,7 +80,7 @@ export async function fetchImage(path) {
 
     /** @type {import('@app_types').RuntimeBboxInfo} */
     const bboxInfo = {
-      uuid: box.uuid,
+      uuid: box.uuid ?? generateUUID(),
       x: absX,
       y: absY,
       width: absWidth,
@@ -126,7 +126,7 @@ export async function updateImage(runtimeImage) {
         y: bbox.y / img.height,
         width: bbox.width / img.width,
         height: bbox.height / img.height,
-        tags: bbox.tagUuids || [],
+        tag_uuids: bbox.tagUuids || [],
         extra: null
       };
     });

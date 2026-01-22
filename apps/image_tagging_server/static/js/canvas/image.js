@@ -1,6 +1,6 @@
 import { CanvasBboxGroup } from './groups/CanvasBboxGroup.js';
 import { state } from './state.js'
-import { Logger, fetchImage, generateUUID, updateImage } from '/app-static/js/ui/utils/index.js';
+import { Logger, fetchImage, generateUUID, toast, updateImage } from '/app-static/js/ui/utils/index.js';
 
 /**
  * @typedef {import('@app_types').RuntimeBboxInfo} RuntimeBboxInfo
@@ -116,6 +116,7 @@ export async function saveAnnotations() {
       state.image.bboxes?.set(key, canvasGroup.metadata.runtimeBboxInfo);
     }
     await updateImage(state.image);
+    toast('Annotations saved successfully!');
   }
   catch (err) {
     Logger.error('Failed to save annotations:', err);

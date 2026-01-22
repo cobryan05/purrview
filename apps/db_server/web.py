@@ -186,7 +186,7 @@ class BoundingBoxInput(BaseModel):
     width: float
     height: float
     uuid: str = Field(default_factory=lambda: str(uuid4()))
-    tags: Optional[List[str]] = []  # List of tag uuids
+    tag_uuids: List[str] = Field(default_factory=list)
     extra: Optional[dict] = {}
 
 
@@ -613,21 +613,11 @@ class WebApp:
             # Build new bounding box list from input
             new_boxes: List[BoundingBoxMetadata] = []
             for b in payload.boxes:
-                class_data = class_uuid_map.get(b.class_uuid, None)
-                class_text = class_data.metadata.name if class_data else "Unknown"
-                # Resolve class info for each class ID
-                # tags = []
-                # for label_id in b.tags or []:
-                #     # Here, you might want to fetch label info by ID from DB or cache
-                #     # Let's assume manager._db_client has get_label_by_id
-                #     label_row = await self._manager._db_client.get_label_by_id(label_id)
-                #     if label_row:
-                #         labels.append(Label(id=label_row["id"], name=label_row["name"], color=label_row["color"]))
-                # TODO TAGS
                 new_boxes.append(
                     BoundingBoxMetadata(
                         uuid=b.uuid,
                         class_uuid=b.class_uuid,
+                        tag_uuids=b.tag_uuids,
                         x=b.x,
                         y=b.y,
                         width=b.width,
