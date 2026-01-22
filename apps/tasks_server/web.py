@@ -5,7 +5,6 @@ import json
 import logging
 import sys
 from contextlib import asynccontextmanager
-from dataclasses import asdict
 from typing import List, Optional, Union
 
 import cv2
@@ -317,7 +316,7 @@ class WebApp:
                 tasks_info = await self._manager.get_tasks_instance_info(payload.task_ids)
                 for task in tasks_info.values():
                     if isinstance(task.get("config_metadata"), TaskConfigMetadata):
-                        task["config_metadata"] = asdict(task["config_metadata"])
+                        task["config_metadata"] = task["config_metadata"].dict()
 
                 response_data = {"status": WebApp.SUCCESS_KEY, "tasks": tasks_info}
             except Exception as e:
@@ -520,7 +519,7 @@ class WebApp:
             """
             try:
                 task_configs = await self._manager.get_task_configs(payload.config_uuids)
-                task_configs_dict = {k: asdict(v) for k, v in task_configs.items()}
+                task_configs_dict = {k: v.dict() for k, v in task_configs.items()}
                 response_data = {"status": WebApp.SUCCESS_KEY, "configs": task_configs_dict}
                 return JSONResponse(content=response_data)
             except Exception as e:

@@ -368,10 +368,11 @@ class DbClient:
             Optional[int]: Image ID if found, otherwise None.
         """
         async with aiosqlite.connect(self._db_path) as db:
+            db.row_factory = aiosqlite.Row
             cursor = await db.execute("SELECT id FROM images WHERE filename = ?", (filename,))
             row = await cursor.fetchone()
             await cursor.close()
-            return row[0] if row else None
+            return row["id"] if row else None
 
     async def add_image(self, filename: str) -> Optional[int]:
         """
@@ -903,10 +904,17 @@ class DbClient:
             List[SourceMetaData]: All source entries.
         """
         async with aiosqlite.connect(self._db_path) as db:
+            db.row_factory = aiosqlite.Row
             cursor = await db.execute("SELECT * FROM sources")
             rows = await cursor.fetchall()
             await cursor.close()
-            return [DbClient.row_to_basemodel(cursor, r, SourceMetadata) for r in rows]
+            results = []
+            for r in rows:
+                data = dict(r)
+                if "params_json" in data:
+                    data["params"] = json.loads(data.pop("params_json"))
+                results.append(SourceMetadata(**data))
+            return results
 
     async def add_source(self, name: str, typename: str, params: dict, uuid: Optional[str] = None) -> SourceMetadata:
         """
@@ -1022,10 +1030,11 @@ class DbClient:
             List[Dict]: List of classes dictionaries with keys: id, name, color, uuid.
         """
         async with aiosqlite.connect(self._db_path) as db:
+            db.row_factory = aiosqlite.Row
             cursor = await db.execute("SELECT * FROM classes")
             rows = await cursor.fetchall()
             await cursor.close()
-            return [DbClient.row_to_basemodel(cursor, r, ClassMetadata) for r in rows]
+            return [ClassMetadata(**dict(r)) for r in rows]
 
     async def add_class(
         self, name: str, color: str, uuid: Optional[str] = None, parent_uuid: Optional[str] = None
@@ -1043,20 +1052,25 @@ class DbClient:
         """
         uuid = uuid or str(uuid4())
         async with aiosqlite.connect(self._db_path) as db:
+            db.row_factory = aiosqlite.Row
             cursor = await db.execute("SELECT * FROM classes WHERE uuid = ?", (uuid,))
             row = await cursor.fetchone()
             if row:
-                return DbClient.row_to_basemodel(cursor, row, ClassMetadata)
+                return ClassMetadata(**dict(row))
 
-            cursor = await db.execute(
-                "INSERT INTO classes (name, color, uuid, parent_uuid) VALUES (?, ?, ?, ?)",
-                (name, color, uuid, parent_uuid),
+            await db.execute(
+                "INSERT INTO classes (uuid, name, color, parent_uuid) VALUES (?, ?, ?, ?)",
+                (uuid, name, color, parent_uuid),
             )
             await db.commit()
-            class_uuid = cursor.lastrowid
-            if class_uuid is None:
-                raise Exception(f"Failed to insert class: {name}")
-            return ClassMetadata(name=name, color=color, uuid=uuid, parent_uuid=parent_uuid)
+
+            cursor = await db.execute("SELECT * FROM classes WHERE uuid = ?", (uuid,))
+            row = await cursor.fetchone()
+            await cursor.close()
+
+        if not row:
+            raise ValueError("Failed to retrieve inserted class")
+        return ClassMetadata(**dict(row))
 
     async def get_class_by_uuid(self, uuid: str) -> Optional[ClassMetadata]:
         """
@@ -1715,7 +1729,7 @@ class DbClient:
                     transformed[new_key] = value
                 continue
 
-            # Skip unknown columns
+            # Skip existing columns
             if key not in model_fields:
                 continue
 
