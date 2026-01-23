@@ -1,14 +1,31 @@
+import base64
+import logging
+import sys
+from dataclasses import dataclass
 from typing import Any, Dict, Optional
+
+import cv2
+from dacite import Config, from_dict
+from db_client.api.sources_api import SourcesApi
+from inference_client.api.inference_api import InferenceApi
+from inference_client.api.models_api import ModelsApi
+from inference_client.models.recognize_payload import RecognizePayload
+from inference_client.models.pin_model_payload import PinModelPayload
+from apps.helpers.consts import JsonValues
+from apps.helpers.imageProviders.imageProvider import ImageProvider
+from apps.helpers.imageProviders.Registry import image_provider_registry
 
 from .Registry import register_task
 from .Task import Task
-from dataclasses import dataclass
-from dacite import from_dict, Config
+
+logging.basicConfig(stream=sys.stdout)
+logger = logging.getLogger(__file__)
+logger.setLevel(logging.DEBUG)
 
 @dataclass
 class ModelLabelValues:
     modelName: str
-    labelValues: Dict[str, float]
+    classesValues: Dict[str, float]
 
 
 @register_task()
@@ -23,14 +40,57 @@ class CollectTrainingImagesTask(Task):
             from_dict(ModelLabelValues, item, Config(cast=[float])) for item in params.get("model_label_config", [])
         ]
 
-
-        print("HI")
-
     async def _run(self) -> dict[str, Any]:
         """Run the main logic of the task."""
         ret = {}
-        status: str = "success"
+        status: str = JsonValues.SUCCESS
         self._status_msg = "Initializing Provider"
+
+        # Get ImageProvider
+        sources_api: SourcesApi = SourcesApi(self._manager.get_db_api_client())
+        api_response = sources_api.get_sources()
+        if api_response.status != JsonValues.SUCCESS:
+            raise Exception("Failed to retrieve source list")
+        source_metadata = api_response.sources.get(self._source_uuid, None) if api_response.sources else None
+        if not source_metadata:
+            raise Exception(f"Source {self._source_uuid} not found")
+        image_provider: ImageProvider = image_provider_registry[source_metadata.typename](**source_metadata.params)
+
+        # Get ImageRecognizer
+        inference_api: InferenceApi = InferenceApi(self._manager.get_inference_api_client())
+
+        models_api: ModelsApi = ModelsApi(self._manager.get_inference_api_client())
+
+        pin_ids = {}
+        for config in self._model_label_configs:
+            pin_payload: PinModelPayload = PinModelPayload(model_name=config.modelName,duration=10)
+            pin_response = models_api.pin_model(pin_payload)
+            pin_ids[config.modelName] = pin_response.get("pin_id")
+
+
+        self._status_msg = "Running"
+        await image_provider.start()
+        try:
+            while self._cancel_flag.is_set() is False:
+                image_with_metadata = await image_provider.getNextImage()
+                if image_with_metadata is None:
+                    break
+                success, buf = cv2.imencode(".png", image_with_metadata.image)
+                image_base64 = base64.b64encode(buf).decode("utf-8")
+                results = {}
+                for config in self._model_label_configs:
+                    payload: RecognizePayload = RecognizePayload(
+                        model_name=config.modelName,
+                        image_base64=image_base64,
+                        conf_thresh=min(config.classesValues.values()),
+                    )
+                    result = inference_api.recognize(payload)
+                    logger.info(result)
+
+        finally:
+            await image_provider.stop()
+
+        # TODO: Unpin models
 
         self._update_resume_data()
         ret["status"] = status
@@ -88,7 +148,8 @@ class CollectTrainingImagesTask(Task):
             "min_capture_interval": {
                 "type": "int",
                 "label": "Minimum capture Interval",
-                "required": False,
+                "default": 0,
+                "required": True,
                 "description": "Minimum time (in seconds) between captures",
             },
         }

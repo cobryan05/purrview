@@ -7,6 +7,9 @@ import sys
 from dataclasses import asdict, dataclass, field
 from typing import Any, Dict, List, Optional, Union
 
+import db_client
+import inference_client
+
 from apps.helpers.consts import TaskStatus
 from apps.helpers.db.db_client import ActiveTaskMetadata, DbClient, TaskConfigMetadata
 
@@ -30,14 +33,31 @@ class Manager:
 
     POLLING_INTERVAL: float = 5.0  # Interval in seconds for periodic tasks
 
-    def __init__(self, db_client: DbClient):
+    def __init__(
+        self,
+        db_api_client: db_client.ApiClient,
+        legacy_db_client: DbClient,
+        inference_api_client: inference_client.ApiClient,
+    ):
         """
         Initialize the Manager.
         """
         self._task: Optional[asyncio.Task] = None  # Background task for periodic operations
-        self._db_client: DbClient = db_client
+        self._legacy_db_client: DbClient = legacy_db_client
+        self._inference_api_client: inference_client.ApiClient = inference_api_client
+        self._db_api_client: db_client.ApiClient = db_api_client
         self._running_tasks: Dict[int, RunningTaskInfo] = {}
-        self._config = {"db_path": db_client.get_path()}
+        self._config = {
+            "db_path": legacy_db_client.get_path(),
+            "db_server": db_api_client.configuration.host,
+            "inference_server": inference_api_client.configuration.host,
+        }
+
+    def get_db_api_client(self) -> db_client.ApiClient:
+        return self._db_api_client
+
+    def get_inference_api_client(self) -> inference_client.ApiClient:
+        return self._inference_api_client
 
     async def get_server_config(self) -> Dict[str, Any]:
         return self._config.copy()
@@ -75,7 +95,7 @@ class Manager:
                         tasks_to_delete.append(tid)
             else:
                 # If not running, check the database
-                results = await self._db_client.get_task_results(task_ids)
+                results = await self._legacy_db_client.get_task_results(task_ids)
         if results and tasks_to_delete:
             asyncio.create_task(self.delete_tasks(task_ids=tasks_to_delete))
 
@@ -101,9 +121,9 @@ class Manager:
         missing_ids = None if task_ids is None else [tid for tid in task_ids if tid not in running_tasks]
         info_from_db = {}
         if missing_ids is None or len(missing_ids) > 0:
-            db_tasks = await self._db_client.get_active_tasks(task_id=missing_ids)
+            db_tasks = await self._legacy_db_client.get_active_tasks(task_id=missing_ids)
             config_uuids = list(set(task.config_uuid for task in db_tasks))
-            config_metadata = await self._db_client.get_task_configs(config_uuids=config_uuids)
+            config_metadata = await self._legacy_db_client.get_task_configs(config_uuids=config_uuids)
             config_map = {config.uuid: config for config in config_metadata}
             info_from_db = {
                 task.id: {
@@ -144,7 +164,7 @@ class Manager:
             raise ValueError(f"Unknown task: {typename}")
 
         params[Task.InternalKeys.PERSISTENT] = persistent
-        task_config_metadata: TaskConfigMetadata = await self._db_client.add_task_config(
+        task_config_metadata: TaskConfigMetadata = await self._legacy_db_client.add_task_config(
             name=name, typename=typename, params=params
         )
 
@@ -159,7 +179,7 @@ class Manager:
         """
         if isinstance(config_uuids, str):
             config_uuids = [config_uuids]
-        await self._db_client.delete_task_config(config_uuids)
+        await self._legacy_db_client.delete_task_config(config_uuids)
 
     async def delete_tasks(self, task_ids: Union[List[int], int]) -> None:
         """
@@ -172,7 +192,7 @@ class Manager:
             if task_id in self._running_tasks:
                 await self._running_tasks[task_id].task.stop()
                 del self._running_tasks[task_id]
-        await self._db_client.delete_active_tasks(task_ids)
+        await self._legacy_db_client.delete_active_tasks(task_ids)
 
     async def update_task_config(
         self,
@@ -198,7 +218,7 @@ class Manager:
             raise ValueError(f"Unknown task type: {typename}")
 
         # Update in database
-        await self._db_client.update_task_config(
+        await self._legacy_db_client.update_task_config(
             config_uuid=config_uuid,
             name=name,
             typename=typename,
@@ -219,7 +239,7 @@ class Manager:
         if isinstance(task_config_uuids, str):
             task_config_uuids = [task_config_uuids]
 
-        configs_metadata = await self._db_client.get_task_configs(config_uuids=task_config_uuids)
+        configs_metadata = await self._legacy_db_client.get_task_configs(config_uuids=task_config_uuids)
         return {cfg.uuid: cfg for cfg in configs_metadata}
 
     async def pause_tasks(self, task_ids: Union[List[int], int]) -> None:
@@ -317,7 +337,7 @@ class Manager:
         for task_info in canceled_tasks:
             try:
                 await task_info.task.wait_for_task_done(5.0)
-                await self._db_client.set_task_status(task_info.task_metadata.id, task_info.task.get_status())
+                await self._legacy_db_client.set_task_status(task_info.task_metadata.id, task_info.task.get_status())
             except TimeoutError:
                 logger.warning(f"Task {task_info.task_metadata.id} did not stop in time")
 
@@ -336,18 +356,20 @@ class Manager:
     async def _save_task_data(self, task_info: RunningTaskInfo) -> None:
         """Save the resume data for a task."""
         if task_info.task.is_data_ready():
-            await self._db_client.set_task_resume_data(task_info.task_metadata.id, task_info.task.get_resume_data())
+            await self._legacy_db_client.set_task_resume_data(
+                task_info.task_metadata.id, task_info.task.get_resume_data()
+            )
             task_info.task.clear_data_ready()
         # TODO: Sync metadata and DB?
-        await self._db_client.set_task_result(task_info.task_metadata.id, task_info.task.get_results())
-        await self._db_client.set_task_status(task_info.task_metadata.id, task_info.task_metadata.status)
+        await self._legacy_db_client.set_task_result(task_info.task_metadata.id, task_info.task.get_results())
+        await self._legacy_db_client.set_task_status(task_info.task_metadata.id, task_info.task_metadata.status)
 
     async def _start_task(self, config_metadata: TaskConfigMetadata) -> Optional[RunningTaskInfo]:
         """Start a task."""
         task_instance = task_registry[config_metadata.typename](
             task_config_uuid=config_metadata.uuid, params=config_metadata.params, manager=self
         )
-        task_metadata: ActiveTaskMetadata = await self._db_client.insert_new_active_task(config_metadata.uuid)
+        task_metadata: ActiveTaskMetadata = await self._legacy_db_client.insert_new_active_task(config_metadata.uuid)
         task_info: RunningTaskInfo = RunningTaskInfo(
             task=task_instance, config_metadata=config_metadata, task_metadata=task_metadata
         )
@@ -365,13 +387,13 @@ class Manager:
 
     async def _init(self):
         """Initialization that should run on event loop"""
-        await self._db_client.init_db()
+        await self._legacy_db_client.init_db()
 
         # Clear any tasks left in DB that can't be resumed
-        stale_tasks: List[TaskConfigMetadata] = await self._db_client.get_active_tasks(resumable=False)
+        stale_tasks: List[TaskConfigMetadata] = await self._legacy_db_client.get_active_tasks(resumable=False)
         if stale_tasks:
             stale_ids = [info.id for info in stale_tasks]
-            await self._db_client.delete_task_config(stale_ids)
+            await self._legacy_db_client.delete_task_config(stale_ids)
 
     async def _worker_task(self):
         """
