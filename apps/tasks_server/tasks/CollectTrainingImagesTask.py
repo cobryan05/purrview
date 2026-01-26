@@ -6,21 +6,24 @@ from typing import Any, Dict, Optional
 
 import cv2
 from dacite import Config, from_dict
-from db_client.api.sources_api import SourcesApi
 from inference_client.api.inference_api import InferenceApi
 from inference_client.api.models_api import ModelsApi
 from inference_client.models.recognize_payload import RecognizePayload
 from inference_client.models.pin_model_payload import PinModelPayload
 from apps.helpers.consts import JsonValues
-from apps.helpers.imageProviders.imageProvider import ImageProvider
-from apps.helpers.imageProviders.Registry import image_provider_registry
+from apps.helpers.imageProviders.imageProvider import ImageMetadata, ImageProvider
 
+from .utils.sourceHelper import SourceHelper
+from .utils.imageHelper import ImageHelper
 from .Registry import register_task
 from .Task import Task
+
+from pathlib import Path
 
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger(__file__)
 logger.setLevel(logging.DEBUG)
+
 
 @dataclass
 class ModelLabelValues:
@@ -43,32 +46,28 @@ class CollectTrainingImagesTask(Task):
     async def _run(self) -> dict[str, Any]:
         """Run the main logic of the task."""
         ret = {}
+        db_api_client = self._manager.get_db_api_client()
+        inference_api_client = self._manager.get_inference_api_client()
         status: str = JsonValues.SUCCESS
         self._status_msg = "Initializing Provider"
 
-        # Get ImageProvider
-        sources_api: SourcesApi = SourcesApi(self._manager.get_db_api_client())
-        api_response = sources_api.get_sources()
-        if api_response.status != JsonValues.SUCCESS:
-            raise Exception("Failed to retrieve source list")
-        source_metadata = api_response.sources.get(self._source_uuid, None) if api_response.sources else None
-        if not source_metadata:
-            raise Exception(f"Source {self._source_uuid} not found")
-        image_provider: ImageProvider = image_provider_registry[source_metadata.typename](**source_metadata.params)
+        source_helper: SourceHelper = SourceHelper(db_api_client)
+        image_provider: ImageProvider = source_helper.get_image_provider(self._source_uuid)
+        if not image_provider:
+            raise KeyError("Failed to get image provider")
 
-        # Get ImageRecognizer
-        inference_api: InferenceApi = InferenceApi(self._manager.get_inference_api_client())
-
-        models_api: ModelsApi = ModelsApi(self._manager.get_inference_api_client())
+        inference_api: InferenceApi = InferenceApi(inference_api_client)
+        models_api: ModelsApi = ModelsApi(inference_api_client)
 
         pin_ids = {}
         for config in self._model_label_configs:
-            pin_payload: PinModelPayload = PinModelPayload(model_name=config.modelName,duration=10)
+            pin_payload: PinModelPayload = PinModelPayload(model_name=config.modelName, duration=60)
             pin_response = models_api.pin_model(pin_payload)
             pin_ids[config.modelName] = pin_response.get("pin_id")
 
-
+        image_helper: ImageHelper = ImageHelper(db_api_client)
         self._status_msg = "Running"
+
         await image_provider.start()
         try:
             while self._cancel_flag.is_set() is False:
@@ -79,18 +78,31 @@ class CollectTrainingImagesTask(Task):
                 image_base64 = base64.b64encode(buf).decode("utf-8")
                 results = {}
                 for config in self._model_label_configs:
+                    # Get inference results
+                    min_conf = min(config.classesValues.values())
                     payload: RecognizePayload = RecognizePayload(
                         model_name=config.modelName,
                         image_base64=image_base64,
-                        conf_thresh=min(config.classesValues.values()),
+                        conf_thresh=min_conf,
+                        pin_id=pin_ids.get(config.modelName),
                     )
-                    result = inference_api.recognize(payload)
-                    logger.info(result)
+                    results[config.modelName] = inference_api.recognize(payload)
+
+
+                # Determine an output filename
+                sanitized_name: str = ImageHelper.sanitize_filename(f"{image_with_metadata.metadata.source}_{image_with_metadata.metadata.frame_idx}")
+                output_path = Path(self._output_dir) / f"{sanitized_name}.png"
+
+                # Check if this file already exists in the database
+                image_metadata: ImageMetadata = image_helper.get_image_metadata(str(output_path))
+                if image_metadata:
+                    logger.info(f"Output image {output_path} already exists")
+                else:
+                    logger.info(f"Output image {output_path} is new")
+                logger.info(results)
 
         finally:
             await image_provider.stop()
-
-        # TODO: Unpin models
 
         self._update_resume_data()
         ret["status"] = status

@@ -193,8 +193,10 @@ class BoundingBoxInput(BaseModel):
 class GetBoundingBoxInfoPayload(BaseModel):
     uuids: List[str]
 
+
 class GetBoundingBoxInfoResponse(StatusResponse):
     metadata: dict[str, BoundingBoxMetadata] = Field(default_factory=dict)
+
 
 class UpdateMetadataPayload(BaseModel):
     image_path: str
@@ -306,7 +308,9 @@ class WebApp:
             API endpoint to add a new class.
             """
             try:
-                new_metadata = await self._manager.create_new_class(request.name, request.color, parent_uuid=request.parent_uuid)
+                new_metadata = await self._manager.create_new_class(
+                    request.name, request.color, parent_uuid=request.parent_uuid
+                )
 
                 return AddClassResponse(status=JsonValues.SUCCESS, metadata=new_metadata)
             except Exception as e:
@@ -314,7 +318,10 @@ class WebApp:
                 return AddClassResponse(status=JsonValues.FAILURE, message=str(e))
 
         @self._app.post(
-            "/api/classes/delete", response_model=DeleteClassResponse, tags=[ApiTags.CLASSES], operation_id="delete_class"
+            "/api/classes/delete",
+            response_model=DeleteClassResponse,
+            tags=[ApiTags.CLASSES],
+            operation_id="delete_class",
         )
         async def delete_class_api(request: DeleteClassPayload) -> DeleteClassResponse:
             """
@@ -583,16 +590,16 @@ class WebApp:
         # Images API
         ################################################################################
 
-        @self._app.get(
+        @self._app.post(
             "/api/images/metadata/get",
             response_model=GetImageMetadataResponse,
             tags=[ApiTags.IMAGES],
             operation_id="get_image_metadata",
         )
         async def get_image_metadata(payload: GetImageMetadataPayload) -> GetImageMetadataResponse:
-            metadata: Optional[ImageMetadata] = await self._manager.get_image_metadata(payload.image_path)
+            metadata = await self._manager.get_image_metadata(payload.image_path)
             if metadata is None:
-                raise HTTPException(status_code=404, detail="Image not found")
+                return GetImageMetadataResponse(status=JsonValues.FAILURE, message="Image not found")
 
             return GetImageMetadataResponse(metadata=metadata)
 
@@ -605,7 +612,6 @@ class WebApp:
         async def update_image_metadata(payload: UpdateMetadataPayload) -> UpdateMetadataResponse:
             image_path = payload.image_path
             metadata = await self._manager.get_image_metadata(image_path)
-            class_uuid_map = await self._manager.get_class_uuid_map()
 
             if metadata is None:
                 return UpdateMetadataResponse(status=JsonValues.FAILURE, message="Image not found")

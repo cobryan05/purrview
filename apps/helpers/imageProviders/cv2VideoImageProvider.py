@@ -33,6 +33,7 @@ class Cv2VideoImageProvider(ImageProvider):
         self._iter: Iterator = iter(self._paths)
         self._vidPath: str = None
         self._vid: Optional[cv2.VideoCapture]= None
+        self._vidFrameCnt: int = 0
         self._loop: bool = loop
         self._nextVideo()
 
@@ -63,11 +64,17 @@ class Cv2VideoImageProvider(ImageProvider):
                 await asyncio.to_thread(self._nextVideo)
                 if self._vid is None:
                     return None
-
                 ret, frame = await asyncio.to_thread(self._vid.read)
                 if not ret:
                     return None
-            return ImageWithMetadata(frame)
+                self._vidFrameCnt = 0
+
+            ret_image = ImageWithMetadata(frame)
+            ret_image.metadata.source = self._vidPath
+            ret_image.metadata.frame_idx = self._vidFrameCnt
+
+            self._vidFrameCnt += 1
+            return ret_image
 
     @classmethod
     def params_schema(cls) -> dict[str, dict[str, Any]]:

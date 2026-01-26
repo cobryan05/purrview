@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 @dataclass
 class ImageMetadata:
     source: Optional[str] = None
+    frame_idx: Optional[int ] = None
     additional_info: dict[str, Any] = field(default_factory=dict)
 
 @dataclass
