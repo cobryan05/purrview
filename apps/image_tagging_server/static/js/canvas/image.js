@@ -44,6 +44,11 @@ export async function refreshCanvas() {
     return;
   }
 
+  const oldBg = layer.findOne('.background');
+  if (oldBg) {
+    oldBg.destroy();
+  }
+
   const bg = new Konva.Image({
     image: img,
     x: 0,
