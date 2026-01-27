@@ -1,6 +1,7 @@
 import { CanvasBboxGroup } from './groups/CanvasBboxGroup.js';
-import { state } from './state.js'
-import { Logger, fetchImage, generateUUID, toast, updateImage } from '/app-static/js/ui/utils/index.js';
+import { state } from './state.js';
+import { fetchImage, updateImage } from '/app-static/js/shared/api/images.js';
+import { Logger, toast } from '/app-static/js/ui/utils/index.js';
 
 /**
  * @typedef {import('@app_types').RuntimeBboxInfo} RuntimeBboxInfo

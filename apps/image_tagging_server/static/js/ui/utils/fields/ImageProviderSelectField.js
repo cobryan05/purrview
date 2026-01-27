@@ -1,6 +1,6 @@
 import { DropDownField } from './DropDownField.js';
 import { Field } from './Field.js';
-import { fetchImageProviderList } from '/app-static/js/ui/utils/index.js'
+import { fetchImageProviderList } from '/app-static/js/shared/api/sources.js';
 
 export class ImageProviderSelectField extends Field {
   constructor({ ...rest }) {

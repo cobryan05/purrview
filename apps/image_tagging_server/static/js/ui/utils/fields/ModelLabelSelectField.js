@@ -1,7 +1,8 @@
 import { DropDownField } from './DropDownField.js';
 import { Field } from './Field.js';
-import { LabelNumberField } from './LabelNumberField.js'
-import { fetchModelsList, fetchModelsClassMappings, fetchClassByUuid } from '/app-static/js/ui/utils/index.js';
+import { LabelNumberField } from './LabelNumberField.js';
+import { fetchClassByUuid } from '/app-static/js/shared/api/classes.js';
+import { fetchModelsClassMappings, fetchModelsList } from '/app-static/js/shared/api/models.js';
 import { createGenericRow } from '/app-static/js/ui/utils/index.js';
 export class ModelLabelSelectField extends Field {
   static DEFAULT_CONFIDENCE = 0.25;

@@ -1,7 +1,7 @@
 // ================= Sources Manager =================
+import { createGenericRow, runPreviewSourceTest, toast } from './utils/index.js';
+import { createSource, deleteSources, fetchSourceList, updateSource } from '/app-static/js/shared/api/sources.js';
 import { EditableField, SourceConfigField } from '/app-static/js/ui/utils/fields/index.js';
-import { createGenericRow, createSource, deleteSources, fetchImageProviderSchema, fetchSourceList, runPreviewSourceTest, toast, updateSource } from '/app-static/js/ui/utils/index.js';
-
 /**
  * Creates a row for a single source with editable buttons
  */

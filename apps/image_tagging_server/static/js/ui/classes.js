@@ -1,9 +1,9 @@
 // classes.js
 import { state } from '/app-static/js/canvas/state.js';
 import { getTool } from '/app-static/js/canvas/tools.js';
-import { createGenericRow, createNewClass, deleteClass, fetchClasses, toast, updateClass } from '/app-static/js/ui/utils/index.js';
+import { clearClassCache, createNewClass, deleteClass, fetchClasses, updateClass, } from '/app-static/js/shared/api/classes.js';
 import { EditableField, TextBoxColorField } from '/app-static/js/ui/utils/fields/index.js';
-import { clearClassCache } from './utils/classesApi.js';
+import { createGenericRow, toast } from '/app-static/js/ui/utils/index.js';
 
 const DEFAULT_COLOR = '#cccccc';
 

@@ -1,4 +1,5 @@
-import { generateUUID, fetchClassByUuid, Logger } from '/app-static/js/ui/utils/index.js';
+import { generateUUID, Logger } from '/app-static/js/ui/utils/index.js';
+import { fetchClassByUuid  } from '/app-static/js/shared/api/classes.js';
 import { state } from '../state.js';
 /**
  * @typedef {Object} CanvasBboxMetadata

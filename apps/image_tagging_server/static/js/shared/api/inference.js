@@ -1,6 +1,7 @@
 // inferenceApi.js
 
-import { Logger, toast, fetchClassByUuid, generateUUID } from '/app-static/js/ui/utils/index.js';
+import { fetchClassByUuid } from '/app-static/js/shared/api/classes.js';
+import { generateUUID, Logger, toast } from '/app-static/js/ui/utils/index.js';
 
 /**
  * @typedef {import('@app_types').RuntimeBboxInfo} RuntimeBbox

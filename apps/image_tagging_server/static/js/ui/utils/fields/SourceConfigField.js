@@ -2,8 +2,8 @@ import { DropDownField } from './DropDownField.js';
 import { Field } from './Field.js';
 import { SchemaField } from './SchemaField.js';
 import { TextField } from './TextField.js';
-import { Logger, fetchImageProviderList, fetchImageProviderSchema } from '/app-static/js/ui/utils/index.js';
-
+import { fetchImageProviderList, fetchImageProviderSchema } from '/app-static/js/shared/api/sources.js';
+import { Logger } from '/app-static/js/ui/utils/index.js';
 export class SourceConfigField extends Field {
   constructor({ ...rest }) {
     super(rest);

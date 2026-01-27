@@ -1,4 +1,5 @@
-import { TaskStatus, cancelTasks, createTaskConfig, deleteTasks, deleteTaskConfigs, fetchTasksResult, fetchTasksStatus, startTask, toast } from '/app-static/js/ui/utils/index.js';
+import { TaskStatus, cancelTasks, createTaskConfig, deleteTaskConfigs, fetchTasksResult, fetchTasksStatus, startTask } from '/app-static/js/shared/api/tasks.js';
+import { toast } from '/app-static/js/ui/utils/index.js';
 
 // Global guard for only one running preview task
 let previewTaskActive = false;

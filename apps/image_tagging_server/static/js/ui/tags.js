@@ -1,10 +1,7 @@
 // tags.js
-import { clearTagCache } from './utils/tagsApi.js';
-import { state } from '/app-static/js/canvas/state.js';
-import { getTool } from '/app-static/js/canvas/tools.js';
+import { clearTagCache, createNewTag, deleteTag, fetchTags, updateTag } from '/app-static/js/shared/api/tags.js';
 import { EditableField, TextBoxColorField } from '/app-static/js/ui/utils/fields/index.js';
-import { createGenericRow, createNewTag, deleteTag, fetchTags, toast, updateTag } from '/app-static/js/ui/utils/index.js';
-
+import { createGenericRow, toast } from '/app-static/js/ui/utils/index.js';
 const DEFAULT_COLOR = '#cccccc';
 
 /**

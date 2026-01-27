@@ -1,5 +1,5 @@
 import { ignoreKeyReturn, wrapSingleKey } from './apiUtils.js';
-import { createCachedFetcher } from './createCachedFetcher.js';
+import { createCachedFetcher } from '/app-static/js/ui/utils/data/createCachedFetcher.js';
 
 /**
  * Caches

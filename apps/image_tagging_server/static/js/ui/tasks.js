@@ -1,6 +1,6 @@
+import { cancelTasks, createTaskConfig, deleteTaskConfigs, deleteTasks, fetchTaskConfigs, fetchTasksStatus, startTask, updateTaskConfig } from '/app-static/js/shared/api/tasks.js';
 import { ActiveTaskField, EditableField, TaskConfigField } from '/app-static/js/ui/utils/fields/index.js';
-import { cancelTasks, createGenericRow, createTaskConfig, deleteTaskConfigs, deleteTasks, fetchTaskConfigs, fetchTasksStatus, Logger, startTask, toast, updateTaskConfig } from '/app-static/js/ui/utils/index.js';
-
+import { createGenericRow, Logger, toast } from '/app-static/js/ui/utils/index.js';
 /**
  * Renders the task configs (left column).
  * @param {object} params

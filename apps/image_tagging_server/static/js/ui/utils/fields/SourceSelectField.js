@@ -1,6 +1,7 @@
 import { DropDownField } from './DropDownField.js';
 import { Field } from './Field.js';
-import { fetchSourceList } from '/app-static/js/ui/utils/index.js'
+import { fetchSourceList } from '/app-static/js/shared/api/sources.js';
+
 
 export class SourceSelectField extends Field {
   constructor({ ...rest }) {

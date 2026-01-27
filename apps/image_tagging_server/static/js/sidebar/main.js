@@ -3,12 +3,15 @@
 import { addInferenceResults, loadImageAndMetadata } from '/app-static/js/canvas/image.js';
 import { state } from '/app-static/js/canvas/state.js';
 import { setTool } from '/app-static/js/canvas/tools.js';
+import { fetchImageList } from '/app-static/js/shared/api/images.js';
+import { runInference } from '/app-static/js/shared/api/inference.js';
+import { clearModelsCache, fetchModelsList } from '/app-static/js/shared/api/models.js';
 import { renderClassList } from '/app-static/js/ui/classes.js';
-import { renderTagList } from '/app-static/js/ui/tags.js';
 import { renderModelClassAssignments } from '/app-static/js/ui/models.js';
 import { renderSourceManager } from '/app-static/js/ui/sources.js';
+import { renderTagList } from '/app-static/js/ui/tags.js';
 import { renderActiveTasks, renderTaskConfigs } from '/app-static/js/ui/tasks.js';
-import { Logger, clearModelsCache, fetchImageList, fetchModelsList, toast, runInference } from '/app-static/js/ui/utils/index.js';
+import { Logger } from '/app-static/js/ui/utils/index.js';
 
 // --- Model list UI ---
 

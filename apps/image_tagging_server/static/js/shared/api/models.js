@@ -1,5 +1,5 @@
 // modelsApi.js
-import { createCachedFetcher } from './createCachedFetcher.js';
+import { createCachedFetcher } from '/app-static/js/ui/utils/data/createCachedFetcher.js';
 import { wrapSingleKey, ignoreKeyReturn } from './apiUtils.js';
 /** -----------------------------
  * MODELS CACHE

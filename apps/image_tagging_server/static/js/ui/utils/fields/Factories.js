@@ -9,8 +9,8 @@ import { TextField } from './TextField.js'
 import { ModelLabelSelectField } from './ModelLabelSelectField.js';
 import { CheckboxField } from './CheckboxField.js';
 import { DropDownField } from './DropDownField.js';
-import { fetchTags } from '../tagsApi.js';
-import { fetchClasses } from '../classesApi.js';
+import { fetchTags } from '/app-static/js/shared/api/tags.js';
+import { fetchClasses } from '/app-static/js/shared/api/classes.js';
 // Factory map
 export const fieldFactories = {
   async array(fieldName, fieldMeta, values, onChange) {

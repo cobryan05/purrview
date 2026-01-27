@@ -2,7 +2,8 @@ import { DropDownField } from './DropDownField.js';
 import { Field } from './Field.js';
 import { SchemaField } from './SchemaField.js';
 import { TextField } from './TextField.js';
-import { Logger, fetchTaskTypeList, fetchTaskTypeSchema } from '/app-static/js/ui/utils/index.js';
+import { fetchTaskTypeList, fetchTaskTypeSchema } from '/app-static/js/shared/api/tasks.js';
+import { Logger } from '/app-static/js/ui/utils/index.js';
 
 export class TaskConfigField extends Field {
   constructor({ ...rest }) {

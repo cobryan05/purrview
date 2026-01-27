@@ -1,6 +1,7 @@
+import { fetchClasses } from '/app-static/js/shared/api/classes.js';
+import { associateClass, clearModelsCache, fetchModelsClassMappings, fetchModelsList } from '/app-static/js/shared/api/models.js';
 import { DropDownField, EditableField, LabelDropDownField } from '/app-static/js/ui/utils/fields/index.js';
-import { associateClass, clearModelsCache, createGenericRow, fetchClasses, fetchModelsClassMappings, fetchModelsList, Logger, toast } from '/app-static/js/ui/utils/index.js';
-
+import { createGenericRow, Logger, toast } from '/app-static/js/ui/utils/index.js';
 
 export function renderModelClassAssignments({
   target = "model-class-box",

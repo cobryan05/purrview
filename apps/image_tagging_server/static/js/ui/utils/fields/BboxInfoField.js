@@ -1,11 +1,6 @@
-import { Logger } from '../logging.js';
-import { Field } from './Field.js';
-import { LabelDropDownField } from './LabelDropDownField.js';
-import { ArrayField } from './ArrayField.js';
-import { TextField } from './TextField.js';
-import { fetchClassByUuid, fetchClasses, fetchTags, renderBoxed } from '/app-static/js/ui/utils/index.js';
-import { fieldFactories } from './Factories.js';
 import { SchemaField } from '././SchemaField.js';
+import { Field } from './Field.js';
+import { renderBoxed } from '/app-static/js/ui/utils/index.js';
 // Takes options as an array of strings or objects
 // Each object can have 'key', 'text', and 'color' properties
 

@@ -1,10 +1,7 @@
+import { refreshCanvas } from '../canvas/image.js'; // TODO: Better way?
 import { state } from '/app-static/js/canvas/state.js';
-import { getTool } from '/app-static/js/canvas/tools.js';
-import { createGenericRow, createNewClass, deleteClass, Logger, fetchClasses, toast, updateClass } from '/app-static/js/ui/utils/index.js';
-import { EditableField, BboxInfoField } from '/app-static/js/ui/utils/fields/index.js';
-import { clearClassCache } from './utils/classesApi.js';
-import { refreshCanvas } from '../canvas/image.js' // TODO: Better way?
-
+import { BboxInfoField, EditableField } from '/app-static/js/ui/utils/fields/index.js';
+import { createGenericRow, Logger } from '/app-static/js/ui/utils/index.js';
 
 /**
  * Opens the inspector tab in the sidebar and highlights it briefly.
