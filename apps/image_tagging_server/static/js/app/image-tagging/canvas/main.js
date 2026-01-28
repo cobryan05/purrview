@@ -77,6 +77,11 @@ export async function init() {
       Logger.error('Failed to run inference:', err);
     }
   });
+
+  events.subscribe(EventTypes.LOAD_IMAGE_ONTO_CANVAS, ({ path, showCanvas }) => {
+    loadImageAndMetadata(path);
+    if (showCanvas) {
+       events.publish(EventTypes.SHOW_CANVAS);
+    }
+  });
 }
-
-
