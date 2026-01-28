@@ -1,5 +1,5 @@
-import { refreshCanvas } from '../canvas/image.js'; // TODO: Better way?
-import { state } from '/app-static/js/canvas/state.js';
+import { refreshCanvas } from '../app/image-tagging/canvas/image.js'; // TODO: Better way?
+import { state } from '../app/image-tagging/canvas/state.js';
 import { BboxInfoField, EditableField } from '/app-static/js/ui/utils/fields/index.js';
 import { createGenericRow, Logger } from '/app-static/js/ui/utils/index.js';
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
@@ -11,21 +11,21 @@ export function openInspectorTab() {
   const sidebar = document.getElementById('sidebar');
   if (!sidebar) return;
 
-  const tabs = sidebar.querySelectorAll('.tab-button');
-  const panes = sidebar.querySelectorAll('.tab-pane');
+  const tabs = sidebar.querySelectorAll('.sidebar-tab-button');
+  const panes = sidebar.querySelectorAll('.sidebar-tab-pane');
 
   tabs.forEach(tab => {
     const tabName = tab.getAttribute('data-tab');
-    tab.classList.toggle('active', tabName === 'tab-pane-inspector');
+    tab.classList.toggle('active', tabName === 'tab-inspector');
   });
 
   panes.forEach(pane => {
-    pane.classList.toggle('active', pane.id === 'tab-pane-inspector');
+    pane.classList.toggle('active', pane.id === 'tab-inspector');
   });
 
   document.getElementById('classInput')?.focus();
 
-  const inspector = document.getElementById('tab-pane-inspector');
+  const inspector = document.getElementById('tab-inspector');
   if (inspector) {
     inspector.style.outline = '2px solid #ff0033';
     setTimeout(() => inspector.style.outline = '', 1000);
@@ -33,7 +33,7 @@ export function openInspectorTab() {
 }
 
 
-export function renderBboxInspector({ bboxUuid = null, target = 'tab-pane-inspector', editable = true, onSelectCallback = null } = {}) {
+export function renderBboxInspector({ bboxUuid = null, target = 'tab-inspector', editable = true, onSelectCallback = null } = {}) {
   bboxUuid = bboxUuid ?? state.selectedBboxUuid;
   const bbox = state.getBboxGroup(bboxUuid)
   try {

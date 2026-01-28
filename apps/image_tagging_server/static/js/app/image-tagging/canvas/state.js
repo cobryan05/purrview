@@ -45,11 +45,11 @@ export const state = {
   setImage(image) {
     this.image = image
   },
-  /** @param {import('@konva_groups').CanvasBboxGroup} bboxGroup */
+  /** @param {import('/app-static/js/app/image-tagging/canvas/groups').CanvasBboxGroup} bboxGroup */
   removeBboxGroup(bboxGroup) {
     this.canvas.bboxes?.delete(bboxGroup.metadata.runtimeBboxInfo.uuid);
   },
-  /** @param {import('@konva_groups').CanvasBboxGroup} bboxGroup */
+  /** @param {import('/app-static/js/app/image-tagging/canvas/groups').CanvasBboxGroup} bboxGroup */
   updateCanvasBbox(bboxGroup) {
     this.canvas.bboxes?.set(bboxGroup.metadata.runtimeBboxInfo.uuid, bboxGroup);
   },

@@ -1,5 +1,5 @@
 import { generateUUID, Logger } from '/app-static/js/ui/utils/index.js';
-import { fetchClassByUuid  } from '/app-static/js/shared/api/classes.js';
+import { fetchClassByUuid } from '/app-static/js/shared/api/classes.js';
 import { state } from '../state.js';
 /**
  * @typedef {Object} CanvasBboxMetadata
@@ -47,7 +47,13 @@ export class CanvasBboxGroup extends Konva.Group {
 
 
     // Restore draggable on mouseup or dragend
-    this.on('mouseup dragend', () => this.draggable(true));
+    this.on('mouseup dragend', () => {
+      this.draggable(true)
+      if (state.currentTool === 'select') {
+        const newPos = { x: this.x(), y: this.y() };
+        this.updateMetadata(newPos);
+      }
+    });
 
     // Disable dragging with middle mouse button down
     this.on('mousedown', e => {

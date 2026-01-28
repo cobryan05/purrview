@@ -1,5 +1,5 @@
-import { Logger } from '../ui/utils/logging.js';
-import { generateUUID } from '../ui/utils/utils.js';
+import { Logger } from '../../../ui/utils/logging.js';
+import { generateUUID } from '../../../ui/utils/utils.js';
 import { CanvasBboxGroup } from './groups/CanvasBboxGroup.js';
 import { state } from './state.js';
 import { clearSelection, selectBboxTool, setTool } from './tools.js';

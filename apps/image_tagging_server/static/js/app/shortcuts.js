@@ -1,5 +1,5 @@
-import { deleteSelected } from './canvas/image.js';
-import { setTool, selectBboxTool } from './canvas/tools.js';
+import { deleteSelected } from './image-tagging/canvas/image.js';
+import { setTool, selectBboxTool } from './image-tagging/canvas/tools.js';
 
 export function registerKeyboardShortcuts() {
   document.addEventListener('keydown', e => {

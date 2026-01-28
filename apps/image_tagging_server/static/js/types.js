@@ -4,7 +4,7 @@
  * @typedef {import('@konva').default.Transformer} Transformer
  * @typedef {import('@konva').default.Group} Group
  * @typedef {import('@web_api').ImageMetadata} ImageMetadata
- * @typedef {import('@konva_groups').CanvasBboxGroup} CanvasBboxGroup
+ * @typedef {import('/app-static/js/app/image-tagging/canvas/groups').CanvasBboxGroup} CanvasBboxGroup
  */
 
 

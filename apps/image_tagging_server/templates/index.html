@@ -1,237 +1,76 @@
 <!DOCTYPE html>
 <html lang="en">
-
 <head>
   <meta charset="UTF-8" />
   <title>Annotation Tool</title>
   <link rel="stylesheet" href="/static/css/pico.min.css" />
   <style>
-    body {
-      margin: 0;
-    }
+    body { margin: 0; }
+    main.container { max-width: 100%; padding: 0.5em 1em; box-sizing: border-box; }
 
-    main.container {
-      max-width: 100%;
-      padding: 0.5em 1em;
-      box-sizing: border-box;
-    }
+    /* --- Top-level tabs --- */
+    .main-tab-header { display: flex; border-bottom: 1px solid #ccc; margin-bottom: 0.5em; }
+    .main-tab-button { width: 100%; text-align: center; padding: 0.5em 0; cursor: pointer; border: none; background: none; font-weight: normal; color: #333; border-bottom: 2px solid transparent; transition: border-color 0.2s; font-size: 1.1em; }
+    .main-tab-button:hover { color: #000; }
+    .main-tab-button.active { font-weight: bold; border-bottom: 2px solid #ff0033; }
+    .main-tab-pane { display: none; }
+    .main-tab-pane.active { display: block; }
 
-    /* Styles for the new outer tab headers */
-    .outer-tab-header {
-      display: flex;
-      border-bottom: 1px solid #ccc;
-      margin-bottom: 0.5em;
-    }
+    /* --- Workspace layout --- */
+    .workspace-container { display: flex; gap: 0; width: 100%; margin: 0; }
+    #workspace { width: 80%; min-width: 0; padding: 0; margin: 0; }
+    #sidebar { width: 20%; padding: 0.5em; border-left: 1px solid #ccc; box-sizing: border-box; }
 
-    .outer-tab-button {
-      width: 100%;
-      text-align: center;
-      padding: 0.5em 0;
-      /* Slightly more padding for main tabs */
-      cursor: pointer;
-      border: none;
-      background: none;
-      font-weight: normal;
-      color: #333;
-      border-bottom: 2px solid transparent;
-      transition: border-color 0.2s;
-      box-sizing: border-box;
-      font-size: 1.1em;
-      /* Larger font size for main tabs */
-    }
+    /* --- Workspace tabs --- */
+    .workspace-tab-header { display: flex; border-bottom: 1px solid #ccc; margin-bottom: 0.5em; }
+    .workspace-tab-button { width: 100%; text-align: center; padding: 0.3em 0; cursor: pointer; border: none; background: none; font-weight: normal; color: #333; border-bottom: 2px solid transparent; transition: border-color 0.2s; font-size: 0.95em; }
+    .workspace-tab-button:hover { color: #000; }
+    .workspace-tab-button.active { font-weight: bold; border-bottom: 2px solid #ff0033; }
+    .workspace-tab-pane { display: none; }
+    .workspace-tab-pane.active { display: block; }
 
-    .outer-tab-button:hover {
-      color: #000;
-    }
+    /* --- Toolbar / Canvas --- */
+    #toolbar { display: flex; gap: 0.5em; margin-bottom: 0.5em; width: 100%; }
+    #toolbar button { flex: 1 1 0; font-size: 0.95em; padding: 0.2em 0.7em; min-height: 2em; border-radius: 4px; margin: 0; box-sizing: border-box; white-space: normal; line-height: 1.2; height: auto; }
+    #toolbar button.selected { background-color: #ff0033; color: white; font-weight: bold; box-shadow: 0 0 0 2px #aa0011 inset; }
+    #draw-container { width: 100%; height: 80vh; border: 1px solid #ccc; overflow: hidden; flex-grow: 1; font-size: 0.95em; }
 
-    .outer-tab-button.active {
-      font-weight: bold;
-      border-bottom: 2px solid #ff0033;
-    }
+    /* --- Sidebar tabs --- */
+    .sidebar-tab-header { display: grid; grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; gap: 0.2em; border-bottom: 1px solid #ccc; margin-bottom: 0.5em; }
+    .sidebar-tab-button { width: 100%; text-align: center; padding: 0.3em 0; cursor: pointer; border: none; background: none; font-weight: normal; color: #333; border-bottom: 2px solid transparent; transition: border-color 0.2s; font-size: 0.95em; }
+    .sidebar-tab-button:hover { color: #000; }
+    .sidebar-tab-button.active { font-weight: bold; border-bottom: 2px solid #ff0033; }
+    .sidebar-tab-pane { display: none; }
+    .sidebar-tab-pane.active { display: block; }
 
-    .outer-tab-pane {
-      display: none;
-    }
-
-    .outer-tab-pane.active {
-      display: block;
-    }
-
-    .sidebar-container {
-      display: flex;
-      flex-direction: row;
-      width: 100%;
-      gap: 0;
-      margin: 0;
-    }
-
-    #main-stage {
-      width: 80%;
-      min-width: 0;
-      padding: 0;
-      margin: 0;
-    }
-
-    #sidebar {
-      width: 20%;
-      padding: 0.5em;
-      border-left: 1px solid #ccc;
-      box-sizing: border-box;
-    }
-
-    .primary-tab-header {
-      display: flex;
-      border-bottom: 1px solid #ccc;
-      margin-bottom: 0.5em;
-    }
-
-    .tab-header {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      grid-template-rows: 1fr 1fr;
-      gap: 0.2em;
-      border-bottom: 1px solid #ccc;
-      margin-bottom: 0.5em;
-    }
-
-    .tab-button {
-      width: 100%;
-      text-align: center;
-      padding: 0.3em 0;
-      cursor: pointer;
-      border: none;
-      background: none;
-      font-weight: normal;
-      color: #333;
-      border-bottom: 2px solid transparent;
-      transition: border-color 0.2s;
-      box-sizing: border-box;
-      font-size: 0.95em;
-    }
-
-    .tab-button:hover {
-      color: #000;
-    }
-
-    .tab-button.active {
-      font-weight: bold;
-      border-bottom: 2px solid #ff0033;
-    }
-
-    .tab-pane {
-      display: none;
-    }
-
-    .tab-pane.active {
-      display: block;
-    }
-
-    #toolbar {
-      display: flex;
-      gap: 0.5em;
-      margin-bottom: 0.5em;
-      width: 100%;
-    }
-
-    #toolbar button {
-      flex: 1 1 0;
-      font-size: 0.95em;
-      padding: 0.2em 0.7em;
-      min-height: 2em;
-      min-width: 0;
-      border-radius: 4px;
-      margin: 0;
-      box-sizing: border-box;
-      white-space: normal;
-      line-height: 1.2;
-      height: auto;
-    }
-
-    #toolbar button.selected {
-      background-color: #ff0033;
-      color: white;
-      font-weight: bold;
-      box-shadow: 0 0 0 2px #aa0011 inset;
-    }
-
-    #draw-container {
-      width: 100%;
-      height: 80vh;
-      border: 1px solid #ccc;
-      overflow: hidden;
-      flex-grow: 1;
-      font-size: 0.95em;
-    }
-
-    .model-buttons {
-      display: flex;
-      gap: 0.5em;
-      margin-bottom: 0.5em;
-    }
-
-    #classes-list {
-      margin-bottom: 1em;
-    }
-
-    .class-row {
-      display: flex;
-      align-items: center;
-      gap: 0.5em;
-      margin-bottom: 0.3em;
-      font-size: 0.95em;
-    }
-
-    .class-row .selected {
-      background-color: #ff0033;
-      color: white;
-      font-weight: bold;
-      box-shadow: 0 0 0 2px #aa0011 inset;
-    }
-
-
-    .label-color {
-      width: 1.2em;
-      height: 1.2em;
-      border-radius: 3px;
-      border: 1px solid #ccc;
-      display: inline-block;
-    }
-
-    .label-name {
-      flex: 1;
-      min-width: 0;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-    }
-
-    .emoji-button {
-      font-size: 0.8em;
-      padding: 0.2em 0.4em;
-      line-height: 1;
-      vertical-align: middle;
-      height: 1.8em;
-    }
+    /* --- Configuration Tabs --- */
+    .config-panel { display: flex; gap: 1em; align-items: flex-start; flex-wrap: wrap; }
   </style>
+
   <script src="/static/js/konva.min.js"></script>
 </head>
-
 <body>
-  <main class="container">
-    <div class="outer-tab-header">
-      <span class="outer-tab-button active" data-tab="outer-tab-image-tagging">Image Tagging</span>
-      <span class="outer-tab-button" data-tab="outer-tab-settings">Configuration</span>
+<main class="container">
+
+  <!-- Top-level tabs wrapper -->
+  <div id="main-tabs">
+    <div class="main-tab-header">
+      <span class="main-tab-button active" data-tab="tab-image-tagging">Image Tagging</span>
+      <span class="main-tab-button" data-tab="tab-configuration">Configuration</span>
     </div>
 
-    <div id="outer-tab-image-tagging" class="outer-tab-pane active">
-      <div class="sidebar-container">
-        <div id="main-stage">
-          <div class="primary-tab-header">
-            <span class="tab-button active" data-tab="tab-canvas">Canvas</span>
-            <span class="tab-button" data-tab="tab-files">Files</span>
+    <!-- Main panes -->
+    <div id="tab-image-tagging" class="main-tab-pane active">
+      <div class="workspace-container">
+
+        <!-- Workspace tabs -->
+        <div id="workspace">
+          <div class="workspace-tab-header">
+            <span class="workspace-tab-button active" data-tab="tab-canvas">Canvas</span>
+            <span class="workspace-tab-button" data-tab="tab-files">Files</span>
           </div>
 
-          <div id="tab-canvas" class="tab-pane active">
+          <div id="tab-canvas" class="workspace-tab-pane active">
             <nav id="toolbar">
               <button onclick="reloadImage()">Reload Image</button>
               <button data-tool="select" onclick="setTool('select')">Select</button>
@@ -243,18 +82,19 @@
             <div id="draw-container"></div>
           </div>
 
-          <div id="tab-files" class="tab-pane">Files</div>
+          <div id="tab-files" class="workspace-tab-pane">Files</div>
         </div>
 
+        <!-- Sidebar tabs -->
         <div id="sidebar">
-          <div class="tab-header">
-            <span class="tab-button active" data-tab="tab-pane-models">Models</span>
-            <span class="tab-button" data-tab="tab-pane-classes-tool">Classes</span>
-            <span class="tab-button" data-tab="tab-pane-annotations">Annotations</span>
-            <span class="tab-button" data-tab="tab-pane-inspector">Inspector</span>
+          <div class="sidebar-tab-header">
+            <span class="sidebar-tab-button active" data-tab="tab-models">Models</span>
+            <span class="sidebar-tab-button" data-tab="tab-classes-tool">Classes</span>
+            <span class="sidebar-tab-button" data-tab="tab-annotations">Annotations</span>
+            <span class="sidebar-tab-button" data-tab="tab-inspector">Inspector</span>
           </div>
 
-          <div id="tab-pane-models" class="tab-pane active">
+          <div id="tab-models" class="sidebar-tab-pane active">
             <div class="model-buttons">
               <button id="recognize-button">Recognize</button>
               <button id="refresh-models">Refresh Models</button>
@@ -262,30 +102,30 @@
             <div id="model-list"></div>
           </div>
 
-          <div id="tab-pane-annotations" class="tab-pane">
-            <button onclick="refreshAnnotations()">Refresh JSON</button>
-            <pre id="annotation-json" style="max-height: 40vh; overflow-y: auto; font-size: 0.8em;"></pre>
-          </div>
-
-          <div id="tab-pane-classes-tool" class="tab-pane">
+          <div id="tab-classes-tool" class="sidebar-tab-pane">
             <h4>Classes</h4>
             <div id="classes-tool-list"></div>
           </div>
 
-          <div id="tab-pane-inspector" class="tab-pane">
+          <div id="tab-annotations" class="sidebar-tab-pane">
+            <button onclick="refreshAnnotations()">Refresh JSON</button>
+            <pre id="annotation-json" style="max-height: 40vh; overflow-y: auto; font-size: 0.8em;"></pre>
           </div>
+
+          <div id="tab-inspector" class="sidebar-tab-pane"></div>
         </div>
       </div>
     </div>
 
-    <div id="outer-tab-settings" class="outer-tab-pane">
-      <div class="primary-tab-header">
-        <span class="tab-button" data-tab="tab-tag-management">Tag Management</span>
-        <span class="tab-button" data-tab="tab-source-management">Source Management</span>
-        <span class="tab-button" data-tab="tab-task-management">Task Management</span>
+    <div id="tab-configuration" class="main-tab-pane">
+      <div class="workspace-tab-header">
+        <span class="workspace-tab-button" data-tab="tab-tag-management">Tag Management</span>
+        <span class="workspace-tab-button" data-tab="tab-source-management">Source Management</span>
+        <span class="workspace-tab-button" data-tab="tab-task-management">Task Management</span>
       </div>
-      <div id="tab-tag-management" class="tab-pane">
-        <div style="display: flex; gap: 1em; align-items: flex-start; flex-wrap: wrap;">
+
+      <div id="tab-tag-management" class="workspace-tab-pane">
+        <div class="config-panel">
           <div style="flex: 1 1 300px; min-width: 250px;">
             <h4>Classes</h4>
             <div id="classes-list"></div>
@@ -300,8 +140,9 @@
           </div>
         </div>
       </div>
-      <div id="tab-source-management" class="tab-pane">
-        <div style="display: flex; gap: 1em; align-items: flex-start; flex-wrap: wrap;">
+
+      <div id="tab-source-management" class="workspace-tab-pane">
+        <div class="config-panel">
           <div style="flex: 1 1 300px; min-width: 250px;">
             <div id="source-management-box"></div>
           </div>
@@ -310,8 +151,9 @@
           </div>
         </div>
       </div>
-      <div id="tab-task-management" class="tab-pane">
-        <div style="display: flex; gap: 1em; align-items: flex-start; flex-wrap: wrap;">
+
+      <div id="tab-task-management" class="workspace-tab-pane">
+        <div class="config-panel">
           <div style="flex: 1 1 300px; min-width: 250px;">
             <h4>Task Configs</h4>
             <div id="task-config-list"></div>
@@ -323,11 +165,10 @@
         </div>
       </div>
     </div>
-  </main>
 
-  <script type="module" src="/app-static/js/main.js"></script>
-  <script type="module" src="/app-static/js/canvas/main.js"></script>
-  <script type="module" src="/app-static/js/sidebar/main.js"></script>
+  </div>
+</main>
+
+<script type="module" src="/app-static/js/app/main.js" defer></script>
 </body>
-
 </html>
