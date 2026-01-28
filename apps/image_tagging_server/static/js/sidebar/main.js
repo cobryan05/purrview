@@ -13,6 +13,8 @@ import { renderTagList } from '/app-static/js/ui/tags.js';
 import { renderActiveTasks, renderTaskConfigs } from '/app-static/js/ui/tasks.js';
 import { Logger } from '/app-static/js/ui/utils/index.js';
 
+import '/app-static/js/ui/inspector.js';
+
 // --- Model list UI ---
 
 /**

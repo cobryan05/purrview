@@ -1,9 +1,9 @@
 import { Logger } from '../ui/utils/logging.js';
 import { generateUUID } from '../ui/utils/utils.js';
 import { CanvasBboxGroup } from './groups/CanvasBboxGroup.js';
-import { state } from './state.js'
-import { clearSelection, selectBboxTool, setTool, selectBbox } from './tools.js';
-
+import { state } from './state.js';
+import { clearSelection, selectBboxTool, setTool } from './tools.js';
+import { events, EventTypes } from '/app-static/js/shared/events/index.js';
 
 /** @type {import('@app_types').CanvasBboxGroup | null} */
 let pendingDraggedBbox = null;
@@ -19,9 +19,9 @@ let crosshairV = null;
 let crosshairH = null;
 
 function createCrosshairLines() {
-  const layer = state.canvas.layer;
-  if (crosshairV && crosshairH) return; // already created
+  if (crosshairV && crosshairH) return;
 
+  const layer = state.canvas.layer;
   const stage = state.canvas.stage;
   const width = stage.width();
   const height = stage.height();
@@ -42,8 +42,7 @@ function createCrosshairLines() {
     listening: false,
   });
 
-  layer.add(crosshairV);
-  layer.add(crosshairH);
+  layer.add(crosshairV, crosshairH);
 }
 
 function getPointerPosition() {
@@ -56,6 +55,20 @@ function getPointerPosition() {
   };
 }
 
+
+/** Return bbox group under pointer, if any */
+function findGroupAtPoint(pos) {
+  const layer = state.canvas.layer;
+  const children = layer.getChildren(node => node.name() === 'annotation');
+  for (const group of children) {
+    const rect = group.getClientRect({ relativeTo: layer });
+    if (pos.x >= rect.x && pos.x <= rect.x + rect.width &&
+        pos.y >= rect.y && pos.y <= rect.y + rect.height) {
+      return group;
+    }
+  }
+  return null;
+}
 export async function handleMouseDown(e) {
   const stage = state.canvas.stage;
   const layer = state.canvas.layer;
@@ -63,6 +76,7 @@ export async function handleMouseDown(e) {
     Logger.error("No canvas!");
     return;
   }
+  // Middle mouse: start panning
   if (e.evt.button === 1) {
     isPanning = true;
     lastPanPos = { x: e.evt.clientX, y: e.evt.clientY };
@@ -71,8 +85,7 @@ export async function handleMouseDown(e) {
     return;
   }
 
-  if (e.evt.button !== 0) return;
-  if (isPanning) return;
+  if (e.evt.button !== 0 || isPanning) return;
 
   const currentTool = state.currentTool;
   if (currentTool === 'select') return;
@@ -81,10 +94,9 @@ export async function handleMouseDown(e) {
   if (!pos) return;
 
   startPos = pos;
-  const currentClassUuid = state.currentClassUuid;
 
   /** @type {import('@app_types').RuntimeBboxInfo} */
-  const emptyBbox = { x: pos.x, y: pos.y, width: 1, height: 1, classUuid: currentClassUuid, uuid: generateUUID() };
+  const emptyBbox = { x: pos.x, y: pos.y, width: 1, height: 1, classUuid: state.currentClassUuid, uuid: generateUUID() };
   pendingDraggedBbox = new CanvasBboxGroup(emptyBbox);
   if (pendingDraggedBbox) {
     state.updateCanvasBbox(pendingDraggedBbox);
@@ -148,13 +160,14 @@ export async function handleMouseUp(e) {
 
   if (pendingDraggedBbox) {
     const box = pendingDraggedBbox.metadata.rect;
-    const stage = state.canvas.stage;
 
     if (box.width() < DOUBLE_CLICK_DISTANCE_PX || box.height() < DOUBLE_CLICK_DISTANCE_PX) {
       state.removeBboxGroup(pendingDraggedBbox);
       pendingDraggedBbox.destroy();
     } else {
-      selectShape(pendingDraggedBbox, box);
+      events.publish(EventTypes.CANVAS_BBOX_CLICKED, {
+        bboxId: pendingDraggedBbox.metadata.runtimeBboxInfo.uuid
+      });
     }
 
     state.canvas.layer.draw();
@@ -172,14 +185,19 @@ export async function handleMouseUp(e) {
   _lastClickPos = pos;
 
   if (hitGroup && hitGroup instanceof CanvasBboxGroup) {
+    const selectedUuid = hitGroup.metadata.runtimeBboxInfo.uuid;
     if (isDoubleClick) {
       if (!isSelectTool) {
         hitGroup.updateMetadata({ classUuid: state.currentClassUuid });
       } else {
-        selectBbox(hitGroup.metadata.runtimeBboxInfo.uuid);
+        state.setSelectedBboxUuid(selectedUuid);
+        events.publish(EventTypes.CANVAS_BBOX_DOUBLE_CLICKED, {
+          bboxId: selectedUuid
+        });
       }
     } else {
-      selectShape(hitGroup, hitGroup.metadata.rect);
+      state.setSelectedBboxUuid(selectedUuid);
+      events.publish(EventTypes.CANVAS_BBOX_CLICKED, { bboxId: selectedUuid });
     }
   }
 
@@ -233,32 +251,4 @@ export function handleContextMenu(e) {
     setTool('select');
   }
   layer.draw();
-}
-
-export function selectShape(group, highlight_shape = null) {
-  const layer = state.canvas.layer;
-  const transformer = state.canvas.transformer;
-  const shape = highlight_shape ?? group;
-  if (!shape || !layer) return;
-
-  transformer.nodes([shape]);
-  transformer.moveToTop();
-}
-
-export function findGroupAtPoint(pos) {
-  const layer = state.canvas.layer;
-  const children = layer.getChildren(node => node.name() === 'annotation');
-
-  for (const group of children) {
-    const rect = group.getClientRect({ relativeTo: layer });
-    if (
-      pos.x >= rect.x &&
-      pos.x <= rect.x + rect.width &&
-      pos.y >= rect.y &&
-      pos.y <= rect.y + rect.height
-    ) {
-      return group;
-    }
-  }
-  return null;
 }

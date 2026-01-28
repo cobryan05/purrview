@@ -2,6 +2,7 @@ import { refreshCanvas } from '../canvas/image.js'; // TODO: Better way?
 import { state } from '/app-static/js/canvas/state.js';
 import { BboxInfoField, EditableField } from '/app-static/js/ui/utils/fields/index.js';
 import { createGenericRow, Logger } from '/app-static/js/ui/utils/index.js';
+import { events, EventTypes } from '/app-static/js/shared/events/index.js';
 
 /**
  * Opens the inspector tab in the sidebar and highlights it briefly.
@@ -81,4 +82,18 @@ export function renderBboxInspector({ bboxUuid = null, target = 'tab-pane-inspec
     console.error('Failed to fetch classes:', err);
   }
 
+}
+
+
+events.subscribe(
+  EventTypes.CANVAS_BBOX_DOUBLE_CLICKED,
+  onCanvasBboxSelected
+);
+
+/**
+ * @param {import('@events').CanvasBboxDoubleClickedPayload} payload
+ */
+function onCanvasBboxSelected(payload) {
+  openInspectorTab();
+  renderBboxInspector({ bboxUuid: payload.bboxId });
 }

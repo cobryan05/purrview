@@ -24,6 +24,9 @@
       "@app_types": [
         "./static/js/types.js"
       ],
+      "@events": [
+        "./static/js/shared/events/types.js"
+      ],
       "@konva_groups": [
         "./static/js/canvas/groups/index.js"
       ]

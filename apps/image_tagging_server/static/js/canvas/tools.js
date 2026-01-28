@@ -1,5 +1,4 @@
 import { state } from './state.js';
-import { openInspectorTab, renderBboxInspector } from '/app-static/js/ui/inspector.js';
 
 // Clear selection implementation
 export function clearSelection() {
@@ -18,12 +17,6 @@ export function setTool(tool) {
   clearSelection();
   updateToolbarButtons();
   state.canvas.stage.container().style.cursor = tool === 'select' ? 'default' : 'crosshair';
-}
-
-export function selectBbox(bboxUuid) {
-  state.setSelectedBboxUuid(bboxUuid);
-  renderBboxInspector();
-  openInspectorTab();
 }
 
 // Get the current tool

@@ -16,6 +16,7 @@ import {
 } from './image.js';
 import { state } from './state.js';
 import { selectBboxTool, setTool, updateToolbarButtons } from './tools.js';
+import { events, EventTypes } from '/app-static/js/shared/events/index.js';
 
 // Initialize stage and set default tool
 const container = document.getElementById('draw-container');
@@ -51,3 +52,17 @@ window.addEventListener('resize', () => {
 
 // Update toolbar buttons on startup
 updateToolbarButtons();
+
+
+
+events.subscribe(EventTypes.CANVAS_BBOX_CLICKED, ({ bboxId }) => {
+  const transformer = state.canvas.transformer;
+  const layer = state.canvas.layer;
+  const group = state.getBboxGroup(bboxId);
+  if (!transformer || !layer || !group) return;
+
+  transformer.nodes([group.metadata.rect]);
+  transformer.moveToTop();
+  layer.batchDraw();
+});
+
