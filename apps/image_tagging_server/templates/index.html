@@ -3,49 +3,12 @@
 <head>
   <meta charset="UTF-8" />
   <title>Annotation Tool</title>
+
+  <!-- Pico base -->
   <link rel="stylesheet" href="/static/css/pico.min.css" />
-  <style>
-    body { margin: 0; }
-    main.container { max-width: 100%; padding: 0.5em 1em; box-sizing: border-box; }
 
-    /* --- Top-level tabs --- */
-    .main-tab-header { display: flex; border-bottom: 1px solid #ccc; margin-bottom: 0.5em; }
-    .main-tab-button { width: 100%; text-align: center; padding: 0.5em 0; cursor: pointer; border: none; background: none; font-weight: normal; color: #333; border-bottom: 2px solid transparent; transition: border-color 0.2s; font-size: 1.1em; }
-    .main-tab-button:hover { color: #000; }
-    .main-tab-button.active { font-weight: bold; border-bottom: 2px solid #ff0033; }
-    .main-tab-pane { display: none; }
-    .main-tab-pane.active { display: block; }
-
-    /* --- Workspace layout --- */
-    .workspace-container { display: flex; gap: 0; width: 100%; margin: 0; }
-    #workspace { width: 80%; min-width: 0; padding: 0; margin: 0; }
-    #sidebar { width: 20%; padding: 0.5em; border-left: 1px solid #ccc; box-sizing: border-box; }
-
-    /* --- Workspace tabs --- */
-    .workspace-tab-header { display: flex; border-bottom: 1px solid #ccc; margin-bottom: 0.5em; }
-    .workspace-tab-button { width: 100%; text-align: center; padding: 0.3em 0; cursor: pointer; border: none; background: none; font-weight: normal; color: #333; border-bottom: 2px solid transparent; transition: border-color 0.2s; font-size: 0.95em; }
-    .workspace-tab-button:hover { color: #000; }
-    .workspace-tab-button.active { font-weight: bold; border-bottom: 2px solid #ff0033; }
-    .workspace-tab-pane { display: none; }
-    .workspace-tab-pane.active { display: block; }
-
-    /* --- Toolbar / Canvas --- */
-    #toolbar { display: flex; gap: 0.5em; margin-bottom: 0.5em; width: 100%; }
-    #toolbar button { flex: 1 1 0; font-size: 0.95em; padding: 0.2em 0.7em; min-height: 2em; border-radius: 4px; margin: 0; box-sizing: border-box; white-space: normal; line-height: 1.2; height: auto; }
-    #toolbar button.selected { background-color: #ff0033; color: white; font-weight: bold; box-shadow: 0 0 0 2px #aa0011 inset; }
-    #draw-container { width: 100%; height: 80vh; border: 1px solid #ccc; overflow: hidden; flex-grow: 1; font-size: 0.95em; }
-
-    /* --- Sidebar tabs --- */
-    .sidebar-tab-header { display: grid; grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; gap: 0.2em; border-bottom: 1px solid #ccc; margin-bottom: 0.5em; }
-    .sidebar-tab-button { width: 100%; text-align: center; padding: 0.3em 0; cursor: pointer; border: none; background: none; font-weight: normal; color: #333; border-bottom: 2px solid transparent; transition: border-color 0.2s; font-size: 0.95em; }
-    .sidebar-tab-button:hover { color: #000; }
-    .sidebar-tab-button.active { font-weight: bold; border-bottom: 2px solid #ff0033; }
-    .sidebar-tab-pane { display: none; }
-    .sidebar-tab-pane.active { display: block; }
-
-    /* --- Configuration Tabs --- */
-    .config-panel { display: flex; gap: 1em; align-items: flex-start; flex-wrap: wrap; }
-  </style>
+  <!-- App styles (single file) -->
+  <link rel="stylesheet" href="/app-static/css/app.css" />
 
   <script src="/static/js/konva.min.js"></script>
 </head>
@@ -101,7 +64,7 @@
 
           <div id="tab-annotations" class="sidebar-tab-pane">
             <button onclick="refreshAnnotations()">Refresh JSON</button>
-            <pre id="annotation-json" style="max-height: 40vh; overflow-y: auto; font-size: 0.8em;"></pre>
+            <pre id="annotation-json"></pre>
           </div>
 
           <div id="tab-inspector" class="sidebar-tab-pane"></div>
@@ -118,15 +81,15 @@
 
       <div id="tab-tag-management" class="workspace-tab-pane">
         <div class="config-panel">
-          <div style="flex: 1 1 300px; min-width: 250px;">
+          <div class="config-column">
             <h4>Classes</h4>
             <div id="classes-list"></div>
           </div>
-          <div style="flex: 1 1 300px; min-width: 250px;">
+          <div class="config-column">
             <h4>Model Class Assignments</h4>
             <div id="model-classes-box"></div>
           </div>
-          <div style="flex: 1 1 300px; min-width: 250px;">
+          <div class="config-column">
             <h4>Tags</h4>
             <div id="tags-list"></div>
           </div>
@@ -135,10 +98,10 @@
 
       <div id="tab-source-management" class="workspace-tab-pane">
         <div class="config-panel">
-          <div style="flex: 1 1 300px; min-width: 250px;">
+          <div class="config-column">
             <div id="source-management-box"></div>
           </div>
-          <div style="flex: 1 1 300px; min-width: 250px;">
+          <div class="config-column">
             <div id="source-preview-box"></div>
           </div>
         </div>
@@ -146,11 +109,11 @@
 
       <div id="tab-task-management" class="workspace-tab-pane">
         <div class="config-panel">
-          <div style="flex: 1 1 300px; min-width: 250px;">
+          <div class="config-column">
             <h4>Task Configs</h4>
             <div id="task-config-list"></div>
           </div>
-          <div style="flex: 1 1 300px; min-width: 250px;">
+          <div class="config-column">
             <h4>Active Tasks</h4>
             <div id="active-tasks-list"></div>
           </div>
