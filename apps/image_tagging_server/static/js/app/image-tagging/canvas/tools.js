@@ -1,4 +1,5 @@
 import { state } from './state.js';
+import { events, EventTypes } from '/app-static/js/shared/events/index.js';
 
 // Clear selection implementation
 export function clearSelection() {
@@ -15,8 +16,9 @@ export function clearSelection() {
 export function setTool(tool) {
   state.setTool(tool);
   clearSelection();
-  updateToolbarButtons();
   state.canvas.stage.container().style.cursor = tool === 'select' ? 'default' : 'crosshair';
+  // Publish an event instead of directly updating toolbar
+  events.publish(EventTypes.CANVAS_TOOL_CHANGED, { tool });
 }
 
 // Get the current tool
@@ -27,14 +29,6 @@ export function getTool() {
 export function parseToolUuid(str) {
   const [tool, uuid] = str.split(':', 2);
   return { tool, uuid };
-}
-
-// Highlight toolbar buttons based on current tool
-export function updateToolbarButtons() {
-  const current = getTool();
-  document.querySelectorAll('#toolbar button[data-tool]').forEach(btn => {
-    btn.classList.toggle('selected', btn.dataset.tool === current);
-  });
 }
 
 export function selectBboxTool() {

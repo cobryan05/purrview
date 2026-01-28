@@ -1,6 +1,7 @@
 import { init as initCanvas } from './canvas/main.js';
 import { init as initFiles } from './files.js';
 import { init as initSidebar } from './sidebar.js';
+import { init as initToolbar } from './toolbar.js';
 import { setupWorkspaceTabs } from '/app-static/js/app/utils/tabs.js';
 
 export async function init() {
@@ -11,7 +12,7 @@ export async function init() {
     }
   });
 
-  await Promise.all([initCanvas(), initSidebar()]);
+  await Promise.all([initCanvas(), initSidebar(), initToolbar()]);
 
   // activate default workspace tab
   const defaultTabBtn = container?.querySelector('.workspace-tab-button');

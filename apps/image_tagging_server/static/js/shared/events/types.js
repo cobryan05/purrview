@@ -13,6 +13,14 @@
  */
 
 /**
+ * Event: canvas:tool:chnaged
+ *
+ * @typedef {Object} CanvasToolChangedPayload
+ * @property {string} toolName
+ */
+
+
+/**
  * Event: canvas:run-inference
  *
  * @typedef {Object} CanvasRunInferencePayload
@@ -25,5 +33,6 @@ export { };
 export const EventTypes = Object.freeze({
   CANVAS_BBOX_DOUBLE_CLICKED: "canvas:bbox:double_clicked",
   CANVAS_BBOX_CLICKED: "canvas:bbox:clicked",
+  CANVAS_TOOL_CHANGED: "canvas:tool:changed",
   RUN_INFERENCE_ON_CANVAS: "canvas:run-inference",
 });

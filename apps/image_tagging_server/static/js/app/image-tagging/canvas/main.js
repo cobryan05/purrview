@@ -17,7 +17,7 @@ import {
 } from './interaction.js';
 import { runInference } from '/app-static/js/shared/api/inference.js';
 import { state } from './state.js';
-import { selectBboxTool, setTool, updateToolbarButtons } from './tools.js';
+import { selectBboxTool, setTool } from './tools.js';
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
 import { Logger } from '/app-static/js/ui/utils/index.js';
 
@@ -53,10 +53,6 @@ export async function init() {
     stage.height(container.clientHeight);
     stage.draw();
   });
-
-  // Update toolbar buttons on startup
-  updateToolbarButtons();
-
 
 
   events.subscribe(EventTypes.CANVAS_BBOX_CLICKED, ({ bboxId }) => {

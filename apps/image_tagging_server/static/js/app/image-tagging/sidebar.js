@@ -1,4 +1,3 @@
-import { state } from './canvas/state.js';
 import { setTool } from './canvas/tools.js';
 import { setupSidebarTabs } from '/app-static/js/app/utils/tabs.js';
 import { clearModelsCache, fetchModelsList } from '/app-static/js/shared/api/models.js';
