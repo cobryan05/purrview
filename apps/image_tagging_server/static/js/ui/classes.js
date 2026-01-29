@@ -1,5 +1,5 @@
 // classes.js
-import { state } from '../app/image-tagging/canvas/state.js';
+import { appState } from '../app/state.js';
 import { getTool } from '../app/image-tagging/canvas/tools.js';
 import { clearClassCache, createNewClass, deleteClass, fetchClasses, updateClass, } from '/app-static/js/shared/api/classes.js';
 import { EditableField, TextBoxColorField } from '/app-static/js/ui/utils/fields/index.js';
@@ -12,7 +12,7 @@ const DEFAULT_COLOR = '#cccccc';
  * @param {string|null} selectedUuid
  */
 function highlightSelectedClass(selectedUuid = null) {
-  const currentTool = getTool();
+  const currentTool = getTool(appState.imageTagging);
   const selected = selectedUuid ?? (currentTool.startsWith('bbox:') ? currentTool.split(':')[1] : null);
 
   document.querySelectorAll('#classes-tool-list .class-row').forEach(row => {
@@ -214,7 +214,7 @@ export function renderClassList({ target = 'classes-list', editable = true, onSe
       }
 
       // Highlight selected class if exists
-      const selectedClassUuid = state.currentClassUuid;
+      const selectedClassUuid = appState.imageTagging.currentClassUuid;
       if (selectedClassUuid) highlightSelectedClass(selectedClassUuid);
     });
   } catch (err) {

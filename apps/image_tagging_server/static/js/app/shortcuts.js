@@ -1,7 +1,10 @@
 import { deleteSelected } from './image-tagging/canvas/image.js';
-import { setTool, selectBboxTool } from './image-tagging/canvas/tools.js';
+import { setTool } from './image-tagging/canvas/tools.js';
 
-export function registerKeyboardShortcuts() {
+/**
+ * @param {import('@image_tagging_types').ImageTaggingState} state
+ */
+export function registerKeyboardShortcuts(state) {
   document.addEventListener('keydown', e => {
     const isMac = navigator.platform.toUpperCase().indexOf('MAC') >= 0;
     const ctrlKey = isMac ? e.metaKey : e.ctrlKey;
@@ -18,11 +21,11 @@ export function registerKeyboardShortcuts() {
         break;
 
       case 'v':
-        setTool('select');
+        setTool(state, 'select');
         break;
 
       case 'r':
-        selectBboxTool();
+        setTool(state, 'bbox:');
         break;
 
       default:

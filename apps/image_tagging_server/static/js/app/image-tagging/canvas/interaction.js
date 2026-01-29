@@ -1,8 +1,7 @@
 import { Logger } from '../../../ui/utils/logging.js';
 import { generateUUID } from '../../../ui/utils/utils.js';
 import { CanvasBboxGroup } from './groups/CanvasBboxGroup.js';
-import { state } from './state.js';
-import { clearSelection, selectBboxTool, setTool } from './tools.js';
+import { clearSelection, setTool } from './tools.js';
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
 
 /** @type {import('@app_types').CanvasBboxGroup | null} */
@@ -18,7 +17,7 @@ const DOUBLE_CLICK_DISTANCE_PX = 10;
 let crosshairV = null;
 let crosshairH = null;
 
-function createCrosshairLines() {
+function createCrosshairLines(state) {
   if (crosshairV && crosshairH) return;
 
   const layer = state.canvas.layer;
@@ -45,7 +44,11 @@ function createCrosshairLines() {
   layer.add(crosshairV, crosshairH);
 }
 
-function getPointerPosition() {
+/**
+ * @param {import('@image_tagging_types').ImageTaggingState} state - The image tagging state for this canvas.
+ * @returns {x, y}
+ */
+function getPointerPosition(state) {
   const stage = state.canvas.stage;
   const pos = stage.getPointerPosition();
   if (!pos) return null;
@@ -56,20 +59,31 @@ function getPointerPosition() {
 }
 
 
-/** Return bbox group under pointer, if any */
-function findGroupAtPoint(pos) {
+/** Return bbox group under pointer, if any
+ *
+ * @param {import('@image_tagging_types').ImageTaggingState} state - The image tagging state for this canvas.
+ * @param {{x: number, y: number}} pos - The pointer position in canvas coordinates.
+ * @returns {import('./groups/CanvasBboxGroup.js').CanvasBboxGroup|null} The bbox group under the pointer, or null if none.
+ */
+function findGroupAtPoint(state, pos) {
   const layer = state.canvas.layer;
   const children = layer.getChildren(node => node.name() === 'annotation');
   for (const group of children) {
     const rect = group.getClientRect({ relativeTo: layer });
     if (pos.x >= rect.x && pos.x <= rect.x + rect.width &&
-        pos.y >= rect.y && pos.y <= rect.y + rect.height) {
+      pos.y >= rect.y && pos.y <= rect.y + rect.height) {
       return group;
     }
   }
   return null;
 }
-export async function handleMouseDown(e) {
+
+/**
+ * @param {Konva.KonvaEventObject<MouseEvent>} e - The mouse event object from Konva.
+ * @param {import('@image_tagging_types').ImageTaggingState} state - The image tagging state for this canvas.
+ * @returns {Promise<void>}
+ */
+export async function handleMouseDown(e, state) {
   const stage = state.canvas.stage;
   const layer = state.canvas.layer;
   if (!stage || !layer) {
@@ -90,21 +104,26 @@ export async function handleMouseDown(e) {
   const currentTool = state.currentTool;
   if (currentTool === 'select') return;
 
-  const pos = getPointerPosition();
+  const pos = getPointerPosition(state);
   if (!pos) return;
 
   startPos = pos;
 
   /** @type {import('@app_types').RuntimeBboxInfo} */
   const emptyBbox = { x: pos.x, y: pos.y, width: 1, height: 1, classUuid: state.currentClassUuid, uuid: generateUUID() };
-  pendingDraggedBbox = new CanvasBboxGroup(emptyBbox);
+  pendingDraggedBbox = new CanvasBboxGroup(emptyBbox, state);
   if (pendingDraggedBbox) {
     state.updateCanvasBbox(pendingDraggedBbox);
     layer.add(pendingDraggedBbox);
   }
 }
 
-export async function handleMouseMove(e) {
+/**
+ * @param {Konva.KonvaEventObject<MouseEvent>} e - The mouse event object from Konva.
+ * @param {import('@image_tagging_types').ImageTaggingState} state - The image tagging state for this canvas.
+ * @returns {Promise<void>}
+ */
+export async function handleMouseMove(e, state) {
   const stage = state.canvas.stage;
   const layer = state.canvas.layer;
   if (isPanning) {
@@ -117,12 +136,12 @@ export async function handleMouseMove(e) {
     return;
   }
 
-  const pos = getPointerPosition();
+  const pos = getPointerPosition(state);
   if (!pos) return;
 
   const currentTool = state.currentTool;
   if (currentTool != 'select') {
-    createCrosshairLines();
+    createCrosshairLines(state);
     // Position lines at mouse X,Y spanning full height,width
     crosshairV.points([pos.x, 0, pos.x, stage.height()]);
     crosshairH.points([0, pos.y, stage.width(), pos.y]);
@@ -147,7 +166,12 @@ export async function handleMouseMove(e) {
   //layer.batchDraw();
 }
 
-export async function handleMouseUp(e) {
+/**
+ * @param {Konva.KonvaEventObject<MouseEvent>} e - The mouse event object from Konva.
+ * @param {import('@image_tagging_types').ImageTaggingState} state - The image tagging state for this canvas.
+ * @returns {Promise<void>}
+ */
+export async function handleMouseUp(e, state) {
   const currentTool = state.currentTool;
   const isSelectTool = currentTool === 'select';
   state.canvas.stage.container().style.cursor =
@@ -174,8 +198,8 @@ export async function handleMouseUp(e) {
     pendingDraggedBbox = null;
   }
 
-  const pos = getPointerPosition();
-  const hitGroup = findGroupAtPoint(pos);
+  const pos = getPointerPosition(state);
+  const hitGroup = findGroupAtPoint(state, pos);
 
   const now = Date.now();
   const timeDelta = now - _lastClickTime;
@@ -204,7 +228,12 @@ export async function handleMouseUp(e) {
 
 }
 
-export async function handleWheel(e) {
+/**
+ * @param {Konva.KonvaEventObject<MouseEvent>} e - The mouse event object from Konva.
+ * @param {import('@image_tagging_types').ImageTaggingState} state - The image tagging state for this canvas.
+ * @returns {Promise<void>}
+ */
+export async function handleWheel(e, state) {
   const stage = state.canvas.stage;
   e.evt.preventDefault();
 
@@ -232,7 +261,12 @@ export async function handleWheel(e) {
   stage.batchDraw();
 }
 
-export function handleClick(e) {
+/**
+ * @param {Konva.KonvaEventObject<MouseEvent>} e - The mouse event object from Konva.
+ * @param {import('@image_tagging_types').ImageTaggingState} state - The image tagging state for this canvas.
+ * @returns {Promise<void>}
+ */
+export function handleClick(e, state) {
   const stage = state.canvas.stage;
   const layer = state.canvas.layer;
   if (e.target === stage) {
@@ -241,14 +275,19 @@ export function handleClick(e) {
   }
 }
 
-export function handleContextMenu(e) {
+/**
+ * @param {Konva.KonvaEventObject<MouseEvent>} e - The mouse event object from Konva.
+ * @param {import('@image_tagging_types').ImageTaggingState} state - The image tagging state for this canvas.
+ * @returns {Promise<void>}
+ */
+export function handleContextMenu(e, state) {
   const layer = state.canvas.layer;
   e.evt.preventDefault();
   clearSelection();
   if (state.currentTool === 'select') {
-    selectBboxTool();
+    setTool(state, `bbox:`)
   } else {
-    setTool('select');
+    setTool(state, 'select');
   }
   layer.draw();
 }

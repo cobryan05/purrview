@@ -1,6 +1,4 @@
-import { generateUUID, Logger } from '/app-static/js/ui/utils/index.js';
 import { fetchClassByUuid } from '/app-static/js/shared/api/classes.js';
-import { state } from '../state.js';
 /**
  * @typedef {Object} CanvasBboxMetadata
  * @property {import('@konva').default.Rect} rect
@@ -16,11 +14,17 @@ export class CanvasBboxGroup extends Konva.Group {
   /** @type {CanvasBboxMetadata} */
   _metadata;
 
+  /** @type {import('@image_tagging_types').ImageTaggingState} */
+  _state;
+
   /**
   * @param {import('@app_types').RuntimeBboxInfo} bbox
-   */
-  constructor(bbox) {
+  * @param {import('@image_tagging_types').ImageTaggingState} state
+  */
+  constructor(bbox, state) {
     super({ x: bbox.x, y: bbox.y, width: bbox.width, height: bbox.height, draggable: true, name: 'annotation' });
+
+    this._state = state;
 
     const color = 'grey';
     const rect = new Konva.Rect({
@@ -49,7 +53,7 @@ export class CanvasBboxGroup extends Konva.Group {
     // Restore draggable on mouseup or dragend
     this.on('mouseup dragend', () => {
       this.draggable(true)
-      if (state.currentTool === 'select') {
+      if (this._state.currentTool === 'select') {
         const newPos = { x: this.x(), y: this.y() };
         this.updateMetadata(newPos);
       }
@@ -60,7 +64,7 @@ export class CanvasBboxGroup extends Konva.Group {
       if (e.evt.button === 1) {
         this.draggable(false);
       } else {
-        this.draggable(state.currentTool === 'select');
+        this.draggable(this._state.currentTool === 'select');
       }
     });
 
@@ -171,7 +175,7 @@ export class CanvasBboxGroup extends Konva.Group {
       textRef.text(bboxText);
       textRef.fill(color);
       rectRef.stroke(color);
-      state.canvas.layer?.batchDraw();
+      this._state.canvas.layer?.batchDraw();
     })
       .catch(err => {
         console.error('Failed to fetch class:', err);

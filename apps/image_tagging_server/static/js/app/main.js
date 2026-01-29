@@ -4,14 +4,20 @@ import { init as initConfiguration } from './configuration/main.js';
 import { setupMainTabs } from '/app-static/js/app/utils/tabs.js';
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
 
+import { appState } from './state.js';
+
 const initializedFeatures = new Set();
 
-export async function init() {
+/**
+ * @param {import('@app_types').AppState} state
+ */
+export async function init(state) {
   // Use the new helper to manage top-level tabs
-  const container = setupMainTabs('#main-tabs', async (tabName) => {
+
+  const { container, activateTab } = setupMainTabs('#main-tabs', async (tabName) => {
     if (!initializedFeatures.has(tabName)) {
       if (tabName === 'tab-image-tagging') {
-        await initImageTagging();
+        await initImageTagging(state.imageTagging);
       } else if (tabName === 'tab-configuration') {
         await initConfiguration?.();
       }
@@ -43,4 +49,4 @@ function activateWorkspaceTab(featureId, tabId) {
     ?.click();
 }
 
-init();
+init(appState);

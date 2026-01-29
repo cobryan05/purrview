@@ -1,5 +1,4 @@
 import { CanvasBboxGroup } from './groups/CanvasBboxGroup.js';
-import { state } from './state.js';
 import { fetchImage, updateImage } from '/app-static/js/shared/api/images.js';
 import { Logger, toast } from '/app-static/js/ui/utils/index.js';
 
@@ -9,19 +8,26 @@ import { Logger, toast } from '/app-static/js/ui/utils/index.js';
 
  */
 
-export async function reloadImage() {
+/**
+ * @param {import('@image_tagging_types').ImageTaggingState} state
+ */
+export async function reloadImage(state) {
   const imageName = state.image.name;
   if (!imageName) {
     Logger.notify('No image loaded to reload');
     return;
   }
-  await loadImageAndMetadata(imageName);
+  await loadImageAndMetadata(state, imageName);
 }
 
-export async function loadImageAndMetadata(imageName) {
+/**
+ * @param {import('@image_tagging_types').ImageTaggingState} state
+ * @param {string} imageName
+ */
+export async function loadImageAndMetadata(state, imageName) {
   Logger.debug('loadImageAndMetadata called with imageName:', imageName);
 
-  clearAnnotations();
+  clearAnnotations(state);
   const imageInfo = await fetchImage(imageName);
   state.setImage(imageInfo);
 
@@ -29,15 +35,17 @@ export async function loadImageAndMetadata(imageName) {
     const { width, height } = imageInfo.img;
 
     for (const [uuid, box] of imageInfo.bboxes.entries()) {
-      const canvasBbox = new CanvasBboxGroup(box);
+      const canvasBbox = new CanvasBboxGroup(box, state);
       state.updateCanvasBbox(canvasBbox);
     }
   }
-  await refreshCanvas();
+  await refreshCanvas(state);
 }
 
-
-export async function refreshCanvas() {
+/**
+ * @param {import('@image_tagging_types').ImageTaggingState} state
+ */
+export async function refreshCanvas(state) {
   const layer = state.canvas.layer;
   const img = state.image?.img;
   if (!layer || !img) {
@@ -94,7 +102,10 @@ export async function refreshCanvas() {
 }
 
 
-export function clearAnnotations() {
+/**
+ * @param {import('@image_tagging_types').ImageTaggingState} state
+ */
+export function clearAnnotations(state) {
   const layer = state.canvas.layer;
   state.clearSelection();
   state.clearBboxes();
@@ -108,7 +119,10 @@ export function clearAnnotations() {
   layer.draw();
 }
 
-export async function saveAnnotations() {
+/**
+ * @param {import('@image_tagging_types').ImageTaggingState} state
+ */
+export async function saveAnnotations(state) {
   if (!state.image) {
     toast('No image loaded to save annotations!');
     return;
@@ -129,7 +143,10 @@ export async function saveAnnotations() {
   }
 }
 
-export function deleteSelected() {
+/**
+ * @param {import('@image_tagging_types').ImageTaggingState} state
+ */
+export function deleteSelected(state) {
   const transformer = state.canvas.transformer;
   const layer = state.canvas.layer;
   if (!transformer) return;
@@ -156,7 +173,10 @@ export function deleteSelected() {
   layer.draw();
 }
 
-export function exportAnnotations() {
+/**
+ * @param {import('@image_tagging_types').ImageTaggingState} state
+ */
+export function exportAnnotations(state) {
   const layer = state.canvas.layer;
   const shapes = layer.getChildren().filter(s => s.name() === 'annotation');
 
@@ -184,18 +204,19 @@ export function exportAnnotations() {
 
 /**
  * Adds recognition results to the current canvas
+ * @param {import('@image_tagging_types').ImageTaggingState} state
  * @param {InferenceResult} results - The inference results to add to the current canvas
  */
-export async function addInferenceResults(results) {
+export async function addInferenceResults(state, results) {
   const layer = state.canvas.layer;
   if (!layer) {
     Logger.error("Couldn't find image and canvas to add results");
     return;
   }
   results.detections.forEach(box => {
-    const bboxGroup = new CanvasBboxGroup(box);
+    const bboxGroup = new CanvasBboxGroup(box, state);
     state.updateCanvasBbox(bboxGroup);
   });
 
-  await refreshCanvas();
+  await refreshCanvas(state);
 }

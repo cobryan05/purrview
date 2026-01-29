@@ -1,8 +1,10 @@
-import { setTool, selectBboxTool } from './canvas/tools.js';
 import { reloadImage, clearAnnotations, deleteSelected, saveAnnotations } from './canvas/image.js';
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
-
-export function init() {
+import { setTool } from './canvas/tools.js';
+/**
+ * @param {import('@image_tagging_types').ImageTaggingState} state
+ */
+export function init(state) {
   const container = document.getElementById('tab-canvas');
   const nav = document.createElement('nav');
   nav.id = 'toolbar';
@@ -12,12 +14,12 @@ export function init() {
   nav.style.width = '100%';
 
   const buttons = [
-    { label: 'Reload Image', onClick: reloadImage },
-    { label: 'Select', onClick: () => setTool('select'), dataTool: 'select' },
-    { label: 'BBox', onClick: selectBboxTool, dataTool: 'bbox' },
-    { label: 'Clear Annotations', onClick: clearAnnotations },
-    { label: 'Delete Selected', onClick: deleteSelected },
-    { label: 'Save', onClick: saveAnnotations }
+    { label: 'Reload Image', onClick: () => reloadImage(state) },
+    { label: 'Select', onClick: () => setTool(state, 'select'), dataTool: 'select' },
+    { label: 'BBox', onClick: () => setTool(state, `bbox:`), dataTool: 'bbox' },
+    { label: 'Clear Annotations', onClick: () => clearAnnotations(state) },
+    { label: 'Delete Selected', onClick: () => deleteSelected(state) },
+    { label: 'Save', onClick: () => saveAnnotations(state) }
   ];
 
   buttons.forEach(btn => {

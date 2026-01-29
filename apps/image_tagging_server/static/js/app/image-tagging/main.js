@@ -4,15 +4,18 @@ import { init as initSidebar } from './sidebar.js';
 import { init as initToolbar } from './toolbar.js';
 import { setupWorkspaceTabs } from '/app-static/js/app/utils/tabs.js';
 
-export async function init() {
-  const container = setupWorkspaceTabs("#tab-image-tagging", tabName => {
-    if (tabName === 'tab-files' && !initFiles._initialized) {
+
+/**
+ * @param {import('@image_tagging_types').ImageTaggingState} state
+ */
+export async function init(state) {
+  const { container, activateTab } = setupWorkspaceTabs("#tab-image-tagging", tabName => {
+    if (tabName === 'tab-files') {
       initFiles();
-      initFiles._initialized = true;
     }
   });
 
-  await Promise.all([initCanvas(), initSidebar(), initToolbar()]);
+  await Promise.all([initCanvas(state), initSidebar(state), initToolbar(state)]);
 
   // activate default workspace tab
   const defaultTabBtn = container?.querySelector('.workspace-tab-button');

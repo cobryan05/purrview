@@ -1,4 +1,5 @@
-import { setTool } from './canvas/tools.js';
+import { appState } from '../state.js';
+import { setTool, parseToolUuid } from './canvas/tools.js';
 import { setupSidebarTabs } from '/app-static/js/app/utils/tabs.js';
 import { clearModelsCache, fetchModelsList } from '/app-static/js/shared/api/models.js';
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
@@ -8,15 +9,18 @@ import { Logger } from '/app-static/js/ui/utils/index.js';
 
 let _modelsInit = false;
 
-export async function init() {
+/**
+ * @param {import('@image_tagging_types').ImageTaggingState} state
+ */
+export async function init(state) {
   // Setup sidebar tabs (Models / Classes / Annotations / Inspector)
-  const container = setupSidebarTabs('#sidebar', async (tabName) => {
+  const { container, activateTab } = setupSidebarTabs('#sidebar', async (tabName) => {
     if (tabName === 'tab-classes-tool') {
       renderClassList({
         target: "classes-tool-list",
         editable: false,
         clickable: true,
-        onSelectCallback: uuid => setTool(`bbox:${uuid}`)
+        onSelectCallback: uuid => setTool(state, `bbox:${uuid}`)
       });
     } else if (tabName === 'tab-models') {
       if (!_modelsInit) {
@@ -31,8 +35,28 @@ export async function init() {
   document.getElementById('refresh-models')?.addEventListener('click', refreshModelList);
 
   // activate default workspace tab
-  const defaultTabBtn = container?.querySelector('.sidebar-tab-button');
-  if (defaultTabBtn) defaultTabBtn.click();
+  if (container) {
+    activateTab(container.querySelector('.sidebar-tab-button')?.dataset.tab);
+  }
+
+  // Show 'Classes' tab when tool changes to BBox
+  events.subscribe(EventTypes.CANVAS_TOOL_CHANGED, ({ tool }) => {
+    // Switch to the Classes tab if the tool is BBox
+    const toolInfo = parseToolUuid(tool);
+    if (toolInfo.tool === 'bbox') {
+      activateTab('tab-classes-tool');
+      const uuid = toolInfo.uuid ?? appState.imageTagging.currentClassUuid;
+
+      // If there is no currently selected class then select the first one
+      if (!uuid) {
+        // defer until after rendering
+        requestAnimationFrame(() => {
+          const firstClassRow = document.querySelector('#classes-tool-list .class-row');
+          if (firstClassRow) firstClassRow.click();
+        });
+      }
+    }
+  });
 }
 
 

@@ -4,33 +4,52 @@
  * @param {string} buttonSelector - CSS selector for tab buttons
  * @param {string} paneSelector - CSS selector for tab panes
  * @param {(tabName: string, button?: HTMLElement) => void} [onTabChange] - callback
- * @returns {HTMLElement|null} container element
+ * @returns {{container: HTMLElement|null, activateTab: (tabName: string) => void}}
  */
 function setupTabs(containerOrSelector, buttonSelector, paneSelector, onTabChange) {
   const container = typeof containerOrSelector === 'string'
     ? document.querySelector(containerOrSelector)
     : containerOrSelector;
 
-  if (!container) return null;
+  if (!container) return { container: null, activateTab: () => { } };
 
-  const buttons = container.querySelectorAll(buttonSelector);
-  const panes = container.querySelectorAll(paneSelector);
+  // Lazy query functions
+  const getButtons = () => Array.from(container.querySelectorAll(buttonSelector));
+  const getPanes = () => Array.from(container.querySelectorAll(paneSelector));
 
-  buttons.forEach(button => {
-    button.addEventListener('click', () => {
-      buttons.forEach(b => b.classList.remove('active'));
-      panes.forEach(p => p.classList.remove('active'));
+  function getActiveTab() {
+    const activeButton = getButtons().find(b => b.classList.contains('active'));
+    return activeButton?.dataset.tab ?? null;
+  }
 
-      button.classList.add('active');
-      const tabName = button.dataset.tab;
-      const pane = container.querySelector(`#${tabName}`);
-      if (pane) pane.classList.add('active');
+  function activateTab(tabName) {
+    if (getActiveTab() === tabName) return;
 
-      if (onTabChange) onTabChange(tabName, button);
-    });
+    const button = getButtons().find(b => b.dataset.tab === tabName);
+    if (!button) return;
+
+    // deactivate all
+    getButtons().forEach(b => b.classList.remove('active'));
+    getPanes().forEach(p => p.classList.remove('active'));
+
+    // activate chosen
+    button.classList.add('active');
+    const pane = container.querySelector(`#${tabName}`);
+    if (pane) pane.classList.add('active');
+
+    onTabChange?.(tabName, button);
+  }
+
+  // attach click listeners
+  getButtons().forEach(button => {
+    button.addEventListener('click', () => activateTab(button.dataset.tab));
   });
 
-  return container;
+  // ensure at least one tab is active on setup
+  const initialTab = getActiveTab() ?? getButtons()[0]?.dataset.tab;
+  if (initialTab) activateTab(initialTab);
+
+  return { container, activateTab };
 }
 
 /** Top-level main tabs (Image Tagging / Configuration) */

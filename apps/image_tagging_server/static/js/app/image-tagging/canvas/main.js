@@ -16,35 +16,36 @@ import {
   handleWheel,
 } from './interaction.js';
 import { runInference } from '/app-static/js/shared/api/inference.js';
-import { state } from './state.js';
-import { selectBboxTool, setTool } from './tools.js';
+import { setTool } from './tools.js';
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
 import { Logger } from '/app-static/js/ui/utils/index.js';
 
-export async function init() {
+/**
+ * @param {import('@image_tagging_types').ImageTaggingState} state
+ */
+export async function init(state) {
   // Initialize stage and set default tool
   const container = document.getElementById('draw-container');
-  state.initStage(container);
+  state.initCanvas(container);
   state.setTool('select');
-
   // Expose functions globally for HTML onclick handlers
-  window.setTool = setTool;
-  window.reloadImage = reloadImage;
-  window.clearAnnotations = clearAnnotations;
-  window.selectBboxTool = selectBboxTool;
-  window.saveAnnotations = saveAnnotations;
-  window.deleteSelected = deleteSelected;
-  window.loadImageAndMetadata = loadImageAndMetadata;
-  window.refreshAnnotations = exportAnnotations;
+  Object.assign(window, {
+    setTool,
+    reloadImage,
+    clearAnnotations,
+    saveAnnotations,
+    deleteSelected,
+    loadImageAndMetadata,
+    refreshAnnotations: exportAnnotations,
+  });
 
-  let stage = state.canvas.stage;
-  // Attach stage event listeners
-  stage.on('mousedown', handleMouseDown);
-  stage.on('mousemove', handleMouseMove);
-  stage.on('mouseup', handleMouseUp);
-  stage.on('wheel', handleWheel);
-  stage.on('click', handleClick);
-  stage.on('contextmenu', handleContextMenu);
+  const stage = state.canvas.stage;
+  stage.on('mousedown', e => handleMouseDown(e, state));
+  stage.on('mousemove', e => handleMouseMove(e, state));
+  stage.on('mouseup', e => handleMouseUp(e, state));
+  stage.on('wheel', e => handleWheel(e, state));
+  stage.on('click', e => handleClick(e, state));
+  stage.on('contextmenu', e => handleContextMenu(e, state));
 
   // Resize stage on window resize
   window.addEventListener('resize', () => {
@@ -56,8 +57,7 @@ export async function init() {
 
 
   events.subscribe(EventTypes.CANVAS_BBOX_CLICKED, ({ bboxId }) => {
-    const transformer = state.canvas.transformer;
-    const layer = state.canvas.layer;
+    const { transformer, layer } = state.canvas;
     const group = state.getBboxGroup(bboxId);
     if (!transformer || !layer || !group) return;
 
@@ -72,14 +72,14 @@ export async function init() {
       if (!img) throw new Error('No image loaded');
 
       const result = await runInference(modelName, img);
-      await addInferenceResults(result);
+      await addInferenceResults(state, result);
     } catch (err) {
       Logger.error('Failed to run inference:', err);
     }
   });
 
   events.subscribe(EventTypes.LOAD_IMAGE_ONTO_CANVAS, ({ path, showCanvas }) => {
-    loadImageAndMetadata(path);
+    loadImageAndMetadata(state, path);
     if (showCanvas) {
        events.publish(EventTypes.SHOW_CANVAS);
     }

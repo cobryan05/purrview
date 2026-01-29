@@ -1,6 +1,5 @@
 // files.js
 import { FileBrowser } from '/app-static/js/ui/fileBrowser.js';
-import { loadImageAndMetadata } from './canvas/image.js';
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
 
 let _initialized = false;

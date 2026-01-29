@@ -1,5 +1,5 @@
 import { refreshCanvas } from '../app/image-tagging/canvas/image.js'; // TODO: Better way?
-import { state } from '../app/image-tagging/canvas/state.js';
+import { appState } from '../app/state.js';
 import { BboxInfoField, EditableField } from '/app-static/js/ui/utils/fields/index.js';
 import { createGenericRow, Logger } from '/app-static/js/ui/utils/index.js';
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
@@ -34,8 +34,8 @@ export function openInspectorTab() {
 
 
 export function renderBboxInspector({ bboxUuid = null, target = 'tab-inspector', editable = true, onSelectCallback = null } = {}) {
-  bboxUuid = bboxUuid ?? state.selectedBboxUuid;
-  const bbox = state.getBboxGroup(bboxUuid)
+  bboxUuid = bboxUuid ?? appState.imageTagging.selectedBboxUuid;
+  const bbox = appState.imageTagging.getBboxGroup(bboxUuid)
   try {
     const targetElement = document.getElementById(target);
     if (!targetElement) {
@@ -60,14 +60,14 @@ export function renderBboxInspector({ bboxUuid = null, target = 'tab-inspector',
             Logger.warn(val);
           },
           onSave: async (val) => {
-            const bboxGroup = state.getBboxGroup(bboxUuid);
+            const bboxGroup = appState.imageTagging.getBboxGroup(bboxUuid);
             if (!bboxGroup) {
               Logger.error(`No bbox found for UUID: ${bboxUuid}`);
               return;
             }
             bboxGroup.updateMetadata({ classUuid: val.bbox_info.classUuid, tagUuids: val.bbox_info.tagUuids });
-            state.updateCanvasBbox(bboxGroup);
-            await refreshCanvas();
+            appState.imageTagging.updateCanvasBbox(bboxGroup);
+            await refreshCanvas(appState.imageTagging);
           },
           onCancel: () => {
             Logger.warn("Canceled");

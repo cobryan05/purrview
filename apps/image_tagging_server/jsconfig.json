@@ -24,6 +24,12 @@
       "@app_types": [
         "./static/js/types.js"
       ],
+      "@canvas_types": [
+        "./static/js/app/image-tagging/canvas/types.js"
+      ],
+      "@image_tagging_types": [
+        "./static/js/app/image-tagging/types.js"
+      ],
       "@events": [
         "./static/js/shared/events/types.js"
       ],
