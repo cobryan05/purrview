@@ -24,6 +24,9 @@
       "@app_types": [
         "./static/js/types.js"
       ],
+      "@ui_types": [
+        "./static/js/ui/types.js"
+      ],
       "@canvas_types": [
         "./static/js/app/image-tagging/canvas/types.js"
       ],

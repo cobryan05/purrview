@@ -1,4 +1,4 @@
-import { registerKeyboardShortcuts } from './shortcuts.js';
+import { registerKeyboardShortcuts } from './hotkeys.js';
 import { init as initImageTagging } from './image-tagging/main.js';
 import { init as initConfiguration } from './configuration/main.js';
 import { setupMainTabs } from '/app-static/js/app/utils/tabs.js';
@@ -36,7 +36,7 @@ export async function init(state) {
   const defaultTabBtn = container?.querySelector('.main-tab-button.active');
   if (defaultTabBtn) defaultTabBtn.click();
 
-  registerKeyboardShortcuts();
+  registerKeyboardShortcuts(state);
 }
 
 function activateMainTab(container, tabId) {

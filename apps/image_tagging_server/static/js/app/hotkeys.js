@@ -2,9 +2,9 @@ import { deleteSelected } from './image-tagging/canvas/image.js';
 import { setTool } from './image-tagging/canvas/tools.js';
 
 /**
- * @param {import('@image_tagging_types').ImageTaggingState} state
+ * @param {import('@app_types').AppState} appState
  */
-export function registerKeyboardShortcuts(state) {
+export function registerKeyboardShortcuts(appState) {
   document.addEventListener('keydown', e => {
     const isMac = navigator.platform.toUpperCase().indexOf('MAC') >= 0;
     const ctrlKey = isMac ? e.metaKey : e.ctrlKey;
@@ -17,15 +17,15 @@ export function registerKeyboardShortcuts(state) {
       case 'delete':
       case 'backspace':
         e.preventDefault();
-        deleteSelected();
+        deleteSelected(appState.imageTagging);
         break;
 
       case 'v':
-        setTool(state, 'select');
+        setTool(appState.imageTagging, 'select');
         break;
 
       case 'r':
-        setTool(state, 'bbox:');
+        setTool(appState.imageTagging, 'bbox:');
         break;
 
       default:
