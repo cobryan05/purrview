@@ -49,7 +49,7 @@ export const Logger = {
 };
 
 
-export function toast(message, duration = 5000, type = "info") {
+export function toast(message, duration = 5000, type = "info", maxToasts = 3) {
   let container = document.getElementById('toast-container');
   if (!container) {
     container = document.createElement('div');
@@ -66,6 +66,11 @@ export function toast(message, duration = 5000, type = "info") {
       pointerEvents: 'none',
     });
     document.body.appendChild(container);
+  }
+
+  // Enforce max toast limit: remove oldest immediately
+  while (container.children.length >= maxToasts) {
+    container.firstElementChild?.remove();
   }
 
   const toast = document.createElement('div');
