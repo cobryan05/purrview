@@ -2,6 +2,8 @@ import { CanvasBboxGroup } from './groups/CanvasBboxGroup.js';
 import { fetchImage, updateImage } from '/app-static/js/shared/api/images.js';
 import { Logger, toast } from '/app-static/js/ui/utils/index.js';
 
+let _activeImageLoadId = 0;
+
 /**
  * @typedef {import('@app_types').RuntimeBboxInfo} RuntimeBboxInfo
  * @typedef {import('@app_types').InferenceResult} InferenceResult
@@ -27,13 +29,20 @@ export async function reloadImage(state) {
 export async function loadImageAndMetadata(state, imageName) {
   Logger.debug('loadImageAndMetadata called with imageName:', imageName);
 
-  clearAnnotations(state);
+  // Create a new load id and invalidate all previous loads
+  const loadId = ++_activeImageLoadId;
   const imageInfo = await fetchImage(imageName);
+
+  // If another load started while we waited → abort
+  if (loadId !== _activeImageLoadId) {
+    Logger.debug('Discarding stale image load for', imageName);
+    return;
+  }
+
+  clearAnnotations(state);
   state.setImage(imageInfo);
 
   if (imageInfo.bboxes && imageInfo.img) {
-    const { width, height } = imageInfo.img;
-
     for (const [uuid, box] of imageInfo.bboxes.entries()) {
       const canvasBbox = new CanvasBboxGroup(box, state);
       state.updateCanvasBbox(canvasBbox);
