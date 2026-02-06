@@ -14,7 +14,7 @@ export class FileBrowser {
    *   container: HTMLElement,
    *   initialPath?: string,
    *   filter?: (entry: {name: string, type: string, path: string}) => boolean,
-   *   fileNavigation?: { setDirectory: (dir: string, files: string[]) => void, select: (file: string) => void },
+   *   fileNavigation?: FileNavigation,
    *   onFileClick?: (entry: any, currentPath: string) => void,
    *   onDirClick?: (path: string) => void,
    * }} options
@@ -44,19 +44,23 @@ export class FileBrowser {
     try {
       const entries = await fetchImageList(path);
       this._entries = entries.filter(this.filter);
-      this.container.innerHTML = '';
-
       // Update navigation if injected
       if (this.fileNavigation) {
         this.fileNavigation.setDirectory(path, this._entries.map(e => e.name));
       }
 
-      this.renderBreadcrumb(path);
-      this.renderList(this._entries);
+      this.rerender();
     } catch (err) {
       this.container.innerHTML = 'Failed to load files.';
       console.error(err);
     }
+  }
+
+  /** Re-renders the current list */
+  rerender() {
+    this.container.innerHTML = '';
+    this.renderBreadcrumb(this.currentPath);
+    this.renderList(this.getEntries());
   }
 
   /** Returns the currently loaded entries */
@@ -80,6 +84,10 @@ export class FileBrowser {
       const link = document.createElement('a');
       link.href = '#';
       link.textContent = entry.name;
+      // Draw a border around the row if it is the current file
+      if (this.fileNavigation && this.fileNavigation.current() === entry.name) {
+        link.style.border = '2px solid #007bff'
+      }
       link.onclick = e => {
         e.preventDefault();
 

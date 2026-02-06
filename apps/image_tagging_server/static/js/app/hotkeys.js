@@ -1,5 +1,6 @@
 import { deleteSelected } from './image-tagging/canvas/image.js';
 import { setTool } from './image-tagging/canvas/tools.js';
+import { next_image, prev_image } from './image-tagging/files.js';
 
 /**
  * @param {import('@app_types').AppState} appState
@@ -26,6 +27,14 @@ export function registerKeyboardShortcuts(appState) {
 
       case 'r':
         setTool(appState.imageTagging, 'bbox:');
+        break;
+
+      case '[':
+        prev_image(appState.imageTagging);
+        break;
+
+      case ']':
+        next_image(appState.imageTagging);
         break;
 
       default:

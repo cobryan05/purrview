@@ -10,6 +10,7 @@
  * @property {string} currentTool
  * @property {string|null} currentClassUuid
  * @property {string|null} selectedBoxUuid
+ * @property {import('@ui_types').FileNavigation} fileNavigation
  * @property {RuntimeImage|null} image
  * @property {(uuid:string) => CanvasBboxGroup|undefined} getBboxGroup
  * @property {(tool:string) => void} setTool

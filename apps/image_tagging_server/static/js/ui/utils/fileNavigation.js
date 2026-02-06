@@ -29,8 +29,8 @@ export class FileNavigation {
    */
   setDirectory(dir, files) {
     this._dir = dir;
-    this._files = files.filter(f => f.match(/\.(jpg|jpeg|png)$/i));
-    this._index = this._files.length ? 0 : -1;
+    this._files = files;
+    this._index = -1;
   }
 
   /**
