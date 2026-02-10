@@ -4,6 +4,7 @@ import sys
 from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
+import asyncio
 import cv2
 from dacite import Config, from_dict
 from inference_client.api.inference_api import InferenceApi
@@ -62,7 +63,7 @@ class CollectTrainingImagesTask(Task):
         pin_ids = {}
         for config in self._model_label_configs:
             pin_payload: PinModelPayload = PinModelPayload(model_name=config.modelName, duration=60)
-            pin_response = models_api.pin_model(pin_payload)
+            pin_response = await asyncio.to_thread(models_api.pin_model, pin_payload)
             pin_ids[config.modelName] = pin_response.get("pin_id")
 
         image_helper: ImageHelper = ImageHelper(db_api_client)
@@ -86,15 +87,23 @@ class CollectTrainingImagesTask(Task):
                         conf_thresh=min_conf,
                         pin_id=pin_ids.get(config.modelName),
                     )
-                    results[config.modelName] = inference_api.recognize(payload)
+                    results[config.modelName] = await asyncio.to_thread(inference_api.recognize, payload)
 
+                # Filter the results to keep only the configured classes
+                for model_name, model_results in results.items():
+                    if model_results and "classes" in model_results:
+                        filtered_classes = [
+                            cls for cls in model_results["classes"]
+                            if cls["label"] in self._model_label_configs[0].classesValues.keys()
+                        ]
+                        results[model_name]["classes"] = filtered_classes
 
                 # Determine an output filename
                 sanitized_name: str = ImageHelper.sanitize_filename(f"{image_with_metadata.metadata.source}_{image_with_metadata.metadata.frame_idx}")
                 output_path = Path(self._output_dir) / f"{sanitized_name}.png"
 
                 # Check if this file already exists in the database
-                image_metadata: ImageMetadata = image_helper.get_image_metadata(str(output_path))
+                image_metadata: ImageMetadata = await asyncio.to_thread(image_helper.get_image_metadata, str(output_path))
                 if image_metadata:
                     logger.info(f"Output image {output_path} already exists")
                 else:
