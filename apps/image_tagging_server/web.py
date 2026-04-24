@@ -19,15 +19,26 @@ from apps.inference_server.web import (
 )
 from apps.tasks_server.web import (
     CancelTasksPayload,
+    CancelTasksResponse,
     CreateTaskConfigPayload,
+    CreateTaskConfigResponse,
     DeleteTaskConfigsPayload,
+    DeleteTaskConfigsResponse,
     DeleteTasksPayload,
+    DeleteTasksResponse,
+    GetTaskConfigResponse,
     GetTaskConfigsPayload,
+    ListTaskTypesResponse,
     StartTasksPayload,
+    StartTasksResponse,
+    TasksResultResponse,
     TasksInfoPayload,
+    TasksInfoResponse,
     TasksResultPayload,
     TasksTypeSchemaPayload,
+    TasksTypeSchemaResponse,
     UpdateTaskConfigPayload,
+    UpdateTaskConfigResponse,
 )
 
 from .manager import Manager
@@ -233,102 +244,102 @@ class WebApp:
 
         @self._app.get(
             "/api/tasks/types/list",
-            response_class=JSONResponse,
+            response_model=ListTaskTypesResponse,
             tags=[ApiTags.TASKS],
             operation_id="list_task_types",
         )
         @self._manager.task_api_request("list_task_types")
-        async def list_task_types_api(request: Request) -> JSONResponse: ...
+        async def list_task_types_api(request: Request) -> ListTaskTypesResponse: ...
 
         @self._app.post(
             "/api/tasks/types/schema",
             tags=[ApiTags.TASKS],
             operation_id="get_task_type_schema",
-            response_class=JSONResponse,
+            response_model=TasksTypeSchemaResponse,
         )
         @self._manager.task_api_request("get_task_type_schema")
-        async def get_task_type_schema_api(_payload: TasksTypeSchemaPayload) -> JSONResponse: ...
+        async def get_task_type_schema_api(_payload: TasksTypeSchemaPayload) -> TasksTypeSchemaResponse: ...
 
         @self._app.post(
             "/api/tasks/configs/create",
             tags=[ApiTags.TASKS],
             operation_id="create_task_config",
-            response_class=JSONResponse,
+            response_model=CreateTaskConfigResponse
         )
         @self._manager.task_api_request("create_task_config")
-        async def create_task_config_api(_payload: CreateTaskConfigPayload) -> JSONResponse: ...
+        async def create_task_config_api(_payload: CreateTaskConfigPayload) -> CreateTaskConfigResponse: ...
 
         @self._app.post(
             "/api/tasks/configs/update",
             tags=[ApiTags.TASKS],
             operation_id="update_task_config",
-            response_class=JSONResponse,
+            response_model=UpdateTaskConfigResponse,
         )
         @self._manager.task_api_request("update_task_config")
-        async def update_task_config_api(_payload: UpdateTaskConfigPayload) -> JSONResponse: ...
+        async def update_task_config_api(_payload: UpdateTaskConfigPayload) -> UpdateTaskConfigResponse: ...
 
         @self._app.post(
             "/api/tasks/configs/delete",
-            response_class=JSONResponse,
+            response_model=DeleteTaskConfigsResponse,
             tags=[ApiTags.TASKS],
             operation_id="delete_task_configs",
         )
         @self._manager.task_api_request("delete_task_configs")
-        async def delete_task_configs_api(_payload: DeleteTaskConfigsPayload) -> JSONResponse: ...
+        async def delete_task_configs_api(_payload: DeleteTaskConfigsPayload) -> DeleteTaskConfigsResponse: ...
 
         @self._app.post(
             "/api/tasks/configs/get",
             tags=[ApiTags.TASKS],
             operation_id="get_task_configs",
-            response_class=JSONResponse,
+            response_model=GetTaskConfigResponse,
         )
         @self._manager.task_api_request("get_task_configs")
-        async def get_task_configs_api(_payload: GetTaskConfigsPayload) -> JSONResponse: ...
+        async def get_task_configs_api(_payload: GetTaskConfigsPayload) -> GetTaskConfigResponse: ...
 
         @self._app.post(
             "/api/tasks/instances/start",
             tags=[ApiTags.TASKS],
             operation_id="start_task",
-            response_class=JSONResponse,
+            response_model=StartTasksResponse,
         )
         @self._manager.task_api_request("start_task")
-        async def start_task_api(_payload: StartTasksPayload) -> JSONResponse: ...
+        async def start_task_api(_payload: StartTasksPayload) -> StartTasksResponse: ...
 
         @self._app.post(
             "/api/tasks/instances/cancel",
             tags=[ApiTags.TASKS],
             operation_id="cancel_tasks",
-            response_class=JSONResponse,
+            response_model=CancelTasksResponse,
         )
         @self._manager.task_api_request("cancel_tasks")
-        async def cancel_task_api(_payload: CancelTasksPayload) -> JSONResponse: ...
+        async def cancel_task_api(_payload: CancelTasksPayload) -> CancelTasksResponse: ...
 
         @self._app.post(
             "/api/tasks/instances/get",
             tags=[ApiTags.TASKS],
             operation_id="get_tasks_info",
-            response_class=JSONResponse,
+            response_model=TasksInfoResponse
         )
         @self._manager.task_api_request("get_tasks_info")
-        async def get_tasks_info_api(_payload: TasksInfoPayload) -> JSONResponse: ...
+        async def get_tasks_info_api(_payload: TasksInfoPayload) -> TasksInfoResponse: ...
 
         @self._app.post(
             "/api/tasks/instances/delete",
             tags=[ApiTags.TASKS],
             operation_id="delete_tasks",
-            response_class=JSONResponse,
+            response_model=DeleteTasksResponse,
         )
         @self._manager.task_api_request("delete_tasks")
-        async def delete_tasks_api(_payload: DeleteTasksPayload) -> JSONResponse: ...
+        async def delete_tasks_api(_payload: DeleteTasksPayload) -> DeleteTasksResponse: ...
 
         @self._app.post(
             "/api/tasks/instances/result",
             tags=[ApiTags.TASKS],
             operation_id="get_tasks_result",
-            response_class=JSONResponse,
+            response_model=TasksResultResponse,
         )
         @self._manager.task_api_request("get_tasks_result")
-        async def task_result_api(_payload: TasksResultPayload) -> JSONResponse: ...
+        async def task_result_api(_payload: TasksResultPayload) -> TasksResultResponse: ...
 
         ################################################################################
         # SOURCES API

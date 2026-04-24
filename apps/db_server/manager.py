@@ -5,19 +5,17 @@ import glob
 import logging
 import os
 import sys
-from pydantic import BaseModel
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 import fnmatch
 import aiofiles
 
+from apps.helpers.db.types import ClassData, FileEntry
+
+from apps.helpers.db.types import BoundingBoxMetadata, ImageMetadata, SourceMetadata
 from apps.helpers.db.db_client import (
-    BoundingBoxMetadata,
     DbClient,
-    ImageMetadata,
-    ClassData,
     ClassMetadata,
-    SourceMetadata,
     TagMetadata,
     TagKinds,
 )
@@ -27,12 +25,6 @@ from apps.helpers.imageProviders.Registry import image_provider_registry
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger(__file__)
 logger.setLevel(logging.DEBUG)
-
-
-class FileEntry(BaseModel):
-    name: str
-    type: str  # "file" or "dir"
-    path: str  # relative path from root
 
 
 class Manager:
@@ -115,13 +107,13 @@ class Manager:
         Get a mapping of class UUIDs to their metadata.
         """
         flat_list: List[ClassMetadata] = await self._db_client.list_classes()
-        uuid_to_node: Dict[str, ClassData] = {cls.uuid: ClassData(metadata=cls) for cls in flat_list}
+        uuid_to_node: Dict[str, ClassData] = {x.uuid: ClassData(metadata=x) for x in flat_list}
 
         # Set up parent-child relationships
-        for cls in flat_list:
-            node = uuid_to_node[cls.uuid]
-            if cls.parent_uuid and cls.parent_uuid in uuid_to_node:
-                parent_node = uuid_to_node[cls.parent_uuid]
+        for node in uuid_to_node.values():
+            parent_uuid = node.metadata.parent_uuid if node.metadata else None
+            parent_node = uuid_to_node.get(parent_uuid) if parent_uuid else None
+            if parent_node:
                 parent_node.children.append(node)
 
         return uuid_to_node
@@ -321,7 +313,7 @@ class Manager:
         if not safe_path or not safe_path.exists():
             return None
         img_path = str(safe_path)
-        image_id = await self._db_client.get_image_id_by_filename(img_path)
+        image_id = await self._db_client.get_image_uuid_by_filename(img_path)
         if image_id is None:
             image_id = await self._db_client.add_image(img_path)
             await self._db_client.read_image_metadata_json_to_db(img_path)

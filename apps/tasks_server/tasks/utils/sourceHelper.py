@@ -2,9 +2,9 @@
 
 import db_client
 from db_client.api.sources_api import SourcesApi
-from db_client.models.source_metadata import SourceMetadata
 
 from apps.helpers.consts import JsonValues
+from apps.helpers.db.types import SourceMetadata
 from apps.helpers.imageProviders.imageProvider import ImageProvider
 from apps.helpers.imageProviders.Registry import image_provider_registry
 

@@ -5,7 +5,7 @@ import { Logger, generateUUID } from '/app-static/js/ui/utils/index.js';
  * Fetch a list of files from the API.
  *
  * @param {string} path - The folder path to list files from.
- * @returns {Promise<import('@web_api').FileEntry[]>} Array of file entries from the server.
+ * @returns {Promise<import('@web_api').FileEntryModel[]>} Array of file entries from the server.
  * @throws {Error} If the fetch fails or the API returns an error status.
  */
 export async function fetchImageList(path) {
@@ -156,4 +156,5 @@ export async function updateImage(runtimeImage) {
   if (updatRes.status !== 'success') {
     throw new Error(`${updatRes.message}`);
   }
+  // TODO:???
 }

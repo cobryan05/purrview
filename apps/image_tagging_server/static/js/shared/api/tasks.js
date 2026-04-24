@@ -1,5 +1,5 @@
 import { createCachedFetcher } from '/app-static/js/ui/utils/data/createCachedFetcher.js';
-import { wrapSingleKey, ignoreKeyReturn } from './apiUtils.js';
+import { ignoreKeyReturn } from './apiUtils.js';
 
 export const TaskStatus = Object.freeze({
   NEW: "new",
@@ -31,7 +31,14 @@ export function clearTaskTypeCache() {
 }
 
 /* ---- Task type schemas --- */
-async function _fetchTasksSchemaFromServer(typenames) {
+/**
+ * Gets the schemas for a list of task typenames
+ *
+ * @param {import('@web_api').TasksTypeSchemaPayload} payload
+ * @returns {Promise<Map<string, any>>}
+ * @throws {Error} If the fetch fails or the API response is invalid.
+ */
+async function fetchTasksSchemaFromServer(typenames) {
   const res = await fetch('/api/tasks/types/schema', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -41,13 +48,14 @@ async function _fetchTasksSchemaFromServer(typenames) {
     const err = await res.json();
     throw new Error(err.message || 'Failed to fetch task schema');
   }
-  const { schemas } = await res.json();
-  return schemas;
+  /** @type {import('@web_api').TasksTypeSchemaResponse} */
+  const response = await res.json();
+  const { schemas } = response;
+  return new Map(Object.entries(schemas));
 }
-const fetchTasksSchemaFromServer = wrapSingleKey(_fetchTasksSchemaFromServer);
 
 const taskSchemaFetcher = createCachedFetcher(fetchTasksSchemaFromServer);
-async function _fetchTaskTypeSchema(typenames) {
+export async function fetchTaskTypeSchemas(typenames) {
   const types = await fetchTaskTypeList();
   for (const t of typenames) {
     if (!types.includes(t)) throw new Error(`Unknown task type: ${t}`);
@@ -61,7 +69,6 @@ async function _fetchTaskTypeSchema(typenames) {
 
   return result;
 }
-export const fetchTaskTypeSchema = wrapSingleKey(_fetchTaskTypeSchema);
 
 export function clearTaskSchemaCache() {
   taskSchemaFetcher.clear();
@@ -71,7 +78,14 @@ export function clearTaskSchemaCache() {
  * TASK CONFIGS
  * -----------------------------
  */
-async function _fetchTaskConfigs(uuids = null) {
+/**
+ * Gets the list of task configurations
+ *
+ * @param {import('@web_api').GetTaskConfigsPayload} payload
+ * @returns {Promise<Map<string, any>>}
+ * @throws {Error} If the fetch fails or the API response is invalid.
+ */
+export async function fetchTaskConfigs(uuids = null) {
   const fetchAll = uuids == null;
   const res = await fetch('/api/tasks/configs/get', {
     method: 'POST',
@@ -83,15 +97,15 @@ async function _fetchTaskConfigs(uuids = null) {
     const err = await res.json();
     throw new Error(err.message || 'Failed to fetch task configs');
   }
-
-  const { configs } = await res.json();
+  /** @type {import('@web_api').GetTaskConfigResponse} */
+  const result = await res.json();
+  const { configs } = result;
   return new Map(Object.entries(configs));
 }
 
-export const fetchTaskConfigs = wrapSingleKey(_fetchTaskConfigs);
 export const taskConfigFetcher = createCachedFetcher(fetchTaskConfigs);
 
-export async function _deleteTaskConfigs({ uuids }) {
+export async function deleteTaskConfigs({ uuids }) {
   const res = await fetch('/api/tasks/configs/delete', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -105,7 +119,6 @@ export async function _deleteTaskConfigs({ uuids }) {
     throw new Error(err.message || 'Failed to delete task configs');
   }
 }
-export const deleteTaskConfigs = wrapSingleKey(_deleteTaskConfigs);
 
 export async function createTaskConfig(config) {
   const res = await fetch('/api/tasks/configs/create', {
@@ -148,11 +161,19 @@ export async function updateTaskConfig(config) {
  * TASK RESULTS
  * -----------------------------
  */
-async function fetchTaskResultFromServer(taskIds) {
+
+/**
+ * Gets the results of a task from its uuid
+ *
+ * @param {import('@web_api').TasksResultPayload} payload
+ * @returns {Promise<import('@web_api').TaskResultModel>}
+ * @throws {Error} If the fetch fails or the API response is invalid.
+ */
+async function fetchTaskResultFromServer(task_uuids) {
   const res = await fetch('/api/tasks/instances/result', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ task_ids: taskIds }),
+    body: JSON.stringify({ task_uuids }),
   });
 
   if (!res.ok) {
@@ -161,48 +182,63 @@ async function fetchTaskResultFromServer(taskIds) {
   }
 
   const { results } = await res.json();
-  const resultsMap = new Map(Object.entries(results).map(([key, value]) => [Number(key), value]))
-  return resultsMap;
+  const resultMap = new Map(Object.entries(results));
+  return resultMap;
 }
 
 const taskResultFetcher = createCachedFetcher(fetchTaskResultFromServer);
 
-export async function _fetchTasksResult({ taskIds, cacheResults = true }) {
-  const results = {};
-  for (const t of taskIds) {
+export async function fetchTasksResult({ task_uuids, cacheResults = true }) {
+  const results = new Map();
+  for (const t of task_uuids) {
     const r = await taskResultFetcher.fetch(t);
     if (!cacheResults) taskResultFetcher.delete(t);
-    results[t] = r;
+    results.set(t, r);
   }
 
   return results;
 }
-export const fetchTasksResult = wrapSingleKey(_fetchTasksResult, "taskIds");
-
 
 /** -----------------------------
  * TASK INSTANCE OPERATIONS
  * -----------------------------
  */
-export async function startTask({ uuid }) {
+/**
+ * Starts a task from a given task config
+ *
+ * @param {import('@web_api').StartTasksPayload} payload - uuid of configuration to create instance of
+ * @returns {Promise<string>} - uuid of the started task
+ * @throws {Error} If the fetch fails or the API response is invalid.
+ */
+export async function startTask({ config_uuid }) {
   const res = await fetch('/api/tasks/instances/start', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ config_uuid: uuid }),
+    body: JSON.stringify({ config_uuid }),
   });
   if (!res.ok) {
     const err = await res.json();
     throw new Error(err.message || 'Failed to start task');
   }
-  const { task_id } = await res.json();
-  return task_id;
+  /** @type {import('@web_api').StartTasksResponse} */
+  const response = await res.json();
+  const { status, task_uuid } = response;
+  return task_uuid;
 }
 
-async function _fetchTasksStatus({ taskIds } = {}) {
+
+/**
+ * Gets the status of a task from its uuid
+ *
+ * @param {import('@web_api').TasksInfoPayload} payload
+ * @returns {Promise<import('@web_api').TasksInfoResponse>}
+ * @throws {Error} If the fetch fails or the API response is invalid.
+ */
+export async function fetchTasksStatus({ task_uuids } = {}) {
   const res = await fetch('/api/tasks/instances/get', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ task_ids: taskIds }),
+    body: JSON.stringify({ task_uuids }),
   });
 
   if (!res.ok) {
@@ -215,75 +251,69 @@ async function _fetchTasksStatus({ taskIds } = {}) {
     throw new Error(data.message || 'Failed to fetch task status');
   }
 
-  return data.tasks;
+  return data;
 }
-export const fetchTasksStatus = wrapSingleKey(_fetchTasksStatus);
-
-async function _cancelTasks({ taskIds }) {
+export async function cancelTasks({ task_uuids }) {
   const res = await fetch('/api/tasks/instances/cancel', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ task_ids: taskIds }),
+    body: JSON.stringify({ task_uuids }),
   });
   if (!res.ok) {
     const err = await res.json();
     throw new Error(err.message || 'Failed to cancel task');
   }
 }
-export const cancelTasks = wrapSingleKey(_cancelTasks);
 
-async function _deleteTasks({ taskIds }) {
+export async function deleteTasks({ task_uuids }) {
   const res = await fetch('/api/tasks/instances/delete', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ task_ids: taskIds }),
+    body: JSON.stringify({ task_uuids }),
   });
   if (!res.ok) {
     const err = await res.json();
     throw new Error(err.message || 'Failed to delete task');
   }
 }
-export const deleteTasks = wrapSingleKey(_deleteTasks);
 
-async function _pauseTasks({ taskIds }) {
+export async function pauseTasks({ task_uuids }) {
   const res = await fetch('/api/tasks/instances/pause', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ task_ids: taskIds }),
+    body: JSON.stringify({ task_uuids }),
   });
   if (!res.ok) {
     const err = await res.json();
     throw new Error(err.message || 'Failed to pause task');
   }
 }
-export const pauseTasks = wrapSingleKey(_pauseTasks);
 
-async function _resumeTasks({ taskIds }) {
+export async function resumeTasks({ task_uuids }) {
   const res = await fetch('/api/tasks/instances/resume', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ task_ids: taskIds }),
+    body: JSON.stringify({ task_uuids }),
   });
   if (!res.ok) {
     const err = await res.json();
     throw new Error(err.message || 'Failed to resume task');
   }
 }
-export const resumeTasks = wrapSingleKey(_resumeTasks);
 
 /**
  * Wait for a task to complete and return its result
  */
-export async function waitForTaskResult(taskId, { intervalMs = 1000, timeoutMs = 60000 } = {}) {
+export async function waitForTaskResult(task_uuid, { intervalMs = 1000, timeoutMs = 60000 } = {}) {
   const startTime = Date.now();
 
   while (true) {
-    const status = await fetchTasksStatus({ taskIds: taskId });
+    const status = await fetchTasksStatus({ task_uuids: [task_uuid] });
 
-    if (status === TaskStatus.COMPLETED) return await fetchTasksResult({ taskIds: taskId });
-    if (status === TaskStatus.ERROR) throw new Error(`Task ${taskId} failed`);
+    if (status === TaskStatus.COMPLETED) return await fetchTasksResult({ task_uuids: [task_uuid] });
+    if (status === TaskStatus.ERROR) throw new Error(`Task ${task_uuid} failed`);
 
-    if (Date.now() - startTime > timeoutMs) throw new Error(`Timeout waiting for task ${taskId}`);
+    if (Date.now() - startTime > timeoutMs) throw new Error(`Timeout waiting for task ${task_uuid}`);
 
     await new Promise(r => setTimeout(r, intervalMs));
   }

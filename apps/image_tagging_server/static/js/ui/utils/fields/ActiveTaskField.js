@@ -8,9 +8,9 @@ export class ActiveTaskField extends Field {
 
   static async create({ ...rest } = {}) {
     const instance = new ActiveTaskField({ ...rest });
-    const { name = '', id, status, message } = instance._value || {};
-    instance._name = name || instance._value;
-    instance._id = id;
+    const { name = '', typename, uuid, status, message } = instance._value.task_metadata || {};
+    instance._name = name || typename || instance._value;
+    instance._uuid = uuid;
     instance._status = status;
     instance._message = message;
 

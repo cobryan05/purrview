@@ -6,7 +6,7 @@ import mimetypes
 import sys
 from contextlib import asynccontextmanager
 from dataclasses import asdict
-from typing import List, Optional
+from typing import Any, List, Optional
 from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException, Request
@@ -15,19 +15,22 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+from apps.db_server.manager import Manager
 from apps.helpers.consts import ApiTags, JsonKeys, JsonValues
-from apps.helpers.db.db_client import ClassMetadata, TagMetadata
-from apps.helpers.types import StatusResponse
-
-from .manager import (
+from apps.helpers.db.db_client import ClassMetadata
+from apps.helpers.db.types import (
     BoundingBoxMetadata,
-    ClassData,
-    FileEntry,
+    BoundingBoxMetadataModel,
+    ClassDataModel,
+    FileEntryModel,
     ImageMetadata,
-    Manager,
+    ImageMetadataModel,
     SourceMetadata,
+    SourceMetadataModel,
     TagKinds,
+    TagMetadataModel,
 )
+from apps.helpers.types import StatusResponse
 
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger(__file__)
@@ -60,7 +63,7 @@ class ListClassesPayload(BaseModel):
 
 
 class ListClassesResponse(StatusResponse):
-    classes: List[ClassData] = Field(default_factory=list)
+    classes: List[ClassDataModel] = Field(default_factory=list)
 
 
 class UpdateClassPayload(BaseModel):
@@ -85,7 +88,7 @@ class AddTagPayload(BaseModel):
 
 
 class AddTagResponse(StatusResponse):
-    tag: Optional[TagMetadata] = None
+    tag: Optional[TagMetadataModel] = None
 
 
 class DeleteTagPayload(BaseModel):
@@ -101,7 +104,7 @@ class ListTagsPayload(BaseModel):
 
 
 class ListTagsResponse(StatusResponse):
-    tags: List[TagMetadata] = Field(default_factory=list)
+    tags: List[TagMetadataModel] = Field(default_factory=list)
 
 
 class UpdateTagPayload(BaseModel):
@@ -146,7 +149,7 @@ class CreateSourcePayload(BaseModel):
 
 
 class CreateSourceResponse(StatusResponse):
-    source: Optional[SourceMetadata] = None
+    source: Optional[SourceMetadataModel] = None
 
 
 class DeleteSourcePayload(BaseModel):
@@ -162,7 +165,7 @@ class GetSourcesPayload(BaseModel):
 
 
 class GetSourcesResponse(StatusResponse):
-    sources: dict[str, SourceMetadata] = Field(default_factory=dict)
+    sources: dict[str, SourceMetadataModel] = Field(default_factory=dict)
 
 
 class UpdateSourcePayload(BaseModel):
@@ -173,7 +176,7 @@ class UpdateSourcePayload(BaseModel):
 
 
 class UpdateSourceResponse(StatusResponse):
-    source: Optional[SourceMetadata] = None
+    source: Optional[SourceMetadataModel] = None
 
 
 ########
@@ -195,7 +198,7 @@ class GetBoundingBoxInfoPayload(BaseModel):
 
 
 class GetBoundingBoxInfoResponse(StatusResponse):
-    metadata: dict[str, BoundingBoxMetadata] = Field(default_factory=dict)
+    metadata: dict[str, BoundingBoxMetadataModel] = Field(default_factory=dict)
 
 
 class UpdateMetadataPayload(BaseModel):
@@ -205,17 +208,17 @@ class UpdateMetadataPayload(BaseModel):
 
 
 class UpdateMetadataResponse(StatusResponse):
-    metadata: Optional[ImageMetadata] = None
+    metadata: Optional[ImageMetadataModel] = None
 
 
 class ListFilesPayload(BaseModel):
     path: str = "/"
-    pattern: str = "*"
-    recursive: bool = False
+    pattern: Optional[str] = "*"
+    recursive: Optional[bool] = False
 
 
 class ListFilesResponse(StatusResponse):
-    files: List[FileEntry] = Field(default_factory=list)
+    files: List[FileEntryModel] = Field(default_factory=list)
 
 
 class GetImageMetadataPayload(BaseModel):
@@ -223,7 +226,7 @@ class GetImageMetadataPayload(BaseModel):
 
 
 class GetImageMetadataResponse(StatusResponse):
-    metadata: Optional[ImageMetadata] = None
+    metadata: Optional[ImageMetadataModel] = None
 
 
 class GetFilePayload(BaseModel):
@@ -234,7 +237,7 @@ class GetFileResponse(StatusResponse):
     filename: str
     mime_type: Optional[str] = None
     image_base64: Optional[str] = None
-    metadata: Optional[ImageMetadata] = None
+    metadata: Optional[ImageMetadataModel] = None
 
 
 class WebApp:
@@ -349,7 +352,8 @@ class WebApp:
             """
             try:
                 class_list = await self._manager.get_classes()
-                response_data = ListClassesResponse(status=JsonValues.SUCCESS, classes=class_list)
+                class_models = [ClassDataModel.from_dataclass(cls) for cls in class_list]
+                response_data = ListClassesResponse(status=JsonValues.SUCCESS, classes=class_models)
                 return response_data
             except Exception as e:
                 logger.error(e, exc_info=True)
@@ -435,7 +439,8 @@ class WebApp:
                     provider_params=payload.provider_params,
                     source_name=payload.source_name,
                 )
-                return UpdateSourceResponse(status=JsonValues.SUCCESS, source=source_metadata)
+                source_model = SourceMetadataModel.from_dataclass(source_metadata)
+                return UpdateSourceResponse(status=JsonValues.SUCCESS, source=source_model)
             except Exception as e:
                 logger.error(e, exc_info=True)
                 return UpdateSourceResponse(status=JsonValues.FAILURE, message=str(e))
@@ -550,7 +555,8 @@ class WebApp:
             """
             try:
                 tags = await self._manager.get_tags()
-                return ListTagsResponse(status=JsonValues.SUCCESS, tags=tags)
+                tag_models = [TagMetadataModel.from_dataclass(tag) for tag in tags]
+                return ListTagsResponse(status=JsonValues.SUCCESS, tags=tag_models)
             except Exception as e:
                 logger.error(e, exc_info=True)
                 return ListTagsResponse(status=JsonValues.FAILURE, message=str(e))
@@ -698,13 +704,14 @@ class WebApp:
                 mime_type = mime_type or "application/octet-stream"
 
                 metadata: ImageMetadata | None = await self._manager.get_image_metadata(payload.path)
+                model = ImageMetadataModel.from_dataclass(metadata)
                 encoded = base64.b64encode(content).decode("utf-8")
                 return GetFileResponse(
                     status=JsonValues.SUCCESS,
                     filename=filename,
                     mime_type=mime_type,
                     image_base64=encoded,
-                    metadata=metadata,
+                    metadata=model,
                 )
 
             except HTTPException:

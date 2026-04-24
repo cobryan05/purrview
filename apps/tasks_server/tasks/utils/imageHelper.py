@@ -9,9 +9,9 @@ from db_client.models.get_image_metadata_payload import GetImageMetadataPayload
 from db_client.models.get_image_metadata_response import GetImageMetadataResponse
 from db_client.models.update_metadata_payload import UpdateMetadataPayload
 from db_client.models.update_metadata_response import UpdateMetadataResponse
-from db_client.models.image_metadata import ImageMetadata
 
 from apps.helpers.consts import JsonValues
+from apps.helpers.db.types import ImageMetadata
 
 
 class ImageHelper:
@@ -24,9 +24,10 @@ class ImageHelper:
     def get_image_metadata(self, image_path: str) -> Optional[ImageMetadata]:
         payload = GetImageMetadataPayload(image_path=image_path)
         response: GetImageMetadataResponse = self._images_api.get_image_metadata(payload)
-        if response.status != JsonValues.SUCCESS:
+        if response.metadata is None or response.status != JsonValues.SUCCESS:
             return None
-        return response.metadata
+
+        return ImageMetadata(**response.metadata.model_dump())
 
     def update_image_metadata(self, image_path: str, metadata: ImageMetadata) -> bool:
         payload = UpdateMetadataPayload(image_path=image_path, boxes=metadata.boxes)
@@ -35,4 +36,4 @@ class ImageHelper:
 
     @staticmethod
     def sanitize_filename(name: str, replacement: str = "_") -> str:
-        return re.sub(r'[<>:"/\\|?*\x00-\x1f]', replacement, name)
+        return re.sub(r'[<>:"/\.\\|?*\x00-\x1f]', replacement, name)

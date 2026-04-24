@@ -2,7 +2,7 @@ import { DropDownField } from './DropDownField.js';
 import { Field } from './Field.js';
 import { SchemaField } from './SchemaField.js';
 import { TextField } from './TextField.js';
-import { fetchTaskTypeList, fetchTaskTypeSchema } from '/app-static/js/shared/api/tasks.js';
+import { fetchTaskTypeList, fetchTaskTypeSchemas } from '/app-static/js/shared/api/tasks.js';
 import { Logger } from '/app-static/js/ui/utils/index.js';
 
 export class TaskConfigField extends Field {
@@ -16,7 +16,7 @@ export class TaskConfigField extends Field {
 
     // If no schema passed but a typename is provided, fetch the schema now
     if (!schema && typename) {
-      schema = await fetchTaskTypeSchema(typename);
+      schema = await fetchTaskTypeSchemas([typename]).then(schemas => schemas.get(typename));
     }
 
     instance._uuid = uuid
@@ -30,7 +30,7 @@ export class TaskConfigField extends Field {
       value: typename,
       onChange: async (newTypename) => {
         try {
-          const newSchema = await fetchTaskTypeSchema(newTypename);
+          const newSchema = await fetchTaskTypeSchemas([newTypename]).then(schemas => schemas.get(newTypename));
           instance._schemaField = await SchemaField.create({
             schema: newSchema,
             values: instance._schemaField.getValue() // preserve current values

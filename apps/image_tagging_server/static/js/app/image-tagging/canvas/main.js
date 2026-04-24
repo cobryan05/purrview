@@ -36,7 +36,6 @@ export async function init(state) {
     saveAnnotations,
     deleteSelected,
     loadImageAndMetadata,
-    refreshAnnotations: exportAnnotations,
   });
 
   const stage = state.canvas.stage;

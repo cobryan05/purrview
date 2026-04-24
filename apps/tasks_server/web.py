@@ -5,7 +5,7 @@ import json
 import logging
 import sys
 from contextlib import asynccontextmanager
-from typing import List, Optional, Union
+from typing import List, Optional, Union, Dict
 
 import cv2
 import numpy as np
@@ -14,9 +14,13 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
-from .manager import Manager, RunningTaskInfo, TaskConfigMetadata
+from apps.helpers.consts import JsonValues
+from apps.helpers.db.types import TaskConfigMetadata, TaskConfigMetadataModel, TaskResultModel
+from apps.helpers.types import StatusResponse
+from apps.tasks_server.manager import Manager, TaskInfo
+from apps.tasks_server.types import TaskInfoModel
 
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger(__file__)
@@ -32,44 +36,90 @@ class CreateTaskConfigPayload(BaseModel):
     persistent: bool = True
 
 
+class CreateTaskConfigResponse(StatusResponse):
+    config_uuid: Optional[str] = None
+
+
 class DeleteTasksPayload(BaseModel):
-    task_ids: List[int]
+    task_uuids: List[str]
+
+
+class DeleteTasksResponse(StatusResponse):
+    task_uuids: List[str] = Field(default_factory=list)
 
 
 class DeleteTaskConfigsPayload(BaseModel):
     config_uuids: List[str]
 
 
+class DeleteTaskConfigsResponse(StatusResponse):
+    config_uuids: List[str] = Field(default_factory=list)
+
+
 class GetTaskConfigsPayload(BaseModel):
     config_uuids: Optional[Union[List[str], str]] = None
 
 
+class GetTaskConfigResponse(StatusResponse):
+    configs: Dict[str, TaskConfigMetadataModel] = Field(default_factory=dict)
+
+
+class ListTaskTypesResponse(StatusResponse):
+    types: List[str] = Field(default_factory=list)
+
+
 class PauseTasksPayload(BaseModel):
-    task_ids: List[int]
+    task_uuids: List[str]
+
+class PauseTasksResponse(StatusResponse):
+    task_uuids: List[str] = Field(default_factory=list)
 
 
 class ResumeTasksPayload(BaseModel):
-    task_ids: List[int]
+    task_uuids: List[str]
+
+
+class ResumeTasksResponse(StatusResponse):
+    task_uuids: List[str] = Field(default_factory=list)
 
 
 class CancelTasksPayload(BaseModel):
-    task_ids: List[int]
+    task_uuids: List[str]
+
+
+class CancelTasksResponse(StatusResponse):
+    task_uuids: List[str] = Field(default_factory=list)
 
 
 class StartTasksPayload(BaseModel):
     config_uuid: str
 
 
+class StartTasksResponse(StatusResponse):
+    task_uuid: Optional[str] = None
+
+
 class TasksTypeSchemaPayload(BaseModel):
     task_typenames: List[str]
 
+class TasksTypeSchemaResponse(StatusResponse):
+    schemas: Dict[str, dict] = Field(default_factory=dict)
+
 
 class TasksResultPayload(BaseModel):
-    task_ids: List[int]
+    task_uuids: List[str]
+
+
+class TasksResultResponse(StatusResponse):
+    results: dict[str, TaskResultModel] = Field(default_factory=dict)
 
 
 class TasksInfoPayload(BaseModel):
-    task_ids: Optional[List[int]] = None
+    task_uuids: Optional[List[str]] = None
+
+
+class TasksInfoResponse(StatusResponse):
+    tasks: dict[str, TaskInfoModel] = Field(default_factory=dict)
 
 
 class UpdateTaskConfigPayload(BaseModel):
@@ -81,6 +131,9 @@ class UpdateTaskConfigPayload(BaseModel):
     params: Optional[dict] = None
     description: Optional[str] = None
     marked_for_delete: Optional[bool] = None
+
+class UpdateTaskConfigResponse(StatusResponse):
+    pass
 
 
 class WebApp:
@@ -226,11 +279,11 @@ class WebApp:
 
         @self._app.get(
             "/api/tasks/types/list",
-            response_class=JSONResponse,
+            response_model=ListTaskTypesResponse,
             tags=[WebApp.TASKS_API_TAG_NAME],
             operation_id="list_task_types",
         )
-        async def list_task_types_api(request: Request) -> JSONResponse:
+        async def list_task_types_api(request: Request) -> ListTaskTypesResponse:
             """
             API endpoint to return a list of task types.
 
@@ -238,25 +291,22 @@ class WebApp:
                 request (Request): The FastAPI request object.
 
             Returns:
-                JSONResponse: A JSON response containing the list of models.
+                ListTaskTypesResponse: A response containing the list of task types.
             """
             try:
                 types_list = await self._manager.list_task_types()
-                response_data = {"status": WebApp.SUCCESS_KEY, "types": types_list}
-                return JSONResponse(content=response_data)
+                return ListTaskTypesResponse(status=WebApp.SUCCESS_KEY, types=types_list)
             except Exception as e:
                 logger.error(e, exc_info=True)
-                return JSONResponse(
-                    content={"status": WebApp.FAILURE_KEY, "message": str(e)},
-                )
+                return ListTaskTypesResponse(status=WebApp.FAILURE_KEY, message=str(e))
 
         @self._app.post(
             "/api/tasks/types/schema",
             tags=[WebApp.TASKS_API_TAG_NAME],
             operation_id="get_task_type_schema",
-            response_class=JSONResponse,
+            response_model=TasksTypeSchemaResponse,
         )
-        async def get_task_type_schema_api(payload: TasksTypeSchemaPayload) -> JSONResponse:
+        async def get_task_type_schema_api(payload: TasksTypeSchemaPayload) -> TasksTypeSchemaResponse:
             """
             API endpoint for getting the schema of a specific task type.
 
@@ -264,22 +314,21 @@ class WebApp:
                 payload (TasksSchemaPayload): Request payload containing the task type.
 
             Returns:
-                JSONResponse: Response with task type schema or error.
+                TasksTypeSchemaResult: Response with task type schema or error.
             """
             try:
                 schemas = await self._manager.get_tasks_type_schema(typenames=payload.task_typenames)
-                response_data = {"status": WebApp.SUCCESS_KEY, "schemas": schemas}
+                return TasksTypeSchemaResponse(status=WebApp.SUCCESS_KEY, schemas=schemas)
             except Exception as e:
-                response_data = {"status": WebApp.FAILURE_KEY, "message": str(e)}
-            return JSONResponse(content=response_data)
+                return TasksTypeSchemaResponse(status=WebApp.FAILURE_KEY, message=str(e))
 
         @self._app.post(
             "/api/tasks/instances/start",
             tags=[WebApp.TASKS_API_TAG_NAME],
             operation_id="start_task",
-            response_class=JSONResponse,
+            response_model=StartTasksResponse,
         )
-        async def start_task_api(payload: StartTasksPayload) -> JSONResponse:
+        async def start_task_api(payload: StartTasksPayload) -> StartTasksResponse:
             """
             API endpoint for starting a new task.
 
@@ -287,22 +336,24 @@ class WebApp:
                 req (StartTaskRequest): Request object with task parameters.
 
             Returns:
-                JSONResponse: Response with new task ID or error.
+                StartTasksResponse: Response with new task ID or error.
             """
+            msg = None
             try:
-                task_info: RunningTaskInfo = await self._manager.start_new_task(task_config_uuid=payload.config_uuid)
-                response_data = {"status": WebApp.SUCCESS_KEY, "task_id": task_info.task_metadata.id}
+                task_info: TaskInfo | None = await self._manager.start_new_task(task_config_uuid=payload.config_uuid)
+                if task_info and task_info.task_metadata:
+                    return StartTasksResponse(status=WebApp.SUCCESS_KEY, task_uuid=task_info.task_metadata.uuid)
             except Exception as e:
-                response_data = {"status": WebApp.FAILURE_KEY, "message": str(e)}
-            return JSONResponse(content=response_data)
+                msg = str(e)
+            return StartTasksResponse(status=WebApp.FAILURE_KEY, message=msg)
 
         @self._app.post(
             "/api/tasks/instances/get",
             tags=[WebApp.TASKS_API_TAG_NAME],
             operation_id="get_tasks_info",
-            response_class=JSONResponse,
+            response_model=TasksInfoResponse,
         )
-        async def task_tasks_info_api(payload: TasksInfoPayload) -> JSONResponse:
+        async def task_tasks_info_api(payload: TasksInfoPayload) -> TasksInfoResponse:
             """
             API endpoint for getting status of one or more tasks.
 
@@ -310,26 +361,22 @@ class WebApp:
                 req (TaskStatusRequest): Request object with task IDs.
 
             Returns:
-                JSONResponse: A JSON response containing task statuses.
+                TasksInfoResponse: Response with task information or error.
             """
             try:
-                tasks_info = await self._manager.get_tasks_instance_info(payload.task_ids)
-                for task in tasks_info.values():
-                    if isinstance(task.get("config_metadata"), TaskConfigMetadata):
-                        task["config_metadata"] = task["config_metadata"].dict()
-
-                response_data = {"status": WebApp.SUCCESS_KEY, "tasks": tasks_info}
+                tasks_info = await self._manager.get_tasks_instance_info(payload.task_uuids)
+                models = {uuid: TaskInfoModel.from_dataclass(task) for uuid, task in tasks_info.items()}
+                return TasksInfoResponse(tasks=models)
             except Exception as e:
-                response_data = {"status": WebApp.FAILURE_KEY, "message": str(e)}
-            return JSONResponse(content=response_data)
+                return TasksInfoResponse(status=JsonValues.FAILURE, message=str(e))
 
         @self._app.post(
             "/api/tasks/instances/result",
             tags=[WebApp.TASKS_API_TAG_NAME],
             operation_id="get_tasks_result",
-            response_class=JSONResponse,
+            response_model=TasksResultResponse,
         )
-        async def get_tasks_result_api(payload: TasksResultPayload) -> JSONResponse:
+        async def get_tasks_result_api(payload: TasksResultPayload) -> TasksResultResponse:
             """
             API endpoint for getting result of a specific task.
 
@@ -337,22 +384,22 @@ class WebApp:
                 req (TaskResultRequest): Request object with task ID.
 
             Returns:
-                JSONResponse: A JSON response containing task result.
+                TasksResultResponse: A response containing task result.
             """
             try:
-                tasks_result = await self._manager.get_tasks_result(payload.task_ids)
-                response_data = {"status": WebApp.SUCCESS_KEY, "results": tasks_result}
+                tasks_result = await self._manager.get_tasks_result(payload.task_uuids)
+                models = {uuid: TaskResultModel.from_dataclass(result) for uuid, result in tasks_result.items()}
+                return TasksResultResponse(results=models)
             except Exception as e:
-                response_data = {"status": WebApp.FAILURE_KEY, "message": str(e)}
-            return JSONResponse(content=response_data)
+                return TasksResultResponse(status=WebApp.FAILURE_KEY, message=str(e))
 
         @self._app.post(
             "/api/tasks/instances/pause",
             tags=[WebApp.TASKS_API_TAG_NAME],
             operation_id="pause_tasks",
-            response_class=JSONResponse,
+            response_model=PauseTasksResponse,
         )
-        async def pause_tasks_api(payload: PauseTasksPayload) -> JSONResponse:
+        async def pause_tasks_api(payload: PauseTasksPayload) -> PauseTasksResponse:
             """
             API endpoint to pause tasks.
 
@@ -363,22 +410,19 @@ class WebApp:
                 JSONResponse: JSON response with pause result.
             """
             try:
-                await self._manager.pause_tasks(payload.task_ids)
-                response_data = {"status": WebApp.SUCCESS_KEY, "tasks": payload.task_ids}
-                return JSONResponse(content=response_data)
+                paused_tasks = await self._manager.pause_tasks(payload.task_uuids)
+                return PauseTasksResponse(task_uuids=paused_tasks)
             except Exception as e:
                 logger.error(e, exc_info=True)
-                return JSONResponse(
-                    content={"status": WebApp.FAILURE_KEY, "message": str(e)},
-                )
+                return PauseTasksResponse(status=WebApp.FAILURE_KEY, message=str(e))
 
         @self._app.post(
             "/api/tasks/instances/delete",
             tags=[WebApp.TASKS_API_TAG_NAME],
             operation_id="delete_tasks",
-            response_class=JSONResponse,
+            response_model=DeleteTasksResponse,
         )
-        async def delete_tasks_api(payload: DeleteTasksPayload) -> JSONResponse:
+        async def delete_tasks_api(payload: DeleteTasksPayload) -> DeleteTasksResponse:
             """
             API endpoint to delete tasks.
 
@@ -389,22 +433,19 @@ class WebApp:
                 JSONResponse: JSON response with delete result.
             """
             try:
-                await self._manager.delete_tasks(payload.task_ids)
-                response_data = {"status": WebApp.SUCCESS_KEY, "tasks": payload.task_ids}
-                return JSONResponse(content=response_data)
+                deleted_uuids = await self._manager.delete_tasks(payload.task_uuids)
+                return DeleteTasksResponse(task_uuids=deleted_uuids)
             except Exception as e:
                 logger.error(e, exc_info=True)
-                return JSONResponse(
-                    content={"status": WebApp.FAILURE_KEY, "message": str(e)},
-                )
+                return DeleteTasksResponse(status=WebApp.FAILURE_KEY, message=str(e))
 
         @self._app.post(
             "/api/tasks/instances/resume",
             tags=[WebApp.TASKS_API_TAG_NAME],
             operation_id="resume_tasks",
-            response_class=JSONResponse,
+            response_model=ResumeTasksResponse,
         )
-        async def resume_tasks_api(payload: ResumeTasksPayload) -> JSONResponse:
+        async def resume_tasks_api(payload: ResumeTasksPayload) -> ResumeTasksResponse:
             """
             API endpoint to resume tasks.
 
@@ -412,25 +453,22 @@ class WebApp:
                 req (ResumeTasksRequest): Request object with task IDs to resume.
 
             Returns:
-                JSONResponse: JSON response with resume result.
+                ResumeTasksResponse: A response containing the UUIDs of the resumed tasks.
             """
             try:
-                await self._manager.resume_tasks(payload.task_ids)
-                response_data = {"status": WebApp.SUCCESS_KEY, "tasks": payload.task_ids}
-                return JSONResponse(content=response_data)
+                resumed_uuids = await self._manager.resume_tasks(payload.task_uuids)
+                return ResumeTasksResponse(task_uuids=resumed_uuids)
             except Exception as e:
                 logger.error(e, exc_info=True)
-                return JSONResponse(
-                    content={"status": WebApp.FAILURE_KEY, "message": str(e)},
-                )
+                return ResumeTasksResponse(status=WebApp.FAILURE_KEY, message=str(e))
 
         @self._app.post(
             "/api/tasks/instances/cancel",
             tags=[WebApp.TASKS_API_TAG_NAME],
             operation_id="cancel_tasks",
-            response_class=JSONResponse,
+            response_model=CancelTasksResponse,
         )
-        async def cancel_tasks_api(payload: CancelTasksPayload) -> JSONResponse:
+        async def cancel_tasks_api(payload: CancelTasksPayload) -> CancelTasksResponse:
             """
             API endpoint to cancel tasks.
 
@@ -441,22 +479,19 @@ class WebApp:
                 JSONResponse: JSON response with resume result.
             """
             try:
-                await self._manager.cancel_tasks(payload.task_ids)
-                response_data = {"status": WebApp.SUCCESS_KEY, "tasks": payload.task_ids}
-                return JSONResponse(content=response_data)
+                uuids = await self._manager.cancel_tasks(payload.task_uuids)
+                return CancelTasksResponse(task_uuids=uuids)
             except Exception as e:
                 logger.error(e, exc_info=True)
-                return JSONResponse(
-                    content={"status": WebApp.FAILURE_KEY, "message": str(e)},
-                )
+                return CancelTasksResponse(status=WebApp.FAILURE_KEY, message=str(e))
 
         @self._app.post(
             "/api/tasks/configs/create",
             tags=[WebApp.TASKS_API_TAG_NAME],
             operation_id="create_task_config",
-            response_class=JSONResponse,
+            response_model=CreateTaskConfigResponse,
         )
-        async def create_task_config_api(payload: CreateTaskConfigPayload) -> JSONResponse:
+        async def create_task_config_api(payload: CreateTaskConfigPayload) -> CreateTaskConfigResponse:
             """
             API endpoint for creating a new task configuration.
 
@@ -470,18 +505,17 @@ class WebApp:
                 task_config: TaskConfigMetadata = await self._manager.create_new_task_config(
                     name=payload.name, typename=payload.typename, params=payload.params, persistent=payload.persistent
                 )
-                response_data = {"status": WebApp.SUCCESS_KEY, "config_uuid": task_config.uuid}
+                return CreateTaskConfigResponse(status=WebApp.SUCCESS_KEY, config_uuid=task_config.uuid)
             except Exception as e:
-                response_data = {"status": WebApp.FAILURE_KEY, "message": str(e)}
-            return JSONResponse(content=response_data)
+                return CreateTaskConfigResponse(status=WebApp.FAILURE_KEY, message=str(e))
 
         @self._app.post(
             "/api/tasks/configs/delete",
             tags=[WebApp.TASKS_API_TAG_NAME],
             operation_id="delete_task_configs",
-            response_class=JSONResponse,
+            response_model=DeleteTaskConfigsResponse,
         )
-        async def delete_task_configs_api(payload: DeleteTaskConfigsPayload) -> JSONResponse:
+        async def delete_task_configs_api(payload: DeleteTaskConfigsPayload) -> DeleteTaskConfigsResponse:
             """
             API endpoint to delete tasks configs
 
@@ -493,21 +527,18 @@ class WebApp:
             """
             try:
                 await self._manager.delete_task_configs(payload.config_uuids)
-                response_data = {"status": WebApp.SUCCESS_KEY, "configs": payload.config_uuids}
-                return JSONResponse(content=response_data)
+                return DeleteTaskConfigsResponse(config_uuids=payload.config_uuids)
             except Exception as e:
                 logger.error(e, exc_info=True)
-                return JSONResponse(
-                    content={"status": WebApp.FAILURE_KEY, "message": str(e)},
-                )
+                return DeleteTaskConfigsResponse(status=WebApp.FAILURE_KEY, message=str(e))
 
         @self._app.post(
             "/api/tasks/configs/get",
             tags=[WebApp.TASKS_API_TAG_NAME],
             operation_id="get_task_configs",
-            response_class=JSONResponse,
+            response_model=GetTaskConfigResponse,
         )
-        async def get_task_configs_api(payload: GetTaskConfigsPayload) -> JSONResponse:
+        async def get_task_configs_api(payload: GetTaskConfigsPayload) -> GetTaskConfigResponse:
             """
             API endpoint to get tasks configs
 
@@ -519,22 +550,19 @@ class WebApp:
             """
             try:
                 task_configs = await self._manager.get_task_configs(payload.config_uuids)
-                task_configs_dict = {k: v.dict() for k, v in task_configs.items()}
-                response_data = {"status": WebApp.SUCCESS_KEY, "configs": task_configs_dict}
-                return JSONResponse(content=response_data)
+                models = {k: TaskConfigMetadataModel.from_dataclass(v) for k, v in task_configs.items()}
+                return GetTaskConfigResponse(configs=models)
             except Exception as e:
                 logger.error(e, exc_info=True)
-                return JSONResponse(
-                    content={"status": WebApp.FAILURE_KEY, "message": str(e)},
-                )
+                return GetTaskConfigResponse(status=WebApp.FAILURE_KEY, message=str(e))
 
         @self._app.post(
             "/api/tasks/configs/update",
             tags=[WebApp.TASKS_API_TAG_NAME],
             operation_id="update_task_config",
-            response_class=JSONResponse,
+            response_model=UpdateTaskConfigResponse,
         )
-        async def update_task_config_api(payload: UpdateTaskConfigPayload) -> JSONResponse:
+        async def update_task_config_api(payload: UpdateTaskConfigPayload) -> UpdateTaskConfigResponse:
             """
             API endpoint for updating an existing task configuration.
 
@@ -550,12 +578,10 @@ class WebApp:
                     description=payload.description,
                     marked_for_delete=payload.marked_for_delete,
                 )
-                return JSONResponse(content={"status": WebApp.SUCCESS_KEY})
+                return UpdateTaskConfigResponse()
             except Exception as e:
                 logger.error(e, exc_info=True)
-                return JSONResponse(
-                    content={"status": WebApp.FAILURE_KEY, "message": str(e)},
-                )
+                return UpdateTaskConfigResponse(status=WebApp.FAILURE_KEY, message=str(e))
 
         @self._app.post(
             "/task_schema",

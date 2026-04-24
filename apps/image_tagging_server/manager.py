@@ -3,23 +3,20 @@
 import asyncio
 import logging
 import sys
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 import db_client
 import inference_client
 import tasks_client
-from db_client.api.images_api import ImagesApi
 from db_client.api.classes_api import ClassesApi
+from db_client.api.images_api import ImagesApi
 from db_client.api.sources_api import SourcesApi
 from db_client.api.tags_api import TagsApi
 from inference_client.api.inference_api import InferenceApi
 from inference_client.api.models_api import ModelsApi
-from inference_client.models.associate_class_with_model_class_payload import (
-    AssociateClassWithModelClassPayload,
-)
 from tasks_client.api.tasks_api import TasksApi
 
-from apps.helpers.db.db_client import BoundingBoxMetadata, DbClient, ClassMetadata
+from apps.helpers.db.db_client import DbClient
 from apps.helpers.webUtils import api_forward_request
 
 logging.basicConfig(stream=sys.stdout)
