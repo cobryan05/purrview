@@ -5,18 +5,18 @@ from typing import Any, Optional
 from dataclasses import dataclass, field
 
 @dataclass
-class ImageMetadata:
+class ImageProviderMetadata:
     source: Optional[str] = None
     frame_idx: Optional[int ] = None
     additional_info: dict[str, Any] = field(default_factory=dict)
 
 @dataclass
-class ImageWithMetadata:
+class ImageWithProviderMetadata:
     image: np.ndarray
-    metadata: ImageMetadata = field(default_factory=ImageMetadata)
+    metadata: ImageProviderMetadata = field(default_factory=ImageProviderMetadata)
 
 class ImageProvider:
-    async def getNextImage(self) -> Optional[ImageWithMetadata]:
+    async def getNextImage(self) -> Optional[ImageWithProviderMetadata]:
         """Retrieves the next image for processing from the image source"""
         raise NotImplementedError()
 

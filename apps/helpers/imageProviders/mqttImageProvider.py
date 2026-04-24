@@ -10,7 +10,7 @@ from PIL import Image
 
 from apps.helpers.mqttClient import MqttClient
 
-from .imageProvider import ImageProvider, ImageWithMetadata
+from .imageProvider import ImageProvider, ImageWithProviderMetadata
 from .Registry import register_image_provider
 
 logging.basicConfig()
@@ -43,13 +43,13 @@ class MqttImageProvider(ImageProvider):
         except Exception as e:
             logger.error(e, exc_info=True)
 
-    async def getNextImage(self) -> Optional[ImageWithMetadata]:
+    async def getNextImage(self) -> Optional[ImageWithProviderMetadata]:
         """Asynchronously retrieves the next image from the queue."""
         try:
             frame: np.ndarray = await asyncio.wait_for(self._frameQueue.get(), timeout=MqttImageProvider.TIMEOUT)
             # Swap channel ordering
             frame_rgb = frame[..., ::-1]
-            return ImageWithMetadata(frame_rgb)
+            return ImageWithProviderMetadata(frame_rgb)
         except asyncio.TimeoutError:
             raise TimeoutError("No image received within the timeout period.")
 

@@ -236,8 +236,8 @@ class BoundingBoxMetadata(BaseModel):
 
 
 class ImageMetadata(BaseModel):
-    id: int
     filename: str
+    id: Optional[int] = None
     last_updated: Optional[str] = None
     extra: Dict[str, str] = Field(default_factory=dict)
     boxes: List[BoundingBoxMetadata] = Field(default_factory=list)

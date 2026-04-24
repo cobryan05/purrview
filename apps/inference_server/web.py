@@ -1,7 +1,6 @@
 """Web API for Inference Server"""
 
 import base64
-import json
 import logging
 import sys
 from contextlib import asynccontextmanager
@@ -16,8 +15,12 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 
-from apps.helpers.inferenceProviders.inferenceProvider import InferenceResult
 from apps.helpers.consts import ApiTags, JsonKeys, JsonValues
+from apps.helpers.inferenceProviders.inferenceProvider import (
+    DetectionResult,
+    InferenceResult,
+)
+from apps.helpers.types import StatusResponse
 
 from .manager import Manager
 
@@ -44,6 +47,39 @@ class RecognizePayload(BaseModel):
     pin_id: Optional[str] = None
     image_base64: str  # base64 encoded image string
 
+class DetectionResultModel(BaseModel):
+    bounding_box: tuple[float, float, float, float]
+    confidence: float
+    class_id: int
+    class_name: Optional[str] = None
+    class_uuid: Optional[str] = None
+
+class InferenceResultResponse(StatusResponse):
+    detections: list[DetectionResultModel]
+    inference_time: float | None = None
+    annotated_image: str | None = None
+
+
+def convert_detection(det: DetectionResult) -> DetectionResultModel:
+    return DetectionResultModel(
+        bounding_box=det.bounding_box.asRX1Y1WH(),
+        confidence=det.confidence,
+        class_id=det.class_id,
+        class_name=det.class_name,
+        class_uuid=det.class_uuid,
+    )
+
+def convert_inference(result: InferenceResult) -> InferenceResultResponse:
+    annotated_b64 = None
+    if result.annotated_image is not None:
+        _, buf = cv2.imencode(".png", result.annotated_image)
+        annotated_b64 = base64.b64encode(buf).decode()
+
+    return InferenceResultResponse(
+        detections=[convert_detection(d) for d in result.detections],
+        inference_time=result.inference_time,
+        annotated_image=annotated_b64,
+    )
 
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger(__file__)
@@ -273,9 +309,9 @@ class WebApp:
             "/api/recognize",
             tags=[ApiTags.INFERENCE],
             operation_id="recognize",
-            response_class=JSONResponse,
+            response_model=InferenceResultResponse,
         )
-        async def recognize_api(payload: RecognizePayload):
+        async def recognize_api(payload: RecognizePayload) -> InferenceResultResponse:
             try:
                 np_bytes = base64.b64decode(payload.image_base64)
                 np_image = np.frombuffer(np_bytes, np.uint8)
@@ -288,12 +324,9 @@ class WebApp:
                     return_annotated=payload.return_annotated,
                     pin_id=payload.pin_id,
                 )
-                return JSONResponse(
-                    content={
-                        JsonKeys.STATUS: JsonValues.SUCCESS,
-                        **inference_result.serialize(include_annotated=payload.return_annotated),
-                    }
-                )
+
+                inference_response: InferenceResultResponse = convert_inference(inference_result)
+                return inference_response
             except Exception as e:
                 logger.error(e, exc_info=True)
-                return JSONResponse(content={JsonKeys.STATUS: JsonValues.FAILURE, JsonKeys.MESSAGE: str(e)})
+                return InferenceResultResponse(status=JsonValues.FAILURE, message=str(e))

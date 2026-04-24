@@ -10,7 +10,7 @@ from typing import Any, Optional
 import cv2
 import numpy as np
 
-from .imageProvider import ImageProvider, ImageWithMetadata
+from .imageProvider import ImageProvider, ImageWithProviderMetadata
 from .Registry import register_image_provider
 
 logging.basicConfig()
@@ -57,7 +57,7 @@ class Cv2VideoImageProvider(ImageProvider):
         else:
             self._vid = None
 
-    async def getNextImage(self) -> Optional[ImageWithMetadata]:
+    async def getNextImage(self) -> Optional[ImageWithProviderMetadata]:
         while self._vid is not None:
             ret, frame = await asyncio.to_thread(self._vid.read)
             if not ret:
@@ -69,7 +69,7 @@ class Cv2VideoImageProvider(ImageProvider):
                     return None
                 self._vidFrameCnt = 0
 
-            ret_image = ImageWithMetadata(frame)
+            ret_image = ImageWithProviderMetadata(frame)
             ret_image.metadata.source = self._vidPath
             ret_image.metadata.frame_idx = self._vidFrameCnt
 

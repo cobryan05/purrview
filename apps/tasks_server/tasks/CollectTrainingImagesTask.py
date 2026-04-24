@@ -1,25 +1,30 @@
+import asyncio
 import base64
 import logging
 import sys
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Dict, Optional
 
-import asyncio
 import cv2
 from dacite import Config, from_dict
+from db_client.models.image_metadata import ImageMetadata
+from inference_client import InferenceResultResponse
 from inference_client.api.inference_api import InferenceApi
 from inference_client.api.models_api import ModelsApi
-from inference_client.models.recognize_payload import RecognizePayload
 from inference_client.models.pin_model_payload import PinModelPayload
-from apps.helpers.consts import JsonValues
-from apps.helpers.imageProviders.imageProvider import ImageMetadata, ImageProvider
+from inference_client.models.recognize_payload import RecognizePayload
 
-from .utils.sourceHelper import SourceHelper
-from .utils.imageHelper import ImageHelper
+from apps.helpers.consts import JsonValues
+from apps.helpers.imageProviders.imageProvider import (
+    ImageProvider,
+    ImageWithProviderMetadata
+)
+
 from .Registry import register_task
 from .Task import Task
-
-from pathlib import Path
+from .utils.imageHelper import ImageHelper
+from .utils.sourceHelper import SourceHelper
 
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger(__file__)
@@ -72,12 +77,12 @@ class CollectTrainingImagesTask(Task):
         await image_provider.start()
         try:
             while self._cancel_flag.is_set() is False:
-                image_with_metadata = await image_provider.getNextImage()
+                image_with_metadata: ImageWithProviderMetadata = await image_provider.getNextImage()
                 if image_with_metadata is None:
                     break
                 success, buf = cv2.imencode(".png", image_with_metadata.image)
                 image_base64 = base64.b64encode(buf).decode("utf-8")
-                results = {}
+                results: Dict[str, InferenceResultResponse] = {}
                 for config in self._model_label_configs:
                     # Get inference results
                     min_conf = min(config.classesValues.values())
@@ -87,27 +92,38 @@ class CollectTrainingImagesTask(Task):
                         conf_thresh=min_conf,
                         pin_id=pin_ids.get(config.modelName),
                     )
-                    results[config.modelName] = await asyncio.to_thread(inference_api.recognize, payload)
 
-                # Filter the results to keep only the configured classes
-                for model_name, model_results in results.items():
-                    if model_results and "classes" in model_results:
-                        filtered_classes = [
-                            cls for cls in model_results["classes"]
-                            if cls["label"] in self._model_label_configs[0].classesValues.keys()
-                        ]
-                        results[model_name]["classes"] = filtered_classes
+                    recognize_res = await asyncio.to_thread(inference_api.recognize, payload)
+                    # Filter the results to only keep configured classes
+                    filtered_detections = []
+                    for detection in recognize_res.detections:
+                        if detection.confidence > config.classesValues.get(detection.class_uuid, 100.0):
+                            filtered_detections.append(detection)
+                    results[config.modelName] = InferenceResultResponse(detections=filtered_detections)
+
+                # TODO: De-dupe results?
 
                 # Determine an output filename
-                sanitized_name: str = ImageHelper.sanitize_filename(f"{image_with_metadata.metadata.source}_{image_with_metadata.metadata.frame_idx}")
+                sanitized_name: str = ImageHelper.sanitize_filename(
+                    f"{image_with_metadata.metadata.source}_{image_with_metadata.metadata.frame_idx}"
+                )
                 output_path = Path(self._output_dir) / f"{sanitized_name}.png"
 
                 # Check if this file already exists in the database
-                image_metadata: ImageMetadata = await asyncio.to_thread(image_helper.get_image_metadata, str(output_path))
+                image_metadata: ImageMetadata = await asyncio.to_thread(
+                    image_helper.get_image_metadata, str(output_path)
+                )
                 if image_metadata:
                     logger.info(f"Output image {output_path} already exists")
                 else:
                     logger.info(f"Output image {output_path} is new")
+                    image_metadata = ImageMetadata(filename=str(output_path))
+                # TODO: Convert BBOX
+                image_metadata.boxes = []
+                for config, result in results.items():
+                    image_metadata.boxes.extend(result.detections)
+                image_with_metadata.metadata.boxes = image_metadata.boxes
+                await asyncio.to_thread(image_helper.update_image_metadata, str(output_path), image_metadata)
                 logger.info(results)
 
         finally:

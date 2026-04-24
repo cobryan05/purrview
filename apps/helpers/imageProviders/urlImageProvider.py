@@ -11,7 +11,7 @@ from typing import Any, Optional
 import cv2
 import numpy as np
 
-from .imageProvider import ImageProvider, ImageWithMetadata
+from .imageProvider import ImageProvider, ImageWithProviderMetadata
 from .Registry import register_image_provider
 
 
@@ -30,9 +30,9 @@ class UrlImageProvider(ImageProvider):
     def __repr__(self):
         return f"UrlImageProvider [{self._url}]"
 
-    async def getNextImage(self) -> Optional[ImageWithMetadata]:
+    async def getNextImage(self) -> Optional[ImageWithProviderMetadata]:
         frame = await asyncio.to_thread(self._downloadImage)
-        return ImageWithMetadata(frame)
+        return ImageWithProviderMetadata(frame)
 
     def _downloadImage(self):
         req = urllib.request.urlopen(self._request, context=ssl._create_unverified_context())
