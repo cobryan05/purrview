@@ -18,6 +18,7 @@ from pydantic import BaseModel, Field
 from apps.helpers.consts import TaskStatus
 from apps.helpers.db.types import (
     BoundingBoxMetadata,
+    BoundingBoxMetadataModel,
     ClassMetadata,
     ImageMetadata,
     ImageMetadataModel,
@@ -46,6 +47,7 @@ CREATE TABLE IF NOT EXISTS images (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+CREATE INDEX IF NOT EXISTS idx_images_filename ON images (filename);
 
 CREATE TABLE IF NOT EXISTS classes (
     uuid TEXT PRIMARY KEY,
@@ -293,29 +295,29 @@ class DbClient:
     # Images
     ################################################################################
 
-    async def get_image_uuid_by_filename(self, filename: str) -> Optional[str]:
+    async def get_image_uuid_by_filename(self, filename: Path) -> Optional[str]:
         """
         Retrieve image UUID by filename.
 
         Args:
-            filename (str): Filename of the image.
+            filename (Path): Path to the image file.
 
         Returns:
             Optional[str]: Image UUID if found, otherwise None.
         """
         async with aiosqlite.connect(self._db_path) as db:
             db.row_factory = aiosqlite.Row
-            cursor = await db.execute("SELECT uuid FROM images WHERE filename = ?", (filename,))
+            cursor = await db.execute("SELECT uuid FROM images WHERE filename = ?", (str(filename),))
             row = await cursor.fetchone()
             await cursor.close()
             return row["uuid"] if row else None
 
-    async def add_image(self, filename: str) -> Optional[str]:
+    async def add_image(self, filename: Path) -> str:
         """
         Add a new image record or return existing UUID.
 
         Args:
-            filename (str): Filename of the image.
+            filename (Path): Path to the image file.
 
         Returns:
             str: Image UUID.
@@ -326,7 +328,9 @@ class DbClient:
         image_uuid = str(uuid4())
 
         async with aiosqlite.connect(self._db_path) as db:
-            async with db.execute("INSERT INTO images (filename, uuid) VALUES (?, ?)", (filename, image_uuid)) as cursor:
+            async with db.execute(
+                "INSERT INTO images (filename, uuid) VALUES (?, ?)", (str(filename), image_uuid)
+            ) as cursor:
                 await db.commit()
                 return image_uuid
 
@@ -466,14 +470,12 @@ class DbClient:
             )
             await db.commit()
 
-            cursor = await db.execute(
-                """
+            cursor = await db.execute("""
                 SELECT *
                 FROM task_instances ta
                 JOIN task_configs tc ON ta.config_uuid = tc.uuid
                 WHERE ta.rowid = last_insert_rowid()
-                """
-            )
+                """)
             row = await cursor.fetchone()
             if not row:
                 raise Exception("Failed to retrieve inserted active task")
@@ -1013,23 +1015,31 @@ class DbClient:
             raise ValueError("Failed to retrieve inserted class")
         return ClassMetadata(**dict(row))
 
-    async def get_class_by_uuid(self, uuid: str) -> Optional[ClassMetadata]:
+    async def get_classes_by_uuids(self, uuids: List[str]) -> dict[str, ClassMetadata]:
         """
-        Retrieve a class by its UUID.
+        Retrieve multiple classes by their UUIDs in a single batch.
 
         Args:
-            uuid (str): Class UUID.
+            uuids (List[str]): List of class UUIDs.
 
         Returns:
-            Optional[Dict]: Class data or None.
+            List[ClassMetadata]: List of found ClassMetadata objects.
         """
+        if not uuids:
+            return {}
+
+        # Generate placeholders: "?, ?, ?"
+        placeholders = ", ".join(["?"] * len(uuids))
+        query = f"SELECT * FROM classes WHERE uuid IN ({placeholders})"
+
         async with aiosqlite.connect(self._db_path) as db:
-            cursor = await db.execute("SELECT * FROM classes WHERE uuid = ?", (uuid,))
-            row = await cursor.fetchone()
-            await cursor.close()
-            if row:
-                return DbClient.row_to_basemodel(cursor, row, ClassMetadata)
-            return None
+            ret = {}
+            async with db.execute(query, uuids) as cursor:
+                rows = await cursor.fetchall()
+                if rows:
+                    classes = [DbClient.row_to_basemodel(cursor, row, ClassMetadata) for row in rows]
+                    ret = { cls.uuid: cls for cls in classes }
+            return ret
 
     async def get_class_children(self, parent_uuid: str) -> List[str]:
         """
@@ -1322,8 +1332,49 @@ class DbClient:
     ################################################################################
     # Unsorted
     ################################################################################
-
     async def read_image_metadata_from_db(self, image_uuid: str) -> Optional[ImageMetadata]:
+        query = """
+            SELECT
+                i.uuid AS img_uuid, i.filename, i.last_updated, i.metadata_json AS img_meta,
+                b.uuid AS bbox_uuid, b.class_uuid, b.x, b.y, b.width, b.height, b.metadata_json AS bbox_meta,
+                c.name AS class_str,
+                bt.tag_uuid
+            FROM images i
+            LEFT JOIN bboxes b ON i.uuid = b.image_uuid
+            LEFT JOIN classes c ON b.class_uuid = c.uuid
+            LEFT JOIN bbox_tags bt ON b.uuid = bt.bbox_uuid
+            WHERE i.uuid = ?
+        """
+
+        async with aiosqlite.connect(self._db_path) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(query, (image_uuid,)) as cursor:
+                rows = await cursor.fetchall()
+
+        if not rows:
+            return None
+
+        first = rows[0]
+        image_model = ImageMetadataModel(**first)
+
+        bboxes_map = {}
+        for row in rows:
+            bbox_model = BoundingBoxMetadataModel(**row)
+            if not bbox_model.uuid:
+                continue  # Skip if image has no boxes
+
+            if bbox_model.uuid not in bboxes_map:
+                bboxes_map[bbox_model.uuid] = bbox_model
+            else:
+                logger.warning("Bbox already in map")
+
+            # TODO: TAGS
+
+        # 3. Final Conversion
+        image_model.boxes = list(bboxes_map.values())
+        return ImageMetadata.from_model(image_model)
+
+    async def read_image_metadata_from_db_old(self, image_uuid: str) -> Optional[ImageMetadata]:
         """
         Read image metadata including bounding boxes and classes.
 
@@ -1333,7 +1384,11 @@ class DbClient:
         async with aiosqlite.connect(self._db_path) as db:
             # Read image base info + metadata JSON
             cursor = await db.execute(
-                "SELECT uuid, filename, last_updated, metadata_json FROM images WHERE uuid = ?",
+                """
+                 SELECT uuid, filename, last_updated, metadata_json
+                 FROM images
+                 WHERE uuid = ?
+                 """,
                 (image_uuid,),
             )
             row = await cursor.fetchone()
@@ -1352,14 +1407,7 @@ class DbClient:
             # Read bounding boxes
             cursor = await db.execute(
                 """
-                SELECT
-                    b.uuid,
-                    b.class_uuid,
-                    b.x,
-                    b.y,
-                    b.width,
-                    b.height,
-                    b.metadata_json
+                SELECT b.uuid, b.class_uuid, b.x, b.y, b.width, b.height, b.metadata_json
                 FROM bboxes b
                 WHERE b.image_uuid = ?
                 """,
@@ -1383,9 +1431,7 @@ class DbClient:
             placeholders = ",".join("?" for _ in bbox_uuids)
             cursor = await db.execute(
                 f"""
-                SELECT
-                    bt.bbox_uuid,
-                    bt.tag_uuid
+                SELECT bt.bbox_uuid, bt.tag_uuid
                 FROM bbox_tags bt
                 WHERE bt.bbox_uuid IN ({placeholders})
                 """,
@@ -1438,7 +1484,7 @@ class DbClient:
             image_uuid: UUID of the image to update.
             metadata: ImageMetadata object containing image-level extra data and boxes.
         """
-        image_meta_json = json.dumps(metadata.extra)
+        image_meta_json = json.dumps(metadata.extra or {})
 
         async with aiosqlite.connect(self._db_path) as db:
             async with db.execute("BEGIN"):
@@ -1541,6 +1587,31 @@ class DbClient:
 
                 await db.commit()
 
+    async def read_image_metadata_from_json(self, json_path: Path) -> ImageMetadata:
+        """
+        Reads the image metadata from the image's .json side file
+
+        Args:
+            json_path (Path): Absolute path to image's json side file
+        """
+        async with aiofiles.open(json_path, "r", encoding="utf-8") as f:
+            raw_json = await f.read()
+            model: ImageMetadataModel = ImageMetadataModel.model_validate_json(raw_json)
+        image_meta: ImageMetadata = ImageMetadata.from_model(model)
+        return image_meta
+
+    async def write_image_metadata_to_json(self, json_path: Path, metadata: ImageMetadata) -> None:
+        """
+        Writes the image metadata to the json file
+
+        Args:
+            json_path (Path): Absolute path to the json file to write
+            metadata (ImageMetadata): The metadata to write
+        """
+        model = ImageMetadataModel.from_dataclass(metadata)
+        async with aiofiles.open(json_path, "w", encoding="utf-8") as f:
+            await f.write(model.model_dump_json(indent=2))
+
     async def export_classes_from_db_to_json(self, json_path: Optional[Path | str] = None) -> None:
         """
         Save all classes from the database into a JSON file.
@@ -1576,56 +1647,6 @@ class DbClient:
                     ),
                 )
             logger.info(f"Imported {len(class_list)} classes from JSON.")
-
-    async def save_image_metadata_db_to_json(self, abs_path: str) -> None:
-        """
-        Sync metadata from the database into the image's .json side file.
-
-        Args:
-            abs_path (str):Absolute path to the json file to write
-        """
-
-        # TODO: Check if json newer?
-        image_uuid = await self.get_image_uuid_by_filename(abs_path)
-        if image_uuid is None:
-            logger.warning(f"No database entry found for image: {abs_path}")
-            return
-
-        metadata: Optional[ImageMetadata] = await self.read_image_metadata_from_db(image_uuid)
-        if metadata is None:
-            logger.warning(f"No metadata found for image: {abs_path}")
-            return
-
-        json_path = Path(abs_path).with_suffix(".json")
-        os.makedirs(json_path.parent, exist_ok=True)
-
-        async with aiofiles.open(json_path, "w", encoding="utf-8") as f:
-            model = ImageMetadataModel.from_dataclass(metadata)
-            await f.write(model.model_dump_json(indent=2))
-
-    async def read_image_metadata_json_to_db(self, abs_path: str) -> Optional[ImageMetadata]:
-        """
-        Load metadata from an image's .json side file and update the database.
-
-        Args:
-            abs_path (str): Absolute path to the image
-        """
-        try:
-            json_path = Path(abs_path).with_suffix(".json")
-            async with aiofiles.open(json_path, "r", encoding="utf-8") as f:
-                raw = await f.read()
-                parsed = json.loads(raw)
-            image_uuid = await self.add_image(abs_path)
-
-            config = Config(strict=False)  # ignore unknown fields
-            # Convert parsed dict into ImageMetadata dataclass
-            image_meta: ImageMetadata = from_dict(data_class=ImageMetadata, data=parsed, config=config)
-            image_meta.uuid = image_uuid
-            await self.write_image_metadata_to_db(image_uuid, image_meta)
-            return image_meta
-        except FileNotFoundError:
-            logger.warning(f"JSON file not found: {json_path}")
-            return None
 
     def basemodel_to_row(model: BaseModel, json_fields: list[str] = None) -> dict[str, Any]:
         """

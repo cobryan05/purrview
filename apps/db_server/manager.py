@@ -221,7 +221,7 @@ class Manager:
         ret = await self._db_client.add_tag(
             name=name, color=color, protected=protected, kind=kind, exclusive_group=exclusive_group
         )
-        # TODO CJO: await self._db_client.export_labels_from_db_to_json(str(self._labels_json))
+        #await self._db_client.export_labels_from_db_to_json(str(self._labels_json))
         return ret
 
     async def delete_tag(self, tag_uuid: str) -> None:
@@ -299,25 +299,57 @@ class Manager:
     # IMAGES API
     ################################################################################
 
-    async def get_image_metadata(self, image_rel_path: str) -> Optional[ImageMetadata]:
+    async def get_image_metadata(self, image_path: Path) -> Optional[ImageMetadata]:
         """
         Get metadata for image by resolving image ID from filename.
 
         Args:
-            image_rel_path (str): Relative image path (filename).
+            image_path (Path): The path to the image file.
 
         Returns:
             Optional[ImageMetadata]: Full metadata object or None.
         """
-        safe_path = get_safe_path(self._files_root, image_rel_path)
+        safe_path = get_safe_path(self._files_root, image_path)
         if not safe_path or not safe_path.exists():
             return None
-        img_path = str(safe_path)
-        image_id = await self._db_client.get_image_uuid_by_filename(img_path)
-        if image_id is None:
-            image_id = await self._db_client.add_image(img_path)
-            await self._db_client.read_image_metadata_json_to_db(img_path)
-        return await self._db_client.read_image_metadata_from_db(image_id)
+        image_uuid = await self._db_client.get_image_uuid_by_filename(safe_path)
+        if image_uuid is None:
+            try:
+                json_path = self._get_json_path(safe_path)
+                metadata = await self._db_client.read_image_metadata_from_json(json_path)
+                if metadata.uuid is not None:
+                    # If the uuid is in the database then this file may have just been moved
+                    logger.warning(f"Image UUID {metadata.uuid} already in json")
+                    self._fixup_entry(metadata)
+
+                image_uuid = await self._db_client.add_image(safe_path)
+                metadata.uuid = image_uuid
+                await self._db_client.write_image_metadata_to_db(image_uuid, metadata)
+            except FileNotFoundError:
+                metadata = None
+        else:
+            metadata = await self._db_client.read_image_metadata_from_db(image_uuid)
+        return metadata
+
+    def _get_json_path(self, image_path: Path) -> Path:
+        return image_path.with_suffix(".json")
+
+    def _fixup_entry(self, entry):
+        logger.info(f"TODO: Fixup entry {entry}")
+        pass
+
+    async def _resolve_metadata_strings(self, metadata: ImageMetadata):
+        # Resolve class_str for missing strings in the metadata
+        missing_uuids: dict[str, list[BoundingBoxMetadata]] = {}
+        for box in metadata.boxes:
+            if box.class_uuid and not box.class_str:
+                missing_uuids.setdefault(box.class_uuid, []).append(box)
+
+        if missing_uuids:
+            class_map = await self._db_client.get_classes_by_uuids(list(missing_uuids.keys()))
+            for cls in class_map.values():
+                for box in missing_uuids.get(cls.uuid, []):
+                    box.class_str = cls.name
 
     async def update_image_metadata(self, image_rel_path: str, metadata: ImageMetadata) -> None:
         """
@@ -331,10 +363,10 @@ class Manager:
         if safe_path is None or not safe_path.exists():
             logger.warning(f"Path not found or inaccessible: {image_rel_path}")
             return
-        img_path = str(safe_path)
-        image_id = await self._db_client.add_image(img_path)
-        await self._db_client.write_image_metadata_to_db(image_id, metadata)
-        await self._db_client.save_image_metadata_db_to_json(img_path)
+        image_uuid = await self._db_client.add_image(safe_path)
+        await self._resolve_metadata_strings(metadata)
+        await self._db_client.write_image_metadata_to_db(image_uuid, metadata)
+        await self._db_client.write_image_metadata_to_json(self._get_json_path(safe_path), metadata)
 
     async def list_files(
         self,

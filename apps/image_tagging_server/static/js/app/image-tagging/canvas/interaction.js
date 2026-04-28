@@ -109,7 +109,7 @@ export async function handleMouseDown(e, state) {
 
   startPos = pos;
 
-  /** @type {import('@app_types').RuntimeBboxInfo} */
+  /** @type {import('@canvas_types').RuntimeBboxInfo} */
   const emptyBbox = { x: pos.x, y: pos.y, width: 1, height: 1, classUuid: state.currentClassUuid, uuid: generateUUID() };
   pendingDraggedBbox = new CanvasBboxGroup(emptyBbox, state);
   if (pendingDraggedBbox) {

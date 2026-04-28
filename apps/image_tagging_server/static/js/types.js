@@ -1,5 +1,4 @@
 /**
- * @typedef {import('@web_api').ImageMetadata} ImageMetadata
  * @typedef {import('@image_tagging_types').ImageTaggingState} ImageTaggingState
  */
 

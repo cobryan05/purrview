@@ -4,7 +4,7 @@ import { fetchClassByUuid } from '/app-static/js/shared/api/classes.js';
 import { generateUUID, Logger, toast } from '/app-static/js/ui/utils/index.js';
 
 /**
- * @typedef {import('@app_types').RuntimeBboxInfo} RuntimeBbox
+ * @typedef {import('@canvas_types').RuntimeBboxInfo} RuntimeBbox
  * @typedef {import('@app_types').InferenceResult} InferenceResult
  */
 

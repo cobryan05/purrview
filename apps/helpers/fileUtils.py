@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Optional
 
 
-def get_safe_path(root: Path, rel_path: str) -> Optional[Path]:
+def get_safe_path(root: Path, rel_path: Path) -> Optional[Path]:
     """
     Resolve a path safely under the given root directory.
 

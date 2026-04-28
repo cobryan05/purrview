@@ -87,6 +87,7 @@ RUN apt-get update \
   && apt-get install -y --no-install-recommends \
   # libgl1 libxext6 libxrender1 libsm6 libx11-6 \
     git \
-  && rm -rf /var/lib/apt/lists/*
+  && rm -rf /var/lib/apt/lists/* \
+  && pip install isort
 
 USER appuser

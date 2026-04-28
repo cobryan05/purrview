@@ -6,9 +6,6 @@ import { ignoreKeyReturn } from './apiUtils.js';
  * -----------------------------
  */
 export const classesFetcher = createCachedFetcher(async (keys) => {
-  /** @type {import('@web_api').ListClassesPayload} */
-  const payload = {};
-
   const res = await fetch('/api/classes/list');
 
   /** @type {import('@web_api').ListClassesResponse} */

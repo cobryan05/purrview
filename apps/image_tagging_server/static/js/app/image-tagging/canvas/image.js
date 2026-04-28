@@ -5,7 +5,7 @@ import { Logger, toast } from '/app-static/js/ui/utils/index.js';
 let _activeImageLoadId = 0;
 
 /**
- * @typedef {import('@app_types').RuntimeBboxInfo} RuntimeBboxInfo
+ * @typedef {import('@canvas_types').RuntimeBboxInfo} RuntimeBboxInfo
  * @typedef {import('@app_types').InferenceResult} InferenceResult
 
  */
@@ -31,6 +31,7 @@ export async function loadImageAndMetadata(state, imageName) {
 
   // Create a new load id and invalidate all previous loads
   const loadId = ++_activeImageLoadId;
+  /** @type {import('@canvas_types').RuntimeImage} */
   const imageInfo = await fetchImage(imageName);
 
   // If another load started while we waited → abort

@@ -17,11 +17,11 @@ from pydantic import BaseModel, Field
 
 from apps.db_server.manager import Manager
 from apps.helpers.consts import ApiTags, JsonKeys, JsonValues
-from apps.helpers.db.db_client import ClassMetadata
 from apps.helpers.db.types import (
     BoundingBoxMetadata,
     BoundingBoxMetadataModel,
     ClassDataModel,
+    ClassMetadataModel,
     FileEntryModel,
     ImageMetadata,
     ImageMetadataModel,
@@ -47,7 +47,7 @@ class AddClassPayload(BaseModel):
 
 
 class AddClassResponse(StatusResponse):
-    metadata: Optional[ClassMetadata] = None
+    metadata: Optional[ClassMetadataModel] = None
 
 
 class DeleteClassPayload(BaseModel):
@@ -315,7 +315,7 @@ class WebApp:
                     request.name, request.color, parent_uuid=request.parent_uuid
                 )
 
-                return AddClassResponse(status=JsonValues.SUCCESS, metadata=new_metadata)
+                return AddClassResponse(status=JsonValues.SUCCESS, metadata=ClassMetadataModel.from_dataclass(new_metadata))
             except Exception as e:
                 logger.error(e, exc_info=True)
                 return AddClassResponse(status=JsonValues.FAILURE, message=str(e))
@@ -642,7 +642,8 @@ class WebApp:
             metadata.extra = payload.extra or {}
 
             await self._manager.update_image_metadata(image_path, metadata)
-            return UpdateMetadataResponse(metadata=metadata)
+            model = ImageMetadataModel.from_dataclass(metadata)
+            return UpdateMetadataResponse(metadata=model)
 
         @self._app.post(
             "/api/images/list",
@@ -704,7 +705,7 @@ class WebApp:
                 mime_type = mime_type or "application/octet-stream"
 
                 metadata: ImageMetadata | None = await self._manager.get_image_metadata(payload.path)
-                model = ImageMetadataModel.from_dataclass(metadata)
+                model = ImageMetadataModel.from_dataclass(metadata) if metadata else None
                 encoded = base64.b64encode(content).decode("utf-8")
                 return GetFileResponse(
                     status=JsonValues.SUCCESS,

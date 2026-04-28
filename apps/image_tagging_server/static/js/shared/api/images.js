@@ -32,7 +32,7 @@ export async function fetchImageList(path) {
  * Fetch an image and its metadata from the server.
  *
  * @param {string} path - Path of the image to fetch.
- * @returns {Promise<import('@app_types').RuntimeImage>}
+ * @returns {Promise<import('@canvas_types').RuntimeImage>}
  *          Object containing the loaded Image element and the bounding boxes.
  * @throws {Error} If the fetch fails or the API response is invalid.
  */
@@ -68,32 +68,32 @@ export async function fetchImage(path) {
   });
 
   // Convert web_api format to app_types Map
-  /** @type {Map<string,import('@app_types').RuntimeBboxInfo>} */
+  /** @type {Map<string,import('@canvas_types').RuntimeBboxInfo>} */
   const bboxMap = new Map();
-  (imageRes.metadata?.boxes || []).forEach(box => {
+  (imageRes.metadata?.boxes || []).forEach(bbox => {
 
-    const tagUuids = (box.tag_uuids ?? []).map(tag => tag);
-    const absX = box.x * img.width;
-    const absY = box.y * img.height;
-    const absHeight = box.height * img.height;
-    const absWidth = box.width * img.width;
+    const tagUuids = (bbox.tag_uuids ?? []).map(tag => tag);
+    const absX = bbox.x * img.width;
+    const absY = bbox.y * img.height;
+    const absHeight = bbox.height * img.height;
+    const absWidth = bbox.width * img.width;
 
-    /** @type {import('@app_types').RuntimeBboxInfo} */
+    /** @type {import('@canvas_types').RuntimeBboxInfo} */
     const bboxInfo = {
-      uuid: box.uuid ?? generateUUID(),
+      uuid: bbox.uuid ?? generateUUID(),
       x: absX,
       y: absY,
       width: absWidth,
       height: absHeight,
       confidence: undefined,
-      text: undefined,
-      classUuid: box.class_uuid,
+      text: bbox.class_str,
+      classUuid: bbox.class_uuid,
       tagUuids
     };
     bboxMap.set(bboxInfo.uuid, bboxInfo);
   });
 
-  /** @type {import('@app_types').RuntimeImage} */
+  /** @type {import('@canvas_types').RuntimeImage} */
   const ret = { name: path, img, bboxes: bboxMap };
   return ret;
 }
@@ -102,7 +102,7 @@ export async function fetchImage(path) {
 /* ---- Metadata Updating --- */
 /**
 
- * @param {import('@app_types').RuntimeImage} runtimeImage
+ * @param {import('@canvas_types').RuntimeImage} runtimeImage
  * @throws {Error} If the update fails or the API response is invalid.
  */
 export async function updateImage(runtimeImage) {

@@ -3,7 +3,7 @@ import { fetchClassByUuid } from '/app-static/js/shared/api/classes.js';
  * @typedef {Object} CanvasBboxMetadata
  * @property {import('@konva').default.Rect} rect
  * @property {import('@konva').default.Text} text
- * @property {import('@app_types').RuntimeBboxInfo} runtimeBboxInfo
+ * @property {import('@canvas_types').RuntimeBboxInfo} runtimeBboxInfo
  */
 
 /**
@@ -18,7 +18,7 @@ export class CanvasBboxGroup extends Konva.Group {
   _state;
 
   /**
-  * @param {import('@app_types').RuntimeBboxInfo} bbox
+  * @param {import('@canvas_types').RuntimeBboxInfo} bbox
   * @param {import('@image_tagging_types').ImageTaggingState} state
   */
   constructor(bbox, state) {
@@ -135,13 +135,13 @@ export class CanvasBboxGroup extends Konva.Group {
       y: -18
     });
 
-    /** @type {import('@app_types').RuntimeBboxInfo} */
+    /** @type {import('@canvas_types').RuntimeBboxInfo} */
     this.updateMetadata({ x: this.x(), y: this.y(), width: this.width(), height: this.height() });
   }
 
   /**
    * Update an existing bounding box with new metadata, such as class or color.
-   * @param {Partial<import('@app_types').RuntimeBboxInfo>} bboxInfo
+   * @param {Partial<import('@canvas_types').RuntimeBboxInfo>} bboxInfo
     */
   updateMetadata(bboxInfo = {}) {
     const rectRef = this._metadata.rect;
@@ -149,7 +149,7 @@ export class CanvasBboxGroup extends Konva.Group {
     if (!rectRef || !textRef) return;
 
     // Merge the partial metadata with the current metadata
-    /** @typedef {import('@app_types').RuntimeBboxInfo} */
+    /** @typedef {import('@canvas_types').RuntimeBboxInfo} */
     const mergedInfo = { ...this._metadata.runtimeBboxInfo };
     for (const key in bboxInfo) {
       if (Object.prototype.hasOwnProperty.call(bboxInfo, key)) {
