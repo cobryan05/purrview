@@ -118,7 +118,7 @@ def annotate_image(image: np.ndarray, detections: List[DetectionResult]) -> np.n
         bbox = detection.bounding_box
         x1, y1, w, h = bbox.asX1Y1WH(imgW, imgH)
         x2, y2 = x1 + w, y1 + h
-        label = detection.class_name if detection.class_name is not None else str(detection.class_id)
+        label = detection.class_str if detection.class_str is not None else str(detection.class_id)
         confidence = detection.confidence
 
         # Draw the bounding box

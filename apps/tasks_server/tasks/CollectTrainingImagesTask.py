@@ -5,6 +5,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Optional
+from uuid import uuid4
 
 import cv2
 from dacite import Config, from_dict
@@ -15,7 +16,7 @@ from inference_client.models.pin_model_payload import PinModelPayload
 from inference_client.models.recognize_payload import RecognizePayload
 
 from apps.helpers.consts import JsonValues
-from apps.helpers.db.types import ImageMetadata
+from apps.helpers.db.types import BoundingBoxMetadata, ImageMetadata
 from apps.helpers.imageProviders.imageProvider import (
     ImageProvider,
     ImageWithProviderMetadata,
@@ -44,7 +45,7 @@ class CollectTrainingImagesTask(Task):
         self._status_msg: str = "Creating Task"
         self._source_uuid: str = params.get("source_uuid", "")
         self._output_dir: str = params.get("output_dir", "")
-        self._min_capture_interval: int = int(params.get("min_capture_interval", 0))
+        self._min_capture_interval: int = int(params.get("min_capture_interval", 0) or 0)
         self._model_label_configs: list[ModelLabelValues] = [
             from_dict(ModelLabelValues, item, Config(cast=[float])) for item in params.get("model_label_config", [])
         ]
@@ -77,13 +78,13 @@ class CollectTrainingImagesTask(Task):
         await image_provider.start()
         try:
             while self._cancel_flag.is_set() is False:
-                image_with_metadata: ImageWithProviderMetadata = await image_provider.getNextImage()
-                if image_with_metadata is None:
+                provided_image: ImageWithProviderMetadata = await image_provider.getNextImage()
+                if provided_image is None:
                     break
 
                 # Determine an output filename
                 sanitized_name: str = ImageHelper.sanitize_filename(
-                    f"{image_with_metadata.metadata.source}_{image_with_metadata.metadata.frame_idx}"
+                    f"{provided_image.metadata.source}_{provided_image.metadata.frame_idx}"
                 )
                 output_path = Path(self._output_dir) / f"{sanitized_name}.png"
 
@@ -97,7 +98,7 @@ class CollectTrainingImagesTask(Task):
                     logger.info(f"Output image {output_path} is new")
                     image_metadata = ImageMetadata(filename=str(output_path))
 
-                success, buf = cv2.imencode(".png", image_with_metadata.image)
+                success, buf = cv2.imencode(".png", provided_image.image)
                 image_base64 = base64.b64encode(buf).decode("utf-8")
                 results: Dict[str, InferenceResultResponse] = {}
                 for config in self._model_label_configs:
@@ -120,11 +121,20 @@ class CollectTrainingImagesTask(Task):
 
                 # TODO: De-dupe results?
 
-                # TODO: Convert BBOX
                 image_metadata.boxes = []
                 for config, result in results.items():
-                    image_metadata.boxes.extend(result.detections)
-                image_with_metadata.metadata.boxes = image_metadata.boxes
+                    for det in result.detections:
+                        bbox_metadata: BoundingBoxMetadata = BoundingBoxMetadata(
+                            uuid=str(uuid4()),
+                            x=det.bounding_box[0],
+                            y=det.bounding_box[1],
+                            width=det.bounding_box[2],
+                            height=det.bounding_box[3],
+                            class_uuid=det.class_uuid,
+                            class_str=det.class_str
+                        )
+                        logger.info(det)
+                        image_metadata.boxes.append(bbox_metadata)
                 await asyncio.to_thread(image_helper.update_image_metadata, str(output_path), image_metadata)
                 logger.info(results)
 

@@ -51,7 +51,7 @@ class DetectionResultModel(BaseModel):
     bounding_box: tuple[float, float, float, float]
     confidence: float
     class_id: int
-    class_name: Optional[str] = None
+    class_str: Optional[str] = None
     class_uuid: Optional[str] = None
 
 class InferenceResultResponse(StatusResponse):
@@ -65,7 +65,7 @@ def convert_detection(det: DetectionResult) -> DetectionResultModel:
         bounding_box=det.bounding_box.asRX1Y1WH(),
         confidence=det.confidence,
         class_id=det.class_id,
-        class_name=det.class_name,
+        class_str=det.class_str,
         class_uuid=det.class_uuid,
     )
 

@@ -63,7 +63,7 @@ class YOLOv8ONNXInferenceProvider(InferenceProvider):
                     bounding_box=rel_bbox,
                     confidence=confidence,
                     class_id=class_id,
-                    class_name=class_name,
+                    class_str=class_name,
                 )
             )
 

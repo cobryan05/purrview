@@ -15,7 +15,7 @@ class DetectionResult:
     bounding_box: BBox
     confidence: float  # Confidence score (0.0 to 1.0)
     class_id: int  # Class ID of the detected object
-    class_name: Optional[str] = None  # Human-readable class name (optional)
+    class_str: Optional[str] = None  # Human-readable class name (optional)
     class_uuid: Optional[str] = None  # UUID of label that this class is associated with (optional)
 
 
@@ -24,7 +24,7 @@ class DetectionResult:
             "bounding_box": self.bounding_box.asRX1Y1WH(),
             "confidence": self.confidence,
             "class_id": self.class_id,
-            "class_name": self.class_name,
+            "class_str": self.class_str,
             "class_uuid": self.class_uuid,
         }
 

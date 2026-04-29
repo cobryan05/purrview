@@ -250,9 +250,9 @@ class Manager:
                 class_uuid_maps = await self.get_models_classes([model_name])
                 class_uuid_map = class_uuid_maps.get(model_name, {})
                 for det in inference_result.detections:
-                    if not det.class_name:
+                    if not det.class_str:
                         continue
-                    det.class_uuid = class_uuid_map.get(det.class_name, det.class_uuid)
+                    det.class_uuid = class_uuid_map.get(det.class_str, det.class_uuid)
 
             if pin_id in model.pins:
                 logger.info(f"Refreshing timeout for pin {pin_id}")

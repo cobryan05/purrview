@@ -30,7 +30,19 @@ class ImageHelper:
         return ImageMetadata(**response.metadata.model_dump())
 
     def update_image_metadata(self, image_path: str, metadata: ImageMetadata) -> bool:
-        payload = UpdateMetadataPayload(image_path=image_path, boxes=metadata.boxes)
+        input_boxes: list[db_client.BoundingBoxInput] = []
+        for box in metadata.boxes:
+            input_boxes.append(
+                db_client.BoundingBoxInput(
+                    uuid=box.uuid,
+                    x=box.x,
+                    y=box.y,
+                    width=box.width,
+                    height=box.height,
+                    class_uuid=box.class_uuid
+                )
+            )
+        payload = UpdateMetadataPayload(image_path=image_path, boxes=input_boxes)
         response: UpdateMetadataResponse = self._images_api.update_image_metadata(payload)
         return response.status == JsonValues.SUCCESS
 
