@@ -5,7 +5,7 @@ import json
 import logging
 import sys
 from contextlib import asynccontextmanager
-from typing import List, Optional, Union, Dict
+from typing import Dict, List, Optional, Union
 
 import cv2
 import numpy as np
@@ -17,8 +17,12 @@ from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 
 from apps.helpers.consts import JsonValues
-from apps.helpers.db.types import TaskConfigMetadata, TaskConfigMetadataModel, TaskResultModel
-from apps.helpers.types import StatusResponse
+from apps.helpers.types import (
+    StatusResponse,
+    TaskConfigMetadata,
+    TaskConfigMetadataModel,
+    TaskResultModel,
+)
 from apps.tasks_server.manager import Manager, TaskInfo
 from apps.tasks_server.types import TaskInfoModel
 

@@ -16,11 +16,11 @@ from inference_client.models.pin_model_payload import PinModelPayload
 from inference_client.models.recognize_payload import RecognizePayload
 
 from apps.helpers.consts import JsonValues
-from apps.helpers.db.types import BoundingBoxMetadata, ImageMetadata
 from apps.helpers.imageProviders.imageProvider import (
     ImageProvider,
     ImageWithProviderMetadata,
 )
+from apps.helpers.types import BoundingBoxMetadata, ImageMetadata
 
 from .Registry import register_task
 from .Task import Task

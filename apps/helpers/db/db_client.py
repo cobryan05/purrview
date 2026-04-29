@@ -16,7 +16,7 @@ from dacite import Config, from_dict
 from pydantic import BaseModel, Field
 
 from apps.helpers.consts import TaskStatus
-from apps.helpers.db.types import (
+from apps.helpers.types import (
     BoundingBoxMetadata,
     BoundingBoxMetadataModel,
     ClassMetadata,

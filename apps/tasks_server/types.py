@@ -1,12 +1,12 @@
 from dataclasses import dataclass
 from typing import Optional
 
-from apps.helpers.db.types import (
-    TaskInstanceMetadata,
-    TaskInstanceMetadataModel,
+from apps.helpers.types import (
     DataclassMapper,
     TaskConfigMetadata,
     TaskConfigMetadataModel,
+    TaskInstanceMetadata,
+    TaskInstanceMetadataModel,
 )
 from apps.tasks_server.tasks.Task import Task
 

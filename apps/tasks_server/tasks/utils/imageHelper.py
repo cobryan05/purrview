@@ -11,7 +11,7 @@ from db_client.models.update_metadata_payload import UpdateMetadataPayload
 from db_client.models.update_metadata_response import UpdateMetadataResponse
 
 from apps.helpers.consts import JsonValues
-from apps.helpers.db.types import ImageMetadata
+from apps.helpers.types import ImageMetadata
 
 
 class ImageHelper:

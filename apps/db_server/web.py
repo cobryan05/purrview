@@ -17,7 +17,7 @@ from pydantic import BaseModel, Field
 
 from apps.db_server.manager import Manager
 from apps.helpers.consts import ApiTags, JsonKeys, JsonValues
-from apps.helpers.db.types import (
+from apps.helpers.types import (
     BoundingBoxMetadata,
     BoundingBoxMetadataModel,
     ClassDataModel,
@@ -27,10 +27,10 @@ from apps.helpers.db.types import (
     ImageMetadataModel,
     SourceMetadata,
     SourceMetadataModel,
+    StatusResponse,
     TagKinds,
     TagMetadataModel,
 )
-from apps.helpers.types import StatusResponse
 
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger(__file__)

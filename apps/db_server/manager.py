@@ -1,26 +1,31 @@
 """Manages the database"""
 
 import asyncio
+import fnmatch
 import glob
 import logging
 import os
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
-import fnmatch
+
 import aiofiles
 
-from apps.helpers.db.types import ClassData, FileEntry
-
-from apps.helpers.db.types import BoundingBoxMetadata, ImageMetadata, SourceMetadata
 from apps.helpers.db.db_client import (
-    DbClient,
     ClassMetadata,
-    TagMetadata,
+    DbClient,
     TagKinds,
+    TagMetadata,
 )
 from apps.helpers.fileUtils import get_safe_path
 from apps.helpers.imageProviders.Registry import image_provider_registry
+from apps.helpers.types import (
+    BoundingBoxMetadata,
+    ClassData,
+    FileEntry,
+    ImageMetadata,
+    SourceMetadata,
+)
 
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger(__file__)

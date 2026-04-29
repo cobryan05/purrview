@@ -12,7 +12,7 @@ import inference_client
 
 from apps.helpers.consts import TaskStatus
 from apps.helpers.db.db_client import DbClient
-from apps.helpers.db.types import TaskInstanceMetadata, TaskConfigMetadata, TaskResult
+from apps.helpers.types import TaskConfigMetadata, TaskInstanceMetadata, TaskResult
 from apps.tasks_server.types import TaskInfo
 
 from .tasks.Registry import task_registry
