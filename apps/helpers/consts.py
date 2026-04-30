@@ -18,7 +18,7 @@ class JsonValues(str, Enum):
     ERROR = "error"
 
 class ApiTags(str, Enum):
-    CLASSES = "classes"
+    LABELS = "labels"
     MODELS = "models"
     INFERENCE = "inference"
     IMAGES = "images"

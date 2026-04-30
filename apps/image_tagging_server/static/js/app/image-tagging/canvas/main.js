@@ -70,6 +70,7 @@ export async function init(state) {
       const img = state.image?.img;
       if (!img) throw new Error('No image loaded');
 
+      /** @type {import('@web_api').InferenceResultModel} */
       const result = await runInference(modelName, img);
       await addInferenceResults(state, result);
     } catch (err) {

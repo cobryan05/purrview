@@ -4,7 +4,7 @@ import { CanvasBboxGroup } from './groups/CanvasBboxGroup.js';
 import { clearSelection, setTool } from './tools.js';
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
 
-/** @type {import('@app_types').CanvasBboxGroup | null} */
+/** @type {import('@canvas_types').CanvasBboxGroup | null} */
 let pendingDraggedBbox = null;
 
 let startPos = null;
@@ -109,8 +109,8 @@ export async function handleMouseDown(e, state) {
 
   startPos = pos;
 
-  /** @type {import('@canvas_types').RuntimeBboxInfo} */
-  const emptyBbox = { x: pos.x, y: pos.y, width: 1, height: 1, classUuid: state.currentClassUuid, uuid: generateUUID() };
+  /** @type {import('@web_api').BoundingBoxMetadataModel} */
+  const emptyBbox = { x: pos.x, y: pos.y, width: 1, height: 1, label_uuid: state.currentLabelUuid, uuid: generateUUID() };
   pendingDraggedBbox = new CanvasBboxGroup(emptyBbox, state);
   if (pendingDraggedBbox) {
     state.updateCanvasBbox(pendingDraggedBbox);
@@ -190,7 +190,7 @@ export async function handleMouseUp(e, state) {
       pendingDraggedBbox.destroy();
     } else {
       events.publish(EventTypes.CANVAS_BBOX_CLICKED, {
-        bboxId: pendingDraggedBbox.metadata.runtimeBboxInfo.uuid
+        bboxId: pendingDraggedBbox.metadata.bboxInfo.uuid
       });
     }
 
@@ -209,10 +209,10 @@ export async function handleMouseUp(e, state) {
   _lastClickPos = pos;
 
   if (hitGroup && hitGroup instanceof CanvasBboxGroup) {
-    const selectedUuid = hitGroup.metadata.runtimeBboxInfo.uuid;
+    const selectedUuid = hitGroup.metadata.bboxInfo.uuid;
     if (isDoubleClick) {
       if (!isSelectTool) {
-        hitGroup.updateMetadata({ classUuid: state.currentClassUuid });
+        hitGroup.updateMetadata({ classUuid: state.currentLabelUuid });
       } else {
         state.setSelectedBboxUuid(selectedUuid);
         events.publish(EventTypes.CANVAS_BBOX_DOUBLE_CLICKED, {

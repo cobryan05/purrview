@@ -118,14 +118,14 @@ class Manager:
                 continue
         return ret
 
-    async def set_model_class_uuid(self, model_name: str, model_class: str, class_uuid: Optional[str]) -> bool:
+    async def set_model_class_label_uuid(self, model_name: str, model_class: str, label_uuid: Optional[str]) -> bool:
         """
-        Associate a model's class label with a class uuid
+        Associate a model's class label with a label uuid
 
         Args:
             model_name (str): The name of the model to set the association on
             model_class (str): The class label to associate with the UUID
-            class_uuid (Optional[str]): The UUID of the class to associate, or to clear if None
+            label_uuid (Optional[str]): The UUID of the label to associate, or to clear if None
 
         Returns:
             bool: True if the association was successful, False otherwise.
@@ -142,10 +142,10 @@ class Manager:
         if model_class not in metadata.get("classes", {}):
             raise ValueError(f"Class '{model_class}' not found in metadata for model '{model_name}'")
         class_map = metadata.get("class_map", {})
-        if class_uuid is None and model_class in class_map:
+        if label_uuid is None and model_class in class_map:
             del class_map[model_class]
         else:
-            class_map[model_class] = class_uuid
+            class_map[model_class] = label_uuid
         metadata["class_map"] = class_map
         save_model_json_metadata(model_path, metadata=metadata)
         return True
@@ -209,7 +209,7 @@ class Manager:
         model_name: str,
         image: np.ndarray,
         conf_thresh: float,
-        return_annotated: bool = False,
+        return_annotated_img: bool = False,
         pin_id: Optional[str] = None,
         **kwargs,
     ) -> InferenceResult:
@@ -221,7 +221,7 @@ class Manager:
             image (np.ndarray): The input image in BGR format.
             conf_thresh (float): Confidence threshold for detections.
             pin_id (str): pin_id to refresh if using a pinned model
-            return_annotated (bool): Whether to return the annotated image.
+            return_annotated_img (bool): Whether to return the annotated image.
             **kwargs: Additional parameters to pass to the inference backend.
 
         Returns:
@@ -243,16 +243,16 @@ class Manager:
                 image, conf_thresh=conf_thresh, **kwargs
             )
 
-            if return_annotated:
+            if return_annotated_img:
                 inference_result.annotated_image = annotate_image(image, inference_result.detections)
 
             if len(inference_result.detections) > 0:
                 class_uuid_maps = await self.get_models_classes([model_name])
                 class_uuid_map = class_uuid_maps.get(model_name, {})
                 for det in inference_result.detections:
-                    if not det.class_str:
+                    if not det.bbox.class_str:
                         continue
-                    det.class_uuid = class_uuid_map.get(det.class_str, det.class_uuid)
+                    det.bbox.label_uuid = class_uuid_map.get(det.bbox.class_str, det.bbox.label_uuid)
 
             if pin_id in model.pins:
                 logger.info(f"Refreshing timeout for pin {pin_id}")

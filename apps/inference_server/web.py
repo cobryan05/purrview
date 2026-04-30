@@ -4,7 +4,7 @@ import base64
 import logging
 import sys
 from contextlib import asynccontextmanager
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 import cv2
 import numpy as np
@@ -13,26 +13,29 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from apps.helpers.consts import ApiTags, JsonKeys, JsonValues
-from apps.helpers.inferenceProviders.inferenceProvider import (
+from apps.helpers.types import (
     DetectionResult,
     InferenceResult,
+    InferenceResultModel,
+    StatusResponse,
 )
-from apps.helpers.types import StatusResponse
 
 from .manager import Manager
 
 
-class AssociateClassWithModelClassPayload(BaseModel):
-    model_name: str
-    model_class: str
-    class_uuid: Optional[str]
+class AssociateLabelPayload(BaseModel):
+    label_uuid: Optional[str]
 
 
-class GetModelClassesPayload(BaseModel):
+class ModelBulkClassesPayload(BaseModel):
     model_names: List[str]
+
+
+class ModelBulkClassesResponse(StatusResponse):
+    models: Dict[str, Dict[str, Optional[str]]] = Field(default_factory=dict)
 
 
 class PinModelPayload(BaseModel):
@@ -40,46 +43,43 @@ class PinModelPayload(BaseModel):
     duration: int
 
 
-class RecognizePayload(BaseModel):
+class InferencePayload(BaseModel):
     model_name: str
     conf_thresh: float
-    return_annotated: bool = False
+    return_source_img: bool = False
+    return_annotated_img: bool = False
     pin_id: Optional[str] = None
     image_base64: str  # base64 encoded image string
+
+
+class InferenceResponse(StatusResponse):
+    result: Optional[InferenceResultModel] = None
+
 
 class DetectionResultModel(BaseModel):
     bounding_box: tuple[float, float, float, float]
     confidence: float
     class_id: int
     class_str: Optional[str] = None
-    class_uuid: Optional[str] = None
-
-class InferenceResultResponse(StatusResponse):
-    detections: list[DetectionResultModel]
-    inference_time: float | None = None
-    annotated_image: str | None = None
+    label_uuid: Optional[str] = None
 
 
-def convert_detection(det: DetectionResult) -> DetectionResultModel:
-    return DetectionResultModel(
-        bounding_box=det.bounding_box.asRX1Y1WH(),
-        confidence=det.confidence,
-        class_id=det.class_id,
-        class_str=det.class_str,
-        class_uuid=det.class_uuid,
-    )
+class ModelListResponse(StatusResponse):
+    models: List[str] = Field(default_factory=list)
 
-def convert_inference(result: InferenceResult) -> InferenceResultResponse:
-    annotated_b64 = None
-    if result.annotated_image is not None:
-        _, buf = cv2.imencode(".png", result.annotated_image)
-        annotated_b64 = base64.b64encode(buf).decode()
 
-    return InferenceResultResponse(
-        detections=[convert_detection(d) for d in result.detections],
-        inference_time=result.inference_time,
-        annotated_image=annotated_b64,
-    )
+class ModelClassesResponse(StatusResponse):
+    # Mapping of { class_name: label_uuid }
+    classes: Dict[str, Optional[str]] = Field(default_factory=dict)
+
+
+class AssociateLabelResponse(StatusResponse):
+    label_set: bool = False
+
+
+class PinModelResponse(StatusResponse):
+    pin_id: Optional[str] = None
+
 
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger(__file__)
@@ -195,138 +195,92 @@ class WebApp:
             return JSONResponse(content=response_data)
 
         @self._app.get(
-            "/api/models/list",
-            response_class=JSONResponse,
+            "/api/models",
+            response_model=ModelListResponse,
             tags=[ApiTags.MODELS],
-            operation_id="list_models",
         )
-        async def list_models_api(request: Request) -> JSONResponse:
-            """
-            API endpoint to return a list of models.
-
-            Args:
-                request (Request): The FastAPI request object.
-
-            Returns:
-                JSONResponse: A JSON response containing the list of models.
-            """
+        async def list_models_api():
             try:
                 model_list = await self._manager.list_models()
-                response_data = {JsonKeys.STATUS: JsonValues.SUCCESS, "models": model_list}
-                return JSONResponse(content=response_data)
+                return ModelListResponse(status=JsonValues.SUCCESS, models=model_list)
             except Exception as e:
-                logger.error(e, exc_info=True)
-                return JSONResponse(
-                    content={JsonKeys.STATUS: JsonValues.FAILURE, JsonKeys.MESSAGE: str(e)},
-                )
+                return ModelListResponse(status=JsonValues.FAILURE, message=str(e))
 
-        @self._app.post(
-            "/api/models/classes/get",
-            response_class=JSONResponse,
-            tags=[ApiTags.MODELS],
-            operation_id="get_model_classes",
-        )
-        async def get_model_classes_api(payload: GetModelClassesPayload) -> JSONResponse:
-            """
-            API endpoint to list classes for a given model.
-            Returns:
-                JSONResponse: A dictionary mapping class names to class IDs.
-            """
+        @self._app.post("/api/models/classes/bulk", response_model=ModelBulkClassesResponse, tags=[ApiTags.MODELS])
+        async def get_bulk_model_classes_api(payload: ModelBulkClassesPayload):
             try:
-                model_class_map: dict[str, dict[str, Optional[str]]] = await self._manager.get_models_classes(
-                    payload.model_names
+                # The manager already supports a list of names
+                model_class_maps = await self._manager.get_models_classes(payload.model_names)
+                return ModelBulkClassesResponse(
+                    status=JsonValues.SUCCESS, models=model_class_maps  # Dict[str, Dict[str, Optional[str]]]
                 )
             except Exception as e:
-                logger.error(e, exc_info=True)
-                return JSONResponse(content={JsonKeys.STATUS: JsonValues.FAILURE, JsonKeys.MESSAGE: str(e)})
+                return ModelBulkClassesResponse(status=JsonValues.FAILURE, message=str(e))
 
-            return JSONResponse(
-                content={
-                    JsonKeys.STATUS: JsonValues.SUCCESS,
-                    "models": model_class_map,
-                },
-            )
-
-        @self._app.post(
-            "/api/models/classes/associate",
+        @self._app.get(
+            "/api/models/{model_name}/classes",
+            response_model=ModelClassesResponse,
             tags=[ApiTags.MODELS],
-            operation_id="associate_class_with_model_class",
-            response_class=JSONResponse,
         )
-        async def associate_class_with_model_class_api(payload: AssociateClassWithModelClassPayload) -> JSONResponse:
-            """
-            API endpoint to associate a model's class with a class
-
-            Returns:
-                JSONResponse: A JSON response containing the list of classes for the model
-            """
+        async def get_model_classes_api(model_name: str):
             try:
-                ret = await self._manager.set_model_class_uuid(
-                    model_name=payload.model_name, model_class=payload.model_class, class_uuid=payload.class_uuid
-                )
-                response_data = {JsonKeys.STATUS: JsonValues.SUCCESS, "class_set": ret}
-                return JSONResponse(content=response_data)
+                res = await self._manager.get_models_classes([model_name])
+                class_map = res.get(model_name, {})
+                return ModelClassesResponse(status=JsonValues.SUCCESS, classes=class_map)
             except Exception as e:
-                logger.error(e, exc_info=True)
-                return JSONResponse(
-                    content={JsonKeys.STATUS: JsonValues.FAILURE, JsonKeys.MESSAGE: str(e)},
-                )
+                return ModelClassesResponse(status=JsonValues.FAILURE, message=str(e))
 
-        @self._app.post(
-            "/api/models/pin",
-            response_class=JSONResponse,
+        @self._app.put(
+            "/api/models/{model_name}/classes/{class_name}/label",
+            response_model=AssociateLabelResponse,
             tags=[ApiTags.MODELS],
-            operation_id="pin_model",
         )
-        async def pin_model_api(payload: PinModelPayload) -> JSONResponse:
-            """
-            API endpoint to pin a model in memory.
-
-            Args:
-                request (Request): The FastAPI request object.
-                model_name (str): Name of the model to pin.
-                duration (str): Duration in seconds for which the model should be pinned.
-
-            Returns:
-                JSONResponse: JSON response containing the pin ID for use in unpin_model.
-            """
+        async def associate_label_api(model_name: str, class_name: str, payload: AssociateLabelPayload):
             try:
-                # Use the payload fields
-                pin_id = await self._manager.pin_model(payload.model_name, payload.duration)
+                ret = await self._manager.set_model_class_label_uuid(
+                    model_name=model_name, model_class=class_name, label_uuid=payload.label_uuid
+                )
+                return AssociateLabelResponse(status=JsonValues.SUCCESS, label_set=ret)
             except Exception as e:
-                logger.error(e, exc_info=True)
-                return JSONResponse(content={JsonKeys.STATUS: JsonValues.FAILURE, JsonKeys.MESSAGE: str(e)})
-
-            return JSONResponse(
-                content={
-                    JsonKeys.STATUS: JsonValues.SUCCESS,
-                    JsonKeys.MESSAGE: "Model pinned successfully.",
-                    "pin_id": pin_id,
-                },
-            )
+                return AssociateLabelResponse(status=JsonValues.FAILURE, message=str(e))
 
         @self._app.post(
-            "/api/recognize",
+            "/api/models/{model_name}/pin",
+            response_model=PinModelResponse,
+            tags=[ApiTags.MODELS],
+        )
+        async def pin_model_api(model_name: str, payload: PinModelPayload):
+            try:
+                pin_id = await self._manager.pin_model(model_name, payload.duration)
+                return PinModelResponse(status=JsonValues.SUCCESS, pin_id=pin_id)
+            except Exception as e:
+                return PinModelResponse(status=JsonValues.FAILURE, message=str(e))
+
+        @self._app.post(
+            "/api/models/inference",
             tags=[ApiTags.INFERENCE],
-            operation_id="recognize",
-            response_model=InferenceResultResponse,
+            operation_id="inference",
+            response_model=InferenceResponse,
         )
-        async def recognize_api(payload: RecognizePayload) -> InferenceResultResponse:
+        async def inference_api(payload: InferencePayload) -> InferenceResponse:
             try:
                 np_bytes = base64.b64decode(payload.image_base64)
                 np_image = np.frombuffer(np_bytes, np.uint8)
-                image_array = cv2.imdecode(np_image, cv2.IMREAD_COLOR)
+                image_array: np.ndarray = cv2.imdecode(np_image, cv2.IMREAD_COLOR)
 
                 inference_result: InferenceResult = await self._manager.recognize(
                     model_name=payload.model_name,
                     image=image_array,
                     conf_thresh=payload.conf_thresh,
-                    return_annotated=payload.return_annotated,
+                    return_annotated_img=payload.return_annotated_img,
                     pin_id=payload.pin_id,
                 )
 
-                inference_response: InferenceResultResponse = convert_inference(inference_result)
-                return inference_response
+                if not payload.return_source_img:
+                    inference_result.source_image = None
+
+                model = InferenceResultModel.from_dataclass(inference_result)
+                return InferenceResponse(result=model)
             except Exception as e:
                 logger.error(e, exc_info=True)
-                return InferenceResultResponse(status=JsonValues.FAILURE, message=str(e))
+                return InferenceResponse(status=JsonValues.FAILURE, message=str(e))

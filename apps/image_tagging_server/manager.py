@@ -3,13 +3,14 @@
 import asyncio
 import logging
 import sys
+from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
 import db_client
 import inference_client
 import tasks_client
-from db_client.api.classes_api import ClassesApi
 from db_client.api.images_api import ImagesApi
+from db_client.api.labels_api import LabelsApi
 from db_client.api.sources_api import SourcesApi
 from db_client.api.tags_api import TagsApi
 from inference_client.api.inference_api import InferenceApi
@@ -66,11 +67,11 @@ class Manager:
         """
         return api_forward_request(InferenceApi(self._inference_api_client), api_method_name)
 
-    def classes_api_request(self, api_method_name: str):
+    def labels_api_request(self, api_method_name: str):
         """
-        Decorator to forward request to the Classes API
+        Decorator to forward request to the Labels API
         """
-        return api_forward_request(ClassesApi(self._db_api_client), api_method_name)
+        return api_forward_request(LabelsApi(self._db_api_client), api_method_name)
 
     def model_api_request(self, api_method_name: str):
         """

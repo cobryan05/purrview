@@ -9,19 +9,18 @@ import uvicorn
 
 from apps.helpers.db.db_client import DbClient
 
-
 from .manager import Manager
 from .web import WebApp
 
-from apps import APPS_CONFIG, DB_DIR
+from apps import APPS, APPS_CONFIG, DB_DIR
 
 config = APPS_CONFIG[Path(__file__).parent.name]
-inference_host = APPS_CONFIG["inference_server"].host
-inference_port = APPS_CONFIG["inference_server"].port
-tasks_host = APPS_CONFIG["tasks_server"].host
-tasks_port = APPS_CONFIG["tasks_server"].port
-db_host = APPS_CONFIG["db_server"].host
-db_port = APPS_CONFIG["db_server"].port
+inference_host = APPS_CONFIG[APPS.INFERENCE_SERVER].host
+inference_port = APPS_CONFIG[APPS.INFERENCE_SERVER].port
+tasks_host = APPS_CONFIG[APPS.TASKS_SERVER].host
+tasks_port = APPS_CONFIG[APPS.TASKS_SERVER].port
+db_host = APPS_CONFIG[APPS.DB_SERVER].host
+db_port = APPS_CONFIG[APPS.DB_SERVER].port
 
 
 

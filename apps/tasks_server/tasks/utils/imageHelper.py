@@ -11,7 +11,10 @@ from db_client.models.update_metadata_payload import UpdateMetadataPayload
 from db_client.models.update_metadata_response import UpdateMetadataResponse
 
 from apps.helpers.consts import JsonValues
-from apps.helpers.types import ImageMetadata
+
+class ImageMetadata:
+    # TODO: Remove these!
+    pass
 
 
 class ImageHelper:
@@ -30,16 +33,16 @@ class ImageHelper:
         return ImageMetadata(**response.metadata.model_dump())
 
     def update_image_metadata(self, image_path: str, metadata: ImageMetadata) -> bool:
-        input_boxes: list[db_client.BoundingBoxInput] = []
+        input_boxes: list[db_client.BoundingBoxMetadataModel] = []
         for box in metadata.boxes:
             input_boxes.append(
-                db_client.BoundingBoxInput(
+                db_client.BoundingBoxMetadataModel(
                     uuid=box.uuid,
                     x=box.x,
                     y=box.y,
                     width=box.width,
                     height=box.height,
-                    class_uuid=box.class_uuid
+                    label_uuid=box.label_uuid
                 )
             )
         payload = UpdateMetadataPayload(image_path=image_path, boxes=input_boxes)

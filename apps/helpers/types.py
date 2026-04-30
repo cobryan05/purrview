@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import sys
 from dataclasses import dataclass, field
 from typing import Any, Dict, Generic, List, Optional, Type, TypeVar
 
+import numpy as np
 from pydantic import (
     AliasChoices,
     BaseModel,
@@ -33,7 +35,7 @@ T = TypeVar("T")
 M = TypeVar("M", bound="DataclassMapper")
 
 
-def validate_json(v: Any) -> Dict[str, str]:
+def validate_raw_json_dict(v: Any) -> Dict[str, str]:
     if isinstance(v, str):
         try:
             return json.loads(v)
@@ -42,7 +44,23 @@ def validate_json(v: Any) -> Dict[str, str]:
     return v if isinstance(v, dict) else {}
 
 
-RawJsonDict = Annotated[Dict[str, str], BeforeValidator(validate_json)]
+RawJsonDict = Annotated[Dict[str, str], BeforeValidator(validate_raw_json_dict)]
+
+def validate_base64_img(v: Any) -> str:
+    if isinstance(v, np.ndarray):
+        try:
+            import cv2
+            _, v = cv2.imencode(".png", v)
+        except (Exception):
+            pass
+
+    if isinstance(v, bytes):
+        return base64.b64encode(v).decode("utf-8")
+
+    return v if isinstance(v, str) else None
+
+
+Base64Image = Annotated[Optional[str], BeforeValidator(validate_base64_img)]
 
 
 class DataclassMapper(BaseModel, Generic[T]):
@@ -56,84 +74,55 @@ class DataclassMapper(BaseModel, Generic[T]):
         """
         return cls.model_validate(dc)
 
+@dataclass
+class DetectionResult:
+    bbox: BoundingBoxMetadata
+    confidence: float
+
+class DetectionResultModel(DataclassMapper):
+    bbox: BoundingBoxMetadataModel
+    confidence: float
 
 @dataclass
-class ClassMetadata:
-    uuid: str
-    name: str
-    color: str
-    parent_uuid: Optional[str] = None
+class InferenceResult:
+    source_width: int
+    source_height: int
+    detections: List[DetectionResult]
+    inference_time: Optional[float] = None
+    annotated_image: Optional[np.ndarray] = None
+    source_image: Optional[np.ndarray] = None
 
-
-class ClassMetadataModel(DataclassMapper):
-    uuid: str = Field(AliasChoices("cls_uuid", "uuid"))
-    name: str
-    color: str
-    parent_uuid: Optional[str] = None
-
-
-@dataclass
-class ClassData:
-    metadata: Optional[ClassMetadata] = None
-    children: List[ClassData] = field(default_factory=list)
-
-
-class ClassDataModel(DataclassMapper):
-    metadata: Optional[ClassMetadataModel] = None
-    children: List[ClassDataModel] = []
-
-
-class TagKinds:
-    GENERIC = "generic"
-    SYSTEM = "system"
-
-
-@dataclass
-class TagMetadata:
-    uuid: str
-    name: str
-    color: str
-    protected: bool = False
-    kind: Optional[str] = None
-    exclusive_group: Optional[str] = None
-    created_at: Optional[str] = None
-    updated_at: Optional[str] = None
-
-
-class TagMetadataModel(DataclassMapper):
-    uuid: str = Field(validation_alias=AliasChoices("tag_uuid", "uuid"))
-    name: str
-    color: str
-    protected: bool = False
-    kind: Optional[str] = None
-    exclusive_group: Optional[str] = None
-    created_at: Optional[str] = None
-    updated_at: Optional[str] = None
-
+class InferenceResultModel(DataclassMapper):
+    source_width: int
+    source_height: int
+    detections: List[DetectionResultModel] = []
+    inference_time: Optional[float] = None
+    annotated_image: Optional[Base64Image] = None
+    source_image: Optional[Base64Image] = None
 
 @dataclass
 class BoundingBoxMetadata:
     uuid: str
-    class_uuid: str
     x: float
     y: float
     width: float
     height: float
-    class_str: str = field(default_factory=str)
+    label_uuid: Optional[str] = None
+    class_str: Optional[str] = None
     tag_uuids: List[str] = field(default_factory=list)
     extra: Dict[str, str] = field(default_factory=dict)
 
 
 class BoundingBoxMetadataModel(DataclassMapper):
-    uuid: str = Field(validation_alias=AliasChoices("bbox_uuid", "uuid"))
-    class_uuid: str
+    uuid: str = Field(validation_alias=AliasChoices("bbox_uuid", "uuid"), serialization_alias="uuid")
     x: float
     y: float
     width: float
     height: float
-    class_str: str = Field(default_factory=str)
+    label_uuid: Optional[str] = None
+    class_str: Optional[str] = None
     tag_uuids: List[str] = Field(default_factory=list)
-    extra: RawJsonDict = Field(default_factory=dict, validation_alias=AliasChoices("bbox_meta", "extra"))
+    extra: RawJsonDict = Field(default_factory=dict, validation_alias=AliasChoices("bbox_meta", "extra"), serialization_alias="extra")
 
     class Config:
         populate_by_name = True
@@ -153,32 +142,6 @@ class FileEntryModel(DataclassMapper):
 
 
 @dataclass
-class ImageMetadata:
-    filename: str
-    uuid: Optional[str] = None
-    last_updated: Optional[str] = None
-    extra: Dict[str, str] = field(default_factory=dict)
-    boxes: List[BoundingBoxMetadata] = field(default_factory=list)
-
-    @classmethod
-    def from_model(cls, model: ImageMetadataModel) -> ImageMetadata:
-        ret = ImageMetadata(**model.model_dump())
-        ret.boxes = [BoundingBoxMetadata(**box.model_dump()) for box in model.boxes]
-        return ret
-
-
-class ImageMetadataModel(DataclassMapper):
-    filename: str
-    uuid: Optional[str] = Field(default=None, validation_alias=AliasChoices("img_uuid", "uuid"))
-    last_updated: Optional[str] = None
-    extra: RawJsonDict = Field(default_factory=dict, validation_alias=AliasChoices("img_meta", "extra"))
-    boxes: List[BoundingBoxMetadataModel] = Field(default_factory=list)
-
-    class Config:
-        populate_by_name = True
-
-
-@dataclass
 class SourceMetadata:
     name: str
     typename: str
@@ -190,7 +153,7 @@ class SourceMetadataModel(DataclassMapper):
     name: str
     typename: str
     params: dict[str, Any]
-    uuid: str = Field(validation_alias=AliasChoices("src_uuid", "uuid"))
+    uuid: str = Field(validation_alias=AliasChoices("src_uuid", "uuid"), serialization_alias="uuid")
 
 
 @dataclass
@@ -205,7 +168,7 @@ class TaskConfigMetadata:
 
 
 class TaskConfigMetadataModel(DataclassMapper):
-    uuid: str = Field(validation_alias=AliasChoices("task_cfg_uuid", "uuid"))
+    uuid: str = Field(validation_alias=AliasChoices("task_cfg_uuid", "uuid"), serialization_alias="uuid")
     typename: str
     params: dict[str, Any]
     name: Optional[str] = None
@@ -229,7 +192,7 @@ class TaskInstanceMetadata:
 
 
 class TaskInstanceMetadataModel(DataclassMapper):
-    uuid: str = Field(validation_alias=AliasChoices("task_uuid", "uuid"))
+    uuid: str = Field(validation_alias=AliasChoices("task_uuid", "uuid"), serialization_alias="uuid")
     config_uuid: str
     typename: str
     status: str

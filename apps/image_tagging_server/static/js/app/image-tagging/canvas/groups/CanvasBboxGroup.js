@@ -1,9 +1,9 @@
-import { fetchClassByUuid } from '/app-static/js/shared/api/classes.js';
+import { fetchLabelByUuid } from '/app-static/js/shared/api/labels.js';
 /**
  * @typedef {Object} CanvasBboxMetadata
  * @property {import('@konva').default.Rect} rect
  * @property {import('@konva').default.Text} text
- * @property {import('@canvas_types').RuntimeBboxInfo} runtimeBboxInfo
+ * @property {import('@web_api').BoundingBoxMetadataModel} bboxInfo
  */
 
 /**
@@ -18,7 +18,7 @@ export class CanvasBboxGroup extends Konva.Group {
   _state;
 
   /**
-  * @param {import('@canvas_types').RuntimeBboxInfo} bbox
+  * @param {import('@web_api').BoundingBoxMetadataModel} bbox
   * @param {import('@image_tagging_types').ImageTaggingState} state
   */
   constructor(bbox, state) {
@@ -44,7 +44,7 @@ export class CanvasBboxGroup extends Konva.Group {
       fill: color,
       x: 0,
       y: -18,
-      name: 'class',
+      name: 'label',
     });
     this.add(rect);
     this.add(text);
@@ -84,10 +84,10 @@ export class CanvasBboxGroup extends Konva.Group {
     this._metadata = {
       rect,
       text,
-      runtimeBboxInfo: bbox
+      bboxInfo: bbox
     };
 
-    // Resolve class name?
+    // Resolve label name?
     this.updateMetadata();
   }
 
@@ -135,13 +135,13 @@ export class CanvasBboxGroup extends Konva.Group {
       y: -18
     });
 
-    /** @type {import('@canvas_types').RuntimeBboxInfo} */
+    /** @type {import('@web_api').BoundingBoxMetadataModel} */
     this.updateMetadata({ x: this.x(), y: this.y(), width: this.width(), height: this.height() });
   }
 
   /**
-   * Update an existing bounding box with new metadata, such as class or color.
-   * @param {Partial<import('@canvas_types').RuntimeBboxInfo>} bboxInfo
+   * Update an existing bounding box with new metadata, such as label or color.
+   * @param {Partial<import('@web_api').BoundingBoxMetadataModel>} bboxInfo
     */
   updateMetadata(bboxInfo = {}) {
     const rectRef = this._metadata.rect;
@@ -149,8 +149,8 @@ export class CanvasBboxGroup extends Konva.Group {
     if (!rectRef || !textRef) return;
 
     // Merge the partial metadata with the current metadata
-    /** @typedef {import('@canvas_types').RuntimeBboxInfo} */
-    const mergedInfo = { ...this._metadata.runtimeBboxInfo };
+    /** @typedef {import('@web_api').BoundingBoxMetadataModel} */
+    const mergedInfo = { ...this._metadata.bboxInfo };
     for (const key in bboxInfo) {
       if (Object.prototype.hasOwnProperty.call(bboxInfo, key)) {
         const value = bboxInfo[key];
@@ -160,17 +160,17 @@ export class CanvasBboxGroup extends Konva.Group {
       }
     }
 
-    // Kick off async class resolution
-    (mergedInfo.classUuid
-      ? fetchClassByUuid(mergedInfo.classUuid)
+    // Kick off async label resolution
+    (mergedInfo.labelUuid
+      ? fetchLabelByUuid(mergedInfo.labelUuid)
       : Promise.resolve(null)
-    ).then(resolvedClass => {
+    ).then(resolvedLabel => {
       let bboxText;
-      const classText = resolvedClass?.metadata?.name ?? this.metadata.text.text() ?? 'Unknown';
-      const color = resolvedClass?.metadata?.color ?? 'grey';
-      bboxText = `${classText}${mergedInfo.confidence != null ? ` (${(mergedInfo.confidence * 100).toFixed(1)}%)` : ''}`;
+      const labelText = resolvedLabel?.metadata?.name ?? this.metadata.text.text() ?? 'Unknown';
+      const color = resolvedLabel?.metadata?.color ?? 'grey';
+      bboxText = `${labelText}${mergedInfo.confidence != null ? ` (${(mergedInfo.confidence * 100).toFixed(1)}%)` : ''}`;
 
-      this._metadata.runtimeBboxInfo = mergedInfo;
+      this._metadata.bboxInfo = mergedInfo;
 
       textRef.text(bboxText);
       textRef.fill(color);
@@ -178,7 +178,7 @@ export class CanvasBboxGroup extends Konva.Group {
       this._state.canvas.layer?.batchDraw();
     })
       .catch(err => {
-        console.error('Failed to fetch class:', err);
+        console.error('Failed to fetch label:', err);
         // optionally fallback
       });
   }

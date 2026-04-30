@@ -9,7 +9,7 @@ from typing import Any, Optional, Tuple
 
 import numpy as np
 
-from apps import APPS_CONFIG
+from apps import APPS, APPS_CONFIG
 from apps.helpers.streams.ffmpegStreamerIn import FFmpegStreamerIn
 
 from .imageProvider import ImageProvider, ImageWithProviderMetadata
@@ -40,7 +40,7 @@ class FfmpegImageProvider(ImageProvider):
         self._video_path: str = video_path.strip()
         self._ffmpeg_args: dict = output_args
         if rtsp_relay and video_path.lower().startswith("rtsp:"):
-            relay_host, relay_port = APPS_CONFIG["relay_buffer_server"].host, APPS_CONFIG["relay_buffer_server"].port
+            relay_host, relay_port = APPS_CONFIG[APPS.RELAY_BUFFER_SERVER].host, APPS_CONFIG[APPS.RELAY_BUFFER_SERVER].port
             config = relay_buffer_client.Configuration(f"http://{relay_host}:{relay_port}")
             self._rtsp_relay_api = relay_buffer_client.ApiClient(config)
             self._relayed_name = f"stream-{uuid.uuid4()}"

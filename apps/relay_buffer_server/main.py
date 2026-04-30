@@ -3,14 +3,14 @@ from pathlib import Path
 import mediamtx_client
 import uvicorn
 
-from apps import APPS_CONFIG
+from apps import APPS, APPS_CONFIG
 
 from .manager import Manager
 from .web import WebApp
 
 config = APPS_CONFIG[Path(__file__).parent.name]
-mediamtx_host = APPS_CONFIG["media_mtx_api"].host
-mediamtx_port = APPS_CONFIG["media_mtx_api"].port
+mediamtx_host = APPS_CONFIG[APPS.MEDIA_MTX_API].host
+mediamtx_port = APPS_CONFIG[APPS.MEDIA_MTX_API].port
 # Defining the host is optional and defaults to http://localhost:9997
 # See configuration.py for a list of all supported configuration parameters.
 mediamtx_conf = mediamtx_client.Configuration(host=f"http://{mediamtx_host}:{mediamtx_port}")

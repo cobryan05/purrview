@@ -10,22 +10,26 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import aiofiles
+from sqlalchemy.orm import make_transient
 
 from apps.helpers.db.db_client import (
-    ClassMetadata,
     DbClient,
-    TagKinds,
-    TagMetadata,
+    TagKind,
 )
+from apps.helpers.db.types import Image, Label, Tag, TagUpdate
 from apps.helpers.fileUtils import get_safe_path
 from apps.helpers.imageProviders.Registry import image_provider_registry
 from apps.helpers.types import (
     BoundingBoxMetadata,
-    ClassData,
     FileEntry,
-    ImageMetadata,
     SourceMetadata,
 )
+
+
+class ImageMetadata:
+    # TODO: Remove these!
+    pass
+
 
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger(__file__)
@@ -66,68 +70,68 @@ class Manager:
             print("Periodic task cleanup.")
 
     ################################################################################
-    # CLASSES API
+    # LABELS API
     ################################################################################
 
-    async def create_new_class(self, name: str, color: str, parent_uuid: Optional[str] = None) -> ClassMetadata:
+    async def create_new_label(self, name: str, color: str, parent_uuid: Optional[str] = None) -> Label:
         """
-        Adds a new class to the database
+        Adds a new label to the database
 
         Returns:
-            ClassMetaData: Class metadata added to database
+            Label: Label added to database
         """
-        ret = await self._db_client.add_class(name, color, parent_uuid=parent_uuid)
+        ret = await self._db_client.add_label(name, color, parent_uuid=parent_uuid)
         # TODO CJO: await self._db_client.export_labels_from_db_to_json(str(self._labels_json))
         return ret
 
-    async def delete_class(self, class_uuid: str) -> None:
+    async def delete_label(self, label_uuid: str) -> None:
         """
-        Deletes a class from the database
-
-        Returns:
-            ClassMetaData: Class metadata deleted from database
+        Deletes a label from the database
         """
-        # Check if the class has a parent
-        child_uuids = await self._db_client.get_class_children(class_uuid)
+        # Check if the label has a parent
+        child_uuids = await self._db_client.get_label_children(label_uuid)
         if child_uuids:
-            raise ValueError(f"Cannot delete class '{class_uuid}' because it has child classes.")
+            raise ValueError(f"Cannot delete label '{label_uuid}' because it has child labels.")
 
-        await self._db_client.delete_class(class_uuid)
+        await self._db_client.delete_label(label_uuid)
         # TODO CJO: await self._db_client.export_labels_from_db_to_json(str(self._labels_json))
 
-    async def update_class(self, class_uuid: str, name: Optional[str] = None, color: Optional[str] = None) -> None:
+    async def update_label(self, label_uuid: str, name: Optional[str] = None, color: Optional[str] = None) -> None:
         """
-        Update a class's name and/or color.
+        Update a label's name and/or color.
 
         Args:
-            class_uuid (str): uuid of the class to update.
-            name (Optional[str]): New name for the class.
-            color (Optional[str]): New color for the class.
+            label_uuid (str): uuid of the label to update.
+            name (Optional[str]): New name for the label.
+            color (Optional[str]): New color for the label.
         """
-        await self._db_client.update_class(class_uuid=class_uuid, name=name, color=color)
+        await self._db_client.update_label(label_uuid=label_uuid, name=name, color=color)
         # TODO CJO: await self._db_client.export_labels_from_db_to_json(str(self._labels_json))
 
-    async def get_class_uuid_map(self) -> Dict[str, ClassData]:
-        """
-        Get a mapping of class UUIDs to their metadata.
-        """
-        flat_list: List[ClassMetadata] = await self._db_client.list_classes()
-        uuid_to_node: Dict[str, ClassData] = {x.uuid: ClassData(metadata=x) for x in flat_list}
+    async def get_label_uuid_map(self) -> Dict[str, Label]:
+        flat_list: List[Label] = await self._db_client.list_labels()
 
-        # Set up parent-child relationships
+        # Manually create parent<->child relationships
+        uuid_to_node: Dict[str, Label] = {}
+        for x in flat_list:
+            # Severe the SQL link and manually initialize children
+            make_transient(x)
+            x.children = []
+            uuid_to_node[x.uuid] = x
+
         for node in uuid_to_node.values():
-            parent_uuid = node.metadata.parent_uuid if node.metadata else None
-            parent_node = uuid_to_node.get(parent_uuid) if parent_uuid else None
-            if parent_node:
-                parent_node.children.append(node)
+            if node.parent_uuid:
+                parent_node = uuid_to_node.get(node.parent_uuid)
+                if parent_node:
+                    parent_node.children.append(node)
 
         return uuid_to_node
 
-    async def get_classes(self) -> List[ClassData]:
+    async def get_labels(self) -> List[Label]:
         """
-        Gets a list of all classes
+        Gets a list of all labels
         """
-        return list((await self.get_class_uuid_map()).values())
+        return list((await self.get_label_uuid_map()).values())
 
     ################################################################################
     # SOURCES API
@@ -208,80 +212,61 @@ class Manager:
     ################################################################################
     # TAGS API
     ################################################################################
-
     async def create_new_tag(
         self,
         name: str,
-        color: str,
+        color: Optional[str] = None,
         protected: bool = False,
-        kind: str = TagKinds.GENERIC,
+        kind: TagKind = TagKind.GENERIC,
         exclusive_group: Optional[str] = None,
-    ) -> TagMetadata:
+    ) -> Tag:
         """
-        Adds a new class to the database
-
-        Returns:
-            TagMetadata: Tag metadata added to database
+        Adds a new tag to the database
         """
         ret = await self._db_client.add_tag(
             name=name, color=color, protected=protected, kind=kind, exclusive_group=exclusive_group
         )
-        #await self._db_client.export_labels_from_db_to_json(str(self._labels_json))
         return ret
 
-    async def delete_tag(self, tag_uuid: str) -> None:
+    async def delete_tag(self, tag_uuid: str) -> bool:
         """
-        Deletes a tag from the database
+        Deletes a tag from the database.
+        Returns True if deleted, False if not found.
+        """
+        return await self._db_client.delete_tag(tag_uuid)
 
-        Returns:
-            TagMetadata: Tag metadata deleted from database
+    async def update_tag(self, tag_uuid: str, update_data: TagUpdate) -> Optional[Tag]:
         """
-        await self._db_client.delete_tag(tag_uuid)
-        # TODO CJO: await self._db_client.export_labels_from_db_to_json(str(self._labels_json))
-
-    async def update_tag(
-        self,
-        tag_uuid: str,
-        name: Optional[str] = None,
-        color: Optional[str] = None,
-        protected: bool = False,
-        kind: Optional[str] = None,
-        exclusive_group: Optional[str] = None,
-    ) -> None:
-        """
-        Update a tag's name and/or color.
+        Update a tag's fields.
 
         Args:
-            tag_uuid (str): uuid of the tag to update.
-            name (Optional[str]): New name for the tag.
-            color (Optional[str]): New color for the tag.
-            protected (bool): Whether the tag is protected.
-            kind (Optional[str]): The kind of tag.
-            exclusive_group (Optional[str]): The exclusive group of the tag.
+            tag_uuid: The "Who" - used to find the row.
+            update_data: The "What" - the validated fields to change.
         """
-        await self._db_client.update_tag(
-            tag_uuid=tag_uuid,
-            name=name,
-            color=color,
-            protected=protected,
-            kind=kind,
-            exclusive_group=exclusive_group,
-        )
-        # TODO CJO: await self._db_client.export_labels_from_db_to_json(str(self._labels_json))
+        changes = update_data.model_dump(exclude_unset=True)
 
-    async def get_tag_uuid_map(self) -> Dict[str, TagMetadata]:
-        """
-        Get a mapping of tag UUIDs to their metadata.
-        """
-        flat_list: List[TagMetadata] = await self._db_client.list_tags()
-        uuid_to_node: Dict[str, TagMetadata] = {tag.uuid: tag for tag in flat_list}
-        return uuid_to_node
+        if not changes:
+            return await self.get_tag_by_uuid(tag_uuid)
 
-    async def get_tags(self) -> List[TagMetadata]:
+        return await self._db_client.update_tag(tag_uuid, **changes)
+
+    async def get_tag_by_uuid(self, uuid: str) -> Optional[Tag]:
+        """Retrieve a tag by its primary key UUID."""
+        async with self._async_session_maker() as session:
+            return await session.get(Tag, uuid)
+
+    async def get_tag_uuid_map(self) -> Dict[str, Tag]:
+        """
+        Get a mapping of tag UUIDs to their SQLModel objects.
+        """
+        tags: List[Tag] = await self._db_client.list_tags()
+        return {tag.uuid: tag for tag in tags}
+
+    async def get_tags(self) -> List[Tag]:
         """
         Gets a list of all tags
         """
-        return list((await self.get_tag_uuid_map()).values())
+        return await self._db_client.list_tags()
 
     ################################################################################
     # BBOXES API
@@ -304,7 +289,7 @@ class Manager:
     # IMAGES API
     ################################################################################
 
-    async def get_image_metadata(self, image_path: Path) -> Optional[ImageMetadata]:
+    async def get_image_metadata(self, image_path: Path) -> Optional[Image]:
         """
         Get metadata for image by resolving image ID from filename.
 
@@ -317,26 +302,12 @@ class Manager:
         safe_path = get_safe_path(self._files_root, image_path)
         if not safe_path or not safe_path.exists():
             return None
-        image_uuid = await self._db_client.get_image_uuid_by_filename(safe_path)
-        if image_uuid is None:
-            try:
-                json_path = self._get_json_path(safe_path)
-                metadata = await self._db_client.read_image_metadata_from_json(json_path)
-                if metadata.uuid is not None:
-                    # If the uuid is in the database then this file may have just been moved
-                    logger.warning(f"Image UUID {metadata.uuid} already in json")
-                    self._fixup_entry(metadata)
+        image = await self._db_client.get_image_by_filename(safe_path)
+        if image is None:
+            image = await self._db_client.sync_image_from_json(safe_path)
+        return image
 
-                image_uuid = await self._db_client.add_image(safe_path)
-                metadata.uuid = image_uuid
-                await self._db_client.write_image_metadata_to_db(image_uuid, metadata)
-            except FileNotFoundError:
-                metadata = None
-        else:
-            metadata = await self._db_client.read_image_metadata_from_db(image_uuid)
-        return metadata
-
-    def _get_json_path(self, image_path: Path) -> Path:
+    def _get_json_sidefile(self, image_path: Path) -> Path:
         return image_path.with_suffix(".json")
 
     def _fixup_entry(self, entry):
@@ -347,8 +318,8 @@ class Manager:
         # Resolve class_str for missing strings in the metadata
         missing_uuids: dict[str, list[BoundingBoxMetadata]] = {}
         for box in metadata.boxes:
-            if box.class_uuid and not box.class_str:
-                missing_uuids.setdefault(box.class_uuid, []).append(box)
+            if box.label_uuid and not box.class_str:
+                missing_uuids.setdefault(box.label_uuid, []).append(box)
 
         if missing_uuids:
             class_map = await self._db_client.get_classes_by_uuids(list(missing_uuids.keys()))
@@ -371,13 +342,13 @@ class Manager:
         image_uuid = await self._db_client.add_image(safe_path)
         await self._resolve_metadata_strings(metadata)
         await self._db_client.write_image_metadata_to_db(image_uuid, metadata)
-        await self._db_client.write_image_metadata_to_json(self._get_json_path(safe_path), metadata)
+        await self._db_client.write_image_metadata_to_json(self._get_json_sidefile(safe_path), metadata)
 
     async def list_files(
         self,
         rel_path: str = "/",
-        patterns: str | List[str] = "*",
-        exclude_patterns: str | List[str] = "*.json",
+        patterns: List[str] = ["*"],
+        exclude_patterns: List[str] = ["*.json"],
         recursive: bool = False,
     ) -> List[FileEntry]:
         """
@@ -385,53 +356,41 @@ class Manager:
 
         Args:
             rel_path (str): Relative path from the root directory (default: "/").
-            include_patterns (str or List[str]): Glob pattern(s) to include (default: "*").
-            exclude_patterns (str or List[str]): Glob pattern(s) to exclude (default: "").
+            patterns (List[str]): Glob pattern(s) to include (default: "*").
+            exclude_patterns (List[str]): Glob pattern(s) to exclude (default: "").
             recursive (bool): Whether to list files recursively (default: False).
 
         Returns:
             List[FileEntry]: List of FileEntry instances.
         """
-        if not self._files_root or not os.path.isdir(self._files_root):
-            logger.warning("Root directory is not set or does not exist.")
+        if not self._files_root or not self._files_root.is_dir():
             return []
 
+        # get_safe_path returns a Path object now
         safe_path = get_safe_path(self._files_root, rel_path)
-
-        if not os.path.exists(safe_path) or not os.path.isdir(safe_path):
-            logger.warning(f"Directory not found: {safe_path}")
+        if not safe_path or not safe_path.is_dir():
             return []
-
-        # Normalize patterns
-        if isinstance(patterns, str):
-            patterns = [patterns]
-        if isinstance(exclude_patterns, str):
-            exclude_patterns = [exclude_patterns]
-
-        # Get matching files
-        glob_path = os.path.join(safe_path, "**", "*") if recursive else os.path.join(safe_path, "*")
-        matched_paths = glob.glob(glob_path, recursive=recursive)
 
         entries: List[FileEntry] = []
-        for full_path in sorted(matched_paths):
-            basename = os.path.basename(full_path)
 
-            # Skip hidden files/folders
-            if basename.startswith("."):
+        # Use rglob for recursive, glob for shallow
+        search_pattern = "**/*" if recursive else "*"
+
+        for p in sorted(safe_path.glob(search_pattern)):
+            # Skip hidden files
+            if p.name.startswith("."):
                 continue
 
-            # Skip if outside root
-            if not os.path.commonpath([self._files_root, full_path]).startswith(str(self._files_root)):
-                continue
+            # Calculate relative path for pattern matching and return value
+            rel_entry_path = p.relative_to(self._files_root)
+            rel_str = str(rel_entry_path)
 
-            # Apply include/exclude pattern matching
-            rel_entry_path = os.path.relpath(full_path, self._files_root)
-            matched = any(fnmatch.fnmatch(rel_entry_path, pat) for pat in patterns)
-            excluded = any(fnmatch.fnmatch(rel_entry_path, pat) for pat in exclude_patterns)
+            # Match logic
+            is_matched = any(fnmatch.fnmatch(rel_str, pat) for pat in patterns)
+            is_excluded = any(fnmatch.fnmatch(rel_str, pat) for pat in exclude_patterns)
 
-            if matched and not excluded:
-                entry_type = "dir" if os.path.isdir(full_path) else "file"
-                entries.append(FileEntry(name=basename, type=entry_type, path=rel_entry_path))
+            if is_matched and not is_excluded:
+                entries.append(FileEntry(name=p.name, type="dir" if p.is_dir() else "file", path=rel_str))
 
         return entries
 

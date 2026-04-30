@@ -17,20 +17,31 @@ from pydantic import BaseModel, Field
 
 from apps.db_server.manager import Manager
 from apps.helpers.consts import ApiTags, JsonKeys, JsonValues
+from apps.helpers.db.types import ImageRead, LabelUpdate, Tag, TagBase, TagKind, TagUpdate, Label, LabelUpdate
 from apps.helpers.types import (
+    Base64Image,
     BoundingBoxMetadata,
     BoundingBoxMetadataModel,
-    ClassDataModel,
-    ClassMetadataModel,
+    FileEntry,
     FileEntryModel,
-    ImageMetadata,
-    ImageMetadataModel,
     SourceMetadata,
     SourceMetadataModel,
     StatusResponse,
-    TagKinds,
-    TagMetadataModel,
 )
+
+
+class ImageMetadata:
+    # TODO: Remove these!
+    pass
+
+
+class ImageMetadataModel(BaseModel):
+    pass
+
+
+class UpdateMetadataPayload(BaseModel):
+    pass
+
 
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger(__file__)
@@ -38,57 +49,57 @@ logger.setLevel(logging.DEBUG)
 
 
 ########
-# Classes
+# Labels
 ########
-class AddClassPayload(BaseModel):
+class AddLabelPayload(BaseModel):
     name: str
     color: str
     parent_uuid: Optional[str] = None
 
 
-class AddClassResponse(StatusResponse):
-    metadata: Optional[ClassMetadataModel] = None
+class AddLabelResponse(StatusResponse):
+    label: Optional[Label] = None
 
 
-class DeleteClassPayload(BaseModel):
-    class_uuid: str
+class DeleteLabelPayload(BaseModel):
+    label_uuid: str
 
 
-class DeleteClassResponse(StatusResponse):
+class DeleteLabelResponse(StatusResponse):
     pass
 
 
-class ListClassesPayload(BaseModel):
+class ListLabelsPayload(BaseModel):
     pass
 
 
-class ListClassesResponse(StatusResponse):
-    classes: List[ClassDataModel] = Field(default_factory=list)
+class ListLabelsResponse(StatusResponse):
+    labels: List[Label] = Field(default_factory=list)
 
 
-class UpdateClassPayload(BaseModel):
-    class_uuid: str
+class UpdateLabelPayload(BaseModel):
+    label_uuid: str
     name: Optional[str] = None
     color: Optional[str] = None
 
 
-class UpdateClassResponse(StatusResponse):
+class UpdateLabelResponse(StatusResponse):
     pass
 
 
 ########
 # Tags
 ########
-class AddTagPayload(BaseModel):
-    name: str
-    color: str
-    protected: bool = False
-    kind: str = TagKinds.GENERIC
-    exclusive_group: Optional[str] = None
+class AddTagPayload(TagBase):
+    """
+    Payload for adding a new tag, inherits from TagBase
+    """
+
+    pass
 
 
 class AddTagResponse(StatusResponse):
-    tag: Optional[TagMetadataModel] = None
+    tag: Optional[Tag] = None
 
 
 class DeleteTagPayload(BaseModel):
@@ -104,16 +115,12 @@ class ListTagsPayload(BaseModel):
 
 
 class ListTagsResponse(StatusResponse):
-    tags: List[TagMetadataModel] = Field(default_factory=list)
+    tags: List[Tag] = Field(default_factory=list)
 
 
 class UpdateTagPayload(BaseModel):
     tag_uuid: str
-    name: Optional[str] = None
-    color: Optional[str] = None
-    protected: Optional[bool] = None
-    kind: Optional[str] = None
-    exclusive_group: Optional[str] = None
+    data: TagUpdate
 
 
 class UpdateTagResponse(StatusResponse):
@@ -182,15 +189,6 @@ class UpdateSourceResponse(StatusResponse):
 ########
 # Bounding Boxes
 ########
-class BoundingBoxInput(BaseModel):
-    class_uuid: str
-    x: float
-    y: float
-    width: float
-    height: float
-    uuid: str = Field(default_factory=lambda: str(uuid4()))
-    tag_uuids: List[str] = Field(default_factory=list)
-    extra: Optional[dict] = {}
 
 
 class GetBoundingBoxInfoPayload(BaseModel):
@@ -201,16 +199,6 @@ class GetBoundingBoxInfoResponse(StatusResponse):
     metadata: dict[str, BoundingBoxMetadataModel] = Field(default_factory=dict)
 
 
-class UpdateMetadataPayload(BaseModel):
-    image_path: str
-    boxes: List[BoundingBoxInput]
-    extra: Optional[dict] = {}
-
-
-class UpdateMetadataResponse(StatusResponse):
-    metadata: Optional[ImageMetadataModel] = None
-
-
 class ListFilesPayload(BaseModel):
     path: str = "/"
     pattern: Optional[str] = "*"
@@ -218,7 +206,7 @@ class ListFilesPayload(BaseModel):
 
 
 class ListFilesResponse(StatusResponse):
-    files: List[FileEntryModel] = Field(default_factory=list)
+    files: List[FileEntry] = []
 
 
 class GetImageMetadataPayload(BaseModel):
@@ -226,7 +214,11 @@ class GetImageMetadataPayload(BaseModel):
 
 
 class GetImageMetadataResponse(StatusResponse):
-    metadata: Optional[ImageMetadataModel] = None
+    image: Optional[ImageRead] = None
+
+
+class UpdateMetadataResponse(StatusResponse):
+    image: Optional[ImageRead] = None
 
 
 class GetFilePayload(BaseModel):
@@ -236,8 +228,8 @@ class GetFilePayload(BaseModel):
 class GetFileResponse(StatusResponse):
     filename: str
     mime_type: Optional[str] = None
-    image_base64: Optional[str] = None
-    metadata: Optional[ImageMetadataModel] = None
+    image_base64: Base64Image = None
+    image: Optional[ImageRead] = None
 
 
 class WebApp:
@@ -300,81 +292,82 @@ class WebApp:
         """Register all routes for the application."""
 
         ################################################################################
-        # Classes API
+        # Labels API
         ################################################################################
-
         @self._app.post(
-            "/api/classes/add", response_model=AddClassResponse, tags=[ApiTags.CLASSES], operation_id="add_class"
+            "/api/labels",
+            response_model=AddLabelResponse,
+            tags=[ApiTags.LABELS],
+            operation_id="add_label",
         )
-        async def add_class_api(request: AddClassPayload) -> AddClassResponse:
+        async def add_label_api(request: AddLabelPayload) -> AddLabelResponse:
             """
-            API endpoint to add a new class.
+            API endpoint to add a new label.
             """
             try:
-                new_metadata = await self._manager.create_new_class(
+                label = await self._manager.create_new_label(
                     request.name, request.color, parent_uuid=request.parent_uuid
                 )
 
-                return AddClassResponse(status=JsonValues.SUCCESS, metadata=ClassMetadataModel.from_dataclass(new_metadata))
+                return AddLabelResponse(status=JsonValues.SUCCESS, label=label)
             except Exception as e:
                 logger.error(e, exc_info=True)
-                return AddClassResponse(status=JsonValues.FAILURE, message=str(e))
+                return AddLabelResponse(status=JsonValues.FAILURE, message=str(e))
 
-        @self._app.post(
-            "/api/classes/delete",
-            response_model=DeleteClassResponse,
-            tags=[ApiTags.CLASSES],
-            operation_id="delete_class",
+        @self._app.delete(
+            "/api/labels/{label_uuid}",
+            response_model=DeleteLabelResponse,
+            tags=[ApiTags.LABELS],
+            operation_id="delete_label",
         )
-        async def delete_class_api(request: DeleteClassPayload) -> DeleteClassResponse:
+        async def delete_labels_api(label_uuid: str) -> DeleteLabelResponse:
             """
-            API endpoint to delete an existing class.
+            API endpoint to delete an existing label.
             """
             try:
-                await self._manager.delete_class(request.class_uuid)
-                return DeleteClassResponse(status=JsonValues.SUCCESS)
+                await self._manager.delete_label(label_uuid)
+                return DeleteLabelResponse(status=JsonValues.SUCCESS)
             except Exception as e:
                 logger.error(e, exc_info=True)
-                return DeleteClassResponse(status=JsonValues.FAILURE, message=str(e))
+                return DeleteLabelResponse(status=JsonValues.FAILURE, message=str(e))
 
         @self._app.get(
-            "/api/classes/list", response_model=ListClassesResponse, tags=[ApiTags.CLASSES], operation_id="list_classes"
+            "/api/labels",
+            response_model=ListLabelsResponse,
+            tags=[ApiTags.LABELS],
+            operation_id="list_labels",
         )
-        async def list_classes_api() -> ListClassesResponse:
+        async def list_labels_api() -> ListLabelsResponse:
             """
-            API endpoint to return a list of classes with metadata.
-
-            Args:
-                request (Request): The FastAPI request object.
-
-            Returns:
-                ListClassesResponse: A response containing the list of classes.
+            API endpoint to return a list of labels with metadata.
             """
             try:
-                class_list = await self._manager.get_classes()
-                class_models = [ClassDataModel.from_dataclass(cls) for cls in class_list]
-                response_data = ListClassesResponse(status=JsonValues.SUCCESS, classes=class_models)
-                return response_data
+                label_list = await self._manager.get_labels()
+                return ListLabelsResponse(status=JsonValues.SUCCESS, labels=label_list)
             except Exception as e:
                 logger.error(e, exc_info=True)
-                return ListClassesResponse(status=JsonValues.FAILURE, message=str(e))
+                return ListLabelsResponse(status=JsonValues.FAILURE, message=str(e))
 
-        @self._app.post(
-            "/api/classes/update",
-            response_model=UpdateClassResponse,
-            tags=[ApiTags.CLASSES],
-            operation_id="update_class",
+        @self._app.patch(
+            "/api/labels/{label_uuid}",
+            response_model=UpdateLabelResponse,
+            tags=[ApiTags.LABELS],
+            operation_id="update_label",
         )
-        async def update_class_api(request: UpdateClassPayload) -> UpdateClassResponse:
+        async def update_label_api(label_uuid: str, request: LabelUpdate) -> UpdateLabelResponse:
             """
-            API endpoint to update an existing class's name and/or color.
+            API endpoint to update an existing label's name and/or color.
             """
             try:
-                await self._manager.update_class(class_uuid=request.class_uuid, name=request.name, color=request.color)
-                return UpdateClassResponse(status=JsonValues.SUCCESS)
+                await self._manager.update_label(
+                    label_uuid=label_uuid,
+                    name=request.name,
+                    color=request.color,
+                )
+                return UpdateLabelResponse(status=JsonValues.SUCCESS)
             except Exception as e:
                 logger.error(e, exc_info=True)
-                return UpdateClassResponse(status=JsonValues.FAILURE, message=str(e))
+                return UpdateLabelResponse(status=JsonValues.FAILURE, message=str(e))
 
         ################################################################################
         # Sources API
@@ -555,8 +548,7 @@ class WebApp:
             """
             try:
                 tags = await self._manager.get_tags()
-                tag_models = [TagMetadataModel.from_dataclass(tag) for tag in tags]
-                return ListTagsResponse(status=JsonValues.SUCCESS, tags=tag_models)
+                return ListTagsResponse(status=JsonValues.SUCCESS, tags=tags)
             except Exception as e:
                 logger.error(e, exc_info=True)
                 return ListTagsResponse(status=JsonValues.FAILURE, message=str(e))
@@ -569,7 +561,7 @@ class WebApp:
             API endpoint to update an existing tag's name and/or color.
             """
             try:
-                await self._manager.update_tag(tag_uuid=request.tag_uuid, name=request.name, color=request.color)
+                await self._manager.update_tag(tag_uuid=request.tag_uuid, update_data=request.data)
                 return UpdateTagResponse(status=JsonValues.SUCCESS)
             except Exception as e:
                 logger.error(e, exc_info=True)
@@ -628,7 +620,7 @@ class WebApp:
                 new_boxes.append(
                     BoundingBoxMetadata(
                         uuid=b.uuid,
-                        class_uuid=b.class_uuid,
+                        label_uuid=b.label_uuid,
                         tag_uuids=b.tag_uuids,
                         x=b.x,
                         y=b.y,
@@ -645,78 +637,64 @@ class WebApp:
             model = ImageMetadataModel.from_dataclass(metadata)
             return UpdateMetadataResponse(metadata=model)
 
-        @self._app.post(
+        @self._app.get(
             "/api/images/list",
             response_model=ListFilesResponse,
             tags=[ApiTags.IMAGES],
             operation_id="list_images",
         )
-        async def list_images(payload: ListFilesPayload) -> ListFilesResponse:
+        async def list_images(path: str = "/", pattern: str = "*", recursive: bool = False) -> ListFilesResponse:
             """
-            API endpoint to return a list of files.
-
-            Query Parameters:
-                path (str): Relative path under the root directory (default: "/").
-                glob (str): Glob pattern to filter files (default: "*").
-                recursive (bool): Whether to search directories recursively (default: False).
-
-            Returns:
-                ListFilesResponse: A response containing the list of files.
+            List files and directories.
+            Usage: /api/images/list?path=/data&pattern=*.jpg&recursive=true
             """
             try:
-                file_list: List[FileEntry] = await self._manager.list_files(
-                    rel_path=payload.path, patterns=payload.pattern, recursive=payload.recursive
-                )
-                return ListFilesResponse(files=file_list)
+                file_list = await self._manager.list_files(rel_path=path, patterns=[pattern], recursive=recursive)
+                return ListFilesResponse(status=JsonValues.SUCCESS, files=file_list)
             except Exception as e:
-                logger.error(e, exc_info=True)
+                logger.exception("Failed to list files")
                 return ListFilesResponse(status=JsonValues.FAILURE, message=str(e))
 
-        @self._app.post(
-            "/api/images/get",
+        @self._app.get(
+            "/api/images/{image_path:path}/file",
             response_model=GetFileResponse,
             tags=[ApiTags.IMAGES],
-            operation_id="get_image",
+            operation_id="get_image_file",
         )
-        async def get_file(
-            payload: GetFilePayload,
-        ) -> GetFileResponse:
+        async def get_file(image_path: str, include_binary: bool = True) -> GetFileResponse:
             """
-            Retrieve a file either as base64 JSON
-
-            Args:
-                path (str): Relative file path.
-
-            Returns:
-                GetFileResponse: A response containing the file data.
+            Retrieve a file and its associated metadata in a single request.
+            The image data is automatically encoded to base64 by the response model.
             """
             try:
-                result = await self._manager.open_file(payload.path)
+                result = await self._manager.open_file(image_path)
                 if not result:
                     return GetFileResponse(
-                        status=JsonValues.FAILURE, message=f"File {payload.path} not found", filename=payload.path
+                        status=JsonValues.FAILURE, message=f"File {image_path} not found", filename=image_path
                     )
 
                 file_obj, filename = result
-                content = await file_obj.read()
-                await file_obj.close()
+                if include_binary:
+                    content = await file_obj.read()  # Raw bytes
+                    await file_obj.close()
+                else:
+                    content = None
 
                 mime_type, _ = mimetypes.guess_type(filename)
                 mime_type = mime_type or "application/octet-stream"
 
-                metadata: ImageMetadata | None = await self._manager.get_image_metadata(payload.path)
-                model = ImageMetadataModel.from_dataclass(metadata) if metadata else None
-                encoded = base64.b64encode(content).decode("utf-8")
+                image_record = await self._manager.get_image_metadata(image_path)
+
                 return GetFileResponse(
                     status=JsonValues.SUCCESS,
                     filename=filename,
                     mime_type=mime_type,
-                    image_base64=encoded,
-                    metadata=model,
+                    image_base64=content,
+                    image=image_record,
                 )
 
             except HTTPException:
                 raise
             except Exception as e:
-                logger.exception("Error retrieving file")
-                return GetFileResponse(status=JsonValues.FAILURE, message=str(e), filename=payload.path)
+                logger.exception(f"Error retrieving file: {image_path}")
+                return GetFileResponse(status=JsonValues.FAILURE, message=str(e), filename=image_path)

@@ -5,12 +5,6 @@ import { Logger, toast } from '/app-static/js/ui/utils/index.js';
 let _activeImageLoadId = 0;
 
 /**
- * @typedef {import('@canvas_types').RuntimeBboxInfo} RuntimeBboxInfo
- * @typedef {import('@app_types').InferenceResult} InferenceResult
-
- */
-
-/**
  * @param {import('@image_tagging_types').ImageTaggingState} state
  */
 export async function reloadImage(state) {
@@ -143,7 +137,7 @@ export async function saveAnnotations(state) {
     state.image.bboxes?.clear();
     for (const [key, canvasGroup] of state.canvas.bboxes) {
       canvasGroup.updatePosition({});
-      state.image.bboxes?.set(key, canvasGroup.metadata.runtimeBboxInfo);
+      state.image.bboxes?.set(key, canvasGroup.metadata.bboxInfo);
     }
     await updateImage(state.image);
     toast('Annotations saved successfully!');
@@ -215,7 +209,7 @@ export function exportAnnotations(state) {
 /**
  * Adds recognition results to the current canvas
  * @param {import('@image_tagging_types').ImageTaggingState} state
- * @param {InferenceResult} results - The inference results to add to the current canvas
+ * @param {import('@web_api').InferenceResultModel} results - The inference results to add to the current canvas
  */
 export async function addInferenceResults(state, results) {
   const layer = state.canvas.layer;
@@ -224,6 +218,7 @@ export async function addInferenceResults(state, results) {
     return;
   }
   results.detections.forEach(box => {
+
     const bboxGroup = new CanvasBboxGroup(box, state);
     state.updateCanvasBbox(bboxGroup);
   });

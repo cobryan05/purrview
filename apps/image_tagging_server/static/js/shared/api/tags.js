@@ -70,7 +70,7 @@ export async function updateTag(uuid, name, color) {
   const res = await fetch('/api/tags/update', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ tag_uuid: uuid, name, color }),
+    body: JSON.stringify({ tag_uuid: uuid, data: { name, color } }),
   });
 
   if (!res.ok) {

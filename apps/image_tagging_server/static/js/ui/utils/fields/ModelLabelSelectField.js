@@ -1,8 +1,8 @@
 import { DropDownField } from './DropDownField.js';
 import { Field } from './Field.js';
 import { LabelNumberField } from './LabelNumberField.js';
-import { fetchClassByUuid } from '/app-static/js/shared/api/classes.js';
-import { fetchModelsClassMappings, fetchModelsList } from '/app-static/js/shared/api/models.js';
+import { fetchLabelByUuid } from '/app-static/js/shared/api/labels.js';
+import { fetchModelsLabelMappings, fetchModelsList } from '/app-static/js/shared/api/models.js';
 import { createGenericRow } from '/app-static/js/ui/utils/index.js';
 export class ModelLabelSelectField extends Field {
   static DEFAULT_CONFIDENCE = 0.25;
@@ -32,15 +32,15 @@ export class ModelLabelSelectField extends Field {
   }
 
   async _handleModelChange(modelName, values = {}) {
-    this._classUuidMapping = modelName ? (await fetchModelsClassMappings({modelNames: [modelName]})).get(modelName) : new Map();
+    this._labelUuidMapping = modelName ? (await fetchModelsLabelMappings({modelNames: [modelName]})).get(modelName) : new Map();
     this._fields = new Map();
 
-    if (this._classUuidMapping.size > 0) {
-      const uniqueUuids = [...new Set(this._classUuidMapping.values())];
-      const classInfos = (await Promise.all(uniqueUuids.map(fetchClassByUuid))).filter((info) => info != null);
+    if (this._labelUuidMapping.size > 0) {
+      const uniqueUuids = [...new Set(this._labelUuidMapping.values())];
+      const labelInfos = (await Promise.all(uniqueUuids.map(fetchLabelByUuid))).filter((info) => info != null);
 
-      for (const classInfo of classInfos) {
-        const { color, name, uuid } = classInfo.metadata;
+      for (const labelInfo of labelInfos) {
+        const { color, name, uuid } = labelInfo.metadata;
         this._fields.set(uuid, new LabelNumberField({
           label: name,
           color: color,
@@ -51,18 +51,18 @@ export class ModelLabelSelectField extends Field {
         }));
       }
     }
-    await this._renderClassList();
+    await this._renderLabelList();
   }
 
-  async _renderClassList() {
-    if (!this._classesContainer) {
+  async _renderLabelList() {
+    if (!this._labelsContainer) {
       return;
     }
 
-    this._classesContainer.innerHTML = '';
+    this._labelsContainer.innerHTML = '';
     for (const [labelName, field] of this._fields) {
       const row = createGenericRow({ field });
-      this._classesContainer.appendChild(row);
+      this._labelsContainer.appendChild(row);
     }
   }
 
@@ -90,7 +90,7 @@ export class ModelLabelSelectField extends Field {
     // Right column: help text
     const helpText = document.createElement('div');
     helpText.textContent =
-      'Select a model, then set a non-zero confidence threshold to enable classes';
+      'Select a model, then set a non-zero confidence threshold to enable labels';
     helpText.style.fontSize = '0.85em';
     helpText.style.color = '#aaa';
     helpText.style.fontStyle = 'italic';
@@ -100,16 +100,16 @@ export class ModelLabelSelectField extends Field {
     modelRow.appendChild(helpText);
 
     // Labels grid
-    this._classesContainer = document.createElement('div');
-    this._classesContainer.style.display = 'grid';
-    this._classesContainer.style.gridTemplateColumns = 'auto auto auto';
-    this._classesContainer.style.gap = '0.25em 1em';
-    this._classesContainer.style.alignItems = 'center';
+    this._labelsContainer = document.createElement('div');
+    this._labelsContainer.style.display = 'grid';
+    this._labelsContainer.style.gridTemplateColumns = 'auto auto auto';
+    this._labelsContainer.style.gap = '0.25em 1em';
+    this._labelsContainer.style.alignItems = 'center';
 
-    await this._renderClassList();
+    await this._renderLabelList();
 
     container.appendChild(modelRow);
-    container.appendChild(this._classesContainer);
+    container.appendChild(this._labelsContainer);
     return container;
   }
 
@@ -128,7 +128,7 @@ export class ModelLabelSelectField extends Field {
   getValue() {
     return {
       modelName: this._dropDownField.getValue(),
-      classesValues: Object.fromEntries([...this._fields.entries()].map(([className, field]) => [className, field.getValue()])),
+      labelValues: Object.fromEntries([...this._fields.entries()].map(([labelName, field]) => [labelName, field.getValue()])),
     };
   }
 }

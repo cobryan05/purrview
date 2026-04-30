@@ -5,22 +5,28 @@ import { Logger, generateUUID } from '/app-static/js/ui/utils/index.js';
  * Fetch a list of files from the API.
  *
  * @param {string} path - The folder path to list files from.
- * @returns {Promise<import('@web_api').FileEntryModel[]>} Array of file entries from the server.
+ * @param {string} [pattern="*"] - Glob pattern to filter files.
+ * @param {boolean} [recursive=false] - Whether to search subdirectories.
+ * @returns {Promise<import('@web_api').FileEntry[]>} Array of file entries from the server.
  * @throws {Error} If the fetch fails or the API returns an error status.
  */
-export async function fetchImageList(path) {
-  /** @type {import('@web_api').ListFilesPayload} */
-  const payload = { path };
+export async function fetchImageList(path, pattern = "*", recursive = false) {
+  // Construct the URL with search parameters
+  const params = new URLSearchParams({
+    path: path,
+    pattern: pattern,
+    recursive: recursive.toString(),
+  });
 
-  const res = await fetch('/api/images/list', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
+  const res = await fetch(`/api/images/list?${params.toString()}`, {
+    method: 'GET',
+    headers: { 'Accept': 'application/json' },
   });
 
   /** @type {import('@web_api').ListFilesResponse} */
   const data = await res.json();
 
+  // Check both the HTTP status and our custom status field
   if (!res.ok || data.status !== 'success') {
     throw new Error(data.message || 'Failed to fetch image list');
   }
@@ -29,21 +35,18 @@ export async function fetchImageList(path) {
 }
 
 /**
- * Fetch an image and its metadata from the server.
+ * Fetch an image and its metadata from the server using the new GET endpoint.
  *
- * @param {string} path - Path of the image to fetch.
+ * @param {string} path - Relative path of the image to fetch.
  * @returns {Promise<import('@canvas_types').RuntimeImage>}
- *          Object containing the loaded Image element and the bounding boxes.
  * @throws {Error} If the fetch fails or the API response is invalid.
  */
 export async function fetchImage(path) {
-  /** @type {import('@web_api').GetFilePayload} */
-  const payload = { path };
+  const url = `/api/images/${encodeURIComponent(path)}/file`;
 
-  const res = await fetch('/api/images/get', {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
+  const res = await fetch(url, {
+    method: "GET",
+    headers: { "Accept": "application/json" },
   });
 
   if (!res.ok) {
@@ -61,43 +64,21 @@ export async function fetchImage(path) {
   const img = new Image();
   img.src = `data:${imageRes.mime_type};base64,${imageRes.image_base64}`;
 
-  // Block until the image is fully loaded to resolve dimensions
+  // Block until the image is fully decoded so we have access to width/height
   await new Promise((resolve, reject) => {
     img.onload = resolve;
     img.onerror = () => reject(new Error(`Failed to decode base64 image for ${path}`));
   });
 
-  // Convert web_api format to app_types Map
-  /** @type {Map<string,import('@canvas_types').RuntimeBboxInfo>} */
-  const bboxMap = new Map();
-  (imageRes.metadata?.boxes || []).forEach(bbox => {
-
-    const tagUuids = (bbox.tag_uuids ?? []).map(tag => tag);
-    const absX = bbox.x * img.width;
-    const absY = bbox.y * img.height;
-    const absHeight = bbox.height * img.height;
-    const absWidth = bbox.width * img.width;
-
-    /** @type {import('@canvas_types').RuntimeBboxInfo} */
-    const bboxInfo = {
-      uuid: bbox.uuid ?? generateUUID(),
-      x: absX,
-      y: absY,
-      width: absWidth,
-      height: absHeight,
-      confidence: undefined,
-      text: bbox.class_str,
-      classUuid: bbox.class_uuid,
-      tagUuids
-    };
-    bboxMap.set(bboxInfo.uuid, bboxInfo);
-  });
+  const bboxes = imageRes.image?.metadata_json?.boxes || [];
 
   /** @type {import('@canvas_types').RuntimeImage} */
-  const ret = { name: path, img, bboxes: bboxMap };
-  return ret;
+  return {
+    name: path,
+    img,
+    bboxes: new Map(bboxes.map(bbox => [bbox.uuid, bbox]))
+  };
 }
-
 
 /* ---- Metadata Updating --- */
 /**
@@ -121,7 +102,7 @@ export async function updateImage(runtimeImage) {
       }
       return {
         uuid: bbox.uuid,
-        class_uuid: bbox.classUuid,
+        label_uuid: bbox.classUuid,
         x: bbox.x / img.width,
         y: bbox.y / img.height,
         width: bbox.width / img.width,

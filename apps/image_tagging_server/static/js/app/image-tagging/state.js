@@ -11,7 +11,7 @@ export const imageTaggingState = {
   canvas: canvasState,
   image: null,
   currentTool: 'select',
-  currentClassUuid: null,
+  currentLabelUuid: null,
   selectedBoxUuid: null,
 
   get selectedTool() {
@@ -21,7 +21,7 @@ export const imageTaggingState = {
     return this.selectedBoxUuid;
   },
   get classUuid() {
-    return this.currentClassUuid;
+    return this.currentLabelUuid;
   },
 
   getBboxGroup(uuid) {
@@ -37,7 +37,7 @@ export const imageTaggingState = {
   },
 
   setClassUuid(uuid) {
-    this.currentClassUuid = uuid;
+    this.currentLabelUuid = uuid;
   },
 
   setImage(image) {
@@ -53,11 +53,11 @@ export const imageTaggingState = {
   },
 
   removeBboxGroup(bboxGroup) {
-    this.canvas.bboxes.delete(bboxGroup.metadata.runtimeBboxInfo.uuid);
+    this.canvas.bboxes.delete(bboxGroup.metadata.bboxInfo.uuid);
   },
 
   updateCanvasBbox(bboxGroup) {
-    this.canvas.bboxes.set(bboxGroup.metadata.runtimeBboxInfo.uuid, bboxGroup);
+    this.canvas.bboxes.set(bboxGroup.metadata.bboxInfo.uuid, bboxGroup);
   },
 
   clearBboxes() {

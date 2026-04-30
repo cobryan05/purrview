@@ -6,7 +6,7 @@ from typing import List
 import cv2
 import numpy as np
 
-from apps.helpers.inferenceProviders.inferenceProvider import DetectionResult
+from apps.helpers.types import DetectionResult
 
 
 def base64_encode_png( image: np.ndarray ):

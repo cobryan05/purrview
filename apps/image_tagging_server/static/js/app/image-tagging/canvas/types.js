@@ -22,24 +22,10 @@
  */
 
 /**
- * @typedef {Object} RuntimeBboxInfo
- * @property {string} uuid
- * @property {number} x
- * @property {number} y
- * @property {number} width
- * @property {number} height
- * @property {number} [confidence]
- * @property {string} [text]
- * @property {string|null} classUuid
- * @property {string[]} [tagUuids]
- */
-
-
-/**
  * @typedef {Object} RuntimeImage
  * @property {string|null} name
  * @property {HTMLImageElement|null} img
- * @property {Map<string,RuntimeBboxInfo>|null} bboxes
+ * @property {Map<string,import('@web_api').BoundingBoxMetadataModel>|null} bboxes
  */
 
 /**

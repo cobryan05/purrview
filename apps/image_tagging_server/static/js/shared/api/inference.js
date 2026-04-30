@@ -1,18 +1,13 @@
 // inferenceApi.js
 
-import { fetchClassByUuid } from '/app-static/js/shared/api/classes.js';
+import { fetchLabelByUuid } from '/app-static/js/shared/api/labels.js';
 import { generateUUID, Logger, toast } from '/app-static/js/ui/utils/index.js';
-
-/**
- * @typedef {import('@canvas_types').RuntimeBboxInfo} RuntimeBbox
- * @typedef {import('@app_types').InferenceResult} InferenceResult
- */
 
 /**
  * Runs inference on the given image using the specified model.
  * @param {string} model_name - The name of the model to use for inference.
  * @param {HTMLImageElement} image - base64 image element to run inference on.
- * @returns {Promise<InferenceResult>}
+ * @returns {Promise<import('@web_api').InferenceResultModel>}
  */
 export async function runInference(model_name, image) {
   if (!image.src.startsWith("data:")) {
@@ -21,17 +16,18 @@ export async function runInference(model_name, image) {
   const base64String = image.src.split(',')[1]; // strip "data:image/png;base64,"
 
   // Prepare JSON payload
+  /** @type {import('@web_api').RecognizePayload} */
   const payload = {
     model_name: model_name,
     conf_thresh: 0.25,
-    return_annotated: false,
+    return_annotated_img: false,
     pin_id: null, // optional
     image_base64: base64String,
   };
 
   toast(`Sending recognition request for model ${model_name}...`);
   // Send recognition request
-  const response = await fetch('/api/recognize', {
+  const res = await fetch('/api/recognize', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -39,41 +35,20 @@ export async function runInference(model_name, image) {
     body: JSON.stringify(payload),
   });
 
-  if (!response.ok) {
-    throw new Error(`Recognition request failed: ${response.statusText}`);
+  if (!res.ok) {
+    throw new Error(`Recognition request failed: ${res.statusText}`);
   }
 
-  const result = await response.json();
-  Logger.debug('Recognize response:', result);
+  /** @type {import('@web_api').RecognizeResponse} */
+  const recRes = await res.json();
+  const { result } = recRes;
 
-  if (result.status != 'success') {
-    throw new Error(`Recognition failed: ${result.message}`);
+  Logger.debug('Recognize response:', recRes);
+
+  if (recRes.status != 'success' || !result) {
+    throw new Error(`Recognition failed: ${recRes.message}`);
   }
-  toast(`${result.detections.length} objects detected`);
+  toast(`${result?.detections?.length} objects detected`);
 
-  // Convert from JSON result to RuntimeBbox type
-  /** @type {RuntimeBbox[]} */
-  const bboxList = await Promise.all(
-    result.detections.map(async (det) => {
-      const [x, y, width, height] = det.bounding_box;
-      return {
-        uuid: generateUUID(),
-        x: x*image.width,
-        y: y*image.height,
-        width: width*image.width,
-        height: height*image.height,
-        confidence: det.confidence,
-        text: (await fetchClassByUuid(det.class_uuid))?.metadata.name || det.class_name,
-        classUuid: det.class_uuid || undefined,
-        tagUuids: [] // TODO: set 'unverified' tag
-      };
-    })
-  );
-
-  /** @type {InferenceResult} */
-  const ret = {
-    detections: bboxList
-  };
-
-  return ret;
+  return result;
 }

@@ -10,7 +10,7 @@ import { ModelLabelSelectField } from './ModelLabelSelectField.js';
 import { CheckboxField } from './CheckboxField.js';
 import { DropDownField } from './DropDownField.js';
 import { fetchTags } from '/app-static/js/shared/api/tags.js';
-import { fetchClasses } from '/app-static/js/shared/api/classes.js';
+import { fetchLabels } from '/app-static/js/shared/api/labels.js';
 // Factory map
 export const fieldFactories = {
   async array(fieldName, fieldMeta, values, onChange) {
@@ -72,14 +72,14 @@ export const fieldFactories = {
     });
   },
 
-  async class(fieldName, fieldMeta, values, onChange) {
+  async label(fieldName, fieldMeta, values, onChange) {
     const { ...rest } = fieldMeta;
 
-    const classList = await fetchClasses();
-    const classOptions = Array.from(classList.values()).map(cls => ({
-      key: cls.metadata.uuid,
-      text: cls.metadata.name,
-      color: cls.metadata.color || '#cccccc'
+    const labelList = await fetchLabels();
+    const labelOptions = Array.from(labelList.values()).map(label => ({
+      key: label.metadata.uuid,
+      text: label.metadata.name,
+      color: label.metadata.color || '#cccccc'
     }))
 
     return await new DropDownField({
@@ -87,7 +87,7 @@ export const fieldFactories = {
       onChange: (val) => {
         onChange?.(val);
       },
-      options: classOptions,
+      options: labelOptions,
       ...rest
     });
   },

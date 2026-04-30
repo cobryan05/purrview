@@ -8,13 +8,13 @@
  * @typedef {Object} ImageTaggingState
  * @property {CanvasState} canvas
  * @property {string} currentTool
- * @property {string|null} currentClassUuid
+ * @property {string|null} currentLabelUuid
  * @property {string|null} selectedBoxUuid
  * @property {import('@ui_types').FileNavigation} fileNavigation
  * @property {RuntimeImage|null} image
  * @property {(uuid:string) => CanvasBboxGroup|undefined} getBboxGroup
  * @property {(tool:string) => void} setTool
- * @property {(uuid:string) => void} setClassUuid
+ * @property {(uuid:string) => void} setLabelUuid
  * @property {(image:RuntimeImage) => void} setImage
  * @property {(bboxGroup:CanvasBboxGroup) => void} removeBboxGroup
  * @property {(bboxGroup:CanvasBboxGroup) => void} updateCanvasBbox

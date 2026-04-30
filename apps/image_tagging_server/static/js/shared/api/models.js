@@ -1,47 +1,40 @@
 // modelsApi.js
 import { createCachedFetcher } from '/app-static/js/ui/utils/data/createCachedFetcher.js';
 import { wrapSingleKey, ignoreKeyReturn } from './apiUtils.js';
-/** -----------------------------
- * MODELS CACHE
- * -----------------------------
- */
+
 export const modelsFetcher = createCachedFetcher(async (keys) => {
-  const res = await fetch('/api/models/list');
-  if (!res.ok) {
-    const err = await res.json();
-    throw new Error(err.message || 'Failed to fetch models list');
+  const res = await fetch('/api/models');
+  const data = await res.json();
+
+  if (!res.ok || data.status === 'failure') {
+    throw new Error(data.message || 'Failed to fetch models list');
   }
-  const { models } = await res.json();
-  // Store as Map: modelName -> classMapping (null initially)
+
+  const { models } = data;
+  // Store as Map: modelName -> labelMapping (null initially)
   const map = new Map(models.map(model => [model, null]));
 
   return ignoreKeyReturn(keys, map);
 });
 
-export const modelClassesFetcher = createCachedFetcher(async (modelNames) => {
-  const res = await fetch('/api/models/classes/get', {
+export const modelLabelsFetcher = createCachedFetcher(async (modelNames) => {
+  const res = await fetch('/api/models/classes/bulk', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ model_names: modelNames }),
   });
 
-  if (!res.ok) {
-    const err = await res.json();
-    throw new Error(err.message || `Failed to fetch classes for model ${modelName}`);
+  const data = await res.json();
+  if (!res.ok || data.status === 'failure') {
+    throw new Error(data.message || 'Failed to fetch bulk model classes');
   }
-
-  const { models } = await res.json();
 
   const modelMap = new Map();
-  for (const [modelName, classObj] of Object.entries(models)) {
-    // Convert inner object → Map
-    const innerMap = new Map(Object.entries(classObj));
-    modelMap.set(modelName, innerMap);
+  for (const [name, classes] of Object.entries(data.models)) {
+    modelMap.set(name, new Map(Object.entries(classes)));
   }
-
   return modelMap;
 });
-
 
 /** -----------------------------
  * CACHE CLEAR
@@ -49,9 +42,8 @@ export const modelClassesFetcher = createCachedFetcher(async (modelNames) => {
  */
 export function clearModelsCache() {
   modelsFetcher.clear();
-  modelClassesFetcher.clear();
+  modelLabelsFetcher.clear();
 }
-
 
 /** -----------------------------
  * FETCH FUNCTIONS
@@ -62,51 +54,51 @@ export async function fetchModelsList() {
   return [...map.keys()];
 }
 
-export async function _fetchModelsClassMappings({modelNames}) {
+export async function _fetchModelsLabelMappings({ modelNames }) {
   const models = await fetchModelsList();
   for (const modelName of modelNames) {
     if (!models.includes(modelName)) throw new Error(`Model ${modelName} not found`);
   }
 
-  const modelClassMap = await modelClassesFetcher.fetch(modelNames);
-  // Ensure we also update the models map with the class mapping
+  const modelLabelMap = await modelLabelsFetcher.fetch(modelNames);
+
   const modelsMap = await modelsFetcher.fetch('modelsMap');
   for (const modelName of modelNames) {
-    const classes = modelClassMap.get(modelName);
-    modelsMap.set(modelName, classes);
+    const labels = modelLabelMap.get(modelName);
+    modelsMap.set(modelName, labels);
   }
 
   return modelsMap;
 }
-export const fetchModelsClassMappings = wrapSingleKey(_fetchModelsClassMappings);
-
+export const fetchModelsLabelMappings = wrapSingleKey(_fetchModelsLabelMappings);
 
 /** -----------------------------
  * UPDATE FUNCTION
  * -----------------------------
  */
-export async function associateClass(modelName, modelClass, classUuid) {
+export async function associateLabel(modelName, modelClass, labelUuid) {
   const models = await fetchModelsList();
   if (!models.includes(modelName)) throw new Error(`Model ${modelName} not found`);
 
-  const res = await fetch('/api/models/classes/associate', {
-    method: 'POST',
+  // Path updated to /api/models/{model_name}/classes/{class_name}/label
+  // Method updated to PUT as suggested for RESTful updates
+  const res = await fetch(`/api/models/${modelName}/classes/${modelClass}/label`, {
+    method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      model_name: modelName,
-      model_class: modelClass,
-      class_uuid: classUuid,
+      label_uuid: labelUuid,
     }),
   });
 
-  if (!res.ok) {
-    const err = await res.json();
-    throw new Error(err.message || 'Failed to associate class');
+  const data = await res.json();
+
+  if (!res.ok || data.status === 'failure') {
+    throw new Error(data.message || 'Failed to associate label');
   }
 
-  // Invalidate class mapping cache for this model
-  modelClassesFetcher.delete(modelName);
-  // Optionally also reset the entry in models map
+  // Invalidate label mapping cache for this model
+  modelLabelsFetcher.delete(modelName);
+
   const modelsMap = await modelsFetcher.fetch('modelsMap');
   modelsMap.set(modelName, null);
 }

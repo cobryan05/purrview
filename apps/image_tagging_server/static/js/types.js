@@ -3,16 +3,6 @@
  */
 
 /**
- * @typedef {Object} BboxMetadata
- * @property {string} uuid
-
-
-/**
- * @typedef {Object} InferenceResult
- * @property {RuntimeBboxInfo[]} detections
- */
-
-/**
  * @typedef {Object} AppState
  * @property {ImageTaggingState} imageTagging
  */

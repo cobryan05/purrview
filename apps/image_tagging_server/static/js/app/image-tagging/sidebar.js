@@ -3,7 +3,7 @@ import { setTool, parseToolUuid } from './canvas/tools.js';
 import { setupSidebarTabs } from '/app-static/js/app/utils/tabs.js';
 import { clearModelsCache, fetchModelsList } from '/app-static/js/shared/api/models.js';
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
-import { renderClassList } from '/app-static/js/ui/classes.js';
+import { renderLabelList } from '/app-static/js/ui/labels.js';
 import '/app-static/js/ui/inspector.js';
 import { Logger } from '/app-static/js/ui/utils/index.js';
 
@@ -13,11 +13,11 @@ let _modelsInit = false;
  * @param {import('@image_tagging_types').ImageTaggingState} state
  */
 export async function init(state) {
-  // Setup sidebar tabs (Models / Classes / Annotations / Inspector)
+  // Setup sidebar tabs (Models / Labels / Annotations / Inspector)
   const { container, activateTab } = setupSidebarTabs('#sidebar', async (tabName) => {
-    if (tabName === 'tab-classes-tool') {
-      renderClassList({
-        target: "classes-tool-list",
+    if (tabName === 'tab-labels-tool') {
+      renderLabelList({
+        target: "labels-tool-list",
         editable: false,
         clickable: true,
         onSelectCallback: uuid => setTool(state, `bbox:${uuid}`)
@@ -39,20 +39,20 @@ export async function init(state) {
     activateTab(container.querySelector('.sidebar-tab-button')?.dataset.tab);
   }
 
-  // Show 'Classes' tab when tool changes to BBox
+  // Show 'Labels' tab when tool changes to BBox
   events.subscribe(EventTypes.CANVAS_TOOL_CHANGED, ({ tool }) => {
-    // Switch to the Classes tab if the tool is BBox
+    // Switch to the Labels tab if the tool is BBox
     const toolInfo = parseToolUuid(tool);
     if (toolInfo.tool === 'bbox') {
-      activateTab('tab-classes-tool');
-      const uuid = toolInfo.uuid ?? appState.imageTagging.currentClassUuid;
+      activateTab('tab-labels-tool');
+      const uuid = toolInfo.uuid ?? appState.imageTagging.currentLabelUuid;
 
-      // If there is no currently selected class then select the first one
+      // If there is no currently selected label then select the first one
       if (!uuid) {
         // defer until after rendering
         requestAnimationFrame(() => {
-          const firstClassRow = document.querySelector('#classes-tool-list .class-row');
-          if (firstClassRow) firstClassRow.click();
+          const firstLabelRow = document.querySelector('#labels-tool-list .label-row');
+          if (firstLabelRow) firstLabelRow.click();
         });
       }
     }

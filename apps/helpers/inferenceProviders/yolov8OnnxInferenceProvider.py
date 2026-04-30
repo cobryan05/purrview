@@ -1,4 +1,5 @@
 from typing import List, Optional, Tuple
+from uuid import uuid4
 
 import cv2
 import numpy as np
@@ -6,8 +7,9 @@ import onnxruntime as ort
 
 import apps.helpers.yoloUtils as YoloUtils
 from apps.helpers.bboxUtils import BBox
+from apps.helpers.types import BoundingBoxMetadata, DetectionResult, InferenceResult
 
-from .inferenceProvider import DetectionResult, InferenceProvider, InferenceResult
+from .inferenceProvider import InferenceProvider
 
 
 class YOLOv8ONNXInferenceProvider(InferenceProvider):
@@ -58,16 +60,15 @@ class YOLOv8ONNXInferenceProvider(InferenceProvider):
 
             # Convert absolute xyxy to relative x1y1wh for BBox
             rel_bbox = BBox.fromX1Y1X2Y2(x_min, y_min, x_max, y_max, imgW, imgH)
-            detection_results.append(
-                DetectionResult(
-                    bounding_box=rel_bbox,
-                    confidence=confidence,
-                    class_id=class_id,
-                    class_str=class_name,
-                )
-            )
+            x, y, width, height = rel_bbox.asRX1Y1WH()
+
+            bbox = BoundingBoxMetadata(uuid=str(uuid4()), class_str=class_name, x=x, y=y, width=width, height=height)
+            res = DetectionResult(bbox=bbox, confidence=confidence)
+            detection_results.append(res)
 
         return InferenceResult(
+            source_width=imgW,
+            source_height=imgH,
             detections=detection_results,
             inference_time=None,
             source_image=image,
