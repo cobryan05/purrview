@@ -19,7 +19,7 @@
         "/app/static/js/konva-types/index-types.d.ts"
       ],
       "@web_api": [
-        "/app/static/js/api-types.js"
+        "/app/static/js/api-types/models/index.ts"
       ],
       "@app_types": [
         "./static/js/types.js"

@@ -25,6 +25,9 @@ pip install --no-cache-dir "$TMP_DIR"/tasks_client
 
 # Generate the Javascript API for the web front end as well
 python -m apps.generate_openapi_jsons image_tagging "$JSON_OUT_DIR"
-python -m apps.generate_jsdoc_from_openapi_json "$JSON_OUT_DIR/image_tagging_server_openapi.json" "static/js/api-types.js"
+
+# Generate the combined API
+python -m apps.merge_openapi_jsons "$JSON_OUT_DIR" "combined-api.json"
+openapi-generator-cli generate -i "$JSON_OUT_DIR/combined-api.json" -g typescript-fetch -o ./static/js/api-types --skip-validate-spec --additional-properties=modelOnly=true,typescriptThreePlus=true
 
 rm -rf "$TMP_DIR"
