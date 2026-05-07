@@ -1,5 +1,5 @@
 /**
- * @typedef {import('/app-static/js/app/image-tagging/canvas/groups').CanvasBboxGroup} CanvasBboxGroup
+ * @typedef {import('/app-static/js/app/image-tagging/canvas/views/bboxView.js').BboxView} BboxView
  * @typedef {import('@konva').default.Stage} Stage
  * @typedef {import('@konva').default.Layer} Layer
  * @typedef {import('@konva').default.Transformer} Transformer
@@ -11,13 +11,13 @@
  * @property {Stage|null} stage
  * @property {Layer|null} layer
  * @property {Transformer|null} transformer
- * @property {Map<string,CanvasBboxGroup>} bboxes
+ * @property {Map<string,BboxView>} bboxes
  */
 
 /**
  * @typedef {Object} ToolState
  * @property {string} tool
- * @property {string|null} classUuid
+ * @property {string|null} labelUuid
  * @property {string|null} selectedBboxUuid
  */
 

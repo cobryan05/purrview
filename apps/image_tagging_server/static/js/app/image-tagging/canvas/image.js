@@ -1,4 +1,4 @@
-import { CanvasBboxGroup } from './groups/CanvasBboxGroup.js';
+import { BboxView } from '/app-static/js/app/image-tagging/canvas/views/bboxView.js';
 import { fetchImage, updateImage } from '/app-static/js/shared/api/images.js';
 import { Logger, toast } from '/app-static/js/ui/utils/index.js';
 
@@ -13,19 +13,19 @@ export async function reloadImage(state) {
     Logger.notify('No image loaded to reload');
     return;
   }
-  await loadImageAndMetadata(state, imageName);
+  await loadImageOntoCanvas(state, imageName);
 }
 
 /**
  * @param {import('@image_tagging_types').ImageTaggingState} state
  * @param {string} imageName
  */
-export async function loadImageAndMetadata(state, imageName) {
-  Logger.debug('loadImageAndMetadata called with imageName:', imageName);
+export async function loadImageOntoCanvas(state, imageName) {
+  Logger.debug('loadImageOntoCanvas called with imageName:', imageName);
 
   // Create a new load id and invalidate all previous loads
   const loadId = ++_activeImageLoadId;
-  /** @type {import('@canvas_types').RuntimeImage} */
+  /** @type {import('@domain_image').UIImage} */
   const imageInfo = await fetchImage(imageName);
 
   // If another load started while we waited → abort
@@ -36,13 +36,6 @@ export async function loadImageAndMetadata(state, imageName) {
 
   clearAnnotations(state);
   state.setImage(imageInfo);
-
-  if (imageInfo.bboxes && imageInfo.img) {
-    for (const [uuid, box] of imageInfo.bboxes.entries()) {
-      const canvasBbox = new CanvasBboxGroup(box, state);
-      state.updateCanvasBbox(canvasBbox);
-    }
-  }
   await refreshCanvas(state);
 }
 
@@ -74,7 +67,9 @@ export async function refreshCanvas(state) {
   layer.add(bg);
   bg.moveToBottom();
 
-  for (const [key, group] of (state.canvas.bboxes ?? [])) {
+  state.canvas.bboxes.clear()
+  for (const [key, bbox] of (state.image?.bboxes)) {
+    const group = new BboxView(bbox, img.width, img.height);
     layer.add(group);
     group.moveToTop();
   }
@@ -219,8 +214,8 @@ export async function addInferenceResults(state, results) {
   }
   results.detections.forEach(box => {
 
-    const bboxGroup = new CanvasBboxGroup(box, state);
-    state.updateCanvasBbox(bboxGroup);
+    const bboxView = new BboxView({ ...box, uuid: key }, 1);
+    state.updateCanvasBboxView(bboxView);
   });
 
   await refreshCanvas(state);

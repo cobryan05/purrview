@@ -15,6 +15,9 @@
       "/app-static/*": [
         "./static/*"
       ],
+      "/static/*": [
+        "/app/static/*",
+      ],
       "@konva": [
         "/app/static/js/konva-types/index-types.d.ts"
       ],
@@ -32,6 +35,12 @@
       ],
       "@image_tagging_types": [
         "./static/js/app/image-tagging/types.js"
+      ],
+      "@domain/*": [
+        "./static/js/shared/domain/*"
+      ],
+      "@domain_image": [
+        "./static/js/shared/domain/image/types.js"
       ],
       "@events": [
         "./static/js/shared/events/types.js"

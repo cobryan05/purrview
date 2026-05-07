@@ -166,9 +166,11 @@ export class CanvasBboxGroup extends Konva.Group {
       : Promise.resolve(null)
     ).then(resolvedLabel => {
       let bboxText;
-      const labelText = resolvedLabel?.metadata?.name ?? this.metadata.text.text() ?? 'Unknown';
-      const color = resolvedLabel?.metadata?.color ?? 'grey';
-      bboxText = `${labelText}${mergedInfo.confidence != null ? ` (${(mergedInfo.confidence * 100).toFixed(1)}%)` : ''}`;
+      const labelText = resolvedLabel?.name ?? this.metadata.text.text() ?? 'Unknown';
+      const color = resolvedLabel?.color ?? 'grey';
+      bboxText = labelText;
+      //TODO: Re-implement confidence
+      //bboxText = `${labelText}${mergedInfo.confidence != null ? ` (${(mergedInfo.confidence * 100).toFixed(1)}%)` : ''}`;
 
       this._metadata.bboxInfo = mergedInfo;
 

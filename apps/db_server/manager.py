@@ -16,20 +16,13 @@ from apps.helpers.db.db_client import (
     DbClient,
     TagKind,
 )
-from apps.helpers.db.types import Image, Label, Tag, TagUpdate
+from apps.helpers.db.types import ImageRecord, ImageRecordRead, Label, Tag, TagUpdate
 from apps.helpers.fileUtils import get_safe_path
 from apps.helpers.imageProviders.Registry import image_provider_registry
 from apps.helpers.types import (
-    BoundingBoxMetadata,
     FileEntry,
     SourceMetadata,
 )
-
-
-class ImageMetadata:
-    # TODO: Remove these!
-    pass
-
 
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger(__file__)
@@ -268,28 +261,12 @@ class Manager:
         """
         return await self._db_client.list_tags()
 
-    ################################################################################
-    # BBOXES API
-    ################################################################################
-
-    async def get_bboxes_info(self, bbox_uuids: List[str]) -> List[BoundingBoxMetadata]:
-        """
-        Get metadata for image by resolving image ID from filename.
-
-        Args:
-            bbox_uuids (List[str]): List of bounding box UUIDs.
-
-        Returns:
-            List[BoundingBoxMetadata]: Metadata or empty list
-        """
-        bboxes_info = await self._db_client.get_bboxes_info(bbox_uuids)
-        return bboxes_info
 
     ################################################################################
     # IMAGES API
     ################################################################################
 
-    async def get_image_metadata(self, image_path: Path) -> Optional[Image]:
+    async def get_image_metadata(self, image_path: Path) -> Optional[ImageRecordRead]:
         """
         Get metadata for image by resolving image ID from filename.
 
@@ -297,15 +274,15 @@ class Manager:
             image_path (Path): The path to the image file.
 
         Returns:
-            Optional[ImageMetadata]: Full metadata object or None.
+            Optional[ImageRecordRead]: Full metadata object or None.
         """
         safe_path = get_safe_path(self._files_root, image_path)
         if not safe_path or not safe_path.exists():
             return None
         image = await self._db_client.get_image_by_filename(safe_path)
-        if image is None:
+        if image is None or len(image.bboxes) == 0:
             image = await self._db_client.sync_image_from_json(safe_path)
-        return image
+        return ImageRecordRead.model_validate(image)
 
     def _get_json_sidefile(self, image_path: Path) -> Path:
         return image_path.with_suffix(".json")
@@ -314,7 +291,7 @@ class Manager:
         logger.info(f"TODO: Fixup entry {entry}")
         pass
 
-    async def _resolve_metadata_strings(self, metadata: ImageMetadata):
+    async def _resolve_image_strings(self, metadata: ImageRecordRead):
         # Resolve class_str for missing strings in the metadata
         missing_uuids: dict[str, list[BoundingBoxMetadata]] = {}
         for box in metadata.boxes:
@@ -327,20 +304,20 @@ class Manager:
                 for box in missing_uuids.get(cls.uuid, []):
                     box.class_str = cls.name
 
-    async def update_image_metadata(self, image_rel_path: str, metadata: ImageMetadata) -> None:
+    async def update_image_metadata(self, image_rel_path: str, metadata: ImageRecordRead) -> None:
         """
         Update metadata for image identified by filename.
 
         Args:
             image_rel_path (str): Relative image path (filename).
-            metadata (ImageMetadata): New metadata to write.
+            metadata (ImageRecordRead): New metadata to write.
         """
         safe_path = get_safe_path(self._files_root, image_rel_path)
         if safe_path is None or not safe_path.exists():
             logger.warning(f"Path not found or inaccessible: {image_rel_path}")
             return
         image_uuid = await self._db_client.add_image(safe_path)
-        await self._resolve_metadata_strings(metadata)
+        await self._resolve_image_strings(metadata)
         await self._db_client.write_image_metadata_to_db(image_uuid, metadata)
         await self._db_client.write_image_metadata_to_json(self._get_json_sidefile(safe_path), metadata)
 

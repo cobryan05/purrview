@@ -1,5 +1,6 @@
 // imagesApi.js
 import { Logger, generateUUID } from '/app-static/js/ui/utils/index.js';
+import { imageRecordToUI } from '/app-static/js/shared/domain/image/mapper.js';
 
 /**
  * Fetch a list of files from the API.
@@ -38,7 +39,7 @@ export async function fetchImageList(path, pattern = "*", recursive = false) {
  * Fetch an image and its metadata from the server using the new GET endpoint.
  *
  * @param {string} path - Relative path of the image to fetch.
- * @returns {Promise<import('@canvas_types').RuntimeImage>}
+ * @returns {Promise<import('@domain_image').UIImage>}
  * @throws {Error} If the fetch fails or the API response is invalid.
  */
 export async function fetchImage(path) {
@@ -70,14 +71,8 @@ export async function fetchImage(path) {
     img.onerror = () => reject(new Error(`Failed to decode base64 image for ${path}`));
   });
 
-  const bboxes = imageRes.image?.metadata_json?.boxes || [];
-
-  /** @type {import('@canvas_types').RuntimeImage} */
-  return {
-    name: path,
-    img,
-    bboxes: new Map(bboxes.map(bbox => [bbox.uuid, bbox]))
-  };
+  const ret = imageRecordToUI(imageRes.image, img);
+  return ret;
 }
 
 /* ---- Metadata Updating --- */
@@ -95,19 +90,19 @@ export async function updateImage(runtimeImage) {
 
   /** @type {import('@web_api').BoundingBoxInput[]} */
   const boxes = Array.from(runtimeImage.bboxes.values())
-    .filter(bbox => bbox.classUuid != null)
+    .filter(bbox => bbox.labelUuid != null)
     .map(bbox => {
-      if (bbox.classUuid == null) {
-        throw new Error("Invalid bbox classUuid");
+      if (bbox.labelUuid == null) {
+        throw new Error("Invalid bbox labelUuid");
       }
       return {
         uuid: bbox.uuid,
-        label_uuid: bbox.classUuid,
+        labelUuid: bbox.labelUuid,
         x: bbox.x / img.width,
         y: bbox.y / img.height,
         width: bbox.width / img.width,
         height: bbox.height / img.height,
-        tag_uuids: bbox.tagUuids || [],
+        tagUuids: bbox.tagUuids || [],
         extra: null
       };
     });

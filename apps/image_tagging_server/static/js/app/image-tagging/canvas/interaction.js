@@ -1,19 +1,20 @@
 import { Logger } from '../../../ui/utils/logging.js';
 import { generateUUID } from '../../../ui/utils/utils.js';
-import { CanvasBboxGroup } from './groups/CanvasBboxGroup.js';
-import { clearSelection, setTool } from './tools.js';
+import { BboxView } from '/app-static/js/app/image-tagging/canvas/views/bboxView.js';
+  import { clearSelection, setTool } from './tools.js';
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
 
-/** @type {import('@canvas_types').CanvasBboxGroup | null} */
-let pendingDraggedBbox = null;
+/** @type {import('@canvas_types').BboxView | null} */
+let _pendingDraggedBbox = null;
 
-let startPos = null;
+let _startPos = null;
 let isPanning = false;
 let lastPanPos = null;
 let _lastClickTime = 0;
 let _lastClickPos = null;
 const DOUBLE_CLICK_TIME_MS = 400;
 const DOUBLE_CLICK_DISTANCE_PX = 10;
+const BBOX_MIN_PX = 10;
 let crosshairV = null;
 let crosshairH = null;
 
@@ -63,7 +64,7 @@ function getPointerPosition(state) {
  *
  * @param {import('@image_tagging_types').ImageTaggingState} state - The image tagging state for this canvas.
  * @param {{x: number, y: number}} pos - The pointer position in canvas coordinates.
- * @returns {import('./groups/CanvasBboxGroup.js').CanvasBboxGroup|null} The bbox group under the pointer, or null if none.
+ * @returns {import('@canvas_types').BboxView|null} The bbox view under the pointer, or null if none.
  */
 function findGroupAtPoint(state, pos) {
   const layer = state.canvas.layer;
@@ -107,15 +108,7 @@ export async function handleMouseDown(e, state) {
   const pos = getPointerPosition(state);
   if (!pos) return;
 
-  startPos = pos;
-
-  /** @type {import('@web_api').BoundingBoxMetadataModel} */
-  const emptyBbox = { x: pos.x, y: pos.y, width: 1, height: 1, label_uuid: state.currentLabelUuid, uuid: generateUUID() };
-  pendingDraggedBbox = new CanvasBboxGroup(emptyBbox, state);
-  if (pendingDraggedBbox) {
-    state.updateCanvasBbox(pendingDraggedBbox);
-    layer.add(pendingDraggedBbox);
-  }
+  _startPos = pos;
 }
 
 /**
@@ -154,16 +147,28 @@ export async function handleMouseMove(e, state) {
     layer.batchDraw();
   }
 
-  if (!pendingDraggedBbox) return;
+  if (!_startPos) return;
 
-  const dx = pos.x - startPos.x;
-  const dy = pos.y - startPos.y;
-  const newX = dx < 0 ? pos.x : startPos.x;
-  const newY = dy < 0 ? pos.y : startPos.y;
-  const newWidth = Math.abs(dx);
-  const newHeight = Math.abs(dy);
-  pendingDraggedBbox.updatePosition({ x: newX, y: newY, width: newWidth, height: newHeight });
-  //layer.batchDraw();
+  const dx = pos.x - _startPos.x;
+  const dy = pos.y - _startPos.y;
+  if (!_pendingDraggedBbox && (dx * dx + dy * dy) > BBOX_MIN_PX ** 2) {
+    /** @type {import('@web_api').BoundingBoxMetadataModel} */
+    const emptyBbox = { x: pos.x, y: pos.y, width: 1, height: 1, labelUuid: state.currentLabelUuid, uuid: generateUUID() };
+    _pendingDraggedBbox = new CanvasBboxGroup(emptyBbox, state);
+    if (_pendingDraggedBbox) {
+      state.updateCanvasBboxView(_pendingDraggedBbox);
+      layer.add(_pendingDraggedBbox);
+    }
+  }
+
+  if (_pendingDraggedBbox) {
+    const newX = dx < 0 ? pos.x : _startPos.x;
+    const newY = dy < 0 ? pos.y : _startPos.y;
+    const newWidth = Math.abs(dx);
+    const newHeight = Math.abs(dy);
+    _pendingDraggedBbox.updatePosition({ x: newX, y: newY, width: newWidth, height: newHeight });
+    //layer.batchDraw();
+  }
 }
 
 /**
@@ -181,21 +186,21 @@ export async function handleMouseUp(e, state) {
     isPanning = false;
     return;
   }
+  _startPos = null;
+  if (_pendingDraggedBbox) {
+    const box = _pendingDraggedBbox.metadata.rect;
 
-  if (pendingDraggedBbox) {
-    const box = pendingDraggedBbox.metadata.rect;
-
-    if (box.width() < DOUBLE_CLICK_DISTANCE_PX || box.height() < DOUBLE_CLICK_DISTANCE_PX) {
-      state.removeBboxGroup(pendingDraggedBbox);
-      pendingDraggedBbox.destroy();
+    if (box.width() < BBOX_MIN_PX || box.height() < BBOX_MIN_PX) {
+      state.removeBboxGroup(_pendingDraggedBbox);
+      _pendingDraggedBbox.destroy();
     } else {
       events.publish(EventTypes.CANVAS_BBOX_CLICKED, {
-        bboxId: pendingDraggedBbox.metadata.bboxInfo.uuid
+        bboxId: _pendingDraggedBbox.metadata.bboxInfo.uuid
       });
     }
 
     state.canvas.layer.draw();
-    pendingDraggedBbox = null;
+    _pendingDraggedBbox = null;
   }
 
   const pos = getPointerPosition(state);
@@ -212,7 +217,7 @@ export async function handleMouseUp(e, state) {
     const selectedUuid = hitGroup.metadata.bboxInfo.uuid;
     if (isDoubleClick) {
       if (!isSelectTool) {
-        hitGroup.updateMetadata({ classUuid: state.currentLabelUuid });
+        hitGroup.updateMetadata({ labelUuid: state.currentLabelUuid });
       } else {
         state.setSelectedBboxUuid(selectedUuid);
         events.publish(EventTypes.CANVAS_BBOX_DOUBLE_CLICKED, {

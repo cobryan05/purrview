@@ -1,6 +1,5 @@
 // inferenceApi.js
 
-import { fetchLabelByUuid } from '/app-static/js/shared/api/labels.js';
 import { generateUUID, Logger, toast } from '/app-static/js/ui/utils/index.js';
 
 /**

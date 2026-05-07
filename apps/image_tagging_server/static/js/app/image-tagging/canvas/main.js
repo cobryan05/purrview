@@ -3,7 +3,7 @@ import {
   clearAnnotations,
   deleteSelected,
   exportAnnotations,
-  loadImageAndMetadata,
+  loadImageOntoCanvas,
   reloadImage,
   saveAnnotations,
 } from './image.js';
@@ -35,7 +35,7 @@ export async function init(state) {
     clearAnnotations,
     saveAnnotations,
     deleteSelected,
-    loadImageAndMetadata,
+    loadImageAndMetadata: loadImageOntoCanvas,
   });
 
   const stage = state.canvas.stage;
@@ -79,7 +79,7 @@ export async function init(state) {
   });
 
   events.subscribe(EventTypes.LOAD_IMAGE_ONTO_CANVAS, ({ path, showCanvas }) => {
-    loadImageAndMetadata(state, path);
+    loadImageOntoCanvas(state, path);
     if (showCanvas) {
        events.publish(EventTypes.SHOW_CANVAS);
     }

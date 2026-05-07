@@ -90,7 +90,18 @@ class Label(LabelBase, TimestampModel, table=True):
         back_populates="children", sa_relationship_kwargs={"remote_side": "Label.uuid"}
     )
     children: List["Label"] = Relationship(back_populates="parent")
-    bboxes: List["BBox"] = Relationship(back_populates="label_obj")
+    bboxes: List["BBox"] = Relationship(back_populates="label")
+
+class LabelRead(BaseModel):
+    """
+    The public read-only representation of an annotation label.
+    """
+    uuid: str
+    name: str
+    color: Optional[str] = None
+    parent_uuid: Optional[str] = None
+
+    model_config = ConfigDict(from_attributes=True)
 
 
 class LabelUpdate(BaseModel):
@@ -99,7 +110,7 @@ class LabelUpdate(BaseModel):
     parent_uuid: Optional[str] = None
 
 
-class ImageBase(SQLModel):
+class ImageRecordBase(SQLModel):
     """
     Base schema for an image and its metadata
     """
@@ -108,7 +119,7 @@ class ImageBase(SQLModel):
     metadata_json: Dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
 
 
-class Image(ImageBase, TimestampModel, table=True):
+class ImageRecord(ImageRecordBase, TimestampModel, table=True):
     """
     The database representation of an image
     """
@@ -120,10 +131,10 @@ class Image(ImageBase, TimestampModel, table=True):
     )
 
 
-class ImageRead(BaseModel):
+class ImageRecordRead(BaseModel):
     uuid: str
     filename: str
-    uuid: str
+    bboxes: List["BBoxRead"]
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -180,10 +191,22 @@ class BBox(BBoxBase, table=True):
     image_uuid: str = Field(foreign_key="images.uuid", ondelete="CASCADE")
     label_uuid: str = Field(foreign_key="labels.uuid")
 
-    image: Image = Relationship(back_populates="bboxes")
-    label_obj: Label = Relationship(back_populates="bboxes")
+    image: ImageRecord = Relationship(back_populates="bboxes")
+    label: Label = Relationship(back_populates="bboxes")
     tags: List["Tag"] = Relationship(back_populates="bboxes", link_model=BBoxTagLink)
 
+class BBoxRead(BaseModel):
+    """ The public read-only representation of a bounding box. """
+    uuid: str
+    x: float
+    y: float
+    width: float
+    height: float
+    label: Optional[LabelRead]
+    tags: List["TagRead"] = []
+
+
+    model_config = ConfigDict(from_attributes=True)
 
 class TagBase(SQLModel):
     name: str = Field(unique=True)
@@ -202,6 +225,13 @@ class Tag(TagBase, TimestampModel, table=True):
     __tablename__ = "tags"
     uuid: str = Field(default_factory=lambda: str(uuid4()), primary_key=True)
     bboxes: List[BBox] = Relationship(back_populates="tags", link_model=BBoxTagLink)
+
+class TagRead(BaseModel):
+    uuid: str
+    name: str
+    color: Optional[str] = None
+
+    model_config = ConfigDict(from_attributes=True)
 
 
 class TaskConfigBase(SQLModel):

@@ -85,10 +85,10 @@ export function renderModelLabelAssignments({
           editable: true,
           editMode: false,
           buttonsLast: true,
-          onSave: async label_uuid => {
+          onSave: async labelUuid => {
             // Save the selected class
-            if (label_uuid) {
-              await associateLabel(preselectedModel, modelClass, label_uuid);
+            if (labelUuid) {
+              await associateLabel(preselectedModel, modelClass, labelUuid);
             }
             renderModelLabelAssignments({ target, editable, preselectedModel: preselectedModel });
           },

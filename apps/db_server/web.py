@@ -17,27 +17,15 @@ from pydantic import BaseModel, Field
 
 from apps.db_server.manager import Manager
 from apps.helpers.consts import ApiTags, JsonKeys, JsonValues
-from apps.helpers.db.types import ImageRead, LabelUpdate, Tag, TagBase, TagKind, TagUpdate, Label, LabelUpdate
+from apps.helpers.db.types import ImageRecordRead, LabelUpdate, Tag, TagBase, TagKind, TagUpdate, Label, LabelUpdate
 from apps.helpers.types import (
     Base64Image,
-    BoundingBoxMetadata,
-    BoundingBoxMetadataModel,
     FileEntry,
     FileEntryModel,
     SourceMetadata,
     SourceMetadataModel,
     StatusResponse,
 )
-
-
-class ImageMetadata:
-    # TODO: Remove these!
-    pass
-
-
-class ImageMetadataModel(BaseModel):
-    pass
-
 
 class UpdateMetadataPayload(BaseModel):
     pass
@@ -186,19 +174,6 @@ class UpdateSourceResponse(StatusResponse):
     source: Optional[SourceMetadataModel] = None
 
 
-########
-# Bounding Boxes
-########
-
-
-class GetBoundingBoxInfoPayload(BaseModel):
-    uuids: List[str]
-
-
-class GetBoundingBoxInfoResponse(StatusResponse):
-    metadata: dict[str, BoundingBoxMetadataModel] = Field(default_factory=dict)
-
-
 class ListFilesPayload(BaseModel):
     path: str = "/"
     pattern: Optional[str] = "*"
@@ -214,11 +189,11 @@ class GetImageMetadataPayload(BaseModel):
 
 
 class GetImageMetadataResponse(StatusResponse):
-    image: Optional[ImageRead] = None
+    image: Optional[ImageRecordRead] = None
 
 
 class UpdateMetadataResponse(StatusResponse):
-    image: Optional[ImageRead] = None
+    image: Optional[ImageRecordRead] = None
 
 
 class GetFilePayload(BaseModel):
@@ -229,7 +204,7 @@ class GetFileResponse(StatusResponse):
     filename: str
     mime_type: Optional[str] = None
     image_base64: Base64Image = None
-    image: Optional[ImageRead] = None
+    image: Optional[ImageRecordRead] = None
 
 
 class WebApp:
@@ -566,23 +541,6 @@ class WebApp:
             except Exception as e:
                 logger.error(e, exc_info=True)
                 return UpdateTagResponse(status=JsonValues.FAILURE, message=str(e))
-
-        ################################################################################
-        # BBox API
-        ################################################################################
-
-        @self._app.get(
-            "/api/bboxes/get",
-            response_model=GetBoundingBoxInfoResponse,
-            tags=[ApiTags.IMAGES],
-            operation_id="get_bbox_info",
-        )
-        async def get_bbox_info(payload: GetBoundingBoxInfoPayload) -> GetBoundingBoxInfoResponse:
-            metadata: List[BoundingBoxMetadata] = await self._manager.get_bboxes_info(payload.uuids)
-            metadata_map = {m.uuid: m for m in metadata}
-            if not metadata:
-                raise HTTPException(status_code=404, detail="Bounding box not found")
-            return GetBoundingBoxInfoResponse(status=JsonValues.SUCCESS, metadata=metadata_map)
 
         ################################################################################
         # Images API

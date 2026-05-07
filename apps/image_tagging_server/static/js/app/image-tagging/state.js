@@ -20,7 +20,7 @@ export const imageTaggingState = {
   get selectedBboxUuid() {
     return this.selectedBoxUuid;
   },
-  get classUuid() {
+  get labelUuid() {
     return this.currentLabelUuid;
   },
 
@@ -33,15 +33,22 @@ export const imageTaggingState = {
     Logger.debug('setTool:', tool);
     const parts = tool.split(':');
     this.currentTool = parts[0];
-    if (parts[1]) this.setClassUuid(parts[1]);
+    if (parts[1]) this.setLabelUuid(parts[1]);
   },
 
-  setClassUuid(uuid) {
+  setLabelUuid(uuid) {
     this.currentLabelUuid = uuid;
   },
 
+  /** @type {import('@domain_image').UIImage} */
   setImage(image) {
     this.image = image;
+    // if( image.bboxes ) {
+    //   for( const [uuid, box] of image.bboxes.entries() ) {
+    //     const canvasBbox = new CanvasBboxGroup(box, this);
+    //     this.updateCanvasBbox(canvasBbox);
+    //   }
+    // }
   },
 
   setSelectedBboxUuid(uuid) {
@@ -56,7 +63,7 @@ export const imageTaggingState = {
     this.canvas.bboxes.delete(bboxGroup.metadata.bboxInfo.uuid);
   },
 
-  updateCanvasBbox(bboxGroup) {
+  updateCanvasBboxView(bboxGroup) {
     this.canvas.bboxes.set(bboxGroup.metadata.bboxInfo.uuid, bboxGroup);
   },
 

@@ -8,11 +8,11 @@ import jstyleson
 from pydantic import TypeAdapter
 from sqlalchemy import func
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.orm import selectinload, sessionmaker
 from sqlmodel import SQLModel, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
-from .types import BBox, Image, ImageRead, Label, Tag, TagKind
+from .types import BBox, ImageRecord, ImageRecordRead, Label, Tag, TagKind
 
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger(__file__)
@@ -80,44 +80,51 @@ class DbClient:
     ################################################################################
     # Images
     ################################################################################
-    async def sync_image_from_json(self, image_path: Path) -> Image:
+    async def sync_image_from_json(self, image_path: Path) -> ImageRecord:
         """
         Syncs a single image's JSON sidecar into the DB.
         Warns if UUIDs or Paths conflict with existing data.
         """
         json_path = image_path.with_suffix(".json")
         metadata_dict = {}
-        incoming_uuid = None
+        json_uuid = None
+        bboxes: List[BBox] = []
 
         if json_path.exists():
             try:
                 metadata_dict = jstyleson.loads(json_path.read_text())
-                incoming_uuid = metadata_dict.get("uuid")
+                json_uuid = metadata_dict.get("uuid")
+                json_bboxes = metadata_dict.get("boxes", [])
+                bboxes = [BBox(**box_data) for box_data in json_bboxes]
             except Exception as e:
                 logger.error(f"Failed to parse {json_path}: {e}")
 
         async with self._async_session_maker() as session:
-            path_stmt = select(Image).where(Image.filename == str(image_path))
+            path_stmt = select(ImageRecord).where(ImageRecord.filename == str(image_path))
             existing_by_path = (await session.execute(path_stmt)).scalar_one_or_none()
 
             existing_by_uuid = None
-            if incoming_uuid:
-                uuid_stmt = select(Image).where(Image.uuid == incoming_uuid)
+            if json_uuid:
+                uuid_stmt = select(ImageRecord).where(ImageRecord.uuid == json_uuid)
                 existing_by_uuid = (await session.execute(uuid_stmt)).scalar_one_or_none()
 
-            if existing_by_path and incoming_uuid and existing_by_path.uuid != incoming_uuid:
+            if existing_by_path and json_uuid and existing_by_path.uuid != json_uuid:
                 logger.warning(
                     f"Conflict: Path '{image_path}' exists in DB with UUID {existing_by_path.uuid}, "
-                    f"but JSON sidecar specifies UUID {incoming_uuid}."
+                    f"but JSON sidecar specifies UUID {json_uuid}."
                 )
 
             if existing_by_uuid and existing_by_uuid.filename != str(image_path):
                 logger.warning(
-                    f"Conflict: UUID {incoming_uuid} already belongs to file '{existing_by_uuid.filename}'. "
+                    f"Conflict: UUID {json_uuid} already belongs to file '{existing_by_uuid.filename}'. "
                     f"The sidecar at '{image_path}' is claiming a UUID used elsewhere."
                 )
-            temp_image = Image(
-                uuid=incoming_uuid or str(uuid4()), filename=str(image_path), metadata_json=metadata_dict
+
+            temp_image = ImageRecord(
+                uuid=json_uuid or str(uuid4()),
+                filename=str(image_path),
+                bboxes=bboxes,
+                metadata_json=metadata_dict,
             )
 
             db_image = await session.merge(temp_image)
@@ -125,31 +132,49 @@ class DbClient:
             await session.refresh(db_image)
             return db_image
 
-    async def read_image_metadata_from_json(self, json_path: Path) -> Optional[ImageRead]:
+    async def read_image_metadata_from_json(self, json_path: Path) -> Optional[ImageRecordRead]:
         """Reads image metadata from a side JSON file"""
         if not json_path.exists():
             return None
 
         try:
             data = jstyleson.loads(json_path.read_text())
-            return ImageRead.model_validate(data)
+            return ImageRecordRead.model_validate(data)
         except Exception as e:
             logger.error(f"Error parsing sidefile {json_path}: {e}")
             return None
 
-    async def get_image_by_uuid(self, uuid: str) -> Optional[Image]:
+    async def get_image_by_uuid(self, uuid: str) -> Optional[ImageRecord]:
         """Retrieve a full Image object by its UUID."""
         async with self._async_session_maker() as session:
-            return await session.get(Image, uuid)
+            stmt = (
+                select(ImageRecord)
+                .where(ImageRecord.uuid == uuid)
+                .options(
+                    selectinload(ImageRecord.bboxes).selectinload(BBox.label),
+                    selectinload(ImageRecord.bboxes).selectinload(BBox.tags),
+                )
+            )
+            result = await session.execute(stmt)
+            return result.scalar_one_or_none()
 
-    async def get_image_by_filename(self, filename: Path) -> Optional[Image]:
+    async def get_image_by_filename(self, filename: Path) -> Optional[ImageRecord]:
         """Retrieve the full Image object by its filename."""
         async with self._async_session_maker() as session:
-            statement = select(Image).where(Image.filename == str(filename))
+            statement = (
+                select(ImageRecord)
+                .where(ImageRecord.filename == str(filename))
+                .options(
+                    selectinload(ImageRecord.bboxes).options(
+                        selectinload(BBox.label),
+                        selectinload(BBox.tags),
+                    )
+                )
+            )
             result = await session.execute(statement)
             return result.scalar_one_or_none()
 
-    async def add_image(self, filename: Path, metadata_json: Optional[Dict[str, Any]] = None) -> Image:
+    async def add_image(self, filename: Path, metadata_json: Optional[Dict[str, Any]] = None) -> ImageRecord:
         """
         Add a new image record or return existing object if filename exists.
 
@@ -158,7 +183,7 @@ class DbClient:
         """
         async with self._async_session_maker() as session:
             # Check for existing image to prevent UniqueConstraint errors
-            statement = select(Image).where(Image.filename == str(filename))
+            statement = select(ImageRecord).where(ImageRecord.filename == str(filename))
             result = await session.execute(statement)
             existing_image = result.scalar_one_or_none()
 
@@ -166,24 +191,24 @@ class DbClient:
                 return existing_image
 
             # Create new record
-            new_image = Image(uuid=str(uuid4()), filename=str(filename), metadata_json=metadata_json or {})
+            new_image = ImageRecord(uuid=str(uuid4()), filename=str(filename), metadata_json=metadata_json or {})
 
             session.add(new_image)
             await session.commit()
             await session.refresh(new_image)
             return new_image
 
-    async def list_images(self, limit: int = 100, offset: int = 0) -> List[Image]:
+    async def list_images(self, limit: int = 100, offset: int = 0) -> List[ImageRecord]:
         """List images with basic pagination."""
         async with self._async_session_maker() as session:
-            statement = select(Image).offset(offset).limit(limit)
+            statement = select(ImageRecord).offset(offset).limit(limit)
             result = await session.execute(statement)
             return result.scalars().all()
 
     async def delete_image(self, image_uuid: str) -> bool:
         """Delete an image by UUID. BBoxes will be deleted via CASCADE."""
         async with self._async_session_maker() as session:
-            db_image = await session.get(Image, image_uuid)
+            db_image = await session.get(ImageRecord, image_uuid)
             if not db_image:
                 return False
 

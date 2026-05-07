@@ -20,7 +20,7 @@ export class BboxInfoField extends Field {
   /**
    * @typedef {Object} BboxInfoFieldCreateOptions
    * @property {import('@app_types').BboxGroup} bboxGroup
-   * @property {import('@web_api').ClassMetadata[]} classes
+   * @property {import('@web_api').LabelMetadata[]} labels
    * @property {any[]} [value] - Optional initial selected values.
    *
    * @property {Object.<string, any>} [rest] - Additional parameters passed to Field.
@@ -32,16 +32,17 @@ export class BboxInfoField extends Field {
    * @param {BboxInfoFieldCreateOptions} options
    * @returns {Promise<BboxInfoField>}
    */
-  static async create({ bboxGroup, classes, value = [], ...rest }) {
+  static async create({ bboxGroup, labels, value = [], ...rest }) {
+    //** @type {BboxInfoField} */
     const instance = new BboxInfoField({ value, ...rest });
     instance._bboxGroup = bboxGroup;
 
     const schema = {
-      "classUuid": {
-        "label": "Class",
-        "type": "class",
+      "labelUuids": {
+        "label": "Label",
+        "type": "label",
         "required": true,
-        "description": "Class of selected bbox",
+        "description": "Label of selected bbox",
       },
       "tagUuids": {
         "label": "Tags",
@@ -52,8 +53,8 @@ export class BboxInfoField extends Field {
     };
 
     const schema_values = {
-      classUuid: instance._bboxGroup.metadata.runtimeBboxInfo.classUuid,
-      tagUuids: instance._bboxGroup.metadata.runtimeBboxInfo.tagUuids
+      labelUuid: instance._bboxGroup.metadata.bboxInfo.labelUuid,
+      tagUuids: instance._bboxGroup.metadata.bboxInfo.tagUuids
     };
     instance._schemaField = await SchemaField.create({ schema: schema ?? {}, values: schema_values });
 

@@ -65,8 +65,8 @@ export function renderBboxInspector({ bboxUuid = null, target = 'tab-inspector',
               Logger.error(`No bbox found for UUID: ${bboxUuid}`);
               return;
             }
-            bboxGroup.updateMetadata({ classUuid: val.bbox_info.classUuid, tagUuids: val.bbox_info.tagUuids });
-            appState.imageTagging.updateCanvasBbox(bboxGroup);
+            bboxGroup.updateMetadata({ class_uuid: val.bbox_info.class_uuid, tagUuids: val.bbox_info.tagUuids });
+            appState.imageTagging.updateCanvasBboxView(bboxGroup);
             await refreshCanvas(appState.imageTagging);
           },
           onCancel: () => {
