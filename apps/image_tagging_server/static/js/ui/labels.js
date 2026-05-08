@@ -1,4 +1,3 @@
-import { appState } from '../app/state.js';
 import { getTool } from '../app/image-tagging/canvas/tools.js';
 import { clearLabelsCache, createNewLabel, deleteLabel, fetchLabels, updateLabel, } from '/app-static/js/shared/api/labels.js';
 import { EditableField, TextBoxColorField } from '/app-static/js/ui/utils/fields/index.js';

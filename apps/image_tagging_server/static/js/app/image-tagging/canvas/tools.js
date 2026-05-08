@@ -1,15 +1,14 @@
-import { appState } from '../../state.js';
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
 
 // Clear selection implementation
 export function clearSelection() {
-  const transformer = appState.imageTagging.canvas.transformer;
+  const transformer = state.imageTagging.canvas.transformer;
   if (transformer) {
     transformer.nodes([]);
     transformer.getLayer()?.draw();
   }
-  appState.imageTagging.setSelectedBboxUuid(null);
-  appState.imageTagging?.canvas?.stage?.batchDraw();
+  state.imageTagging.setSelectedBboxUuid(null);
+  state.imageTagging?.canvas?.stage?.batchDraw();
 }
 
 // Set the current tool, update UI and cursor

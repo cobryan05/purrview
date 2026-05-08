@@ -6,9 +6,9 @@ let _initialized = false;
 let browser = null;
 
 /**
- * @param {import('@image_tagging_types').ImageTaggingState} state
+ * @param {import('@image_tagging_types').ImageTaggingRuntime} runtime
  */
-export async function init(state) {
+export async function init(runtime) {
   if (_initialized) {
       browser.rerender();
       return;
@@ -21,7 +21,7 @@ export async function init(state) {
   browser = new FileBrowser({
     container,
     initialPath: '/',
-    fileNavigation: state.fileNavigation,
+    fileNavigation: runtime.fileNavigation,
     filter: entry => entry.type === 'dir' || entry.name.match(/\.(jpg|jpeg|png)$/i),
     onFileClick: (entry, dirPath) => {
       const imageName =

@@ -7,21 +7,22 @@ import { setupWorkspaceTabs } from '/app-static/js/app/utils/tabs.js';
 
 
 /**
- * @param {import('@image_tagging_types').ImageTaggingState} state
+ * @param {import('@image_tagging_types').ImageTaggingRuntime} runtime
+ * @param {HTMLElement} tab_pane
  */
-export async function init(state) {
-  if( !state.fileNavigation ) {
-    state.fileNavigation = new FileNavigation();
-  }
-  const { container, activateTab } = setupWorkspaceTabs("#tab-image-tagging", tabName => {
+export async function init(runtime, tab_pane) {
+  runtime.setImageTaggingPane(tab_pane);
+  runtime.setFileNavigation(new FileNavigation());
+
+  const { container, activateTab } = setupWorkspaceTabs("#tab-image-tagging", (tabName, button, pane)  => {
     if (tabName === 'tab-files') {
-      initFiles(state);
+      initFiles(runtime);
     }
   });
 
-  await Promise.all([initCanvas(state), initSidebar(state), initToolbar(state)]);
+  await Promise.all([initCanvas(runtime), initSidebar(runtime), initToolbar(runtime)]);
 
   // activate default workspace tab
-  const defaultTabBtn = container?.querySelector('.workspace-tab-button');
+  const defaultTabBtn = tab_pane?.querySelector('.workspace-tab-button');
   if (defaultTabBtn) defaultTabBtn.click();
 }

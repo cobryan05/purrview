@@ -24,7 +24,6 @@
  * @property {string} uuid
  * @property {string} filename
  * @property {Map<string, UIBbox>} bboxes
- * @property {string|null} selectedBBoxId
  * @property {boolean} dirty
  *
  * @property {HTMLImageElement} img

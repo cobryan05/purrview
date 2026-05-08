@@ -1,5 +1,4 @@
 import { refreshCanvas } from '../app/image-tagging/canvas/image.js'; // TODO: Better way?
-import { appState } from '../app/state.js';
 import { BboxInfoField, EditableField } from '/app-static/js/ui/utils/fields/index.js';
 import { createGenericRow, Logger } from '/app-static/js/ui/utils/index.js';
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';

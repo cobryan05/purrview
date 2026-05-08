@@ -6,7 +6,7 @@ import { renderTagList } from '/app-static/js/ui/tags.js';
 import { renderActiveTasks, renderTaskConfigs } from '/app-static/js/ui/tasks.js';
 
 export async function init() {
-  const { container, activateTab } = setupWorkspaceTabs("#tab-configuration", tabName => {
+  const { container, activateTab } = setupWorkspaceTabs("#tab-configuration", (tabName, button, pane) => {
     if (tabName === 'tab-tag-management') {
       renderLabelList({ target: "labels-list" });
       renderTagList({ target: "tags-list" });

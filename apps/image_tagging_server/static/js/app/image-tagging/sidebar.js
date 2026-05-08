@@ -1,4 +1,3 @@
-import { appState } from '../state.js';
 import { setTool, parseToolUuid } from './canvas/tools.js';
 import { setupSidebarTabs } from '/app-static/js/app/utils/tabs.js';
 import { clearModelsCache, fetchModelsList } from '/app-static/js/shared/api/models.js';
@@ -10,17 +9,17 @@ import { Logger } from '/app-static/js/ui/utils/index.js';
 let _modelsInit = false;
 
 /**
- * @param {import('@image_tagging_types').ImageTaggingState} state
+ * @param {import('@image_tagging_types').ImageTaggingRuntime} runtime
  */
-export async function init(state) {
+export async function init(runtime) {
   // Setup sidebar tabs (Models / Labels / Annotations / Inspector)
-  const { container, activateTab } = setupSidebarTabs('#sidebar', async (tabName) => {
+  const { container, activateTab } = setupSidebarTabs('#sidebar', async (tabName, button, pane) => {
     if (tabName === 'tab-labels-tool') {
       renderLabelList({
         target: "labels-tool-list",
         editable: false,
         clickable: true,
-        onSelectCallback: uuid => setTool(state, `bbox:${uuid}`)
+        onSelectCallback: uuid => setTool(runtime.state, `bbox:${uuid}`)
       });
     } else if (tabName === 'tab-models') {
       if (!_modelsInit) {
@@ -45,7 +44,7 @@ export async function init(state) {
     const toolInfo = parseToolUuid(tool);
     if (toolInfo.tool === 'bbox') {
       activateTab('tab-labels-tool');
-      const uuid = toolInfo.uuid ?? appState.imageTagging.currentLabelUuid;
+      const uuid = toolInfo.uuid ?? state.currentLabelUuid;
 
       // If there is no currently selected label then select the first one
       if (!uuid) {

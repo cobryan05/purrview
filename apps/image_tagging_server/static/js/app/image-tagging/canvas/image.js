@@ -17,10 +17,10 @@ export async function reloadImage(state) {
 }
 
 /**
- * @param {import('@image_tagging_types').ImageTaggingState} state
+ * @param {import('@image_tagging_types').ImageTaggingRuntime} runtime
  * @param {string} imageName
  */
-export async function loadImageOntoCanvas(state, imageName) {
+export async function loadImageOntoCanvas(runtime, imageName) {
   Logger.debug('loadImageOntoCanvas called with imageName:', imageName);
 
   // Create a new load id and invalidate all previous loads
@@ -28,15 +28,16 @@ export async function loadImageOntoCanvas(state, imageName) {
   /** @type {import('@domain_image').UIImage} */
   const imageInfo = await fetchImage(imageName);
 
-  // If another load started while we waited → abort
+  // If another load started while we waited abort
   if (loadId !== _activeImageLoadId) {
     Logger.debug('Discarding stale image load for', imageName);
     return;
   }
 
-  clearAnnotations(state);
-  state.setImage(imageInfo);
-  await refreshCanvas(state);
+  runtime.setImage(imageInfo);
+  // clearAnnotations(state);
+  // state.setImage(imageInfo);
+  // await refreshCanvas(state);
 }
 
 /**

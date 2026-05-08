@@ -31,8 +31,6 @@ export function imageRecordToUI(imageRecord, img) {
     filename: imageRecord.filename,
     img: img,
     bboxes: bboxMap,
-
-    selectedBBoxId: null,
     dirty: false,
   };
 }

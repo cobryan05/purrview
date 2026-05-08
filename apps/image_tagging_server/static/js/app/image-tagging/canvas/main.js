@@ -2,10 +2,9 @@ import {
   addInferenceResults,
   clearAnnotations,
   deleteSelected,
-  exportAnnotations,
   loadImageOntoCanvas,
   reloadImage,
-  saveAnnotations,
+  saveAnnotations
 } from './image.js';
 import {
   handleClick,
@@ -13,21 +12,25 @@ import {
   handleMouseDown,
   handleMouseMove,
   handleMouseUp,
-  handleWheel,
+  handleResize,
+  handleWheel
 } from './interaction.js';
-import { runInference } from '/app-static/js/shared/api/inference.js';
 import { setTool } from './tools.js';
+import { runInference } from '/app-static/js/shared/api/inference.js';
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
 import { Logger } from '/app-static/js/ui/utils/index.js';
 
 /**
- * @param {import('@image_tagging_types').ImageTaggingState} state
+ * @param {import('@image_tagging_types').ImageTaggingRuntime} runtime
  */
-export async function init(state) {
+export async function init(runtime) {
   // Initialize stage and set default tool
-  const container = document.getElementById('draw-container');
-  state.initCanvas(container);
-  state.setTool('select');
+  const container = runtime.imageTaggingPane;
+  if (!container) {
+    Logger.error("Failed to find canvas container");
+    return;
+  }
+  runtime.setTool('select');
   // Expose functions globally for HTML onclick handlers
   Object.assign(window, {
     setTool,
@@ -38,21 +41,30 @@ export async function init(state) {
     loadImageAndMetadata: loadImageOntoCanvas,
   });
 
-  const stage = state.canvas.stage;
-  stage.on('mousedown', e => handleMouseDown(e, state));
-  stage.on('mousemove', e => handleMouseMove(e, state));
-  stage.on('mouseup', e => handleMouseUp(e, state));
-  stage.on('wheel', e => handleWheel(e, state));
-  stage.on('click', e => handleClick(e, state));
-  stage.on('contextmenu', e => handleContextMenu(e, state));
+  const stage = runtime.canvas.stage;
+  if (!stage) {
+    Logger.error('Failed to initialize canvas stage');
+    return;
+  }
+
+  stage.on('mousedown', e => handleMouseDown(e, runtime));
+  stage.on('mousemove', e => handleMouseMove(e, runtime));
+  stage.on('mouseup', e => handleMouseUp(e, runtime));
+  stage.on('wheel', e => handleWheel(e, runtime));
+  stage.on('click', e => handleClick(e, runtime));
+  stage.on('contextmenu', e => handleContextMenu(e, runtime));
 
   // Resize stage on window resize
-  window.addEventListener('resize', () => {
-    const container = document.getElementById('draw-container');
-    stage.width(container.clientWidth);
-    stage.height(container.clientHeight);
-    stage.draw();
-  });
+  window.addEventListener('resize', e => { handleResize(e, runtime); });
+  // if (container) {
+  //   stage.width(container.clientWidth);
+  //   stage.height(container.clientHeight);
+  //   stage.draw();
+  // } else {
+  //   Logger.warn('Failed to resize canvas stage');
+  // }
+
+  //});
 
 
   events.subscribe(EventTypes.CANVAS_BBOX_CLICKED, ({ bboxId }) => {
@@ -79,9 +91,9 @@ export async function init(state) {
   });
 
   events.subscribe(EventTypes.LOAD_IMAGE_ONTO_CANVAS, ({ path, showCanvas }) => {
-    loadImageOntoCanvas(state, path);
+    loadImageOntoCanvas(runtime, path);
     if (showCanvas) {
-       events.publish(EventTypes.SHOW_CANVAS);
+      events.publish(EventTypes.SHOW_CANVAS);
     }
   });
 }

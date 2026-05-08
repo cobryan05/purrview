@@ -1,4 +1,17 @@
 // @ts-check
+
+/**
+  @param {HTMLElement} container
+  @returns {import('@canvas_types').ImageTaggingState}
+ */
+export function createImageTaggingState(container) {
+  const stage = new Konva.Stage({
+    container: container,
+    width: container.clientWidth,
+    height: container.clientHeight,
+  });
+
+
 import { canvasState } from './canvas/state.js';
 import { Logger } from '/app-static/js/ui/utils/index.js';
 

@@ -6,13 +6,13 @@
  * @typedef {import('@konva').default.Group} Group
  */
 
-/**
- * @typedef {Object} CanvasState
- * @property {Stage|null} stage
- * @property {Layer|null} layer
- * @property {Transformer|null} transformer
- * @property {Map<string,BboxView>} bboxes
- */
+// /**
+//  * @typedef {Object} CanvasState
+//  * @property {HTMLElement} container
+//  * @property {Stage|null} stage
+//  * @property {Layer|null} layer
+//  * @property {Transformer|null} transformer
+//  */
 
 /**
  * @typedef {Object} ToolState

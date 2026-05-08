@@ -3,7 +3,7 @@
  * @param {HTMLElement|string} containerOrSelector - container or selector
  * @param {string} buttonSelector - CSS selector for tab buttons
  * @param {string} paneSelector - CSS selector for tab panes
- * @param {(tabName: string, button?: HTMLElement) => void} [onTabChange] - callback
+ * @param {(tabName: string, button?: HTMLElement, pane?: HTMLElement) => void} [onTabChange] - callback
  * @returns {{container: HTMLElement|null, activateTab: (tabName: string) => void}}
  */
 function setupTabs(containerOrSelector, buttonSelector, paneSelector, onTabChange) {
@@ -37,7 +37,7 @@ function setupTabs(containerOrSelector, buttonSelector, paneSelector, onTabChang
     const pane = container.querySelector(`#${tabName}`);
     if (pane) pane.classList.add('active');
 
-    onTabChange?.(tabName, button);
+    onTabChange?.(tabName, button, pane);
   }
 
   // attach click listeners
