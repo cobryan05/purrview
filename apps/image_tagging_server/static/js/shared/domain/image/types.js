@@ -22,6 +22,7 @@
 /**
  * @typedef {Object} UIImage
  * @property {string} uuid
+ * @property {string} image_path
  * @property {string} filename
  * @property {Map<string, UIBbox>} bboxes
  * @property {boolean} dirty

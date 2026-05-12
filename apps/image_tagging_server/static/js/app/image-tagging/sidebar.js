@@ -19,7 +19,8 @@ export async function init(runtime) {
         target: "labels-tool-list",
         editable: false,
         clickable: true,
-        onSelectCallback: uuid => setTool(runtime.state, `bbox:${uuid}`)
+        onSelectCallback: uuid => setTool(runtime, `bbox:${uuid}`),
+        selectedLabelUuid: runtime.labelUuid
       });
     } else if (tabName === 'tab-models') {
       if (!_modelsInit) {
@@ -43,8 +44,8 @@ export async function init(runtime) {
     // Switch to the Labels tab if the tool is BBox
     const toolInfo = parseToolUuid(tool);
     if (toolInfo.tool === 'bbox') {
+      const uuid = toolInfo.uuid ?? runtime.state.currentLabelUuid;
       activateTab('tab-labels-tool');
-      const uuid = toolInfo.uuid ?? state.currentLabelUuid;
 
       // If there is no currently selected label then select the first one
       if (!uuid) {

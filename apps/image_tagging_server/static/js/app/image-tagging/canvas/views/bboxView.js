@@ -6,16 +6,15 @@ export class BboxView extends Konva.Group {
 
   /**
    * @param {import('@domain_image').UIBbox} uiBBox
-   * @param {number} scaleWidth - To convert normalized -> pixels
-   * @param {number} scaleHeight - To convert normalized -> pixels
+   * @param {import('@image_tagging_types').ViewportTransform} viewport
    */
-  constructor(uiBBox, scaleWidth, scaleHeight) {
+  constructor(uiBBox, viewport) {
     // Initialize Konva.Group
     super({
-      x: uiBBox.x * scaleWidth,
-      y: uiBBox.y * scaleHeight,
-      width: uiBBox.width * scaleWidth,
-      height: uiBBox.height * scaleHeight,
+      x: uiBBox.x * viewport.imageWidth * viewport.scale,
+      y: uiBBox.y * viewport.imageHeight * viewport.scale,
+      width: uiBBox.width * viewport.imageWidth * viewport.scale,
+      height: uiBBox.height * viewport.imageHeight * viewport.scale,
       draggable: true,
       name: 'annotation',
       id: uiBBox.uuid
@@ -27,7 +26,7 @@ export class BboxView extends Konva.Group {
     this._rect = new Konva.Rect({
       width: this.width(),
       height: this.height(),
-      stroke: 'grey',
+      stroke: uiBBox.label?.color || 'grey',
       strokeWidth: 2,
       name: 'box',
       strokeScaleEnabled: false
@@ -35,6 +34,7 @@ export class BboxView extends Konva.Group {
 
     this._text = new Konva.Text({
       text: uiBBox.label?.text || 'Loading...',
+      fill: uiBBox.label?.color || 'grey',
       fontSize: 14,
       y: -18,
       name: 'label'
@@ -49,9 +49,6 @@ export class BboxView extends Konva.Group {
   /** @private */
   _setupEvents() {
     this.on('dragend transformend', () => {
-      this.uiBBox.isDirty = true;
-
-      // Logic for snapping/updating normalized data would go here
       const scaleX = this.scaleX();
       const scaleY = this.scaleY();
       const newWidth = this.width() * scaleX;
@@ -78,5 +75,16 @@ export class BboxView extends Konva.Group {
 
     // Safety check if the layer exists to redraw
     this.getLayer()?.batchDraw();
+  }
+
+  /**
+ * @param {number} width
+ * @param {number} height
+ */
+  updateSize(width, height) {
+    // Adjust text position or scale here too?
+    this.width(width);
+    this.height(height);
+    this._rect.size({ width, height });
   }
 }

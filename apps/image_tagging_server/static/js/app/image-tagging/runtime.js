@@ -15,6 +15,8 @@ export function createImageTaggingRuntime() {
   let _fileNavigation = null;
   /** @type {string} */
   let _currentTool = 'select';
+  /** @type {string|null} */
+  let _currentLabelUuid = null;
   /** @type {HTMLElement | null} */
   let _pane = null;
   /** @type {ViewportTransform|null} */
@@ -62,16 +64,23 @@ export function createImageTaggingRuntime() {
   function clearBboxes() {
   }
 
+  /** @param {string|null} uuid */
+  function setLabelUuid(uuid) {
+    _currentLabelUuid = uuid;
+  }
 
   return {
     get state() { return _imgTaggingState; },
     get canvas() { return _canvasState; },
     get imageTaggingPane() { return _pane; },
     get fileNavigation() { return _fileNavigation; },
+    get tool() { return _currentTool; },
+    get labelUuid() { return _currentLabelUuid; },
 
     setImageTaggingPane,
     setFileNavigation,
     setTool,
+    setLabelUuid,
     setImage,
     clearBboxes,
   };

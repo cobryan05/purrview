@@ -44,8 +44,9 @@
  * @property {import('@ui_types').FileNavigation|null} fileNavigation
  *
  * @property {(tool:string) => void} setTool
- * @property {() => string} getTool
+ * @property {string|null} tool
  * @property {(uuid:string) => void} setLabelUuid
+ * @property {string|null} labelUuid
  * @property {(image:UIImage) => void} setImage
  * @property {(uuid:string) => void} setSelectedBboxUuid
  *

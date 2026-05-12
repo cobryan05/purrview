@@ -1,6 +1,7 @@
 import { Logger } from '../../../ui/utils/logging.js';
 import { generateUUID } from '../../../ui/utils/utils.js';
 import { BboxView } from '/app-static/js/app/image-tagging/canvas/views/bboxView.js';
+import { createUIBBbox } from '/app-static/js/shared/domain/image/mapper.js';
 import { clearSelection, setTool } from './tools.js';
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
 import { setCanvasViewport } from './manager.js';
@@ -68,12 +69,12 @@ function getPointerPosition(canvasState) {
 
 /** Return bbox group under pointer, if any
  *
- * @param {import('@image_tagging_types').ImageTaggingState} state - The image tagging state for this canvas.
+ * @param {import('@image_tagging_types').ImageTaggingRuntime} runtime - The image tagging runtime for this canvas.
  * @param {{x: number, y: number}} pos - The pointer position in canvas coordinates.
  * @returns {import('@canvas_types').BboxView|null} The bbox view under the pointer, or null if none.
  */
-function findGroupAtPoint(state, pos) {
-  const layer = state.canvas.layer;
+function findGroupAtPoint(runtime, pos) {
+  const layer = runtime.canvas.layer;
   const children = layer.getChildren(node => node.name() === 'annotation');
   for (const group of children) {
     const rect = group.getClientRect({ relativeTo: layer });
@@ -92,11 +93,14 @@ function findGroupAtPoint(state, pos) {
  */
 export async function handleMouseDown(e, runtime) {
   const stage = runtime.canvas.stage;
+  const background = runtime.canvas?.backgroundImage;
   const layer = runtime.canvas.layer;
+
   if (!stage || !layer) {
     Logger.error("No canvas!");
     return;
   }
+
   // Middle mouse: start panning
   if (e.evt.button === 1) {
     _isPanning = true;
@@ -106,12 +110,9 @@ export async function handleMouseDown(e, runtime) {
     return;
   }
 
-  if (e.evt.button !== 0 || _isPanning) return;
+  if (e.evt.button !== 0 || _isPanning || runtime.tool === 'select') return;
 
-  const currentTool = state.currentTool;
-  if (currentTool === 'select') return;
-
-  const pos = getPointerPosition(state);
+  const pos = getPointerPosition(runtime.canvas);
   if (!pos) return;
 
   _startPos = pos;
@@ -160,10 +161,17 @@ export async function handleMouseMove(e, runtime) {
   const dy = pos.y - _startPos.y;
   if (!_pendingDraggedBbox && (dx * dx + dy * dy) > BBOX_MIN_PX ** 2) {
     /** @type {import('@web_api').BoundingBoxMetadataModel} */
-    const emptyBbox = { x: pos.x, y: pos.y, width: 1, height: 1, labelUuid: state.currentLabelUuid, uuid: generateUUID() };
-    _pendingDraggedBbox = new CanvasBboxGroup(emptyBbox, state);
+    const emptyBbox = { x: pos.x, y: pos.y, width: 1, height: 1, labelUuid: runtime.state?.currentLabelUuid, uuid: generateUUID() };
+    _pendingDraggedBbox = createUIBBbox({
+      x: _startPos.x,
+      y: _startPos.y,
+      width: dx,
+      height: dy,
+      labelUuid: runtime.state?.currentLabelUuid,
+      uuid: generateUUID()
+    });
     if (_pendingDraggedBbox) {
-      state.updateCanvasBboxView(_pendingDraggedBbox);
+      runtime.state.updateCanvasBboxView(_pendingDraggedBbox);
       layer.add(_pendingDraggedBbox);
     }
   }
@@ -184,8 +192,7 @@ export async function handleMouseMove(e, runtime) {
  * @returns {Promise<void>}
  */
 export async function handleMouseUp(e, runtime) {
-  const currentTool = runtime.state.currentTool;
-  const isSelectTool = currentTool === 'select';
+  const isSelectTool = runtime.tool === 'select';
   runtime.canvas.stage.container().style.cursor =
     isSelectTool ? 'default' : 'crosshair';
 
@@ -210,8 +217,8 @@ export async function handleMouseUp(e, runtime) {
     _pendingDraggedBbox = null;
   }
 
-  const pos = getPointerPosition(state);
-  const hitGroup = findGroupAtPoint(state, pos);
+  const pos = getPointerPosition(runtime.canvas);
+  const hitGroup = findGroupAtPoint(runtime, pos);
 
   const now = Date.now();
   const timeDelta = now - _lastClickTime;

@@ -71,7 +71,7 @@ export async function fetchImage(path) {
     img.onerror = () => reject(new Error(`Failed to decode base64 image for ${path}`));
   });
 
-  const ret = imageRecordToUI(imageRes.image, img);
+  const ret = imageRecordToUI(imageRes.image, img, path);
   return ret;
 }
 

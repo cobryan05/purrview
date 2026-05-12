@@ -9,12 +9,9 @@ const DEFAULT_COLOR = '#cccccc';
  * Highlights a label visually in the list
  * @param {string|null} selectedUuid
  */
-function highlightSelectedLabel(selectedUuid = null) {
-  const currentTool = getTool(appState.imageTagging);
-  const selected = selectedUuid ?? (currentTool.startsWith('bbox:') ? currentTool.split(':')[1] : null);
-
+function highlightLabelUuid(selectedUuid = null) {
   document.querySelectorAll('#labels-tool-list .label-row').forEach(row => {
-    row.style.outline = row.dataset.uuid === selected ? '2px solid #ff0033' : '';
+    row.style.outline = row.dataset.uuid === selectedUuid ? '2px solid #ff0033' : '';
   });
 }
 
@@ -125,7 +122,7 @@ function renderLabel(label, childrenByParent, container, indentLevel, editable, 
       // Prevent selection if clicking buttons/inputs
       if (e.target.closest('button, input')) return;
       onSelectCallback(uuid);
-      highlightSelectedLabel(uuid);
+      highlightLabelUuid(uuid);
     };
   }
 
@@ -143,7 +140,7 @@ function renderLabel(label, childrenByParent, container, indentLevel, editable, 
 /**
  * Renders all labels into a container
  */
-export async function renderLabelList({ target = 'labels-list', editable = true, onSelectCallback = null } = {}) {
+export async function renderLabelList({ target = 'labels-list', selectedLabelUuid = null, editable = true, onSelectCallback = null } = {}) {
   try {
     const targetElement = document.getElementById(target);
     if (!targetElement) {
@@ -161,7 +158,7 @@ export async function renderLabelList({ target = 'labels-list', editable = true,
     container.style.minWidth = '0';
     targetElement.appendChild(container);
 
-    const rerender = () => renderLabelList({ target, editable, onSelectCallback });
+    const rerender = () => renderLabelList({ target, selectedLabelUuid, editable, onSelectCallback });
 
     // Fetch and Build Hierarchy Lookup
     const labelsMap = await fetchLabels();
@@ -237,8 +234,7 @@ export async function renderLabelList({ target = 'labels-list', editable = true,
     }
 
     // Highlight selected label if exists
-    const selectedLabelUuid = appState.imageTagging.currentLabelUuid;
-    if (selectedLabelUuid) highlightSelectedLabel(selectedLabelUuid);
+    if (selectedLabelUuid) highlightLabelUuid(selectedLabelUuid);
 
   } catch (err) {
     console.error('Failed to render labels:', err);

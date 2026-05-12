@@ -5,15 +5,15 @@ import { Logger, toast } from '/app-static/js/ui/utils/index.js';
 let _activeImageLoadId = 0;
 
 /**
- * @param {import('@image_tagging_types').ImageTaggingState} state
+ * @param {import('@image_tagging_types').ImageTaggingRuntime} runtime
  */
-export async function reloadImage(state) {
-  const imageName = state.image.name;
+export async function reloadImage(runtime) {
+  const imageName = runtime.state.image?.image_path;
   if (!imageName) {
     Logger.notify('No image loaded to reload');
     return;
   }
-  await loadImageOntoCanvas(state, imageName);
+  await loadImageOntoCanvas(runtime, imageName);
 }
 
 /**
@@ -35,9 +35,6 @@ export async function loadImageOntoCanvas(runtime, imageName) {
   }
 
   runtime.setImage(imageInfo);
-  // clearAnnotations(state);
-  // state.setImage(imageInfo);
-  // await refreshCanvas(state);
 }
 
 /**
