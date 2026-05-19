@@ -13,22 +13,31 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
+from pydantic.alias_generators import to_camel
 
 from apps.db_server.manager import Manager
 from apps.helpers.consts import ApiTags, JsonKeys, JsonValues
-from apps.helpers.db.types import ImageRecordRead, LabelUpdate, Tag, TagBase, TagKind, TagUpdate, Label, LabelUpdate
+from apps.helpers.db.types import ImageRecordRead, LabelUpdate, Tag, TagBase, TagUpdate, Label, LabelUpdate
+from apps.helpers.db.types import BBoxUpdate, ImageRecordUpdate
 from apps.helpers.types import (
     Base64Image,
+    BoundingBoxMetadataModel,
     FileEntry,
-    FileEntryModel,
     SourceMetadata,
     SourceMetadataModel,
     StatusResponse,
 )
 
-class UpdateMetadataPayload(BaseModel):
-    pass
+
+class ApiPayload(BaseModel):
+    model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)
+
+
+class UpdateMetadataPayload(ApiPayload):
+    image_path: str
+    boxes: List[BoundingBoxMetadataModel] = Field(default_factory=list)
+    extra: Optional[Any] = None
 
 
 logging.basicConfig(stream=sys.stdout)
@@ -39,7 +48,7 @@ logger.setLevel(logging.DEBUG)
 ########
 # Labels
 ########
-class AddLabelPayload(BaseModel):
+class AddLabelPayload(ApiPayload):
     name: str
     color: str
     parent_uuid: Optional[str] = None
@@ -49,7 +58,7 @@ class AddLabelResponse(StatusResponse):
     label: Optional[Label] = None
 
 
-class DeleteLabelPayload(BaseModel):
+class DeleteLabelPayload(ApiPayload):
     label_uuid: str
 
 
@@ -57,7 +66,7 @@ class DeleteLabelResponse(StatusResponse):
     pass
 
 
-class ListLabelsPayload(BaseModel):
+class ListLabelsPayload(ApiPayload):
     pass
 
 
@@ -65,7 +74,7 @@ class ListLabelsResponse(StatusResponse):
     labels: List[Label] = Field(default_factory=list)
 
 
-class UpdateLabelPayload(BaseModel):
+class UpdateLabelPayload(ApiPayload):
     label_uuid: str
     name: Optional[str] = None
     color: Optional[str] = None
@@ -79,18 +88,14 @@ class UpdateLabelResponse(StatusResponse):
 # Tags
 ########
 class AddTagPayload(TagBase):
-    """
-    Payload for adding a new tag, inherits from TagBase
-    """
-
-    pass
+    model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)  # type: ignore[assignment]
 
 
 class AddTagResponse(StatusResponse):
     tag: Optional[Tag] = None
 
 
-class DeleteTagPayload(BaseModel):
+class DeleteTagPayload(ApiPayload):
     tag_uuid: str
 
 
@@ -98,7 +103,7 @@ class DeleteTagResponse(StatusResponse):
     pass
 
 
-class ListTagsPayload(BaseModel):
+class ListTagsPayload(ApiPayload):
     pass
 
 
@@ -106,7 +111,7 @@ class ListTagsResponse(StatusResponse):
     tags: List[Tag] = Field(default_factory=list)
 
 
-class UpdateTagPayload(BaseModel):
+class UpdateTagPayload(ApiPayload):
     tag_uuid: str
     data: TagUpdate
 
@@ -118,7 +123,7 @@ class UpdateTagResponse(StatusResponse):
 ########
 # Image Providers
 ########
-class GetImageProviderSchemaPayload(BaseModel):
+class GetImageProviderSchemaPayload(ApiPayload):
     image_provider: str
 
 
@@ -126,7 +131,7 @@ class GetImageProviderSchemaResponse(StatusResponse):
     image_provider_schema: Optional[dict] = None
 
 
-class ListImageProvidersPayload(BaseModel):
+class ListImageProvidersPayload(ApiPayload):
     pass
 
 
@@ -137,7 +142,7 @@ class ListImageProvidersResponse(StatusResponse):
 ########
 # Sources
 ########
-class CreateSourcePayload(BaseModel):
+class CreateSourcePayload(ApiPayload):
     source_name: str
     image_provider: str
     provider_params: dict
@@ -147,7 +152,7 @@ class CreateSourceResponse(StatusResponse):
     source: Optional[SourceMetadataModel] = None
 
 
-class DeleteSourcePayload(BaseModel):
+class DeleteSourcePayload(ApiPayload):
     source_uuids: List[str]
 
 
@@ -155,7 +160,7 @@ class DeleteSourceResponse(StatusResponse):
     pass
 
 
-class GetSourcesPayload(BaseModel):
+class GetSourcesPayload(ApiPayload):
     pass
 
 
@@ -163,7 +168,7 @@ class GetSourcesResponse(StatusResponse):
     sources: dict[str, SourceMetadataModel] = Field(default_factory=dict)
 
 
-class UpdateSourcePayload(BaseModel):
+class UpdateSourcePayload(ApiPayload):
     source_name: str
     source_uuid: str
     image_provider: str
@@ -174,7 +179,7 @@ class UpdateSourceResponse(StatusResponse):
     source: Optional[SourceMetadataModel] = None
 
 
-class ListFilesPayload(BaseModel):
+class ListFilesPayload(ApiPayload):
     path: str = "/"
     pattern: Optional[str] = "*"
     recursive: Optional[bool] = False
@@ -184,7 +189,7 @@ class ListFilesResponse(StatusResponse):
     files: List[FileEntry] = []
 
 
-class GetImageMetadataPayload(BaseModel):
+class GetImageMetadataPayload(ApiPayload):
     image_path: str
 
 
@@ -196,7 +201,7 @@ class UpdateMetadataResponse(StatusResponse):
     image: Optional[ImageRecordRead] = None
 
 
-class GetFilePayload(BaseModel):
+class GetFilePayload(ApiPayload):
     path: str
 
 
@@ -567,33 +572,28 @@ class WebApp:
         )
         async def update_image_metadata(payload: UpdateMetadataPayload) -> UpdateMetadataResponse:
             image_path = payload.image_path
-            metadata = await self._manager.get_image_metadata(image_path)
-
-            if metadata is None:
+            existing = await self._manager.get_image_metadata(image_path)
+            if existing is None:
                 return UpdateMetadataResponse(status=JsonValues.FAILURE, message="Image not found")
 
-            # Build new bounding box list from input
-            new_boxes: List[BoundingBoxMetadata] = []
-            for b in payload.boxes:
-                new_boxes.append(
-                    BoundingBoxMetadata(
+            update = ImageRecordUpdate(
+                bboxes=[
+                    BBoxUpdate(
                         uuid=b.uuid,
                         label_uuid=b.label_uuid,
-                        tag_uuids=b.tag_uuids,
                         x=b.x,
                         y=b.y,
                         width=b.width,
                         height=b.height,
-                        extra=b.extra or {},
+                        tag_uuids=b.tag_uuids or [],
                     )
-                )
+                    for b in payload.boxes
+                    if b.label_uuid
+                ]
+            )
 
-            metadata.boxes = new_boxes
-            metadata.extra = payload.extra or {}
-
-            await self._manager.update_image_metadata(image_path, metadata)
-            model = ImageMetadataModel.from_dataclass(metadata)
-            return UpdateMetadataResponse(metadata=model)
+            updated = await self._manager.update_image_metadata(image_path, update)
+            return UpdateMetadataResponse(image=updated)
 
         @self._app.get(
             "/api/images/list",

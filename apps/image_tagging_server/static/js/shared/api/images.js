@@ -1,5 +1,4 @@
 // imagesApi.js
-import { Logger, generateUUID } from '/app-static/js/ui/utils/index.js';
 import { imageRecordToUI } from '/app-static/js/shared/domain/image/mapper.js';
 
 /**
@@ -58,12 +57,12 @@ export async function fetchImage(path) {
   /** @type {import('@web_api').GetFileResponse} */
   const imageRes = await res.json();
 
-  if (imageRes.status !== 'success' || !imageRes.image_base64) {
+  if (imageRes.status !== 'success' || !imageRes.imageBase64 || !imageRes.image) {
     throw new Error(`Invalid image API response for ${path}`);
   }
 
   const img = new Image();
-  img.src = `data:${imageRes.mime_type};base64,${imageRes.image_base64}`;
+  img.src = `data:${imageRes.mimeType ?? 'image/jpeg'};base64,${imageRes.imageBase64}`;
 
   // Block until the image is fully decoded so we have access to width/height
   await new Promise((resolve, reject) => {
@@ -77,41 +76,31 @@ export async function fetchImage(path) {
 
 /* ---- Metadata Updating --- */
 /**
-
- * @param {import('@canvas_types').RuntimeImage} runtimeImage
+ * @param {import('@domain_image').UIImage} uiImage
  * @throws {Error} If the update fails or the API response is invalid.
  */
-export async function updateImage(runtimeImage) {
-  const img = runtimeImage.img;
-  if (!runtimeImage.name || !img || !runtimeImage.bboxes) {
-    throw new Error("No image name provided");
+export async function updateImage(uiImage) {
+  if (!uiImage.image_path || !uiImage.bboxes) {
+    throw new Error("No image path provided");
   }
-  // Convert from runtime type to web api type
 
-  /** @type {import('@web_api').BoundingBoxInput[]} */
-  const boxes = Array.from(runtimeImage.bboxes.values())
-    .filter(bbox => bbox.labelUuid != null)
-    .map(bbox => {
-      if (bbox.labelUuid == null) {
-        throw new Error("Invalid bbox labelUuid");
-      }
-      return {
-        uuid: bbox.uuid,
-        labelUuid: bbox.labelUuid,
-        x: bbox.x / img.width,
-        y: bbox.y / img.height,
-        width: bbox.width / img.width,
-        height: bbox.height / img.height,
-        tagUuids: bbox.tagUuids || [],
-        extra: null
-      };
-    });
+  /** @type {import('@web_api').BoundingBoxMetadataModel[]} */
+  const boxes = Array.from(uiImage.bboxes.values())
+    .filter(bbox => bbox.label?.uuid != null)
+    .map(bbox => ({
+      uuid: bbox.uuid,
+      labelUuid: /** @type {string} */ (bbox.label?.uuid),
+      x: bbox.x,
+      y: bbox.y,
+      width: bbox.width,
+      height: bbox.height,
+      tagUuids: [],
+    }));
 
   /** @type {import('@web_api').UpdateMetadataPayload} */
   const payload = {
-    image_path: runtimeImage.name,
-    boxes: boxes,
-    extra: null
+    imagePath: uiImage.image_path,
+    boxes,
   };
 
   const res = await fetch('/api/images/metadata/update', {
@@ -120,17 +109,15 @@ export async function updateImage(runtimeImage) {
     body: JSON.stringify(payload)
   });
 
-
   if (!res.ok) {
     const errData = await res.json().catch(() => ({}));
-    throw new Error(errData.message || `Failed to update image via API for ${runtimeImage.name}`);
+    throw new Error(errData.message || `Failed to update image via API for ${uiImage.image_path}`);
   }
 
   /** @type {import('@web_api').UpdateMetadataResponse} */
-  const updatRes = await res.json();
+  const updateRes = await res.json();
 
-  if (updatRes.status !== 'success') {
-    throw new Error(`${updatRes.message}`);
+  if (updateRes.status !== 'success') {
+    throw new Error(`${updateRes.message}`);
   }
-  // TODO:???
 }

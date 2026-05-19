@@ -1,3 +1,4 @@
+import json
 import logging
 import sys
 from pathlib import Path
@@ -6,13 +7,13 @@ from uuid import uuid4
 
 import jstyleson
 from pydantic import TypeAdapter
-from sqlalchemy import func
+from sqlalchemy import delete, func
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import selectinload, sessionmaker
 from sqlmodel import SQLModel, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
-from .types import BBox, ImageRecord, ImageRecordRead, Label, Tag, TagKind
+from .types import BBox, BBoxTagLink, BBoxUpdate, ImageRecord, ImageRecordRead, ImageRecordUpdate, Label, Tag, TagKind
 
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger(__file__)
@@ -215,6 +216,43 @@ class DbClient:
             await session.delete(db_image)
             await session.commit()
             return True
+
+    async def write_image_metadata_to_db(self, image_uuid: str, update: ImageRecordUpdate) -> None:
+        """Replace all bboxes for an image directly in the database."""
+        async with self._async_session_maker() as session:
+            await session.execute(delete(BBox).where(BBox.image_uuid == image_uuid))
+            for b in update.bboxes:
+                session.add(BBox(
+                    uuid=b.uuid,
+                    image_uuid=image_uuid,
+                    label_uuid=b.label_uuid,
+                    x=b.x,
+                    y=b.y,
+                    width=b.width,
+                    height=b.height,
+                ))
+                for tag_uuid in b.tag_uuids:
+                    session.add(BBoxTagLink(bbox_uuid=b.uuid, tag_uuid=tag_uuid))
+            await session.commit()
+
+    def write_image_metadata_to_json(self, json_path: Path, image_uuid: str, filename: str, update: ImageRecordUpdate) -> None:
+        """Write image metadata to the JSON sidecar file."""
+        existing: Dict[str, Any] = {}
+        if json_path.exists():
+            try:
+                existing = jstyleson.loads(json_path.read_text())
+            except Exception:
+                pass
+        existing.update({
+            "uuid": image_uuid,
+            "filename": filename,
+            "boxes": [
+                {"uuid": b.uuid, "label_uuid": b.label_uuid,
+                 "x": b.x, "y": b.y, "width": b.width, "height": b.height}
+                for b in update.bboxes
+            ],
+        })
+        json_path.write_text(json.dumps(existing, indent=2))
 
     ################################################################################
     # Labels

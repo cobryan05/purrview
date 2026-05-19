@@ -12,6 +12,7 @@ from pydantic import (
     Field,
     field_validator,
 )
+from pydantic.alias_generators import to_camel
 from sqlmodel import JSON, Column, DateTime, Field, Relationship, SQLModel
 from typing_extensions import Annotated
 
@@ -205,8 +206,25 @@ class BBoxRead(BaseModel):
     label: Optional[LabelRead]
     tags: List["TagRead"] = []
 
-
     model_config = ConfigDict(from_attributes=True)
+
+
+class BBoxUpdate(BaseModel):
+    """Input data for creating or replacing a bounding box."""
+    uuid: str
+    label_uuid: str
+    x: float
+    y: float
+    width: float
+    height: float
+    tag_uuids: List[str] = []
+
+    model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)
+
+
+class ImageRecordUpdate(BaseModel):
+    """Input data for replacing all bboxes on an image."""
+    bboxes: List[BBoxUpdate] = []
 
 class TagBase(SQLModel):
     name: str = Field(unique=True)

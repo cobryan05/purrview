@@ -117,22 +117,16 @@ export function clearAnnotations(state) {
 }
 
 /**
- * @param {import('@image_tagging_types').ImageTaggingState} state
+ * @param {import('@image_tagging_types').ImageTaggingRuntime} runtime
  */
-export async function saveAnnotations(state) {
-  if (!state.image) {
+export async function saveAnnotations(runtime) {
+  if (!runtime.state?.image) {
     toast('No image loaded to save annotations!');
     return;
   }
 
   try {
-    // Sync the canvas positions to the image
-    state.image.bboxes?.clear();
-    for (const [key, canvasGroup] of state.canvas.bboxes) {
-      canvasGroup.updatePosition({});
-      state.image.bboxes?.set(key, canvasGroup.metadata.bboxInfo);
-    }
-    await updateImage(state.image);
+    await updateImage(runtime.state.image);
     toast('Annotations saved successfully!');
   }
   catch (err) {

@@ -17,6 +17,7 @@ from pydantic import (
     ConfigDict,
     Field,
 )
+from pydantic.alias_generators import to_camel
 from typing_extensions import Annotated
 
 from .consts import JsonValues
@@ -27,6 +28,7 @@ logger.setLevel(logging.DEBUG)
 
 
 class StatusResponse(BaseModel):
+    model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)
     status: str = JsonValues.SUCCESS
     message: Optional[str] = None
 
@@ -64,7 +66,7 @@ Base64Image = Annotated[Optional[str], BeforeValidator(validate_base64_img)]
 
 
 class DataclassMapper(BaseModel, Generic[T]):
-    model_config = ConfigDict(from_attributes=True)
+    model_config = ConfigDict(from_attributes=True, alias_generator=to_camel, populate_by_name=True)
 
     @classmethod
     def from_dataclass(cls: Type[M], dc: T) -> M:

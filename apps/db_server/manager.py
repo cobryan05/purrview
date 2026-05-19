@@ -16,7 +16,7 @@ from apps.helpers.db.db_client import (
     DbClient,
     TagKind,
 )
-from apps.helpers.db.types import ImageRecord, ImageRecordRead, Label, Tag, TagUpdate
+from apps.helpers.db.types import ImageRecord, ImageRecordRead, ImageRecordUpdate, Label, Tag, TagUpdate
 from apps.helpers.fileUtils import get_safe_path
 from apps.helpers.imageProviders.Registry import image_provider_registry
 from apps.helpers.types import (
@@ -261,7 +261,6 @@ class Manager:
         """
         return await self._db_client.list_tags()
 
-
     ################################################################################
     # IMAGES API
     ################################################################################
@@ -291,35 +290,28 @@ class Manager:
         logger.info(f"TODO: Fixup entry {entry}")
         pass
 
-    async def _resolve_image_strings(self, metadata: ImageRecordRead):
-        # Resolve class_str for missing strings in the metadata
-        missing_uuids: dict[str, list[BoundingBoxMetadata]] = {}
-        for box in metadata.boxes:
-            if box.label_uuid and not box.class_str:
-                missing_uuids.setdefault(box.label_uuid, []).append(box)
-
-        if missing_uuids:
-            class_map = await self._db_client.get_classes_by_uuids(list(missing_uuids.keys()))
-            for cls in class_map.values():
-                for box in missing_uuids.get(cls.uuid, []):
-                    box.class_str = cls.name
-
-    async def update_image_metadata(self, image_rel_path: str, metadata: ImageRecordRead) -> None:
+    async def update_image_metadata(self, image_rel_path: str, update: ImageRecordUpdate) -> Optional[ImageRecordRead]:
         """
-        Update metadata for image identified by filename.
+        Replace the bboxes for an image, persisting to both the DB and the JSON sidecar.
 
         Args:
-            image_rel_path (str): Relative image path (filename).
-            metadata (ImageRecordRead): New metadata to write.
+            image_rel_path (str): Relative image path.
+            update (ImageRecordUpdate): New bbox data.
+
+        Returns:
+            The updated ImageRecordRead, or None if the image path is invalid.
         """
         safe_path = get_safe_path(self._files_root, image_rel_path)
         if safe_path is None or not safe_path.exists():
             logger.warning(f"Path not found or inaccessible: {image_rel_path}")
-            return
-        image_uuid = await self._db_client.add_image(safe_path)
-        await self._resolve_image_strings(metadata)
-        await self._db_client.write_image_metadata_to_db(image_uuid, metadata)
-        await self._db_client.write_image_metadata_to_json(self._get_json_sidefile(safe_path), metadata)
+            return None
+        image = await self._db_client.add_image(safe_path)
+        await self._db_client.write_image_metadata_to_db(image.uuid, update)
+        self._db_client.write_image_metadata_to_json(
+            self._get_json_sidefile(safe_path), image.uuid, image.filename, update
+        )
+        updated = await self._db_client.get_image_by_filename(safe_path)
+        return ImageRecordRead.model_validate(updated) if updated else None
 
     async def list_files(
         self,
