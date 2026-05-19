@@ -40,20 +40,21 @@ export async function init(runtime) {
   }
 
   // Show 'Labels' tab when tool changes to BBox
-  events.subscribe(EventTypes.CANVAS_TOOL_CHANGED, ({ tool }) => {
-    // Switch to the Labels tab if the tool is BBox
+  events.subscribe(EventTypes.CANVAS_TOOL_CHANGED, async ({ tool }) => {
     const toolInfo = parseToolUuid(tool);
     if (toolInfo.tool === 'bbox') {
       const uuid = toolInfo.uuid ?? runtime.state.currentLabelUuid;
       activateTab('tab-labels-tool');
 
-      // If there is no currently selected label then select the first one
       if (!uuid) {
-        // defer until after rendering
-        requestAnimationFrame(() => {
-          const firstLabelRow = document.querySelector('#labels-tool-list .label-row');
-          if (firstLabelRow) firstLabelRow.click();
+        await renderLabelList({
+          target: "labels-tool-list",
+          editable: false,
+          onSelectCallback: labelUuid => setTool(runtime, `bbox:${labelUuid}`),
+          selectedLabelUuid: runtime.labelUuid
         });
+        const firstLabelRow = document.querySelector('#labels-tool-list .label-row');
+        if (firstLabelRow) firstLabelRow.click();
       }
     }
   });

@@ -108,14 +108,7 @@ main.container {
 }
 
 /* ===== Toolbar / Canvas ===== */
-#toolbar {
-  display: flex;
-  gap: 0.5em;
-  margin-bottom: 0.5em;
-  width: 100%;
-}
-
-#toolbar button {
+.canvas-toolbar button {
   flex: 1 1 0;
   font-size: 0.95em;
   padding: 0.2em 0.7em;
@@ -128,7 +121,7 @@ main.container {
   height: auto;
 }
 
-#toolbar button.selected {
+.canvas-toolbar button.selected {
   background-color: #ff0033;
   color: white;
   font-weight: bold;
