@@ -3,6 +3,7 @@ export class BboxView extends Konva.Group {
     /** @type {import('@domain_image').UIBbox} */ uiBBox;
     /** @type {import('@konva').default.Rect} */ _rect;
     /** @type {import('@konva').default.Text} */ _text;
+    /** @type {import('@image_tagging_types').ViewportTransform} */ _viewport;
 
   /**
    * @param {import('@domain_image').UIBbox} uiBBox
@@ -22,6 +23,7 @@ export class BboxView extends Konva.Group {
 
     // Assigning to typed members
     this.uiBBox = uiBBox;
+    this._viewport = viewport;
     this.dirty = false;
 
     this._rect = new Konva.Rect({
@@ -61,6 +63,16 @@ export class BboxView extends Konva.Group {
         scaleX: 1,
         scaleY: 1
       });
+
+      // Sync normalized model coords so updateViewport() reads the new position
+      if (this._viewport) {
+        const sw = this._viewport.imageWidth * this._viewport.scale;
+        const sh = this._viewport.imageHeight * this._viewport.scale;
+        this.uiBBox.x = (this.x() - this._viewport.offsetX) / sw;
+        this.uiBBox.y = (this.y() - this._viewport.offsetY) / sh;
+        this.uiBBox.width = newWidth / sw;
+        this.uiBBox.height = newHeight / sh;
+      }
     });
   }
 
@@ -82,6 +94,7 @@ export class BboxView extends Konva.Group {
    * @param {import('@image_tagging_types').ViewportTransform} viewport
    */
   updateViewport(viewport) {
+    this._viewport = viewport;
     const fullScaledWidth = viewport.imageWidth * viewport.scale;
     const fullScaledHeight = viewport.imageHeight * viewport.scale;
     this.setAttrs({

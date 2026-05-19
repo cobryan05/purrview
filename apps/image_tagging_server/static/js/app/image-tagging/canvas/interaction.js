@@ -256,21 +256,19 @@ export async function handleWheel(e, runtime) {
   const pointer = stage.getPointerPosition();
   if (!pointer) return;
 
-  const oldScale = viewport.scale;
   const zoomFactor = 1.1;
   const direction = e.evt.deltaY > 0 ? 1 : -1;
-
-  const newScale =
-    direction > 0
-      ? oldScale / zoomFactor
-      : oldScale * zoomFactor;
+  const newScale = direction > 0 ? viewport.scale / zoomFactor : viewport.scale * zoomFactor;
 
   // mouse-centered zoom
   const imagePoint = screenToImage(pointer.x, pointer.y, viewport);
-  viewport.scale = newScale;
-  viewport.offsetX = pointer.x - imagePoint.x * newScale;
-  viewport.offsetY = pointer.y - imagePoint.y * newScale;
-  await setCanvasViewport(runtime.canvas, viewport);
+  const zoomedViewport = {
+    ...viewport,
+    scale: newScale,
+    offsetX: pointer.x - imagePoint.x * newScale,
+    offsetY: pointer.y - imagePoint.y * newScale,
+  };
+  await setCanvasViewport(runtime.canvas, zoomedViewport);
 }
 
 /**
