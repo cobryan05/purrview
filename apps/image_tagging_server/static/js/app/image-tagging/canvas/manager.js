@@ -11,7 +11,7 @@ export async function setCanvasImage(canvas, uiImage) {
 
   // Clean up existing
   transformer.nodes([]);
-  layer.find('.annotation').forEach(n => n.destroy());
+  layer.find('.bbox').forEach(n => n.destroy());
   layer.find('.background-image').forEach(n => n.destroy());
 
   const konvaImg = new Konva.Image({
