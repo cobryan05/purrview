@@ -18,7 +18,7 @@
  * @property {HTMLElement|null} container
  * @property {Stage|null} stage
  * @property {Layer|null} layer
- * @property {Transformer|null} transformer
+ * @property {Konva.Transformer|null} transformer
  * @property {ViewportTransform|null} viewport
  * @property {Map<string, BboxView>} bboxViews
  * @property {Konva.Image|null} backgroundImage

@@ -61,6 +61,7 @@ export function createImageTaggingRuntime() {
     _currentTool = tool;
   }
   function clearBboxes() {
+    _imgTaggingState?.image?.bboxes.clear();
   }
 
   /** @param {string|null} uuid */

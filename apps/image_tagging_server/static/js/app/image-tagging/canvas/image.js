@@ -100,16 +100,17 @@ export async function refreshCanvas(state) {
 
 
 /**
- * @param {import('@image_tagging_types').ImageTaggingState} state
+ * @param {import('@image_tagging_types').ImageTaggingRuntime} runtime
  */
-export function clearAnnotations(state) {
-  const layer = state.canvas.layer;
-  state.clearSelection();
-  state.clearBboxes();
+export function clearAnnotations(runtime) {
+  if (!runtime.canvas) return;
+  const { layer, transformer } = runtime.canvas;
+  transformer?.nodes([]);
+  runtime.clearBboxes();
 
   const children = [...layer.getChildren()];
   children.forEach(child => {
-    if (child.name() === 'annotation') {
+    if (child.name() === 'bbox') {
       child.destroy();
     }
   });
