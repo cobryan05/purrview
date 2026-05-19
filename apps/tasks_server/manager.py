@@ -43,7 +43,7 @@ class Manager:
         self._db_api_client: db_client.ApiClient = db_api_client
         self._running_tasks: Dict[str, TaskInfo] = {}
         self._config = {
-            "db_path": legacy_db_client.get_path(),
+            "db_path": None, #legacy_db_client.get_path(),
             "db_server": db_api_client.configuration.host,
             "inference_server": inference_api_client.configuration.host,
         }
@@ -385,6 +385,7 @@ class Manager:
         """
         Periodic worker task that runs at regular intervals.
         """
+        return
         try:
             await self._init()
             while True:

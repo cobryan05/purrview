@@ -16,12 +16,13 @@ export class BboxView extends Konva.Group {
       width: uiBBox.width * viewport.imageWidth * viewport.scale,
       height: uiBBox.height * viewport.imageHeight * viewport.scale,
       draggable: true,
-      name: 'annotation',
+      name: 'bbox',
       id: uiBBox.uuid
     });
 
     // Assigning to typed members
     this.uiBBox = uiBBox;
+    this.dirty = false;
 
     this._rect = new Konva.Rect({
       width: this.width(),
@@ -60,7 +61,6 @@ export class BboxView extends Konva.Group {
         scaleX: 1,
         scaleY: 1
       });
-      this._rect.size({ width: newWidth, height: newHeight });
     });
   }
 
@@ -77,14 +77,20 @@ export class BboxView extends Konva.Group {
     this.getLayer()?.batchDraw();
   }
 
+
   /**
- * @param {number} width
- * @param {number} height
- */
-  updateSize(width, height) {
-    // Adjust text position or scale here too?
-    this.width(width);
-    this.height(height);
-    this._rect.size({ width, height });
+   * @param {import('@image_tagging_types').ViewportTransform} viewport
+   */
+  updateViewport(viewport) {
+    const fullScaledWidth = viewport.imageWidth * viewport.scale;
+    const fullScaledHeight = viewport.imageHeight * viewport.scale;
+    this.setAttrs({
+      x: (this.uiBBox.x * fullScaledWidth) + viewport.offsetX,
+      y: (this.uiBBox.y * fullScaledHeight) + viewport.offsetY,
+      width: this.uiBBox.width * fullScaledWidth,
+      height: this.uiBBox.height * fullScaledHeight
+    });
+    this._rect.size({ width: this.width(), height: this.height() });
+
   }
 }

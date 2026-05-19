@@ -69,21 +69,11 @@ export async function setCanvasViewport(canvas, viewport, size) {
   }
 
   // Place bounding boxes
-  const annotations = layer.find('.annotation');
-  const fullScaledWidth = viewport.imageWidth * viewport.scale;
-  const fullScaledHeight = viewport.imageHeight * viewport.scale;
-  annotations.forEach((node) => {
-    const uiBBox = node.uiBBox;
-    if (!uiBBox) return;
+  const annotations = layer.find('.bbox');
 
-    node.setAttrs({
-      x: (uiBBox.x * fullScaledWidth) + viewport.offsetX,
-      y: (uiBBox.y * fullScaledHeight) + viewport.offsetY,
-      width: uiBBox.width * fullScaledWidth,
-      height: uiBBox.height * fullScaledHeight
-    });
-    if (typeof node.updateSize === 'function') {
-      node.updateSize(node.width(), node.height());
+  annotations.forEach((bboxView) => {
+    if (typeof bboxView.updateViewport === 'function') {
+      bboxView.updateViewport(viewport);
     }
   });
 

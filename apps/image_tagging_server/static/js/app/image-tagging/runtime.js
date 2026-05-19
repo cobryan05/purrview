@@ -1,6 +1,5 @@
+import { setCanvasImage } from './canvas/manager.js';
 import { createCanvasState } from './canvas/state.js';
-import { computeViewport, screenToImage } from './canvas/viewport.js';
-import { setCanvasImage, setCanvasViewport } from './canvas/manager.js';
 import { Logger } from '/app-static/js/ui/utils/index.js';
 
 /**
