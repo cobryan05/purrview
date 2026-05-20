@@ -162,29 +162,20 @@ export async function handleMouseMove(e, runtime) {
   const dx = pos.x - _startPos.x;
   const dy = pos.y - _startPos.y;
   if (!_pendingDraggedBbox && (dx * dx + dy * dy) > BBOX_MIN_PX ** 2) {
-    /** @type {import('@web_api').BoundingBoxMetadataModel} */
-    const emptyBbox = { x: pos.x, y: pos.y, width: 1, height: 1, labelUuid: runtime.state?.currentLabelUuid, uuid: generateUUID() };
-    _pendingDraggedBbox = createUIBBbox({
-      x: _startPos.x,
-      y: _startPos.y,
-      width: dx,
-      height: dy,
-      labelUuid: runtime.state?.currentLabelUuid,
-      uuid: generateUUID()
-    });
-    if (_pendingDraggedBbox) {
-      runtime.state.updateCanvasBboxView(_pendingDraggedBbox);
-      layer.add(_pendingDraggedBbox);
-    }
+    const viewport = runtime.canvas?.viewport;
+    if (!viewport) return;
+    const uiBBox = createUIBBbox({ uuid: generateUUID() });
+    _pendingDraggedBbox = new BboxView(uiBBox, viewport);
+    layer.add(_pendingDraggedBbox);
   }
 
   if (_pendingDraggedBbox) {
-    const newX = dx < 0 ? pos.x : _startPos.x;
-    const newY = dy < 0 ? pos.y : _startPos.y;
-    const newWidth = Math.abs(dx);
-    const newHeight = Math.abs(dy);
-    _pendingDraggedBbox.updatePosition({ x: newX, y: newY, width: newWidth, height: newHeight });
-    //layer.batchDraw();
+    _pendingDraggedBbox.updatePosition({
+      x: dx < 0 ? pos.x : _startPos.x,
+      y: dy < 0 ? pos.y : _startPos.y,
+      width: Math.abs(dx),
+      height: Math.abs(dy),
+    });
   }
 }
 
@@ -194,6 +185,7 @@ export async function handleMouseMove(e, runtime) {
  * @returns {Promise<void>}
  */
 export async function handleMouseUp(e, runtime) {
+  if (!runtime.canvas) return;
   const isSelectTool = runtime.tool === 'select';
   runtime.canvas.stage.container().style.cursor =
     isSelectTool ? 'default' : 'crosshair';
@@ -204,18 +196,26 @@ export async function handleMouseUp(e, runtime) {
   }
   _startPos = null;
   if (_pendingDraggedBbox) {
-    const box = _pendingDraggedBbox.metadata.rect;
+    const w = _pendingDraggedBbox.width();
+    const h = _pendingDraggedBbox.height();
 
-    if (box.width() < BBOX_MIN_PX || box.height() < BBOX_MIN_PX) {
-      state.removeBboxGroup(_pendingDraggedBbox);
+    if (w < BBOX_MIN_PX || h < BBOX_MIN_PX) {
       _pendingDraggedBbox.destroy();
     } else {
-      events.publish(EventTypes.CANVAS_BBOX_CLICKED, {
-        bboxId: _pendingDraggedBbox.metadata.bboxInfo.uuid
-      });
+      // normalize back to 0-1 image space before registering
+      const vp = runtime.canvas.viewport;
+      const sw = vp.imageWidth * vp.scale;
+      const sh = vp.imageHeight * vp.scale;
+      const uiBBox = _pendingDraggedBbox.uiBBox;
+      uiBBox.x = (_pendingDraggedBbox.x() - vp.offsetX) / sw;
+      uiBBox.y = (_pendingDraggedBbox.y() - vp.offsetY) / sh;
+      uiBBox.width = w / sw;
+      uiBBox.height = h / sh;
+      runtime.state.image.bboxes.set(uiBBox.uuid, uiBBox);
+      events.publish(EventTypes.CANVAS_BBOX_CLICKED, { bboxId: uiBBox.uuid });
     }
 
-    state.canvas.layer.draw();
+    runtime.canvas.layer.draw();
     _pendingDraggedBbox = null;
   }
 

@@ -4,6 +4,14 @@
  */
 
 /**
+ * @typedef {Object} CanvasRect
+ * @property {number} x
+ * @property {number} y
+ * @property {number} width
+ * @property {number} height
+ */
+
+/**
  * @typedef {Object} ViewportTransform
  * @property {number} offsetX
  * @property {number} offsetY

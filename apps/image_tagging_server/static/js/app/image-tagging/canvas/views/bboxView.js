@@ -81,6 +81,13 @@ export class BboxView extends Konva.Group {
     });
   }
 
+  /** @param {import('@image_tagging_types').CanvasRect} rect */
+  updatePosition({ x, y, width, height }) {
+    this.setAttrs({ x, y, width, height });
+    this._rect.setAttrs({ width, height });
+    this.getLayer()?.batchDraw();
+  }
+
   /**
    * @param {string} text
    * @param {string} color
