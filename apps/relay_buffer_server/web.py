@@ -32,12 +32,12 @@ class WebApp:
         self._manager: Manager = manager
         self._app_name: str = app_name
         self._app: FastAPI = FastAPI(lifespan=self._lifespan)
-        self._templates: Jinja2Templates = Jinja2Templates(directory="templates")
+        self._templates: Jinja2Templates = Jinja2Templates(directory="/app/templates")
         self._dflt_args: dict[str, str] = {"app_name": self._app_name}
         self._api_client: ApiClient = manager._media_mtx_api_client
 
         # Mount static files
-        self._app.mount("/static", StaticFiles(directory="static"), name="static")
+        self._app.mount("/static", StaticFiles(directory="/app/static"), name="static")
 
         # Register routes
         self._register_routes()

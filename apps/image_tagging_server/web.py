@@ -83,7 +83,7 @@ class WebApp:
         self._manager: Manager = manager
 
         # Mount static files
-        self._app.mount("/static", StaticFiles(directory="static"), name="static")
+        self._app.mount("/static", StaticFiles(directory="/app/static"), name="static")
         self._app.mount("/app-static", StaticFiles(directory=os.path.join(SCRIPT_DIR, "static")), name="app-static")
 
         # Register routes

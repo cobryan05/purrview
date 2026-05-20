@@ -229,7 +229,7 @@ class WebApp:
         self._dflt_args: dict[str, str] = {"app_name": self._app_name}  # Default arguments for templates
 
         # Mount static files
-        self._app.mount("/static", StaticFiles(directory="static"), name="static")
+        self._app.mount("/static", StaticFiles(directory="/app/static"), name="static")
 
         # Register routes
         self._register_routes()

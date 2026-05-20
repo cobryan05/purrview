@@ -161,11 +161,11 @@ class WebApp:
         self._manager: Manager = manager  # Manager instance
         self._app_name: str = app_name  # Name of the application
         self._app: FastAPI = FastAPI(lifespan=self._lifespan)  # FastAPI instance with lifespan events
-        self._templates: Jinja2Templates = Jinja2Templates(directory="templates")  # Template engine for rendering HTML
+        self._templates: Jinja2Templates = Jinja2Templates(directory="/app/templates")  # Template engine for rendering HTML
         self._dflt_args: dict[str, str] = {"app_name": self._app_name}  # Default arguments for templates
 
         # Mount static files
-        self._app.mount("/static", StaticFiles(directory="static"), name="static")
+        self._app.mount("/static", StaticFiles(directory="/app/static"), name="static")
 
         # Register routes
         self._register_routes()
