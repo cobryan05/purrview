@@ -272,6 +272,15 @@ class WebApp:
     def _register_routes(self):
         """Register all routes for the application."""
 
+        @self._app.get("/server-config", operation_id="server_config", response_class=JSONResponse)
+        async def server_config(request: Request):
+            try:
+                server_config = await self._manager.get_server_config()
+                response_data = {JsonKeys.STATUS: JsonValues.SUCCESS, JsonKeys.CONFIG: server_config}
+            except Exception as e:
+                response_data = {JsonKeys.STATUS: JsonValues.FAILURE, JsonKeys.MESSAGE: str(e)}
+            return JSONResponse(content=response_data)
+
         ################################################################################
         # Labels API
         ################################################################################

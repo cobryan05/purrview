@@ -41,6 +41,9 @@ class Manager:
         self._task: Optional[asyncio.Task] = None  # Background task for periodic operations
         self._config = {}
 
+    async def get_server_config(self) -> Dict[str, Any]:
+        return self._config.copy()
+
     def start(self):
         """Start the periodic worker task, should be called from the event loop to run on"""
         if self._task and not self._task.done():

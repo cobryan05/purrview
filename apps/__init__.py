@@ -20,12 +20,14 @@ class APPS(str, Enum):
     MEDIA_MTX_API = "media_mtx_api"
 
 
+_port_offset = int(os.environ.get("PORT_OFFSET", "0"))
+
 APPS_CONFIG = {
-    APPS.IMAGE_TAGGING_SERVER: AppConfig("Image Tagging Server", "localhost", 7999),
-    APPS.INFERENCE_SERVER: AppConfig("Inference Server", "localhost", 8001),
-    APPS.TASKS_SERVER: AppConfig("Tasks Server", "localhost", 8002),
-    APPS.DB_SERVER: AppConfig("DB Server", "localhost", 8003),
-    APPS.RELAY_BUFFER_SERVER: AppConfig("RTSP/Relay Buffer Server", "localhost", 8004),
+    APPS.IMAGE_TAGGING_SERVER: AppConfig("Image Tagging Server", "localhost", 7999 + _port_offset),
+    APPS.INFERENCE_SERVER: AppConfig("Inference Server", "localhost", 8001 + _port_offset),
+    APPS.TASKS_SERVER: AppConfig("Tasks Server", "localhost", 8002 + _port_offset),
+    APPS.DB_SERVER: AppConfig("DB Server", "localhost", 8003 + _port_offset),
+    APPS.RELAY_BUFFER_SERVER: AppConfig("RTSP/Relay Buffer Server", "localhost", 8004 + _port_offset),
     APPS.MEDIA_MTX_RTSP: AppConfig("MediaMTXRtsp", "localhost", 8554),
     APPS.MEDIA_MTX_API: AppConfig("MediaMTXApi", "localhost", 9997),
 }

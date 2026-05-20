@@ -1,6 +1,12 @@
 import struct
 import zlib
 
+import pytest
+
+
+def pytest_addoption(parser):
+    parser.addoption("--run-smoke", action="store_true", default=False, help="Run smoke tests against live services")
+
 
 def make_png() -> bytes:
     """Return a minimal valid 1x1 white PNG."""
