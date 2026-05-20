@@ -82,12 +82,16 @@ FROM base AS dev
 
 USER root
 
-# Development dependencies (CV2 over X11, git)
+# Development dependencies (CV2 over X11, git, Claude Code)
 RUN apt-get update \
   && apt-get install -y --no-install-recommends \
   # libgl1 libxext6 libxrender1 libsm6 libx11-6 \
     git \
   && rm -rf /var/lib/apt/lists/* \
-  && pip install isort
+  && pip install isort \
+  && echo 'cd /project/apps 2>/dev/null || cd /app/apps' >> /home/appuser/.bashrc
 
 USER appuser
+
+# Install claude-cli as appuser; binary lands in ~/.local/bin, credentials in ~/.claude (bind-mounted from host)
+RUN curl -fsSL https://claude.ai/install.sh | bash

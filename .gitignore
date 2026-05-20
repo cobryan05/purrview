@@ -1,7 +1,13 @@
+# Claude Code — credentials and project config must never be committed
+.claude/
+docker-compose.override.yml
+
 static/js/htmx
 static/css/pico.min.css
 storage/
 image_datasets/
+logs/
+data/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
@@ -166,6 +172,7 @@ dmypy.json
 cython_debug/
 
 .vscode/
+.vscode_container/
 
 # PyCharm
 #  JetBrains specific template is maintained in a separate JetBrains.gitignore that can
