@@ -563,7 +563,7 @@ class WebApp:
             if metadata is None:
                 return GetImageMetadataResponse(status=JsonValues.FAILURE, message="Image not found")
 
-            return GetImageMetadataResponse(metadata=metadata)
+            return GetImageMetadataResponse(image=metadata)
 
         @self._app.post(
             "/api/images/metadata/update",

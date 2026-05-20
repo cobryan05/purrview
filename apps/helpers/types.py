@@ -130,9 +130,6 @@ class BoundingBoxMetadataModel(DataclassMapper):
     tag_uuids: List[str] = Field(default_factory=list)
     extra: RawJsonDict = Field(default_factory=dict, validation_alias=AliasChoices("bbox_meta", "extra"), serialization_alias="extra")
 
-    class Config:
-        populate_by_name = True
-
 
 @dataclass
 class FileEntry:

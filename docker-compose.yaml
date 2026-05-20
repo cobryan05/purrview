@@ -23,6 +23,8 @@ services:
       - ./apps:/app/apps
       - ./templates:/app/templates
       - ./static/images:/app/static/images
+      - ./tests:/app/tests
+      - ./pytest.ini:/app/pytest.ini
 
       - .:/project
       - ./.vscode_container:/app/.vscode

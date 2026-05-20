@@ -69,12 +69,12 @@ class DbClient:
         # Sync labels from json if table is currently empty
         async with self._async_session_maker() as session:
             count_statement = select(func.count()).select_from(Label)
-            result = await session.execute(count_statement)
-            label_count = result.scalar() or 0
+            result = await session.exec(count_statement)
+            label_count = result.one() or 0
 
             count_statement = select(func.count()).select_from(Tag)
-            result = await session.execute(count_statement)
-            tag_count = result.scalar() or 0
+            result = await session.exec(count_statement)
+            tag_count = result.one() or 0
 
         if label_count == 0:
             await self.sync_labels_from_json()
@@ -109,12 +109,12 @@ class DbClient:
 
         async with self._async_session_maker() as session:
             path_stmt = select(ImageRecord).where(ImageRecord.filename == str(image_path))
-            existing_by_path = (await session.execute(path_stmt)).scalar_one_or_none()
+            existing_by_path = (await session.exec(path_stmt)).one_or_none()
 
             existing_by_uuid = None
             if json_uuid:
                 uuid_stmt = select(ImageRecord).where(ImageRecord.uuid == json_uuid)
-                existing_by_uuid = (await session.execute(uuid_stmt)).scalar_one_or_none()
+                existing_by_uuid = (await session.exec(uuid_stmt)).one_or_none()
 
             if existing_by_path and json_uuid and existing_by_path.uuid != json_uuid:
                 logger.warning(
@@ -163,8 +163,8 @@ class DbClient:
                     selectinload(ImageRecord.bboxes).selectinload(BBox.tags),
                 )
             )
-            result = await session.execute(stmt)
-            return result.scalar_one_or_none()
+            result = await session.exec(stmt)
+            return result.one_or_none()
 
     async def get_image_by_filename(self, filename: Path) -> Optional[ImageRecord]:
         """Retrieve the full Image object by its filename."""
@@ -179,8 +179,8 @@ class DbClient:
                     )
                 )
             )
-            result = await session.execute(statement)
-            return result.scalar_one_or_none()
+            result = await session.exec(statement)
+            return result.one_or_none()
 
     async def add_image(self, filename: Path, metadata_json: Optional[Dict[str, Any]] = None) -> ImageRecord:
         """
@@ -192,8 +192,8 @@ class DbClient:
         async with self._async_session_maker() as session:
             # Check for existing image to prevent UniqueConstraint errors
             statement = select(ImageRecord).where(ImageRecord.filename == str(filename))
-            result = await session.execute(statement)
-            existing_image = result.scalar_one_or_none()
+            result = await session.exec(statement)
+            existing_image = result.one_or_none()
 
             if existing_image:
                 return existing_image
@@ -210,8 +210,8 @@ class DbClient:
         """List images with basic pagination."""
         async with self._async_session_maker() as session:
             statement = select(ImageRecord).offset(offset).limit(limit)
-            result = await session.execute(statement)
-            return result.scalars().all()
+            result = await session.exec(statement)
+            return result.all()
 
     async def delete_image(self, image_uuid: str) -> bool:
         """Delete an image by UUID. BBoxes will be deleted via CASCADE."""
@@ -227,7 +227,7 @@ class DbClient:
     async def write_image_metadata_to_db(self, image_uuid: str, update: ImageRecordUpdate) -> None:
         """Replace all bboxes for an image directly in the database."""
         async with self._async_session_maker() as session:
-            await session.execute(delete(BBox).where(BBox.image_uuid == image_uuid))
+            await session.exec(delete(BBox).where(BBox.image_uuid == image_uuid))
             for b in update.bboxes:
                 session.add(BBox(
                     uuid=b.uuid,
@@ -323,8 +323,8 @@ class DbClient:
         """List all labels using SQLModel select."""
         async with self._async_session_maker() as session:
             statement = select(Label)
-            result = await session.execute(statement)
-            return result.scalars().all()
+            result = await session.exec(statement)
+            return result.all()
 
     async def add_label(
         self,
@@ -355,16 +355,16 @@ class DbClient:
 
         async with self._async_session_maker() as session:
             statement = select(Label).where(Label.uuid.in_(uuids))
-            result = await session.execute(statement)
-            labels = result.scalars().all()
+            result = await session.exec(statement)
+            labels = result.all()
             return {lbl.uuid: lbl for lbl in labels}
 
     async def get_label_children(self, parent_uuid: str) -> List[str]:
         """Retrieve the UUIDs of labels that have the given UUID as their parent."""
         async with self._async_session_maker() as session:
             statement = select(Label.uuid).where(Label.parent_uuid == parent_uuid)
-            result = await session.execute(statement)
-            return list(result.scalars().all())
+            result = await session.exec(statement)
+            return list(result.all())
 
     async def update_label(self, label_uuid: str, **kwargs) -> Optional[Label]:
         """
@@ -438,8 +438,8 @@ class DbClient:
         """List all tags using SQLModel select."""
         async with self._async_session_maker() as session:
             statement = select(Tag)
-            result = await session.execute(statement)
-            return result.scalars().all()
+            result = await session.exec(statement)
+            return result.all()
 
     async def add_tag(
         self,

@@ -87,8 +87,10 @@ RUN apt-get update \
   && apt-get install -y --no-install-recommends \
   # libgl1 libxext6 libxrender1 libsm6 libx11-6 \
     git \
-  && rm -rf /var/lib/apt/lists/* \
-  && pip install isort \
+  && rm -rf /var/lib/apt/lists/*
+
+COPY requirements-dev.txt .
+RUN pip install --no-cache-dir -r requirements-dev.txt \
   && echo 'cd /project/apps 2>/dev/null || cd /app/apps' >> /home/appuser/.bashrc
 
 USER appuser
