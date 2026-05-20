@@ -11,6 +11,7 @@
  * @typedef {Object} UIBbox
  * @property {string} uuid
  * @property {UILabel} [label]
+ * @property {string[]} tagUuids
  * @property {number} x
  * @property {number} y
  * @property {number} width

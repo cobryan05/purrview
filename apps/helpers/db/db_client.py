@@ -7,7 +7,7 @@ from uuid import uuid4
 
 import jstyleson
 from pydantic import TypeAdapter
-from sqlalchemy import delete, func
+from sqlalchemy import delete, event, func
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import selectinload, sessionmaker
 from sqlmodel import SQLModel, select
@@ -50,6 +50,13 @@ class DbClient:
         self._url: str = f"sqlite+aiosqlite:///{self._db_path}"
 
         self._engine = create_async_engine(self._url, echo=False)
+
+        @event.listens_for(self._engine.sync_engine, "connect")
+        def _set_sqlite_pragma(dbapi_conn, connection_record):
+            cursor = dbapi_conn.cursor()
+            cursor.execute("PRAGMA foreign_keys=ON")
+            cursor.close()
+
         self._async_session_maker = sessionmaker(self._engine, class_=AsyncSession, expire_on_commit=False)
 
     async def init_db(self) -> None:

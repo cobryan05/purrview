@@ -94,7 +94,7 @@ export async function updateImage(uiImage) {
       y: bbox.y,
       width: bbox.width,
       height: bbox.height,
-      tagUuids: [],
+      tagUuids: bbox.tagUuids ?? [],
     }));
 
   /** @type {import('@web_api').UpdateMetadataPayload} */

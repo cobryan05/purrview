@@ -69,6 +69,7 @@ export function renderBboxInspector({ bboxView = null, target = 'tab-inspector',
               bboxView.uiBBox.label = undefined;
               bboxView.updateAppearance('', 'grey');
             }
+            bboxView.uiBBox.tagUuids = val.bbox_info.tagUuids ?? [];
           },
           onCancel: () => {
             Logger.warn("Canceled");
