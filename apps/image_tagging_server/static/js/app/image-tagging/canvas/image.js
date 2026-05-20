@@ -77,29 +77,30 @@ export async function saveAnnotations(runtime) {
 }
 
 /**
- * @param {import('@image_tagging_types').ImageTaggingState} state
+ * @param {import('@image_tagging_types').ImageTaggingRuntime} runtime
  */
-export function deleteSelected(state) {
-  const transformer = state.canvas.transformer;
-  const layer = state.canvas.layer;
-  if (!transformer) return;
+export function deleteSelected(runtime) {
+  const transformer = runtime.canvas?.transformer;
+  const layer = runtime.canvas?.layer;
+  if (!transformer || !layer) return;
 
   const selectedNodes = transformer.nodes();
   if (!selectedNodes.length) return;
 
+  // Walk up from the selected node to find the BboxView group
   let node = selectedNodes[0];
-  let group = node.getParent();
-
-  // Walk up until we find the group named "annotation"
-  while (group && group.name() !== 'annotation') {
-    group = group.getParent();
+  let bboxView = null;
+  while (node && node !== layer) {
+    if (node instanceof BboxView) {
+      bboxView = node;
+      break;
+    }
+    node = node.getParent();
   }
 
-  if (group && group.name() === 'annotation') {
-    group.destroy();
-    state.removeBboxGroup(group);
-  } else {
-    node.destroy(); // fallback
+  if (bboxView) {
+    runtime.state.image?.bboxes.delete(bboxView.uiBBox.uuid);
+    bboxView.destroy();
   }
 
   transformer.nodes([]);

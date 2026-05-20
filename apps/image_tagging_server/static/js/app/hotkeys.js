@@ -18,23 +18,23 @@ export function registerKeyboardShortcuts(appState) {
       case 'delete':
       case 'backspace':
         e.preventDefault();
-        deleteSelected(appState.imageTagging);
+        deleteSelected(appState.imgRuntime);
         break;
 
       case 'v':
-        setTool(appState.imageTagging, 'select');
+        setTool(appState.imgRuntime, 'select');
         break;
 
       case 'r':
-        setTool(appState.imageTagging, 'bbox:');
+        setTool(appState.imgRuntime, 'bbox:');
         break;
 
       case '[':
-        prev_image(appState.imageTagging);
+        prev_image(appState.imgRuntime);
         break;
 
       case ']':
-        next_image(appState.imageTagging);
+        next_image(appState.imgRuntime);
         break;
 
       default:
