@@ -1,6 +1,6 @@
 import pytest
 
-from tests.db_server.conftest import make_png
+from tests.conftest import make_png
 
 
 @pytest.fixture
