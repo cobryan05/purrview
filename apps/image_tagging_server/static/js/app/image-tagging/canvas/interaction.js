@@ -2,7 +2,8 @@ import { Logger } from '../../../ui/utils/logging.js';
 import { generateUUID } from '../../../ui/utils/utils.js';
 import { BboxView } from '/app-static/js/app/image-tagging/canvas/views/bboxView.js';
 import { createUIBBbox } from '/app-static/js/shared/domain/image/mapper.js';
-import { clearSelection, setTool } from './tools.js';
+import { clearSelection, setTool, parseToolUuid } from './tools.js';
+import { fetchLabelByUuid } from '/app-static/js/shared/api/labels.js';
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
 import { setCanvasViewport } from './manager.js';
 import { screenToImage } from './viewport.js';
@@ -164,7 +165,15 @@ export async function handleMouseMove(e, runtime) {
   if (!_pendingDraggedBbox && (dx * dx + dy * dy) > BBOX_MIN_PX ** 2) {
     const viewport = runtime.canvas?.viewport;
     if (!viewport) return;
-    const uiBBox = createUIBBbox({ uuid: generateUUID() });
+    const { uuid: labelUuid } = parseToolUuid(runtime.tool);
+    let label = undefined;
+    if (labelUuid) {
+      const labelData = await fetchLabelByUuid(labelUuid);
+      if (labelData) {
+        label = { uuid: labelUuid, text: labelData.name, color: labelData.color };
+      }
+    }
+    const uiBBox = createUIBBbox({ uuid: generateUUID(), label });
     _pendingDraggedBbox = new BboxView(uiBBox, viewport);
     layer.add(_pendingDraggedBbox);
   }
