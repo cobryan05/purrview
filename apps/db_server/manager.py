@@ -280,7 +280,10 @@ class Manager:
             return None
         image = await self._db_client.get_image_by_filename(safe_path)
         if image is None or len(image.bboxes) == 0:
-            image = await self._db_client.sync_image_from_json(safe_path)
+            await self._db_client.sync_image_from_json(safe_path)
+            image = await self._db_client.get_image_by_filename(safe_path)
+        if image is None:
+            return None
         return ImageRecordRead.model_validate(image)
 
     def _get_json_sidefile(self, image_path: Path) -> Path:
