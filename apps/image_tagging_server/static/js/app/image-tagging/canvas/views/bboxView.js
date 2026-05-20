@@ -1,4 +1,6 @@
 // @ts-check
+const LABEL_OFFSET_Y = -18;
+
 export class BboxView extends Konva.Group {
     /** @type {import('@domain_image').UIBbox} */ uiBBox;
     /** @type {import('@konva').default.Rect} */ _rect;
@@ -10,7 +12,6 @@ export class BboxView extends Konva.Group {
    * @param {import('@image_tagging_types').ViewportTransform} viewport
    */
   constructor(uiBBox, viewport) {
-    // Initialize Konva.Group
     super({
       x: uiBBox.x * viewport.imageWidth * viewport.scale,
       y: uiBBox.y * viewport.imageHeight * viewport.scale,
@@ -21,7 +22,6 @@ export class BboxView extends Konva.Group {
       id: uiBBox.uuid
     });
 
-    // Assigning to typed members
     this.uiBBox = uiBBox;
     this._viewport = viewport;
     this.dirty = false;
@@ -39,7 +39,7 @@ export class BboxView extends Konva.Group {
       text: uiBBox.label?.text || 'Loading...',
       fill: uiBBox.label?.color || 'grey',
       fontSize: 14,
-      y: -18,
+      y: LABEL_OFFSET_Y,
       name: 'label'
     });
 
@@ -51,20 +51,25 @@ export class BboxView extends Konva.Group {
 
   /** @private */
   _setupEvents() {
+    // During transform the group's scaleX/Y changes, make sure text doesn't drift or scale
+    this.on('transform', () => {
+      const scaleX = this.scaleX();
+      const scaleY = this.scaleY();
+      this._text.scaleX(1 / scaleX);
+      this._text.scaleY(1 / scaleY);
+      this._text.y(LABEL_OFFSET_Y / scaleY);
+    });
+
     this.on('dragend transformend', () => {
       const scaleX = this.scaleX();
       const scaleY = this.scaleY();
       const newWidth = this.width() * scaleX;
       const newHeight = this.height() * scaleY;
 
-      this.setAttrs({
-        width: newWidth,
-        height: newHeight,
-        scaleX: 1,
-        scaleY: 1
-      });
+      this.setAttrs({ width: newWidth, height: newHeight, scaleX: 1, scaleY: 1 });
+      this._rect.setAttrs({ width: newWidth, height: newHeight, scaleX: 1, scaleY: 1 });
+      this._text.setAttrs({ scaleX: 1, scaleY: 1, y: LABEL_OFFSET_Y });
 
-      // Sync normalized model coords so updateViewport() reads the new position
       if (this._viewport) {
         const sw = this._viewport.imageWidth * this._viewport.scale;
         const sh = this._viewport.imageHeight * this._viewport.scale;
@@ -84,26 +89,27 @@ export class BboxView extends Konva.Group {
     this._text.text(text);
     this._text.fill(color);
     this._rect.stroke(color);
-
-    // Safety check if the layer exists to redraw
     this.getLayer()?.batchDraw();
   }
 
+  /** @param {object} [config] */
+  getClientRect(config) {
+    return this._rect.getClientRect(config);
+  }
 
-  /**
-   * @param {import('@image_tagging_types').ViewportTransform} viewport
-   */
+  /** @param {import('@image_tagging_types').ViewportTransform} viewport */
   updateViewport(viewport) {
     this._viewport = viewport;
     const fullScaledWidth = viewport.imageWidth * viewport.scale;
     const fullScaledHeight = viewport.imageHeight * viewport.scale;
+    const w = this.uiBBox.width * fullScaledWidth;
+    const h = this.uiBBox.height * fullScaledHeight;
     this.setAttrs({
       x: (this.uiBBox.x * fullScaledWidth) + viewport.offsetX,
       y: (this.uiBBox.y * fullScaledHeight) + viewport.offsetY,
-      width: this.uiBBox.width * fullScaledWidth,
-      height: this.uiBBox.height * fullScaledHeight
+      width: w,
+      height: h
     });
-    this._rect.size({ width: this.width(), height: this.height() });
-
+    this._rect.size({ width: w, height: h });
   }
 }

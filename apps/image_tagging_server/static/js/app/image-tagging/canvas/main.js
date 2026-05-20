@@ -67,24 +67,14 @@ export async function init(runtime) {
   //});
 
 
-  events.subscribe(EventTypes.CANVAS_BBOX_CLICKED, ({ bboxId }) => {
-    const { transformer, layer } = state.canvas;
-    const group = state.getBboxGroup(bboxId);
-    if (!transformer || !layer || !group) return;
-
-    transformer.nodes([group.metadata.rect]);
-    transformer.moveToTop();
-    layer.batchDraw();
-  });
-
   events.subscribe(EventTypes.RUN_INFERENCE_ON_CANVAS, async ({ modelName }) => {
     try {
-      const img = state.image?.img;
+      const img = runtime.state?.image?.img;
       if (!img) throw new Error('No image loaded');
 
       /** @type {import('@web_api').InferenceResultModel} */
       const result = await runInference(modelName, img);
-      await addInferenceResults(state, result);
+      await addInferenceResults(runtime, result);
     } catch (err) {
       Logger.error('Failed to run inference:', err);
     }

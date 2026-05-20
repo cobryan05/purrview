@@ -196,20 +196,9 @@ export function exportAnnotations(state) {
 
 /**
  * Adds recognition results to the current canvas
- * @param {import('@image_tagging_types').ImageTaggingState} state
+ * @param {import('@image_tagging_types').ImageTaggingRuntime} runtime
  * @param {import('@web_api').InferenceResultModel} results - The inference results to add to the current canvas
  */
-export async function addInferenceResults(state, results) {
-  const layer = state.canvas.layer;
-  if (!layer) {
-    Logger.error("Couldn't find image and canvas to add results");
-    return;
-  }
-  results.detections.forEach(box => {
-
-    const bboxView = new BboxView({ ...box, uuid: key }, 1);
-    state.updateCanvasBboxView(bboxView);
-  });
-
-  await refreshCanvas(state);
+export async function addInferenceResults(runtime, results) {
+  Logger.warn('addInferenceResults not yet implemented');
 }

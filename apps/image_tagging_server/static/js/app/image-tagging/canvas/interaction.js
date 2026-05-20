@@ -9,6 +9,8 @@ import { screenToImage } from './viewport.js';
 
 /** @type {import('@canvas_types').BboxView | null} */
 let _pendingDraggedBbox = null;
+/** @type {import('@canvas_types').BboxView | null} */
+let _selectedBbox = null;
 
 const DOUBLE_CLICK_TIME_MS = 400;
 const DOUBLE_CLICK_DISTANCE_PX = 10;
@@ -75,7 +77,7 @@ function getPointerPosition(canvasState) {
  */
 function findGroupAtPoint(runtime, pos) {
   const layer = runtime.canvas.layer;
-  const children = layer.getChildren(node => node.name() === 'annotation');
+  const children = layer.getChildren(node => node.name() === 'bbox');
   for (const group of children) {
     const rect = group.getClientRect({ relativeTo: layer });
     if (pos.x >= rect.x && pos.x <= rect.x + rect.width &&
@@ -140,7 +142,7 @@ export async function handleMouseMove(e, runtime) {
   const pos = getPointerPosition(runtime.canvas);
   if (!pos) return;
 
-  const currentTool = runtime.state.currentTool;
+  const currentTool = runtime.tool;
   if (currentTool != 'select') {
     createCrosshairLines(runtime.canvas);
     // Position lines at mouse X,Y spanning full height,width
@@ -227,21 +229,8 @@ export async function handleMouseUp(e, runtime) {
   _lastClickTime = now;
   _lastClickPos = pos;
 
-  if (hitGroup && hitGroup instanceof CanvasBboxGroup) {
-    const selectedUuid = hitGroup.metadata.bboxInfo.uuid;
-    if (isDoubleClick) {
-      if (!isSelectTool) {
-        hitGroup.updateMetadata({ labelUuid: state.currentLabelUuid });
-      } else {
-        state.setSelectedBboxUuid(selectedUuid);
-        events.publish(EventTypes.CANVAS_BBOX_DOUBLE_CLICKED, {
-          bboxId: selectedUuid
-        });
-      }
-    } else {
-      state.setSelectedBboxUuid(selectedUuid);
-      events.publish(EventTypes.CANVAS_BBOX_CLICKED, { bboxId: selectedUuid });
-    }
+  if (hitGroup instanceof BboxView && isDoubleClick) {
+    events.publish(EventTypes.CANVAS_BBOX_DOUBLE_CLICKED, { bboxId: hitGroup.id() });
   }
 }
 
@@ -277,12 +266,36 @@ export async function handleWheel(e, runtime) {
  * @returns {Promise<void>}
  */
 export function handleClick(e, runtime) {
-  const stage = runtime.canvas.stage;
-  const layer = runtime.canvas.layer;
-  if (e.target === stage) {
-    clearSelection();
-    layer.draw();
+  if (!runtime.canvas) return;
+  const { stage, layer, transformer } = runtime.canvas;
+
+  // Walk up from the click target to find a BboxView group
+  let node = e.target;
+  let bboxGroup = null;
+  while (node && node !== stage) {
+    if (node instanceof BboxView) {
+      bboxGroup = node;
+      break;
+    }
+    node = node.getParent();
   }
+
+  if (bboxGroup instanceof BboxView) {
+    if (_selectedBbox && _selectedBbox !== bboxGroup) {
+      _selectedBbox.off('transformend.transformer');
+      _selectedBbox = null;
+    }
+    _selectedBbox = bboxGroup;
+    transformer.nodes([bboxGroup]);
+    transformer.moveToTop();
+    bboxGroup.on('transformend.transformer', () => transformer.forceUpdate());
+    events.publish(EventTypes.CANVAS_BBOX_CLICKED, { bboxId: bboxGroup.id() });
+  } else if (e.target === stage) {
+    _selectedBbox?.off('transformend.transformer');
+    _selectedBbox = null;
+    transformer.nodes([]);
+  }
+  layer.batchDraw();
 }
 
 /**
