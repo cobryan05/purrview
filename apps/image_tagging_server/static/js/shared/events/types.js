@@ -10,6 +10,7 @@
  *
  * @typedef {Object} CanvasBboxDoubleClickedPayload
  * @property {string} bboxId
+ * @property {import('@canvas_types').BboxView} bboxView - The live BboxView instance, used by the inspector to read/update bbox state without going through appState
  */
 
 /**

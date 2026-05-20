@@ -1,7 +1,7 @@
-import { refreshCanvas } from '../app/image-tagging/canvas/image.js'; // TODO: Better way?
 import { BboxInfoField, EditableField } from '/app-static/js/ui/utils/fields/index.js';
 import { createGenericRow, Logger } from '/app-static/js/ui/utils/index.js';
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
+import { fetchLabelByUuid } from '/app-static/js/shared/api/labels.js';
 
 /**
  * Opens the inspector tab in the sidebar and highlights it briefly.
@@ -32,9 +32,8 @@ export function openInspectorTab() {
 }
 
 
-export function renderBboxInspector({ bboxUuid = null, target = 'tab-inspector', editable = true, onSelectCallback = null } = {}) {
-  bboxUuid = bboxUuid ?? appState.imageTagging.selectedBboxUuid;
-  const bbox = appState.imageTagging.getBboxGroup(bboxUuid)
+export function renderBboxInspector({ bboxView = null, target = 'tab-inspector', editable = true, onSelectCallback = null } = {}) {
+  if (!bboxView) return;
   try {
     const targetElement = document.getElementById(target);
     if (!targetElement) {
@@ -43,13 +42,13 @@ export function renderBboxInspector({ bboxUuid = null, target = 'tab-inspector',
     }
     targetElement.innerHTML = 'Inspector Loading...'
     const container = document.createElement('div');
-    container.style.display = 'inline-block';      // shrink-wrap width
-    container.style.verticalAlign = 'top';         // optional, align with top of parent
-    container.style.width = 'max-content';         // shrink to longest content
-    container.style.minWidth = '0';                // prevent overflow issues
+    container.style.display = 'inline-block';
+    container.style.verticalAlign = 'top';
+    container.style.width = 'max-content';
+    container.style.minWidth = '0';
     targetElement.appendChild(container);
 
-    BboxInfoField.create({ bboxGroup: bbox }).then(bboxInfoFieldInstance => {
+    BboxInfoField.create({ bboxGroup: bboxView }).then(bboxInfoFieldInstance => {
       const row = createGenericRow({
         field: new EditableField({
           field: bboxInfoFieldInstance,
@@ -59,14 +58,17 @@ export function renderBboxInspector({ bboxUuid = null, target = 'tab-inspector',
             Logger.warn(val);
           },
           onSave: async (val) => {
-            const bboxGroup = appState.imageTagging.getBboxGroup(bboxUuid);
-            if (!bboxGroup) {
-              Logger.error(`No bbox found for UUID: ${bboxUuid}`);
-              return;
+            const labelUuid = val.bbox_info.labelUuid;
+            if (labelUuid) {
+              const labelData = await fetchLabelByUuid(labelUuid);
+              if (labelData) {
+                bboxView.uiBBox.label = { uuid: labelUuid, text: labelData.name, color: labelData.color };
+                bboxView.updateAppearance(labelData.name, labelData.color);
+              }
+            } else {
+              bboxView.uiBBox.label = undefined;
+              bboxView.updateAppearance('', 'grey');
             }
-            bboxGroup.updateMetadata({ class_uuid: val.bbox_info.class_uuid, tagUuids: val.bbox_info.tagUuids });
-            appState.imageTagging.updateCanvasBboxView(bboxGroup);
-            await refreshCanvas(appState.imageTagging);
           },
           onCancel: () => {
             Logger.warn("Canceled");
@@ -78,7 +80,7 @@ export function renderBboxInspector({ bboxUuid = null, target = 'tab-inspector',
       targetElement.appendChild(container);
     });
   } catch (err) {
-    console.error('Failed to fetch classes:', err);
+    console.error('Failed to render bbox inspector:', err);
   }
 
 }
@@ -94,5 +96,5 @@ events.subscribe(
  */
 function onCanvasBboxSelected(payload) {
   openInspectorTab();
-  renderBboxInspector({ bboxUuid: payload.bboxId });
+  renderBboxInspector({ bboxView: payload.bboxView });
 }

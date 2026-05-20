@@ -77,9 +77,9 @@ export const fieldFactories = {
 
     const labelList = await fetchLabels();
     const labelOptions = Array.from(labelList.values()).map(label => ({
-      key: label.metadata.uuid,
-      text: label.metadata.name,
-      color: label.metadata.color || '#cccccc'
+      key: label.uuid,
+      text: label.name,
+      color: label.color || '#cccccc'
     }))
 
     return await new DropDownField({

@@ -38,7 +38,7 @@ export class BboxInfoField extends Field {
     instance._bboxGroup = bboxGroup;
 
     const schema = {
-      "labelUuids": {
+      "labelUuid": {
         "label": "Label",
         "type": "label",
         "required": true,
@@ -47,14 +47,13 @@ export class BboxInfoField extends Field {
       "tagUuids": {
         "label": "Tags",
         "type": "tags",
-
         "description": "Tag applied to the bbox"
       }
     };
 
     const schema_values = {
-      labelUuid: instance._bboxGroup.metadata.bboxInfo.labelUuid,
-      tagUuids: instance._bboxGroup.metadata.bboxInfo.tagUuids
+      labelUuid: instance._bboxGroup.uiBBox?.label?.uuid,
+      tagUuids: instance._bboxGroup.uiBBox?.tagUuids ?? []
     };
     instance._schemaField = await SchemaField.create({ schema: schema ?? {}, values: schema_values });
 

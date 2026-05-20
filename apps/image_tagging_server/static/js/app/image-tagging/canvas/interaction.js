@@ -239,7 +239,7 @@ export async function handleMouseUp(e, runtime) {
   _lastClickPos = pos;
 
   if (hitGroup instanceof BboxView && isDoubleClick) {
-    events.publish(EventTypes.CANVAS_BBOX_DOUBLE_CLICKED, { bboxId: hitGroup.id() });
+    events.publish(EventTypes.CANVAS_BBOX_DOUBLE_CLICKED, { bboxId: hitGroup.id(), bboxView: hitGroup });
   }
 }
 
