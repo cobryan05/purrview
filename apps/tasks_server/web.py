@@ -14,10 +14,11 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from pydantic import BaseModel, Field
+from pydantic import Field
 
 from apps.helpers.consts import JsonValues
 from apps.helpers.types import (
+    Payload,
     StatusResponse,
     TaskConfigMetadata,
     TaskConfigMetadataModel,
@@ -31,7 +32,7 @@ logger = logging.getLogger(__file__)
 logger.setLevel(logging.DEBUG)
 
 
-class CreateTaskConfigPayload(BaseModel):
+class CreateTaskConfigPayload(Payload):
     """Request model for creating a new task configuration."""
 
     name: str
@@ -44,7 +45,7 @@ class CreateTaskConfigResponse(StatusResponse):
     config_uuid: Optional[str] = None
 
 
-class DeleteTasksPayload(BaseModel):
+class DeleteTasksPayload(Payload):
     task_uuids: List[str]
 
 
@@ -52,7 +53,7 @@ class DeleteTasksResponse(StatusResponse):
     task_uuids: List[str] = Field(default_factory=list)
 
 
-class DeleteTaskConfigsPayload(BaseModel):
+class DeleteTaskConfigsPayload(Payload):
     config_uuids: List[str]
 
 
@@ -60,7 +61,7 @@ class DeleteTaskConfigsResponse(StatusResponse):
     config_uuids: List[str] = Field(default_factory=list)
 
 
-class GetTaskConfigsPayload(BaseModel):
+class GetTaskConfigsPayload(Payload):
     config_uuids: Optional[Union[List[str], str]] = None
 
 
@@ -72,14 +73,14 @@ class ListTaskTypesResponse(StatusResponse):
     types: List[str] = Field(default_factory=list)
 
 
-class PauseTasksPayload(BaseModel):
+class PauseTasksPayload(Payload):
     task_uuids: List[str]
 
 class PauseTasksResponse(StatusResponse):
     task_uuids: List[str] = Field(default_factory=list)
 
 
-class ResumeTasksPayload(BaseModel):
+class ResumeTasksPayload(Payload):
     task_uuids: List[str]
 
 
@@ -87,7 +88,7 @@ class ResumeTasksResponse(StatusResponse):
     task_uuids: List[str] = Field(default_factory=list)
 
 
-class CancelTasksPayload(BaseModel):
+class CancelTasksPayload(Payload):
     task_uuids: List[str]
 
 
@@ -95,7 +96,7 @@ class CancelTasksResponse(StatusResponse):
     task_uuids: List[str] = Field(default_factory=list)
 
 
-class StartTasksPayload(BaseModel):
+class StartTasksPayload(Payload):
     config_uuid: str
 
 
@@ -103,14 +104,14 @@ class StartTasksResponse(StatusResponse):
     task_uuid: Optional[str] = None
 
 
-class TasksTypeSchemaPayload(BaseModel):
+class TasksTypeSchemaPayload(Payload):
     task_typenames: List[str]
 
 class TasksTypeSchemaResponse(StatusResponse):
     schemas: Dict[str, dict] = Field(default_factory=dict)
 
 
-class TasksResultPayload(BaseModel):
+class TasksResultPayload(Payload):
     task_uuids: List[str]
 
 
@@ -118,7 +119,7 @@ class TasksResultResponse(StatusResponse):
     results: dict[str, TaskResultModel] = Field(default_factory=dict)
 
 
-class TasksInfoPayload(BaseModel):
+class TasksInfoPayload(Payload):
     task_uuids: Optional[List[str]] = None
 
 
@@ -126,7 +127,7 @@ class TasksInfoResponse(StatusResponse):
     tasks: dict[str, TaskInfoModel] = Field(default_factory=dict)
 
 
-class UpdateTaskConfigPayload(BaseModel):
+class UpdateTaskConfigPayload(Payload):
     """Request model for updating a task configuration."""
 
     config_uuid: str

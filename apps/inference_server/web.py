@@ -20,17 +20,18 @@ from apps.helpers.types import (
     DetectionResult,
     InferenceResult,
     InferenceResultModel,
+    Payload,
     StatusResponse,
 )
 
 from .manager import Manager
 
 
-class AssociateLabelPayload(BaseModel):
+class AssociateLabelPayload(Payload):
     label_uuid: Optional[str]
 
 
-class ModelBulkClassesPayload(BaseModel):
+class ModelBulkClassesPayload(Payload):
     model_names: List[str]
 
 
@@ -38,13 +39,12 @@ class ModelBulkClassesResponse(StatusResponse):
     models: Dict[str, Dict[str, Optional[str]]] = Field(default_factory=dict)
 
 
-class PinModelPayload(BaseModel):
+class PinModelPayload(Payload):
     model_name: str
     duration: int
 
 
-class InferencePayload(BaseModel):
-    model_name: str
+class InferencePayload(Payload):
     conf_thresh: float
     return_source_img: bool = False
     return_annotated_img: bool = False
@@ -257,19 +257,19 @@ class WebApp:
                 return PinModelResponse(status=JsonValues.FAILURE, message=str(e))
 
         @self._app.post(
-            "/api/models/inference",
+            "/api/models/{model_name}/infer",
             tags=[ApiTags.INFERENCE],
             operation_id="inference",
             response_model=InferenceResponse,
         )
-        async def inference_api(payload: InferencePayload) -> InferenceResponse:
+        async def inference_api(model_name: str, payload: InferencePayload) -> InferenceResponse:
             try:
                 np_bytes = base64.b64decode(payload.image_base64)
                 np_image = np.frombuffer(np_bytes, np.uint8)
                 image_array: np.ndarray = cv2.imdecode(np_image, cv2.IMREAD_COLOR)
 
                 inference_result: InferenceResult = await self._manager.recognize(
-                    model_name=payload.model_name,
+                    model_name=model_name,
                     image=image_array,
                     conf_thresh=payload.conf_thresh,
                     return_annotated_img=payload.return_annotated_img,

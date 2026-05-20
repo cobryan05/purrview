@@ -17,8 +17,6 @@ from apps.helpers.types import StatusResponse
 from apps.inference_server.web import (
     AssociateLabelPayload,
     ModelBulkClassesPayload,
-    InferencePayload,
-    InferenceResponse,
 )
 from apps.tasks_server.web import (
     CancelTasksPayload,

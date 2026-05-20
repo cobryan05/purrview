@@ -13,7 +13,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import ConfigDict, Field
 from pydantic.alias_generators import to_camel
 
 from apps.db_server.manager import Manager
@@ -24,14 +24,15 @@ from apps.helpers.types import (
     Base64Image,
     BoundingBoxMetadataModel,
     FileEntry,
+    Payload,
     SourceMetadata,
     SourceMetadataModel,
     StatusResponse,
 )
 
 
-class ApiPayload(BaseModel):
-    model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)
+class ApiPayload(Payload):
+    pass
 
 
 class UpdateMetadataPayload(ApiPayload):

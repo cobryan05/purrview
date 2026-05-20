@@ -1,5 +1,7 @@
 import { BboxView } from '/app-static/js/app/image-tagging/canvas/views/bboxView.js';
 import { fetchImage, updateImage } from '/app-static/js/shared/api/images.js';
+import { fetchLabels } from '/app-static/js/shared/api/labels.js';
+import { createUIBBbox } from '/app-static/js/shared/domain/image/mapper.js';
 import { Logger, toast } from '/app-static/js/ui/utils/index.js';
 
 let _activeImageLoadId = 0;
@@ -35,67 +37,6 @@ export async function loadImageOntoCanvas(runtime, imageName) {
   }
 
   runtime.setImage(imageInfo);
-}
-
-/**
- * @param {import('@image_tagging_types').ImageTaggingState} state
- */
-export async function refreshCanvas(state) {
-  const layer = state.canvas.layer;
-  const img = state.image?.img;
-  if (!layer || !img) {
-    Logger.warn("Can't refresh without a canvas and image");
-    return;
-  }
-
-  const oldBg = layer.findOne('.background');
-  if (oldBg) {
-    oldBg.destroy();
-  }
-
-  const bg = new Konva.Image({
-    image: img,
-    x: 0,
-    y: 0,
-    width: img.width,
-    height: img.height,
-    listening: false,
-    name: 'background',
-  });
-  layer.add(bg);
-  bg.moveToBottom();
-
-  state.canvas.bboxes.clear()
-  for (const [key, bbox] of (state.image?.bboxes)) {
-    const group = new BboxView(bbox, img.width, img.height);
-    layer.add(group);
-    group.moveToTop();
-  }
-
-  // === Zoom to fit the image with padding ===
-  const stage = state.canvas.stage;
-  const container = stage?.container();
-  if (stage && container) {
-    const padding = 20;
-
-    const scaleX = (container.clientWidth - padding * 2) / img.width;
-    const scaleY = (container.clientHeight - padding * 2) / img.height;
-    const scale = Math.min(scaleX, scaleY);
-
-    // Center the image
-    const newWidth = img.width * scale;
-    const newHeight = img.height * scale;
-
-    const offsetX = (container.clientWidth - newWidth) / 2;
-    const offsetY = (container.clientHeight - newHeight) / 2;
-
-    stage.scale({ x: scale, y: scale });
-    stage.position({ x: offsetX, y: offsetY });
-    stage.batchDraw();
-  }
-
-  layer.draw();
-  Logger.notify(`Loaded image and metadata for ${state.image.name}`);
 }
 
 
@@ -200,5 +141,40 @@ export function exportAnnotations(state) {
  * @param {import('@web_api').InferenceResultModel} results - The inference results to add to the current canvas
  */
 export async function addInferenceResults(runtime, results) {
-  Logger.warn('addInferenceResults not yet implemented');
+  if (!runtime.canvas || !runtime.state?.image) {
+    Logger.warn('addInferenceResults: no canvas or image loaded');
+    return;
+  }
+
+  const { layer, viewport } = runtime.canvas;
+  const labelsMap = await fetchLabels();
+
+  for (const detection of results.detections) {
+    const { bbox } = detection;
+
+    const labelData = bbox.labelUuid ? labelsMap.get(bbox.labelUuid) : null;
+    const label = labelData
+      ? { uuid: labelData.uuid, text: labelData.name, color: labelData.color }
+      : bbox.labelUuid
+        ? { uuid: bbox.labelUuid, text: bbox.classStr ?? bbox.labelUuid }
+        : undefined;
+
+    const uiBbox = createUIBBbox({
+      uuid: bbox.uuid,
+      label,
+      tagUuids: bbox.tagUuids ?? [],
+      x: bbox.x,
+      y: bbox.y,
+      width: bbox.width,
+      height: bbox.height,
+      selected: false,
+      dirty: true,
+    });
+
+    runtime.state.image.bboxes.set(uiBbox.uuid, uiBbox);
+    const bboxView = new BboxView(uiBbox, viewport);
+    layer.add(bboxView);
+  }
+
+  layer.draw();
 }

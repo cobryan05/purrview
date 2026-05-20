@@ -15,9 +15,8 @@ export async function runInference(model_name, image) {
   const base64String = image.src.split(',')[1]; // strip "data:image/png;base64,"
 
   // Prepare JSON payload
-  /** @type {import('@web_api').RecognizePayload} */
+  /** @type {import('@web_api').InferencePayload} */
   const payload = {
-    model_name: model_name,
     conf_thresh: 0.25,
     return_annotated_img: false,
     pin_id: null, // optional
@@ -26,7 +25,7 @@ export async function runInference(model_name, image) {
 
   toast(`Sending recognition request for model ${model_name}...`);
   // Send recognition request
-  const res = await fetch('/api/recognize', {
+  const res = await fetch(`/api/models/${model_name}/infer`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -38,7 +37,7 @@ export async function runInference(model_name, image) {
     throw new Error(`Recognition request failed: ${res.statusText}`);
   }
 
-  /** @type {import('@web_api').RecognizeResponse} */
+  /** @type {import('@web_api').InferenceResponse} */
   const recRes = await res.json();
   const { result } = recRes;
 

@@ -27,6 +27,10 @@ logger = logging.getLogger(__file__)
 logger.setLevel(logging.DEBUG)
 
 
+class Payload(BaseModel):
+    model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)
+
+
 class StatusResponse(BaseModel):
     model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)
     status: str = JsonValues.SUCCESS

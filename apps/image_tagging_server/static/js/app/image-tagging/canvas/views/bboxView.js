@@ -13,8 +13,8 @@ export class BboxView extends Konva.Group {
    */
   constructor(uiBBox, viewport) {
     super({
-      x: uiBBox.x * viewport.imageWidth * viewport.scale,
-      y: uiBBox.y * viewport.imageHeight * viewport.scale,
+      x: uiBBox.x * viewport.imageWidth * viewport.scale + viewport.offsetX,
+      y: uiBBox.y * viewport.imageHeight * viewport.scale + viewport.offsetY,
       width: uiBBox.width * viewport.imageWidth * viewport.scale,
       height: uiBBox.height * viewport.imageHeight * viewport.scale,
       draggable: true,
