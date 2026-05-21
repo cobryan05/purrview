@@ -305,3 +305,29 @@ class TaskInstance(TaskInstanceBase, TimestampModel, table=True):
     uuid: str = Field(default_factory=lambda: str(uuid4()), primary_key=True)
     config_uuid: str = Field(foreign_key="task_configs.uuid", ondelete="RESTRICT")
     config: TaskConfig = Relationship(back_populates="instances")
+
+
+class TaskConfigRead(BaseModel):
+    uuid: str
+    name: str
+    typename: str
+    description: Optional[str] = None
+    params: Dict[str, Any] = Field(alias="params_json")
+    marked_for_delete: bool = False
+
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+
+
+class TaskInstanceRead(BaseModel):
+    uuid: str
+    config_uuid: str
+    status: str
+    resume_data: Optional[Dict[str, Any]] = Field(default=None, alias="resume_data_json")
+    result: Optional[Dict[str, Any]] = Field(default=None, alias="result_json")
+    error_message: Optional[str] = None
+
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+
+
+class TaskResult(BaseModel):
+    data: Dict[str, Any] = Field(default_factory=dict)

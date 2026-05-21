@@ -1,6 +1,7 @@
 import json
 import logging
 import sys
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, TypeVar, Union
 from uuid import uuid4
@@ -13,6 +14,8 @@ from sqlalchemy.orm import selectinload, sessionmaker
 from sqlmodel import SQLModel, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
+from apps.helpers.consts import TaskStatus
+
 from .types import (
     BBox,
     BBoxTagLink,
@@ -23,6 +26,8 @@ from .types import (
     Source,
     Tag,
     TagKind,
+    TaskConfig,
+    TaskInstance,
 )
 
 logging.basicConfig(stream=sys.stdout)
@@ -543,3 +548,181 @@ class DbClient:
             await session.commit()
             await session.refresh(source)
         return source
+
+    ################################################################################
+    # Task Configs
+    ################################################################################
+
+    async def add_task_config(
+        self,
+        name: str,
+        typename: str,
+        params: Dict[str, Any],
+        description: Optional[str] = None,
+    ) -> TaskConfig:
+        config = TaskConfig(name=name, typename=typename, params_json=params, description=description)
+        async with self._async_session_maker() as session:
+            session.add(config)
+            await session.commit()
+            await session.refresh(config)
+        return config
+
+    async def update_task_config(
+        self,
+        config_uuid: str,
+        name: Optional[str] = None,
+        typename: Optional[str] = None,
+        params: Optional[Dict[str, Any]] = None,
+        description: Optional[str] = None,
+        marked_for_delete: Optional[bool] = None,
+    ) -> None:
+        async with self._async_session_maker() as session:
+            config = await session.get(TaskConfig, config_uuid)
+            if not config:
+                return
+            if name is not None:
+                config.name = name
+            if typename is not None:
+                config.typename = typename
+            if params is not None:
+                config.params_json = params
+            if description is not None:
+                config.description = description
+            if marked_for_delete is not None:
+                config.marked_for_delete = marked_for_delete
+            session.add(config)
+            await session.commit()
+
+    async def delete_task_config(self, config_uuids: Union[str, List[str]]) -> None:
+        if isinstance(config_uuids, str):
+            config_uuids = [config_uuids]
+        if not config_uuids:
+            return
+        async with self._async_session_maker() as session:
+            # Delete configs with no task instances referencing them
+            configs_with_instances = select(TaskInstance.config_uuid).where(
+                TaskInstance.config_uuid.in_(config_uuids)
+            )
+            await session.exec(
+                delete(TaskConfig).where(
+                    TaskConfig.uuid.in_(config_uuids),
+                    ~TaskConfig.uuid.in_(configs_with_instances),
+                )
+            )
+            # Mark the rest for deletion
+            result = await session.exec(
+                select(TaskConfig).where(TaskConfig.uuid.in_(config_uuids))
+            )
+            for config in result.all():
+                config.marked_for_delete = True
+                session.add(config)
+            await session.commit()
+
+    async def get_task_configs(
+        self,
+        config_uuids: Optional[Union[str, List[str]]] = None,
+        typename: Optional[Union[str, List[str]]] = None,
+        name: Optional[Union[str, List[str]]] = None,
+    ) -> Dict[str, TaskConfig]:
+        stmt = select(TaskConfig)
+        if config_uuids is not None:
+            uuids = [config_uuids] if isinstance(config_uuids, str) else config_uuids
+            stmt = stmt.where(TaskConfig.uuid.in_(uuids))
+        if typename is not None:
+            typenames = [typename] if isinstance(typename, str) else typename
+            stmt = stmt.where(TaskConfig.typename.in_(typenames))
+        if name is not None:
+            names = [name] if isinstance(name, str) else name
+            stmt = stmt.where(TaskConfig.name.in_(names))
+        stmt = stmt.order_by(TaskConfig.created_at.desc())
+        async with self._async_session_maker() as session:
+            result = await session.exec(stmt)
+            configs = result.all()
+        return {c.uuid: c for c in configs}
+
+    async def get_tasks(
+        self,
+        task_uuid: Optional[Union[str, List[str]]] = None,
+        config_uuid: Optional[Union[str, List[str]]] = None,
+        typename: Optional[Union[str, List[str]]] = None,
+        status: Optional[Union[str, List[str]]] = None,
+        resumable: Optional[bool] = None,
+    ) -> List[TaskInstance]:
+        stmt = select(TaskInstance).options(selectinload(TaskInstance.config))
+        if task_uuid is not None:
+            uuids = [task_uuid] if isinstance(task_uuid, str) else task_uuid
+            stmt = stmt.where(TaskInstance.uuid.in_(uuids))
+        if config_uuid is not None:
+            cuuids = [config_uuid] if isinstance(config_uuid, str) else config_uuid
+            stmt = stmt.where(TaskInstance.config_uuid.in_(cuuids))
+        if typename is not None:
+            typenames = [typename] if isinstance(typename, str) else typename
+            stmt = stmt.join(TaskConfig).where(TaskConfig.typename.in_(typenames))
+        if status is not None:
+            statuses = [status] if isinstance(status, str) else status
+            stmt = stmt.where(TaskInstance.status.in_(statuses))
+        if resumable is True:
+            stmt = stmt.where(TaskInstance.resume_data_json.is_not(None))
+        elif resumable is False:
+            stmt = stmt.where(TaskInstance.resume_data_json.is_(None))
+        async with self._async_session_maker() as session:
+            result = await session.exec(stmt)
+            instances = result.all()
+        return list(instances)
+
+    async def get_task_results(self, task_uuids: Union[List[str], str]) -> Optional[Dict[str, Any]]:
+        if isinstance(task_uuids, str):
+            task_uuids = [task_uuids]
+        stmt = select(TaskInstance).where(TaskInstance.uuid.in_(task_uuids))
+        async with self._async_session_maker() as session:
+            result = await session.exec(stmt)
+            instances = result.all()
+        if not instances:
+            return None
+        return {i.uuid: i.result_json for i in instances if i.result_json is not None}
+
+    async def set_task_result(self, task_uuid: str, results: Dict[str, Any]) -> None:
+        async with self._async_session_maker() as session:
+            instance = await session.get(TaskInstance, task_uuid)
+            if instance:
+                instance.result_json = results
+                session.add(instance)
+                await session.commit()
+
+    async def set_task_resume_data(self, task_uuid: str, resume_data: Dict[str, Any]) -> None:
+        async with self._async_session_maker() as session:
+            instance = await session.get(TaskInstance, task_uuid)
+            if instance:
+                instance.resume_data_json = resume_data
+                session.add(instance)
+                await session.commit()
+
+    async def set_task_status(self, task_uuid: str, new_status: str) -> None:
+        async with self._async_session_maker() as session:
+            instance = await session.get(TaskInstance, task_uuid)
+            if instance:
+                instance.status = new_status
+                session.add(instance)
+                await session.commit()
+
+    async def insert_new_active_task(self, config_uuid: str) -> TaskInstance:
+        instance = TaskInstance(config_uuid=config_uuid, status=TaskStatus.NEW)
+        async with self._async_session_maker() as session:
+            session.add(instance)
+            await session.commit()
+            await session.refresh(instance)
+            stmt = select(TaskInstance).options(selectinload(TaskInstance.config)).where(
+                TaskInstance.uuid == instance.uuid
+            )
+            result = await session.exec(stmt)
+            instance = result.one()
+        return instance
+
+    async def delete_active_tasks(self, task_uuids: Union[str, List[str]]) -> None:
+        if isinstance(task_uuids, str):
+            task_uuids = [task_uuids]
+        if not task_uuids:
+            return
+        async with self._async_session_maker() as session:
+            await session.exec(delete(TaskInstance).where(TaskInstance.uuid.in_(task_uuids)))
+            await session.commit()

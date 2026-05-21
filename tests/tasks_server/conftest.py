@@ -6,7 +6,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from apps.helpers.consts import TaskStatus
-from apps.helpers.types import TaskConfigMetadata, TaskInstanceMetadata
+from apps.helpers.db.types import TaskConfig, TaskInstance
 from apps.tasks_server.manager import Manager
 from apps.tasks_server.tasks.Registry import register_task, task_registry
 from apps.tasks_server.tasks.Task import Task
@@ -37,16 +37,11 @@ TASK_UUID = str(uuid.uuid4())
 @pytest.fixture
 def legacy_db():
     mock = AsyncMock()
-    mock.add_task_config.return_value = TaskConfigMetadata(
-        uuid=CONFIG_UUID, typename="TestTask", params={}, name="test-config"
-    )
-    mock.get_task_configs.return_value = {
-        CONFIG_UUID: TaskConfigMetadata(
-            uuid=CONFIG_UUID, typename="TestTask", params={}, name="test-config"
-        )
-    }
-    mock.insert_new_active_task.return_value = TaskInstanceMetadata(
-        uuid=TASK_UUID, config_uuid=CONFIG_UUID, typename="TestTask", status=TaskStatus.PENDING
+    mock_config = TaskConfig(uuid=CONFIG_UUID, name="test-config", typename="TestTask", params_json={})
+    mock.add_task_config.return_value = mock_config
+    mock.get_task_configs.return_value = {CONFIG_UUID: mock_config}
+    mock.insert_new_active_task.return_value = TaskInstance(
+        uuid=TASK_UUID, config_uuid=CONFIG_UUID, status=TaskStatus.PENDING
     )
     mock.get_tasks.return_value = []
     mock.delete_active_tasks.return_value = None

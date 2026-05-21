@@ -10,7 +10,7 @@ import inference_client
 
 from apps.helpers.consts import TaskStatus
 from apps.helpers.db.db_client import DbClient
-from apps.helpers.types import TaskConfigMetadata, TaskInstanceMetadata, TaskResult
+from apps.helpers.db.types import TaskConfig, TaskInstance
 from apps.tasks_server.types import TaskInfo
 
 from .tasks.Registry import task_registry
@@ -61,7 +61,7 @@ class Manager:
         """
         return list(task_registry.keys())
 
-    async def get_tasks_result(self, task_ids: Union[List[str], str]) -> dict[str, TaskResult]:
+    async def get_tasks_result(self, task_ids: Union[List[str], str]) -> dict[str, dict]:
         """
         Get the result of specified tasks.
 
@@ -83,7 +83,7 @@ class Manager:
                 result = task_info.task.get_results()
                 if result:
                     results[tid] = result
-                    delete_on_success = task_info.config_metadata.params.get(Task.InternalKeys.ONESHOT_RESULT, False)
+                    delete_on_success = task_info.config.params_json.get(Task.InternalKeys.ONESHOT_RESULT, False)
                     if delete_on_success:
                         tasks_to_delete.append(tid)
             else:
@@ -113,34 +113,30 @@ class Manager:
                     uuids_left.remove(uuid)
 
         if uuids_left is None or len(uuids_left) > 0:
-            db_task_inst_metadata = await self._legacy_db_client.get_tasks(task_uuid=uuids_left)
-            config_uuids = list(set(task_meta.config_uuid for task_meta in db_task_inst_metadata))
-            config_metadata = await self._legacy_db_client.get_task_configs(config_uuids=config_uuids)
-            for inst_metadata in db_task_inst_metadata:
-                config_meta = config_metadata[inst_metadata.config_uuid]
-                running_task = self._running_tasks.get(inst_metadata.uuid)
-                task_info = TaskInfo(config_metadata=config_meta, task_metadata=inst_metadata, task=running_task)
-                ret_info[inst_metadata.uuid] = task_info
+            db_instances = await self._legacy_db_client.get_tasks(task_uuid=uuids_left)
+            config_uuids = list(set(inst.config_uuid for inst in db_instances))
+            configs = await self._legacy_db_client.get_task_configs(config_uuids=config_uuids)
+            for instance in db_instances:
+                config = configs[instance.config_uuid]
+                running_task = self._running_tasks.get(instance.uuid)
+                task_info = TaskInfo(config=config, instance=instance, task=running_task.task if running_task else None)
+                ret_info[instance.uuid] = task_info
 
         return ret_info
 
     async def create_new_task_config(
         self, name: str, typename: str, params: Dict[str, Any], persistent: bool
-    ) -> TaskConfigMetadata:
+    ) -> TaskConfig:
         """
         Start a new task.
 
-        Returns new task metadata
+        Returns new task config
         """
         if typename not in task_registry:
             raise ValueError(f"Unknown task: {typename}")
 
         params[Task.InternalKeys.PERSISTENT] = persistent
-        task_config_metadata: TaskConfigMetadata = await self._legacy_db_client.add_task_config(
-            name=name, typename=typename, params=params
-        )
-
-        return task_config_metadata
+        return await self._legacy_db_client.add_task_config(name=name, typename=typename, params=params)
 
     async def delete_task_configs(self, config_uuids: Union[List[str], str]) -> None:
         """
@@ -207,15 +203,14 @@ class Manager:
 
     async def get_task_configs(
         self, task_config_uuids: Union[List[str], str, None]
-    ) -> dict[str, TaskConfigMetadata]:
+    ) -> dict[str, TaskConfig]:
         """
         Get task configurations by their IDs.
         """
         if isinstance(task_config_uuids, str):
             task_config_uuids = [task_config_uuids]
 
-        configs_metadata = await self._legacy_db_client.get_task_configs(config_uuids=task_config_uuids)
-        return configs_metadata
+        return await self._legacy_db_client.get_task_configs(config_uuids=task_config_uuids)
 
     async def pause_tasks(self, task_uuids: Union[List[str], str]) -> List[str]:
         """
@@ -231,7 +226,8 @@ class Manager:
             self._running_tasks[task_id]
             for task_id in task_uuids
             if task_id in self._running_tasks
-            and self._running_tasks[task_id].task_metadata.status == TaskStatus.RUNNING
+            and self._running_tasks[task_id].instance is not None
+            and self._running_tasks[task_id].instance.status == TaskStatus.RUNNING
         ]
 
         for task_info in task_infos:
@@ -242,20 +238,20 @@ class Manager:
         for task_info in task_infos:
             try:
                 await task_info.task.wait_for_task_done(timeout=10.0)
-                task_info.config_metadata.status = TaskStatus.PAUSED
+                task_info.instance.status = TaskStatus.PAUSED
             except asyncio.TimeoutError as e:
                 logger.warning(f"Timeout while waiting task pause: {e}")
-                task_info.config_metadata.status = TaskStatus.ERROR
+                task_info.instance.status = TaskStatus.ERROR
             except StopIteration as e:
-                task_info.config_metadata.status = TaskStatus.COMPLETED
+                task_info.instance.status = TaskStatus.COMPLETED
                 logger.info(f"Task finished while waiting for data ready: {e}")
 
             try:
-                del self._running_tasks[task_info.task_metadata.id]
+                del self._running_tasks[task_info.instance.uuid]
                 await self._save_task_data(task_info)
             except Exception as e:
                 logger.exception(f"Error while saving task data: {e}")
-            paused_tasks.append(task_info.task_metadata.uuid)
+            paused_tasks.append(task_info.instance.uuid)
 
         return paused_tasks
 
@@ -274,11 +270,14 @@ class Manager:
             if task_uuid in self._running_tasks:
                 logger.warning(f"Can't resume task {task_uuid}: already in running tasks")
             else:
-                task_info = (await self.get_task_configs(task_uuid)).get(task_uuid)
-                if task_info and task_info.config_metadata.status == TaskStatus.PAUSED:
-                    await self._start_task(task_info)
+                instances = await self._legacy_db_client.get_tasks(task_uuid=task_uuid)
+                instance = instances[0] if instances else None
+                if instance and instance.status == TaskStatus.PAUSED:
+                    config = (await self._legacy_db_client.get_task_configs(config_uuids=[instance.config_uuid])).get(instance.config_uuid)
+                    if config:
+                        await self._start_task(config, resume_instance=instance)
                 else:
-                    logger.warning(f"Can't resume task {task_uuid} from {task_info.config_metadata.status}")
+                    logger.warning(f"Can't resume task {task_uuid}: status={instance.status if instance else 'not found'}")
 
         return resumed_tasks
 
@@ -289,10 +288,10 @@ class Manager:
         Args:
             task_config_uuid (str): The UUID of the task configuration to start.
         """
-        task_config_metadata: dict[str, TaskConfigMetadata] = await self.get_task_configs([task_config_uuid])
-        metadata = task_config_metadata.get(task_config_uuid)
-        if metadata:
-            return await self._start_task(metadata)
+        configs = await self.get_task_configs([task_config_uuid])
+        config = configs.get(task_config_uuid)
+        if config:
+            return await self._start_task(config)
         else:
             logger.warning(f"Unknown task configuration: {task_config_uuid}")
 
@@ -320,10 +319,10 @@ class Manager:
         for task_info in canceled_tasks:
             try:
                 await task_info.task.wait_for_task_done(5.0)
-                await self._legacy_db_client.set_task_status(task_info.task_metadata.uuid, task_info.task.get_status())
-                stopped_tasks.append(task_info.task_metadata.uuid)
+                await self._legacy_db_client.set_task_status(task_info.instance.uuid, task_info.task.get_status())
+                stopped_tasks.append(task_info.instance.uuid)
             except TimeoutError:
-                logger.warning(f"Task {task_info.task_metadata.uuid} did not stop in time")
+                logger.warning(f"Task {task_info.instance.uuid} did not stop in time")
 
         return stopped_tasks
 
@@ -343,24 +342,24 @@ class Manager:
         """Save the resume data for a task."""
         if task_info.task.is_data_ready():
             await self._legacy_db_client.set_task_resume_data(
-                task_info.task_metadata.uuid, task_info.task.get_resume_data()
+                task_info.instance.uuid, task_info.task.get_resume_data()
             )
             task_info.task.clear_data_ready()
         # TODO: Sync metadata and DB?
-        await self._legacy_db_client.set_task_result(task_info.task_metadata.uuid, task_info.task.get_results())
-        await self._legacy_db_client.set_task_status(task_info.task_metadata.uuid, task_info.task_metadata.status)
+        await self._legacy_db_client.set_task_result(task_info.instance.uuid, task_info.task.get_results())
+        await self._legacy_db_client.set_task_status(task_info.instance.uuid, task_info.instance.status)
 
-    async def _start_task(self, config_metadata: TaskConfigMetadata) -> Optional[TaskInfo]:
+    async def _start_task(self, config: TaskConfig, resume_instance: Optional[TaskInstance] = None) -> Optional[TaskInfo]:
         """Start a task."""
-        task_instance = task_registry[config_metadata.typename](
-            task_config_uuid=config_metadata.uuid, params=config_metadata.params, manager=self
+        task = task_registry[config.typename](
+            task_config_uuid=config.uuid, params=config.params_json, manager=self
         )
-        task_metadata: TaskInstanceMetadata = await self._legacy_db_client.insert_new_active_task(config_metadata.uuid)
-        task_info: TaskInfo = TaskInfo(task=task_instance, config_metadata=config_metadata, task_metadata=task_metadata)
+        instance: TaskInstance = resume_instance or await self._legacy_db_client.insert_new_active_task(config.uuid)
+        task_info: TaskInfo = TaskInfo(task=task, config=config, instance=instance)
 
-        self._running_tasks[task_metadata.uuid] = task_info
-        await task_instance.start()
-        task_metadata.status = TaskStatus.RUNNING
+        self._running_tasks[instance.uuid] = task_info
+        await task.start()
+        instance.status = TaskStatus.RUNNING
         return task_info
 
     def start(self):
@@ -374,9 +373,9 @@ class Manager:
         await self._legacy_db_client.init_db()
 
         # Clear any tasks left in DB that can't be resumed
-        stale_tasks: List[TaskInstanceMetadata] = await self._legacy_db_client.get_tasks(resumable=False)
+        stale_tasks: List[TaskInstance] = await self._legacy_db_client.get_tasks(resumable=False)
         if stale_tasks:
-            stale_ids = [info.uuid for info in stale_tasks]
+            stale_ids = [inst.uuid for inst in stale_tasks]
             await self._legacy_db_client.delete_active_tasks(stale_ids)
 
     async def _worker_task(self):
@@ -394,7 +393,7 @@ class Manager:
                 for task_uuid, task_info in dict(self._running_tasks).items():
                     task_done = task_info.task.is_task_done()
                     if task_done:
-                        task_info.task_metadata.status = TaskStatus.COMPLETED
+                        task_info.instance.status = TaskStatus.COMPLETED
                     await self._save_task_data(task_info)
                     if task_done:
                         tasks_to_remove.add(task_uuid)

@@ -15,15 +15,10 @@ from fastapi.templating import Jinja2Templates
 from pydantic import Field
 
 from apps.helpers.consts import JsonValues
-from apps.helpers.types import (
-    Payload,
-    StatusResponse,
-    TaskConfigMetadata,
-    TaskConfigMetadataModel,
-    TaskResultModel,
-)
-from apps.tasks_server.manager import Manager, TaskInfo
-from apps.tasks_server.types import TaskInfoModel
+from apps.helpers.db.types import TaskConfigRead, TaskResult
+from apps.helpers.types import Payload, StatusResponse
+from apps.tasks_server.manager import Manager
+from apps.tasks_server.types import TaskInfo, TaskInfoRead
 
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger(__file__)
@@ -64,7 +59,7 @@ class GetTaskConfigsPayload(Payload):
 
 
 class GetTaskConfigResponse(StatusResponse):
-    configs: Dict[str, TaskConfigMetadataModel] = Field(default_factory=dict)
+    configs: Dict[str, TaskConfigRead] = Field(default_factory=dict)
 
 
 class ListTaskTypesResponse(StatusResponse):
@@ -114,7 +109,7 @@ class TasksResultPayload(Payload):
 
 
 class TasksResultResponse(StatusResponse):
-    results: dict[str, TaskResultModel] = Field(default_factory=dict)
+    results: dict[str, TaskResult] = Field(default_factory=dict)
 
 
 class TasksInfoPayload(Payload):
@@ -122,7 +117,7 @@ class TasksInfoPayload(Payload):
 
 
 class TasksInfoResponse(StatusResponse):
-    tasks: dict[str, TaskInfoModel] = Field(default_factory=dict)
+    tasks: dict[str, TaskInfoRead] = Field(default_factory=dict)
 
 
 class UpdateTaskConfigPayload(Payload):
@@ -344,8 +339,8 @@ class WebApp:
             msg = None
             try:
                 task_info: TaskInfo | None = await self._manager.start_new_task(task_config_uuid=payload.config_uuid)
-                if task_info and task_info.task_metadata:
-                    return StartTasksResponse(status=WebApp.SUCCESS_KEY, task_uuid=task_info.task_metadata.uuid)
+                if task_info and task_info.instance:
+                    return StartTasksResponse(status=WebApp.SUCCESS_KEY, task_uuid=task_info.instance.uuid)
             except Exception as e:
                 msg = str(e)
             return StartTasksResponse(status=WebApp.FAILURE_KEY, message=msg)
@@ -368,7 +363,7 @@ class WebApp:
             """
             try:
                 tasks_info = await self._manager.get_tasks_instance_info(payload.task_uuids)
-                models = {uuid: TaskInfoModel.from_dataclass(task) for uuid, task in tasks_info.items()}
+                models = {uuid: TaskInfoRead.from_task_info(task) for uuid, task in tasks_info.items()}
                 return TasksInfoResponse(tasks=models)
             except Exception as e:
                 return TasksInfoResponse(status=JsonValues.FAILURE, message=str(e))
@@ -391,7 +386,7 @@ class WebApp:
             """
             try:
                 tasks_result = await self._manager.get_tasks_result(payload.task_uuids)
-                models = {uuid: TaskResultModel.from_dataclass(result) for uuid, result in tasks_result.items()}
+                models = {uuid: TaskResult.model_validate(result) for uuid, result in tasks_result.items()}
                 return TasksResultResponse(results=models)
             except Exception as e:
                 return TasksResultResponse(status=WebApp.FAILURE_KEY, message=str(e))
@@ -505,7 +500,7 @@ class WebApp:
                 JSONResponse: Response with new task ID or error.
             """
             try:
-                task_config: TaskConfigMetadata = await self._manager.create_new_task_config(
+                task_config = await self._manager.create_new_task_config(
                     name=payload.name, typename=payload.typename, params=payload.params, persistent=payload.persistent
                 )
                 return CreateTaskConfigResponse(status=WebApp.SUCCESS_KEY, config_uuid=task_config.uuid)
@@ -553,7 +548,7 @@ class WebApp:
             """
             try:
                 task_configs = await self._manager.get_task_configs(payload.config_uuids)
-                models = {k: TaskConfigMetadataModel.from_dataclass(v) for k, v in task_configs.items()}
+                models = {k: TaskConfigRead.model_validate(v) for k, v in task_configs.items()}
                 return GetTaskConfigResponse(configs=models)
             except Exception as e:
                 logger.error(e, exc_info=True)

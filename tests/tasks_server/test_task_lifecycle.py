@@ -47,7 +47,7 @@ async def test_get_task_info_after_start(http_client):
     data = resp.json()
     assert data["status"] == "success"
     assert TASK_UUID in data["tasks"]
-    assert data["tasks"][TASK_UUID]["configMetadata"]["typename"] == "TestTask"
+    assert data["tasks"][TASK_UUID]["config"]["typename"] == "TestTask"
 
 
 async def test_cancel_running_task(http_client):
