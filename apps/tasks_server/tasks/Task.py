@@ -206,7 +206,7 @@ class Task(ABC):
         """Request a data update for the task."""
         self._cancel_flag.set()
 
-    async def wait_for_task_done(self, timeout: float) -> None:
+    async def wait_for_task_done(self, timeout: Optional[float] = None) -> None:
         """
         Wait until the task is done.
 

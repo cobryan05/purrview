@@ -24,8 +24,6 @@ logger.setLevel(logging.DEBUG)
 class Manager:
     """Manages inference models, including loading, pinning, and unpinning."""
 
-    POLLING_INTERVAL: float = 5.0  # Interval in seconds for periodic tasks
-
     def __init__(
         self,
         db_api_client: db_client.ApiClient,
@@ -40,6 +38,7 @@ class Manager:
         self._inference_api_client: inference_client.ApiClient = inference_api_client
         self._db_api_client: db_client.ApiClient = db_api_client
         self._running_tasks: Dict[str, TaskInfo] = {}
+        self._completion_tasks: set[asyncio.Task] = set()
         self._config = {
             "db_path": None, #legacy_db_client.get_path(),
             "db_server": db_api_client.configuration.host,
@@ -338,6 +337,14 @@ class Manager:
             schemas[typename] = task_registry[typename].params_schema()
         return schemas
 
+    async def _on_task_complete(self, task_info: TaskInfo) -> None:
+        if task_info.task is None:
+            return
+        await task_info.task.wait_for_task_done()
+        task_info.instance.status = task_info.task.get_status()
+        await self._save_task_data(task_info)
+        self._running_tasks.pop(task_info.instance.uuid, None)
+
     async def _save_task_data(self, task_info: TaskInfo) -> None:
         """Save the resume data for a task."""
         if task_info.task.is_data_ready():
@@ -360,6 +367,9 @@ class Manager:
         self._running_tasks[instance.uuid] = task_info
         await task.start()
         instance.status = TaskStatus.RUNNING
+        t = asyncio.create_task(self._on_task_complete(task_info))
+        self._completion_tasks.add(t)
+        t.add_done_callback(self._completion_tasks.discard)
         return task_info
 
     def start(self):
@@ -379,33 +389,11 @@ class Manager:
             await self._legacy_db_client.delete_active_tasks(stale_ids)
 
     async def _worker_task(self):
-        """
-        Periodic worker task that runs at regular intervals.
-        """
-        return
         try:
             await self._init()
-            while True:
-                await asyncio.sleep(Manager.POLLING_INTERVAL)  # TODO: Drive some of this with events?
-
-                # Check if any data should be persisted to DB
-                tasks_to_remove: set[int] = set()
-                for task_uuid, task_info in dict(self._running_tasks).items():
-                    task_done = task_info.task.is_task_done()
-                    if task_done:
-                        task_info.instance.status = TaskStatus.COMPLETED
-                    await self._save_task_data(task_info)
-                    if task_done:
-                        tasks_to_remove.add(task_uuid)
-                for task_uuid in tasks_to_remove:
-                    if task_uuid in self._running_tasks:
-                        del self._running_tasks[task_uuid]
-                    else:
-                        logger.warning(f"Task {task_uuid} not found in running tasks.")
-
         except asyncio.CancelledError:
-            logger.info("Periodic task was cancelled.")  # Handle task cancellation
+            logger.info("Periodic task was cancelled.")
         except Exception as e:
             logger.exception(e)
         finally:
-            logger.info("Periodic task cleanup.")  # Perform cleanup when the task is stopped
+            logger.info("Periodic task cleanup.")
