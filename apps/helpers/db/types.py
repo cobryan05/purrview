@@ -252,6 +252,32 @@ class TagRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class SourceBase(SQLModel):
+    name: str = Field(unique=True, index=True)
+    typename: str
+    params: Dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+
+
+class Source(SourceBase, TimestampModel, table=True):
+    __tablename__ = "sources"
+    uuid: str = Field(default_factory=lambda: str(uuid4()), primary_key=True)
+
+
+class SourceRead(BaseModel):
+    uuid: str
+    name: str
+    typename: str
+    params: Dict[str, Any]
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class SourceUpdate(BaseModel):
+    name: Optional[str] = None
+    typename: Optional[str] = None
+    params: Optional[Dict[str, Any]] = None
+
+
 class TaskConfigBase(SQLModel):
     name: str
     typename: str

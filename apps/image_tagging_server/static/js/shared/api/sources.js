@@ -22,8 +22,8 @@ export const imageProviderFetcher = createCachedFetcher(async (keys) => {
     const err = await res.json();
     throw new Error(err.message || 'Failed to fetch image provider list');
   }
-  const { image_providers } = await res.json();
-  return ignoreKeyReturn(keys, Array.from(image_providers));
+  const { imageProviders } = await res.json();
+  return ignoreKeyReturn(keys, Array.from(imageProviders));
 });
 
 export const providerSchemaFetcher = createCachedFetcher(async (providerNames) => {
@@ -32,7 +32,7 @@ export const providerSchemaFetcher = createCachedFetcher(async (providerNames) =
     const res = await fetch('/api/sources/image-providers/schema', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ image_provider: name }),
+      body: JSON.stringify({ imageProvider: name }),
     });
 
     if (!res.ok) {
@@ -40,8 +40,8 @@ export const providerSchemaFetcher = createCachedFetcher(async (providerNames) =
       throw new Error(err.message || `Failed to fetch image provider schema for ${name}`);
     }
 
-    const { image_provider_schema } = await res.json();
-    results.set(name, image_provider_schema);
+    const { imageProviderSchema } = await res.json();
+    results.set(name, imageProviderSchema);
   }
 
   return results
@@ -84,11 +84,11 @@ export async function fetchImageProviderSchema(providerName) {
  * SOURCE FUNCTIONS
  * -----------------------------
  */
-export async function createSource({ name, provider = null, provider_params = {} }) {
+export async function createSource({ name, provider = null, providerParams = {} }) {
   const res = await fetch('/api/sources/create', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ source_name: name, image_provider: provider, provider_params }),
+    body: JSON.stringify({ sourceName: name, imageProvider: provider, providerParams }),
   });
 
   if (!res.ok) {
@@ -103,11 +103,11 @@ export async function createSource({ name, provider = null, provider_params = {}
   return source;
 }
 
-export async function updateSource({ uuid, name, provider, provider_params }) {
+export async function updateSource({ uuid, name, provider, providerParams }) {
   const res = await fetch('/api/sources/update', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ source_uuid: uuid, source_name: name, image_provider: provider, provider_params }),
+    body: JSON.stringify({ sourceUuid: uuid, sourceName: name, imageProvider: provider, providerParams }),
   });
 
   if (!res.ok) {
@@ -125,7 +125,7 @@ async function _deleteSources({ uuids }) {
   const res = await fetch('/api/sources/delete', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ source_uuids: uuids }),
+    body: JSON.stringify({ sourceUuids: uuids }),
   });
 
   if (!res.ok) {

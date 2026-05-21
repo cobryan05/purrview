@@ -70,7 +70,7 @@ export async function updateTag(uuid, name, color) {
   const res = await fetch('/api/tags/update', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ tag_uuid: uuid, data: { name, color } }),
+    body: JSON.stringify({ tagUuid: uuid, data: { name, color } }),
   });
 
   if (!res.ok) {
@@ -91,7 +91,7 @@ export async function deleteTag(uuid) {
   const res = await fetch('/api/tags/delete', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ tag_uuid: uuid }),
+    body: JSON.stringify({ tagUuid: uuid }),
   });
 
   if (!res.ok) {

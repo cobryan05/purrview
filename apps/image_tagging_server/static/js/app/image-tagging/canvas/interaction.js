@@ -113,6 +113,17 @@ export async function handleMouseDown(e, runtime) {
     return;
   }
 
+  // Left click on empty canvas in select mode: pan
+  if (e.evt.button === 0 && runtime.tool === 'select') {
+    const pos = getPointerPosition(runtime.canvas);
+    if (pos && !findGroupAtPoint(runtime, pos)) {
+      _isPanning = true;
+      _lastPanPos = { x: e.evt.clientX, y: e.evt.clientY };
+      stage.container().style.cursor = 'grabbing';
+      return;
+    }
+  }
+
   if (e.evt.button !== 0 || _isPanning || runtime.tool === 'select') return;
 
   const pos = getPointerPosition(runtime.canvas);
@@ -199,7 +210,7 @@ export async function handleMouseUp(e, runtime) {
   runtime.canvas.stage.container().style.cursor =
     isSelectTool ? 'default' : 'crosshair';
 
-  if (e.evt.button === 1) {
+  if (e.evt.button === 1 || _isPanning) {
     _isPanning = false;
     return;
   }

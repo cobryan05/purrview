@@ -13,7 +13,7 @@ from sqlalchemy.orm import selectinload, sessionmaker
 from sqlmodel import SQLModel, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
-from .types import BBox, BBoxTagLink, BBoxUpdate, ImageRecord, ImageRecordRead, ImageRecordUpdate, Label, Tag, TagKind
+from .types import BBox, BBoxTagLink, BBoxUpdate, ImageRecord, ImageRecordRead, ImageRecordUpdate, Label, Source, Tag, TagKind
 
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger(__file__)
@@ -26,8 +26,6 @@ T = TypeVar("T", bound=SQLModel)
 from apps.helpers.types import (
     BoundingBoxMetadata,
     BoundingBoxMetadataModel,
-    SourceMetadata,
-    SourceMetadataModel,
     TaskConfigMetadata,
     TaskConfigMetadataModel,
     TaskInstanceMetadata,
@@ -504,3 +502,41 @@ class DbClient:
             await session.commit()
         await self._sync_tags_to_json()
         return True
+
+    ################################################################################
+    # Sources
+    ################################################################################
+    async def get_sources(self) -> List[Source]:
+        """List all sources."""
+        async with self._async_session_maker() as session:
+            result = await session.exec(select(Source))
+            return result.all()
+
+    async def add_source(self, name: str, typename: str, params: Dict[str, Any]) -> Source:
+        """Insert a source and return the created object."""
+        new_source = Source(uuid=str(uuid4()), name=name, typename=typename, params=params)
+        async with self._async_session_maker() as session:
+            session.add(new_source)
+            await session.commit()
+            await session.refresh(new_source)
+        return new_source
+
+    async def delete_sources(self, uuids: List[str]) -> None:
+        """Delete sources by UUID list."""
+        async with self._async_session_maker() as session:
+            await session.exec(delete(Source).where(Source.uuid.in_(uuids)))
+            await session.commit()
+
+    async def update_source(self, source_uuid: str, name: str, typename: str, params: Dict[str, Any]) -> Optional[Source]:
+        """Update a source by UUID and return the updated object."""
+        async with self._async_session_maker() as session:
+            source = await session.get(Source, source_uuid)
+            if not source:
+                return None
+            source.name = name
+            source.typename = typename
+            source.params = params
+            session.add(source)
+            await session.commit()
+            await session.refresh(source)
+        return source

@@ -17,10 +17,10 @@ export async function runInference(model_name, image) {
   // Prepare JSON payload
   /** @type {import('@web_api').InferencePayload} */
   const payload = {
-    conf_thresh: 0.25,
-    return_annotated_img: false,
-    pin_id: null, // optional
-    image_base64: base64String,
+    confThresh: 0.25,
+    returnAnnotatedImg: false,
+    pinId: null,
+    imageBase64: base64String,
   };
 
   toast(`Sending recognition request for model ${model_name}...`);

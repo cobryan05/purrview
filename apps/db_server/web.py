@@ -19,14 +19,12 @@ from pydantic.alias_generators import to_camel
 from apps.db_server.manager import Manager
 from apps.helpers.consts import ApiTags, JsonKeys, JsonValues
 from apps.helpers.db.types import ImageRecordRead, LabelUpdate, Tag, TagBase, TagUpdate, Label, LabelUpdate
-from apps.helpers.db.types import BBoxUpdate, ImageRecordUpdate
+from apps.helpers.db.types import BBoxUpdate, ImageRecordUpdate, Source, SourceRead
 from apps.helpers.types import (
     Base64Image,
     BoundingBoxMetadataModel,
     FileEntry,
     Payload,
-    SourceMetadata,
-    SourceMetadataModel,
     StatusResponse,
 )
 
@@ -150,7 +148,7 @@ class CreateSourcePayload(ApiPayload):
 
 
 class CreateSourceResponse(StatusResponse):
-    source: Optional[SourceMetadataModel] = None
+    source: Optional[SourceRead] = None
 
 
 class DeleteSourcePayload(ApiPayload):
@@ -166,7 +164,7 @@ class GetSourcesPayload(ApiPayload):
 
 
 class GetSourcesResponse(StatusResponse):
-    sources: dict[str, SourceMetadataModel] = Field(default_factory=dict)
+    sources: dict[str, SourceRead] = Field(default_factory=dict)
 
 
 class UpdateSourcePayload(ApiPayload):
@@ -177,7 +175,7 @@ class UpdateSourcePayload(ApiPayload):
 
 
 class UpdateSourceResponse(StatusResponse):
-    source: Optional[SourceMetadataModel] = None
+    source: Optional[SourceRead] = None
 
 
 class ListFilesPayload(ApiPayload):
@@ -416,14 +414,13 @@ class WebApp:
             API endpoint for updating an existing source.
             """
             try:
-                source_metadata: SourceMetadata = await self._manager.update_source(
+                source: Source = await self._manager.update_source(
                     payload.source_uuid,
                     image_provider=payload.image_provider,
                     provider_params=payload.provider_params,
                     source_name=payload.source_name,
                 )
-                source_model = SourceMetadataModel.from_dataclass(source_metadata)
-                return UpdateSourceResponse(status=JsonValues.SUCCESS, source=source_model)
+                return UpdateSourceResponse(status=JsonValues.SUCCESS, source=source)
             except Exception as e:
                 logger.error(e, exc_info=True)
                 return UpdateSourceResponse(status=JsonValues.FAILURE, message=str(e))
@@ -445,12 +442,12 @@ class WebApp:
                 CreateSourceResponse: Response with new source ID or error.
             """
             try:
-                source_metadata: SourceMetadata = await self._manager.create_new_source(
+                source: Source = await self._manager.create_new_source(
                     image_provider=payload.image_provider,
                     provider_params=payload.provider_params,
                     source_name=payload.source_name,
                 )
-                return CreateSourceResponse(status=JsonValues.SUCCESS, source=source_metadata)
+                return CreateSourceResponse(status=JsonValues.SUCCESS, source=source)
             except Exception as e:
                 return CreateSourceResponse(status=JsonValues.FAILURE, message=str(e))
 
@@ -487,8 +484,8 @@ class WebApp:
                 GetSourcesResponse: A JSON response containing the list of sources
             """
             try:
-                sources: list[SourceMetadata] = await self._manager.get_avail_sources()
-                sources_dict: dict[str, SourceMetadata] = {source.uuid: source for source in sources}
+                sources: list[Source] = await self._manager.get_avail_sources()
+                sources_dict: dict[str, Source] = {source.uuid: source for source in sources}
                 return GetSourcesResponse(status=JsonValues.SUCCESS, sources=sources_dict)
             except Exception as e:
                 logger.error(e, exc_info=True)

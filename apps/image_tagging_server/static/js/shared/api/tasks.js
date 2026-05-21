@@ -42,7 +42,7 @@ async function fetchTasksSchemaFromServer(typenames) {
   const res = await fetch('/api/tasks/types/schema', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ task_typenames: typenames }),
+    body: JSON.stringify({ taskTypenames: typenames }),
   });
   if (!res.ok) {
     const err = await res.json();
@@ -90,7 +90,7 @@ export async function fetchTaskConfigs(uuids = null) {
   const res = await fetch('/api/tasks/configs/get', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ config_uuids: fetchAll ? null : uuids }),
+    body: JSON.stringify({ configUuids: fetchAll ? null : uuids }),
   });
 
   if (!res.ok) {
@@ -109,7 +109,7 @@ export async function deleteTaskConfigs({ uuids }) {
   const res = await fetch('/api/tasks/configs/delete', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ config_uuids: uuids }),
+    body: JSON.stringify({ configUuids: uuids }),
   });
 
   if (res.ok) {
@@ -139,8 +139,8 @@ export async function createTaskConfig(config) {
     throw new Error(data.message || 'Failed to fetch task status');
   }
 
-  const { config_uuid } = data;
-  return config_uuid;
+  const { configUuid } = data;
+  return configUuid;
 }
 
 
@@ -148,7 +148,7 @@ export async function updateTaskConfig(config) {
   const res = await fetch('/api/tasks/configs/update', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ config_uuid: config.uuid, ...config }),
+    body: JSON.stringify({ configUuid: config.uuid, ...config }),
   });
 
   if (!res.ok) {
@@ -169,11 +169,11 @@ export async function updateTaskConfig(config) {
  * @returns {Promise<import('@web_api').TaskResultModel>}
  * @throws {Error} If the fetch fails or the API response is invalid.
  */
-async function fetchTaskResultFromServer(task_uuids) {
+async function fetchTaskResultFromServer(taskUuids) {
   const res = await fetch('/api/tasks/instances/result', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ task_uuids }),
+    body: JSON.stringify({ taskUuids }),
   });
 
   if (!res.ok) {
@@ -188,9 +188,9 @@ async function fetchTaskResultFromServer(task_uuids) {
 
 const taskResultFetcher = createCachedFetcher(fetchTaskResultFromServer);
 
-export async function fetchTasksResult({ task_uuids, cacheResults = true }) {
+export async function fetchTasksResult({ taskUuids, cacheResults = true }) {
   const results = new Map();
-  for (const t of task_uuids) {
+  for (const t of taskUuids) {
     const r = await taskResultFetcher.fetch(t);
     if (!cacheResults) taskResultFetcher.delete(t);
     results.set(t, r);
@@ -210,11 +210,11 @@ export async function fetchTasksResult({ task_uuids, cacheResults = true }) {
  * @returns {Promise<string>} - uuid of the started task
  * @throws {Error} If the fetch fails or the API response is invalid.
  */
-export async function startTask({ config_uuid }) {
+export async function startTask({ configUuid }) {
   const res = await fetch('/api/tasks/instances/start', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ config_uuid }),
+    body: JSON.stringify({ configUuid }),
   });
   if (!res.ok) {
     const err = await res.json();
@@ -222,8 +222,8 @@ export async function startTask({ config_uuid }) {
   }
   /** @type {import('@web_api').StartTasksResponse} */
   const response = await res.json();
-  const { status, task_uuid } = response;
-  return task_uuid;
+  const { taskUuid } = response;
+  return taskUuid;
 }
 
 
@@ -234,11 +234,11 @@ export async function startTask({ config_uuid }) {
  * @returns {Promise<import('@web_api').TasksInfoResponse>}
  * @throws {Error} If the fetch fails or the API response is invalid.
  */
-export async function fetchTasksStatus({ task_uuids } = {}) {
+export async function fetchTasksStatus({ taskUuids } = {}) {
   const res = await fetch('/api/tasks/instances/get', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ task_uuids }),
+    body: JSON.stringify({ taskUuids }),
   });
 
   if (!res.ok) {
@@ -253,11 +253,11 @@ export async function fetchTasksStatus({ task_uuids } = {}) {
 
   return data;
 }
-export async function cancelTasks({ task_uuids }) {
+export async function cancelTasks({ taskUuids }) {
   const res = await fetch('/api/tasks/instances/cancel', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ task_uuids }),
+    body: JSON.stringify({ taskUuids }),
   });
   if (!res.ok) {
     const err = await res.json();
@@ -265,11 +265,11 @@ export async function cancelTasks({ task_uuids }) {
   }
 }
 
-export async function deleteTasks({ task_uuids }) {
+export async function deleteTasks({ taskUuids }) {
   const res = await fetch('/api/tasks/instances/delete', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ task_uuids }),
+    body: JSON.stringify({ taskUuids }),
   });
   if (!res.ok) {
     const err = await res.json();
@@ -277,11 +277,11 @@ export async function deleteTasks({ task_uuids }) {
   }
 }
 
-export async function pauseTasks({ task_uuids }) {
+export async function pauseTasks({ taskUuids }) {
   const res = await fetch('/api/tasks/instances/pause', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ task_uuids }),
+    body: JSON.stringify({ taskUuids }),
   });
   if (!res.ok) {
     const err = await res.json();
@@ -289,11 +289,11 @@ export async function pauseTasks({ task_uuids }) {
   }
 }
 
-export async function resumeTasks({ task_uuids }) {
+export async function resumeTasks({ taskUuids }) {
   const res = await fetch('/api/tasks/instances/resume', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ task_uuids }),
+    body: JSON.stringify({ taskUuids }),
   });
   if (!res.ok) {
     const err = await res.json();
@@ -304,16 +304,16 @@ export async function resumeTasks({ task_uuids }) {
 /**
  * Wait for a task to complete and return its result
  */
-export async function waitForTaskResult(task_uuid, { intervalMs = 1000, timeoutMs = 60000 } = {}) {
+export async function waitForTaskResult(taskUuid, { intervalMs = 1000, timeoutMs = 60000 } = {}) {
   const startTime = Date.now();
 
   while (true) {
-    const status = await fetchTasksStatus({ task_uuids: [task_uuid] });
+    const status = await fetchTasksStatus({ taskUuids: [taskUuid] });
 
-    if (status === TaskStatus.COMPLETED) return await fetchTasksResult({ task_uuids: [task_uuid] });
-    if (status === TaskStatus.ERROR) throw new Error(`Task ${task_uuid} failed`);
+    if (status === TaskStatus.COMPLETED) return await fetchTasksResult({ taskUuids: [taskUuid] });
+    if (status === TaskStatus.ERROR) throw new Error(`Task ${taskUuid} failed`);
 
-    if (Date.now() - startTime > timeoutMs) throw new Error(`Timeout waiting for task ${task_uuid}`);
+    if (Date.now() - startTime > timeoutMs) throw new Error(`Timeout waiting for task ${taskUuid}`);
 
     await new Promise(r => setTimeout(r, intervalMs));
   }

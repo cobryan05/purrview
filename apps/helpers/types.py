@@ -144,20 +144,6 @@ class FileEntryModel(DataclassMapper):
     path: str  # relative path from root
 
 
-@dataclass
-class SourceMetadata:
-    name: str
-    typename: str
-    params: dict[str, Any]
-    uuid: str
-
-
-class SourceMetadataModel(DataclassMapper):
-    name: str
-    typename: str
-    params: dict[str, Any]
-    uuid: str = Field(validation_alias=AliasChoices("src_uuid", "uuid"), serialization_alias="uuid")
-
 
 @dataclass
 class TaskConfigMetadata:

@@ -21,7 +21,7 @@ export const modelLabelsFetcher = createCachedFetcher(async (modelNames) => {
   const res = await fetch('/api/models/classes/bulk', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ model_names: modelNames }),
+    body: JSON.stringify({ modelNames }),
   });
 
   const data = await res.json();

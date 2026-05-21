@@ -4,7 +4,7 @@ import { toast } from '/app-static/js/ui/utils/index.js';
 // Global guard for only one running preview task
 let previewTaskActive = false;
 
-export async function runPreviewSourceTest({ provider, provider_params, target = 'source-preview-box' }) {
+export async function runPreviewSourceTest({ provider, providerParams, target = 'source-preview-box' }) {
   if (previewTaskActive) {
     console.warn("Preview task already running, ignoring request");
     toast("A preview task is already running. Please cancel it first.", 4000, "warning");
@@ -36,8 +36,8 @@ export async function runPreviewSourceTest({ provider, provider_params, target =
     cancelBtn.disabled = true;
     addMessage('⏹ Cancelling task...');
     try {
-      await cancelTasks({ task_uuids: [taskUuid] });
-      await deleteTasks({ task_uuids: [taskUuid] });
+      await cancelTasks({ taskUuids: [taskUuid] });
+      await deleteTasks({ taskUuids: [taskUuid] });
       addMessage('❌ Task cancelled by user');
     } catch (err) {
       toast(`Failed to cancel task: ${err.message}`, 5000, 'error');
@@ -60,25 +60,25 @@ export async function runPreviewSourceTest({ provider, provider_params, target =
   }
 
   try {
-    const config_uuid = await createTaskConfig({
+    const configUuid = await createTaskConfig({
       typename: 'PreviewSourceTask',
       name: "Source Preview: " + provider,
-      params: { source_config: { provider, provider_params } },
+      params: { source_config: { provider, provider_params: providerParams } },
       persistent: false,
     });
 
-    taskUuid = await startTask({ config_uuid });
+    taskUuid = await startTask({ configUuid });
     addMessage(`Task started: ${taskUuid}`);
     addMessage(`Status: pending...`);
 
-    await deleteTaskConfigs({ uuids: [config_uuid] });
+    await deleteTaskConfigs({ uuids: [configUuid] });
 
     const startTime = Date.now();
     let taskInfo;
     while (true) {
       if (cancelled) break; // stop polling if cancelled
 
-      const res = await fetchTasksStatus({ task_uuids: [taskUuid] });
+      const res = await fetchTasksStatus({ taskUuids: [taskUuid] });
       taskInfo = res.tasks[taskUuid];
       const taskStatus = taskInfo.task_metadata.status;
       addMessage(`Status update: ${taskStatus}`);
@@ -97,7 +97,7 @@ export async function runPreviewSourceTest({ provider, provider_params, target =
 
     // Remove cancel button once task finishes
     if (!cancelled && taskInfo.task_metadata.status === TaskStatus.COMPLETED) {
-      const res = await fetchTasksResult({ task_uuids: [taskUuid], cacheResults: false });
+      const res = await fetchTasksResult({ taskUuids: [taskUuid], cacheResults: false });
       const result = res.get(taskUuid);
       addMessage('✅ Task completed');
 
@@ -119,7 +119,7 @@ export async function runPreviewSourceTest({ provider, provider_params, target =
     previewTaskActive = false;
 
     if (taskUuid) {
-      await deleteTasks({ task_uuids: [taskUuid] }).catch(e =>
+      await deleteTasks({ taskUuids: [taskUuid] }).catch(e =>
         console.error("Cleanup failed", e)
       );
     }

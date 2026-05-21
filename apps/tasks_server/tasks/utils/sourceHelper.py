@@ -4,7 +4,6 @@ import db_client
 from db_client.api.sources_api import SourcesApi
 
 from apps.helpers.consts import JsonValues
-from apps.helpers.types import SourceMetadata
 from apps.helpers.imageProviders.imageProvider import ImageProvider
 from apps.helpers.imageProviders.Registry import image_provider_registry
 
@@ -15,7 +14,7 @@ class SourceHelper:
     def __init__(self, db_api_client: db_client.ApiClient):
         self._db_api_client = db_api_client
         self._sources_api = SourcesApi(db_api_client)
-        self._sources_cache: dict[str, SourceMetadata] | None = None
+        self._sources_cache: dict | None = None
 
     def _refresh_sources_cache(self) -> None:
         """Fetch sources from the API and update the cache."""

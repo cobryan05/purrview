@@ -6,13 +6,13 @@ import { EditableField, SourceConfigField } from '/app-static/js/ui/utils/fields
  * Creates a row for a single source with editable buttons
  */
 function createSourceRow({ source, editable = false, renderList, onEdit, onDelete }) {
-  const { name: source_name, typename: provider, uuid, params: provider_params } = source;
+  const { name: sourceName, typename: provider, uuid, params: providerParams } = source;
   const rowDiv = document.createElement('div');
   const deleteButton = {
     text: 'Delete',
     emoji: '🗑️',
     onClick: async () => {
-      if (!window.confirm(`Are you sure you want to delete "${source_name}"?`)) return;
+      if (!window.confirm(`Are you sure you want to delete "${sourceName}"?`)) return;
       try {
         await deleteSources({ uuids: [uuid] });
         onDelete?.();
@@ -26,18 +26,18 @@ function createSourceRow({ source, editable = false, renderList, onEdit, onDelet
     text: 'Test Source',
     emoji: '🧪',
     onClick: async ({ field }) => {
-      const { source_name, provider, provider_params } = field.getValue();
-      await runPreviewSourceTest({ provider, provider_params });
+      const { sourceName, provider, providerParams } = field.getValue();
+      await runPreviewSourceTest({ provider, providerParams });
     },
   };
 
 
-  SourceConfigField.create({ value: { source_name, provider, uuid, provider_params } }).then(fieldInstance => {
+  SourceConfigField.create({ value: { sourceName, provider, uuid, providerParams } }).then(fieldInstance => {
     const row = createGenericRow({
       field: new EditableField({
         field: fieldInstance,
-        onSave: async ({ source_name, provider, provider_params }) => {
-          await updateSource({ uuid, name: source_name, provider, provider_params });
+        onSave: async ({ sourceName, provider, providerParams }) => {
+          await updateSource({ uuid, name: sourceName, provider, providerParams });
           renderList();
         },
         onCancel: () => {
@@ -130,9 +130,9 @@ export function renderSourceManager({ target = 'sources-box' }) {
     text: 'Save',
     emoji: '✅',
     onClick: async ({ field }) => {
-      const { source_name, provider, provider_params } = field.getValue();
+      const { sourceName, provider, providerParams } = field.getValue();
       try {
-        await createSource({ name: source_name, provider, provider_params });
+        await createSource({ name: sourceName, provider, providerParams });
         await refresh();
 
         // Replace the row with a fresh blank one
@@ -150,8 +150,8 @@ export function renderSourceManager({ target = 'sources-box' }) {
     text: 'Test Source',
     emoji: '🧪',
     onClick: async ({ field }) => {
-      const { source_name, provider, provider_params } = field.getValue();
-      await runPreviewSourceTest({ provider, provider_params });
+      const { sourceName, provider, providerParams } = field.getValue();
+      await runPreviewSourceTest({ provider, providerParams });
     },
   };
 

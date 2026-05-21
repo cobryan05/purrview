@@ -16,12 +16,11 @@ from apps.helpers.db.db_client import (
     DbClient,
     TagKind,
 )
-from apps.helpers.db.types import ImageRecord, ImageRecordRead, ImageRecordUpdate, Label, Tag, TagUpdate
+from apps.helpers.db.types import ImageRecord, ImageRecordRead, ImageRecordUpdate, Label, Source, Tag, TagUpdate
 from apps.helpers.fileUtils import get_safe_path
 from apps.helpers.imageProviders.Registry import image_provider_registry
 from apps.helpers.types import (
     FileEntry,
-    SourceMetadata,
 )
 
 logging.basicConfig(stream=sys.stdout)
@@ -133,7 +132,7 @@ class Manager:
     # SOURCES API
     ################################################################################
 
-    async def get_avail_sources(self) -> List[SourceMetadata]:
+    async def get_avail_sources(self) -> List[Source]:
         """
         List all sources managed by the Manager.
         """
@@ -142,7 +141,7 @@ class Manager:
 
     async def create_new_source(
         self, image_provider: str, provider_params: Dict[str, Any], source_name: str
-    ) -> SourceMetadata:
+    ) -> Source:
         """
         Create a new source from an image source as a preset image_provider/params
 
@@ -154,7 +153,7 @@ class Manager:
         if image_provider not in image_provider_registry:
             raise ValueError(f"Unknown image provider: {image_provider}")
 
-        ret: SourceMetadata = await self._db_client.add_source(
+        ret: Source = await self._db_client.add_source(
             name=source_name, typename=image_provider, params=provider_params
         )
         return ret
@@ -170,7 +169,7 @@ class Manager:
 
     async def update_source(
         self, source_uuid: str, image_provider: str, provider_params: Dict[str, Any], source_name: str
-    ) -> SourceMetadata:
+    ) -> Source:
         """
         Updates sources by their UUIDs.
 

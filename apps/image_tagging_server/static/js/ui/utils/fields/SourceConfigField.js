@@ -11,10 +11,10 @@ export class SourceConfigField extends Field {
 
   static async create({ ...rest } = {}) {
     const instance = new SourceConfigField({ ...rest });
-    const { source_name = '', provider = '', provider_params = {}, uuid = null } = instance._value || {};
+    const { sourceName = '', provider = '', providerParams = {}, uuid = null } = instance._value || {};
 
     instance._uuid = uuid;
-    instance._textField = new TextField({ value: source_name, placeholder: 'Enter new source name' });
+    instance._textField = new TextField({ value: sourceName, placeholder: 'Enter new source name' });
 
     const imageProviders = await fetchImageProviderList();
     instance._dropDownField = new DropDownField({
@@ -39,7 +39,7 @@ export class SourceConfigField extends Field {
         Logger.error('Failed to fetch schema:', err);
       }
     }
-    instance._schemaField = await SchemaField.create({ schema: fetchedSchema, values: provider_params });
+    instance._schemaField = await SchemaField.create({ schema: fetchedSchema, values: providerParams });
 
     return instance;
   }
@@ -101,9 +101,9 @@ export class SourceConfigField extends Field {
 
   getValue() {
     return {
-      source_name: this._textField.getValue(),
+      sourceName: this._textField.getValue(),
       provider: this._dropDownField.getValue(),
-      provider_params: this._schemaField.getValue()
+      providerParams: this._schemaField.getValue()
     };
   }
 }

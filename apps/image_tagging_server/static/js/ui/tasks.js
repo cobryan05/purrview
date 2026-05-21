@@ -15,14 +15,14 @@ export function renderTaskConfigs({ target = 'task-config-list', onEdit, onDelet
   container.appendChild(configListDiv);
 
   fetchTaskConfigs().then(response => {
-    response.forEach(((config, config_uuid) => {
+    response.forEach(((config, configUuid) => {
       const deleteButton = {
         text: 'Delete',
         emoji: '🗑️',
         onClick: async ({ field }) => {
           if (!window.confirm(`Are you sure you want to delete "${field.getValue().text}"?`)) return;
           try {
-            await deleteTaskConfigs({ uuids: [config_uuid] });
+            await deleteTaskConfigs({ uuids: [configUuid] });
             onDelete?.();
             refresh?.();
           } catch (error) {
@@ -35,7 +35,7 @@ export function renderTaskConfigs({ target = 'task-config-list', onEdit, onDelet
         emoji: '▶️',
         onClick: async () => {
           try {
-            await startTask({ config_uuid });
+            await startTask({ configUuid });
             onStartTask?.();
             refresh?.()
           } catch (error) {
@@ -124,7 +124,7 @@ export function renderActiveTasks({ target = 'active-tasks-list', refresh = null
         onClick: async ({ field }) => {
           if (!window.confirm(`Are you sure you want to delete "${taskId}"?`)) return;
           try {
-            await deleteTasks({ task_uuids: [taskId] });
+            await deleteTasks({ taskUuids: [taskId] });
             refresh?.();
           } catch (error) {
             toast(error.message || 'Failed to delete task', 5000, 'error');
@@ -136,7 +136,7 @@ export function renderActiveTasks({ target = 'active-tasks-list', refresh = null
         emoji: '⏹️',
         onClick: async () => {
           try {
-            await cancelTasks({ task_uuids: [taskId] });
+            await cancelTasks({ taskUuids: [taskId] });
             refresh?.();
           } catch (error) {
             toast(error.message || 'Failed to stop task', 5000, 'error');
