@@ -80,7 +80,7 @@ export async function runPreviewSourceTest({ provider, providerParams, target = 
 
       const res = await fetchTasksStatus({ taskUuids: [taskUuid] });
       taskInfo = res.tasks[taskUuid];
-      const taskStatus = taskInfo.task_metadata.status;
+      const taskStatus = taskInfo.instance.status;
       addMessage(`Status update: ${taskStatus}`);
 
       if (taskStatus === TaskStatus.COMPLETED || taskStatus === TaskStatus.ERROR) {
@@ -96,7 +96,7 @@ export async function runPreviewSourceTest({ provider, providerParams, target = 
     }
 
     // Remove cancel button once task finishes
-    if (!cancelled && taskInfo.task_metadata.status === TaskStatus.COMPLETED) {
+    if (!cancelled && taskInfo.instance.status === TaskStatus.COMPLETED) {
       const res = await fetchTasksResult({ taskUuids: [taskUuid], cacheResults: false });
       const result = res.get(taskUuid);
       addMessage('✅ Task completed');
@@ -108,7 +108,7 @@ export async function runPreviewSourceTest({ provider, providerParams, target = 
         img.style.maxWidth = '100%';
         messagesContainer.insertBefore(img, messagesContainer.firstChild);
       }
-    } else if (!cancelled && taskInfo.task_metadata.status === TaskStatus.ERROR) {
+    } else if (!cancelled && taskInfo.instance.status === TaskStatus.ERROR) {
       addMessage('❌ Task failed');
     }
   } catch (err) {

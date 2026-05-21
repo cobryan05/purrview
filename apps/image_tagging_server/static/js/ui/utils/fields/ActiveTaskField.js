@@ -8,7 +8,8 @@ export class ActiveTaskField extends Field {
 
   static async create({ ...rest } = {}) {
     const instance = new ActiveTaskField({ ...rest });
-    const { name = '', typename, uuid, status, message } = instance._value.task_metadata || {};
+    const { uuid, status, error_message: message } = instance._value.instance || {};
+    const { name, typename } = instance._value.config || {};
     instance._name = name || typename || instance._value;
     instance._uuid = uuid;
     instance._status = status;
@@ -30,7 +31,7 @@ export class ActiveTaskField extends Field {
     container.style.gap = '0.5em';
 
     const label = document.createElement('span');
-    label.textContent = `${this._id}: ${this._value.config_metadata?.name} [${this._value.config_metadata?.typename}] - ${this._status} ("${this._message}")`;
+    label.textContent = `${this._id}: ${this._value.config?.name} [${this._value.config?.typename}] - ${this._status} ("${this._message}")`;
     container.appendChild(label);
 
     return container;
