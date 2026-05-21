@@ -239,7 +239,16 @@ export async function handleMouseUp(e, runtime) {
   _lastClickPos = pos;
 
   if (hitGroup instanceof BboxView && isDoubleClick) {
-    events.publish(EventTypes.CANVAS_BBOX_DOUBLE_CLICKED, { bboxId: hitGroup.id(), bboxView: hitGroup });
+    const { uuid: labelUuid } = parseToolUuid(runtime.tool);
+    if (runtime.tool === 'select') {
+      events.publish(EventTypes.CANVAS_BBOX_DOUBLE_CLICKED, { bboxId: hitGroup.id(), bboxView: hitGroup });
+    } else if (labelUuid) {
+      const labelData = await fetchLabelByUuid(labelUuid);
+      if (labelData) {
+        hitGroup.uiBBox.label = { uuid: labelUuid, text: labelData.name, color: labelData.color };
+        hitGroup.updateAppearance(labelData.name, labelData.color);
+      }
+    }
   }
 }
 
@@ -313,13 +322,20 @@ export function handleClick(e, runtime) {
  * @returns {Promise<void>}
  */
 export function handleContextMenu(e, runtime) {
-  const layer = runtime.canvas.layer;
+  const { stage, layer } = runtime.canvas;
   e.evt.preventDefault();
+
+  let node = e.target;
+  while (node && node !== stage) {
+    if (node instanceof BboxView) return;
+    node = node.getParent();
+  }
+
   clearSelection();
-  if (state.currentTool === 'select') {
-    setTool(state, `bbox:`)
+  if (runtime.tool === 'select') {
+    setTool(runtime, 'bbox:');
   } else {
-    setTool(state, 'select');
+    setTool(runtime, 'select');
   }
   layer.draw();
 }
