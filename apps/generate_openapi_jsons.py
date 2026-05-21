@@ -3,6 +3,7 @@
 import json
 import os
 import sys
+
 os.environ["GENERATING_OPENAPI_CLIENTS"] = "1"
 
 if len(sys.argv) < 2:

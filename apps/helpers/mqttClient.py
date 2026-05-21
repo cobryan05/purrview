@@ -1,10 +1,10 @@
-import paho.mqtt.client as mqtt
-import time
-import sys
 import logging
-
-from typing import Callable
+import sys
+import time
 from dataclasses import dataclass
+from typing import Callable
+
+import paho.mqtt.client as mqtt
 
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger("MqttClient")

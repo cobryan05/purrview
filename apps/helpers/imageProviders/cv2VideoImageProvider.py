@@ -4,11 +4,9 @@ import asyncio
 import glob
 import logging
 from collections.abc import Iterator
-from threading import Event
 from typing import Any, Optional
 
 import cv2
-import numpy as np
 
 from .imageProvider import ImageProvider, ImageWithProviderMetadata
 from .Registry import register_image_provider

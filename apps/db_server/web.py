@@ -1,13 +1,10 @@
 """Web API for DB Server"""
 
-import base64
 import logging
 import mimetypes
 import sys
 from contextlib import asynccontextmanager
-from dataclasses import asdict
 from typing import Any, List, Optional
-from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
@@ -18,8 +15,18 @@ from pydantic.alias_generators import to_camel
 
 from apps.db_server.manager import Manager
 from apps.helpers.consts import ApiTags, JsonKeys, JsonValues
-from apps.helpers.db.types import ImageRecordRead, LabelUpdate, Tag, TagBase, TagUpdate, Label, LabelUpdate
-from apps.helpers.db.types import BBoxUpdate, ImageRecordUpdate, Source, SourceRead
+from apps.helpers.db.types import (
+    BBoxUpdate,
+    ImageRecordRead,
+    ImageRecordUpdate,
+    Label,
+    LabelUpdate,
+    Source,
+    SourceRead,
+    Tag,
+    TagBase,
+    TagUpdate,
+)
 from apps.helpers.types import (
     Base64Image,
     BoundingBoxMetadataModel,

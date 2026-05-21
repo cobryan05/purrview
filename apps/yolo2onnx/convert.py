@@ -1,8 +1,6 @@
-import sys
 import os
 import subprocess
-import shutil
-import torch
+import sys
 
 TOOLS_DIR = os.environ.get("YOLO_TOOLS_DIR", "/workspace/tools")
 os.makedirs(TOOLS_DIR, exist_ok=True)

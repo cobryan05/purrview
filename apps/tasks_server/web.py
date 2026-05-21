@@ -7,9 +7,7 @@ import sys
 from contextlib import asynccontextmanager
 from typing import Dict, List, Optional, Union
 
-import cv2
-import numpy as np
-from fastapi import Body, FastAPI, File, Form, Request
+from fastapi import FastAPI, Form, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles

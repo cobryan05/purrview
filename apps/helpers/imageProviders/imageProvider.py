@@ -1,8 +1,10 @@
 """Image Provider Interface Class"""
 
-import numpy as np
-from typing import Any, Optional
 from dataclasses import dataclass, field
+from typing import Any, Optional
+
+import numpy as np
+
 
 @dataclass
 class ImageProviderMetadata:
@@ -22,11 +24,9 @@ class ImageProvider:
 
     async def start(self) -> None:
         """Starts the image provider and prepares it for use"""
-        pass
 
     async def stop(self) -> None:
         """Stops the image provider and releases any resources"""
-        pass
 
     @classmethod
     def params_schema(cls) -> dict[str, dict[str, Any]]:

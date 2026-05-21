@@ -8,14 +8,17 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from glob import glob
-from typing import Any, Dict, List, Tuple, Optional
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 
-from apps.helpers.inferenceProviders.inferenceProvider import InferenceProvider, InferenceResult
-from apps.helpers.yoloUtils import load_yolo_onnx
-from apps.helpers.metadataUtils import get_model_metadata, save_model_json_metadata
 from apps.helpers.imageUtils import annotate_image
+from apps.helpers.inferenceProviders.inferenceProvider import (
+    InferenceProvider,
+    InferenceResult,
+)
+from apps.helpers.metadataUtils import get_model_metadata, save_model_json_metadata
+from apps.helpers.yoloUtils import load_yolo_onnx
 
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger(__file__)

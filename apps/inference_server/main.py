@@ -1,10 +1,12 @@
+from pathlib import Path
+
 import uvicorn
 
-from apps import APPS_CONFIG, DB_DIR
+from apps import APPS_CONFIG
 
 from .manager import Manager
 from .web import WebApp
-from pathlib import Path
+
 config = APPS_CONFIG[Path(__file__).parent.name]
 
 manager = Manager("/app/models/")

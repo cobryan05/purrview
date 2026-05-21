@@ -3,7 +3,6 @@
 import asyncio
 import logging
 import sys
-from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
 import db_client

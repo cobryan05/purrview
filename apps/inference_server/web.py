@@ -8,7 +8,7 @@ from typing import Dict, List, Optional
 
 import cv2
 import numpy as np
-from fastapi import Body, FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -17,7 +17,6 @@ from pydantic import BaseModel, Field
 
 from apps.helpers.consts import ApiTags, JsonKeys, JsonValues
 from apps.helpers.types import (
-    DetectionResult,
     InferenceResult,
     InferenceResultModel,
     Payload,

@@ -1,7 +1,8 @@
+import glob
 import json
 import os
 import sys
-import glob
+
 
 def merge(output_dir, output_filename="combined_openapi.json"):
     # Pattern to find all openapi.json files

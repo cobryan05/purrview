@@ -2,7 +2,6 @@
 
 import asyncio
 import base64
-import logging
 import random
 import ssl
 import urllib.request

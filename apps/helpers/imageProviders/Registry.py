@@ -1,6 +1,7 @@
 """Registry of available ImageProviders"""
-from .imageProvider import ImageProvider, ImageWithProviderMetadata
 from typing import Type
+
+from .imageProvider import ImageProvider
 
 image_provider_registry: dict[str, Type[ImageProvider]] = {}
 def register_image_provider(name: str = None):

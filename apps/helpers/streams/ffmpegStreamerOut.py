@@ -1,12 +1,10 @@
-import ffmpeg
 import logging
-import time
 import select
 import subprocess
-from collections import deque
 from threading import Event
-from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Dict, List, Optional, Union
+
+import ffmpeg
 
 logging.basicConfig()
 logger = logging.getLogger(__file__)

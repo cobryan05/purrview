@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Annotated, Any, Dict, List, Optional, TypeVar
+from typing import Annotated, Any, Dict, List, Optional
 from uuid import uuid4
 
 import jstyleson

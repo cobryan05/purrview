@@ -1,18 +1,15 @@
-import argparse
-import os
 from pathlib import Path
 
+import db_client
 import inference_client
 import tasks_client
-import db_client
 import uvicorn
 
+from apps import APPS, APPS_CONFIG, DB_DIR
 from apps.helpers.db.db_client import DbClient
 
 from .manager import Manager
 from .web import WebApp
-
-from apps import APPS, APPS_CONFIG, DB_DIR
 
 config = APPS_CONFIG[Path(__file__).parent.name]
 inference_host = APPS_CONFIG[APPS.INFERENCE_SERVER].host

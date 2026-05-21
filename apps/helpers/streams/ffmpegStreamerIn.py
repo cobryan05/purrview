@@ -1,9 +1,9 @@
 import asyncio
-import ffmpeg
-from subprocess import Popen
 import logging
-from fractions import Fraction
-from typing import Any, Dict, Optional, Tuple, List
+from subprocess import Popen
+from typing import Any, Dict, Optional, Tuple
+
+import ffmpeg
 
 logging.basicConfig()
 logger = logging.getLogger(__file__)

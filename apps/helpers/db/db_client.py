@@ -2,7 +2,7 @@ import json
 import logging
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Type, TypeVar, Union
+from typing import Any, Dict, List, Optional, TypeVar, Union
 from uuid import uuid4
 
 import jstyleson
@@ -13,7 +13,17 @@ from sqlalchemy.orm import selectinload, sessionmaker
 from sqlmodel import SQLModel, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
-from .types import BBox, BBoxTagLink, BBoxUpdate, ImageRecord, ImageRecordRead, ImageRecordUpdate, Label, Source, Tag, TagKind
+from .types import (
+    BBox,
+    BBoxTagLink,
+    ImageRecord,
+    ImageRecordRead,
+    ImageRecordUpdate,
+    Label,
+    Source,
+    Tag,
+    TagKind,
+)
 
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger(__file__)
@@ -23,13 +33,6 @@ logger.setLevel(logging.DEBUG)
 T = TypeVar("T", bound=SQLModel)
 
 
-from apps.helpers.types import (
-    BoundingBoxMetadata,
-    BoundingBoxMetadataModel,
-    TaskConfigMetadata,
-    TaskConfigMetadataModel,
-    TaskInstanceMetadata,
-)
 
 LABELS_JSON = "labels.json"
 TAGS_JSON = "tags.json"

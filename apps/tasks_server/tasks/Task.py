@@ -1,11 +1,14 @@
 from __future__ import annotations
+
 import asyncio
 import logging
 import sys
 from abc import ABC, abstractmethod
-from typing import Any, Optional, TYPE_CHECKING
 from enum import Enum
+from typing import TYPE_CHECKING, Any, Optional
+
 from apps.helpers.consts import TaskStatus
+
 if TYPE_CHECKING:
     from ..manager import Manager
 
@@ -49,7 +52,6 @@ class Task(ABC):
         This method is called once before the task starts running, and should perform any
         setup required to begin or resume execution.
         """
-        pass
 
     @abstractmethod
     async def _run(self) -> dict[str, Any]:
@@ -70,12 +72,10 @@ class Task(ABC):
 
         Tasks should periodically call self._update_progress(float perc).
         """
-        pass
 
     @abstractmethod
     async def _deinit(self) -> None:
         """Run any cleanup logic for the task."""
-        pass
 
     @classmethod
     def params_schema(cls) -> dict[str, dict[str, Any]]:
@@ -120,11 +120,9 @@ class Task(ABC):
 
     async def pause(self) -> None:
         """Pause a task in a resumable way"""
-        pass
 
     async def resume(self) -> None:
         """Resume a paused task"""
-        pass
 
     async def stop(self) -> None:
         """Request a task to stop"""

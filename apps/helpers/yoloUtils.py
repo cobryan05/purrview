@@ -1,21 +1,18 @@
 """Utility functions for YOLO models"""
 
-import json
 import logging
 import sys
-from pathlib import Path
-from typing import Any, Dict, Tuple
+from typing import Tuple
 
 import cv2
 import numpy as np
-import onnx
 import onnxruntime as ort
 
+import apps.helpers.metadataUtils as metadataUtils
 from apps.helpers.inferenceProviders.inferenceProvider import InferenceProvider
 from apps.helpers.inferenceProviders.yolov8OnnxInferenceProvider import (
     YOLOv8ONNXInferenceProvider,
 )
-import apps.helpers.metadataUtils as metadataUtils
 
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger(__file__)

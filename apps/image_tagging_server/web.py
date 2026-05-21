@@ -1,46 +1,15 @@
-import base64
 import logging
 import os
 import sys
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, File, Form, Request, UploadFile
+from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-import apps.db_server.web as db_web
 from apps import APPS, APPS_CONFIG
-from apps.helpers.consts import ApiTags
 from apps.helpers.reverseProxy import ReverseProxy
-from apps.helpers.types import StatusResponse
-from apps.inference_server.web import (
-    AssociateLabelPayload,
-    ModelBulkClassesPayload,
-)
-from apps.tasks_server.web import (
-    CancelTasksPayload,
-    CancelTasksResponse,
-    CreateTaskConfigPayload,
-    CreateTaskConfigResponse,
-    DeleteTaskConfigsPayload,
-    DeleteTaskConfigsResponse,
-    DeleteTasksPayload,
-    DeleteTasksResponse,
-    GetTaskConfigResponse,
-    GetTaskConfigsPayload,
-    ListTaskTypesResponse,
-    StartTasksPayload,
-    StartTasksResponse,
-    TasksInfoPayload,
-    TasksInfoResponse,
-    TasksResultPayload,
-    TasksResultResponse,
-    TasksTypeSchemaPayload,
-    TasksTypeSchemaResponse,
-    UpdateTaskConfigPayload,
-    UpdateTaskConfigResponse,
-)
 
 from .manager import Manager
 

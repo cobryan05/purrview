@@ -5,6 +5,7 @@ from functools import wraps
 
 from pydantic import BaseModel
 
+
 def api_forward_request(api, api_method_name: str):
     def decorator(func):
         @wraps(func)

@@ -2,7 +2,6 @@
 
 import asyncio
 import fnmatch
-import glob
 import logging
 import os
 import sys
@@ -16,7 +15,14 @@ from apps.helpers.db.db_client import (
     DbClient,
     TagKind,
 )
-from apps.helpers.db.types import ImageRecord, ImageRecordRead, ImageRecordUpdate, Label, Source, Tag, TagUpdate
+from apps.helpers.db.types import (
+    ImageRecordRead,
+    ImageRecordUpdate,
+    Label,
+    Source,
+    Tag,
+    TagUpdate,
+)
 from apps.helpers.fileUtils import get_safe_path
 from apps.helpers.imageProviders.Registry import image_provider_registry
 from apps.helpers.types import (
@@ -293,7 +299,6 @@ class Manager:
 
     def _fixup_entry(self, entry):
         logger.info(f"TODO: Fixup entry {entry}")
-        pass
 
     async def update_image_metadata(self, image_rel_path: str, update: ImageRecordUpdate) -> Optional[ImageRecordRead]:
         """

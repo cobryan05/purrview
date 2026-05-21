@@ -1,6 +1,5 @@
 import asyncio
 import logging
-import os
 from typing import Any, Optional
 
 from apps.helpers.imageProviders.Registry import image_provider_registry
@@ -8,7 +7,6 @@ from apps.helpers.imageUtils import base64_encode_png
 
 from .Registry import register_task
 from .Task import Task
-
 
 logging.basicConfig()
 logger = logging.getLogger(__file__)
@@ -52,7 +50,7 @@ class PreviewSourceTask(Task):
                     try:
                         image_base64 = base64_encode_png(image_task.result().image)
                         ret["image"] = image_base64
-                    except Exception as e:
+                    except Exception:
                         logger.exception(f"Error fetching image")
                         self._status_msg = "Error"
                         status = "error"
