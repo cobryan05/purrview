@@ -40,7 +40,7 @@ export class ModelLabelSelectField extends Field {
       const labelInfos = (await Promise.all(uniqueUuids.map(fetchLabelByUuid))).filter((info) => info != null);
 
       for (const labelInfo of labelInfos) {
-        const { color, name, uuid } = labelInfo.metadata;
+        const { color, name, uuid } = labelInfo;
         this._fields.set(uuid, new LabelNumberField({
           label: name,
           color: color,

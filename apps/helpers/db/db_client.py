@@ -1,7 +1,7 @@
 import json
 import logging
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, TypeVar, Union
 from uuid import uuid4
@@ -19,6 +19,8 @@ from apps.helpers.consts import TaskStatus
 from .types import (
     BBox,
     BBoxTagLink,
+    ImageLabel,
+    ImageLabelStatus,
     ImageRecord,
     ImageRecordRead,
     ImageRecordUpdate,
@@ -29,6 +31,37 @@ from .types import (
     TaskConfig,
     TaskInstance,
 )
+
+UNVERIFIED_TAG_UUID = "00000000-0000-0000-0000-000000000001"
+VERIFIED_TAG_UUID = "00000000-0000-0000-0000-000000000002"
+FALSE_POS_TAG_UUID = "00000000-0000-0000-0000-000000000003"
+
+_SYSTEM_TAGS = [
+    Tag(
+        uuid=UNVERIFIED_TAG_UUID,
+        name="Unverified",
+        color="#f0a030",
+        kind=TagKind.SYSTEM,
+        exclusive_group="verification",
+        protected=True,
+    ),
+    Tag(
+        uuid=VERIFIED_TAG_UUID,
+        name="Verified",
+        color="#30c060",
+        kind=TagKind.SYSTEM,
+        exclusive_group="verification",
+        protected=True,
+    ),
+    Tag(
+        uuid=FALSE_POS_TAG_UUID,
+        name="FalsePositive",
+        color="#e04040",
+        kind=TagKind.SYSTEM,
+        exclusive_group="verification",
+        protected=True,
+    ),
+]
 
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger(__file__)
@@ -72,6 +105,8 @@ class DbClient:
             # This creates all tables defined by SQLModel (Tag, Label, etc.)
             await conn.run_sync(SQLModel.metadata.create_all)
 
+        await self._seed_system_tags()
+
         # Sync labels from json if table is currently empty
         async with self._async_session_maker() as session:
             count_statement = select(func.count()).select_from(Label)
@@ -86,6 +121,15 @@ class DbClient:
             await self.sync_labels_from_json()
         if tag_count == 0:
             await self.sync_tags_from_json()
+
+    async def _seed_system_tags(self) -> None:
+        """Ensure system tags always exist (idempotent)."""
+        async with self._async_session_maker() as session:
+            for tag in _SYSTEM_TAGS:
+                existing = await session.get(Tag, tag.uuid)
+                if existing is None:
+                    session.add(tag)
+            await session.commit()
 
     async def close(self):
         """Dispose of the engine connection pool."""
@@ -548,6 +592,27 @@ class DbClient:
             await session.commit()
             await session.refresh(source)
         return source
+
+    ################################################################################
+    # Image Labels
+    ################################################################################
+
+    async def set_image_label(self, image_uuid: str, label_uuid: str, status: ImageLabelStatus) -> None:
+        """Upsert an image_label record, overwriting any existing status."""
+        async with self._async_session_maker() as session:
+            existing = await session.get(ImageLabel, (image_uuid, label_uuid))
+            if existing:
+                existing.status = status
+                existing.updated_at = datetime.now(timezone.utc)
+            else:
+                session.add(ImageLabel(image_uuid=image_uuid, label_uuid=label_uuid, status=status))
+            await session.commit()
+
+    async def get_image_labels(self, image_uuid: str) -> List[ImageLabel]:
+        """Return all image_label rows for a given image."""
+        async with self._async_session_maker() as session:
+            result = await session.exec(select(ImageLabel).where(ImageLabel.image_uuid == image_uuid))
+            return result.all()
 
     ################################################################################
     # Task Configs

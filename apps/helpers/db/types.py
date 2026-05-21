@@ -3,6 +3,12 @@ from enum import Enum
 from typing import Annotated, Any, Dict, List, Optional
 from uuid import uuid4
 
+
+class ImageLabelStatus(str, Enum):
+    UNCERTAIN = "uncertain"
+    PRESENT = "present"
+    ABSENT = "absent"
+
 import jstyleson
 import numpy as np
 from pydantic import (
@@ -331,3 +337,22 @@ class TaskInstanceRead(BaseModel):
 
 class TaskResult(BaseModel):
     data: Dict[str, Any] = Field(default_factory=dict)
+
+
+class ImageLabel(SQLModel, table=True):
+    __tablename__ = "image_labels"
+    image_uuid: str = Field(foreign_key="images.uuid", primary_key=True, ondelete="CASCADE")
+    label_uuid: str = Field(foreign_key="labels.uuid", primary_key=True, ondelete="CASCADE")
+    status: ImageLabelStatus = Field(default=ImageLabelStatus.UNCERTAIN)
+    updated_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        sa_type=DateTime(timezone=True),
+    )
+
+
+class ImageLabelRead(BaseModel):
+    image_uuid: str
+    label_uuid: str
+    status: ImageLabelStatus
+
+    model_config = ConfigDict(from_attributes=True)

@@ -17,6 +17,8 @@ from apps.db_server.manager import Manager
 from apps.helpers.consts import ApiTags, JsonKeys, JsonValues
 from apps.helpers.db.types import (
     BBoxUpdate,
+    ImageLabelRead,
+    ImageLabelStatus,
     ImageRecordRead,
     ImageRecordUpdate,
     Label,
@@ -216,6 +218,20 @@ class GetFileResponse(StatusResponse):
     mime_type: Optional[str] = None
     image_base64: Base64Image = None
     image: Optional[ImageRecordRead] = None
+
+
+class SetImageLabelPayload(ApiPayload):
+    image_path: str
+    label_uuid: str
+    status: ImageLabelStatus
+
+
+class SetImageLabelResponse(StatusResponse):
+    pass
+
+
+class GetImageLabelsResponse(StatusResponse):
+    labels: List[ImageLabelRead] = Field(default_factory=list)
 
 
 class WebApp:
@@ -670,3 +686,31 @@ class WebApp:
             except Exception as e:
                 logger.exception(f"Error retrieving file: {image_path}")
                 return GetFileResponse(status=JsonValues.FAILURE, message=str(e), filename=image_path)
+
+        ################################################################################
+        # Image Labels API
+        ################################################################################
+
+        @self._app.post(
+            "/api/images/labels/set",
+            response_model=SetImageLabelResponse,
+            tags=[ApiTags.IMAGES],
+            operation_id="set_image_label",
+        )
+        async def set_image_label(payload: SetImageLabelPayload) -> SetImageLabelResponse:
+            ok = await self._manager.set_image_label(payload.image_path, payload.label_uuid, payload.status)
+            if not ok:
+                return SetImageLabelResponse(status=JsonValues.FAILURE, message="Image not found")
+            return SetImageLabelResponse()
+
+        @self._app.get(
+            "/api/images/{image_path:path}/labels",
+            response_model=GetImageLabelsResponse,
+            tags=[ApiTags.IMAGES],
+            operation_id="get_image_labels",
+        )
+        async def get_image_labels(image_path: str) -> GetImageLabelsResponse:
+            labels = await self._manager.get_image_labels(image_path)
+            if labels is None:
+                return GetImageLabelsResponse(status=JsonValues.FAILURE, message="Image not found")
+            return GetImageLabelsResponse(labels=labels)

@@ -1,206 +1,217 @@
-# import asyncio
-# import base64
-# import logging
-# import sys
-# from dataclasses import dataclass
-# from pathlib import Path
-# from typing import Any, Dict, Optional
-# from uuid import uuid4
+import asyncio
+import logging
+import os
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Optional
+from uuid import uuid4
 
-# import cv2
-# from dacite import Config, from_dict
-# from inference_client.api.inference_api import InferenceApi
-# from inference_client.api.models_api import ModelsApi
-# from inference_client.models.pin_model_payload import PinModelPayload
-# from inference_client.models.recognize_payload import RecognizePayload
+import cv2
+import db_client
+from db_client.api.images_api import ImagesApi
+from db_client.api.tags_api import TagsApi
+from db_client.models.bounding_box_metadata_model import BoundingBoxMetadataModel
+from db_client.models.update_metadata_payload import UpdateMetadataPayload
+import inference_client
+from inference_client.api.inference_api import InferenceApi
+from inference_client.api.models_api import ModelsApi
+from inference_client.models.inference_payload import InferencePayload
+from inference_client.models.pin_model_payload import PinModelPayload
 
-# from apps.helpers.consts import JsonValues
-# from apps.helpers.imageProviders.imageProvider import (
-#     ImageProvider,
-#     ImageWithProviderMetadata,
-# )
-# from apps.helpers.types import BoundingBoxMetadata
-# from apps.inference_server.web import InferenceResponse
+from apps.helpers.imageUtils import base64_encode_png
 
-# from .Registry import register_task
-# from .Task import Task
-# from .utils.imageHelper import ImageHelper
-# from .utils.sourceHelper import SourceHelper
+from .Registry import register_task
+from .Task import Task
+from .utils.imageHelper import ImageHelper
+from .utils.sourceHelper import SourceHelper
 
-# logging.basicConfig(stream=sys.stdout)
-# logger = logging.getLogger(__file__)
-# logger.setLevel(logging.DEBUG)
+logging.basicConfig()
+logger = logging.getLogger(__file__)
+logger.setLevel(logging.DEBUG)
 
 
-# @dataclass
-# class ModelLabelValues:
-#     modelName: str
-#     classesValues: Dict[str, float]
+@dataclass
+class TargetLabel:
+    label_uuid: str
+    min_confidence: float
 
-# class ImageMetadata:
-#     pass
 
-# @register_task()
-# class CollectTrainingImagesTask(Task):
-#     async def _init(self, params: dict[str, Any], resume_data: Optional[dict[str, Any]]) -> None:
-#         """Run any initialization logic for the task."""
-#         self._status_msg: str = "Creating Task"
-#         self._source_uuid: str = params.get("source_uuid", "")
-#         self._output_dir: str = params.get("output_dir", "")
-#         self._min_capture_interval: int = int(params.get("min_capture_interval", 0) or 0)
-#         self._model_label_configs: list[ModelLabelValues] = [
-#             from_dict(ModelLabelValues, item, Config(cast=[float])) for item in params.get("model_label_config", [])
-#         ]
+@register_task()
+class CollectTrainingImagesTask(Task):
+    async def _init(self, params: dict[str, Any], resume_data: Optional[dict[str, Any]]) -> None:
+        self._status_msg: str = "Initializing"
+        self._source_uuid: str = params["source_uuid"]
+        self._output_dir: str = params["output_dir"]
+        self._model_names: list[str] = params.get("model_names", [])
+        self._target_labels: list[TargetLabel] = [
+            TargetLabel(label_uuid=t["label_uuid"], min_confidence=float(t["min_confidence"]))
+            for t in params.get("target_labels", [])
+        ]
+        self._target_label_map: dict[str, float] = {
+            t.label_uuid: t.min_confidence for t in self._target_labels
+        }
+        self._min_all_conf: float = min((t.min_confidence for t in self._target_labels), default=0.5)
+        self._images_saved: int = resume_data.get("images_saved", 0) if resume_data else 0
+        self._unverified_tag_uuid: Optional[str] = None
 
-#     async def _run(self) -> dict[str, Any]:
-#         """Run the main logic of the task."""
-#         ret = {}
-#         db_api_client = self._manager.get_db_api_client()
-#         inference_api_client = self._manager.get_inference_api_client()
-#         status: str = JsonValues.SUCCESS
-#         self._status_msg = "Initializing Provider"
+    async def _run(self) -> dict[str, Any]:
+        self._status_msg = "Looking up system tags"
+        db_api_client = self._manager.get_db_api_client()
+        inference_api_client = self._manager.get_inference_api_client()
 
-#         source_helper: SourceHelper = SourceHelper(db_api_client)
-#         image_provider: ImageProvider = source_helper.get_image_provider(self._source_uuid)
-#         if not image_provider:
-#             raise KeyError("Failed to get image provider")
+        tags_resp = await asyncio.to_thread(TagsApi(db_api_client).list_tags)
+        self._unverified_tag_uuid = next(
+            (t.uuid for t in (tags_resp.tags or []) if t.name == "Unverified"), None
+        )
+        if not self._unverified_tag_uuid:
+            raise RuntimeError("'Unverified' system tag not found in DB")
 
-#         inference_api: InferenceApi = InferenceApi(inference_api_client)
-#         models_api: ModelsApi = ModelsApi(inference_api_client)
+        self._status_msg = "Getting image provider"
+        source_helper = SourceHelper(db_api_client)
+        provider = source_helper.get_image_provider(self._source_uuid)
 
-#         pin_ids = {}
-#         for config in self._model_label_configs:
-#             pin_payload: PinModelPayload = PinModelPayload(model_name=config.modelName, duration=60)
-#             pin_response = await asyncio.to_thread(models_api.pin_model, pin_payload)
-#             pin_ids[config.modelName] = pin_response.get("pin_id")
+        self._status_msg = "Pinning models"
+        models_api = ModelsApi(inference_api_client)
+        pin_ids: dict[str, Optional[str]] = {}
+        for name in self._model_names:
+            try:
+                resp = await asyncio.to_thread(
+                    models_api.pin_model_api_api_models_model_name_pin_post,
+                    name,
+                    PinModelPayload(model_name=name, duration=3600),
+                )
+                pin_ids[name] = resp.pin_id
+            except Exception:
+                logger.exception(f"Failed to pin model {name}")
+                pin_ids[name] = None
 
-#         image_helper: ImageHelper = ImageHelper(db_api_client)
-#         self._status_msg = "Running"
+        images_api = ImagesApi(db_api_client)
+        inference_api = InferenceApi(inference_api_client)
+        files_root = Path(os.environ.get("FILES_ROOT", "/app/image_datasets"))
 
-#         await image_provider.start()
-#         try:
-#             while self._cancel_flag.is_set() is False:
-#                 provided_image: ImageWithProviderMetadata = await image_provider.getNextImage()
-#                 if provided_image is None:
-#                     break
+        self._status_msg = "Running"
+        await provider.start()
+        try:
+            while not self._cancel_flag.is_set():
+                provided = await provider.getNextImage()
+                if provided is None:
+                    break
 
-#                 # Determine an output filename
-#                 sanitized_name: str = ImageHelper.sanitize_filename(
-#                     f"{provided_image.metadata.source}_{provided_image.metadata.frame_idx}"
-#                 )
-#                 output_path = Path(self._output_dir) / f"{sanitized_name}.png"
+                base64_img = base64_encode_png(provided.image)
 
-#                 # Check if this file already exists in the database
-#                 image_metadata: ImageMetadata = await asyncio.to_thread(
-#                     image_helper.get_image_metadata, str(output_path)
-#                 )
-#                 if image_metadata:
-#                     logger.info(f"Output image {output_path} already exists")
-#                 else:
-#                     logger.info(f"Output image {output_path} is new")
-#                     image_metadata = ImageMetadata(filename=str(output_path))
+                matching = []
+                for name in self._model_names:
+                    try:
+                        result = await asyncio.to_thread(
+                            inference_api.inference,
+                            name,
+                            InferencePayload(
+                                image_base64=base64_img,
+                                conf_thresh=self._min_all_conf,
+                                pin_id=pin_ids.get(name),
+                            ),
+                        )
+                        for det in result.result.detections or []:
+                            luuid = det.bbox.label_uuid
+                            if luuid and luuid in self._target_label_map:
+                                if det.confidence >= self._target_label_map[luuid]:
+                                    matching.append(det)
+                    except Exception:
+                        logger.exception(f"Inference error on model {name}")
 
-#                 success, buf = cv2.imencode(".png", provided_image.image)
-#                 image_base64 = base64.b64encode(buf).decode("utf-8")
-#                 results: Dict[str, InferenceResponse] = {}
-#                 for config in self._model_label_configs:
-#                     # Get inference results
-#                     min_conf = min(config.classesValues.values())
-#                     payload: RecognizePayload = RecognizePayload(
-#                         model_name=config.modelName,
-#                         image_base64=image_base64,
-#                         conf_thresh=min_conf,
-#                         pin_id=pin_ids.get(config.modelName),
-#                     )
+                if not matching:
+                    continue
 
-#                     recognize_res = await asyncio.to_thread(inference_api.recognize, payload)
-#                     # Filter the results to only keep configured classes
-#                     filtered_detections = []
-#                     for detection in recognize_res.detections:
-#                         if detection.confidence > config.classesValues.get(detection.label_uuid, 100.0):
-#                             filtered_detections.append(detection)
-#                     results[config.modelName] = InferenceResponse(detections=filtered_detections)
+                source_name = ImageHelper.sanitize_filename(provided.metadata.source or "unknown")
+                frame_idx = provided.metadata.frame_idx or 0
+                filename = f"{source_name}_{frame_idx}.png"
+                rel_path = str(Path(self._output_dir) / filename)
+                abs_path = files_root / self._output_dir / filename
+                abs_path.parent.mkdir(parents=True, exist_ok=True)
 
-#                 # TODO: De-dupe results?
+                if not cv2.imwrite(str(abs_path), provided.image):
+                    logger.warning(f"Failed to write image to {abs_path}")
+                    continue
 
-#                 image_metadata.boxes = []
-#                 for config, result in results.items():
-#                     for det in result.detections:
-#                         bbox_metadata: BoundingBoxMetadata = BoundingBoxMetadata(
-#                             uuid=str(uuid4()),
-#                             x=det.bounding_box[0],
-#                             y=det.bounding_box[1],
-#                             width=det.bounding_box[2],
-#                             height=det.bounding_box[3],
-#                             label_uuid=det.label_uuid,
-#                             class_str=det.class_str
-#                         )
-#                         logger.info(det)
-#                         image_metadata.boxes.append(bbox_metadata)
-#                 await asyncio.to_thread(image_helper.update_image_metadata, str(output_path), image_metadata)
-#                 logger.info(results)
+                boxes = [
+                    BoundingBoxMetadataModel(
+                        bbox_uuid=str(uuid4()),
+                        x=det.bbox.x,
+                        y=det.bbox.y,
+                        width=det.bbox.width,
+                        height=det.bbox.height,
+                        label_uuid=det.bbox.label_uuid,
+                        class_str=det.bbox.class_str,
+                        tag_uuids=[self._unverified_tag_uuid],
+                    )
+                    for det in matching
+                ]
 
-#         finally:
-#             await image_provider.stop()
+                try:
+                    await asyncio.to_thread(
+                        images_api.update_image_metadata,
+                        UpdateMetadataPayload(image_path=rel_path, boxes=boxes),
+                    )
+                except Exception:
+                    logger.exception(f"Failed to save metadata for {rel_path}")
+                    continue
 
-#         self._update_resume_data()
-#         ret["status"] = status
-#         self._status_msg = "Done"
-#         return ret
+                self._images_saved += 1
+                self._status_msg = f"Saved {self._images_saved} images"
+                self._update_progress(self._images_saved)
 
-#     async def _deinit(self) -> None:
-#         # TODO: Does killing clean up
-#         pass
+                if self._data_req_flag.is_set():
+                    self._data_req_flag.clear()
+                    self._resume_data = {"images_saved": self._images_saved}
+                    self._data_ready_flag.set()
 
-#     def get_status_message(self) -> str:
-#         return self._status_msg
+        finally:
+            await provider.stop()
 
-#     def _update_resume_data(self) -> None:
-#         self._resume_data = {}
-#         self._data_ready_flag.set()
+        self._resume_data = {"images_saved": self._images_saved}
+        self._data_ready_flag.set()
+        return {"images_saved": self._images_saved}
 
-#     @classmethod
-#     def params_schema(cls) -> dict[str, dict[str, Any]]:
-#         """
-#         Return a schema describing the parameters for this Task.
-#         Each key is a parameter name, value is a dict with:
-#             - type: str
-#             - required: bool
-#             - default: Any (optional)
-#             - description: str (optional)
-#             - options: list (optional, for enums)
-#             - schema: dict (optional, for nested objects)
-#         """
-#         return {
-#             "meta": {"order": ["source_uuid", "model_label_config", "output_dir", "min_capture_interval"]},
-#             "source_uuid": {
-#                 "type": "source_uuid",
-#                 "label": "Image Capture Source",
-#                 "required": True,
-#                 "description": "UUID of pre-configured Source to use",
-#             },
-#             "model_label_config": {
-#                 "type": "array",
-#                 "required": "true",
-#                 "label": "Model/Label Configuration",
-#                 "items": {
-#                     "type": "model_label",
-#                     "label": "Model/Label selection",
-#                     "required": True,
-#                     "description": "Labels to collect",
-#                 },
-#             },
-#             "output_dir": {
-#                 "type": "string",
-#                 "label": "Image Output Directory",
-#                 "required": True,
-#                 "description": "Directory to save the collected images",
-#             },
-#             "min_capture_interval": {
-#                 "type": "int",
-#                 "label": "Minimum capture Interval",
-#                 "default": 0,
-#                 "required": True,
-#                 "description": "Minimum time (in seconds) between captures",
-#             },
-#         }
+    async def _deinit(self) -> None:
+        pass
+
+    def get_status_message(self) -> str:
+        return self._status_msg
+
+    @classmethod
+    def params_schema(cls) -> dict[str, dict[str, Any]]:
+        return {
+            "meta": {
+                "order": ["source_uuid", "output_dir", "model_label_config", "min_capture_interval"]
+            },
+            "source_uuid": {
+                "type": "source_uuid",
+                "label": "Image Source",
+                "required": True,
+                "description": "Pre-configured source to pull images from",
+            },
+            "output_dir": {
+                "type": "string",
+                "label": "Output Directory",
+                "required": True,
+                "description": "Directory relative to image dataset root where images will be saved",
+            },
+            "model_label_config": {
+                "type": "array",
+                "required": "true",
+                "label": "Model/Label Configuration",
+                "items": {
+                    "type": "model_label",
+                    "label": "Model/Label selection",
+                    "required": True,
+                    "description": "Labels to collect",
+                },
+            },
+            "min_capture_interval": {
+                "type": "int",
+                "label": "Min Capture Interval (s)",
+                "default": 0,
+                "required": False,
+                "description": "Minimum seconds between frame grabs (reserved for live streams)",
+            },
+        }

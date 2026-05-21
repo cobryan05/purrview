@@ -1,10 +1,10 @@
 """Manages the database"""
-
 import asyncio
 import fnmatch
 import logging
 import os
 import sys
+from collections import defaultdict
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -13,9 +13,13 @@ from sqlalchemy.orm import make_transient
 
 from apps.helpers.db.db_client import (
     DbClient,
+    FALSE_POS_TAG_UUID,
     TagKind,
+    VERIFIED_TAG_UUID,
 )
 from apps.helpers.db.types import (
+    ImageLabelRead,
+    ImageLabelStatus,
     ImageRecordRead,
     ImageRecordUpdate,
     Label,
@@ -321,7 +325,49 @@ class Manager:
             self._get_json_sidefile(safe_path), image.uuid, image.filename, update
         )
         updated = await self._db_client.get_image_by_filename(safe_path)
+        await self._recompute_image_labels(image.uuid, update)
         return ImageRecordRead.model_validate(updated) if updated else None
+
+    async def _recompute_image_labels(self, image_uuid: str, update: ImageRecordUpdate) -> None:
+        """Derive image_labels from the current bbox+tag state after a metadata update."""
+
+        label_tag_sets: dict[str, list[set[str]]] = defaultdict(list)
+        for b in update.bboxes:
+            if b.label_uuid:
+                label_tag_sets[b.label_uuid].append(set(b.tag_uuids))
+
+        for label_uuid, tag_sets in label_tag_sets.items():
+            if any(VERIFIED_TAG_UUID in tags for tags in tag_sets):
+                status = ImageLabelStatus.PRESENT
+            elif all(FALSE_POS_TAG_UUID in tags for tags in tag_sets):
+                status = ImageLabelStatus.ABSENT
+            else:
+                status = ImageLabelStatus.UNCERTAIN
+            await self._db_client.set_image_label(image_uuid, label_uuid, status)
+
+    async def _resolve_image_uuid(self, image_path: str) -> Optional[str]:
+        """Resolve an image path to its DB uuid, or None if not found."""
+        safe_path = get_safe_path(self._files_root, image_path)
+        if safe_path is None:
+            return None
+        image = await self._db_client.get_image_by_filename(safe_path)
+        return image.uuid if image else None
+
+    async def set_image_label(self, image_path: str, label_uuid: str, status: ImageLabelStatus) -> bool:
+        """Explicitly set an image_label (e.g. verified-absent with no bboxes)."""
+        image_uuid = await self._resolve_image_uuid(image_path)
+        if image_uuid is None:
+            return False
+        await self._db_client.set_image_label(image_uuid, label_uuid, status)
+        return True
+
+    async def get_image_labels(self, image_path: str) -> Optional[List[ImageLabelRead]]:
+        """Return all label statuses for an image."""
+        image_uuid = await self._resolve_image_uuid(image_path)
+        if image_uuid is None:
+            return None
+        rows = await self._db_client.get_image_labels(image_uuid)
+        return [ImageLabelRead.model_validate(r) for r in rows]
 
     async def list_files(
         self,
