@@ -724,5 +724,23 @@ class DbClient:
         if not task_uuids:
             return
         async with self._async_session_maker() as session:
+            # Capture config UUIDs before deleting so we can GC marked_for_delete configs
+            result = await session.exec(select(TaskInstance.config_uuid).where(TaskInstance.uuid.in_(task_uuids)))
+            affected_config_uuids = list(set(result.all()))
+
             await session.exec(delete(TaskInstance).where(TaskInstance.uuid.in_(task_uuids)))
+
+            # Delete any configs that were marked_for_delete and now have no remaining instances
+            if affected_config_uuids:
+                still_referenced = select(TaskInstance.config_uuid).where(
+                    TaskInstance.config_uuid.in_(affected_config_uuids)
+                )
+                await session.exec(
+                    delete(TaskConfig).where(
+                        TaskConfig.uuid.in_(affected_config_uuids),
+                        TaskConfig.marked_for_delete == True,  # type: ignore[arg-type]  # noqa: E712
+                        ~TaskConfig.uuid.in_(still_referenced),
+                    )
+                )
+
             await session.commit()
