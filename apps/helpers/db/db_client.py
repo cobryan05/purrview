@@ -32,6 +32,7 @@ from .types import (
     ImageRecordUpdate,
     Label,
     Source,
+    SourceRead,
     Tag,
     TagKind,
     TaskConfig,
@@ -80,6 +81,7 @@ T = TypeVar("T", bound=SQLModel)
 
 LABELS_JSON = "labels.json"
 TAGS_JSON = "tags.json"
+SOURCES_JSON = "sources.json"
 DB_FILE = "db.sqlite"
 
 
@@ -91,6 +93,7 @@ class DbClient:
         self._db_path: Path = self._db_dir / DB_FILE
         self._labels_json_path: Path = self._db_dir / LABELS_JSON
         self._tags_json_path: Path = self._db_dir / TAGS_JSON
+        self._sources_json_path: Path = self._db_dir / SOURCES_JSON
 
         self._url: str = f"sqlite+aiosqlite:///{self._db_path}"
 
@@ -129,6 +132,14 @@ class DbClient:
             await self.sync_labels_from_json()
         if tag_count == 0:
             await self.sync_tags_from_json()
+
+        async with self._async_session_maker() as session:
+            count_statement = select(func.count()).select_from(Source)
+            result = await session.exec(count_statement)
+            source_count = result.one() or 0
+
+        if source_count == 0:
+            await self.sync_sources_from_json()
 
     async def _seed_system_tags(self) -> None:
         """Ensure system tags always exist (idempotent)."""
@@ -594,6 +605,34 @@ class DbClient:
     ################################################################################
     # Sources
     ################################################################################
+    async def _sync_sources_to_json(self):
+        """Internal helper to dump the current sources table to sources.json."""
+        sources = await self.get_sources()
+        adapter = TypeAdapter(List[SourceRead])
+        json_str = adapter.dump_json(
+            [SourceRead.model_validate(s) for s in sources],
+            indent=2,
+        )
+        self._sources_json_path.write_bytes(json_str)
+
+    async def sync_sources_from_json(self):
+        """Reads sources.json and syncs to DB. Does not remove existing sources."""
+        if not self._sources_json_path.exists():
+            return
+
+        try:
+            json_data = jstyleson.loads(self._sources_json_path.read_text())
+        except Exception as e:
+            logger.error(f"Failed to parse sources.json: {e}")
+            return
+
+        async with self._async_session_maker() as session:
+            for item in json_data:
+                source_obj = Source.model_validate(item)
+                await session.merge(source_obj)
+            await session.commit()
+        logger.info(f"Imported {len(json_data)} sources from JSON")
+
     async def get_sources(self) -> List[Source]:
         """List all sources."""
         async with self._async_session_maker() as session:
@@ -607,6 +646,7 @@ class DbClient:
             session.add(new_source)
             await session.commit()
             await session.refresh(new_source)
+        await self._sync_sources_to_json()
         return new_source
 
     async def delete_sources(self, uuids: List[str]) -> None:
@@ -614,6 +654,7 @@ class DbClient:
         async with self._async_session_maker() as session:
             await session.exec(delete(Source).where(Source.uuid.in_(uuids)))
             await session.commit()
+        await self._sync_sources_to_json()
 
     async def update_source(self, source_uuid: str, name: str, typename: str, params: Dict[str, Any]) -> Optional[Source]:
         """Update a source by UUID and return the updated object."""
@@ -627,6 +668,7 @@ class DbClient:
             session.add(source)
             await session.commit()
             await session.refresh(source)
+        await self._sync_sources_to_json()
         return source
 
     ################################################################################
