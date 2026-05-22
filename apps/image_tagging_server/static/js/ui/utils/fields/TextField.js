@@ -8,6 +8,12 @@ export class TextField extends Field {
     this._min = min;
     this._max = max;
     this._step = step;
+    this._el = null;
+  }
+
+  setValue(value) {
+    this._value = value;
+    if (this._el) this._el.value = value;
   }
 
   async renderEdit() {
@@ -43,12 +49,13 @@ export class TextField extends Field {
       this._value = input.value;
       this._onChange?.(this._value);
     });
+    this._el = input;
     return input;
   }
 
   async renderView() {
     const span = document.createElement('span');
-    span.textContent = this._value || '(empty)';
+    span.textContent = this._value != null && this._value !== '' ? this._value : '(empty)';
     return span;
   }
 

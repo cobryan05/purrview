@@ -34,6 +34,7 @@ class Manager:
         self._db_api_client: db_client.ApiClient = db_api_client
         self._running_tasks: Dict[str, TaskInfo] = {}
         self._completion_tasks: set[asyncio.Task] = set()
+        self._pending_oneshot_deletes: set[str] = set()
         self._config = {
             "db_server": db_api_client.configuration.host,
             "inference_server": inference_api_client.configuration.host,
@@ -76,6 +77,10 @@ class Manager:
                 db_models.GetTaskResultsPayload(task_uuids=not_running),
             )
             results.update(resp.results or {})
+            for tid in not_running:
+                if tid in results and tid in self._pending_oneshot_deletes:
+                    self._pending_oneshot_deletes.discard(tid)
+                    tasks_to_delete.append(tid)
 
         if results and tasks_to_delete:
             asyncio.create_task(self.delete_tasks(task_uuids=tasks_to_delete))
@@ -218,8 +223,8 @@ class Manager:
                 logger.info(f"Task finished while waiting for data ready: {e}")
 
             try:
-                del self._running_tasks[task_info.instance.uuid]
-                await self._save_task_data(task_info)
+                if self._running_tasks.pop(task_info.instance.uuid, None) is not None:
+                    await self._save_task_data(task_info)
             except Exception as e:
                 logger.exception(f"Error while saving task data: {e}")
             paused_tasks.append(task_info.instance.uuid)
@@ -327,9 +332,14 @@ class Manager:
         if task_info.task is None:
             return
         await task_info.task.wait_for_task_done()
+        # Use pop to atomically claim save responsibility; pause_tasks uses the same pattern.
+        # Whichever coroutine wins the pop is responsible for persisting final status.
+        if self._running_tasks.pop(task_info.instance.uuid, None) is None:
+            return
         task_info.instance.status = task_info.task.get_status()
         await self._save_task_data(task_info)
-        self._running_tasks.pop(task_info.instance.uuid, None)
+        if task_info.config.params_json.get(Task.InternalKeys.ONESHOT_RESULT, False):
+            self._pending_oneshot_deletes.add(task_info.instance.uuid)
 
     async def _save_task_data(self, task_info: TaskInfo) -> None:
         if task_info.task.is_data_ready():
@@ -362,6 +372,7 @@ class Manager:
         )
         if resume_instance:
             instance = resume_instance
+            task.set_resume_data(resume_instance.resume_data or {})
         else:
             resp = await asyncio.to_thread(
                 TasksApi(self._db_api_client).create_task_instance,

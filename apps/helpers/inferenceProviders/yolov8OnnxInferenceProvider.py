@@ -56,6 +56,7 @@ class YOLOv8ONNXInferenceProvider(InferenceProvider):
             x_min, y_min, x_max, y_max = map(float, det[:4])
             confidence = float(det[4])
             class_id = int(det[5])
+            # TODO: Why is class_id + 1? Is this a data error or a code error?
             class_name = self.class_names[class_id + 1] if self.class_names else None
 
             # Convert absolute xyxy to relative x1y1wh for BBox

@@ -71,7 +71,7 @@ class FfmpegImageProvider(ImageProvider):
             if not stream_found:
                 raise TimeoutError(f"Timed out waiting for '{self._relayed_name}' to appear in relay list")
             stream_url = (
-                f"rtsp://{APPS_CONFIG['media_mtx_rtsp'].host}:{APPS_CONFIG['media_mtx_rtsp'].port}/{self._relayed_name}"
+                f"rtsp://{APPS_CONFIG[APPS.MEDIA_MTX_RTSP].host}:{APPS_CONFIG[APPS.MEDIA_MTX_RTSP].port}/{self._relayed_name}"
             )
         else:
             stream_url = self._video_path

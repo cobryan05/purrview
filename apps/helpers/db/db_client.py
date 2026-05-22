@@ -116,9 +116,8 @@ class DbClient:
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, lambda: alembic_command.upgrade(alembic_cfg, "head"))
 
-        await self._seed_system_tags()
-
-        # Sync labels from json if table is currently empty
+        # Count labels and tags before seeding system tags so the zero-check
+        # reflects only user-defined data (system tag seeding would inflate tag_count).
         async with self._async_session_maker() as session:
             count_statement = select(func.count()).select_from(Label)
             result = await session.exec(count_statement)
@@ -127,6 +126,8 @@ class DbClient:
             count_statement = select(func.count()).select_from(Tag)
             result = await session.exec(count_statement)
             tag_count = result.one() or 0
+
+        await self._seed_system_tags()
 
         if label_count == 0:
             await self.sync_labels_from_json()

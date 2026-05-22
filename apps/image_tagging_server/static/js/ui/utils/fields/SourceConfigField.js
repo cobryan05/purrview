@@ -2,8 +2,11 @@ import { DropDownField } from './DropDownField.js';
 import { Field } from './Field.js';
 import { SchemaField } from './SchemaField.js';
 import { TextField } from './TextField.js';
-import { fetchImageProviderList, fetchImageProviderSchema } from '/app-static/js/shared/api/sources.js';
+import { fetchImageProviderList, fetchImageProviderSchema, fetchSourceList } from '/app-static/js/shared/api/sources.js';
 import { Logger } from '/app-static/js/ui/utils/index.js';
+import { pickExistingModal } from '/app-static/js/ui/utils/pickExistingModal.js';
+
+const FROM_EXISTING_SENTINEL = '__from_existing__';
 export class SourceConfigField extends Field {
   constructor({ ...rest }) {
     super(rest);
@@ -17,10 +20,28 @@ export class SourceConfigField extends Field {
     instance._textField = new TextField({ value: sourceName, placeholder: 'Enter new source name' });
 
     const imageProviders = await fetchImageProviderList();
+    const providerOptions = [
+      { key: FROM_EXISTING_SENTINEL, text: 'From Existing...' },
+      ...imageProviders,
+    ];
     instance._dropDownField = new DropDownField({
-      options: imageProviders,
+      options: providerOptions,
       value: provider,
       onChange: async (newProvider) => {
+        if (newProvider === FROM_EXISTING_SENTINEL) {
+          try {
+            const sources = await fetchSourceList();
+            const picked = await pickExistingModal({ items: sources, getLabel: s => s.name });
+            if (picked) {
+              await instance._prefillFrom(picked);
+            } else {
+              instance._dropDownField.setValue('');
+            }
+          } catch (err) {
+            Logger.error('Failed to copy from existing source:', err);
+          }
+          return;
+        }
         try {
           const fetchedSchema = await fetchImageProviderSchema(newProvider);
           instance._schemaField = await SchemaField.create({ schema: fetchedSchema });
@@ -42,6 +63,18 @@ export class SourceConfigField extends Field {
     instance._schemaField = await SchemaField.create({ schema: fetchedSchema, values: providerParams });
 
     return instance;
+  }
+
+  async _prefillFrom({ typename: provider, params: providerParams, name }) {
+    this._dropDownField.setValue(provider);
+    this._textField.setValue(`Copy of ${name}`);
+    try {
+      const schema = await fetchImageProviderSchema(provider);
+      this._schemaField = await SchemaField.create({ schema, values: providerParams });
+      this._rerenderSchema();
+    } catch (err) {
+      Logger.error('Failed to load schema for copied source:', err);
+    }
   }
 
   // Helper to re-render the schemaField in the DOM
@@ -101,6 +134,7 @@ export class SourceConfigField extends Field {
 
   getValue() {
     return {
+      uuid: this._uuid,
       sourceName: this._textField.getValue(),
       provider: this._dropDownField.getValue(),
       providerParams: this._schemaField.getValue()

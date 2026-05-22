@@ -2,8 +2,11 @@ import { DropDownField } from './DropDownField.js';
 import { Field } from './Field.js';
 import { SchemaField } from './SchemaField.js';
 import { TextField } from './TextField.js';
-import { fetchTaskTypeList, fetchTaskTypeSchemas } from '/app-static/js/shared/api/tasks.js';
+import { fetchTaskConfigs, fetchTaskTypeList, fetchTaskTypeSchemas } from '/app-static/js/shared/api/tasks.js';
 import { Logger } from '/app-static/js/ui/utils/index.js';
+import { pickExistingModal } from '/app-static/js/ui/utils/pickExistingModal.js';
+
+const FROM_EXISTING_SENTINEL = '__from_existing__';
 
 export class TaskConfigField extends Field {
   constructor({ ...rest }) {
@@ -23,17 +26,34 @@ export class TaskConfigField extends Field {
     instance._textField = new TextField({ value: name, placeholder: 'Enter new config name' });
     instance._schemaField = await SchemaField.create({ schema: schema ?? {}, values: instance._value || {} });
     const taskTypes = await fetchTaskTypeList();
+    const taskTypeOptions = [
+      { key: FROM_EXISTING_SENTINEL, text: 'From Existing...' },
+      ...taskTypes,
+    ];
 
-    // Initialize DropDownField with onChange
     instance._dropDownField = new DropDownField({
-      options: taskTypes,
+      options: taskTypeOptions,
       value: typename,
       onChange: async (newTypename) => {
+        if (newTypename === FROM_EXISTING_SENTINEL) {
+          try {
+            const configs = await fetchTaskConfigs();
+            const picked = await pickExistingModal({ items: configs, getLabel: c => c.name });
+            if (picked) {
+              await instance._prefillFrom(picked);
+            } else {
+              instance._dropDownField.setValue('');
+            }
+          } catch (err) {
+            Logger.error('Failed to copy from existing task config:', err);
+          }
+          return;
+        }
         try {
           const newSchema = await fetchTaskTypeSchemas([newTypename]).then(schemas => schemas.get(newTypename));
           instance._schemaField = await SchemaField.create({
             schema: newSchema,
-            values: instance._schemaField.getValue() // preserve current values
+            values: instance._schemaField.getValue()
           });
           await instance._rerenderSchema();
         } catch (err) {
@@ -43,6 +63,18 @@ export class TaskConfigField extends Field {
     });
 
     return instance;
+  }
+
+  async _prefillFrom({ typename, params_json, name }) {
+    this._dropDownField.setValue(typename);
+    this._textField.setValue(`Copy of ${name}`);
+    try {
+      const schema = await fetchTaskTypeSchemas([typename]).then(s => s.get(typename));
+      this._schemaField = await SchemaField.create({ schema, values: params_json });
+      await this._rerenderSchema();
+    } catch (err) {
+      Logger.error('Failed to load schema for copied task config:', err);
+    }
   }
 
   // Helper to re-render the schemaField in the DOM

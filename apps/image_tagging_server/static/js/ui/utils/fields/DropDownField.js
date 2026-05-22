@@ -6,6 +6,12 @@ import { Field } from './Field.js';
 export class DropDownField extends Field {
   constructor(params = {}) {
     super(params);
+    this._el = null;
+  }
+
+  setValue(value) {
+    this._value = value;
+    if (this._el) this._el.value = value;
   }
 
   async renderEdit() {
@@ -45,6 +51,7 @@ export class DropDownField extends Field {
       this._onChange?.(this._value);
     });
 
+    this._el = select;
     return select;
   }
 

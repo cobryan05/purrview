@@ -19,7 +19,7 @@ export function renderTaskConfigs({ target = 'task-config-list', onEdit, onDelet
         text: 'Delete',
         emoji: '🗑️',
         onClick: async ({ field }) => {
-          if (!window.confirm(`Are you sure you want to delete "${field.getValue().text}"?`)) return;
+          if (!window.confirm(`Are you sure you want to delete "${field.getValue().name}"?`)) return;
           try {
             await deleteTaskConfigs({ uuids: [configUuid] });
             onDelete?.();
