@@ -4,6 +4,7 @@ import asyncio
 import logging
 import sys
 from abc import ABC, abstractmethod
+from collections import deque
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Optional
 
@@ -31,6 +32,7 @@ class Task(ABC):
         self._progress: float = 0.0
         self._results: dict[str, Any] = {}
         self._resume_data: dict[str, Any] = {}
+        self._log_lines: deque[str] = deque(maxlen=100)
         self._task_done: asyncio.Event = asyncio.Event()
         self._cancel_flag: asyncio.Event = asyncio.Event()
         self._pause_flag: asyncio.Event = asyncio.Event()
@@ -93,15 +95,19 @@ class Task(ABC):
 
     async def _execute(self) -> None:
         try:
+            self.log("Initializing")
             await self._init(params=self._params, resume_data=self._resume_data)
             self._status = TaskStatus.RUNNING
+            self.log("Running")
             results = await self._run()
             self._results = {"status": TaskStatus.COMPLETED, "data": results}
             self._status = TaskStatus.COMPLETED
+            self.log("Completed")
         except Exception as e:
             self._status = TaskStatus.ERROR
             logger.error(e, exc_info=True)
             self._results = {"status": TaskStatus.ERROR, "message": str(e)}
+            self.log(f"Error: {e}")
         finally:
             self._progress = 100.0
             await self._deinit()
@@ -110,6 +116,15 @@ class Task(ABC):
     def _update_progress(self, percent: float):
         """Store progress"""
         self._progress = percent
+
+    def log(self, msg: str) -> None:
+        """Append a message to the in-memory log ring buffer and emit to logger."""
+        logger.info(msg)
+        self._log_lines.append(msg)
+
+    def get_log_lines(self) -> list[str]:
+        """Return a copy of recent log lines."""
+        return list(self._log_lines)
 
     async def start(self) -> None:
         """Execute the task. Should periodically update progress and save resume data."""

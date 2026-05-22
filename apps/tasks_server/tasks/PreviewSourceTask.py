@@ -22,20 +22,25 @@ class PreviewSourceTask(Task):
         self._provider: str = config.get("provider", "")
         self._provider_params: dict[str, Any] = config.get("provider_params", {})
         self._params[Task.InternalKeys.ONESHOT_RESULT] = True
+        self.log(f"Initializing preview for provider: {self._provider}")
 
     async def _run(self) -> dict[str, Any]:
         """Run the main logic of the task."""
         ret = {}
         status: str = "success"
         self._status_msg = "Initializing Provider"
+        self.log("Initializing provider")
         provider = image_provider_registry[self._provider](**self._provider_params)
         if not provider:
             status = "error"
+            self.log("Error: provider not found")
         else:
             self._status_msg = "Starting Provider"
+            self.log("Starting provider")
 
             await asyncio.create_task(provider.start())
             self._status_msg = "Waiting for image"
+            self.log("Waiting for image")
 
             cancel_task = asyncio.create_task(self._cancel_flag.wait())
             image_task = asyncio.create_task(provider.getNextImage())
@@ -50,12 +55,15 @@ class PreviewSourceTask(Task):
                     try:
                         image_base64 = base64_encode_png(image_task.result().image)
                         ret["image"] = image_base64
+                        self.log("Image received successfully")
                     except Exception:
                         logger.exception(f"Error fetching image")
                         self._status_msg = "Error"
+                        self.log("Error fetching image")
                         status = "error"
                 elif cancel_task in done:
                     self._status_msg = "Canceled"
+                    self.log("Task canceled")
                     status = "canceled"
 
             finally:

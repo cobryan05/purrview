@@ -40,6 +40,7 @@ class TargetLabel:
 class CollectTrainingImagesTask(Task):
     async def _init(self, params: dict[str, Any], resume_data: Optional[dict[str, Any]]) -> None:
         self._status_msg: str = "Initializing"
+        self.log("Initializing task parameters")
         self._source_uuid: str = params["source_uuid"]
         self._output_dir: str = params["output_dir"]
 
@@ -67,6 +68,7 @@ class CollectTrainingImagesTask(Task):
 
     async def _run(self) -> dict[str, Any]:
         self._status_msg = "Looking up system tags"
+        self.log("Looking up system tags")
         db_api_client = self._manager.get_db_api_client()
         inference_api_client = self._manager.get_inference_api_client()
 
@@ -78,10 +80,12 @@ class CollectTrainingImagesTask(Task):
             raise RuntimeError("'Unverified' system tag not found in DB")
 
         self._status_msg = "Getting image provider"
+        self.log(f"Getting image provider for source {self._source_uuid}")
         source_helper = SourceHelper(db_api_client)
         provider = source_helper.get_image_provider(self._source_uuid)
 
         self._status_msg = "Pinning models"
+        self.log(f"Pinning {len(self._model_names)} model(s)")
         models_api = ModelsApi(inference_api_client)
         pin_ids: dict[str, Optional[str]] = {}
         for name in self._model_names:
@@ -92,8 +96,10 @@ class CollectTrainingImagesTask(Task):
                     PinModelPayload(model_name=name, duration=3600),
                 )
                 pin_ids[name] = resp.pin_id
+                self.log(f"Pinned model: {name}")
             except Exception:
                 logger.exception(f"Failed to pin model {name}")
+                self.log(f"Failed to pin model: {name}")
                 pin_ids[name] = None
 
         images_api = ImagesApi(db_api_client)
@@ -101,6 +107,7 @@ class CollectTrainingImagesTask(Task):
         files_root = Path(os.environ.get("FILES_ROOT", "/app/image_datasets"))
 
         self._status_msg = "Running"
+        self.log(f"Starting collection (resuming from {self._images_saved} images)")
         await provider.start()
         try:
             while not self._cancel_flag.is_set():
@@ -142,6 +149,7 @@ class CollectTrainingImagesTask(Task):
 
                 if not cv2.imwrite(str(abs_path), provided.image):
                     logger.warning(f"Failed to write image to {abs_path}")
+                    self.log(f"Failed to write image: {filename}")
                     continue
 
                 boxes = [
@@ -166,10 +174,12 @@ class CollectTrainingImagesTask(Task):
                     )
                 except Exception:
                     logger.exception(f"Failed to save metadata for {rel_path}")
+                    self.log(f"Failed to save metadata: {filename}")
                     continue
 
                 self._images_saved += 1
                 self._status_msg = f"Saved {self._images_saved} images"
+                self.log(f"Saved {filename} ({self._images_saved} total)")
                 self._update_progress(self._images_saved)
 
                 if self._data_req_flag.is_set():

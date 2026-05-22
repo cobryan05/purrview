@@ -339,6 +339,7 @@ class TaskInstanceRead(BaseModel):
     resume_data: Optional[Dict[str, Any]] = Field(default=None, alias="resume_data_json")
     result: Optional[Dict[str, Any]] = Field(default=None, alias="result_json")
     error_message: Optional[str] = None
+    created_at: Optional[datetime] = None
 
     model_config = ConfigDict(from_attributes=True, populate_by_name=True)
 

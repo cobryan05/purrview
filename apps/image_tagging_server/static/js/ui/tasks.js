@@ -1,10 +1,9 @@
-import { cancelTasks, createTaskConfig, deleteTaskConfigs, deleteTasks, fetchTaskConfigs, fetchTasksStatus, startTask, updateTaskConfig } from '/app-static/js/shared/api/tasks.js';
+import { cancelTasks, createTaskConfig, deleteTaskConfigs, deleteTasks, fetchTaskConfigs, fetchTasksStatus, pauseTasks, resumeTasks, startTask, updateTaskConfig } from '/app-static/js/shared/api/tasks.js';
 import { ActiveTaskField, EditableField, TaskConfigField } from '/app-static/js/ui/utils/fields/index.js';
 import { createGenericRow, Logger, toast } from '/app-static/js/ui/utils/index.js';
+
 /**
  * Renders the task configs (left column).
- * @param {object} params
- * @param {string} params.target - ID of the container
  */
 export function renderTaskConfigs({ target = 'task-config-list', onEdit, onDelete, onStartTask, onCreateTask, refresh = null }) {
   const container = document.getElementById(target);
@@ -102,27 +101,27 @@ export function renderTaskConfigs({ target = 'task-config-list', onEdit, onDelet
 
 /**
  * Renders the active tasks (right column).
- * @param {object} params
- * @param {string} params.target - ID of the container
  */
 export function renderActiveTasks({ target = 'active-tasks-list', refresh = null }) {
   const container = document.getElementById(target);
   if (!container) return;
   container.innerHTML = '';
 
-  const configListDiv = document.createElement('div');
-  container.appendChild(configListDiv);
+  const listDiv = document.createElement('div');
+  container.appendChild(listDiv);
 
   /** @type {Promise<import('@web_api').TasksInfoResponse>} */
   fetchTasksStatus().then(response => {
     const { tasks } = response;
 
     Object.entries(tasks || {}).forEach(([taskId, task]) => {
+      const status = task.instance?.status;
+
       const deleteButton = {
         text: 'Delete',
         emoji: '🗑️',
-        onClick: async ({ field }) => {
-          if (!window.confirm(`Are you sure you want to delete "${taskId}"?`)) return;
+        onClick: async () => {
+          if (!window.confirm(`Delete task ${task.config?.name ?? taskId}?`)) return;
           try {
             await deleteTasks({ taskUuids: [taskId] });
             refresh?.();
@@ -131,25 +130,69 @@ export function renderActiveTasks({ target = 'active-tasks-list', refresh = null
           }
         }
       };
-      const stopButton = {
-        text: 'Stop',
+
+      const cancelButton = {
+        text: 'Cancel',
         emoji: '⏹️',
         onClick: async () => {
           try {
             await cancelTasks({ taskUuids: [taskId] });
             refresh?.();
           } catch (error) {
-            toast(error.message || 'Failed to stop task', 5000, 'error');
+            toast(error.message || 'Failed to cancel task', 5000, 'error');
           }
         }
       };
+
+      const pauseButton = {
+        text: 'Pause',
+        emoji: '⏸️',
+        onClick: async () => {
+          try {
+            await pauseTasks({ taskUuids: [taskId] });
+            refresh?.();
+          } catch (error) {
+            toast(error.message || 'Failed to pause task', 5000, 'error');
+          }
+        }
+      };
+
+      const resumeButton = {
+        text: 'Resume',
+        emoji: '▶️',
+        onClick: async () => {
+          try {
+            await resumeTasks({ taskUuids: [taskId] });
+            refresh?.();
+          } catch (error) {
+            toast(error.message || 'Failed to resume task', 5000, 'error');
+          }
+        }
+      };
+
+      let leftButtons = [];
+      let rightButtons = [];
+
+      if (status === 'running') {
+        leftButtons = [pauseButton];
+        rightButtons = [cancelButton];
+      } else if (status === 'pending') {
+        rightButtons = [cancelButton];
+      } else if (status === 'paused') {
+        leftButtons = [deleteButton];
+        rightButtons = [resumeButton];
+      } else {
+        // completed, error
+        leftButtons = [deleteButton];
+      }
+
       ActiveTaskField.create({ value: { ...task } }).then(fieldInstance => {
         const row = createGenericRow({
           field: fieldInstance,
-          leftButtons: [deleteButton],
-          rightButtons: [stopButton]
+          leftButtons,
+          rightButtons,
         });
-        configListDiv.appendChild(row);
+        listDiv.appendChild(row);
       });
     });
   });
