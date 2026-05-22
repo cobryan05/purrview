@@ -1,7 +1,12 @@
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Annotated, Any, Dict, List, Optional
+from typing import TypeAlias
 from uuid import uuid4
+
+TaskParams: TypeAlias = Dict[str, Any]
+TaskResumeData: TypeAlias = Dict[str, Any]
+TaskResultData: TypeAlias = Dict[str, Any]
 
 
 class ImageLabelStatus(str, Enum):

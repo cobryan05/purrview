@@ -5,8 +5,7 @@ import inference_client
 import tasks_client
 import uvicorn
 
-from apps import APPS, APPS_CONFIG, DB_DIR
-from apps.helpers.db.db_client import DbClient
+from apps import APPS, APPS_CONFIG
 
 from .manager import Manager
 from .web import WebApp
@@ -28,12 +27,9 @@ tasks_api_client = tasks_client.ApiClient(tasks_client_conf)
 db_client_conf = db_client.Configuration(f"http://{db_host}:{db_port}")
 db_api_client = db_client.ApiClient(db_client_conf)
 
-legacy_db_client = DbClient(DB_DIR)
-
 manager = Manager(
     inference_api_client=inference_api_client,
     db_api_client=db_api_client,
-    legacy_db_client=legacy_db_client,
     tasks_api_client=tasks_api_client
 )
 web_app = WebApp(app_name=config.name, manager=manager)

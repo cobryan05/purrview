@@ -27,7 +27,15 @@ from apps.helpers.db.types import (
     Source,
     Tag,
     TagUpdate,
+    TaskConfig,
+    TaskConfigRead,
+    TaskInstance,
+    TaskInstanceRead,
+    TaskParams,
+    TaskResultData,
+    TaskResumeData,
 )
+from apps.helpers.consts import TaskStatus
 from apps.helpers.fileUtils import get_safe_path
 from apps.helpers.imageProviders.Registry import image_provider_registry
 from apps.helpers.types import (
@@ -444,6 +452,78 @@ class Manager:
                 entries.append(FileEntry(name=p.name, type="dir" if p.is_dir() else "file", path=rel_str))
 
         return entries
+
+    ################################################################################
+    # TASK CONFIGS API
+    ################################################################################
+
+    async def create_task_config(
+        self,
+        name: str,
+        typename: str,
+        params: TaskParams,
+        description: Optional[str] = None,
+    ) -> TaskConfig:
+        return await self._db_client.add_task_config(name=name, typename=typename, params=params, description=description)
+
+    async def list_task_configs(
+        self,
+        config_uuids: Optional[List[str]] = None,
+        typename: Optional[str] = None,
+        name: Optional[str] = None,
+    ) -> Dict[str, TaskConfig]:
+        return await self._db_client.get_task_configs(config_uuids=config_uuids, typename=typename, name=name)
+
+    async def update_task_config(
+        self,
+        config_uuid: str,
+        name: Optional[str] = None,
+        typename: Optional[str] = None,
+        params: Optional[TaskParams] = None,
+        description: Optional[str] = None,
+        marked_for_delete: Optional[bool] = None,
+    ) -> None:
+        await self._db_client.update_task_config(
+            config_uuid=config_uuid,
+            name=name,
+            typename=typename,
+            params=params,
+            description=description,
+            marked_for_delete=marked_for_delete,
+        )
+
+    async def delete_task_configs(self, config_uuids: List[str]) -> None:
+        await self._db_client.delete_task_config(config_uuids)
+
+    ################################################################################
+    # TASK INSTANCES API
+    ################################################################################
+
+    async def create_task_instance(self, config_uuid: str) -> TaskInstance:
+        return await self._db_client.insert_new_active_task(config_uuid)
+
+    async def list_task_instances(
+        self,
+        task_uuids: Optional[List[str]] = None,
+        resumable: Optional[bool] = None,
+    ) -> List[TaskInstance]:
+        return await self._db_client.get_tasks(task_uuid=task_uuids, resumable=resumable)
+
+    async def delete_task_instances(self, task_uuids: List[str]) -> None:
+        await self._db_client.delete_active_tasks(task_uuids)
+
+    async def set_task_status(self, instance_uuid: str, status: TaskStatus) -> None:
+        await self._db_client.set_task_status(instance_uuid, status)
+
+    async def set_task_result(self, instance_uuid: str, result: TaskResultData) -> None:
+        await self._db_client.set_task_result(instance_uuid, result)
+
+    async def set_task_resume_data(self, instance_uuid: str, resume_data: TaskResumeData) -> None:
+        await self._db_client.set_task_resume_data(instance_uuid, resume_data)
+
+    async def get_task_results(self, task_uuids: List[str]) -> Dict[str, TaskResultData]:
+        results = await self._db_client.get_task_results(task_uuids)
+        return results or {}
 
     async def open_file(self, rel_path: str) -> Optional[Tuple[aiofiles.threadpool.binary.AsyncBufferedReader, str]]:
         """

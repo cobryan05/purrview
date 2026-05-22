@@ -1,4 +1,5 @@
 import asyncio
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -16,8 +17,8 @@ async def test_start_task_returns_task_uuid(http_client):
     assert data["taskUuid"] == TASK_UUID
 
 
-async def test_start_task_unknown_config_returns_failure(http_client, legacy_db):
-    legacy_db.get_task_configs.return_value = {}
+async def test_start_task_unknown_config_returns_failure(http_client, tasks_api_mock):
+    tasks_api_mock.list_task_configs.return_value = MagicMock(configs={})
     resp = await http_client.post(
         "/api/tasks/instances/start",
         json={"configUuid": "nonexistent-uuid"},

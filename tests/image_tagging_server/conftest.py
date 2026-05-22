@@ -9,7 +9,7 @@ from apps.image_tagging_server.web import WebApp
 
 
 @pytest.fixture
-def manager(tmp_path):
+def manager():
     inf_api = MagicMock()
     inf_api.configuration.host = "http://inference:8001"
     tasks_api = MagicMock()
@@ -17,14 +17,10 @@ def manager(tmp_path):
     db_api = MagicMock()
     db_api.configuration.host = "http://db:8003"
 
-    from apps.helpers.db.db_client import DbClient
-    legacy_db = DbClient(db_dir=tmp_path)
-
     return Manager(
         inference_api_client=inf_api,
         tasks_api_client=tasks_api,
         db_api_client=db_api,
-        legacy_db_client=legacy_db,
     )
 
 

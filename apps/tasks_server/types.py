@@ -3,14 +3,15 @@ from typing import Optional
 
 from pydantic import BaseModel
 
-from apps.helpers.db.types import TaskConfig, TaskConfigRead, TaskInstance, TaskInstanceRead
+import db_client.models as db_models
+from apps.helpers.db.types import TaskConfigRead, TaskInstanceRead
 from apps.tasks_server.tasks.Task import Task
 
 
 @dataclass
 class TaskInfo:
-    config: TaskConfig
-    instance: Optional[TaskInstance] = None
+    config: db_models.TaskConfigRead
+    instance: Optional[db_models.TaskInstanceRead] = None
     task: Optional[Task] = None
 
 

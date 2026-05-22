@@ -4,9 +4,9 @@ import logging
 import mimetypes
 import sys
 from contextlib import asynccontextmanager
-from typing import Any, List, Optional
+from typing import Any, Dict, List, Optional
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -14,7 +14,7 @@ from pydantic import ConfigDict, Field
 from pydantic.alias_generators import to_camel
 
 from apps.db_server.manager import Manager
-from apps.helpers.consts import ApiTags, JsonKeys, JsonValues
+from apps.helpers.consts import ApiTags, JsonKeys, JsonValues, TaskStatus
 from apps.helpers.db.db_client import UNVERIFIED_TAG_UUID
 from apps.helpers.db.types import (
     BBoxUpdate,
@@ -29,6 +29,11 @@ from apps.helpers.db.types import (
     Tag,
     TagBase,
     TagUpdate,
+    TaskConfigRead,
+    TaskInstanceRead,
+    TaskParams,
+    TaskResultData,
+    TaskResumeData,
 )
 from apps.helpers.types import (
     Base64Image,
@@ -237,6 +242,75 @@ class GetImageLabelsResponse(StatusResponse):
 
 class ReviewQueueResponse(StatusResponse):
     images: List[ImageRecordRead] = Field(default_factory=list)
+
+
+########
+# Task Configs
+########
+class CreateTaskConfigPayload(ApiPayload):
+    name: str
+    typename: str
+    params: TaskParams = Field(default_factory=dict)
+    description: Optional[str] = None
+
+
+class TaskConfigReadResponse(StatusResponse):
+    config: Optional[TaskConfigRead] = None
+
+
+class ListTaskConfigsResponse(StatusResponse):
+    configs: dict[str, TaskConfigRead] = Field(default_factory=dict)
+
+
+class UpdateTaskConfigPayload(ApiPayload):
+    name: Optional[str] = None
+    typename: Optional[str] = None
+    params: Optional[TaskParams] = None
+    description: Optional[str] = None
+    marked_for_delete: Optional[bool] = None
+
+
+class DeleteTaskConfigsPayload(ApiPayload):
+    config_uuids: List[str]
+
+
+########
+# Task Instances
+########
+class CreateTaskInstancePayload(ApiPayload):
+    config_uuid: str
+
+
+class TaskInstanceReadResponse(StatusResponse):
+    instance: Optional[TaskInstanceRead] = None
+
+
+class ListTaskInstancesResponse(StatusResponse):
+    instances: List[TaskInstanceRead] = Field(default_factory=list)
+
+
+class DeleteTaskInstancesPayload(ApiPayload):
+    task_uuids: List[str]
+
+
+class SetTaskStatusPayload(ApiPayload):
+    status: TaskStatus
+
+
+class SetTaskResultPayload(ApiPayload):
+    result: TaskResultData = Field(default_factory=dict)
+
+
+class SetTaskResumeDataPayload(ApiPayload):
+    resume_data: TaskResumeData = Field(default_factory=dict)
+
+
+class GetTaskResultsPayload(ApiPayload):
+    task_uuids: List[str]
+
+
+class GetTaskResultsResponse(StatusResponse):
+    results: Dict[str, TaskResultData] = Field(default_factory=dict)
 
 
 class WebApp:
@@ -742,3 +816,196 @@ class WebApp:
             except Exception as e:
                 logger.exception("Failed to fetch review queue")
                 return ReviewQueueResponse(status=JsonValues.FAILURE, message=str(e))
+
+        ################################################################################
+        # Task Configs API
+        ################################################################################
+
+        @self._app.post(
+            "/api/task-configs",
+            response_model=TaskConfigReadResponse,
+            tags=[ApiTags.TASKS],
+            operation_id="create_task_config",
+        )
+        async def create_task_config(payload: CreateTaskConfigPayload) -> TaskConfigReadResponse:
+            try:
+                config = await self._manager.create_task_config(
+                    name=payload.name,
+                    typename=payload.typename,
+                    params=payload.params,
+                    description=payload.description,
+                )
+                return TaskConfigReadResponse(status=JsonValues.SUCCESS, config=TaskConfigRead.model_validate(config))
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return TaskConfigReadResponse(status=JsonValues.FAILURE, message=str(e))
+
+        @self._app.get(
+            "/api/task-configs",
+            response_model=ListTaskConfigsResponse,
+            tags=[ApiTags.TASKS],
+            operation_id="list_task_configs",
+        )
+        async def list_task_configs(
+            uuids: List[str] = Query(default=[]),
+        ) -> ListTaskConfigsResponse:
+            try:
+                configs = await self._manager.list_task_configs(config_uuids=uuids or None)
+                return ListTaskConfigsResponse(
+                    status=JsonValues.SUCCESS,
+                    configs={uuid: TaskConfigRead.model_validate(c) for uuid, c in configs.items()},
+                )
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return ListTaskConfigsResponse(status=JsonValues.FAILURE, message=str(e))
+
+        @self._app.patch(
+            "/api/task-configs/{config_uuid}",
+            response_model=StatusResponse,
+            tags=[ApiTags.TASKS],
+            operation_id="update_task_config",
+        )
+        async def update_task_config(config_uuid: str, payload: UpdateTaskConfigPayload) -> StatusResponse:
+            try:
+                await self._manager.update_task_config(
+                    config_uuid=config_uuid,
+                    name=payload.name,
+                    typename=payload.typename,
+                    params=payload.params,
+                    description=payload.description,
+                    marked_for_delete=payload.marked_for_delete,
+                )
+                return StatusResponse(status=JsonValues.SUCCESS)
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return StatusResponse(status=JsonValues.FAILURE, message=str(e))
+
+        @self._app.post(
+            "/api/task-configs/delete",
+            response_model=StatusResponse,
+            tags=[ApiTags.TASKS],
+            operation_id="delete_task_configs",
+        )
+        async def delete_task_configs(payload: DeleteTaskConfigsPayload) -> StatusResponse:
+            try:
+                await self._manager.delete_task_configs(payload.config_uuids)
+                return StatusResponse(status=JsonValues.SUCCESS)
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return StatusResponse(status=JsonValues.FAILURE, message=str(e))
+
+        ################################################################################
+        # Task Instances API
+        ################################################################################
+
+        @self._app.post(
+            "/api/task-instances",
+            response_model=TaskInstanceReadResponse,
+            tags=[ApiTags.TASKS],
+            operation_id="create_task_instance",
+        )
+        async def create_task_instance(payload: CreateTaskInstancePayload) -> TaskInstanceReadResponse:
+            try:
+                instance = await self._manager.create_task_instance(payload.config_uuid)
+                return TaskInstanceReadResponse(
+                    status=JsonValues.SUCCESS,
+                    instance=TaskInstanceRead.model_validate(instance),
+                )
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return TaskInstanceReadResponse(status=JsonValues.FAILURE, message=str(e))
+
+        @self._app.get(
+            "/api/task-instances",
+            response_model=ListTaskInstancesResponse,
+            tags=[ApiTags.TASKS],
+            operation_id="list_task_instances",
+        )
+        async def list_task_instances(
+            uuids: List[str] = Query(default=[]),
+            resumable: Optional[bool] = None,
+        ) -> ListTaskInstancesResponse:
+            try:
+                instances = await self._manager.list_task_instances(
+                    task_uuids=uuids or None,
+                    resumable=resumable,
+                )
+                return ListTaskInstancesResponse(
+                    status=JsonValues.SUCCESS,
+                    instances=[TaskInstanceRead.model_validate(i) for i in instances],
+                )
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return ListTaskInstancesResponse(status=JsonValues.FAILURE, message=str(e))
+
+        @self._app.post(
+            "/api/task-instances/delete",
+            response_model=StatusResponse,
+            tags=[ApiTags.TASKS],
+            operation_id="delete_task_instances",
+        )
+        async def delete_task_instances(payload: DeleteTaskInstancesPayload) -> StatusResponse:
+            try:
+                await self._manager.delete_task_instances(payload.task_uuids)
+                return StatusResponse(status=JsonValues.SUCCESS)
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return StatusResponse(status=JsonValues.FAILURE, message=str(e))
+
+        @self._app.patch(
+            "/api/task-instances/{instance_uuid}/status",
+            response_model=StatusResponse,
+            tags=[ApiTags.TASKS],
+            operation_id="set_task_instance_status",
+        )
+        async def set_task_instance_status(instance_uuid: str, payload: SetTaskStatusPayload) -> StatusResponse:
+            try:
+                await self._manager.set_task_status(instance_uuid, payload.status)
+                return StatusResponse(status=JsonValues.SUCCESS)
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return StatusResponse(status=JsonValues.FAILURE, message=str(e))
+
+        @self._app.patch(
+            "/api/task-instances/{instance_uuid}/result",
+            response_model=StatusResponse,
+            tags=[ApiTags.TASKS],
+            operation_id="set_task_instance_result",
+        )
+        async def set_task_instance_result(instance_uuid: str, payload: SetTaskResultPayload) -> StatusResponse:
+            try:
+                await self._manager.set_task_result(instance_uuid, payload.result)
+                return StatusResponse(status=JsonValues.SUCCESS)
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return StatusResponse(status=JsonValues.FAILURE, message=str(e))
+
+        @self._app.patch(
+            "/api/task-instances/{instance_uuid}/resume-data",
+            response_model=StatusResponse,
+            tags=[ApiTags.TASKS],
+            operation_id="set_task_instance_resume_data",
+        )
+        async def set_task_instance_resume_data(
+            instance_uuid: str, payload: SetTaskResumeDataPayload
+        ) -> StatusResponse:
+            try:
+                await self._manager.set_task_resume_data(instance_uuid, payload.resume_data)
+                return StatusResponse(status=JsonValues.SUCCESS)
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return StatusResponse(status=JsonValues.FAILURE, message=str(e))
+
+        @self._app.post(
+            "/api/task-instances/results",
+            response_model=GetTaskResultsResponse,
+            tags=[ApiTags.TASKS],
+            operation_id="get_task_results",
+        )
+        async def get_task_results(payload: GetTaskResultsPayload) -> GetTaskResultsResponse:
+            try:
+                results = await self._manager.get_task_results(payload.task_uuids)
+                return GetTaskResultsResponse(status=JsonValues.SUCCESS, results=results)
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return GetTaskResultsResponse(status=JsonValues.FAILURE, message=str(e))

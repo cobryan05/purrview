@@ -1,12 +1,12 @@
 import uuid
 from typing import Any, Optional
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 from httpx import ASGITransport, AsyncClient
 
+import db_client.models as db_models
 from apps.helpers.consts import TaskStatus
-from apps.helpers.db.types import TaskConfig, TaskInstance
 from apps.tasks_server.manager import Manager
 from apps.tasks_server.tasks.Registry import register_task, task_registry
 from apps.tasks_server.tasks.Task import Task
@@ -35,40 +35,46 @@ TASK_UUID = str(uuid.uuid4())
 
 
 @pytest.fixture
-def legacy_db():
-    mock = AsyncMock()
-    mock_config = TaskConfig(uuid=CONFIG_UUID, name="test-config", typename="TestTask", params_json={})
-    mock.add_task_config.return_value = mock_config
-    mock.get_task_configs.return_value = {CONFIG_UUID: mock_config}
-    mock.insert_new_active_task.return_value = TaskInstance(
-        uuid=TASK_UUID, config_uuid=CONFIG_UUID, status=TaskStatus.PENDING
+def tasks_api_mock():
+    mock = MagicMock()
+    mock_config = db_models.TaskConfigRead(
+        uuid=CONFIG_UUID,
+        name="test-config",
+        typename="TestTask",
+        params_json={},
+        marked_for_delete=False,
+        description=None,
     )
-    mock.get_tasks.return_value = []
-    mock.delete_active_tasks.return_value = None
-    mock.set_task_status.return_value = None
-    mock.set_task_result.return_value = None
-    mock.set_task_resume_data.return_value = None
-    mock.get_task_results.return_value = {}
+    mock_instance = db_models.TaskInstanceRead(
+        uuid=TASK_UUID,
+        config_uuid=CONFIG_UUID,
+        status=TaskStatus.PENDING,
+        resume_data_json=None,
+        result_json=None,
+        error_message=None,
+    )
+    mock.create_task_config.return_value = MagicMock(config=mock_config)
+    mock.list_task_configs.return_value = MagicMock(configs={CONFIG_UUID: mock_config})
+    mock.update_task_config.return_value = MagicMock()
+    mock.delete_task_configs.return_value = MagicMock()
+    mock.create_task_instance.return_value = MagicMock(instance=mock_instance)
+    mock.list_task_instances.return_value = MagicMock(instances=[])
+    mock.delete_task_instances.return_value = MagicMock()
+    mock.set_task_instance_status.return_value = MagicMock()
+    mock.set_task_instance_result.return_value = MagicMock()
+    mock.set_task_instance_resume_data.return_value = MagicMock()
+    mock.get_task_results.return_value = MagicMock(results={})
     return mock
 
 
 @pytest.fixture
-def mock_api_clients():
+def manager(tasks_api_mock):
     db_api = MagicMock()
     db_api.configuration.host = "http://db:8000"
     inf_api = MagicMock()
     inf_api.configuration.host = "http://inference:8001"
-    return db_api, inf_api
-
-
-@pytest.fixture
-def manager(legacy_db, mock_api_clients):
-    db_api, inf_api = mock_api_clients
-    return Manager(
-        db_api_client=db_api,
-        legacy_db_client=legacy_db,
-        inference_api_client=inf_api,
-    )
+    with patch("apps.tasks_server.manager.TasksApi", return_value=tasks_api_mock):
+        yield Manager(db_api_client=db_api, inference_api_client=inf_api)
 
 
 @pytest.fixture

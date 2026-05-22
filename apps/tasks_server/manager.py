@@ -6,11 +6,11 @@ import sys
 from typing import Any, Dict, List, Optional, Union
 
 import db_client
+import db_client.models as db_models
 import inference_client
+from db_client.api.tasks_api import TasksApi
 
 from apps.helpers.consts import TaskStatus
-from apps.helpers.db.db_client import DbClient
-from apps.helpers.db.types import TaskConfig, TaskInstance
 from apps.tasks_server.types import TaskInfo
 
 from .tasks.Registry import task_registry
@@ -22,25 +22,19 @@ logger.setLevel(logging.DEBUG)
 
 
 class Manager:
-    """Manages inference models, including loading, pinning, and unpinning."""
+    """Manages running tasks and coordinates with db_server and inference_server."""
 
     def __init__(
         self,
         db_api_client: db_client.ApiClient,
-        legacy_db_client: DbClient,
         inference_api_client: inference_client.ApiClient,
     ):
-        """
-        Initialize the Manager.
-        """
-        self._task: Optional[asyncio.Task] = None  # Background task for periodic operations
-        self._legacy_db_client: DbClient = legacy_db_client
+        self._task: Optional[asyncio.Task] = None
         self._inference_api_client: inference_client.ApiClient = inference_api_client
         self._db_api_client: db_client.ApiClient = db_api_client
         self._running_tasks: Dict[str, TaskInfo] = {}
         self._completion_tasks: set[asyncio.Task] = set()
         self._config = {
-            "db_path": None, #legacy_db_client.get_path(),
             "db_server": db_api_client.configuration.host,
             "inference_server": inference_api_client.configuration.host,
         }
@@ -55,39 +49,34 @@ class Manager:
         return self._config.copy()
 
     async def list_task_types(self) -> List[str]:
-        """
-        List all tasks managed by the Manager.
-        """
         return list(task_registry.keys())
 
     async def get_tasks_result(self, task_ids: Union[List[str], str]) -> dict[str, dict]:
-        """
-        Get the result of specified tasks.
-
-        Args:
-            task_ids (List[str]): The UUIDs of the tasks.
-
-        Returns:
-            Optional[dict[str, Any]]: The result of the tasks, or None if not found.
-        """
         if isinstance(task_ids, str):
             task_ids = [task_ids]
 
-        tasks_info = {tid: self._running_tasks.get(tid) for tid in task_ids}
         tasks_to_delete = []
-
         results = {}
-        for tid, task_info in tasks_info.items():
+        not_running = []
+
+        for tid in task_ids:
+            task_info = self._running_tasks.get(tid)
             if task_info:
                 result = task_info.task.get_results()
                 if result:
                     results[tid] = result
-                    delete_on_success = task_info.config.params_json.get(Task.InternalKeys.ONESHOT_RESULT, False)
-                    if delete_on_success:
+                    if task_info.config.params_json.get(Task.InternalKeys.ONESHOT_RESULT, False):
                         tasks_to_delete.append(tid)
             else:
-                # If not running, check the database
-                results = await self._legacy_db_client.get_task_results(task_ids)
+                not_running.append(tid)
+
+        if not_running:
+            resp = await asyncio.to_thread(
+                TasksApi(self._db_api_client).get_task_results,
+                db_models.GetTaskResultsPayload(task_uuids=not_running),
+            )
+            results.update(resp.results or {})
+
         if results and tasks_to_delete:
             asyncio.create_task(self.delete_tasks(task_uuids=tasks_to_delete))
 
@@ -96,10 +85,6 @@ class Manager:
     async def get_tasks_instance_info(
         self, task_uuids: Union[List[str], str, None] = None
     ) -> Dict[str, TaskInfo]:
-        """
-        Returns status about a specified task, or all tasks.
-        Combines DB and running tasks, with running tasks taking precedence.
-        """
         if isinstance(task_uuids, str):
             task_uuids = [task_uuids]
 
@@ -112,11 +97,19 @@ class Manager:
                     uuids_left.remove(uuid)
 
         if uuids_left is None or len(uuids_left) > 0:
-            db_instances = await self._legacy_db_client.get_tasks(task_uuid=uuids_left)
+            instances_resp = await asyncio.to_thread(
+                TasksApi(self._db_api_client).list_task_instances,
+                uuids=uuids_left,
+            )
+            db_instances = instances_resp.instances or []
             config_uuids = list(set(inst.config_uuid for inst in db_instances))
-            configs = await self._legacy_db_client.get_task_configs(config_uuids=config_uuids)
+            configs_resp = await asyncio.to_thread(
+                TasksApi(self._db_api_client).list_task_configs,
+                uuids=config_uuids,
+            )
+            configs = configs_resp.configs or {}
             for instance in db_instances:
-                config = configs[instance.config_uuid]
+                config = configs.get(instance.config_uuid)
                 running_task = self._running_tasks.get(instance.uuid)
                 task_info = TaskInfo(config=config, instance=instance, task=running_task.task if running_task else None)
                 ret_info[instance.uuid] = task_info
@@ -125,36 +118,26 @@ class Manager:
 
     async def create_new_task_config(
         self, name: str, typename: str, params: Dict[str, Any], persistent: bool
-    ) -> TaskConfig:
-        """
-        Start a new task.
-
-        Returns new task config
-        """
+    ) -> db_models.TaskConfigRead:
         if typename not in task_registry:
             raise ValueError(f"Unknown task: {typename}")
 
         params[Task.InternalKeys.PERSISTENT] = persistent
-        return await self._legacy_db_client.add_task_config(name=name, typename=typename, params=params)
+        resp = await asyncio.to_thread(
+            TasksApi(self._db_api_client).create_task_config,
+            db_models.CreateTaskConfigPayload(name=name, typename=typename, params=params),
+        )
+        return resp.config
 
     async def delete_task_configs(self, config_uuids: Union[List[str], str]) -> None:
-        """
-        Delete task configs by their UUIDs.
-
-        Args:
-            config_uuids (Union[List[str], str]): The UUIDs of the task configs to delete.
-        """
         if isinstance(config_uuids, str):
             config_uuids = [config_uuids]
-        await self._legacy_db_client.delete_task_config(config_uuids)
+        await asyncio.to_thread(
+            TasksApi(self._db_api_client).delete_task_configs,
+            db_models.DeleteTaskConfigsPayload(config_uuids=config_uuids),
+        )
 
     async def delete_tasks(self, task_uuids: Union[List[str], str]) -> List[str]:
-        """
-        Delete tasks by their UUIDs.
-
-        Returns:
-            List[str]: The UUIDs of the deleted tasks.
-        """
         if isinstance(task_uuids, str):
             task_uuids = [task_uuids]
 
@@ -164,7 +147,10 @@ class Manager:
                 await self._running_tasks[task_id].task.stop()
                 del self._running_tasks[task_id]
                 deleted_uuids.append(task_id)
-        await self._legacy_db_client.delete_active_tasks(task_uuids)
+        await asyncio.to_thread(
+            TasksApi(self._db_api_client).delete_task_instances,
+            db_models.DeleteTaskInstancesPayload(task_uuids=task_uuids),
+        )
         return deleted_uuids
 
     async def update_task_config(
@@ -176,48 +162,34 @@ class Manager:
         description: Optional[str] = None,
         marked_for_delete: Optional[bool] = None,
     ) -> None:
-        """
-        Update an existing task configuration.
-
-        Args:
-            config_uuid (str): UUID of the task config to update.
-            name (Optional[str]): New name.
-            typename (Optional[str]): New typename.
-            params (Optional[Dict[str, Any]]): New parameters.
-            description (Optional[str]): New description.
-            marked_for_delete (Optional[bool]): Flag to mark for deletion.
-        """
         if typename is not None and typename not in task_registry:
             raise ValueError(f"Unknown task type: {typename}")
 
-        # Update in database
-        await self._legacy_db_client.update_task_config(
-            config_uuid=config_uuid,
-            name=name,
-            typename=typename,
-            params=params,
-            description=description,
-            marked_for_delete=marked_for_delete,
+        await asyncio.to_thread(
+            TasksApi(self._db_api_client).update_task_config,
+            config_uuid,
+            db_models.UpdateTaskConfigPayload(
+                name=name,
+                typename=typename,
+                params=params,
+                description=description,
+                marked_for_delete=marked_for_delete,
+            ),
         )
 
     async def get_task_configs(
         self, task_config_uuids: Union[List[str], str, None]
-    ) -> dict[str, TaskConfig]:
-        """
-        Get task configurations by their IDs.
-        """
+    ) -> dict[str, db_models.TaskConfigRead]:
         if isinstance(task_config_uuids, str):
             task_config_uuids = [task_config_uuids]
 
-        return await self._legacy_db_client.get_task_configs(config_uuids=task_config_uuids)
+        resp = await asyncio.to_thread(
+            TasksApi(self._db_api_client).list_task_configs,
+            uuids=task_config_uuids,
+        )
+        return resp.configs or {}
 
     async def pause_tasks(self, task_uuids: Union[List[str], str]) -> List[str]:
-        """
-        Pause tasks by their UUID.
-
-        Args:
-            task_uuids (list[str]): The UUIDs of the tasks to pause.
-        """
         if isinstance(task_uuids, str):
             task_uuids = [task_uuids]
 
@@ -255,38 +227,55 @@ class Manager:
         return paused_tasks
 
     async def resume_tasks(self, task_uuids: Union[List[str], str]) -> List[str]:
-        """
-        Resume a paused task by its UUID.
-
-        Args:
-            task_uuid (str): The UUID of the task to resume.
-        """
         if isinstance(task_uuids, str):
             task_uuids = [task_uuids]
 
-        resumed_tasks = []
-        for task_uuid in task_uuids:
-            if task_uuid in self._running_tasks:
-                logger.warning(f"Can't resume task {task_uuid}: already in running tasks")
+        uuids_to_check = []
+        for tid in task_uuids:
+            if tid in self._running_tasks:
+                logger.warning(f"Can't resume task {tid}: already in running tasks")
             else:
-                instances = await self._legacy_db_client.get_tasks(task_uuid=task_uuid)
-                instance = instances[0] if instances else None
-                if instance and instance.status == TaskStatus.PAUSED:
-                    config = (await self._legacy_db_client.get_task_configs(config_uuids=[instance.config_uuid])).get(instance.config_uuid)
-                    if config:
-                        await self._start_task(config, resume_instance=instance)
-                else:
-                    logger.warning(f"Can't resume task {task_uuid}: status={instance.status if instance else 'not found'}")
+                uuids_to_check.append(tid)
+
+        if not uuids_to_check:
+            return []
+
+        instances_resp = await asyncio.to_thread(
+            TasksApi(self._db_api_client).list_task_instances,
+            uuids=uuids_to_check,
+        )
+        instances = instances_resp.instances or []
+
+        found_uuids = {inst.uuid for inst in instances}
+        for tid in uuids_to_check:
+            if tid not in found_uuids:
+                logger.warning(f"Can't resume task {tid}: status=not found")
+
+        paused = [inst for inst in instances if inst.status == TaskStatus.PAUSED]
+        for inst in instances:
+            if inst.status != TaskStatus.PAUSED:
+                logger.warning(f"Can't resume task {inst.uuid}: status={inst.status}")
+
+        if not paused:
+            return []
+
+        config_uuids = list(set(inst.config_uuid for inst in paused))
+        configs_resp = await asyncio.to_thread(
+            TasksApi(self._db_api_client).list_task_configs,
+            uuids=config_uuids,
+        )
+        configs = configs_resp.configs or {}
+
+        resumed_tasks = []
+        for instance in paused:
+            config = configs.get(instance.config_uuid)
+            if config:
+                await self._start_task(config, resume_instance=instance)
+                resumed_tasks.append(instance.uuid)
 
         return resumed_tasks
 
     async def start_new_task(self, task_config_uuid: str) -> Optional[TaskInfo]:
-        """
-        Start a configured task by its config uuid
-
-        Args:
-            task_config_uuid (str): The UUID of the task configuration to start.
-        """
         configs = await self.get_task_configs([task_config_uuid])
         config = configs.get(task_config_uuid)
         if config:
@@ -295,12 +284,6 @@ class Manager:
             logger.warning(f"Unknown task configuration: {task_config_uuid}")
 
     async def cancel_tasks(self, task_uuids: Union[List[str], str]) -> List[str]:
-        """
-        Stop tasks by id, syncing to db
-
-        Args:
-            task_uuids (Union[List[str], str]): The UUID(s) of the task(s) to stop.
-        """
         if isinstance(task_uuids, str):
             task_uuids = [task_uuids]
 
@@ -318,7 +301,11 @@ class Manager:
         for task_info in canceled_tasks:
             try:
                 await task_info.task.wait_for_task_done(5.0)
-                await self._legacy_db_client.set_task_status(task_info.instance.uuid, task_info.task.get_status())
+                await asyncio.to_thread(
+                    TasksApi(self._db_api_client).set_task_instance_status,
+                    task_info.instance.uuid,
+                    db_models.SetTaskStatusPayload(status=task_info.task.get_status()),
+                )
                 stopped_tasks.append(task_info.instance.uuid)
             except TimeoutError:
                 logger.warning(f"Task {task_info.instance.uuid} did not stop in time")
@@ -326,7 +313,6 @@ class Manager:
         return stopped_tasks
 
     async def get_tasks_type_schema(self, typenames: Union[List[str], str]) -> dict[str, dict]:
-        """Get the schema for a specific task type."""
         if isinstance(typenames, str):
             typenames = [typenames]
 
@@ -346,22 +332,42 @@ class Manager:
         self._running_tasks.pop(task_info.instance.uuid, None)
 
     async def _save_task_data(self, task_info: TaskInfo) -> None:
-        """Save the resume data for a task."""
         if task_info.task.is_data_ready():
-            await self._legacy_db_client.set_task_resume_data(
-                task_info.instance.uuid, task_info.task.get_resume_data()
+            await asyncio.to_thread(
+                TasksApi(self._db_api_client).set_task_instance_resume_data,
+                task_info.instance.uuid,
+                db_models.SetTaskResumeDataPayload(resume_data=task_info.task.get_resume_data()),
             )
             task_info.task.clear_data_ready()
-        # TODO: Sync metadata and DB?
-        await self._legacy_db_client.set_task_result(task_info.instance.uuid, task_info.task.get_results())
-        await self._legacy_db_client.set_task_status(task_info.instance.uuid, task_info.instance.status)
+        await asyncio.gather(
+            asyncio.to_thread(
+                TasksApi(self._db_api_client).set_task_instance_result,
+                task_info.instance.uuid,
+                db_models.SetTaskResultPayload(result=task_info.task.get_results() or {}),
+            ),
+            asyncio.to_thread(
+                TasksApi(self._db_api_client).set_task_instance_status,
+                task_info.instance.uuid,
+                db_models.SetTaskStatusPayload(status=task_info.instance.status),
+            ),
+        )
 
-    async def _start_task(self, config: TaskConfig, resume_instance: Optional[TaskInstance] = None) -> Optional[TaskInfo]:
-        """Start a task."""
+    async def _start_task(
+        self,
+        config: db_models.TaskConfigRead,
+        resume_instance: Optional[db_models.TaskInstanceRead] = None,
+    ) -> Optional[TaskInfo]:
         task = task_registry[config.typename](
             task_config_uuid=config.uuid, params=config.params_json, manager=self
         )
-        instance: TaskInstance = resume_instance or await self._legacy_db_client.insert_new_active_task(config.uuid)
+        if resume_instance:
+            instance = resume_instance
+        else:
+            resp = await asyncio.to_thread(
+                TasksApi(self._db_api_client).create_task_instance,
+                db_models.CreateTaskInstancePayload(config_uuid=config.uuid),
+            )
+            instance = resp.instance
         task_info: TaskInfo = TaskInfo(task=task, config=config, instance=instance)
 
         self._running_tasks[instance.uuid] = task_info
@@ -373,20 +379,22 @@ class Manager:
         return task_info
 
     def start(self):
-        """Start the periodic worker task, should be called from the event loop to run on"""
         if self._task and not self._task.done():
-            self._task.cancel()  # Cancel the existing task if it's still running
-        self._task = asyncio.get_running_loop().create_task(self._worker_task())  # Schedule a new task
+            self._task.cancel()
+        self._task = asyncio.get_running_loop().create_task(self._worker_task())
 
     async def _init(self):
-        """Initialization that should run on event loop"""
-        await self._legacy_db_client.init_db()
-
-        # Clear any tasks left in DB that can't be resumed
-        stale_tasks: List[TaskInstance] = await self._legacy_db_client.get_tasks(resumable=False)
+        resp = await asyncio.to_thread(
+            TasksApi(self._db_api_client).list_task_instances,
+            resumable=False,
+        )
+        stale_tasks = resp.instances or []
         if stale_tasks:
             stale_ids = [inst.uuid for inst in stale_tasks]
-            await self._legacy_db_client.delete_active_tasks(stale_ids)
+            await asyncio.to_thread(
+                TasksApi(self._db_api_client).delete_task_instances,
+                db_models.DeleteTaskInstancesPayload(task_uuids=stale_ids),
+            )
 
     async def _worker_task(self):
         try:

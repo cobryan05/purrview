@@ -70,7 +70,6 @@ class WebApp:
         """
         logging.info("Application is starting up...")
 
-        self._manager.start()  # Start the manager's periodic task
         yield  # This allows the app to run
 
         logging.info("Application is shutting down...")
