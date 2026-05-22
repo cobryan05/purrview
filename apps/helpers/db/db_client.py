@@ -263,6 +263,33 @@ class DbClient:
             result = await session.exec(statement)
             return result.all()
 
+    async def list_images_with_bbox_tag(
+        self,
+        tag_uuid: str,
+        label_uuid: Optional[str] = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> List[ImageRecord]:
+        """Return images that have at least one bbox tagged with tag_uuid, optionally filtered by label."""
+        async with self._async_session_maker() as session:
+            stmt = (
+                select(ImageRecord)
+                .join(BBox, BBox.image_uuid == ImageRecord.uuid)
+                .join(BBoxTagLink, BBoxTagLink.bbox_uuid == BBox.uuid)
+                .where(BBoxTagLink.tag_uuid == tag_uuid)
+                .options(
+                    selectinload(ImageRecord.bboxes).selectinload(BBox.label),
+                    selectinload(ImageRecord.bboxes).selectinload(BBox.tags),
+                )
+                .distinct()
+                .offset(offset)
+                .limit(limit)
+            )
+            if label_uuid:
+                stmt = stmt.where(BBox.label_uuid == label_uuid)
+            result = await session.exec(stmt)
+            return result.all()
+
     async def delete_image(self, image_uuid: str) -> bool:
         """Delete an image by UUID. BBoxes will be deleted via CASCADE."""
         async with self._async_session_maker() as session:
@@ -287,6 +314,7 @@ class DbClient:
                     y=b.y,
                     width=b.width,
                     height=b.height,
+                    metadata_json=b.metadata_json or {},
                 ))
                 for tag_uuid in b.tag_uuids:
                     session.add(BBoxTagLink(bbox_uuid=b.uuid, tag_uuid=tag_uuid))

@@ -205,11 +205,13 @@ class BBox(BBoxBase, table=True):
 class BBoxRead(BaseModel):
     """ The public read-only representation of a bounding box. """
     uuid: str
+    label_uuid: Optional[str] = None
     x: float
     y: float
     width: float
     height: float
-    label: Optional[LabelRead]
+    metadata_json: Dict[str, Any] = Field(default_factory=dict)
+    label: Optional[LabelRead] = None
     tags: List["TagRead"] = []
 
     model_config = ConfigDict(from_attributes=True)
@@ -224,6 +226,7 @@ class BBoxUpdate(BaseModel):
     width: float
     height: float
     tag_uuids: List[str] = []
+    metadata_json: Dict[str, Any] = Field(default_factory=dict)
 
     model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)
 

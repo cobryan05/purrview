@@ -42,14 +42,25 @@ class CollectTrainingImagesTask(Task):
         self._status_msg: str = "Initializing"
         self._source_uuid: str = params["source_uuid"]
         self._output_dir: str = params["output_dir"]
-        self._model_names: list[str] = params.get("model_names", [])
+
+        # model_label_config: [{modelName, labelValues: {labelUuid: confidence}}]
+        model_label_config: list[dict] = params.get("model_label_config", [])
+        model_names_set: set[str] = set()
+        # Flatten to label_uuid → min_confidence; skip zero-confidence (disabled in UI)
+        label_conf: dict[str, float] = {}
+        for item in model_label_config:
+            if item.get("modelName"):
+                model_names_set.add(item["modelName"])
+            for label_uuid, conf in item.get("labelValues", {}).items():
+                conf_f = float(conf)
+                if conf_f > 0:
+                    label_conf[label_uuid] = min(label_conf.get(label_uuid, 1.0), conf_f)
+        self._model_names: list[str] = list(model_names_set)
+
         self._target_labels: list[TargetLabel] = [
-            TargetLabel(label_uuid=t["label_uuid"], min_confidence=float(t["min_confidence"]))
-            for t in params.get("target_labels", [])
+            TargetLabel(label_uuid=u, min_confidence=c) for u, c in label_conf.items()
         ]
-        self._target_label_map: dict[str, float] = {
-            t.label_uuid: t.min_confidence for t in self._target_labels
-        }
+        self._target_label_map: dict[str, float] = {t.label_uuid: t.min_confidence for t in self._target_labels}
         self._min_all_conf: float = min((t.min_confidence for t in self._target_labels), default=0.5)
         self._images_saved: int = resume_data.get("images_saved", 0) if resume_data else 0
         self._unverified_tag_uuid: Optional[str] = None
@@ -143,6 +154,7 @@ class CollectTrainingImagesTask(Task):
                         label_uuid=det.bbox.label_uuid,
                         class_str=det.bbox.class_str,
                         tag_uuids=[self._unverified_tag_uuid],
+                        extra={"confidence": str(det.confidence)},
                     )
                     for det in matching
                 ]
@@ -182,7 +194,7 @@ class CollectTrainingImagesTask(Task):
     def params_schema(cls) -> dict[str, dict[str, Any]]:
         return {
             "meta": {
-                "order": ["source_uuid", "output_dir", "model_label_config", "min_capture_interval"]
+                "order": ["source_uuid", "output_dir", "model_label_config"]
             },
             "source_uuid": {
                 "type": "source_uuid",
@@ -206,12 +218,5 @@ class CollectTrainingImagesTask(Task):
                     "required": True,
                     "description": "Labels to collect",
                 },
-            },
-            "min_capture_interval": {
-                "type": "int",
-                "label": "Min Capture Interval (s)",
-                "default": 0,
-                "required": False,
-                "description": "Minimum seconds between frame grabs (reserved for live streams)",
             },
         }

@@ -15,6 +15,7 @@ from pydantic.alias_generators import to_camel
 
 from apps.db_server.manager import Manager
 from apps.helpers.consts import ApiTags, JsonKeys, JsonValues
+from apps.helpers.db.db_client import UNVERIFIED_TAG_UUID
 from apps.helpers.db.types import (
     BBoxUpdate,
     ImageLabelRead,
@@ -232,6 +233,10 @@ class SetImageLabelResponse(StatusResponse):
 
 class GetImageLabelsResponse(StatusResponse):
     labels: List[ImageLabelRead] = Field(default_factory=list)
+
+
+class ReviewQueueResponse(StatusResponse):
+    images: List[ImageRecordRead] = Field(default_factory=list)
 
 
 class WebApp:
@@ -616,6 +621,7 @@ class WebApp:
                         width=b.width,
                         height=b.height,
                         tag_uuids=b.tag_uuids or [],
+                        metadata_json=b.extra or {},
                     )
                     for b in payload.boxes
                     if b.label_uuid
@@ -714,3 +720,25 @@ class WebApp:
             if labels is None:
                 return GetImageLabelsResponse(status=JsonValues.FAILURE, message="Image not found")
             return GetImageLabelsResponse(labels=labels)
+
+        @self._app.get(
+            "/api/images/review",
+            response_model=ReviewQueueResponse,
+            tags=[ApiTags.IMAGES],
+            operation_id="get_review_queue",
+        )
+        async def get_review_queue(
+            tag_uuid: str = UNVERIFIED_TAG_UUID,
+            label_uuid: Optional[str] = None,
+            limit: int = 50,
+            offset: int = 0,
+        ) -> ReviewQueueResponse:
+            """Return images with at least one bbox tagged with tag_uuid (default: Unverified)."""
+            try:
+                images = await self._manager.get_review_queue(
+                    tag_uuid=tag_uuid, label_uuid=label_uuid, limit=limit, offset=offset
+                )
+                return ReviewQueueResponse(images=images)
+            except Exception as e:
+                logger.exception("Failed to fetch review queue")
+                return ReviewQueueResponse(status=JsonValues.FAILURE, message=str(e))

@@ -1,6 +1,7 @@
 import { registerKeyboardShortcuts } from './hotkeys.js';
 import { init as initImageTagging } from './image-tagging/main.js';
 import { init as initConfiguration } from './configuration/main.js';
+import { init as initReview } from './review/main.js';
 import { setupMainTabs } from '/app-static/js/app/utils/tabs.js';
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
 import { createImageTaggingRuntime } from './image-tagging/runtime.js';
@@ -29,6 +30,8 @@ export async function init(appState) {
         await initImageTagging(appState.imgRuntime, pane);
       } else if (tabName === 'tab-configuration') {
         await initConfiguration?.();
+      } else if (tabName === 'tab-review') {
+        await initReview?.();
       }
       initializedFeatures.add(tabName);
     }

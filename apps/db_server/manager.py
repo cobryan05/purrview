@@ -15,6 +15,7 @@ from apps.helpers.db.db_client import (
     DbClient,
     FALSE_POS_TAG_UUID,
     TagKind,
+    UNVERIFIED_TAG_UUID,
     VERIFIED_TAG_UUID,
 )
 from apps.helpers.db.types import (
@@ -368,6 +369,31 @@ class Manager:
             return None
         rows = await self._db_client.get_image_labels(image_uuid)
         return [ImageLabelRead.model_validate(r) for r in rows]
+
+    def _image_rel_path(self, image_filename: str) -> str:
+        """Convert an absolute stored filename back to a FILES_ROOT-relative path."""
+        try:
+            return str(Path(image_filename).relative_to(self._files_root))
+        except ValueError:
+            return image_filename
+
+    async def get_review_queue(
+        self,
+        tag_uuid: str = UNVERIFIED_TAG_UUID,
+        label_uuid: Optional[str] = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> List[ImageRecordRead]:
+        """Return images that have at least one bbox tagged with tag_uuid."""
+        images = await self._db_client.list_images_with_bbox_tag(
+            tag_uuid=tag_uuid, label_uuid=label_uuid, limit=limit, offset=offset
+        )
+        results = []
+        for img in images:
+            record = ImageRecordRead.model_validate(img)
+            record.filename = self._image_rel_path(img.filename)
+            results.append(record)
+        return results
 
     async def list_files(
         self,
