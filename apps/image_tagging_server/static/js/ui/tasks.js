@@ -43,12 +43,12 @@ export function renderTaskConfigs({ target = 'task-config-list', onEdit, onDelet
           }
         }
       };
-      TaskConfigField.create({ value: config.params, ...config }).then(fieldInstance => {
+      TaskConfigField.create({ value: config.params_json, ...config }).then(fieldInstance => {
         const row = createGenericRow({
           field: new EditableField({
             field: fieldInstance,
             onSave: async ({ name, typename, params }) => {
-              await updateTaskConfig({ uuid, name, typename, params });
+              await updateTaskConfig({ uuid: configUuid, name, typename, params });
               refresh?.();
             },
             onCancel: () => {
