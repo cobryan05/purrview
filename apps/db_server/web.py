@@ -742,11 +742,10 @@ class WebApp:
                     )
 
                 file_obj, filename = result
-                if include_binary:
-                    content = await file_obj.read()  # Raw bytes
+                try:
+                    content = await file_obj.read() if include_binary else None
+                finally:
                     await file_obj.close()
-                else:
-                    content = None
 
                 mime_type, _ = mimetypes.guess_type(filename)
                 mime_type = mime_type or "application/octet-stream"

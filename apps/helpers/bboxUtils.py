@@ -54,8 +54,11 @@ class BBox:
         """
         if self.bbox is other.bbox:
             return True
+        maxArea = max(self.area, other.area)
+        if maxArea == 0:
+            return self.dist(other) < distEpsilon
         absAreaDiff = abs(self.area - other.area)
-        areaRatio = min(self.area, other.area) / max(self.area, other.area)
+        areaRatio = min(self.area, other.area) / maxArea
         if absAreaDiff > distEpsilon and areaRatio > sizeEpsilon:
             return False
         return self.dist(other) < distEpsilon

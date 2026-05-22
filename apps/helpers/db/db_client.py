@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import sys
@@ -5,6 +6,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, TypeVar, Union
 from uuid import uuid4
+
+from alembic import command as alembic_command
+from alembic.config import Config as AlembicConfig
+
+ALEMBIC_INI_PATH = Path(__file__).parent / "alembic.ini"
 
 import jstyleson
 from pydantic import TypeAdapter
@@ -99,11 +105,13 @@ class DbClient:
         self._async_session_maker = sessionmaker(self._engine, class_=AsyncSession, expire_on_commit=False)
 
     async def init_db(self) -> None:
-        """Initialize database and create tables based on SQLModel metadata."""
+        """Initialize database and run any pending Alembic migrations."""
         self._db_dir.mkdir(parents=True, exist_ok=True)
-        async with self._engine.begin() as conn:
-            # This creates all tables defined by SQLModel (Tag, Label, etc.)
-            await conn.run_sync(SQLModel.metadata.create_all)
+
+        alembic_cfg = AlembicConfig(ALEMBIC_INI_PATH)
+        alembic_cfg.set_main_option("sqlalchemy.url", f"sqlite:///{self._db_path}")
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, lambda: alembic_command.upgrade(alembic_cfg, "head"))
 
         await self._seed_system_tags()
 
@@ -641,6 +649,19 @@ class DbClient:
         async with self._async_session_maker() as session:
             result = await session.exec(select(ImageLabel).where(ImageLabel.image_uuid == image_uuid))
             return result.all()
+
+    async def delete_image_labels(self, image_uuid: str, label_uuids: List[str]) -> None:
+        """Delete image_label rows for the given image/label pairs."""
+        if not label_uuids:
+            return
+        async with self._async_session_maker() as session:
+            await session.exec(
+                delete(ImageLabel).where(
+                    ImageLabel.image_uuid == image_uuid,
+                    ImageLabel.label_uuid.in_(label_uuids),
+                )
+            )
+            await session.commit()
 
     ################################################################################
     # Task Configs

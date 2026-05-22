@@ -266,8 +266,7 @@ class Manager:
 
     async def get_tag_by_uuid(self, uuid: str) -> Optional[Tag]:
         """Retrieve a tag by its primary key UUID."""
-        async with self._async_session_maker() as session:
-            return await session.get(Tag, uuid)
+        return await self._db_client.get_tag_by_uuid(uuid)
 
     async def get_tag_uuid_map(self) -> Dict[str, Tag]:
         """
@@ -353,6 +352,11 @@ class Manager:
             else:
                 status = ImageLabelStatus.UNCERTAIN
             await self._db_client.set_image_label(image_uuid, label_uuid, status)
+
+        # Remove stale rows for labels that no longer have any bboxes in this image.
+        existing = await self._db_client.get_image_labels(image_uuid)
+        stale = [r.label_uuid for r in existing if r.label_uuid not in label_tag_sets]
+        await self._db_client.delete_image_labels(image_uuid, stale)
 
     async def _resolve_image_uuid(self, image_path: str) -> Optional[str]:
         """Resolve an image path to its DB uuid, or None if not found."""
@@ -540,19 +544,18 @@ class Manager:
             return None
 
         try:
-            abs_path = os.path.normpath(os.path.join(self._files_root, rel_path.lstrip("/")))
+            safe_path = get_safe_path(self._files_root, rel_path)
 
-            # Prevent directory traversal
-            if not abs_path.startswith(str(self._files_root)):
+            if safe_path is None:
                 logger.warning(f"Blocked directory traversal attempt: {rel_path}")
                 return None
 
-            if not os.path.exists(abs_path) or not os.path.isfile(abs_path):
-                logger.warning(f"File not found: {abs_path}")
+            if not safe_path.is_file():
+                logger.warning(f"File not found: {safe_path}")
                 return None
 
-            f = await aiofiles.open(abs_path, mode="rb")
-            filename = os.path.basename(abs_path)
+            f = await aiofiles.open(safe_path, mode="rb")
+            filename = safe_path.name
             return f, filename
 
         except Exception as e:
