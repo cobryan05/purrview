@@ -8,7 +8,7 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import ConfigDict, Field
 from pydantic.alias_generators import to_camel
@@ -52,6 +52,11 @@ class UpdateMetadataPayload(ApiPayload):
     image_path: str
     boxes: List[BoundingBoxMetadataModel] = Field(default_factory=list)
     extra: Optional[Any] = None
+
+
+class BboxPatchPayload(ApiPayload):
+    label_uuid: Optional[str] = None
+    tag_uuids: List[str] = Field(default_factory=list)
 
 
 logging.basicConfig(stream=sys.stdout)
@@ -242,6 +247,10 @@ class GetImageLabelsResponse(StatusResponse):
 
 class ReviewQueueResponse(StatusResponse):
     images: List[ImageRecordRead] = Field(default_factory=list)
+
+
+class InvalidateThumbnailsPayload(ApiPayload):
+    bbox_uuids: List[str] = Field(default_factory=list)
 
 
 ########
@@ -815,6 +824,48 @@ class WebApp:
             except Exception as e:
                 logger.exception("Failed to fetch review queue")
                 return ReviewQueueResponse(status=JsonValues.FAILURE, message=str(e))
+
+        @self._app.patch(
+            "/api/images/bbox/{bbox_uuid}",
+            tags=[ApiTags.IMAGES],
+            operation_id="update_bbox",
+        )
+        async def update_bbox(bbox_uuid: str, payload: BboxPatchPayload) -> Response:
+            ok = await self._manager.update_single_bbox(bbox_uuid, payload.label_uuid, payload.tag_uuids)
+            if not ok:
+                raise HTTPException(status_code=404, detail="Bbox not found")
+            return Response(status_code=204)
+
+        @self._app.post(
+            "/api/images/bbox/thumbnails/invalidate",
+            tags=[ApiTags.IMAGES],
+            operation_id="invalidate_bbox_thumbnails",
+        )
+        async def invalidate_bbox_thumbnails(payload: InvalidateThumbnailsPayload) -> StatusResponse:
+            await self._manager.invalidate_bbox_thumbnails(payload.bbox_uuids)
+            return StatusResponse()
+
+        @self._app.delete(
+            "/api/images/bbox/{bbox_uuid}",
+            tags=[ApiTags.IMAGES],
+            operation_id="delete_bbox",
+        )
+        async def delete_bbox(bbox_uuid: str) -> Response:
+            ok = await self._manager.delete_single_bbox(bbox_uuid)
+            if not ok:
+                raise HTTPException(status_code=404, detail="Bbox not found")
+            return Response(status_code=204)
+
+        @self._app.get(
+            "/api/images/{image_path:path}/bbox/{bbox_uuid}/thumbnail",
+            tags=[ApiTags.IMAGES],
+            operation_id="get_bbox_thumbnail",
+        )
+        async def get_bbox_thumbnail(image_path: str, bbox_uuid: str, width: int = 200) -> Response:
+            png_bytes = await self._manager.get_bbox_thumbnail(bbox_uuid, width=width)
+            if png_bytes is None:
+                raise HTTPException(status_code=404, detail="Thumbnail not available")
+            return Response(content=png_bytes, media_type="image/png")
 
         ################################################################################
         # Task Configs API

@@ -33,3 +33,4 @@ APPS_CONFIG = {
 }
 
 DB_DIR = Path(os.environ.get("DB_DIR", "/data/db/"))
+CACHE_DIR = Path(os.environ.get("CACHE_DIR", "/data/cache/"))

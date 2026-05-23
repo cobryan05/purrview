@@ -61,3 +61,52 @@ export async function setImageLabel(imagePath, labelUuid, status) {
 export function swapVerificationTag(tagUuids, newTagUuid) {
   return [...tagUuids.filter(t => !VERIFICATION_TAG_UUIDS.has(t)), newTagUuid];
 }
+
+/**
+ * Return a URL suitable for use as <img src> for a bbox crop thumbnail.
+ * @param {string} imagePath
+ * @param {string} bboxUuid
+ * @param {number} [width=200]
+ * @returns {string}
+ */
+export function getBboxThumbnailUrl(imagePath, bboxUuid, width = 200) {
+  const encodedPath = imagePath.split('/').map(encodeURIComponent).join('/');
+  return `/api/images/${encodedPath}/bbox/${bboxUuid}/thumbnail?width=${width}`;
+}
+
+/**
+ * Update a single bbox's label and tags.
+ * @param {string} bboxUuid
+ * @param {{ labelUuid: string, tagUuids: string[] }} opts
+ */
+export async function updateBbox(bboxUuid, { labelUuid, tagUuids }) {
+  const res = await fetch(`/api/images/bbox/${bboxUuid}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ labelUuid, tagUuids }),
+  });
+  if (!res.ok) throw new Error(`updateBbox failed: ${res.status}`);
+}
+
+/**
+ * Delete a single bbox.
+ * @param {string} bboxUuid
+ */
+export async function deleteBbox(bboxUuid) {
+  const res = await fetch(`/api/images/bbox/${bboxUuid}`, { method: 'DELETE' });
+  if (!res.ok) throw new Error(`deleteBbox failed: ${res.status}`);
+}
+
+/**
+ * Invalidate cached thumbnails for a list of bbox UUIDs.
+ * @param {string[]} bboxUuids
+ */
+export async function invalidateBboxThumbnails(bboxUuids) {
+  if (!bboxUuids.length) return;
+  const res = await fetch('/api/images/bbox/thumbnails/invalidate', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ bboxUuids }),
+  });
+  if (!res.ok) console.warn(`invalidateBboxThumbnails failed: ${res.status}`);
+}

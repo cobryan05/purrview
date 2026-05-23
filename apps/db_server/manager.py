@@ -1,6 +1,8 @@
 """Manages the database"""
+
 import asyncio
 import fnmatch
+import io
 import logging
 import os
 import sys
@@ -11,6 +13,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import aiofiles
 from sqlalchemy.orm import make_transient
 
+from apps import CACHE_DIR
 from apps.helpers.db.db_client import (
     DbClient,
     FALSE_POS_TAG_UUID,
@@ -19,8 +22,10 @@ from apps.helpers.db.db_client import (
     VERIFIED_TAG_UUID,
 )
 from apps.helpers.db.types import (
+    BBoxUpdate,
     ImageLabelRead,
     ImageLabelStatus,
+    ImageRecord,
     ImageRecordRead,
     ImageRecordUpdate,
     Label,
@@ -158,9 +163,7 @@ class Manager:
         sources = await self._db_client.get_sources()
         return sources
 
-    async def create_new_source(
-        self, image_provider: str, provider_params: Dict[str, Any], source_name: str
-    ) -> Source:
+    async def create_new_source(self, image_provider: str, provider_params: Dict[str, Any], source_name: str) -> Source:
         """
         Create a new source from an image source as a preset image_provider/params
 
@@ -336,6 +339,52 @@ class Manager:
         await self._recompute_image_labels(image.uuid, update)
         return ImageRecordRead.model_validate(updated) if updated else None
 
+    async def update_single_bbox(self, bbox_uuid: str, label_uuid: Optional[str], tag_uuids: List[str]) -> bool:
+        """Update one bbox's label and tags, then sync sidecar and image_labels."""
+        result = await self._db_client.get_bbox_with_image(bbox_uuid)
+        if result is None or result[1] is None:
+            return False
+        _, image_record = result
+        await self._db_client.update_single_bbox(bbox_uuid, label_uuid, tag_uuids)
+        await self._sync_image_state(image_record)
+        return True
+
+    async def delete_single_bbox(self, bbox_uuid: str) -> bool:
+        """Delete one bbox, then sync sidecar and image_labels."""
+        result = await self._db_client.get_bbox_with_image(bbox_uuid)
+        if result is None or result[1] is None:
+            return False
+        _, image_record = result
+        await self._db_client.delete_single_bbox(bbox_uuid)
+        await self._sync_image_state(image_record)
+        return True
+
+    async def _sync_image_state(self, image_record: ImageRecord) -> None:
+        """Rebuild JSON sidecar and image_labels after a single-bbox mutation."""
+        safe_path = get_safe_path(self._files_root, image_record.filename)
+        bboxes = await self._db_client.get_bboxes_for_image(image_record.uuid)
+        update = ImageRecordUpdate(
+            bboxes=[
+                BBoxUpdate(
+                    uuid=b.uuid,
+                    label_uuid=b.label_uuid,
+                    x=b.x,
+                    y=b.y,
+                    width=b.width,
+                    height=b.height,
+                    tag_uuids=[t.uuid for t in (b.tags or [])],
+                )
+                for b in bboxes
+            ]
+        )
+        if safe_path is not None:
+            self._db_client.write_image_metadata_to_json(
+                self._get_json_sidefile(safe_path), image_record.uuid, image_record.filename, update
+            )
+        else:
+            logger.warning(f"Skipping sidecar write for {image_record.filename!r}: path not under FILES_ROOT")
+        await self._recompute_image_labels(image_record.uuid, update)
+
     async def _recompute_image_labels(self, image_uuid: str, update: ImageRecordUpdate) -> None:
         """Derive image_labels from the current bbox+tag state after a metadata update."""
 
@@ -468,7 +517,9 @@ class Manager:
         params: TaskParams,
         description: Optional[str] = None,
     ) -> TaskConfig:
-        return await self._db_client.add_task_config(name=name, typename=typename, params=params, description=description)
+        return await self._db_client.add_task_config(
+            name=name, typename=typename, params=params, description=description
+        )
 
     async def list_task_configs(
         self,
@@ -528,6 +579,78 @@ class Manager:
     async def get_task_results(self, task_uuids: List[str]) -> Dict[str, TaskResultData]:
         results = await self._db_client.get_task_results(task_uuids)
         return results or {}
+
+    ################################################################################
+    # THUMBNAIL API
+    ################################################################################
+
+    def _thumb_cache_dir(self) -> Path:
+        return CACHE_DIR / "thumb_cache"
+
+    def _thumb_cache_path(self, bbox_uuid: str, width: int) -> Path:
+        return self._thumb_cache_dir() / f"{bbox_uuid}_{width}.png"
+
+    async def get_bbox_thumbnail(self, bbox_uuid: str, width: int = 200) -> Optional[bytes]:
+        """
+        Return JPEG bytes for a cropped+resized thumbnail of the given bbox.
+        Serves from disk cache if available, otherwise generates and caches it.
+        """
+        from PIL import Image as PILImage
+
+        cache_path = self._thumb_cache_path(bbox_uuid, width)
+        if cache_path.exists():
+            async with aiofiles.open(cache_path, "rb") as f:
+                return await f.read()
+
+        result = await self._db_client.get_bbox_with_image(bbox_uuid)
+        if result is None:
+            return None
+        bbox, image_record = result
+        if image_record is None:
+            return None
+
+        safe_path = get_safe_path(self._files_root, Path(image_record.filename))
+        if safe_path is None or not safe_path.is_file():
+            safe_path = Path(image_record.filename)
+            if not safe_path.is_file():
+                return None
+
+        try:
+            with PILImage.open(safe_path) as img:
+                img_w, img_h = img.size
+                pad_x = bbox.width * img_w * 0.2
+                pad_y = bbox.height * img_h * 0.2
+                left = max(0, bbox.x * img_w - pad_x)
+                top = max(0, bbox.y * img_h - pad_y)
+                right = min(img_w, (bbox.x + bbox.width) * img_w + pad_x)
+                bottom = min(img_h, (bbox.y + bbox.height) * img_h + pad_y)
+                cropped = img.crop((left, top, right, bottom))
+                aspect = cropped.width / cropped.height if cropped.height else 1
+                height = max(1, round(width / aspect))
+                cropped = cropped.resize((width, height), PILImage.LANCZOS)
+                buf = io.BytesIO()
+                cropped.save(buf, format="PNG")
+                jpeg_bytes = buf.getvalue()
+        except Exception as e:
+            logger.warning(f"Failed to generate thumbnail for bbox {bbox_uuid}: {e}")
+            return None
+
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        async with aiofiles.open(cache_path, "wb") as f:
+            await f.write(jpeg_bytes)
+
+        return jpeg_bytes
+
+
+    async def invalidate_bbox_thumbnails(self, bbox_uuids: List[str]) -> None:
+        """Delete all cached thumbnail sizes for the given bbox UUIDs."""
+        cache_dir = self._thumb_cache_dir()
+        for uuid in bbox_uuids:
+            for path in cache_dir.glob(f"{uuid}_*.png"):
+                try:
+                    path.unlink(missing_ok=True)
+                except Exception as e:
+                    logger.warning(f"Failed to delete thumbnail cache for {uuid}: {e}")
 
     async def open_file(self, rel_path: str) -> Optional[Tuple[aiofiles.threadpool.binary.AsyncBufferedReader, str]]:
         """

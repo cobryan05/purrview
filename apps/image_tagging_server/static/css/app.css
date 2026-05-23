@@ -178,6 +178,65 @@ main.container {
   display: block;
 }
 
+/* ===== Review Grid ===== */
+.review-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 0.5em;
+  padding: 0.5em 0;
+  flex-wrap: wrap;
+}
+
+.review-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 1em;
+  padding: 0.5em 0 2em;
+}
+
+.review-card {
+  background: #222;
+  border: 2px solid transparent;
+  border-radius: 6px;
+  overflow: hidden;
+  position: relative;
+}
+
+.review-card.selected {
+  border-color: #ff0033;
+}
+
+.review-card .thumb {
+  width: 100%;
+  aspect-ratio: 1;
+  object-fit: contain;
+  background: #111;
+  display: block;
+  cursor: pointer;
+}
+
+.review-card .card-info {
+  padding: 0.4em 0.5em;
+  font-size: 0.8em;
+}
+
+.review-card input[type=checkbox] {
+  position: absolute;
+  top: 6px;
+  left: 6px;
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+  accent-color: #ff0033;
+}
+
+.label-chip {
+  display: inline-block;
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-size: 0.85em;
+}
+
 /* ===== Configuration ===== */
 .config-panel {
   display: flex;

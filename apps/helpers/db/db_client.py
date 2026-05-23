@@ -310,6 +310,56 @@ class DbClient:
             result = await session.exec(stmt)
             return result.all()
 
+    async def get_bbox_with_image(self, bbox_uuid: str) -> Optional[tuple[BBox, ImageRecord]]:
+        """Return a bbox and its parent image record, or None if not found."""
+        async with self._async_session_maker() as session:
+            stmt = (
+                select(BBox)
+                .where(BBox.uuid == bbox_uuid)
+                .options(selectinload(BBox.image))
+            )
+            result = await session.exec(stmt)
+            bbox = result.first()
+            if bbox is None:
+                return None
+            image = await session.get(ImageRecord, bbox.image_uuid)
+            return bbox, image
+
+    async def update_single_bbox(self, bbox_uuid: str, label_uuid: Optional[str], tag_uuids: List[str]) -> None:
+        """Update one bbox's label and replace its tag links in place."""
+        async with self._async_session_maker() as session:
+            bbox = await session.get(BBox, bbox_uuid)
+            if bbox is None:
+                return
+            bbox.label_uuid = label_uuid
+            await session.exec(delete(BBoxTagLink).where(BBoxTagLink.bbox_uuid == bbox_uuid))
+            for tag_uuid in tag_uuids:
+                session.add(BBoxTagLink(bbox_uuid=bbox_uuid, tag_uuid=tag_uuid))
+            session.add(bbox)
+            await session.commit()
+
+    async def delete_single_bbox(self, bbox_uuid: str) -> Optional[str]:
+        """Delete one bbox and return its image_uuid, or None if not found."""
+        async with self._async_session_maker() as session:
+            bbox = await session.get(BBox, bbox_uuid)
+            if bbox is None:
+                return None
+            image_uuid = bbox.image_uuid
+            await session.delete(bbox)
+            await session.commit()
+            return image_uuid
+
+    async def get_bboxes_for_image(self, image_uuid: str) -> List[BBox]:
+        """Return all BBox rows for an image with their tags loaded."""
+        async with self._async_session_maker() as session:
+            stmt = (
+                select(BBox)
+                .where(BBox.image_uuid == image_uuid)
+                .options(selectinload(BBox.tags))
+            )
+            result = await session.exec(stmt)
+            return list(result.all())
+
     async def delete_image(self, image_uuid: str) -> bool:
         """Delete an image by UUID. BBoxes will be deleted via CASCADE."""
         async with self._async_session_maker() as session:
