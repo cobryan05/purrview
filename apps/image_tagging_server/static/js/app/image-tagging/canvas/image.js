@@ -64,15 +64,17 @@ export function clearAnnotations(runtime) {
 export async function saveAnnotations(runtime) {
   if (!runtime.state?.image) {
     toast('No image loaded to save annotations!');
-    return;
+    return false;
   }
 
   try {
     await updateImage(runtime.state.image);
     toast('Annotations saved successfully!');
+    return true;
   }
   catch (err) {
     Logger.error('Failed to save annotations:', err);
+    return false;
   }
 }
 

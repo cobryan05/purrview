@@ -596,7 +596,7 @@ class Manager:
         Return JPEG bytes for a cropped+resized thumbnail of the given bbox.
         Serves from disk cache if available, otherwise generates and caches it.
         """
-        from PIL import Image as PILImage
+        from PIL import Image as PILImage, ImageDraw
 
         cache_path = self._thumb_cache_path(bbox_uuid, width)
         if cache_path.exists():
@@ -616,12 +616,22 @@ class Manager:
             if not safe_path.is_file():
                 return None
 
-        # Extract coords before the thread to avoid passing ORM-bound objects across.
+        # Extract coords and look up label color before the thread (avoids detached ORM objects).
         bx, by, bw, bh = bbox.x, bbox.y, bbox.width, bbox.height
+        label_color: tuple[int, int, int] = (255, 215, 0)  # fallback gold
+        if bbox.label_uuid:
+            label = await self._db_client.get_label_by_uuid(bbox.label_uuid)
+            if label and label.color:
+                try:
+                    h = label.color.lstrip('#')
+                    label_color = (int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16))
+                except (ValueError, IndexError):
+                    pass
 
         def _generate() -> Optional[bytes]:
             try:
                 with PILImage.open(safe_path) as img:
+                    img = img.convert('RGB')
                     img_w, img_h = img.size
                     pad_x = bw * img_w * 0.2
                     pad_y = bh * img_h * 0.2
@@ -630,6 +640,14 @@ class Manager:
                     right = min(img_w, (bx + bw) * img_w + pad_x)
                     bottom = min(img_h, (by + bh) * img_h + pad_y)
                     cropped = img.crop((left, top, right, bottom))
+                    draw = ImageDraw.Draw(cropped)
+                    draw.rectangle(
+                        [bx * img_w - left, by * img_h - top,
+                         (bx + bw) * img_w - left, (by + bh) * img_h - top],
+                        outline=label_color,
+                        width=3,
+                    )
+                    del draw
                     aspect = cropped.width / cropped.height if cropped.height else 1
                     height = max(1, round(width / aspect))
                     cropped = cropped.resize((width, height), PILImage.LANCZOS)

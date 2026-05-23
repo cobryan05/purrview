@@ -237,6 +237,108 @@ main.container {
   font-size: 0.85em;
 }
 
+/* ===== Canvas Modal (review page editor) ===== */
+.canvas-modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: #000a;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 2000;
+}
+
+.canvas-modal-dialog {
+  background: #1a1a1a;
+  border: 1px solid #555;
+  border-radius: 6px;
+  width: 90vw;
+  height: 90vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.canvas-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.5em 0.8em;
+  border-bottom: 1px solid #444;
+  flex-shrink: 0;
+  gap: 0.5em;
+}
+
+.canvas-modal-header .canvas-modal-title {
+  font-size: 0.9em;
+  color: #ccc;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.canvas-modal-header .canvas-modal-close {
+  background: none;
+  border: none;
+  color: #aaa;
+  cursor: pointer;
+  font-size: 1.2em;
+  padding: 0 0.2em;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+.canvas-modal-header .canvas-modal-close:hover {
+  color: #fff;
+}
+
+.canvas-modal-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 0.4em;
+  padding: 0.3em 0.6em;
+  border-bottom: 1px solid #333;
+  flex-shrink: 0;
+  flex-wrap: wrap;
+}
+
+.canvas-modal-toolbar button {
+  padding: 0.2em 0.6em;
+  font-size: 0.85em;
+  cursor: pointer;
+  border: 1px solid #555;
+  border-radius: 3px;
+  background: #2a2a2a;
+  color: #ccc;
+}
+
+.canvas-modal-toolbar button:hover {
+  background: #3a3a3a;
+  color: #fff;
+}
+
+.canvas-modal-toolbar button.active {
+  border-color: #ffd700;
+  color: #ffd700;
+}
+
+.canvas-modal-canvas {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  position: relative;
+}
+
+.canvas-modal-footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.5em;
+  padding: 0.4em 0.8em;
+  border-top: 1px solid #333;
+  flex-shrink: 0;
+}
+
 /* ===== Configuration ===== */
 .config-panel {
   display: flex;

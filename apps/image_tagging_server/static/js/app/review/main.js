@@ -11,8 +11,9 @@ import {
   VERIFIED_TAG_UUID,
   FALSE_POS_TAG_UUID,
 } from '/app-static/js/shared/api/review.js';
-import { events, EventTypes } from '/app-static/js/shared/events/index.js';
 import { Logger } from '/app-static/js/ui/utils/logging.js';
+import { createCanvasInstance } from '/app-static/js/app/image-tagging/canvas/instance.js';
+import { saveAnnotations, deleteSelected } from '/app-static/js/app/image-tagging/canvas/image.js';
 
 const PAGE_SIZE = 50;
 
@@ -201,9 +202,9 @@ export async function init() {
     thumbImg.className = 'thumb';
     thumbImg.alt = labelName;
     thumbImg.src = getBboxThumbnailUrl(img.filename, bbox.uuid, 300);
-    thumbImg.addEventListener('click', () => {
-      events.publish(EventTypes.LOAD_IMAGE_ONTO_CANVAS, { path: img.filename, showCanvas: true });
-      events.publish(EventTypes.SHOW_CANVAS);
+    thumbImg.title = 'Double-click to edit in canvas';
+    thumbImg.addEventListener('dblclick', () => {
+      showCanvasModal(bbox, img, labels, async () => { await render(); });
     });
 
     const info = document.createElement('div');
@@ -302,6 +303,131 @@ async function executeBulkAction(action, entries, newLabelUuid) {
 
   if (toInvalidate.length) await invalidateBboxThumbnails(toInvalidate);
   return failCount;
+}
+
+// ── Canvas edit modal ─────────────────────────────────────────────────
+
+let _modalOpen = false;
+
+/**
+ * Open a full canvas editor modal for a single bbox.
+ * @param {object} bbox  The bbox object from the review queue
+ * @param {object} img   The parent image object
+ * @param {Map} labels   Labels map (uuid → { name, color })
+ * @param {() => Promise<void>} onSaved  Called after a successful save
+ */
+async function showCanvasModal(bbox, img, labels, onSaved) {
+  if (_modalOpen) return;
+  _modalOpen = true;
+  const shortPath = img.filename.split('/').slice(-2).join('/');
+
+  // ── Build DOM ─────────────────────────────────────────────────────
+  const overlay = document.createElement('div');
+  overlay.className = 'canvas-modal-overlay';
+
+  const dialog = document.createElement('div');
+  dialog.className = 'canvas-modal-dialog';
+
+  // Header
+  const header = document.createElement('div');
+  header.className = 'canvas-modal-header';
+  const title = document.createElement('span');
+  title.className = 'canvas-modal-title';
+  title.textContent = `Edit: ${shortPath}`;
+  const closeBtn = document.createElement('button');
+  closeBtn.className = 'canvas-modal-close';
+  closeBtn.textContent = '✕';
+  closeBtn.title = 'Close without saving';
+  header.append(title, closeBtn);
+
+  // Toolbar
+  const toolbar = document.createElement('div');
+  toolbar.className = 'canvas-modal-toolbar';
+
+  const selectBtn = document.createElement('button');
+  selectBtn.textContent = 'Select';
+  selectBtn.className = 'active';
+  const deleteBtn = document.createElement('button');
+  deleteBtn.textContent = 'Delete';
+  toolbar.append(selectBtn, deleteBtn);
+
+  // Canvas container
+  const canvasWrap = document.createElement('div');
+  canvasWrap.className = 'canvas-modal-canvas';
+
+  // Footer
+  const footer = document.createElement('div');
+  footer.className = 'canvas-modal-footer';
+  const saveBtn = document.createElement('button');
+  saveBtn.textContent = 'Save & Close';
+  saveBtn.style.cssText = 'background:#ff003322;border:1px solid #ff0033;border-radius:3px;padding:0.3em 1em;cursor:pointer;color:#ff6666;';
+  footer.appendChild(saveBtn);
+
+  dialog.append(header, toolbar, canvasWrap, footer);
+  overlay.appendChild(dialog);
+  document.body.appendChild(overlay);
+
+  // ── Create canvas instance ─────────────────────────────────────────
+  let instance;
+  try {
+    instance = await createCanvasInstance(canvasWrap, { tool: 'select' });
+    await instance.loadImage(img.filename);
+  } catch (err) {
+    Logger.error('Canvas modal: failed to load image', err);
+    instance?.destroy();
+    overlay.remove();
+    _modalOpen = false;
+    return;
+  }
+
+  // Highlight the target bbox
+  const layer = instance.runtime.canvas.layer;
+  const targetView = layer.findOne('#' + bbox.uuid);
+  if (targetView) {
+    instance.runtime.canvas.transformer.nodes([targetView]);
+    layer.draw();
+  }
+
+  // ── Toolbar wiring ─────────────────────────────────────────────────
+  selectBtn.addEventListener('click', () => {
+    instance.runtime.setTool('select');
+    selectBtn.classList.add('active');
+  });
+  deleteBtn.addEventListener('click', () => {
+    deleteSelected(instance.runtime);
+  });
+
+  // ── Close / Save ───────────────────────────────────────────────────
+  function closeModal() {
+    _modalOpen = false;
+    instance.destroy();
+    overlay.remove();
+  }
+
+  closeBtn.addEventListener('click', closeModal);
+  overlay.addEventListener('click', e => { if (e.target === overlay) closeModal(); });
+
+  saveBtn.addEventListener('click', async () => {
+    saveBtn.disabled = true;
+    saveBtn.textContent = 'Saving…';
+    let saved = false;
+    try {
+      saved = await saveAnnotations(instance.runtime);
+      if (saved) {
+        const allUuids = [...instance.runtime.state.image.bboxes.keys()];
+        await invalidateBboxThumbnails([...new Set([...allUuids, bbox.uuid])]);
+      }
+    } catch (err) {
+      Logger.error('Canvas modal: save failed', err);
+    }
+    if (saved) {
+      closeModal();
+      await onSaved();
+    } else {
+      saveBtn.disabled = false;
+      saveBtn.textContent = 'Save & Close';
+    }
+  });
 }
 
 // ── Bulk action modal ─────────────────────────────────────────────────
