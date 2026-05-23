@@ -378,8 +378,9 @@ class Manager:
             ]
         )
         if safe_path is not None:
-            self._db_client.write_image_metadata_to_json(
-                self._get_json_sidefile(safe_path), image_record.uuid, image_record.filename, update
+            await asyncio.to_thread(
+                self._db_client.write_image_metadata_to_json,
+                self._get_json_sidefile(safe_path), image_record.uuid, image_record.filename, update,
             )
         else:
             logger.warning(f"Skipping sidecar write for {image_record.filename!r}: path not under FILES_ROOT")
@@ -615,24 +616,32 @@ class Manager:
             if not safe_path.is_file():
                 return None
 
-        try:
-            with PILImage.open(safe_path) as img:
-                img_w, img_h = img.size
-                pad_x = bbox.width * img_w * 0.2
-                pad_y = bbox.height * img_h * 0.2
-                left = max(0, bbox.x * img_w - pad_x)
-                top = max(0, bbox.y * img_h - pad_y)
-                right = min(img_w, (bbox.x + bbox.width) * img_w + pad_x)
-                bottom = min(img_h, (bbox.y + bbox.height) * img_h + pad_y)
-                cropped = img.crop((left, top, right, bottom))
-                aspect = cropped.width / cropped.height if cropped.height else 1
-                height = max(1, round(width / aspect))
-                cropped = cropped.resize((width, height), PILImage.LANCZOS)
-                buf = io.BytesIO()
-                cropped.save(buf, format="PNG")
-                jpeg_bytes = buf.getvalue()
-        except Exception as e:
-            logger.warning(f"Failed to generate thumbnail for bbox {bbox_uuid}: {e}")
+        # Extract coords before the thread to avoid passing ORM-bound objects across.
+        bx, by, bw, bh = bbox.x, bbox.y, bbox.width, bbox.height
+
+        def _generate() -> Optional[bytes]:
+            try:
+                with PILImage.open(safe_path) as img:
+                    img_w, img_h = img.size
+                    pad_x = bw * img_w * 0.2
+                    pad_y = bh * img_h * 0.2
+                    left = max(0, bx * img_w - pad_x)
+                    top = max(0, by * img_h - pad_y)
+                    right = min(img_w, (bx + bw) * img_w + pad_x)
+                    bottom = min(img_h, (by + bh) * img_h + pad_y)
+                    cropped = img.crop((left, top, right, bottom))
+                    aspect = cropped.width / cropped.height if cropped.height else 1
+                    height = max(1, round(width / aspect))
+                    cropped = cropped.resize((width, height), PILImage.LANCZOS)
+                    buf = io.BytesIO()
+                    cropped.save(buf, format="PNG")
+                    return buf.getvalue()
+            except Exception as e:
+                logger.warning(f"Failed to generate thumbnail for bbox {bbox_uuid}: {e}")
+                return None
+
+        jpeg_bytes = await asyncio.to_thread(_generate)
+        if jpeg_bytes is None:
             return None
 
         cache_path.parent.mkdir(parents=True, exist_ok=True)
@@ -641,16 +650,19 @@ class Manager:
 
         return jpeg_bytes
 
-
     async def invalidate_bbox_thumbnails(self, bbox_uuids: List[str]) -> None:
         """Delete all cached thumbnail sizes for the given bbox UUIDs."""
         cache_dir = self._thumb_cache_dir()
-        for uuid in bbox_uuids:
-            for path in cache_dir.glob(f"{uuid}_*.png"):
-                try:
-                    path.unlink(missing_ok=True)
-                except Exception as e:
-                    logger.warning(f"Failed to delete thumbnail cache for {uuid}: {e}")
+
+        def _remove_files() -> None:
+            for uuid in bbox_uuids:
+                for path in cache_dir.glob(f"{uuid}_*.png"):
+                    try:
+                        path.unlink(missing_ok=True)
+                    except Exception as e:
+                        logger.warning(f"Failed to delete thumbnail cache for {uuid}: {e}")
+
+        await asyncio.to_thread(_remove_files)
 
     async def open_file(self, rel_path: str) -> Optional[Tuple[aiofiles.threadpool.binary.AsyncBufferedReader, str]]:
         """

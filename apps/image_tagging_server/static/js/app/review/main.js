@@ -157,7 +157,9 @@ export async function init() {
 
     if (total === 0) {
       const empty = document.createElement('p');
-      empty.textContent = 'Nothing to review here.';
+      empty.textContent = _hasMore
+        ? 'No unverified annotations on this page.'
+        : 'No unverified annotations remaining.';
       empty.style.color = '#aaa';
       grid.appendChild(empty);
       refreshBtn.disabled = false;
@@ -245,9 +247,12 @@ export async function init() {
     if (_selected.size === 0) return;
     const selectedEntries = _allBboxEntries.filter(e => _selected.has(e.bbox.uuid));
     showBulkActionModal(selectedEntries, labels, async (action, newLabelUuid) => {
-      await executeBulkAction(action, selectedEntries, newLabelUuid);
+      const failCount = await executeBulkAction(action, selectedEntries, newLabelUuid);
       _offset = 0;
       await render();
+      if (failCount > 0) {
+        statusMsg.textContent += ` (${failCount} action${failCount === 1 ? '' : 's'} failed — check console)`;
+      }
     });
   });
 
@@ -271,6 +276,7 @@ export async function init() {
 
 async function executeBulkAction(action, entries, newLabelUuid) {
   const toInvalidate = [];
+  let failCount = 0;
 
   for (const { bbox } of entries) {
     try {
@@ -290,10 +296,12 @@ async function executeBulkAction(action, entries, newLabelUuid) {
       toInvalidate.push(bbox.uuid);
     } catch (err) {
       Logger.error(`Bulk action failed for bbox ${bbox.uuid}: ${err.message}`);
+      failCount++;
     }
   }
 
   if (toInvalidate.length) await invalidateBboxThumbnails(toInvalidate);
+  return failCount;
 }
 
 // ── Bulk action modal ─────────────────────────────────────────────────

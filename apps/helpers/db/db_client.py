@@ -331,7 +331,8 @@ class DbClient:
             bbox = await session.get(BBox, bbox_uuid)
             if bbox is None:
                 return
-            bbox.label_uuid = label_uuid
+            if label_uuid is not None:
+                bbox.label_uuid = label_uuid
             await session.exec(delete(BBoxTagLink).where(BBoxTagLink.bbox_uuid == bbox_uuid))
             for tag_uuid in tag_uuids:
                 session.add(BBoxTagLink(bbox_uuid=bbox_uuid, tag_uuid=tag_uuid))

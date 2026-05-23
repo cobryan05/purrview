@@ -336,10 +336,18 @@ class Manager:
         # Whichever coroutine wins the pop is responsible for persisting final status.
         if self._running_tasks.pop(task_info.instance.uuid, None) is None:
             return
-        task_info.instance.status = task_info.task.get_status()
-        await self._save_task_data(task_info)
-        if task_info.config.params_json.get(Task.InternalKeys.ONESHOT_RESULT, False):
-            self._pending_oneshot_deletes.add(task_info.instance.uuid)
+        try:
+            task_info.instance.status = task_info.task.get_status()
+            await self._save_task_data(task_info)
+            if task_info.config.params_json.get(Task.InternalKeys.ONESHOT_RESULT, False):
+                self._pending_oneshot_deletes.add(task_info.instance.uuid)
+        except Exception:
+            logger.exception(f"Error completing task {task_info.instance.uuid}; forcing ERROR status")
+            task_info.instance.status = TaskStatus.ERROR
+            try:
+                await self._save_task_data(task_info)
+            except Exception:
+                logger.exception(f"Failed to save ERROR status for task {task_info.instance.uuid}")
 
     async def _save_task_data(self, task_info: TaskInfo) -> None:
         if task_info.task.is_data_ready():
