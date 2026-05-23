@@ -5,7 +5,7 @@
  */
 export function createCanvasState(container) {
   const stage = new Konva.Stage({
-    container: container.id,
+    container: container,
     width: container.clientWidth,
     height: container.clientHeight,
   });
@@ -36,10 +36,25 @@ export function createCanvasState(container) {
   /** @type {import('@image_tagging_types').ViewportTransform} */
   const viewport = { offsetX: 0, offsetY: 0, scale: 1.0, imageHeight: 0, imageWidth: 0 };
 
+  const interactionState = {
+    pendingDraggedBbox: null,
+    selectedBbox: null,
+    isPanning: false,
+    startPos: null,
+    lastPanPos: null,
+    lastClickTime: 0,
+    lastClickPos: null,
+    crosshairV: null,
+    crosshairH: null,
+  };
+
   /** @type {import('@image_tagging_types').CanvasState} */
   const canvasState = {
     container,
-    stage, layer, transformer, viewport
+    stage, layer, transformer, viewport,
+    interactionState,
+    activeImageLoadId: 0,
+    resizeObserver: null,
   };
 
   return canvasState;

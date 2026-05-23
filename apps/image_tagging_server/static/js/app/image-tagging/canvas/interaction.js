@@ -8,43 +8,32 @@ import { events, EventTypes } from '/app-static/js/shared/events/index.js';
 import { setCanvasViewport } from './manager.js';
 import { screenToImage } from './viewport.js';
 
-/** @type {import('@canvas_types').BboxView | null} */
-let _pendingDraggedBbox = null;
-/** @type {import('@canvas_types').BboxView | null} */
-let _selectedBbox = null;
-
 const DOUBLE_CLICK_TIME_MS = 400;
 const DOUBLE_CLICK_DISTANCE_PX = 10;
 const BBOX_MIN_PX = 10;
-let _startPos = null;
-let _isPanning = false;
-let _lastPanPos = null;
-let _lastClickTime = 0;
-let _lastClickPos = null;
-let _crosshairV = null;
-let _crosshairH = null;
 
 /**
  * Creates crosshair lines on the canvas.
  * @param {import('@image_tagging_types').CanvasState} canvasState - The canvas state.
  */
 function createCrosshairLines(canvasState) {
-  if (_crosshairV && _crosshairH) return;
+  const ist = canvasState.interactionState;
+  if (ist.crosshairV && ist.crosshairH) return;
 
   const layer = canvasState.layer;
   const stage = canvasState.stage;
   const width = stage.width();
   const height = stage.height();
 
-  _crosshairV = new Konva.Line({
+  ist.crosshairV = new Konva.Line({
     points: [0, 0, 0, height],
     stroke: 'rgba(127,127,127,0.5)',
     strokeWidth: 1,
     dash: [4, 4],
-    listening: false,  // don't interfere with events
+    listening: false,
   });
 
-  _crosshairH = new Konva.Line({
+  ist.crosshairH = new Konva.Line({
     points: [0, 0, width, 0],
     stroke: 'rgba(0,0,0,0.3)',
     strokeWidth: 1,
@@ -52,7 +41,7 @@ function createCrosshairLines(canvasState) {
     listening: false,
   });
 
-  layer.add(_crosshairV, _crosshairH);
+  layer.add(ist.crosshairV, ist.crosshairH);
 }
 
 /**
@@ -96,8 +85,8 @@ function findGroupAtPoint(runtime, pos) {
  */
 export async function handleMouseDown(e, runtime) {
   const stage = runtime.canvas.stage;
-  const background = runtime.canvas?.backgroundImage;
   const layer = runtime.canvas.layer;
+  const ist = runtime.canvas.interactionState;
 
   if (!stage || !layer) {
     Logger.error("No canvas!");
@@ -106,8 +95,8 @@ export async function handleMouseDown(e, runtime) {
 
   // Middle mouse: start panning
   if (e.evt.button === 1) {
-    _isPanning = true;
-    _lastPanPos = { x: e.evt.clientX, y: e.evt.clientY };
+    ist.isPanning = true;
+    ist.lastPanPos = { x: e.evt.clientX, y: e.evt.clientY };
     stage.container().style.cursor = 'move';
     e.evt.preventDefault();
     return;
@@ -117,19 +106,19 @@ export async function handleMouseDown(e, runtime) {
   if (e.evt.button === 0 && runtime.tool === 'select') {
     const pos = getPointerPosition(runtime.canvas);
     if (pos && !findGroupAtPoint(runtime, pos)) {
-      _isPanning = true;
-      _lastPanPos = { x: e.evt.clientX, y: e.evt.clientY };
+      ist.isPanning = true;
+      ist.lastPanPos = { x: e.evt.clientX, y: e.evt.clientY };
       stage.container().style.cursor = 'grabbing';
       return;
     }
   }
 
-  if (e.evt.button !== 0 || _isPanning || runtime.tool === 'select') return;
+  if (e.evt.button !== 0 || ist.isPanning || runtime.tool === 'select') return;
 
   const pos = getPointerPosition(runtime.canvas);
   if (!pos) return;
 
-  _startPos = pos;
+  ist.startPos = pos;
 }
 
 /**
@@ -140,10 +129,12 @@ export async function handleMouseDown(e, runtime) {
 export async function handleMouseMove(e, runtime) {
   const stage = runtime.canvas.stage;
   const layer = runtime.canvas.layer;
-  if (_isPanning) {
-    const dx = e.evt.clientX - _lastPanPos.x;
-    const dy = e.evt.clientY - _lastPanPos.y;
-    _lastPanPos = { x: e.evt.clientX, y: e.evt.clientY };
+  const ist = runtime.canvas.interactionState;
+
+  if (ist.isPanning) {
+    const dx = e.evt.clientX - ist.lastPanPos.x;
+    const dy = e.evt.clientY - ist.lastPanPos.y;
+    ist.lastPanPos = { x: e.evt.clientX, y: e.evt.clientY };
     const viewport = runtime.canvas?.viewport;
     if (!viewport) return;
 
@@ -157,23 +148,22 @@ export async function handleMouseMove(e, runtime) {
   const currentTool = runtime.tool;
   if (currentTool != 'select') {
     createCrosshairLines(runtime.canvas);
-    // Position lines at mouse X,Y spanning full height,width
-    _crosshairV.points([pos.x, 0, pos.x, stage.height()]);
-    _crosshairH.points([0, pos.y, stage.width(), pos.y]);
-    _crosshairV.show();
-    _crosshairH.show();
+    ist.crosshairV.points([pos.x, 0, pos.x, stage.height()]);
+    ist.crosshairH.points([0, pos.y, stage.width(), pos.y]);
+    ist.crosshairV.show();
+    ist.crosshairH.show();
     layer.batchDraw();
   } else {
-    if (_crosshairV) _crosshairV.hide();
-    if (_crosshairH) _crosshairH.hide();
+    if (ist.crosshairV) ist.crosshairV.hide();
+    if (ist.crosshairH) ist.crosshairH.hide();
     layer.batchDraw();
   }
 
-  if (!_startPos) return;
+  if (!ist.startPos) return;
 
-  const dx = pos.x - _startPos.x;
-  const dy = pos.y - _startPos.y;
-  if (!_pendingDraggedBbox && (dx * dx + dy * dy) > BBOX_MIN_PX ** 2) {
+  const dx = pos.x - ist.startPos.x;
+  const dy = pos.y - ist.startPos.y;
+  if (!ist.pendingDraggedBbox && (dx * dx + dy * dy) > BBOX_MIN_PX ** 2) {
     const viewport = runtime.canvas?.viewport;
     if (!viewport) return;
     const { uuid: labelUuid } = parseToolUuid(runtime.tool);
@@ -185,14 +175,14 @@ export async function handleMouseMove(e, runtime) {
       }
     }
     const uiBBox = createUIBBbox({ uuid: generateUUID(), label });
-    _pendingDraggedBbox = new BboxView(uiBBox, viewport);
-    layer.add(_pendingDraggedBbox);
+    ist.pendingDraggedBbox = new BboxView(uiBBox, viewport);
+    layer.add(ist.pendingDraggedBbox);
   }
 
-  if (_pendingDraggedBbox) {
-    _pendingDraggedBbox.updatePosition({
-      x: dx < 0 ? pos.x : _startPos.x,
-      y: dy < 0 ? pos.y : _startPos.y,
+  if (ist.pendingDraggedBbox) {
+    ist.pendingDraggedBbox.updatePosition({
+      x: dx < 0 ? pos.x : ist.startPos.x,
+      y: dy < 0 ? pos.y : ist.startPos.y,
       width: Math.abs(dx),
       height: Math.abs(dy),
     });
@@ -206,29 +196,30 @@ export async function handleMouseMove(e, runtime) {
  */
 export async function handleMouseUp(e, runtime) {
   if (!runtime.canvas) return;
+  const ist = runtime.canvas.interactionState;
   const isSelectTool = runtime.tool === 'select';
   runtime.canvas.stage.container().style.cursor =
     isSelectTool ? 'default' : 'crosshair';
 
-  if (e.evt.button === 1 || _isPanning) {
-    _isPanning = false;
+  if (e.evt.button === 1 || ist.isPanning) {
+    ist.isPanning = false;
     return;
   }
-  _startPos = null;
-  if (_pendingDraggedBbox) {
-    const w = _pendingDraggedBbox.width();
-    const h = _pendingDraggedBbox.height();
+  ist.startPos = null;
+  if (ist.pendingDraggedBbox) {
+    const w = ist.pendingDraggedBbox.width();
+    const h = ist.pendingDraggedBbox.height();
 
     if (w < BBOX_MIN_PX || h < BBOX_MIN_PX) {
-      _pendingDraggedBbox.destroy();
+      ist.pendingDraggedBbox.destroy();
     } else {
       // normalize back to 0-1 image space before registering
       const vp = runtime.canvas.viewport;
       const sw = vp.imageWidth * vp.scale;
       const sh = vp.imageHeight * vp.scale;
-      const uiBBox = _pendingDraggedBbox.uiBBox;
-      uiBBox.x = (_pendingDraggedBbox.x() - vp.offsetX) / sw;
-      uiBBox.y = (_pendingDraggedBbox.y() - vp.offsetY) / sh;
+      const uiBBox = ist.pendingDraggedBbox.uiBBox;
+      uiBBox.x = (ist.pendingDraggedBbox.x() - vp.offsetX) / sw;
+      uiBBox.y = (ist.pendingDraggedBbox.y() - vp.offsetY) / sh;
       uiBBox.width = w / sw;
       uiBBox.height = h / sh;
       runtime.state.image.bboxes.set(uiBBox.uuid, uiBBox);
@@ -236,18 +227,18 @@ export async function handleMouseUp(e, runtime) {
     }
 
     runtime.canvas.layer.draw();
-    _pendingDraggedBbox = null;
+    ist.pendingDraggedBbox = null;
   }
 
   const pos = getPointerPosition(runtime.canvas);
   const hitGroup = findGroupAtPoint(runtime, pos);
 
   const now = Date.now();
-  const timeDelta = now - _lastClickTime;
-  const clickDist = _lastClickPos ? Math.hypot(pos.x - _lastClickPos.x, pos.y - _lastClickPos.y) : null;
+  const timeDelta = now - ist.lastClickTime;
+  const clickDist = ist.lastClickPos ? Math.hypot(pos.x - ist.lastClickPos.x, pos.y - ist.lastClickPos.y) : null;
   const isDoubleClick = (clickDist != null && timeDelta < DOUBLE_CLICK_TIME_MS && clickDist < DOUBLE_CLICK_DISTANCE_PX);
-  _lastClickTime = now;
-  _lastClickPos = pos;
+  ist.lastClickTime = now;
+  ist.lastClickPos = pos;
 
   if (hitGroup instanceof BboxView && isDoubleClick) {
     const { uuid: labelUuid } = parseToolUuid(runtime.tool);
@@ -297,6 +288,7 @@ export async function handleWheel(e, runtime) {
 export function handleClick(e, runtime) {
   if (!runtime.canvas) return;
   const { stage, layer, transformer } = runtime.canvas;
+  const ist = runtime.canvas.interactionState;
 
   // Walk up from the click target to find a BboxView group
   let node = e.target;
@@ -310,18 +302,18 @@ export function handleClick(e, runtime) {
   }
 
   if (bboxGroup instanceof BboxView) {
-    if (_selectedBbox && _selectedBbox !== bboxGroup) {
-      _selectedBbox.off('transformend.transformer');
-      _selectedBbox = null;
+    if (ist.selectedBbox && ist.selectedBbox !== bboxGroup) {
+      ist.selectedBbox.off('transformend.transformer');
+      ist.selectedBbox = null;
     }
-    _selectedBbox = bboxGroup;
+    ist.selectedBbox = bboxGroup;
     transformer.nodes([bboxGroup]);
     transformer.moveToTop();
     bboxGroup.on('transformend.transformer', () => transformer.forceUpdate());
     events.publish(EventTypes.CANVAS_BBOX_CLICKED, { bboxId: bboxGroup.id() });
   } else if (e.target === stage) {
-    _selectedBbox?.off('transformend.transformer');
-    _selectedBbox = null;
+    ist.selectedBbox?.off('transformend.transformer');
+    ist.selectedBbox = null;
     transformer.nodes([]);
   }
   layer.batchDraw();

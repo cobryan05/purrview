@@ -4,8 +4,6 @@ import { fetchLabels } from '/app-static/js/shared/api/labels.js';
 import { createUIBBbox } from '/app-static/js/shared/domain/image/mapper.js';
 import { Logger, toast } from '/app-static/js/ui/utils/index.js';
 
-let _activeImageLoadId = 0;
-
 /**
  * @param {import('@image_tagging_types').ImageTaggingRuntime} runtime
  */
@@ -25,13 +23,15 @@ export async function reloadImage(runtime) {
 export async function loadImageOntoCanvas(runtime, imageName) {
   Logger.debug('loadImageOntoCanvas called with imageName:', imageName);
 
-  // Create a new load id and invalidate all previous loads
-  const loadId = ++_activeImageLoadId;
+  if (!runtime.canvas) return;
+
+  // Create a new load id and invalidate all previous loads for this canvas instance
+  const loadId = ++runtime.canvas.activeImageLoadId;
   /** @type {import('@domain_image').UIImage} */
   const imageInfo = await fetchImage(imageName);
 
-  // If another load started while we waited abort
-  if (loadId !== _activeImageLoadId) {
+  // Abort if canvas was destroyed or a newer load started while we waited
+  if (!runtime.canvas || loadId !== runtime.canvas.activeImageLoadId) {
     Logger.debug('Discarding stale image load for', imageName);
     return;
   }

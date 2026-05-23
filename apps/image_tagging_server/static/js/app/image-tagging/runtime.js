@@ -26,11 +26,24 @@ export function createImageTaggingRuntime() {
     if (!pane) return;
     if (_pane) {
       Logger.warn("Replacing existing pane");
-      // TODO: Cleanup?
     }
+    _canvasState?.resizeObserver?.disconnect();
     _pane = pane;
-    const stage = _pane.getElementsByClassName("canvas-container")[0];
-    _canvasState = createCanvasState(stage);
+    const container = _pane.getElementsByClassName("canvas-container")[0];
+    _canvasState = createCanvasState(container);
+  }
+
+  /** @param {HTMLElement} container - The canvas container element directly (no pane wrapper needed). */
+  function setCanvasContainer(container) {
+    _canvasState?.resizeObserver?.disconnect();
+    _canvasState = createCanvasState(container);
+  }
+
+  /** Disconnect, destroy and null out the canvas state. Safe to call multiple times. */
+  function destroyCanvas() {
+    _canvasState?.resizeObserver?.disconnect();
+    _canvasState?.stage?.destroy();
+    _canvasState = null;
   }
 
   /** @param {import('@image_tagging_types').UIImage} image */
@@ -78,6 +91,8 @@ export function createImageTaggingRuntime() {
     get labelUuid() { return _currentLabelUuid; },
 
     setImageTaggingPane,
+    setCanvasContainer,
+    destroyCanvas,
     setFileNavigation,
     setTool,
     setLabelUuid,
