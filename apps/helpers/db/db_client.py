@@ -288,9 +288,14 @@ class DbClient:
         tag_uuid: str,
         label_uuid: Optional[str] = None,
         limit: int = 50,
-        offset: int = 0,
+        after_uuid: Optional[str] = None,
     ) -> List[ImageRecord]:
-        """Return images that have at least one bbox tagged with tag_uuid, optionally filtered by label."""
+        """Return images that have at least one bbox tagged with tag_uuid, optionally filtered by label.
+
+        Uses cursor-based pagination: pass after_uuid to fetch only images whose UUID sorts
+        lexicographically after that value, preserving a stable page position even as items
+        are verified/deleted and drop out of the filter.
+        """
         async with self._async_session_maker() as session:
             stmt = (
                 select(ImageRecord)
@@ -302,11 +307,13 @@ class DbClient:
                     selectinload(ImageRecord.bboxes).selectinload(BBox.tags),
                 )
                 .distinct()
-                .offset(offset)
+                .order_by(ImageRecord.uuid)
                 .limit(limit)
             )
             if label_uuid:
                 stmt = stmt.where(BBox.label_uuid == label_uuid)
+            if after_uuid:
+                stmt = stmt.where(ImageRecord.uuid > after_uuid)
             result = await session.exec(stmt)
             return result.all()
 

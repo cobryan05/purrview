@@ -96,67 +96,125 @@ export async function init() {
   // ── State ─────────────────────────────────────────────────────────
   let _allBboxEntries = []; // flat list of { bbox, img } for current page
   let _selected = new Set(); // selected bbox UUIDs
-  let _offset = 0;
+  let _staleUuids = new Set(); // bbox UUIDs modified/deleted on this page (in-place)
+  let _pageCursors = [null]; // cursor stack: each entry is the afterUuid used to load that page
+  let _lastImageUuid = null; // UUID of the last image on the current page (cursor for Next)
   let _rendering = false;
   let _hasMore = false;
 
   function updateBulkBtn() {
+    const activeCount = _allBboxEntries.filter(e => !_staleUuids.has(e.bbox.uuid)).length;
     bulkBtn.textContent = `Bulk Apply (${_selected.size})`;
     bulkBtn.disabled = _selected.size === 0;
-    selectAllCb.checked = _selected.size > 0 && _selected.size === _allBboxEntries.length;
-    selectAllCb.indeterminate = _selected.size > 0 && _selected.size < _allBboxEntries.length;
+    selectAllCb.checked = _selected.size > 0 && _selected.size === activeCount;
+    selectAllCb.indeterminate = _selected.size > 0 && _selected.size < activeCount;
+  }
+
+  function updateStatusMsg() {
+    const total = _allBboxEntries.length;
+    const stale = _staleUuids.size;
+    const fresh = total - stale;
+    if (total === 0) {
+      statusMsg.textContent = 'No unverified annotations on this page';
+    } else if (stale === 0) {
+      statusMsg.textContent = `${total} unverified bbox${total === 1 ? '' : 'es'} on this page`;
+    } else {
+      statusMsg.textContent = `${fresh} unverified remaining · ${stale} modified`;
+    }
+  }
+
+  function markCardStale(card, state) {
+    card.querySelector('.card-state-badge')?.remove();
+    card.classList.remove('stale-verified', 'stale-false-positive', 'stale-relabeled', 'stale-deleted');
+    card.classList.add(`stale-${state}`);
+    const stateLabels = {
+      verified: '✓ Verified',
+      'false-positive': '✗ False Pos.',
+      relabeled: '⤴ Relabeled',
+      deleted: '🗑 Deleted',
+    };
+    const badge = document.createElement('div');
+    badge.className = `card-state-badge state-${state}`;
+    badge.textContent = stateLabels[state] ?? state;
+    card.querySelector('.card-info')?.prepend(badge);
+    const cb = card.querySelector('input[type=checkbox]');
+    if (cb) { cb.checked = false; cb.disabled = true; }
+    const uuid = card.dataset.bboxUuid;
+    _staleUuids.add(uuid);
+    _selected.delete(uuid);
   }
 
   // ── Render ────────────────────────────────────────────────────────
   async function render() {
     if (_rendering) return;
     _rendering = true;
-    refreshBtn.disabled = true;
-    prevBtn.disabled = true;
-    nextBtn.disabled = true;
-    statusMsg.textContent = 'Loading…';
-    grid.innerHTML = '';
-    _selected.clear();
-    _allBboxEntries = [];
-    updateBulkBtn();
 
-    let images;
-    try {
-      images = await fetchReviewQueue({
-        tagUuid: UNVERIFIED_TAG_UUID,
-        labelUuid: labelSelect.value || undefined,
-        limit: PAGE_SIZE,
-        offset: _offset,
-      });
-    } catch (err) {
-      statusMsg.textContent = `Error: ${err.message}`;
-      refreshBtn.disabled = false;
-      _rendering = false;
-      return;
-    }
+    // currentCursor tracks the effective fetch cursor, which may advance past
+    // server pages that contain zero unverified bboxes (all already verified).
+    // We update the top of _pageCursors so Prev navigates correctly.
+    const MAX_AUTO_SKIP = 10;
+    let autoSkipped = 0;
 
-    _hasMore = images.length === PAGE_SIZE;
+    fetchLoop: while (true) {
+      refreshBtn.disabled = true;
+      prevBtn.disabled = true;
+      nextBtn.disabled = true;
+      statusMsg.textContent = 'Loading…';
+      grid.innerHTML = '';
+      _selected.clear();
+      _staleUuids = new Set();
+      _allBboxEntries = [];
+      _lastImageUuid = null;
+      updateBulkBtn();
 
-    // Flatten images → unverified bboxes
-    for (const img of images) {
-      const unverified = (img.bboxes || []).filter(
-        b => (b.tags || []).some(t => t.uuid === UNVERIFIED_TAG_UUID)
-      );
-      for (const bbox of unverified) {
-        _allBboxEntries.push({ bbox, img });
+      let images;
+      try {
+        images = await fetchReviewQueue({
+          tagUuid: UNVERIFIED_TAG_UUID,
+          labelUuid: labelSelect.value || undefined,
+          limit: PAGE_SIZE,
+          afterUuid: _pageCursors[_pageCursors.length - 1],
+        });
+      } catch (err) {
+        statusMsg.textContent = `Error: ${err.message}`;
+        refreshBtn.disabled = false;
+        _rendering = false;
+        return;
       }
+
+      _hasMore = images.length === PAGE_SIZE;
+      _lastImageUuid = images.length > 0 ? images[images.length - 1].uuid : null;
+
+      // Flatten images → unverified bboxes
+      for (const img of images) {
+        const unverified = (img.bboxes || []).filter(
+          b => (b.tags || []).some(t => t.uuid === UNVERIFIED_TAG_UUID)
+        );
+        for (const bbox of unverified) {
+          _allBboxEntries.push({ bbox, img });
+        }
+      }
+
+      // If the server returned a full page of images but every bbox on them is
+      // already verified (client-side filter found nothing), advance the cursor
+      // automatically rather than showing the user an empty page.
+      if (_allBboxEntries.length === 0 && _hasMore && autoSkipped < MAX_AUTO_SKIP) {
+        autoSkipped++;
+        // Advance the top of the cursor stack in place so Prev still works correctly
+        // (it will skip over the invisible empty server pages too).
+        _pageCursors[_pageCursors.length - 1] = _lastImageUuid;
+        continue fetchLoop;
+      }
+
+      break fetchLoop;
     }
 
-    const total = _allBboxEntries.length;
-    statusMsg.textContent = total === 0
-      ? 'No unverified annotations'
-      : `${total} unverified bbox${total === 1 ? '' : 'es'} in ${images.length} image${images.length === 1 ? '' : 's'}`;
-
-    pageInfo.textContent = `Page ${Math.floor(_offset / PAGE_SIZE) + 1}`;
-    prevBtn.disabled = _offset === 0;
+    updateStatusMsg();
+    pageInfo.textContent = `Page ${_pageCursors.length}`;
+    prevBtn.disabled = _pageCursors.length <= 1;
     nextBtn.disabled = !_hasMore;
 
-    if (total === 0) {
+    if (_allBboxEntries.length === 0) {
       const empty = document.createElement('p');
       empty.textContent = _hasMore
         ? 'No unverified annotations on this page.'
@@ -204,7 +262,41 @@ export async function init() {
     thumbImg.src = getBboxThumbnailUrl(img.filename, bbox.uuid, 300);
     thumbImg.title = 'Double-click to edit in canvas';
     thumbImg.addEventListener('dblclick', () => {
-      showCanvasModal(bbox, img, labels, async () => { await render(); });
+      showCanvasModal(bbox, img, labels, async (updatedUIBbox) => {
+        const card = grid.querySelector(`[data-bbox-uuid="${bbox.uuid}"]`);
+        if (!card) return;
+
+        if (updatedUIBbox === undefined) {
+          // Bbox was deleted inside the canvas editor
+          markCardStale(card, 'deleted');
+        } else {
+          // Force thumbnail re-download by cache-busting the URL
+          const thumb = card.querySelector('.thumb');
+          if (thumb) thumb.src = getBboxThumbnailUrl(img.filename, bbox.uuid, 300) + `&t=${Date.now()}`;
+
+          // Update label chip to reflect the saved state (including the label-less case)
+          const chip = card.querySelector('.label-chip');
+          if (chip) {
+            if (updatedUIBbox.label) {
+              chip.textContent = updatedUIBbox.label.text;
+              chip.style.cssText = `background:${updatedUIBbox.label.color}33;border:1px solid ${updatedUIBbox.label.color};`;
+            } else {
+              chip.textContent = '(unknown)';
+              chip.style.cssText = 'background:#88888833;border:1px solid #888;';
+            }
+          }
+
+          // If it's no longer unverified, mark it stale with the appropriate state
+          const stillUnverified = (updatedUIBbox.tagUuids ?? []).includes(UNVERIFIED_TAG_UUID);
+          if (!stillUnverified) {
+            const isFP = (updatedUIBbox.tagUuids ?? []).includes(FALSE_POS_TAG_UUID);
+            markCardStale(card, isFP ? 'false-positive' : 'verified');
+          }
+        }
+
+        updateBulkBtn();
+        updateStatusMsg();
+      });
     });
 
     const info = document.createElement('div');
@@ -232,10 +324,12 @@ export async function init() {
   selectAllCb.addEventListener('change', () => {
     const cards = grid.querySelectorAll('.review-card');
     for (const { bbox } of _allBboxEntries) {
+      if (_staleUuids.has(bbox.uuid)) continue; // skip already-modified cards
       if (selectAllCb.checked) _selected.add(bbox.uuid);
       else _selected.delete(bbox.uuid);
     }
     cards.forEach(c => {
+      if (_staleUuids.has(c.dataset.bboxUuid)) return; // stale cards stay disabled
       const cb = c.querySelector('input[type=checkbox]');
       if (cb) cb.checked = selectAllCb.checked;
       c.classList.toggle('selected', selectAllCb.checked);
@@ -248,9 +342,36 @@ export async function init() {
     if (_selected.size === 0) return;
     const selectedEntries = _allBboxEntries.filter(e => _selected.has(e.bbox.uuid));
     showBulkActionModal(selectedEntries, labels, async (action, newLabelUuid) => {
-      const failCount = await executeBulkAction(action, selectedEntries, newLabelUuid);
-      _offset = 0;
-      await render();
+      const { failCount, succeededEntries } = await executeBulkAction(action, selectedEntries, newLabelUuid);
+
+      for (const { bbox, img } of succeededEntries) {
+        const card = grid.querySelector(`[data-bbox-uuid="${bbox.uuid}"]`);
+        if (!card) continue;
+
+        if (action === 'delete') {
+          markCardStale(card, 'deleted');
+        } else {
+          const thumb = card.querySelector('.thumb');
+          if (thumb) thumb.src = getBboxThumbnailUrl(img.filename, bbox.uuid, 300) + `&t=${Date.now()}`;
+
+          if (action === 'relabel' && newLabelUuid) {
+            const label = labels.get(newLabelUuid);
+            if (label) {
+              const chip = card.querySelector('.label-chip');
+              if (chip) {
+                chip.textContent = label.name;
+                chip.style.cssText = `background:${label.color}33;border:1px solid ${label.color};`;
+              }
+            }
+            markCardStale(card, 'relabeled');
+          } else {
+            markCardStale(card, action === 'fp' ? 'false-positive' : 'verified');
+          }
+        }
+      }
+
+      updateBulkBtn();
+      updateStatusMsg();
       if (failCount > 0) {
         statusMsg.textContent += ` (${failCount} action${failCount === 1 ? '' : 's'} failed — check console)`;
       }
@@ -259,16 +380,16 @@ export async function init() {
 
   // ── Pagination ────────────────────────────────────────────────────
   prevBtn.addEventListener('click', () => {
-    _offset = Math.max(0, _offset - PAGE_SIZE);
+    if (_pageCursors.length > 1) _pageCursors.pop();
     render();
   });
   nextBtn.addEventListener('click', () => {
-    _offset += PAGE_SIZE;
+    _pageCursors.push(_lastImageUuid);
     render();
   });
 
-  refreshBtn.addEventListener('click', () => { _offset = 0; render(); });
-  labelSelect.addEventListener('change', () => { _offset = 0; render(); });
+  refreshBtn.addEventListener('click', () => { _pageCursors = [null]; render(); });
+  labelSelect.addEventListener('change', () => { _pageCursors = [null]; render(); });
 
   render();
 }
@@ -277,9 +398,11 @@ export async function init() {
 
 async function executeBulkAction(action, entries, newLabelUuid) {
   const toInvalidate = [];
+  const succeededEntries = [];
   let failCount = 0;
 
-  for (const { bbox } of entries) {
+  for (const entry of entries) {
+    const { bbox } = entry;
     try {
       if (action === 'delete') {
         await deleteBbox(bbox.uuid);
@@ -295,6 +418,7 @@ async function executeBulkAction(action, entries, newLabelUuid) {
         await updateBbox(bbox.uuid, { labelUuid, tagUuids });
       }
       toInvalidate.push(bbox.uuid);
+      succeededEntries.push(entry);
     } catch (err) {
       Logger.error(`Bulk action failed for bbox ${bbox.uuid}: ${err.message}`);
       failCount++;
@@ -302,7 +426,7 @@ async function executeBulkAction(action, entries, newLabelUuid) {
   }
 
   if (toInvalidate.length) await invalidateBboxThumbnails(toInvalidate);
-  return failCount;
+  return { failCount, succeededEntries };
 }
 
 // ── Canvas edit modal ─────────────────────────────────────────────────
@@ -314,7 +438,8 @@ let _modalOpen = false;
  * @param {object} bbox  The bbox object from the review queue
  * @param {object} img   The parent image object
  * @param {Map} labels   Labels map (uuid → { name, color })
- * @param {() => Promise<void>} onSaved  Called after a successful save
+ * @param {(updatedBbox?: object) => Promise<void>} onSaved  Called after a successful save with
+ *   the updated UIBBox (undefined if the bbox was deleted inside the editor)
  */
 async function showCanvasModal(bbox, img, labels, onSaved) {
   if (_modalOpen) return;
@@ -404,11 +529,16 @@ async function showCanvasModal(bbox, img, labels, onSaved) {
     overlay.remove();
   }
 
+  // Use closeBtn.disabled as the "save in flight" sentinel so the backdrop
+  // handler doesn't need a separate flag.
   closeBtn.addEventListener('click', closeModal);
-  overlay.addEventListener('click', e => { if (e.target === overlay) closeModal(); });
+  overlay.addEventListener('click', e => {
+    if (e.target === overlay && !closeBtn.disabled) closeModal();
+  });
 
   saveBtn.addEventListener('click', async () => {
     saveBtn.disabled = true;
+    closeBtn.disabled = true; // block close while save is in-flight
     saveBtn.textContent = 'Saving…';
     let saved = false;
     try {
@@ -421,10 +551,14 @@ async function showCanvasModal(bbox, img, labels, onSaved) {
       Logger.error('Canvas modal: save failed', err);
     }
     if (saved) {
+      // Read the bbox's updated state from the canvas runtime before destroying it.
+      // Returns undefined if the user deleted this bbox inside the editor.
+      const updatedUIBbox = instance.runtime.state.image.bboxes.get(bbox.uuid);
       closeModal();
-      await onSaved();
+      await onSaved(updatedUIBbox);
     } else {
       saveBtn.disabled = false;
+      closeBtn.disabled = false; // re-enable close on failure
       saveBtn.textContent = 'Save & Close';
     }
   });

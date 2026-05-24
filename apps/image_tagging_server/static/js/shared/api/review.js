@@ -7,11 +7,14 @@ const VERIFICATION_TAG_UUIDS = new Set([UNVERIFIED_TAG_UUID, VERIFIED_TAG_UUID, 
 
 /**
  * Fetch images that have at least one bbox tagged with the given tag.
- * @param {{ tagUuid?: string, labelUuid?: string, limit?: number, offset?: number }} opts
+ * Uses cursor-based pagination: pass afterUuid to get images whose UUID sorts after that value,
+ * so the page position stays stable even as items are verified/deleted and leave the filter.
+ * @param {{ tagUuid?: string, labelUuid?: string, limit?: number, afterUuid?: string|null }} opts
  */
-export async function fetchReviewQueue({ tagUuid = UNVERIFIED_TAG_UUID, labelUuid, limit = 50, offset = 0 } = {}) {
-  const params = new URLSearchParams({ tag_uuid: tagUuid, limit, offset });
+export async function fetchReviewQueue({ tagUuid = UNVERIFIED_TAG_UUID, labelUuid, limit = 50, afterUuid = null } = {}) {
+  const params = new URLSearchParams({ tag_uuid: tagUuid, limit });
   if (labelUuid) params.set('label_uuid', labelUuid);
+  if (afterUuid) params.set('after_uuid', afterUuid);
 
   const res = await fetch(`/api/images/review?${params}`);
   const data = await res.json();

@@ -813,12 +813,16 @@ class WebApp:
             tag_uuid: str = UNVERIFIED_TAG_UUID,
             label_uuid: Optional[str] = None,
             limit: int = 50,
-            offset: int = 0,
+            after_uuid: Optional[str] = None,
         ) -> ReviewQueueResponse:
-            """Return images with at least one bbox tagged with tag_uuid (default: Unverified)."""
+            """Return images with at least one bbox tagged with tag_uuid (default: Unverified).
+
+            Uses cursor-based pagination: pass after_uuid to get images whose UUID sorts after
+            that value, so the page position stays stable as items drop out of the filter.
+            """
             try:
                 images = await self._manager.get_review_queue(
-                    tag_uuid=tag_uuid, label_uuid=label_uuid, limit=limit, offset=offset
+                    tag_uuid=tag_uuid, label_uuid=label_uuid, limit=limit, after_uuid=after_uuid
                 )
                 return ReviewQueueResponse(images=images)
             except Exception as e:

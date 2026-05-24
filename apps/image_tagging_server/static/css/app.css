@@ -206,6 +206,35 @@ main.container {
   border-color: #ff0033;
 }
 
+/* ── Stale card states (modified in-place without re-fetch) ──── */
+.review-card.stale-deleted {
+  opacity: 0.45;
+}
+.review-card.stale-deleted .thumb {
+  filter: grayscale(0.7);
+}
+
+.card-state-badge {
+  display: inline-block;
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-size: 0.78em;
+  font-weight: 600;
+  margin-bottom: 0.25em;
+}
+.card-state-badge.state-verified {
+  background: #00b45018; border: 1px solid #00b450; color: #4dffa0;
+}
+.card-state-badge.state-false-positive {
+  background: #ff880018; border: 1px solid #ff8800; color: #ffbb66;
+}
+.card-state-badge.state-relabeled {
+  background: #2288ff18; border: 1px solid #2288ff; color: #88bbff;
+}
+.card-state-badge.state-deleted {
+  background: #66666618; border: 1px solid #666; color: #999;
+}
+
 .review-card .thumb {
   width: 100%;
   aspect-ratio: 1;

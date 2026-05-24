@@ -444,11 +444,11 @@ class Manager:
         tag_uuid: str = UNVERIFIED_TAG_UUID,
         label_uuid: Optional[str] = None,
         limit: int = 50,
-        offset: int = 0,
+        after_uuid: Optional[str] = None,
     ) -> List[ImageRecordRead]:
         """Return images that have at least one bbox tagged with tag_uuid."""
         images = await self._db_client.list_images_with_bbox_tag(
-            tag_uuid=tag_uuid, label_uuid=label_uuid, limit=limit, offset=offset
+            tag_uuid=tag_uuid, label_uuid=label_uuid, limit=limit, after_uuid=after_uuid
         )
         results = []
         for img in images:
