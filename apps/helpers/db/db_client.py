@@ -333,18 +333,60 @@ class DbClient:
             return bbox, image
 
     async def update_single_bbox(self, bbox_uuid: str, label_uuid: Optional[str], tag_uuids: List[str]) -> None:
-        """Update one bbox's label and replace its tag links in place."""
+        """Update one bbox's label and replace its tag links in place.
+
+        Exclusive-group constraints are enforced: if multiple tags in tag_uuids share
+        an exclusive_group, only the *last* one in the list is kept.  Callers can
+        therefore pass [*existing_tags, *new_tags] and the new tags will win any
+        exclusive-group conflict.
+        """
         async with self._async_session_maker() as session:
             bbox = await session.get(BBox, bbox_uuid)
             if bbox is None:
                 return
             if label_uuid is not None:
                 bbox.label_uuid = label_uuid
+
+            # Resolve exclusive-group conflicts before writing.
+            if tag_uuids:
+                tag_rows = await session.exec(select(Tag).where(Tag.uuid.in_(tag_uuids)))
+                tags_by_uuid = {t.uuid: t for t in tag_rows.all()}
+            else:
+                tags_by_uuid = {}
+            final_uuids = self._resolve_exclusive_groups(tag_uuids, tags_by_uuid)
+
             await session.exec(delete(BBoxTagLink).where(BBoxTagLink.bbox_uuid == bbox_uuid))
-            for tag_uuid in tag_uuids:
+            for tag_uuid in final_uuids:
                 session.add(BBoxTagLink(bbox_uuid=bbox_uuid, tag_uuid=tag_uuid))
             session.add(bbox)
             await session.commit()
+
+    @staticmethod
+    def _resolve_exclusive_groups(tag_uuids: List[str], tags_by_uuid: dict) -> List[str]:
+        """Drop earlier members of an exclusive_group so only the last one survives.
+
+        Tags with no exclusive_group are kept as-is.  The order of the remaining
+        tags in the output matches their order in the input.
+        """
+        # First pass: find which uuid wins each exclusive group (last occurrence wins).
+        exclusive_winner: dict[str, str] = {}
+        for uuid in tag_uuids:
+            tag = tags_by_uuid.get(uuid)
+            if tag and tag.exclusive_group:
+                exclusive_winner[tag.exclusive_group] = uuid
+
+        # Second pass: keep a tag if it has no exclusive_group, or if it is the winner.
+        seen: set[str] = set()
+        resolved: List[str] = []
+        for uuid in tag_uuids:
+            if uuid in seen:
+                continue
+            seen.add(uuid)
+            tag = tags_by_uuid.get(uuid)
+            if tag and tag.exclusive_group and exclusive_winner.get(tag.exclusive_group) != uuid:
+                continue  # lost the exclusive-group contest
+            resolved.append(uuid)
+        return resolved
 
     async def delete_single_bbox(self, bbox_uuid: str) -> Optional[str]:
         """Delete one bbox and return its image_uuid, or None if not found."""
@@ -383,6 +425,15 @@ class DbClient:
         """Replace all bboxes for an image directly in the database."""
         async with self._async_session_maker() as session:
             await session.exec(delete(BBox).where(BBox.image_uuid == image_uuid))
+
+            # Batch-fetch all tag metadata needed for exclusive-group enforcement.
+            all_tag_uuids = {u for b in update.bboxes for u in b.tag_uuids}
+            if all_tag_uuids:
+                tag_rows = await session.exec(select(Tag).where(Tag.uuid.in_(all_tag_uuids)))
+                tags_by_uuid = {t.uuid: t for t in tag_rows.all()}
+            else:
+                tags_by_uuid = {}
+
             for b in update.bboxes:
                 session.add(BBox(
                     uuid=b.uuid,
@@ -394,7 +445,7 @@ class DbClient:
                     height=b.height,
                     metadata_json=b.metadata_json or {},
                 ))
-                for tag_uuid in b.tag_uuids:
+                for tag_uuid in self._resolve_exclusive_groups(b.tag_uuids, tags_by_uuid):
                     session.add(BBoxTagLink(bbox_uuid=b.uuid, tag_uuid=tag_uuid))
             await session.commit()
 

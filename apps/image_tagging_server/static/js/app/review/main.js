@@ -1,4 +1,5 @@
 import { fetchLabels } from '/app-static/js/shared/api/labels.js';
+import { fetchTags } from '/app-static/js/shared/api/tags.js';
 import {
   fetchReviewQueue,
   updateImageBboxes,
@@ -12,6 +13,7 @@ import {
   FALSE_POS_TAG_UUID,
 } from '/app-static/js/shared/api/review.js';
 import { Logger } from '/app-static/js/ui/utils/logging.js';
+import { CheckboxField } from '/app-static/js/ui/utils/fields/CheckboxField.js';
 import { createCanvasInstance } from '/app-static/js/app/image-tagging/canvas/instance.js';
 import { saveAnnotations } from '/app-static/js/app/image-tagging/canvas/image.js';
 import { init as initToolbar } from '/app-static/js/app/image-tagging/toolbar.js';
@@ -129,13 +131,14 @@ export async function init() {
 
   function markCardStale(card, state) {
     card.querySelector('.card-state-badge')?.remove();
-    card.classList.remove('stale-verified', 'stale-false-positive', 'stale-relabeled', 'stale-deleted');
+    card.classList.remove('stale-verified', 'stale-false-positive', 'stale-relabeled', 'stale-deleted', 'stale-tagged');
     card.classList.add(`stale-${state}`);
     const stateLabels = {
       verified: '✓ Verified',
       'false-positive': '✗ False Pos.',
       relabeled: '⤴ Relabeled',
       deleted: '🗑 Deleted',
+      tagged: '🏷 Tagged',
     };
     const badge = document.createElement('div');
     badge.className = `card-state-badge state-${state}`;
@@ -370,11 +373,11 @@ export async function init() {
   });
 
   // ── Bulk Apply ────────────────────────────────────────────────────
-  bulkBtn.addEventListener('click', () => {
+  bulkBtn.addEventListener('click', async () => {
     if (_selected.size === 0) return;
     const selectedEntries = _allBboxEntries.filter(e => _selected.has(e.bbox.uuid));
-    showBulkActionModal(selectedEntries, labels, async (action, newLabelUuid) => {
-      const { failCount, succeededEntries } = await executeBulkAction(action, selectedEntries, newLabelUuid);
+    await showBulkActionModal(selectedEntries, labels, async (action, newLabelUuid, selectedTagUuids) => {
+      const { failCount, succeededEntries } = await executeBulkAction(action, selectedEntries, newLabelUuid, selectedTagUuids);
 
       for (const { bbox, img } of succeededEntries) {
         const card = grid.querySelector(`[data-bbox-uuid="${bbox.uuid}"]`);
@@ -396,6 +399,13 @@ export async function init() {
               }
             }
             markCardStale(card, 'relabeled');
+          } else if (action === 'addTags' || action === 'removeTags') {
+            // If a verification tag was bulk-applied, surface the right stale state.
+            const tagSet = new Set(selectedTagUuids);
+            const staleState = action === 'addTags' && tagSet.has(FALSE_POS_TAG_UUID) ? 'false-positive'
+              : action === 'addTags' && tagSet.has(VERIFIED_TAG_UUID) ? 'verified'
+              : 'tagged';
+            markCardStale(card, staleState);
           } else {
             markCardStale(card, action === 'fp' ? 'false-positive' : 'verified');
           }
@@ -428,7 +438,7 @@ export async function init() {
 
 // ── Bulk action execution ─────────────────────────────────────────────
 
-async function executeBulkAction(action, entries, newLabelUuid) {
+async function executeBulkAction(action, entries, newLabelUuid, selectedTagUuids = []) {
   const toInvalidate = [];
   const succeededEntries = [];
   let failCount = 0;
@@ -438,6 +448,18 @@ async function executeBulkAction(action, entries, newLabelUuid) {
     try {
       if (action === 'delete') {
         await deleteBbox(bbox.uuid);
+      } else if (action === 'addTags') {
+        const currentTagUuids = (bbox.tags || []).map(t => t.uuid);
+        // Union: merge selected tags into existing, dedup
+        const tagUuids = [...new Set([...currentTagUuids, ...selectedTagUuids])];
+        const labelUuid = bbox.labelUuid ?? bbox.label?.uuid;
+        await updateBbox(bbox.uuid, { labelUuid, tagUuids });
+      } else if (action === 'removeTags') {
+        const currentTagUuids = (bbox.tags || []).map(t => t.uuid);
+        const removeSet = new Set(selectedTagUuids);
+        const tagUuids = currentTagUuids.filter(u => !removeSet.has(u));
+        const labelUuid = bbox.labelUuid ?? bbox.label?.uuid;
+        await updateBbox(bbox.uuid, { labelUuid, tagUuids });
       } else {
         // swapVerificationTag keeps all non-verification tags, replacing only
         // the verification slot — so other custom tags on the bbox are preserved.
@@ -698,7 +720,9 @@ async function showCanvasModal(bbox, img, labels, onSaved) {
 
 // ── Bulk action modal ─────────────────────────────────────────────────
 
-function showBulkActionModal(entries, labels, onConfirm) {
+async function showBulkActionModal(entries, labels, onConfirm) {
+  // Fetch fresh tags so recently-created tags always appear in the picker.
+  const tags = await fetchTags().catch(() => new Map());
   const overlay = document.createElement('div');
   overlay.style.cssText = `position:fixed;inset:0;background:#0008;display:flex;
     align-items:center;justify-content:center;z-index:1000;`;
@@ -716,6 +740,8 @@ function showBulkActionModal(entries, labels, onConfirm) {
     { value: 'fp', label: 'Mark False Positive' },
     { value: 'relabel', label: 'Change Label (and verify)' },
     { value: 'delete', label: 'Delete Bboxes' },
+    { value: 'addTags', label: 'Add Tags' },
+    { value: 'removeTags', label: 'Remove Tags' },
   ];
 
   const radioGroup = document.createElement('div');
@@ -733,6 +759,7 @@ function showBulkActionModal(entries, labels, onConfirm) {
     radio.addEventListener('change', () => {
       selectedAction = action.value;
       labelPickerRow.style.display = selectedAction === 'relabel' ? '' : 'none';
+      tagPickerRow.style.display = (selectedAction === 'addTags' || selectedAction === 'removeTags') ? 'flex' : 'none';
     });
     lbl.appendChild(radio);
     lbl.appendChild(document.createTextNode(action.label));
@@ -752,6 +779,18 @@ function showBulkActionModal(entries, labels, onConfirm) {
   labelPickerRow.appendChild(document.createTextNode('New label: '));
   labelPickerRow.appendChild(labelPicker);
 
+  // Tag picker (shown only for addTags / removeTags)
+  const tagOptions = Array.from(tags.values())
+    .map(tag => ({
+      key: tag.uuid,
+      text: (tag.icon ? tag.icon + ' ' : '') + tag.name,
+      color: tag.color || '#cccccc',
+    }));
+  const tagCheckboxField = new CheckboxField({ value: [], options: tagOptions });
+  const tagPickerRow = document.createElement('div');
+  tagPickerRow.style.cssText = 'max-height:180px;overflow-y:auto;display:none;flex-direction:column;gap:0.3em;padding:0.3em 0;';
+  tagPickerRow.appendChild(await tagCheckboxField.renderEdit());
+
   const btnRow = document.createElement('div');
   btnRow.style.cssText = 'display:flex;gap:0.5em;justify-content:flex-end;';
 
@@ -765,12 +804,15 @@ function showBulkActionModal(entries, labels, onConfirm) {
   okBtn.addEventListener('click', async () => {
     overlay.remove();
     const newLabelUuid = selectedAction === 'relabel' ? labelPicker.value : null;
-    await onConfirm(selectedAction, newLabelUuid);
+    const selectedTagUuids = (selectedAction === 'addTags' || selectedAction === 'removeTags')
+      ? tagCheckboxField.getValue()
+      : [];
+    await onConfirm(selectedAction, newLabelUuid, selectedTagUuids);
   });
 
   btnRow.appendChild(cancelBtn);
   btnRow.appendChild(okBtn);
-  dialog.append(title, radioGroup, labelPickerRow, btnRow);
+  dialog.append(title, radioGroup, labelPickerRow, tagPickerRow, btnRow);
   overlay.appendChild(dialog);
   document.body.appendChild(overlay);
 

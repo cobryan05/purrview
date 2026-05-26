@@ -234,6 +234,9 @@ main.container {
 .card-state-badge.state-deleted {
   background: #66666618; border: 1px solid #666; color: #999;
 }
+.card-state-badge.state-tagged {
+  background: #aa44ff18; border: 1px solid #aa44ff; color: #cc88ff;
+}
 
 .review-card .thumb {
   width: 100%;
