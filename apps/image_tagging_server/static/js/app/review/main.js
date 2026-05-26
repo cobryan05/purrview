@@ -13,7 +13,9 @@ import {
 } from '/app-static/js/shared/api/review.js';
 import { Logger } from '/app-static/js/ui/utils/logging.js';
 import { createCanvasInstance } from '/app-static/js/app/image-tagging/canvas/instance.js';
-import { saveAnnotations, deleteSelected } from '/app-static/js/app/image-tagging/canvas/image.js';
+import { saveAnnotations } from '/app-static/js/app/image-tagging/canvas/image.js';
+import { init as initToolbar } from '/app-static/js/app/image-tagging/toolbar.js';
+import { initLabelPanel } from '/app-static/js/app/image-tagging/canvas/labelPanel.js';
 
 const PAGE_SIZE = 50;
 
@@ -466,19 +468,20 @@ async function showCanvasModal(bbox, img, labels, onSaved) {
   header.append(title, closeBtn);
 
   // Toolbar
-  const toolbar = document.createElement('div');
-  toolbar.className = 'canvas-modal-toolbar';
+  const toolbarEl = document.createElement('div');
+  toolbarEl.className = 'canvas-modal-toolbar';
 
-  const selectBtn = document.createElement('button');
-  selectBtn.textContent = 'Select';
-  selectBtn.className = 'active';
-  const deleteBtn = document.createElement('button');
-  deleteBtn.textContent = 'Delete';
-  toolbar.append(selectBtn, deleteBtn);
+  // Content area: label panel (left) + canvas (right)
+  const contentArea = document.createElement('div');
+  contentArea.className = 'canvas-modal-content';
 
-  // Canvas container
+  const labelPanelEl = document.createElement('div');
+  labelPanelEl.className = 'canvas-modal-label-panel';
+
   const canvasWrap = document.createElement('div');
   canvasWrap.className = 'canvas-modal-canvas';
+
+  contentArea.append(labelPanelEl, canvasWrap);
 
   // Footer
   const footer = document.createElement('div');
@@ -488,12 +491,15 @@ async function showCanvasModal(bbox, img, labels, onSaved) {
   saveBtn.style.cssText = 'background:#ff003322;border:1px solid #ff0033;border-radius:3px;padding:0.3em 1em;cursor:pointer;color:#ff6666;';
   footer.appendChild(saveBtn);
 
-  dialog.append(header, toolbar, canvasWrap, footer);
+  dialog.append(header, toolbarEl, contentArea, footer);
   overlay.appendChild(dialog);
   document.body.appendChild(overlay);
 
   // ── Create canvas instance ─────────────────────────────────────────
   let instance;
+  let toolbarHandle = { destroy: () => {} };
+  let labelHandle   = { destroy: () => {} };
+
   try {
     instance = await createCanvasInstance(canvasWrap, { tool: 'select' });
     await instance.loadImage(img.filename);
@@ -505,6 +511,14 @@ async function showCanvasModal(bbox, img, labels, onSaved) {
     return;
   }
 
+  // ── Wire shared toolbar (select / bbox / delete) ───────────────────
+  toolbarHandle = initToolbar(instance.runtime, toolbarEl, {
+    buttons: ['select', 'bbox', 'delete'],
+  });
+
+  // ── Wire label panel ───────────────────────────────────────────────
+  labelHandle = await initLabelPanel(instance.runtime, labelPanelEl);
+
   // Highlight the target bbox
   const layer = instance.runtime.canvas.layer;
   const targetView = layer.findOne('#' + bbox.uuid);
@@ -513,20 +527,13 @@ async function showCanvasModal(bbox, img, labels, onSaved) {
     layer.draw();
   }
 
-  // ── Toolbar wiring ─────────────────────────────────────────────────
-  selectBtn.addEventListener('click', () => {
-    instance.runtime.setTool('select');
-    selectBtn.classList.add('active');
-  });
-  deleteBtn.addEventListener('click', () => {
-    deleteSelected(instance.runtime);
-  });
-
   // ── Close / Save ───────────────────────────────────────────────────
   function closeModal() {
-    _modalOpen = false;
+    toolbarHandle.destroy();
+    labelHandle.destroy();
     instance.destroy();
     overlay.remove();
+    _modalOpen = false;
   }
 
   // Use closeBtn.disabled as the "save in flight" sentinel so the backdrop

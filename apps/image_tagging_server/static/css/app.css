@@ -351,11 +351,37 @@ main.container {
   color: #ffd700;
 }
 
+/* Content area: label panel (left) + canvas (right) */
+.canvas-modal-content {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.canvas-modal-label-panel {
+  width: 150px;
+  min-width: 120px;
+  flex-shrink: 0;
+  overflow-y: auto;
+  border-right: 1px solid #333;
+  background: #161616;
+}
+
+.canvas-modal-label-panel .label-panel-row:hover {
+  background: #2a2a2a !important;
+}
+
 .canvas-modal-canvas {
   flex: 1;
   min-height: 0;
   overflow: hidden;
   position: relative;
+}
+
+.canvas-modal-toolbar button.selected {
+  border-color: #ffd700;
+  color: #ffd700;
 }
 
 .canvas-modal-footer {
