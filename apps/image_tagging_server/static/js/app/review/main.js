@@ -102,6 +102,7 @@ export async function init() {
   let _staleUuids = new Set(); // bbox UUIDs modified/deleted on this page (in-place)
   let _pageCursors = [null]; // cursor stack: each entry is the afterUuid used to load that page
   let _lastImageUuid = null; // UUID of the last image on the current page (cursor for Next)
+  let _lastClickedIndex = -1; // index in _allBboxEntries of the last checkbox click (for shift-select)
   let _rendering = false;
   let _hasMore = false;
 
@@ -168,6 +169,7 @@ export async function init() {
       _staleUuids = new Set();
       _allBboxEntries = [];
       _lastImageUuid = null;
+      _lastClickedIndex = -1;
       updateBulkBtn();
 
       let images;
@@ -229,16 +231,16 @@ export async function init() {
       return;
     }
 
-    for (const { bbox, img } of _allBboxEntries) {
-      grid.appendChild(buildCard(bbox, img, labels));
-    }
+    _allBboxEntries.forEach(({ bbox, img }, index) => {
+      grid.appendChild(buildCard(bbox, img, labels, index));
+    });
 
     refreshBtn.disabled = false;
     _rendering = false;
   }
 
   // ── Card builder ──────────────────────────────────────────────────
-  function buildCard(bbox, img, labels) {
+  function buildCard(bbox, img, labels, index) {
     const label = bbox.labelUuid ? labels.get(bbox.labelUuid) : null;
     const labelName = label?.name ?? '(unknown)';
     const labelColor = label?.color ?? '#888';
@@ -252,10 +254,34 @@ export async function init() {
 
     const cb = document.createElement('input');
     cb.type = 'checkbox';
-    cb.addEventListener('change', () => {
-      if (cb.checked) _selected.add(bbox.uuid);
-      else _selected.delete(bbox.uuid);
-      card.classList.toggle('selected', cb.checked);
+    // Use 'click' (not 'change') so we can read e.shiftKey for range selection.
+    // By the time 'click' fires, cb.checked already reflects the new toggled state.
+    cb.addEventListener('click', (e) => {
+      const newChecked = cb.checked;
+
+      if (e.shiftKey && _lastClickedIndex !== -1 && _lastClickedIndex !== index) {
+        // Range-select: toggle all non-stale cards between last click and this one
+        const lo = Math.min(_lastClickedIndex, index);
+        const hi = Math.max(_lastClickedIndex, index);
+        for (let i = lo; i <= hi; i++) {
+          const entry = _allBboxEntries[i];
+          if (!entry || _staleUuids.has(entry.bbox.uuid)) continue;
+          const c = grid.querySelector(`[data-bbox-uuid="${entry.bbox.uuid}"]`);
+          const cCb = c?.querySelector('input[type=checkbox]');
+          if (!cCb || cCb.disabled) continue;
+          cCb.checked = newChecked;
+          if (newChecked) _selected.add(entry.bbox.uuid);
+          else _selected.delete(entry.bbox.uuid);
+          c.classList.toggle('selected', newChecked);
+        }
+      } else {
+        // Normal single click: just update this card
+        if (newChecked) _selected.add(bbox.uuid);
+        else _selected.delete(bbox.uuid);
+        card.classList.toggle('selected', newChecked);
+      }
+
+      _lastClickedIndex = index;
       updateBulkBtn();
     });
 
@@ -337,6 +363,9 @@ export async function init() {
       if (cb) cb.checked = selectAllCb.checked;
       c.classList.toggle('selected', selectAllCb.checked);
     });
+    // Clear the shift-select anchor so a subsequent shift-click doesn't range
+    // from a stale individual-click position.
+    _lastClickedIndex = -1;
     updateBulkBtn();
   });
 
@@ -618,12 +647,17 @@ async function showCanvasModal(bbox, img, labels, onSaved) {
     closeBtn.disabled = true; // block close while save is in-flight
     saveBtn.textContent = 'Saving…';
 
-    // If checked, swap UNVERIFIED → VERIFIED on any bbox that was changed
+    // If checked, swap UNVERIFIED → VERIFIED on any bbox that was changed.
+    // We snapshot the original tags so we can revert if the network call fails —
+    // otherwise the user can't retry cleanly (or uncheck the option and retry).
+    let tagRollback = null;
     if (markVerifiedCheckbox.checked) {
       const VERIFICATION_UUIDS = new Set([UNVERIFIED_TAG_UUID, VERIFIED_TAG_UUID, FALSE_POS_TAG_UUID]);
       const modifiedUuids = getModifiedBboxUuids(instance.runtime.state.image.bboxes, initialBboxSnapshot);
+      tagRollback = new Map();
       for (const [, b] of instance.runtime.state.image.bboxes.entries()) {
         if (modifiedUuids.has(b.uuid)) {
+          tagRollback.set(b.uuid, b.tags); // save original so we can roll back on failure
           const nonVerifTags = (b.tags ?? []).filter(t => !VERIFICATION_UUIDS.has(t.uuid));
           b.tags = [...nonVerifTags, { uuid: VERIFIED_TAG_UUID, icon: null }];
         }
@@ -647,6 +681,14 @@ async function showCanvasModal(bbox, img, labels, onSaved) {
       closeModal();
       await onSaved(updatedUIBbox);
     } else {
+      // Revert auto-verify tag mutations so the user can retry with a clean state
+      // (including if they uncheck "Mark modified boxes as verified" before retrying).
+      if (tagRollback) {
+        for (const [uuid, originalTags] of tagRollback) {
+          const b = instance.runtime.state.image.bboxes.get(uuid);
+          if (b) b.tags = originalTags;
+        }
+      }
       saveBtn.disabled = false;
       closeBtn.disabled = false; // re-enable close on failure
       saveBtn.textContent = 'Save & Close';
