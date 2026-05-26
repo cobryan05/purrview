@@ -38,7 +38,7 @@ export async function init(appState) {
   });
 
 
-  events.subscribe(EventTypes.SHOW_CANVAS, () => {
+  events.subscribeToCanvas(_appState.imgRuntime.id, EventTypes.SHOW_MAIN_CANVAS, () => {
     activateMainTab(container, 'tab-image-tagging');
     activateWorkspaceTab('#tab-image-tagging', 'tab-canvas');
   });

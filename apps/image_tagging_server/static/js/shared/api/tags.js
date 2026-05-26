@@ -1,5 +1,6 @@
 import { createCachedFetcher } from '/app-static/js/ui/utils/data/createCachedFetcher.js';
 import { ignoreKeyReturn } from './apiUtils.js';
+import { events, EventTypes } from '/app-static/js/shared/events/index.js';
 
 /** -----------------------------
  * TAGS CACHE
@@ -45,11 +46,11 @@ export async function fetchTagByUuid(uuid) {
  * CRUD FUNCTIONS
  * -----------------------------
  */
-export async function createNewTag(name, color) {
+export async function createNewTag(name, color, icon = null) {
   const res = await fetch('/api/tags/add', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name, color }),
+    body: JSON.stringify({ name, color, icon }),
   });
 
   if (!res.ok) {
@@ -64,13 +65,14 @@ export async function createNewTag(name, color) {
 
   // Invalidate cache after successful creation
   tagsFetcher.clear();
+  events.publish(EventTypes.TAGS_UPDATED, {});
 }
 
-export async function updateTag(uuid, name, color) {
+export async function updateTag(uuid, name, color, icon = undefined) {
   const res = await fetch('/api/tags/update', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ tagUuid: uuid, data: { name, color } }),
+    body: JSON.stringify({ tagUuid: uuid, data: { name, color, icon } }),
   });
 
   if (!res.ok) {
@@ -85,6 +87,7 @@ export async function updateTag(uuid, name, color) {
 
   // Invalidate cache after successful update
   tagsFetcher.clear();
+  events.publish(EventTypes.TAGS_UPDATED, {});
 }
 
 export async function deleteTag(uuid) {
@@ -101,4 +104,5 @@ export async function deleteTag(uuid) {
 
   // Invalidate cache after successful deletion
   tagsFetcher.clear();
+  events.publish(EventTypes.TAGS_UPDATED, {});
 }

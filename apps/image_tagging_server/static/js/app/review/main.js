@@ -289,9 +289,9 @@ export async function init() {
           }
 
           // If it's no longer unverified, mark it stale with the appropriate state
-          const stillUnverified = (updatedUIBbox.tagUuids ?? []).includes(UNVERIFIED_TAG_UUID);
+          const stillUnverified = (updatedUIBbox.tags ?? []).some(t => t.uuid === UNVERIFIED_TAG_UUID);
           if (!stillUnverified) {
-            const isFP = (updatedUIBbox.tagUuids ?? []).includes(FALSE_POS_TAG_UUID);
+            const isFP = (updatedUIBbox.tags ?? []).some(t => t.uuid === FALSE_POS_TAG_UUID);
             markCardStale(card, isFP ? 'false-positive' : 'verified');
           }
         }

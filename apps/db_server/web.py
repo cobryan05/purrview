@@ -613,7 +613,7 @@ class WebApp:
             """
             try:
                 tag = await self._manager.create_new_tag(
-                    request.name, request.color, kind=request.kind, exclusive_group=request.exclusive_group
+                    request.name, request.color, icon=request.icon, kind=request.kind, exclusive_group=request.exclusive_group
                 )
                 return AddTagResponse(status=JsonValues.SUCCESS, tag=tag)
             except Exception as e:

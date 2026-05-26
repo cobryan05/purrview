@@ -3,7 +3,7 @@ import { setupSidebarTabs } from '/app-static/js/app/utils/tabs.js';
 import { clearModelsCache, fetchModelsList } from '/app-static/js/shared/api/models.js';
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
 import { renderLabelList } from '/app-static/js/ui/labels.js';
-import '/app-static/js/ui/inspector.js';
+import { initInspector } from '/app-static/js/ui/inspector.js';
 import { Logger } from '/app-static/js/ui/utils/index.js';
 
 let _modelsInit = false;
@@ -12,6 +12,8 @@ let _modelsInit = false;
  * @param {import('@image_tagging_types').ImageTaggingRuntime} runtime
  */
 export async function init(runtime) {
+  const _unsubInspector = initInspector(runtime);
+
   // Setup sidebar tabs (Models / Labels / Annotations / Inspector)
   const { container, activateTab } = setupSidebarTabs('#sidebar', async (tabName, button, pane) => {
     if (tabName === 'tab-labels-tool') {
@@ -30,6 +32,12 @@ export async function init(runtime) {
     }
   });
 
+  function handleRecognizeClick() {
+    const selected = document.querySelector('input[name="model"]:checked');
+    if (!selected) return alert('Please select a model');
+    events.publish(EventTypes.RUN_INFERENCE_ON_CANVAS, { modelName: selected.value, runtimeId: runtime.id });
+  }
+
   // Sidebar buttons
   document.getElementById('recognize-button')?.addEventListener('click', handleRecognizeClick);
   document.getElementById('refresh-models')?.addEventListener('click', refreshModelList);
@@ -39,8 +47,8 @@ export async function init(runtime) {
     activateTab(container.querySelector('.sidebar-tab-button')?.dataset.tab);
   }
 
-  // Show 'Labels' tab when tool changes to BBox
-  events.subscribe(EventTypes.CANVAS_TOOL_CHANGED, async ({ tool }) => {
+  // Show 'Labels' tab when tool changes to BBox (scoped to this canvas's runtime)
+  events.subscribeToCanvas(runtime.id, EventTypes.CANVAS_TOOL_CHANGED, async ({ tool }) => {
     const toolInfo = parseToolUuid(tool);
     if (toolInfo.tool === 'bbox') {
       const uuid = toolInfo.uuid ?? runtime.state.currentLabelUuid;
@@ -58,14 +66,6 @@ export async function init(runtime) {
       }
     }
   });
-}
-
-
-function handleRecognizeClick() {
-  const selected = document.querySelector('input[name="model"]:checked');
-  if (!selected) return alert('Please select a model');
-
-  events.publish(EventTypes.RUN_INFERENCE_ON_CANVAS, { modelName: selected.value });
 }
 
 

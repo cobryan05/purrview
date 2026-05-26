@@ -1,11 +1,14 @@
 import { setCanvasImage } from './canvas/manager.js';
 import { createCanvasState } from './canvas/state.js';
 import { Logger } from '/app-static/js/ui/utils/index.js';
+import { generateUUID } from '/app-static/js/ui/utils/utils.js';
 
 /**
  * @returns {import('@image_tagging_types').ImageTaggingRuntime}
  */
 export function createImageTaggingRuntime() {
+  const _id = generateUUID();
+
   /** @type {import('@image_tagging_types').ImageTaggingState|null} */
   let _imgTaggingState = { image: null, currentTool: null, currentLabelUuid: null, selectedBoxUuid: null };
   /** @type {import('@image_tagging_types').CanvasState|null} */
@@ -83,6 +86,7 @@ export function createImageTaggingRuntime() {
   }
 
   return {
+    get id() { return _id; },
     get state() { return _imgTaggingState; },
     get canvas() { return _canvasState; },
     get imageTaggingPane() { return _pane; },

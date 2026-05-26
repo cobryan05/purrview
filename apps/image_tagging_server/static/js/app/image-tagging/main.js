@@ -26,8 +26,8 @@ export async function init(runtime, tab_pane) {
 
   await initCanvasStage(runtime);
 
-  // App-specific event subscriptions that only apply to the main edit tab.
-  events.subscribe(EventTypes.RUN_INFERENCE_ON_CANVAS, async ({ modelName }) => {
+  // App-specific event subscriptions scoped to this canvas's runtime.
+  events.subscribeToCanvas(runtime.id, EventTypes.RUN_INFERENCE_ON_CANVAS, async ({ modelName }) => {
     try {
       const img = runtime.state?.image?.img;
       if (!img) throw new Error('No image loaded');
@@ -38,10 +38,10 @@ export async function init(runtime, tab_pane) {
     }
   });
 
-  events.subscribe(EventTypes.LOAD_IMAGE_ONTO_CANVAS, ({ path, showCanvas }) => {
+  events.subscribeToCanvas(runtime.id, EventTypes.LOAD_IMAGE_ONTO_CANVAS, ({ path, showCanvas }) => {
     loadImageOntoCanvas(runtime, path);
     if (showCanvas) {
-      events.publish(EventTypes.SHOW_CANVAS);
+      events.publish(EventTypes.SHOW_MAIN_CANVAS, { runtimeId: runtime.id });
     }
   });
 

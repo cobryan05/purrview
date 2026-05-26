@@ -223,7 +223,7 @@ export async function handleMouseUp(e, runtime) {
       uiBBox.width = w / sw;
       uiBBox.height = h / sh;
       runtime.state.image.bboxes.set(uiBBox.uuid, uiBBox);
-      events.publish(EventTypes.CANVAS_BBOX_CLICKED, { bboxId: uiBBox.uuid });
+      events.publish(EventTypes.CANVAS_BBOX_CLICKED, { bboxId: uiBBox.uuid, runtimeId: runtime.id });
     }
 
     runtime.canvas.layer.draw();
@@ -243,7 +243,7 @@ export async function handleMouseUp(e, runtime) {
   if (hitGroup instanceof BboxView && isDoubleClick) {
     const { uuid: labelUuid } = parseToolUuid(runtime.tool);
     if (runtime.tool === 'select') {
-      events.publish(EventTypes.CANVAS_BBOX_DOUBLE_CLICKED, { bboxId: hitGroup.id(), bboxView: hitGroup });
+      events.publish(EventTypes.CANVAS_BBOX_DOUBLE_CLICKED, { bboxId: hitGroup.id(), bboxView: hitGroup, runtimeId: runtime.id });
     } else if (labelUuid) {
       const labelData = await fetchLabelByUuid(labelUuid);
       if (labelData) {
@@ -310,7 +310,7 @@ export function handleClick(e, runtime) {
     transformer.nodes([bboxGroup]);
     transformer.moveToTop();
     bboxGroup.on('transformend.transformer', () => transformer.forceUpdate());
-    events.publish(EventTypes.CANVAS_BBOX_CLICKED, { bboxId: bboxGroup.id() });
+    events.publish(EventTypes.CANVAS_BBOX_CLICKED, { bboxId: bboxGroup.id(), runtimeId: runtime.id });
   } else if (e.target === stage) {
     ist.selectedBbox?.off('transformend.transformer');
     ist.selectedBbox = null;

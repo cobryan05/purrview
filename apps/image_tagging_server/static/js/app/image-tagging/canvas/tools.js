@@ -20,7 +20,7 @@ export function setTool(runtime, tool) {
   runtime.setTool(tool);
   clearSelection();
   runtime.canvas.stage.container().style.cursor = tool === 'select' ? 'default' : 'crosshair';
-  events.publish(EventTypes.CANVAS_TOOL_CHANGED, { tool });
+  events.publish(EventTypes.CANVAS_TOOL_CHANGED, { tool, runtimeId: runtime.id });
 }
 
 /**

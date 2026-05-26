@@ -36,6 +36,22 @@ class EventBus {
     });
   }
 
+  /**
+   * Like subscribe, but filters to events that either have no runtimeId (global)
+   * or whose runtimeId matches the given value.
+   * @param {string} runtimeId
+   * @param {string} event
+   * @param {EventHandler} handler
+   * @returns {() => void} unsubscribe function
+   */
+  subscribeToCanvas(runtimeId, event, handler) {
+    return this.subscribe(event, (payload) => {
+      if (!('runtimeId' in (payload ?? {})) || payload.runtimeId === runtimeId) {
+        handler(payload);
+      }
+    });
+  }
+
   clear() {
     this._listeners.clear();
   }

@@ -243,6 +243,7 @@ class ImageRecordUpdate(BaseModel):
 class TagBase(SQLModel):
     name: str = Field(unique=True)
     color: Optional[str] = None
+    icon: Optional[str] = None
     kind: TagKind = TagKind.GENERIC
     protected: bool = Field(default=False)
     exclusive_group: Optional[str] = None
@@ -251,6 +252,7 @@ class TagBase(SQLModel):
 class TagUpdate(SQLModel):
     name: Optional[str] = None
     color: Optional[str] = None
+    icon: Optional[str] = None
 
 
 class Tag(TagBase, TimestampModel, table=True):
@@ -262,6 +264,7 @@ class TagRead(BaseModel):
     uuid: str
     name: str
     color: Optional[str] = None
+    icon: Optional[str] = None
 
     model_config = ConfigDict(from_attributes=True)
 

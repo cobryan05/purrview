@@ -165,7 +165,7 @@ export async function addInferenceResults(runtime, results) {
     const uiBbox = createUIBBbox({
       uuid: bbox.uuid,
       label,
-      tagUuids: bbox.tagUuids ?? [],
+      tags: (bbox.tagUuids ?? []).map(id => ({ uuid: id })),
       x: bbox.x,
       y: bbox.y,
       width: bbox.width,

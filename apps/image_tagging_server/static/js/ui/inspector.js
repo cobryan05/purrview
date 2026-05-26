@@ -2,6 +2,7 @@ import { BboxInfoField, EditableField } from '/app-static/js/ui/utils/fields/ind
 import { createGenericRow, Logger } from '/app-static/js/ui/utils/index.js';
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
 import { fetchLabelByUuid } from '/app-static/js/shared/api/labels.js';
+import { fetchTags } from '/app-static/js/shared/api/tags.js';
 
 /**
  * Opens the inspector tab in the sidebar and highlights it briefly.
@@ -69,7 +70,13 @@ export function renderBboxInspector({ bboxView = null, target = 'tab-inspector',
               bboxView.uiBBox.label = undefined;
               bboxView.updateAppearance('', 'grey');
             }
-            bboxView.uiBBox.tagUuids = val.bbox_info.tagUuids ?? [];
+            const savedTagUuids = val.bbox_info.tagUuids ?? [];
+            const tagsMap = await fetchTags();
+            bboxView.uiBBox.tags = savedTagUuids.map(id => {
+              const tag = tagsMap.get(id);
+              return { uuid: id, icon: tag?.icon ?? null };
+            });
+            bboxView.refreshIcons(bboxView.uiBBox.tags);
           },
           onCancel: () => {
             Logger.warn("Canceled");
@@ -87,10 +94,20 @@ export function renderBboxInspector({ bboxView = null, target = 'tab-inspector',
 }
 
 
-events.subscribe(
-  EventTypes.CANVAS_BBOX_DOUBLE_CLICKED,
-  onCanvasBboxSelected
-);
+/**
+ * Bind the inspector to a specific canvas runtime so it only responds to
+ * double-clicks from that canvas (not from review-page modal canvases, etc.).
+ *
+ * @param {import('@image_tagging_types').ImageTaggingRuntime} runtime
+ * @returns {() => void} unsubscribe function
+ */
+export function initInspector(runtime) {
+  return events.subscribeToCanvas(
+    runtime.id,
+    EventTypes.CANVAS_BBOX_DOUBLE_CLICKED,
+    onCanvasBboxSelected
+  );
+}
 
 /**
  * @param {import('@events').CanvasBboxDoubleClickedPayload} payload

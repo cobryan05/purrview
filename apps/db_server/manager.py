@@ -233,6 +233,7 @@ class Manager:
         self,
         name: str,
         color: Optional[str] = None,
+        icon: Optional[str] = None,
         protected: bool = False,
         kind: TagKind = TagKind.GENERIC,
         exclusive_group: Optional[str] = None,
@@ -241,7 +242,7 @@ class Manager:
         Adds a new tag to the database
         """
         ret = await self._db_client.add_tag(
-            name=name, color=color, protected=protected, kind=kind, exclusive_group=exclusive_group
+            name=name, color=color, icon=icon, protected=protected, kind=kind, exclusive_group=exclusive_group
         )
         return ret
 

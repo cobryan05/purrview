@@ -173,10 +173,10 @@ export const fieldFactories = {
 
     const tags = await fetchTags();
 
-    const tagOptions =  Array.from(tags.values()).map(tag => ({
+    const tagOptions = Array.from(tags.values()).map(tag => ({
       key: tag.uuid,
-      text: tag.name,
-      color: tag.color || '#cccccc'
+      text: (tag.icon ? tag.icon + ' ' : '') + tag.name,
+      color: tag.color || '#cccccc',
     }));
 
     return await new CheckboxField({

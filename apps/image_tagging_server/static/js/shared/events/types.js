@@ -54,6 +54,9 @@ export const EventTypes = Object.freeze({
   CANVAS_BBOX_CLICKED: "canvas:bbox:clicked",
   CANVAS_TOOL_CHANGED: "canvas:tool:changed",
   LOAD_IMAGE_ONTO_CANVAS: "canvas:image:load",
-  SHOW_CANVAS: "canvas:show",
+  /** @deprecated Use SHOW_MAIN_CANVAS */
+  SHOW_CANVAS: "canvas:main:show",
+  SHOW_MAIN_CANVAS: "canvas:main:show",
   RUN_INFERENCE_ON_CANVAS: "canvas:run-inference",
+  TAGS_UPDATED: "tags:updated",
 });

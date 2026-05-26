@@ -20,7 +20,7 @@ export function createUIBBbox(overrides = {}) {
     uuid: generateUUID(),
 
     label: undefined,
-    tagUuids: [],
+    tags: [],
 
     x: 0,
     y: 0,
@@ -80,7 +80,7 @@ export function bboxReadToUI(bboxData) {
   const uiBbox = createUIBBbox({
     uuid: bboxData.uuid,
     label,
-    tagUuids: (bboxData.tags ?? []).map(t => t.uuid),
+    tags: (bboxData.tags ?? []).map(t => ({ uuid: t.uuid, icon: t.icon ?? null })),
     x: bboxData.x,
     y: bboxData.y,
     width: bboxData.width,

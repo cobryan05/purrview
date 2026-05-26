@@ -53,7 +53,7 @@ export class BboxInfoField extends Field {
 
     const schema_values = {
       labelUuid: instance._bboxGroup.uiBBox?.label?.uuid,
-      tagUuids: instance._bboxGroup.uiBBox?.tagUuids ?? []
+      tagUuids: (instance._bboxGroup.uiBBox?.tags ?? []).map(t => t.uuid)
     };
     instance._schemaField = await SchemaField.create({ schema: schema ?? {}, values: schema_values });
 

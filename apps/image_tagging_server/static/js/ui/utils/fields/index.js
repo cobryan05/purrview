@@ -11,6 +11,7 @@ export { ModelLabelSelectField } from './ModelLabelSelectField.js';
 export { RadioField } from './RadioField.js';
 export { SchemaField } from './SchemaField.js';
 export { SourceConfigField } from './SourceConfigField.js';
+export { TagField } from './TagField.js';
 export { TaskConfigField } from './TaskConfigField.js';
 export { TextBoxColorField } from './TextBoxColorField.js';
 export { TextField } from './TextField.js';

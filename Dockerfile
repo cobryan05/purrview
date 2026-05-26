@@ -56,7 +56,7 @@ COPY static ./static
 COPY apps ./apps
 
 # Generates python and js clients for internal apps
-COPY generate_openapi_modules.sh ./
+COPY generate_openapi_modules.sh generate_alembic_revision.sh ./
 RUN ./generate_openapi_modules.sh ./openapi_jsons
 
 # Create non-root user

@@ -98,7 +98,7 @@ export async function initLabelPanel(runtime, container) {
     });
   }
 
-  const unsub = events.subscribe(EventTypes.CANVAS_TOOL_CHANGED, ({ tool }) => {
+  const unsub = events.subscribeToCanvas(runtime.id, EventTypes.CANVAS_TOOL_CHANGED, ({ tool }) => {
     const activeLabelUuid = tool.startsWith('bbox:') ? tool.slice(5) : null;
     syncHighlight(activeLabelUuid);
   });

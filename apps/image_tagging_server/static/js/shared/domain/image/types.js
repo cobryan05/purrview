@@ -8,10 +8,17 @@
  */
 
 /**
+ * A tag as used within the UI layer — carries uuid and optional icon.
+ * @typedef {Object} UITag
+ * @property {string} uuid
+ * @property {string|null} [icon]
+ */
+
+/**
  * @typedef {Object} UIBbox
  * @property {string} uuid
  * @property {UILabel} [label]
- * @property {string[]} tagUuids
+ * @property {UITag[]} tags
  * @property {number} x
  * @property {number} y
  * @property {number} width

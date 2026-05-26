@@ -1,21 +1,20 @@
 // tags.js
 import { clearTagCache, createNewTag, deleteTag, fetchTags, updateTag } from '/app-static/js/shared/api/tags.js';
-import { EditableField, TextBoxColorField } from '/app-static/js/ui/utils/fields/index.js';
+import { EditableField, TagField } from '/app-static/js/ui/utils/fields/index.js';
 import { createGenericRow, toast } from '/app-static/js/ui/utils/index.js';
 const DEFAULT_COLOR = '#cccccc';
 
 /**
  * Returns button handlers for a tag
  * @param {Object} options
- * @param {Object} options.label - label metadata
+ * @param {Object} options.tag - tag metadata
  * @param {boolean} options.editable
  * @param {Function} options.renderList - callback to refresh the list
- * @param {HTMLElement} options.labelRow - the DOM element for this row
  */
 function createTagHandlers({ tag, editable, renderList }) {
   if (!editable) return { leftButtons: [], rightButtons: [] };
 
-  const { name, color, uuid } = tag;
+  const { name, uuid } = tag;
 
   const deleteButton = {
     text: 'Delete',
@@ -38,25 +37,23 @@ function createTagHandlers({ tag, editable, renderList }) {
 }
 
 /**
- * Renders a tag
+ * Renders a tag row
  */
 function renderTag(tag, container, editable, onSelectCallback, rerenderCallback) {
-  const { name, color, uuid } = tag;
+  const { name, color, icon, uuid } = tag;
 
-  // Generate left/right buttons objects from handler
   const { leftButtons, rightButtons } = editable
     ? createTagHandlers({ tag, editable, renderList: rerenderCallback })
     : { leftButtons: [], rightButtons: [] };
 
-  // Create row once, passing the button specs into createGenericRow
   const tagRow = createGenericRow({
     field: new EditableField({
       buttonsLast: true,
-      field: new TextBoxColorField({ text: name, uuid: uuid, placeholder: "New Tag Name", color: color }),
+      field: new TagField({ text: name, uuid, placeholder: 'New Tag Name', color, icon: icon ?? null }),
       ...(editable && {
-        onSave: async ({ text: newText, color: newColor }) => {
+        onSave: async ({ text: newText, color: newColor, icon: newIcon }) => {
           try {
-            await updateTag(uuid, newText, newColor);
+            await updateTag(uuid, newText, newColor, newIcon);
             rerenderCallback();
           } catch (err) {
             toast(err.message, 5000, 'error');
@@ -73,7 +70,6 @@ function renderTag(tag, container, editable, onSelectCallback, rerenderCallback)
   });
   tagRow.dataset.uuid = uuid;
 
-  // Add selection handling
   if (onSelectCallback) {
     tagRow.style.cursor = 'pointer';
     tagRow.onclick = () => {
@@ -87,7 +83,6 @@ function renderTag(tag, container, editable, onSelectCallback, rerenderCallback)
 /**
  * Renders all tags into a container
  */
-
 export function renderTagList({ target = 'tags-list', editable = true, onSelectCallback = null } = {}) {
   try {
     const targetElement = document.getElementById(target);
@@ -95,14 +90,14 @@ export function renderTagList({ target = 'tags-list', editable = true, onSelectC
       console.error('Tag container not found');
       return;
     }
-    targetElement.innerHTML = ''
+    targetElement.innerHTML = '';
     const container = document.createElement('div');
-    container.style.display = 'inline-block';      // shrink-wrap width
-    container.style.verticalAlign = 'top';         // optional, align with top of parent
-    container.style.width = 'max-content';         // shrink to longest content
-    container.style.minWidth = '0';                // prevent overflow issues
+    container.style.display = 'inline-block';
+    container.style.verticalAlign = 'top';
+    container.style.width = 'max-content';
+    container.style.minWidth = '0';
     targetElement.appendChild(container);
-    // Render root tags
+
     const rerender = () => renderTagList({ target, editable, onSelectCallback });
 
     fetchTags().then(tags => {
@@ -111,7 +106,6 @@ export function renderTagList({ target = 'tags-list', editable = true, onSelectC
           renderTag(tag, container, editable, onSelectCallback, rerender);
         });
 
-      // Add "Add new tag" row
       if (editable) {
         const divider = document.createElement('hr');
         container.appendChild(divider);
@@ -119,7 +113,7 @@ export function renderTagList({ target = 'tags-list', editable = true, onSelectC
         const newRootRow = createGenericRow({
           field: new EditableField({
             buttonsLast: true,
-            field: new TextBoxColorField({ text: '', placeholder: "New Tag Name", color: DEFAULT_COLOR }),
+            field: new TagField({ text: '', placeholder: 'New Tag Name', color: DEFAULT_COLOR, icon: null }),
             editMode: true,
           }),
           indentLevel: 0,
@@ -128,16 +122,15 @@ export function renderTagList({ target = 'tags-list', editable = true, onSelectC
               text: 'Add tag',
               emoji: '➕',
               onClick: async ({ field }) => {
-                const name = field.getValue().text?.trim();
-                const color = field.getValue().color || DEFAULT_COLOR;
+                const { text: name, color, icon } = field.getValue();
 
-                if (!name) {
-                  toast('Error: Name required', 5000, "error");
+                if (!name?.trim()) {
+                  toast('Error: Name required', 5000, 'error');
                   return;
                 }
 
                 try {
-                  await createNewTag(name, color);
+                  await createNewTag(name.trim(), color || DEFAULT_COLOR, icon);
                   rerender();
                 } catch (err) {
                   toast(err.message, 5000, 'error');

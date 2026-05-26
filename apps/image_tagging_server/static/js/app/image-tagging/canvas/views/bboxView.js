@@ -5,6 +5,7 @@ export class BboxView extends Konva.Group {
     /** @type {import('@domain_image').UIBbox} */ uiBBox;
     /** @type {import('@konva').default.Rect} */ _rect;
     /** @type {import('@konva').default.Text} */ _text;
+    /** @type {import('@konva').default.Text} */ _iconText;
     /** @type {import('@image_tagging_types').ViewportTransform} */ _viewport;
 
   /**
@@ -43,10 +44,38 @@ export class BboxView extends Konva.Group {
       name: 'label'
     });
 
+    this._iconText = new Konva.Text({
+      text: this._computeIconText(uiBBox.tags),
+      fontSize: 14,
+      fill: 'white',
+      stroke: 'rgba(0,0,0,0.75)',
+      strokeWidth: 0.5,
+      fillAfterStrokeEnabled: true,
+      fontStyle: 'bold',
+      x: 4,
+      y: 4,
+      name: 'icon',
+      strokeScaleEnabled: false,
+      listening: false,
+    });
+
     this.add(this._rect);
     this.add(this._text);
+    this.add(this._iconText);
 
     this._setupEvents();
+  }
+
+  /**
+   * Compute the icon string to display from the tags array.
+   * Collects unique non-null icons and joins them.
+   * @private
+   * @param {import('@domain_image').UITag[] | undefined} tags
+   * @returns {string}
+   */
+  _computeIconText(tags) {
+    const icons = (tags ?? []).map(t => t.icon).filter(Boolean);
+    return [...new Set(icons)].join('');
   }
 
   /** @private */
@@ -58,6 +87,8 @@ export class BboxView extends Konva.Group {
       this._text.scaleX(1 / scaleX);
       this._text.scaleY(1 / scaleY);
       this._text.y(LABEL_OFFSET_Y / scaleY);
+      this._iconText.scaleX(1 / scaleX);
+      this._iconText.scaleY(1 / scaleY);
     });
 
     this.on('dragend transformend', () => {
@@ -69,6 +100,7 @@ export class BboxView extends Konva.Group {
       this.setAttrs({ width: newWidth, height: newHeight, scaleX: 1, scaleY: 1 });
       this._rect.setAttrs({ width: newWidth, height: newHeight, scaleX: 1, scaleY: 1 });
       this._text.setAttrs({ scaleX: 1, scaleY: 1, y: LABEL_OFFSET_Y });
+      this._iconText.setAttrs({ scaleX: 1, scaleY: 1 });
 
       if (this._viewport) {
         const sw = this._viewport.imageWidth * this._viewport.scale;
@@ -96,6 +128,15 @@ export class BboxView extends Konva.Group {
     this._text.text(text);
     this._text.fill(color);
     this._rect.stroke(color);
+    this.getLayer()?.batchDraw();
+  }
+
+  /**
+   * Update the icon indicator from the current tags array.
+   * @param {import('@domain_image').UITag[]} tags
+   */
+  refreshIcons(tags) {
+    this._iconText.text(this._computeIconText(tags));
     this.getLayer()?.batchDraw();
   }
 

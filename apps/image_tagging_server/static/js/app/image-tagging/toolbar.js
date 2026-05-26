@@ -51,7 +51,7 @@ export function init(runtime, container, options = {}) {
       container.appendChild(b);
     });
 
-  const unsub = events.subscribe(EventTypes.CANVAS_TOOL_CHANGED, ({ tool }) => {
+  const unsub = events.subscribeToCanvas(runtime.id, EventTypes.CANVAS_TOOL_CHANGED, ({ tool }) => {
     container.querySelectorAll('button[data-tool]').forEach(btn => {
       const toolBase = tool.split(':')[0]; // handles 'bbox:label-uuid'
       btn.classList.toggle('selected', btn.dataset.tool === toolBase);

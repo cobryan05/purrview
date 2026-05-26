@@ -30,7 +30,7 @@ export async function init(runtime) {
       /**
       * @typedef {import('@events').CanvasImageLoadPayload}
       */
-      const payload = { path: imageName, showCanvas: true };
+      const payload = { path: imageName, showCanvas: true, runtimeId: runtime.id };
       events.publish(EventTypes.LOAD_IMAGE_ONTO_CANVAS, payload );
     }
   });
@@ -40,21 +40,21 @@ export async function init(runtime) {
 
 
 /**
- * @param {import('@image_tagging_types').ImageTaggingState} state
+ * @param {import('@image_tagging_types').ImageTaggingRuntime} runtime
  */
-export async function next_image(state) {
-  if (state.fileNavigation.next()) {
-    const payload = { path: state.fileNavigation.currentPath(), showCanvas: true };
+export async function next_image(runtime) {
+  if (runtime.fileNavigation.next()) {
+    const payload = { path: runtime.fileNavigation.currentPath(), showCanvas: true, runtimeId: runtime.id };
     events.publish(EventTypes.LOAD_IMAGE_ONTO_CANVAS, payload);
   }
 }
 
 /**
- * @param {import('@image_tagging_types').ImageTaggingState} state
+ * @param {import('@image_tagging_types').ImageTaggingRuntime} runtime
  */
-export async function prev_image(state) {
-  if (state.fileNavigation.prev()) {
-    const payload = { path: state.fileNavigation.currentPath(), showCanvas: true };
+export async function prev_image(runtime) {
+  if (runtime.fileNavigation.prev()) {
+    const payload = { path: runtime.fileNavigation.currentPath(), showCanvas: true, runtimeId: runtime.id };
     events.publish(EventTypes.LOAD_IMAGE_ONTO_CANVAS, payload);
   }
 }
