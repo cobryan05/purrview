@@ -16,6 +16,7 @@ import { createCanvasInstance } from '/app-static/js/app/image-tagging/canvas/in
 import { saveAnnotations } from '/app-static/js/app/image-tagging/canvas/image.js';
 import { init as initToolbar } from '/app-static/js/app/image-tagging/toolbar.js';
 import { initLabelPanel } from '/app-static/js/app/image-tagging/canvas/labelPanel.js';
+import { initInspector } from '/app-static/js/ui/inspector.js';
 
 const PAGE_SIZE = 50;
 
@@ -436,6 +437,52 @@ async function executeBulkAction(action, entries, newLabelUuid) {
 let _modalOpen = false;
 
 /**
+ * Snapshot the current bbox map so we can detect which bboxes were modified.
+ * @param {Map<string, import('@domain_image').UIBbox>} bboxMap
+ * @returns {Map<string, {x:number, y:number, width:number, height:number, labelUuid:string|null, tagUuids:string}>}
+ */
+function snapshotBboxes(bboxMap) {
+  const snap = new Map();
+  for (const [uuid, bbox] of bboxMap.entries()) {
+    snap.set(uuid, {
+      x: bbox.x, y: bbox.y,
+      width: bbox.width, height: bbox.height,
+      labelUuid: bbox.label?.uuid ?? null,
+      tagUuids: (bbox.tags ?? []).map(t => t.uuid).sort().join(','),
+    });
+  }
+  return snap;
+}
+
+/**
+ * Return the set of bbox UUIDs that differ from the snapshot.
+ * New bboxes (not present in snapshot) are always included.
+ * @param {Map<string, import('@domain_image').UIBbox>} bboxMap
+ * @param {ReturnType<typeof snapshotBboxes>} snapshot
+ * @returns {Set<string>}
+ */
+function getModifiedBboxUuids(bboxMap, snapshot) {
+  const modified = new Set();
+  for (const [uuid, bbox] of bboxMap.entries()) {
+    const orig = snapshot.get(uuid);
+    if (!orig) {
+      modified.add(uuid); // newly drawn bbox
+    } else {
+      const tagStr = (bbox.tags ?? []).map(t => t.uuid).sort().join(',');
+      if (
+        orig.x !== bbox.x || orig.y !== bbox.y ||
+        orig.width !== bbox.width || orig.height !== bbox.height ||
+        orig.labelUuid !== (bbox.label?.uuid ?? null) ||
+        orig.tagUuids !== tagStr
+      ) {
+        modified.add(uuid);
+      }
+    }
+  }
+  return modified;
+}
+
+/**
  * Open a full canvas editor modal for a single bbox.
  * @param {object} bbox  The bbox object from the review queue
  * @param {object} img   The parent image object
@@ -481,15 +528,30 @@ async function showCanvasModal(bbox, img, labels, onSaved) {
   const canvasWrap = document.createElement('div');
   canvasWrap.className = 'canvas-modal-canvas';
 
-  contentArea.append(labelPanelEl, canvasWrap);
+  const inspectorPanel = document.createElement('div');
+  inspectorPanel.className = 'canvas-modal-inspector';
+  const inspectorHint = document.createElement('div');
+  inspectorHint.className = 'canvas-modal-inspector-hint';
+  inspectorHint.textContent = 'Double-click a box to edit its tags & label';
+  inspectorPanel.appendChild(inspectorHint);
+
+  contentArea.append(labelPanelEl, canvasWrap, inspectorPanel);
 
   // Footer
   const footer = document.createElement('div');
   footer.className = 'canvas-modal-footer';
+
+  const markVerifiedLabel = document.createElement('label');
+  markVerifiedLabel.style.cssText = 'display:flex;align-items:center;gap:0.4em;color:#aaa;font-size:0.85em;cursor:pointer;user-select:none;margin-right:auto;';
+  const markVerifiedCheckbox = document.createElement('input');
+  markVerifiedCheckbox.type = 'checkbox';
+  markVerifiedCheckbox.checked = true;
+  markVerifiedLabel.append(markVerifiedCheckbox, 'Mark modified boxes as verified');
+
   const saveBtn = document.createElement('button');
   saveBtn.textContent = 'Save & Close';
   saveBtn.style.cssText = 'background:#ff003322;border:1px solid #ff0033;border-radius:3px;padding:0.3em 1em;cursor:pointer;color:#ff6666;';
-  footer.appendChild(saveBtn);
+  footer.append(markVerifiedLabel, saveBtn);
 
   dialog.append(header, toolbarEl, contentArea, footer);
   overlay.appendChild(dialog);
@@ -499,6 +561,7 @@ async function showCanvasModal(bbox, img, labels, onSaved) {
   let instance;
   let toolbarHandle = { destroy: () => {} };
   let labelHandle   = { destroy: () => {} };
+  let unsubInspector = () => {};
 
   try {
     instance = await createCanvasInstance(canvasWrap, { tool: 'select' });
@@ -511,6 +574,9 @@ async function showCanvasModal(bbox, img, labels, onSaved) {
     return;
   }
 
+  // Snapshot bbox state so we can detect which ones were modified at save time
+  const initialBboxSnapshot = snapshotBboxes(instance.runtime.state.image.bboxes);
+
   // ── Wire shared toolbar (select / bbox / delete) ───────────────────
   toolbarHandle = initToolbar(instance.runtime, toolbarEl, {
     buttons: ['select', 'bbox', 'delete'],
@@ -518,6 +584,9 @@ async function showCanvasModal(bbox, img, labels, onSaved) {
 
   // ── Wire label panel ───────────────────────────────────────────────
   labelHandle = await initLabelPanel(instance.runtime, labelPanelEl);
+
+  // ── Wire inspector panel (double-click a bbox to edit tags/label) ──
+  unsubInspector = initInspector(instance.runtime, { container: inspectorPanel, openTab: false });
 
   // Highlight the target bbox
   const layer = instance.runtime.canvas.layer;
@@ -529,6 +598,7 @@ async function showCanvasModal(bbox, img, labels, onSaved) {
 
   // ── Close / Save ───────────────────────────────────────────────────
   function closeModal() {
+    unsubInspector();
     toolbarHandle.destroy();
     labelHandle.destroy();
     instance.destroy();
@@ -547,6 +617,19 @@ async function showCanvasModal(bbox, img, labels, onSaved) {
     saveBtn.disabled = true;
     closeBtn.disabled = true; // block close while save is in-flight
     saveBtn.textContent = 'Saving…';
+
+    // If checked, swap UNVERIFIED → VERIFIED on any bbox that was changed
+    if (markVerifiedCheckbox.checked) {
+      const VERIFICATION_UUIDS = new Set([UNVERIFIED_TAG_UUID, VERIFIED_TAG_UUID, FALSE_POS_TAG_UUID]);
+      const modifiedUuids = getModifiedBboxUuids(instance.runtime.state.image.bboxes, initialBboxSnapshot);
+      for (const [, b] of instance.runtime.state.image.bboxes.entries()) {
+        if (modifiedUuids.has(b.uuid)) {
+          const nonVerifTags = (b.tags ?? []).filter(t => !VERIFICATION_UUIDS.has(t.uuid));
+          b.tags = [...nonVerifTags, { uuid: VERIFIED_TAG_UUID, icon: null }];
+        }
+      }
+    }
+
     let saved = false;
     try {
       saved = await saveAnnotations(instance.runtime);

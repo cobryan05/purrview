@@ -33,10 +33,14 @@ export function openInspectorTab() {
 }
 
 
+/**
+ * @param {{ bboxView?: any, target?: string|HTMLElement, editable?: boolean, onSelectCallback?: any }} [opts]
+ *   target – a string element ID *or* an HTMLElement; defaults to 'tab-inspector'
+ */
 export function renderBboxInspector({ bboxView = null, target = 'tab-inspector', editable = true, onSelectCallback = null } = {}) {
   if (!bboxView) return;
   try {
-    const targetElement = document.getElementById(target);
+    const targetElement = typeof target === 'string' ? document.getElementById(target) : target;
     if (!targetElement) {
       console.error('Class container not found');
       return;
@@ -96,23 +100,21 @@ export function renderBboxInspector({ bboxView = null, target = 'tab-inspector',
 
 /**
  * Bind the inspector to a specific canvas runtime so it only responds to
- * double-clicks from that canvas (not from review-page modal canvases, etc.).
+ * double-clicks from that canvas.
  *
  * @param {import('@image_tagging_types').ImageTaggingRuntime} runtime
+ * @param {{ container?: HTMLElement, openTab?: boolean }} [opts]
+ *   container – render into this element instead of the default sidebar tab
+ *   openTab   – switch the sidebar to the inspector tab on double-click (default true)
  * @returns {() => void} unsubscribe function
  */
-export function initInspector(runtime) {
+export function initInspector(runtime, { container = null, openTab = true } = {}) {
   return events.subscribeToCanvas(
     runtime.id,
     EventTypes.CANVAS_BBOX_DOUBLE_CLICKED,
-    onCanvasBboxSelected
+    ({ bboxView }) => {
+      if (openTab) openInspectorTab();
+      renderBboxInspector({ bboxView, target: container ?? 'tab-inspector' });
+    }
   );
-}
-
-/**
- * @param {import('@events').CanvasBboxDoubleClickedPayload} payload
- */
-function onCanvasBboxSelected(payload) {
-  openInspectorTab();
-  renderBboxInspector({ bboxView: payload.bboxView });
 }

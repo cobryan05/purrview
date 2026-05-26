@@ -384,6 +384,24 @@ main.container {
   color: #ffd700;
 }
 
+.canvas-modal-inspector {
+  width: 220px;
+  min-width: 180px;
+  flex-shrink: 0;
+  overflow-y: auto;
+  border-left: 1px solid #333;
+  background: #161616;
+  padding: 0.5em;
+}
+
+.canvas-modal-inspector-hint {
+  color: #555;
+  font-size: 0.8em;
+  text-align: center;
+  padding: 1.5em 0.5em;
+  line-height: 1.4;
+}
+
 .canvas-modal-footer {
   display: flex;
   align-items: center;
