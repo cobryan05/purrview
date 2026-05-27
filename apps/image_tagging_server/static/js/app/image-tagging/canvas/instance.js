@@ -6,21 +6,14 @@ import { events, EventTypes } from '/app-static/js/shared/events/index.js';
 import { fetchTags } from '/app-static/js/shared/api/tags.js';
 
 /**
- * Creates a self-contained, destroyable canvas instance.
+ * Shared canvas setup: wires stage events, hotkeys, and live tag-icon refresh.
+ * Call this after the runtime has a canvas (setCanvasContainer or setImageTaggingPane).
  *
- * The container must have explicit CSS dimensions before this is called;
- * the Konva stage will size itself to the container's current clientWidth/clientHeight.
- *
- * @param {HTMLElement} container
- * @param {{ tool?: string }} [options]
- * @returns {Promise<{ runtime: import('@image_tagging_types').ImageTaggingRuntime, loadImage: (path: string) => Promise<void>, destroy: () => void }>}
+ * @param {import('@image_tagging_types').ImageTaggingRuntime} runtime
+ * @returns {Promise<{ destroy: () => void }>}
  */
-export async function createCanvasInstance(container, options = {}) {
-  const runtime = createImageTaggingRuntime();
-  runtime.setCanvasContainer(container);
+export async function initCanvasCore(runtime) {
   await initCanvasStage(runtime);
-  runtime.setTool(options.tool ?? 'select');
-
   const hotkeyHandle = attachHotkeys(runtime);
 
   const unsubTagsUpdated = events.subscribe(EventTypes.TAGS_UPDATED, async () => {
@@ -36,11 +29,34 @@ export async function createCanvasInstance(container, options = {}) {
   });
 
   return {
-    runtime,
-    loadImage: (path) => loadImageOntoCanvas(runtime, path),
     destroy() {
       hotkeyHandle.destroy();
       unsubTagsUpdated();
+    },
+  };
+}
+
+/**
+ * Creates a self-contained, destroyable canvas instance.
+ *
+ * The container must have explicit CSS dimensions before this is called;
+ * the Konva stage will size itself to the container's current clientWidth/clientHeight.
+ *
+ * @param {HTMLElement} container
+ * @param {{ tool?: string }} [options]
+ * @returns {Promise<{ runtime: import('@image_tagging_types').ImageTaggingRuntime, loadImage: (path: string) => Promise<void>, destroy: () => void }>}
+ */
+export async function createCanvasInstance(container, options = {}) {
+  const runtime = createImageTaggingRuntime();
+  runtime.setCanvasContainer(container);
+  const coreHandle = await initCanvasCore(runtime);
+  runtime.setTool(options.tool ?? 'select');
+
+  return {
+    runtime,
+    loadImage: (path) => loadImageOntoCanvas(runtime, path),
+    destroy() {
+      coreHandle.destroy();
       runtime.destroyCanvas();
     },
   };

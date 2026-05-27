@@ -1,5 +1,5 @@
 import { FileNavigation } from '../../ui/utils/fileNavigation.js';
-import { initCanvasStage } from './canvas/main.js';
+import { initCanvasCore } from './canvas/instance.js';
 import { addInferenceResults, loadImageOntoCanvas } from './canvas/image.js';
 import { init as initFiles } from './files.js';
 import { init as initSidebar } from './sidebar.js';
@@ -24,7 +24,7 @@ export async function init(runtime, tab_pane) {
     }
   });
 
-  await initCanvasStage(runtime);
+  await initCanvasCore(runtime);
 
   // App-specific event subscriptions scoped to this canvas's runtime.
   events.subscribeToCanvas(runtime.id, EventTypes.RUN_INFERENCE_ON_CANVAS, async ({ modelName }) => {
