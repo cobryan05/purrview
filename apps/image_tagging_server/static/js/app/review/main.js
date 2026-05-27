@@ -201,13 +201,12 @@ export async function init() {
 
       const fs = filterPanel.getState();
       const cursor = _pageCursors[_pageCursors.length - 1];
-      const showAll = fs.tagUuids.length === 0;
 
       let images;
       try {
         images = await fetchReviewQueue({
-          tagUuids: showAll ? [] : fs.tagUuids,
-          showAllBboxes: showAll,
+          tagUuids: fs.showAllBboxes ? [] : fs.tagUuids,
+          showAllBboxes: fs.showAllBboxes,
           labelUuid: labelSelect.value || undefined,
           sortBy: fs.sortBy,
           sortOrder: fs.sortOrder,
@@ -233,7 +232,9 @@ export async function init() {
         const last = images[images.length - 1];
         _lastCursor = {
           uuid: last.uuid,
-          sortValue: fs.sortBy === 'updated_at' ? (last.updatedAt ?? null) : (last.createdAt ?? null),
+          sortValue: fs.sortBy === 'uuid' ? null
+            : fs.sortBy === 'updated_at' ? (last.updatedAt ?? null)
+            : (last.createdAt ?? null),
         };
       }
 
@@ -244,7 +245,7 @@ export async function init() {
       const tagSet = new Set(fs.tagUuids);
       for (const img of images) {
         const matching = (img.bboxes || []).filter(b =>
-          showAll || (b.tags || []).some(t => tagSet.has(t.uuid))
+          fs.showAllBboxes || (b.tags || []).some(t => tagSet.has(t.uuid))
         );
         for (const bbox of matching) {
           _allBboxEntries.push({ bbox, img });

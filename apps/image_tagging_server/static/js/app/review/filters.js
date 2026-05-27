@@ -287,7 +287,14 @@ export function createFilterPanel(labels, tags, onFilterChange) {
 
   return {
     element: panel,
-    getState: () => ({ ..._state, imageLabelFilters: [..._state.imageLabelFilters] }),
+    getState: () => ({
+      ..._state,
+      // showAllBboxes: true skips the server-side tag filter entirely.
+      // We map "no tags selected" → showAll so the user sees everything rather
+      // than nothing; callers should use this field instead of inferring from tagUuids.
+      showAllBboxes: _state.tagUuids.length === 0,
+      imageLabelFilters: [..._state.imageLabelFilters],
+    }),
     isDefault,
   };
 }

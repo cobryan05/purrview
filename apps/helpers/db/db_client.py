@@ -43,8 +43,10 @@ from .types import (
     VERIFIED_TAG_UUID,
 )
 
-# Re-exported for callers that import from this module.
-# Canonical definitions live in helpers/db/types.py.
+# The three UUID constants are re-exported from helpers/db/types.py via the
+# explicit imports above.  __all__ here only governs `from db_client import *`;
+# named imports (from apps.helpers.db.db_client import UNVERIFIED_TAG_UUID)
+# work because the names are present in this module's namespace.
 __all__ = ["UNVERIFIED_TAG_UUID", "VERIFIED_TAG_UUID", "FALSE_POS_TAG_UUID"]
 
 _SYSTEM_TAGS = [
@@ -326,7 +328,14 @@ class DbClient:
 
             # ── Filename search ────────────────────────────────────────────────
             if params.filename_search:
-                stmt = stmt.where(ImageRecord.filename.like(f"%{params.filename_search}%"))
+                # Escape SQL LIKE metacharacters so user input is treated as literal text.
+                escaped = (
+                    params.filename_search
+                    .replace("!", "!!")
+                    .replace("%", "!%")
+                    .replace("_", "!_")
+                )
+                stmt = stmt.where(ImageRecord.filename.like(f"%{escaped}%", escape="!"))
 
             # ── Date range (always on created_at) ──────────────────────────────
             if params.date_from:
@@ -431,11 +440,16 @@ class DbClient:
                 session.add(BBoxTagLink(bbox_uuid=bbox_uuid, tag_uuid=tag_uuid))
             session.add(bbox)
             # Touch the parent image so updated_at reflects bbox-level changes.
-            image = await session.get(ImageRecord, bbox.image_uuid)
-            if image is not None:
-                image.updated_at = datetime.now(timezone.utc)
-                session.add(image)
+            await self._touch_image(session, bbox.image_uuid)
             await session.commit()
+
+    @staticmethod
+    async def _touch_image(session: AsyncSession, image_uuid: str) -> None:
+        """Set updated_at on an image to now, so bbox-level changes are reflected in sorts."""
+        image = await session.get(ImageRecord, image_uuid)
+        if image is not None:
+            image.updated_at = datetime.now(timezone.utc)
+            session.add(image)
 
     @staticmethod
     def _resolve_exclusive_groups(tag_uuids: List[str], tags_by_uuid: dict) -> List[str]:
@@ -524,10 +538,7 @@ class DbClient:
                 for tag_uuid in self._resolve_exclusive_groups(b.tag_uuids, tags_by_uuid):
                     session.add(BBoxTagLink(bbox_uuid=b.uuid, tag_uuid=tag_uuid))
             # Touch the image so updated_at reflects the full bbox replacement.
-            image = await session.get(ImageRecord, image_uuid)
-            if image is not None:
-                image.updated_at = datetime.now(timezone.utc)
-                session.add(image)
+            await self._touch_image(session, image_uuid)
             await session.commit()
 
     def write_image_metadata_to_json(self, json_path: Path, image_uuid: str, filename: str, update: ImageRecordUpdate) -> None:

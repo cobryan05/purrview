@@ -156,7 +156,11 @@ class ImageRecordRead(BaseModel):
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 
-    model_config = ConfigDict(from_attributes=True)
+    model_config = ConfigDict(
+        from_attributes=True,
+        alias_generator=to_camel,
+        populate_by_name=True,
+    )
 
 
 class ImageLabelFilter(BaseModel):
