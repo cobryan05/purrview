@@ -334,8 +334,9 @@ class Manager:
             return None
         image = await self._db_client.add_image(safe_path)
         await self._db_client.write_image_metadata_to_db(image.uuid, update)
-        self._db_client.write_image_metadata_to_json(
-            self._get_json_sidefile(safe_path), image.uuid, image.filename, update
+        await asyncio.to_thread(
+            self._db_client.write_image_metadata_to_json,
+            self._get_json_sidefile(safe_path), image.uuid, image.filename, update,
         )
         updated = await self._db_client.get_image_by_filename(safe_path)
         await self._recompute_image_labels(image.uuid, update)

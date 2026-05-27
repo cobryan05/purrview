@@ -400,11 +400,7 @@ class DbClient:
     async def get_bbox_with_image(self, bbox_uuid: str) -> Optional[tuple[BBox, ImageRecord]]:
         """Return a bbox and its parent image record, or None if not found."""
         async with self._async_session_maker() as session:
-            stmt = (
-                select(BBox)
-                .where(BBox.uuid == bbox_uuid)
-                .options(selectinload(BBox.image))
-            )
+            stmt = select(BBox).where(BBox.uuid == bbox_uuid)
             result = await session.exec(stmt)
             bbox = result.first()
             if bbox is None:
@@ -547,8 +543,8 @@ class DbClient:
         if json_path.exists():
             try:
                 existing = jstyleson.loads(json_path.read_text())
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning(f"Could not parse sidecar {json_path}, overwriting: {e}")
         existing.update({
             "uuid": image_uuid,
             "filename": filename,

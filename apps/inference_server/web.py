@@ -40,11 +40,11 @@ class ModelBulkClassesResponse(StatusResponse):
 
 class PinModelPayload(Payload):
     model_name: str
-    duration: int
+    duration: int = Field(gt=0, description="Pin lifetime in seconds; must be positive")
 
 
 class InferencePayload(Payload):
-    conf_thresh: float
+    conf_thresh: float = Field(ge=0.0, le=1.0, description="Confidence threshold; must be in [0, 1]")
     return_source_img: bool = False
     return_annotated_img: bool = False
     pin_id: Optional[str] = None

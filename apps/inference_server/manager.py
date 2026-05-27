@@ -61,6 +61,7 @@ class Manager:
         self._models_path: str = models_path  # Store the models directory path
         self._avail_models: Dict[str, str] = {}  # {basename (no .onnx): full_path}
         self._pinned_models: Dict[str, InferenceModel] = {}  # {model_name: PinnedModel}
+        self._loading_models: Dict[str, asyncio.Future] = {}  # in-progress loads; awaited by concurrent pin requests
         self._config = { "models_path": models_path }
 
 
@@ -170,12 +171,24 @@ class Manager:
         else:
             raise FileNotFoundError(f"Model '{model_name}' not found in available models")
 
-        # Load the model into memory if not already loaded
+        # If a concurrent pin_model call is already loading this model, wait for it.
+        if model_name in self._loading_models:
+            await self._loading_models[model_name]
+
         if model_name not in self._pinned_models:
-            new_model = InferenceModel(model_name=model_name, path=model_path)
-            new_model.inference = await asyncio.to_thread(load_yolo_onnx, model_path)
-            self._pinned_models[model_name] = new_model
-            logger.info(f"Model '{model_name}' loaded into memory.")
+            load_future: asyncio.Future = asyncio.get_running_loop().create_future()
+            self._loading_models[model_name] = load_future
+            try:
+                new_model = InferenceModel(model_name=model_name, path=model_path)
+                new_model.inference = await asyncio.to_thread(load_yolo_onnx, model_path)
+                self._pinned_models[model_name] = new_model
+                logger.info(f"Model '{model_name}' loaded into memory.")
+                load_future.set_result(None)
+            except Exception as exc:
+                load_future.set_exception(exc)
+                raise
+            finally:
+                self._loading_models.pop(model_name, None)
 
         pin_id = str(uuid.uuid4())
         expiry = time.time() + timeout

@@ -3,7 +3,6 @@
 import asyncio
 import base64
 import random
-import ssl
 import urllib.request
 from typing import Any, Optional
 
@@ -34,7 +33,7 @@ class UrlImageProvider(ImageProvider):
         return ImageWithProviderMetadata(frame)
 
     def _downloadImage(self):
-        req = urllib.request.urlopen(self._request, context=ssl._create_unverified_context())
+        req = urllib.request.urlopen(self._request)
         buffer = np.array(bytearray(req.read()), dtype=np.uint8)
         return cv2.imdecode(buffer, flags=cv2.IMREAD_COLOR)
 

@@ -9,7 +9,6 @@ from uuid import uuid4
 import cv2
 import db_client
 from db_client.api.images_api import ImagesApi
-from db_client.api.tags_api import TagsApi
 from db_client.models.bounding_box_metadata_model import BoundingBoxMetadataModel
 from db_client.models.update_metadata_payload import UpdateMetadataPayload
 import inference_client
@@ -18,6 +17,7 @@ from inference_client.api.models_api import ModelsApi
 from inference_client.models.inference_payload import InferencePayload
 from inference_client.models.pin_model_payload import PinModelPayload
 
+from apps.helpers.db.db_client import UNVERIFIED_TAG_UUID
 from apps.helpers.imageUtils import base64_encode_png
 
 from .Registry import register_task
@@ -64,20 +64,12 @@ class CollectTrainingImagesTask(Task):
         self._target_label_map: dict[str, float] = {t.label_uuid: t.min_confidence for t in self._target_labels}
         self._min_all_conf: float = min((t.min_confidence for t in self._target_labels), default=0.5)
         self._images_saved: int = resume_data.get("images_saved", 0) if resume_data else 0
-        self._unverified_tag_uuid: Optional[str] = None
 
     async def _run(self) -> dict[str, Any]:
-        self._status_msg = "Looking up system tags"
-        self.log("Looking up system tags")
+        self._unverified_tag_uuid = UNVERIFIED_TAG_UUID
+
         db_api_client = self._manager.get_db_api_client()
         inference_api_client = self._manager.get_inference_api_client()
-
-        tags_resp = await asyncio.to_thread(TagsApi(db_api_client).list_tags)
-        self._unverified_tag_uuid = next(
-            (t.uuid for t in (tags_resp.tags or []) if t.name == "Unverified"), None
-        )
-        if not self._unverified_tag_uuid:
-            raise RuntimeError("'Unverified' system tag not found in DB")
 
         self._status_msg = "Getting image provider"
         self.log(f"Getting image provider for source {self._source_uuid}")
