@@ -125,7 +125,8 @@ export async function init() {
   // ── State ─────────────────────────────────────────────────────────
   let _allBboxEntries = []; // flat list of { bbox, img } for current page
   let _selected = new Set(); // selected bbox UUIDs
-  let _staleUuids = new Set(); // bbox UUIDs modified/deleted on this page (in-place)
+  let _staleUuids = new Set(); // bbox UUIDs modified on this page (for status display)
+  let _deletedUuids = new Set(); // bbox UUIDs deleted this page (disabled/unselectable)
   let _pageCursors = [null]; // cursor stack: null = first page, {uuid, sortValue} = keyset
   let _lastCursor = null; // {uuid: string, sortValue: string|null} of last image on current page
   let _lastClickedIndex = -1; // index in _allBboxEntries of the last checkbox click (for shift-select)
@@ -133,7 +134,7 @@ export async function init() {
   let _hasMore = false;
 
   function updateBulkBtn() {
-    const activeCount = _allBboxEntries.filter(e => !_staleUuids.has(e.bbox.uuid)).length;
+    const activeCount = _allBboxEntries.filter(e => !_deletedUuids.has(e.bbox.uuid)).length;
     bulkBtn.textContent = `Bulk Apply (${_selected.size})`;
     bulkBtn.disabled = _selected.size === 0;
     selectAllCb.checked = _selected.size > 0 && _selected.size === activeCount;
@@ -168,11 +169,14 @@ export async function init() {
     badge.className = `card-state-badge state-${state}`;
     badge.textContent = stateLabels[state] ?? state;
     card.querySelector('.card-info')?.prepend(badge);
-    const cb = card.querySelector('input[type=checkbox]');
-    if (cb) { cb.checked = false; cb.disabled = true; }
     const uuid = card.dataset.bboxUuid;
     _staleUuids.add(uuid);
-    _selected.delete(uuid);
+    if (state === 'deleted') {
+      const cb = card.querySelector('input[type=checkbox]');
+      if (cb) { cb.checked = false; cb.disabled = true; }
+      _selected.delete(uuid);
+      _deletedUuids.add(uuid);
+    }
   }
 
   // ── Render ────────────────────────────────────────────────────────
@@ -194,6 +198,7 @@ export async function init() {
       grid.innerHTML = '';
       _selected.clear();
       _staleUuids = new Set();
+      _deletedUuids = new Set();
       _allBboxEntries = [];
       _lastCursor = null;
       _lastClickedIndex = -1;
@@ -305,18 +310,15 @@ export async function init() {
 
     const cb = document.createElement('input');
     cb.type = 'checkbox';
-    // Use 'click' (not 'change') so we can read e.shiftKey for range selection.
-    // By the time 'click' fires, cb.checked already reflects the new toggled state.
-    cb.addEventListener('click', (e) => {
-      const newChecked = cb.checked;
 
-      if (e.shiftKey && _lastClickedIndex !== -1 && _lastClickedIndex !== index) {
-        // Range-select: toggle all non-stale cards between last click and this one
+    function applySelect(shiftKey, newChecked) {
+      cb.checked = newChecked;
+      if (shiftKey && _lastClickedIndex !== -1 && _lastClickedIndex !== index) {
         const lo = Math.min(_lastClickedIndex, index);
         const hi = Math.max(_lastClickedIndex, index);
         for (let i = lo; i <= hi; i++) {
           const entry = _allBboxEntries[i];
-          if (!entry || _staleUuids.has(entry.bbox.uuid)) continue;
+          if (!entry || _deletedUuids.has(entry.bbox.uuid)) continue;
           const c = grid.querySelector(`[data-bbox-uuid="${entry.bbox.uuid}"]`);
           const cCb = c?.querySelector('input[type=checkbox]');
           if (!cCb || cCb.disabled) continue;
@@ -326,14 +328,26 @@ export async function init() {
           c.classList.toggle('selected', newChecked);
         }
       } else {
-        // Normal single click: just update this card
         if (newChecked) _selected.add(bbox.uuid);
         else _selected.delete(bbox.uuid);
         card.classList.toggle('selected', newChecked);
       }
-
       _lastClickedIndex = index;
       updateBulkBtn();
+    }
+
+    // Use 'click' (not 'change') so we can read e.shiftKey for range selection.
+    // By the time 'click' fires, cb.checked already reflects the new toggled state.
+    cb.addEventListener('click', (e) => applySelect(e.shiftKey, cb.checked));
+
+    let _clickTimer = null;
+    card.addEventListener('click', (e) => {
+      if (e.target === cb || cb.disabled) return;
+      if (e.shiftKey) e.preventDefault(); // prevent text selection from shift-click
+      clearTimeout(_clickTimer);
+      const shiftKey = e.shiftKey;
+      const newChecked = !cb.checked;
+      _clickTimer = setTimeout(() => applySelect(shiftKey, newChecked), 220);
     });
 
     const thumbImg = document.createElement('img');
@@ -342,6 +356,7 @@ export async function init() {
     thumbImg.src = getBboxThumbnailUrl(img.filename, bbox.uuid, 300);
     thumbImg.title = 'Double-click to edit in canvas';
     thumbImg.addEventListener('dblclick', () => {
+      clearTimeout(_clickTimer);
       showCanvasModal(bbox, img, labels, async (updatedUIBbox) => {
         const card = grid.querySelector(`[data-bbox-uuid="${bbox.uuid}"]`);
         if (!card) return;
@@ -404,12 +419,12 @@ export async function init() {
   selectAllCb.addEventListener('change', () => {
     const cards = grid.querySelectorAll('.review-card');
     for (const { bbox } of _allBboxEntries) {
-      if (_staleUuids.has(bbox.uuid)) continue; // skip already-modified cards
+      if (_deletedUuids.has(bbox.uuid)) continue; // deleted cards can't be selected
       if (selectAllCb.checked) _selected.add(bbox.uuid);
       else _selected.delete(bbox.uuid);
     }
     cards.forEach(c => {
-      if (_staleUuids.has(c.dataset.bboxUuid)) return; // stale cards stay disabled
+      if (_deletedUuids.has(c.dataset.bboxUuid)) return; // deleted cards stay disabled
       const cb = c.querySelector('input[type=checkbox]');
       if (cb) cb.checked = selectAllCb.checked;
       c.classList.toggle('selected', selectAllCb.checked);
@@ -866,42 +881,4 @@ async function showBulkActionModal(entries, labels, onConfirm) {
   document.body.appendChild(overlay);
 
   overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove(); });
-}
-
-// ── Shared helpers ─────────────────────────────────────────────────────
-
-function bboxToPayload(bbox) {
-  return {
-    uuid: bbox.uuid,
-    labelUuid: bbox.labelUuid ?? bbox.label?.uuid,
-    x: bbox.x,
-    y: bbox.y,
-    width: bbox.width,
-    height: bbox.height,
-    tagUuids: (bbox.tags || []).map(t => t.uuid),
-    extra: bbox.metadataJson ?? {},
-  };
-}
-
-async function applyTagSwap(imagePath, allBboxes, targetBboxUuid, newTagUuid) {
-  const updated = allBboxes.map(b => {
-    const payload = bboxToPayload(b);
-    if (b.uuid === targetBboxUuid) {
-      payload.tagUuids = swapVerificationTag(payload.tagUuids, newTagUuid);
-    }
-    return payload;
-  });
-  await updateImageBboxes(imagePath, updated);
-}
-
-async function applyTagSwapAndRelabel(imagePath, allBboxes, targetBboxUuid, newTagUuid, newLabelUuid) {
-  const updated = allBboxes.map(b => {
-    const payload = bboxToPayload(b);
-    if (b.uuid === targetBboxUuid) {
-      payload.tagUuids = swapVerificationTag(payload.tagUuids, newTagUuid);
-      payload.labelUuid = newLabelUuid;
-    }
-    return payload;
-  });
-  await updateImageBboxes(imagePath, updated);
 }
