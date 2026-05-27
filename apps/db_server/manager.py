@@ -391,24 +391,17 @@ class Manager:
 
     async def _recompute_image_labels(self, image_uuid: str, update: ImageRecordUpdate) -> None:
         """Derive image_labels from the current bbox+tag state after a metadata update."""
+        from apps.helpers.db.label_state import compute_image_label_states
 
-        label_tag_sets: dict[str, list[set[str]]] = defaultdict(list)
-        for b in update.bboxes:
-            if b.label_uuid:
-                label_tag_sets[b.label_uuid].append(set(b.tag_uuids))
+        bboxes = [(b.label_uuid, set(b.tag_uuids)) for b in update.bboxes]
+        states = compute_image_label_states(bboxes)
 
-        for label_uuid, tag_sets in label_tag_sets.items():
-            if any(VERIFIED_TAG_UUID in tags for tags in tag_sets):
-                status = ImageLabelStatus.PRESENT
-            elif all(FALSE_POS_TAG_UUID in tags for tags in tag_sets):
-                status = ImageLabelStatus.ABSENT
-            else:
-                status = ImageLabelStatus.UNCERTAIN
+        for label_uuid, status in states.items():
             await self._db_client.set_image_label(image_uuid, label_uuid, status)
 
         # Remove stale rows for labels that no longer have any bboxes in this image.
         existing = await self._db_client.get_image_labels(image_uuid)
-        stale = [r.label_uuid for r in existing if r.label_uuid not in label_tag_sets]
+        stale = [r.label_uuid for r in existing if r.label_uuid not in states]
         await self._db_client.delete_image_labels(image_uuid, stale)
 
     async def _resolve_image_uuid(self, image_path: str) -> Optional[str]:

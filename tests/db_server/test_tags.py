@@ -1,12 +1,19 @@
 import pytest
 
 
-async def test_list_tags_empty(http_client):
+async def test_list_tags_contains_system_tags(http_client):
+    """init_db always seeds the 3 system tags; the list is never empty."""
     r = await http_client.get("/api/tags/list")
     assert r.status_code == 200
     body = r.json()
     assert body["status"] == "success"
-    assert body["tags"] == []
+    names = {t["name"] for t in body["tags"]}
+    # System tags are always present after init_db.
+    assert "Unverified" in names
+    assert "Verified" in names
+    assert "FalsePositive" in names
+    # No user-created tags yet.
+    assert all(t["kind"] == "system" for t in body["tags"])
 
 
 async def test_create_tag(http_client):

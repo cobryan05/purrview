@@ -149,12 +149,25 @@ class DbClient:
             await self.sync_sources_from_json()
 
     async def _seed_system_tags(self) -> None:
-        """Ensure system tags always exist (idempotent)."""
+        """Ensure system tags always exist (idempotent).
+
+        _SYSTEM_TAGS are module-level objects shared across DbClient instances.
+        After the first seed they become SQLAlchemy "detached" objects; re-using
+        them in a second session would make SQLAlchemy treat them as already-
+        persisted (no INSERT emitted).  Always construct fresh Tag instances.
+        """
         async with self._async_session_maker() as session:
-            for tag in _SYSTEM_TAGS:
-                existing = await session.get(Tag, tag.uuid)
+            for tmpl in _SYSTEM_TAGS:
+                existing = await session.get(Tag, tmpl.uuid)
                 if existing is None:
-                    session.add(tag)
+                    session.add(Tag(
+                        uuid=tmpl.uuid,
+                        name=tmpl.name,
+                        color=tmpl.color,
+                        kind=tmpl.kind,
+                        exclusive_group=tmpl.exclusive_group,
+                        protected=tmpl.protected,
+                    ))
             await session.commit()
 
     async def close(self):
