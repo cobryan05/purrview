@@ -3,6 +3,7 @@
 import asyncio
 import base64
 import random
+import ssl
 import urllib.request
 from typing import Any, Optional
 
@@ -15,9 +16,10 @@ from .Registry import register_image_provider
 
 @register_image_provider()
 class UrlImageProvider(ImageProvider):
-    def __init__(self, url: str, user: str = None, password: str = None, bust_cache: bool = False):
+    def __init__(self, url: str, user: str = None, password: str = None, bust_cache: bool = False, ignore_ssl_errors: bool = True):
         self._url: str = url
         self._request = urllib.request.Request(url)
+        self._ignore_ssl_errors: bool = ignore_ssl_errors
         if bust_cache:
             separator = '&' if '?' in url else '?'
             self._url += f"{separator}{random.randint(100000, 999999)}"
@@ -33,7 +35,12 @@ class UrlImageProvider(ImageProvider):
         return ImageWithProviderMetadata(frame)
 
     def _downloadImage(self):
-        req = urllib.request.urlopen(self._request)
+        if self._ignore_ssl_errors:
+            ssl_context = ssl._create_unverified_context()
+            req = urllib.request.urlopen(self._request, context=ssl_context)
+        else:
+            req = urllib.request.urlopen(self._request)
+
         buffer = np.array(bytearray(req.read()), dtype=np.uint8)
         return cv2.imdecode(buffer, flags=cv2.IMREAD_COLOR)
 
@@ -74,5 +81,12 @@ class UrlImageProvider(ImageProvider):
                 "label": "Bust Cache",
                 "required": False,
                 "description": "Append random number to url to avoid caching"
+            },
+            "ignore_ssl_errors": {
+                "type": "boolean",
+                "label": "Ignore SSL Errors",
+                "required": False,
+                "description": "Ignore SSL certificate errors",
+                "default": True,
             }
         }
