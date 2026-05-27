@@ -4,6 +4,7 @@ docker-compose.override.yml
 
 static/js/htmx
 static/css/pico.min.css
+static/js/api-types/
 storage/
 image_datasets/
 logs/
