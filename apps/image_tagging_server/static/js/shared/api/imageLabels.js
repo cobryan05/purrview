@@ -1,0 +1,45 @@
+/**
+ * @param {string} imagePath
+ * @returns {Promise<Map<string, 'present'|'absent'>>}
+ *   Map from labelUuid → status.  Labels absent from the map are UNCERTAIN.
+ */
+export async function fetchImageLabels(imagePath) {
+  const res = await fetch(`/api/images/${encodeURIComponent(imagePath)}/labels`, {
+    method: 'GET',
+    headers: { 'Accept': 'application/json' },
+  });
+
+  /** @type {{ status: string, labels?: Array<{ label_uuid: string, status: string }> }} */
+  const data = await res.json().catch(() => ({}));
+
+  if (!res.ok || data.status !== 'success') {
+    throw new Error(data.message || 'Failed to fetch image labels');
+  }
+
+  /** @type {Map<string, 'present'|'absent'>} */
+  const map = new Map();
+  for (const row of (data.labels ?? [])) {
+    map.set(row.label_uuid, row.status);
+  }
+  return map;
+}
+
+/**
+ * @param {string} imagePath
+ * @param {string} labelUuid
+ * @param {'absent'|'uncertain'} status
+ *   'absent'    - explicitly mark label as not present in this image
+ *   'uncertain' - clear an existing explicit ABSENT (reverts to default)
+ */
+export async function setImageLabel(imagePath, labelUuid, status) {
+  const res = await fetch('/api/images/labels/set', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ imagePath, labelUuid, status }),
+  });
+
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || data.status !== 'success') {
+    throw new Error(data.message || 'Failed to set image label');
+  }
+}

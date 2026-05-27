@@ -85,21 +85,7 @@ export async function updateImageBboxes(imagePath, bboxes) {
   if (!res.ok || data.status !== 'success') throw new Error(data.message || 'Failed to update image');
 }
 
-/**
- * Explicitly set a label's status on an image (e.g. absent with no bboxes).
- * @param {string} imagePath
- * @param {string} labelUuid
- * @param {'uncertain'|'present'|'absent'} status
- */
-export async function setImageLabel(imagePath, labelUuid, status) {
-  const res = await fetch('/api/images/labels/set', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ imagePath, labelUuid, status }),
-  });
-  const data = await res.json();
-  if (!res.ok || data.status !== 'success') throw new Error(data.message || 'Failed to set image label');
-}
+
 
 /**
  * Return a copy of tagUuids with the verification tag replaced by newTagUuid.

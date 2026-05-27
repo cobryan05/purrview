@@ -136,7 +136,7 @@ async def test_full_verify_workflow(client, files_root):
 
 
 async def test_false_positive_workflow(client, files_root):
-    """Mark as false-positive → absent in image_labels, gone from UNVERIFIED queue."""
+    """Mark as false-positive → gone from UNVERIFIED queue; no image_label row."""
     label = await _create_label(client, "dog")
     bid = await _put_image(files_root, client, "fp.png", label, [UNVERIFIED_TAG_UUID])
 
@@ -155,9 +155,10 @@ async def test_false_positive_workflow(client, files_root):
     images = await _review(client, tag_uuids=[UNVERIFIED_TAG_UUID])
     assert not any("fp.png" in img["filename"] for img in images)
 
-    # Image label is ABSENT
+    # False-positive bboxes no longer derive ABSENT — label has no image_label row
+    # (user must explicitly mark ABSENT via set_image_label if desired)
     labels = await _image_labels(client, "fp.png")
-    assert labels[label] == ImageLabelStatus.ABSENT
+    assert label not in labels
 
 
 async def test_delete_bbox_removes_from_queue(client, files_root):

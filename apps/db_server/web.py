@@ -786,6 +786,8 @@ class WebApp:
             operation_id="set_image_label",
         )
         async def set_image_label(payload: SetImageLabelPayload) -> SetImageLabelResponse:
+            if payload.status == ImageLabelStatus.PRESENT:
+                return SetImageLabelResponse(status=JsonValues.FAILURE, message="PRESENT status cannot be set directly; it is derived from verified bboxes")
             ok = await self._manager.set_image_label(payload.image_path, payload.label_uuid, payload.status)
             if not ok:
                 return SetImageLabelResponse(status=JsonValues.FAILURE, message="Image not found")

@@ -20,7 +20,6 @@ from apps.helpers.db.db_client import (
 )
 from apps.helpers.db.types import (
     BBoxUpdate,
-    FALSE_POS_TAG_UUID,
     ImageLabelRead,
     ImageLabelStatus,
     ImageRecord,
@@ -390,19 +389,24 @@ class Manager:
         await self._recompute_image_labels(image_record.uuid, update)
 
     async def _recompute_image_labels(self, image_uuid: str, update: ImageRecordUpdate) -> None:
-        """Derive image_labels from the current bbox+tag state after a metadata update."""
-        from apps.helpers.db.label_state import compute_image_label_states
+        """Sync PRESENT rows in image_labels from verified bboxes.
 
-        bboxes = [(b.label_uuid, set(b.tag_uuids)) for b in update.bboxes]
-        states = compute_image_label_states(bboxes)
+        Only PRESENT rows are written/deleted here.  ABSENT rows are always
+        set explicitly by the user via set_image_label and are never touched.
+        """
+        present_label_uuids = {
+            b.label_uuid for b in update.bboxes
+            if b.label_uuid and VERIFIED_TAG_UUID in b.tag_uuids
+        }
+        for label_uuid in present_label_uuids:
+            await self._db_client.set_image_label(image_uuid, label_uuid, ImageLabelStatus.PRESENT)
 
-        for label_uuid, status in states.items():
-            await self._db_client.set_image_label(image_uuid, label_uuid, status)
-
-        # Remove stale rows for labels that no longer have any bboxes in this image.
         existing = await self._db_client.get_image_labels(image_uuid)
-        stale = [r.label_uuid for r in existing if r.label_uuid not in states]
-        await self._db_client.delete_image_labels(image_uuid, stale)
+        stale_present = [
+            r.label_uuid for r in existing
+            if r.status == ImageLabelStatus.PRESENT and r.label_uuid not in present_label_uuids
+        ]
+        await self._db_client.delete_image_labels(image_uuid, stale_present)
 
     async def _resolve_image_uuid(self, image_path: str) -> Optional[str]:
         """Resolve an image path to its DB uuid, or None if not found."""
@@ -413,11 +417,21 @@ class Manager:
         return image.uuid if image else None
 
     async def set_image_label(self, image_path: str, label_uuid: str, status: ImageLabelStatus) -> bool:
-        """Explicitly set an image_label (e.g. verified-absent with no bboxes)."""
+        """Explicitly set a label state for an image.
+
+        ABSENT creates/updates the row.  UNCERTAIN clears an existing explicit
+        ABSENT row (deletes it so the label reverts to the implicit default).
+        PRESENT cannot be set this way — it is always derived from verified bboxes.
+        """
         image_uuid = await self._resolve_image_uuid(image_path)
         if image_uuid is None:
             return False
-        await self._db_client.set_image_label(image_uuid, label_uuid, status)
+        if status == ImageLabelStatus.PRESENT:
+            return False  # PRESENT is always derived from verified bboxes, never set directly
+        if status == ImageLabelStatus.UNCERTAIN:
+            await self._db_client.delete_image_labels(image_uuid, [label_uuid])
+        else:
+            await self._db_client.set_image_label(image_uuid, label_uuid, status)
         return True
 
     async def get_image_labels(self, image_path: str) -> Optional[List[ImageLabelRead]]:

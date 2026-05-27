@@ -133,6 +133,11 @@ export async function init() {
   let _rendering = false;
   let _hasMore = false;
 
+  // Stale (non-deleted) cards intentionally remain selectable and bulk-updatable.
+  // After applying changes via the canvas modal or a single-card action, we want
+  // the user to stay on the same page and keep their place in the list — disabling
+  // stale cards would force a page reload to re-select them.  Only truly deleted
+  // bboxes are excluded from selection and the active-count denominator.
   function updateBulkBtn() {
     const activeCount = _allBboxEntries.filter(e => !_deletedUuids.has(e.bbox.uuid)).length;
     bulkBtn.textContent = `Bulk Apply (${_selected.size})`;
