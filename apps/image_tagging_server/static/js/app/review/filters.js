@@ -6,6 +6,14 @@
  *
  * Calls onFilterChange(state) whenever any filter value changes.
  * The panel element starts hidden; the caller controls visibility.
+ *
+ * Layout: two compact horizontal rows.
+ *
+ *   Row 1 (primary):
+ *     [□ Unverified □ Verified □ FP …]  |  Sort: [by▼][dir▼]  |  Date: [from]—[to]  |  File: [____]
+ *
+ *   Row 2 (labels):
+ *     Labels: [— label —▼] [status▼] [□ Exclude] [＋ Add]   chip chip …
  */
 import {
   UNVERIFIED_TAG_UUID,
@@ -38,28 +46,30 @@ export function createFilterPanel(labels, tags, onFilterChange) {
   const panel = document.createElement('div');
   panel.className = 'review-filter-panel';
 
-  // ── Helper: emit change ─────────────────────────────────────────────────
-  function emit() {
-    onFilterChange({ ..._state });
-  }
+  // ── Helpers ─────────────────────────────────────────────────────────────
+  function emit() { onFilterChange({ ..._state }); }
 
-  // ── Row builder ─────────────────────────────────────────────────────────
-  function makeRow(labelText) {
-    const row = document.createElement('div');
-    row.className = 'filter-row';
-    const lbl = document.createElement('span');
-    lbl.className = 'filter-label';
-    lbl.textContent = labelText;
-    row.appendChild(lbl);
-    return row;
-  }
+  const makeSep = () => {
+    const s = document.createElement('span');
+    s.className = 'filter-sep';
+    return s;
+  };
+  const makeLabel = (text) => {
+    const s = document.createElement('span');
+    s.className = 'filter-label';
+    s.textContent = text;
+    return s;
+  };
 
-  // ── 1. Tags row ─────────────────────────────────────────────────────────
-  const tagRow = makeRow('Tags');
+  // ── Primary row ──────────────────────────────────────────────────────────
+  const primaryRow = document.createElement('div');
+  primaryRow.className = 'filter-row-primary';
+
+  // ── 1. Tag checkboxes ───────────────────────────────────────────────────
   const tagCheckboxes = document.createElement('div');
   tagCheckboxes.className = 'filter-tag-checkboxes';
 
-  // Sort: system tags first (in SYSTEM_TAG_ORDER), then alphabetical custom tags.
+  // System tags first (SYSTEM_TAG_ORDER), then alphabetical custom tags.
   const sortedTags = [
     ...SYSTEM_TAG_ORDER.map(u => tags.get(u)).filter(Boolean),
     ...[...tags.values()]
@@ -70,23 +80,21 @@ export function createFilterPanel(labels, tags, onFilterChange) {
   const tagCheckboxMap = new Map(); // uuid → checkbox input
 
   for (const tag of sortedTags) {
-    const label = document.createElement('label');
-    label.style.cssText = 'display:flex;align-items:center;gap:0.3em;cursor:pointer;white-space:nowrap;';
+    const lbl = document.createElement('label');
     const cb = document.createElement('input');
     cb.type = 'checkbox';
     cb.value = tag.uuid;
-    cb.checked = tag.uuid === UNVERIFIED_TAG_UUID; // default: only Unverified
+    cb.checked = tag.uuid === UNVERIFIED_TAG_UUID;
     tagCheckboxMap.set(tag.uuid, cb);
 
-    // Color swatch
     if (tag.color) {
       const swatch = document.createElement('span');
-      swatch.style.cssText = `display:inline-block;width:0.7em;height:0.7em;border-radius:2px;background:${tag.color};flex-shrink:0;`;
-      label.appendChild(swatch);
+      swatch.style.cssText = `display:inline-block;width:0.65em;height:0.65em;border-radius:2px;background:${tag.color};flex-shrink:0;`;
+      lbl.appendChild(swatch);
     }
-    label.appendChild(cb);
-    label.appendChild(document.createTextNode(tag.name));
-    tagCheckboxes.appendChild(label);
+    lbl.appendChild(cb);
+    lbl.appendChild(document.createTextNode(tag.name));
+    tagCheckboxes.appendChild(lbl);
 
     cb.addEventListener('change', () => {
       _state.tagUuids = [...tagCheckboxMap.entries()]
@@ -96,13 +104,14 @@ export function createFilterPanel(labels, tags, onFilterChange) {
     });
   }
 
-  tagRow.appendChild(tagCheckboxes);
-  panel.appendChild(tagRow);
+  primaryRow.appendChild(tagCheckboxes);
 
-  // ── 2. Sort row ─────────────────────────────────────────────────────────
-  const sortRow = makeRow('Sort by');
+  // ── 2. Sort controls ────────────────────────────────────────────────────
+  primaryRow.appendChild(makeSep());
+  primaryRow.appendChild(makeLabel('Sort:'));
 
   const sortBySelect = document.createElement('select');
+  sortBySelect.className = 'filter-sort-by';
   for (const [value, text] of [['created_at', 'Date created'], ['updated_at', 'Date modified']]) {
     const opt = document.createElement('option');
     opt.value = value;
@@ -110,12 +119,10 @@ export function createFilterPanel(labels, tags, onFilterChange) {
     sortBySelect.appendChild(opt);
   }
   sortBySelect.value = _state.sortBy;
-  sortBySelect.addEventListener('change', () => {
-    _state.sortBy = sortBySelect.value;
-    emit();
-  });
+  sortBySelect.addEventListener('change', () => { _state.sortBy = sortBySelect.value; emit(); });
 
   const sortOrderSelect = document.createElement('select');
+  sortOrderSelect.className = 'filter-sort-dir';
   for (const [value, text] of [['desc', 'Newest first'], ['asc', 'Oldest first']]) {
     const opt = document.createElement('option');
     opt.value = value;
@@ -123,51 +130,42 @@ export function createFilterPanel(labels, tags, onFilterChange) {
     sortOrderSelect.appendChild(opt);
   }
   sortOrderSelect.value = _state.sortOrder;
-  sortOrderSelect.addEventListener('change', () => {
-    _state.sortOrder = sortOrderSelect.value;
-    emit();
-  });
+  sortOrderSelect.addEventListener('change', () => { _state.sortOrder = sortOrderSelect.value; emit(); });
 
-  sortRow.appendChild(sortBySelect);
-  sortRow.appendChild(sortOrderSelect);
-  panel.appendChild(sortRow);
+  primaryRow.appendChild(sortBySelect);
+  primaryRow.appendChild(sortOrderSelect);
 
-  // ── 3. Date range row ────────────────────────────────────────────────────
-  const dateRow = makeRow('Date range');
+  // ── 3. Date range ───────────────────────────────────────────────────────
+  primaryRow.appendChild(makeSep());
+  primaryRow.appendChild(makeLabel('Date:'));
 
-  function makeDateInput(placeholder) {
-    const input = document.createElement('input');
-    input.type = 'datetime-local';
-    input.title = placeholder;
-    input.style.cssText = 'font-size:0.85em;';
-    return input;
-  }
-
-  const dateFromInput = makeDateInput('From');
-  const dateSep = document.createTextNode(' — ');
-  const dateToInput = makeDateInput('To');
-
+  const dateFromInput = document.createElement('input');
+  dateFromInput.type = 'datetime-local';
+  dateFromInput.title = 'From date';
   dateFromInput.addEventListener('change', () => {
     _state.dateFrom = dateFromInput.value ? new Date(dateFromInput.value).toISOString() : null;
     emit();
   });
+
+  const dateToInput = document.createElement('input');
+  dateToInput.type = 'datetime-local';
+  dateToInput.title = 'To date';
   dateToInput.addEventListener('change', () => {
     _state.dateTo = dateToInput.value ? new Date(dateToInput.value).toISOString() : null;
     emit();
   });
 
-  dateRow.appendChild(dateFromInput);
-  dateRow.appendChild(dateSep);
-  dateRow.appendChild(dateToInput);
-  panel.appendChild(dateRow);
+  primaryRow.appendChild(dateFromInput);
+  primaryRow.appendChild(document.createTextNode('–'));
+  primaryRow.appendChild(dateToInput);
 
-  // ── 4. Filename search row ───────────────────────────────────────────────
-  const filenameRow = makeRow('Filename');
+  // ── 4. Filename search ──────────────────────────────────────────────────
+  primaryRow.appendChild(makeSep());
+  primaryRow.appendChild(makeLabel('File:'));
 
   const filenameInput = document.createElement('input');
   filenameInput.type = 'text';
   filenameInput.placeholder = 'substring…';
-  filenameInput.style.cssText = 'flex:1;min-width:120px;max-width:280px;font-size:0.85em;';
 
   let _filenameDebounce = null;
   filenameInput.addEventListener('input', () => {
@@ -178,20 +176,20 @@ export function createFilterPanel(labels, tags, onFilterChange) {
     }, 400);
   });
 
-  filenameRow.appendChild(filenameInput);
-  panel.appendChild(filenameRow);
+  primaryRow.appendChild(filenameInput);
+  panel.appendChild(primaryRow);
 
-  // ── 5. Image-label filter row ─────────────────────────────────────────────
-  const imLabelRow = makeRow('Image labels');
-  imLabelRow.style.flexWrap = 'wrap';
-  imLabelRow.style.gap = '0.4em';
+  // ── Labels row ───────────────────────────────────────────────────────────
+  const labelsRow = document.createElement('div');
+  labelsRow.className = 'filter-row-labels';
+
+  labelsRow.appendChild(makeLabel('Labels:'));
 
   // Builder controls
   const builderDiv = document.createElement('div');
   builderDiv.className = 'filter-imlabel-builder';
 
   const labelSelect = document.createElement('select');
-  labelSelect.style.fontSize = '0.85em';
   const labelPlaceholder = document.createElement('option');
   labelPlaceholder.value = '';
   labelPlaceholder.textContent = '— label —';
@@ -204,7 +202,6 @@ export function createFilterPanel(labels, tags, onFilterChange) {
   }
 
   const statusSelect = document.createElement('select');
-  statusSelect.style.fontSize = '0.85em';
   for (const [value, text] of [['uncertain', 'Uncertain'], ['present', 'Present'], ['absent', 'Absent']]) {
     const opt = document.createElement('option');
     opt.value = value;
@@ -214,27 +211,26 @@ export function createFilterPanel(labels, tags, onFilterChange) {
   statusSelect.value = 'absent';
 
   const excludeLabel = document.createElement('label');
-  excludeLabel.style.cssText = 'display:flex;align-items:center;gap:0.2em;cursor:pointer;font-size:0.85em;white-space:nowrap;';
+  excludeLabel.className = 'filter-exclude-label';
   const excludeCb = document.createElement('input');
   excludeCb.type = 'checkbox';
-  excludeCb.checked = true; // default: exclude
+  excludeCb.checked = true;
   excludeLabel.appendChild(excludeCb);
   excludeLabel.appendChild(document.createTextNode('Exclude'));
 
   const addBtn = document.createElement('button');
   addBtn.textContent = '＋ Add';
-  addBtn.style.cssText = 'font-size:0.8em;padding:0.2em 0.5em;cursor:pointer;';
 
   builderDiv.appendChild(labelSelect);
   builderDiv.appendChild(statusSelect);
   builderDiv.appendChild(excludeLabel);
   builderDiv.appendChild(addBtn);
-  imLabelRow.appendChild(builderDiv);
+  labelsRow.appendChild(builderDiv);
 
-  // Active filters list
+  // Active filter chips
   const filterList = document.createElement('ul');
   filterList.className = 'filter-imlabel-list';
-  imLabelRow.appendChild(filterList);
+  labelsRow.appendChild(filterList);
 
   function renderFilterChips() {
     filterList.innerHTML = '';
@@ -268,7 +264,7 @@ export function createFilterPanel(labels, tags, onFilterChange) {
     emit();
   });
 
-  panel.appendChild(imLabelRow);
+  panel.appendChild(labelsRow);
 
   // ── Public API ────────────────────────────────────────────────────────────
   function isDefault() {

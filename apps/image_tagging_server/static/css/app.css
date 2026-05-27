@@ -188,41 +188,112 @@ main.container {
 }
 
 .review-filter-panel {
+  /* Override Pico's generous form-element padding inside this panel */
+  --pico-form-element-spacing-vertical: 0.15em;
+  --pico-form-element-spacing-horizontal: 0.4em;
+
   background: #1a1a1a;
   border: 1px solid #444;
   border-radius: 4px;
-  padding: 0.75em 1em;
+  padding: 0.35em 0.75em;
   margin-bottom: 0.5em;
   display: flex;
   flex-direction: column;
-  gap: 0.6em;
+  gap: 0.25em;
 }
 
-.filter-row {
+/* Two horizontal rows inside the panel */
+.filter-row-primary,
+.filter-row-labels {
   display: flex;
   align-items: center;
-  gap: 0.6em;
+  gap: 0.35em;
   flex-wrap: wrap;
 }
 
-.filter-label {
-  min-width: 90px;
-  font-size: 0.85em;
-  color: #aaa;
-  font-weight: 500;
+/* Thin vertical rule separating logical filter groups */
+.filter-sep {
+  display: inline-block;
+  width: 1px;
+  height: 1.2em;
+  background: #444;
+  margin: 0 0.15em;
+  flex-shrink: 0;
+  align-self: center;
 }
+
+/* Compact inline label prefix ("Sort:", "Date:", etc.) */
+.filter-label {
+  font-size: 0.75em;
+  color: #777;
+  font-weight: 500;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+/* Shrink all form controls inside the panel; kill Pico's bottom margin */
+.review-filter-panel select,
+.review-filter-panel input[type="text"],
+.review-filter-panel input[type="datetime-local"] {
+  font-size: 0.8em;
+  height: auto;
+  margin-bottom: 0;
+  padding: var(--pico-form-element-spacing-vertical)
+           var(--pico-form-element-spacing-horizontal);
+  border-radius: 3px;
+}
+
+/* Fixed widths so Pico's width:100% doesn't stretch inputs to fill the row */
+.review-filter-panel input[type="text"]           { width: 130px; }
+.review-filter-panel input[type="datetime-local"] { width: 165px; }
+.filter-sort-by  { max-width: 115px; }
+.filter-sort-dir { max-width: 105px; }
 
 .filter-tag-checkboxes {
   display: flex;
-  gap: 0.8em;
+  gap: 0.5em;
   flex-wrap: wrap;
+  align-items: center;
+}
+
+.filter-tag-checkboxes label {
+  display: flex;
+  align-items: center;
+  gap: 0.25em;
+  cursor: pointer;
+  white-space: nowrap;
+  font-size: 0.8em;
 }
 
 .filter-imlabel-builder {
   display: flex;
-  gap: 0.4em;
+  gap: 0.3em;
   align-items: center;
   flex-wrap: wrap;
+}
+
+.filter-imlabel-builder button {
+  font-size: 0.75em;
+  padding: 0.15em 0.4em;
+  cursor: pointer;
+  border: 1px solid #555;
+  border-radius: 3px;
+  background: #2a2a2a;
+  color: #ccc;
+  white-space: nowrap;
+}
+
+.filter-imlabel-builder button:hover {
+  background: #3a3a3a;
+}
+
+.filter-exclude-label {
+  display: flex;
+  align-items: center;
+  gap: 0.2em;
+  cursor: pointer;
+  font-size: 0.8em;
+  white-space: nowrap;
 }
 
 .filter-imlabel-list {
@@ -230,28 +301,29 @@ main.container {
   padding: 0;
   list-style: none;
   display: flex;
-  gap: 0.4em;
+  gap: 0.3em;
   flex-wrap: wrap;
+  align-items: center;
 }
 
 .filter-imlabel-list li {
   background: #2a2a2a;
   border: 1px solid #555;
   border-radius: 3px;
-  padding: 1px 6px;
-  font-size: 0.8em;
+  padding: 1px 5px;
+  font-size: 0.75em;
   display: flex;
   align-items: center;
-  gap: 0.3em;
+  gap: 0.25em;
 }
 
 .filter-imlabel-list li button {
   background: none;
   border: none;
-  color: #aaa;
+  color: #888;
   cursor: pointer;
   padding: 0;
-  font-size: 0.9em;
+  font-size: 0.85em;
   line-height: 1;
 }
 
