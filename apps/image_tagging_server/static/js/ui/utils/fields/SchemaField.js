@@ -10,7 +10,7 @@ export class SchemaField extends Field {
   static async create({ schema = {}, values = {}, ...rest } = {}) {
     const instance = new SchemaField({ ...rest });
     instance._schema = schema; // The schema definition
-    instance._init_values = values; // Current values for the fields
+    instance._init_values = structuredClone(values); // Clone to prevent mutating the caller's object
     instance._fields = {};
 
     for (const [fieldName, fieldMeta] of Object.entries(schema)) {
