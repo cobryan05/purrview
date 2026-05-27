@@ -51,12 +51,15 @@ async def test_get_task_info_after_start(http_client):
     assert data["tasks"][TASK_UUID]["config"]["typename"] == "TestTask"
 
 
-async def test_cancel_running_task(http_client):
+async def test_cancel_running_task(http_client, tasks_api_mock):
+    # Make the configured TestTask run for a short time so cancel has effect
+    tasks_api_mock.list_task_configs.return_value.configs[CONFIG_UUID].params_json = {"duration": 5}
+
     await http_client.post(
         "/api/tasks/instances/start",
         json={"configUuid": CONFIG_UUID},
     )
-    # Give the event loop a tick so the task can finish (TestTask is instant)
+    # Give the event loop a tick so the task has started
     await asyncio.sleep(0)
 
     resp = await http_client.post(

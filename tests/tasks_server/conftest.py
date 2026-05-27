@@ -1,4 +1,5 @@
 import uuid
+import asyncio
 from typing import Any, Optional
 from unittest.mock import MagicMock, patch
 
@@ -21,10 +22,31 @@ if "TestTask" not in task_registry:
     @register_task("TestTask")
     class TestTask(Task):
         async def _init(self, params: dict, resume_data: Optional[dict]) -> None:
-            pass
+            self._duration = float(params.get("duration", 0.0))
+            self._status_msg = "Initialized"
 
         async def _run(self) -> dict[str, Any]:
-            return {}
+            if self._duration <= 0:
+                return {}
+
+            cancel_task = asyncio.create_task(self._cancel_flag.wait())
+            sleep_task = asyncio.create_task(asyncio.sleep(self._duration))
+
+            try:
+                done, pending = await asyncio.wait({cancel_task, sleep_task}, return_when=asyncio.FIRST_COMPLETED)
+
+                if sleep_task in done:
+                    return {"ran_for": self._duration}
+                else:
+                    self._status_msg = "Canceled"
+                    return {"canceled": True}
+            finally:
+                for t in pending:
+                    t.cancel()
+                    try:
+                        await t
+                    except asyncio.CancelledError:
+                        pass
 
         async def _deinit(self) -> None:
             pass
