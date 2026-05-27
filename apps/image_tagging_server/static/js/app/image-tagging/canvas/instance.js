@@ -1,6 +1,7 @@
 import { createImageTaggingRuntime } from '../runtime.js';
 import { initCanvasStage } from './main.js';
 import { loadImageOntoCanvas } from './image.js';
+import { attachHotkeys } from '../../hotkeys.js';
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
 import { fetchTags } from '/app-static/js/shared/api/tags.js';
 
@@ -20,6 +21,8 @@ export async function createCanvasInstance(container, options = {}) {
   await initCanvasStage(runtime);
   runtime.setTool(options.tool ?? 'select');
 
+  const hotkeyHandle = attachHotkeys(runtime);
+
   const unsubTagsUpdated = events.subscribe(EventTypes.TAGS_UPDATED, async () => {
     const tagsMap = await fetchTags();
     runtime.canvas?.layer?.find('.bbox')?.forEach(bboxView => {
@@ -36,6 +39,7 @@ export async function createCanvasInstance(container, options = {}) {
     runtime,
     loadImage: (path) => loadImageOntoCanvas(runtime, path),
     destroy() {
+      hotkeyHandle.destroy();
       unsubTagsUpdated();
       runtime.destroyCanvas();
     },
