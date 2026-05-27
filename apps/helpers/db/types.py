@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Annotated, Any, Dict, List, Optional
+from typing import Annotated, Any, Dict, List, Literal, Optional
 from typing import TypeAlias
 from uuid import uuid4
 
@@ -13,6 +13,12 @@ class ImageLabelStatus(str, Enum):
     UNCERTAIN = "uncertain"
     PRESENT = "present"
     ABSENT = "absent"
+
+
+# System tag UUIDs — keep in sync with static/js/shared/api/review.js
+UNVERIFIED_TAG_UUID = "00000000-0000-0000-0000-000000000001"
+VERIFIED_TAG_UUID   = "00000000-0000-0000-0000-000000000002"
+FALSE_POS_TAG_UUID  = "00000000-0000-0000-0000-000000000003"
 
 import jstyleson
 import numpy as np
@@ -147,8 +153,38 @@ class ImageRecordRead(BaseModel):
     uuid: str
     filename: str
     bboxes: List["BBoxRead"]
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class ImageLabelFilter(BaseModel):
+    """A single condition on the image_labels table used when searching images."""
+    label_uuid: str
+    status: ImageLabelStatus
+    exclude: bool = False
+
+
+class ImageSearchParams(BaseModel):
+    """All parameters for a flexible image/bbox search query."""
+    # Tag filter: show bboxes that carry any of these tags.
+    # Empty list + show_all_bboxes=True → no tag filter (show everything).
+    tag_uuids: List[str] = Field(default_factory=lambda: [UNVERIFIED_TAG_UUID])
+    show_all_bboxes: bool = False
+    # Optional secondary filter: only images whose bboxes carry this label.
+    label_uuid: Optional[str] = None
+    sort_by: Literal["uuid", "created_at", "updated_at"] = "created_at"
+    sort_order: Literal["asc", "desc"] = "desc"
+    filename_search: Optional[str] = None
+    # Date range always filters on images.created_at.
+    date_from: Optional[datetime] = None
+    date_to: Optional[datetime] = None
+    # Keyset pagination cursor.
+    after_uuid: Optional[str] = None
+    after_sort_value: Optional[datetime] = None  # populated when sort_by != "uuid"
+    image_label_filters: List[ImageLabelFilter] = Field(default_factory=list)
+    limit: int = Field(default=50, ge=1, le=500)
 
 
 class FileEntry(BaseModel):

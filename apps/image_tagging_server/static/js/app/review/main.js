@@ -1,5 +1,6 @@
 import { fetchLabels } from '/app-static/js/shared/api/labels.js';
 import { fetchTags } from '/app-static/js/shared/api/tags.js';
+import { createFilterPanel } from '/app-static/js/app/review/filters.js';
 import {
   fetchReviewQueue,
   updateImageBboxes,
@@ -36,9 +37,15 @@ export async function init() {
   const toolbar = document.createElement('div');
   toolbar.className = 'review-toolbar';
 
-  // Label filter
+  // Filter toggle
+  const filterToggleBtn = document.createElement('button');
+  filterToggleBtn.textContent = '☰ Filters';
+  filterToggleBtn.title = 'Toggle search filters';
+  filterToggleBtn.style.cssText = 'padding:0.3em 0.8em;cursor:pointer;';
+
+  // Label filter (quick bbox-label filter in toolbar)
   const labelSelect = document.createElement('select');
-  labelSelect.title = 'Filter by label';
+  labelSelect.title = 'Filter by bbox label';
   const allOption = document.createElement('option');
   allOption.value = '';
   allOption.textContent = '— All labels —';
@@ -83,6 +90,7 @@ export async function init() {
   const statusMsg = document.createElement('span');
   statusMsg.style.cssText = 'color:#aaa;font-size:0.9em;';
 
+  toolbar.appendChild(filterToggleBtn);
   toolbar.appendChild(labelSelect);
   toolbar.appendChild(selectAllLabel);
   toolbar.appendChild(bulkBtn);
@@ -93,6 +101,22 @@ export async function init() {
   toolbar.appendChild(refreshBtn);
   root.appendChild(toolbar);
 
+  // ── Filter panel ──────────────────────────────────────────────────
+  const tags = await fetchTags().catch(() => new Map());
+
+  const filterPanel = createFilterPanel(labels, tags, () => {
+    filterToggleBtn.classList.toggle('filter-active', !filterPanel.isDefault());
+    _pageCursors = [null];
+    _lastCursor = null;
+    render();
+  });
+  filterPanel.element.hidden = true;
+  root.appendChild(filterPanel.element);
+
+  filterToggleBtn.addEventListener('click', () => {
+    filterPanel.element.hidden = !filterPanel.element.hidden;
+  });
+
   // ── Grid container ────────────────────────────────────────────────
   const grid = document.createElement('div');
   grid.className = 'review-grid';
@@ -102,8 +126,8 @@ export async function init() {
   let _allBboxEntries = []; // flat list of { bbox, img } for current page
   let _selected = new Set(); // selected bbox UUIDs
   let _staleUuids = new Set(); // bbox UUIDs modified/deleted on this page (in-place)
-  let _pageCursors = [null]; // cursor stack: each entry is the afterUuid used to load that page
-  let _lastImageUuid = null; // UUID of the last image on the current page (cursor for Next)
+  let _pageCursors = [null]; // cursor stack: null = first page, {uuid, sortValue} = keyset
+  let _lastCursor = null; // {uuid: string, sortValue: string|null} of last image on current page
   let _lastClickedIndex = -1; // index in _allBboxEntries of the last checkbox click (for shift-select)
   let _rendering = false;
   let _hasMore = false;
@@ -121,11 +145,11 @@ export async function init() {
     const stale = _staleUuids.size;
     const fresh = total - stale;
     if (total === 0) {
-      statusMsg.textContent = 'No unverified annotations on this page';
+      statusMsg.textContent = 'No matching annotations on this page';
     } else if (stale === 0) {
-      statusMsg.textContent = `${total} unverified bbox${total === 1 ? '' : 'es'} on this page`;
+      statusMsg.textContent = `${total} bbox${total === 1 ? '' : 'es'} on this page`;
     } else {
-      statusMsg.textContent = `${fresh} unverified remaining · ${stale} modified`;
+      statusMsg.textContent = `${fresh} remaining · ${stale} modified`;
     }
   }
 
@@ -171,17 +195,29 @@ export async function init() {
       _selected.clear();
       _staleUuids = new Set();
       _allBboxEntries = [];
-      _lastImageUuid = null;
+      _lastCursor = null;
       _lastClickedIndex = -1;
       updateBulkBtn();
+
+      const fs = filterPanel.getState();
+      const cursor = _pageCursors[_pageCursors.length - 1];
+      const showAll = fs.tagUuids.length === 0;
 
       let images;
       try {
         images = await fetchReviewQueue({
-          tagUuid: UNVERIFIED_TAG_UUID,
+          tagUuids: showAll ? [] : fs.tagUuids,
+          showAllBboxes: showAll,
           labelUuid: labelSelect.value || undefined,
+          sortBy: fs.sortBy,
+          sortOrder: fs.sortOrder,
+          filenameSearch: fs.filenameSearch || undefined,
+          dateFrom: fs.dateFrom || undefined,
+          dateTo: fs.dateTo || undefined,
+          afterUuid: cursor?.uuid ?? null,
+          afterSortValue: cursor?.sortValue ?? null,
+          imageLabelFilters: fs.imageLabelFilters,
           limit: PAGE_SIZE,
-          afterUuid: _pageCursors[_pageCursors.length - 1],
         });
       } catch (err) {
         statusMsg.textContent = `Error: ${err.message}`;
@@ -191,26 +227,37 @@ export async function init() {
       }
 
       _hasMore = images.length === PAGE_SIZE;
-      _lastImageUuid = images.length > 0 ? images[images.length - 1].uuid : null;
 
-      // Flatten images → unverified bboxes
+      // Update the keyset cursor for the Next button.
+      if (images.length > 0) {
+        const last = images[images.length - 1];
+        _lastCursor = {
+          uuid: last.uuid,
+          sortValue: fs.sortBy === 'updated_at' ? (last.updatedAt ?? null) : (last.createdAt ?? null),
+        };
+      }
+
+      // Flatten images → matching bboxes.
+      // When show_all_bboxes, every bbox is shown; otherwise filter client-side
+      // to only bboxes that carry one of the selected tags (server may return extras
+      // if a page contains images with mixed bbox states).
+      const tagSet = new Set(fs.tagUuids);
       for (const img of images) {
-        const unverified = (img.bboxes || []).filter(
-          b => (b.tags || []).some(t => t.uuid === UNVERIFIED_TAG_UUID)
+        const matching = (img.bboxes || []).filter(b =>
+          showAll || (b.tags || []).some(t => tagSet.has(t.uuid))
         );
-        for (const bbox of unverified) {
+        for (const bbox of matching) {
           _allBboxEntries.push({ bbox, img });
         }
       }
 
-      // If the server returned a full page of images but every bbox on them is
-      // already verified (client-side filter found nothing), advance the cursor
-      // automatically rather than showing the user an empty page.
+      // If the server returned a full page of images but the client-side tag filter
+      // found nothing on any of them, advance the cursor automatically rather than
+      // showing an empty page.
       if (_allBboxEntries.length === 0 && _hasMore && autoSkipped < MAX_AUTO_SKIP) {
         autoSkipped++;
-        // Advance the top of the cursor stack in place so Prev still works correctly
-        // (it will skip over the invisible empty server pages too).
-        _pageCursors[_pageCursors.length - 1] = _lastImageUuid;
+        // Advance the top of the cursor stack in place so Prev still navigates correctly.
+        _pageCursors[_pageCursors.length - 1] = _lastCursor;
         continue fetchLoop;
       }
 
@@ -225,8 +272,8 @@ export async function init() {
     if (_allBboxEntries.length === 0) {
       const empty = document.createElement('p');
       empty.textContent = _hasMore
-        ? 'No unverified annotations on this page.'
-        : 'No unverified annotations remaining.';
+        ? 'No matching annotations on this page.'
+        : 'No matching annotations found.';
       empty.style.color = '#aaa';
       grid.appendChild(empty);
       refreshBtn.disabled = false;
@@ -426,12 +473,13 @@ export async function init() {
     render();
   });
   nextBtn.addEventListener('click', () => {
-    _pageCursors.push(_lastImageUuid);
+    _pageCursors.push(_lastCursor);
     render();
   });
 
-  refreshBtn.addEventListener('click', () => { _pageCursors = [null]; render(); });
-  labelSelect.addEventListener('change', () => { _pageCursors = [null]; render(); });
+  function resetAndRender() { _pageCursors = [null]; _lastCursor = null; render(); }
+  refreshBtn.addEventListener('click', resetAndRender);
+  labelSelect.addEventListener('change', resetAndRender);
 
   render();
 }

@@ -15,13 +15,13 @@ from pydantic.alias_generators import to_camel
 
 from apps.db_server.manager import Manager
 from apps.helpers.consts import ApiTags, JsonKeys, JsonValues, TaskStatus
-from apps.helpers.db.db_client import UNVERIFIED_TAG_UUID
 from apps.helpers.db.types import (
     BBoxUpdate,
     ImageLabelRead,
     ImageLabelStatus,
     ImageRecordRead,
     ImageRecordUpdate,
+    ImageSearchParams,
     Label,
     LabelUpdate,
     Source,
@@ -803,27 +803,20 @@ class WebApp:
                 return GetImageLabelsResponse(status=JsonValues.FAILURE, message="Image not found")
             return GetImageLabelsResponse(labels=labels)
 
-        @self._app.get(
+        @self._app.post(
             "/api/images/review",
             response_model=ReviewQueueResponse,
             tags=[ApiTags.IMAGES],
             operation_id="get_review_queue",
         )
-        async def get_review_queue(
-            tag_uuid: str = UNVERIFIED_TAG_UUID,
-            label_uuid: Optional[str] = None,
-            limit: int = 50,
-            after_uuid: Optional[str] = None,
-        ) -> ReviewQueueResponse:
-            """Return images with at least one bbox tagged with tag_uuid (default: Unverified).
+        async def get_review_queue(params: ImageSearchParams) -> ReviewQueueResponse:
+            """Search the image/bbox store with flexible filters and cursor-based pagination.
 
-            Uses cursor-based pagination: pass after_uuid to get images whose UUID sorts after
-            that value, so the page position stays stable as items drop out of the filter.
+            Defaults to showing images with unverified bboxes, newest first.
+            Pass show_all_bboxes=true to bypass the tag filter entirely.
             """
             try:
-                images = await self._manager.get_review_queue(
-                    tag_uuid=tag_uuid, label_uuid=label_uuid, limit=limit, after_uuid=after_uuid
-                )
+                images = await self._manager.get_review_queue(params)
                 return ReviewQueueResponse(images=images)
             except Exception as e:
                 logger.exception("Failed to fetch review queue")

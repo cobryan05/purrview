@@ -16,18 +16,17 @@ from sqlalchemy.orm import make_transient
 from apps import CACHE_DIR
 from apps.helpers.db.db_client import (
     DbClient,
-    FALSE_POS_TAG_UUID,
     TagKind,
-    UNVERIFIED_TAG_UUID,
-    VERIFIED_TAG_UUID,
 )
 from apps.helpers.db.types import (
     BBoxUpdate,
+    FALSE_POS_TAG_UUID,
     ImageLabelRead,
     ImageLabelStatus,
     ImageRecord,
     ImageRecordRead,
     ImageRecordUpdate,
+    ImageSearchParams,
     Label,
     Source,
     Tag,
@@ -39,6 +38,8 @@ from apps.helpers.db.types import (
     TaskParams,
     TaskResultData,
     TaskResumeData,
+    UNVERIFIED_TAG_UUID,
+    VERIFIED_TAG_UUID,
 )
 from apps.helpers.consts import TaskStatus
 from apps.helpers.fileUtils import get_safe_path
@@ -440,17 +441,9 @@ class Manager:
         except ValueError:
             return image_filename
 
-    async def get_review_queue(
-        self,
-        tag_uuid: str = UNVERIFIED_TAG_UUID,
-        label_uuid: Optional[str] = None,
-        limit: int = 50,
-        after_uuid: Optional[str] = None,
-    ) -> List[ImageRecordRead]:
-        """Return images that have at least one bbox tagged with tag_uuid."""
-        images = await self._db_client.list_images_with_bbox_tag(
-            tag_uuid=tag_uuid, label_uuid=label_uuid, limit=limit, after_uuid=after_uuid
-        )
+    async def get_review_queue(self, params: ImageSearchParams) -> List[ImageRecordRead]:
+        """Return images matching the search parameters for the review queue."""
+        images = await self._db_client.list_images_search(params)
         results = []
         for img in images:
             record = ImageRecordRead.model_validate(img)

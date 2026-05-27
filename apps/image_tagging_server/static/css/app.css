@@ -187,6 +187,85 @@ main.container {
   flex-wrap: wrap;
 }
 
+.review-filter-panel {
+  background: #1a1a1a;
+  border: 1px solid #444;
+  border-radius: 4px;
+  padding: 0.75em 1em;
+  margin-bottom: 0.5em;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6em;
+}
+
+.filter-row {
+  display: flex;
+  align-items: center;
+  gap: 0.6em;
+  flex-wrap: wrap;
+}
+
+.filter-label {
+  min-width: 90px;
+  font-size: 0.85em;
+  color: #aaa;
+  font-weight: 500;
+}
+
+.filter-tag-checkboxes {
+  display: flex;
+  gap: 0.8em;
+  flex-wrap: wrap;
+}
+
+.filter-imlabel-builder {
+  display: flex;
+  gap: 0.4em;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.filter-imlabel-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  gap: 0.4em;
+  flex-wrap: wrap;
+}
+
+.filter-imlabel-list li {
+  background: #2a2a2a;
+  border: 1px solid #555;
+  border-radius: 3px;
+  padding: 1px 6px;
+  font-size: 0.8em;
+  display: flex;
+  align-items: center;
+  gap: 0.3em;
+}
+
+.filter-imlabel-list li button {
+  background: none;
+  border: none;
+  color: #aaa;
+  cursor: pointer;
+  padding: 0;
+  font-size: 0.9em;
+  line-height: 1;
+}
+
+.filter-imlabel-list li button:hover {
+  color: #fff;
+}
+
+button.filter-active {
+  background: #ff003322;
+  border: 1px solid #ff0033;
+  border-radius: 3px;
+  color: #ff6666;
+}
+
 .review-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));

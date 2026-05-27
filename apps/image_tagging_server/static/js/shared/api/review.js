@@ -6,20 +6,66 @@ export const FALSE_POS_TAG_UUID = '00000000-0000-0000-0000-000000000003';
 const VERIFICATION_TAG_UUIDS = new Set([UNVERIFIED_TAG_UUID, VERIFIED_TAG_UUID, FALSE_POS_TAG_UUID]);
 
 /**
- * Fetch images that have at least one bbox tagged with the given tag.
- * Uses cursor-based pagination: pass afterUuid to get images whose UUID sorts after that value,
- * so the page position stays stable even as items are verified/deleted and leave the filter.
- * @param {{ tagUuid?: string, labelUuid?: string, limit?: number, afterUuid?: string|null }} opts
+ * Search the review queue with flexible filters and cursor-based pagination.
+ *
+ * @param {{
+ *   tagUuids?: string[],          // bbox tags to include (OR); default [UNVERIFIED_TAG_UUID]
+ *   showAllBboxes?: boolean,       // ignore tagUuids, show all bboxes
+ *   labelUuid?: string,            // optional bbox label filter
+ *   sortBy?: 'created_at'|'updated_at'|'uuid',
+ *   sortOrder?: 'asc'|'desc',
+ *   filenameSearch?: string,
+ *   dateFrom?: string|null,        // ISO datetime (filters on images.created_at)
+ *   dateTo?: string|null,
+ *   afterUuid?: string|null,       // keyset cursor: UUID of last image on previous page
+ *   afterSortValue?: string|null,  // ISO datetime of last image's sort field (when sortBy != 'uuid')
+ *   imageLabelFilters?: Array<{labelUuid: string, status: string, exclude: boolean}>,
+ *   limit?: number,
+ * }} opts
  */
-export async function fetchReviewQueue({ tagUuid = UNVERIFIED_TAG_UUID, labelUuid, limit = 50, afterUuid = null } = {}) {
-  const params = new URLSearchParams({ tag_uuid: tagUuid, limit });
-  if (labelUuid) params.set('label_uuid', labelUuid);
-  if (afterUuid) params.set('after_uuid', afterUuid);
+export async function fetchReviewQueue({
+  tagUuids = [UNVERIFIED_TAG_UUID],
+  showAllBboxes = false,
+  labelUuid,
+  sortBy = 'created_at',
+  sortOrder = 'desc',
+  filenameSearch,
+  dateFrom = null,
+  dateTo = null,
+  afterUuid = null,
+  afterSortValue = null,
+  imageLabelFilters = [],
+  limit = 50,
+} = {}) {
+  const body = {
+    tag_uuids: tagUuids,
+    show_all_bboxes: showAllBboxes,
+    sort_by: sortBy,
+    sort_order: sortOrder,
+    limit,
+  };
+  if (labelUuid) body.label_uuid = labelUuid;
+  if (filenameSearch) body.filename_search = filenameSearch;
+  if (dateFrom) body.date_from = dateFrom;
+  if (dateTo) body.date_to = dateTo;
+  if (afterUuid) body.after_uuid = afterUuid;
+  if (afterSortValue) body.after_sort_value = afterSortValue;
+  if (imageLabelFilters.length > 0) {
+    body.image_label_filters = imageLabelFilters.map(f => ({
+      label_uuid: f.labelUuid,
+      status: f.status,
+      exclude: f.exclude,
+    }));
+  }
 
-  const res = await fetch(`/api/images/review?${params}`);
+  const res = await fetch('/api/images/review', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
   const data = await res.json();
   if (!res.ok || data.status !== 'success') throw new Error(data.message || 'Failed to fetch review queue');
-  return data.images || [];
+  return data.images ?? [];
 }
 
 /**

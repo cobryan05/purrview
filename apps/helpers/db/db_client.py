@@ -14,7 +14,7 @@ ALEMBIC_INI_PATH = Path(__file__).parent / "alembic.ini"
 
 import jstyleson
 from pydantic import TypeAdapter
-from sqlalchemy import delete, event, func
+from sqlalchemy import and_, delete, event, func, or_
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import selectinload, sessionmaker
 from sqlmodel import SQLModel, select
@@ -25,11 +25,13 @@ from apps.helpers.consts import TaskStatus
 from .types import (
     BBox,
     BBoxTagLink,
+    FALSE_POS_TAG_UUID,
     ImageLabel,
     ImageLabelStatus,
     ImageRecord,
     ImageRecordRead,
     ImageRecordUpdate,
+    ImageSearchParams,
     Label,
     Source,
     SourceRead,
@@ -37,11 +39,13 @@ from .types import (
     TagKind,
     TaskConfig,
     TaskInstance,
+    UNVERIFIED_TAG_UUID,
+    VERIFIED_TAG_UUID,
 )
 
-UNVERIFIED_TAG_UUID = "00000000-0000-0000-0000-000000000001"
-VERIFIED_TAG_UUID = "00000000-0000-0000-0000-000000000002"
-FALSE_POS_TAG_UUID = "00000000-0000-0000-0000-000000000003"
+# Re-exported for callers that import from this module.
+# Canonical definitions live in helpers/db/types.py.
+__all__ = ["UNVERIFIED_TAG_UUID", "VERIFIED_TAG_UUID", "FALSE_POS_TAG_UUID"]
 
 _SYSTEM_TAGS = [
     Tag(
@@ -283,37 +287,104 @@ class DbClient:
             result = await session.exec(statement)
             return result.all()
 
-    async def list_images_with_bbox_tag(
-        self,
-        tag_uuid: str,
-        label_uuid: Optional[str] = None,
-        limit: int = 50,
-        after_uuid: Optional[str] = None,
-    ) -> List[ImageRecord]:
-        """Return images that have at least one bbox tagged with tag_uuid, optionally filtered by label.
+    async def list_images_search(self, params: ImageSearchParams) -> List[ImageRecord]:
+        """Flexible image search used by the review queue.
 
-        Uses cursor-based pagination: pass after_uuid to fetch only images whose UUID sorts
-        lexicographically after that value, preserving a stable page position even as items
-        are verified/deleted and drop out of the filter.
+        Supports tag filtering (OR across selected tags), label filtering, filename
+        substring search, date range, image-label status filters, and stable keyset
+        pagination for both UUID and datetime sort orders.
         """
         async with self._async_session_maker() as session:
             stmt = (
                 select(ImageRecord)
-                .join(BBox, BBox.image_uuid == ImageRecord.uuid)
-                .join(BBoxTagLink, BBoxTagLink.bbox_uuid == BBox.uuid)
-                .where(BBoxTagLink.tag_uuid == tag_uuid)
                 .options(
                     selectinload(ImageRecord.bboxes).selectinload(BBox.label),
                     selectinload(ImageRecord.bboxes).selectinload(BBox.tags),
                 )
                 .distinct()
-                .order_by(ImageRecord.uuid)
-                .limit(limit)
             )
-            if label_uuid:
-                stmt = stmt.where(BBox.label_uuid == label_uuid)
-            if after_uuid:
-                stmt = stmt.where(ImageRecord.uuid > after_uuid)
+
+            # ── Tag filter ─────────────────────────────────────────────────────
+            # When show_all_bboxes is True or tag_uuids is empty, skip the join so
+            # all images are candidates regardless of bbox tags.
+            if not params.show_all_bboxes and params.tag_uuids:
+                stmt = (
+                    stmt
+                    .join(BBox, BBox.image_uuid == ImageRecord.uuid)
+                    .join(BBoxTagLink, BBoxTagLink.bbox_uuid == BBox.uuid)
+                    .where(BBoxTagLink.tag_uuid.in_(params.tag_uuids))
+                )
+                if params.label_uuid:
+                    stmt = stmt.where(BBox.label_uuid == params.label_uuid)
+            elif params.label_uuid:
+                # Need the bbox join only to apply the label filter.
+                stmt = (
+                    stmt
+                    .join(BBox, BBox.image_uuid == ImageRecord.uuid)
+                    .where(BBox.label_uuid == params.label_uuid)
+                )
+
+            # ── Filename search ────────────────────────────────────────────────
+            if params.filename_search:
+                stmt = stmt.where(ImageRecord.filename.like(f"%{params.filename_search}%"))
+
+            # ── Date range (always on created_at) ──────────────────────────────
+            if params.date_from:
+                stmt = stmt.where(ImageRecord.created_at >= params.date_from)
+            if params.date_to:
+                stmt = stmt.where(ImageRecord.created_at <= params.date_to)
+
+            # ── Image-label filters (EXISTS / NOT EXISTS subqueries) ────────────
+            for f in params.image_label_filters:
+                subq = (
+                    select(ImageLabel)
+                    .where(
+                        ImageLabel.image_uuid == ImageRecord.uuid,
+                        ImageLabel.label_uuid == f.label_uuid,
+                        ImageLabel.status == f.status,
+                    )
+                    .exists()
+                )
+                stmt = stmt.where(~subq if f.exclude else subq)
+
+            # ── Sort column ────────────────────────────────────────────────────
+            sort_col_map = {
+                "created_at": ImageRecord.created_at,
+                "updated_at": ImageRecord.updated_at,
+                "uuid":       ImageRecord.uuid,
+            }
+            sort_col = sort_col_map[params.sort_by]
+
+            # ── Keyset pagination ──────────────────────────────────────────────
+            # For UUID sort, a simple scalar comparison is sufficient (UUIDs are unique).
+            # For datetime sorts, use a composite (sort_field, uuid) keyset to handle
+            # ties deterministically without gaps or duplicates.
+            if params.after_uuid is not None:
+                if params.sort_by == "uuid" or params.after_sort_value is None:
+                    if params.sort_order == "asc":
+                        stmt = stmt.where(ImageRecord.uuid > params.after_uuid)
+                    else:
+                        stmt = stmt.where(ImageRecord.uuid < params.after_uuid)
+                else:
+                    sv = params.after_sort_value
+                    if params.sort_order == "asc":
+                        stmt = stmt.where(or_(
+                            sort_col > sv,
+                            and_(sort_col == sv, ImageRecord.uuid > params.after_uuid),
+                        ))
+                    else:
+                        stmt = stmt.where(or_(
+                            sort_col < sv,
+                            and_(sort_col == sv, ImageRecord.uuid < params.after_uuid),
+                        ))
+
+            # ── Order + limit ──────────────────────────────────────────────────
+            if params.sort_order == "asc":
+                stmt = stmt.order_by(sort_col.asc(), ImageRecord.uuid.asc())
+            else:
+                stmt = stmt.order_by(sort_col.desc(), ImageRecord.uuid.desc())
+            stmt = stmt.limit(params.limit)
+
             result = await session.exec(stmt)
             return result.all()
 
@@ -359,6 +430,11 @@ class DbClient:
             for tag_uuid in final_uuids:
                 session.add(BBoxTagLink(bbox_uuid=bbox_uuid, tag_uuid=tag_uuid))
             session.add(bbox)
+            # Touch the parent image so updated_at reflects bbox-level changes.
+            image = await session.get(ImageRecord, bbox.image_uuid)
+            if image is not None:
+                image.updated_at = datetime.now(timezone.utc)
+                session.add(image)
             await session.commit()
 
     @staticmethod
@@ -447,6 +523,11 @@ class DbClient:
                 ))
                 for tag_uuid in self._resolve_exclusive_groups(b.tag_uuids, tags_by_uuid):
                     session.add(BBoxTagLink(bbox_uuid=b.uuid, tag_uuid=tag_uuid))
+            # Touch the image so updated_at reflects the full bbox replacement.
+            image = await session.get(ImageRecord, image_uuid)
+            if image is not None:
+                image.updated_at = datetime.now(timezone.utc)
+                session.add(image)
             await session.commit()
 
     def write_image_metadata_to_json(self, json_path: Path, image_uuid: str, filename: str, update: ImageRecordUpdate) -> None:
