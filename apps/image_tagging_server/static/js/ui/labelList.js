@@ -267,7 +267,6 @@ async function mountSelectMode(container, { runtime, filter }) {
 
       const btn = document.createElement('button');
       Object.assign(btn.style, {
-        marginLeft: 'auto',
         flexShrink: '0',
         width: '22px',
         height: '20px',
@@ -309,9 +308,9 @@ async function mountSelectMode(container, { runtime, filter }) {
         }
       });
 
+      row.appendChild(btn);
       row.appendChild(swatch);
       row.appendChild(nameEl);
-      row.appendChild(btn);
 
       row.addEventListener('click', () => setTool(runtime, `bbox:${label.uuid}`));
 

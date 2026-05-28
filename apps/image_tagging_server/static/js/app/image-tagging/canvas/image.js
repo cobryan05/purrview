@@ -4,10 +4,37 @@ import { fetchLabels } from '/app-static/js/shared/api/labels.js';
 import { createUIBBbox } from '/app-static/js/shared/domain/image/mapper.js';
 import { Logger, toast } from '/app-static/js/ui/utils/index.js';
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
+import { UNVERIFIED_TAG_UUID } from '/app-static/js/shared/api/review.js';
+import { fetchTags } from '/app-static/js/shared/api/tags.js';
 
 /**
  * @param {import('@image_tagging_types').ImageTaggingRuntime} runtime
  */
+/**
+ * Returns true if the current canvas image has any unsaved (dirty) bboxes.
+ * @param {import('@image_tagging_types').ImageTaggingRuntime} runtime
+ */
+function hasDirtyChanges(runtime) {
+  const bboxes = runtime.state?.image?.bboxes;
+  if (!bboxes) return false;
+  for (const bbox of bboxes.values()) {
+    if (bbox.dirty) return true;
+  }
+  return false;
+}
+
+/**
+ * Marks all bboxes on the current image as clean (not dirty).
+ * @param {import('@image_tagging_types').ImageTaggingRuntime} runtime
+ */
+function markSaved(runtime) {
+  const bboxes = runtime.state?.image?.bboxes;
+  if (!bboxes) return;
+  for (const bbox of bboxes.values()) {
+    bbox.dirty = false;
+  }
+}
+
 export async function reloadImage(runtime) {
   const imageName = runtime.state.image?.image_path;
   if (!imageName) {
@@ -25,6 +52,13 @@ export async function loadImageOntoCanvas(runtime, imageName) {
   Logger.debug('loadImageOntoCanvas called with imageName:', imageName);
 
   if (!runtime.canvas) return;
+
+  // Warn if switching to a different image with unsaved changes
+  const currentPath = runtime.state?.image?.image_path;
+  if (currentPath && currentPath !== imageName && hasDirtyChanges(runtime)) {
+    const proceed = confirm('You have unsaved annotation changes. Discard them and load the new image?');
+    if (!proceed) return;
+  }
 
   // Create a new load id and invalidate all previous loads for this canvas instance
   const loadId = ++runtime.canvas.activeImageLoadId;
@@ -71,6 +105,7 @@ export async function saveAnnotations(runtime) {
 
   try {
     await updateImage(runtime.state.image);
+    markSaved(runtime);
     toast('Annotations saved successfully!');
     return true;
   }
@@ -153,7 +188,8 @@ export async function addInferenceResults(runtime, results) {
   }
 
   const { layer, viewport } = runtime.canvas;
-  const labelsMap = await fetchLabels();
+  const [labelsMap, tagsMap] = await Promise.all([fetchLabels(), fetchTags()]);
+  const unverifiedIcon = tagsMap.get(UNVERIFIED_TAG_UUID)?.icon ?? null;
 
   for (const detection of results.detections) {
     const { bbox } = detection;
@@ -163,12 +199,20 @@ export async function addInferenceResults(runtime, results) {
       ? { uuid: labelData.uuid, text: labelData.name, color: labelData.color }
       : bbox.labelUuid
         ? { uuid: bbox.labelUuid, text: bbox.classStr ?? bbox.labelUuid }
-        : undefined;
+        : bbox.classStr
+          ? { text: bbox.classStr }
+          : undefined;
+
+    // Always include the UNVERIFIED tag on inference results
+    const baseTags = (bbox.tagUuids ?? []).map(id => ({ uuid: id, icon: tagsMap.get(id)?.icon ?? null }));
+    const tags = baseTags.some(t => t.uuid === UNVERIFIED_TAG_UUID)
+      ? baseTags
+      : [{ uuid: UNVERIFIED_TAG_UUID, icon: unverifiedIcon }, ...baseTags];
 
     const uiBbox = createUIBBbox({
       uuid: bbox.uuid,
       label,
-      tags: (bbox.tagUuids ?? []).map(id => ({ uuid: id })),
+      tags,
       x: bbox.x,
       y: bbox.y,
       width: bbox.width,

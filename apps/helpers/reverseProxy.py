@@ -6,7 +6,7 @@ class ReverseProxy:
     def __init__(self, host: str, port: int, path: str):
         path = path if path.startswith("/") else f"/{path}"
         self.target_base_url = f"http://{host}:{port}{path}"
-        self.client = httpx.AsyncClient()
+        self.client = httpx.AsyncClient(timeout=None)
 
     async def handle_request(self, path: str, request: Request):
         url = f"{self.target_base_url}"
