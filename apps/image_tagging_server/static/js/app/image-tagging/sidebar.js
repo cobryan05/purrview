@@ -2,7 +2,7 @@ import { setTool, parseToolUuid } from './canvas/tools.js';
 import { setupSidebarTabs } from '/app-static/js/app/utils/tabs.js';
 import { clearModelsCache, fetchModelsList } from '/app-static/js/shared/api/models.js';
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
-import { renderLabelList } from '/app-static/js/ui/labels.js';
+import { createLabelList } from '/app-static/js/ui/labelList.js';
 import { initInspector } from '/app-static/js/ui/inspector.js';
 import { Logger } from '/app-static/js/ui/utils/index.js';
 
@@ -14,16 +14,16 @@ let _modelsInit = false;
 export async function init(runtime) {
   const _unsubInspector = initInspector(runtime);
 
+  let _labelListInit = false;
+
   // Setup sidebar tabs (Models / Labels / Annotations / Inspector)
   const { container, activateTab } = setupSidebarTabs('#sidebar', async (tabName, button, pane) => {
     if (tabName === 'tab-labels-tool') {
-      renderLabelList({
-        target: "labels-tool-list",
-        editable: false,
-        clickable: true,
-        onSelectCallback: uuid => setTool(runtime, `bbox:${uuid}`),
-        selectedLabelUuid: runtime.labelUuid
-      });
+      if (!_labelListInit) {
+        _labelListInit = true;
+        const listEl = document.getElementById('labels-tool-list');
+        if (listEl) await createLabelList(listEl, { mode: 'select', runtime });
+      }
     } else if (tabName === 'tab-models') {
       if (!_modelsInit) {
         _modelsInit = true;
@@ -47,22 +47,14 @@ export async function init(runtime) {
     activateTab(container.querySelector('.sidebar-tab-button')?.dataset.tab);
   }
 
-  // Show 'Labels' tab when tool changes to BBox (scoped to this canvas's runtime)
-  events.subscribeToCanvas(runtime.id, EventTypes.CANVAS_TOOL_CHANGED, async ({ tool }) => {
+  // Show Labels tab and auto-select first label when switching to bbox tool
+  events.subscribeToCanvas(runtime.id, EventTypes.CANVAS_TOOL_CHANGED, ({ tool }) => {
     const toolInfo = parseToolUuid(tool);
     if (toolInfo.tool === 'bbox') {
-      const uuid = toolInfo.uuid ?? runtime.state.currentLabelUuid;
       activateTab('tab-labels-tool');
-
-      if (!uuid) {
-        await renderLabelList({
-          target: "labels-tool-list",
-          editable: false,
-          onSelectCallback: labelUuid => setTool(runtime, `bbox:${labelUuid}`),
-          selectedLabelUuid: runtime.labelUuid
-        });
-        const firstLabelRow = document.querySelector('#labels-tool-list .label-row');
-        if (firstLabelRow) firstLabelRow.click();
+      if (!toolInfo.uuid) {
+        const firstRow = document.querySelector('#labels-tool-list .label-panel-row');
+        if (firstRow) firstRow.click();
       }
     }
   });

@@ -37,7 +37,7 @@ export function openInspectorTab() {
  * @param {{ bboxView?: any, target?: string|HTMLElement, editable?: boolean, onSelectCallback?: any }} [opts]
  *   target – a string element ID *or* an HTMLElement; defaults to 'tab-inspector'
  */
-export function renderBboxInspector({ bboxView = null, target = 'tab-inspector', editable = true, onSelectCallback = null } = {}) {
+export function renderBboxInspector({ bboxView = null, target = 'tab-inspector', editable = true, onSelectCallback = null, runtimeId = null } = {}) {
   if (!bboxView) return;
   try {
     const targetElement = typeof target === 'string' ? document.getElementById(target) : target;
@@ -81,6 +81,7 @@ export function renderBboxInspector({ bboxView = null, target = 'tab-inspector',
               return { uuid: id, icon: tag?.icon ?? null };
             });
             bboxView.refreshIcons(bboxView.uiBBox.tags);
+            events.publish(EventTypes.CANVAS_BBOXES_CHANGED, { runtimeId });
           },
           onCancel: () => {
             Logger.warn("Canceled");
@@ -114,7 +115,7 @@ export function initInspector(runtime, { container = null, openTab = true } = {}
     EventTypes.CANVAS_BBOX_DOUBLE_CLICKED,
     ({ bboxView }) => {
       if (openTab) openInspectorTab();
-      renderBboxInspector({ bboxView, target: container ?? 'tab-inspector' });
+      renderBboxInspector({ bboxView, target: container ?? 'tab-inspector', runtimeId: runtime.id });
     }
   );
 }

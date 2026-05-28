@@ -5,8 +5,20 @@ import { createUIBBbox } from '/app-static/js/shared/domain/image/mapper.js';
 import { clearSelection, setTool, parseToolUuid } from './tools.js';
 import { fetchLabelByUuid } from '/app-static/js/shared/api/labels.js';
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
+import { UNVERIFIED_TAG_UUID, VERIFIED_TAG_UUID, FALSE_POS_TAG_UUID } from '/app-static/js/shared/api/review.js';
 import { setCanvasViewport } from './manager.js';
 import { screenToImage } from './viewport.js';
+
+/**
+ * Mutates uiBBox.tags in-place: if no verification tag is present, adds VERIFIED.
+ * If UNVERIFIED is present (inference-generated bbox), swaps it to VERIFIED.
+ * FALSE_POS is left untouched — the user explicitly marked it that way.
+ */
+function autoVerifyBbox(uiBBox) {
+  const tags = uiBBox.tags ?? [];
+  if (tags.some(t => t.uuid === VERIFIED_TAG_UUID || t.uuid === FALSE_POS_TAG_UUID)) return;
+  uiBBox.tags = [...tags.filter(t => t.uuid !== UNVERIFIED_TAG_UUID), { uuid: VERIFIED_TAG_UUID, icon: null }];
+}
 
 const DOUBLE_CLICK_TIME_MS = 400;
 const DOUBLE_CLICK_DISTANCE_PX = 10;
@@ -223,7 +235,10 @@ export async function handleMouseUp(e, runtime) {
       uiBBox.width = w / sw;
       uiBBox.height = h / sh;
       runtime.state.image.bboxes.set(uiBBox.uuid, uiBBox);
+      autoVerifyBbox(uiBBox);
+      ist.pendingDraggedBbox.refreshIcons(uiBBox.tags);
       events.publish(EventTypes.CANVAS_BBOX_CLICKED, { bboxId: uiBBox.uuid, runtimeId: runtime.id });
+      events.publish(EventTypes.CANVAS_BBOXES_CHANGED, { runtimeId: runtime.id });
     }
 
     runtime.canvas.layer.draw();
@@ -249,6 +264,9 @@ export async function handleMouseUp(e, runtime) {
       if (labelData) {
         hitGroup.uiBBox.label = { uuid: labelUuid, text: labelData.name, color: labelData.color };
         hitGroup.updateAppearance(labelData.name, labelData.color);
+        autoVerifyBbox(hitGroup.uiBBox);
+        hitGroup.refreshIcons(hitGroup.uiBBox.tags);
+        events.publish(EventTypes.CANVAS_BBOXES_CHANGED, { runtimeId: runtime.id });
       }
     }
   }

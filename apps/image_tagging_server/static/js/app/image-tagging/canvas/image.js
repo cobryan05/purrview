@@ -3,6 +3,7 @@ import { fetchImage, updateImage } from '/app-static/js/shared/api/images.js';
 import { fetchLabels } from '/app-static/js/shared/api/labels.js';
 import { createUIBBbox } from '/app-static/js/shared/domain/image/mapper.js';
 import { Logger, toast } from '/app-static/js/ui/utils/index.js';
+import { events, EventTypes } from '/app-static/js/shared/events/index.js';
 
 /**
  * @param {import('@image_tagging_types').ImageTaggingRuntime} runtime
@@ -37,6 +38,7 @@ export async function loadImageOntoCanvas(runtime, imageName) {
   }
 
   runtime.setImage(imageInfo);
+  events.publish(EventTypes.IMAGE_LOADED_ONTO_CANVAS, { path: imageName, runtimeId: runtime.id });
 }
 
 
@@ -103,6 +105,7 @@ export function deleteSelected(runtime) {
   if (bboxView) {
     runtime.state.image?.bboxes.delete(bboxView.uiBBox.uuid);
     bboxView.destroy();
+    events.publish(EventTypes.CANVAS_BBOXES_CHANGED, { runtimeId: runtime.id });
   }
 
   transformer.nodes([]);
