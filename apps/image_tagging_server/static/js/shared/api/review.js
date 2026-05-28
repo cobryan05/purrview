@@ -3,7 +3,7 @@ export const UNVERIFIED_TAG_UUID = '00000000-0000-0000-0000-000000000001';
 export const VERIFIED_TAG_UUID = '00000000-0000-0000-0000-000000000002';
 export const FALSE_POS_TAG_UUID = '00000000-0000-0000-0000-000000000003';
 
-const VERIFICATION_TAG_UUIDS = new Set([UNVERIFIED_TAG_UUID, VERIFIED_TAG_UUID, FALSE_POS_TAG_UUID]);
+export const VERIFICATION_TAG_UUIDS = new Set([UNVERIFIED_TAG_UUID, VERIFIED_TAG_UUID, FALSE_POS_TAG_UUID]);
 
 /**
  * Search the review queue with flexible filters and cursor-based pagination.
@@ -93,8 +93,26 @@ export async function updateImageBboxes(imagePath, bboxes) {
  * @param {string} newTagUuid
  * @returns {string[]}
  */
+/**
+ * Generic exclusive-group swap: remove all tags that belong to the same exclusive
+ * group (identified by groupUuids) and append newTagUuid.
+ *
+ * @param {string[]} tagUuids      - current tag UUID list
+ * @param {Set<string>} groupUuids - the full set of UUIDs in the exclusive group
+ * @param {string} newTagUuid      - the new group member to set
+ * @returns {string[]}
+ */
+export function swapExclusiveGroupTag(tagUuids, groupUuids, newTagUuid) {
+  return [...tagUuids.filter(t => !groupUuids.has(t)), newTagUuid];
+}
+
+/**
+ * Return a copy of tagUuids with the verification tag replaced by newTagUuid.
+ * @param {string[]} tagUuids
+ * @param {string} newTagUuid
+ */
 export function swapVerificationTag(tagUuids, newTagUuid) {
-  return [...tagUuids.filter(t => !VERIFICATION_TAG_UUIDS.has(t)), newTagUuid];
+  return swapExclusiveGroupTag(tagUuids, VERIFICATION_TAG_UUIDS, newTagUuid);
 }
 
 /**

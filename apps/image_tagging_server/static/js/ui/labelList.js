@@ -13,7 +13,7 @@
 
 import { fetchLabels, clearLabelsCache, createNewLabel, deleteLabel, updateLabel } from '/app-static/js/shared/api/labels.js';
 import { fetchImageLabels, setImageLabel } from '/app-static/js/shared/api/imageLabels.js';
-import { VERIFIED_TAG_UUID } from '/app-static/js/shared/api/review.js';
+import { FALSE_POS_TAG_UUID } from '/app-static/js/shared/api/review.js';
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
 import { setTool } from '../app/image-tagging/canvas/tools.js';
 import { EditableField, TextBoxColorField } from '/app-static/js/ui/utils/fields/index.js';
@@ -195,7 +195,7 @@ async function mountEditMode(container, { filter, onRerender }) {
 function computeDerivedPresent(bboxes) {
   const present = new Set();
   for (const bbox of (bboxes ?? new Map()).values()) {
-    if (bbox.label?.uuid && bbox.tags?.some(t => t.uuid === VERIFIED_TAG_UUID)) {
+    if (bbox.label?.uuid && !bbox.tags?.some(t => t.uuid === FALSE_POS_TAG_UUID)) {
       present.add(bbox.label.uuid);
     }
   }
@@ -378,6 +378,24 @@ async function mountSelectMode(container, { runtime, filter }) {
   // Reflect tool already active when the panel mounts
   const currentTool = runtime.tool ?? '';
   if (currentTool.startsWith('bbox:')) syncHighlight(currentTool.slice(5));
+
+  // If an image was already loaded before this component was created (lazy init),
+  // we missed its IMAGE_LOADED_ONTO_CANVAS event — fetch its states now so ✗ icons appear.
+  const alreadyLoadedPath = runtime?.state?.image?.image_path;
+  if (alreadyLoadedPath) {
+    currentImagePath = alreadyLoadedPath;
+    const seq = ++_loadSeq;
+    try {
+      const states = await fetchImageLabels(alreadyLoadedPath);
+      if (seq === _loadSeq) {
+        serverStates = new Map([...states].filter(([, v]) => v === 'absent'));
+        derivedPresent = computeDerivedPresent(runtime?.state?.image?.bboxes);
+        refreshStatusButtons();
+      }
+    } catch (err) {
+      console.error('Failed to fetch initial image labels:', err);
+    }
+  }
 
   return {
     destroy() {

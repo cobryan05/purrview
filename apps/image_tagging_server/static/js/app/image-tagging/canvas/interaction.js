@@ -5,7 +5,7 @@ import { createUIBBbox } from '/app-static/js/shared/domain/image/mapper.js';
 import { clearSelection, setTool, parseToolUuid } from './tools.js';
 import { fetchLabelByUuid } from '/app-static/js/shared/api/labels.js';
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
-import { UNVERIFIED_TAG_UUID, VERIFIED_TAG_UUID, FALSE_POS_TAG_UUID } from '/app-static/js/shared/api/review.js';
+import { UNVERIFIED_TAG_UUID, VERIFIED_TAG_UUID, VERIFICATION_TAG_UUIDS } from '/app-static/js/shared/api/review.js';
 import { setCanvasViewport } from './manager.js';
 import { screenToImage } from './viewport.js';
 
@@ -16,8 +16,9 @@ import { screenToImage } from './viewport.js';
  */
 function autoVerifyBbox(uiBBox) {
   const tags = uiBBox.tags ?? [];
-  if (tags.some(t => t.uuid === VERIFIED_TAG_UUID || t.uuid === FALSE_POS_TAG_UUID)) return;
-  uiBBox.tags = [...tags.filter(t => t.uuid !== UNVERIFIED_TAG_UUID), { uuid: VERIFIED_TAG_UUID, icon: null }];
+  // Skip if already carrying any verification tag other than the default (Unverified).
+  if (tags.some(t => VERIFICATION_TAG_UUIDS.has(t.uuid) && t.uuid !== UNVERIFIED_TAG_UUID)) return;
+  uiBBox.tags = [...tags.filter(t => !VERIFICATION_TAG_UUIDS.has(t.uuid)), { uuid: VERIFIED_TAG_UUID, icon: null }];
 }
 
 const DOUBLE_CLICK_TIME_MS = 400;

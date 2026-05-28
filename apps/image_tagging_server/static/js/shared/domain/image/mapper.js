@@ -2,6 +2,7 @@
 import { Logger, generateUUID } from '/app-static/js/ui/utils/index.js';
 import { BboxView } from '/app-static/js/app/image-tagging/canvas/views/bboxView.js';
 import { fetchLabelByUuid } from '/app-static/js/shared/api/labels.js';
+import { UNVERIFIED_TAG_UUID, VERIFICATION_TAG_UUIDS } from '/app-static/js/shared/api/review.js';
 
 /**
  * @typedef {import('./types.js').UIImage} UIImage
@@ -76,11 +77,18 @@ export function bboxReadToUI(bboxData) {
   /** @type {import('./types.js').UILabel|undefined} */
   const label = labelUuid ? { uuid: labelUuid, text: labelText, color: labelColor } : undefined;
 
+  const rawTags = (bboxData.tags ?? []).map(t => ({ uuid: t.uuid, icon: t.icon ?? null }));
+
+  // Default to UNVERIFIED if the bbox has no explicit verification tag
+  const tags = rawTags.some(t => VERIFICATION_TAG_UUIDS.has(t.uuid))
+    ? rawTags
+    : [...rawTags, { uuid: UNVERIFIED_TAG_UUID, icon: null }];
+
   /** @type {import('./types.js').UIBbox} */
   const uiBbox = createUIBBbox({
     uuid: bboxData.uuid,
     label,
-    tags: (bboxData.tags ?? []).map(t => ({ uuid: t.uuid, icon: t.icon ?? null })),
+    tags,
     x: bboxData.x,
     y: bboxData.y,
     width: bboxData.width,

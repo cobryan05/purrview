@@ -12,6 +12,7 @@ import {
   UNVERIFIED_TAG_UUID,
   VERIFIED_TAG_UUID,
   FALSE_POS_TAG_UUID,
+  VERIFICATION_TAG_UUIDS,
 } from '/app-static/js/shared/api/review.js';
 import { Logger } from '/app-static/js/ui/utils/logging.js';
 import { CheckboxField } from '/app-static/js/ui/utils/fields/CheckboxField.js';
@@ -743,13 +744,12 @@ async function showCanvasModal(bbox, img, labels, onSaved) {
     // otherwise the user can't retry cleanly (or uncheck the option and retry).
     let tagRollback = null;
     if (markVerifiedCheckbox.checked) {
-      const VERIFICATION_UUIDS = new Set([UNVERIFIED_TAG_UUID, VERIFIED_TAG_UUID, FALSE_POS_TAG_UUID]);
       const modifiedUuids = getModifiedBboxUuids(instance.runtime.state.image.bboxes, initialBboxSnapshot);
       tagRollback = new Map();
       for (const [, b] of instance.runtime.state.image.bboxes.entries()) {
         if (modifiedUuids.has(b.uuid)) {
           tagRollback.set(b.uuid, b.tags); // save original so we can roll back on failure
-          const nonVerifTags = (b.tags ?? []).filter(t => !VERIFICATION_UUIDS.has(t.uuid));
+          const nonVerifTags = (b.tags ?? []).filter(t => !VERIFICATION_TAG_UUIDS.has(t.uuid));
           b.tags = [...nonVerifTags, { uuid: VERIFIED_TAG_UUID, icon: null }];
         }
       }
