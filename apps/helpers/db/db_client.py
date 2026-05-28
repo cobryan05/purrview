@@ -15,6 +15,7 @@ ALEMBIC_INI_PATH = Path(__file__).parent / "alembic.ini"
 import jstyleson
 from pydantic import TypeAdapter
 from sqlalchemy import and_, delete, event, func, or_
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import selectinload, sessionmaker
 from sqlmodel import SQLModel, select
@@ -177,34 +178,55 @@ class DbClient:
     ################################################################################
     # Images
     ################################################################################
-    async def sync_image_from_json(self, image_path: Path) -> ImageRecord:
+    async def sync_image_from_json(self, image_path: Path, overwrite: bool = False) -> ImageRecord:
         """
         Syncs a single image's JSON sidecar into the DB.
-        Warns if UUIDs or Paths conflict with existing data.
+
+        Args:
+            image_path: Path to the image file (sidecar is image_path.with_suffix('.json')).
+            overwrite: If True, replace the DB record's bboxes and metadata_json with
+                       the JSON contents.  If False (default), merge: add only the JSON
+                       bboxes whose UUIDs are not already in the DB, and leave metadata
+                       unchanged if the DB already has any.
+
+        Returns:
+            The inserted or updated ImageRecord.
+
+        Warns if UUIDs or paths conflict with existing data.
         """
+        # --- Parse JSON sidecar ---
         json_path = image_path.with_suffix(".json")
         metadata_dict = {}
         json_uuid = None
-        bboxes: List[BBox] = []
+        json_bboxes: List[BBox] = []
 
         if json_path.exists():
             try:
                 metadata_dict = jstyleson.loads(json_path.read_text())
                 json_uuid = metadata_dict.get("uuid")
-                json_bboxes = metadata_dict.get("boxes", [])
-                bboxes = [BBox(**box_data) for box_data in json_bboxes]
+                json_bboxes = [BBox(**box_data) for box_data in metadata_dict.get("boxes", [])]
             except Exception as e:
                 logger.error(f"Failed to parse {json_path}: {e}")
 
         async with self._async_session_maker() as session:
-            path_stmt = select(ImageRecord).where(ImageRecord.filename == str(image_path))
+            # --- Look up any existing records ---
+            path_stmt = (
+                select(ImageRecord)
+                .where(ImageRecord.filename == str(image_path))
+                .options(selectinload(ImageRecord.bboxes))
+            )
             existing_by_path = (await session.exec(path_stmt)).one_or_none()
 
             existing_by_uuid = None
             if json_uuid:
-                uuid_stmt = select(ImageRecord).where(ImageRecord.uuid == json_uuid)
+                uuid_stmt = (
+                    select(ImageRecord)
+                    .where(ImageRecord.uuid == json_uuid)
+                    .options(selectinload(ImageRecord.bboxes))
+                )
                 existing_by_uuid = (await session.exec(uuid_stmt)).one_or_none()
 
+            # --- Warn about conflicts ---
             if existing_by_path and json_uuid and existing_by_path.uuid != json_uuid:
                 logger.warning(
                     f"Conflict: Path '{image_path}' exists in DB with UUID {existing_by_path.uuid}, "
@@ -217,17 +239,41 @@ class DbClient:
                     f"The sidecar at '{image_path}' is claiming a UUID used elsewhere."
                 )
 
-            temp_image = ImageRecord(
-                uuid=json_uuid or str(uuid4()),
-                filename=str(image_path),
-                bboxes=bboxes,
-                metadata_json=metadata_dict,
-            )
+            # --- Insert or update ---
+            # Prefer the record matched by path; fall back to the one matched by UUID.
+            db_record = existing_by_path or existing_by_uuid
 
-            db_image = await session.merge(temp_image)
-            await session.commit()
-            await session.refresh(db_image)
-            return db_image
+            if db_record is None:
+                # No existing record — insert fresh from JSON.
+                db_record = ImageRecord(
+                    uuid=json_uuid or str(uuid4()),
+                    filename=str(image_path),
+                    bboxes=json_bboxes,
+                    metadata_json=metadata_dict,
+                )
+                session.add(db_record)
+            elif overwrite:
+                # Replace bboxes and metadata wholesale.
+                db_record.bboxes = json_bboxes
+                db_record.metadata_json = metadata_dict
+                session.add(db_record)
+            else:
+                # Append: add JSON bboxes whose UUIDs aren't already in the DB;
+                # leave metadata_json alone if the DB already has content.
+                existing_uuids = {b.uuid for b in db_record.bboxes}
+                new_bboxes = [b for b in json_bboxes if b.uuid not in existing_uuids]
+                db_record.bboxes = db_record.bboxes + new_bboxes
+                if not db_record.metadata_json:
+                    db_record.metadata_json = metadata_dict
+                session.add(db_record)
+
+            try:
+                await session.commit()
+            except Exception as e:
+                logger.exception(e)
+
+            await session.refresh(db_record)
+            return db_record
 
     async def read_image_metadata_from_json(self, json_path: Path) -> Optional[ImageRecordRead]:
         """Reads image metadata from a side JSON file"""
@@ -279,7 +325,7 @@ class DbClient:
             Image: The fully populated Image SQLModel instance.
         """
         async with self._async_session_maker() as session:
-            # Check for existing image to prevent UniqueConstraint errors
+            # Check for existing image first (fast path)
             statement = select(ImageRecord).where(ImageRecord.filename == str(filename))
             result = await session.exec(statement)
             existing_image = result.one_or_none()
@@ -287,13 +333,18 @@ class DbClient:
             if existing_image:
                 return existing_image
 
-            # Create new record
+            # Create new record; catch the race where two concurrent callers
+            # both pass the check above before either INSERT commits.
             new_image = ImageRecord(uuid=str(uuid4()), filename=str(filename), metadata_json=metadata_json or {})
-
             session.add(new_image)
-            await session.commit()
-            await session.refresh(new_image)
-            return new_image
+            try:
+                await session.commit()
+                await session.refresh(new_image)
+                return new_image
+            except IntegrityError:
+                await session.rollback()
+                result = await session.exec(statement)
+                return result.one()
 
     async def list_images(self, limit: int = 100, offset: int = 0) -> List[ImageRecord]:
         """List images with basic pagination."""

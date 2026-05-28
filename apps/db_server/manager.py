@@ -302,13 +302,13 @@ class Manager:
         safe_path = get_safe_path(self._files_root, image_path)
         if not safe_path or not safe_path.exists():
             return None
-        image = await self._db_client.get_image_by_filename(safe_path)
-        if image is None or len(image.bboxes) == 0:
+        image_record = await self._db_client.get_image_by_filename(safe_path)
+        if image_record is None or len(image_record.bboxes) == 0:
             await self._db_client.sync_image_from_json(safe_path)
-            image = await self._db_client.get_image_by_filename(safe_path)
-        if image is None:
+            image_record = await self._db_client.get_image_by_filename(safe_path)
+        if image_record is None:
             return None
-        return ImageRecordRead.model_validate(image)
+        return ImageRecordRead.model_validate(image_record)
 
     def _get_json_sidefile(self, image_path: Path) -> Path:
         return image_path.with_suffix(".json")
