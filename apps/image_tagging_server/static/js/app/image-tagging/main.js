@@ -1,5 +1,5 @@
 import { FileNavigation } from '../../ui/utils/fileNavigation.js';
-import { initCanvasCore } from './canvas/instance.js';
+import { createCanvasInstance } from './canvas/instance.js';
 import { addInferenceResults, loadImageOntoCanvas } from './canvas/image.js';
 import { init as initFiles } from './files.js';
 import { init as initSidebar } from './sidebar.js';
@@ -15,7 +15,7 @@ import { Logger } from '/app-static/js/ui/utils/index.js';
  * @param {HTMLElement} tab_pane
  */
 export async function init(runtime, tab_pane) {
-  runtime.setImageTaggingPane(tab_pane);
+  runtime.setPaneRef(tab_pane);
   runtime.setFileNavigation(new FileNavigation());
 
   const { container, activateTab } = setupWorkspaceTabs("#tab-image-tagging", (tabName, button, pane)  => {
@@ -24,7 +24,8 @@ export async function init(runtime, tab_pane) {
     }
   });
 
-  await initCanvasCore(runtime);
+  const canvasContainer = tab_pane.querySelector('.canvas-container');
+  await createCanvasInstance(canvasContainer, { runtime });
 
   // App-specific event subscriptions scoped to this canvas's runtime.
   events.subscribeToCanvas(runtime.id, EventTypes.RUN_INFERENCE_ON_CANVAS, async ({ modelName }) => {

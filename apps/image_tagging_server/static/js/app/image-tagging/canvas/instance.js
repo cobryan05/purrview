@@ -47,7 +47,7 @@ export async function initCanvasCore(runtime) {
  * @returns {Promise<{ runtime: import('@image_tagging_types').ImageTaggingRuntime, loadImage: (path: string) => Promise<void>, destroy: () => void }>}
  */
 export async function createCanvasInstance(container, options = {}) {
-  const runtime = createImageTaggingRuntime();
+  const runtime = options.runtime ?? createImageTaggingRuntime();
   runtime.setCanvasContainer(container);
   const coreHandle = await initCanvasCore(runtime);
   runtime.setTool(options.tool ?? 'select');

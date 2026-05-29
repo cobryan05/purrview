@@ -18,6 +18,7 @@ import { init as initToolbar } from '/app-static/js/app/image-tagging/toolbar.js
 import { initLabelPanel } from '/app-static/js/app/image-tagging/canvas/labelPanel.js';
 import { initInspector } from '/app-static/js/ui/inspector.js';
 
+
 const PAGE_SIZE = 50;
 
 /**
@@ -625,8 +626,8 @@ async function showCanvasModal(bbox, img, labels, onSaved) {
 
   // ── Create canvas instance ─────────────────────────────────────────
   let instance;
-  let toolbarHandle = { destroy: () => {} };
-  let labelHandle   = { destroy: () => {} };
+  let toolbarHandle  = { destroy: () => {} };
+  let labelHandle    = { destroy: () => {} };
   let unsubInspector = () => {};
 
   try {

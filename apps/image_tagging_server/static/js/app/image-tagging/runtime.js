@@ -36,6 +36,15 @@ export function createImageTaggingRuntime() {
     _canvasState = createCanvasState(container);
   }
 
+  /**
+   * Sets the pane reference only — no canvas creation.
+   * Use this when the canvas will be (or already is) initialized via setCanvasContainer / createCanvasInstance.
+   * @param {HTMLElement | null} pane
+   */
+  function setPaneRef(pane) {
+    _pane = pane;
+  }
+
   /** @param {HTMLElement} container - The canvas container element directly (no pane wrapper needed). */
   function setCanvasContainer(container) {
     _canvasState?.resizeObserver?.disconnect();
@@ -95,6 +104,7 @@ export function createImageTaggingRuntime() {
     get labelUuid() { return _currentLabelUuid; },
 
     setImageTaggingPane,
+    setPaneRef,
     setCanvasContainer,
     destroyCanvas,
     setFileNavigation,

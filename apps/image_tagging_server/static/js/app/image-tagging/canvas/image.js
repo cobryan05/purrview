@@ -92,6 +92,7 @@ export function clearAnnotations(runtime) {
     }
   });
   layer.draw();
+  events.publish(EventTypes.CANVAS_BBOXES_CHANGED, { runtimeId: runtime.id });
 }
 
 /**
@@ -227,4 +228,5 @@ export async function addInferenceResults(runtime, results) {
   }
 
   layer.draw();
+  events.publish(EventTypes.CANVAS_BBOXES_CHANGED, { runtimeId: runtime.id });
 }

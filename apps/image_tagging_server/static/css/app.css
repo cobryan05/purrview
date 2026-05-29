@@ -567,6 +567,78 @@ button.filter-active {
   flex-shrink: 0;
 }
 
+/* ===== Inference Panel ===== */
+.inference-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4em;
+  padding: 0.5em;
+}
+
+.inference-panel-actions {
+  display: flex;
+  gap: 0.4em;
+}
+
+.inference-panel-actions button {
+  flex: 1;
+  font-size: 0.8em;
+  padding: 0.3em 0.5em;
+  cursor: pointer;
+}
+
+.inference-model-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25em;
+  overflow-y: auto;
+  max-height: 300px;
+}
+
+.inference-model-item {
+  padding: 0.3em 0.6em;
+  border-radius: 3px;
+  border: 1px solid #444;
+  cursor: pointer;
+  font-size: 0.85em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  user-select: none;
+}
+
+.inference-model-item:hover {
+  border-color: #888;
+  background: #2a2a2a;
+}
+
+.inference-model-item.selected {
+  border-color: #ff6666;
+  background: #ff003322;
+  color: #ff9999;
+}
+
+.inference-model-empty {
+  color: #666;
+  font-size: 0.8em;
+  padding: 0.5em;
+  font-style: italic;
+}
+
+/* Inference column inside the canvas modal */
+.canvas-modal-inference {
+  width: 160px;
+  min-width: 130px;
+  flex-shrink: 0;
+  overflow-y: auto;
+  border-left: 1px solid #333;
+  background: #161616;
+}
+
+.canvas-modal-inference .inference-model-list {
+  max-height: none;
+}
+
 /* ===== Configuration ===== */
 .config-panel {
   display: flex;

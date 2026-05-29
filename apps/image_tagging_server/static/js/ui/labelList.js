@@ -13,6 +13,7 @@
 
 import { fetchLabels, clearLabelsCache, createNewLabel, deleteLabel, updateLabel } from '/app-static/js/shared/api/labels.js';
 import { fetchImageLabels, setImageLabel } from '/app-static/js/shared/api/imageLabels.js';
+import { VERIFIED_TAG_UUID } from '/app-static/js/shared/api/review.js';
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
 import { setTool } from '../app/image-tagging/canvas/tools.js';
 import { EditableField, TextBoxColorField } from '/app-static/js/ui/utils/fields/index.js';
@@ -194,7 +195,7 @@ async function mountEditMode(container, { filter, onRerender }) {
 function computeDerivedPresent(bboxes) {
   const present = new Set();
   for (const bbox of (bboxes ?? new Map()).values()) {
-    if (bbox.label?.uuid) {
+    if (bbox.label?.uuid && (bbox.tags ?? []).some(t => t.uuid === VERIFIED_TAG_UUID)) {
       present.add(bbox.label.uuid);
     }
   }
@@ -221,6 +222,7 @@ async function mountSelectMode(container, { runtime, filter }) {
 
   let currentImagePath = null;
   let _loadSeq = 0;
+  let _lastSelectedUuid = null;
   /** @type {Map<string, 'absent'>} — explicit absence marks from the server */
   let serverStates = new Map();
   let derivedPresent = computeDerivedPresent(runtime?.state?.image?.bboxes);
@@ -311,7 +313,10 @@ async function mountSelectMode(container, { runtime, filter }) {
       row.appendChild(swatch);
       row.appendChild(nameEl);
 
-      row.addEventListener('click', () => setTool(runtime, `bbox:${label.uuid}`));
+      row.addEventListener('click', () => {
+        _lastSelectedUuid = label.uuid;
+        setTool(runtime, `bbox:${label.uuid}`);
+      });
 
       container.appendChild(row);
       renderSelectRows(label.uuid, indent + 1);
@@ -366,16 +371,38 @@ async function mountSelectMode(container, { runtime, filter }) {
     }
   );
 
-  // Highlight the active label row whenever the tool changes
+  // Highlight the active label row whenever the tool changes; auto-select on bare 'bbox'
   const unsubTool = events.subscribeToCanvas(
     runtime.id,
     EventTypes.CANVAS_TOOL_CHANGED,
-    ({ tool }) => syncHighlight(tool.startsWith('bbox:') ? tool.slice(5) : null)
+    ({ tool }) => {
+      if (tool === 'bbox') {
+        // Restore the last used label, or default to the first row
+        if (_lastSelectedUuid) {
+          setTool(runtime, `bbox:${_lastSelectedUuid}`);
+        } else {
+          const firstRow = container.querySelector('.label-panel-row');
+          if (firstRow) firstRow.click();
+        }
+        return;
+      }
+      if (tool.startsWith('bbox:')) {
+        _lastSelectedUuid = tool.slice(5);
+      }
+      syncHighlight(tool.startsWith('bbox:') ? tool.slice(5) : null);
+    }
   );
 
   // Reflect tool already active when the panel mounts
   const currentTool = runtime.tool ?? '';
-  if (currentTool.startsWith('bbox:')) syncHighlight(currentTool.slice(5));
+  if (currentTool.startsWith('bbox:')) {
+    _lastSelectedUuid = currentTool.slice(5);
+    syncHighlight(_lastSelectedUuid);
+  } else if (currentTool === 'bbox') {
+    // Panel mounted while bbox is active but no label chosen — pick first
+    const firstRow = container.querySelector('.label-panel-row');
+    if (firstRow) firstRow.click();
+  }
 
   // If an image was already loaded before this component was created (lazy init),
   // we missed its IMAGE_LOADED_ONTO_CANVAS event — fetch its states now so ✗ icons appear.
