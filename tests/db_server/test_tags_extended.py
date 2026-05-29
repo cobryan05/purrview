@@ -3,7 +3,7 @@ import uuid
 
 import pytest
 
-from apps.helpers.db.types import UNVERIFIED_TAG_UUID, VERIFIED_TAG_UUID, FALSE_POS_TAG_UUID
+from apps.helpers.db.types import UNVERIFIED_TAG_UUID
 from tests.conftest import make_png
 
 
@@ -91,36 +91,54 @@ async def bbox_uuid(http_client, image_file, label_uuid):
     return bbox_id
 
 
-async def test_exclusive_group_swap_unverified_to_verified(http_client, bbox_uuid):
-    """Patching a bbox with VERIFIED must remove UNVERIFIED (same exclusive group)."""
+async def test_exclusive_group_custom_tag_ousts_unverified(http_client, bbox_uuid):
+    """A custom tag in the 'verification' exclusive group replaces UNVERIFIED."""
+    r = await http_client.post(
+        "/api/tags/add",
+        json={"name": "accepted", "exclusive_group": "verification"},
+    )
+    accepted_uuid = r.json()["tag"]["uuid"]
+
     patch_r = await http_client.patch(
         f"/api/images/bbox/{bbox_uuid}",
-        json={"tagUuids": [VERIFIED_TAG_UUID]},
+        json={"tagUuids": [accepted_uuid]},
     )
     assert patch_r.status_code == 204
 
-    # Retrieve and check that only VERIFIED remains
     meta_r = await http_client.post(
         "/api/images/metadata/get", json={"imagePath": "excl.png"}
     )
     bboxes = meta_r.json()["image"]["bboxes"]
     assert len(bboxes) == 1
     tag_uuids = [t["uuid"] for t in bboxes[0]["tags"]]
-    assert VERIFIED_TAG_UUID in tag_uuids
+    assert accepted_uuid in tag_uuids
     assert UNVERIFIED_TAG_UUID not in tag_uuids
 
 
-async def test_exclusive_group_swap_to_false_positive(http_client, bbox_uuid):
-    """Patching with FALSE_POS must remove UNVERIFIED."""
-    await http_client.patch(
-        f"/api/images/bbox/{bbox_uuid}",
-        json={"tagUuids": [FALSE_POS_TAG_UUID]},
+async def test_exclusive_group_last_tag_wins(http_client, bbox_uuid):
+    """When multiple exclusive-group tags are sent, only the last survives."""
+    r1 = await http_client.post(
+        "/api/tags/add",
+        json={"name": "ver-tag-a", "exclusive_group": "verification"},
     )
+    r2 = await http_client.post(
+        "/api/tags/add",
+        json={"name": "ver-tag-b", "exclusive_group": "verification"},
+    )
+    tag_a = r1.json()["tag"]["uuid"]
+    tag_b = r2.json()["tag"]["uuid"]
+
+    patch_r = await http_client.patch(
+        f"/api/images/bbox/{bbox_uuid}",
+        json={"tagUuids": [tag_a, tag_b]},
+    )
+    assert patch_r.status_code == 204
+
     meta_r = await http_client.post(
         "/api/images/metadata/get", json={"imagePath": "excl.png"}
     )
     bboxes = meta_r.json()["image"]["bboxes"]
     tag_uuids = [t["uuid"] for t in bboxes[0]["tags"]]
-    assert FALSE_POS_TAG_UUID in tag_uuids
+    assert tag_b in tag_uuids
+    assert tag_a not in tag_uuids
     assert UNVERIFIED_TAG_UUID not in tag_uuids
-    assert VERIFIED_TAG_UUID not in tag_uuids

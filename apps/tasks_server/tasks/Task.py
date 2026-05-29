@@ -205,7 +205,7 @@ class Task(ABC):
             StopIteration: if the task is completed
         """
         done, _ = await asyncio.wait(
-            [self._data_ready_flag.wait(), self._task_done.wait()],
+            [asyncio.create_task(self._data_ready_flag.wait()), asyncio.create_task(self._task_done.wait())],
             timeout=timeout,
             return_when=asyncio.FIRST_COMPLETED,
         )

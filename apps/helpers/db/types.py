@@ -270,6 +270,10 @@ class BBoxUpdate(BaseModel):
     height: float
     tag_uuids: List[str] = []
     metadata_json: Dict[str, Any] = Field(default_factory=dict)
+    # Sidecar rebuild fallback: names are stored alongside UUIDs so that a DB
+    # rebuild can resolve references even when UUIDs differ after re-generation.
+    label_name: Optional[str] = None
+    tag_names: List[str] = []
 
     model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)
 

@@ -4,7 +4,7 @@ This test exercises the full loop that the UI performs:
   1. Create label and tags (system tags already seeded by init_db)
   2. Add image + bboxes tagged UNVERIFIED
   3. Query review queue → image appears
-  4. PATCH bbox to swap UNVERIFIED → VERIFIED
+  4. PATCH bbox to remove UNVERIFIED (confirm)
   5. Query review queue (UNVERIFIED filter) → image gone
   6. Check image_labels → label shows PRESENT
 
@@ -19,9 +19,7 @@ from apps.db_server.manager import Manager
 from apps.db_server.web import WebApp
 from apps.helpers.db.db_client import DbClient
 from apps.helpers.db.types import (
-    FALSE_POS_TAG_UUID,
     UNVERIFIED_TAG_UUID,
-    VERIFIED_TAG_UUID,
     ImageLabelStatus,
 )
 from tests.conftest import make_png
@@ -67,7 +65,7 @@ async def _create_label(client, name="cat", color="#FF0000"):
 
 async def _put_image(files_root, client, filename="img.png", label_uuid=None, tag_uuids=None):
     """Write a PNG to files_root and register it with one bbox."""
-    tag_uuids = tag_uuids or [UNVERIFIED_TAG_UUID]
+    tag_uuids = [UNVERIFIED_TAG_UUID] if tag_uuids is None else tag_uuids
     p = files_root / filename
     p.write_bytes(make_png())
     bid = str(uuid.uuid4())
@@ -118,10 +116,9 @@ async def test_full_verify_workflow(client, files_root):
     filenames = [img["filename"] for img in images]
     assert any("review.png" in f for f in filenames)
 
-    # Verify the bbox
     r = await client.patch(
         f"/api/images/bbox/{bid}",
-        json={"labelUuid": label, "tagUuids": [VERIFIED_TAG_UUID]},
+        json={"labelUuid": label, "tagUuids": []},
     )
     assert r.status_code == 204
 
@@ -135,30 +132,27 @@ async def test_full_verify_workflow(client, files_root):
     assert labels[label] == ImageLabelStatus.PRESENT
 
 
-async def test_false_positive_workflow(client, files_root):
-    """Mark as false-positive → gone from UNVERIFIED queue; no image_label row."""
+async def test_confirm_workflow_creates_present_label(client, files_root):
+    """Confirming a bbox (removing UNVERIFIED) removes it from the UNVERIFIED queue
+    and produces a PRESENT image_label row."""
     label = await _create_label(client, "dog")
-    bid = await _put_image(files_root, client, "fp.png", label, [UNVERIFIED_TAG_UUID])
+    bid = await _put_image(files_root, client, "confirm.png", label, [UNVERIFIED_TAG_UUID])
 
     # In queue initially
     images = await _review(client, tag_uuids=[UNVERIFIED_TAG_UUID])
-    assert any("fp.png" in img["filename"] for img in images)
+    assert any("confirm.png" in img["filename"] for img in images)
 
-    # Mark false positive
     r = await client.patch(
         f"/api/images/bbox/{bid}",
-        json={"labelUuid": label, "tagUuids": [FALSE_POS_TAG_UUID]},
+        json={"labelUuid": label, "tagUuids": []},
     )
     assert r.status_code == 204
 
-    # Gone from UNVERIFIED queue
     images = await _review(client, tag_uuids=[UNVERIFIED_TAG_UUID])
-    assert not any("fp.png" in img["filename"] for img in images)
+    assert not any("confirm.png" in img["filename"] for img in images)
 
-    # False-positive bboxes no longer derive ABSENT — label has no image_label row
-    # (user must explicitly mark ABSENT via set_image_label if desired)
-    labels = await _image_labels(client, "fp.png")
-    assert label not in labels
+    labels = await _image_labels(client, "confirm.png")
+    assert labels[label] == ImageLabelStatus.PRESENT
 
 
 async def test_delete_bbox_removes_from_queue(client, files_root):
@@ -190,9 +184,8 @@ async def test_multiple_images_independent_verification(client, files_root):
     filenames = {img["filename"] for img in images}
     assert sum(1 for f in filenames if "a.png" in f or "b.png" in f or "c.png" in f) == 3
 
-    # Verify a.png and b.png
     for bid in [bid_a, bid_b]:
-        await client.patch(f"/api/images/bbox/{bid}", json={"labelUuid": label, "tagUuids": [VERIFIED_TAG_UUID]})
+        await client.patch(f"/api/images/bbox/{bid}", json={"labelUuid": label, "tagUuids": []})
 
     images = await _review(client, tag_uuids=[UNVERIFIED_TAG_UUID])
     filenames = [img["filename"] for img in images]
@@ -214,11 +207,11 @@ async def test_review_queue_label_filter(client, files_root):
     assert not any("dog.png" in f for f in filenames)
 
 
-async def test_image_label_filter_excludes_verified(client, files_root):
-    """image_label_filters with exclude=True keeps only non-verified images."""
+async def test_image_label_filter_excludes_confirmed(client, files_root):
+    """image_label_filters with exclude=True keeps only non-confirmed images."""
     label = await _create_label(client, "fish")
     bid_unv = await _put_image(files_root, client, "unv.png", label, [UNVERIFIED_TAG_UUID])
-    bid_ver = await _put_image(files_root, client, "ver.png", label, [VERIFIED_TAG_UUID])
+    bid_ver = await _put_image(files_root, client, "ver.png", label, [])
 
     images = await _review(
         client,

@@ -319,6 +319,10 @@ class Manager:
         """
         Replace the bboxes for an image, persisting to both the DB and the JSON sidecar.
 
+        The sidecar is written after re-reading the DB so that label and tag *names* are
+        stored alongside UUIDs.  Names serve as fallback resolution keys if UUIDs change
+        on a future DB rebuild.
+
         Args:
             image_rel_path (str): Relative image path.
             update (ImageRecordUpdate): New bbox data.
@@ -332,12 +336,34 @@ class Manager:
             return None
         image = await self._db_client.add_image(safe_path)
         await self._db_client.write_image_metadata_to_db(image.uuid, update)
-        await asyncio.to_thread(
-            self._db_client.write_image_metadata_to_json,
-            self._get_json_sidefile(safe_path), image.uuid, image.filename, update,
-        )
+        # Re-read from DB; get_image_by_filename eager-loads bboxes → label + tags,
+        # so we can include names in the sidecar for rebuild robustness.
         updated = await self._db_client.get_image_by_filename(safe_path)
-        await self._recompute_image_labels(image.uuid, update)
+        if updated:
+            enriched_update = ImageRecordUpdate(
+                bboxes=[
+                    BBoxUpdate(
+                        uuid=b.uuid,
+                        label_uuid=b.label_uuid,
+                        label_name=b.label.name if b.label else None,
+                        x=b.x,
+                        y=b.y,
+                        width=b.width,
+                        height=b.height,
+                        tag_uuids=[t.uuid for t in (b.tags or [])],
+                        tag_names=[t.name for t in (b.tags or [])],
+                    )
+                    for b in updated.bboxes
+                ]
+            )
+            await asyncio.to_thread(
+                self._db_client.write_image_metadata_to_json,
+                self._get_json_sidefile(safe_path), image.uuid, image.filename, enriched_update,
+            )
+            await self._recompute_image_labels(image.uuid, enriched_update)
+        else:
+            # DB re-read failed; fall back to the raw caller payload for label recomputation.
+            await self._recompute_image_labels(image.uuid, update)
         return ImageRecordRead.model_validate(updated) if updated else None
 
     async def update_single_bbox(self, bbox_uuid: str, label_uuid: Optional[str], tag_uuids: List[str]) -> bool:
@@ -363,17 +389,20 @@ class Manager:
     async def _sync_image_state(self, image_record: ImageRecord) -> None:
         """Rebuild JSON sidecar and image_labels after a single-bbox mutation."""
         safe_path = get_safe_path(self._files_root, image_record.filename)
+        # get_bboxes_for_image eager-loads both tags and label so names are available.
         bboxes = await self._db_client.get_bboxes_for_image(image_record.uuid)
         update = ImageRecordUpdate(
             bboxes=[
                 BBoxUpdate(
                     uuid=b.uuid,
                     label_uuid=b.label_uuid,
+                    label_name=b.label.name if b.label else None,
                     x=b.x,
                     y=b.y,
                     width=b.width,
                     height=b.height,
                     tag_uuids=[t.uuid for t in (b.tags or [])],
+                    tag_names=[t.name for t in (b.tags or [])],
                 )
                 for b in bboxes
             ]
@@ -412,8 +441,7 @@ class Manager:
         safe_path = get_safe_path(self._files_root, image_path)
         if safe_path is None:
             return None
-        image = await self._db_client.get_image_by_filename(safe_path)
-        return image.uuid if image else None
+        return await self._db_client.get_image_uuid_by_filename(safe_path)
 
     async def set_image_label(self, image_path: str, label_uuid: str, status: ImageLabelStatus) -> bool:
         """Explicitly set a label state for an image.

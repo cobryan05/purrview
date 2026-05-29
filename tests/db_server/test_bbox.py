@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from apps.helpers.db.types import UNVERIFIED_TAG_UUID, VERIFIED_TAG_UUID
+from apps.helpers.db.types import UNVERIFIED_TAG_UUID
 from tests.conftest import make_png
 
 
@@ -72,11 +72,12 @@ async def test_patch_bbox_updates_label(http_client, setup_image_with_bbox, labe
 
 
 async def test_patch_bbox_updates_tags(http_client, setup_image_with_bbox, label_uuid):
+    """Patching to empty tags removes UNVERIFIED (bbox is now 'confirmed')."""
     bid = setup_image_with_bbox
 
     patch_r = await http_client.patch(
         f"/api/images/bbox/{bid}",
-        json={"labelUuid": label_uuid, "tagUuids": [VERIFIED_TAG_UUID]},
+        json={"labelUuid": label_uuid, "tagUuids": []},
     )
     assert patch_r.status_code == 204
 
@@ -85,7 +86,6 @@ async def test_patch_bbox_updates_tags(http_client, setup_image_with_bbox, label
     )
     bboxes = meta_r.json()["image"]["bboxes"]
     tag_uuids = [t["uuid"] for t in bboxes[0]["tags"]]
-    assert VERIFIED_TAG_UUID in tag_uuids
     assert UNVERIFIED_TAG_UUID not in tag_uuids
 
 
@@ -120,14 +120,14 @@ async def test_delete_nonexistent_bbox_returns_404(http_client):
 
 
 async def test_delete_bbox_recomputes_image_labels(http_client, image_file, label_uuid):
-    """After deleting the only verified bbox for a label, the PRESENT row is removed."""
+    """After deleting the only confirmed bbox for a label, the PRESENT row is removed."""
     bid = str(uuid.uuid4())
     await http_client.post(
         "/api/images/metadata/update",
         json={"imagePath": "bbox_test.png", "boxes": [{
             "uuid": bid, "labelUuid": label_uuid,
             "x": 0.1, "y": 0.1, "width": 0.3, "height": 0.3,
-            "tagUuids": [VERIFIED_TAG_UUID],
+            "tagUuids": [],
         }]},
     )
 

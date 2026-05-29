@@ -8,11 +8,7 @@ from datetime import datetime, timezone, timedelta
 
 import pytest
 
-from apps.helpers.db.types import (
-    FALSE_POS_TAG_UUID,
-    UNVERIFIED_TAG_UUID,
-    VERIFIED_TAG_UUID,
-)
+from apps.helpers.db.types import UNVERIFIED_TAG_UUID
 from tests.conftest import make_png
 
 
@@ -87,27 +83,29 @@ async def test_unverified_image_appears_in_queue(http_client, files_root, label_
     assert any("unverified.png" in f for f in filenames)
 
 
-async def test_verified_image_not_in_unverified_queue(http_client, files_root, label_uuid):
-    _make_image(files_root, "verified.png")
-    await _add_bbox(http_client, "verified.png", label_uuid, [VERIFIED_TAG_UUID])
+async def test_confirmed_image_not_in_unverified_queue(http_client, files_root, label_uuid):
+    """A 'confirmed' bbox (no UNVERIFIED tag) does not appear in the UNVERIFIED queue."""
+    _make_image(files_root, "confirmed.png")
+    await _add_bbox(http_client, "confirmed.png", label_uuid, [])
     images = await _review(http_client, tag_uuids=[UNVERIFIED_TAG_UUID])
     filenames = [img["filename"] for img in images]
-    assert not any("verified.png" in f for f in filenames)
+    assert not any("confirmed.png" in f for f in filenames)
 
 
-async def test_verified_image_appears_in_verified_queue(http_client, files_root, label_uuid):
-    _make_image(files_root, "verf2.png")
-    await _add_bbox(http_client, "verf2.png", label_uuid, [VERIFIED_TAG_UUID])
-    images = await _review(http_client, tag_uuids=[VERIFIED_TAG_UUID])
+async def test_confirmed_image_appears_when_show_all(http_client, files_root, label_uuid):
+    """A confirmed image (no UNVERIFIED tag) is visible via show_all_bboxes."""
+    _make_image(files_root, "show-all.png")
+    await _add_bbox(http_client, "show-all.png", label_uuid, [])
+    images = await _review(http_client, show_all_bboxes=True)
     filenames = [img["filename"] for img in images]
-    assert any("verf2.png" in f for f in filenames)
+    assert any("show-all.png" in f for f in filenames)
 
 
 async def test_show_all_bboxes_returns_all_images(http_client, files_root, label_uuid):
     _make_image(files_root, "all1.png")
     _make_image(files_root, "all2.png")
     await _add_bbox(http_client, "all1.png", label_uuid, [UNVERIFIED_TAG_UUID])
-    await _add_bbox(http_client, "all2.png", label_uuid, [VERIFIED_TAG_UUID])
+    await _add_bbox(http_client, "all2.png", label_uuid, [])
     images = await _review(http_client, show_all_bboxes=True)
     filenames = [img["filename"] for img in images]
     assert any("all1.png" in f for f in filenames)
@@ -231,10 +229,10 @@ async def test_cursor_pagination_covers_all_records(http_client, files_root, lab
 # ──────────────────────────────────────────────────────────────────────────────
 
 async def test_image_label_filter_present(http_client, files_root, label_uuid):
-    """image_label_filters with PRESENT status should only return verified images."""
+    """image_label_filters with PRESENT status should only return confirmed images."""
     _make_image(files_root, "ilf-verf.png")
     _make_image(files_root, "ilf-unv.png")
-    await _add_bbox(http_client, "ilf-verf.png", label_uuid, [VERIFIED_TAG_UUID])
+    await _add_bbox(http_client, "ilf-verf.png", label_uuid, [])
     await _add_bbox(http_client, "ilf-unv.png", label_uuid, [UNVERIFIED_TAG_UUID])
 
     images = await _review(
@@ -251,7 +249,7 @@ async def test_image_label_filter_exclude(http_client, files_root, label_uuid):
     """Exclude filter: return images that do NOT have a 'present' label."""
     _make_image(files_root, "excl-verf.png")
     _make_image(files_root, "excl-unv.png")
-    await _add_bbox(http_client, "excl-verf.png", label_uuid, [VERIFIED_TAG_UUID])
+    await _add_bbox(http_client, "excl-verf.png", label_uuid, [])
     await _add_bbox(http_client, "excl-unv.png", label_uuid, [UNVERIFIED_TAG_UUID])
 
     images = await _review(

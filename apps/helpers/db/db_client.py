@@ -142,6 +142,7 @@ class DbClient:
                         uuid=tmpl.uuid,
                         name=tmpl.name,
                         color=tmpl.color,
+                        icon=tmpl.icon,
                         kind=tmpl.kind,
                         exclusive_group=tmpl.exclusive_group,
                         protected=tmpl.protected,
@@ -169,24 +170,124 @@ class DbClient:
         Returns:
             The inserted or updated ImageRecord.
 
-        Warns if UUIDs or paths conflict with existing data.
+        Label and tag UUIDs are resolved UUID-first; if the UUID is not found in the
+        DB, the stored name is used as a fallback (warns on mismatch).  Bboxes whose
+        label cannot be resolved at all are skipped with a warning.
         """
         # --- Parse JSON sidecar ---
         json_path = image_path.with_suffix(".json")
         metadata_dict = {}
         json_uuid = None
         json_bboxes: List[BBox] = []
+        # Per-bbox supplementary data extracted before constructing BBox objects.
+        box_tag_uuids: Dict[str, List[str]] = {}    # bbox_uuid → tag UUID list
+        box_tag_names: Dict[str, List[str]] = {}    # bbox_uuid → tag name list (fallback)
+        box_label_names: Dict[str, str] = {}        # bbox_uuid → label name (fallback)
 
         if json_path.exists():
             try:
                 metadata_dict = jstyleson.loads(json_path.read_text())
                 json_uuid = metadata_dict.get("uuid")
-                json_bboxes = [BBox(**box_data) for box_data in metadata_dict.get("boxes", [])]
+                for box_data in metadata_dict.get("boxes", []):
+                    raw = dict(box_data)
+                    tag_uuids_list = raw.pop("tag_uuids", [])
+                    tag_names_list = raw.pop("tag_names", [])
+                    label_name = raw.pop("label_name", None)
+                    bbox = BBox(**raw)
+                    json_bboxes.append(bbox)
+                    box_tag_uuids[bbox.uuid] = tag_uuids_list
+                    box_tag_names[bbox.uuid] = tag_names_list
+                    if label_name:
+                        box_label_names[bbox.uuid] = label_name
             except Exception as e:
                 logger.error(f"Failed to parse {json_path}: {e}")
+                # Reset to empty — partial state from a mid-loop failure is worse than no state.
+                json_bboxes = []
+                box_tag_uuids = {}
+                box_tag_names = {}
+                box_label_names = {}
 
         async with self._async_session_maker() as session:
-            # --- Look up any existing records ---
+            # --- Resolve label/tag UUIDs (UUID-first, name-fallback) ---
+            all_label_uuids = {b.label_uuid for b in json_bboxes if b.label_uuid}
+            all_tag_uuids = {u for uuids in box_tag_uuids.values() for u in uuids}
+            all_label_names = set(box_label_names.values())
+            all_tag_names = {n for names in box_tag_names.values() for n in names}
+
+            labels_by_uuid: Dict[str, str] = {}
+            labels_by_name: Dict[str, str] = {}
+            if all_label_uuids or all_label_names:
+                lbl_stmt = select(Label).where(
+                    or_(Label.uuid.in_(all_label_uuids), Label.name.in_(all_label_names))
+                )
+                for lbl in (await session.exec(lbl_stmt)).all():
+                    labels_by_uuid[lbl.uuid] = lbl.uuid
+                    labels_by_name[lbl.name] = lbl.uuid
+
+            tags_by_uuid: Dict[str, str] = {}
+            tags_by_name: Dict[str, str] = {}
+            tags_obj_by_uuid: Dict[str, "Tag"] = {}  # full objects for exclusive-group enforcement
+            if all_tag_uuids or all_tag_names:
+                tag_stmt = select(Tag).where(
+                    or_(Tag.uuid.in_(all_tag_uuids), Tag.name.in_(all_tag_names))
+                )
+                for tag in (await session.exec(tag_stmt)).all():
+                    tags_by_uuid[tag.uuid] = tag.uuid
+                    tags_by_name[tag.name] = tag.uuid
+                    tags_obj_by_uuid[tag.uuid] = tag
+
+            # Resolve each bbox's label_uuid; skip bboxes with no resolvable label.
+            invalid_bbox_uuids: set = set()
+            for bbox in json_bboxes:
+                if bbox.label_uuid and bbox.label_uuid in labels_by_uuid:
+                    pass  # UUID valid as-is
+                else:
+                    fallback_name = box_label_names.get(bbox.uuid)
+                    if fallback_name and fallback_name in labels_by_name:
+                        resolved = labels_by_name[fallback_name]
+                        logger.warning(
+                            "BBox %s: label_uuid %s not in DB; resolved by name '%s' → %s",
+                            bbox.uuid, bbox.label_uuid, fallback_name, resolved,
+                        )
+                        bbox.label_uuid = resolved
+                    else:
+                        logger.warning(
+                            "BBox %s: label_uuid %s unresolvable (name fallback '%s' also failed); skipping.",
+                            bbox.uuid, bbox.label_uuid, fallback_name,
+                        )
+                        invalid_bbox_uuids.add(bbox.uuid)
+
+            # Resolve each bbox's tag UUIDs; drop individual unresolvable tags.
+            for bbox in json_bboxes:
+                if bbox.uuid in invalid_bbox_uuids:
+                    continue
+                raw_uuids = box_tag_uuids.get(bbox.uuid, [])
+                raw_names = box_tag_names.get(bbox.uuid, [])
+                uuid_to_name = dict(zip(raw_uuids, raw_names))
+                resolved: List[str] = []
+                for tag_uuid in raw_uuids:
+                    if tag_uuid in tags_by_uuid:
+                        resolved.append(tag_uuid)
+                    else:
+                        name = uuid_to_name.get(tag_uuid)
+                        if name and name in tags_by_name:
+                            remapped = tags_by_name[name]
+                            logger.warning(
+                                "BBox %s: tag_uuid %s not in DB; resolved by name '%s' → %s",
+                                bbox.uuid, tag_uuid, name, remapped,
+                            )
+                            resolved.append(remapped)
+                        else:
+                            logger.warning(
+                                "BBox %s: tag_uuid %s unresolvable (name '%s' also failed); dropping tag.",
+                                bbox.uuid, tag_uuid, name,
+                            )
+                box_tag_uuids[bbox.uuid] = resolved
+
+            # Filter out bboxes with unresolvable labels.
+            json_bboxes = [b for b in json_bboxes if b.uuid not in invalid_bbox_uuids]
+
+            # --- Look up any existing image records ---
             path_stmt = (
                 select(ImageRecord)
                 .where(ImageRecord.filename == str(image_path))
@@ -206,22 +307,23 @@ class DbClient:
             # --- Warn about conflicts ---
             if existing_by_path and json_uuid and existing_by_path.uuid != json_uuid:
                 logger.warning(
-                    f"Conflict: Path '{image_path}' exists in DB with UUID {existing_by_path.uuid}, "
-                    f"but JSON sidecar specifies UUID {json_uuid}."
+                    "Conflict: Path '%s' exists in DB with UUID %s, "
+                    "but JSON sidecar specifies UUID %s.",
+                    image_path, existing_by_path.uuid, json_uuid,
                 )
 
             if existing_by_uuid and existing_by_uuid.filename != str(image_path):
                 logger.warning(
-                    f"Conflict: UUID {json_uuid} already belongs to file '{existing_by_uuid.filename}'. "
-                    f"The sidecar at '{image_path}' is claiming a UUID used elsewhere."
+                    "Conflict: UUID %s already belongs to file '%s'. "
+                    "The sidecar at '%s' is claiming a UUID used elsewhere.",
+                    json_uuid, existing_by_uuid.filename, image_path,
                 )
 
             # --- Insert or update ---
-            # Prefer the record matched by path; fall back to the one matched by UUID.
             db_record = existing_by_path or existing_by_uuid
+            bboxes_needing_links: List[str] = []
 
             if db_record is None:
-                # No existing record — insert fresh from JSON.
                 db_record = ImageRecord(
                     uuid=json_uuid or str(uuid4()),
                     filename=str(image_path),
@@ -229,25 +331,37 @@ class DbClient:
                     metadata_json=metadata_dict,
                 )
                 session.add(db_record)
+                bboxes_needing_links = [b.uuid for b in json_bboxes if box_tag_uuids.get(b.uuid)]
             elif overwrite:
-                # Replace bboxes and metadata wholesale.
+                # Old BBoxTagLink rows are cascade-deleted when the old BBox rows are removed.
                 db_record.bboxes = json_bboxes
                 db_record.metadata_json = metadata_dict
                 session.add(db_record)
+                bboxes_needing_links = [b.uuid for b in json_bboxes if box_tag_uuids.get(b.uuid)]
             else:
-                # Append: add JSON bboxes whose UUIDs aren't already in the DB;
-                # leave metadata_json alone if the DB already has content.
                 existing_uuids = {b.uuid for b in db_record.bboxes}
                 new_bboxes = [b for b in json_bboxes if b.uuid not in existing_uuids]
                 db_record.bboxes = db_record.bboxes + new_bboxes
                 if not db_record.metadata_json:
                     db_record.metadata_json = metadata_dict
                 session.add(db_record)
+                bboxes_needing_links = [b.uuid for b in new_bboxes if box_tag_uuids.get(b.uuid)]
+
+            # Flush so BBox PKs are in DB before BBoxTagLink FK references them.
+            await session.flush()
+
+            for bbox_uuid in bboxes_needing_links:
+                raw_tags = box_tag_uuids.get(bbox_uuid, [])
+                # _resolve_exclusive_groups enforces mutual-exclusion constraints and
+                # deduplicates the list, preventing composite-PK IntegrityErrors.
+                for tag_uuid in self._resolve_exclusive_groups(raw_tags, tags_obj_by_uuid):
+                    session.add(BBoxTagLink(bbox_uuid=bbox_uuid, tag_uuid=tag_uuid))
 
             try:
                 await session.commit()
             except Exception as e:
                 logger.exception(e)
+                raise
 
             await session.refresh(db_record)
             return db_record
@@ -271,10 +385,19 @@ class DbClient:
                 select(ImageRecord)
                 .where(ImageRecord.uuid == uuid)
                 .options(
-                    selectinload(ImageRecord.bboxes).selectinload(BBox.label),
-                    selectinload(ImageRecord.bboxes).selectinload(BBox.tags),
+                    selectinload(ImageRecord.bboxes).options(
+                        selectinload(BBox.label),
+                        selectinload(BBox.tags),
+                    )
                 )
             )
+            result = await session.exec(stmt)
+            return result.one_or_none()
+
+    async def get_image_uuid_by_filename(self, filename: Path) -> Optional[str]:
+        """Return only the UUID for an image by filename.  Cheaper than a full load."""
+        async with self._async_session_maker() as session:
+            stmt = select(ImageRecord.uuid).where(ImageRecord.filename == str(filename))
             result = await session.exec(stmt)
             return result.one_or_none()
 
@@ -341,8 +464,10 @@ class DbClient:
             stmt = (
                 select(ImageRecord)
                 .options(
-                    selectinload(ImageRecord.bboxes).selectinload(BBox.label),
-                    selectinload(ImageRecord.bboxes).selectinload(BBox.tags),
+                    selectinload(ImageRecord.bboxes).options(
+                        selectinload(BBox.label),
+                        selectinload(BBox.tags),
+                    )
                 )
                 .distinct()
             )
@@ -527,12 +652,15 @@ class DbClient:
             return image_uuid
 
     async def get_bboxes_for_image(self, image_uuid: str) -> List[BBox]:
-        """Return all BBox rows for an image with their tags loaded."""
+        """Return all BBox rows for an image with their tags and label loaded."""
         async with self._async_session_maker() as session:
             stmt = (
                 select(BBox)
                 .where(BBox.image_uuid == image_uuid)
-                .options(selectinload(BBox.tags))
+                .options(
+                    selectinload(BBox.tags),
+                    selectinload(BBox.label),
+                )
             )
             result = await session.exec(stmt)
             return list(result.all())
@@ -590,8 +718,17 @@ class DbClient:
             "uuid": image_uuid,
             "filename": filename,
             "boxes": [
-                {"uuid": b.uuid, "label_uuid": b.label_uuid,
-                 "x": b.x, "y": b.y, "width": b.width, "height": b.height}
+                {
+                    "uuid": b.uuid,
+                    "label_uuid": b.label_uuid,
+                    "label_name": b.label_name,
+                    "x": b.x,
+                    "y": b.y,
+                    "width": b.width,
+                    "height": b.height,
+                    "tag_uuids": b.tag_uuids,
+                    "tag_names": b.tag_names,
+                }
                 for b in update.bboxes
             ],
         })
@@ -614,46 +751,107 @@ class DbClient:
         self._labels_json_path.write_bytes(json_str)
 
     async def sync_labels_from_json(self):
-        """Reads labels from JSON to db. Does not remove existing labels from database."""
+        """Reads labels from JSON to db. Does not remove existing labels from database.
+
+        Resolution order per label:
+        1. UUID match  → update the existing DB record in-place.
+        2. Name match  → reuse the existing DB record (log UUID mismatch), remap
+                         any child parent_uuid references to the DB UUID.
+        3. No match    → insert a new record with the UUID from the JSON.
+
+        The multi-pass loop handles the label hierarchy (parents before children).
+        """
         if not self._labels_json_path.exists():
             return
 
-        # Read the raw bytes and load into list of dicts
         json_data = jstyleson.loads(self._labels_json_path.read_text())
 
         async with self._async_session_maker() as session:
-            processed_uuids = set()
+            # Pre-fetch all existing labels for O(1) lookups.
+            existing = (await session.exec(select(Label))).all()
+            labels_by_uuid: Dict[str, Label] = {lbl.uuid: lbl for lbl in existing}
+            labels_by_name: Dict[str, Label] = {lbl.name: lbl for lbl in existing}
 
-            # Multi-pass loop to handle the hierarchy
-            pending = json_data
+            # Seed with all pre-existing DB label UUIDs so that JSON children whose
+            # parent already lives in the DB (but is absent from this JSON batch) are
+            # not incorrectly deferred as orphans.
+            processed_uuids: set = set(labels_by_uuid.keys())
+            # Maps a JSON uuid → the actual DB uuid used (identity or name-fallback remap).
+            # Used to rewrite child parent_uuid fields so the hierarchy stays consistent.
+            uuid_remapping: Dict[str, str] = {}
+
+            pending = list(json_data)
             while pending:
                 batch_processed = False
                 remaining = []
 
                 for item in pending:
+                    json_uuid = item.get("uuid")
                     parent_uuid = item.get("parent_uuid")
 
-                    # Can we process this now?
-                    # Yes, if no parent OR parent already exists/processed
-                    if parent_uuid is None or parent_uuid in processed_uuids:
-                        # Use model_validate to leverage Pydantic's parsing
-                        # then session.merge to handle potential existing records
-                        label_obj = Label.model_validate(item)
-                        await session.merge(label_obj)
-
-                        processed_uuids.add(label_obj.uuid)
-                        batch_processed = True
-                    else:
+                    # Resolve parent through any prior remapping so the hierarchy check works.
+                    resolved_parent = uuid_remapping.get(parent_uuid, parent_uuid)
+                    if resolved_parent is not None and resolved_parent not in processed_uuids:
                         remaining.append(item)
+                        continue
+
+                    # The parent_uuid stored in DB should use the remapped (DB) uuid.
+                    effective_parent = uuid_remapping.get(parent_uuid, parent_uuid)
+
+                    if json_uuid and json_uuid in labels_by_uuid:
+                        # 1. UUID match — update fields in-place.
+                        db_label = labels_by_uuid[json_uuid]
+                        for key, value in item.items():
+                            if key != "uuid" and hasattr(db_label, key):
+                                setattr(db_label, key, value)
+                        db_label.parent_uuid = effective_parent
+                        session.add(db_label)
+                        processed_uuids.add(json_uuid)
+                        uuid_remapping[json_uuid] = json_uuid
+
+                    elif item.get("name") and item["name"] in labels_by_name:
+                        # 2. Name fallback — reuse existing DB record's UUID.
+                        db_label = labels_by_name[item["name"]]
+                        logger.warning(
+                            "Label '%s' from JSON (UUID %s) matched by name to existing "
+                            "DB label (UUID %s). Using DB UUID.",
+                            item["name"], json_uuid, db_label.uuid,
+                        )
+                        for key, value in item.items():
+                            if key != "uuid" and hasattr(db_label, key):
+                                setattr(db_label, key, value)
+                        db_label.parent_uuid = effective_parent
+                        session.add(db_label)
+                        processed_uuids.add(db_label.uuid)
+                        if json_uuid:
+                            uuid_remapping[json_uuid] = db_label.uuid
+                            processed_uuids.add(json_uuid)
+
+                    else:
+                        # 3. No match — insert new with the JSON's UUID.
+                        effective_item = dict(item)
+                        effective_item["parent_uuid"] = effective_parent
+                        new_label = Label.model_validate(effective_item)
+                        session.add(new_label)
+                        labels_by_uuid[new_label.uuid] = new_label
+                        labels_by_name[new_label.name] = new_label
+                        processed_uuids.add(new_label.uuid)
+                        if json_uuid:
+                            uuid_remapping[json_uuid] = new_label.uuid
+
+                    batch_processed = True
 
                 if not batch_processed and remaining:
-                    print(f"Warning: Orphaned labels found in JSON: {[x['name'] for x in remaining]}")
+                    logger.warning(
+                        "Orphaned labels in JSON (unresolved parents): %s",
+                        [x.get("name") for x in remaining],
+                    )
                     break
 
                 pending = remaining
 
             await session.commit()
-        logger.info(f"Imported {len(processed_uuids)} labels from JSON")
+        logger.info("Imported %d labels from JSON", len(processed_uuids))
 
     async def list_labels(self) -> List[Label]:
         """List all labels using SQLModel select."""
@@ -751,7 +949,13 @@ class DbClient:
         self._tags_json_path.write_bytes(json_str)
 
     async def sync_tags_from_json(self):
-        """Reads tags.json and syncs to DB. Does not remove existing tags."""
+        """Reads tags.json and syncs to DB. Does not remove existing tags.
+
+        Resolution order per tag:
+        1. UUID match  → update the existing DB record in-place.
+        2. Name match  → reuse the existing DB record (avoids unique-name IntegrityError).
+        3. No match    → insert a new record with the UUID from the JSON.
+        """
         if not self._tags_json_path.exists():
             return
 
@@ -762,13 +966,44 @@ class DbClient:
             return
 
         async with self._async_session_maker() as session:
+            existing = (await session.exec(select(Tag))).all()
+            tags_by_uuid: Dict[str, Tag] = {t.uuid: t for t in existing}
+            tags_by_name: Dict[str, Tag] = {t.name: t for t in existing}
+
+            count = 0
             for item in json_data:
-                # Use merge so we update existing tags if the UUID matches
-                tag_obj = Tag.model_validate(item)
-                await session.merge(tag_obj)
+                json_uuid = item.get("uuid")
+                name = item.get("name")
+
+                if json_uuid and json_uuid in tags_by_uuid:
+                    # 1. UUID match — update in-place.
+                    db_tag = tags_by_uuid[json_uuid]
+                    for key, value in item.items():
+                        if key != "uuid" and hasattr(db_tag, key):
+                            setattr(db_tag, key, value)
+                    session.add(db_tag)
+                elif name and name in tags_by_name:
+                    # 2. Name fallback — reuse DB record to avoid unique-name violation.
+                    db_tag = tags_by_name[name]
+                    logger.warning(
+                        "Tag '%s' from JSON (UUID %s) matched by name to existing DB tag "
+                        "(UUID %s). Using DB UUID.",
+                        name, json_uuid, db_tag.uuid,
+                    )
+                    for key, value in item.items():
+                        if key != "uuid" and hasattr(db_tag, key):
+                            setattr(db_tag, key, value)
+                    session.add(db_tag)
+                else:
+                    # 3. No match — insert new.
+                    new_tag = Tag.model_validate(item)
+                    session.add(new_tag)
+                    tags_by_uuid[new_tag.uuid] = new_tag
+                    tags_by_name[new_tag.name] = new_tag
+                count += 1
 
             await session.commit()
-        logger.info(f"Imported {len(json_data)} tags from JSON")
+        logger.info("Imported %d tags from JSON", count)
 
     async def list_tags(self) -> List[Tag]:
         """List all tags using SQLModel select."""
@@ -857,7 +1092,13 @@ class DbClient:
         self._sources_json_path.write_bytes(json_str)
 
     async def sync_sources_from_json(self):
-        """Reads sources.json and syncs to DB. Does not remove existing sources."""
+        """Reads sources.json and syncs to DB. Does not remove existing sources.
+
+        Resolution order per source:
+        1. UUID match  → update the existing DB record in-place.
+        2. Name match  → reuse the existing DB record (avoids unique-name IntegrityError).
+        3. No match    → insert a new record with the UUID from the JSON.
+        """
         if not self._sources_json_path.exists():
             return
 
@@ -868,11 +1109,44 @@ class DbClient:
             return
 
         async with self._async_session_maker() as session:
+            existing = (await session.exec(select(Source))).all()
+            sources_by_uuid: Dict[str, Source] = {s.uuid: s for s in existing}
+            sources_by_name: Dict[str, Source] = {s.name: s for s in existing}
+
+            count = 0
             for item in json_data:
-                source_obj = Source.model_validate(item)
-                await session.merge(source_obj)
+                json_uuid = item.get("uuid")
+                name = item.get("name")
+
+                if json_uuid and json_uuid in sources_by_uuid:
+                    # 1. UUID match — update in-place.
+                    db_src = sources_by_uuid[json_uuid]
+                    for key, value in item.items():
+                        if key != "uuid" and hasattr(db_src, key):
+                            setattr(db_src, key, value)
+                    session.add(db_src)
+                elif name and name in sources_by_name:
+                    # 2. Name fallback — reuse DB record to avoid unique-name violation.
+                    db_src = sources_by_name[name]
+                    logger.warning(
+                        "Source '%s' from JSON (UUID %s) matched by name to existing DB source "
+                        "(UUID %s). Using DB UUID.",
+                        name, json_uuid, db_src.uuid,
+                    )
+                    for key, value in item.items():
+                        if key != "uuid" and hasattr(db_src, key):
+                            setattr(db_src, key, value)
+                    session.add(db_src)
+                else:
+                    # 3. No match — insert new.
+                    new_src = Source.model_validate(item)
+                    session.add(new_src)
+                    sources_by_uuid[new_src.uuid] = new_src
+                    sources_by_name[new_src.name] = new_src
+                count += 1
+
             await session.commit()
-        logger.info(f"Imported {len(json_data)} sources from JSON")
+        logger.info("Imported %d sources from JSON", count)
 
     async def get_sources(self) -> List[Source]:
         """List all sources."""
