@@ -47,7 +47,9 @@ export async function init(runtime, tab_pane) {
   });
 
   const toolbarEl = tab_pane.querySelector('.canvas-toolbar');
-  await Promise.all([initSidebar(runtime), initToolbar(runtime, toolbarEl)]);
+  // Store handle on runtime so destroy() is reachable if a cleanup path is added later.
+  runtime._toolbarHandle = initToolbar(runtime, toolbarEl);
+  await initSidebar(runtime);
 
   // activate default workspace tab
   const defaultTabBtn = tab_pane?.querySelector('.workspace-tab-button');

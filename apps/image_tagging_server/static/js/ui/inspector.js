@@ -100,9 +100,6 @@ export function renderBboxInspector({ bboxView = null, target = 'tab-inspector',
               return { uuid: id, icon: tag?.icon ?? null };
             });
             bboxView.refreshIcons(bboxView.uiBBox.tags);
-            // Always publish after hydration so subscribers see the final icon state,
-            // not the placeholder icons from the optimistic update above.
-            events.publish(EventTypes.CANVAS_BBOXES_CHANGED, { runtimeId });
 
             // Async: update label appearance only if it changed.
             if (labelChanged) {
@@ -117,11 +114,10 @@ export function renderBboxInspector({ bboxView = null, target = 'tab-inspector',
                 bboxView.uiBBox.label = undefined;
                 bboxView.updateAppearance('', 'grey');
               }
-              events.publish(EventTypes.CANVAS_BBOXES_CHANGED, { runtimeId });
             }
 
-            // Snapshot after all mutations are applied so undo/redo round-trips correctly.
-            // Publish after pushState so toolbar button state reflects the new snapshot.
+            // Snapshot after all mutations are applied, then publish once so every
+            // subscriber (canvas, label list, toolbar undo state) sees the final state.
             onAfterSave?.();
             events.publish(EventTypes.CANVAS_BBOXES_CHANGED, { runtimeId });
           },

@@ -370,17 +370,12 @@ export function handleContextMenu(e, runtime) {
 
   clearSelection();
 
-  if (bboxGroup instanceof BboxView) {
-    const bboxLabelUuid = bboxGroup.uiBBox?.label?.uuid;
-    if (bboxLabelUuid) {
-      // Toggle between this bbox's label tool and select
-      setTool(runtime, runtime.tool === `bbox:${bboxLabelUuid}` ? 'select' : `bbox:${bboxLabelUuid}`);
-    } else {
-      // Unlabelled bbox: normal toggle
-      setTool(runtime, runtime.tool === 'select' ? 'bbox:' : 'select');
-    }
+  // If right-clicked on a labelled bbox, toggle to that bbox's label tool.
+  // All other cases (unlabelled bbox or empty canvas) use the same generic toggle.
+  const bboxLabelUuid = bboxGroup?.uiBBox?.label?.uuid;
+  if (bboxLabelUuid) {
+    setTool(runtime, runtime.tool === `bbox:${bboxLabelUuid}` ? 'select' : `bbox:${bboxLabelUuid}`);
   } else {
-    // Empty canvas: normal toggle
     setTool(runtime, runtime.tool === 'select' ? 'bbox:' : 'select');
   }
 

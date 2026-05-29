@@ -14,11 +14,6 @@ function _cloneBboxes(bboxes) {
   }]));
 }
 
-/** @param {Map<string, import('@image_tagging_types').UIBbox>} bboxes */
-function _markAllDirty(bboxes) {
-  bboxes.forEach(b => { b.dirty = true; });
-}
-
 /**
  * @returns {import('@image_tagging_types').ImageTaggingRuntime}
  */
@@ -62,7 +57,6 @@ export function createImageTaggingRuntime() {
     _redoStack.push(_undoStack.pop());                       // current → redo
     const prev = _undoStack[_undoStack.length - 1];         // peek new top
     _imgTaggingState.image.bboxes = _cloneBboxes(prev);     // restore (clone keeps stack clean)
-    _markAllDirty(_imgTaggingState.image.bboxes);
     rerenderBboxViews(_canvasState, _imgTaggingState.image.bboxes);
     events.publish(EventTypes.CANVAS_BBOXES_CHANGED, { runtimeId: _id });
   }
@@ -72,7 +66,6 @@ export function createImageTaggingRuntime() {
     const next = _redoStack.pop();
     _undoStack.push(next);
     _imgTaggingState.image.bboxes = _cloneBboxes(next);
-    _markAllDirty(_imgTaggingState.image.bboxes);
     rerenderBboxViews(_canvasState, _imgTaggingState.image.bboxes);
     events.publish(EventTypes.CANVAS_BBOXES_CHANGED, { runtimeId: _id });
   }

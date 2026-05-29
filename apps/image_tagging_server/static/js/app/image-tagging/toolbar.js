@@ -61,10 +61,10 @@ export function init(runtime, container, options = {}) {
     });
   });
 
-  // Set initial disabled state for undo/redo before any events fire
+  // Capture refs once at construction time to avoid repeated DOM queries per event.
+  const undoBtn = container.querySelector('[data-toolbar-key="undo"]');
+  const redoBtn = container.querySelector('[data-toolbar-key="redo"]');
   const _syncUndoRedo = () => {
-    const undoBtn = container.querySelector('[data-toolbar-key="undo"]');
-    const redoBtn = container.querySelector('[data-toolbar-key="redo"]');
     if (undoBtn) undoBtn.disabled = !runtime.canUndo;
     if (redoBtn) redoBtn.disabled = !runtime.canRedo;
   };

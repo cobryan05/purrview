@@ -31,18 +31,14 @@ export async function initCanvasStage(runtime) {
 
   // Snapshot bbox state after drag/transform completes. BboxView's own handlers
   // mutate uiBBox first, so by the time the event bubbles here the data is final.
-  stage.on('dragend', e => {
+  const onBboxMutated = e => {
     if (e.target.name() === 'bbox') {
       runtime.pushState();
       events.publish(EventTypes.CANVAS_BBOXES_CHANGED, { runtimeId: runtime.id });
     }
-  });
-  stage.on('transformend', e => {
-    if (e.target.name() === 'bbox') {
-      runtime.pushState();
-      events.publish(EventTypes.CANVAS_BBOXES_CHANGED, { runtimeId: runtime.id });
-    }
-  });
+  };
+  stage.on('dragend', onBboxMutated);
+  stage.on('transformend', onBboxMutated);
 
   const observer = new ResizeObserver(() => handleResize({}, runtime));
   observer.observe(runtime.canvas.container);
