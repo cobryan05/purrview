@@ -19,6 +19,13 @@ document.addEventListener('keydown', e => {
       deleteSelected(runtime);
       break;
 
+    case 'z':
+      if (e.ctrlKey || e.metaKey) {
+        e.preventDefault();
+        e.shiftKey ? runtime.redo() : runtime.undo();
+      }
+      break;
+
     case 'v':
       setTool(runtime, 'select');
       break;

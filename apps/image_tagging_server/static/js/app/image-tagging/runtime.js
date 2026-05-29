@@ -1,7 +1,23 @@
-import { setCanvasImage } from './canvas/manager.js';
+import { setCanvasImage, rerenderBboxViews } from './canvas/manager.js';
+import { events, EventTypes } from '/app-static/js/shared/events/index.js';
 import { createCanvasState } from './canvas/state.js';
 import { Logger } from '/app-static/js/ui/utils/index.js';
 import { generateUUID } from '/app-static/js/ui/utils/utils.js';
+
+/** @param {Map<string, import('@image_tagging_types').UIBbox>} bboxes */
+function _cloneBboxes(bboxes) {
+  return new Map([...bboxes].map(([k, v]) => [k, {
+    ...v,
+    selected: false,  // selection is driven by the transformer, not persisted in snapshots
+    label: v.label ? { ...v.label } : null,
+    tags: v.tags.map(t => ({ ...t })),
+  }]));
+}
+
+/** @param {Map<string, import('@image_tagging_types').UIBbox>} bboxes */
+function _markAllDirty(bboxes) {
+  bboxes.forEach(b => { b.dirty = true; });
+}
 
 /**
  * @returns {import('@image_tagging_types').ImageTaggingRuntime}
@@ -23,6 +39,49 @@ export function createImageTaggingRuntime() {
   let _pane = null;
   /** @type {ViewportTransform|null} */
   let viewport = null;
+
+  // ── Undo / redo ──────────────────────────────────────────────────────────
+  // Each entry is a deep-cloned snapshot of image.bboxes. The current state
+  // is always at the top of _undoStack. Cap at 101 entries (100 undoable steps
+  // + 1 baseline).
+  /** @type {Array<Map<string, import('@image_tagging_types').UIBbox>>} */
+  let _undoStack = [];
+  /** @type {Array<Map<string, import('@image_tagging_types').UIBbox>>} */
+  let _redoStack = [];
+
+  /** Push a snapshot of the current bbox state. Clears the redo stack. */
+  function pushState() {
+    if (!_imgTaggingState?.image) return;
+    _undoStack.push(_cloneBboxes(_imgTaggingState.image.bboxes));
+    if (_undoStack.length > 101) _undoStack.shift();
+    _redoStack = [];
+  }
+
+  function undo() {
+    if (_undoStack.length <= 1 || !_imgTaggingState?.image || !_canvasState) return;
+    _redoStack.push(_undoStack.pop());                       // current → redo
+    const prev = _undoStack[_undoStack.length - 1];         // peek new top
+    _imgTaggingState.image.bboxes = _cloneBboxes(prev);     // restore (clone keeps stack clean)
+    _markAllDirty(_imgTaggingState.image.bboxes);
+    rerenderBboxViews(_canvasState, _imgTaggingState.image.bboxes);
+    events.publish(EventTypes.CANVAS_BBOXES_CHANGED, { runtimeId: _id });
+  }
+
+  function redo() {
+    if (!_redoStack.length || !_imgTaggingState?.image || !_canvasState) return;
+    const next = _redoStack.pop();
+    _undoStack.push(next);
+    _imgTaggingState.image.bboxes = _cloneBboxes(next);
+    _markAllDirty(_imgTaggingState.image.bboxes);
+    rerenderBboxViews(_canvasState, _imgTaggingState.image.bboxes);
+    events.publish(EventTypes.CANVAS_BBOXES_CHANGED, { runtimeId: _id });
+  }
+
+  function clearHistory() {
+    _undoStack = [];
+    _redoStack = [];
+  }
+  // ─────────────────────────────────────────────────────────────────────────
 
   /** @param {HTMLElement | null} pane */
   function setImageTaggingPane(pane) {
@@ -70,6 +129,9 @@ export function createImageTaggingRuntime() {
     }
     _imgTaggingState.image = image;
     setCanvasImage(_canvasState, _imgTaggingState.image);
+    clearHistory();
+    pushState();  // baseline — the "can't undo past this" floor
+    events.publish(EventTypes.CANVAS_BBOXES_CHANGED, { runtimeId: _id });
   }
 
   /** @param {import('@ui_types').FileNavigation|null} navigation */
@@ -85,6 +147,7 @@ export function createImageTaggingRuntime() {
   function setTool(tool) {
     _currentTool = tool;
   }
+
   function clearBboxes() {
     _imgTaggingState?.image?.bboxes.clear();
   }
@@ -102,6 +165,8 @@ export function createImageTaggingRuntime() {
     get fileNavigation() { return _fileNavigation; },
     get tool() { return _currentTool; },
     get labelUuid() { return _currentLabelUuid; },
+    get canUndo() { return _undoStack.length > 1; },
+    get canRedo() { return _redoStack.length > 0; },
 
     setImageTaggingPane,
     setPaneRef,
@@ -112,5 +177,9 @@ export function createImageTaggingRuntime() {
     setLabelUuid,
     setImage,
     clearBboxes,
+    pushState,
+    undo,
+    redo,
+    clearHistory,
   };
 }

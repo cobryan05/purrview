@@ -38,7 +38,7 @@ export function openInspectorTab() {
  * @param {{ bboxView?: any, target?: string|HTMLElement, editable?: boolean, onSelectCallback?: any }} [opts]
  *   target – a string element ID *or* an HTMLElement; defaults to 'tab-inspector'
  */
-export function renderBboxInspector({ bboxView = null, target = 'tab-inspector', editable = true, onSelectCallback = null, runtimeId = null } = {}) {
+export function renderBboxInspector({ bboxView = null, target = 'tab-inspector', editable = true, onSelectCallback = null, runtimeId = null, onAfterSave = null } = {}) {
   if (!bboxView) return;
   try {
     const targetElement = typeof target === 'string' ? document.getElementById(target) : target;
@@ -119,6 +119,11 @@ export function renderBboxInspector({ bboxView = null, target = 'tab-inspector',
               }
               events.publish(EventTypes.CANVAS_BBOXES_CHANGED, { runtimeId });
             }
+
+            // Snapshot after all mutations are applied so undo/redo round-trips correctly.
+            // Publish after pushState so toolbar button state reflects the new snapshot.
+            onAfterSave?.();
+            events.publish(EventTypes.CANVAS_BBOXES_CHANGED, { runtimeId });
           },
           onCancel: () => {
             Logger.warn("Canceled");
@@ -152,7 +157,12 @@ export function initInspector(runtime, { container = null, openTab = true } = {}
     EventTypes.CANVAS_BBOX_DOUBLE_CLICKED,
     ({ bboxView }) => {
       if (openTab) openInspectorTab();
-      renderBboxInspector({ bboxView, target: container ?? 'tab-inspector', runtimeId: runtime.id });
+      renderBboxInspector({
+        bboxView,
+        target: container ?? 'tab-inspector',
+        runtimeId: runtime.id,
+        onAfterSave: () => runtime.pushState(),
+      });
     }
   );
 }

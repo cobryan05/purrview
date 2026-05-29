@@ -7,6 +7,7 @@ import {
   handleResize,
   handleWheel
 } from './interaction.js';
+import { events, EventTypes } from '/app-static/js/shared/events/index.js';
 
 /**
  * Wires stage event handlers and a ResizeObserver for a canvas instance.
@@ -27,6 +28,21 @@ export async function initCanvasStage(runtime) {
   stage.on('wheel', e => handleWheel(e, runtime));
   stage.on('click', e => handleClick(e, runtime));
   stage.on('contextmenu', e => handleContextMenu(e, runtime));
+
+  // Snapshot bbox state after drag/transform completes. BboxView's own handlers
+  // mutate uiBBox first, so by the time the event bubbles here the data is final.
+  stage.on('dragend', e => {
+    if (e.target.name() === 'bbox') {
+      runtime.pushState();
+      events.publish(EventTypes.CANVAS_BBOXES_CHANGED, { runtimeId: runtime.id });
+    }
+  });
+  stage.on('transformend', e => {
+    if (e.target.name() === 'bbox') {
+      runtime.pushState();
+      events.publish(EventTypes.CANVAS_BBOXES_CHANGED, { runtimeId: runtime.id });
+    }
+  });
 
   const observer = new ResizeObserver(() => handleResize({}, runtime));
   observer.observe(runtime.canvas.container);

@@ -247,6 +247,8 @@ export async function handleMouseUp(e, runtime) {
       runtime.state.image.bboxes.set(uiBBox.uuid, uiBBox);
       applyDefaultVerificationTag(uiBBox);
       ist.pendingDraggedBbox.refreshIcons(uiBBox.tags);
+      // Drawing uses manual mouse positioning, not Konva drag — 'dragend' does not fire here.
+      runtime.pushState();
       events.publish(EventTypes.CANVAS_BBOX_CLICKED, { bboxId: uiBBox.uuid, runtimeId: runtime.id });
       events.publish(EventTypes.CANVAS_BBOXES_CHANGED, { runtimeId: runtime.id });
     }
@@ -276,6 +278,8 @@ export async function handleMouseUp(e, runtime) {
         hitGroup.updateAppearance(labelData.name, labelData.color);
         stripUnverifiedTag(hitGroup.uiBBox);
         hitGroup.refreshIcons(hitGroup.uiBBox.tags);
+        // Labeling is a pure data mutation — no Konva drag/transform event fires for this.
+        runtime.pushState();
         events.publish(EventTypes.CANVAS_BBOXES_CHANGED, { runtimeId: runtime.id });
       }
     }
@@ -356,18 +360,30 @@ export function handleContextMenu(e, runtime) {
   const { stage, layer } = runtime.canvas;
   e.evt.preventDefault();
 
+  // Find bbox under the right-click, if any
   let node = e.target;
+  let bboxGroup = null;
   while (node && node !== stage) {
-    if (node instanceof BboxView) return;
+    if (node instanceof BboxView) { bboxGroup = node; break; }
     node = node.getParent();
   }
 
   clearSelection();
-  if (runtime.tool === 'select') {
-    setTool(runtime, 'bbox:');
+
+  if (bboxGroup instanceof BboxView) {
+    const bboxLabelUuid = bboxGroup.uiBBox?.label?.uuid;
+    if (bboxLabelUuid) {
+      // Toggle between this bbox's label tool and select
+      setTool(runtime, runtime.tool === `bbox:${bboxLabelUuid}` ? 'select' : `bbox:${bboxLabelUuid}`);
+    } else {
+      // Unlabelled bbox: normal toggle
+      setTool(runtime, runtime.tool === 'select' ? 'bbox:' : 'select');
+    }
   } else {
-    setTool(runtime, 'select');
+    // Empty canvas: normal toggle
+    setTool(runtime, runtime.tool === 'select' ? 'bbox:' : 'select');
   }
+
   layer.draw();
 }
 

@@ -2,7 +2,7 @@ import { reloadImage, clearAnnotations, deleteSelected, saveAnnotations } from '
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
 import { setTool } from './canvas/tools.js';
 
-const ALL_BUTTONS = ['reload', 'select', 'bbox', 'clear', 'delete', 'save'];
+const ALL_BUTTONS = ['reload', 'undo', 'redo', 'select', 'bbox', 'clear', 'delete', 'save'];
 
 /**
  * Initialises a canvas toolbar into an explicit container element.
@@ -33,6 +33,8 @@ export function init(runtime, container, options = {}) {
 
   const buttonDefs = [
     { key: 'reload', label: 'Reload',  onClick: () => reloadImage(runtime) },
+    { key: 'undo',   label: 'Undo',    onClick: () => runtime.undo() },
+    { key: 'redo',   label: 'Redo',    onClick: () => runtime.redo() },
     { key: 'select', label: 'Select',  onClick: () => setTool(runtime, 'select'), dataTool: 'select' },
     { key: 'bbox',   label: 'BBox',    onClick: () => setTool(runtime, 'bbox'),   dataTool: 'bbox' },
     { key: 'clear',  label: 'Clear',   onClick: () => clearAnnotations(runtime) },
@@ -46,17 +48,28 @@ export function init(runtime, container, options = {}) {
       const b = document.createElement('button');
       b.textContent = btn.label;
       b.style.flex = '1';
+      b.dataset.toolbarKey = btn.key;
       b.addEventListener('click', btn.onClick);
       if (btn.dataTool) b.dataset.tool = btn.dataTool;
       container.appendChild(b);
     });
 
-  const unsub = events.subscribeToCanvas(runtime.id, EventTypes.CANVAS_TOOL_CHANGED, ({ tool }) => {
+  const unsubToolChanged = events.subscribeToCanvas(runtime.id, EventTypes.CANVAS_TOOL_CHANGED, ({ tool }) => {
     container.querySelectorAll('button[data-tool]').forEach(btn => {
       const toolBase = tool.split(':')[0]; // handles 'bbox:label-uuid'
       btn.classList.toggle('selected', btn.dataset.tool === toolBase);
     });
   });
 
-  return { destroy: unsub };
+  // Set initial disabled state for undo/redo before any events fire
+  const _syncUndoRedo = () => {
+    const undoBtn = container.querySelector('[data-toolbar-key="undo"]');
+    const redoBtn = container.querySelector('[data-toolbar-key="redo"]');
+    if (undoBtn) undoBtn.disabled = !runtime.canUndo;
+    if (redoBtn) redoBtn.disabled = !runtime.canRedo;
+  };
+  _syncUndoRedo();
+  const unsubBboxChanged = events.subscribeToCanvas(runtime.id, EventTypes.CANVAS_BBOXES_CHANGED, _syncUndoRedo);
+
+  return { destroy: () => { unsubToolChanged(); unsubBboxChanged(); } };
 }

@@ -7,11 +7,9 @@ import { BboxView } from './views/bboxView.js';
  * @param {import('@image_tagging_types').UIImage} uiImage
  */
 export async function setCanvasImage(canvas, uiImage) {
-  const { stage, layer, transformer } = canvas;
+  const { stage, layer } = canvas;
 
-  // Clean up existing
-  transformer.nodes([]);
-  layer.find('.bbox').forEach(n => n.destroy());
+  // Clean up existing background image; bbox cleanup handled by rerenderBboxViews
   layer.find('.background-image').forEach(n => n.destroy());
 
   const konvaImg = new Konva.Image({
@@ -33,10 +31,7 @@ export async function setCanvasImage(canvas, uiImage) {
   );
   canvas.backgroundImage = konvaImg;
 
-  uiImage.bboxes.forEach(bbox => {
-    const bboxView = new BboxView(bbox, viewport);
-    layer.add(bboxView);
-  });
+  rerenderBboxViews(canvas, uiImage.bboxes, viewport);
 
   setCanvasViewport(canvas, viewport, { width: canvas.container.clientWidth, height: canvas.container.clientHeight });
 }
@@ -88,4 +83,20 @@ export async function setCanvasViewport(canvas, viewport, size) {
 
   // clone to avoid reference leaks (?)
   canvas.viewport = { ...viewport };
+}
+
+/**
+ * Destroys all existing BboxView nodes and rebuilds them from the given bbox map.
+ * Used for undo/redo restore and initial image render. Does not touch the background image or viewport.
+ * @param {import('@image_tagging_types').CanvasState} canvas
+ * @param {Map<string, import('@image_tagging_types').UIBbox>} bboxes
+ * @param {import('@image_tagging_types').ViewportTransform} [viewport] - Defaults to canvas.viewport if omitted.
+ */
+export function rerenderBboxViews(canvas, bboxes, viewport) {
+  const { layer, transformer } = canvas;
+  const vp = viewport ?? canvas.viewport;
+  transformer.nodes([]);
+  layer.find('.bbox').forEach(n => n.destroy());
+  bboxes.forEach(bbox => layer.add(new BboxView(bbox, vp)));
+  layer.batchDraw();
 }

@@ -42,12 +42,6 @@ from .types import (
     UNVERIFIED_TAG_UUID,
 )
 
-# UNVERIFIED_TAG_UUID is re-exported from helpers/db/types.py via the explicit
-# import above.  __all__ here only governs `from db_client import *`;
-# named imports (from apps.helpers.db.db_client import UNVERIFIED_TAG_UUID)
-# work because the name is present in this module's namespace.
-__all__ = ["UNVERIFIED_TAG_UUID"]
-
 _SYSTEM_TAGS = [
     Tag(
         uuid=UNVERIFIED_TAG_UUID,
@@ -56,6 +50,7 @@ _SYSTEM_TAGS = [
         kind=TagKind.SYSTEM,
         exclusive_group="verification",
         protected=True,
+        icon="?"
     ),
 ]
 

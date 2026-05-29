@@ -92,10 +92,9 @@ export function clearAnnotations(runtime) {
     }
   });
   layer.draw();
+  runtime.pushState();
   events.publish(EventTypes.CANVAS_BBOXES_CHANGED, { runtimeId: runtime.id });
-}
-
-/**
+}/**
  * @param {import('@image_tagging_types').ImageTaggingRuntime} runtime
  */
 export async function saveAnnotations(runtime) {
@@ -141,6 +140,7 @@ export function deleteSelected(runtime) {
   if (bboxView) {
     runtime.state.image?.bboxes.delete(bboxView.uiBBox.uuid);
     bboxView.destroy();
+    runtime.pushState();
     events.publish(EventTypes.CANVAS_BBOXES_CHANGED, { runtimeId: runtime.id });
   }
 
@@ -228,5 +228,6 @@ export async function addInferenceResults(runtime, results) {
   }
 
   layer.draw();
+  if (results.detections.length) runtime.pushState();
   events.publish(EventTypes.CANVAS_BBOXES_CHANGED, { runtimeId: runtime.id });
 }
