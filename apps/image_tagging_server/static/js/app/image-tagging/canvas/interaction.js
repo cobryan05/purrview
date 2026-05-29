@@ -11,7 +11,7 @@ import { screenToImage } from './viewport.js';
 
 /**
  * Mutates uiBBox.tags in-place: if no verification tag is present, adds UNVERIFIED.
- * Bboxes that already carry any verification tag (UNVERIFIED, VERIFIED, FALSE_POS) are left untouched.
+ * Bboxes that already carry the UNVERIFIED verification tag are left untouched.
  */
 function applyDefaultVerificationTag(uiBBox) {
   const tags = uiBBox.tags ?? [];

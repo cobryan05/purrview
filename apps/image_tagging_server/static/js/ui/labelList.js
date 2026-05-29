@@ -13,7 +13,7 @@
 
 import { fetchLabels, clearLabelsCache, createNewLabel, deleteLabel, updateLabel } from '/app-static/js/shared/api/labels.js';
 import { fetchImageLabels, setImageLabel } from '/app-static/js/shared/api/imageLabels.js';
-import { VERIFIED_TAG_UUID } from '/app-static/js/shared/api/review.js';
+import { UNVERIFIED_TAG_UUID } from '/app-static/js/shared/api/review.js';
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
 import { setTool } from '../app/image-tagging/canvas/tools.js';
 import { EditableField, TextBoxColorField } from '/app-static/js/ui/utils/fields/index.js';
@@ -187,7 +187,7 @@ async function mountEditMode(container, { filter, onRerender }) {
 
 /**
  * Returns the set of label UUIDs that are PRESENT based on current canvas bbox state.
- * A label is present if at least one verified bbox in the image carries that label.
+ * A label is present if at least one reviewed (non-unverified) bbox in the image carries that label.
  *
  * @param {Map<string, object>|undefined} bboxes
  * @returns {Set<string>}
@@ -195,7 +195,7 @@ async function mountEditMode(container, { filter, onRerender }) {
 function computeDerivedPresent(bboxes) {
   const present = new Set();
   for (const bbox of (bboxes ?? new Map()).values()) {
-    if (bbox.label?.uuid && (bbox.tags ?? []).some(t => t.uuid === VERIFIED_TAG_UUID)) {
+    if (bbox.label?.uuid && !(bbox.tags ?? []).some(t => t.uuid === UNVERIFIED_TAG_UUID)) {
       present.add(bbox.label.uuid);
     }
   }

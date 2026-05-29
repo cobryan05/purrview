@@ -38,7 +38,6 @@ from apps.helpers.db.types import (
     TaskResultData,
     TaskResumeData,
     UNVERIFIED_TAG_UUID,
-    VERIFIED_TAG_UUID,
 )
 from apps.helpers.consts import TaskStatus
 from apps.helpers.fileUtils import get_safe_path
@@ -389,14 +388,14 @@ class Manager:
         await self._recompute_image_labels(image_record.uuid, update)
 
     async def _recompute_image_labels(self, image_uuid: str, update: ImageRecordUpdate) -> None:
-        """Sync PRESENT rows in image_labels from verified bboxes.
+        """Sync PRESENT rows in image_labels from reviewed bboxes.
 
         Only PRESENT rows are written/deleted here.  ABSENT rows are always
         set explicitly by the user via set_image_label and are never touched.
         """
         present_label_uuids = {
             b.label_uuid for b in update.bboxes
-            if b.label_uuid and VERIFIED_TAG_UUID in b.tag_uuids
+            if b.label_uuid and UNVERIFIED_TAG_UUID not in b.tag_uuids
         }
         for label_uuid in present_label_uuids:
             await self._db_client.set_image_label(image_uuid, label_uuid, ImageLabelStatus.PRESENT)

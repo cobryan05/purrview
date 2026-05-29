@@ -17,8 +17,6 @@ class ImageLabelStatus(str, Enum):
 
 # System tag UUIDs — keep in sync with static/js/shared/api/review.js
 UNVERIFIED_TAG_UUID = "00000000-0000-0000-0000-000000000001"
-VERIFIED_TAG_UUID   = "00000000-0000-0000-0000-000000000002"
-FALSE_POS_TAG_UUID  = "00000000-0000-0000-0000-000000000003"
 
 import jstyleson
 import numpy as np

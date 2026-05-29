@@ -1,9 +1,7 @@
 // System tag UUIDs (must match constants in apps/helpers/db/db_client.py)
 export const UNVERIFIED_TAG_UUID = '00000000-0000-0000-0000-000000000001';
-export const VERIFIED_TAG_UUID = '00000000-0000-0000-0000-000000000002';
-export const FALSE_POS_TAG_UUID = '00000000-0000-0000-0000-000000000003';
 
-export const VERIFICATION_TAG_UUIDS = new Set([UNVERIFIED_TAG_UUID, VERIFIED_TAG_UUID, FALSE_POS_TAG_UUID]);
+export const VERIFICATION_TAG_UUIDS = new Set([UNVERIFIED_TAG_UUID]);
 
 /**
  * Search the review queue with flexible filters and cursor-based pagination.

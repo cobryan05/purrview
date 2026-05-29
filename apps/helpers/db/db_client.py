@@ -26,7 +26,6 @@ from apps.helpers.consts import TaskStatus
 from .types import (
     BBox,
     BBoxTagLink,
-    FALSE_POS_TAG_UUID,
     ImageLabel,
     ImageLabelStatus,
     ImageRecord,
@@ -41,36 +40,19 @@ from .types import (
     TaskConfig,
     TaskInstance,
     UNVERIFIED_TAG_UUID,
-    VERIFIED_TAG_UUID,
 )
 
-# The three UUID constants are re-exported from helpers/db/types.py via the
-# explicit imports above.  __all__ here only governs `from db_client import *`;
+# UNVERIFIED_TAG_UUID is re-exported from helpers/db/types.py via the explicit
+# import above.  __all__ here only governs `from db_client import *`;
 # named imports (from apps.helpers.db.db_client import UNVERIFIED_TAG_UUID)
-# work because the names are present in this module's namespace.
-__all__ = ["UNVERIFIED_TAG_UUID", "VERIFIED_TAG_UUID", "FALSE_POS_TAG_UUID"]
+# work because the name is present in this module's namespace.
+__all__ = ["UNVERIFIED_TAG_UUID"]
 
 _SYSTEM_TAGS = [
     Tag(
         uuid=UNVERIFIED_TAG_UUID,
         name="Unverified",
         color="#f0a030",
-        kind=TagKind.SYSTEM,
-        exclusive_group="verification",
-        protected=True,
-    ),
-    Tag(
-        uuid=VERIFIED_TAG_UUID,
-        name="Verified",
-        color="#30c060",
-        kind=TagKind.SYSTEM,
-        exclusive_group="verification",
-        protected=True,
-    ),
-    Tag(
-        uuid=FALSE_POS_TAG_UUID,
-        name="FalsePositive",
-        color="#e04040",
         kind=TagKind.SYSTEM,
         exclusive_group="verification",
         protected=True,
