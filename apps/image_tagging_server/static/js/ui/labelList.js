@@ -13,7 +13,6 @@
 
 import { fetchLabels, clearLabelsCache, createNewLabel, deleteLabel, updateLabel } from '/app-static/js/shared/api/labels.js';
 import { fetchImageLabels, setImageLabel } from '/app-static/js/shared/api/imageLabels.js';
-import { FALSE_POS_TAG_UUID } from '/app-static/js/shared/api/review.js';
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
 import { setTool } from '../app/image-tagging/canvas/tools.js';
 import { EditableField, TextBoxColorField } from '/app-static/js/ui/utils/fields/index.js';
@@ -195,7 +194,7 @@ async function mountEditMode(container, { filter, onRerender }) {
 function computeDerivedPresent(bboxes) {
   const present = new Set();
   for (const bbox of (bboxes ?? new Map()).values()) {
-    if (bbox.label?.uuid && !bbox.tags?.some(t => t.uuid === FALSE_POS_TAG_UUID)) {
+    if (bbox.label?.uuid) {
       present.add(bbox.label.uuid);
     }
   }

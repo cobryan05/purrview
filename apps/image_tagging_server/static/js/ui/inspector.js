@@ -3,6 +3,7 @@ import { createGenericRow, Logger } from '/app-static/js/ui/utils/index.js';
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
 import { fetchLabelByUuid } from '/app-static/js/shared/api/labels.js';
 import { fetchTags } from '/app-static/js/shared/api/tags.js';
+import { UNVERIFIED_TAG_UUID } from '/app-static/js/shared/api/review.js';
 
 /**
  * Opens the inspector tab in the sidebar and highlights it briefly.
@@ -47,10 +48,10 @@ export function renderBboxInspector({ bboxView = null, target = 'tab-inspector',
     }
     targetElement.innerHTML = 'Inspector Loading...'
     const container = document.createElement('div');
-    container.style.display = 'inline-block';
-    container.style.verticalAlign = 'top';
-    container.style.width = 'max-content';
+    container.style.display = 'block';
+    container.style.width = '100%';
     container.style.minWidth = '0';
+    container.style.overflow = 'hidden';
     targetElement.appendChild(container);
 
     BboxInfoField.create({ bboxGroup: bboxView }).then(bboxInfoFieldInstance => {
@@ -63,25 +64,61 @@ export function renderBboxInspector({ bboxView = null, target = 'tab-inspector',
             Logger.warn(val);
           },
           onSave: async (val) => {
-            const labelUuid = val.bbox_info.labelUuid;
-            if (labelUuid) {
-              const labelData = await fetchLabelByUuid(labelUuid);
-              if (labelData) {
-                bboxView.uiBBox.label = { uuid: labelUuid, text: labelData.name, color: labelData.color };
-                bboxView.updateAppearance(labelData.name, labelData.color);
+            const originalLabelUuid = bboxView.uiBBox.label?.uuid ?? null;
+            const labelUuid = val.bbox_info.labelUuid ?? null;
+            const labelChanged = labelUuid !== originalLabelUuid;
+
+            // Build new tag list. Only strip UNVERIFIED when the user is actively
+            // assigning/changing a label — not when they're just editing tags on a
+            // bbox that already has a label.
+            let savedTagUuids = val.bbox_info.tagUuids ?? [];
+            if (labelChanged && labelUuid) {
+              savedTagUuids = savedTagUuids.filter(id => id !== UNVERIFIED_TAG_UUID);
+            } else if (labelChanged && !labelUuid) {
+              // Removing a label: re-mark as unverified so the bbox returns to the review queue.
+              if (!savedTagUuids.includes(UNVERIFIED_TAG_UUID)) {
+                savedTagUuids = [...savedTagUuids, UNVERIFIED_TAG_UUID];
               }
-            } else {
-              bboxView.uiBBox.label = undefined;
-              bboxView.updateAppearance('', 'grey');
             }
-            const savedTagUuids = val.bbox_info.tagUuids ?? [];
+
+            // Immediate optimistic update using any icon data we already have.
+            const existingIconsMap = new Map((bboxView.uiBBox.tags ?? []).map(t => [t.uuid, t.icon]));
+            bboxView.uiBBox.tags = savedTagUuids.map(id => ({
+              uuid: id,
+              icon: existingIconsMap.get(id) ?? null,
+            }));
+            bboxView.refreshIcons(bboxView.uiBBox.tags);
+            events.publish(EventTypes.CANVAS_BBOXES_CHANGED, { runtimeId });
+
+            // Async: hydrate tag icons from cache/network and do a second pass.
             const tagsMap = await fetchTags();
+            // Guard: if the inspector was re-rendered for a different bbox while we
+            // were awaiting, bail out to avoid corrupting the new bbox's state.
+            if (!container.isConnected) return;
             bboxView.uiBBox.tags = savedTagUuids.map(id => {
               const tag = tagsMap.get(id);
               return { uuid: id, icon: tag?.icon ?? null };
             });
             bboxView.refreshIcons(bboxView.uiBBox.tags);
+            // Always publish after hydration so subscribers see the final icon state,
+            // not the placeholder icons from the optimistic update above.
             events.publish(EventTypes.CANVAS_BBOXES_CHANGED, { runtimeId });
+
+            // Async: update label appearance only if it changed.
+            if (labelChanged) {
+              if (labelUuid) {
+                const labelData = await fetchLabelByUuid(labelUuid);
+                if (!container.isConnected) return;
+                if (labelData) {
+                  bboxView.uiBBox.label = { uuid: labelUuid, text: labelData.name, color: labelData.color };
+                  bboxView.updateAppearance(labelData.name, labelData.color);
+                }
+              } else {
+                bboxView.uiBBox.label = undefined;
+                bboxView.updateAppearance('', 'grey');
+              }
+              events.publish(EventTypes.CANVAS_BBOXES_CHANGED, { runtimeId });
+            }
           },
           onCancel: () => {
             Logger.warn("Canceled");

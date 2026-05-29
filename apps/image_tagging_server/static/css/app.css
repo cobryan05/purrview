@@ -542,6 +542,7 @@ button.filter-active {
   width: 220px;
   min-width: 180px;
   flex-shrink: 0;
+  overflow-x: hidden;
   overflow-y: auto;
   border-left: 1px solid #333;
   background: #161616;

@@ -18,11 +18,10 @@
 import {
   UNVERIFIED_TAG_UUID,
   VERIFIED_TAG_UUID,
-  FALSE_POS_TAG_UUID,
 } from '/app-static/js/shared/api/review.js';
 
 // System tags appear first in the tag checkbox list, in this order.
-const SYSTEM_TAG_ORDER = [UNVERIFIED_TAG_UUID, VERIFIED_TAG_UUID, FALSE_POS_TAG_UUID];
+const SYSTEM_TAG_ORDER = [UNVERIFIED_TAG_UUID, VERIFIED_TAG_UUID];
 
 const DEFAULT_STATE = () => ({
   tagUuids: [UNVERIFIED_TAG_UUID],

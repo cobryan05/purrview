@@ -6,13 +6,9 @@ import {
   updateImageBboxes,
   updateBbox,
   deleteBbox,
-  swapVerificationTag,
   getBboxThumbnailUrl,
   invalidateBboxThumbnails,
   UNVERIFIED_TAG_UUID,
-  VERIFIED_TAG_UUID,
-  FALSE_POS_TAG_UUID,
-  VERIFICATION_TAG_UUIDS,
 } from '/app-static/js/shared/api/review.js';
 import { Logger } from '/app-static/js/ui/utils/logging.js';
 import { CheckboxField } from '/app-static/js/ui/utils/fields/CheckboxField.js';
@@ -390,8 +386,7 @@ export async function init() {
           // If it's no longer unverified, mark it stale with the appropriate state
           const stillUnverified = (updatedUIBbox.tags ?? []).some(t => t.uuid === UNVERIFIED_TAG_UUID);
           if (!stillUnverified) {
-            const isFP = (updatedUIBbox.tags ?? []).some(t => t.uuid === FALSE_POS_TAG_UUID);
-            markCardStale(card, isFP ? 'false-positive' : 'verified');
+            markCardStale(card, 'verified');
           }
         }
 
@@ -469,14 +464,9 @@ export async function init() {
             }
             markCardStale(card, 'relabeled');
           } else if (action === 'addTags' || action === 'removeTags') {
-            // If a verification tag was bulk-applied, surface the right stale state.
-            const tagSet = new Set(selectedTagUuids);
-            const staleState = action === 'addTags' && tagSet.has(FALSE_POS_TAG_UUID) ? 'false-positive'
-              : action === 'addTags' && tagSet.has(VERIFIED_TAG_UUID) ? 'verified'
-              : 'tagged';
-            markCardStale(card, staleState);
+            markCardStale(card, 'tagged');
           } else {
-            markCardStale(card, action === 'fp' ? 'false-positive' : 'verified');
+            markCardStale(card, 'relabeled');
           }
         }
       }
@@ -531,15 +521,14 @@ async function executeBulkAction(action, entries, newLabelUuid, selectedTagUuids
         const labelUuid = bbox.labelUuid ?? bbox.label?.uuid;
         await updateBbox(bbox.uuid, { labelUuid, tagUuids });
       } else {
-        // swapVerificationTag keeps all non-verification tags, replacing only
-        // the verification slot — so other custom tags on the bbox are preserved.
-        const currentTagUuids = (bbox.tags || []).map(t => t.uuid);
-        const newTagUuid = action === 'fp' ? FALSE_POS_TAG_UUID : VERIFIED_TAG_UUID;
-        const tagUuids = swapVerificationTag(currentTagUuids, newTagUuid);
-        const labelUuid = action === 'relabel' && newLabelUuid
-          ? newLabelUuid
-          : (bbox.labelUuid ?? bbox.label?.uuid);
-        await updateBbox(bbox.uuid, { labelUuid, tagUuids });
+        // relabel: change the label, strip UNVERIFIED only when a real label is being
+        // assigned — if newLabelUuid is empty/null (e.g. no labels exist in the system)
+        // keep UNVERIFIED so the bbox stays visible in the review queue.
+        const shouldStripUnverified = !!newLabelUuid;
+        const currentTagUuids = (bbox.tags || []).map(t => t.uuid)
+          .filter(u => !shouldStripUnverified || u !== UNVERIFIED_TAG_UUID);
+        const labelUuid = newLabelUuid ?? (bbox.labelUuid ?? bbox.label?.uuid);
+        await updateBbox(bbox.uuid, { labelUuid, tagUuids: currentTagUuids });
       }
       toInvalidate.push(bbox.uuid);
       succeededEntries.push(entry);
@@ -562,47 +551,6 @@ let _modalOpen = false;
  * @param {Map<string, import('@domain_image').UIBbox>} bboxMap
  * @returns {Map<string, {x:number, y:number, width:number, height:number, labelUuid:string|null, tagUuids:string}>}
  */
-function snapshotBboxes(bboxMap) {
-  const snap = new Map();
-  for (const [uuid, bbox] of bboxMap.entries()) {
-    snap.set(uuid, {
-      x: bbox.x, y: bbox.y,
-      width: bbox.width, height: bbox.height,
-      labelUuid: bbox.label?.uuid ?? null,
-      tagUuids: (bbox.tags ?? []).map(t => t.uuid).sort().join(','),
-    });
-  }
-  return snap;
-}
-
-/**
- * Return the set of bbox UUIDs that differ from the snapshot.
- * New bboxes (not present in snapshot) are always included.
- * @param {Map<string, import('@domain_image').UIBbox>} bboxMap
- * @param {ReturnType<typeof snapshotBboxes>} snapshot
- * @returns {Set<string>}
- */
-function getModifiedBboxUuids(bboxMap, snapshot) {
-  const modified = new Set();
-  for (const [uuid, bbox] of bboxMap.entries()) {
-    const orig = snapshot.get(uuid);
-    if (!orig) {
-      modified.add(uuid); // newly drawn bbox
-    } else {
-      const tagStr = (bbox.tags ?? []).map(t => t.uuid).sort().join(',');
-      if (
-        orig.x !== bbox.x || orig.y !== bbox.y ||
-        orig.width !== bbox.width || orig.height !== bbox.height ||
-        orig.labelUuid !== (bbox.label?.uuid ?? null) ||
-        orig.tagUuids !== tagStr
-      ) {
-        modified.add(uuid);
-      }
-    }
-  }
-  return modified;
-}
-
 /**
  * Open a full canvas editor modal for a single bbox.
  * @param {object} bbox  The bbox object from the review queue
@@ -662,17 +610,14 @@ async function showCanvasModal(bbox, img, labels, onSaved) {
   const footer = document.createElement('div');
   footer.className = 'canvas-modal-footer';
 
-  const markVerifiedLabel = document.createElement('label');
-  markVerifiedLabel.style.cssText = 'display:flex;align-items:center;gap:0.4em;color:#aaa;font-size:0.85em;cursor:pointer;user-select:none;margin-right:auto;';
-  const markVerifiedCheckbox = document.createElement('input');
-  markVerifiedCheckbox.type = 'checkbox';
-  markVerifiedCheckbox.checked = true;
-  markVerifiedLabel.append(markVerifiedCheckbox, 'Mark modified boxes as verified');
+  const cancelBtn = document.createElement('button');
+  cancelBtn.textContent = 'Cancel';
+  cancelBtn.style.cssText = 'border:1px solid #555;border-radius:3px;padding:0.3em 1em;cursor:pointer;color:#aaa;margin-left:auto;';
 
   const saveBtn = document.createElement('button');
   saveBtn.textContent = 'Save & Close';
   saveBtn.style.cssText = 'background:#ff003322;border:1px solid #ff0033;border-radius:3px;padding:0.3em 1em;cursor:pointer;color:#ff6666;';
-  footer.append(markVerifiedLabel, saveBtn);
+  footer.append(cancelBtn, saveBtn);
 
   dialog.append(header, toolbarEl, contentArea, footer);
   overlay.appendChild(dialog);
@@ -694,9 +639,6 @@ async function showCanvasModal(bbox, img, labels, onSaved) {
     _modalOpen = false;
     return;
   }
-
-  // Snapshot bbox state so we can detect which ones were modified at save time
-  const initialBboxSnapshot = snapshotBboxes(instance.runtime.state.image.bboxes);
 
   // ── Wire shared toolbar (select / bbox / delete) ───────────────────
   toolbarHandle = initToolbar(instance.runtime, toolbarEl, {
@@ -730,30 +672,16 @@ async function showCanvasModal(bbox, img, labels, onSaved) {
   // Use closeBtn.disabled as the "save in flight" sentinel so the backdrop
   // handler doesn't need a separate flag.
   closeBtn.addEventListener('click', closeModal);
+  cancelBtn.addEventListener('click', closeModal);
   overlay.addEventListener('click', e => {
     if (e.target === overlay && !closeBtn.disabled) closeModal();
   });
 
   saveBtn.addEventListener('click', async () => {
     saveBtn.disabled = true;
+    cancelBtn.disabled = true;
     closeBtn.disabled = true; // block close while save is in-flight
     saveBtn.textContent = 'Saving…';
-
-    // If checked, swap UNVERIFIED → VERIFIED on any bbox that was changed.
-    // We snapshot the original tags so we can revert if the network call fails —
-    // otherwise the user can't retry cleanly (or uncheck the option and retry).
-    let tagRollback = null;
-    if (markVerifiedCheckbox.checked) {
-      const modifiedUuids = getModifiedBboxUuids(instance.runtime.state.image.bboxes, initialBboxSnapshot);
-      tagRollback = new Map();
-      for (const [, b] of instance.runtime.state.image.bboxes.entries()) {
-        if (modifiedUuids.has(b.uuid)) {
-          tagRollback.set(b.uuid, b.tags); // save original so we can roll back on failure
-          const nonVerifTags = (b.tags ?? []).filter(t => !VERIFICATION_TAG_UUIDS.has(t.uuid));
-          b.tags = [...nonVerifTags, { uuid: VERIFIED_TAG_UUID, icon: null }];
-        }
-      }
-    }
 
     let saved = false;
     try {
@@ -772,15 +700,8 @@ async function showCanvasModal(bbox, img, labels, onSaved) {
       closeModal();
       await onSaved(updatedUIBbox);
     } else {
-      // Revert auto-verify tag mutations so the user can retry with a clean state
-      // (including if they uncheck "Mark modified boxes as verified" before retrying).
-      if (tagRollback) {
-        for (const [uuid, originalTags] of tagRollback) {
-          const b = instance.runtime.state.image.bboxes.get(uuid);
-          if (b) b.tags = originalTags;
-        }
-      }
       saveBtn.disabled = false;
+      cancelBtn.disabled = false;
       closeBtn.disabled = false; // re-enable close on failure
       saveBtn.textContent = 'Save & Close';
     }
@@ -805,9 +726,7 @@ async function showBulkActionModal(entries, labels, onConfirm) {
 
   // Action radio buttons
   const actions = [
-    { value: 'verify', label: 'Verify / Accept' },
-    { value: 'fp', label: 'Mark False Positive' },
-    { value: 'relabel', label: 'Change Label (and verify)' },
+    { value: 'relabel', label: 'Change Label' },
     { value: 'delete', label: 'Delete Bboxes' },
     { value: 'addTags', label: 'Add Tags' },
     { value: 'removeTags', label: 'Remove Tags' },
@@ -815,7 +734,7 @@ async function showBulkActionModal(entries, labels, onConfirm) {
 
   const radioGroup = document.createElement('div');
   radioGroup.style.cssText = 'display:flex;flex-direction:column;gap:0.4em;';
-  let selectedAction = 'verify';
+  let selectedAction = 'relabel';
 
   for (const action of actions) {
     const lbl = document.createElement('label');
@@ -824,7 +743,7 @@ async function showBulkActionModal(entries, labels, onConfirm) {
     radio.type = 'radio';
     radio.name = 'bulk-action';
     radio.value = action.value;
-    if (action.value === 'verify') radio.checked = true;
+    if (action.value === 'relabel') radio.checked = true;
     radio.addEventListener('change', () => {
       selectedAction = action.value;
       labelPickerRow.style.display = selectedAction === 'relabel' ? '' : 'none';
@@ -837,7 +756,6 @@ async function showBulkActionModal(entries, labels, onConfirm) {
 
   // Label picker (shown only for relabel)
   const labelPickerRow = document.createElement('div');
-  labelPickerRow.style.display = 'none';
   const labelPicker = document.createElement('select');
   for (const lbl of labels.values()) {
     const opt = document.createElement('option');

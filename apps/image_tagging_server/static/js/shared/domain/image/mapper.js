@@ -79,8 +79,10 @@ export function bboxReadToUI(bboxData) {
 
   const rawTags = (bboxData.tags ?? []).map(t => ({ uuid: t.uuid, icon: t.icon ?? null }));
 
-  // Default to UNVERIFIED if the bbox has no explicit verification tag
-  const tags = rawTags.some(t => VERIFICATION_TAG_UUIDS.has(t.uuid))
+  // Default to UNVERIFIED if the bbox has no explicit verification tag and no label.
+  // A bbox with a label was human-reviewed (UNVERIFIED was stripped on assignment),
+  // so we don't re-add it on load even if the DB row no longer carries any verification tag.
+  const tags = (rawTags.some(t => VERIFICATION_TAG_UUIDS.has(t.uuid)) || label?.uuid)
     ? rawTags
     : [...rawTags, { uuid: UNVERIFIED_TAG_UUID, icon: null }];
 

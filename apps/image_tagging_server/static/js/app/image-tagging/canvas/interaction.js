@@ -17,7 +17,17 @@ function applyDefaultVerificationTag(uiBBox) {
   const tags = uiBBox.tags ?? [];
   // Skip if already carrying any verification tag.
   if (tags.some(t => VERIFICATION_TAG_UUIDS.has(t.uuid))) return;
+  // Don't mark as unverified if the human already assigned a label.
+  if (uiBBox.label?.uuid) return;
   uiBBox.tags = [...tags, { uuid: UNVERIFIED_TAG_UUID, icon: null }];
+}
+
+/**
+ * Strips the UNVERIFIED tag from a bbox in-place (no-op if not present).
+ * Call this whenever a human assigns a label to a bbox.
+ */
+export function stripUnverifiedTag(uiBBox) {
+  uiBBox.tags = (uiBBox.tags ?? []).filter(t => t.uuid !== UNVERIFIED_TAG_UUID);
 }
 
 const DOUBLE_CLICK_TIME_MS = 400;
@@ -264,7 +274,7 @@ export async function handleMouseUp(e, runtime) {
       if (labelData) {
         hitGroup.uiBBox.label = { uuid: labelUuid, text: labelData.name, color: labelData.color };
         hitGroup.updateAppearance(labelData.name, labelData.color);
-        applyDefaultVerificationTag(hitGroup.uiBBox);
+        stripUnverifiedTag(hitGroup.uiBBox);
         hitGroup.refreshIcons(hitGroup.uiBBox.tags);
         events.publish(EventTypes.CANVAS_BBOXES_CHANGED, { runtimeId: runtime.id });
       }
