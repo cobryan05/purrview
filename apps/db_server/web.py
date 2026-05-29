@@ -4,6 +4,7 @@ import logging
 import mimetypes
 import sys
 from contextlib import asynccontextmanager
+from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI, HTTPException, Query, Request
@@ -17,6 +18,9 @@ from apps.db_server.manager import Manager
 from apps.helpers.consts import ApiTags, JsonKeys, JsonValues, TaskStatus
 from apps.helpers.db.types import (
     BBoxUpdate,
+    DatasetCreate,
+    DatasetRead,
+    DatasetUpdate,
     ImageLabelRead,
     ImageLabelStatus,
     ImageRecordRead,
@@ -320,6 +324,24 @@ class GetTaskResultsPayload(ApiPayload):
 
 class GetTaskResultsResponse(StatusResponse):
     results: Dict[str, TaskResultData] = Field(default_factory=dict)
+
+
+
+class ListDatasetsResponse(StatusResponse):
+    datasets: List[DatasetRead] = Field(default_factory=list)
+
+
+class DatasetResponse(StatusResponse):
+    dataset: Optional[DatasetRead] = None
+
+
+class DatasetImagesResponse(StatusResponse):
+    images: List[ImageRecordRead] = Field(default_factory=list)
+    has_more: bool = False
+
+
+class DatasetLabelsResponse(StatusResponse):
+    labels: List[Label] = Field(default_factory=list)
 
 
 class WebApp:
@@ -1058,3 +1080,126 @@ class WebApp:
             except Exception as e:
                 logger.error(e, exc_info=True)
                 return GetTaskResultsResponse(status=JsonValues.FAILURE, message=str(e))
+
+        # ─────────────────────────────────────────────────────────────────────
+        # Dataset endpoints
+        # ─────────────────────────────────────────────────────────────────────
+
+        @self._app.get(
+            "/api/datasets",
+            response_model=ListDatasetsResponse,
+            tags=[ApiTags.DATASETS],
+            operation_id="list_datasets",
+        )
+        async def list_datasets() -> ListDatasetsResponse:
+            try:
+                datasets = await self._manager.list_datasets()
+                return ListDatasetsResponse(status=JsonValues.SUCCESS, datasets=datasets)
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return ListDatasetsResponse(status=JsonValues.FAILURE, message=str(e))
+
+        @self._app.post(
+            "/api/datasets",
+            response_model=DatasetResponse,
+            tags=[ApiTags.DATASETS],
+            operation_id="create_dataset",
+        )
+        async def create_dataset(payload: DatasetCreate) -> DatasetResponse:
+            try:
+                dataset = await self._manager.create_dataset(payload)
+                return DatasetResponse(status=JsonValues.SUCCESS, dataset=dataset)
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return DatasetResponse(status=JsonValues.FAILURE, message=str(e))
+
+        @self._app.patch(
+            "/api/datasets/{uuid}",
+            response_model=DatasetResponse,
+            tags=[ApiTags.DATASETS],
+            operation_id="update_dataset",
+        )
+        async def update_dataset(uuid: str, payload: DatasetUpdate) -> DatasetResponse:
+            try:
+                dataset = await self._manager.update_dataset(uuid, payload)
+                if dataset is None:
+                    raise HTTPException(status_code=404, detail="Dataset not found")
+                return DatasetResponse(status=JsonValues.SUCCESS, dataset=dataset)
+            except HTTPException:
+                raise
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return DatasetResponse(status=JsonValues.FAILURE, message=str(e))
+
+        @self._app.delete(
+            "/api/datasets/{uuid}",
+            response_model=StatusResponse,
+            tags=[ApiTags.DATASETS],
+            operation_id="delete_dataset",
+        )
+        async def delete_dataset(uuid: str) -> StatusResponse:
+            try:
+                ok = await self._manager.delete_dataset(uuid)
+                if not ok:
+                    raise HTTPException(status_code=404, detail="Dataset not found")
+                return StatusResponse(status=JsonValues.SUCCESS)
+            except HTTPException:
+                raise
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return StatusResponse(status=JsonValues.FAILURE, message=str(e))
+
+        @self._app.post(
+            "/api/datasets/{uuid}/images",
+            response_model=DatasetImagesResponse,
+            tags=[ApiTags.DATASETS],
+            operation_id="get_dataset_images",
+        )
+        async def get_dataset_images(
+            uuid: str,
+            limit: int = Query(default=50, ge=1, le=500),
+            sort_by: str = Query(default="updated_at"),
+            sort_order: str = Query(default="desc"),
+            after_uuid: Optional[str] = Query(default=None),
+            after_sort_value: Optional[datetime] = Query(default=None),
+        ) -> DatasetImagesResponse:
+            try:
+                result = await self._manager.get_dataset_images(
+                    uuid,
+                    limit=limit,
+                    sort_by=sort_by,
+                    sort_order=sort_order,
+                    after_uuid=after_uuid,
+                    after_sort_value=after_sort_value,
+                )
+                if result is None:
+                    raise HTTPException(status_code=404, detail="Dataset not found")
+                images, has_more = result
+                return DatasetImagesResponse(
+                    status=JsonValues.SUCCESS,
+                    images=images,
+                    has_more=has_more,
+                )
+            except HTTPException:
+                raise
+            except Exception as e:
+                logger.exception("Failed to fetch dataset images")
+                return DatasetImagesResponse(status=JsonValues.FAILURE, message=str(e))
+
+        @self._app.get(
+            "/api/datasets/{uuid}/labels",
+            response_model=DatasetLabelsResponse,
+            tags=[ApiTags.DATASETS],
+            operation_id="get_dataset_labels",
+        )
+        async def get_dataset_labels(uuid: str) -> DatasetLabelsResponse:
+            try:
+                labels = await self._manager.get_dataset_labels(uuid)
+                if labels is None:
+                    raise HTTPException(status_code=404, detail="Dataset not found")
+                return DatasetLabelsResponse(status=JsonValues.SUCCESS, labels=labels)
+            except HTTPException:
+                raise
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return DatasetLabelsResponse(status=JsonValues.FAILURE, message=str(e))

@@ -63,4 +63,6 @@ export const EventTypes = Object.freeze({
   SHOW_MAIN_CANVAS: "canvas:main:show",
   RUN_INFERENCE_ON_CANVAS: "canvas:run-inference",
   TAGS_UPDATED: "tags:updated",
+  DATASETS_UPDATED: "datasets:updated",
+  ACTIVE_DATASET_CHANGED: "dataset:active:changed",
 });

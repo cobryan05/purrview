@@ -25,6 +25,7 @@ class ApiTags(str, Enum):
     SOURCES = "sources"
     TAGS = "tags"
     TASKS = "tasks"
+    DATASETS = "datasets"
 
 class TaskStatus(str, Enum):
     NEW = "new"

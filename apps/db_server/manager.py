@@ -7,6 +7,7 @@ import logging
 import os
 import sys
 from collections import defaultdict
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -20,6 +21,9 @@ from apps.helpers.db.db_client import (
 )
 from apps.helpers.db.types import (
     BBoxUpdate,
+    DatasetCreate,
+    DatasetRead,
+    DatasetUpdate,
     ImageLabelRead,
     ImageLabelStatus,
     ImageRecord,
@@ -743,3 +747,60 @@ class Manager:
         except Exception as e:
             logger.error(f"Failed to open file {rel_path}: {e}", exc_info=True)
             return None
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Dataset management
+    # ─────────────────────────────────────────────────────────────────────────
+
+    async def list_datasets(self) -> List[DatasetRead]:
+        return await self._db_client.list_datasets()
+
+    async def get_dataset(self, uuid: str) -> Optional[DatasetRead]:
+        return await self._db_client.get_dataset(uuid)
+
+    async def create_dataset(self, data: DatasetCreate) -> DatasetRead:
+        return await self._db_client.create_dataset(data)
+
+    async def update_dataset(self, uuid: str, data: DatasetUpdate) -> Optional[DatasetRead]:
+        return await self._db_client.update_dataset(uuid, data)
+
+    async def delete_dataset(self, uuid: str) -> bool:
+        return await self._db_client.delete_dataset(uuid)
+
+    async def get_dataset_images(
+        self,
+        uuid: str,
+        *,
+        limit: int = 50,
+        sort_by: str = "updated_at",
+        sort_order: str = "desc",
+        after_uuid: Optional[str] = None,
+        after_sort_value: Optional[datetime] = None,
+    ) -> Optional[tuple[List[ImageRecordRead], bool]]:
+        result = await self._db_client.list_dataset_images(
+            uuid,
+            limit=limit,
+            sort_by=sort_by,
+            sort_order=sort_order,
+            after_uuid=after_uuid,
+            after_sort_value=after_sort_value,
+        )
+        if result is None:
+            return None
+        images, has_more = result
+        records = []
+        for img in images:
+            record = ImageRecordRead.model_validate(img)
+            record.filename = self._image_rel_path(img.filename)
+            records.append(record)
+        return records, has_more
+
+    async def get_dataset_labels(self, uuid: str) -> Optional[List[Label]]:
+        """Return the Label objects for a dataset's relevant labels."""
+        dataset = await self._db_client.get_dataset(uuid)
+        if dataset is None:
+            return None
+        if not dataset.label_uuids:
+            return []
+        labels_map = await self._db_client.get_labels_by_uuids(dataset.label_uuids)
+        return list(labels_map.values())

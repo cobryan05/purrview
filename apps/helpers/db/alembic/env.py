@@ -16,6 +16,8 @@ from sqlmodel import SQLModel
 from apps.helpers.db.types import (  # noqa: F401
     BBox,
     BBoxTagLink,
+    Dataset,
+    DatasetLabelLink,
     ImageLabel,
     ImageRecord,
     Label,

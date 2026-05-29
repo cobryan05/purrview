@@ -4,11 +4,12 @@ import { renderModelLabelAssignments } from '/app-static/js/ui/models.js';
 import { renderSourceManager } from '/app-static/js/ui/sources.js';
 import { renderTagList } from '/app-static/js/ui/tags.js';
 import { renderActiveTasks, renderTaskConfigs } from '/app-static/js/ui/tasks.js';
+import { renderDatasetManager } from '/app-static/js/ui/datasets.js';
 
 export async function init() {
   let taskPollInterval = null;
 
-  const { container, activateTab } = setupWorkspaceTabs("#tab-configuration", (tabName, button, pane) => {
+  const { container, activateTab } = setupWorkspaceTabs("#tab-configuration", async (tabName, button, pane) => {
     // Stop any existing task polling when switching tabs
     if (taskPollInterval !== null) {
       clearInterval(taskPollInterval);
@@ -33,6 +34,8 @@ export async function init() {
 
       // Poll active tasks every 2.5s to show live progress and logs
       taskPollInterval = setInterval(refreshActiveTasks, 2500);
+    } else if (tabName === 'tab-dataset-management') {
+      await renderDatasetManager({ target: 'dataset-management-box' });
     }
   });
 

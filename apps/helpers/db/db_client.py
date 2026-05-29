@@ -2,7 +2,7 @@ import asyncio
 import json
 import logging
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, TypeVar, Union
 from uuid import uuid4
@@ -26,7 +26,18 @@ from apps.helpers.consts import TaskStatus
 from .types import (
     BBox,
     BBoxTagLink,
+    BboxAgeCondition,
+    Dataset,
+    DatasetCreate,
+    DatasetFilterCriteria,
+    DatasetLabelLink,
+    DatasetLabelStatusCondition,
+    DatasetRead,
+    DatasetUpdate,
+    FilenameCondition,
+    ImageAgeCondition,
     ImageLabel,
+    ImageLabelFilter,
     ImageLabelStatus,
     ImageRecord,
     ImageRecordRead,
@@ -36,7 +47,9 @@ from .types import (
     Source,
     SourceRead,
     Tag,
+    TagCondition,
     TagKind,
+    TagPresenceFilter,
     TaskConfig,
     TaskInstance,
     UNVERIFIED_TAG_UUID,
@@ -502,25 +515,67 @@ class DbClient:
                     .replace("_", "!_")
                 )
                 stmt = stmt.where(ImageRecord.filename.like(f"%{escaped}%", escape="!"))
+            for pattern in params.filename_searches:
+                escaped = (
+                    pattern
+                    .replace("!", "!!")
+                    .replace("%", "!%")
+                    .replace("_", "!_")
+                )
+                stmt = stmt.where(ImageRecord.filename.like(f"%{escaped}%", escape="!"))
 
-            # ── Date range (always on created_at) ──────────────────────────────
+            # ── Date range on created_at ───────────────────────────────────────
             if params.date_from:
                 stmt = stmt.where(ImageRecord.created_at >= params.date_from)
             if params.date_to:
                 stmt = stmt.where(ImageRecord.created_at <= params.date_to)
 
-            # ── Image-label filters (EXISTS / NOT EXISTS subqueries) ────────────
-            for f in params.image_label_filters:
-                subq = (
-                    select(ImageLabel)
+            # ── Date range on updated_at ───────────────────────────────────────
+            if params.updated_date_from:
+                stmt = stmt.where(ImageRecord.updated_at >= params.updated_date_from)
+            if params.updated_date_to:
+                stmt = stmt.where(ImageRecord.updated_at <= params.updated_date_to)
+
+            # ── Tag presence/absence filters ───────────────────────────────────
+            for tf in params.tag_presence_filters:
+                tag_subq = (
+                    select(BBox)
+                    .join(BBoxTagLink, BBoxTagLink.bbox_uuid == BBox.uuid)
                     .where(
-                        ImageLabel.image_uuid == ImageRecord.uuid,
-                        ImageLabel.label_uuid == f.label_uuid,
-                        ImageLabel.status == f.status,
+                        BBox.image_uuid == ImageRecord.uuid,
+                        BBoxTagLink.tag_uuid == tf.tag_uuid,
                     )
                     .exists()
                 )
-                stmt = stmt.where(~subq if f.exclude else subq)
+                stmt = stmt.where(~tag_subq if tf.exclude else tag_subq)
+
+            # ── Image-label filters (EXISTS / NOT EXISTS subqueries) ────────────
+            for f in params.image_label_filters:
+                if f.require_verified:
+                    # require EXISTS row with PRESENT or ABSENT (not uncertain)
+                    subq = (
+                        select(ImageLabel)
+                        .where(
+                            ImageLabel.image_uuid == ImageRecord.uuid,
+                            ImageLabel.label_uuid == f.label_uuid,
+                            ImageLabel.status.in_(
+                                [ImageLabelStatus.PRESENT, ImageLabelStatus.ABSENT]
+                            ),
+                        )
+                        .exists()
+                    )
+                    stmt = stmt.where(subq)
+                else:
+                    subq = (
+                        select(ImageLabel)
+                        .where(
+                            ImageLabel.image_uuid == ImageRecord.uuid,
+                            ImageLabel.label_uuid == f.label_uuid,
+                            ImageLabel.status == f.status,
+                        )
+                        .exists()
+                    )
+                    stmt = stmt.where(~subq if f.exclude else subq)
 
             # ── Sort column ────────────────────────────────────────────────────
             sort_col_map = {
@@ -1415,3 +1470,273 @@ class DbClient:
                 )
 
             await session.commit()
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Dataset CRUD
+    # ─────────────────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _dataset_to_read(d: Dataset) -> DatasetRead:
+        return DatasetRead(
+            uuid=d.uuid,
+            name=d.name,
+            description=d.description,
+            filter_json=d.filter_json or {},
+            label_uuids=[link.label_uuid for link in (d.label_links or [])],
+            created_at=d.created_at,
+            updated_at=d.updated_at,
+        )
+
+    async def list_datasets(self) -> List[DatasetRead]:
+        async with self._async_session_maker() as session:
+            stmt = select(Dataset).options(selectinload(Dataset.label_links))
+            result = await session.exec(stmt)
+            return [self._dataset_to_read(d) for d in result.all()]
+
+    async def get_dataset(self, uuid: str) -> Optional[DatasetRead]:
+        async with self._async_session_maker() as session:
+            stmt = (
+                select(Dataset)
+                .where(Dataset.uuid == uuid)
+                .options(selectinload(Dataset.label_links))
+            )
+            result = await session.exec(stmt)
+            d = result.one_or_none()
+            return self._dataset_to_read(d) if d else None
+
+    async def create_dataset(self, data: DatasetCreate) -> DatasetRead:
+        async with self._async_session_maker() as session:
+            dataset = Dataset(
+                name=data.name,
+                description=data.description,
+                filter_json=data.filter_json.model_dump(mode="json"),
+            )
+            session.add(dataset)
+            await session.flush()
+            for label_uuid in data.label_uuids:
+                session.add(DatasetLabelLink(
+                    dataset_uuid=dataset.uuid,
+                    label_uuid=label_uuid,
+                ))
+            await session.commit()
+            stmt = (
+                select(Dataset)
+                .where(Dataset.uuid == dataset.uuid)
+                .options(selectinload(Dataset.label_links))
+            )
+            result = await session.exec(stmt)
+            return self._dataset_to_read(result.one())
+
+    async def update_dataset(self, uuid: str, data: DatasetUpdate) -> Optional[DatasetRead]:
+        async with self._async_session_maker() as session:
+            # Fetch without label_links — we'll replace them via bulk DELETE/INSERT,
+            # so loading them into the session identity map first would cause
+            # SQLAlchemy to complain about deleted-but-still-tracked objects.
+            result = await session.exec(select(Dataset).where(Dataset.uuid == uuid))
+            dataset = result.one_or_none()
+            if dataset is None:
+                return None
+
+            changes = data.model_dump(exclude_unset=True, mode="json")
+            label_uuids = changes.pop("label_uuids", None)
+
+            for key, value in changes.items():
+                if hasattr(dataset, key):
+                    setattr(dataset, key, value)
+
+            if label_uuids is not None:
+                await session.exec(
+                    delete(DatasetLabelLink).where(DatasetLabelLink.dataset_uuid == uuid)
+                )
+                for label_uuid in label_uuids:
+                    session.add(DatasetLabelLink(
+                        dataset_uuid=uuid,
+                        label_uuid=label_uuid,
+                    ))
+
+            dataset.updated_at = datetime.now(timezone.utc)
+            session.add(dataset)
+            await session.commit()
+
+            result = await session.exec(
+                select(Dataset)
+                .where(Dataset.uuid == uuid)
+                .options(selectinload(Dataset.label_links))
+            )
+            return self._dataset_to_read(result.one())
+
+    async def delete_dataset(self, uuid: str) -> bool:
+        async with self._async_session_maker() as session:
+            dataset = await session.get(Dataset, uuid)
+            if dataset is None:
+                return False
+            await session.delete(dataset)
+            await session.commit()
+            return True
+
+    @staticmethod
+    def build_dataset_search_params(
+        dataset: DatasetRead,
+        criteria: DatasetFilterCriteria,
+        *,
+        limit: int = 50,
+        sort_by: str = "updated_at",
+        sort_order: str = "desc",
+        after_uuid: Optional[str] = None,
+        after_sort_value: Optional[datetime] = None,
+    ) -> ImageSearchParams:
+        """Expand a DatasetFilterCriteria into an ImageSearchParams.
+
+        All conditions in the criteria are AND-combined.
+        DatasetLabelStatusCondition entries are expanded into one ImageLabelFilter
+        per label in dataset.label_uuids.
+        """
+        now = datetime.now(timezone.utc)
+
+        params = ImageSearchParams(
+            show_all_bboxes=True,
+            tag_uuids=[],
+            limit=limit,
+            sort_by=sort_by,  # type: ignore[arg-type]
+            sort_order=sort_order,  # type: ignore[arg-type]
+            after_uuid=after_uuid,
+            after_sort_value=after_sort_value,
+        )
+
+        image_label_filters: List[ImageLabelFilter] = []
+        tag_presence_filters: List[TagPresenceFilter] = []
+        filename_searches: List[str] = []
+
+        for cond in criteria.conditions:
+            if isinstance(cond, ImageAgeCondition):
+                if cond.within_days is not None:
+                    cutoff = now - timedelta(days=cond.within_days)
+                    if cond.field == "created_at":
+                        params.date_from = cutoff
+                    else:
+                        params.updated_date_from = cutoff
+                else:
+                    if cond.field == "created_at":
+                        if cond.after:
+                            params.date_from = cond.after
+                        if cond.before:
+                            params.date_to = cond.before
+                    else:
+                        if cond.after:
+                            params.updated_date_from = cond.after
+                        if cond.before:
+                            params.updated_date_to = cond.before
+
+            elif isinstance(cond, BboxAgeCondition):
+                # Filtered via EXISTS on bboxes.{field}. Handled separately in
+                # list_dataset_images since ImageSearchParams has no bbox-age field.
+                pass  # stored in criteria, executed in list_dataset_images
+
+            elif isinstance(cond, TagCondition):
+                tag_presence_filters.append(
+                    TagPresenceFilter(tag_uuid=cond.tag_uuid, exclude=cond.exclude)
+                )
+
+            elif isinstance(cond, DatasetLabelStatusCondition):
+                if not dataset.label_uuids:
+                    # Dataset has no labels — condition can never be satisfied.
+                    # Inject an impossible filter so the query returns zero rows.
+                    image_label_filters.append(
+                        ImageLabelFilter(
+                            label_uuid="00000000-0000-0000-0000-000000000000",
+                            status=ImageLabelStatus.PRESENT,
+                            require_verified=True,
+                        )
+                    )
+                else:
+                    # Expand: one filter per dataset label
+                    for label_uuid in dataset.label_uuids:
+                        image_label_filters.append(
+                            ImageLabelFilter(
+                                label_uuid=label_uuid,
+                                status=ImageLabelStatus.PRESENT,  # ignored when require_verified=True
+                                require_verified=True,
+                            )
+                        )
+
+            elif isinstance(cond, FilenameCondition):
+                filename_searches.append(cond.pattern)
+
+        params.image_label_filters = image_label_filters
+        params.tag_presence_filters = tag_presence_filters
+        params.filename_searches = filename_searches
+        return params
+
+    async def list_dataset_images(
+        self,
+        uuid: str,
+        *,
+        limit: int = 50,
+        sort_by: str = "updated_at",
+        sort_order: str = "desc",
+        after_uuid: Optional[str] = None,
+        after_sort_value: Optional[datetime] = None,
+    ) -> Optional[tuple[list[ImageRecord], bool]]:
+        """Execute a dataset's filter criteria and return (images, has_more).
+
+        Returns None if the dataset doesn't exist.
+        has_more is True if there may be additional results beyond this page.
+        BboxAgeCondition entries are applied as an additional in-DB filter after
+        the base query.
+        """
+        dataset = await self.get_dataset(uuid)
+        if dataset is None:
+            return None
+
+        criteria = DatasetFilterCriteria.model_validate({"conditions": dataset.filter_json.get("conditions", [])})
+
+        params = self.build_dataset_search_params(
+            dataset,
+            criteria,
+            limit=limit,
+            sort_by=sort_by,
+            sort_order=sort_order,
+            after_uuid=after_uuid,
+            after_sort_value=after_sort_value,
+        )
+
+        # For BboxAgeCondition, apply extra WHERE clauses directly.
+        bbox_age_conditions = [c for c in criteria.conditions if isinstance(c, BboxAgeCondition)]
+
+        if not bbox_age_conditions:
+            results = await self.list_images_search(params)
+            return results, len(results) == limit
+
+        # Apply bbox-age filters with an additional DB query against the matched UUID set.
+        # has_more is derived from the base page size so we never terminate pagination
+        # early when the in-DB filter reduces the page below `limit`.
+        now = datetime.now(timezone.utc)
+        results = await self.list_images_search(params)
+        has_more = len(results) == limit  # conservative: base page was full
+
+        if not results:
+            return results, False
+
+        filtered_uuids = {img.uuid for img in results}
+        async with self._async_session_maker() as session:
+            for cond in bbox_age_conditions:
+                cutoff: Optional[datetime] = None
+                if cond.within_days is not None:
+                    cutoff = now - timedelta(days=cond.within_days)
+                elif cond.after:
+                    cutoff = cond.after
+
+                if cutoff is None and cond.before is None:
+                    continue
+
+                col = BBox.created_at if cond.field == "created_at" else BBox.updated_at
+                stmt = select(BBox.image_uuid).where(BBox.image_uuid.in_(list(filtered_uuids))).distinct()
+                if cutoff:
+                    stmt = stmt.where(col >= cutoff)
+                if cond.before:
+                    stmt = stmt.where(col <= cond.before)
+                result = await session.exec(stmt)
+                matching = set(result.all())
+                filtered_uuids = filtered_uuids & matching
+
+        return [img for img in results if img.uuid in filtered_uuids], has_more

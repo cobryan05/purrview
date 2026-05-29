@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Annotated, Any, Dict, List, Literal, Optional
+from typing import Annotated, Any, Dict, List, Literal, Optional, Union
 from typing import TypeAlias
 from uuid import uuid4
 
@@ -166,27 +166,37 @@ class ImageLabelFilter(BaseModel):
     label_uuid: str
     status: ImageLabelStatus
     exclude: bool = False
+    require_verified: bool = False  # if True: EXISTS (status IN PRESENT, ABSENT); status/exclude ignored
+
+
+
+class TagPresenceFilter(BaseModel):
+    """Require or exclude images based on bbox-level tag presence."""
+    tag_uuid: str
+    exclude: bool = False  # False = require at least one bbox has this tag; True = require none do
 
 
 class ImageSearchParams(BaseModel):
-    """All parameters for a flexible image/bbox search query."""
-    # Tag filter: show bboxes that carry any of these tags.
-    # Empty list + show_all_bboxes=True → no tag filter (show everything).
-    tag_uuids: List[str] = Field(default_factory=lambda: [UNVERIFIED_TAG_UUID])
     show_all_bboxes: bool = False
-    # Optional secondary filter: only images whose bboxes carry this label.
+    tag_uuids: List[str] = Field(default_factory=list)
     label_uuid: Optional[str] = None
+    image_label_filters: List["ImageLabelFilter"] = Field(default_factory=list)
+    limit: int = 50
     sort_by: Literal["uuid", "created_at", "updated_at"] = "created_at"
     sort_order: Literal["asc", "desc"] = "desc"
     filename_search: Optional[str] = None
-    # Date range always filters on images.created_at.
+    filename_searches: List[str] = Field(default_factory=list)  # AND of all patterns
+    # Date range filters on images.created_at.
     date_from: Optional[datetime] = None
     date_to: Optional[datetime] = None
+    # Date range filters on images.updated_at.
+    updated_date_from: Optional[datetime] = None
+    updated_date_to: Optional[datetime] = None
+    # Tag presence/absence filters (complement to tag_uuids positive-only filter).
+    tag_presence_filters: List["TagPresenceFilter"] = Field(default_factory=list)
     # Keyset pagination cursor.
     after_uuid: Optional[str] = None
     after_sort_value: Optional[datetime] = None  # populated when sort_by != "uuid"
-    image_label_filters: List[ImageLabelFilter] = Field(default_factory=list)
-    limit: int = Field(default=50, ge=1, le=500)
 
 
 class FileEntry(BaseModel):
@@ -235,7 +245,7 @@ class BBoxBase(SQLModel):
         return v
 
 
-class BBox(BBoxBase, table=True):
+class BBox(BBoxBase, TimestampModel, table=True):
     __tablename__ = "bboxes"
     uuid: str = Field(default_factory=lambda: str(uuid4()), primary_key=True)
     image_uuid: str = Field(foreign_key="images.uuid", ondelete="CASCADE")
@@ -410,3 +420,116 @@ class ImageLabelRead(BaseModel):
     status: ImageLabelStatus
 
     model_config = ConfigDict(from_attributes=True)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Dataset filter condition types
+# ─────────────────────────────────────────────────────────────────────────────
+
+class ImageAgeCondition(BaseModel):
+    """Filter by image created_at or updated_at."""
+    type: Literal["image_age"] = "image_age"
+    field: Literal["created_at", "updated_at"] = "updated_at"
+    within_days: Optional[int] = None    # relative: last N days (takes priority over after/before)
+    after: Optional[datetime] = None     # absolute lower bound
+    before: Optional[datetime] = None    # absolute upper bound
+
+
+class BboxAgeCondition(BaseModel):
+    """Filter images by whether any of their bboxes were recently created/updated.
+    Requires bbox.created_at / bbox.updated_at columns (added in add_timestamps_to_bboxes migration)."""
+    type: Literal["bbox_age"] = "bbox_age"
+    field: Literal["created_at", "updated_at"] = "updated_at"
+    within_days: Optional[int] = None
+    after: Optional[datetime] = None
+    before: Optional[datetime] = None
+
+
+class TagCondition(BaseModel):
+    """Require or exclude images based on any bbox carrying a specific tag."""
+    type: Literal["tag"] = "tag"
+    tag_uuid: str
+    exclude: bool = False   # False = require at least one bbox has this tag; True = require none do
+
+
+class DatasetLabelStatusCondition(BaseModel):
+    """Filter on the image_labels status for this dataset's own relevant labels."""
+    type: Literal["dataset_label_status"] = "dataset_label_status"
+    check: Literal["all_verified", "exclude_uncertain"]
+    # "all_verified"      → for each dataset label: EXISTS row with status PRESENT or ABSENT
+    # "exclude_uncertain" → same semantics (kept separate for UI clarity)
+
+
+class FilenameCondition(BaseModel):
+    """Substring match on image filename."""
+    type: Literal["filename"] = "filename"
+    pattern: str
+
+
+FilterCondition = Annotated[
+    Union[
+        ImageAgeCondition,
+        BboxAgeCondition,
+        TagCondition,
+        DatasetLabelStatusCondition,
+        FilenameCondition,
+    ],
+    Field(discriminator="type"),
+]
+
+
+class DatasetFilterCriteria(BaseModel):
+    """Stored as JSON in datasets.filter_json. AND-combined list of conditions.
+    Conditions of type DatasetLabelStatusCondition operate over the dataset's own label_uuids."""
+    conditions: List[FilterCondition] = Field(default_factory=list)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Dataset ORM models
+# ─────────────────────────────────────────────────────────────────────────────
+
+class DatasetBase(SQLModel):
+    name: str = Field(unique=True, index=True)
+    description: Optional[str] = None
+    filter_json: Dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+
+
+class Dataset(DatasetBase, TimestampModel, table=True):
+    __tablename__ = "datasets"
+    uuid: str = Field(default_factory=lambda: str(uuid4()), primary_key=True)
+    label_links: List["DatasetLabelLink"] = Relationship(
+        back_populates="dataset",
+        sa_relationship_kwargs={"cascade": "all, delete-orphan"},
+    )
+
+
+class DatasetLabelLink(SQLModel, table=True):
+    __tablename__ = "dataset_label_links"
+    dataset_uuid: str = Field(foreign_key="datasets.uuid", primary_key=True, ondelete="CASCADE")
+    label_uuid: str = Field(foreign_key="labels.uuid", primary_key=True, ondelete="CASCADE")
+    dataset: Optional[Dataset] = Relationship(back_populates="label_links")
+
+
+class DatasetRead(BaseModel):
+    uuid: str
+    name: str
+    description: Optional[str] = None
+    filter_json: Dict[str, Any] = Field(default_factory=dict)
+    label_uuids: List[str] = Field(default_factory=list)
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+    model_config = ConfigDict(from_attributes=True)
+
+
+class DatasetCreate(BaseModel):
+    name: str
+    description: Optional[str] = None
+    filter_json: DatasetFilterCriteria = Field(default_factory=DatasetFilterCriteria)
+    label_uuids: List[str] = Field(default_factory=list)
+
+
+class DatasetUpdate(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    filter_json: Optional[DatasetFilterCriteria] = None
+    label_uuids: Optional[List[str]] = None   # None = no change; [] = remove all   # None = no change; [] = remove all   # None = no change; [] = remove all
