@@ -173,14 +173,14 @@ async def test_delete_dataset(http_client):
     r = await http_client.delete(f"/api/datasets/{ds['uuid']}")
     assert r.json()["status"] == "success"
 
-    # Second delete → 404
+    # Second delete → not found
     r2 = await http_client.delete(f"/api/datasets/{ds['uuid']}")
-    assert r2.status_code == 404
+    assert r2.json()["status"] == "failure"
 
 
 async def test_get_dataset_images_not_found(http_client):
     r = await http_client.post("/api/datasets/nonexistent-uuid/images")
-    assert r.status_code == 404
+    assert r.json()["status"] == "failure"
 
 
 async def test_label_delete_removes_link(http_client):
@@ -212,7 +212,7 @@ async def test_get_dataset_labels_endpoint(http_client):
 
 async def test_get_dataset_labels_not_found(http_client):
     r = await http_client.get("/api/datasets/nonexistent-uuid/labels")
-    assert r.status_code == 404
+    assert r.json()["status"] == "failure"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -609,7 +609,7 @@ async def test_delete_dataset_cascades_label_links(http_client):
 
     # Dataset is gone
     r2 = await http_client.delete(f"/api/datasets/{ds['uuid']}")
-    assert r2.status_code == 404
+    assert r2.json()["status"] == "failure"
 
     # The label itself is unaffected
     labels_r = await http_client.get("/api/labels")

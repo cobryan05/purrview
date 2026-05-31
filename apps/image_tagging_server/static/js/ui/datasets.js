@@ -1,7 +1,7 @@
 import { fetchLabels } from '/app-static/js/shared/api/labels.js';
 import { fetchTags } from '/app-static/js/shared/api/tags.js';
 import {
-  fetchDatasets, fetchDatasetImages,
+  fetchDatasets, fetchDatasetImages, previewDatasetImages,
   createDataset, updateDataset, deleteDataset,
 } from '/app-static/js/shared/api/datasets.js';
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
@@ -32,7 +32,7 @@ function renderLabelCheckboxList(container, labelsMap, selectedUuids, onChange) 
   container.appendChild(controls);
 
   const list = document.createElement('div');
-  list.style.cssText = 'max-height:200px; overflow-y:auto; border:1px solid #ddd; padding:4px; border-radius:4px;';
+  list.style.cssText = 'height:300px; min-height:60px; overflow-y:auto; border:1px solid var(--pico-border-color, #ddd); padding:4px; border-radius:4px; resize:vertical;';
   container.appendChild(list);
 
   // Build hierarchy from labelsMap (Map<uuid, label>)
@@ -123,7 +123,7 @@ function describeCondition(cond, tagsMap) {
 // Conditions editor (inline, expandable)
 // -------------------------------------------------------
 
-function renderConditionsEditor(parentEl, initialConditions, tagsMap) {
+function renderConditionsEditor(parentEl, initialConditions, tagsMap, { onChange } = {}) {
   let conditions = [...initialConditions];
 
   const heading = document.createElement('h5');
@@ -138,14 +138,14 @@ function renderConditionsEditor(parentEl, initialConditions, tagsMap) {
     listEl.innerHTML = '';
     if (conditions.length === 0) {
       const empty = document.createElement('p');
-      empty.style.cssText = 'color:#888; font-style:italic; font-size:0.85em; margin:0;';
+      empty.style.cssText = 'color:var(--pico-muted-color,#888); font-style:italic; font-size:0.85em; margin:0;';
       empty.textContent = 'No conditions — all images included.';
       listEl.appendChild(empty);
       return;
     }
     for (let i = 0; i < conditions.length; i++) {
       const row = document.createElement('div');
-      row.style.cssText = 'display:flex; align-items:center; gap:8px; margin-bottom:4px; padding:4px 8px; background:#f5f5f5; border-radius:4px;';
+      row.style.cssText = 'display:flex; align-items:center; gap:8px; margin-bottom:4px; padding:4px 8px; background:var(--pico-card-background-color); border:1px solid var(--pico-border-color,#ddd); border-radius:4px;';
 
       const label = document.createElement('span');
       label.style.flex = '1';
@@ -160,6 +160,7 @@ function renderConditionsEditor(parentEl, initialConditions, tagsMap) {
       rmBtn.addEventListener('click', () => {
         conditions.splice(idx, 1);
         renderList();
+        onChange?.();
       });
       row.appendChild(rmBtn);
       listEl.appendChild(row);
@@ -172,8 +173,8 @@ function renderConditionsEditor(parentEl, initialConditions, tagsMap) {
   const addSection = document.createElement('details');
   addSection.style.marginTop = '6px';
   const summary = document.createElement('summary');
-  summary.style.cursor = 'pointer';
-  summary.textContent = 'Add condition…';
+  summary.style.cssText = 'cursor:pointer; font-weight:bold;';
+  summary.textContent = '+ Add Filter Condition';
   addSection.appendChild(summary);
   parentEl.appendChild(addSection);
 
@@ -193,20 +194,42 @@ function renderConditionsEditor(parentEl, initialConditions, tagsMap) {
   typeRow.appendChild(typeSelect);
   addSection.appendChild(typeRow);
 
+  const hintEl = document.createElement('p');
+  hintEl.style.cssText = 'font-size:0.82em; color:var(--pico-muted-color,#888); margin:4px 0 0; display:none;';
+  addSection.appendChild(hintEl);
+
   const inputsEl = document.createElement('div');
   inputsEl.style.marginTop = '6px';
   addSection.appendChild(inputsEl);
 
+  const _conditionHints = {
+    image_age: 'Filters images by when they were created or last updated.',
+    bbox_age: 'Filters images that have a bounding box created/updated within the given window.',
+    tag_present: 'Includes only images that have this tag.',
+    tag_absent: 'Excludes images that have this tag.',
+    label_status_all_verified: 'Includes only images where every dataset label is verified. Click Add to confirm.',
+    label_status_exclude_uncertain: 'Excludes images with any unverified (uncertain) label. Click Add to confirm.',
+    filename: 'Includes images whose filename contains the given text (case-insensitive).',
+  };
+
   function resetAddForm() {
     typeSelect.value = '';
     inputsEl.innerHTML = '';
+    hintEl.style.display = 'none';
+    hintEl.textContent = '';
     addSection.open = false;
   }
 
   typeSelect.addEventListener('change', () => {
     inputsEl.innerHTML = '';
     const type = typeSelect.value;
-    if (!type) return;
+    if (!type) {
+      hintEl.style.display = 'none';
+      hintEl.textContent = '';
+      return;
+    }
+    hintEl.textContent = _conditionHints[type] || '';
+    hintEl.style.display = hintEl.textContent ? '' : 'none';
 
     switch (type) {
       case 'image_age':
@@ -281,6 +304,7 @@ function renderConditionsEditor(parentEl, initialConditions, tagsMap) {
           conditions.push(cond);
           renderList();
           resetAddForm();
+          onChange?.();
         });
         inputsEl.appendChild(addBtn);
         break;
@@ -311,6 +335,7 @@ function renderConditionsEditor(parentEl, initialConditions, tagsMap) {
           conditions.push({ type: 'tag', tag_uuid: tagSel.value, exclude });
           renderList();
           resetAddForm();
+          onChange?.();
         });
         inputsEl.appendChild(addBtn);
         break;
@@ -326,6 +351,7 @@ function renderConditionsEditor(parentEl, initialConditions, tagsMap) {
           conditions.push({ type: 'dataset_label_status', check });
           renderList();
           resetAddForm();
+          onChange?.();
         });
         inputsEl.appendChild(addBtn);
         break;
@@ -349,6 +375,7 @@ function renderConditionsEditor(parentEl, initialConditions, tagsMap) {
           conditions.push({ type: 'filename', pattern: inp.value.trim() });
           renderList();
           resetAddForm();
+          onChange?.();
         });
         inputsEl.appendChild(addBtn);
         break;
@@ -365,7 +392,16 @@ function renderConditionsEditor(parentEl, initialConditions, tagsMap) {
 // Shared form fields builder
 // -------------------------------------------------------
 
-function buildDatasetForm(container, { name = '', description = '', labelUuids = [], filterConditions = [] }, labelsMap, tagsMap) {
+function buildDatasetForm(container, { name = '', description = '', labelUuids = [], filterConditions = [] }, labelsMap, tagsMap, { onAnyChange } = {}) {
+  let _dirty = false;
+
+  function _markDirty() {
+    if (!_dirty) {
+      _dirty = true;
+      onAnyChange?.();
+    }
+  }
+
   // Name
   const nameLabel = document.createElement('label');
   nameLabel.style.display = 'block';
@@ -375,6 +411,7 @@ function buildDatasetForm(container, { name = '', description = '', labelUuids =
   nameInput.value = name;
   nameInput.placeholder = 'Dataset name';
   nameInput.style.width = '100%';
+  nameInput.addEventListener('input', _markDirty);
   nameLabel.appendChild(nameInput);
   container.appendChild(nameLabel);
 
@@ -387,6 +424,7 @@ function buildDatasetForm(container, { name = '', description = '', labelUuids =
   descInput.value = description;
   descInput.placeholder = 'Optional description';
   descInput.style.cssText = 'width:100%; height:60px; resize:vertical;';
+  descInput.addEventListener('input', _markDirty);
   descLabel.appendChild(descInput);
   container.appendChild(descLabel);
 
@@ -401,16 +439,19 @@ function buildDatasetForm(container, { name = '', description = '', labelUuids =
   container.appendChild(labelPickerEl);
   renderLabelCheckboxList(labelPickerEl, labelsMap, selectedLabelUuids, (uuids) => {
     selectedLabelUuids = uuids;
+    _markDirty();
   });
 
   // Conditions
-  const condEditor = renderConditionsEditor(container, filterConditions, tagsMap);
+  const condEditor = renderConditionsEditor(container, filterConditions, tagsMap, { onChange: _markDirty });
 
   return {
     getName: () => nameInput.value.trim(),
     getDescription: () => descInput.value.trim(),
     getLabelUuids: () => selectedLabelUuids,
     getConditions: () => condEditor.getConditions(),
+    isDirty: () => _dirty,
+    markClean: () => { _dirty = false; },
   };
 }
 
@@ -418,7 +459,7 @@ function buildDatasetForm(container, { name = '', description = '', labelUuids =
 // Detail panel (edit existing dataset)
 // -------------------------------------------------------
 
-function _renderDetailPanel(container, dataset, { labelsMap, tagsMap, onDeleted }) {
+function _renderDetailPanel(container, dataset, { labelsMap, tagsMap, onDeleted, onDirtyChange }) {
   container.innerHTML = '';
 
   const h4 = document.createElement('h4');
@@ -436,17 +477,36 @@ function _renderDetailPanel(container, dataset, { labelsMap, tagsMap, onDeleted 
     },
     labelsMap,
     tagsMap,
+    { onAnyChange: () => { updateSaveBtnStyle(); onDirtyChange?.(() => form.isDirty()); } },
   );
 
   // Track current name so the delete confirm stays accurate after a rename+save
   let currentName = dataset.name;
 
-  // Action buttons
+  // Register dirty getter immediately so navigation checks work from the start
+  onDirtyChange?.(() => form.isDirty());
+
+  // ── Action buttons ───────────────────────────────────────────────
   const actionsEl = document.createElement('div');
-  actionsEl.style.cssText = 'margin-top:12px; display:flex; gap:8px; flex-wrap:wrap;';
+  actionsEl.style.cssText = 'margin-top:12px; display:flex; gap:8px; flex-wrap:wrap; align-items:center;';
   container.appendChild(actionsEl);
 
-  // Preview Count
+  // View group: Preview + Open in Review
+  const viewGroup = document.createElement('div');
+  viewGroup.style.cssText = 'display:flex; gap:8px; flex-wrap:wrap;';
+  actionsEl.appendChild(viewGroup);
+
+  // Separator
+  const sep = document.createElement('div');
+  sep.style.cssText = 'width:1px; min-height:28px; background:var(--pico-border-color,#ddd); align-self:stretch; margin:0 2px;';
+  actionsEl.appendChild(sep);
+
+  // Edit group: Save + Delete
+  const editGroup = document.createElement('div');
+  editGroup.style.cssText = 'display:flex; gap:8px; flex-wrap:wrap;';
+  actionsEl.appendChild(editGroup);
+
+  // Preview Count — uses current form state, not the last-saved dataset
   const previewBtn = document.createElement('button');
   previewBtn.type = 'button';
   previewBtn.textContent = 'Preview Count';
@@ -454,9 +514,13 @@ function _renderDetailPanel(container, dataset, { labelsMap, tagsMap, onDeleted 
     previewBtn.disabled = true;
     previewBtn.textContent = 'Loading…';
     try {
-      const images = await fetchDatasetImages(dataset.uuid, { limit: 500 });
-      const suffix = images.length === 500 ? '500+' : String(images.length);
-      toast(`Dataset contains ${suffix} images`, 4000);
+      const { images, hasMore } = await previewDatasetImages({
+        filterJson: { conditions: form.getConditions() },
+        labelUuids: form.getLabelUuids(),
+        limit: 500,
+      });
+      const suffix = hasMore ? '500+' : String(images.length);
+      toast(`Dataset contains ${suffix} images${form.isDirty() ? ' (unsaved)' : ''}`, 4000);
     } catch (err) {
       toast(err.message || 'Failed to preview', 5000, 'error');
     } finally {
@@ -464,10 +528,9 @@ function _renderDetailPanel(container, dataset, { labelsMap, tagsMap, onDeleted 
       previewBtn.textContent = 'Preview Count';
     }
   });
-  actionsEl.appendChild(previewBtn);
+  viewGroup.appendChild(previewBtn);
 
-  // Open in Review Queue — fires a cancelable custom event; Phase 4 wires the handler and
-  // calls event.preventDefault() to suppress the fallback toast.
+  // Open in Review Queue
   const reviewBtn = document.createElement('button');
   reviewBtn.type = 'button';
   reviewBtn.textContent = 'Open in Review Queue';
@@ -483,12 +546,27 @@ function _renderDetailPanel(container, dataset, { labelsMap, tagsMap, onDeleted 
       toast('Switch to the Review tab to browse this dataset\'s images', 5000);
     }
   });
-  actionsEl.appendChild(reviewBtn);
+  viewGroup.appendChild(reviewBtn);
 
   // Save
   const saveBtn = document.createElement('button');
   saveBtn.type = 'button';
   saveBtn.textContent = 'Save';
+
+  function updateSaveBtnStyle() {
+    if (form.isDirty()) {
+      saveBtn.style.outline = '2px solid var(--pico-primary-background, #36c)';
+      saveBtn.style.outlineOffset = '2px';
+      saveBtn.style.fontWeight = 'bold';
+      saveBtn.textContent = 'Save ●';
+    } else {
+      saveBtn.style.outline = '';
+      saveBtn.style.outlineOffset = '';
+      saveBtn.style.fontWeight = '';
+      saveBtn.textContent = 'Save';
+    }
+  }
+
   saveBtn.addEventListener('click', async () => {
     const name = form.getName();
     if (!name) { toast('Name is required', 5000, 'error'); return; }
@@ -502,6 +580,9 @@ function _renderDetailPanel(container, dataset, { labelsMap, tagsMap, onDeleted 
       });
       h4.textContent = updated.name;
       currentName = updated.name;
+      form.markClean();
+      updateSaveBtnStyle();
+      onDirtyChange?.(() => form.isDirty());
       toast('Dataset saved', 3000);
     } catch (err) {
       toast(err.message || 'Failed to save', 5000, 'error');
@@ -509,7 +590,7 @@ function _renderDetailPanel(container, dataset, { labelsMap, tagsMap, onDeleted 
       saveBtn.disabled = false;
     }
   });
-  actionsEl.appendChild(saveBtn);
+  editGroup.appendChild(saveBtn);
 
   // Delete
   const deleteBtn = document.createElement('button');
@@ -521,6 +602,7 @@ function _renderDetailPanel(container, dataset, { labelsMap, tagsMap, onDeleted 
     deleteBtn.disabled = true;
     try {
       await deleteDataset(dataset.uuid);
+      onDirtyChange?.(() => false);
       toast('Dataset deleted', 3000);
       onDeleted?.();
     } catch (err) {
@@ -528,14 +610,14 @@ function _renderDetailPanel(container, dataset, { labelsMap, tagsMap, onDeleted 
       deleteBtn.disabled = false;
     }
   });
-  actionsEl.appendChild(deleteBtn);
+  editGroup.appendChild(deleteBtn);
 }
 
 // -------------------------------------------------------
 // Create panel (new dataset)
 // -------------------------------------------------------
 
-function _renderCreatePanel(container, { labelsMap, tagsMap, onCreated }) {
+function _renderCreatePanel(container, { labelsMap, tagsMap, onCreated, onDirtyChange }) {
   container.innerHTML = '';
 
   const h4 = document.createElement('h4');
@@ -543,12 +625,42 @@ function _renderCreatePanel(container, { labelsMap, tagsMap, onCreated }) {
   h4.textContent = 'New Dataset';
   container.appendChild(h4);
 
-  const form = buildDatasetForm(container, {}, labelsMap, tagsMap);
+  const form = buildDatasetForm(container, {}, labelsMap, tagsMap, {
+    onAnyChange: () => onDirtyChange?.(() => form.isDirty()),
+  });
+
+  onDirtyChange?.(() => form.isDirty());
+
+  const btnRow = document.createElement('div');
+  btnRow.style.cssText = 'margin-top:12px; display:flex; gap:8px; flex-wrap:wrap;';
+  container.appendChild(btnRow);
+
+  const previewBtn = document.createElement('button');
+  previewBtn.type = 'button';
+  previewBtn.textContent = 'Preview Count';
+  previewBtn.addEventListener('click', async () => {
+    previewBtn.disabled = true;
+    previewBtn.textContent = 'Loading…';
+    try {
+      const { images, hasMore } = await previewDatasetImages({
+        filterJson: { conditions: form.getConditions() },
+        labelUuids: form.getLabelUuids(),
+        limit: 500,
+      });
+      const suffix = hasMore ? '500+' : String(images.length);
+      toast(`Filter matches ${suffix} images`, 4000);
+    } catch (err) {
+      toast(err.message || 'Failed to preview', 5000, 'error');
+    } finally {
+      previewBtn.disabled = false;
+      previewBtn.textContent = 'Preview Count';
+    }
+  });
+  btnRow.appendChild(previewBtn);
 
   const createBtn = document.createElement('button');
   createBtn.type = 'button';
   createBtn.textContent = 'Create Dataset';
-  createBtn.style.marginTop = '12px';
   createBtn.addEventListener('click', async () => {
     const name = form.getName();
     if (!name) { toast('Name is required', 5000, 'error'); return; }
@@ -560,6 +672,8 @@ function _renderCreatePanel(container, { labelsMap, tagsMap, onCreated }) {
         filterJson: { conditions: form.getConditions() },
         labelUuids: form.getLabelUuids(),
       });
+      form.markClean();
+      onDirtyChange?.(() => false);
       toast(`Dataset "${dataset.name}" created`, 3000);
       await onCreated?.(dataset);
     } catch (err) {
@@ -567,7 +681,7 @@ function _renderCreatePanel(container, { labelsMap, tagsMap, onCreated }) {
       createBtn.disabled = false;
     }
   });
-  container.appendChild(createBtn);
+  btnRow.appendChild(createBtn);
 }
 
 // -------------------------------------------------------
@@ -600,24 +714,37 @@ export async function renderDatasetManager({ target = 'dataset-management-box' }
 
     let _selectedUuid = null;
 
+    // Dirty-state tracker for the currently displayed right panel.
+    // Both _renderDetailPanel and _renderCreatePanel register a getter via onDirtyChange.
+    let _getDirtyState = () => false;
+
+    function _confirmIfDirty() {
+      if (!_getDirtyState()) return true;
+      return window.confirm('You have unsaved changes. Discard them?');
+    }
+
     // Update row highlight in-place without re-fetching the list
     function _updateListSelection(uuid) {
       for (const row of leftCol.querySelectorAll('[data-dataset-uuid]')) {
         const sel = row.dataset.datasetUuid === uuid;
-        row.style.background = sel ? '#eef' : '';
-        row.style.borderColor = sel ? '#aad' : 'transparent';
+        row.style.background = sel ? 'var(--pico-primary-background, #eef)' : '';
+        row.style.borderColor = sel ? 'var(--pico-primary-border, #aad)' : 'transparent';
       }
     }
 
     async function showDetail(dataset) {
+      if (!_confirmIfDirty()) return;
       _selectedUuid = dataset.uuid;
+      _getDirtyState = () => false;
       // Re-fetch so the label/tag pickers always reflect current data
       const [labelsMap, tagsMap] = await Promise.all([fetchLabels(), fetchTags()]);
       _renderDetailPanel(rightCol, dataset, {
         labelsMap,
         tagsMap,
+        onDirtyChange: (getter) => { _getDirtyState = getter; },
         onDeleted: () => {
           _selectedUuid = null;
+          _getDirtyState = () => false;
           rightCol.innerHTML = '';
         },
       });
@@ -625,12 +752,18 @@ export async function renderDatasetManager({ target = 'dataset-management-box' }
     }
 
     async function showCreate() {
+      if (!_confirmIfDirty()) return;
       _selectedUuid = null;
+      _getDirtyState = () => false;
       const [labelsMap, tagsMap] = await Promise.all([fetchLabels(), fetchTags()]);
       _renderCreatePanel(rightCol, {
         labelsMap,
         tagsMap,
-        onCreated: async (dataset) => { await showDetail(dataset); },
+        onDirtyChange: (getter) => { _getDirtyState = getter; },
+        onCreated: async (dataset) => {
+          _getDirtyState = () => false;
+          await showDetail(dataset);
+        },
       });
       _updateListSelection(null);
     }
@@ -650,14 +783,14 @@ export async function renderDatasetManager({ target = 'dataset-management-box' }
 
       if (datasetsMap.size === 0) {
         const empty = document.createElement('p');
-        empty.style.cssText = 'color:#888; font-style:italic; font-size:0.85em;';
+        empty.style.cssText = 'color:var(--pico-muted-color,#888); font-style:italic; font-size:0.85em;';
         empty.textContent = 'No datasets yet.';
         listEl.appendChild(empty);
       }
 
       for (const dataset of datasetsMap.values()) {
         const row = document.createElement('div');
-        row.style.cssText = 'cursor:pointer; padding:6px 8px; margin-bottom:4px; border-radius:4px; border:1px solid transparent;';
+        row.style.cssText = 'cursor:pointer; padding:6px 8px; margin-bottom:4px; border-radius:4px; border:1px solid transparent; background:var(--pico-card-background-color);';
         row.dataset.datasetUuid = dataset.uuid;
 
         const nameLine = document.createElement('div');
@@ -667,18 +800,18 @@ export async function renderDatasetManager({ target = 'dataset-management-box' }
 
         if (dataset.description) {
           const descLine = document.createElement('div');
-          descLine.style.cssText = 'font-size:0.82em; color:#666; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:220px;';
+          descLine.style.cssText = 'font-size:0.82em; color:var(--pico-muted-color,#666); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:220px;';
           descLine.textContent = dataset.description;
           row.appendChild(descLine);
         }
 
         const metaLine = document.createElement('div');
-        metaLine.style.cssText = 'font-size:0.75em; color:#999;';
+        metaLine.style.cssText = 'font-size:0.75em; color:var(--pico-muted-color,#999);';
         metaLine.textContent = `${dataset.label_uuids?.length ?? 0} labels`;
         row.appendChild(metaLine);
 
-        row.addEventListener('mouseenter', () => { if (row.dataset.datasetUuid !== _selectedUuid) row.style.background = '#f5f5f5'; });
-        row.addEventListener('mouseleave', () => { if (row.dataset.datasetUuid !== _selectedUuid) row.style.background = ''; });
+        row.addEventListener('mouseenter', () => { if (row.dataset.datasetUuid !== _selectedUuid) row.style.background = 'var(--pico-card-sectioning-background-color, #f5f5f5)'; });
+        row.addEventListener('mouseleave', () => { if (row.dataset.datasetUuid !== _selectedUuid) row.style.background = 'var(--pico-card-background-color)'; });
         row.addEventListener('click', async () => { await showDetail(dataset); });
         listEl.appendChild(row);
       }

@@ -804,3 +804,21 @@ class Manager:
             return []
         labels_map = await self._db_client.get_labels_by_uuids(dataset.label_uuids)
         return list(labels_map.values())
+
+    async def preview_dataset_images(
+        self,
+        filter_json: dict,
+        label_uuids: List[str],
+        *,
+        limit: int = 500,
+    ) -> tuple[List[ImageRecordRead], bool]:
+        """Execute filter criteria in-memory without saving a dataset (unsaved preview)."""
+        images, has_more = await self._db_client.preview_dataset_images(
+            filter_json, label_uuids, limit=limit
+        )
+        records = []
+        for img in images:
+            record = ImageRecordRead.model_validate(img)
+            record.filename = self._image_rel_path(img.filename)
+            records.append(record)
+        return records, has_more

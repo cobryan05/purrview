@@ -119,6 +119,29 @@ export async function updateDataset(uuid, patch) {
   return data.dataset;
 }
 
+/** POST /api/datasets/preview — count images matching unsaved filter state */
+export async function previewDatasetImages({ filterJson, labelUuids = [], limit = 500 } = {}) {
+  const query = new URLSearchParams({ limit });
+  const url = `/api/datasets/preview?${query}`;
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      filter_json: filterJson || { conditions: [] },
+      label_uuids: labelUuids,
+    }),
+  });
+  if (!res.ok) {
+    const err = await res.json();
+    throw new Error(err.message || 'Failed to preview dataset');
+  }
+  const data = await res.json();
+  if (data.status !== 'success') {
+    throw new Error(data.message || 'Failed to preview dataset');
+  }
+  return { images: data.images, hasMore: data.has_more };
+}
+
 /** DELETE /api/datasets/{uuid} */
 export async function deleteDataset(uuid) {
   const res = await fetch(`/api/datasets/${uuid}`, { method: 'DELETE' });

@@ -79,7 +79,14 @@ T = TypeVar("T", bound=SQLModel)
 LABELS_JSON = "labels.json"
 TAGS_JSON = "tags.json"
 SOURCES_JSON = "sources.json"
+DATASETS_JSON = "datasets.json"
 DB_FILE = "db.sqlite"
+
+
+
+def _escape_like_pattern(pattern: str) -> str:
+    """Escape SQL LIKE metacharacters so user input is treated as literal text."""
+    return pattern.replace("!", "!!").replace("%", "!%").replace("_", "!_")
 
 
 class DbClient:
@@ -91,6 +98,7 @@ class DbClient:
         self._labels_json_path: Path = self._db_dir / LABELS_JSON
         self._tags_json_path: Path = self._db_dir / TAGS_JSON
         self._sources_json_path: Path = self._db_dir / SOURCES_JSON
+        self._datasets_json_path: Path = self._db_dir / DATASETS_JSON
 
         self._url: str = f"sqlite+aiosqlite:///{self._db_path}"
 
@@ -138,6 +146,14 @@ class DbClient:
 
         if source_count == 0:
             await self.sync_sources_from_json()
+
+        async with self._async_session_maker() as session:
+            count_statement = select(func.count()).select_from(Dataset)
+            result = await session.exec(count_statement)
+            dataset_count = result.one() or 0
+
+        if dataset_count == 0:
+            await self.sync_datasets_from_json()
 
     async def _seed_system_tags(self) -> None:
         """Ensure system tags always exist (idempotent).
@@ -507,21 +523,10 @@ class DbClient:
 
             # ── Filename search ────────────────────────────────────────────────
             if params.filename_search:
-                # Escape SQL LIKE metacharacters so user input is treated as literal text.
-                escaped = (
-                    params.filename_search
-                    .replace("!", "!!")
-                    .replace("%", "!%")
-                    .replace("_", "!_")
-                )
+                escaped = _escape_like_pattern(params.filename_search)
                 stmt = stmt.where(ImageRecord.filename.like(f"%{escaped}%", escape="!"))
             for pattern in params.filename_searches:
-                escaped = (
-                    pattern
-                    .replace("!", "!!")
-                    .replace("%", "!%")
-                    .replace("_", "!_")
-                )
+                escaped = _escape_like_pattern(pattern)
                 stmt = stmt.where(ImageRecord.filename.like(f"%{escaped}%", escape="!"))
 
             # ── Date range on created_at ───────────────────────────────────────
@@ -582,6 +587,7 @@ class DbClient:
                 "created_at": ImageRecord.created_at,
                 "updated_at": ImageRecord.updated_at,
                 "uuid":       ImageRecord.uuid,
+                "filename":   ImageRecord.filename,
             }
             sort_col = sort_col_map[params.sort_by]
 
@@ -1493,6 +1499,112 @@ class DbClient:
             result = await session.exec(stmt)
             return [self._dataset_to_read(d) for d in result.all()]
 
+    async def _sync_datasets_to_json(self) -> None:
+        """Dump the current datasets table to datasets.json."""
+        datasets = await self.list_datasets()
+        rows = [
+            {
+                "uuid": d.uuid,
+                "name": d.name,
+                "description": d.description,
+                "filter_json": d.filter_json,
+                "label_uuids": d.label_uuids,
+            }
+            for d in datasets
+        ]
+        self._datasets_json_path.write_text(json.dumps(rows, indent=2))
+
+    async def sync_datasets_from_json(self) -> None:
+        """Reads datasets.json and syncs to DB. Does not remove existing datasets.
+
+        Resolution order per dataset:
+        1. UUID match  → update the existing DB record in-place.
+        2. Name match  → reuse the existing DB record (log UUID mismatch).
+        3. No match    → insert a new record with the UUID from the JSON.
+
+        Label links are replaced wholesale for any updated/inserted dataset.
+        Label UUIDs that no longer exist in the labels table are silently skipped.
+        """
+        if not self._datasets_json_path.exists():
+            return
+
+        try:
+            json_data = json.loads(self._datasets_json_path.read_text())
+        except Exception as e:
+            logger.error(f"Failed to parse datasets.json: {e}")
+            return
+
+        async with self._async_session_maker() as session:
+            existing = (
+                await session.exec(
+                    select(Dataset).options(selectinload(Dataset.label_links))
+                )
+            ).all()
+            by_uuid: Dict[str, Dataset] = {d.uuid: d for d in existing}
+            by_name: Dict[str, Dataset] = {d.name: d for d in existing}
+
+            # Collect valid label UUIDs so we can skip broken FK references.
+            valid_labels = set((await session.exec(select(Label.uuid))).all())  # type: ignore[attr-defined]
+
+            count = 0
+            for item in json_data:
+                json_uuid = item.get("uuid")
+                name = item.get("name")
+                label_uuids = [lu for lu in item.get("label_uuids", []) if lu in valid_labels]
+
+                if json_uuid and json_uuid in by_uuid:
+                    # 1. UUID match — update in-place.
+                    db_ds = by_uuid[json_uuid]
+                    for key, value in item.items():
+                        if key not in ("uuid", "label_uuids") and hasattr(db_ds, key):
+                            setattr(db_ds, key, value)
+                    session.add(db_ds)
+                    await session.exec(
+                        delete(DatasetLabelLink).where(DatasetLabelLink.dataset_uuid == db_ds.uuid)
+                    )
+                    for lu in label_uuids:
+                        session.add(DatasetLabelLink(dataset_uuid=db_ds.uuid, label_uuid=lu))
+
+                elif name and name in by_name:
+                    # 2. Name fallback — reuse DB record to avoid unique-name violation.
+                    db_ds = by_name[name]
+                    logger.warning(
+                        "Dataset '%s' from JSON (UUID %s) matched by name to existing "
+                        "DB dataset (UUID %s). Using DB UUID.",
+                        name, json_uuid, db_ds.uuid,
+                    )
+                    for key, value in item.items():
+                        if key not in ("uuid", "label_uuids") and hasattr(db_ds, key):
+                            setattr(db_ds, key, value)
+                    session.add(db_ds)
+                    await session.exec(
+                        delete(DatasetLabelLink).where(DatasetLabelLink.dataset_uuid == db_ds.uuid)
+                    )
+                    for lu in label_uuids:
+                        session.add(DatasetLabelLink(dataset_uuid=db_ds.uuid, label_uuid=lu))
+
+                else:
+                    # 3. No match — insert new.
+                    effective_uuid = json_uuid or str(uuid4())
+                    ds = Dataset(
+                        uuid=effective_uuid,
+                        name=name,
+                        description=item.get("description"),
+                        filter_json=item.get("filter_json") or {},
+                    )
+                    session.add(ds)
+                    await session.flush()
+                    for lu in label_uuids:
+                        session.add(DatasetLabelLink(dataset_uuid=ds.uuid, label_uuid=lu))
+                    by_uuid[ds.uuid] = ds
+                    if ds.name:
+                        by_name[ds.name] = ds
+
+                count += 1
+
+            await session.commit()
+        logger.info("Imported %d datasets from JSON", count)
+
     async def get_dataset(self, uuid: str) -> Optional[DatasetRead]:
         async with self._async_session_maker() as session:
             stmt = (
@@ -1525,7 +1637,9 @@ class DbClient:
                 .options(selectinload(Dataset.label_links))
             )
             result = await session.exec(stmt)
-            return self._dataset_to_read(result.one())
+            read = self._dataset_to_read(result.one())
+        await self._sync_datasets_to_json()
+        return read
 
     async def update_dataset(self, uuid: str, data: DatasetUpdate) -> Optional[DatasetRead]:
         async with self._async_session_maker() as session:
@@ -1563,7 +1677,9 @@ class DbClient:
                 .where(Dataset.uuid == uuid)
                 .options(selectinload(Dataset.label_links))
             )
-            return self._dataset_to_read(result.one())
+            read = self._dataset_to_read(result.one())
+        await self._sync_datasets_to_json()
+        return read
 
     async def delete_dataset(self, uuid: str) -> bool:
         async with self._async_session_maker() as session:
@@ -1572,7 +1688,8 @@ class DbClient:
                 return False
             await session.delete(dataset)
             await session.commit()
-            return True
+        await self._sync_datasets_to_json()
+        return True
 
     @staticmethod
     def build_dataset_search_params(
@@ -1597,8 +1714,8 @@ class DbClient:
             show_all_bboxes=True,
             tag_uuids=[],
             limit=limit,
-            sort_by=sort_by,  # type: ignore[arg-type]
-            sort_order=sort_order,  # type: ignore[arg-type]
+            sort_by=sort_by,
+            sort_order=sort_order,
             after_uuid=after_uuid,
             after_sort_value=after_sort_value,
         )
@@ -1667,27 +1784,22 @@ class DbClient:
         params.filename_searches = filename_searches
         return params
 
-    async def list_dataset_images(
+    async def _list_images_for_dataset(
         self,
-        uuid: str,
+        dataset: DatasetRead,
         *,
         limit: int = 50,
         sort_by: str = "updated_at",
         sort_order: str = "desc",
         after_uuid: Optional[str] = None,
         after_sort_value: Optional[datetime] = None,
-    ) -> Optional[tuple[list[ImageRecord], bool]]:
-        """Execute a dataset's filter criteria and return (images, has_more).
+    ) -> tuple[list[ImageRecord], bool]:
+        """Execute a DatasetRead's filter criteria and return (images, has_more).
 
-        Returns None if the dataset doesn't exist.
         has_more is True if there may be additional results beyond this page.
         BboxAgeCondition entries are applied as an additional in-DB filter after
         the base query.
         """
-        dataset = await self.get_dataset(uuid)
-        if dataset is None:
-            return None
-
         criteria = DatasetFilterCriteria.model_validate({"conditions": dataset.filter_json.get("conditions", [])})
 
         params = self.build_dataset_search_params(
@@ -1740,3 +1852,45 @@ class DbClient:
                 filtered_uuids = filtered_uuids & matching
 
         return [img for img in results if img.uuid in filtered_uuids], has_more
+
+    async def list_dataset_images(
+        self,
+        uuid: str,
+        *,
+        limit: int = 50,
+        sort_by: str = "updated_at",
+        sort_order: str = "desc",
+        after_uuid: Optional[str] = None,
+        after_sort_value: Optional[datetime] = None,
+    ) -> Optional[tuple[list[ImageRecord], bool]]:
+        """Execute a dataset's filter criteria and return (images, has_more).
+
+        Returns None if the dataset doesn't exist.
+        """
+        dataset = await self.get_dataset(uuid)
+        if dataset is None:
+            return None
+        return await self._list_images_for_dataset(
+            dataset,
+            limit=limit,
+            sort_by=sort_by,
+            sort_order=sort_order,
+            after_uuid=after_uuid,
+            after_sort_value=after_sort_value,
+        )
+
+    async def preview_dataset_images(
+        self,
+        filter_json: Dict[str, Any],
+        label_uuids: List[str],
+        *,
+        limit: int = 500,
+    ) -> tuple[list[ImageRecord], bool]:
+        """Execute filter criteria without a stored dataset (unsaved preview)."""
+        fake_dataset = DatasetRead(
+            uuid="__preview__",
+            name="__preview__",
+            filter_json=filter_json,
+            label_uuids=label_uuids,
+        )
+        return await self._list_images_for_dataset(fake_dataset, limit=limit)

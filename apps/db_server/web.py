@@ -11,7 +11,7 @@ from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field
 from pydantic.alias_generators import to_camel
 
 from apps.db_server.manager import Manager
@@ -19,6 +19,7 @@ from apps.helpers.consts import ApiTags, JsonKeys, JsonValues, TaskStatus
 from apps.helpers.db.types import (
     BBoxUpdate,
     DatasetCreate,
+    DatasetFilterCriteria,
     DatasetRead,
     DatasetUpdate,
     ImageLabelRead,
@@ -342,6 +343,13 @@ class DatasetImagesResponse(StatusResponse):
 
 class DatasetLabelsResponse(StatusResponse):
     labels: List[Label] = Field(default_factory=list)
+
+
+class DatasetPreviewPayload(BaseModel):
+    """Request body for the unsaved-preview endpoint."""
+    model_config = ConfigDict(populate_by_name=True)
+    filter_json: DatasetFilterCriteria = Field(default_factory=DatasetFilterCriteria)
+    label_uuids: List[str] = Field(default_factory=list)
 
 
 class WebApp:
@@ -1123,10 +1131,8 @@ class WebApp:
             try:
                 dataset = await self._manager.update_dataset(uuid, payload)
                 if dataset is None:
-                    raise HTTPException(status_code=404, detail="Dataset not found")
+                    return DatasetResponse(status=JsonValues.FAILURE, message="Dataset not found")
                 return DatasetResponse(status=JsonValues.SUCCESS, dataset=dataset)
-            except HTTPException:
-                raise
             except Exception as e:
                 logger.error(e, exc_info=True)
                 return DatasetResponse(status=JsonValues.FAILURE, message=str(e))
@@ -1141,13 +1147,36 @@ class WebApp:
             try:
                 ok = await self._manager.delete_dataset(uuid)
                 if not ok:
-                    raise HTTPException(status_code=404, detail="Dataset not found")
+                    return StatusResponse(status=JsonValues.FAILURE, message="Dataset not found")
                 return StatusResponse(status=JsonValues.SUCCESS)
-            except HTTPException:
-                raise
             except Exception as e:
                 logger.error(e, exc_info=True)
                 return StatusResponse(status=JsonValues.FAILURE, message=str(e))
+
+        @self._app.post(
+            "/api/datasets/preview",
+            response_model=DatasetImagesResponse,
+            tags=[ApiTags.DATASETS],
+            operation_id="preview_dataset_images",
+        )
+        async def preview_dataset_images(
+            payload: DatasetPreviewPayload,
+            limit: int = Query(default=500, ge=1, le=500),
+        ) -> DatasetImagesResponse:
+            try:
+                images, has_more = await self._manager.preview_dataset_images(
+                    payload.filter_json.model_dump(mode="json"),
+                    payload.label_uuids,
+                    limit=limit,
+                )
+                return DatasetImagesResponse(
+                    status=JsonValues.SUCCESS,
+                    images=images,
+                    has_more=has_more,
+                )
+            except Exception as e:
+                logger.exception("Failed to preview dataset images")
+                return DatasetImagesResponse(status=JsonValues.FAILURE, message=str(e))
 
         @self._app.post(
             "/api/datasets/{uuid}/images",
@@ -1173,15 +1202,13 @@ class WebApp:
                     after_sort_value=after_sort_value,
                 )
                 if result is None:
-                    raise HTTPException(status_code=404, detail="Dataset not found")
+                    return DatasetImagesResponse(status=JsonValues.FAILURE, message="Dataset not found")
                 images, has_more = result
                 return DatasetImagesResponse(
                     status=JsonValues.SUCCESS,
                     images=images,
                     has_more=has_more,
                 )
-            except HTTPException:
-                raise
             except Exception as e:
                 logger.exception("Failed to fetch dataset images")
                 return DatasetImagesResponse(status=JsonValues.FAILURE, message=str(e))
@@ -1196,10 +1223,8 @@ class WebApp:
             try:
                 labels = await self._manager.get_dataset_labels(uuid)
                 if labels is None:
-                    raise HTTPException(status_code=404, detail="Dataset not found")
+                    return DatasetLabelsResponse(status=JsonValues.FAILURE, message="Dataset not found")
                 return DatasetLabelsResponse(status=JsonValues.SUCCESS, labels=labels)
-            except HTTPException:
-                raise
             except Exception as e:
                 logger.error(e, exc_info=True)
                 return DatasetLabelsResponse(status=JsonValues.FAILURE, message=str(e))
