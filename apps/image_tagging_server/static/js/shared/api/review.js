@@ -125,6 +125,11 @@ export function getBboxThumbnailUrl(imagePath, bboxUuid, width = 200) {
   return `/api/images/${encodedPath}/bbox/${bboxUuid}/thumbnail?width=${width}`;
 }
 
+export function getImageThumbnailUrl(imagePath, width = 200) {
+  const encodedPath = imagePath.split('/').map(encodeURIComponent).join('/');
+  return `/api/images/${encodedPath}/thumbnail?width=${width}`;
+}
+
 /**
  * Update a single bbox's label and tags.
  * @param {string} bboxUuid

@@ -885,6 +885,8 @@ class WebApp:
                 raise HTTPException(status_code=404, detail="Bbox not found")
             return Response(status_code=204)
 
+        # NOTE: bbox thumbnail route must come BEFORE the generic image thumbnail route
+        # because {path:path} is greedy and would otherwise capture the /bbox/uuid/thumbnail suffix.
         @self._app.get(
             "/api/images/{image_path:path}/bbox/{bbox_uuid}/thumbnail",
             tags=[ApiTags.IMAGES],
@@ -894,6 +896,17 @@ class WebApp:
             png_bytes = await self._manager.get_bbox_thumbnail(bbox_uuid, width=width)
             if png_bytes is None:
                 raise HTTPException(status_code=404, detail="Thumbnail not available")
+            return Response(content=png_bytes, media_type="image/png")
+
+        @self._app.get(
+            "/api/images/{image_path:path}/thumbnail",
+            tags=[ApiTags.IMAGES],
+            operation_id="get_image_thumbnail",
+        )
+        async def get_image_thumbnail(image_path: str, width: int = 640) -> Response:
+            png_bytes = await self._manager.get_image_thumbnail(image_path, width=width)
+            if png_bytes is None:
+                raise HTTPException(status_code=404, detail="Image not found")
             return Response(content=png_bytes, media_type="image/png")
 
         ################################################################################

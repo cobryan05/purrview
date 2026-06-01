@@ -7,19 +7,23 @@ import {
   updateBbox,
   deleteBbox,
   getBboxThumbnailUrl,
+  getImageThumbnailUrl,
   invalidateBboxThumbnails,
   UNVERIFIED_TAG_UUID,
 } from '/app-static/js/shared/api/review.js';
-import { Logger } from '/app-static/js/ui/utils/logging.js';
+import { setImageLabel } from '/app-static/js/shared/api/imageLabels.js';
+import { Logger, toast } from '/app-static/js/ui/utils/logging.js';
 import { CheckboxField } from '/app-static/js/ui/utils/fields/CheckboxField.js';
 import { createCanvasInstance } from '/app-static/js/app/image-tagging/canvas/instance.js';
 import { saveAnnotations } from '/app-static/js/app/image-tagging/canvas/image.js';
 import { init as initToolbar } from '/app-static/js/app/image-tagging/toolbar.js';
 import { initLabelPanel } from '/app-static/js/app/image-tagging/canvas/labelPanel.js';
 import { initInspector } from '/app-static/js/ui/inspector.js';
+import { createHoverPreview } from '/app-static/js/app/review/hoverPreview.js';
 
 
-const PAGE_SIZE = 50;
+const DEFAULT_PAGE_SIZE = 50;
+const MAX_ENTRIES = 500; // hard cap on total cards per page
 
 function makeSelect(className, options, defaultValue) {
   const sel = document.createElement('select');
@@ -90,6 +94,36 @@ export async function createReviewPanel(container, { fetchImages = null } = {}) 
     labelSelect.appendChild(opt);
   }
 
+  // ── View filter toggle (All / Images / Bboxes) ───────────────────
+  const viewToggle = document.createElement('div');
+  viewToggle.className = 'review-view-toggle';
+  const viewBtns = [
+    { key: 'all', label: 'All' },
+    { key: 'images', label: 'Images' },
+    { key: 'bboxes', label: 'Bboxes' },
+  ];
+  for (const { key, label } of viewBtns) {
+    const btn = document.createElement('button');
+    btn.className = 'view-btn' + (key === 'all' ? ' active' : '');
+    btn.dataset.viewKey = key;
+    btn.textContent = label;
+    btn.addEventListener('click', () => {
+      if (_viewFilter === key) return;
+      _viewFilter = key;
+      viewToggle.querySelectorAll('.view-btn').forEach(b =>
+        b.classList.toggle('active', b.dataset.viewKey === key));
+      _selected.clear();
+      _selectionKind = null;
+      renderFromEntries();
+    });
+    viewToggle.appendChild(btn);
+  }
+
+  // ── Per-page selector ────────────────────────────────────────────
+  const pageSizeSelect = makeSelect('filter-page-size',
+    [['10', '10/page'], ['25', '25/page'], ['50', '50/page'], ['100', '100/page']],
+    String(DEFAULT_PAGE_SIZE));
+
   // Select-all checkbox
   const selectAllLabel = document.createElement('label');
   selectAllLabel.style.cssText = 'display:flex;align-items:center;gap:0.3em;cursor:pointer;white-space:nowrap;';
@@ -127,6 +161,8 @@ export async function createReviewPanel(container, { fetchImages = null } = {}) 
   toolbar.appendChild(sortBySelect);
   toolbar.appendChild(sortOrderSelect);
   toolbar.appendChild(labelSelect);
+  toolbar.appendChild(viewToggle);
+  toolbar.appendChild(pageSizeSelect);
   toolbar.appendChild(selectAllLabel);
   toolbar.appendChild(bulkBtn);
   toolbar.appendChild(statusMsg);
@@ -160,24 +196,41 @@ export async function createReviewPanel(container, { fetchImages = null } = {}) 
   grid.className = 'review-grid';
   container.appendChild(grid);
 
+  // ── Hover preview ─────────────────────────────────────────────────
+  const _imageCache = new Map();
+  const hoverPreview = createHoverPreview({ imageCache: _imageCache });
+
   // ── State ─────────────────────────────────────────────────────────
-  let _allBboxEntries = []; // flat list of { bbox, img } for current page
-  let _selected = new Set(); // selected bbox UUIDs
-  let _staleUuids = new Set(); // bbox UUIDs modified on this page (for status display)
-  let _deletedUuids = new Set(); // bbox UUIDs deleted this page (disabled/unselectable)
-  let _pageCursors = [null]; // cursor stack: null = first page, {uuid, sortValue} = keyset
-  let _lastCursor = null; // {uuid: string, sortValue: string|null} of last image on current page
-  let _lastClickedIndex = -1; // index in _allBboxEntries of the last checkbox click (for shift-select)
+  // _allEntries holds ALL entries for the current page (both image and bbox).
+  // _viewFilter controls which subset is rendered to DOM.
+  let _allEntries = [];       // Array<{ kind: 'bbox', bbox, img } | { kind: 'image', img }>
+  let _viewFilter = 'all';    // 'all' | 'images' | 'bboxes'
+  let _selectionKind = null;  // 'bbox' | 'image' | null — type of currently selected cards
+  let _pageSize = DEFAULT_PAGE_SIZE;
+  let _imageCardRefreshers = new Map(); // img.uuid → () => void — redraws bbox overlay
+
+  let _selected = new Set();      // selected IDs (bbox.uuid or img.uuid depending on kind)
+  let _staleUuids = new Set();    // entry IDs modified on this page (for status display)
+  let _deletedUuids = new Set();  // entry IDs deleted this page (disabled/unselectable)
+  let _pageCursors = [null];
+  let _lastCursor = null;
+  let _lastClickedIndex = -1;     // index in _visibleEntries of the last checkbox click
   let _rendering = false;
   let _hasMore = false;
 
-  // Stale (non-deleted) cards intentionally remain selectable and bulk-updatable.
-  // After applying changes via the canvas modal or a single-card action, we want
-  // the user to stay on the same page and keep their place in the list — disabling
-  // stale cards would force a page reload to re-select them.  Only truly deleted
-  // bboxes are excluded from selection and the active-count denominator.
+  // _visibleEntries is the filtered subset rendered to DOM (updated by renderFromEntries)
+  let _visibleEntries = [];
+
+  const entryId = e => e.kind === 'image' ? e.img.uuid : e.bbox.uuid;
+
   function updateBulkBtn() {
-    const activeCount = _allBboxEntries.filter(e => !_deletedUuids.has(e.bbox.uuid)).length;
+    // Count only active entries of the current selection kind so the select-all
+    // checkbox reaches `checked=true` (not `indeterminate`) when every entry of
+    // the selected type is chosen — even if entries of the other type exist.
+    const activeCount = _visibleEntries.filter(e =>
+      !_deletedUuids.has(entryId(e)) &&
+      (_selectionKind === null || e.kind === _selectionKind)
+    ).length;
     bulkBtn.textContent = `Bulk Apply (${_selected.size})`;
     bulkBtn.disabled = _selected.size === 0;
     selectAllCb.checked = _selected.size > 0 && _selected.size === activeCount;
@@ -185,13 +238,16 @@ export async function createReviewPanel(container, { fetchImages = null } = {}) 
   }
 
   function updateStatusMsg() {
-    const total = _allBboxEntries.length;
+    const total = _visibleEntries.length;
     const stale = _staleUuids.size;
     const fresh = total - stale;
+    const singular = _viewFilter === 'images' ? 'image' : 'bbox';
+    const plural = _viewFilter === 'images' ? 'images' : 'bboxes';
+    const unit = total === 1 ? singular : plural;
     if (total === 0) {
-      statusMsg.textContent = 'No matching annotations on this page';
+      statusMsg.textContent = `No matching ${plural} on this page`;
     } else if (stale === 0) {
-      statusMsg.textContent = `${total} bbox${total === 1 ? '' : 'es'} on this page`;
+      statusMsg.textContent = `${total} ${unit} on this page`;
     } else {
       statusMsg.textContent = `${fresh} remaining · ${stale} modified`;
     }
@@ -212,24 +268,150 @@ export async function createReviewPanel(container, { fetchImages = null } = {}) 
     badge.className = `card-state-badge state-${state}`;
     badge.textContent = stateLabels[state] ?? state;
     card.querySelector('.card-info')?.prepend(badge);
-    const uuid = card.dataset.bboxUuid;
-    _staleUuids.add(uuid);
+    const id = card.dataset.bboxUuid ?? card.dataset.imageUuid;
+    _staleUuids.add(id);
     if (state === 'deleted') {
       const cb = card.querySelector('input[type=checkbox]');
       if (cb) { cb.checked = false; cb.disabled = true; }
-      _selected.delete(uuid);
-      _deletedUuids.add(uuid);
+      _selected.delete(id);
+      _deletedUuids.add(id);
     }
   }
 
-  // ── Render ────────────────────────────────────────────────────────
+  function updateTypeFading() {
+    grid.querySelectorAll('.review-card').forEach(card => {
+      const shouldFade = _selectionKind !== null && card.dataset.kind !== _selectionKind;
+      card.classList.toggle('type-faded', shouldFade);
+    });
+  }
+
+  function clearSelection() {
+    _selected.clear();
+    _selectionKind = null;
+    selectAllCb.checked = false;
+    selectAllCb.indeterminate = false;
+    grid.querySelectorAll('.review-card').forEach(c => {
+      c.classList.remove('selected');
+      const cb = c.querySelector('input[type=checkbox]');
+      if (cb && !cb.disabled) cb.checked = false;
+    });
+    updateBulkBtn();
+    updateTypeFading();
+  }
+
+  // ── Card hover utilities (grouping highlight + preview) ───────────
+  function attachGroupHighlight(card, imageUuid) {
+    card.addEventListener('mouseenter', () => {
+      // Bold highlight on the hovered card itself
+      card.classList.add(card.dataset.kind === 'image' ? 'group-highlight-self-image' : 'group-highlight-self-bbox');
+      // Softer highlight on related cards
+      grid.querySelectorAll(`[data-image-uuid="${imageUuid}"]`).forEach(c => {
+        if (c === card) return;
+        c.classList.add(c.dataset.kind === 'image' ? 'group-highlight-image' : 'group-highlight-bbox');
+      });
+    });
+    card.addEventListener('mouseleave', () => {
+      card.classList.remove('group-highlight-self-image', 'group-highlight-self-bbox');
+      grid.querySelectorAll('.group-highlight-image,.group-highlight-bbox').forEach(c =>
+        c.classList.remove('group-highlight-image', 'group-highlight-bbox'));
+    });
+  }
+
+  // ── Shared applySelect logic ──────────────────────────────────────
+  function applySelect(cb, card, id, entryKind, index, shiftKey, newChecked) {
+    // Block if selection type is locked to a different kind
+    if (newChecked && _selectionKind !== null && entryKind !== _selectionKind) {
+      toast('You can only select one type at a time. Deselect current items first.');
+      cb.checked = false;
+      return;
+    }
+
+    cb.checked = newChecked;
+
+    if (shiftKey && _lastClickedIndex !== -1 && _lastClickedIndex !== index) {
+      const lo = Math.min(_lastClickedIndex, index);
+      const hi = Math.max(_lastClickedIndex, index);
+      for (let i = lo; i <= hi; i++) {
+        const entry = _visibleEntries[i];
+        if (!entry) continue;
+        const eid = entryId(entry);
+        if (_deletedUuids.has(eid)) continue;
+        // Only select entries of the same kind
+        if (entry.kind !== entryKind) continue;
+        const selector = entry.kind === 'image'
+          ? `[data-image-uuid="${eid}"][data-kind="image"]`
+          : `[data-bbox-uuid="${eid}"]`;
+        const c = grid.querySelector(selector);
+        const cCb = c?.querySelector('input[type=checkbox]');
+        if (!cCb || cCb.disabled) continue;
+        cCb.checked = newChecked;
+        if (newChecked) _selected.add(eid);
+        else _selected.delete(eid);
+        c.classList.toggle('selected', newChecked);
+      }
+    } else {
+      if (newChecked) _selected.add(id);
+      else _selected.delete(id);
+      card.classList.toggle('selected', newChecked);
+    }
+
+    _lastClickedIndex = index;
+
+    // Update selectionKind
+    if (_selected.size === 0) {
+      _selectionKind = null;
+    } else if (_selectionKind === null) {
+      _selectionKind = entryKind;
+    }
+
+    updateBulkBtn();
+    updateTypeFading();
+  }
+
+  // ── Render filtered entries to grid ──────────────────────────────
+  function renderFromEntries() {
+    _selected.clear();
+    _staleUuids = new Set();
+    _deletedUuids = new Set();
+    _lastClickedIndex = -1;
+    _selectionKind = null;
+
+    // Filter entries by view mode
+    _visibleEntries = _allEntries.filter(e => {
+      if (_viewFilter === 'images') return e.kind === 'image';
+      if (_viewFilter === 'bboxes') return e.kind === 'bbox';
+      return true; // 'all'
+    });
+
+    grid.innerHTML = '';
+    updateBulkBtn();
+
+    if (_visibleEntries.length === 0) {
+      const empty = document.createElement('p');
+      empty.textContent = _hasMore
+        ? 'No matching annotations on this page.'
+        : 'No matching annotations found.';
+      empty.style.color = '#aaa';
+      grid.appendChild(empty);
+      updateStatusMsg();
+      return;
+    }
+
+    _visibleEntries.forEach((entry, index) => {
+      const card = entry.kind === 'image'
+        ? buildImageCard(entry.img, labels, index)
+        : buildCard(entry.bbox, entry.img, labels, index);
+      grid.appendChild(card);
+    });
+
+    updateStatusMsg();
+  }
+
+  // ── Render (fetch + display) ──────────────────────────────────────
   async function render() {
     if (_rendering) return;
     _rendering = true;
 
-    // currentCursor tracks the effective fetch cursor, which may advance past
-    // server pages that contain zero unverified bboxes (all already verified).
-    // We update the top of _pageCursors so Prev navigates correctly.
     const MAX_AUTO_SKIP = 10;
     let autoSkipped = 0;
 
@@ -242,9 +424,13 @@ export async function createReviewPanel(container, { fetchImages = null } = {}) 
       _selected.clear();
       _staleUuids = new Set();
       _deletedUuids = new Set();
-      _allBboxEntries = [];
+      _allEntries = [];
+      _visibleEntries = [];
+      _selectionKind = null;
       _lastCursor = null;
       _lastClickedIndex = -1;
+      _imageCache.clear();
+      _imageCardRefreshers.clear();
       updateBulkBtn();
 
       const sortBy = sortBySelect.value;
@@ -255,17 +441,15 @@ export async function createReviewPanel(container, { fetchImages = null } = {}) 
       let images;
       try {
         if (fetchImages) {
-          // Custom data source (dataset mode): caller decides what to fetch
           images = await fetchImages({
             sortBy,
             sortOrder,
             labelUuid: labelSelect.value || undefined,
             afterUuid: cursor?.uuid ?? null,
             afterSortValue: cursor?.sortValue ?? null,
-            limit: PAGE_SIZE,
+            limit: _pageSize,
           });
         } else {
-          // Standard mode: full filter panel + fetchReviewQueue
           images = await fetchReviewQueue({
             tagUuids: fs.showAllBboxes ? [] : fs.tagUuids,
             showAllBboxes: fs.showAllBboxes,
@@ -278,7 +462,7 @@ export async function createReviewPanel(container, { fetchImages = null } = {}) 
             afterUuid: cursor?.uuid ?? null,
             afterSortValue: cursor?.sortValue ?? null,
             imageLabelFilters: fs.imageLabelFilters,
-            limit: PAGE_SIZE,
+            limit: _pageSize,
           });
         }
       } catch (err) {
@@ -288,9 +472,8 @@ export async function createReviewPanel(container, { fetchImages = null } = {}) 
         return;
       }
 
-      _hasMore = images.length === PAGE_SIZE;
+      _hasMore = images.length === _pageSize;
 
-      // Update the keyset cursor for the Next button.
       if (images.length > 0) {
         const last = images[images.length - 1];
         _lastCursor = {
@@ -301,28 +484,32 @@ export async function createReviewPanel(container, { fetchImages = null } = {}) 
         };
       }
 
-      // Flatten images → matching bboxes.
-      // In fetchImages (dataset) mode all bboxes are shown — the backend already
-      // applied the dataset filter.  In standard mode, filter client-side to bboxes
-      // that carry one of the selected tags (server may return extras).
-      const showAll = fetchImages || fs.showAllBboxes;
+      // Build _allEntries: for each image, one ImageEntry then its matching BboxEntries.
+      const showAll = fetchImages || fs?.showAllBboxes;
       const tagSet = (fs && !showAll) ? new Set(fs.tagUuids) : null;
 
       for (const img of images) {
         const matching = (img.bboxes || []).filter(b =>
           showAll || (b.tags || []).some(t => tagSet.has(t.uuid))
         );
+        // Always add an image-level entry
+        _allEntries.push({ kind: 'image', img });
+        // Add bbox entries for each matching bbox
         for (const bbox of matching) {
-          _allBboxEntries.push({ bbox, img });
+          _allEntries.push({ kind: 'bbox', bbox, img });
         }
       }
 
-      // If the server returned a full page of images but the client-side tag filter
-      // found nothing on any of them, advance the cursor automatically rather than
-      // showing an empty page.
-      if (_allBboxEntries.length === 0 && _hasMore && autoSkipped < MAX_AUTO_SKIP) {
+      // Hard cap: truncate total entries to prevent runaway card counts
+      if (_allEntries.length > MAX_ENTRIES) {
+        _allEntries = _allEntries.slice(0, MAX_ENTRIES);
+        _hasMore = true; // there are more, user must paginate
+      }
+
+      // Auto-skip empty pages (when client-side tag filter leaves nothing)
+      const bboxEntries = _allEntries.filter(e => e.kind === 'bbox');
+      if (bboxEntries.length === 0 && _hasMore && autoSkipped < MAX_AUTO_SKIP) {
         autoSkipped++;
-        // Advance the top of the cursor stack in place so Prev still navigates correctly.
         _pageCursors[_pageCursors.length - 1] = _lastCursor;
         continue fetchLoop;
       }
@@ -330,32 +517,17 @@ export async function createReviewPanel(container, { fetchImages = null } = {}) 
       break fetchLoop;
     }
 
-    updateStatusMsg();
     pageInfo.textContent = `Page ${_pageCursors.length}`;
     prevBtn.disabled = _pageCursors.length <= 1;
     nextBtn.disabled = !_hasMore;
 
-    if (_allBboxEntries.length === 0) {
-      const empty = document.createElement('p');
-      empty.textContent = _hasMore
-        ? 'No matching annotations on this page.'
-        : 'No matching annotations found.';
-      empty.style.color = '#aaa';
-      grid.appendChild(empty);
-      refreshBtn.disabled = false;
-      _rendering = false;
-      return;
-    }
-
-    _allBboxEntries.forEach(({ bbox, img }, index) => {
-      grid.appendChild(buildCard(bbox, img, labels, index));
-    });
+    renderFromEntries();
 
     refreshBtn.disabled = false;
     _rendering = false;
   }
 
-  // ── Card builder ──────────────────────────────────────────────────
+  // ── Bbox card builder ─────────────────────────────────────────────
   function buildCard(bbox, img, labels, index) {
     const label = bbox.labelUuid ? labels.get(bbox.labelUuid) : null;
     const labelName = label?.name ?? '(unknown)';
@@ -367,47 +539,24 @@ export async function createReviewPanel(container, { fetchImages = null } = {}) 
     const card = document.createElement('div');
     card.className = 'review-card';
     card.dataset.bboxUuid = bbox.uuid;
+    card.dataset.imageUuid = img.uuid;
+    card.dataset.kind = 'bbox';
 
     const cb = document.createElement('input');
     cb.type = 'checkbox';
 
-    function applySelect(shiftKey, newChecked) {
-      cb.checked = newChecked;
-      if (shiftKey && _lastClickedIndex !== -1 && _lastClickedIndex !== index) {
-        const lo = Math.min(_lastClickedIndex, index);
-        const hi = Math.max(_lastClickedIndex, index);
-        for (let i = lo; i <= hi; i++) {
-          const entry = _allBboxEntries[i];
-          if (!entry || _deletedUuids.has(entry.bbox.uuid)) continue;
-          const c = grid.querySelector(`[data-bbox-uuid="${entry.bbox.uuid}"]`);
-          const cCb = c?.querySelector('input[type=checkbox]');
-          if (!cCb || cCb.disabled) continue;
-          cCb.checked = newChecked;
-          if (newChecked) _selected.add(entry.bbox.uuid);
-          else _selected.delete(entry.bbox.uuid);
-          c.classList.toggle('selected', newChecked);
-        }
-      } else {
-        if (newChecked) _selected.add(bbox.uuid);
-        else _selected.delete(bbox.uuid);
-        card.classList.toggle('selected', newChecked);
-      }
-      _lastClickedIndex = index;
-      updateBulkBtn();
-    }
-
-    // Use 'click' (not 'change') so we can read e.shiftKey for range selection.
-    // By the time 'click' fires, cb.checked already reflects the new toggled state.
-    cb.addEventListener('click', (e) => applySelect(e.shiftKey, cb.checked));
+    cb.addEventListener('click', (e) => {
+      applySelect(cb, card, bbox.uuid, 'bbox', index, e.shiftKey, cb.checked);
+    });
 
     let _clickTimer = null;
     card.addEventListener('click', (e) => {
       if (e.target === cb || cb.disabled) return;
-      if (e.shiftKey) e.preventDefault(); // prevent text selection from shift-click
+      if (e.shiftKey) e.preventDefault();
       clearTimeout(_clickTimer);
       const shiftKey = e.shiftKey;
       const newChecked = !cb.checked;
-      _clickTimer = setTimeout(() => applySelect(shiftKey, newChecked), 220);
+      _clickTimer = setTimeout(() => applySelect(cb, card, bbox.uuid, 'bbox', index, shiftKey, newChecked), 220);
     });
 
     const thumbImg = document.createElement('img');
@@ -422,14 +571,11 @@ export async function createReviewPanel(container, { fetchImages = null } = {}) 
         if (!card) return;
 
         if (updatedUIBbox === undefined) {
-          // Bbox was deleted inside the canvas editor
           markCardStale(card, 'deleted');
         } else {
-          // Force thumbnail re-download by cache-busting the URL
           const thumb = card.querySelector('.thumb');
           if (thumb) thumb.src = getBboxThumbnailUrl(img.filename, bbox.uuid, 300) + `&t=${Date.now()}`;
 
-          // Update label chip to reflect the saved state (including the label-less case)
           const chip = card.querySelector('.label-chip');
           if (chip) {
             if (updatedUIBbox.label) {
@@ -441,7 +587,6 @@ export async function createReviewPanel(container, { fetchImages = null } = {}) 
             }
           }
 
-          // If it's no longer unverified, mark it stale with the appropriate state
           const stillUnverified = (updatedUIBbox.tags ?? []).some(t => t.uuid === UNVERIFIED_TAG_UUID);
           if (!stillUnverified) {
             markCardStale(card, 'verified');
@@ -471,70 +616,253 @@ export async function createReviewPanel(container, { fetchImages = null } = {}) 
     card.appendChild(cb);
     card.appendChild(thumbImg);
     card.appendChild(info);
+
+    attachGroupHighlight(card, img.uuid);
+    hoverPreview.attach(card, {
+      imagePath: img.filename,
+      imageUuid: img.uuid,
+      allBboxes: img.bboxes,
+      hoveredBboxUuid: bbox.uuid,
+    });
+
+    return card;
+  }
+
+  // ── Image card builder ────────────────────────────────────────────
+  function buildImageCard(img, labels, index) {
+    const card = document.createElement('div');
+    card.className = 'review-card review-card--image';
+    card.dataset.imageUuid = img.uuid;
+    card.dataset.kind = 'image';
+
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+
+    cb.addEventListener('click', (e) => {
+      applySelect(cb, card, img.uuid, 'image', index, e.shiftKey, cb.checked);
+    });
+
+    let _clickTimer = null;
+    card.addEventListener('click', (e) => {
+      if (e.target === cb || cb.disabled) return;
+      if (e.shiftKey) e.preventDefault();
+      clearTimeout(_clickTimer);
+      const shiftKey = e.shiftKey;
+      const newChecked = !cb.checked;
+      _clickTimer = setTimeout(() => applySelect(cb, card, img.uuid, 'image', index, shiftKey, newChecked), 220);
+    });
+
+    // Double-click thumbnail → open canvas modal on first available bbox
+    const thumbImg = document.createElement('img');
+    thumbImg.className = 'thumb';
+    thumbImg.alt = img.filename.split('/').pop();
+    thumbImg.src = getImageThumbnailUrl(img.filename, 200);
+    thumbImg.title = 'Double-click to edit in canvas';
+    thumbImg.addEventListener('dblclick', () => {
+      clearTimeout(_clickTimer);
+      const firstBbox = (img.bboxes ?? [])[0];
+      if (firstBbox) {
+        showCanvasModal(firstBbox, img, labels, async () => {
+          updateBulkBtn();
+          updateStatusMsg();
+        });
+      }
+    });
+
+    // Bbox canvas overlay — draws normalized rects over the thumbnail
+    const thumbCanvas = document.createElement('canvas');
+    thumbCanvas.className = 'thumb-overlay';
+
+    function drawBboxOverlay() {
+      const w = thumbImg.naturalWidth || 200;
+      const h = thumbImg.naturalHeight || 150;
+      thumbCanvas.width = w;
+      thumbCanvas.height = h;
+      const ctx = thumbCanvas.getContext('2d');
+      ctx.clearRect(0, 0, w, h);
+      for (const bbox of (img.bboxes ?? [])) {
+        const color = bbox.label?.color ?? '#ffdd00';
+        ctx.strokeStyle = color;
+        ctx.lineWidth = Math.max(1, Math.round(w / 150));
+        ctx.strokeRect(bbox.x * w, bbox.y * h, bbox.width * w, bbox.height * h);
+      }
+    }
+
+    if (thumbImg.complete && thumbImg.naturalWidth) {
+      drawBboxOverlay();
+    } else {
+      thumbImg.onload = drawBboxOverlay;
+    }
+
+    // Register so bulk bbox actions can trigger a redraw
+    _imageCardRefreshers.set(img.uuid, drawBboxOverlay);
+
+    // Bbox count badge
+    const countBadge = document.createElement('div');
+    countBadge.className = 'bbox-count-badge';
+    const bc = (img.bboxes ?? []).length;
+    countBadge.textContent = `${bc} box${bc !== 1 ? 'es' : ''}`;
+
+    const thumbWrap = document.createElement('div');
+    thumbWrap.style.cssText = 'position:relative;';
+    thumbWrap.appendChild(thumbImg);
+    thumbWrap.appendChild(thumbCanvas);
+    thumbWrap.appendChild(countBadge);
+
+    const info = document.createElement('div');
+    info.className = 'card-info';
+
+    // Deduplicated label chips
+    const seenLabels = new Set();
+    const chipsRow = document.createElement('div');
+    chipsRow.style.cssText = 'display:flex;flex-wrap:wrap;gap:2px;margin-bottom:0.2em;';
+    for (const bbox of (img.bboxes ?? [])) {
+      const luuid = bbox.labelUuid;
+      if (!luuid || seenLabels.has(luuid)) continue;
+      seenLabels.add(luuid);
+      const lbl = labels.get(luuid);
+      if (!lbl) continue;
+      const chip = document.createElement('span');
+      chip.className = 'label-chip';
+      chip.textContent = lbl.name;
+      chip.style.cssText = `background:${lbl.color}33;border:1px solid ${lbl.color};`;
+      chipsRow.appendChild(chip);
+    }
+    if (seenLabels.size === 0) {
+      const chip = document.createElement('span');
+      chip.className = 'label-chip';
+      chip.textContent = '(no labels)';
+      chip.style.cssText = 'background:#88888833;border:1px solid #888;';
+      chipsRow.appendChild(chip);
+    }
+
+    const meta = document.createElement('div');
+    meta.style.cssText = 'color:#aaa;font-size:0.75em;';
+    meta.textContent = img.filename.split('/').slice(-2).join('/');
+
+    info.appendChild(chipsRow);
+    info.appendChild(meta);
+    card.appendChild(cb);
+    card.appendChild(thumbWrap);
+    card.appendChild(info);
+
+    attachGroupHighlight(card, img.uuid);
+    hoverPreview.attach(card, {
+      imagePath: img.filename,
+      imageUuid: img.uuid,
+      allBboxes: img.bboxes,
+      hoveredBboxUuid: null,
+    });
+
     return card;
   }
 
   // ── Select all ────────────────────────────────────────────────────
   selectAllCb.addEventListener('change', () => {
-    const cards = grid.querySelectorAll('.review-card');
-    for (const { bbox } of _allBboxEntries) {
-      if (_deletedUuids.has(bbox.uuid)) continue; // deleted cards can't be selected
-      if (selectAllCb.checked) _selected.add(bbox.uuid);
-      else _selected.delete(bbox.uuid);
+    if (!selectAllCb.checked) {
+      // Unchecked → clear everything
+      clearSelection();
+      _lastClickedIndex = -1;
+      return;
     }
-    cards.forEach(c => {
-      if (_deletedUuids.has(c.dataset.bboxUuid)) return; // deleted cards stay disabled
+
+    // Determine kind: use current selection's kind, or the kind of the first
+    // visible non-deleted entry (so selecting nothing then hitting select-all
+    // anchors to whatever type comes first on the page).
+    const firstEntry = _visibleEntries.find(e => !_deletedUuids.has(entryId(e)));
+    const targetKind = _selectionKind ?? firstEntry?.kind ?? null;
+    if (!targetKind) {
+      selectAllCb.checked = false;
+      return;
+    }
+
+    _selectionKind = targetKind;
+    for (const entry of _visibleEntries) {
+      const eid = entryId(entry);
+      if (_deletedUuids.has(eid)) continue;
+      if (entry.kind !== targetKind) continue;
+      _selected.add(eid);
+    }
+
+    grid.querySelectorAll('.review-card').forEach(c => {
+      const eid = c.dataset.bboxUuid ?? c.dataset.imageUuid;
+      if (_deletedUuids.has(eid)) return;
+      if (c.dataset.kind !== targetKind) return;
       const cb = c.querySelector('input[type=checkbox]');
-      if (cb) cb.checked = selectAllCb.checked;
-      c.classList.toggle('selected', selectAllCb.checked);
+      if (cb && !cb.disabled) cb.checked = true;
+      c.classList.add('selected');
     });
-    // Clear the shift-select anchor so a subsequent shift-click doesn't range
-    // from a stale individual-click position.
+
     _lastClickedIndex = -1;
     updateBulkBtn();
+    updateTypeFading();
   });
 
   // ── Bulk Apply ────────────────────────────────────────────────────
   bulkBtn.addEventListener('click', async () => {
     if (_selected.size === 0) return;
-    const selectedEntries = _allBboxEntries.filter(e => _selected.has(e.bbox.uuid));
-    await showBulkActionModal(selectedEntries, labels, async (action, newLabelUuid, selectedTagUuids) => {
-      const { failCount, succeededEntries } = await executeBulkAction(action, selectedEntries, newLabelUuid, selectedTagUuids);
+    const selectedEntries = _visibleEntries.filter(e => _selected.has(entryId(e)));
 
-      for (const { bbox, img } of succeededEntries) {
-        const card = grid.querySelector(`[data-bbox-uuid="${bbox.uuid}"]`);
-        if (!card) continue;
-
-        if (action === 'delete') {
-          markCardStale(card, 'deleted');
-        } else {
-          const thumb = card.querySelector('.thumb');
-          if (thumb) thumb.src = getBboxThumbnailUrl(img.filename, bbox.uuid, 300) + `&t=${Date.now()}`;
-
-          if (action === 'relabel' && newLabelUuid) {
-            const label = labels.get(newLabelUuid);
-            if (label) {
-              const chip = card.querySelector('.label-chip');
-              if (chip) {
-                chip.textContent = label.name;
-                chip.style.cssText = `background:${label.color}33;border:1px solid ${label.color};`;
-              }
-            }
-            markCardStale(card, 'relabeled');
-          } else if (action === 'addTags' || action === 'removeTags') {
-            markCardStale(card, 'tagged');
-          } else {
-            markCardStale(card, 'relabeled');
-          }
+    if (_selectionKind === 'image') {
+      await showImageBulkActionModal(selectedEntries, labels, async (action, labelUuid) => {
+        const { failCount, succeededEntries } = await executeBulkImageAction(action, selectedEntries, labelUuid);
+        for (const { img } of succeededEntries) {
+          const card = grid.querySelector(`[data-image-uuid="${img.uuid}"][data-kind="image"]`);
+          if (card) markCardStale(card, 'tagged');
         }
-      }
+        clearSelection();
+        updateStatusMsg();
+        if (failCount > 0) {
+          statusMsg.textContent += ` (${failCount} action${failCount === 1 ? '' : 's'} failed — check console)`;
+        }
+      });
+    } else {
+      await showBulkActionModal(selectedEntries, labels, async (action, newLabelUuid, selectedTagUuids) => {
+        const { failCount, succeededEntries } = await executeBulkAction(action, selectedEntries, newLabelUuid, selectedTagUuids);
 
-      updateBulkBtn();
-      updateStatusMsg();
-      if (failCount > 0) {
-        statusMsg.textContent += ` (${failCount} action${failCount === 1 ? '' : 's'} failed — check console)`;
-      }
-    });
+        for (const { bbox, img } of succeededEntries) {
+          const card = grid.querySelector(`[data-bbox-uuid="${bbox.uuid}"]`);
+          if (!card) continue;
+
+          if (action === 'delete') {
+            markCardStale(card, 'deleted');
+            // Remove from in-memory bboxes so image card overlay updates
+            const idx = img.bboxes?.findIndex(b => b.uuid === bbox.uuid) ?? -1;
+            if (idx !== -1) img.bboxes.splice(idx, 1);
+          } else {
+            const thumb = card.querySelector('.thumb');
+            if (thumb) thumb.src = getBboxThumbnailUrl(img.filename, bbox.uuid, 300) + `&t=${Date.now()}`;
+
+            if (action === 'relabel' && newLabelUuid) {
+              const label = labels.get(newLabelUuid);
+              if (label) {
+                const chip = card.querySelector('.label-chip');
+                if (chip) {
+                  chip.textContent = label.name;
+                  chip.style.cssText = `background:${label.color}33;border:1px solid ${label.color};`;
+                }
+                // Update in-memory bbox label so image card overlay reflects new color
+                const bboxInImg = img.bboxes?.find(b => b.uuid === bbox.uuid);
+                if (bboxInImg) { bboxInImg.labelUuid = newLabelUuid; bboxInImg.label = label; }
+              }
+              markCardStale(card, 'relabeled');
+            } else if (action === 'addTags' || action === 'removeTags') {
+              markCardStale(card, 'tagged');
+            } else {
+              markCardStale(card, 'relabeled');
+            }
+          }
+          // Redraw bbox overlay on the related image card (if visible)
+          _imageCardRefreshers.get(img.uuid)?.();
+        }
+
+        clearSelection();
+        updateStatusMsg();
+        if (failCount > 0) {
+          statusMsg.textContent += ` (${failCount} action${failCount === 1 ? '' : 's'} failed — check console)`;
+        }
+      });
+    }
   });
 
   // ── Pagination ────────────────────────────────────────────────────
@@ -552,11 +880,18 @@ export async function createReviewPanel(container, { fetchImages = null } = {}) 
   labelSelect.addEventListener('change', resetAndRender);
   sortBySelect.addEventListener('change', resetAndRender);
   sortOrderSelect.addEventListener('change', resetAndRender);
+  pageSizeSelect.addEventListener('change', () => {
+    _pageSize = parseInt(pageSizeSelect.value, 10) || DEFAULT_PAGE_SIZE;
+    resetAndRender();
+  });
 
   render();
 
   return {
-    destroy() { container.innerHTML = ''; },
+    destroy() {
+      hoverPreview.destroy();
+      container.innerHTML = '';
+    },
   };
 }
 
@@ -918,4 +1253,93 @@ async function showBulkActionModal(entries, labels, onConfirm) {
   document.body.appendChild(overlay);
 
   overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove(); });
+}
+
+async function showImageBulkActionModal(entries, labels, onConfirm) {
+  const overlay = document.createElement('div');
+  overlay.style.cssText = `position:fixed;inset:0;background:#0008;display:flex;
+    align-items:center;justify-content:center;z-index:1000;`;
+
+  const dialog = document.createElement('div');
+  dialog.style.cssText = `background:#222;border:1px solid #555;border-radius:6px;
+    padding:1.5em;min-width:300px;display:flex;flex-direction:column;gap:0.8em;`;
+
+  const title = document.createElement('strong');
+  title.textContent = `Apply to ${entries.length} selected image${entries.length === 1 ? '' : 's'}`;
+
+  const actions = [
+    { value: 'setAbsent', label: 'Mark label Absent (negative label)' },
+    { value: 'setUncertain', label: 'Clear Absent → Uncertain' },
+  ];
+
+  const radioGroup = document.createElement('div');
+  radioGroup.style.cssText = 'display:flex;flex-direction:column;gap:0.4em;';
+  let selectedAction = 'setAbsent';
+
+  for (const action of actions) {
+    const lbl = document.createElement('label');
+    lbl.style.cssText = 'display:flex;align-items:center;gap:0.5em;cursor:pointer;';
+    const radio = document.createElement('input');
+    radio.type = 'radio';
+    radio.name = 'image-bulk-action';
+    radio.value = action.value;
+    if (action.value === 'setAbsent') radio.checked = true;
+    radio.addEventListener('change', () => { selectedAction = action.value; });
+    lbl.appendChild(radio);
+    lbl.appendChild(document.createTextNode(action.label));
+    radioGroup.appendChild(lbl);
+  }
+
+  const labelPickerRow = document.createElement('div');
+  const labelPicker = document.createElement('select');
+  for (const lbl of labels.values()) {
+    const opt = document.createElement('option');
+    opt.value = lbl.uuid;
+    opt.textContent = lbl.name;
+    labelPicker.appendChild(opt);
+  }
+  labelPickerRow.appendChild(document.createTextNode('Label: '));
+  labelPickerRow.appendChild(labelPicker);
+
+  const btnRow = document.createElement('div');
+  btnRow.style.cssText = 'display:flex;gap:0.5em;justify-content:flex-end;';
+
+  const cancelBtn = document.createElement('button');
+  cancelBtn.textContent = 'Cancel';
+  cancelBtn.addEventListener('click', () => overlay.remove());
+
+  const okBtn = document.createElement('button');
+  okBtn.textContent = 'Apply';
+  okBtn.style.cssText = 'background:#ff003322;border:1px solid #ff0033;border-radius:3px;padding:0.2em 0.8em;cursor:pointer;';
+  okBtn.addEventListener('click', async () => {
+    overlay.remove();
+    await onConfirm(selectedAction, labelPicker.value);
+  });
+
+  btnRow.appendChild(cancelBtn);
+  btnRow.appendChild(okBtn);
+  dialog.append(title, radioGroup, labelPickerRow, btnRow);
+  overlay.appendChild(dialog);
+  document.body.appendChild(overlay);
+
+  overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove(); });
+}
+
+async function executeBulkImageAction(action, entries, labelUuid) {
+  const status = action === 'setAbsent' ? 'absent' : 'uncertain';
+  let failCount = 0;
+  const succeededEntries = [];
+
+  for (const entry of entries) {
+    const { img } = entry;
+    try {
+      await setImageLabel(img.filename, labelUuid, status);
+      succeededEntries.push(entry);
+    } catch (err) {
+      Logger.error(`Image label action failed for ${img.uuid}: ${err.message}`);
+      failCount++;
+    }
+  }
+
+  return { failCount, succeededEntries };
 }

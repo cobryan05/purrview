@@ -421,6 +421,7 @@ button.filter-active {
   height: 16px;
   cursor: pointer;
   accent-color: #ff0033;
+  z-index: 2;
 }
 
 .label-chip {
@@ -428,6 +429,119 @@ button.filter-active {
   padding: 1px 5px;
   border-radius: 3px;
   font-size: 0.85em;
+}
+
+/* ===== Review: View Filter Toggle ===== */
+.review-view-toggle {
+  display: flex;
+  border: 1px solid #555;
+  border-radius: 4px;
+  overflow: hidden;
+}
+.review-view-toggle .view-btn {
+  border: none;
+  border-radius: 0;
+  padding: 0.2em 0.7em;
+  cursor: pointer;
+  background: transparent;
+  color: #aaa;
+  font-size: 0.85em;
+}
+.review-view-toggle .view-btn.active {
+  background: #ff003322;
+  color: #ff6666;
+  border: 1px solid #ff0033;
+}
+
+/* ===== Review: Image-mode card ===== */
+.review-card--image {
+  background: #141e2e;
+  border-left: 3px solid #3366aa55;
+}
+.review-card--image .thumb {
+  aspect-ratio: 4/3 !important;
+  object-fit: contain !important;
+  background: #0d1520;
+}
+.review-card--image .thumb-overlay {
+  position: absolute;
+  inset: 0;
+  width: 100% !important;
+  height: 100% !important;
+  pointer-events: none;
+}
+.bbox-count-badge {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  background: #000a;
+  color: #fff;
+  font-size: 0.7em;
+  padding: 1px 5px;
+  border-radius: 3px;
+  pointer-events: none;
+}
+
+/* ===== Review: Type fading ===== */
+.review-card.type-faded {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+.review-card.type-faded input[type=checkbox] {
+  pointer-events: none;
+}
+
+/* ===== Review: Group highlight ===== */
+.review-card.group-highlight-bbox {
+  outline: 2px solid #ffdd0066;
+  outline-offset: -2px;
+}
+.review-card.group-highlight-image {
+  outline: 2px solid #4488ff88;
+  outline-offset: -2px;
+}
+.review-card.group-highlight-self-bbox {
+  outline: 3px solid #ffdd00cc;
+  outline-offset: -2px;
+}
+.review-card.group-highlight-self-image {
+  outline: 3px solid #4488ffcc;
+  outline-offset: -2px;
+}
+
+/* ===== Review: Hover preview popover ===== */
+.review-hover-popover {
+  position: fixed;
+  z-index: 1200;
+  background: #1a1a1a;
+  border: 1px solid #555;
+  border-radius: 6px;
+  padding: 4px;
+  box-shadow: 0 4px 24px #000a;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+  max-width: 320px;
+}
+.review-hover-popover.visible {
+  opacity: 1;
+}
+.review-hover-popover .popover-img-wrap {
+  position: relative;
+  display: block;
+}
+.review-hover-popover img.popover-img {
+  display: block;
+  max-width: 312px;
+  height: auto;
+  border-radius: 3px;
+}
+.review-hover-popover canvas.popover-canvas {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  width: 100% !important;
+  height: 100% !important;
 }
 
 /* ===== Canvas Modal (review page editor) ===== */

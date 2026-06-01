@@ -2,6 +2,7 @@
 
 import asyncio
 import fnmatch
+import hashlib
 import io
 import logging
 import os
@@ -624,6 +625,14 @@ class Manager:
     def _thumb_cache_path(self, bbox_uuid: str, width: int) -> Path:
         return self._thumb_cache_dir() / f"{bbox_uuid}_{width}.png"
 
+    def _resolve_image_file_path(self, image_path: str) -> Optional[Path]:
+        """Resolve an image path under _files_root; falls back to treating it as an absolute path."""
+        safe = get_safe_path(self._files_root, Path(image_path))
+        if safe is not None and safe.is_file():
+            return safe
+        fallback = Path(image_path)
+        return fallback if fallback.is_file() else None
+
     async def get_bbox_thumbnail(self, bbox_uuid: str, width: int = 200) -> Optional[bytes]:
         """
         Return JPEG bytes for a cropped+resized thumbnail of the given bbox.
@@ -643,11 +652,9 @@ class Manager:
         if image_record is None:
             return None
 
-        safe_path = get_safe_path(self._files_root, Path(image_record.filename))
-        if safe_path is None or not safe_path.is_file():
-            safe_path = Path(image_record.filename)
-            if not safe_path.is_file():
-                return None
+        safe_path = self._resolve_image_file_path(image_record.filename)
+        if safe_path is None:
+            return None
 
         # Extract coords and look up label color before the thread (avoids detached ORM objects).
         bx, by, bw, bh = bbox.x, bbox.y, bbox.width, bbox.height
@@ -714,6 +721,49 @@ class Manager:
                         logger.warning(f"Failed to delete thumbnail cache for {uuid}: {e}")
 
         await asyncio.to_thread(_remove_files)
+
+    def _image_thumb_cache_path(self, image_path: str, width: int) -> Path:
+        key = hashlib.sha1(image_path.encode()).hexdigest()
+        return self._thumb_cache_dir() / f"img_{key}_{width}.png"
+
+    async def get_image_thumbnail(self, image_path: str, width: int = 640) -> Optional[bytes]:
+        """Return PNG bytes for a full-image thumbnail, resized to `width` px.
+        Serves from disk cache if available, otherwise generates and caches it.
+        """
+        from PIL import Image as PILImage
+
+        cache_path = self._image_thumb_cache_path(image_path, width)
+        if cache_path.exists():
+            async with aiofiles.open(cache_path, "rb") as f:
+                return await f.read()
+
+        safe_path = self._resolve_image_file_path(image_path)
+        if safe_path is None:
+            return None
+
+        def _generate() -> Optional[bytes]:
+            try:
+                with PILImage.open(safe_path) as img:
+                    img = img.convert("RGB")
+                    aspect = img.width / img.height if img.height else 1
+                    height = max(1, round(width / aspect))
+                    resized = img.resize((width, height), PILImage.LANCZOS)
+                    buf = io.BytesIO()
+                    resized.save(buf, format="PNG")
+                    return buf.getvalue()
+            except Exception as e:
+                logger.warning(f"Failed to generate image thumbnail for {image_path}: {e}")
+                return None
+
+        png_bytes = await asyncio.to_thread(_generate)
+        if png_bytes is None:
+            return None
+
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        async with aiofiles.open(cache_path, "wb") as f:
+            await f.write(png_bytes)
+
+        return png_bytes
 
     async def open_file(self, rel_path: str) -> Optional[Tuple[aiofiles.threadpool.binary.AsyncBufferedReader, str]]:
         """
