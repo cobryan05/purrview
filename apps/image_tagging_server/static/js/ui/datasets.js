@@ -530,23 +530,30 @@ function _renderDetailPanel(container, dataset, { labelsMap, tagsMap, onDeleted,
   });
   viewGroup.appendChild(previewBtn);
 
-  // Open in Review Queue
-  const reviewBtn = document.createElement('button');
-  reviewBtn.type = 'button';
-  reviewBtn.textContent = 'Open in Review Queue';
-  reviewBtn.addEventListener('click', () => {
-    const notHandled = reviewBtn.dispatchEvent(
-      new CustomEvent('open-dataset-in-review', {
-        detail: { datasetUuid: dataset.uuid },
-        bubbles: true,
-        cancelable: true,
-      }),
-    );
-    if (notHandled) {
-      toast('Switch to the Review tab to browse this dataset\'s images', 5000);
+  // Browse Images — opens an inline review modal for this dataset
+  const browseBtn = document.createElement('button');
+  browseBtn.type = 'button';
+  browseBtn.textContent = 'Browse Images';
+  browseBtn.addEventListener('click', async () => {
+    browseBtn.disabled = true;
+    try {
+      const { showReviewModal } = await import('/app-static/js/app/review/main.js');
+      await showReviewModal({
+        title: `Browse: ${dataset.name}`,
+        fetchImages: async ({ sortBy, sortOrder, afterUuid, afterSortValue, limit }) =>
+          fetchDatasetImages(dataset.uuid, {
+            sort_by: sortBy,
+            sort_order: sortOrder,
+            after_uuid: afterUuid,
+            after_sort_value: afterSortValue,
+            limit,
+          }),
+      });
+    } finally {
+      browseBtn.disabled = false;
     }
   });
-  viewGroup.appendChild(reviewBtn);
+  viewGroup.appendChild(browseBtn);
 
   // Save
   const saveBtn = document.createElement('button');

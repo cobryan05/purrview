@@ -21,25 +21,60 @@ import { initInspector } from '/app-static/js/ui/inspector.js';
 
 const PAGE_SIZE = 50;
 
-/**
- * Initialize the Review tab. Called once on first tab focus.
- */
-export async function init() {
-  const root = document.getElementById('review-root');
-  if (!root) return;
-  root.innerHTML = '';
+function makeSelect(className, options, defaultValue) {
+  const sel = document.createElement('select');
+  sel.className = className;
+  for (const [value, text] of options) {
+    const opt = document.createElement('option');
+    opt.value = value;
+    opt.textContent = text;
+    sel.appendChild(opt);
+  }
+  sel.value = defaultValue;
+  return sel;
+}
 
-  const labels = await fetchLabels().catch(() => new Map());
+/**
+ * Create a self-contained review panel inside `container`.
+ * Works both standalone (review tab) and embedded inside a modal.
+ *
+ * @param {HTMLElement} container - The element to build the panel inside. Will be cleared.
+ * @param {{
+ *   fetchImages?: (params: {
+ *     sortBy: string, sortOrder: string, labelUuid?: string,
+ *     afterUuid: string|null, afterSortValue: string|null, limit: number
+ *   }) => Promise<object[]>
+ * }} options
+ *   fetchImages — optional custom data-fetcher. When provided the tag/date/filename
+ *   filter panel is hidden and this function is called instead of fetchReviewQueue.
+ *   Receives sort, pagination, and label params; returns an images array with the
+ *   same shape as fetchReviewQueue. All bboxes in returned images are shown (no
+ *   client-side tag filtering). When omitted the full filter panel is shown and
+ *   fetchReviewQueue is used.
+ *
+ * @returns {Promise<{ destroy: () => void }>}
+ */
+export async function createReviewPanel(container, { fetchImages = null } = {}) {
+  container.innerHTML = '';
+
+  const labelsPromise = fetchLabels().catch(() => new Map());
+  const tagsPromise = !fetchImages ? fetchTags().catch(() => new Map()) : null;
+  const labels = await labelsPromise;
 
   // ── Toolbar ───────────────────────────────────────────────────────
   const toolbar = document.createElement('div');
   toolbar.className = 'review-toolbar';
 
-  // Filter toggle
+  // Filter toggle — only visible in full-filter mode
   const filterToggleBtn = document.createElement('button');
   filterToggleBtn.textContent = '☰ Filters';
   filterToggleBtn.title = 'Toggle search filters';
   filterToggleBtn.style.cssText = 'padding:0.3em 0.8em;cursor:pointer;';
+  if (fetchImages) filterToggleBtn.hidden = true;
+
+  // Sort controls — always visible in toolbar (moved from filter panel)
+  const sortBySelect = makeSelect('filter-sort-by', [['created_at', 'Date created'], ['updated_at', 'Date modified']], 'created_at');
+  const sortOrderSelect = makeSelect('filter-sort-dir', [['desc', 'Newest first'], ['asc', 'Oldest first']], 'desc');
 
   // Label filter (quick bbox-label filter in toolbar)
   const labelSelect = document.createElement('select');
@@ -89,6 +124,8 @@ export async function init() {
   statusMsg.style.cssText = 'color:#aaa;font-size:0.9em;';
 
   toolbar.appendChild(filterToggleBtn);
+  toolbar.appendChild(sortBySelect);
+  toolbar.appendChild(sortOrderSelect);
   toolbar.appendChild(labelSelect);
   toolbar.appendChild(selectAllLabel);
   toolbar.appendChild(bulkBtn);
@@ -97,28 +134,31 @@ export async function init() {
   toolbar.appendChild(pageInfo);
   toolbar.appendChild(nextBtn);
   toolbar.appendChild(refreshBtn);
-  root.appendChild(toolbar);
+  container.appendChild(toolbar);
 
-  // ── Filter panel ──────────────────────────────────────────────────
-  const tags = await fetchTags().catch(() => new Map());
+  // ── Filter panel (full mode only) ─────────────────────────────────
+  let filterPanel = null;
+  if (!fetchImages) {
+    const tags = await tagsPromise;
 
-  const filterPanel = createFilterPanel(labels, tags, () => {
-    filterToggleBtn.classList.toggle('filter-active', !filterPanel.isDefault());
-    _pageCursors = [null];
-    _lastCursor = null;
-    render();
-  });
-  filterPanel.element.hidden = true;
-  root.appendChild(filterPanel.element);
+    filterPanel = createFilterPanel(labels, tags, () => {
+      filterToggleBtn.classList.toggle('filter-active', !filterPanel.isDefault());
+      _pageCursors = [null];
+      _lastCursor = null;
+      render();
+    });
+    filterPanel.element.hidden = true;
+    container.appendChild(filterPanel.element);
 
-  filterToggleBtn.addEventListener('click', () => {
-    filterPanel.element.hidden = !filterPanel.element.hidden;
-  });
+    filterToggleBtn.addEventListener('click', () => {
+      filterPanel.element.hidden = !filterPanel.element.hidden;
+    });
+  }
 
   // ── Grid container ────────────────────────────────────────────────
   const grid = document.createElement('div');
   grid.className = 'review-grid';
-  root.appendChild(grid);
+  container.appendChild(grid);
 
   // ── State ─────────────────────────────────────────────────────────
   let _allBboxEntries = []; // flat list of { bbox, img } for current page
@@ -207,25 +247,40 @@ export async function init() {
       _lastClickedIndex = -1;
       updateBulkBtn();
 
-      const fs = filterPanel.getState();
+      const sortBy = sortBySelect.value;
+      const sortOrder = sortOrderSelect.value;
       const cursor = _pageCursors[_pageCursors.length - 1];
 
+      const fs = !fetchImages ? filterPanel.getState() : null;
       let images;
       try {
-        images = await fetchReviewQueue({
-          tagUuids: fs.showAllBboxes ? [] : fs.tagUuids,
-          showAllBboxes: fs.showAllBboxes,
-          labelUuid: labelSelect.value || undefined,
-          sortBy: fs.sortBy,
-          sortOrder: fs.sortOrder,
-          filenameSearch: fs.filenameSearch || undefined,
-          dateFrom: fs.dateFrom || undefined,
-          dateTo: fs.dateTo || undefined,
-          afterUuid: cursor?.uuid ?? null,
-          afterSortValue: cursor?.sortValue ?? null,
-          imageLabelFilters: fs.imageLabelFilters,
-          limit: PAGE_SIZE,
-        });
+        if (fetchImages) {
+          // Custom data source (dataset mode): caller decides what to fetch
+          images = await fetchImages({
+            sortBy,
+            sortOrder,
+            labelUuid: labelSelect.value || undefined,
+            afterUuid: cursor?.uuid ?? null,
+            afterSortValue: cursor?.sortValue ?? null,
+            limit: PAGE_SIZE,
+          });
+        } else {
+          // Standard mode: full filter panel + fetchReviewQueue
+          images = await fetchReviewQueue({
+            tagUuids: fs.showAllBboxes ? [] : fs.tagUuids,
+            showAllBboxes: fs.showAllBboxes,
+            labelUuid: labelSelect.value || undefined,
+            sortBy,
+            sortOrder,
+            filenameSearch: fs.filenameSearch || undefined,
+            dateFrom: fs.dateFrom || undefined,
+            dateTo: fs.dateTo || undefined,
+            afterUuid: cursor?.uuid ?? null,
+            afterSortValue: cursor?.sortValue ?? null,
+            imageLabelFilters: fs.imageLabelFilters,
+            limit: PAGE_SIZE,
+          });
+        }
       } catch (err) {
         statusMsg.textContent = `Error: ${err.message}`;
         refreshBtn.disabled = false;
@@ -240,20 +295,22 @@ export async function init() {
         const last = images[images.length - 1];
         _lastCursor = {
           uuid: last.uuid,
-          sortValue: fs.sortBy === 'uuid' ? null
-            : fs.sortBy === 'updated_at' ? (last.updatedAt ?? null)
+          sortValue: sortBy === 'uuid' ? null
+            : sortBy === 'updated_at' ? (last.updatedAt ?? null)
             : (last.createdAt ?? null),
         };
       }
 
       // Flatten images → matching bboxes.
-      // When show_all_bboxes, every bbox is shown; otherwise filter client-side
-      // to only bboxes that carry one of the selected tags (server may return extras
-      // if a page contains images with mixed bbox states).
-      const tagSet = new Set(fs.tagUuids);
+      // In fetchImages (dataset) mode all bboxes are shown — the backend already
+      // applied the dataset filter.  In standard mode, filter client-side to bboxes
+      // that carry one of the selected tags (server may return extras).
+      const showAll = fetchImages || fs.showAllBboxes;
+      const tagSet = (fs && !showAll) ? new Set(fs.tagUuids) : null;
+
       for (const img of images) {
         const matching = (img.bboxes || []).filter(b =>
-          fs.showAllBboxes || (b.tags || []).some(t => tagSet.has(t.uuid))
+          showAll || (b.tags || []).some(t => tagSet.has(t.uuid))
         );
         for (const bbox of matching) {
           _allBboxEntries.push({ bbox, img });
@@ -493,8 +550,69 @@ export async function init() {
   function resetAndRender() { _pageCursors = [null]; _lastCursor = null; render(); }
   refreshBtn.addEventListener('click', resetAndRender);
   labelSelect.addEventListener('change', resetAndRender);
+  sortBySelect.addEventListener('change', resetAndRender);
+  sortOrderSelect.addEventListener('change', resetAndRender);
 
   render();
+
+  return {
+    destroy() { container.innerHTML = ''; },
+  };
+}
+
+/**
+ * Initialize the Review tab. Called once on first tab focus.
+ */
+export async function init() {
+  const root = document.getElementById('review-root');
+  if (!root) return;
+  await createReviewPanel(root);
+}
+
+/**
+ * Open a modal window containing a full review panel.
+ *
+ * @param {{
+ *   title?: string,
+ *   fetchImages?: (params: object) => Promise<object[]>
+ * }} options
+ *   title      — shown in the modal header bar.
+ *   fetchImages — passed straight through to createReviewPanel; see its docs.
+ */
+export async function showReviewModal({ title = 'Browse Images', fetchImages } = {}) {
+  const overlay = document.createElement('div');
+  overlay.style.cssText = 'position:fixed;inset:0;background:#0009;display:flex;align-items:center;justify-content:center;z-index:900;';
+
+  const dialog = document.createElement('div');
+  dialog.style.cssText = 'background:var(--pico-background-color,#121212);border:1px solid #555;border-radius:6px;width:92vw;height:90vh;display:flex;flex-direction:column;overflow:hidden;';
+
+  // Header
+  const header = document.createElement('div');
+  header.style.cssText = 'display:flex;align-items:center;padding:0.5em 1em;border-bottom:1px solid #444;gap:0.8em;flex-shrink:0;';
+
+  const titleEl = document.createElement('strong');
+  titleEl.textContent = title;
+
+  const closeBtn = document.createElement('button');
+  closeBtn.textContent = '✕';
+  closeBtn.title = 'Close';
+  closeBtn.style.cssText = 'margin-left:auto;cursor:pointer;padding:0.2em 0.6em;';
+
+  header.append(titleEl, closeBtn);
+
+  // Scrollable content area for the panel
+  const content = document.createElement('div');
+  content.style.cssText = 'flex:1;overflow:auto;display:flex;flex-direction:column;min-height:0;';
+
+  dialog.append(header, content);
+  overlay.appendChild(dialog);
+  document.body.appendChild(overlay);
+
+  function close() { overlay.remove(); }
+  closeBtn.addEventListener('click', close);
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+
+  await createReviewPanel(content, { fetchImages });
 }
 
 // ── Bulk action execution ─────────────────────────────────────────────
@@ -547,11 +665,6 @@ async function executeBulkAction(action, entries, newLabelUuid, selectedTagUuids
 
 let _modalOpen = false;
 
-/**
- * Snapshot the current bbox map so we can detect which bboxes were modified.
- * @param {Map<string, import('@domain_image').UIBbox>} bboxMap
- * @returns {Map<string, {x:number, y:number, width:number, height:number, labelUuid:string|null, tagUuids:string}>}
- */
 /**
  * Open a full canvas editor modal for a single bbox.
  * @param {object} bbox  The bbox object from the review queue

@@ -10,10 +10,12 @@
  * Layout: two compact horizontal rows.
  *
  *   Row 1 (primary):
- *     [□ Unverified …]  |  Sort: [by▼][dir▼]  |  Date: [from]—[to]  |  File: [____]
+ *     [□ Unverified …]  |  Date: [from]—[to]  |  File: [____]
  *
  *   Row 2 (labels):
  *     Labels: [— label —▼] [status▼] [□ Exclude] [＋ Add]   chip chip …
+ *
+ * Sort controls are on the review toolbar (always visible).
  */
 import {
   UNVERIFIED_TAG_UUID,
@@ -24,8 +26,6 @@ const SYSTEM_TAG_ORDER = [UNVERIFIED_TAG_UUID];
 
 const DEFAULT_STATE = () => ({
   tagUuids: [UNVERIFIED_TAG_UUID],
-  sortBy: 'created_at',
-  sortOrder: 'desc',
   filenameSearch: '',
   dateFrom: null,
   dateTo: null,
@@ -104,36 +104,7 @@ export function createFilterPanel(labels, tags, onFilterChange) {
 
   primaryRow.appendChild(tagCheckboxes);
 
-  // ── 2. Sort controls ────────────────────────────────────────────────────
-  primaryRow.appendChild(makeSep());
-  primaryRow.appendChild(makeLabel('Sort:'));
-
-  const sortBySelect = document.createElement('select');
-  sortBySelect.className = 'filter-sort-by';
-  for (const [value, text] of [['created_at', 'Date created'], ['updated_at', 'Date modified']]) {
-    const opt = document.createElement('option');
-    opt.value = value;
-    opt.textContent = text;
-    sortBySelect.appendChild(opt);
-  }
-  sortBySelect.value = _state.sortBy;
-  sortBySelect.addEventListener('change', () => { _state.sortBy = sortBySelect.value; emit(); });
-
-  const sortOrderSelect = document.createElement('select');
-  sortOrderSelect.className = 'filter-sort-dir';
-  for (const [value, text] of [['desc', 'Newest first'], ['asc', 'Oldest first']]) {
-    const opt = document.createElement('option');
-    opt.value = value;
-    opt.textContent = text;
-    sortOrderSelect.appendChild(opt);
-  }
-  sortOrderSelect.value = _state.sortOrder;
-  sortOrderSelect.addEventListener('change', () => { _state.sortOrder = sortOrderSelect.value; emit(); });
-
-  primaryRow.appendChild(sortBySelect);
-  primaryRow.appendChild(sortOrderSelect);
-
-  // ── 3. Date range ───────────────────────────────────────────────────────
+  // ── 2. Date range ───────────────────────────────────────────────────────
   primaryRow.appendChild(makeSep());
   primaryRow.appendChild(makeLabel('Date:'));
 
@@ -157,7 +128,7 @@ export function createFilterPanel(labels, tags, onFilterChange) {
   primaryRow.appendChild(document.createTextNode('–'));
   primaryRow.appendChild(dateToInput);
 
-  // ── 4. Filename search ──────────────────────────────────────────────────
+  // ── 3. Filename search ──────────────────────────────────────────────────
   primaryRow.appendChild(makeSep());
   primaryRow.appendChild(makeLabel('File:'));
 
@@ -270,8 +241,6 @@ export function createFilterPanel(labels, tags, onFilterChange) {
     return (
       s.tagUuids.length === 1 &&
       s.tagUuids[0] === UNVERIFIED_TAG_UUID &&
-      s.sortBy === 'created_at' &&
-      s.sortOrder === 'desc' &&
       !s.filenameSearch &&
       !s.dateFrom &&
       !s.dateTo &&
