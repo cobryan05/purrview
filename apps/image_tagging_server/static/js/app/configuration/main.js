@@ -1,6 +1,7 @@
 import { setupWorkspaceTabs } from '/app-static/js/app/utils/tabs.js';
 import { renderLabelList } from '/app-static/js/ui/labels.js';
 import { renderModelLabelAssignments } from '/app-static/js/ui/models.js';
+import { renderModelConfigManager } from '/app-static/js/ui/modelConfigs.js';
 import { renderSourceManager } from '/app-static/js/ui/sources.js';
 import { renderTagList } from '/app-static/js/ui/tags.js';
 import { renderActiveTasks, renderTaskConfigs } from '/app-static/js/ui/tasks.js';
@@ -36,6 +37,8 @@ export async function init() {
       taskPollInterval = setInterval(refreshActiveTasks, 2500);
     } else if (tabName === 'tab-dataset-management') {
       await renderDatasetManager({ target: 'dataset-management-box' });
+    } else if (tabName === 'tab-model-management') {
+      await renderModelConfigManager({ target: 'model-config-box' });
     }
   });
 

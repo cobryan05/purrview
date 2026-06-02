@@ -26,6 +26,7 @@ class ApiTags(str, Enum):
     TAGS = "tags"
     TASKS = "tasks"
     DATASETS = "datasets"
+    MODEL_CONFIGS = "model_configs"
 
 class TaskStatus(str, Enum):
     NEW = "new"

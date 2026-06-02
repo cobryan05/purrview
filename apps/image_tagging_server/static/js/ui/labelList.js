@@ -431,6 +431,152 @@ async function mountSelectMode(container, { runtime, filter }) {
   };
 }
 
+// ─── Model-config mode ───────────────────────────────────────────────────────
+
+/**
+ * Renders a fully-expanded, always-visible label tree for the model-config form.
+ *
+ * Each row: [checkbox] [color swatch] [label name] [☐ sub model] ← parent-only badge
+ *
+ * @param {HTMLElement} container
+ * @param {{
+ *   labelsMap?: Map<string,object>,   pre-fetched labels (skips internal fetch)
+ *   initialSelected?: Set<string>,    UUIDs whose checkboxes start checked
+ *   initialSubmodels?: Map<string,string>, UUID → typename for enabled submodels
+ *   typenames?: string[],
+ *   onSubmodelsChanged?: (submodels: Map<string,string>) => void,
+ * }} opts
+ */
+async function mountModelConfigMode(container, {
+  labelsMap: preloaded = null,
+  initialSelected = new Set(),
+  initialSubmodels = new Map(),
+  typenames = [],
+  onSubmodelsChanged = () => {},
+} = {}) {
+  const labelsMap = preloaded ?? await fetchLabels();
+  const byParent = buildHierarchy(labelsMap, null);
+
+  const hasChildrenSet = new Set();
+  for (const label of labelsMap.values()) {
+    if (label.parent_uuid) hasChildrenSet.add(label.parent_uuid);
+  }
+
+  const selected = new Set(initialSelected);
+  const submodels = new Map(initialSubmodels);
+
+  function appendRows(parentUuid, indent) {
+    for (const label of (byParent.get(parentUuid ?? null) ?? [])) {
+      const isParent = hasChildrenSet.has(label.uuid);
+
+      // ---- Row ------------------------------------------------------------
+      const row = document.createElement('div');
+      row.style.cssText = [
+        'display: flex',
+        'align-items: center',
+        'gap: 0.4em',
+        'padding: 3px 6px',
+        `padding-left: ${6 + indent * 14}px`,
+        'border-radius: 3px',
+        'user-select: none',
+      ].join('; ');
+
+      // Checkbox — label inclusion
+      const cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.checked = selected.has(label.uuid);
+      cb.style.cssText = 'margin: 0; flex-shrink: 0;';
+
+      // Color swatch (same style as select mode)
+      const swatch = document.createElement('span');
+      swatch.style.cssText = [
+        'width: 10px', 'height: 10px', 'border-radius: 50%',
+        'flex-shrink: 0', 'display: inline-block',
+        `background: ${label.color ?? '#888'}`,
+      ].join('; ');
+
+      // Label name — clicking also toggles the checkbox
+      const nameEl = document.createElement('span');
+      nameEl.textContent = label.name;
+      nameEl.style.cssText = 'font-size: 0.88em; cursor: pointer; white-space: nowrap;';
+      nameEl.addEventListener('click', () => {
+        cb.checked = !cb.checked;
+        cb.dispatchEvent(new Event('change'));
+      });
+
+      row.appendChild(cb);
+      row.appendChild(swatch);
+      row.appendChild(nameEl);
+
+      // "sub model" badge — immediately after label name, parents only
+      let subToggle = null;
+      if (isParent) {
+        const badge = document.createElement('label');
+        badge.style.cssText = [
+          'display: inline-flex', 'align-items: center', 'gap: 3px',
+          'font-size: 0.72em', 'cursor: pointer', 'margin: 0',
+          'padding: 1px 5px', 'border-radius: 3px',
+          'border: 1px solid var(--pico-border-color)',
+          'color: var(--pico-muted-color)',
+          'white-space: nowrap', 'flex-shrink: 0',
+        ].join('; ');
+
+        subToggle = document.createElement('input');
+        subToggle.type = 'checkbox';
+        subToggle.checked = submodels.has(label.uuid);
+        subToggle.style.cssText = 'margin: 0;';
+
+        badge.appendChild(subToggle);
+        badge.appendChild(document.createTextNode('sub model'));
+        row.appendChild(badge);
+      }
+
+      // ---- Checkbox event -------------------------------------------------
+      cb.addEventListener('change', () => {
+        if (cb.checked) {
+          selected.add(label.uuid);
+        } else {
+          // Unchecking removes any active submodel for this label too.
+          if (submodels.has(label.uuid)) {
+            submodels.delete(label.uuid);
+            if (subToggle) subToggle.checked = false;
+            onSubmodelsChanged(new Map(submodels));
+          }
+          selected.delete(label.uuid);
+        }
+      });
+
+      // ---- Sub-model toggle event -----------------------------------------
+      if (subToggle) {
+        subToggle.addEventListener('change', () => {
+          if (subToggle.checked) {
+            // Enabling submodel auto-selects the label.
+            cb.checked = true;
+            selected.add(label.uuid);
+            submodels.set(label.uuid, typenames[0] ?? '');
+          } else {
+            submodels.delete(label.uuid);
+          }
+          onSubmodelsChanged(new Map(submodels));
+        });
+      }
+
+      container.appendChild(row);
+
+      // Children always rendered immediately below (fully expanded).
+      if (isParent) appendRows(label.uuid, indent + 1);
+    }
+  }
+
+  appendRows(null, 0);
+
+  return {
+    getSelected: () => new Set(selected),
+    getSubmodels: () => new Map(submodels),
+    destroy() {},
+  };
+}
+
 // ─── Public API ──────────────────────────────────────────────────────────────
 
 /**
@@ -438,23 +584,54 @@ async function mountSelectMode(container, { runtime, filter }) {
  *
  * @param {HTMLElement} container
  * @param {{
- *   mode?: 'edit'|'select',
+ *   mode?: 'edit'|'select'|'model-config',
  *   runtime?: object,
  *   filter?: ((label: object) => boolean)|null,
+ *   labelsMap?: Map<string,object>,        pre-fetched labels (model-config mode)
+ *   initialSelected?: Set<string>,         model-config mode
+ *   initialSubmodels?: Map<string,string>, model-config mode
+ *   typenames?: string[],                  model-config mode
+ *   onSubmodelsChanged?: function,         model-config mode
  * }} options
- * @returns {Promise<{ destroy(): void, refresh(): Promise<void> }>}
+ * @returns {Promise<{
+ *   destroy(): void,
+ *   refresh(): Promise<void>,
+ *   getSelected(): Set<string>,   model-config mode only
+ *   getSubmodels(): Map<string,string>, model-config mode only
+ * }>}
  */
 export async function createLabelList(container, options = {}) {
-  const { mode = 'select', runtime = null, filter = null } = options;
+  const {
+    mode = 'select',
+    runtime = null,
+    filter = null,
+    labelsMap = null,
+    initialSelected = new Set(),
+    initialSubmodels = new Map(),
+    typenames = [],
+    onSubmodelsChanged = () => {},
+  } = options;
+
   let _destroyFn = () => {};
+  let _handle = null;
 
   async function mount() {
     _destroyFn();
     _destroyFn = () => {};
     container.innerHTML = '';
-    const handle = mode === 'edit'
-      ? await mountEditMode(container, { filter, onRerender: mount })
-      : await mountSelectMode(container, { runtime, filter });
+
+    let handle;
+    if (mode === 'edit') {
+      handle = await mountEditMode(container, { filter, onRerender: mount });
+    } else if (mode === 'model-config') {
+      handle = await mountModelConfigMode(container, {
+        labelsMap, initialSelected, initialSubmodels, typenames, onSubmodelsChanged,
+      });
+    } else {
+      handle = await mountSelectMode(container, { runtime, filter });
+    }
+
+    _handle = handle;
     _destroyFn = handle?.destroy ?? (() => {});
   }
 
@@ -463,5 +640,7 @@ export async function createLabelList(container, options = {}) {
   return {
     destroy() { _destroyFn(); },
     refresh() { return mount(); },
+    getSelected() { return _handle?.getSelected?.() ?? new Set(); },
+    getSubmodels() { return _handle?.getSubmodels?.() ?? new Map(); },
   };
 }

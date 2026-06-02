@@ -533,3 +533,62 @@ class DatasetUpdate(BaseModel):
     description: Optional[str] = None
     filter_json: Optional[DatasetFilterCriteria] = None
     label_uuids: Optional[List[str]] = None   # None = no change; [] = remove all   # None = no change; [] = remove all   # None = no change; [] = remove all
+
+
+# ─── Model Configurations ────────────────────────────────────────────────────
+
+AVAILABLE_MODEL_TYPENAMES = ["YoloV8", "TestModel"]
+
+
+class ModelConfigNode(SQLModel, table=True):
+    __tablename__ = "model_config_nodes"
+    uuid: str = Field(default_factory=lambda: str(uuid4()), primary_key=True)
+    model_config_uuid: str = Field(foreign_key="model_configs.uuid", index=True, ondelete="CASCADE")
+    label_uuid: Optional[str] = Field(default=None, foreign_key="labels.uuid", ondelete="CASCADE")
+    model_typename: str
+    config: "ModelConfig" = Relationship(back_populates="nodes")
+
+
+class ModelConfig(TimestampModel, table=True):
+    __tablename__ = "model_configs"
+    uuid: str = Field(default_factory=lambda: str(uuid4()), primary_key=True)
+    name: str = Field(unique=True, index=True)
+    description: Optional[str] = None
+    nodes: List[ModelConfigNode] = Relationship(
+        back_populates="config",
+        sa_relationship_kwargs={"cascade": "all, delete-orphan"},
+    )
+
+
+class ModelConfigNodeRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    uuid: str
+    label_uuid: Optional[str] = None
+    model_typename: str
+
+
+class ModelConfigRead(BaseModel):
+    uuid: str
+    name: str
+    description: Optional[str] = None
+    nodes: List[ModelConfigNodeRead] = Field(default_factory=list)
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+    model_config = ConfigDict(from_attributes=True)
+
+
+class ModelConfigNodeWrite(BaseModel):
+    label_uuid: Optional[str] = None  # None = root node
+    model_typename: str
+
+
+class ModelConfigCreate(BaseModel):
+    name: str
+    description: Optional[str] = None
+    nodes: List[ModelConfigNodeWrite] = Field(default_factory=list)
+
+
+class ModelConfigUpdate(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    nodes: Optional[List[ModelConfigNodeWrite]] = None  # None=no change; []=remove all

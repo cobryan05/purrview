@@ -21,6 +21,8 @@ from apps.helpers.db.types import (  # noqa: F401
     ImageLabel,
     ImageRecord,
     Label,
+    ModelConfig,
+    ModelConfigNode,
     Source,
     Tag,
     TaskConfig,

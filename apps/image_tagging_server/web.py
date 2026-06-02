@@ -39,6 +39,9 @@ TASKS_PROXY = ReverseProxy(
 DATASETS_PROXY = ReverseProxy(
     host=APPS_CONFIG[APPS.DB_SERVER].host, port=APPS_CONFIG[APPS.DB_SERVER].port, path="/api/datasets"
 )
+MODEL_CONFIGS_PROXY = ReverseProxy(
+    host=APPS_CONFIG[APPS.DB_SERVER].host, port=APPS_CONFIG[APPS.DB_SERVER].port, path="/api/model-configs"
+)
 
 
 class WebApp:
@@ -135,3 +138,7 @@ class WebApp:
         @self._app.api_route("/api/datasets/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
         async def proxy_datasets(request: Request, path: str):
             return await DATASETS_PROXY.handle_request(path, request)
+
+        @self._app.api_route("/api/model-configs/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
+        async def proxy_model_configs(request: Request, path: str):
+            return await MODEL_CONFIGS_PROXY.handle_request(path, request)

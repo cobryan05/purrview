@@ -29,6 +29,9 @@ from apps.helpers.db.types import (
     ImageSearchParams,
     Label,
     LabelUpdate,
+    ModelConfigCreate,
+    ModelConfigRead,
+    ModelConfigUpdate,
     Source,
     SourceRead,
     Tag,
@@ -352,6 +355,18 @@ class DatasetPreviewPayload(BaseModel):
     label_uuids: List[str] = Field(default_factory=list)
 
 
+class ListModelTypenamesResponse(StatusResponse):
+    typenames: List[str] = Field(default_factory=list)
+
+
+class ListModelConfigsResponse(StatusResponse):
+    configs: List[ModelConfigRead] = Field(default_factory=list)
+
+
+class ModelConfigResponse(StatusResponse):
+    config: Optional[ModelConfigRead] = None
+
+
 class WebApp:
     """Web application for managing the database"""
 
@@ -373,6 +388,7 @@ class WebApp:
 
         # Register routes
         self._register_routes()
+        self._register_model_config_routes()
         self._register_exception()
 
     def _register_exception(self):
@@ -1241,3 +1257,114 @@ class WebApp:
             except Exception as e:
                 logger.error(e, exc_info=True)
                 return DatasetLabelsResponse(status=JsonValues.FAILURE, message=str(e))
+
+    # ─── Model Configurations ─────────────────────────────────────────────────
+    # NOTE: /typenames must be registered before /{uuid} to prevent FastAPI
+    # routing the literal string "typenames" as a UUID path parameter.
+
+    def _register_model_config_routes(self) -> None:
+        @self._app.get(
+            "/api/model-configs/typenames",
+            response_model=ListModelTypenamesResponse,
+            tags=[ApiTags.MODEL_CONFIGS],
+            operation_id="list_model_typenames",
+        )
+        async def list_model_typenames() -> ListModelTypenamesResponse:
+            try:
+                typenames = self._manager.get_available_model_typenames()
+                return ListModelTypenamesResponse(
+                    status=JsonValues.SUCCESS, typenames=typenames
+                )
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return ListModelTypenamesResponse(
+                    status=JsonValues.FAILURE, message=str(e)
+                )
+
+        @self._app.get(
+            "/api/model-configs",
+            response_model=ListModelConfigsResponse,
+            tags=[ApiTags.MODEL_CONFIGS],
+            operation_id="list_model_configs",
+        )
+        async def list_model_configs() -> ListModelConfigsResponse:
+            try:
+                configs = await self._manager.list_model_configs()
+                return ListModelConfigsResponse(
+                    status=JsonValues.SUCCESS, configs=configs
+                )
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return ListModelConfigsResponse(
+                    status=JsonValues.FAILURE, message=str(e)
+                )
+
+        @self._app.post(
+            "/api/model-configs",
+            response_model=ModelConfigResponse,
+            tags=[ApiTags.MODEL_CONFIGS],
+            operation_id="create_model_config",
+        )
+        async def create_model_config(payload: ModelConfigCreate) -> ModelConfigResponse:
+            try:
+                config = await self._manager.create_model_config(payload)
+                return ModelConfigResponse(status=JsonValues.SUCCESS, config=config)
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return ModelConfigResponse(status=JsonValues.FAILURE, message=str(e))
+
+        @self._app.get(
+            "/api/model-configs/{uuid}",
+            response_model=ModelConfigResponse,
+            tags=[ApiTags.MODEL_CONFIGS],
+            operation_id="get_model_config",
+        )
+        async def get_model_config(uuid: str) -> ModelConfigResponse:
+            try:
+                config = await self._manager.get_model_config(uuid)
+                if config is None:
+                    return ModelConfigResponse(
+                        status=JsonValues.FAILURE, message="Model config not found"
+                    )
+                return ModelConfigResponse(status=JsonValues.SUCCESS, config=config)
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return ModelConfigResponse(status=JsonValues.FAILURE, message=str(e))
+
+        @self._app.patch(
+            "/api/model-configs/{uuid}",
+            response_model=ModelConfigResponse,
+            tags=[ApiTags.MODEL_CONFIGS],
+            operation_id="update_model_config",
+        )
+        async def update_model_config(
+            uuid: str, payload: ModelConfigUpdate
+        ) -> ModelConfigResponse:
+            try:
+                config = await self._manager.update_model_config(uuid, payload)
+                if config is None:
+                    return ModelConfigResponse(
+                        status=JsonValues.FAILURE, message="Model config not found"
+                    )
+                return ModelConfigResponse(status=JsonValues.SUCCESS, config=config)
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return ModelConfigResponse(status=JsonValues.FAILURE, message=str(e))
+
+        @self._app.delete(
+            "/api/model-configs/{uuid}",
+            response_model=StatusResponse,
+            tags=[ApiTags.MODEL_CONFIGS],
+            operation_id="delete_model_config",
+        )
+        async def delete_model_config(uuid: str) -> StatusResponse:
+            try:
+                ok = await self._manager.delete_model_config(uuid)
+                if not ok:
+                    return StatusResponse(
+                        status=JsonValues.FAILURE, message="Model config not found"
+                    )
+                return StatusResponse(status=JsonValues.SUCCESS)
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return StatusResponse(status=JsonValues.FAILURE, message=str(e))

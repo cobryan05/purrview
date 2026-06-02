@@ -24,6 +24,7 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 from apps.helpers.consts import TaskStatus
 
 from .types import (
+    AVAILABLE_MODEL_TYPENAMES,
     BBox,
     BBoxTagLink,
     BboxAgeCondition,
@@ -44,6 +45,12 @@ from .types import (
     ImageRecordUpdate,
     ImageSearchParams,
     Label,
+    ModelConfig,
+    ModelConfigCreate,
+    ModelConfigNode,
+
+    ModelConfigRead,
+    ModelConfigUpdate,
     Source,
     SourceRead,
     Tag,
@@ -1894,3 +1901,121 @@ class DbClient:
             label_uuids=label_uuids,
         )
         return await self._list_images_for_dataset(fake_dataset, limit=limit)
+
+    # ─── Model Configurations ─────────────────────────────────────────────────
+
+    @staticmethod
+    def _mc_to_read(mc: ModelConfig) -> ModelConfigRead:
+        return ModelConfigRead.model_validate(mc)
+
+    async def list_model_configs(self) -> List[ModelConfigRead]:
+        async with self._async_session_maker() as session:
+            stmt = select(ModelConfig).options(selectinload(ModelConfig.nodes))
+            result = await session.exec(stmt)
+            return [self._mc_to_read(mc) for mc in result.all()]
+
+    async def get_model_config(self, uuid: str) -> Optional[ModelConfigRead]:
+        async with self._async_session_maker() as session:
+            stmt = (
+                select(ModelConfig)
+                .where(ModelConfig.uuid == uuid)
+                .options(selectinload(ModelConfig.nodes))
+            )
+            result = await session.exec(stmt)
+            mc = result.one_or_none()
+            if mc is None:
+                return None
+            return self._mc_to_read(mc)
+
+    async def create_model_config(self, data: ModelConfigCreate) -> ModelConfigRead:
+        # Validate uniqueness of label_uuid within the node list
+        seen: set = set()
+        for node in data.nodes:
+            key = node.label_uuid  # None is valid once (root)
+            if key in seen:
+                raise ValueError(
+                    f"Duplicate label_uuid in nodes: {key!r}"
+                )
+            seen.add(key)
+
+        async with self._async_session_maker() as session:
+            mc = ModelConfig(name=data.name, description=data.description)
+            session.add(mc)
+            await session.flush()
+            for node in data.nodes:
+                session.add(
+                    ModelConfigNode(
+                        model_config_uuid=mc.uuid,
+                        label_uuid=node.label_uuid,
+                        model_typename=node.model_typename,
+                    )
+                )
+            await session.commit()
+            stmt = (
+                select(ModelConfig)
+                .where(ModelConfig.uuid == mc.uuid)
+                .options(selectinload(ModelConfig.nodes))
+            )
+            result = await session.exec(stmt)
+            return self._mc_to_read(result.one())
+
+    async def update_model_config(
+        self, uuid: str, data: ModelConfigUpdate
+    ) -> Optional[ModelConfigRead]:
+        async with self._async_session_maker() as session:
+            result = await session.exec(
+                select(ModelConfig).where(ModelConfig.uuid == uuid)
+            )
+            mc = result.one_or_none()
+            if mc is None:
+                return None
+
+            changes = data.model_dump(exclude_unset=True, mode="json")
+            nodes_data = changes.pop("nodes", None)
+
+            for key, value in changes.items():
+                if hasattr(mc, key):
+                    setattr(mc, key, value)
+
+            if isinstance(nodes_data, list):
+                await session.exec(
+                    delete(ModelConfigNode).where(
+                        ModelConfigNode.model_config_uuid == uuid
+                    )
+                )
+                if nodes_data:
+                    seen: set = set()
+                    for node in nodes_data:
+                        key_lbl = node.get("label_uuid")
+                        if key_lbl in seen:
+                            raise ValueError(
+                                f"Duplicate label_uuid in nodes: {key_lbl!r}"
+                            )
+                        seen.add(key_lbl)
+                        session.add(
+                            ModelConfigNode(
+                                model_config_uuid=uuid,
+                                label_uuid=node.get("label_uuid"),
+                                model_typename=node["model_typename"],
+                            )
+                        )
+
+            mc.updated_at = datetime.now(timezone.utc)
+            session.add(mc)
+            await session.commit()
+
+            result2 = await session.exec(
+                select(ModelConfig)
+                .where(ModelConfig.uuid == uuid)
+                .options(selectinload(ModelConfig.nodes))
+            )
+            return self._mc_to_read(result2.one())
+
+    async def delete_model_config(self, uuid: str) -> bool:
+        async with self._async_session_maker() as session:
+            mc = await session.get(ModelConfig, uuid)
+            if mc is None:
+                return False
+            await session.delete(mc)
+            await session.commit()
+        return True

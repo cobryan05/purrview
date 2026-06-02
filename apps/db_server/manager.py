@@ -21,6 +21,7 @@ from apps.helpers.db.db_client import (
     TagKind,
 )
 from apps.helpers.db.types import (
+    AVAILABLE_MODEL_TYPENAMES,
     BBoxUpdate,
     DatasetCreate,
     DatasetRead,
@@ -32,6 +33,10 @@ from apps.helpers.db.types import (
     ImageRecordUpdate,
     ImageSearchParams,
     Label,
+    ModelConfigCreate,
+    ModelConfigNodeWrite,
+    ModelConfigRead,
+    ModelConfigUpdate,
     Source,
     Tag,
     TagUpdate,
@@ -872,3 +877,41 @@ class Manager:
             record.filename = self._image_rel_path(img.filename)
             records.append(record)
         return records, has_more
+
+    # ─── Model Configurations ─────────────────────────────────────────────────
+
+    def get_available_model_typenames(self) -> List[str]:
+        return list(AVAILABLE_MODEL_TYPENAMES)
+
+    async def _validate_model_config_nodes(self, nodes: List[ModelConfigNodeWrite]) -> None:
+        """Validate typename and label_uuid for every node write object."""
+        for node in nodes:
+            if node.model_typename not in AVAILABLE_MODEL_TYPENAMES:
+                raise ValueError(
+                    f"Unknown model typename: {node.model_typename!r}. "
+                    f"Valid choices: {AVAILABLE_MODEL_TYPENAMES}"
+                )
+            if node.label_uuid is not None:
+                label = await self._db_client.get_label_by_uuid(node.label_uuid)
+                if label is None:
+                    raise ValueError(f"Label not found: {node.label_uuid!r}")
+
+    async def list_model_configs(self) -> List[ModelConfigRead]:
+        return await self._db_client.list_model_configs()
+
+    async def get_model_config(self, uuid: str) -> Optional[ModelConfigRead]:
+        return await self._db_client.get_model_config(uuid)
+
+    async def create_model_config(self, data: ModelConfigCreate) -> ModelConfigRead:
+        await self._validate_model_config_nodes(data.nodes)
+        return await self._db_client.create_model_config(data)
+
+    async def update_model_config(
+        self, uuid: str, data: ModelConfigUpdate
+    ) -> Optional[ModelConfigRead]:
+        if data.nodes is not None:
+            await self._validate_model_config_nodes(data.nodes)
+        return await self._db_client.update_model_config(uuid, data)
+
+    async def delete_model_config(self, uuid: str) -> bool:
+        return await self._db_client.delete_model_config(uuid)
