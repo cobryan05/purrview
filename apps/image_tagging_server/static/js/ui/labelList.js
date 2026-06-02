@@ -38,7 +38,7 @@ const STATUS_CYCLE = Object.freeze({ uncertain: 'absent', absent: 'uncertain' })
  * @param {((label: object) => boolean)|null} filter
  * @returns {Map<string|null, object[]>}
  */
-function buildHierarchy(labelsMap, filter) {
+export function buildHierarchy(labelsMap, filter) {
   /** @type {Map<string|null, object[]>} */
   const byParent = new Map();
   for (const label of labelsMap.values()) {
@@ -51,6 +51,50 @@ function buildHierarchy(labelsMap, filter) {
     children.sort((a, b) => a.name.localeCompare(b.name));
   }
   return byParent;
+}
+
+// ─── Shared row builder ──────────────────────────────────────────────────────
+
+/**
+ * Builds a base label row: a flex div with an indent, a color swatch, and a name span.
+ * Callers may prepend leading controls (row.prepend) and append trailing controls (row.appendChild).
+ *
+ * @param {object} label
+ * @param {number} indent
+ * @param {{ padding?: string }} [opts]
+ * @returns {{ row: HTMLDivElement, swatch: HTMLSpanElement, nameEl: HTMLSpanElement }}
+ */
+export function buildLabelRow(label, indent, { padding = '4px 6px' } = {}) {
+  const row = document.createElement('div');
+  row.dataset.uuid = label.uuid;
+  Object.assign(row.style, {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '0.4em',
+    padding,
+    paddingLeft: `${6 + indent * 14}px`,
+    borderRadius: '3px',
+    userSelect: 'none',
+  });
+
+  const swatch = document.createElement('span');
+  Object.assign(swatch.style, {
+    width: '10px',
+    height: '10px',
+    borderRadius: '50%',
+    flexShrink: '0',
+    background: label.color ?? '#888',
+    display: 'inline-block',
+  });
+
+  const nameEl = document.createElement('span');
+  nameEl.textContent = label.name;
+  nameEl.style.fontSize = '0.88em';
+
+  row.appendChild(swatch);
+  row.appendChild(nameEl);
+
+  return { row, swatch, nameEl };
 }
 
 // ─── Edit mode ───────────────────────────────────────────────────────────────
@@ -238,33 +282,9 @@ async function mountSelectMode(container, { runtime, filter }) {
   function renderSelectRows(parentUuid, indent) {
     const children = byParent.get(parentUuid ?? null) ?? [];
     for (const label of children) {
-      const row = document.createElement('div');
+      const { row } = buildLabelRow(label, indent);
       row.className = 'label-panel-row';
-      row.dataset.uuid = label.uuid;
-      Object.assign(row.style, {
-        display: 'flex',
-        alignItems: 'center',
-        gap: '0.4em',
-        padding: '4px 6px',
-        paddingLeft: `${6 + indent * 14}px`,
-        cursor: 'pointer',
-        borderRadius: '3px',
-        userSelect: 'none',
-      });
-
-      const swatch = document.createElement('span');
-      Object.assign(swatch.style, {
-        width: '10px',
-        height: '10px',
-        borderRadius: '50%',
-        flexShrink: '0',
-        background: label.color ?? '#888',
-        display: 'inline-block',
-      });
-
-      const nameEl = document.createElement('span');
-      nameEl.textContent = label.name;
-      nameEl.style.fontSize = '0.88em';
+      row.style.cursor = 'pointer';
 
       const btn = document.createElement('button');
       Object.assign(btn.style, {
@@ -309,9 +329,7 @@ async function mountSelectMode(container, { runtime, filter }) {
         }
       });
 
-      row.appendChild(btn);
-      row.appendChild(swatch);
-      row.appendChild(nameEl);
+      row.prepend(btn);
 
       row.addEventListener('click', () => {
         _lastSelectedUuid = label.uuid;
@@ -457,60 +475,37 @@ async function mountModelConfigMode(container, {
   const labelsMap = preloaded ?? await fetchLabels();
   const byParent = buildHierarchy(labelsMap, null);
 
-  const hasChildrenSet = new Set();
+  const childCountMap = new Map();
   for (const label of labelsMap.values()) {
-    if (label.parent_uuid) hasChildrenSet.add(label.parent_uuid);
+    if (label.parent_uuid) childCountMap.set(label.parent_uuid, (childCountMap.get(label.parent_uuid) ?? 0) + 1);
   }
-
   const selected = new Set(initialSelected);
   const submodels = new Map(initialSubmodels);
 
   function appendRows(parentUuid, indent) {
     for (const label of (byParent.get(parentUuid ?? null) ?? [])) {
-      const isParent = hasChildrenSet.has(label.uuid);
+      const isParent = childCountMap.has(label.uuid);
+      const showSubmodel = isParent;
 
-      // ---- Row ------------------------------------------------------------
-      const row = document.createElement('div');
-      row.style.cssText = [
-        'display: flex',
-        'align-items: center',
-        'gap: 0.4em',
-        'padding: 3px 6px',
-        `padding-left: ${6 + indent * 14}px`,
-        'border-radius: 3px',
-        'user-select: none',
-      ].join('; ');
+      const { row, nameEl } = buildLabelRow(label, indent, { padding: '3px 6px' });
 
-      // Checkbox — label inclusion
       const cb = document.createElement('input');
       cb.type = 'checkbox';
       cb.checked = selected.has(label.uuid);
       cb.style.cssText = 'margin: 0; flex-shrink: 0;';
 
-      // Color swatch (same style as select mode)
-      const swatch = document.createElement('span');
-      swatch.style.cssText = [
-        'width: 10px', 'height: 10px', 'border-radius: 50%',
-        'flex-shrink: 0', 'display: inline-block',
-        `background: ${label.color ?? '#888'}`,
-      ].join('; ');
-
-      // Label name — clicking also toggles the checkbox
-      const nameEl = document.createElement('span');
-      nameEl.textContent = label.name;
-      nameEl.style.cssText = 'font-size: 0.88em; cursor: pointer; white-space: nowrap;';
+      nameEl.style.cursor = 'pointer';
+      nameEl.style.whiteSpace = 'nowrap';
       nameEl.addEventListener('click', () => {
         cb.checked = !cb.checked;
         cb.dispatchEvent(new Event('change'));
       });
 
-      row.appendChild(cb);
-      row.appendChild(swatch);
-      row.appendChild(nameEl);
+      row.prepend(cb);
 
-      // "sub model" badge — immediately after label name, parents only
+      // "sub model" badge — only for labels with 2+ children
       let subToggle = null;
-      if (isParent) {
+      if (showSubmodel) {
         const badge = document.createElement('label');
         badge.style.cssText = [
           'display: inline-flex', 'align-items: center', 'gap: 3px',
@@ -563,7 +558,6 @@ async function mountModelConfigMode(container, {
 
       container.appendChild(row);
 
-      // Children always rendered immediately below (fully expanded).
       if (isParent) appendRows(label.uuid, indent + 1);
     }
   }

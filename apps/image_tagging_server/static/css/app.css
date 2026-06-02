@@ -24,14 +24,14 @@ main.container {
   border: none;
   background: none;
   font-weight: normal;
-  color: #333;
+  color: var(--pico-color);
   border-bottom: 2px solid transparent;
   transition: border-color 0.2s;
   font-size: 1.1em;
 }
 
 .main-tab-button:hover {
-  color: #000;
+  color: var(--pico-primary);
 }
 
 .main-tab-button.active {
@@ -84,14 +84,14 @@ main.container {
   border: none;
   background: none;
   font-weight: normal;
-  color: #333;
+  color: var(--pico-color);
   border-bottom: 2px solid transparent;
   transition: border-color 0.2s;
   font-size: 0.95em;
 }
 
 .workspace-tab-button:hover {
-  color: #000;
+  color: var(--pico-primary);
 }
 
 .workspace-tab-button.active {
@@ -155,14 +155,14 @@ main.container {
   border: none;
   background: none;
   font-weight: normal;
-  color: #333;
+  color: var(--pico-color);
   border-bottom: 2px solid transparent;
   transition: border-color 0.2s;
   font-size: 0.95em;
 }
 
 .sidebar-tab-button:hover {
-  color: #000;
+  color: var(--pico-primary);
 }
 
 .sidebar-tab-button.active {

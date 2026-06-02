@@ -1,7 +1,6 @@
 import { fetchLabels } from '/app-static/js/shared/api/labels.js';
 import { createLabelList } from '/app-static/js/ui/labelList.js';
 import {
-  clearModelConfigsCache,
   createModelConfig,
   deleteModelConfig,
   fetchModelConfigs,
@@ -149,8 +148,13 @@ function renderSubmodelPanels(container, submodels, labelsMap, typenames, onType
 // Config form (create / edit)
 // -------------------------------------------------------
 
-function renderConfigForm({ config, typenames, labelsMap, onSave, onCancel }) {
+function renderConfigForm({ config, typenames, labelsMap, onSave, onCancel, onDirtyChange }) {
   const form = document.createElement('div');
+
+  let _dirty = false;
+  function _markDirty() {
+    if (!_dirty) { _dirty = true; onDirtyChange?.(() => _dirty); }
+  }
 
   // ---- Name + Description -------------------------------------------------
   function makeInputRow(labelText, input) {
@@ -168,12 +172,14 @@ function renderConfigForm({ config, typenames, labelsMap, onSave, onCancel }) {
   nameInput.type = 'text';
   nameInput.value = config?.name ?? '';
   nameInput.placeholder = 'Required';
+  nameInput.addEventListener('input', _markDirty);
   form.appendChild(makeInputRow('Name:', nameInput));
 
   const descInput = document.createElement('input');
   descInput.type = 'text';
   descInput.value = config?.description ?? '';
   descInput.placeholder = 'Optional';
+  descInput.addEventListener('input', _markDirty);
   form.appendChild(makeInputRow('Description:', descInput));
 
   // ---- Root model type ----------------------------------------------------
@@ -194,7 +200,7 @@ function renderConfigForm({ config, typenames, labelsMap, onSave, onCancel }) {
     if (tn === rootTypename) o.selected = true;
     rootSel.appendChild(o);
   });
-  rootSel.addEventListener('change', () => { rootTypename = rootSel.value; });
+  rootSel.addEventListener('change', () => { rootTypename = rootSel.value; _markDirty(); });
   rootRow.appendChild(rootLbl);
   rootRow.appendChild(rootSel);
   form.appendChild(rootRow);
@@ -210,6 +216,8 @@ function renderConfigForm({ config, typenames, labelsMap, onSave, onCancel }) {
     'overflow-y: auto',
   ].join('; ');
   form.appendChild(treeSection);
+
+  treeSection.addEventListener('change', _markDirty);
 
   // ---- Submodel panels (populated dynamically) ---------------------------
   const submodelsContainer = document.createElement('div');
@@ -235,7 +243,7 @@ function renderConfigForm({ config, typenames, labelsMap, onSave, onCancel }) {
     initialSelected: initSelected,
     initialSubmodels: initSubmodels,
     typenames,
-    onSubmodelsChanged: (submodels) => refreshPanels(submodels),
+    onSubmodelsChanged: (submodels) => { refreshPanels(submodels); _markDirty(); },
   }).then(handle => {
     treeHandle = handle;
     refreshPanels(initSubmodels); // render initial panels
@@ -280,111 +288,6 @@ function renderConfigForm({ config, typenames, labelsMap, onSave, onCancel }) {
 }
 
 // -------------------------------------------------------
-// Config card (view mode + edit toggle)
-// -------------------------------------------------------
-
-function renderConfigCard({ config, labelsMap, typenames, onRefresh }) {
-  const card = document.createElement('div');
-  card.style.cssText = [
-    'border: 1px solid var(--pico-border-color)',
-    'border-radius: 6px',
-    'padding: 12px',
-    'margin-bottom: 8px',
-  ].join('; ');
-
-  function showView() {
-    card.innerHTML = '';
-
-    const header = document.createElement('div');
-    header.style.cssText = 'display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 8px;';
-
-    const left = document.createElement('div');
-    const title = document.createElement('strong');
-    title.textContent = config.name;
-    left.appendChild(title);
-    if (config.description) {
-      const desc = document.createElement('div');
-      desc.style.cssText = 'font-size: 0.85em; color: var(--pico-muted-color); margin-top: 2px;';
-      desc.textContent = config.description;
-      left.appendChild(desc);
-    }
-
-    const btns = document.createElement('div');
-    btns.style.cssText = 'display: flex; gap: 6px; margin-left: 12px;';
-
-    const editBtn = document.createElement('button');
-    editBtn.type = 'button';
-    editBtn.textContent = '✏️ Edit';
-    editBtn.style.cssText = 'font-size: 0.8em; padding: 2px 8px;';
-    editBtn.addEventListener('click', showEdit);
-
-    const deleteBtn = document.createElement('button');
-    deleteBtn.type = 'button';
-    deleteBtn.textContent = '🗑️ Delete';
-    deleteBtn.style.cssText = 'font-size: 0.8em; padding: 2px 8px;';
-    deleteBtn.addEventListener('click', async () => {
-      if (!window.confirm(`Delete model config "${config.name}"?`)) return;
-      try { await deleteModelConfig(config.uuid); onRefresh(); }
-      catch (err) { toast(err.message, 5000, 'error'); }
-    });
-
-    btns.appendChild(editBtn);
-    btns.appendChild(deleteBtn);
-    header.appendChild(left);
-    header.appendChild(btns);
-    card.appendChild(header);
-
-    if (config.nodes.length === 0) {
-      const empty = document.createElement('div');
-      empty.style.cssText = 'font-size: 0.85em; color: var(--pico-muted-color);';
-      empty.textContent = 'No assignments defined.';
-      card.appendChild(empty);
-    } else {
-      const table = document.createElement('div');
-      table.style.cssText = 'font-size: 0.85em; display: flex; flex-direction: column; gap: 3px;';
-      for (const node of config.nodes) {
-        const row = document.createElement('div');
-        row.style.cssText = 'display: flex; align-items: center; gap: 8px;';
-
-        // Color swatch
-        if (node.label_uuid) {
-          const color = labelsMap.get(node.label_uuid)?.color ?? '#888';
-          const swatch = document.createElement('span');
-          swatch.style.cssText = `background:${color}; width:8px; height:8px; border-radius:50%; flex-shrink:0; display:inline-block;`;
-          row.appendChild(swatch);
-        }
-
-        const lbl = document.createElement('span');
-        lbl.style.cssText = 'color: var(--pico-muted-color); min-width: 130px;';
-        lbl.textContent = node.label_uuid
-          ? (labelsMap.get(node.label_uuid)?.name ?? '(unknown)')
-          : 'Root';
-        const arrow = document.createElement('span'); arrow.textContent = '→';
-        const type = document.createElement('span'); type.textContent = node.model_typename;
-        row.appendChild(lbl); row.appendChild(arrow); row.appendChild(type);
-        table.appendChild(row);
-      }
-      card.appendChild(table);
-    }
-  }
-
-  function showEdit() {
-    card.innerHTML = '';
-    card.appendChild(renderConfigForm({
-      config, typenames, labelsMap,
-      onSave: async ({ name, description, nodes }) => {
-        await updateModelConfig(config.uuid, { name, description, nodes });
-        onRefresh();
-      },
-      onCancel: showView,
-    }));
-  }
-
-  showView();
-  return card;
-}
-
-// -------------------------------------------------------
 // Public entry point
 // -------------------------------------------------------
 
@@ -397,42 +300,173 @@ export async function renderModelConfigManager({ target = 'model-config-box' } =
   container.innerHTML = '';
 
   try {
-    const [configsMap, typenames, labelsMap] = await Promise.all([
-      fetchModelConfigs(),
-      fetchModelTypenames(),
-      fetchLabels(),
-    ]);
+    const panel = document.createElement('div');
+    panel.className = 'config-panel';
+    container.appendChild(panel);
 
-    const refresh = () => { clearModelConfigsCache(); renderModelConfigManager({ target }); };
+    const leftCol = document.createElement('div');
+    leftCol.className = 'config-column';
+    panel.appendChild(leftCol);
 
-    const listHeader = document.createElement('h3');
-    listHeader.textContent = 'Model Configurations';
-    container.appendChild(listHeader);
+    const rightCol = document.createElement('div');
+    rightCol.className = 'config-column';
+    panel.appendChild(rightCol);
 
-    if (configsMap.size === 0) {
-      const empty = document.createElement('p');
-      empty.style.color = 'var(--pico-muted-color)';
-      empty.textContent = 'No model configurations defined yet.';
-      container.appendChild(empty);
-    } else {
-      for (const config of configsMap.values()) {
-        container.appendChild(renderConfigCard({ config, typenames, labelsMap, onRefresh: refresh }));
+    let _selectedUuid = null;
+    let _getDirtyState = () => false;
+
+    function _confirmIfDirty() {
+      if (!_getDirtyState()) return true;
+      return window.confirm('You have unsaved changes. Discard them?');
+    }
+
+    function _updateListSelection(uuid) {
+      for (const row of leftCol.querySelectorAll('[data-config-uuid]')) {
+        const sel = row.dataset.configUuid === uuid;
+        row.style.background = sel ? 'var(--pico-primary-background, #eef)' : '';
+        row.style.borderColor = sel ? 'var(--pico-primary-border, #aad)' : 'transparent';
       }
     }
 
-    container.appendChild(document.createElement('hr'));
+    async function showEdit(config, { force = false } = {}) {
+      if (!force && !_confirmIfDirty()) return;
+      _getDirtyState = () => false;
+      _selectedUuid = config.uuid;
+      const [labelsMap, typenames] = await Promise.all([fetchLabels(), fetchModelTypenames()]);
+      rightCol.innerHTML = '';
 
-    const createHeader = document.createElement('h3');
-    createHeader.textContent = 'Create Model Configuration';
-    container.appendChild(createHeader);
+      const h4 = document.createElement('h4');
+      h4.style.marginBottom = '8px';
+      h4.textContent = config.name;
+      rightCol.appendChild(h4);
 
-    container.appendChild(renderConfigForm({
-      config: null, typenames, labelsMap,
-      onSave: async ({ name, description, nodes }) => {
-        await createModelConfig({ name, description, nodes });
-        refresh();
-      },
-    }));
+      rightCol.appendChild(renderConfigForm({
+        config, typenames, labelsMap,
+        onDirtyChange: (getter) => { _getDirtyState = getter; },
+        onSave: async ({ name, description, nodes }) => {
+          const updated = await updateModelConfig(config.uuid, { name, description, nodes });
+          _getDirtyState = () => false;
+          toast('Saved', 3000);
+          const nameEl = leftCol.querySelector(`[data-config-uuid="${config.uuid}"] .mc-name`);
+          if (nameEl) nameEl.textContent = updated.name;
+          await showEdit(updated, { force: true });
+        },
+      }));
+
+      const deleteBtn = document.createElement('button');
+      deleteBtn.type = 'button';
+      deleteBtn.textContent = '🗑️ Delete';
+      deleteBtn.style.cssText = 'margin-top:8px;';
+      deleteBtn.addEventListener('click', async () => {
+        if (!window.confirm(`Delete model config "${config.name}"?`)) return;
+        deleteBtn.disabled = true;
+        try {
+          await deleteModelConfig(config.uuid);
+          toast('Deleted', 3000);
+          await refreshList();
+          await showCreate({ force: true });
+        } catch (err) {
+          toast(err.message, 5000, 'error');
+          deleteBtn.disabled = false;
+        }
+      });
+      rightCol.appendChild(deleteBtn);
+
+      _updateListSelection(config.uuid);
+    }
+
+    async function showCreate({ force = false } = {}) {
+      if (!force && !_confirmIfDirty()) return;
+      _getDirtyState = () => false;
+      _selectedUuid = null;
+      const [labelsMap, typenames] = await Promise.all([fetchLabels(), fetchModelTypenames()]);
+      rightCol.innerHTML = '';
+
+      const h4 = document.createElement('h4');
+      h4.style.marginBottom = '8px';
+      h4.textContent = 'New Model Configuration';
+      rightCol.appendChild(h4);
+
+      rightCol.appendChild(renderConfigForm({
+        config: null, typenames, labelsMap,
+        onDirtyChange: (getter) => { _getDirtyState = getter; },
+        onSave: async ({ name, description, nodes }) => {
+          const created = await createModelConfig({ name, description, nodes });
+          _getDirtyState = () => false;
+          toast(`Created "${created.name}"`, 3000);
+          await refreshList();
+          await showEdit(created, { force: true });
+        },
+      }));
+
+      _updateListSelection(null);
+    }
+
+    async function refreshList() {
+      leftCol.innerHTML = '';
+
+      const h4 = document.createElement('h4');
+      h4.style.marginBottom = '8px';
+      h4.textContent = 'Model Configurations';
+      leftCol.appendChild(h4);
+
+      const configsMap = await fetchModelConfigs();
+      const listEl = document.createElement('div');
+      leftCol.appendChild(listEl);
+
+      if (configsMap.size === 0) {
+        const empty = document.createElement('p');
+        empty.style.cssText = 'color:var(--pico-muted-color,#888); font-style:italic; font-size:0.85em;';
+        empty.textContent = 'No configurations yet.';
+        listEl.appendChild(empty);
+      }
+
+      for (const config of configsMap.values()) {
+        const row = document.createElement('div');
+        row.style.cssText = 'cursor:pointer; padding:6px 8px; margin-bottom:4px; border-radius:4px; border:1px solid transparent; background:var(--pico-card-background-color);';
+        row.dataset.configUuid = config.uuid;
+
+        const nameLine = document.createElement('div');
+        nameLine.className = 'mc-name';
+        nameLine.style.fontWeight = 'bold';
+        nameLine.textContent = config.name;
+        row.appendChild(nameLine);
+
+        if (config.description) {
+          const descLine = document.createElement('div');
+          descLine.style.cssText = 'font-size:0.82em; color:var(--pico-muted-color,#666); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:220px;';
+          descLine.textContent = config.description;
+          row.appendChild(descLine);
+        }
+
+        const metaLine = document.createElement('div');
+        metaLine.style.cssText = 'font-size:0.75em; color:var(--pico-muted-color,#999);';
+        const n = config.nodes?.length ?? 0;
+        metaLine.textContent = `${n} assignment${n === 1 ? '' : 's'}`;
+        row.appendChild(metaLine);
+
+        row.addEventListener('mouseenter', () => {
+          if (row.dataset.configUuid !== _selectedUuid) row.style.background = 'var(--pico-card-sectioning-background-color, #f5f5f5)';
+        });
+        row.addEventListener('mouseleave', () => {
+          if (row.dataset.configUuid !== _selectedUuid) row.style.background = 'var(--pico-card-background-color)';
+        });
+        row.addEventListener('click', () => showEdit(config));
+        listEl.appendChild(row);
+      }
+
+      const newBtn = document.createElement('button');
+      newBtn.type = 'button';
+      newBtn.textContent = '+ New Configuration';
+      newBtn.style.cssText = 'margin-top:8px; width:100%;';
+      newBtn.addEventListener('click', () => showCreate());
+      leftCol.appendChild(newBtn);
+
+      _updateListSelection(_selectedUuid);
+    }
+
+    await refreshList();
+    await showCreate({ force: true });
   } catch (err) {
     const errMsg = document.createElement('p');
     errMsg.style.color = 'red';

@@ -24,6 +24,8 @@ export function renderModelLabelAssignments({
         placeholder: 'Choose a model...',
         onChange: value => {
           if (!value) return;
+          if (container.querySelector('.emoji-button[title="Save"]') &&
+              !window.confirm('You have unsaved changes. Discard them?')) return;
           setTimeout(() => {
             renderModelLabelAssignments({ target, editable, preselectedModel: value });
           }, 0);
@@ -34,6 +36,8 @@ export function renderModelLabelAssignments({
           text: 'Refresh',
           emoji: '🔄',
           onClick: () => {
+            if (container.querySelector('.emoji-button[title="Save"]') &&
+                !window.confirm('You have unsaved changes. Discard them?')) return;
             clearModelsCache();
             renderModelLabelAssignments({ target, editable, preselectedModel: preselectedModel });
           }
