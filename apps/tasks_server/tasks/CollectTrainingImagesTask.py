@@ -18,6 +18,7 @@ from inference_client.models.inference_payload import InferencePayload
 from inference_client.models.pin_model_payload import PinModelPayload
 
 from apps.helpers.db.db_client import UNVERIFIED_TAG_UUID
+from apps.helpers.imageProviders.imageProvider import ImageProvider
 from apps.helpers.imageUtils import base64_encode_png
 
 from .Registry import register_task
@@ -41,7 +42,7 @@ class CollectTrainingImagesTask(Task):
     async def _init(self, params: dict[str, Any], resume_data: Optional[dict[str, Any]]) -> None:
         self._status_msg: str = "Initializing"
         self.log("Initializing task parameters")
-        self._source_uuid: str = params["source_uuid"]
+        self._source_uuids: list[str] = params["source_uuids"]
         self._output_dir: str = params["output_dir"]
 
         # model_label_config: [{modelName, labelValues: {labelUuid: confidence}}]
@@ -71,10 +72,16 @@ class CollectTrainingImagesTask(Task):
         db_api_client = self._manager.get_db_api_client()
         inference_api_client = self._manager.get_inference_api_client()
 
-        self._status_msg = "Getting image provider"
-        self.log(f"Getting image provider for source {self._source_uuid}")
+        self._status_msg = "Getting image providers"
         source_helper = SourceHelper(db_api_client)
-        provider = source_helper.get_image_provider(self._source_uuid)
+        providers: list[ImageProvider] =  []
+        for source_uuid in self._source_uuids:
+            try:
+                provider = source_helper.get_image_provider(source_uuid)
+            except ValueError:
+                self.log(f"Failed to get provider for {source_uuid}")
+                continue
+            providers.append(provider)
 
         self._status_msg = "Pinning models"
         self.log(f"Pinning {len(self._model_names)} model(s)")
@@ -100,91 +107,121 @@ class CollectTrainingImagesTask(Task):
 
         self._status_msg = "Running"
         self.log(f"Starting collection (resuming from {self._images_saved} images)")
-        await provider.start()
+
+        for provider in providers:
+            await provider.start()
         try:
-            while not self._cancel_flag.is_set():
-                provided = await provider.getNextImage()
-                if provided is None:
-                    break
+            active = set(providers)
+            while active and not self._cancel_flag.is_set():
+                for provider in list(active):
+                    if self._cancel_flag.is_set():
+                        break
 
-                base64_img = base64_encode_png(provided.image)
+                    provided = await provider.getNextImage()
+                    if provided is None:
+                        active.discard(provider)
+                        continue
 
-                matching = []
-                for name in self._model_names:
-                    try:
-                        result = await asyncio.to_thread(
-                            inference_api.inference,
-                            name,
-                            InferencePayload(
-                                image_base64=base64_img,
-                                conf_thresh=self._min_all_conf,
-                                pin_id=pin_ids.get(name),
-                            ),
-                        )
-                        for det in result.result.detections or []:
-                            luuid = det.bbox.label_uuid
-                            if luuid and luuid in self._target_label_map:
-                                if det.confidence >= self._target_label_map[luuid]:
-                                    matching.append(det)
-                    except Exception:
-                        logger.exception(f"Inference error on model {name}")
+                    base64_img = base64_encode_png(provided.image)
+                    matching = await self._run_inference(inference_api, base64_img, pin_ids)
+                    if not matching:
+                        continue
 
-                if not matching:
-                    continue
+                    filename = await self._save_image(images_api, provided, matching, files_root)
+                    if filename is None:
+                        continue
 
-                source_name = ImageHelper.sanitize_filename(provided.metadata.source or "unknown")
-                frame_idx = provided.metadata.frame_idx or 0
-                filename = f"{source_name}_{frame_idx}.png"
-                rel_path = str(Path(self._output_dir) / filename)
-                abs_path = files_root / self._output_dir / filename
-                abs_path.parent.mkdir(parents=True, exist_ok=True)
+                    self._images_saved += 1
+                    self._status_msg = f"Saved {self._images_saved} images"
+                    self.log(f"Saved {filename} ({self._images_saved} total)")
+                    self._update_progress(self._images_saved)
 
-                if not cv2.imwrite(str(abs_path), provided.image):
-                    logger.warning(f"Failed to write image to {abs_path}")
-                    self.log(f"Failed to write image: {filename}")
-                    continue
-
-                boxes = [
-                    BoundingBoxMetadataModel(
-                        bbox_uuid=str(uuid4()),
-                        x=det.bbox.x,
-                        y=det.bbox.y,
-                        width=det.bbox.width,
-                        height=det.bbox.height,
-                        label_uuid=det.bbox.label_uuid,
-                        class_str=det.bbox.class_str,
-                        tag_uuids=[self._unverified_tag_uuid],
-                        extra={"confidence": str(det.confidence)},
-                    )
-                    for det in matching
-                ]
-
-                try:
-                    await asyncio.to_thread(
-                        images_api.update_image_metadata,
-                        UpdateMetadataPayload(image_path=rel_path, boxes=boxes),
-                    )
-                except Exception:
-                    logger.exception(f"Failed to save metadata for {rel_path}")
-                    self.log(f"Failed to save metadata: {filename}")
-                    continue
-
-                self._images_saved += 1
-                self._status_msg = f"Saved {self._images_saved} images"
-                self.log(f"Saved {filename} ({self._images_saved} total)")
-                self._update_progress(self._images_saved)
-
-                if self._data_req_flag.is_set():
-                    self._data_req_flag.clear()
-                    self._resume_data = {"images_saved": self._images_saved}
-                    self._data_ready_flag.set()
-
+                    if self._data_req_flag.is_set():
+                        self._data_req_flag.clear()
+                        self._resume_data = {"images_saved": self._images_saved}
+                        self._data_ready_flag.set()
         finally:
-            await provider.stop()
+            for provider in providers:
+                await provider.stop()
 
         self._resume_data = {"images_saved": self._images_saved}
         self._data_ready_flag.set()
         return {"images_saved": self._images_saved}
+
+    async def _run_inference(
+        self,
+        inference_api: InferenceApi,
+        base64_img: str,
+        pin_ids: dict[str, Optional[str]],
+    ) -> list:
+        """Runs all configured models; returns detections meeting per-label confidence thresholds."""
+        matching = []
+        for name in self._model_names:
+            try:
+                result = await asyncio.to_thread(
+                    inference_api.inference,
+                    name,
+                    InferencePayload(
+                        image_base64=base64_img,
+                        conf_thresh=self._min_all_conf,
+                        pin_id=pin_ids.get(name),
+                    ),
+                )
+                for det in result.result.detections or []:
+                    luuid = det.bbox.label_uuid
+                    if luuid and luuid in self._target_label_map:
+                        if det.confidence >= self._target_label_map[luuid]:
+                            matching.append(det)
+            except Exception:
+                logger.exception(f"Inference error on model {name}")
+        return matching
+
+    async def _save_image(
+        self,
+        images_api: ImagesApi,
+        provided,
+        matching: list,
+        files_root: Path,
+    ) -> Optional[str]:
+        """Writes image to disk and persists bounding-box metadata. Returns filename on success, None on failure."""
+        source_name = ImageHelper.sanitize_filename(provided.metadata.source or "unknown")
+        frame_idx = provided.metadata.frame_idx or 0
+        filename = f"{source_name}_{frame_idx}.png"
+        rel_path = str(Path(self._output_dir) / filename)
+        abs_path = files_root / self._output_dir / filename
+        abs_path.parent.mkdir(parents=True, exist_ok=True)
+
+        if not cv2.imwrite(str(abs_path), provided.image):
+            logger.warning(f"Failed to write image to {abs_path}")
+            self.log(f"Failed to write image: {filename}")
+            return None
+
+        boxes = [
+            BoundingBoxMetadataModel(
+                bbox_uuid=str(uuid4()),
+                x=det.bbox.x,
+                y=det.bbox.y,
+                width=det.bbox.width,
+                height=det.bbox.height,
+                label_uuid=det.bbox.label_uuid,
+                class_str=det.bbox.class_str,
+                tag_uuids=[self._unverified_tag_uuid],
+                extra={"confidence": str(det.confidence)},
+            )
+            for det in matching
+        ]
+
+        try:
+            await asyncio.to_thread(
+                images_api.update_image_metadata,
+                UpdateMetadataPayload(image_path=rel_path, boxes=boxes),
+            )
+        except Exception:
+            logger.exception(f"Failed to save metadata for {rel_path}")
+            self.log(f"Failed to save metadata: {filename}")
+            return None
+
+        return filename
 
     async def _deinit(self) -> None:
         pass
@@ -196,13 +233,24 @@ class CollectTrainingImagesTask(Task):
     def params_schema(cls) -> dict[str, dict[str, Any]]:
         return {
             "meta": {
-                "order": ["source_uuid", "output_dir", "model_label_config"]
+                "order": ["output_dir", "snapshot_interval","source_uuids", "model_label_config"]
             },
-            "source_uuid": {
-                "type": "source_uuid",
-                "label": "Image Source",
+            "snapshot_interval": {
+                "type": "int",
+                "label": "Snapshot Interval",
+                "description": "Interval between image captures",
+                "default": 15,
+            },
+            "source_uuids": {
+                "type": "array",
                 "required": True,
-                "description": "Pre-configured source to pull images from",
+                "label": "Image Sources",
+                "items": {
+                    "type": "source_uuid",
+                    "label": "Image Source",
+                    "required": True,
+                    "description": "Pre-configured source to pull images from",
+                },
             },
             "output_dir": {
                 "type": "string",

@@ -36,7 +36,7 @@ class SourceHelper:
 
         source_metadata = self._sources_cache.get(source_uuid)
         if not source_metadata:
-            raise Exception(f"Source {source_uuid} not found")
+            raise ValueError(f"Source {source_uuid} not found")
 
         image_provider: ImageProvider = image_provider_registry[source_metadata.typename](**source_metadata.params)
         return image_provider
