@@ -114,6 +114,11 @@ class Manager:
             )
             configs = configs_resp.configs or {}
             for instance in db_instances:
+                if instance.uuid in ret_info:
+                    # Already populated from _running_tasks; the in-memory entry has
+                    # the correct live status ("running") whereas the DB record still
+                    # has the initial status ("new") until the task completes or pauses.
+                    continue
                 config = configs.get(instance.config_uuid)
                 running_task = self._running_tasks.get(instance.uuid)
                 task_info = TaskInfo(config=config, instance=instance, task=running_task.task if running_task else None)
@@ -392,9 +397,18 @@ class Manager:
         self._running_tasks[instance.uuid] = task_info
         await task.start()
         instance.status = TaskStatus.RUNNING
+        # Register the completion handler before the DB write so that a DB
+        # failure cannot leave the task running with no completion handler.
         t = asyncio.create_task(self._on_task_complete(task_info))
         self._completion_tasks.add(t)
         t.add_done_callback(self._completion_tasks.discard)
+        # Persist the running status immediately so the DB is the authoritative
+        # source of truth for task state from the moment execution begins.
+        await asyncio.to_thread(
+            TasksApi(self._db_api_client).set_task_instance_status,
+            instance.uuid,
+            db_models.SetTaskStatusPayload(status=TaskStatus.RUNNING),
+        )
         return task_info
 
     def start(self):
@@ -405,15 +419,39 @@ class Manager:
     async def _init(self):
         resp = await asyncio.to_thread(
             TasksApi(self._db_api_client).list_task_instances,
-            resumable=False,
         )
-        stale_tasks = resp.instances or []
-        if stale_tasks:
-            stale_ids = [inst.uuid for inst in stale_tasks]
+        all_instances = resp.instances or []
+
+        # "new" = created but server crashed before task.start() was reached.
+        # Nothing useful to recover; remove them.
+        new_tasks = [inst for inst in all_instances if inst.status == TaskStatus.NEW]
+        if new_tasks:
+            logger.info(f"Removing {len(new_tasks)} never-started task instance(s)")
             await asyncio.to_thread(
                 TasksApi(self._db_api_client).delete_task_instances,
-                db_models.DeleteTaskInstancesPayload(task_uuids=stale_ids),
+                db_models.DeleteTaskInstancesPayload(task_uuids=[inst.uuid for inst in new_tasks]),
             )
+
+        # "running" = server was killed while the task was executing.
+        # If the task managed to save a checkpoint, treat it as paused so the user
+        # can resume it.  If there is no checkpoint there is nothing to resume from,
+        # so mark it as an error so it's clearly visible but not misleadingly resumable.
+        running_tasks = [inst for inst in all_instances if inst.status == TaskStatus.RUNNING]
+        if running_tasks:
+            coros = []
+            for inst in running_tasks:
+                if inst.resume_data_json:
+                    recovered_status = db_models.TaskStatus.PAUSED
+                    logger.info(f"Task {inst.uuid} interrupted with checkpoint — marking paused (resumable)")
+                else:
+                    recovered_status = db_models.TaskStatus.ERROR
+                    logger.info(f"Task {inst.uuid} interrupted without checkpoint — marking error")
+                coros.append(asyncio.to_thread(
+                    TasksApi(self._db_api_client).set_task_instance_status,
+                    inst.uuid,
+                    db_models.SetTaskStatusPayload(status=recovered_status),
+                ))
+            await asyncio.gather(*coros)
 
     async def _worker_task(self):
         try:

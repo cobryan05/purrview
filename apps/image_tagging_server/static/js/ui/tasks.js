@@ -100,100 +100,172 @@ export function renderTaskConfigs({ target = 'task-config-list', onEdit, onDelet
 }
 
 /**
+ * Compute a cheap fingerprint over task data so we can skip re-renders when
+ * nothing has changed.  Includes status, rounded progress, and the last log line.
+ * @param {Record<string, any>} tasks
+ * @returns {string}
+ */
+function _taskFingerprint(tasks) {
+  return Object.entries(tasks || {})
+    .map(([id, t]) => {
+      const logs = t.log_lines ?? [];
+      return `${id}:${t.instance?.status}:${Math.round(t.progress ?? 0)}:${logs.length}:${logs[logs.length - 1] ?? ''}`;
+    })
+    .sort()
+    .join('|');
+}
+
+/**
  * Renders the active tasks (right column).
+ *
+ * Flash-free strategy:
+ *   1. Fetch + build all new rows in a detached div while old DOM stays visible.
+ *   2. Fingerprint-check: if data hasn't changed, skip the swap entirely.
+ *   3. Snapshot open/scroll state from the live DOM.
+ *   4. Atomically swap the detached div into the container.
+ *
+ * This means the pane never goes blank — the old content is replaced only when
+ * the new content is fully ready.
  */
 export function renderActiveTasks({ target = 'active-tasks-list', refresh = null }) {
   const container = document.getElementById(target);
   if (!container) return;
-  container.innerHTML = '';
 
-  const listDiv = document.createElement('div');
-  container.appendChild(listDiv);
+  // Guard against concurrent renders (e.g. rapid button clicks during a slow fetch).
+  if (container._rendering) return;
+  container._rendering = true;
 
-  /** @type {Promise<import('@web_api').TasksInfoResponse>} */
-  fetchTasksStatus().then(response => {
-    const { tasks } = response;
+  fetchTasksStatus().then(async response => {
+    try {
+      const { tasks } = response;
 
-    Object.entries(tasks || {}).forEach(([taskId, task]) => {
-      const status = task.instance?.status;
+      // Skip re-render entirely when nothing meaningful changed.
+      const fingerprint = _taskFingerprint(tasks);
+      if (container._lastFingerprint === fingerprint) return;
 
-      const deleteButton = {
-        text: 'Delete',
-        emoji: '🗑️',
-        onClick: async () => {
-          if (!window.confirm(`Delete task ${task.config?.name ?? taskId}?`)) return;
-          try {
-            await deleteTasks({ taskUuids: [taskId] });
-            refresh?.();
-          } catch (error) {
-            toast(error.message || 'Failed to delete task', 5000, 'error');
-          }
-        }
-      };
-
-      const cancelButton = {
-        text: 'Cancel',
-        emoji: '⏹️',
-        onClick: async () => {
-          try {
-            await cancelTasks({ taskUuids: [taskId] });
-            refresh?.();
-          } catch (error) {
-            toast(error.message || 'Failed to cancel task', 5000, 'error');
-          }
-        }
-      };
-
-      const pauseButton = {
-        text: 'Pause',
-        emoji: '⏸️',
-        onClick: async () => {
-          try {
-            await pauseTasks({ taskUuids: [taskId] });
-            refresh?.();
-          } catch (error) {
-            toast(error.message || 'Failed to pause task', 5000, 'error');
-          }
-        }
-      };
-
-      const resumeButton = {
-        text: 'Resume',
-        emoji: '▶️',
-        onClick: async () => {
-          try {
-            await resumeTasks({ taskUuids: [taskId] });
-            refresh?.();
-          } catch (error) {
-            toast(error.message || 'Failed to resume task', 5000, 'error');
-          }
-        }
-      };
-
-      let leftButtons = [];
-      let rightButtons = [];
-
-      if (status === 'running') {
-        leftButtons = [pauseButton];
-        rightButtons = [cancelButton];
-      } else if (status === 'pending') {
-        rightButtons = [cancelButton];
-      } else if (status === 'paused') {
-        leftButtons = [deleteButton];
-        rightButtons = [resumeButton];
-      } else {
-        // completed, error
-        leftButtons = [deleteButton];
-      }
-
-      ActiveTaskField.create({ value: { ...task } }).then(fieldInstance => {
-        const row = createGenericRow({
-          field: fieldInstance,
-          leftButtons,
-          rightButtons,
-        });
-        listDiv.appendChild(row);
+      // Snapshot open/scroll state from the *current* live DOM before we touch it.
+      const openState = {};
+      container.querySelectorAll('[data-task-uuid]').forEach(row => {
+        const uuid = row.dataset.taskUuid;
+        if (!uuid) return;
+        const details = row.querySelector('details');
+        const pre = row.querySelector('pre');
+        openState[uuid] = {
+          detailsOpen: details?.open ?? false,
+          scrollTop: pre?.scrollTop ?? 0,
+        };
       });
-    });
+
+      // Build every row in parallel inside a detached div.  The live DOM is
+      // untouched until everything is ready.
+      const newListDiv = document.createElement('div');
+
+      await Promise.all(Object.entries(tasks || {}).map(async ([taskId, task]) => {
+        const status = task.instance?.status;
+
+        const deleteButton = {
+          text: 'Delete', emoji: '🗑️',
+          onClick: async () => {
+            if (!window.confirm(`Delete task ${task.config?.name ?? taskId}?`)) return;
+            try { await deleteTasks({ taskUuids: [taskId] }); refresh?.(); }
+            catch (error) { toast(error.message || 'Failed to delete task', 5000, 'error'); }
+          }
+        };
+        const stopButton = {
+          text: 'Stop', emoji: '⏹️',
+          onClick: async () => {
+            try { await cancelTasks({ taskUuids: [taskId] }); refresh?.(); }
+            catch (error) { toast(error.message || 'Failed to stop task', 5000, 'error'); }
+          }
+        };
+        const pauseButton = {
+          text: 'Pause', emoji: '⏸️',
+          onClick: async () => {
+            try { await pauseTasks({ taskUuids: [taskId] }); refresh?.(); }
+            catch (error) { toast(error.message || 'Failed to pause task', 5000, 'error'); }
+          }
+        };
+        const resumeButton = {
+          text: 'Resume', emoji: '▶️',
+          onClick: async () => {
+            try { await resumeTasks({ taskUuids: [taskId] }); refresh?.(); }
+            catch (error) { toast(error.message || 'Failed to resume task', 5000, 'error'); }
+          }
+        };
+        const rerunButton = {
+          text: 'Rerun', emoji: '🔁',
+          onClick: async () => {
+            try {
+              // Delete the current instance (may be paused, completed, or errored)
+              // before creating a fresh one so we don't leave orphaned checkpoints.
+              await deleteTasks({ taskUuids: [taskId] });
+              await startTask({ configUuid: task.config?.uuid });
+              refresh?.();
+            } catch (error) { toast(error.message || 'Failed to start task', 5000, 'error'); }
+          }
+        };
+
+        let leftButtons = [];
+        let rightButtons = [];
+        if (status === 'running') {
+          leftButtons = [pauseButton];
+          rightButtons = [stopButton];
+        } else if (status === 'pending') {
+          rightButtons = [stopButton];
+        } else if (status === 'paused') {
+          leftButtons = [deleteButton];
+          rightButtons = [resumeButton, rerunButton];
+        } else {
+          // completed, error
+          leftButtons = [deleteButton];
+          rightButtons = [rerunButton];
+        }
+
+        // Pre-render field content so we get a direct DOM handle for state
+        // restoration, and so createGenericRow gets an already-resolved Promise
+        // (avoids timing uncertainty about when fieldDiv content is populated).
+        const fieldInstance = await ActiveTaskField.create({ value: { ...task } });
+        const content = await fieldInstance.renderView();
+
+        // Restore open/scroll state directly on the pre-rendered content node.
+        const saved = openState[taskId];
+        if (saved?.detailsOpen) {
+          const details = content.querySelector('details');
+          if (details) {
+            details.open = true;
+            if (saved.scrollTop) {
+              requestAnimationFrame(() => {
+                const pre = details.querySelector('pre');
+                if (pre) pre.scrollTop = saved.scrollTop;
+              });
+            }
+          }
+        }
+
+        // Wrap the pre-rendered node in a minimal field-compatible object so
+        // createGenericRow doesn't re-render it.
+        const preRendered = {
+          getEditMode: () => false,
+          renderView: async () => content,
+          getValue: () => ({}),
+        };
+
+        const row = createGenericRow({ field: preRendered, leftButtons, rightButtons });
+        row.dataset.taskUuid = taskId;
+        newListDiv.appendChild(row);
+      }));
+
+      // Atomic swap: old content stays visible until this exact line.
+      container.innerHTML = '';
+      container.appendChild(newListDiv);
+
+      // Record fingerprint only after a successful swap.
+      container._lastFingerprint = fingerprint;
+
+    } finally {
+      container._rendering = false;
+    }
+  }).catch(() => {
+    container._rendering = false;
   });
 }

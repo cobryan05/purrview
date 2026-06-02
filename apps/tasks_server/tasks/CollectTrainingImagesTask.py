@@ -65,6 +65,11 @@ class CollectTrainingImagesTask(Task):
         self._target_label_map: dict[str, float] = {t.label_uuid: t.min_confidence for t in self._target_labels}
         self._min_all_conf: float = min((t.min_confidence for t in self._target_labels), default=0.5)
         self._images_saved: int = resume_data.get("images_saved", 0) if resume_data else 0
+        # Set of "source:frame_idx" strings for images already processed this run or
+        # in a previous run that was paused.  Lets us skip re-processing on resume.
+        self._processed_ids: set[str] = set(resume_data.get("processed_ids", [])) if resume_data else set()
+        if self._processed_ids:
+            self.log(f"Resuming: {len(self._processed_ids)} images already processed")
 
     async def _run(self) -> dict[str, Any]:
         self._unverified_tag_uuid = UNVERIFIED_TAG_UUID
@@ -107,12 +112,12 @@ class CollectTrainingImagesTask(Task):
 
         self._status_msg = "Running"
         self.log(f"Starting collection (resuming from {self._images_saved} images)")
-
         for provider in providers:
             await provider.start()
         try:
             active = set(providers)
             while active and not self._cancel_flag.is_set():
+                self._status_msg = f"Processed {len(self._processed_ids)} images, Saved {self._images_saved} images"
                 for provider in list(active):
                     if self._cancel_flag.is_set():
                         break
@@ -120,6 +125,15 @@ class CollectTrainingImagesTask(Task):
                     provided = await provider.getNextImage()
                     if provided is None:
                         active.discard(provider)
+                        continue
+
+                    # Build a stable unique ID when the provider gives us source + frame_idx.
+                    # Used to skip already-processed frames on resume (file-based providers only).
+                    unique_id: Optional[str] = None
+                    if provided.metadata.source is not None and provided.metadata.frame_idx is not None:
+                        unique_id = f"{provided.metadata.source}:{provided.metadata.frame_idx}"
+                    if unique_id and unique_id in self._processed_ids:
+                        logger.debug(f"Skipping already-processed: {unique_id}")
                         continue
 
                     base64_img = base64_encode_png(provided.image)
@@ -131,20 +145,27 @@ class CollectTrainingImagesTask(Task):
                     if filename is None:
                         continue
 
+                    if unique_id:
+                        self._processed_ids.add(unique_id)
                     self._images_saved += 1
-                    self._status_msg = f"Saved {self._images_saved} images"
                     self.log(f"Saved {filename} ({self._images_saved} total)")
                     self._update_progress(self._images_saved)
 
                     if self._data_req_flag.is_set():
                         self._data_req_flag.clear()
-                        self._resume_data = {"images_saved": self._images_saved}
+                        self._resume_data = {
+                            "images_saved": self._images_saved,
+                            "processed_ids": list(self._processed_ids),
+                        }
                         self._data_ready_flag.set()
         finally:
             for provider in providers:
                 await provider.stop()
 
-        self._resume_data = {"images_saved": self._images_saved}
+        self._resume_data = {
+            "images_saved": self._images_saved,
+            "processed_ids": list(self._processed_ids),
+        }
         self._data_ready_flag.set()
         return {"images_saved": self._images_saved}
 
