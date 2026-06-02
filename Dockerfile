@@ -86,7 +86,7 @@ USER root
 RUN apt-get update \
   && apt-get install -y --no-install-recommends \
   # libgl1 libxext6 libxrender1 libsm6 libx11-6 \
-    git \
+    bash curl git \
   && rm -rf /var/lib/apt/lists/*
 
 COPY requirements-dev.txt .
@@ -95,5 +95,18 @@ RUN pip install --no-cache-dir -r requirements-dev.txt \
 
 USER appuser
 
-# Install claude-cli as appuser; binary lands in ~/.local/bin, credentials in ~/.claude (bind-mounted from host)
+# Install claude-cli as appuser; binary lands in ~/.local/bin
 RUN curl -fsSL https://claude.ai/install.sh | bash
+
+# Install Serena
+ENV NVM_DIR="/home/appuser/.nvm"
+ENV PATH="/home/appuser/.local/bin:$PATH"
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh \
+    && curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.0/install.sh | bash \
+    && /bin/bash -c " \
+        source \$NVM_DIR/nvm.sh \
+        && nvm install --lts \
+        && nvm use --lts \
+        && nvm alias default 'lts/*' \
+    " \
+    && uv tool install -p 3.13 serena-agent
