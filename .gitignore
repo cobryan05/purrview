@@ -1,5 +1,6 @@
-# Claude Code — credentials and project config must never be committed
+# Claude Code
 .claude/
+.serena/
 docker-compose.override.yml
 
 static/js/htmx
