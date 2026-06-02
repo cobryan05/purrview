@@ -8,6 +8,8 @@ from typing import Any, Optional
 
 import cv2
 
+from apps.helpers.imageUtils import base64_encode_png
+
 from .imageProvider import ImageProvider, ImageProviderType, ImageWithProviderMetadata
 from .Registry import register_image_provider
 
@@ -18,7 +20,7 @@ logger.setLevel(logging.DEBUG)
 
 @register_image_provider()
 class Cv2VideoImageProvider(ImageProvider):
-    PREFETCH_QUEUE_SIZE = 2
+    PREFETCH_QUEUE_SIZE = 16
 
     def provider_type(self) -> ImageProviderType:
         return ImageProviderType.LIVE_STREAM if self._loop else ImageProviderType.FIXED
@@ -38,6 +40,9 @@ class Cv2VideoImageProvider(ImageProvider):
         self._vidFrameCnt: int = 0
         self._loop: bool = loop
         self._frame_stride: int = max(1, int(frame_stride))
+        # Set to True before start() to have the prefetch worker base64-encode each frame
+        # so that encode cost is pipelined with the previous frame's inference.
+        self.pre_encode: bool = False
         # Start with 1-frame-per-file estimate; _refine_total_frames() updates it lazily
         # as the prefetch worker opens each file and discovers its real frame count.
         self._total_frames: int = len(self._paths)
@@ -121,6 +126,8 @@ class Cv2VideoImageProvider(ImageProvider):
                 img.metadata.source = self._vidPath
                 img.metadata.frame_idx = self._vidFrameCnt
                 self._vidFrameCnt += self._frame_stride
+                if self.pre_encode:
+                    img.encoded_b64 = await asyncio.to_thread(base64_encode_png, frame)
                 await self._prefetch_queue.put(img)
 
                 self._advance_stride()

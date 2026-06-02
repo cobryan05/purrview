@@ -107,8 +107,15 @@ class CollectTrainingImagesTask(Task):
                     name,
                     PinModelPayload(model_name=name, duration=3600),
                 )
-                pin_ids[name] = resp.pin_id
-                self.log(f"Pinned model: {name}")
+                if resp.pin_id:
+                    pin_ids[name] = resp.pin_id
+                    self.log(f"Pinned model: {name} (pin_id={resp.pin_id})")
+                else:
+                    # Server returned failure status without raising — pin_id will be None,
+                    # causing the model to reload on every inference call.
+                    logger.warning(f"Pin request for '{name}' returned no pin_id: status={resp.status} message={resp.message}")
+                    self.log(f"Warning: could not pin model '{name}' — will reload each inference")
+                    pin_ids[name] = None
             except Exception:
                 logger.exception(f"Failed to pin model {name}")
                 self.log(f"Failed to pin model: {name}")
@@ -173,6 +180,10 @@ class CollectTrainingImagesTask(Task):
         self._status_msg = "Running"
         self.log(f"Starting collection (resuming from {self._images_saved} images)")
         for provider in providers:
+            # Enable pre-encoding in the prefetch worker so encode cost is pipelined
+            # with the previous frame's inference rather than sitting on the critical path.
+            if hasattr(provider, "pre_encode"):
+                provider.pre_encode = True
             await provider.start()
         try:
             active = set(providers)
@@ -214,9 +225,14 @@ class CollectTrainingImagesTask(Task):
                     if ptype == ImageProviderType.FIXED:
                         self._fixed_frames_processed += 1
 
-                    # base64_encode_png is CPU-bound (PNG compression); run off the event loop
-                    base64_img = await asyncio.to_thread(base64_encode_png, provided.image)
-                    t_encode = time.perf_counter()
+                    # Use pre-encoded data from the prefetch worker when available;
+                    # otherwise encode here (CPU-bound PNG compression, off the event loop).
+                    if provided.encoded_b64 is not None:
+                        base64_img = provided.encoded_b64
+                        t_encode = time.perf_counter()
+                    else:
+                        base64_img = await asyncio.to_thread(base64_encode_png, provided.image)
+                        t_encode = time.perf_counter()
 
                     matching = await self._run_inference(inference_api, base64_img, pin_ids)
                     t_infer = time.perf_counter()
@@ -227,17 +243,16 @@ class CollectTrainingImagesTask(Task):
                             f"encode={1000*(t_encode-t_fetch):.1f}ms "
                             f"infer={1000*(t_infer-t_encode):.1f}ms"
                         )
-                        continue
-
-                    logger.debug(
-                        f"Frame timing (matched): fetch={1000*(t_fetch-t0):.1f}ms "
-                        f"encode={1000*(t_encode-t_fetch):.1f}ms "
-                        f"infer={1000*(t_infer-t_encode):.1f}ms (save dispatched)"
-                    )
-                    save_task = asyncio.create_task(
-                        self._save_image(images_api, provided, matching, files_root)
-                    )
-                    pending_saves.append((save_task, unique_id))
+                    else:
+                        logger.debug(
+                            f"Frame timing (matched): fetch={1000*(t_fetch-t0):.1f}ms "
+                            f"encode={1000*(t_encode-t_fetch):.1f}ms "
+                            f"infer={1000*(t_infer-t_encode):.1f}ms (save dispatched)"
+                        )
+                        save_task = asyncio.create_task(
+                            self._save_image(images_api, provided, matching, files_root)
+                        )
+                        pending_saves.append((save_task, unique_id))
 
                     if self._data_req_flag.is_set():
                         await _drain_saves()
@@ -254,6 +269,15 @@ class CollectTrainingImagesTask(Task):
             await _drain_saves()
             for provider in providers:
                 await provider.stop()
+            # Release long-lived model pins so the inference server can unload promptly.
+            unpin_api = ModelsApi(inference_api_client)
+            for name, pid in pin_ids.items():
+                if pid:
+                    try:
+                        await asyncio.to_thread(unpin_api.unpin_model, name, pid)
+                        self.log(f"Unpinned model: {name}")
+                    except Exception:
+                        logger.warning(f"Failed to unpin model '{name}' (pin {pid})")
 
         self._resume_data = self._build_resume_data()
         self._data_ready_flag.set()

@@ -23,6 +23,7 @@ class ImageProviderMetadata:
 class ImageWithProviderMetadata:
     image: np.ndarray
     metadata: ImageProviderMetadata = field(default_factory=ImageProviderMetadata)
+    encoded_b64: Optional[str] = None
 
 class ImageProvider:
     @classmethod

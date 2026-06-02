@@ -193,7 +193,7 @@ class Manager:
         pin_id = str(uuid.uuid4())
         expiry = time.time() + timeout
         self._pinned_models[model_name].pins[pin_id] = Pin(pin_id=pin_id, expiry=expiry, timeout=timeout)
-        logger.info(f"Model '{model_name}' pinned with ID '{pin_id}' and timeout {timeout}s.")
+        logger.debug(f"Model '{model_name}' pinned with ID '{pin_id}' and timeout {timeout}s.")
 
         return pin_id
 
@@ -213,7 +213,7 @@ class Manager:
 
         # Remove the pin
         del self._pinned_models[model_name].pins[pin_id]
-        logger.info(f"Model '{model_name}' unpinned with ID '{pin_id}'.")
+        logger.debug(f"Model '{model_name}' unpinned with ID '{pin_id}'.")
 
         # If no more pins exist for the model, unload it from memory
         if not self._pinned_models[model_name].pins:
@@ -247,10 +247,18 @@ class Manager:
         if model_name not in self._avail_models:
             raise ValueError(f"Model '{model_name}' is not available. Please check the model name.")
 
-        # Temporarily pin the model
-        tmp_pin_id = await self.pin_model(model_name)
+        # If the caller holds a valid long-lived pin and the model is already loaded,
+        # skip creating a temp pin — the caller's pin guarantees the model stays alive.
+        # Refresh the pin's expiry first so it can't expire mid-inference.
+        pinned = self._pinned_models.get(model_name)
+        caller_pin_valid = pin_id is not None and pinned is not None and pin_id in pinned.pins
+        if caller_pin_valid:
+            pinned.pins[pin_id].expiry = time.time() + pinned.pins[pin_id].timeout
+            tmp_pin_id = None
+        else:
+            tmp_pin_id = await self.pin_model(model_name)
+
         try:
-            # Ensure the model is loaded
             model = self._pinned_models.get(model_name)
             if not model or not model.inference:
                 raise ValueError(f"Model '{model_name}' is not properly loaded or initialized.")
@@ -280,15 +288,11 @@ class Manager:
             else:
                 logger.debug(f"recognize '{model_name}': inference={1000*(t_infer-t0):.1f}ms (no detections)")
 
-            if pin_id in model.pins:
-                logger.info(f"Refreshing timeout for pin {pin_id}")
-                model.pins[pin_id].expiry = time.time() + model.pins[pin_id].timeout
-
             return inference_result
 
         finally:
-            # Unpin the model after inference
-            await self.unpin_model(model_name, tmp_pin_id)
+            if tmp_pin_id:
+                await self.unpin_model(model_name, tmp_pin_id)
 
     def _cleanup_expired_pins(self):
         """

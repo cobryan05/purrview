@@ -255,6 +255,19 @@ class WebApp:
             except Exception as e:
                 return PinModelResponse(status=JsonValues.FAILURE, message=str(e))
 
+        @self._app.delete(
+            "/api/models/{model_name}/pin/{pin_id}",
+            response_model=StatusResponse,
+            tags=[ApiTags.MODELS],
+            operation_id="unpin_model",
+        )
+        async def unpin_model_api(model_name: str, pin_id: str):
+            try:
+                await self._manager.unpin_model(model_name, pin_id)
+                return StatusResponse(status=JsonValues.SUCCESS)
+            except Exception as e:
+                return StatusResponse(status=JsonValues.FAILURE, message=str(e))
+
         @self._app.post(
             "/api/models/{model_name}/infer",
             tags=[ApiTags.INFERENCE],

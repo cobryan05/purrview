@@ -6,6 +6,7 @@ from uuid import uuid4
 import cv2
 import numpy as np
 import onnxruntime as ort
+import sys
 
 import apps.helpers.yoloUtils as YoloUtils
 from apps.helpers.bboxUtils import BBox
@@ -13,8 +14,9 @@ from apps.helpers.types import BoundingBoxMetadata, DetectionResult, InferenceRe
 
 from .inferenceProvider import InferenceProvider
 
-logger = logging.getLogger(__name__)
-
+logging.basicConfig(stream=sys.stdout)
+logger = logging.getLogger(__file__)
+logger.setLevel(logging.DEBUG)
 
 class YOLOv8ONNXInferenceProvider(InferenceProvider):
     def __init__(
@@ -25,6 +27,7 @@ class YOLOv8ONNXInferenceProvider(InferenceProvider):
         iou_thresh: float = 0.45,
     ):
         self.session = ort.InferenceSession(model_path, providers=["CUDAExecutionProvider", "CPUExecutionProvider"])
+        logger.info(f"ONNX providers active: {self.session.get_providers()}")
         self.input_name = self.session.get_inputs()[0].name
         try:
             self.input_shape = YoloUtils.get_input_shape(self.session)  # (h, w)
