@@ -102,8 +102,8 @@ export class TagField extends Field {
     const trigger = document.createElement('button');
     trigger.type = 'button';
     trigger.style.cssText = `
-      width: 2em; height: 2em;
-      padding: 0;
+      height: 2em;
+      padding: 0 0.4em;
       cursor: pointer;
       border: 1px solid var(--pico-form-element-border-color, #888);
       border-radius: 3px;
@@ -111,8 +111,9 @@ export class TagField extends Field {
       line-height: 1;
       background: var(--pico-form-element-background-color, #f5f5f5);
       color: var(--pico-form-element-color, #333);
+      white-space: nowrap;
     `;
-    const triggerLabel = () => this._icon ?? '⊙';
+    const triggerLabel = () => this._icon ?? 'Icon';
     trigger.textContent = triggerLabel();
 
     // ── popup ─────────────────────────────────────────────────────────────

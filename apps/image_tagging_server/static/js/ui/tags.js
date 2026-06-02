@@ -1,7 +1,7 @@
 // tags.js
 import { clearTagCache, createNewTag, deleteTag, fetchTags, updateTag } from '/app-static/js/shared/api/tags.js';
 import { EditableField, TagField } from '/app-static/js/ui/utils/fields/index.js';
-import { createGenericRow, toast } from '/app-static/js/ui/utils/index.js';
+import { createEmojiButton, createGenericRow, toast } from '/app-static/js/ui/utils/index.js';
 const DEFAULT_COLOR = '#cccccc';
 
 /**
@@ -112,44 +112,45 @@ export function renderTagList({ target = 'tags-list', editable = true, onSelectC
         const divider = document.createElement('hr');
         container.appendChild(divider);
 
-        const newRootRow = createGenericRow({
-          field: new EditableField({
-            buttonsLast: true,
-            field: new TagField({ text: '', placeholder: 'New Tag Name', color: DEFAULT_COLOR, icon: null }),
-            editMode: true,
-          }),
-          indentLevel: 0,
-          leftButtons: [
-            {
-              text: 'Add tag',
-              emoji: '➕',
-              onClick: async ({ field }) => {
-                const { text: name, color, icon } = field.getValue();
+        const newTagField = new TagField({ text: '', placeholder: 'New Tag Name', color: DEFAULT_COLOR, icon: null });
 
-                if (!name?.trim()) {
-                  toast('Error: Name required', 5000, 'error');
-                  return;
-                }
+        const newRootRow = document.createElement('div');
+        newRootRow.className = 'label-row';
+        newRootRow.style.cssText = 'display:flex; flex-direction:row; align-items:center; gap:0.4em;';
 
-                try {
-                  await createNewTag(name.trim(), color || DEFAULT_COLOR, icon);
-                  rerender();
-                } catch (err) {
-                  toast(err.message, 5000, 'error');
-                }
-              },
-            },
-          ],
-          rightButtons: [
-            {
-              text: 'Refresh',
-              emoji: '🔄',
-              onClick: async () => {
-                clearTagCache();
+        newTagField.renderEdit().then(tagFieldEl => {
+          // Make the outer wrapper transparent so its children (color+icon+name) join our flex row
+          tagFieldEl.style.display = 'contents';
+          const innerRow = tagFieldEl.firstElementChild;
+          if (innerRow) innerRow.style.flexWrap = 'nowrap';
+
+          const addBtn = createEmojiButton({
+            text: 'Add tag',
+            emoji: '➕',
+            onClick: async () => {
+              const { text: name, color, icon } = newTagField.getValue();
+              if (!name?.trim()) { toast('Error: Name required', 5000, 'error'); return; }
+              try {
+                await createNewTag(name.trim(), color || DEFAULT_COLOR, icon);
                 rerender();
-              },
+              } catch (err) {
+                toast(err.message, 5000, 'error');
+              }
             },
-          ],
+          });
+
+          const refreshBtn = createEmojiButton({
+            text: 'Refresh',
+            emoji: '🔄',
+            onClick: async () => {
+              clearTagCache();
+              rerender();
+            },
+          });
+
+          newRootRow.appendChild(tagFieldEl);
+          newRootRow.appendChild(addBtn);
+          newRootRow.appendChild(refreshBtn);
         });
 
         container.appendChild(newRootRow);
