@@ -10,7 +10,7 @@ from PIL import Image
 
 from apps.helpers.mqttClient import MqttClient
 
-from .imageProvider import ImageProvider, ImageWithProviderMetadata
+from .imageProvider import ImageProvider, ImageProviderType, ImageWithProviderMetadata
 from .Registry import register_image_provider
 
 logging.basicConfig()
@@ -21,6 +21,10 @@ logger.setLevel(logging.DEBUG)
 @register_image_provider()
 class MqttImageProvider(ImageProvider):
     TIMEOUT = 60
+
+    @classmethod
+    def provider_type(cls) -> ImageProviderType:
+        return ImageProviderType.LIVE_STREAM
 
     def __init__(self, broker_address: str, broker_port: int, topic: str):
         """Initializes the MQTT source."""

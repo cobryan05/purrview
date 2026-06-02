@@ -10,12 +10,16 @@ from typing import Any, Optional
 import cv2
 import numpy as np
 
-from .imageProvider import ImageProvider, ImageWithProviderMetadata
+from .imageProvider import ImageProvider, ImageProviderType, ImageWithProviderMetadata
 from .Registry import register_image_provider
 
 
 @register_image_provider()
 class UrlImageProvider(ImageProvider):
+    @classmethod
+    def provider_type(cls) -> ImageProviderType:
+        return ImageProviderType.LIVE_SNAPSHOT
+
     def __init__(self, url: str, user: str = None, password: str = None, bust_cache: bool = False, ignore_ssl_errors: bool = True):
         self._url: str = url
         self._request = urllib.request.Request(url)

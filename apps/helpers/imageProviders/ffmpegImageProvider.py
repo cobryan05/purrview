@@ -12,7 +12,7 @@ import numpy as np
 from apps import APPS, APPS_CONFIG
 from apps.helpers.streams.ffmpegStreamerIn import FFmpegStreamerIn
 
-from .imageProvider import ImageProvider, ImageWithProviderMetadata
+from .imageProvider import ImageProvider, ImageProviderType, ImageWithProviderMetadata
 from .Registry import register_image_provider
 
 logging.basicConfig()
@@ -28,6 +28,10 @@ FFMPEG_START_TIMEOUT = 30.0
 
 @register_image_provider()
 class FfmpegImageProvider(ImageProvider):
+    @classmethod
+    def provider_type(cls) -> ImageProviderType:
+        return ImageProviderType.LIVE_STREAM
+
     def __init__(self, video_path: str, loop: bool = True, rtsp_relay: bool = True):
         output_args = {"format": "rawvideo", "pix_fmt": "rgb24", "codec": "rawvideo"}  # decode raw frames
         self._video_path: str = video_path.strip()

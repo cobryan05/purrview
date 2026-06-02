@@ -19,7 +19,7 @@ from inference_client.models.inference_payload import InferencePayload
 from inference_client.models.pin_model_payload import PinModelPayload
 
 from apps.helpers.db.db_client import UNVERIFIED_TAG_UUID
-from apps.helpers.imageProviders.imageProvider import ImageProvider
+from apps.helpers.imageProviders.imageProvider import ImageProvider, ImageProviderType, ImageWithProviderMetadata
 from apps.helpers.imageUtils import base64_encode_png
 
 from .Registry import register_task
@@ -65,8 +65,14 @@ class CollectTrainingImagesTask(Task):
         ]
         self._target_label_map: dict[str, float] = {t.label_uuid: t.min_confidence for t in self._target_labels}
         self._min_all_conf: float = min((t.min_confidence for t in self._target_labels), default=0.5)
+
+        # Intervals for rate-limited provider types
+        self._snapshot_interval: float = float(params.get("snapshot_interval", 15))
+        self._stream_interval: float = float(params.get("stream_interval", 1.0))
+
         self._images_saved: int = resume_data.get("images_saved", 0) if resume_data else 0
         self._images_processed: int = resume_data.get("images_processed", 0) if resume_data else 0
+        self._fixed_frames_processed: int = resume_data.get("fixed_frames_processed", 0) if resume_data else 0
         # Set of "source:frame_idx" strings for images already processed this run or
         # in a previous run that was paused.  Lets us skip re-processing on resume.
         self._processed_ids: set[str] = set(resume_data.get("processed_ids", [])) if resume_data else set()
@@ -116,6 +122,22 @@ class CollectTrainingImagesTask(Task):
         # with fetch/encode/infer so the ~100 ms metadata write is hidden.
         pending_saves: list[tuple[asyncio.Task, Optional[str]]] = []
 
+        # Separate out FIXED providers so we can compute real progress from their frame counts.
+        # For LIVE_SNAPSHOT and LIVE_STREAM providers we track last-fetch time for rate limiting.
+        fixed_providers: list[ImageProvider] = [p for p in providers if p.provider_type() == ImageProviderType.FIXED]
+        last_fetch: dict[int, float] = {}  # id(provider) → perf_counter time of last successful fetch
+        _rate_limits: dict[ImageProviderType, float] = {
+            ImageProviderType.LIVE_SNAPSHOT: self._snapshot_interval,
+            ImageProviderType.LIVE_STREAM: self._stream_interval,
+        }
+
+        def _status_msg_str() -> str:
+            # Switch to generic message once all fixed providers are exhausted.
+            if fixed_providers and any(p in active for p in fixed_providers):
+                total = sum(p.get_total_frames() or 0 for p in fixed_providers)
+                return f"Processed {self._fixed_frames_processed}/{total} frames, Saved {self._images_saved} images"
+            return f"Processed {self._images_processed} frames, Saved {self._images_saved} images"
+
         def _collect_saves() -> None:
             """Harvest results from any completed save tasks and update counters."""
             still_pending = []
@@ -132,7 +154,11 @@ class CollectTrainingImagesTask(Task):
                         self._processed_ids.add(uid)
                     self._images_saved += 1
                     self.log(f"Saved {filename} ({self._images_saved} total)")
-                    self._update_progress(self._images_saved)
+                    # Update progress for FIXED providers based on real frame counts.
+                    if fixed_providers:
+                        total = sum(p.get_total_frames() or 0 for p in fixed_providers)
+                        if total > 0:
+                            self._update_progress(min(100.0, self._fixed_frames_processed / total * 100.0))
                 else:
                     still_pending.append((task, uid))
             pending_saves.clear()
@@ -152,10 +178,18 @@ class CollectTrainingImagesTask(Task):
             active = set(providers)
             while active and not self._cancel_flag.is_set():
                 _collect_saves()
-                self._status_msg = f"Processed {self._images_processed} images, Saved {self._images_saved} images"
+                self._status_msg = _status_msg_str()
+
+                any_fetched = False
                 for provider in list(active):
                     if self._cancel_flag.is_set():
                         break
+
+                    # Rate-limit LIVE providers: skip until enough time has elapsed.
+                    ptype = provider.provider_type()
+                    if (interval := _rate_limits.get(ptype)) is not None:
+                        if time.perf_counter() - last_fetch.get(id(provider), 0) < interval:
+                            continue
 
                     t0 = time.perf_counter()
                     provided = await provider.getNextImage()
@@ -163,6 +197,9 @@ class CollectTrainingImagesTask(Task):
                     if provided is None:
                         active.discard(provider)
                         continue
+
+                    any_fetched = True
+                    last_fetch[id(provider)] = t_fetch
 
                     # Build a stable unique ID when the provider gives us source + frame_idx.
                     # Used to skip already-processed frames on resume (file-based providers only).
@@ -174,6 +211,8 @@ class CollectTrainingImagesTask(Task):
                         continue
 
                     self._images_processed += 1
+                    if ptype == ImageProviderType.FIXED:
+                        self._fixed_frames_processed += 1
 
                     # base64_encode_png is CPU-bound (PNG compression); run off the event loop
                     base64_img = await asyncio.to_thread(base64_encode_png, provided.image)
@@ -203,24 +242,30 @@ class CollectTrainingImagesTask(Task):
                     if self._data_req_flag.is_set():
                         await _drain_saves()
                         self._data_req_flag.clear()
-                        self._resume_data = {
-                            "images_saved": self._images_saved,
-                            "images_processed": self._images_processed,
-                            "processed_ids": list(self._processed_ids),
-                        }
+                        self._resume_data = self._build_resume_data()
                         self._data_ready_flag.set()
+
+                # If all remaining active providers were rate-limited this iteration,
+                # yield briefly to avoid busy-spinning.
+                if not any_fetched:
+                    await asyncio.sleep(0.05)
+
         finally:
             await _drain_saves()
             for provider in providers:
                 await provider.stop()
 
-        self._resume_data = {
-            "images_saved": self._images_saved,
-            "images_processed": self._images_processed,
-            "processed_ids": list(self._processed_ids),
-        }
+        self._resume_data = self._build_resume_data()
         self._data_ready_flag.set()
         return {"images_saved": self._images_saved}
+
+    def _build_resume_data(self) -> dict[str, Any]:
+        return {
+            "images_saved": self._images_saved,
+            "images_processed": self._images_processed,
+            "fixed_frames_processed": self._fixed_frames_processed,
+            "processed_ids": list(self._processed_ids),
+        }
 
     async def _run_inference(
         self,
@@ -258,7 +303,7 @@ class CollectTrainingImagesTask(Task):
     async def _save_image(
         self,
         images_api: ImagesApi,
-        provided,
+        provided: ImageWithProviderMetadata,
         matching: list,
         files_root: Path,
     ) -> Optional[str]:
@@ -317,13 +362,19 @@ class CollectTrainingImagesTask(Task):
     def params_schema(cls) -> dict[str, dict[str, Any]]:
         return {
             "meta": {
-                "order": ["output_dir", "snapshot_interval","source_uuids", "model_label_config"]
+                "order": ["output_dir", "snapshot_interval", "stream_interval", "source_uuids", "model_label_config"]
             },
             "snapshot_interval": {
                 "type": "int",
-                "label": "Snapshot Interval",
-                "description": "Interval between image captures",
+                "label": "Snapshot Interval (s)",
+                "description": "Minimum seconds between fetches from snapshot sources (e.g. URL cameras)",
                 "default": 15,
+            },
+            "stream_interval": {
+                "type": "int",
+                "label": "Stream Min Interval (s)",
+                "description": "Minimum seconds between frames collected from live stream sources (e.g. RTSP)",
+                "default": 1,
             },
             "source_uuids": {
                 "type": "array",

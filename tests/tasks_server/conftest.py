@@ -63,7 +63,7 @@ def tasks_api_mock():
         uuid=CONFIG_UUID,
         name="test-config",
         typename="TestTask",
-        params_json={},
+        params_json={"duration": 60.0},
         marked_for_delete=False,
         description=None,
     )
