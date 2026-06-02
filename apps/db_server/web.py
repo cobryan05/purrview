@@ -396,7 +396,7 @@ class WebApp:
         async def validation_exception_handler(request: Request, exc: RequestValidationError):
 
             exc_str = f"{exc}".replace("\n", " ").replace("   ", " ")
-            logger.error(request, exc_str)
+            logger.error("%s %s", request, exc_str)
             content = {"status_code": 10422, JsonKeys.MESSAGE: exc_str, "data": None}
             return JSONResponse(content=content, status_code=422)
 

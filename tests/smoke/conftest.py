@@ -7,9 +7,7 @@ import time
 import httpx
 import pytest
 
-os.environ.setdefault("PORT_OFFSET", "10000")
-
-from apps import APPS, APPS_CONFIG
+from apps import APPS, APP_BASE_PORTS
 
 _SERVICES = [
     APPS.DB_SERVER,
@@ -41,16 +39,27 @@ def _wait_for_port(port: int, timeout: float = 30.0) -> None:
     raise TimeoutError(f"Port {port} did not become ready within {timeout}s")
 
 
+def _worker_port_offset(request) -> int:
+    """Return a per-xdist-worker PORT_OFFSET so each worker's servers use unique ports."""
+    worker_id = getattr(request.config, "workerinput", {}).get("workerid", "gw0")
+    worker_num = int(worker_id[2:]) if worker_id.startswith("gw") else 0
+    return 10000 + worker_num * 10  # 5 services; 10-port spacing avoids any overlap
+
+
 @pytest.fixture(scope="session")
-def smoke_services(tmp_path_factory):
+def smoke_services(tmp_path_factory, request):
     db_dir = tmp_path_factory.mktemp("smoke_db")
-    env = {**os.environ, "DB_DIR": str(db_dir)}
+    port_offset = _worker_port_offset(request)
+    ports = {app_key: APP_BASE_PORTS[app_key] + port_offset for app_key in _SERVICES}
+    # PORT_OFFSET must be in the subprocess env so inter-service calls (e.g.
+    # tasks_server → db_server) resolve the correct sibling ports.
+    env = {**os.environ, "DB_DIR": str(db_dir), "PORT_OFFSET": str(port_offset)}
 
     procs = []
     for app_key in _SERVICES:
         module = app_key.value
         proc = subprocess.Popen(
-            ["uvicorn", f"apps.{module}.main:app", "--host", "0.0.0.0", "--port", str(APPS_CONFIG[app_key].port)],
+            ["uvicorn", f"apps.{module}.main:app", "--host", "0.0.0.0", "--port", str(ports[app_key])],
             env=env,
             cwd="/app",
             stdout=subprocess.DEVNULL,
@@ -60,13 +69,13 @@ def smoke_services(tmp_path_factory):
 
     try:
         for app_key in _SERVICES:
-            _wait_for_port(APPS_CONFIG[app_key].port)
+            _wait_for_port(ports[app_key])
     except TimeoutError:
         for proc in procs:
             proc.terminate()
         raise
 
-    yield {app_key: f"http://localhost:{APPS_CONFIG[app_key].port}" for app_key in _SERVICES}
+    yield {app_key: f"http://localhost:{ports[app_key]}" for app_key in _SERVICES}
 
     for proc in procs:
         proc.terminate()
