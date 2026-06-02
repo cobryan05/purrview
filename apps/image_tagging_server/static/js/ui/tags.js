@@ -13,6 +13,7 @@ const DEFAULT_COLOR = '#cccccc';
  */
 function createTagHandlers({ tag, editable, renderList }) {
   if (!editable) return { leftButtons: [], rightButtons: [] };
+  if (tag.kind === 'system') return { leftButtons: [], rightButtons: [] };
 
   const { name, uuid } = tag;
 
@@ -46,11 +47,12 @@ function renderTag(tag, container, editable, onSelectCallback, rerenderCallback)
     ? createTagHandlers({ tag, editable, renderList: rerenderCallback })
     : { leftButtons: [], rightButtons: [] };
 
+  const isSystem = tag.kind === 'system';
   const tagRow = createGenericRow({
     field: new EditableField({
       buttonsLast: true,
       field: new TagField({ text: name, uuid, placeholder: 'New Tag Name', color, icon: icon ?? null }),
-      ...(editable && {
+      ...(editable && !isSystem && {
         onSave: async ({ text: newText, color: newColor, icon: newIcon }) => {
           try {
             await updateTag(uuid, newText, newColor, newIcon);

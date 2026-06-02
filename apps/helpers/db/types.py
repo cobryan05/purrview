@@ -317,6 +317,7 @@ class TagRead(BaseModel):
     name: str
     color: Optional[str] = None
     icon: Optional[str] = None
+    kind: TagKind = TagKind.GENERIC
 
     model_config = ConfigDict(from_attributes=True)
 
