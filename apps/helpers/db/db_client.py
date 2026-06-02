@@ -14,10 +14,12 @@ ALEMBIC_INI_PATH = Path(__file__).parent / "alembic.ini"
 
 import jstyleson
 from pydantic import TypeAdapter
+from alembic.runtime.migration import MigrationContext
 from sqlalchemy import and_, delete, event, func, or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import selectinload, sessionmaker
+from sqlalchemy.pool import StaticPool
 from sqlmodel import SQLModel, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
@@ -99,17 +101,25 @@ def _escape_like_pattern(pattern: str) -> str:
 class DbClient:
     """Helper class for SQLModel interactions for image annotations."""
 
-    def __init__(self, db_dir: Union[str, Path]):
+    def __init__(self, db_dir: Union[str, Path], *, memory: bool = False):
         self._db_dir = Path(db_dir)
         self._db_path: Path = self._db_dir / DB_FILE
         self._labels_json_path: Path = self._db_dir / LABELS_JSON
         self._tags_json_path: Path = self._db_dir / TAGS_JSON
         self._sources_json_path: Path = self._db_dir / SOURCES_JSON
         self._datasets_json_path: Path = self._db_dir / DATASETS_JSON
+        self._memory: bool = memory
 
-        self._url: str = f"sqlite+aiosqlite:///{self._db_path}"
-
-        self._engine = create_async_engine(self._url, echo=False)
+        if memory:
+            self._url = "sqlite+aiosqlite:///:memory:"
+            self._engine = create_async_engine(
+                self._url,
+                connect_args={"check_same_thread": False},
+                poolclass=StaticPool,
+            )
+        else:
+            self._url = f"sqlite+aiosqlite:///{self._db_path}"
+            self._engine = create_async_engine(self._url, echo=False)
 
         @event.listens_for(self._engine.sync_engine, "connect")
         def _set_sqlite_pragma(dbapi_conn, connection_record):
@@ -120,13 +130,47 @@ class DbClient:
         self._async_session_maker = sessionmaker(self._engine, class_=AsyncSession, expire_on_commit=False)
 
     async def init_db(self) -> None:
-        """Initialize database and run any pending Alembic migrations."""
+        """Initialize database and run any pending Alembic migrations.
+
+        Three cases:
+          - In-memory DB  — always fresh; create_all only (alembic CLI can't reach
+                            a :memory: engine, and migration history is irrelevant).
+          - Fresh file DB — create_all + alembic stamp (fast, no migration replay).
+          - Existing DB   — alembic upgrade head (incremental migrations).
+        """
         self._db_dir.mkdir(parents=True, exist_ok=True)
 
-        alembic_cfg = AlembicConfig(ALEMBIC_INI_PATH)
-        alembic_cfg.set_main_option("sqlalchemy.url", f"sqlite:///{self._db_path}")
-        loop = asyncio.get_running_loop()
-        await loop.run_in_executor(None, lambda: alembic_command.upgrade(alembic_cfg, "head"))
+        if self._memory:
+            # In-memory: always empty on creation; skip alembic entirely.
+            async with self._engine.begin() as conn:
+                await conn.run_sync(SQLModel.metadata.create_all)
+        else:
+            loop = asyncio.get_running_loop()
+            alembic_cfg = AlembicConfig(ALEMBIC_INI_PATH)
+            alembic_cfg.set_main_option("sqlalchemy.url", f"sqlite:///{self._db_path}")
+
+            is_fresh = not self._db_path.exists() or self._db_path.stat().st_size == 0
+            if is_fresh:
+                # Fresh file DB: create schema in one shot, stamp as head.
+                async with self._engine.begin() as conn:
+                    await conn.run_sync(SQLModel.metadata.create_all)
+                await loop.run_in_executor(None, lambda: alembic_command.stamp(alembic_cfg, "head"))
+            else:
+                # Existing DB — but guard against a crash between create_all and
+                # alembic stamp on a previous startup.  If the schema was created
+                # but never stamped, `upgrade head` would fail ("table already exists").
+                # Use alembic's own MigrationContext to check: an empty heads tuple
+                # means the DB is unstamped; stamp now so upgrade head can proceed.
+                async with self._engine.connect() as conn:
+                    is_stamped = await conn.run_sync(
+                        lambda sync_conn: bool(
+                            MigrationContext.configure(sync_conn).get_current_heads()
+                        )
+                    )
+                if not is_stamped:
+                    await loop.run_in_executor(None, lambda: alembic_command.stamp(alembic_cfg, "head"))
+                else:
+                    await loop.run_in_executor(None, lambda: alembic_command.upgrade(alembic_cfg, "head"))
 
         # Count labels and tags before seeding system tags so the zero-check
         # reflects only user-defined data (system tag seeding would inflate tag_count).

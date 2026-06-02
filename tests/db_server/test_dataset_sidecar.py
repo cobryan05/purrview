@@ -35,7 +35,7 @@ async def _read_sidecar(db_dir) -> list:
 
 async def test_create_writes_sidecar(tmp_path):
     """Creating a dataset produces datasets.json with the correct fields."""
-    client = DbClient(db_dir=tmp_path)
+    client = DbClient(db_dir=tmp_path, memory=True)
     await client.init_db()
 
     uuid = await _create(client, "test-ds", description="hello")
@@ -57,7 +57,7 @@ async def test_create_writes_sidecar(tmp_path):
 
 async def test_update_refreshes_sidecar(tmp_path):
     """Updating a dataset name/filter is reflected in datasets.json."""
-    client = DbClient(db_dir=tmp_path)
+    client = DbClient(db_dir=tmp_path, memory=True)
     await client.init_db()
 
     uuid = await _create(client, "before")
@@ -73,7 +73,7 @@ async def test_update_refreshes_sidecar(tmp_path):
 
 async def test_delete_removes_from_sidecar(tmp_path):
     """Deleting a dataset removes it from datasets.json."""
-    client = DbClient(db_dir=tmp_path)
+    client = DbClient(db_dir=tmp_path, memory=True)
     await client.init_db()
 
     uuid1 = await _create(client, "keep")
@@ -91,7 +91,7 @@ async def test_delete_removes_from_sidecar(tmp_path):
 
 async def test_sidecar_includes_label_uuids(tmp_path):
     """datasets.json stores the label_uuids for the dataset."""
-    client = DbClient(db_dir=tmp_path)
+    client = DbClient(db_dir=tmp_path, memory=True)
     await client.init_db()
 
     label = await client.add_label("cat", "#FF0000")
@@ -105,7 +105,7 @@ async def test_sidecar_includes_label_uuids(tmp_path):
 
 async def test_sidecar_stores_filter_json(tmp_path):
     """datasets.json preserves filter_json conditions."""
-    client = DbClient(db_dir=tmp_path)
+    client = DbClient(db_dir=tmp_path, memory=True)
     await client.init_db()
 
     conditions = [{"type": "filename", "pattern": ".jpg"}]
@@ -129,7 +129,7 @@ async def test_sync_from_json_uuid_match(tmp_path):
     """sync_datasets_from_json restores a dataset when its UUID matches."""
     db_dir1 = tmp_path / "db1"
     db_dir1.mkdir()
-    client1 = DbClient(db_dir=db_dir1)
+    client1 = DbClient(db_dir=db_dir1, memory=True)
     await client1.init_db()
     uuid = await _create(client1, "restore-me")
     await client1.close()
@@ -139,7 +139,7 @@ async def test_sync_from_json_uuid_match(tmp_path):
     db_dir2.mkdir()
     (db_dir2 / DATASETS_JSON).write_text((db_dir1 / DATASETS_JSON).read_text())
 
-    client2 = DbClient(db_dir=db_dir2)
+    client2 = DbClient(db_dir=db_dir2, memory=True)
     await client2.init_db()
 
     datasets = await client2.list_datasets()
@@ -152,7 +152,7 @@ async def test_sync_from_json_name_fallback(tmp_path):
     """sync_datasets_from_json reuses an existing dataset when names match but UUIDs differ."""
     db_dir = tmp_path / "db"
     db_dir.mkdir()
-    client = DbClient(db_dir=db_dir)
+    client = DbClient(db_dir=db_dir, memory=True)
     await client.init_db()
 
     # Seed DB with a dataset under a known UUID
@@ -182,7 +182,7 @@ async def test_sync_from_json_inserts_new(tmp_path):
     """sync_datasets_from_json inserts a dataset when neither UUID nor name matches."""
     db_dir = tmp_path / "db"
     db_dir.mkdir()
-    client = DbClient(db_dir=db_dir)
+    client = DbClient(db_dir=db_dir, memory=True)
     await client.init_db()
 
     brand_new_uuid = str(uuid_mod.uuid4())
@@ -202,7 +202,7 @@ async def test_sync_from_json_restores_label_links(tmp_path):
     """sync_datasets_from_json recreates DatasetLabelLink rows."""
     db_dir1 = tmp_path / "db1"
     db_dir1.mkdir()
-    client1 = DbClient(db_dir=db_dir1)
+    client1 = DbClient(db_dir=db_dir1, memory=True)
     await client1.init_db()
 
     label = await client1.add_label("cat", "#FF0000")
@@ -215,7 +215,7 @@ async def test_sync_from_json_restores_label_links(tmp_path):
     for fname in (DATASETS_JSON, "labels.json"):
         (db_dir2 / fname).write_text((db_dir1 / fname).read_text())
 
-    client2 = DbClient(db_dir=db_dir2)
+    client2 = DbClient(db_dir=db_dir2, memory=True)
     await client2.init_db()
 
     datasets = await client2.list_datasets()
@@ -229,7 +229,7 @@ async def test_sync_from_json_skips_missing_label_uuids(tmp_path):
     """sync_datasets_from_json silently skips label_uuids that don't exist in DB."""
     db_dir = tmp_path / "db"
     db_dir.mkdir()
-    client = DbClient(db_dir=db_dir)
+    client = DbClient(db_dir=db_dir, memory=True)
     await client.init_db()
 
     ghost_uuid = str(uuid_mod.uuid4())
@@ -252,7 +252,7 @@ async def test_init_db_auto_restores_from_sidecar(tmp_path):
     """init_db on a fresh DB calls sync_datasets_from_json when datasets table is empty."""
     db_dir1 = tmp_path / "db1"
     db_dir1.mkdir()
-    client1 = DbClient(db_dir=db_dir1)
+    client1 = DbClient(db_dir=db_dir1, memory=True)
     await client1.init_db()
     uuid = await _create(client1, "auto-restore", description="via init_db")
     await client1.close()
@@ -261,7 +261,7 @@ async def test_init_db_auto_restores_from_sidecar(tmp_path):
     db_dir2.mkdir()
     (db_dir2 / DATASETS_JSON).write_text((db_dir1 / DATASETS_JSON).read_text())
 
-    client2 = DbClient(db_dir=db_dir2)
+    client2 = DbClient(db_dir=db_dir2, memory=True)
     # init_db should pick up datasets.json automatically
     await client2.init_db()
 
@@ -275,7 +275,7 @@ async def test_no_sidecar_is_noop(tmp_path):
     """sync_datasets_from_json is a no-op when datasets.json doesn't exist."""
     db_dir = tmp_path / "db"
     db_dir.mkdir()
-    client = DbClient(db_dir=db_dir)
+    client = DbClient(db_dir=db_dir, memory=True)
     await client.init_db()
 
     # No sidecar file — should not raise

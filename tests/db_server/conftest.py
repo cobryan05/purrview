@@ -8,7 +8,7 @@ from apps.helpers.db.db_client import DbClient
 
 @pytest.fixture
 async def db_client(tmp_path):
-    client = DbClient(db_dir=tmp_path)
+    client = DbClient(db_dir=tmp_path, memory=True)
     await client.init_db()
     yield client
     await client.close()

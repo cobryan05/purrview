@@ -26,12 +26,14 @@ from tests.conftest import make_png
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Fixtures (mirror db_server conftest but in the integration directory)
+# Fixtures
 # ──────────────────────────────────────────────────────────────────────────────
 
 @pytest.fixture
 async def db_client(tmp_path):
-    client = DbClient(db_dir=tmp_path / "db")
+    db_dir = tmp_path / "db"
+    db_dir.mkdir()
+    client = DbClient(db_dir=db_dir, memory=True)
     await client.init_db()
     yield client
     await client.close()
