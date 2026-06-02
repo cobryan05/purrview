@@ -66,6 +66,7 @@ class CollectTrainingImagesTask(Task):
         self._target_label_map: dict[str, float] = {t.label_uuid: t.min_confidence for t in self._target_labels}
         self._min_all_conf: float = min((t.min_confidence for t in self._target_labels), default=0.5)
         self._images_saved: int = resume_data.get("images_saved", 0) if resume_data else 0
+        self._images_processed: int = resume_data.get("images_processed", 0) if resume_data else 0
         # Set of "source:frame_idx" strings for images already processed this run or
         # in a previous run that was paused.  Lets us skip re-processing on resume.
         self._processed_ids: set[str] = set(resume_data.get("processed_ids", [])) if resume_data else set()
@@ -80,7 +81,7 @@ class CollectTrainingImagesTask(Task):
 
         self._status_msg = "Getting image providers"
         source_helper = SourceHelper(db_api_client)
-        providers: list[ImageProvider] =  []
+        providers: list[ImageProvider] = []
         for source_uuid in self._source_uuids:
             try:
                 provider = source_helper.get_image_provider(source_uuid)
@@ -111,6 +112,38 @@ class CollectTrainingImagesTask(Task):
         inference_api = InferenceApi(inference_api_client)
         files_root = Path(os.environ.get("FILES_ROOT", "/app/image_datasets"))
 
+        # Background save tasks: list of (Task, unique_id).  Saves run concurrently
+        # with fetch/encode/infer so the ~100 ms metadata write is hidden.
+        pending_saves: list[tuple[asyncio.Task, Optional[str]]] = []
+
+        def _collect_saves() -> None:
+            """Harvest results from any completed save tasks and update counters."""
+            still_pending = []
+            for task, uid in pending_saves:
+                if task.done():
+                    try:
+                        filename = task.result()
+                    except Exception:
+                        logger.exception("Background save task raised an exception")
+                        continue
+                    if filename is None:
+                        continue
+                    if uid:
+                        self._processed_ids.add(uid)
+                    self._images_saved += 1
+                    self.log(f"Saved {filename} ({self._images_saved} total)")
+                    self._update_progress(self._images_saved)
+                else:
+                    still_pending.append((task, uid))
+            pending_saves.clear()
+            pending_saves.extend(still_pending)
+
+        async def _drain_saves() -> None:
+            """Wait for all in-flight saves then collect their results."""
+            if pending_saves:
+                await asyncio.gather(*(t for t, _ in pending_saves), return_exceptions=True)
+            _collect_saves()
+
         self._status_msg = "Running"
         self.log(f"Starting collection (resuming from {self._images_saved} images)")
         for provider in providers:
@@ -118,7 +151,8 @@ class CollectTrainingImagesTask(Task):
         try:
             active = set(providers)
             while active and not self._cancel_flag.is_set():
-                self._status_msg = f"Processed {len(self._processed_ids)} images, Saved {self._images_saved} images"
+                _collect_saves()
+                self._status_msg = f"Processed {self._images_processed} images, Saved {self._images_saved} images"
                 for provider in list(active):
                     if self._cancel_flag.is_set():
                         break
@@ -139,6 +173,8 @@ class CollectTrainingImagesTask(Task):
                         logger.debug(f"Skipping already-processed: {unique_id}")
                         continue
 
+                    self._images_processed += 1
+
                     # base64_encode_png is CPU-bound (PNG compression); run off the event loop
                     base64_img = await asyncio.to_thread(base64_encode_png, provided.image)
                     t_encode = time.perf_counter()
@@ -154,37 +190,33 @@ class CollectTrainingImagesTask(Task):
                         )
                         continue
 
-                    filename = await self._save_image(images_api, provided, matching, files_root)
-                    t_save = time.perf_counter()
                     logger.debug(
-                        f"Frame timing: fetch={1000*(t_fetch-t0):.1f}ms "
+                        f"Frame timing (matched): fetch={1000*(t_fetch-t0):.1f}ms "
                         f"encode={1000*(t_encode-t_fetch):.1f}ms "
-                        f"infer={1000*(t_infer-t_encode):.1f}ms "
-                        f"save={1000*(t_save-t_infer):.1f}ms "
-                        f"total={1000*(t_save-t0):.1f}ms"
+                        f"infer={1000*(t_infer-t_encode):.1f}ms (save dispatched)"
                     )
-                    if filename is None:
-                        continue
-
-                    if unique_id:
-                        self._processed_ids.add(unique_id)
-                    self._images_saved += 1
-                    self.log(f"Saved {filename} ({self._images_saved} total)")
-                    self._update_progress(self._images_saved)
+                    save_task = asyncio.create_task(
+                        self._save_image(images_api, provided, matching, files_root)
+                    )
+                    pending_saves.append((save_task, unique_id))
 
                     if self._data_req_flag.is_set():
+                        await _drain_saves()
                         self._data_req_flag.clear()
                         self._resume_data = {
                             "images_saved": self._images_saved,
+                            "images_processed": self._images_processed,
                             "processed_ids": list(self._processed_ids),
                         }
                         self._data_ready_flag.set()
         finally:
+            await _drain_saves()
             for provider in providers:
                 await provider.stop()
 
         self._resume_data = {
             "images_saved": self._images_saved,
+            "images_processed": self._images_processed,
             "processed_ids": list(self._processed_ids),
         }
         self._data_ready_flag.set()

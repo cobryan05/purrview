@@ -18,6 +18,7 @@ logger.setLevel(logging.DEBUG)
 
 @register_image_provider()
 class Cv2VideoImageProvider(ImageProvider):
+    PREFETCH_QUEUE_SIZE = 2
 
     def __init__(self, paths: list[str], loop: bool = False):
         if isinstance(paths, str):
@@ -55,7 +56,56 @@ class Cv2VideoImageProvider(ImageProvider):
         else:
             self._vid = None
 
+    async def start(self) -> None:
+        self._prefetch_queue: asyncio.Queue = asyncio.Queue(maxsize=Cv2VideoImageProvider.PREFETCH_QUEUE_SIZE)
+        self._prefetch_task: asyncio.Task = asyncio.create_task(self._prefetch_worker())
+
+    async def stop(self) -> None:
+        task = getattr(self, "_prefetch_task", None)
+        if task and not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+        self._prefetch_task = None
+
+    async def _prefetch_worker(self) -> None:
+        """Reads frames off the event loop and buffers them for getNextImage()."""
+        try:
+            while self._vid is not None:
+                ret, frame = await asyncio.to_thread(self._vid.read)
+                if not ret:
+                    await asyncio.to_thread(self._nextVideo)
+                    if self._vid is None:
+                        break
+                    ret, frame = await asyncio.to_thread(self._vid.read)
+                    if not ret:
+                        break
+                    self._vidFrameCnt = 0
+
+                img = ImageWithProviderMetadata(frame)
+                img.metadata.source = self._vidPath
+                img.metadata.frame_idx = self._vidFrameCnt
+                self._vidFrameCnt += 1
+                await self._prefetch_queue.put(img)
+        except asyncio.CancelledError:
+            raise
+        finally:
+            # Sentinel so any waiting getNextImage() call unblocks cleanly.
+            # put_nowait is fine here: if the queue is full the caller has already exited.
+            try:
+                self._prefetch_queue.put_nowait(None)
+            except asyncio.QueueFull:
+                pass
+
     async def getNextImage(self) -> Optional[ImageWithProviderMetadata]:
+        if not hasattr(self, "_prefetch_queue"):
+            # start() was not called — fall back to direct (unbuffered) read
+            return await self._direct_read()
+        return await self._prefetch_queue.get()
+
+    async def _direct_read(self) -> Optional[ImageWithProviderMetadata]:
         while self._vid is not None:
             ret, frame = await asyncio.to_thread(self._vid.read)
             if not ret:
@@ -70,7 +120,6 @@ class Cv2VideoImageProvider(ImageProvider):
             ret_image = ImageWithProviderMetadata(frame)
             ret_image.metadata.source = self._vidPath
             ret_image.metadata.frame_idx = self._vidFrameCnt
-
             self._vidFrameCnt += 1
             return ret_image
 
