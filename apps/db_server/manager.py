@@ -15,7 +15,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import aiofiles
 from sqlalchemy.orm import make_transient
 
-from apps import CACHE_DIR
+from apps import CACHE_DIR, THUMB_CACHE_MAX_MB
 from apps.helpers.db.db_client import (
     DbClient,
     TagKind,
@@ -630,6 +630,40 @@ class Manager:
     def _thumb_cache_path(self, bbox_uuid: str, width: int) -> Path:
         return self._thumb_cache_dir() / f"{bbox_uuid}_{width}.png"
 
+    def _trim_thumb_cache_sync(self, max_bytes: int) -> None:
+        """Evict least-recently-used thumbnail files until total cache size is under max_bytes."""
+        cache_dir = self._thumb_cache_dir()
+        if not cache_dir.exists():
+            return
+        entries = []
+        total = 0
+        for p in cache_dir.glob("*.png"):
+            try:
+                st = p.stat()
+                entries.append((st.st_mtime, st.st_size, p))
+                total += st.st_size
+            except FileNotFoundError:
+                pass
+        if total <= max_bytes:
+            return
+        entries.sort()  # oldest mtime first — evict these first
+        for _, size, path in entries:
+            if total <= max_bytes:
+                break
+            try:
+                path.unlink(missing_ok=True)
+                total -= size
+                logger.info(f"Thumbnail cache evicted: {path.name}")
+            except Exception as e:
+                logger.warning(f"Failed to evict thumbnail {path.name}: {e}")
+
+    def _schedule_thumb_cache_trim(self) -> None:
+        """Fire-and-forget: trim the cache in a background thread if a size limit is set."""
+        if THUMB_CACHE_MAX_MB <= 0:
+            return
+        max_bytes = THUMB_CACHE_MAX_MB * 1024 * 1024
+        asyncio.create_task(asyncio.to_thread(self._trim_thumb_cache_sync, max_bytes))
+
     def _resolve_image_file_path(self, image_path: str) -> Optional[Path]:
         """Resolve an image path under _files_root; falls back to treating it as an absolute path."""
         safe = get_safe_path(self._files_root, Path(image_path))
@@ -647,6 +681,10 @@ class Manager:
 
         cache_path = self._thumb_cache_path(bbox_uuid, width)
         if cache_path.exists():
+            try:
+                cache_path.touch()  # update mtime for LRU tracking
+            except OSError:
+                pass
             async with aiofiles.open(cache_path, "rb") as f:
                 return await f.read()
 
@@ -711,6 +749,7 @@ class Manager:
         async with aiofiles.open(cache_path, "wb") as f:
             await f.write(jpeg_bytes)
 
+        self._schedule_thumb_cache_trim()
         return jpeg_bytes
 
     async def invalidate_bbox_thumbnails(self, bbox_uuids: List[str]) -> None:
@@ -739,6 +778,10 @@ class Manager:
 
         cache_path = self._image_thumb_cache_path(image_path, width)
         if cache_path.exists():
+            try:
+                cache_path.touch()  # update mtime for LRU tracking
+            except OSError:
+                pass
             async with aiofiles.open(cache_path, "rb") as f:
                 return await f.read()
 
@@ -768,6 +811,7 @@ class Manager:
         async with aiofiles.open(cache_path, "wb") as f:
             await f.write(png_bytes)
 
+        self._schedule_thumb_cache_trim()
         return png_bytes
 
     async def open_file(self, rel_path: str) -> Optional[Tuple[aiofiles.threadpool.binary.AsyncBufferedReader, str]]:
