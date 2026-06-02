@@ -255,20 +255,30 @@ class Manager:
             if not model or not model.inference:
                 raise ValueError(f"Model '{model_name}' is not properly loaded or initialized.")
 
+            t0 = time.perf_counter()
             inference_result: InferenceResult = await model.inference.processImage(
                 image, conf_thresh=conf_thresh, **kwargs
             )
+            t_infer = time.perf_counter()
 
             if return_annotated_img:
                 inference_result.annotated_image = annotate_image(image, inference_result.detections)
 
             if len(inference_result.detections) > 0:
+                t_cls = time.perf_counter()
                 class_uuid_maps = await self.get_models_classes([model_name])
                 class_uuid_map = class_uuid_maps.get(model_name, {})
                 for det in inference_result.detections:
                     if not det.bbox.class_str:
                         continue
                     det.bbox.label_uuid = class_uuid_map.get(det.bbox.class_str, det.bbox.label_uuid)
+                logger.debug(
+                    f"recognize '{model_name}': inference={1000*(t_infer-t0):.1f}ms "
+                    f"class_lookup={1000*(time.perf_counter()-t_cls):.1f}ms "
+                    f"({len(inference_result.detections)} dets)"
+                )
+            else:
+                logger.debug(f"recognize '{model_name}': inference={1000*(t_infer-t0):.1f}ms (no detections)")
 
             if pin_id in model.pins:
                 logger.info(f"Refreshing timeout for pin {pin_id}")

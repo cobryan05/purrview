@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
@@ -122,7 +123,9 @@ class CollectTrainingImagesTask(Task):
                     if self._cancel_flag.is_set():
                         break
 
+                    t0 = time.perf_counter()
                     provided = await provider.getNextImage()
+                    t_fetch = time.perf_counter()
                     if provided is None:
                         active.discard(provider)
                         continue
@@ -136,12 +139,30 @@ class CollectTrainingImagesTask(Task):
                         logger.debug(f"Skipping already-processed: {unique_id}")
                         continue
 
-                    base64_img = base64_encode_png(provided.image)
+                    # base64_encode_png is CPU-bound (PNG compression); run off the event loop
+                    base64_img = await asyncio.to_thread(base64_encode_png, provided.image)
+                    t_encode = time.perf_counter()
+
                     matching = await self._run_inference(inference_api, base64_img, pin_ids)
+                    t_infer = time.perf_counter()
+
                     if not matching:
+                        logger.debug(
+                            f"Frame timing (no match): fetch={1000*(t_fetch-t0):.1f}ms "
+                            f"encode={1000*(t_encode-t_fetch):.1f}ms "
+                            f"infer={1000*(t_infer-t_encode):.1f}ms"
+                        )
                         continue
 
                     filename = await self._save_image(images_api, provided, matching, files_root)
+                    t_save = time.perf_counter()
+                    logger.debug(
+                        f"Frame timing: fetch={1000*(t_fetch-t0):.1f}ms "
+                        f"encode={1000*(t_encode-t_fetch):.1f}ms "
+                        f"infer={1000*(t_infer-t_encode):.1f}ms "
+                        f"save={1000*(t_save-t_infer):.1f}ms "
+                        f"total={1000*(t_save-t0):.1f}ms"
+                    )
                     if filename is None:
                         continue
 
@@ -179,6 +200,7 @@ class CollectTrainingImagesTask(Task):
         matching = []
         for name in self._model_names:
             try:
+                t_start = time.perf_counter()
                 result = await asyncio.to_thread(
                     inference_api.inference,
                     name,
@@ -187,6 +209,10 @@ class CollectTrainingImagesTask(Task):
                         conf_thresh=self._min_all_conf,
                         pin_id=pin_ids.get(name),
                     ),
+                )
+                logger.debug(
+                    f"Inference HTTP round-trip model='{name}': {1000*(time.perf_counter()-t_start):.1f}ms "
+                    f"({len(result.result.detections or [])} detections)"
                 )
                 for det in result.result.detections or []:
                     luuid = det.bbox.label_uuid
@@ -212,10 +238,13 @@ class CollectTrainingImagesTask(Task):
         abs_path = files_root / self._output_dir / filename
         abs_path.parent.mkdir(parents=True, exist_ok=True)
 
-        if not cv2.imwrite(str(abs_path), provided.image):
+        # cv2.imwrite is CPU-bound (PNG compression) + I/O; run off the event loop
+        t0 = time.perf_counter()
+        if not await asyncio.to_thread(cv2.imwrite, str(abs_path), provided.image):
             logger.warning(f"Failed to write image to {abs_path}")
             self.log(f"Failed to write image: {filename}")
             return None
+        logger.debug(f"Image write: {1000*(time.perf_counter()-t0):.1f}ms → {abs_path}")
 
         boxes = [
             BoundingBoxMetadataModel(
@@ -233,10 +262,12 @@ class CollectTrainingImagesTask(Task):
         ]
 
         try:
+            t_meta = time.perf_counter()
             await asyncio.to_thread(
                 images_api.update_image_metadata,
                 UpdateMetadataPayload(image_path=rel_path, boxes=boxes),
             )
+            logger.debug(f"Metadata save: {1000*(time.perf_counter()-t_meta):.1f}ms for {filename}")
         except Exception:
             logger.exception(f"Failed to save metadata for {rel_path}")
             self.log(f"Failed to save metadata: {filename}")

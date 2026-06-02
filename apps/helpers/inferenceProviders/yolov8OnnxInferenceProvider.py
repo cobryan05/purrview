@@ -1,3 +1,5 @@
+import logging
+import time
 from typing import List, Optional
 from uuid import uuid4
 
@@ -10,6 +12,8 @@ from apps.helpers.bboxUtils import BBox
 from apps.helpers.types import BoundingBoxMetadata, DetectionResult, InferenceResult
 
 from .inferenceProvider import InferenceProvider
+
+logger = logging.getLogger(__name__)
 
 
 class YOLOv8ONNXInferenceProvider(InferenceProvider):
@@ -34,9 +38,14 @@ class YOLOv8ONNXInferenceProvider(InferenceProvider):
     async def processImage(self, image: np.ndarray, **kwargs) -> InferenceResult:
         original_shape = image.shape[:2]
         imgH, imgW = original_shape
+
+        t0 = time.perf_counter()
         image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
         img, scale, pad = YoloUtils.preprocess_image(image_rgb, self.input_shape)
+        t_pre = time.perf_counter()
+
         preds = self.session.run(None, {self.input_name: img})[0]
+        t_onnx = time.perf_counter()
 
         # Handle (batch, classes, boxes) -> (batch, boxes, classes)
         if preds.shape[1] < preds.shape[2]:
@@ -49,6 +58,13 @@ class YOLOv8ONNXInferenceProvider(InferenceProvider):
             scale=scale,
             pad=pad,
             original_shape=original_shape,
+        )
+        t_post = time.perf_counter()
+        logger.debug(
+            f"processImage: preprocess={1000*(t_pre-t0):.1f}ms "
+            f"onnx={1000*(t_onnx-t_pre):.1f}ms "
+            f"postprocess={1000*(t_post-t_onnx):.1f}ms "
+            f"total={1000*(t_post-t0):.1f}ms ({len(detections)} raw dets)"
         )
 
         detection_results: List[DetectionResult] = []
