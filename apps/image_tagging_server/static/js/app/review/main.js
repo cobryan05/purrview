@@ -762,19 +762,36 @@ export async function createReviewPanel(container, { fetchImages = null } = {}) 
     // Bbox canvas overlay — draws normalized rects over the thumbnail
     const thumbCanvas = document.createElement('canvas');
     thumbCanvas.className = 'thumb-overlay';
+    const thumbCtx = thumbCanvas.getContext('2d');
 
     function drawBboxOverlay() {
-      const w = thumbImg.naturalWidth || 200;
-      const h = thumbImg.naturalHeight || 150;
-      thumbCanvas.width = w;
-      thumbCanvas.height = h;
-      const ctx = thumbCanvas.getContext('2d');
-      ctx.clearRect(0, 0, w, h);
+      const natW = thumbImg.naturalWidth;
+      const natH = thumbImg.naturalHeight;
+      if (!natW || !natH) return;
+      const cssW = thumbImg.clientWidth;
+      const cssH = thumbImg.clientHeight;
+      if (!cssW || !cssH) return;
+
+      thumbCanvas.width = cssW;
+      thumbCanvas.height = cssH;
+
+      // The img uses object-fit:contain, so compute the letterbox offsets.
+      const scale = Math.min(cssW / natW, cssH / natH);
+      const dispW = natW * scale;
+      const dispH = natH * scale;
+      const offsetX = (cssW - dispW) / 2;
+      const offsetY = (cssH - dispH) / 2;
+
+      thumbCtx.clearRect(0, 0, cssW, cssH);
+      thumbCtx.lineWidth = Math.max(1, Math.round(cssW / 150));
       for (const bbox of (img.bboxes ?? [])) {
-        const color = bbox.label?.color ?? '#ffdd00';
-        ctx.strokeStyle = color;
-        ctx.lineWidth = Math.max(1, Math.round(w / 150));
-        ctx.strokeRect(bbox.x * w, bbox.y * h, bbox.width * w, bbox.height * h);
+        thumbCtx.strokeStyle = bbox.label?.color ?? '#ffdd00';
+        thumbCtx.strokeRect(
+          offsetX + bbox.x * dispW,
+          offsetY + bbox.y * dispH,
+          bbox.width * dispW,
+          bbox.height * dispH,
+        );
       }
     }
 
