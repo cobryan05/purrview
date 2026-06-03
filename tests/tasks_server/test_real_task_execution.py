@@ -6,6 +6,7 @@ error handling, and the data-request/data-ready protocol.
 
 No HTTP server is spun up here.  Tasks are instantiated directly.
 """
+
 import asyncio
 from typing import Any, Optional
 from unittest.mock import MagicMock
@@ -114,6 +115,7 @@ def _make_task(cls_name: str, params: dict | None = None) -> Task:
 # Happy path: full lifecycle
 # ──────────────────────────────────────────────────────────────────────────────
 
+
 async def test_task_completes_successfully():
     task = _make_task("StepsTask", {"steps": 3})
     await task.start()
@@ -147,11 +149,12 @@ async def test_task_logs_lifecycle_messages():
 # Cancel
 # ──────────────────────────────────────────────────────────────────────────────
 
+
 async def test_cancel_stops_task_early():
     # Use many steps so it won't finish before we cancel
     task = _make_task("StepsTask", {"steps": 1000})
     await task.start()
-    await task.stop()   # sets _cancel_flag
+    await task.stop()  # sets _cancel_flag
     await task.wait_for_task_done(timeout=5.0)
 
     assert task.is_task_done()
@@ -175,6 +178,7 @@ async def test_start_twice_raises():
 # Error handling
 # ──────────────────────────────────────────────────────────────────────────────
 
+
 async def test_error_in_run_sets_error_status():
     task = _make_task("ErrorTask")
     await task.start()
@@ -197,6 +201,7 @@ async def test_error_task_logs_error_message():
 # ──────────────────────────────────────────────────────────────────────────────
 # Data request / data ready protocol
 # ──────────────────────────────────────────────────────────────────────────────
+
 
 async def test_data_request_flag_triggers_resume_data_save():
     task = _make_task("DataFlagTask")
@@ -232,6 +237,7 @@ async def test_clear_data_ready(task=None):
 # Resume data injection
 # ──────────────────────────────────────────────────────────────────────────────
 
+
 async def test_resume_data_injected_before_init():
     task = _make_task("ResumeTask")
     task.set_resume_data({"checkpoint": 7})
@@ -255,6 +261,7 @@ async def test_no_resume_data_gives_zero_checkpoint():
 # ──────────────────────────────────────────────────────────────────────────────
 # wait_for_task_done timeout
 # ──────────────────────────────────────────────────────────────────────────────
+
 
 async def test_wait_for_task_done_timeout():
     # DataFlagTask never finishes unless cancelled — timeout should raise

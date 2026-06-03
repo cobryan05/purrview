@@ -988,7 +988,25 @@ export async function createReviewPanel(container, { fetchImages = null } = {}) 
       hoverPreview.destroy();
       container.innerHTML = '';
     },
+    filterPanel,
   };
+}
+
+/** Module-level reference to the active filter panel for the Review tab. */
+let _activeFilterPanel = null;
+/** Queued filter state to apply as soon as the panel is ready. */
+let _pendingFilterState = null;
+
+/**
+ * Apply filter state now if the panel is ready, or queue it to be applied
+ * once init() completes. Eliminates the rAF/setTimeout timing race in main.js.
+ */
+export function applyFilterWhenReady(state) {
+  if (_activeFilterPanel) {
+    _activeFilterPanel.setState(state);
+  } else {
+    _pendingFilterState = state;
+  }
 }
 
 /**
@@ -997,7 +1015,12 @@ export async function createReviewPanel(container, { fetchImages = null } = {}) 
 export async function init() {
   const root = document.getElementById('review-root');
   if (!root) return;
-  await createReviewPanel(root);
+  const panel = await createReviewPanel(root);
+  _activeFilterPanel = panel.filterPanel ?? null;
+  if (_pendingFilterState && _activeFilterPanel) {
+    _activeFilterPanel.setState(_pendingFilterState);
+    _pendingFilterState = null;
+  }
 }
 
 /**

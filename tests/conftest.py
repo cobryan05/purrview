@@ -10,6 +10,7 @@ def pytest_addoption(parser):
 
 def make_png() -> bytes:
     """Return a minimal valid 1x1 white PNG."""
+
     def chunk(tag, data):
         raw = tag + data
         return struct.pack(">I", len(data)) + raw + struct.pack(">I", zlib.crc32(raw) & 0xFFFFFFFF)

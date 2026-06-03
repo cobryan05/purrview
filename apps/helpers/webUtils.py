@@ -17,5 +17,7 @@ def api_forward_request(api, api_method_name: str):
                 args = None
             api_method = getattr(api, api_method_name)
             return await asyncio.to_thread(api_method, args)
+
         return wrapper
+
     return decorator

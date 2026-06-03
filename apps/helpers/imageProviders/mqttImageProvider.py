@@ -83,7 +83,13 @@ class MqttImageProvider(ImageProvider):
                 "required": True,
                 "description": "MQTT broker address",
             },
-            "broker_port": {"type": "int", "label": "Broker Port", "default": 1883, "required": True, "description": "MQTT broker port"},
+            "broker_port": {
+                "type": "int",
+                "label": "Broker Port",
+                "default": 1883,
+                "required": True,
+                "description": "MQTT broker port",
+            },
             "topic": {
                 "type": "string",
                 "label": "Mqtt Topic",

@@ -1,4 +1,4 @@
-import { cancelTasks, createTaskConfig, deleteTaskConfigs, deleteTasks, fetchTaskConfigs, fetchTasksStatus, pauseTasks, resumeTasks, startTask, updateTaskConfig } from '/app-static/js/shared/api/tasks.js';
+import { cancelTasks, createTaskConfig, deleteTaskConfigs, deleteTasks, fetchTaskConfigs, fetchTasksStatus, pauseTasks, pauseTasksInPlace, resumeTasks, resumeTasksInPlace, startTask, updateTaskConfig } from '/app-static/js/shared/api/tasks.js';
 import { ActiveTaskField, EditableField, TaskConfigField } from '/app-static/js/ui/utils/fields/index.js';
 import { createGenericRow, Logger, toast } from '/app-static/js/ui/utils/index.js';
 
@@ -109,7 +109,7 @@ function _taskFingerprint(tasks) {
   return Object.entries(tasks || {})
     .map(([id, t]) => {
       const logs = t.log_lines ?? [];
-      return `${id}:${t.instance?.status}:${Math.round(t.progress ?? 0)}:${logs.length}:${logs[logs.length - 1] ?? ''}`;
+      return `${id}:${t.instance?.status}:${t.is_paused_in_place ?? false}:${Math.round(t.progress ?? 0)}:${logs.length}:${logs[logs.length - 1] ?? ''}:${t.instance?.started_at ?? ''}:${t.instance?.ended_at ?? ''}`;
     })
     .sort()
     .join('|');
@@ -184,11 +184,25 @@ export function renderActiveTasks({ target = 'active-tasks-list', refresh = null
             catch (error) { toast(error.message || 'Failed to stop task', 5000, 'error'); }
           }
         };
-        const pauseButton = {
+        const pauseInPlaceButton = {
           text: 'Pause', emoji: '⏸️',
           onClick: async () => {
-            try { await pauseTasks({ taskUuids: [taskId] }); refresh?.(); }
+            try { await pauseTasksInPlace({ taskUuids: [taskId] }); refresh?.(); }
             catch (error) { toast(error.message || 'Failed to pause task', 5000, 'error'); }
+          }
+        };
+        const resumeInPlaceButton = {
+          text: 'Resume', emoji: '▶️',
+          onClick: async () => {
+            try { await resumeTasksInPlace({ taskUuids: [taskId] }); refresh?.(); }
+            catch (error) { toast(error.message || 'Failed to resume task', 5000, 'error'); }
+          }
+        };
+        const suspendButton = {
+          text: 'Suspend', emoji: '💾',
+          onClick: async () => {
+            try { await pauseTasks({ taskUuids: [taskId] }); refresh?.(); }
+            catch (error) { toast(error.message || 'Failed to suspend task', 5000, 'error'); }
           }
         };
         const resumeButton = {
@@ -211,14 +225,19 @@ export function renderActiveTasks({ target = 'active-tasks-list', refresh = null
           }
         };
 
+        const isPausedInPlace = task.is_paused_in_place === true;
         let leftButtons = [];
         let rightButtons = [];
-        if (status === 'running') {
-          leftButtons = [pauseButton];
+        if (status === 'running' && !isPausedInPlace) {
+          leftButtons = [pauseInPlaceButton, suspendButton];
+          rightButtons = [stopButton];
+        } else if (status === 'running' && isPausedInPlace) {
+          leftButtons = [resumeInPlaceButton, suspendButton];
           rightButtons = [stopButton];
         } else if (status === 'pending') {
           rightButtons = [stopButton];
         } else if (status === 'paused') {
+          // Suspended — has a checkpoint; resume restarts from it
           leftButtons = [deleteButton];
           rightButtons = [resumeButton, rerunButton];
         } else {

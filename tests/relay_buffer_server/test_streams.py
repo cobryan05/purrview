@@ -37,9 +37,7 @@ async def test_create_stream_calls_relay(http_client, manager):
     assert resp.status_code == 200
     data = resp.json()
     assert data["success"] is True
-    manager.create_rtsp_relay_stream.assert_called_once_with(
-        rtsp_url="rtsp://cam/stream", stream_name="relay1"
-    )
+    manager.create_rtsp_relay_stream.assert_called_once_with(rtsp_url="rtsp://cam/stream", stream_name="relay1")
 
 
 async def test_create_stream_with_delay_calls_delay_stream(http_client, manager):
@@ -50,13 +48,12 @@ async def test_create_stream_with_delay_calls_delay_stream(http_client, manager)
     assert resp.status_code == 200
     data = resp.json()
     assert data["success"] is True
-    manager.create_delay_stream.assert_called_once_with(
-        rtsp_url="rtsp://cam/stream", stream_name="delayed1", delay=2.5
-    )
+    manager.create_delay_stream.assert_called_once_with(rtsp_url="rtsp://cam/stream", stream_name="delayed1", delay=2.5)
 
 
 async def test_create_stream_failure_returns_error(http_client, manager):
     from unittest.mock import AsyncMock
+
     manager.create_rtsp_relay_stream = AsyncMock(side_effect=RuntimeError("mediamtx down"))
     resp = await http_client.post(
         "/api/streams/create",
@@ -79,6 +76,7 @@ async def test_destroy_stream_calls_manager(http_client, manager):
 
 async def test_destroy_stream_failure_returns_error(http_client, manager):
     from unittest.mock import AsyncMock
+
     manager.destroy_stream = AsyncMock(side_effect=RuntimeError("not found"))
     resp = await http_client.post("/api/streams/destroy", data={"stream_name": "ghost"})
     assert resp.status_code == 200

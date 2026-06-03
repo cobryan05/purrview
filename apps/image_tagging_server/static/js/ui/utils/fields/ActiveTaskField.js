@@ -1,4 +1,5 @@
 import { Field } from './Field.js';
+import { events, EventTypes } from '/app-static/js/shared/events/index.js';
 
 const STATUS_COLORS = {
   pending: '#888',
@@ -15,7 +16,7 @@ export class ActiveTaskField extends Field {
 
   static async create({ ...rest } = {}) {
     const instance = new ActiveTaskField({ ...rest });
-    const { uuid, status, error_message, created_at } = instance._value.instance || {};
+    const { uuid, status, error_message, created_at, started_at, ended_at } = instance._value.instance || {};
     const { name, typename } = instance._value.config || {};
     instance._name = name || typename || uuid;
     instance._uuid = uuid;
@@ -23,9 +24,21 @@ export class ActiveTaskField extends Field {
     instance._message = error_message;
     instance._progress = instance._value.progress ?? 0;
     instance._statusMessage = instance._value.status_message ?? '';
-    instance._logLines = instance._value.log_lines ?? [];
+    instance._isPausedInPlace = instance._value.is_paused_in_place === true;
+    // For active tasks use the live ring-buffer (may be empty on first poll).
+    // For finished/suspended tasks fall back to the persisted log_json column.
+    // Checking status rather than log length avoids showing a previous run's
+    // persisted logs on the first poll of a fresh run.
+    const liveLogs = instance._value.log_lines ?? [];
+    const isActive = status === 'running' || status === 'pending';
+    instance._logLines = (liveLogs.length > 0 || isActive)
+      ? liveLogs
+      : (instance._value.instance?.log_lines ?? []);
     instance._createdAt = created_at ? new Date(created_at) : null;
+    instance._startedAt = started_at ? new Date(started_at) : null;
+    instance._endedAt = ended_at ? new Date(ended_at) : null;
     instance._typename = typename;
+    instance._actions = instance._value.instance?.result?.actions ?? [];
     return instance;
   }
 
@@ -55,13 +68,24 @@ export class ActiveTaskField extends Field {
     }
 
     const statusBadge = document.createElement('span');
-    statusBadge.textContent = `● ${this._status}`;
-    statusBadge.style.cssText = `font-size:0.8em; font-weight:bold; color:${STATUS_COLORS[this._status] ?? '#888'};`;
+    const displayStatus = (this._status === 'running' && this._isPausedInPlace) ? 'paused (in-place)' : this._status;
+    const displayColor = (this._status === 'running' && this._isPausedInPlace)
+      ? STATUS_COLORS.paused
+      : (STATUS_COLORS[this._status] ?? '#888');
+    statusBadge.textContent = `● ${displayStatus}`;
+    statusBadge.style.cssText = `font-size:0.8em; font-weight:bold; color:${displayColor};`;
     header.appendChild(statusBadge);
 
-    if (this._createdAt) {
+    const displayTime = this._startedAt ?? this._createdAt;
+    if (displayTime) {
       const timeSpan = document.createElement('span');
-      timeSpan.textContent = this._createdAt.toLocaleTimeString();
+      const label = this._startedAt ? 'Started' : 'Created';
+      let timeText = `${label}: ${displayTime.toLocaleTimeString()}`;
+      if (this._startedAt && this._endedAt) {
+        const durationSec = Math.round((this._endedAt - this._startedAt) / 1000);
+        timeText += ` · ${durationSec}s`;
+      }
+      timeSpan.textContent = timeText;
       timeSpan.style.cssText = 'font-size:0.75em; color:#888; margin-left:auto;';
       header.appendChild(timeSpan);
     }
@@ -114,7 +138,29 @@ export class ActiveTaskField extends Field {
       container.appendChild(details);
     }
 
+    // Task-supplied action buttons (e.g. "See results")
+    if (this._actions.length > 0) {
+      const actionsRow = document.createElement('div');
+      actionsRow.style.cssText = 'display:flex; gap:0.5em; margin-top:0.5em; flex-wrap:wrap;';
+      for (const action of this._actions) {
+        const btn = document.createElement('button');
+        btn.textContent = action.label;
+        btn.style.cssText = 'font-size:0.8em; padding:0.2em 0.6em; cursor:pointer;';
+        btn.addEventListener('click', () => this._handleAction(action));
+        actionsRow.appendChild(btn);
+      }
+      container.appendChild(actionsRow);
+    }
+
     return container;
+  }
+
+  _handleAction(action) {
+    if (action.type === 'open_review') {
+      events.publish(EventTypes.OPEN_REVIEW_WITH_FILTERS, {
+        tagUuids: action.payload?.tag_uuids ?? [],
+      });
+    }
   }
 
   getValue() {

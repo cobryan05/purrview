@@ -9,11 +9,11 @@ query directly on the bbox table rather than relying solely on the parent
 image's updated_at (which is touched on every bbox write via _touch_image).
 Existing rows are backfilled with CURRENT_TIMESTAMP.
 """
+
 from typing import Sequence, Union
 
 import sqlalchemy as sa
 import sqlmodel.sql.sqltypes
-
 from alembic import op
 
 # revision identifiers, used by Alembic.

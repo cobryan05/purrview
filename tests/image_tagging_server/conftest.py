@@ -31,6 +31,7 @@ async def http_client(manager, monkeypatch):
     proxy_mock = AsyncMock(return_value=proxy_response)
 
     import apps.image_tagging_server.web as web_module
+
     for proxy_attr in ("IMAGE_PROXY", "LABEL_PROXY", "MODELS_PROXY", "SOURCES_PROXY", "TAG_PROXY", "TASKS_PROXY"):
         monkeypatch.setattr(getattr(web_module, proxy_attr), "handle_request", proxy_mock)
 

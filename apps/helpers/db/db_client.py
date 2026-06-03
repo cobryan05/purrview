@@ -13,8 +13,8 @@ from alembic.config import Config as AlembicConfig
 ALEMBIC_INI_PATH = Path(__file__).parent / "alembic.ini"
 
 import jstyleson
-from pydantic import TypeAdapter
 from alembic.runtime.migration import MigrationContext
+from pydantic import TypeAdapter
 from sqlalchemy import Select, and_, delete, event, func, or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
@@ -27,9 +27,10 @@ from apps.helpers.consts import TaskStatus
 
 from .types import (
     AVAILABLE_MODEL_TYPENAMES,
+    UNVERIFIED_TAG_UUID,
     BBox,
-    BBoxTagLink,
     BboxAgeCondition,
+    BBoxTagLink,
     Dataset,
     DatasetCreate,
     DatasetFilterCriteria,
@@ -50,7 +51,6 @@ from .types import (
     ModelConfig,
     ModelConfigCreate,
     ModelConfigNode,
-
     ModelConfigRead,
     ModelConfigUpdate,
     Source,
@@ -61,7 +61,6 @@ from .types import (
     TagPresenceFilter,
     TaskConfig,
     TaskInstance,
-    UNVERIFIED_TAG_UUID,
 )
 
 _SYSTEM_TAGS = [
@@ -72,7 +71,7 @@ _SYSTEM_TAGS = [
         kind=TagKind.SYSTEM,
         exclusive_group="verification",
         protected=True,
-        icon="?"
+        icon="?",
     ),
 ]
 
@@ -84,13 +83,12 @@ logger.setLevel(logging.DEBUG)
 T = TypeVar("T", bound=SQLModel)
 
 
-
 LABELS_JSON = "labels.json"
 TAGS_JSON = "tags.json"
 SOURCES_JSON = "sources.json"
 DATASETS_JSON = "datasets.json"
+TASK_CONFIGS_JSON = "task_configs.json"
 DB_FILE = "db.sqlite"
-
 
 
 def _escape_like_pattern(pattern: str) -> str:
@@ -109,8 +107,7 @@ def _apply_image_search_filters(stmt: Select, params: ImageSearchParams) -> Sele
     # all images are candidates regardless of bbox tags.
     if not params.show_all_bboxes and params.tag_uuids:
         stmt = (
-            stmt
-            .join(BBox, BBox.image_uuid == ImageRecord.uuid)
+            stmt.join(BBox, BBox.image_uuid == ImageRecord.uuid)
             .join(BBoxTagLink, BBoxTagLink.bbox_uuid == BBox.uuid)
             .where(BBoxTagLink.tag_uuid.in_(params.tag_uuids))
         )
@@ -118,11 +115,7 @@ def _apply_image_search_filters(stmt: Select, params: ImageSearchParams) -> Sele
             stmt = stmt.where(BBox.label_uuid == params.label_uuid)
     elif params.label_uuid:
         # Need the bbox join only to apply the label filter.
-        stmt = (
-            stmt
-            .join(BBox, BBox.image_uuid == ImageRecord.uuid)
-            .where(BBox.label_uuid == params.label_uuid)
-        )
+        stmt = stmt.join(BBox, BBox.image_uuid == ImageRecord.uuid).where(BBox.label_uuid == params.label_uuid)
 
     # ── Filename search ────────────────────────────────────────────────────────
     if params.filename_search:
@@ -166,9 +159,7 @@ def _apply_image_search_filters(stmt: Select, params: ImageSearchParams) -> Sele
                 .where(
                     ImageLabel.image_uuid == ImageRecord.uuid,
                     ImageLabel.label_uuid == f.label_uuid,
-                    ImageLabel.status.in_(
-                        [ImageLabelStatus.PRESENT, ImageLabelStatus.ABSENT]
-                    ),
+                    ImageLabel.status.in_([ImageLabelStatus.PRESENT, ImageLabelStatus.ABSENT]),
                 )
                 .exists()
             )
@@ -198,6 +189,7 @@ class DbClient:
         self._tags_json_path: Path = self._db_dir / TAGS_JSON
         self._sources_json_path: Path = self._db_dir / SOURCES_JSON
         self._datasets_json_path: Path = self._db_dir / DATASETS_JSON
+        self._task_configs_json_path: Path = self._db_dir / TASK_CONFIGS_JSON
         self._memory: bool = memory
 
         if memory:
@@ -253,9 +245,7 @@ class DbClient:
                 # means the DB is unstamped; stamp now so upgrade head can proceed.
                 async with self._engine.connect() as conn:
                     is_stamped = await conn.run_sync(
-                        lambda sync_conn: bool(
-                            MigrationContext.configure(sync_conn).get_current_heads()
-                        )
+                        lambda sync_conn: bool(MigrationContext.configure(sync_conn).get_current_heads())
                     )
                 if not is_stamped:
                     await loop.run_in_executor(None, lambda: alembic_command.stamp(alembic_cfg, "head"))
@@ -279,6 +269,14 @@ class DbClient:
             await self.sync_labels_from_json()
         if tag_count == 0:
             await self.sync_tags_from_json()
+
+        async with self._async_session_maker() as session:
+            count_statement = select(func.count()).select_from(TaskConfig)
+            result = await session.exec(count_statement)
+            task_config_count = result.one() or 0
+
+        if task_config_count == 0:
+            await self.sync_task_configs_from_json()
 
         async with self._async_session_maker() as session:
             count_statement = select(func.count()).select_from(Source)
@@ -308,15 +306,17 @@ class DbClient:
             for tmpl in _SYSTEM_TAGS:
                 existing = await session.get(Tag, tmpl.uuid)
                 if existing is None:
-                    session.add(Tag(
-                        uuid=tmpl.uuid,
-                        name=tmpl.name,
-                        color=tmpl.color,
-                        icon=tmpl.icon,
-                        kind=tmpl.kind,
-                        exclusive_group=tmpl.exclusive_group,
-                        protected=tmpl.protected,
-                    ))
+                    session.add(
+                        Tag(
+                            uuid=tmpl.uuid,
+                            name=tmpl.name,
+                            color=tmpl.color,
+                            icon=tmpl.icon,
+                            kind=tmpl.kind,
+                            exclusive_group=tmpl.exclusive_group,
+                            protected=tmpl.protected,
+                        )
+                    )
             await session.commit()
 
     async def close(self):
@@ -350,9 +350,9 @@ class DbClient:
         json_uuid = None
         json_bboxes: List[BBox] = []
         # Per-bbox supplementary data extracted before constructing BBox objects.
-        box_tag_uuids: Dict[str, List[str]] = {}    # bbox_uuid → tag UUID list
-        box_tag_names: Dict[str, List[str]] = {}    # bbox_uuid → tag name list (fallback)
-        box_label_names: Dict[str, str] = {}        # bbox_uuid → label name (fallback)
+        box_tag_uuids: Dict[str, List[str]] = {}  # bbox_uuid → tag UUID list
+        box_tag_names: Dict[str, List[str]] = {}  # bbox_uuid → tag name list (fallback)
+        box_label_names: Dict[str, str] = {}  # bbox_uuid → label name (fallback)
 
         if json_path.exists():
             try:
@@ -387,9 +387,7 @@ class DbClient:
             labels_by_uuid: Dict[str, str] = {}
             labels_by_name: Dict[str, str] = {}
             if all_label_uuids or all_label_names:
-                lbl_stmt = select(Label).where(
-                    or_(Label.uuid.in_(all_label_uuids), Label.name.in_(all_label_names))
-                )
+                lbl_stmt = select(Label).where(or_(Label.uuid.in_(all_label_uuids), Label.name.in_(all_label_names)))
                 for lbl in (await session.exec(lbl_stmt)).all():
                     labels_by_uuid[lbl.uuid] = lbl.uuid
                     labels_by_name[lbl.name] = lbl.uuid
@@ -398,9 +396,7 @@ class DbClient:
             tags_by_name: Dict[str, str] = {}
             tags_obj_by_uuid: Dict[str, "Tag"] = {}  # full objects for exclusive-group enforcement
             if all_tag_uuids or all_tag_names:
-                tag_stmt = select(Tag).where(
-                    or_(Tag.uuid.in_(all_tag_uuids), Tag.name.in_(all_tag_names))
-                )
+                tag_stmt = select(Tag).where(or_(Tag.uuid.in_(all_tag_uuids), Tag.name.in_(all_tag_names)))
                 for tag in (await session.exec(tag_stmt)).all():
                     tags_by_uuid[tag.uuid] = tag.uuid
                     tags_by_name[tag.name] = tag.uuid
@@ -417,13 +413,18 @@ class DbClient:
                         resolved = labels_by_name[fallback_name]
                         logger.warning(
                             "BBox %s: label_uuid %s not in DB; resolved by name '%s' → %s",
-                            bbox.uuid, bbox.label_uuid, fallback_name, resolved,
+                            bbox.uuid,
+                            bbox.label_uuid,
+                            fallback_name,
+                            resolved,
                         )
                         bbox.label_uuid = resolved
                     else:
                         logger.warning(
                             "BBox %s: label_uuid %s unresolvable (name fallback '%s' also failed); skipping.",
-                            bbox.uuid, bbox.label_uuid, fallback_name,
+                            bbox.uuid,
+                            bbox.label_uuid,
+                            fallback_name,
                         )
                         invalid_bbox_uuids.add(bbox.uuid)
 
@@ -444,13 +445,18 @@ class DbClient:
                             remapped = tags_by_name[name]
                             logger.warning(
                                 "BBox %s: tag_uuid %s not in DB; resolved by name '%s' → %s",
-                                bbox.uuid, tag_uuid, name, remapped,
+                                bbox.uuid,
+                                tag_uuid,
+                                name,
+                                remapped,
                             )
                             resolved.append(remapped)
                         else:
                             logger.warning(
                                 "BBox %s: tag_uuid %s unresolvable (name '%s' also failed); dropping tag.",
-                                bbox.uuid, tag_uuid, name,
+                                bbox.uuid,
+                                tag_uuid,
+                                name,
                             )
                 box_tag_uuids[bbox.uuid] = resolved
 
@@ -468,25 +474,26 @@ class DbClient:
             existing_by_uuid = None
             if json_uuid:
                 uuid_stmt = (
-                    select(ImageRecord)
-                    .where(ImageRecord.uuid == json_uuid)
-                    .options(selectinload(ImageRecord.bboxes))
+                    select(ImageRecord).where(ImageRecord.uuid == json_uuid).options(selectinload(ImageRecord.bboxes))
                 )
                 existing_by_uuid = (await session.exec(uuid_stmt)).one_or_none()
 
             # --- Warn about conflicts ---
             if existing_by_path and json_uuid and existing_by_path.uuid != json_uuid:
                 logger.warning(
-                    "Conflict: Path '%s' exists in DB with UUID %s, "
-                    "but JSON sidecar specifies UUID %s.",
-                    image_path, existing_by_path.uuid, json_uuid,
+                    "Conflict: Path '%s' exists in DB with UUID %s, " "but JSON sidecar specifies UUID %s.",
+                    image_path,
+                    existing_by_path.uuid,
+                    json_uuid,
                 )
 
             if existing_by_uuid and existing_by_uuid.filename != str(image_path):
                 logger.warning(
                     "Conflict: UUID %s already belongs to file '%s'. "
                     "The sidecar at '%s' is claiming a UUID used elsewhere.",
-                    json_uuid, existing_by_uuid.filename, image_path,
+                    json_uuid,
+                    existing_by_uuid.filename,
+                    image_path,
                 )
 
             # --- Insert or update ---
@@ -648,8 +655,8 @@ class DbClient:
             sort_col_map = {
                 "created_at": ImageRecord.created_at,
                 "updated_at": ImageRecord.updated_at,
-                "uuid":       ImageRecord.uuid,
-                "filename":   ImageRecord.filename,
+                "uuid": ImageRecord.uuid,
+                "filename": ImageRecord.filename,
             }
             sort_col = sort_col_map[params.sort_by]
 
@@ -666,15 +673,19 @@ class DbClient:
                 else:
                     sv = params.after_sort_value
                     if params.sort_order == "asc":
-                        stmt = stmt.where(or_(
-                            sort_col > sv,
-                            and_(sort_col == sv, ImageRecord.uuid > params.after_uuid),
-                        ))
+                        stmt = stmt.where(
+                            or_(
+                                sort_col > sv,
+                                and_(sort_col == sv, ImageRecord.uuid > params.after_uuid),
+                            )
+                        )
                     else:
-                        stmt = stmt.where(or_(
-                            sort_col < sv,
-                            and_(sort_col == sv, ImageRecord.uuid < params.after_uuid),
-                        ))
+                        stmt = stmt.where(
+                            or_(
+                                sort_col < sv,
+                                and_(sort_col == sv, ImageRecord.uuid < params.after_uuid),
+                            )
+                        )
 
             # ── Order + limit ──────────────────────────────────────────────────
             if params.sort_order == "asc":
@@ -811,6 +822,50 @@ class DbClient:
             await session.commit()
             return True
 
+    async def get_image(self, image_uuid: str) -> Optional[ImageRecord]:
+        """Return the ImageRecord for the given UUID, or None if not found."""
+        async with self._async_session_maker() as session:
+            return await session.get(ImageRecord, image_uuid)
+
+    async def get_all_image_stubs(self) -> List[Dict[str, str]]:
+        """Return [{uuid, filename}] for every image record, with no pagination limit."""
+        async with self._async_session_maker() as session:
+            result = await session.exec(select(ImageRecord.uuid, ImageRecord.filename))
+            return [{"uuid": uuid, "filename": filename} for uuid, filename in result.all()]
+
+    async def update_image_filename(self, image_uuid: str, new_filename: str) -> bool:
+        """Update the filename of an existing image record. Returns True if found and updated."""
+        async with self._async_session_maker() as session:
+            db_image = await session.get(ImageRecord, image_uuid)
+            if not db_image:
+                return False
+            db_image.filename = new_filename
+            session.add(db_image)
+            await session.commit()
+            return True
+
+    async def clear_orphan_generated_tags(self) -> int:
+        """Delete TASK_GENERATED tags that have no associated bbox_tags rows.
+
+        Returns the number of tags deleted.
+        """
+        async with self._async_session_maker() as session:
+            # Find TASK_GENERATED tag UUIDs that have at least one bbox_tags row.
+            referenced = select(BBoxTagLink.tag_uuid).distinct()
+            stmt = select(Tag).where(
+                Tag.kind == TagKind.TASK_GENERATED,
+                ~Tag.uuid.in_(referenced),
+            )
+            result = await session.exec(stmt)
+            orphans = result.all()
+            count = len(orphans)
+            for tag in orphans:
+                await session.delete(tag)
+            if count:
+                await session.commit()
+                await self._sync_tags_to_json()
+        return count
+
     async def write_image_metadata_to_db(self, image_uuid: str, update: ImageRecordUpdate) -> None:
         """Replace all bboxes for an image directly in the database."""
         async with self._async_session_maker() as session:
@@ -825,23 +880,27 @@ class DbClient:
                 tags_by_uuid = {}
 
             for b in update.bboxes:
-                session.add(BBox(
-                    uuid=b.uuid,
-                    image_uuid=image_uuid,
-                    label_uuid=b.label_uuid,
-                    x=b.x,
-                    y=b.y,
-                    width=b.width,
-                    height=b.height,
-                    metadata_json=b.metadata_json or {},
-                ))
+                session.add(
+                    BBox(
+                        uuid=b.uuid,
+                        image_uuid=image_uuid,
+                        label_uuid=b.label_uuid,
+                        x=b.x,
+                        y=b.y,
+                        width=b.width,
+                        height=b.height,
+                        metadata_json=b.metadata_json or {},
+                    )
+                )
                 for tag_uuid in self._resolve_exclusive_groups(b.tag_uuids, tags_by_uuid):
                     session.add(BBoxTagLink(bbox_uuid=b.uuid, tag_uuid=tag_uuid))
             # Touch the image so updated_at reflects the full bbox replacement.
             await self._touch_image(session, image_uuid)
             await session.commit()
 
-    def write_image_metadata_to_json(self, json_path: Path, image_uuid: str, filename: str, update: ImageRecordUpdate) -> None:
+    def write_image_metadata_to_json(
+        self, json_path: Path, image_uuid: str, filename: str, update: ImageRecordUpdate
+    ) -> None:
         """Write image metadata to the JSON sidecar file."""
         existing: Dict[str, Any] = {}
         if json_path.exists():
@@ -849,24 +908,26 @@ class DbClient:
                 existing = jstyleson.loads(json_path.read_text())
             except Exception as e:
                 logger.warning(f"Could not parse sidecar {json_path}, overwriting: {e}")
-        existing.update({
-            "uuid": image_uuid,
-            "filename": filename,
-            "boxes": [
-                {
-                    "uuid": b.uuid,
-                    "label_uuid": b.label_uuid,
-                    "label_name": b.label_name,
-                    "x": b.x,
-                    "y": b.y,
-                    "width": b.width,
-                    "height": b.height,
-                    "tag_uuids": b.tag_uuids,
-                    "tag_names": b.tag_names,
-                }
-                for b in update.bboxes
-            ],
-        })
+        existing.update(
+            {
+                "uuid": image_uuid,
+                "filename": filename,
+                "boxes": [
+                    {
+                        "uuid": b.uuid,
+                        "label_uuid": b.label_uuid,
+                        "label_name": b.label_name,
+                        "x": b.x,
+                        "y": b.y,
+                        "width": b.width,
+                        "height": b.height,
+                        "tag_uuids": b.tag_uuids,
+                        "tag_names": b.tag_names,
+                    }
+                    for b in update.bboxes
+                ],
+            }
+        )
         json_path.write_text(json.dumps(existing, indent=2))
 
     ################################################################################
@@ -950,7 +1011,9 @@ class DbClient:
                         logger.warning(
                             "Label '%s' from JSON (UUID %s) matched by name to existing "
                             "DB label (UUID %s). Using DB UUID.",
-                            item["name"], json_uuid, db_label.uuid,
+                            item["name"],
+                            json_uuid,
+                            db_label.uuid,
                         )
                         for key, value in item.items():
                             if key != "uuid" and hasattr(db_label, key):
@@ -1121,9 +1184,10 @@ class DbClient:
                     # 2. Name fallback — reuse DB record to avoid unique-name violation.
                     db_tag = tags_by_name[name]
                     logger.warning(
-                        "Tag '%s' from JSON (UUID %s) matched by name to existing DB tag "
-                        "(UUID %s). Using DB UUID.",
-                        name, json_uuid, db_tag.uuid,
+                        "Tag '%s' from JSON (UUID %s) matched by name to existing DB tag " "(UUID %s). Using DB UUID.",
+                        name,
+                        json_uuid,
+                        db_tag.uuid,
                     )
                     for key, value in item.items():
                         if key != "uuid" and hasattr(db_tag, key):
@@ -1266,7 +1330,9 @@ class DbClient:
                     logger.warning(
                         "Source '%s' from JSON (UUID %s) matched by name to existing DB source "
                         "(UUID %s). Using DB UUID.",
-                        name, json_uuid, db_src.uuid,
+                        name,
+                        json_uuid,
+                        db_src.uuid,
                     )
                     for key, value in item.items():
                         if key != "uuid" and hasattr(db_src, key):
@@ -1306,7 +1372,9 @@ class DbClient:
             await session.commit()
         await self._sync_sources_to_json()
 
-    async def update_source(self, source_uuid: str, name: str, typename: str, params: Dict[str, Any]) -> Optional[Source]:
+    async def update_source(
+        self, source_uuid: str, name: str, typename: str, params: Dict[str, Any]
+    ) -> Optional[Source]:
         """Update a source by UUID and return the updated object."""
         async with self._async_session_maker() as session:
             source = await session.get(Source, source_uuid)
@@ -1359,6 +1427,86 @@ class DbClient:
     # Task Configs
     ################################################################################
 
+    async def _sync_task_configs_to_json(self):
+        """Internal helper to dump the current task_configs table to task_configs.json.
+
+        Configs marked_for_delete are excluded — they are logically deleted and
+        restoring them from JSON would create confusion in the UI.
+        """
+        all_configs = await self.get_task_configs()
+        active_configs = [c for c in all_configs.values() if not c.marked_for_delete]
+        adapter = TypeAdapter(List[TaskConfig])
+        json_str = adapter.dump_json(
+            active_configs,
+            exclude={"__all__": {"instances": True, "created_at": True, "updated_at": True}},
+            indent=2,
+        )
+        self._task_configs_json_path.write_bytes(json_str)
+
+    async def sync_task_configs_from_json(self):
+        """Reads task_configs.json and syncs to DB. Does not remove existing configs.
+
+        Resolution order per config:
+        1. UUID match  → update the existing DB record in-place.
+        2. Name match  → reuse the existing DB record (avoids unique-name IntegrityError).
+        3. No match    → insert a new record with the UUID from the JSON.
+        """
+        if not self._task_configs_json_path.exists():
+            return
+
+        try:
+            json_data = jstyleson.loads(self._task_configs_json_path.read_text())
+        except Exception as e:
+            logger.error(f"Failed to parse task_configs.json: {e}")
+            return
+
+        async with self._async_session_maker() as session:
+            existing = (await session.exec(select(TaskConfig))).all()
+            configs_by_uuid: Dict[str, TaskConfig] = {c.uuid: c for c in existing}
+            configs_by_name: Dict[str, TaskConfig] = {c.name: c for c in existing}
+
+            count = 0
+            for item in json_data:
+                json_uuid = item.get("uuid")
+                name = item.get("name")
+
+                if json_uuid and json_uuid in configs_by_uuid:
+                    # 1. UUID match — update in-place.
+                    db_config = configs_by_uuid[json_uuid]
+                elif name and name in configs_by_name:
+                    # 2. Name fallback — reuse DB record to avoid unique-name violation.
+                    db_config = configs_by_name[name]
+                    logger.warning(
+                        "TaskConfig '%s' from JSON (UUID %s) matched by name to existing DB config "
+                        "(UUID %s). Using DB UUID.",
+                        name,
+                        json_uuid,
+                        db_config.uuid,
+                    )
+                else:
+                    db_config = None
+
+                if db_config is not None:
+                    old_name = db_config.name
+                    for key, value in item.items():
+                        if key != "uuid" and hasattr(db_config, key):
+                            setattr(db_config, key, value)
+                    session.add(db_config)
+                    # Keep the name index consistent if the JSON renamed this config.
+                    if old_name != db_config.name:
+                        configs_by_name.pop(old_name, None)
+                        configs_by_name[db_config.name] = db_config
+                else:
+                    # 3. No match — insert new.
+                    new_config = TaskConfig.model_validate(item)
+                    session.add(new_config)
+                    configs_by_uuid[new_config.uuid] = new_config
+                    configs_by_name[new_config.name] = new_config
+                count += 1
+
+            await session.commit()
+        logger.info("Imported %d task configs from JSON", count)
+
     async def add_task_config(
         self,
         name: str,
@@ -1371,6 +1519,7 @@ class DbClient:
             session.add(config)
             await session.commit()
             await session.refresh(config)
+        await self._sync_task_configs_to_json()
         return config
 
     async def update_task_config(
@@ -1398,6 +1547,7 @@ class DbClient:
                 config.marked_for_delete = marked_for_delete
             session.add(config)
             await session.commit()
+        await self._sync_task_configs_to_json()
 
     async def delete_task_config(self, config_uuids: Union[str, List[str]]) -> None:
         if isinstance(config_uuids, str):
@@ -1406,9 +1556,7 @@ class DbClient:
             return
         async with self._async_session_maker() as session:
             # Delete configs with no task instances referencing them
-            configs_with_instances = select(TaskInstance.config_uuid).where(
-                TaskInstance.config_uuid.in_(config_uuids)
-            )
+            configs_with_instances = select(TaskInstance.config_uuid).where(TaskInstance.config_uuid.in_(config_uuids))
             await session.exec(
                 delete(TaskConfig).where(
                     TaskConfig.uuid.in_(config_uuids),
@@ -1416,13 +1564,12 @@ class DbClient:
                 )
             )
             # Mark the rest for deletion
-            result = await session.exec(
-                select(TaskConfig).where(TaskConfig.uuid.in_(config_uuids))
-            )
+            result = await session.exec(select(TaskConfig).where(TaskConfig.uuid.in_(config_uuids)))
             for config in result.all():
                 config.marked_for_delete = True
                 session.add(config)
             await session.commit()
+        await self._sync_task_configs_to_json()
 
     async def get_task_configs(
         self,
@@ -1503,6 +1650,25 @@ class DbClient:
                 session.add(instance)
                 await session.commit()
 
+    async def set_task_timestamps_and_logs(
+        self,
+        task_uuid: str,
+        started_at: Optional[datetime] = None,
+        ended_at: Optional[datetime] = None,
+        log_json: Optional[List[str]] = None,
+    ) -> None:
+        async with self._async_session_maker() as session:
+            instance = await session.get(TaskInstance, task_uuid)
+            if instance:
+                if started_at is not None:
+                    instance.started_at = started_at
+                if ended_at is not None:
+                    instance.ended_at = ended_at
+                if log_json is not None:
+                    instance.log_json = log_json
+                session.add(instance)
+                await session.commit()
+
     async def set_task_status(self, task_uuid: str, new_status: str) -> None:
         async with self._async_session_maker() as session:
             instance = await session.get(TaskInstance, task_uuid)
@@ -1517,8 +1683,10 @@ class DbClient:
             session.add(instance)
             await session.commit()
             await session.refresh(instance)
-            stmt = select(TaskInstance).options(selectinload(TaskInstance.config)).where(
-                TaskInstance.uuid == instance.uuid
+            stmt = (
+                select(TaskInstance)
+                .options(selectinload(TaskInstance.config))
+                .where(TaskInstance.uuid == instance.uuid)
             )
             result = await session.exec(stmt)
             instance = result.one()
@@ -1609,11 +1777,7 @@ class DbClient:
             return
 
         async with self._async_session_maker() as session:
-            existing = (
-                await session.exec(
-                    select(Dataset).options(selectinload(Dataset.label_links))
-                )
-            ).all()
+            existing = (await session.exec(select(Dataset).options(selectinload(Dataset.label_links)))).all()
             by_uuid: Dict[str, Dataset] = {d.uuid: d for d in existing}
             by_name: Dict[str, Dataset] = {d.name: d for d in existing}
 
@@ -1633,9 +1797,7 @@ class DbClient:
                         if key not in ("uuid", "label_uuids") and hasattr(db_ds, key):
                             setattr(db_ds, key, value)
                     session.add(db_ds)
-                    await session.exec(
-                        delete(DatasetLabelLink).where(DatasetLabelLink.dataset_uuid == db_ds.uuid)
-                    )
+                    await session.exec(delete(DatasetLabelLink).where(DatasetLabelLink.dataset_uuid == db_ds.uuid))
                     for lu in label_uuids:
                         session.add(DatasetLabelLink(dataset_uuid=db_ds.uuid, label_uuid=lu))
 
@@ -1645,15 +1807,15 @@ class DbClient:
                     logger.warning(
                         "Dataset '%s' from JSON (UUID %s) matched by name to existing "
                         "DB dataset (UUID %s). Using DB UUID.",
-                        name, json_uuid, db_ds.uuid,
+                        name,
+                        json_uuid,
+                        db_ds.uuid,
                     )
                     for key, value in item.items():
                         if key not in ("uuid", "label_uuids") and hasattr(db_ds, key):
                             setattr(db_ds, key, value)
                     session.add(db_ds)
-                    await session.exec(
-                        delete(DatasetLabelLink).where(DatasetLabelLink.dataset_uuid == db_ds.uuid)
-                    )
+                    await session.exec(delete(DatasetLabelLink).where(DatasetLabelLink.dataset_uuid == db_ds.uuid))
                     for lu in label_uuids:
                         session.add(DatasetLabelLink(dataset_uuid=db_ds.uuid, label_uuid=lu))
 
@@ -1681,11 +1843,7 @@ class DbClient:
 
     async def get_dataset(self, uuid: str) -> Optional[DatasetRead]:
         async with self._async_session_maker() as session:
-            stmt = (
-                select(Dataset)
-                .where(Dataset.uuid == uuid)
-                .options(selectinload(Dataset.label_links))
-            )
+            stmt = select(Dataset).where(Dataset.uuid == uuid).options(selectinload(Dataset.label_links))
             result = await session.exec(stmt)
             d = result.one_or_none()
             return self._dataset_to_read(d) if d else None
@@ -1700,16 +1858,14 @@ class DbClient:
             session.add(dataset)
             await session.flush()
             for label_uuid in data.label_uuids:
-                session.add(DatasetLabelLink(
-                    dataset_uuid=dataset.uuid,
-                    label_uuid=label_uuid,
-                ))
+                session.add(
+                    DatasetLabelLink(
+                        dataset_uuid=dataset.uuid,
+                        label_uuid=label_uuid,
+                    )
+                )
             await session.commit()
-            stmt = (
-                select(Dataset)
-                .where(Dataset.uuid == dataset.uuid)
-                .options(selectinload(Dataset.label_links))
-            )
+            stmt = select(Dataset).where(Dataset.uuid == dataset.uuid).options(selectinload(Dataset.label_links))
             result = await session.exec(stmt)
             read = self._dataset_to_read(result.one())
         await self._sync_datasets_to_json()
@@ -1733,23 +1889,21 @@ class DbClient:
                     setattr(dataset, key, value)
 
             if label_uuids is not None:
-                await session.exec(
-                    delete(DatasetLabelLink).where(DatasetLabelLink.dataset_uuid == uuid)
-                )
+                await session.exec(delete(DatasetLabelLink).where(DatasetLabelLink.dataset_uuid == uuid))
                 for label_uuid in label_uuids:
-                    session.add(DatasetLabelLink(
-                        dataset_uuid=uuid,
-                        label_uuid=label_uuid,
-                    ))
+                    session.add(
+                        DatasetLabelLink(
+                            dataset_uuid=uuid,
+                            label_uuid=label_uuid,
+                        )
+                    )
 
             dataset.updated_at = datetime.now(timezone.utc)
             session.add(dataset)
             await session.commit()
 
             result = await session.exec(
-                select(Dataset)
-                .where(Dataset.uuid == uuid)
-                .options(selectinload(Dataset.label_links))
+                select(Dataset).where(Dataset.uuid == uuid).options(selectinload(Dataset.label_links))
             )
             read = self._dataset_to_read(result.one())
         await self._sync_datasets_to_json()
@@ -1824,9 +1978,7 @@ class DbClient:
                 pass  # stored in criteria, executed in list_dataset_images
 
             elif isinstance(cond, TagCondition):
-                tag_presence_filters.append(
-                    TagPresenceFilter(tag_uuid=cond.tag_uuid, exclude=cond.exclude)
-                )
+                tag_presence_filters.append(TagPresenceFilter(tag_uuid=cond.tag_uuid, exclude=cond.exclude))
 
             elif isinstance(cond, DatasetLabelStatusCondition):
                 if not dataset.label_uuids:
@@ -1983,11 +2135,7 @@ class DbClient:
 
     async def get_model_config(self, uuid: str) -> Optional[ModelConfigRead]:
         async with self._async_session_maker() as session:
-            stmt = (
-                select(ModelConfig)
-                .where(ModelConfig.uuid == uuid)
-                .options(selectinload(ModelConfig.nodes))
-            )
+            stmt = select(ModelConfig).where(ModelConfig.uuid == uuid).options(selectinload(ModelConfig.nodes))
             result = await session.exec(stmt)
             mc = result.one_or_none()
             if mc is None:
@@ -2000,9 +2148,7 @@ class DbClient:
         for node in data.nodes:
             key = node.label_uuid  # None is valid once (root)
             if key in seen:
-                raise ValueError(
-                    f"Duplicate label_uuid in nodes: {key!r}"
-                )
+                raise ValueError(f"Duplicate label_uuid in nodes: {key!r}")
             seen.add(key)
 
         async with self._async_session_maker() as session:
@@ -2018,21 +2164,13 @@ class DbClient:
                     )
                 )
             await session.commit()
-            stmt = (
-                select(ModelConfig)
-                .where(ModelConfig.uuid == mc.uuid)
-                .options(selectinload(ModelConfig.nodes))
-            )
+            stmt = select(ModelConfig).where(ModelConfig.uuid == mc.uuid).options(selectinload(ModelConfig.nodes))
             result = await session.exec(stmt)
             return self._mc_to_read(result.one())
 
-    async def update_model_config(
-        self, uuid: str, data: ModelConfigUpdate
-    ) -> Optional[ModelConfigRead]:
+    async def update_model_config(self, uuid: str, data: ModelConfigUpdate) -> Optional[ModelConfigRead]:
         async with self._async_session_maker() as session:
-            result = await session.exec(
-                select(ModelConfig).where(ModelConfig.uuid == uuid)
-            )
+            result = await session.exec(select(ModelConfig).where(ModelConfig.uuid == uuid))
             mc = result.one_or_none()
             if mc is None:
                 return None
@@ -2045,19 +2183,13 @@ class DbClient:
                     setattr(mc, key, value)
 
             if isinstance(nodes_data, list):
-                await session.exec(
-                    delete(ModelConfigNode).where(
-                        ModelConfigNode.model_config_uuid == uuid
-                    )
-                )
+                await session.exec(delete(ModelConfigNode).where(ModelConfigNode.model_config_uuid == uuid))
                 if nodes_data:
                     seen: set = set()
                     for node in nodes_data:
                         key_lbl = node.get("label_uuid")
                         if key_lbl in seen:
-                            raise ValueError(
-                                f"Duplicate label_uuid in nodes: {key_lbl!r}"
-                            )
+                            raise ValueError(f"Duplicate label_uuid in nodes: {key_lbl!r}")
                         seen.add(key_lbl)
                         session.add(
                             ModelConfigNode(
@@ -2072,9 +2204,7 @@ class DbClient:
             await session.commit()
 
             result2 = await session.exec(
-                select(ModelConfig)
-                .where(ModelConfig.uuid == uuid)
-                .options(selectinload(ModelConfig.nodes))
+                select(ModelConfig).where(ModelConfig.uuid == uuid).options(selectinload(ModelConfig.nodes))
             )
             return self._mc_to_read(result2.one())
 

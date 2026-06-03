@@ -3,14 +3,15 @@
 These hit the db_server's /api/task-configs and /api/task-instances endpoints
 with a real SQLite DB, exercising the persistence layer used by tasks_server.
 """
+
 import pytest
 
 from apps.helpers.consts import TaskStatus
 
-
 # ──────────────────────────────────────────────────────────────────────────────
 # Task Config CRUD
 # ──────────────────────────────────────────────────────────────────────────────
+
 
 async def test_list_task_configs_empty(http_client):
     r = await http_client.get("/api/task-configs")
@@ -134,6 +135,7 @@ async def test_delete_task_configs(http_client):
 # ──────────────────────────────────────────────────────────────────────────────
 # Task Instance CRUD
 # ──────────────────────────────────────────────────────────────────────────────
+
 
 @pytest.fixture
 async def config_uuid(http_client):

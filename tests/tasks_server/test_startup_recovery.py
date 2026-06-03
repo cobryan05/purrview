@@ -15,10 +15,10 @@ do with any that weren't cleanly shut down:
                them alone.
 """
 
-import pytest
 from unittest.mock import MagicMock, call
 
 import db_client.models as db_models
+import pytest
 
 from apps.helpers.consts import TaskStatus
 
@@ -35,6 +35,7 @@ def _make_instance(uuid: str, status: str, resume_data=None) -> db_models.TaskIn
 
 
 # ─── "new" tasks ──────────────────────────────────────────────────────────────
+
 
 async def test_init_deletes_never_started_new_tasks(manager, tasks_api_mock):
     inst = _make_instance("new-task-uuid", TaskStatus.NEW)
@@ -60,10 +61,9 @@ async def test_init_deletes_multiple_new_tasks_in_one_call(manager, tasks_api_mo
 
 # ─── "running" tasks ──────────────────────────────────────────────────────────
 
+
 async def test_init_promotes_running_with_checkpoint_to_paused(manager, tasks_api_mock):
-    inst = _make_instance(
-        "run-chk-uuid", TaskStatus.RUNNING, resume_data={"images_saved": 10}
-    )
+    inst = _make_instance("run-chk-uuid", TaskStatus.RUNNING, resume_data={"images_saved": 10})
     tasks_api_mock.list_task_instances.return_value = MagicMock(instances=[inst])
 
     await manager._init()
@@ -90,22 +90,18 @@ async def test_init_handles_mixed_running_instances(manager, tasks_api_mock):
     """Two interrupted running tasks: one with checkpoint, one without."""
     with_chk = _make_instance("run-chk", TaskStatus.RUNNING, resume_data={"x": 1})
     without_chk = _make_instance("run-no", TaskStatus.RUNNING, resume_data=None)
-    tasks_api_mock.list_task_instances.return_value = MagicMock(
-        instances=[with_chk, without_chk]
-    )
+    tasks_api_mock.list_task_instances.return_value = MagicMock(instances=[with_chk, without_chk])
 
     await manager._init()
 
     assert tasks_api_mock.set_task_instance_status.call_count == 2
-    calls_by_uuid = {
-        c.args[0]: c.args[1].status
-        for c in tasks_api_mock.set_task_instance_status.call_args_list
-    }
+    calls_by_uuid = {c.args[0]: c.args[1].status for c in tasks_api_mock.set_task_instance_status.call_args_list}
     assert calls_by_uuid["run-chk"] == "paused"
     assert calls_by_uuid["run-no"] == "error"
 
 
 # ─── Terminal / intentional states left untouched ─────────────────────────────
+
 
 async def test_init_does_not_touch_completed_tasks(manager, tasks_api_mock):
     inst = _make_instance("done-uuid", TaskStatus.COMPLETED)

@@ -20,12 +20,14 @@ class UrlImageProvider(ImageProvider):
     def provider_type(cls) -> ImageProviderType:
         return ImageProviderType.LIVE_SNAPSHOT
 
-    def __init__(self, url: str, user: str = None, password: str = None, bust_cache: bool = False, ignore_ssl_errors: bool = True):
+    def __init__(
+        self, url: str, user: str = None, password: str = None, bust_cache: bool = False, ignore_ssl_errors: bool = True
+    ):
         self._url: str = url
         self._request = urllib.request.Request(url)
         self._ignore_ssl_errors: bool = ignore_ssl_errors
         if bust_cache:
-            separator = '&' if '?' in url else '?'
+            separator = "&" if "?" in url else "?"
             self._url += f"{separator}{random.randint(100000, 999999)}"
         if user:
             base64String = base64.b64encode(bytes(f"{user}:{password}", encoding="utf8"))
@@ -48,7 +50,6 @@ class UrlImageProvider(ImageProvider):
         buffer = np.array(bytearray(req.read()), dtype=np.uint8)
         return cv2.imdecode(buffer, flags=cv2.IMREAD_COLOR)
 
-
     @classmethod
     def params_schema(cls) -> dict[str, dict[str, Any]]:
         """
@@ -62,29 +63,24 @@ class UrlImageProvider(ImageProvider):
             - schema: dict (optional, for nested objects)
         """
         return {
-            "url": {
-                "type": "string",
-                "label": "URL",
-                "required": True,
-                "description": "URL of the image"
-            },
+            "url": {"type": "string", "label": "URL", "required": True, "description": "URL of the image"},
             "user": {
                 "type": "string",
                 "label": "Username",
                 "required": False,
-                "description": "Username for authentication"
+                "description": "Username for authentication",
             },
             "password": {
                 "type": "string",
                 "label": "Password",
                 "required": False,
-                "description": "Password for authentication"
+                "description": "Password for authentication",
             },
             "bust_cache": {
                 "type": "boolean",
                 "label": "Bust Cache",
                 "required": False,
-                "description": "Append random number to url to avoid caching"
+                "description": "Append random number to url to avoid caching",
             },
             "ignore_ssl_errors": {
                 "type": "boolean",
@@ -92,5 +88,5 @@ class UrlImageProvider(ImageProvider):
                 "required": False,
                 "description": "Ignore SSL certificate errors",
                 "default": True,
-            }
+            },
         }

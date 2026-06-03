@@ -8,11 +8,11 @@ Adds the datasets table (name, description, filter_json, timestamps) and
 dataset_label_links join table (dataset_uuid → datasets, label_uuid → labels,
 both with CASCADE deletes).
 """
+
 from typing import Sequence, Union
 
 import sqlalchemy as sa
 import sqlmodel.sql.sqltypes
-
 from alembic import op
 
 # revision identifiers, used by Alembic.

@@ -9,12 +9,13 @@ import numpy as np
 from apps.helpers.types import DetectionResult
 
 
-def base64_encode_png( image: np.ndarray ):
+def base64_encode_png(image: np.ndarray):
     # Encode image to PNG and base64 encode
     success, buffer = cv2.imencode(".png", image)
     if not success:
         raise RuntimeError("Failed to encode image")
     return base64.b64encode(buffer).decode("utf-8")
+
 
 def letterbox(image, size=640, color=(114, 114, 114)):
     """

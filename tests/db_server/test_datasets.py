@@ -7,19 +7,20 @@ Fix coverage:
   Fix 4 — after_sort_value query param accepted and forwarded
   Fix 5 — multiple FilenameConditions are AND-combined
 """
+
 import uuid
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from sqlmodel import select
 
-from apps.helpers.db.types import BBox, ImageRecord, UNVERIFIED_TAG_UUID
+from apps.helpers.db.types import UNVERIFIED_TAG_UUID, BBox, ImageRecord
 from tests.conftest import make_png
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Helpers
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 def _png(files_root, name: str) -> str:
     (files_root / name).write_bytes(make_png())
@@ -36,20 +37,23 @@ async def _register(http_client, name: str) -> str:
     return name
 
 
-async def _add_bbox(
-    http_client, image_path: str, label_uuid: str, *, tag_uuids: list | None = None
-) -> str:
+async def _add_bbox(http_client, image_path: str, label_uuid: str, *, tag_uuids: list | None = None) -> str:
     bid = str(uuid.uuid4())
     r = await http_client.post(
         "/api/images/metadata/update",
         json={
             "imagePath": image_path,
-            "boxes": [{
-                "uuid": bid,
-                "labelUuid": label_uuid,
-                "x": 0.1, "y": 0.1, "width": 0.2, "height": 0.2,
-                "tagUuids": tag_uuids or [],
-            }],
+            "boxes": [
+                {
+                    "uuid": bid,
+                    "labelUuid": label_uuid,
+                    "x": 0.1,
+                    "y": 0.1,
+                    "width": 0.2,
+                    "height": 0.2,
+                    "tagUuids": tag_uuids or [],
+                }
+            ],
         },
     )
     assert r.status_code == 200, r.text
@@ -90,9 +94,7 @@ async def _backdate_created_at(db_client, filename: str, delta: timedelta) -> No
     """Set created_at on an image to now() - delta."""
     ts = datetime.now(timezone.utc) - delta
     async with db_client._async_session_maker() as session:
-        result = await session.exec(
-            select(ImageRecord).where(ImageRecord.filename.like(f"%/{filename}"))
-        )
+        result = await session.exec(select(ImageRecord).where(ImageRecord.filename.like(f"%/{filename}")))
         img = result.one()
         img.created_at = ts
         session.add(img)
@@ -118,9 +120,7 @@ async def _backdate(db_client, filename: str, delta: timedelta) -> None:
     ts = datetime.now(timezone.utc) - delta
     async with db_client._async_session_maker() as session:
         # filename is a bare name like "old.png"; DB stores the full path.
-        result = await session.exec(
-            select(ImageRecord).where(ImageRecord.filename.like(f"%/{filename}"))
-        )
+        result = await session.exec(select(ImageRecord).where(ImageRecord.filename.like(f"%/{filename}")))
         img = result.one()
         img.updated_at = ts
         session.add(img)
@@ -130,6 +130,7 @@ async def _backdate(db_client, filename: str, delta: timedelta) -> None:
 # ─────────────────────────────────────────────────────────────────────────────
 # CRUD
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 async def test_create_and_list_datasets(http_client):
     ds = await _create_dataset(http_client, "pets", description="All pets")
@@ -161,9 +162,7 @@ async def test_update_dataset_replaces_labels(http_client):
     ds = await _create_dataset(http_client, "animals", label_uuids=[lbl1])
     assert ds["label_uuids"] == [lbl1]
 
-    r = await http_client.patch(
-        f"/api/datasets/{ds['uuid']}", json={"label_uuids": [lbl2]}
-    )
+    r = await http_client.patch(f"/api/datasets/{ds['uuid']}", json={"label_uuids": [lbl2]})
     assert r.json()["status"] == "success"
     assert r.json()["dataset"]["label_uuids"] == [lbl2]
 
@@ -219,6 +218,7 @@ async def test_get_dataset_labels_not_found(http_client):
 # Fix 1 — filter_json validated at write time
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 async def test_filter_json_invalid_type_rejected_at_create(http_client):
     """POST with unknown condition type returns 422, not 200 (Fix 1)."""
     r = await http_client.post(
@@ -244,7 +244,8 @@ async def test_filter_json_invalid_type_rejected_at_update(http_client):
 async def test_filter_json_valid_condition_accepted(http_client):
     """Valid condition types are accepted at create time."""
     ds = await _create_dataset(
-        http_client, "valid-cond",
+        http_client,
+        "valid-cond",
         conditions=[{"type": "filename", "pattern": "test"}],
     )
     conds = ds["filter_json"]["conditions"]
@@ -256,25 +257,26 @@ async def test_filter_json_valid_condition_accepted(http_client):
 # Fix 2 — DatasetLabelStatusCondition + empty label_uuids → 0 images
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 async def test_label_status_empty_label_uuids_returns_no_images(http_client, files_root):
     """DatasetLabelStatusCondition with no labels returns 0 images, not all (Fix 2)."""
     _png(files_root, "img_fix2.png")
     await _register(http_client, "img_fix2.png")
 
     ds = await _create_dataset(
-        http_client, "no-labels-status",
+        http_client,
+        "no-labels-status",
         conditions=[{"type": "dataset_label_status", "check": "all_verified"}],
         label_uuids=[],  # intentionally empty
     )
     result = await _dataset_images(http_client, ds["uuid"])
-    assert result["images"] == [], (
-        "DatasetLabelStatusCondition with no labels should return 0 images, not all images"
-    )
+    assert result["images"] == [], "DatasetLabelStatusCondition with no labels should return 0 images, not all images"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Fix 3 — has_more reflects base-query page, not post-filter count
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 async def test_has_more_correct_with_bbox_age_filter(http_client, files_root, db_client):
     """has_more=True when base page is full, even if bbox-age filter reduces returned count (Fix 3)."""
@@ -294,7 +296,8 @@ async def test_has_more_correct_with_bbox_age_filter(http_client, files_root, db
     await _backdate(db_client, "img_hc.png", timedelta(hours=3))
 
     ds = await _create_dataset(
-        http_client, "bbox-age-has-more",
+        http_client,
+        "bbox-age-has-more",
         conditions=[{"type": "bbox_age", "field": "updated_at", "within_days": 1}],
     )
 
@@ -313,6 +316,7 @@ async def test_has_more_correct_with_bbox_age_filter(http_client, files_root, db
 # ─────────────────────────────────────────────────────────────────────────────
 # Fix 4 — after_sort_value query param forwarded through endpoint
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 async def test_after_sort_value_accepted_in_endpoint(http_client, files_root):
     """after_sort_value is accepted and used for keyset pagination (Fix 4)."""
@@ -352,6 +356,7 @@ async def test_after_sort_value_accepted_in_endpoint(http_client, files_root):
 # Fix 5 — multiple FilenameConditions are AND-combined
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 async def test_multiple_filename_conditions_and_logic(http_client, files_root):
     """Two FilenameConditions both must match — AND, not last-wins (Fix 5)."""
     for name in ("cats_and_dogs.png", "cats_only.png", "dogs_only.png"):
@@ -359,7 +364,8 @@ async def test_multiple_filename_conditions_and_logic(http_client, files_root):
         await _register(http_client, name)
 
     ds = await _create_dataset(
-        http_client, "multi-filename",
+        http_client,
+        "multi-filename",
         conditions=[
             {"type": "filename", "pattern": "cats"},
             {"type": "filename", "pattern": "dogs"},
@@ -376,6 +382,7 @@ async def test_multiple_filename_conditions_and_logic(http_client, files_root):
 # Dataset filter — ImageAgeCondition
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 async def test_dataset_filter_image_age(http_client, files_root, db_client):
     """ImageAgeCondition(field=updated_at, within_days=7) filters correctly."""
     for name in ("old_img.png", "new_img.png"):
@@ -385,7 +392,8 @@ async def test_dataset_filter_image_age(http_client, files_root, db_client):
     await _backdate(db_client, "old_img.png", timedelta(days=60))
 
     ds = await _create_dataset(
-        http_client, "recent-images",
+        http_client,
+        "recent-images",
         conditions=[{"type": "image_age", "field": "updated_at", "within_days": 7}],
     )
     result = await _dataset_images(http_client, ds["uuid"])
@@ -397,6 +405,7 @@ async def test_dataset_filter_image_age(http_client, files_root, db_client):
 # ─────────────────────────────────────────────────────────────────────────────
 # Dataset filter — TagCondition
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 async def test_dataset_filter_tag_condition(http_client, files_root):
     """TagCondition includes/excludes images based on bbox tag presence."""
@@ -412,7 +421,8 @@ async def test_dataset_filter_tag_condition(http_client, files_root):
 
     # Positive: images that have the tag
     ds_pos = await _create_dataset(
-        http_client, "has-tag",
+        http_client,
+        "has-tag",
         conditions=[{"type": "tag", "tag_uuid": tag_uuid, "exclude": False}],
     )
     result = await _dataset_images(http_client, ds_pos["uuid"])
@@ -422,7 +432,8 @@ async def test_dataset_filter_tag_condition(http_client, files_root):
 
     # Negative: images that don't have the tag
     ds_neg = await _create_dataset(
-        http_client, "no-tag",
+        http_client,
+        "no-tag",
         conditions=[{"type": "tag", "tag_uuid": tag_uuid, "exclude": True}],
     )
     result2 = await _dataset_images(http_client, ds_neg["uuid"])
@@ -434,6 +445,7 @@ async def test_dataset_filter_tag_condition(http_client, files_root):
 # ─────────────────────────────────────────────────────────────────────────────
 # Dataset filter — DatasetLabelStatusCondition (with labels)
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 async def test_dataset_filter_label_status(http_client, files_root):
     """DatasetLabelStatusCondition returns only images with verified label rows."""
@@ -448,7 +460,8 @@ async def test_dataset_filter_label_status(http_client, files_root):
     await _add_bbox(http_client, "unconfirmed_img.png", label_uuid, tag_uuids=[UNVERIFIED_TAG_UUID])
 
     ds = await _create_dataset(
-        http_client, "verified-only",
+        http_client,
+        "verified-only",
         conditions=[{"type": "dataset_label_status", "check": "all_verified"}],
         label_uuids=[label_uuid],
     )
@@ -461,6 +474,7 @@ async def test_dataset_filter_label_status(http_client, files_root):
 # ─────────────────────────────────────────────────────────────────────────────
 # ImageSearchParams unit-level tests (via review queue endpoint)
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 async def test_updated_at_range_filter(http_client, files_root, db_client):
     """updated_date_from/updated_date_to filter images by updated_at timestamp."""
@@ -537,9 +551,7 @@ async def test_require_verified_filter(http_client, files_root):
         json={
             "show_all_bboxes": True,
             "tag_uuids": [],
-            "image_label_filters": [
-                {"label_uuid": label_uuid, "status": "present", "require_verified": True}
-            ],
+            "image_label_filters": [{"label_uuid": label_uuid, "status": "present", "require_verified": True}],
         },
     )
     assert r.status_code == 200
@@ -551,6 +563,7 @@ async def test_require_verified_filter(http_client, files_root):
 # ─────────────────────────────────────────────────────────────────────────────
 # CRUD — PATCH and uniqueness
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 async def test_patch_name_and_description(http_client):
     """PATCH can update name and description without touching label_uuids."""
@@ -621,6 +634,7 @@ async def test_delete_dataset_cascades_label_links(http_client):
 # ImageAgeCondition — created_at field
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 async def test_image_age_condition_created_at_within_days(http_client, files_root, db_client):
     """ImageAgeCondition with field=created_at and within_days filters on created_at."""
     for name in ("old_created.png", "new_created.png"):
@@ -630,7 +644,8 @@ async def test_image_age_condition_created_at_within_days(http_client, files_roo
     await _backdate_created_at(db_client, "old_created.png", timedelta(days=60))
 
     ds = await _create_dataset(
-        http_client, "recent-created",
+        http_client,
+        "recent-created",
         conditions=[{"type": "image_age", "field": "created_at", "within_days": 7}],
     )
     result = await _dataset_images(http_client, ds["uuid"])
@@ -642,6 +657,7 @@ async def test_image_age_condition_created_at_within_days(http_client, files_roo
 # ─────────────────────────────────────────────────────────────────────────────
 # ImageAgeCondition — absolute after/before range
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 async def test_image_age_condition_after_before_range(http_client, files_root, db_client):
     """ImageAgeCondition with after/before fields applies an absolute timestamp window."""
@@ -658,17 +674,20 @@ async def test_image_age_condition_after_before_range(http_client, files_root, d
     before = (now - timedelta(days=5)).isoformat()
 
     ds = await _create_dataset(
-        http_client, "range-ds",
-        conditions=[{
-            "type": "image_age",
-            "field": "updated_at",
-            "after": after,
-            "before": before,
-        }],
+        http_client,
+        "range-ds",
+        conditions=[
+            {
+                "type": "image_age",
+                "field": "updated_at",
+                "after": after,
+                "before": before,
+            }
+        ],
     )
     result = await _dataset_images(http_client, ds["uuid"])
     names = [img["filename"] for img in result["images"]]
-    assert "img_range_mid.png" in names      # inside the window
+    assert "img_range_mid.png" in names  # inside the window
     assert "img_range_old.png" not in names  # before lower bound
     assert "img_range_new.png" not in names  # after upper bound
 
@@ -676,6 +695,7 @@ async def test_image_age_condition_after_before_range(http_client, files_root, d
 # ─────────────────────────────────────────────────────────────────────────────
 # BboxAgeCondition — actual bbox-timestamp age filtering
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 async def test_bbox_age_condition_excludes_old_bboxes(http_client, files_root, db_client):
     """BboxAgeCondition filters out images whose bboxes are older than within_days."""
@@ -690,7 +710,8 @@ async def test_bbox_age_condition_excludes_old_bboxes(http_client, files_root, d
     await _backdate_bbox(db_client, old_bid, timedelta(days=60))
 
     ds = await _create_dataset(
-        http_client, "recent-bboxes",
+        http_client,
+        "recent-bboxes",
         conditions=[{"type": "bbox_age", "field": "updated_at", "within_days": 7}],
     )
     result = await _dataset_images(http_client, ds["uuid"])
@@ -703,6 +724,7 @@ async def test_bbox_age_condition_excludes_old_bboxes(http_client, files_root, d
 # FilenameCondition — basic single-pattern
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 async def test_filename_condition_single_pattern(http_client, files_root):
     """A single FilenameCondition filters images by filename substring."""
     for name in ("orange_cat.png", "blue_dog.png"):
@@ -710,7 +732,8 @@ async def test_filename_condition_single_pattern(http_client, files_root):
         await _register(http_client, name)
 
     ds = await _create_dataset(
-        http_client, "cats-only",
+        http_client,
+        "cats-only",
         conditions=[{"type": "filename", "pattern": "orange_cat"}],
     )
     result = await _dataset_images(http_client, ds["uuid"])
@@ -723,6 +746,7 @@ async def test_filename_condition_single_pattern(http_client, files_root):
 # DatasetLabelStatusCondition — exclude_uncertain variant
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 async def test_dataset_label_status_exclude_uncertain(http_client, files_root):
     """exclude_uncertain excludes images with no verified label row (same as all_verified)."""
     r = await http_client.post("/api/labels", json={"name": "cat", "color": "#FF0000"})
@@ -734,7 +758,8 @@ async def test_dataset_label_status_exclude_uncertain(http_client, files_root):
     await _add_bbox(http_client, "uncertain_eu.png", label_uuid, tag_uuids=[UNVERIFIED_TAG_UUID])
 
     ds = await _create_dataset(
-        http_client, "exclude-uncertain",
+        http_client,
+        "exclude-uncertain",
         conditions=[{"type": "dataset_label_status", "check": "exclude_uncertain"}],
         label_uuids=[label_uuid],
     )
@@ -747,6 +772,7 @@ async def test_dataset_label_status_exclude_uncertain(http_client, files_root):
 # ─────────────────────────────────────────────────────────────────────────────
 # Empty conditions — no filter returns all images
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 async def test_empty_conditions_returns_all_images(http_client, files_root):
     """A dataset with no conditions returns every registered image."""
@@ -765,6 +791,7 @@ async def test_empty_conditions_returns_all_images(http_client, files_root):
 # ─────────────────────────────────────────────────────────────────────────────
 # ImageSearchParams — updated_at upper bound
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 async def test_updated_at_upper_bound_filter(http_client, files_root, db_client):
     """updated_date_to excludes images updated after the cutoff timestamp."""
@@ -789,6 +816,7 @@ async def test_updated_at_upper_bound_filter(http_client, files_root, db_client)
 # ─────────────────────────────────────────────────────────────────────────────
 # ImageSearchParams — created_at range (date_from / date_to)
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 async def test_created_at_range_filter(http_client, files_root, db_client):
     """date_from / date_to filter images by the created_at timestamp."""

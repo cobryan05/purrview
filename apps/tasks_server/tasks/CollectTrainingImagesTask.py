@@ -2,6 +2,7 @@ import asyncio
 import logging
 import os
 import time
+import uuid as uuid_module
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
@@ -9,17 +10,26 @@ from uuid import uuid4
 
 import cv2
 import db_client
-from db_client.api.images_api import ImagesApi
-from db_client.models.bounding_box_metadata_model import BoundingBoxMetadataModel
-from db_client.models.update_metadata_payload import UpdateMetadataPayload
 import inference_client
+from db_client.api.images_api import ImagesApi
+from db_client.api.tags_api import TagsApi
+from db_client.models.add_tag_payload import AddTagPayload
+from db_client.models.bounding_box_metadata_model import BoundingBoxMetadataModel
+from db_client.models.tag_kind import (  # noqa: F401 (used as ApiTagKind.TASK_GENERATED)
+    TagKind as ApiTagKind,
+)
+from db_client.models.update_metadata_payload import UpdateMetadataPayload
 from inference_client.api.inference_api import InferenceApi
 from inference_client.api.models_api import ModelsApi
 from inference_client.models.inference_payload import InferencePayload
 from inference_client.models.pin_model_payload import PinModelPayload
 
 from apps.helpers.db.db_client import UNVERIFIED_TAG_UUID
-from apps.helpers.imageProviders.imageProvider import ImageProvider, ImageProviderType, ImageWithProviderMetadata
+from apps.helpers.imageProviders.imageProvider import (
+    ImageProvider,
+    ImageProviderType,
+    ImageWithProviderMetadata,
+)
 from apps.helpers.imageUtils import base64_encode_png
 
 from .Registry import register_task
@@ -79,11 +89,45 @@ class CollectTrainingImagesTask(Task):
         if self._processed_ids:
             self.log(f"Resuming: {len(self._processed_ids)} images already processed")
 
+        # Tag params — resolved to UUIDs in _run() once API clients are available.
+        self._apply_tag_uuids: list[str] = list(params.get("apply_tags", []))
+        self._generate_task_tag: bool = bool(params.get("generate_task_tag", False))
+        self._task_tag_name_override: str = params.get("task_tag_name", "") or ""
+        # _config_name is injected by the manager (reserved key, not user-facing).
+        self._config_name: str = params.get("_config_name", "")
+        # Set in _run() when a TASK_GENERATED tag is created or found; used in result actions.
+        self._task_tag_uuid: Optional[str] = None
+
     async def _run(self) -> dict[str, Any]:
         self._unverified_tag_uuid = UNVERIFIED_TAG_UUID
 
         db_api_client = self._manager.get_db_api_client()
         inference_api_client = self._manager.get_inference_api_client()
+
+        # Resolve extra tags to apply to every saved bbox.
+        self._extra_tag_uuids: list[str] = list(self._apply_tag_uuids)
+        if self._generate_task_tag:
+            task_tag_uuid = str(uuid_module.uuid5(uuid_module.NAMESPACE_OID, self._config_uuid))
+            tag_name = self._task_tag_name_override or (
+                f"[Task] {self._config_name}" if self._config_name else f"[Task] {self._config_uuid[:8]}"
+            )
+            tags_api = TagsApi(db_api_client)
+            existing_tags = await asyncio.to_thread(tags_api.list_tags)
+            existing_by_uuid = {t.uuid: t for t in (existing_tags.tags or [])}
+            if task_tag_uuid not in existing_by_uuid:
+                try:
+                    await asyncio.to_thread(
+                        tags_api.add_tag,
+                        AddTagPayload(name=tag_name, kind=ApiTagKind.TASK_GENERATED, uuid=task_tag_uuid),
+                    )
+                    self.log(f"Created task tag: {tag_name} ({task_tag_uuid})")
+                    self._extra_tag_uuids.append(task_tag_uuid)
+                    self._task_tag_uuid = task_tag_uuid
+                except Exception:
+                    logger.exception(f"Failed to create task tag {tag_name}")
+            else:
+                self._extra_tag_uuids.append(task_tag_uuid)
+                self._task_tag_uuid = task_tag_uuid
 
         self._status_msg = "Getting image providers"
         source_helper = SourceHelper(db_api_client)
@@ -113,7 +157,9 @@ class CollectTrainingImagesTask(Task):
                 else:
                     # Server returned failure status without raising — pin_id will be None,
                     # causing the model to reload on every inference call.
-                    logger.warning(f"Pin request for '{name}' returned no pin_id: status={resp.status} message={resp.message}")
+                    logger.warning(
+                        f"Pin request for '{name}' returned no pin_id: status={resp.status} message={resp.message}"
+                    )
                     self.log(f"Warning: could not pin model '{name}' — will reload each inference")
                     pin_ids[name] = None
             except Exception:
@@ -188,6 +234,7 @@ class CollectTrainingImagesTask(Task):
         try:
             active = set(providers)
             while active and not self._cancel_flag.is_set():
+                await self._check_pause()
                 _collect_saves()
                 self._status_msg = _status_msg_str()
 
@@ -249,9 +296,7 @@ class CollectTrainingImagesTask(Task):
                             f"encode={1000*(t_encode-t_fetch):.1f}ms "
                             f"infer={1000*(t_infer-t_encode):.1f}ms (save dispatched)"
                         )
-                        save_task = asyncio.create_task(
-                            self._save_image(images_api, provided, matching, files_root)
-                        )
+                        save_task = asyncio.create_task(self._save_image(images_api, provided, matching, files_root))
                         pending_saves.append((save_task, unique_id))
 
                     if self._data_req_flag.is_set():
@@ -281,7 +326,16 @@ class CollectTrainingImagesTask(Task):
 
         self._resume_data = self._build_resume_data()
         self._data_ready_flag.set()
-        return {"images_saved": self._images_saved}
+        result: dict[str, Any] = {"images_saved": self._images_saved}
+        if self._task_tag_uuid:
+            result["actions"] = [
+                {
+                    "type": "open_review",
+                    "label": "See results",
+                    "payload": {"tag_uuids": [self._task_tag_uuid]},
+                }
+            ]
+        return result
 
     def _build_resume_data(self) -> dict[str, Any]:
         return {
@@ -356,7 +410,7 @@ class CollectTrainingImagesTask(Task):
                 height=det.bbox.height,
                 label_uuid=det.bbox.label_uuid,
                 class_str=det.bbox.class_str,
-                tag_uuids=[self._unverified_tag_uuid],
+                tag_uuids=[self._unverified_tag_uuid, *self._extra_tag_uuids],
                 extra={"confidence": str(det.confidence)},
             )
             for det in matching
@@ -386,7 +440,16 @@ class CollectTrainingImagesTask(Task):
     def params_schema(cls) -> dict[str, dict[str, Any]]:
         return {
             "meta": {
-                "order": ["output_dir", "snapshot_interval", "stream_interval", "source_uuids", "model_label_config"]
+                "order": [
+                    "output_dir",
+                    "snapshot_interval",
+                    "stream_interval",
+                    "source_uuids",
+                    "model_label_config",
+                    "apply_tags",
+                    "generate_task_tag",
+                    "task_tag_name",
+                ]
             },
             "snapshot_interval": {
                 "type": "int",
@@ -427,5 +490,24 @@ class CollectTrainingImagesTask(Task):
                     "required": True,
                     "description": "Labels to collect",
                 },
+            },
+            "apply_tags": {
+                "type": "tags",
+                "label": "Apply Tags",
+                "description": "Tags to apply to every bounding box in each saved image.",
+                "default": [],
+                "allow_add_tag": True,
+            },
+            "generate_task_tag": {
+                "type": "boolean",
+                "label": "Tag images with a tag unique to this task",
+                "description": "Creates a dedicated tag for this task config and applies it to all saved images. Useful for reviewing just this task's output.",
+                "default": False,
+            },
+            "task_tag_name": {
+                "type": "string",
+                "label": "Generated tag name (optional)",
+                "description": "Custom name for the per-task generated tag. Defaults to the config name if left blank.",
+                "default": "",
             },
         }

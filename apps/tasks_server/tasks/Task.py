@@ -35,7 +35,10 @@ class Task(ABC):
         self._log_lines: deque[str] = deque(maxlen=100)
         self._task_done: asyncio.Event = asyncio.Event()
         self._cancel_flag: asyncio.Event = asyncio.Event()
-        self._pause_flag: asyncio.Event = asyncio.Event()
+        # Starts set (running). pause() clears it; resume() sets it.
+        # _check_pause awaits it — blocks while clear, passes through while set.
+        self._resume_event: asyncio.Event = asyncio.Event()
+        self._resume_event.set()
         self._data_req_flag: asyncio.Event = asyncio.Event()
         self._data_ready_flag: asyncio.Event = asyncio.Event()
         self._manager: Manager = manager
@@ -61,7 +64,7 @@ class Task(ABC):
         Run the main logic of the task.
 
         Long-running tasks should check self._cancel_flag and
-        self._pause_flag for stop conditions, and self._data_req_flag
+        self._resume_event for stop/pause conditions, and self._data_req_flag
         to check if a database update is requested.
 
         The _cancel_flag and _data_req_flag may be set at the same time. The
@@ -134,10 +137,36 @@ class Task(ABC):
         raise RuntimeError("Task is already running")
 
     async def pause(self) -> None:
-        """Pause a task in a resumable way"""
+        """Pause a task cooperatively in-place. Task stays in _running_tasks; DB status unchanged."""
+        self._resume_event.clear()
 
     async def resume(self) -> None:
-        """Resume a paused task"""
+        """Resume a task that was paused in-place."""
+        self._resume_event.set()
+
+    def is_paused_in_place(self) -> bool:
+        """Return True if the task is cooperatively paused in-place."""
+        return not self._resume_event.is_set()
+
+    async def _check_pause(self) -> None:
+        """
+        Cooperative pause checkpoint. Call this from task run loops.
+        Blocks while paused; returns immediately when resumed or if cancel is requested.
+        Uses asyncio.Event.wait() — zero polling overhead.
+        """
+        if self._resume_event.is_set():
+            return  # fast path: not paused
+        cancel_task = asyncio.create_task(self._cancel_flag.wait())
+        resume_task = asyncio.create_task(self._resume_event.wait())
+        try:
+            _, pending = await asyncio.wait({cancel_task, resume_task}, return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            for t in pending:
+                t.cancel()
+                try:
+                    await t
+                except asyncio.CancelledError:
+                    pass
 
     async def stop(self) -> None:
         """Request a task to stop"""

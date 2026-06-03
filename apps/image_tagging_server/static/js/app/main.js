@@ -1,6 +1,6 @@
 import { init as initImageTagging } from './image-tagging/main.js';
 import { init as initConfiguration } from './configuration/main.js';
-import { init as initReview } from './review/main.js';
+import { init as initReview, applyFilterWhenReady } from './review/main.js';
 import { setupMainTabs } from '/app-static/js/app/utils/tabs.js';
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
 import { createImageTaggingRuntime } from './image-tagging/runtime.js';
@@ -40,6 +40,13 @@ export async function init(appState) {
   events.subscribeToCanvas(_appState.imgRuntime.id, EventTypes.SHOW_MAIN_CANVAS, () => {
     activateMainTab(container, 'tab-image-tagging');
     activateWorkspaceTab('#tab-image-tagging', 'tab-canvas');
+  });
+
+  events.subscribe(EventTypes.OPEN_REVIEW_WITH_FILTERS, ({ tagUuids }) => {
+    activateMainTab(container, 'tab-review');
+    // applyFilterWhenReady applies immediately if the panel is already up, or
+    // queues the state so init() applies it once createReviewPanel resolves.
+    applyFilterWhenReady({ tagUuids: tagUuids ?? [] });
   });
 
 

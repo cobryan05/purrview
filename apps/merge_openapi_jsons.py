@@ -20,7 +20,7 @@ def merge(output_dir, output_filename="combined_openapi.json"):
         "openapi": "3.1.0",
         "info": {"title": "Combined API", "version": "1.0.0"},
         "paths": {},
-        "components": {"schemas": {}}
+        "components": {"schemas": {}},
     }
 
     for path in files:
@@ -41,6 +41,7 @@ def merge(output_dir, output_filename="combined_openapi.json"):
     with open(output_path, "w") as f:
         json.dump(combined, f, indent=2)
     print(f"Successfully created: {output_path}", file=sys.stderr)
+
 
 if __name__ == "__main__":
     # Usage: python -m apps.merge_openapi_jsons [dir] [filename]

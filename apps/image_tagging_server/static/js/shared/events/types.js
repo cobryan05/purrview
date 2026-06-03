@@ -65,4 +65,9 @@ export const EventTypes = Object.freeze({
   TAGS_UPDATED: "tags:updated",
   DATASETS_UPDATED: "datasets:updated",
   ACTIVE_DATASET_CHANGED: "dataset:active:changed",
+  /**
+   * Fired when a task action requests the Review tab to open with specific filters.
+   * Payload: { tagUuids: string[] }
+   */
+  OPEN_REVIEW_WITH_FILTERS: "review:open_with_filters",
 });

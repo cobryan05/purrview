@@ -274,6 +274,42 @@ export function createFilterPanel(labels, tags, onFilterChange) {
     return getActiveFilterCount() === 1 && _state.tagUuids[0] === UNVERIFIED_TAG_UUID;
   }
 
+  /**
+   * Programmatically set filter state. Merges partial state, syncs all DOM
+   * controls to match, and fires onFilterChange. Used by task action buttons
+   * ("See results"). Every controlled input is kept in sync so the visible UI
+   * matches what the active filter is actually doing.
+   * @param {Partial<typeof _state>} partial
+   */
+  function setState(partial) {
+    _state = { ..._state, ...partial };
+
+    if (partial.tagUuids !== undefined) {
+      tagCheckboxMap.forEach((input, uuid) => {
+        input.checked = _state.tagUuids.includes(uuid);
+      });
+    }
+    if (partial.labelUuid !== undefined) {
+      bboxLabelSelect.value = _state.labelUuid ?? '';
+    }
+    if (partial.dateFrom !== undefined) {
+      // datetime-local expects 'YYYY-MM-DDTHH:MM' (no seconds/timezone)
+      dateFromInput.value = _state.dateFrom
+        ? new Date(_state.dateFrom).toISOString().slice(0, 16)
+        : '';
+    }
+    if (partial.dateTo !== undefined) {
+      dateToInput.value = _state.dateTo
+        ? new Date(_state.dateTo).toISOString().slice(0, 16)
+        : '';
+    }
+    if (partial.filenameSearch !== undefined) {
+      filenameInput.value = _state.filenameSearch ?? '';
+    }
+
+    emit();
+  }
+
   return {
     element: panel,
     getState: () => ({
@@ -286,5 +322,6 @@ export function createFilterPanel(labels, tags, onFilterChange) {
     }),
     isDefault,
     getActiveFilterCount,
+    setState,
   };
 }

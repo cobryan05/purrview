@@ -7,7 +7,7 @@ import time
 import httpx
 import pytest
 
-from apps import APPS, APP_BASE_PORTS
+from apps import APP_BASE_PORTS, APPS
 
 _SERVICES = [
     APPS.DB_SERVER,
@@ -84,19 +84,28 @@ def smoke_services(tmp_path_factory, request):
 
 
 @pytest.fixture(scope="session")
-def db_url(smoke_services):        return smoke_services[APPS.DB_SERVER]
+def db_url(smoke_services):
+    return smoke_services[APPS.DB_SERVER]
+
 
 @pytest.fixture(scope="session")
-def inference_url(smoke_services):  return smoke_services[APPS.INFERENCE_SERVER]
+def inference_url(smoke_services):
+    return smoke_services[APPS.INFERENCE_SERVER]
+
 
 @pytest.fixture(scope="session")
-def tasks_url(smoke_services):     return smoke_services[APPS.TASKS_SERVER]
+def tasks_url(smoke_services):
+    return smoke_services[APPS.TASKS_SERVER]
+
 
 @pytest.fixture(scope="session")
-def relay_url(smoke_services):     return smoke_services[APPS.RELAY_BUFFER_SERVER]
+def relay_url(smoke_services):
+    return smoke_services[APPS.RELAY_BUFFER_SERVER]
+
 
 @pytest.fixture(scope="session")
-def tagging_url(smoke_services):   return smoke_services[APPS.IMAGE_TAGGING_SERVER]
+def tagging_url(smoke_services):
+    return smoke_services[APPS.IMAGE_TAGGING_SERVER]
 
 
 @pytest.fixture
@@ -104,20 +113,24 @@ async def db(db_url):
     async with httpx.AsyncClient(base_url=db_url, timeout=10) as c:
         yield c
 
+
 @pytest.fixture
 async def inference(inference_url):
     async with httpx.AsyncClient(base_url=inference_url, timeout=10) as c:
         yield c
+
 
 @pytest.fixture
 async def tasks(tasks_url):
     async with httpx.AsyncClient(base_url=tasks_url, timeout=10) as c:
         yield c
 
+
 @pytest.fixture
 async def relay(relay_url):
     async with httpx.AsyncClient(base_url=relay_url, timeout=10) as c:
         yield c
+
 
 @pytest.fixture
 async def tagging(tagging_url):

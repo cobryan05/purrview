@@ -116,6 +116,7 @@ class UpdateLabelResponse(StatusResponse):
 ########
 class AddTagPayload(TagBase):
     model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)  # type: ignore[assignment]
+    uuid: Optional[str] = None
 
 
 class AddTagResponse(StatusResponse):
@@ -145,6 +146,41 @@ class UpdateTagPayload(ApiPayload):
 
 class UpdateTagResponse(StatusResponse):
     pass
+
+
+class ClearOrphanGeneratedTagsResponse(StatusResponse):
+    deleted_count: int = 0
+
+
+########
+# Image Reconciliation
+########
+class ImageStub(BaseModel):
+    uuid: str
+    filename: str
+
+
+class ListImageStubsResponse(StatusResponse):
+    stubs: List[ImageStub] = Field(default_factory=list)
+
+
+class ReconcileImagePayload(ApiPayload):
+    rel_path: str
+    sync_mode: str = "merge"
+
+
+class ReconcileImageResponse(StatusResponse):
+    action: str = ""
+    rel_path: str = ""
+    reason: Optional[str] = None
+
+
+class PruneImagesPayload(ApiPayload):
+    known_disk_uuids: List[str] = Field(default_factory=list)
+
+
+class PruneImagesResponse(StatusResponse):
+    deleted_count: int = 0
 
 
 ########
@@ -324,13 +360,18 @@ class SetTaskResumeDataPayload(ApiPayload):
     resume_data: TaskResumeData = Field(default_factory=dict)
 
 
+class SetTaskTimestampsPayload(ApiPayload):
+    started_at: Optional[datetime] = None
+    ended_at: Optional[datetime] = None
+    log_json: Optional[List[str]] = None
+
+
 class GetTaskResultsPayload(ApiPayload):
     task_uuids: List[str]
 
 
 class GetTaskResultsResponse(StatusResponse):
     results: Dict[str, TaskResultData] = Field(default_factory=dict)
-
 
 
 class ListDatasetsResponse(StatusResponse):
@@ -352,6 +393,7 @@ class DatasetLabelsResponse(StatusResponse):
 
 class DatasetPreviewPayload(BaseModel):
     """Request body for the unsaved-preview endpoint."""
+
     model_config = ConfigDict(populate_by_name=True)
     filter_json: DatasetFilterCriteria = Field(default_factory=DatasetFilterCriteria)
     label_uuids: List[str] = Field(default_factory=list)
@@ -661,7 +703,12 @@ class WebApp:
             """
             try:
                 tag = await self._manager.create_new_tag(
-                    request.name, request.color, icon=request.icon, kind=request.kind, exclusive_group=request.exclusive_group
+                    request.name,
+                    request.color,
+                    icon=request.icon,
+                    kind=request.kind,
+                    exclusive_group=request.exclusive_group,
+                    uuid=request.uuid,
                 )
                 return AddTagResponse(status=JsonValues.SUCCESS, tag=tag)
             except Exception as e:
@@ -712,6 +759,21 @@ class WebApp:
             except Exception as e:
                 logger.error(e, exc_info=True)
                 return UpdateTagResponse(status=JsonValues.FAILURE, message=str(e))
+
+        @self._app.post(
+            "/api/tags/clear-orphan-generated",
+            response_model=ClearOrphanGeneratedTagsResponse,
+            tags=[ApiTags.TAGS],
+            operation_id="clear_orphan_generated_tags",
+        )
+        async def clear_orphan_generated_tags_api() -> ClearOrphanGeneratedTagsResponse:
+            """Delete TASK_GENERATED tags that have no associated bounding boxes."""
+            try:
+                count = await self._manager.clear_orphan_generated_tags()
+                return ClearOrphanGeneratedTagsResponse(status=JsonValues.SUCCESS, deleted_count=count)
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return ClearOrphanGeneratedTagsResponse(status=JsonValues.FAILURE, message=str(e))
 
         ################################################################################
         # Images API
@@ -835,7 +897,10 @@ class WebApp:
         )
         async def set_image_label(payload: SetImageLabelPayload) -> SetImageLabelResponse:
             if payload.status == ImageLabelStatus.PRESENT:
-                return SetImageLabelResponse(status=JsonValues.FAILURE, message="PRESENT status cannot be set directly; it is derived from verified bboxes")
+                return SetImageLabelResponse(
+                    status=JsonValues.FAILURE,
+                    message="PRESENT status cannot be set directly; it is derived from verified bboxes",
+                )
             ok = await self._manager.set_image_label(payload.image_path, payload.label_uuid, payload.status)
             if not ok:
                 return SetImageLabelResponse(status=JsonValues.FAILURE, message="Image not found")
@@ -926,6 +991,65 @@ class WebApp:
             if png_bytes is None:
                 raise HTTPException(status_code=404, detail="Image not found")
             return Response(content=png_bytes, media_type="image/png")
+
+        ################################################################################
+        # Image Reconciliation API
+        ################################################################################
+
+        @self._app.get(
+            "/api/images/stubs",
+            response_model=ListImageStubsResponse,
+            tags=[ApiTags.IMAGES],
+            operation_id="list_image_stubs",
+        )
+        async def list_image_stubs() -> ListImageStubsResponse:
+            """Return uuid+filename for every image record (no pagination)."""
+            try:
+                raw = await self._manager.list_all_image_stubs()
+                stubs = [ImageStub(uuid=s["uuid"], filename=s["filename"]) for s in raw]
+                return ListImageStubsResponse(status=JsonValues.SUCCESS, stubs=stubs)
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return ListImageStubsResponse(status=JsonValues.FAILURE, message=str(e))
+
+        @self._app.post(
+            "/api/images/reconcile",
+            response_model=ReconcileImageResponse,
+            tags=[ApiTags.IMAGES],
+            operation_id="reconcile_image",
+        )
+        async def reconcile_image(payload: ReconcileImagePayload) -> ReconcileImageResponse:
+            """Move-aware reconcile of a single image file against the DB."""
+            try:
+                result = await self._manager.reconcile_image(payload.rel_path, payload.sync_mode)
+                return ReconcileImageResponse(
+                    status=JsonValues.SUCCESS,
+                    action=result.get("action", ""),
+                    rel_path=result.get("rel_path", payload.rel_path),
+                    reason=result.get("reason"),
+                )
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return ReconcileImageResponse(
+                    status=JsonValues.FAILURE,
+                    message=str(e),
+                    rel_path=payload.rel_path,
+                )
+
+        @self._app.post(
+            "/api/images/prune",
+            response_model=PruneImagesResponse,
+            tags=[ApiTags.IMAGES],
+            operation_id="prune_missing_images",
+        )
+        async def prune_missing_images(payload: PruneImagesPayload) -> PruneImagesResponse:
+            """Delete DB records for images whose file is missing and not accounted for by known_disk_uuids."""
+            try:
+                count = await self._manager.prune_missing_images(payload.known_disk_uuids)
+                return PruneImagesResponse(status=JsonValues.SUCCESS, deleted_count=count)
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return PruneImagesResponse(status=JsonValues.FAILURE, message=str(e))
 
         ################################################################################
         # Task Configs API
@@ -1106,6 +1230,25 @@ class WebApp:
                 logger.error(e, exc_info=True)
                 return StatusResponse(status=JsonValues.FAILURE, message=str(e))
 
+        @self._app.patch(
+            "/api/task-instances/{instance_uuid}/timestamps",
+            response_model=StatusResponse,
+            tags=[ApiTags.TASKS],
+            operation_id="set_task_instance_timestamps",
+        )
+        async def set_task_instance_timestamps(instance_uuid: str, payload: SetTaskTimestampsPayload) -> StatusResponse:
+            try:
+                await self._manager.set_task_timestamps_and_logs(
+                    instance_uuid,
+                    started_at=payload.started_at,
+                    ended_at=payload.ended_at,
+                    log_json=payload.log_json,
+                )
+                return StatusResponse(status=JsonValues.SUCCESS)
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return StatusResponse(status=JsonValues.FAILURE, message=str(e))
+
         @self._app.post(
             "/api/task-instances/results",
             response_model=GetTaskResultsResponse,
@@ -1274,14 +1417,10 @@ class WebApp:
         async def list_model_typenames() -> ListModelTypenamesResponse:
             try:
                 typenames = self._manager.get_available_model_typenames()
-                return ListModelTypenamesResponse(
-                    status=JsonValues.SUCCESS, typenames=typenames
-                )
+                return ListModelTypenamesResponse(status=JsonValues.SUCCESS, typenames=typenames)
             except Exception as e:
                 logger.error(e, exc_info=True)
-                return ListModelTypenamesResponse(
-                    status=JsonValues.FAILURE, message=str(e)
-                )
+                return ListModelTypenamesResponse(status=JsonValues.FAILURE, message=str(e))
 
         @self._app.get(
             "/api/model-configs",
@@ -1292,14 +1431,10 @@ class WebApp:
         async def list_model_configs() -> ListModelConfigsResponse:
             try:
                 configs = await self._manager.list_model_configs()
-                return ListModelConfigsResponse(
-                    status=JsonValues.SUCCESS, configs=configs
-                )
+                return ListModelConfigsResponse(status=JsonValues.SUCCESS, configs=configs)
             except Exception as e:
                 logger.error(e, exc_info=True)
-                return ListModelConfigsResponse(
-                    status=JsonValues.FAILURE, message=str(e)
-                )
+                return ListModelConfigsResponse(status=JsonValues.FAILURE, message=str(e))
 
         @self._app.post(
             "/api/model-configs",
@@ -1325,9 +1460,7 @@ class WebApp:
             try:
                 config = await self._manager.get_model_config(uuid)
                 if config is None:
-                    return ModelConfigResponse(
-                        status=JsonValues.FAILURE, message="Model config not found"
-                    )
+                    return ModelConfigResponse(status=JsonValues.FAILURE, message="Model config not found")
                 return ModelConfigResponse(status=JsonValues.SUCCESS, config=config)
             except Exception as e:
                 logger.error(e, exc_info=True)
@@ -1339,15 +1472,11 @@ class WebApp:
             tags=[ApiTags.MODEL_CONFIGS],
             operation_id="update_model_config",
         )
-        async def update_model_config(
-            uuid: str, payload: ModelConfigUpdate
-        ) -> ModelConfigResponse:
+        async def update_model_config(uuid: str, payload: ModelConfigUpdate) -> ModelConfigResponse:
             try:
                 config = await self._manager.update_model_config(uuid, payload)
                 if config is None:
-                    return ModelConfigResponse(
-                        status=JsonValues.FAILURE, message="Model config not found"
-                    )
+                    return ModelConfigResponse(status=JsonValues.FAILURE, message="Model config not found")
                 return ModelConfigResponse(status=JsonValues.SUCCESS, config=config)
             except Exception as e:
                 logger.error(e, exc_info=True)
@@ -1363,9 +1492,7 @@ class WebApp:
             try:
                 ok = await self._manager.delete_model_config(uuid)
                 if not ok:
-                    return StatusResponse(
-                        status=JsonValues.FAILURE, message="Model config not found"
-                    )
+                    return StatusResponse(status=JsonValues.FAILURE, message="Model config not found")
                 return StatusResponse(status=JsonValues.SUCCESS)
             except Exception as e:
                 logger.error(e, exc_info=True)

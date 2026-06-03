@@ -62,8 +62,7 @@ class Manager:
         self._avail_models: Dict[str, str] = {}  # {basename (no .onnx): full_path}
         self._pinned_models: Dict[str, InferenceModel] = {}  # {model_name: PinnedModel}
         self._loading_models: Dict[str, asyncio.Future] = {}  # in-progress loads; awaited by concurrent pin requests
-        self._config = { "models_path": models_path }
-
+        self._config = {"models_path": models_path}
 
     async def get_server_config(self) -> Dict[str, Any]:
         return self._config.copy()

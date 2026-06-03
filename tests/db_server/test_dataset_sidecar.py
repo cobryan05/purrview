@@ -6,18 +6,19 @@ Two concerns:
   2. Read side — sync_datasets_from_json and init_db can restore a fresh DB
      from datasets.json, with UUID-first, name-fallback, and insert-new semantics.
 """
+
 import json
 import uuid as uuid_mod
 
 import pytest
 
-from apps.helpers.db.db_client import DbClient, DATASETS_JSON
+from apps.helpers.db.db_client import DATASETS_JSON, DbClient
 from apps.helpers.db.types import DatasetCreate, DatasetFilterCriteria, DatasetUpdate
-
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Helpers
 # ──────────────────────────────────────────────────────────────────────────────
+
 
 async def _create(client: DbClient, name: str, **kwargs) -> str:
     """Create a dataset and return its UUID."""
@@ -32,6 +33,7 @@ async def _read_sidecar(db_dir) -> list:
 # ──────────────────────────────────────────────────────────────────────────────
 # 1. Write side
 # ──────────────────────────────────────────────────────────────────────────────
+
 
 async def test_create_writes_sidecar(tmp_path):
     """Creating a dataset produces datasets.json with the correct fields."""
@@ -125,6 +127,7 @@ async def test_sidecar_stores_filter_json(tmp_path):
 # 2. Read side
 # ──────────────────────────────────────────────────────────────────────────────
 
+
 async def test_sync_from_json_uuid_match(tmp_path):
     """sync_datasets_from_json restores a dataset when its UUID matches."""
     db_dir1 = tmp_path / "db1"
@@ -162,8 +165,9 @@ async def test_sync_from_json_name_fallback(tmp_path):
     # Write a sidecar with the same name but a different UUID
     new_uuid = str(uuid_mod.uuid4())
     assert new_uuid != existing_uuid
-    sidecar_data = [{"uuid": new_uuid, "name": "shared-name", "description": "from-json",
-                     "filter_json": {}, "label_uuids": []}]
+    sidecar_data = [
+        {"uuid": new_uuid, "name": "shared-name", "description": "from-json", "filter_json": {}, "label_uuids": []}
+    ]
     (db_dir / DATASETS_JSON).write_text(json.dumps(sidecar_data))
 
     await client.sync_datasets_from_json()
@@ -186,8 +190,9 @@ async def test_sync_from_json_inserts_new(tmp_path):
     await client.init_db()
 
     brand_new_uuid = str(uuid_mod.uuid4())
-    sidecar_data = [{"uuid": brand_new_uuid, "name": "brand-new", "description": None,
-                     "filter_json": {}, "label_uuids": []}]
+    sidecar_data = [
+        {"uuid": brand_new_uuid, "name": "brand-new", "description": None, "filter_json": {}, "label_uuids": []}
+    ]
     (db_dir / DATASETS_JSON).write_text(json.dumps(sidecar_data))
 
     await client.sync_datasets_from_json()
@@ -234,8 +239,9 @@ async def test_sync_from_json_skips_missing_label_uuids(tmp_path):
 
     ghost_uuid = str(uuid_mod.uuid4())
     ds_uuid = str(uuid_mod.uuid4())
-    sidecar_data = [{"uuid": ds_uuid, "name": "ghost-labels", "description": None,
-                     "filter_json": {}, "label_uuids": [ghost_uuid]}]
+    sidecar_data = [
+        {"uuid": ds_uuid, "name": "ghost-labels", "description": None, "filter_json": {}, "label_uuids": [ghost_uuid]}
+    ]
     (db_dir / DATASETS_JSON).write_text(json.dumps(sidecar_data))
 
     # Must not raise; ghost label UUID should be silently dropped

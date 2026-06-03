@@ -69,6 +69,7 @@ class ListTaskTypesResponse(StatusResponse):
 class PauseTasksPayload(Payload):
     task_uuids: List[str]
 
+
 class PauseTasksResponse(StatusResponse):
     task_uuids: List[str] = Field(default_factory=list)
 
@@ -89,6 +90,22 @@ class CancelTasksResponse(StatusResponse):
     task_uuids: List[str] = Field(default_factory=list)
 
 
+class PauseInPlacePayload(Payload):
+    task_uuids: List[str]
+
+
+class PauseInPlaceResponse(StatusResponse):
+    task_uuids: List[str] = Field(default_factory=list)
+
+
+class ResumeInPlacePayload(Payload):
+    task_uuids: List[str]
+
+
+class ResumeInPlaceResponse(StatusResponse):
+    task_uuids: List[str] = Field(default_factory=list)
+
+
 class StartTasksPayload(Payload):
     config_uuid: str
 
@@ -99,6 +116,7 @@ class StartTasksResponse(StatusResponse):
 
 class TasksTypeSchemaPayload(Payload):
     task_typenames: List[str]
+
 
 class TasksTypeSchemaResponse(StatusResponse):
     schemas: Dict[str, dict] = Field(default_factory=dict)
@@ -130,6 +148,7 @@ class UpdateTaskConfigPayload(Payload):
     description: Optional[str] = None
     marked_for_delete: Optional[bool] = None
 
+
 class UpdateTaskConfigResponse(StatusResponse):
     pass
 
@@ -155,7 +174,9 @@ class WebApp:
         self._manager: Manager = manager  # Manager instance
         self._app_name: str = app_name  # Name of the application
         self._app: FastAPI = FastAPI(lifespan=self._lifespan)  # FastAPI instance with lifespan events
-        self._templates: Jinja2Templates = Jinja2Templates(directory="/app/templates")  # Template engine for rendering HTML
+        self._templates: Jinja2Templates = Jinja2Templates(
+            directory="/app/templates"
+        )  # Template engine for rendering HTML
         self._dflt_args: dict[str, str] = {"app_name": self._app_name}  # Default arguments for templates
 
         # Mount static files
@@ -459,6 +480,36 @@ class WebApp:
             except Exception as e:
                 logger.error(e, exc_info=True)
                 return ResumeTasksResponse(status=WebApp.FAILURE_KEY, message=str(e))
+
+        @self._app.post(
+            "/api/tasks/instances/pause-in-place",
+            tags=[WebApp.TASKS_API_TAG_NAME],
+            operation_id="pause_tasks_in_place",
+            response_model=PauseInPlaceResponse,
+        )
+        async def pause_tasks_in_place_api(payload: PauseInPlacePayload) -> PauseInPlaceResponse:
+            """Pause tasks cooperatively in-place (task stays running, loop blocks)."""
+            try:
+                paused = await self._manager.pause_tasks_in_place(payload.task_uuids)
+                return PauseInPlaceResponse(task_uuids=paused)
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return PauseInPlaceResponse(status=WebApp.FAILURE_KEY, message=str(e))
+
+        @self._app.post(
+            "/api/tasks/instances/resume-in-place",
+            tags=[WebApp.TASKS_API_TAG_NAME],
+            operation_id="resume_tasks_in_place",
+            response_model=ResumeInPlaceResponse,
+        )
+        async def resume_tasks_in_place_api(payload: ResumeInPlacePayload) -> ResumeInPlaceResponse:
+            """Resume tasks that were paused in-place."""
+            try:
+                resumed = await self._manager.resume_tasks_in_place(payload.task_uuids)
+                return ResumeInPlaceResponse(task_uuids=resumed)
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return ResumeInPlaceResponse(status=WebApp.FAILURE_KEY, message=str(e))
 
         @self._app.post(
             "/api/tasks/instances/cancel",

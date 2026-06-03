@@ -52,12 +52,14 @@ def validate_raw_json_dict(v: Any) -> Dict[str, str]:
 
 RawJsonDict = Annotated[Dict[str, str], BeforeValidator(validate_raw_json_dict)]
 
+
 def validate_base64_img(v: Any) -> str:
     if isinstance(v, np.ndarray):
         try:
             import cv2
+
             _, v = cv2.imencode(".png", v)
-        except (Exception):
+        except Exception:
             pass
 
     if isinstance(v, bytes):
@@ -80,14 +82,17 @@ class DataclassMapper(BaseModel, Generic[T]):
         """
         return cls.model_validate(dc)
 
+
 @dataclass
 class DetectionResult:
     bbox: BoundingBoxMetadata
     confidence: float
 
+
 class DetectionResultModel(DataclassMapper):
     bbox: BoundingBoxMetadataModel
     confidence: float
+
 
 @dataclass
 class InferenceResult:
@@ -98,6 +103,7 @@ class InferenceResult:
     annotated_image: Optional[np.ndarray] = None
     source_image: Optional[np.ndarray] = None
 
+
 class InferenceResultModel(DataclassMapper):
     source_width: int
     source_height: int
@@ -105,6 +111,7 @@ class InferenceResultModel(DataclassMapper):
     inference_time: Optional[float] = None
     annotated_image: Optional[Base64Image] = None
     source_image: Optional[Base64Image] = None
+
 
 @dataclass
 class BoundingBoxMetadata:
@@ -128,7 +135,9 @@ class BoundingBoxMetadataModel(DataclassMapper):
     label_uuid: Optional[str] = None
     class_str: Optional[str] = None
     tag_uuids: List[str] = Field(default_factory=list)
-    extra: RawJsonDict = Field(default_factory=dict, validation_alias=AliasChoices("bbox_meta", "extra"), serialization_alias="extra")
+    extra: RawJsonDict = Field(
+        default_factory=dict, validation_alias=AliasChoices("bbox_meta", "extra"), serialization_alias="extra"
+    )
 
 
 @dataclass
@@ -142,6 +151,3 @@ class FileEntryModel(DataclassMapper):
     name: str
     type: str  # "file" or "dir"
     path: str  # relative path from root
-
-
-

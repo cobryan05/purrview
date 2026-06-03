@@ -10,6 +10,7 @@ This test exercises the full loop that the UI performs:
 
 Nothing is mocked.  One real SQLite DB, one real Manager, one ASGI client.
 """
+
 import uuid
 
 import pytest
@@ -24,10 +25,10 @@ from apps.helpers.db.types import (
 )
 from tests.conftest import make_png
 
-
 # ──────────────────────────────────────────────────────────────────────────────
 # Fixtures
 # ──────────────────────────────────────────────────────────────────────────────
+
 
 @pytest.fixture
 async def db_client(tmp_path):
@@ -59,6 +60,7 @@ async def client(db_client, files_root):
 # Helpers
 # ──────────────────────────────────────────────────────────────────────────────
 
+
 async def _create_label(client, name="cat", color="#FF0000"):
     r = await client.post("/api/labels", json={"name": name, "color": color})
     assert r.status_code == 200
@@ -75,12 +77,17 @@ async def _put_image(files_root, client, filename="img.png", label_uuid=None, ta
         "/api/images/metadata/update",
         json={
             "imagePath": filename,
-            "boxes": [{
-                "uuid": bid,
-                "labelUuid": label_uuid,
-                "x": 0.1, "y": 0.1, "width": 0.2, "height": 0.2,
-                "tagUuids": tag_uuids,
-            }],
+            "boxes": [
+                {
+                    "uuid": bid,
+                    "labelUuid": label_uuid,
+                    "x": 0.1,
+                    "y": 0.1,
+                    "width": 0.2,
+                    "height": 0.2,
+                    "tagUuids": tag_uuids,
+                }
+            ],
         },
     )
     assert r.status_code == 200
@@ -107,6 +114,7 @@ async def _image_labels(client, path):
 # ──────────────────────────────────────────────────────────────────────────────
 # The full review workflow
 # ──────────────────────────────────────────────────────────────────────────────
+
 
 async def test_full_verify_workflow(client, files_root):
     """Core review loop: unverified → appears in queue → verify → gone from queue."""

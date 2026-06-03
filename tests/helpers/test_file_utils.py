@@ -3,6 +3,7 @@
 Security-critical: every path-traversal escape attempt must return None.
 All tests are pure filesystem operations on tmp directories.
 """
+
 from pathlib import Path
 
 import pytest

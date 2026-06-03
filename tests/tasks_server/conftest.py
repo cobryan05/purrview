@@ -1,20 +1,19 @@
-import uuid
 import asyncio
+import uuid
 from typing import Any, Optional
 from unittest.mock import MagicMock, patch
 
+import db_client.models as db_models
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-import db_client.models as db_models
+# Trigger discovery of real tasks (registers PreviewSourceTask, etc.)
+import apps.tasks_server.tasks  # noqa: F401
 from apps.helpers.consts import TaskStatus
 from apps.tasks_server.manager import Manager
 from apps.tasks_server.tasks.Registry import register_task, task_registry
 from apps.tasks_server.tasks.Task import Task
 from apps.tasks_server.web import WebApp
-
-# Trigger discovery of real tasks (registers PreviewSourceTask, etc.)
-import apps.tasks_server.tasks  # noqa: F401
 
 # Register a minimal task used only in tests
 if "TestTask" not in task_registry:
@@ -47,6 +46,28 @@ if "TestTask" not in task_registry:
                         await t
                     except asyncio.CancelledError:
                         pass
+
+        async def _deinit(self) -> None:
+            pass
+
+
+# Register a task that supports cooperative pause via _check_pause()
+if "PausableTestTask" not in task_registry:
+
+    @register_task("PausableTestTask")
+    class PausableTestTask(Task):
+        async def _init(self, params: dict, resume_data: Optional[dict]) -> None:
+            self._iterations = int(params.get("iterations", 20))
+
+        async def _run(self) -> dict[str, Any]:
+            count = 0
+            for _ in range(self._iterations):
+                if self._cancel_flag.is_set():
+                    break
+                await self._check_pause()
+                await asyncio.sleep(0.01)
+                count += 1
+            return {"count": count}
 
         async def _deinit(self) -> None:
             pass
@@ -85,6 +106,7 @@ def tasks_api_mock():
     mock.set_task_instance_status.return_value = MagicMock()
     mock.set_task_instance_result.return_value = MagicMock()
     mock.set_task_instance_resume_data.return_value = MagicMock()
+    mock.set_task_instance_timestamps.return_value = MagicMock()
     mock.get_task_results.return_value = MagicMock(results={})
     return mock
 

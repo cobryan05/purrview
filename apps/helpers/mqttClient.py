@@ -10,6 +10,7 @@ logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger("MqttClient")
 logger.setLevel(logging.DEBUG)
 
+
 class MqttClient:
     @dataclass
     class SubMapData:
@@ -22,9 +23,7 @@ class MqttClient:
     CONNECTION_RETRIES = 5
     CONNECTION_RETRY_DELAY = 2
 
-    def __init__(
-        self, broker_address: str, prefix: str = "myhome/", broker_port: int = 1883
-    ):
+    def __init__(self, broker_address: str, prefix: str = "myhome/", broker_port: int = 1883):
         self._prefix: str = prefix.rstrip("/")
         self._mqtt: mqtt.Client = mqtt.Client()
         self._mqtt.on_connect = self.mqtt_connected_callback
@@ -35,16 +34,12 @@ class MqttClient:
         remaining_tries = MqttClient.CONNECTION_RETRIES
         while True:
             try:
-                self._mqtt.connect(
-                    broker_address, broker_port, keepalive=MqttClient.KEEPALIVE_TIME
-                )
+                self._mqtt.connect(broker_address, broker_port, keepalive=MqttClient.KEEPALIVE_TIME)
                 break
             except Exception as e:
                 remaining_tries -= 1
                 logger.warning(
-                    "Failed to connect to broker: {}.  {} retries remaining.".format(
-                        str(e), remaining_tries
-                    )
+                    "Failed to connect to broker: {}.  {} retries remaining.".format(str(e), remaining_tries)
                 )
                 if remaining_tries == 0:
                     raise
@@ -58,16 +53,12 @@ class MqttClient:
     def disconnect(self):
         self._mqtt.disconnect()
 
-    def publish(
-        self, topic: str, value: str, retain: bool = False, absoluteTopic=False
-    ):
+    def publish(self, topic: str, value: str, retain: bool = False, absoluteTopic=False):
         if absoluteTopic:
             publish_topic = topic
         else:
             publish_topic = "{}/{}".format(self._prefix, topic)
-        logger.debug(
-            f"Publishing {publish_topic} value of {value if isinstance(value, str) else 'non-string type'}"
-        )
+        logger.debug(f"Publishing {publish_topic} value of {value if isinstance(value, str) else 'non-string type'}")
         self._mqtt.publish(publish_topic, value, retain=retain)
 
     def subscribe(self, topic: str, callback: Callable[[str], None], absoluteTopic=False):
@@ -103,9 +94,7 @@ class MqttClient:
                 except Exception as e:
                     remaining_tries -= 1
                     logger.warning(
-                        "Failed to connect to broker: {}.  {} retries remaining.".format(
-                            str(e), remaining_tries
-                        )
+                        "Failed to connect to broker: {}.  {} retries remaining.".format(str(e), remaining_tries)
                     )
                     if remaining_tries == 0:
                         raise
@@ -114,15 +103,13 @@ class MqttClient:
             logger.debug("Stopping Mqtt loop")
             self._mqtt.loop_stop()
 
-    def mqtt_message_callback(
-        self, client: mqtt.Client, userdata, msg: mqtt.MQTTMessage
-    ):
+    def mqtt_message_callback(self, client: mqtt.Client, userdata, msg: mqtt.MQTTMessage):
         # print(f"Received topic|message: {msg.topic}|{msg.payload.decode()}")
         for topic, data in self._subMap.copy().items():
             prefixedTopic = f"{self._prefix}/{topic.rstrip('#')}"
             if msg.topic.startswith(prefixedTopic) and callable(data.callback):
                 data.callback(msg)
-            else: # TODO: Deal with prefix?
-              topic = f"{topic.rstrip('#')}"
-              if msg.topic.startswith(topic) and callable(data.callback):
-                data.callback(msg)
+            else:  # TODO: Deal with prefix?
+                topic = f"{topic.rstrip('#')}"
+                if msg.topic.startswith(topic) and callable(data.callback):
+                    data.callback(msg)

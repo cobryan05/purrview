@@ -1,6 +1,6 @@
 """Tests for the model configurations feature — CRUD, validation, and cascade behavior."""
-import pytest
 
+import pytest
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Helpers

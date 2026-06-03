@@ -8,9 +8,9 @@ import numpy as np
 
 
 class ImageProviderType(Enum):
-    FIXED = "fixed"                    # Known frame count; process at full speed, report progress
-    LIVE_SNAPSHOT = "live_snapshot"    # Poll on a slow interval (e.g. URL cameras)
-    LIVE_STREAM = "live_stream"        # Continuous stream; rate-limit collection (e.g. RTSP)
+    FIXED = "fixed"  # Known frame count; process at full speed, report progress
+    LIVE_SNAPSHOT = "live_snapshot"  # Poll on a slow interval (e.g. URL cameras)
+    LIVE_STREAM = "live_stream"  # Continuous stream; rate-limit collection (e.g. RTSP)
 
 
 @dataclass
@@ -19,11 +19,13 @@ class ImageProviderMetadata:
     frame_idx: Optional[int] = None
     additional_info: dict[str, Any] = field(default_factory=dict)
 
+
 @dataclass
 class ImageWithProviderMetadata:
     image: np.ndarray
     metadata: ImageProviderMetadata = field(default_factory=ImageProviderMetadata)
     encoded_b64: Optional[str] = None
+
 
 class ImageProvider:
     @classmethod

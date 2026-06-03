@@ -10,6 +10,7 @@ class AppConfig:
     host: str
     port: int
 
+
 class APPS(str, Enum):
     IMAGE_TAGGING_SERVER = "image_tagging_server"
     INFERENCE_SERVER = "inference_server"
@@ -26,20 +27,26 @@ _port_offset = int(os.environ.get("PORT_OFFSET", "0"))
 # compute ports for a different offset (e.g. per-worker test isolation).
 APP_BASE_PORTS = {
     APPS.IMAGE_TAGGING_SERVER: 7999,
-    APPS.INFERENCE_SERVER:     8001,
-    APPS.TASKS_SERVER:         8002,
-    APPS.DB_SERVER:            8003,
-    APPS.RELAY_BUFFER_SERVER:  8004,
+    APPS.INFERENCE_SERVER: 8001,
+    APPS.TASKS_SERVER: 8002,
+    APPS.DB_SERVER: 8003,
+    APPS.RELAY_BUFFER_SERVER: 8004,
 }
 
 APPS_CONFIG = {
-    APPS.IMAGE_TAGGING_SERVER: AppConfig("Image Tagging Server",      "localhost", APP_BASE_PORTS[APPS.IMAGE_TAGGING_SERVER] + _port_offset),
-    APPS.INFERENCE_SERVER:     AppConfig("Inference Server",           "localhost", APP_BASE_PORTS[APPS.INFERENCE_SERVER]     + _port_offset),
-    APPS.TASKS_SERVER:         AppConfig("Tasks Server",               "localhost", APP_BASE_PORTS[APPS.TASKS_SERVER]         + _port_offset),
-    APPS.DB_SERVER:            AppConfig("DB Server",                  "localhost", APP_BASE_PORTS[APPS.DB_SERVER]            + _port_offset),
-    APPS.RELAY_BUFFER_SERVER:  AppConfig("RTSP/Relay Buffer Server",   "localhost", APP_BASE_PORTS[APPS.RELAY_BUFFER_SERVER]  + _port_offset),
-    APPS.MEDIA_MTX_RTSP:       AppConfig("MediaMTXRtsp",               "localhost", 8554),
-    APPS.MEDIA_MTX_API:        AppConfig("MediaMTXApi",                "localhost", 9997),
+    APPS.IMAGE_TAGGING_SERVER: AppConfig(
+        "Image Tagging Server", "localhost", APP_BASE_PORTS[APPS.IMAGE_TAGGING_SERVER] + _port_offset
+    ),
+    APPS.INFERENCE_SERVER: AppConfig(
+        "Inference Server", "localhost", APP_BASE_PORTS[APPS.INFERENCE_SERVER] + _port_offset
+    ),
+    APPS.TASKS_SERVER: AppConfig("Tasks Server", "localhost", APP_BASE_PORTS[APPS.TASKS_SERVER] + _port_offset),
+    APPS.DB_SERVER: AppConfig("DB Server", "localhost", APP_BASE_PORTS[APPS.DB_SERVER] + _port_offset),
+    APPS.RELAY_BUFFER_SERVER: AppConfig(
+        "RTSP/Relay Buffer Server", "localhost", APP_BASE_PORTS[APPS.RELAY_BUFFER_SERVER] + _port_offset
+    ),
+    APPS.MEDIA_MTX_RTSP: AppConfig("MediaMTXRtsp", "localhost", 8554),
+    APPS.MEDIA_MTX_API: AppConfig("MediaMTXApi", "localhost", 9997),
 }
 
 DB_DIR = Path(os.environ.get("DB_DIR", "/data/db/"))

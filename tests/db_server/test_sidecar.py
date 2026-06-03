@@ -6,6 +6,7 @@ Two concerns:
   2. Read side — sync_image_from_json can restore a fresh DB from those sidecars,
      using UUID-first resolution and falling back to names when UUIDs differ.
 """
+
 import json
 import uuid as uuid_mod
 from pathlib import Path
@@ -16,17 +17,17 @@ from apps.db_server.manager import Manager
 from apps.db_server.web import WebApp
 from apps.helpers.db.db_client import DbClient
 from apps.helpers.db.types import (
+    UNVERIFIED_TAG_UUID,
     BBoxUpdate,
     ImageRecordUpdate,
-    UNVERIFIED_TAG_UUID,
 )
 from tests.conftest import make_png
-
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Shared fixtures (the http_client / db_client / files_root fixtures already
 # live in tests/db_server/conftest.py and are available automatically)
 # ──────────────────────────────────────────────────────────────────────────────
+
 
 @pytest.fixture
 def image_file(files_root):
@@ -51,6 +52,7 @@ async def custom_tag_uuid(http_client):
 # 1. Write side: sidecar is created / updated by bbox operations
 # ──────────────────────────────────────────────────────────────────────────────
 
+
 async def test_sidecar_created_on_metadata_update(http_client, image_file, label_uuid):
     """Calling the update endpoint writes a .json sidecar next to the image."""
     bid = str(uuid_mod.uuid4())
@@ -58,12 +60,17 @@ async def test_sidecar_created_on_metadata_update(http_client, image_file, label
         "/api/images/metadata/update",
         json={
             "imagePath": "sidecar_test.png",
-            "boxes": [{
-                "uuid": bid,
-                "labelUuid": label_uuid,
-                "x": 0.1, "y": 0.2, "width": 0.3, "height": 0.4,
-                "tagUuids": [UNVERIFIED_TAG_UUID],
-            }],
+            "boxes": [
+                {
+                    "uuid": bid,
+                    "labelUuid": label_uuid,
+                    "x": 0.1,
+                    "y": 0.2,
+                    "width": 0.3,
+                    "height": 0.4,
+                    "tagUuids": [UNVERIFIED_TAG_UUID],
+                }
+            ],
         },
     )
     assert r.status_code == 200
@@ -91,12 +98,17 @@ async def test_sidecar_includes_label_and_tag_names(http_client, image_file, lab
         "/api/images/metadata/update",
         json={
             "imagePath": "sidecar_test.png",
-            "boxes": [{
-                "uuid": bid,
-                "labelUuid": label_uuid,
-                "x": 0.1, "y": 0.1, "width": 0.2, "height": 0.2,
-                "tagUuids": [UNVERIFIED_TAG_UUID, custom_tag_uuid],
-            }],
+            "boxes": [
+                {
+                    "uuid": bid,
+                    "labelUuid": label_uuid,
+                    "x": 0.1,
+                    "y": 0.1,
+                    "width": 0.2,
+                    "height": 0.2,
+                    "tagUuids": [UNVERIFIED_TAG_UUID, custom_tag_uuid],
+                }
+            ],
         },
     )
     assert r.status_code == 200
@@ -118,11 +130,17 @@ async def test_sidecar_updated_on_bbox_patch(http_client, image_file, label_uuid
         "/api/images/metadata/update",
         json={
             "imagePath": "sidecar_test.png",
-            "boxes": [{
-                "uuid": bid, "labelUuid": label_uuid,
-                "x": 0.1, "y": 0.1, "width": 0.2, "height": 0.2,
-                "tagUuids": [UNVERIFIED_TAG_UUID],
-            }],
+            "boxes": [
+                {
+                    "uuid": bid,
+                    "labelUuid": label_uuid,
+                    "x": 0.1,
+                    "y": 0.1,
+                    "width": 0.2,
+                    "height": 0.2,
+                    "tagUuids": [UNVERIFIED_TAG_UUID],
+                }
+            ],
         },
     )
 
@@ -149,11 +167,17 @@ async def test_sidecar_updated_on_bbox_delete(http_client, image_file, label_uui
         "/api/images/metadata/update",
         json={
             "imagePath": "sidecar_test.png",
-            "boxes": [{
-                "uuid": bid, "labelUuid": label_uuid,
-                "x": 0.1, "y": 0.1, "width": 0.2, "height": 0.2,
-                "tagUuids": [UNVERIFIED_TAG_UUID],
-            }],
+            "boxes": [
+                {
+                    "uuid": bid,
+                    "labelUuid": label_uuid,
+                    "x": 0.1,
+                    "y": 0.1,
+                    "width": 0.2,
+                    "height": 0.2,
+                    "tagUuids": [UNVERIFIED_TAG_UUID],
+                }
+            ],
         },
     )
 
@@ -175,11 +199,17 @@ async def test_sidecar_reflects_multiple_updates(http_client, image_file, label_
         "/api/images/metadata/update",
         json={
             "imagePath": "sidecar_test.png",
-            "boxes": [{
-                "uuid": bid1, "labelUuid": label_uuid,
-                "x": 0.0, "y": 0.0, "width": 0.1, "height": 0.1,
-                "tagUuids": [],
-            }],
+            "boxes": [
+                {
+                    "uuid": bid1,
+                    "labelUuid": label_uuid,
+                    "x": 0.0,
+                    "y": 0.0,
+                    "width": 0.1,
+                    "height": 0.1,
+                    "tagUuids": [],
+                }
+            ],
         },
     )
 
@@ -189,10 +219,24 @@ async def test_sidecar_reflects_multiple_updates(http_client, image_file, label_
         json={
             "imagePath": "sidecar_test.png",
             "boxes": [
-                {"uuid": bid1, "labelUuid": label_uuid,
-                 "x": 0.0, "y": 0.0, "width": 0.1, "height": 0.1, "tagUuids": []},
-                {"uuid": bid2, "labelUuid": label_uuid,
-                 "x": 0.5, "y": 0.5, "width": 0.2, "height": 0.2, "tagUuids": []},
+                {
+                    "uuid": bid1,
+                    "labelUuid": label_uuid,
+                    "x": 0.0,
+                    "y": 0.0,
+                    "width": 0.1,
+                    "height": 0.1,
+                    "tagUuids": [],
+                },
+                {
+                    "uuid": bid2,
+                    "labelUuid": label_uuid,
+                    "x": 0.5,
+                    "y": 0.5,
+                    "width": 0.2,
+                    "height": 0.2,
+                    "tagUuids": [],
+                },
             ],
         },
     )
@@ -207,6 +251,7 @@ async def test_sidecar_reflects_multiple_updates(http_client, image_file, label_
 # 2. Read side: sync_image_from_json restores a fresh DB from sidecar files
 # ──────────────────────────────────────────────────────────────────────────────
 
+
 async def _write_sidecar_directly(
     db_client: DbClient,
     image_path: Path,
@@ -219,16 +264,21 @@ async def _write_sidecar_directly(
 ) -> None:
     """Write a sidecar with fully populated name fields."""
     sidecar_path = image_path.with_suffix(".json")
-    update = ImageRecordUpdate(bboxes=[
-        BBoxUpdate(
-            uuid=bbox_uuid,
-            label_uuid=label_uuid,
-            label_name=label_name,
-            x=0.1, y=0.2, width=0.3, height=0.4,
-            tag_uuids=[tag_uuid],
-            tag_names=[tag_name],
-        )
-    ])
+    update = ImageRecordUpdate(
+        bboxes=[
+            BBoxUpdate(
+                uuid=bbox_uuid,
+                label_uuid=label_uuid,
+                label_name=label_name,
+                x=0.1,
+                y=0.2,
+                width=0.3,
+                height=0.4,
+                tag_uuids=[tag_uuid],
+                tag_names=[tag_name],
+            )
+        ]
+    )
     db_client.write_image_metadata_to_json(sidecar_path, image_uuid, str(image_path), update)
 
 
@@ -254,16 +304,29 @@ async def test_rebuild_from_sidecar_by_uuid(tmp_path):
     bbox_uuid = str(uuid_mod.uuid4())
     await client1.write_image_metadata_to_db(
         image.uuid,
-        ImageRecordUpdate(bboxes=[BBoxUpdate(
-            uuid=bbox_uuid, label_uuid=label.uuid,
-            x=0.1, y=0.2, width=0.3, height=0.4,
-            tag_uuids=[UNVERIFIED_TAG_UUID],
-        )]),
+        ImageRecordUpdate(
+            bboxes=[
+                BBoxUpdate(
+                    uuid=bbox_uuid,
+                    label_uuid=label.uuid,
+                    x=0.1,
+                    y=0.2,
+                    width=0.3,
+                    height=0.4,
+                    tag_uuids=[UNVERIFIED_TAG_UUID],
+                )
+            ]
+        ),
     )
     await _write_sidecar_directly(
-        client1, image_path, image.uuid,
-        bbox_uuid, label.uuid, "cat",
-        UNVERIFIED_TAG_UUID, "Unverified",
+        client1,
+        image_path,
+        image.uuid,
+        bbox_uuid,
+        label.uuid,
+        "cat",
+        UNVERIFIED_TAG_UUID,
+        "Unverified",
     )
     original_image_uuid = image.uuid
     original_label_uuid = label.uuid
@@ -311,18 +374,27 @@ async def test_rebuild_from_sidecar_by_name_fallback(tmp_path):
 
     # Write the sidecar directly — no DB needed for phase 1
     sidecar_path = image_path.with_suffix(".json")
-    sidecar_path.write_text(json.dumps({
-        "uuid": image_uuid,
-        "filename": str(image_path),
-        "boxes": [{
-            "uuid": bbox_uuid,
-            "label_uuid": old_label_uuid,
-            "label_name": "cat",
-            "x": 0.1, "y": 0.2, "width": 0.3, "height": 0.4,
-            "tag_uuids": [old_tag_uuid],
-            "tag_names": ["my_tag"],
-        }],
-    }))
+    sidecar_path.write_text(
+        json.dumps(
+            {
+                "uuid": image_uuid,
+                "filename": str(image_path),
+                "boxes": [
+                    {
+                        "uuid": bbox_uuid,
+                        "label_uuid": old_label_uuid,
+                        "label_name": "cat",
+                        "x": 0.1,
+                        "y": 0.2,
+                        "width": 0.3,
+                        "height": 0.4,
+                        "tag_uuids": [old_tag_uuid],
+                        "tag_names": ["my_tag"],
+                    }
+                ],
+            }
+        )
+    )
 
     # ── Phase 2: fresh DB with NEW UUIDs but same names ───────────────────────
     db_dir = tmp_path / "db"
@@ -330,8 +402,8 @@ async def test_rebuild_from_sidecar_by_name_fallback(tmp_path):
     client = DbClient(db_dir=db_dir)
     await client.init_db()
 
-    new_label = await client.add_label("cat", "#FF0000")   # new UUID
-    new_tag = await client.add_tag("my_tag")                # new UUID
+    new_label = await client.add_label("cat", "#FF0000")  # new UUID
+    new_tag = await client.add_tag("my_tag")  # new UUID
 
     assert new_label.uuid != old_label_uuid, "precondition: UUIDs differ"
     assert new_tag.uuid != old_tag_uuid, "precondition: UUIDs differ"
@@ -365,18 +437,27 @@ async def test_rebuild_skips_bbox_with_unresolvable_label(tmp_path):
     image_path.write_bytes(make_png())
 
     sidecar_path = image_path.with_suffix(".json")
-    sidecar_path.write_text(json.dumps({
-        "uuid": image_uuid,
-        "filename": str(image_path),
-        "boxes": [{
-            "uuid": bbox_uuid,
-            "label_uuid": "00000000-dead-beef-0000-000000000000",  # no such label
-            # no label_name provided — no fallback possible
-            "x": 0.1, "y": 0.1, "width": 0.2, "height": 0.2,
-            "tag_uuids": [],
-            "tag_names": [],
-        }],
-    }))
+    sidecar_path.write_text(
+        json.dumps(
+            {
+                "uuid": image_uuid,
+                "filename": str(image_path),
+                "boxes": [
+                    {
+                        "uuid": bbox_uuid,
+                        "label_uuid": "00000000-dead-beef-0000-000000000000",  # no such label
+                        # no label_name provided — no fallback possible
+                        "x": 0.1,
+                        "y": 0.1,
+                        "width": 0.2,
+                        "height": 0.2,
+                        "tag_uuids": [],
+                        "tag_names": [],
+                    }
+                ],
+            }
+        )
+    )
 
     db_dir = tmp_path / "db"
     db_dir.mkdir()
@@ -414,27 +495,56 @@ async def test_rebuild_preserves_existing_bboxes_on_merge(tmp_path):
     existing_bid = str(uuid_mod.uuid4())
     await client.write_image_metadata_to_db(
         image.uuid,
-        ImageRecordUpdate(bboxes=[BBoxUpdate(
-            uuid=existing_bid, label_uuid=label.uuid,
-            x=0.0, y=0.0, width=0.1, height=0.1, tag_uuids=[],
-        )]),
+        ImageRecordUpdate(
+            bboxes=[
+                BBoxUpdate(
+                    uuid=existing_bid,
+                    label_uuid=label.uuid,
+                    x=0.0,
+                    y=0.0,
+                    width=0.1,
+                    height=0.1,
+                    tag_uuids=[],
+                )
+            ]
+        ),
     )
 
     # Sidecar has the existing bbox plus a brand-new one
     new_bid = str(uuid_mod.uuid4())
     sidecar_path = image_path.with_suffix(".json")
-    sidecar_path.write_text(json.dumps({
-        "uuid": image.uuid,
-        "filename": str(image_path),
-        "boxes": [
-            {"uuid": existing_bid, "label_uuid": label.uuid, "label_name": "cat",
-             "x": 0.0, "y": 0.0, "width": 0.1, "height": 0.1,
-             "tag_uuids": [], "tag_names": []},
-            {"uuid": new_bid, "label_uuid": label.uuid, "label_name": "cat",
-             "x": 0.5, "y": 0.5, "width": 0.2, "height": 0.2,
-             "tag_uuids": [], "tag_names": []},
-        ],
-    }))
+    sidecar_path.write_text(
+        json.dumps(
+            {
+                "uuid": image.uuid,
+                "filename": str(image_path),
+                "boxes": [
+                    {
+                        "uuid": existing_bid,
+                        "label_uuid": label.uuid,
+                        "label_name": "cat",
+                        "x": 0.0,
+                        "y": 0.0,
+                        "width": 0.1,
+                        "height": 0.1,
+                        "tag_uuids": [],
+                        "tag_names": [],
+                    },
+                    {
+                        "uuid": new_bid,
+                        "label_uuid": label.uuid,
+                        "label_name": "cat",
+                        "x": 0.5,
+                        "y": 0.5,
+                        "width": 0.2,
+                        "height": 0.2,
+                        "tag_uuids": [],
+                        "tag_names": [],
+                    },
+                ],
+            }
+        )
+    )
 
     # merge (default overwrite=False)
     await client.sync_image_from_json(image_path, overwrite=False)
@@ -471,26 +581,38 @@ async def test_rebuild_overwrites_bboxes_when_requested(tmp_path):
     stale_bid2 = str(uuid_mod.uuid4())
     await client.write_image_metadata_to_db(
         image.uuid,
-        ImageRecordUpdate(bboxes=[
-            BBoxUpdate(uuid=stale_bid1, label_uuid=label.uuid,
-                       x=0.0, y=0.0, width=0.1, height=0.1, tag_uuids=[]),
-            BBoxUpdate(uuid=stale_bid2, label_uuid=label.uuid,
-                       x=0.5, y=0.5, width=0.1, height=0.1, tag_uuids=[]),
-        ]),
+        ImageRecordUpdate(
+            bboxes=[
+                BBoxUpdate(uuid=stale_bid1, label_uuid=label.uuid, x=0.0, y=0.0, width=0.1, height=0.1, tag_uuids=[]),
+                BBoxUpdate(uuid=stale_bid2, label_uuid=label.uuid, x=0.5, y=0.5, width=0.1, height=0.1, tag_uuids=[]),
+            ]
+        ),
     )
 
     # Sidecar has only one bbox (the authoritative truth)
     canonical_bid = str(uuid_mod.uuid4())
     sidecar_path = image_path.with_suffix(".json")
-    sidecar_path.write_text(json.dumps({
-        "uuid": image.uuid,
-        "filename": str(image_path),
-        "boxes": [{
-            "uuid": canonical_bid, "label_uuid": label.uuid, "label_name": "cat",
-            "x": 0.2, "y": 0.3, "width": 0.4, "height": 0.1,
-            "tag_uuids": [], "tag_names": [],
-        }],
-    }))
+    sidecar_path.write_text(
+        json.dumps(
+            {
+                "uuid": image.uuid,
+                "filename": str(image_path),
+                "boxes": [
+                    {
+                        "uuid": canonical_bid,
+                        "label_uuid": label.uuid,
+                        "label_name": "cat",
+                        "x": 0.2,
+                        "y": 0.3,
+                        "width": 0.4,
+                        "height": 0.1,
+                        "tag_uuids": [],
+                        "tag_names": [],
+                    }
+                ],
+            }
+        )
+    )
 
     await client.sync_image_from_json(image_path, overwrite=True)
 

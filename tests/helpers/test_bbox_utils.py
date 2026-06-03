@@ -2,14 +2,15 @@
 
 All tests are pure arithmetic: no I/O, no network, no database.
 """
+
 import pytest
 
 from apps.helpers.bboxUtils import BBox
 
-
 # ──────────────────────────────────────────────────────────────────────────────
 # Factory constructors
 # ──────────────────────────────────────────────────────────────────────────────
+
 
 class TestFromX1Y1X2Y2:
     def test_basic(self):
@@ -81,6 +82,7 @@ class TestFromRX1Y1X2Y2:
 # Negative-size normalisation (constructor flips negative w/h)
 # ──────────────────────────────────────────────────────────────────────────────
 
+
 class TestNegativeDimensions:
     def test_negative_width_flipped(self):
         b = BBox((0.5, 0.1, -0.2, 0.3))
@@ -106,6 +108,7 @@ class TestNegativeDimensions:
 # ──────────────────────────────────────────────────────────────────────────────
 # Round-trip conversions
 # ──────────────────────────────────────────────────────────────────────────────
+
 
 class TestConversionRoundTrips:
     def test_x1y1x2y2_roundtrip(self):
@@ -143,6 +146,7 @@ class TestConversionRoundTrips:
 # Area
 # ──────────────────────────────────────────────────────────────────────────────
 
+
 class TestArea:
     def test_normal(self):
         b = BBox.fromRX1Y1WH(0.0, 0.0, 0.5, 0.4)
@@ -169,6 +173,7 @@ class TestArea:
 # Distance
 # ──────────────────────────────────────────────────────────────────────────────
 
+
 class TestDist:
     def test_same_origin(self):
         b = BBox.fromRX1Y1WH(0.0, 0.0, 0.1, 0.1)
@@ -189,6 +194,7 @@ class TestDist:
 # ──────────────────────────────────────────────────────────────────────────────
 # Similarity / equality
 # ──────────────────────────────────────────────────────────────────────────────
+
 
 class TestSimilar:
     def test_identical_is_similar(self):
@@ -214,6 +220,7 @@ class TestSimilar:
 # ──────────────────────────────────────────────────────────────────────────────
 # Copy
 # ──────────────────────────────────────────────────────────────────────────────
+
 
 class TestCopy:
     def test_copy_is_equal(self):

@@ -1,4 +1,5 @@
 """Extended tag tests — update endpoint and exclusive-group behaviour."""
+
 import uuid
 
 import pytest
@@ -18,6 +19,7 @@ async def custom_tag(http_client):
 # ──────────────────────────────────────────────────────────────────────────────
 # Tag update
 # ──────────────────────────────────────────────────────────────────────────────
+
 
 async def test_update_tag_name(http_client, custom_tag):
     r = await http_client.post(
@@ -59,6 +61,7 @@ async def test_update_tag_no_changes_is_ok(http_client, custom_tag):
 # Exclusive-group enforcement via bbox PATCH
 # ──────────────────────────────────────────────────────────────────────────────
 
+
 @pytest.fixture
 def image_file(files_root):
     img = files_root / "excl.png"
@@ -80,12 +83,17 @@ async def bbox_uuid(http_client, image_file, label_uuid):
         "/api/images/metadata/update",
         json={
             "imagePath": "excl.png",
-            "boxes": [{
-                "uuid": bbox_id,
-                "labelUuid": label_uuid,
-                "x": 0.1, "y": 0.1, "width": 0.2, "height": 0.2,
-                "tagUuids": [UNVERIFIED_TAG_UUID],
-            }],
+            "boxes": [
+                {
+                    "uuid": bbox_id,
+                    "labelUuid": label_uuid,
+                    "x": 0.1,
+                    "y": 0.1,
+                    "width": 0.2,
+                    "height": 0.2,
+                    "tagUuids": [UNVERIFIED_TAG_UUID],
+                }
+            ],
         },
     )
     return bbox_id
@@ -105,9 +113,7 @@ async def test_exclusive_group_custom_tag_ousts_unverified(http_client, bbox_uui
     )
     assert patch_r.status_code == 204
 
-    meta_r = await http_client.post(
-        "/api/images/metadata/get", json={"imagePath": "excl.png"}
-    )
+    meta_r = await http_client.post("/api/images/metadata/get", json={"imagePath": "excl.png"})
     bboxes = meta_r.json()["image"]["bboxes"]
     assert len(bboxes) == 1
     tag_uuids = [t["uuid"] for t in bboxes[0]["tags"]]
@@ -134,9 +140,7 @@ async def test_exclusive_group_last_tag_wins(http_client, bbox_uuid):
     )
     assert patch_r.status_code == 204
 
-    meta_r = await http_client.post(
-        "/api/images/metadata/get", json={"imagePath": "excl.png"}
-    )
+    meta_r = await http_client.post("/api/images/metadata/get", json={"imagePath": "excl.png"})
     bboxes = meta_r.json()["image"]["bboxes"]
     tag_uuids = [t["uuid"] for t in bboxes[0]["tags"]]
     assert tag_b in tag_uuids

@@ -4,15 +4,16 @@ Tests cover the pure numerical functions (letterbox, compute_iou, nms).
 annotate_image is skipped here because it depends on a DetectionResult shape
 that differs from the current dataclass definition in types.py.
 """
+
 import numpy as np
 import pytest
 
 from apps.helpers.imageUtils import compute_iou, letterbox, nms
 
-
 # ──────────────────────────────────────────────────────────────────────────────
 # letterbox
 # ──────────────────────────────────────────────────────────────────────────────
+
 
 class TestLetterbox:
     def test_square_image_unchanged_shape(self):
@@ -66,6 +67,7 @@ class TestLetterbox:
 # compute_iou
 # ──────────────────────────────────────────────────────────────────────────────
 
+
 class TestComputeIoU:
     def test_identical_boxes(self):
         box = [0, 0, 100, 100]
@@ -88,7 +90,7 @@ class TestComputeIoU:
 
     def test_contained_box(self):
         # small box fully inside large box
-        box = [2, 2, 8, 8]   # area 36
+        box = [2, 2, 8, 8]  # area 36
         boxes = np.array([[0, 0, 10, 10]])  # area 100
         iou = compute_iou(box, boxes)
         # IoU = 36 / (36 + 100 - 36)
@@ -96,10 +98,12 @@ class TestComputeIoU:
 
     def test_multiple_boxes(self):
         box = [0, 0, 10, 10]
-        boxes = np.array([
-            [0, 0, 10, 10],   # identical → 1.0
-            [20, 20, 30, 30], # no overlap → 0.0
-        ])
+        boxes = np.array(
+            [
+                [0, 0, 10, 10],  # identical → 1.0
+                [20, 20, 30, 30],  # no overlap → 0.0
+            ]
+        )
         iou = compute_iou(box, boxes)
         assert len(iou) == 2
         assert iou[0] == pytest.approx(1.0)
@@ -115,6 +119,7 @@ class TestComputeIoU:
 # ──────────────────────────────────────────────────────────────────────────────
 # nms
 # ──────────────────────────────────────────────────────────────────────────────
+
 
 class TestNMS:
     def test_single_box_kept(self):
@@ -164,5 +169,5 @@ class TestNMS:
         boxes = np.array([[0, 0, 10, 10], [5, 0, 15, 10], [11, 0, 21, 10]])
         scores = np.array([0.9, 0.8, 0.7])
         keep = nms(boxes, scores, iou_threshold=0.3)
-        assert 0 in keep       # highest score always kept
+        assert 0 in keep  # highest score always kept
         assert len(keep) >= 1

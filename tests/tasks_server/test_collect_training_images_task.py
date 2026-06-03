@@ -28,7 +28,6 @@ from apps.helpers.imageProviders.imageProvider import (
 )
 from apps.tasks_server.tasks.CollectTrainingImagesTask import CollectTrainingImagesTask
 
-
 # ─── Shared constants ─────────────────────────────────────────────────────────
 
 _LABEL_UUID = "label-test-uuid"
@@ -38,13 +37,12 @@ _SOURCE = "clip.mp4"
 _PARAMS = {
     "source_uuids": ["src-uuid"],
     "output_dir": "test_collected",
-    "model_label_config": [
-        {"modelName": _MODEL_NAME, "labelValues": {_LABEL_UUID: 0.5}}
-    ],
+    "model_label_config": [{"modelName": _MODEL_NAME, "labelValues": {_LABEL_UUID: 0.5}}],
 }
 
 
 # ─── Test helpers ─────────────────────────────────────────────────────────────
+
 
 def _tracked_image(frame_idx: int, source: str = _SOURCE) -> ImageWithProviderMetadata:
     """Image with source + frame_idx so it gets a unique_id."""
@@ -118,18 +116,10 @@ async def _run_task(
     files_root = str(tmp_path or Path("/tmp"))
 
     with (
-        patch(
-            "apps.tasks_server.tasks.CollectTrainingImagesTask.SourceHelper"
-        ) as mock_sh,
-        patch(
-            "apps.tasks_server.tasks.CollectTrainingImagesTask.ModelsApi"
-        ) as mock_models_cls,
-        patch(
-            "apps.tasks_server.tasks.CollectTrainingImagesTask.InferenceApi"
-        ) as mock_inf_cls,
-        patch(
-            "apps.tasks_server.tasks.CollectTrainingImagesTask.ImagesApi"
-        ) as mock_img_cls,
+        patch("apps.tasks_server.tasks.CollectTrainingImagesTask.SourceHelper") as mock_sh,
+        patch("apps.tasks_server.tasks.CollectTrainingImagesTask.ModelsApi") as mock_models_cls,
+        patch("apps.tasks_server.tasks.CollectTrainingImagesTask.InferenceApi") as mock_inf_cls,
+        patch("apps.tasks_server.tasks.CollectTrainingImagesTask.ImagesApi") as mock_img_cls,
         patch.dict(os.environ, {"FILES_ROOT": files_root}),
     ):
         mock_sh.return_value.get_image_provider.return_value = provider
@@ -144,6 +134,7 @@ async def _run_task(
 
 
 # ─── _init() unit tests ───────────────────────────────────────────────────────
+
 
 async def test_init_empty_processed_ids_for_fresh_run():
     task = _make_task()
@@ -168,6 +159,7 @@ async def test_init_empty_resume_data_gives_empty_ids():
 
 
 # ─── Full-run integration tests ───────────────────────────────────────────────
+
 
 async def test_processed_ids_saved_in_resume_data_after_run(tmp_path):
     """After a completed run, resume_data must contain the IDs of saved images."""
@@ -197,6 +189,7 @@ async def test_no_detections_means_no_processed_ids(tmp_path):
 
 # ─── Resume / dedup tests ─────────────────────────────────────────────────────
 
+
 async def test_already_processed_images_are_skipped(tmp_path):
     """On a resumed run, images already in processed_ids must not trigger inference."""
     existing_ids = [f"{_SOURCE}:0", f"{_SOURCE}:1"]
@@ -209,18 +202,10 @@ async def test_already_processed_images_are_skipped(tmp_path):
     pin_resp.pin_id = "pin-1"
 
     with (
-        patch(
-            "apps.tasks_server.tasks.CollectTrainingImagesTask.SourceHelper"
-        ) as mock_sh,
-        patch(
-            "apps.tasks_server.tasks.CollectTrainingImagesTask.ModelsApi"
-        ) as mock_models_cls,
-        patch(
-            "apps.tasks_server.tasks.CollectTrainingImagesTask.InferenceApi"
-        ) as mock_inf_cls,
-        patch(
-            "apps.tasks_server.tasks.CollectTrainingImagesTask.ImagesApi"
-        ) as mock_img_cls,
+        patch("apps.tasks_server.tasks.CollectTrainingImagesTask.SourceHelper") as mock_sh,
+        patch("apps.tasks_server.tasks.CollectTrainingImagesTask.ModelsApi") as mock_models_cls,
+        patch("apps.tasks_server.tasks.CollectTrainingImagesTask.InferenceApi") as mock_inf_cls,
+        patch("apps.tasks_server.tasks.CollectTrainingImagesTask.ImagesApi") as mock_img_cls,
         patch.dict(os.environ, {"FILES_ROOT": str(tmp_path)}),
     ):
         mock_sh.return_value.get_image_provider.return_value = provider
@@ -259,5 +244,5 @@ async def test_mixed_tracked_and_untracked_images(tmp_path):
     saved_ids = set(task._resume_data.get("processed_ids", []))
     assert f"{_SOURCE}:0" in saved_ids
     assert f"{_SOURCE}:1" in saved_ids
-    assert len(saved_ids) == 2   # the untracked image does not contribute an ID
+    assert len(saved_ids) == 2  # the untracked image does not contribute an ID
     assert task._resume_data["images_saved"] == 3

@@ -1,7 +1,6 @@
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Annotated, Any, Dict, List, Literal, Optional, Union
-from typing import TypeAlias
+from typing import Annotated, Any, Dict, List, Literal, Optional, TypeAlias, Union
 from uuid import uuid4
 
 TaskParams: TypeAlias = Dict[str, Any]
@@ -40,7 +39,9 @@ def validate_raw_json_dict(v: Any) -> Dict[str, str]:
             return {}
     return v if isinstance(v, dict) else {}
 
+
 RawJsonDict = Annotated[Dict[str, Any], BeforeValidator(validate_raw_json_dict)]
+
 
 def validate_base64_img(v: Any) -> str:
     if isinstance(v, np.ndarray):
@@ -62,6 +63,7 @@ Base64Image = Annotated[Optional[str], BeforeValidator(validate_base64_img)]
 class TagKind(str, Enum):
     GENERIC = "generic"
     SYSTEM = "system"
+    TASK_GENERATED = "task_generated"
 
 
 class TimestampModel(SQLModel):
@@ -108,10 +110,12 @@ class Label(LabelBase, TimestampModel, table=True):
     children: List["Label"] = Relationship(back_populates="parent")
     bboxes: List["BBox"] = Relationship(back_populates="label")
 
+
 class LabelRead(BaseModel):
     """
     The public read-only representation of an annotation label.
     """
+
     uuid: str
     name: str
     color: Optional[str] = None
@@ -163,15 +167,16 @@ class ImageRecordRead(BaseModel):
 
 class ImageLabelFilter(BaseModel):
     """A single condition on the image_labels table used when searching images."""
+
     label_uuid: str
     status: ImageLabelStatus
     exclude: bool = False
     require_verified: bool = False  # if True: EXISTS (status IN PRESENT, ABSENT); status/exclude ignored
 
 
-
 class TagPresenceFilter(BaseModel):
     """Require or exclude images based on bbox-level tag presence."""
+
     tag_uuid: str
     exclude: bool = False  # False = require at least one bbox has this tag; True = require none do
 
@@ -207,6 +212,7 @@ class FileEntry(BaseModel):
     modified_at: Optional[datetime] = None
     mime_type: Optional[str] = None
     uuid: Optional[str] = None
+
 
 class BBoxTagLink(SQLModel, table=True):
     """
@@ -255,8 +261,10 @@ class BBox(BBoxBase, TimestampModel, table=True):
     label: Label = Relationship(back_populates="bboxes")
     tags: List["Tag"] = Relationship(back_populates="bboxes", link_model=BBoxTagLink)
 
+
 class BBoxRead(BaseModel):
-    """ The public read-only representation of a bounding box. """
+    """The public read-only representation of a bounding box."""
+
     uuid: str
     label_uuid: Optional[str] = None
     x: float
@@ -272,6 +280,7 @@ class BBoxRead(BaseModel):
 
 class BBoxUpdate(BaseModel):
     """Input data for creating or replacing a bounding box."""
+
     uuid: str
     label_uuid: str
     x: float
@@ -290,7 +299,9 @@ class BBoxUpdate(BaseModel):
 
 class ImageRecordUpdate(BaseModel):
     """Input data for replacing all bboxes on an image."""
+
     bboxes: List[BBoxUpdate] = []
+
 
 class TagBase(SQLModel):
     name: str = Field(unique=True)
@@ -311,6 +322,7 @@ class Tag(TagBase, TimestampModel, table=True):
     __tablename__ = "tags"
     uuid: str = Field(default_factory=lambda: str(uuid4()), primary_key=True)
     bboxes: List[BBox] = Relationship(back_populates="tags", link_model=BBoxTagLink)
+
 
 class TagRead(BaseModel):
     uuid: str
@@ -368,6 +380,9 @@ class TaskInstanceBase(SQLModel):
     result_json: Optional[Dict[str, Any]] = Field(default=None, sa_column=Column(JSON))
     error_message: Optional[str] = None
     expires_at: Optional[datetime] = None
+    started_at: Optional[datetime] = Field(default=None, sa_type=DateTime(timezone=True))
+    ended_at: Optional[datetime] = Field(default=None, sa_type=DateTime(timezone=True))
+    log_json: Optional[List[str]] = Field(default=None, sa_column=Column(JSON))
 
 
 class TaskInstance(TaskInstanceBase, TimestampModel, table=True):
@@ -396,6 +411,9 @@ class TaskInstanceRead(BaseModel):
     result: Optional[Dict[str, Any]] = Field(default=None, alias="result_json")
     error_message: Optional[str] = None
     created_at: Optional[datetime] = None
+    started_at: Optional[datetime] = None
+    ended_at: Optional[datetime] = None
+    log_lines: Optional[List[str]] = Field(default=None, alias="log_json")
 
     model_config = ConfigDict(from_attributes=True, populate_by_name=True)
 
@@ -427,18 +445,21 @@ class ImageLabelRead(BaseModel):
 # Dataset filter condition types
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 class ImageAgeCondition(BaseModel):
     """Filter by image created_at or updated_at."""
+
     type: Literal["image_age"] = "image_age"
     field: Literal["created_at", "updated_at"] = "updated_at"
-    within_days: Optional[int] = None    # relative: last N days (takes priority over after/before)
-    after: Optional[datetime] = None     # absolute lower bound
-    before: Optional[datetime] = None    # absolute upper bound
+    within_days: Optional[int] = None  # relative: last N days (takes priority over after/before)
+    after: Optional[datetime] = None  # absolute lower bound
+    before: Optional[datetime] = None  # absolute upper bound
 
 
 class BboxAgeCondition(BaseModel):
     """Filter images by whether any of their bboxes were recently created/updated.
     Requires bbox.created_at / bbox.updated_at columns (added in add_timestamps_to_bboxes migration)."""
+
     type: Literal["bbox_age"] = "bbox_age"
     field: Literal["created_at", "updated_at"] = "updated_at"
     within_days: Optional[int] = None
@@ -448,13 +469,15 @@ class BboxAgeCondition(BaseModel):
 
 class TagCondition(BaseModel):
     """Require or exclude images based on any bbox carrying a specific tag."""
+
     type: Literal["tag"] = "tag"
     tag_uuid: str
-    exclude: bool = False   # False = require at least one bbox has this tag; True = require none do
+    exclude: bool = False  # False = require at least one bbox has this tag; True = require none do
 
 
 class DatasetLabelStatusCondition(BaseModel):
     """Filter on the image_labels status for this dataset's own relevant labels."""
+
     type: Literal["dataset_label_status"] = "dataset_label_status"
     check: Literal["all_verified", "exclude_uncertain"]
     # "all_verified"      → for each dataset label: EXISTS row with status PRESENT or ABSENT
@@ -463,6 +486,7 @@ class DatasetLabelStatusCondition(BaseModel):
 
 class FilenameCondition(BaseModel):
     """Substring match on image filename."""
+
     type: Literal["filename"] = "filename"
     pattern: str
 
@@ -482,12 +506,14 @@ FilterCondition = Annotated[
 class DatasetFilterCriteria(BaseModel):
     """Stored as JSON in datasets.filter_json. AND-combined list of conditions.
     Conditions of type DatasetLabelStatusCondition operate over the dataset's own label_uuids."""
+
     conditions: List[FilterCondition] = Field(default_factory=list)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Dataset ORM models
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 class DatasetBase(SQLModel):
     name: str = Field(unique=True, index=True)
@@ -533,7 +559,9 @@ class DatasetUpdate(BaseModel):
     name: Optional[str] = None
     description: Optional[str] = None
     filter_json: Optional[DatasetFilterCriteria] = None
-    label_uuids: Optional[List[str]] = None   # None = no change; [] = remove all   # None = no change; [] = remove all   # None = no change; [] = remove all
+    label_uuids: Optional[List[str]] = (
+        None  # None = no change; [] = remove all   # None = no change; [] = remove all   # None = no change; [] = remove all
+    )
 
 
 # ─── Model Configurations ────────────────────────────────────────────────────

@@ -49,11 +49,14 @@ async def test_proxy_tasks_route_forwards(http_client):
 
 async def test_proxy_called_with_correct_path(http_client, monkeypatch):
     """Verify the proxy handle_request receives the path segment after the route prefix."""
-    import apps.image_tagging_server.web as web_module
     from unittest.mock import AsyncMock
+
     from fastapi.responses import JSONResponse
 
+    import apps.image_tagging_server.web as web_module
+
     captured = {}
+
     async def capture(path, request):
         captured["path"] = path
         return JSONResponse(content={"status": "success"})

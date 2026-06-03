@@ -26,6 +26,7 @@ STREAM_START_TIMEOUT = 10.0
 STREAM_READ_TIMEOUT = 10.0
 FFMPEG_START_TIMEOUT = 30.0
 
+
 @register_image_provider()
 class FfmpegImageProvider(ImageProvider):
     @classmethod
@@ -44,7 +45,10 @@ class FfmpegImageProvider(ImageProvider):
         self._video_path: str = video_path.strip()
         self._ffmpeg_args: dict = output_args
         if rtsp_relay and video_path.lower().startswith("rtsp:"):
-            relay_host, relay_port = APPS_CONFIG[APPS.RELAY_BUFFER_SERVER].host, APPS_CONFIG[APPS.RELAY_BUFFER_SERVER].port
+            relay_host, relay_port = (
+                APPS_CONFIG[APPS.RELAY_BUFFER_SERVER].host,
+                APPS_CONFIG[APPS.RELAY_BUFFER_SERVER].port,
+            )
             config = relay_buffer_client.Configuration(f"http://{relay_host}:{relay_port}")
             self._rtsp_relay_api = relay_buffer_client.ApiClient(config)
             self._relayed_name = f"stream-{uuid.uuid4()}"
@@ -65,7 +69,7 @@ class FfmpegImageProvider(ImageProvider):
                     streams = await asyncio.to_thread(api.list_streams)
                     for stream in streams.get("results", []):
                         if stream.get("name") == stream_name:
-                            if stream['info']['mtx_path']['bytes_received'] > 0:
+                            if stream["info"]["mtx_path"]["bytes_received"] > 0:
                                 return True
                             break
                     await asyncio.sleep(poll_interval)
@@ -74,9 +78,7 @@ class FfmpegImageProvider(ImageProvider):
             stream_found = await wait_for_stream(api, self._relayed_name, STREAM_START_TIMEOUT)
             if not stream_found:
                 raise TimeoutError(f"Timed out waiting for '{self._relayed_name}' to appear in relay list")
-            stream_url = (
-                f"rtsp://{APPS_CONFIG[APPS.MEDIA_MTX_RTSP].host}:{APPS_CONFIG[APPS.MEDIA_MTX_RTSP].port}/{self._relayed_name}"
-            )
+            stream_url = f"rtsp://{APPS_CONFIG[APPS.MEDIA_MTX_RTSP].host}:{APPS_CONFIG[APPS.MEDIA_MTX_RTSP].port}/{self._relayed_name}"
         else:
             stream_url = self._video_path
 

@@ -3,6 +3,7 @@
 import asyncio
 import logging
 import sys
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Union
 
 import db_client
@@ -87,9 +88,7 @@ class Manager:
 
         return results
 
-    async def get_tasks_instance_info(
-        self, task_uuids: Union[List[str], str, None] = None
-    ) -> Dict[str, TaskInfo]:
+    async def get_tasks_instance_info(self, task_uuids: Union[List[str], str, None] = None) -> Dict[str, TaskInfo]:
         if isinstance(task_uuids, str):
             task_uuids = [task_uuids]
 
@@ -229,7 +228,8 @@ class Manager:
 
             try:
                 if self._running_tasks.pop(task_info.instance.uuid, None) is not None:
-                    await self._save_task_data(task_info)
+                    # Suspended tasks are resumable; don't write ended_at.
+                    await self._save_task_data(task_info, ended_at=None)
             except Exception as e:
                 logger.exception(f"Error while saving task data: {e}")
             paused_tasks.append(task_info.instance.uuid)
@@ -284,6 +284,34 @@ class Manager:
                 resumed_tasks.append(instance.uuid)
 
         return resumed_tasks
+
+    async def pause_tasks_in_place(self, task_uuids: Union[List[str], str]) -> List[str]:
+        """Pause tasks cooperatively in-place. Task stays in _running_tasks; DB status unchanged."""
+        if isinstance(task_uuids, str):
+            task_uuids = [task_uuids]
+        paused = []
+        for tid in task_uuids:
+            task_info = self._running_tasks.get(tid)
+            if task_info and task_info.task and task_info.instance.status == TaskStatus.RUNNING:
+                await task_info.task.pause()
+                paused.append(tid)
+            else:
+                logger.warning(f"Can't pause in place {tid}: not a running task")
+        return paused
+
+    async def resume_tasks_in_place(self, task_uuids: Union[List[str], str]) -> List[str]:
+        """Resume tasks that were paused in-place."""
+        if isinstance(task_uuids, str):
+            task_uuids = [task_uuids]
+        resumed = []
+        for tid in task_uuids:
+            task_info = self._running_tasks.get(tid)
+            if task_info and task_info.task:
+                await task_info.task.resume()
+                resumed.append(tid)
+            else:
+                logger.warning(f"Can't resume in place {tid}: not in running tasks")
+        return resumed
 
     async def start_new_task(self, task_config_uuid: str) -> Optional[TaskInfo]:
         configs = await self.get_task_configs([task_config_uuid])
@@ -343,18 +371,18 @@ class Manager:
             return
         try:
             task_info.instance.status = task_info.task.get_status()
-            await self._save_task_data(task_info)
+            await self._save_task_data(task_info, ended_at=datetime.now(timezone.utc))
             if task_info.config.params_json.get(Task.InternalKeys.ONESHOT_RESULT, False):
                 self._pending_oneshot_deletes.add(task_info.instance.uuid)
         except Exception:
             logger.exception(f"Error completing task {task_info.instance.uuid}; forcing ERROR status")
             task_info.instance.status = TaskStatus.ERROR
             try:
-                await self._save_task_data(task_info)
+                await self._save_task_data(task_info, ended_at=datetime.now(timezone.utc))
             except Exception:
                 logger.exception(f"Failed to save ERROR status for task {task_info.instance.uuid}")
 
-    async def _save_task_data(self, task_info: TaskInfo) -> None:
+    async def _save_task_data(self, task_info: TaskInfo, ended_at: Optional[datetime] = None) -> None:
         if task_info.task.is_data_ready():
             await asyncio.to_thread(
                 TasksApi(self._db_api_client).set_task_instance_resume_data,
@@ -362,6 +390,8 @@ class Manager:
                 db_models.SetTaskResumeDataPayload(resume_data=task_info.task.get_resume_data()),
             )
             task_info.task.clear_data_ready()
+        # Status and result are critical — a failure here must propagate so the
+        # caller's retry logic can attempt recovery.
         await asyncio.gather(
             asyncio.to_thread(
                 TasksApi(self._db_api_client).set_task_instance_result,
@@ -374,15 +404,31 @@ class Manager:
                 db_models.SetTaskStatusPayload(status=task_info.instance.status),
             ),
         )
+        # Timestamps and logs are best-effort: a failure must not block status/result
+        # from being written, and must not prevent the task from being marked done.
+        # ended_at is None for suspended tasks (they can be resumed) and set by
+        # callers that know the task has truly terminated.
+        try:
+            await asyncio.to_thread(
+                TasksApi(self._db_api_client).set_task_instance_timestamps,
+                task_info.instance.uuid,
+                db_models.SetTaskTimestampsPayload(
+                    ended_at=ended_at,
+                    log_json=list(task_info.task.get_log_lines()),
+                ),
+            )
+        except Exception:
+            logger.exception(f"Failed to persist timestamps/logs for task {task_info.instance.uuid} (non-fatal)")
 
     async def _start_task(
         self,
         config: db_models.TaskConfigRead,
         resume_instance: Optional[db_models.TaskInstanceRead] = None,
     ) -> Optional[TaskInfo]:
-        task = task_registry[config.typename](
-            task_config_uuid=config.uuid, params=config.params_json, manager=self
-        )
+        # Inject the config display name so tasks can use it for generated artifact names
+        # without needing a separate API call.  Use a copy to avoid mutating the config.
+        task_params = {**config.params_json, "_config_name": config.name}
+        task = task_registry[config.typename](task_config_uuid=config.uuid, params=task_params, manager=self)
         if resume_instance:
             instance = resume_instance
             task.set_resume_data(resume_instance.resume_data or {})
@@ -397,17 +443,24 @@ class Manager:
         self._running_tasks[instance.uuid] = task_info
         await task.start()
         instance.status = TaskStatus.RUNNING
+        started_at = datetime.now(timezone.utc)
         # Register the completion handler before the DB write so that a DB
         # failure cannot leave the task running with no completion handler.
         t = asyncio.create_task(self._on_task_complete(task_info))
         self._completion_tasks.add(t)
         t.add_done_callback(self._completion_tasks.discard)
-        # Persist the running status immediately so the DB is the authoritative
-        # source of truth for task state from the moment execution begins.
-        await asyncio.to_thread(
-            TasksApi(self._db_api_client).set_task_instance_status,
-            instance.uuid,
-            db_models.SetTaskStatusPayload(status=TaskStatus.RUNNING),
+        # Persist the running status and start timestamp immediately.
+        await asyncio.gather(
+            asyncio.to_thread(
+                TasksApi(self._db_api_client).set_task_instance_status,
+                instance.uuid,
+                db_models.SetTaskStatusPayload(status=TaskStatus.RUNNING),
+            ),
+            asyncio.to_thread(
+                TasksApi(self._db_api_client).set_task_instance_timestamps,
+                instance.uuid,
+                db_models.SetTaskTimestampsPayload(started_at=started_at),
+            ),
         )
         return task_info
 
@@ -446,11 +499,13 @@ class Manager:
                 else:
                     recovered_status = db_models.TaskStatus.ERROR
                     logger.info(f"Task {inst.uuid} interrupted without checkpoint — marking error")
-                coros.append(asyncio.to_thread(
-                    TasksApi(self._db_api_client).set_task_instance_status,
-                    inst.uuid,
-                    db_models.SetTaskStatusPayload(status=recovered_status),
-                ))
+                coros.append(
+                    asyncio.to_thread(
+                        TasksApi(self._db_api_client).set_task_instance_status,
+                        inst.uuid,
+                        db_models.SetTaskStatusPayload(status=recovered_status),
+                    )
+                )
             await asyncio.gather(*coros)
 
     async def _worker_task(self):

@@ -1,7 +1,7 @@
 import pytest
 
-
 # --- liveness ---
+
 
 async def test_db_server_alive(db):
     r = await db.get("/server-config")
@@ -35,6 +35,7 @@ async def test_tagging_server_alive(tagging):
 
 # --- db_server round-trip ---
 
+
 async def test_label_round_trip(db):
     r = await db.post("/api/labels", json={"name": "_smoke", "color": "#123456"})
     assert r.json()["status"] == "success"
@@ -56,6 +57,7 @@ async def test_image_list(db):
 
 # --- inference_server ---
 
+
 async def test_models_list(inference):
     r = await inference.get("/api/models")
     assert r.status_code == 200
@@ -63,6 +65,7 @@ async def test_models_list(inference):
 
 
 # --- tasks_server ---
+
 
 async def test_task_types_list(tasks):
     r = await tasks.get("/api/tasks/types/list")
@@ -119,12 +122,10 @@ async def test_started_task_reports_running_status(tasks):
         assert r.json()["status"] == "success"
         task_data = r.json()["tasks"].get(task_uuid, {})
         instance_status = task_data.get("instance", {}).get("status", "")
-        assert instance_status != "new", (
-            f"Task status must not be the stale DB initial value 'new'; got {instance_status!r}"
-        )
-        assert instance_status in ("running", "completed", "error"), (
-            f"Unexpected task status: {instance_status!r}"
-        )
+        assert (
+            instance_status != "new"
+        ), f"Task status must not be the stale DB initial value 'new'; got {instance_status!r}"
+        assert instance_status in ("running", "completed", "error"), f"Unexpected task status: {instance_status!r}"
 
     finally:
         # Best-effort cleanup — cancel if still running, then delete.
@@ -137,6 +138,7 @@ async def test_started_task_reports_running_status(tasks):
 
 # --- relay_buffer_server ---
 
+
 async def test_streams_list(relay):
     r = await relay.get("/api/streams/list")
     assert r.status_code == 200
@@ -144,6 +146,7 @@ async def test_streams_list(relay):
 
 
 # --- end-to-end proxy (image_tagging_server -> downstream) ---
+
 
 async def test_proxy_to_db(tagging):
     r = await tagging.get("/api/labels/")

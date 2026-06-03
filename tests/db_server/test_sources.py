@@ -1,10 +1,10 @@
 """Tests for source management endpoints — db_server /api/sources/."""
-import pytest
 
-from apps.helpers.imageProviders.Registry import image_provider_registry
+import pytest
 
 # Import providers so they register themselves
 import apps.helpers.imageProviders  # noqa: F401
+from apps.helpers.imageProviders.Registry import image_provider_registry
 
 
 @pytest.fixture
@@ -23,6 +23,7 @@ def provider_params():
 # ──────────────────────────────────────────────────────────────────────────────
 # Image provider discovery
 # ──────────────────────────────────────────────────────────────────────────────
+
 
 async def test_list_image_providers(http_client):
     r = await http_client.get("/api/sources/image-providers/list")
@@ -58,6 +59,7 @@ async def test_get_image_provider_schema_unknown(http_client):
 # ──────────────────────────────────────────────────────────────────────────────
 # Source CRUD
 # ──────────────────────────────────────────────────────────────────────────────
+
 
 async def test_list_sources_empty(http_client):
     r = await http_client.get("/api/sources/get")

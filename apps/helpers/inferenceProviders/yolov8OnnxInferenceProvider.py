@@ -1,4 +1,5 @@
 import logging
+import sys
 import time
 from typing import List, Optional
 from uuid import uuid4
@@ -6,7 +7,6 @@ from uuid import uuid4
 import cv2
 import numpy as np
 import onnxruntime as ort
-import sys
 
 import apps.helpers.yoloUtils as YoloUtils
 from apps.helpers.bboxUtils import BBox
@@ -17,6 +17,7 @@ from .inferenceProvider import InferenceProvider
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger(__file__)
 logger.setLevel(logging.DEBUG)
+
 
 class YOLOv8ONNXInferenceProvider(InferenceProvider):
     def __init__(

@@ -12,6 +12,7 @@ UNCERTAIN rows were never meaningful to store (implicit default = no row).
 Derived ABSENT rows (all-false-positive bboxes) are no longer written.
 This migration removes all non-PRESENT rows left from the old approach.
 """
+
 from typing import Sequence, Union
 
 from alembic import op

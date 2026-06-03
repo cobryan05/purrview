@@ -9,7 +9,7 @@ import { TextField } from './TextField.js'
 import { ModelLabelSelectField } from './ModelLabelSelectField.js';
 import { CheckboxField } from './CheckboxField.js';
 import { DropDownField } from './DropDownField.js';
-import { fetchTags } from '/app-static/js/shared/api/tags.js';
+import { fetchTags, createNewTag } from '/app-static/js/shared/api/tags.js';
 import { fetchLabels } from '/app-static/js/shared/api/labels.js';
 // Factory map
 export const fieldFactories = {
@@ -168,8 +168,22 @@ export const fieldFactories = {
     });
   },
 
+  async select(fieldName, fieldMeta, values, onChange) {
+    const { options = [], ...rest } = fieldMeta;
+    // Schema options use { value, label }; DropDownField expects { key, text }.
+    const dropdownOptions = options.map(opt =>
+      typeof opt === 'string' ? opt : { key: opt.value ?? opt.key, text: opt.label ?? opt.text }
+    );
+    return new DropDownField({
+      value: values[fieldName],
+      onChange: (val) => onChange?.(val),
+      options: dropdownOptions,
+      ...rest,
+    });
+  },
+
   async tags(fieldName, fieldMeta, values, onChange) {
-    const { ...rest } = fieldMeta;
+    const { allow_add_tag, ...rest } = fieldMeta;
 
     const tags = await fetchTags();
 
@@ -179,7 +193,7 @@ export const fieldFactories = {
       color: tag.color || '#cccccc',
     }));
 
-    return await new CheckboxField({
+    const checkboxField = new CheckboxField({
       value: values[fieldName],
       onChange: (val) => {
         onChange?.(val);
@@ -187,5 +201,91 @@ export const fieldFactories = {
       options: tagOptions,
       ...rest
     });
+
+    if (!allow_add_tag) return checkboxField;
+
+    // Wrap with an inline "add new tag" affordance.
+    return {
+      getEditMode: () => true,
+      getValue: () => checkboxField.getValue(),
+      renderView: async () => checkboxField.renderView(),
+      renderEdit: async () => {
+        const wrapper = document.createElement('div');
+
+        let checkboxEl = await checkboxField.renderEdit();
+        wrapper.appendChild(checkboxEl);
+
+        const addBtn = document.createElement('button');
+        addBtn.type = 'button';
+        addBtn.textContent = '+ New tag';
+        addBtn.style.cssText = 'font-size:0.8em; cursor:pointer; padding:0.15em 0.5em; margin-top:0.4em; display:block;';
+
+        const inputRow = document.createElement('div');
+        inputRow.style.cssText = 'display:none; align-items:center; gap:0.4em; margin-top:0.3em;';
+        const nameInput = document.createElement('input');
+        nameInput.type = 'text';
+        nameInput.placeholder = 'Tag name…';
+        nameInput.style.cssText = 'font-size:0.85em; padding:0.2em 0.4em;';
+        const saveBtn = document.createElement('button');
+        saveBtn.type = 'button';
+        saveBtn.textContent = 'Save';
+        saveBtn.style.cssText = 'font-size:0.8em; cursor:pointer;';
+        const cancelBtn = document.createElement('button');
+        cancelBtn.type = 'button';
+        cancelBtn.textContent = 'Cancel';
+        cancelBtn.style.cssText = 'font-size:0.8em; cursor:pointer; color:#888;';
+        inputRow.append(nameInput, saveBtn, cancelBtn);
+
+        addBtn.addEventListener('click', () => {
+          addBtn.style.display = 'none';
+          inputRow.style.display = 'flex';
+          nameInput.focus();
+        });
+
+        cancelBtn.addEventListener('click', () => {
+          nameInput.value = '';
+          inputRow.style.display = 'none';
+          addBtn.style.display = '';
+        });
+
+        async function doSave() {
+          const name = nameInput.value.trim();
+          if (!name) return;
+          saveBtn.disabled = true;
+          try {
+            // createNewTag returns the created tag and already clears the cache.
+            const newTag = await createNewTag(name, '#888888');
+            if (newTag) {
+              const opt = { key: newTag.uuid, text: newTag.name, color: newTag.color || '#cccccc' };
+              checkboxField._options.push(opt);
+              checkboxField._optionsMap.set(newTag.uuid, opt);
+              checkboxField._value = [...(checkboxField._value || []), opt];
+              onChange?.(checkboxField.getValue());
+              // Re-render the checkbox list in-place.
+              const newCheckboxEl = await checkboxField.renderEdit();
+              checkboxEl.replaceWith(newCheckboxEl);
+              checkboxEl = newCheckboxEl;
+            }
+          } catch (err) {
+            console.error('Failed to create tag:', err);
+          } finally {
+            saveBtn.disabled = false;
+            nameInput.value = '';
+            inputRow.style.display = 'none';
+            addBtn.style.display = '';
+          }
+        }
+
+        saveBtn.addEventListener('click', doSave);
+        nameInput.addEventListener('keydown', (e) => {
+          if (e.key === 'Enter') doSave();
+          if (e.key === 'Escape') cancelBtn.click();
+        });
+
+        wrapper.appendChild(addBtn);
+        wrapper.appendChild(inputRow);
+        return wrapper;
+      },
+    };
   },
 };

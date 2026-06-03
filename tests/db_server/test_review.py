@@ -3,18 +3,19 @@
 Covers tag filtering, label filtering, filename search, date range,
 image_label filters, cursor pagination, and sort order.
 """
+
 import uuid
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
 from apps.helpers.db.types import UNVERIFIED_TAG_UUID
 from tests.conftest import make_png
 
-
 # ──────────────────────────────────────────────────────────────────────────────
 # Fixtures
 # ──────────────────────────────────────────────────────────────────────────────
+
 
 @pytest.fixture
 async def label_uuid(http_client):
@@ -42,12 +43,17 @@ async def _add_bbox(http_client, image_path: str, label_uuid: str, tag_uuids: li
         "/api/images/metadata/update",
         json={
             "imagePath": image_path,
-            "boxes": [{
-                "uuid": bid,
-                "labelUuid": label_uuid,
-                "x": 0.1, "y": 0.1, "width": 0.2, "height": 0.2,
-                "tagUuids": tag_uuids,
-            }],
+            "boxes": [
+                {
+                    "uuid": bid,
+                    "labelUuid": label_uuid,
+                    "x": 0.1,
+                    "y": 0.1,
+                    "width": 0.2,
+                    "height": 0.2,
+                    "tagUuids": tag_uuids,
+                }
+            ],
         },
     )
     assert r.status_code == 200
@@ -69,6 +75,7 @@ async def _review(http_client, **params):
 # ──────────────────────────────────────────────────────────────────────────────
 # Basic tag filter
 # ──────────────────────────────────────────────────────────────────────────────
+
 
 async def test_empty_queue(http_client):
     images = await _review(http_client, tag_uuids=[UNVERIFIED_TAG_UUID])
@@ -116,6 +123,7 @@ async def test_show_all_bboxes_returns_all_images(http_client, files_root, label
 # Label filter
 # ──────────────────────────────────────────────────────────────────────────────
 
+
 async def test_label_filter_includes_matching(http_client, files_root, label_uuid, label2_uuid):
     _make_image(files_root, "cat-img.png")
     _make_image(files_root, "dog-img.png")
@@ -131,6 +139,7 @@ async def test_label_filter_includes_matching(http_client, files_root, label_uui
 # ──────────────────────────────────────────────────────────────────────────────
 # Filename search
 # ──────────────────────────────────────────────────────────────────────────────
+
 
 async def test_filename_search_matches(http_client, files_root, label_uuid):
     _make_image(files_root, "search-match.png")
@@ -154,6 +163,7 @@ async def test_filename_search_no_results(http_client, files_root, label_uuid):
 # ──────────────────────────────────────────────────────────────────────────────
 # Sort order
 # ──────────────────────────────────────────────────────────────────────────────
+
 
 async def test_default_sort_desc_newest_first(http_client, files_root, label_uuid):
     """Default sort is created_at DESC; later-created images come first."""
@@ -180,6 +190,7 @@ async def test_sort_asc_returns_images(http_client, files_root, label_uuid):
 # Limit / pagination
 # ──────────────────────────────────────────────────────────────────────────────
 
+
 async def test_limit_restricts_results(http_client, files_root, label_uuid):
     for i in range(5):
         name = f"page-{i}.png"
@@ -201,7 +212,7 @@ async def test_cursor_pagination_covers_all_records(http_client, files_root, lab
     after_uuid = None
     after_sort_value = None
 
-    for _ in range(4):   # at most 4 iterations for 4 records with limit=2
+    for _ in range(4):  # at most 4 iterations for 4 records with limit=2
         params = dict(
             tag_uuids=[UNVERIFIED_TAG_UUID],
             sort_by="created_at",
@@ -227,6 +238,7 @@ async def test_cursor_pagination_covers_all_records(http_client, files_root, lab
 # ──────────────────────────────────────────────────────────────────────────────
 # image_label_filters
 # ──────────────────────────────────────────────────────────────────────────────
+
 
 async def test_image_label_filter_present(http_client, files_root, label_uuid):
     """image_label_filters with PRESENT status should only return confirmed images."""

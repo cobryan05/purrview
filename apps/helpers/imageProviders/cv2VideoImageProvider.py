@@ -187,8 +187,8 @@ class Cv2VideoImageProvider(ImageProvider):
                 "required": True,
                 "items": {
                     "type": "string",
-                    "description": "File paths to image or video files, accepts glob patterns."
-                }
+                    "description": "File paths to image or video files, accepts glob patterns.",
+                },
             },
             "loop": {
                 "label": "Loop playlist",

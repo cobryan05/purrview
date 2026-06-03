@@ -1,9 +1,10 @@
 """Tests for single-bbox CRUD and thumbnail endpoints.
 
-  PATCH  /api/images/bbox/{uuid}
-  DELETE /api/images/bbox/{uuid}
-  GET    /api/images/{path}/bbox/{uuid}/thumbnail
+PATCH  /api/images/bbox/{uuid}
+DELETE /api/images/bbox/{uuid}
+GET    /api/images/{path}/bbox/{uuid}/thumbnail
 """
+
 import uuid
 from pathlib import Path
 
@@ -34,12 +35,17 @@ async def setup_image_with_bbox(http_client, image_file, label_uuid):
         "/api/images/metadata/update",
         json={
             "imagePath": "bbox_test.png",
-            "boxes": [{
-                "uuid": bid,
-                "labelUuid": label_uuid,
-                "x": 0.1, "y": 0.1, "width": 0.3, "height": 0.3,
-                "tagUuids": [UNVERIFIED_TAG_UUID],
-            }],
+            "boxes": [
+                {
+                    "uuid": bid,
+                    "labelUuid": label_uuid,
+                    "x": 0.1,
+                    "y": 0.1,
+                    "width": 0.3,
+                    "height": 0.3,
+                    "tagUuids": [UNVERIFIED_TAG_UUID],
+                }
+            ],
         },
     )
     assert r.status_code == 200
@@ -49,6 +55,7 @@ async def setup_image_with_bbox(http_client, image_file, label_uuid):
 # ──────────────────────────────────────────────────────────────────────────────
 # PATCH /api/images/bbox/{uuid}
 # ──────────────────────────────────────────────────────────────────────────────
+
 
 async def test_patch_bbox_updates_label(http_client, setup_image_with_bbox, label_uuid):
     bid = setup_image_with_bbox
@@ -63,9 +70,7 @@ async def test_patch_bbox_updates_label(http_client, setup_image_with_bbox, labe
     )
     assert patch_r.status_code == 204
 
-    meta_r = await http_client.post(
-        "/api/images/metadata/get", json={"imagePath": "bbox_test.png"}
-    )
+    meta_r = await http_client.post("/api/images/metadata/get", json={"imagePath": "bbox_test.png"})
     bboxes = meta_r.json()["image"]["bboxes"]
     assert len(bboxes) == 1
     assert bboxes[0]["label_uuid"] == other_uuid
@@ -81,9 +86,7 @@ async def test_patch_bbox_updates_tags(http_client, setup_image_with_bbox, label
     )
     assert patch_r.status_code == 204
 
-    meta_r = await http_client.post(
-        "/api/images/metadata/get", json={"imagePath": "bbox_test.png"}
-    )
+    meta_r = await http_client.post("/api/images/metadata/get", json={"imagePath": "bbox_test.png"})
     bboxes = meta_r.json()["image"]["bboxes"]
     tag_uuids = [t["uuid"] for t in bboxes[0]["tags"]]
     assert UNVERIFIED_TAG_UUID not in tag_uuids
@@ -101,15 +104,14 @@ async def test_patch_nonexistent_bbox_returns_404(http_client):
 # DELETE /api/images/bbox/{uuid}
 # ──────────────────────────────────────────────────────────────────────────────
 
+
 async def test_delete_bbox_removes_it(http_client, setup_image_with_bbox):
     bid = setup_image_with_bbox
 
     del_r = await http_client.delete(f"/api/images/bbox/{bid}")
     assert del_r.status_code == 204
 
-    meta_r = await http_client.post(
-        "/api/images/metadata/get", json={"imagePath": "bbox_test.png"}
-    )
+    meta_r = await http_client.post("/api/images/metadata/get", json={"imagePath": "bbox_test.png"})
     bboxes = meta_r.json()["image"]["bboxes"]
     assert len(bboxes) == 0
 
@@ -124,11 +126,20 @@ async def test_delete_bbox_recomputes_image_labels(http_client, image_file, labe
     bid = str(uuid.uuid4())
     await http_client.post(
         "/api/images/metadata/update",
-        json={"imagePath": "bbox_test.png", "boxes": [{
-            "uuid": bid, "labelUuid": label_uuid,
-            "x": 0.1, "y": 0.1, "width": 0.3, "height": 0.3,
-            "tagUuids": [],
-        }]},
+        json={
+            "imagePath": "bbox_test.png",
+            "boxes": [
+                {
+                    "uuid": bid,
+                    "labelUuid": label_uuid,
+                    "x": 0.1,
+                    "y": 0.1,
+                    "width": 0.3,
+                    "height": 0.3,
+                    "tagUuids": [],
+                }
+            ],
+        },
     )
 
     labels_r = await http_client.get("/api/images/bbox_test.png/labels")
@@ -143,6 +154,7 @@ async def test_delete_bbox_recomputes_image_labels(http_client, image_file, labe
 # ──────────────────────────────────────────────────────────────────────────────
 # Thumbnail
 # ──────────────────────────────────────────────────────────────────────────────
+
 
 async def test_thumbnail_returns_png_bytes(http_client, setup_image_with_bbox, monkeypatch, tmp_path):
     """Thumbnail endpoint returns PNG image data for a valid bbox."""

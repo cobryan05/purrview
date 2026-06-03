@@ -111,11 +111,11 @@ class WebApp:
                 response_data = {"status": WebApp.FAILURE_KEY, "message": str(e)}
             return JSONResponse(content=response_data)
 
-        @self._app.api_route("/api/images/{path:path}", methods=["GET", "POST", "PUT",  "PATCH", "DELETE"])
+        @self._app.api_route("/api/images/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
         async def proxy_images(request: Request, path: str):
             return await IMAGE_PROXY.handle_request(path, request)
 
-        @self._app.api_route("/api/labels/{path:path}", methods=["GET", "POST", "PUT",  "PATCH", "DELETE"])
+        @self._app.api_route("/api/labels/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
         async def proxy_labels(request: Request, path: str):
             return await LABEL_PROXY.handle_request(path, request)
 
@@ -123,11 +123,11 @@ class WebApp:
         async def proxy_models(request: Request, path: str):
             return await MODELS_PROXY.handle_request(path, request)
 
-        @self._app.api_route("/api/sources/{path:path}", methods=["GET", "POST", "PUT",  "PATCH", "DELETE"])
+        @self._app.api_route("/api/sources/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
         async def proxy_sources(request: Request, path: str):
             return await SOURCES_PROXY.handle_request(path, request)
 
-        @self._app.api_route("/api/tags/{path:path}", methods=["GET", "POST", "PUT",  "PATCH", "DELETE"])
+        @self._app.api_route("/api/tags/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
         async def proxy_tags(request: Request, path: str):
             return await TAG_PROXY.handle_request(path, request)
 

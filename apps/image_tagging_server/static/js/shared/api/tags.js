@@ -66,6 +66,7 @@ export async function createNewTag(name, color, icon = null) {
   // Invalidate cache after successful creation
   tagsFetcher.clear();
   events.publish(EventTypes.TAGS_UPDATED, {});
+  return data.tag;
 }
 
 export async function updateTag(uuid, name, color, icon = undefined) {

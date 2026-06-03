@@ -1,8 +1,8 @@
 import asyncio
 from unittest.mock import MagicMock
 
-import pytest
 import db_client.models as db_models
+import pytest
 
 from apps.helpers.consts import TaskStatus
 from tests.tasks_server.conftest import CONFIG_UUID, TASK_UUID
@@ -101,6 +101,7 @@ async def test_delete_task(http_client):
 
 # ─── Tests for changes made to _start_task and get_tasks_instance_info ────────
 
+
 async def test_start_task_writes_running_status_to_db(manager, tasks_api_mock):
     """_start_task must persist status='running' to the DB immediately on start."""
     # Use a long-running task so completion doesn't race with our assertion.
@@ -120,8 +121,7 @@ async def test_start_task_writes_running_status_to_db(manager, tasks_api_mock):
     await manager.start_new_task(CONFIG_UUID)
 
     running_writes = [
-        c for c in tasks_api_mock.set_task_instance_status.call_args_list
-        if c.args[1].status == "running"
+        c for c in tasks_api_mock.set_task_instance_status.call_args_list if c.args[1].status == "running"
     ]
     assert running_writes, "set_task_instance_status('running') must be called on task start"
 
@@ -166,8 +166,8 @@ async def test_get_task_info_uses_in_memory_status_not_stale_db(manager, tasks_a
     info = await manager.get_tasks_instance_info(None)
 
     assert TASK_UUID in info, "Running task must appear in results"
-    assert info[TASK_UUID].instance.status == TaskStatus.RUNNING, (
-        "In-memory 'running' status must not be overwritten by stale DB 'new' status"
-    )
+    assert (
+        info[TASK_UUID].instance.status == TaskStatus.RUNNING
+    ), "In-memory 'running' status must not be overwritten by stale DB 'new' status"
 
     await manager.cancel_tasks([TASK_UUID])

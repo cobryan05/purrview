@@ -8,20 +8,23 @@ import logging
 import os
 import sys
 from collections import defaultdict
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 import aiofiles
+import jstyleson
 from sqlalchemy.orm import make_transient
 
 from apps import CACHE_DIR, THUMB_CACHE_MAX_MB
+from apps.helpers.consts import TaskStatus
 from apps.helpers.db.db_client import (
     DbClient,
     TagKind,
 )
 from apps.helpers.db.types import (
     AVAILABLE_MODEL_TYPENAMES,
+    UNVERIFIED_TAG_UUID,
     BBoxUpdate,
     DatasetCreate,
     DatasetRead,
@@ -47,9 +50,7 @@ from apps.helpers.db.types import (
     TaskParams,
     TaskResultData,
     TaskResumeData,
-    UNVERIFIED_TAG_UUID,
 )
-from apps.helpers.consts import TaskStatus
 from apps.helpers.fileUtils import get_safe_path
 from apps.helpers.imageProviders.Registry import image_provider_registry
 from apps.helpers.types import (
@@ -246,12 +247,19 @@ class Manager:
         protected: bool = False,
         kind: TagKind = TagKind.GENERIC,
         exclusive_group: Optional[str] = None,
+        uuid: Optional[str] = None,
     ) -> Tag:
         """
         Adds a new tag to the database
         """
         ret = await self._db_client.add_tag(
-            name=name, color=color, icon=icon, protected=protected, kind=kind, exclusive_group=exclusive_group
+            name=name,
+            color=color,
+            icon=icon,
+            protected=protected,
+            kind=kind,
+            exclusive_group=exclusive_group,
+            uuid=uuid,
         )
         return ret
 
@@ -368,7 +376,10 @@ class Manager:
             )
             await asyncio.to_thread(
                 self._db_client.write_image_metadata_to_json,
-                self._get_json_sidefile(safe_path), image.uuid, image.filename, enriched_update,
+                self._get_json_sidefile(safe_path),
+                image.uuid,
+                image.filename,
+                enriched_update,
             )
             await self._recompute_image_labels(image.uuid, enriched_update)
         else:
@@ -420,7 +431,10 @@ class Manager:
         if safe_path is not None:
             await asyncio.to_thread(
                 self._db_client.write_image_metadata_to_json,
-                self._get_json_sidefile(safe_path), image_record.uuid, image_record.filename, update,
+                self._get_json_sidefile(safe_path),
+                image_record.uuid,
+                image_record.filename,
+                update,
             )
         else:
             logger.warning(f"Skipping sidecar write for {image_record.filename!r}: path not under FILES_ROOT")
@@ -433,15 +447,15 @@ class Manager:
         set explicitly by the user via set_image_label and are never touched.
         """
         present_label_uuids = {
-            b.label_uuid for b in update.bboxes
-            if b.label_uuid and UNVERIFIED_TAG_UUID not in b.tag_uuids
+            b.label_uuid for b in update.bboxes if b.label_uuid and UNVERIFIED_TAG_UUID not in b.tag_uuids
         }
         for label_uuid in present_label_uuids:
             await self._db_client.set_image_label(image_uuid, label_uuid, ImageLabelStatus.PRESENT)
 
         existing = await self._db_client.get_image_labels(image_uuid)
         stale_present = [
-            r.label_uuid for r in existing
+            r.label_uuid
+            for r in existing
             if r.status == ImageLabelStatus.PRESENT and r.label_uuid not in present_label_uuids
         ]
         await self._db_client.delete_image_labels(image_uuid, stale_present)
@@ -558,6 +572,132 @@ class Manager:
         return entries
 
     ################################################################################
+    # Image Reconciliation API
+    ################################################################################
+
+    async def list_all_image_stubs(self) -> List[Dict[str, str]]:
+        """Return [{uuid, filename}] for every image record without pagination."""
+        return await self._db_client.get_all_image_stubs()
+
+    async def reconcile_image(self, rel_path: str, sync_mode: str) -> Dict[str, Any]:
+        """Move-aware reconcile of a single image file against the DB.
+
+        1. Reads the sidecar to get the image UUID.
+        2. If that UUID exists in the DB under a different filename and the old
+           file is gone, updates the record's filename (move detection).
+        3. Applies sync_mode: replace_db_with_json | replace_json_with_db |
+           merge | keep_newer.
+
+        Returns a dict with "action" and "rel_path".
+        """
+        image_path = get_safe_path(self._files_root, rel_path)
+        if image_path is None:
+            return {"action": "skipped", "reason": "path outside files_root", "rel_path": rel_path}
+
+        # Sidecars replace the image extension: image.jpg → image.json (matches _get_json_sidefile)
+        sidecar_path = self._get_json_sidefile(image_path)
+
+        if not sidecar_path.exists():
+            logger.debug("reconcile_image: no sidecar for %s, skipping", rel_path)
+            return {"action": "skipped", "reason": "no sidecar", "rel_path": rel_path}
+
+        try:
+            sidecar_data = jstyleson.loads(sidecar_path.read_text())
+        except Exception as e:
+            logger.warning("reconcile_image: failed to parse sidecar %s: %s", sidecar_path, e)
+            return {"action": "error", "reason": str(e), "rel_path": rel_path}
+
+        sidecar_uuid = sidecar_data.get("uuid")
+        if not sidecar_uuid:
+            return {"action": "skipped", "reason": "sidecar has no uuid", "rel_path": rel_path}
+
+        # Move detection: UUID exists but under a different absolute filename.
+        # The DB stores absolute paths (e.g. /files_root/subdir/img.png).
+        existing = await self._db_client.get_image(sidecar_uuid)
+        action = "synced"
+        if existing is not None and existing.filename != str(image_path):
+            old_abs = (
+                Path(existing.filename)
+                if Path(existing.filename).is_absolute()
+                else get_safe_path(self._files_root, existing.filename)
+            )
+            if old_abs is None or not old_abs.exists():
+                # The old file is gone — this is a move.
+                logger.info("reconcile_image: move detected %s → %s", existing.filename, image_path)
+                await self._db_client.update_image_filename(sidecar_uuid, str(image_path))
+                action = "moved"
+
+        # Apply sync_mode.
+        # Every branch that mutates the DB calls _sync_image_state so that
+        # image_labels stays consistent with the new bbox set.
+        if sync_mode == "replace_db_with_json":
+            record = await self._db_client.sync_image_from_json(image_path, overwrite=True)
+            await self._sync_image_state(record)
+        elif sync_mode == "replace_json_with_db":
+            # DB wins: write current DB bboxes back to the sidecar.
+            updated_record = await self._db_client.get_image(sidecar_uuid)
+            if updated_record:
+                await self._sync_image_state(updated_record)
+        elif sync_mode == "merge":
+            record = await self._db_client.sync_image_from_json(image_path, overwrite=False)
+            # Write the merged result back to the sidecar.
+            await self._sync_image_state(record)
+        elif sync_mode == "keep_newer":
+            updated_record = await self._db_client.get_image(sidecar_uuid)
+            if updated_record and updated_record.updated_at:
+                db_ts = updated_record.updated_at
+                if db_ts.tzinfo is None:
+                    db_ts = db_ts.replace(tzinfo=timezone.utc)
+                sidecar_mtime = datetime.fromtimestamp(sidecar_path.stat().st_mtime, tz=timezone.utc)
+                if sidecar_mtime > db_ts:
+                    # Sidecar is newer — import from JSON and rebuild image_labels.
+                    record = await self._db_client.sync_image_from_json(image_path, overwrite=True)
+                    await self._sync_image_state(record)
+                else:
+                    # DB is newer — write DB state back to the sidecar.
+                    await self._sync_image_state(updated_record)
+            else:
+                # No DB record yet — import from JSON.
+                record = await self._db_client.sync_image_from_json(image_path, overwrite=True)
+                await self._sync_image_state(record)
+        else:
+            return {"action": "error", "reason": f"unknown sync_mode: {sync_mode}", "rel_path": rel_path}
+
+        return {"action": action, "rel_path": rel_path}
+
+    async def prune_missing_images(self, known_disk_uuids: List[str]) -> int:
+        """Delete DB records for images whose file is missing and whose UUID is not on disk.
+
+        The known_disk_uuids set is the set of UUIDs seen in sidecars during the
+        reconcile pass.  Any DB record whose file is absent AND whose UUID is not in
+        that set is truly gone (not just moved) and can be safely deleted.
+
+        Returns the number of records deleted.
+        """
+        known_set: Set[str] = set(known_disk_uuids)
+        stubs = await self._db_client.get_all_image_stubs()
+        deleted = 0
+        for stub in stubs:
+            uuid = stub["uuid"]
+            filename = stub["filename"]
+            if uuid in known_set:
+                continue
+            abs_path = get_safe_path(self._files_root, filename)
+            if abs_path is not None and abs_path.exists():
+                continue
+            logger.info("prune_missing_images: deleting %s (%s)", filename, uuid)
+            await self._db_client.delete_image(uuid)
+            deleted += 1
+        return deleted
+
+    async def clear_orphan_generated_tags(self) -> int:
+        """Delete TASK_GENERATED tags with no associated bboxes.
+
+        Returns the number of tags deleted.
+        """
+        return await self._db_client.clear_orphan_generated_tags()
+
+    ################################################################################
     # TASK CONFIGS API
     ################################################################################
 
@@ -627,6 +767,17 @@ class Manager:
     async def set_task_resume_data(self, instance_uuid: str, resume_data: TaskResumeData) -> None:
         await self._db_client.set_task_resume_data(instance_uuid, resume_data)
 
+    async def set_task_timestamps_and_logs(
+        self,
+        instance_uuid: str,
+        started_at: Optional[datetime] = None,
+        ended_at: Optional[datetime] = None,
+        log_json: Optional[List[str]] = None,
+    ) -> None:
+        await self._db_client.set_task_timestamps_and_logs(
+            instance_uuid, started_at=started_at, ended_at=ended_at, log_json=log_json
+        )
+
     async def get_task_results(self, task_uuids: List[str]) -> Dict[str, TaskResultData]:
         results = await self._db_client.get_task_results(task_uuids)
         return results or {}
@@ -690,7 +841,8 @@ class Manager:
         Cache freshness is validated against bbox.updated_at so edits made outside the
         review page (e.g. from the image-tagging canvas) are always reflected.
         """
-        from PIL import Image as PILImage, ImageDraw
+        from PIL import Image as PILImage
+        from PIL import ImageDraw
 
         # Fetch bbox first so we can validate cache freshness against bbox.updated_at.
         result = await self._db_client.get_bbox_with_image(bbox_uuid)
@@ -724,7 +876,7 @@ class Manager:
             label = await self._db_client.get_label_by_uuid(bbox.label_uuid)
             if label and label.color:
                 try:
-                    h = label.color.lstrip('#')
+                    h = label.color.lstrip("#")
                     label_color = (int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16))
                 except (ValueError, IndexError):
                     pass
@@ -732,7 +884,7 @@ class Manager:
         def _generate() -> Optional[bytes]:
             try:
                 with PILImage.open(safe_path) as img:
-                    img = img.convert('RGB')
+                    img = img.convert("RGB")
                     img_w, img_h = img.size
                     pad_x = bw * img_w * 0.2
                     pad_y = bh * img_h * 0.2
@@ -743,8 +895,7 @@ class Manager:
                     cropped = img.crop((left, top, right, bottom))
                     draw = ImageDraw.Draw(cropped)
                     draw.rectangle(
-                        [bx * img_w - left, by * img_h - top,
-                         (bx + bw) * img_w - left, (by + bh) * img_h - top],
+                        [bx * img_w - left, by * img_h - top, (bx + bw) * img_w - left, (by + bh) * img_h - top],
                         outline=label_color,
                         width=3,
                     )
@@ -930,9 +1081,7 @@ class Manager:
         limit: int = 500,
     ) -> tuple[List[ImageRecordRead], bool]:
         """Execute filter criteria in-memory without saving a dataset (unsaved preview)."""
-        images, has_more = await self._db_client.preview_dataset_images(
-            filter_json, label_uuids, limit=limit
-        )
+        images, has_more = await self._db_client.preview_dataset_images(filter_json, label_uuids, limit=limit)
         records = []
         for img in images:
             record = ImageRecordRead.model_validate(img)
@@ -950,8 +1099,7 @@ class Manager:
         for node in nodes:
             if node.model_typename not in AVAILABLE_MODEL_TYPENAMES:
                 raise ValueError(
-                    f"Unknown model typename: {node.model_typename!r}. "
-                    f"Valid choices: {AVAILABLE_MODEL_TYPENAMES}"
+                    f"Unknown model typename: {node.model_typename!r}. " f"Valid choices: {AVAILABLE_MODEL_TYPENAMES}"
                 )
             if node.label_uuid is not None:
                 label = await self._db_client.get_label_by_uuid(node.label_uuid)
@@ -968,9 +1116,7 @@ class Manager:
         await self._validate_model_config_nodes(data.nodes)
         return await self._db_client.create_model_config(data)
 
-    async def update_model_config(
-        self, uuid: str, data: ModelConfigUpdate
-    ) -> Optional[ModelConfigRead]:
+    async def update_model_config(self, uuid: str, data: ModelConfigUpdate) -> Optional[ModelConfigRead]:
         if data.nodes is not None:
             await self._validate_model_config_nodes(data.nodes)
         return await self._db_client.update_model_config(uuid, data)

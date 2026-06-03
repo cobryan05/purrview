@@ -12,10 +12,12 @@ class JsonKeys(str, Enum):
     RESULT = "result"
     ERROR = "error"
 
+
 class JsonValues(str, Enum):
     SUCCESS = "success"
     FAILURE = "failure"
     ERROR = "error"
+
 
 class ApiTags(str, Enum):
     LABELS = "labels"
@@ -27,6 +29,7 @@ class ApiTags(str, Enum):
     TASKS = "tasks"
     DATASETS = "datasets"
     MODEL_CONFIGS = "model_configs"
+
 
 class TaskStatus(str, Enum):
     NEW = "new"

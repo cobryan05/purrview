@@ -253,53 +253,25 @@ export async function fetchTasksStatus({ taskUuids } = {}) {
 
   return data;
 }
-export async function cancelTasks({ taskUuids }) {
-  const res = await fetch('/api/tasks/instances/cancel', {
+/** POST taskUuids to a task-instance operation endpoint; throws on failure. */
+async function _taskOp(endpoint, taskUuids) {
+  const res = await fetch(endpoint, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ taskUuids }),
   });
   if (!res.ok) {
     const err = await res.json();
-    throw new Error(err.message || 'Failed to cancel task');
+    throw new Error(err.message || `Task operation failed: ${endpoint}`);
   }
 }
 
-export async function deleteTasks({ taskUuids }) {
-  const res = await fetch('/api/tasks/instances/delete', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ taskUuids }),
-  });
-  if (!res.ok) {
-    const err = await res.json();
-    throw new Error(err.message || 'Failed to delete task');
-  }
-}
-
-export async function pauseTasks({ taskUuids }) {
-  const res = await fetch('/api/tasks/instances/pause', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ taskUuids }),
-  });
-  if (!res.ok) {
-    const err = await res.json();
-    throw new Error(err.message || 'Failed to pause task');
-  }
-}
-
-export async function resumeTasks({ taskUuids }) {
-  const res = await fetch('/api/tasks/instances/resume', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ taskUuids }),
-  });
-  if (!res.ok) {
-    const err = await res.json();
-    throw new Error(err.message || 'Failed to resume task');
-  }
-}
+export const cancelTasks        = ({ taskUuids }) => _taskOp('/api/tasks/instances/cancel',           taskUuids);
+export const deleteTasks        = ({ taskUuids }) => _taskOp('/api/tasks/instances/delete',           taskUuids);
+export const pauseTasks         = ({ taskUuids }) => _taskOp('/api/tasks/instances/pause',            taskUuids);
+export const resumeTasks        = ({ taskUuids }) => _taskOp('/api/tasks/instances/resume',           taskUuids);
+export const pauseTasksInPlace  = ({ taskUuids }) => _taskOp('/api/tasks/instances/pause-in-place',  taskUuids);
+export const resumeTasksInPlace = ({ taskUuids }) => _taskOp('/api/tasks/instances/resume-in-place', taskUuids);
 
 /**
  * Wait for a task to complete and return its result
