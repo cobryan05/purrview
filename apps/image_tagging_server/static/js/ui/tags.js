@@ -1,7 +1,7 @@
 // tags.js
 import { clearTagCache, createNewTag, deleteTag, fetchTags, updateTag } from '/app-static/js/shared/api/tags.js';
 import { EditableField, TagField } from '/app-static/js/ui/utils/fields/index.js';
-import { createEmojiButton, createGenericRow, toast } from '/app-static/js/ui/utils/index.js';
+import { createEmojiButton, createGenericRow, showPaneError, toast } from '/app-static/js/ui/utils/index.js';
 const DEFAULT_COLOR = '#cccccc';
 
 /**
@@ -155,8 +155,10 @@ export function renderTagList({ target = 'tags-list', editable = true, onSelectC
 
         container.appendChild(newRootRow);
       }
+    }).catch(err => {
+      showPaneError(targetElement, err.message);
     });
   } catch (err) {
-    console.error('Failed to fetch tags:', err);
+    console.error('Failed to render tag list:', err);
   }
 }

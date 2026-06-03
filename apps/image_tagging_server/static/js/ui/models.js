@@ -1,7 +1,7 @@
 import { fetchLabels } from '/app-static/js/shared/api/labels.js';
 import { associateLabel, clearModelsCache, fetchModelsLabelMappings, fetchModelsList } from '/app-static/js/shared/api/models.js';
 import { DropDownField, EditableField, LabelDropDownField } from '/app-static/js/ui/utils/fields/index.js';
-import { createGenericRow, Logger, toast } from '/app-static/js/ui/utils/index.js';
+import { createGenericRow, Logger, showPaneError, toast } from '/app-static/js/ui/utils/index.js';
 
 export function renderModelLabelAssignments({
   target = "model-labels-box",
@@ -45,6 +45,8 @@ export function renderModelLabelAssignments({
       ]
     });
     modelSelectDiv.appendChild(modelDropdownRow);
+  }).catch(err => {
+    showPaneError(modelSelectDiv, err.message);
   });
 
   if (!preselectedModel) return;
@@ -105,5 +107,7 @@ export function renderModelLabelAssignments({
 
       labelAssignmentDiv.appendChild(assignmentRow);
     });
-  }).catch(err => Logger.error(err));
+  }).catch(err => {
+    showPaneError(labelAssignmentDiv, err.message);
+  });
 }

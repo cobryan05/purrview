@@ -261,6 +261,18 @@ async function mountSelectMode(container, { runtime, filter }) {
   });
   container.appendChild(header);
 
+  const bulkRow = document.createElement('div');
+  Object.assign(bulkRow.style, { display: 'flex', gap: '4px', padding: '0 6px 4px' });
+  const markAbsentBtn = document.createElement('button');
+  markAbsentBtn.textContent = 'Mark all absent';
+  Object.assign(markAbsentBtn.style, { fontSize: '0.75em', padding: '2px 6px' });
+  const resetAllBtn = document.createElement('button');
+  resetAllBtn.textContent = 'Reset all';
+  Object.assign(resetAllBtn.style, { fontSize: '0.75em', padding: '2px 6px' });
+  bulkRow.appendChild(markAbsentBtn);
+  bulkRow.appendChild(resetAllBtn);
+  container.appendChild(bulkRow);
+
   const labelsMap = await fetchLabels();
   const byParent = buildHierarchy(labelsMap, filter);
 
@@ -340,6 +352,28 @@ async function mountSelectMode(container, { runtime, filter }) {
       renderSelectRows(label.uuid, indent + 1);
     }
   }
+
+  async function bulkOp(uuids, applyFn, errorMsg) {
+    if (!currentImagePath) { toast('No image loaded'); return; }
+    try {
+      await Promise.all(uuids.map(applyFn));
+    } catch (err) {
+      toast(err.message || errorMsg, 5000, 'error');
+    }
+    refreshStatusButtons();
+  }
+
+  markAbsentBtn.addEventListener('click', () => bulkOp(
+    [...rowUpdaters.keys()].filter(uuid => effectiveStatus(uuid) !== 'present'),
+    uuid => setImageLabel(currentImagePath, uuid, 'absent').then(() => serverStates.set(uuid, 'absent')),
+    'Failed to mark labels absent',
+  ));
+
+  resetAllBtn.addEventListener('click', () => bulkOp(
+    [...serverStates.keys()],
+    uuid => setImageLabel(currentImagePath, uuid, 'uncertain').then(() => serverStates.delete(uuid)),
+    'Failed to reset labels',
+  ));
 
   renderSelectRows(null, 0);
 

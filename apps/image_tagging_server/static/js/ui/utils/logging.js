@@ -107,3 +107,11 @@ export function toast(message, duration = 5000, type = "info", maxToasts = 3) {
     }, { once: true });
   }, duration);
 }
+
+export function showPaneError(el, message) {
+  el.innerHTML = '';
+  const div = document.createElement('div');
+  div.style.cssText = 'padding:1em; color:#c0392b; font-size:0.9em;';
+  div.textContent = `⚠ ${message || 'Server is not responding'}`;
+  el.appendChild(div);
+}

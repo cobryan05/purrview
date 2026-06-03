@@ -1,5 +1,5 @@
 // ================= Sources Manager =================
-import { createGenericRow, runPreviewSourceTest, toast } from './utils/index.js';
+import { createGenericRow, runPreviewSourceTest, showPaneError, toast } from './utils/index.js';
 import { createSource, deleteSources, fetchSourceList, updateSource } from '/app-static/js/shared/api/sources.js';
 import { EditableField, SourceConfigField } from '/app-static/js/ui/utils/fields/index.js';
 /**
@@ -72,6 +72,8 @@ export function renderSourceList({ parent, editable = false, onEdit, onDelete })
       });
       parent.appendChild(row);
     });
+  }).catch(err => {
+    showPaneError(parent, err.message);
   });
 }
 

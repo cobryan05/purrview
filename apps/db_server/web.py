@@ -13,6 +13,7 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 from pydantic.alias_generators import to_camel
+from sqlalchemy.exc import IntegrityError
 
 from apps.db_server.manager import Manager
 from apps.helpers.consts import ApiTags, JsonKeys, JsonValues, TaskStatus
@@ -435,6 +436,11 @@ class WebApp:
         self._register_model_config_routes()
         self._register_exception()
 
+    @staticmethod
+    def _unique_constraint_msg(e: IntegrityError, entity: str) -> str:
+        """Return a friendly message for unique-constraint violations, raw error otherwise."""
+        return f'A {entity} with that name already exists.' if 'unique' in str(e).lower() else str(e)
+
     def _register_exception(self):
         @self._app.exception_handler(RequestValidationError)
         async def validation_exception_handler(request: Request, exc: RequestValidationError):
@@ -622,6 +628,9 @@ class WebApp:
                     source_name=payload.source_name,
                 )
                 return UpdateSourceResponse(status=JsonValues.SUCCESS, source=source)
+            except IntegrityError as e:
+                logger.error(e, exc_info=True)
+                return UpdateSourceResponse(status=JsonValues.FAILURE, message=self._unique_constraint_msg(e, 'source'))
             except Exception as e:
                 logger.error(e, exc_info=True)
                 return UpdateSourceResponse(status=JsonValues.FAILURE, message=str(e))
@@ -649,7 +658,11 @@ class WebApp:
                     source_name=payload.source_name,
                 )
                 return CreateSourceResponse(status=JsonValues.SUCCESS, source=source)
+            except IntegrityError as e:
+                logger.error(e, exc_info=True)
+                return CreateSourceResponse(status=JsonValues.FAILURE, message=self._unique_constraint_msg(e, 'source'))
             except Exception as e:
+                logger.error(e, exc_info=True)
                 return CreateSourceResponse(status=JsonValues.FAILURE, message=str(e))
 
         @self._app.post(
@@ -711,6 +724,9 @@ class WebApp:
                     uuid=request.uuid,
                 )
                 return AddTagResponse(status=JsonValues.SUCCESS, tag=tag)
+            except IntegrityError as e:
+                logger.error(e, exc_info=True)
+                return AddTagResponse(status=JsonValues.FAILURE, message=self._unique_constraint_msg(e, 'tag'))
             except Exception as e:
                 logger.error(e, exc_info=True)
                 return AddTagResponse(status=JsonValues.FAILURE, message=str(e))
@@ -756,6 +772,9 @@ class WebApp:
             try:
                 await self._manager.update_tag(tag_uuid=request.tag_uuid, update_data=request.data)
                 return UpdateTagResponse(status=JsonValues.SUCCESS)
+            except IntegrityError as e:
+                logger.error(e, exc_info=True)
+                return UpdateTagResponse(status=JsonValues.FAILURE, message=self._unique_constraint_msg(e, 'tag'))
             except Exception as e:
                 logger.error(e, exc_info=True)
                 return UpdateTagResponse(status=JsonValues.FAILURE, message=str(e))
@@ -1291,6 +1310,9 @@ class WebApp:
             try:
                 dataset = await self._manager.create_dataset(payload)
                 return DatasetResponse(status=JsonValues.SUCCESS, dataset=dataset)
+            except IntegrityError as e:
+                logger.error(e, exc_info=True)
+                return DatasetResponse(status=JsonValues.FAILURE, message=self._unique_constraint_msg(e, 'dataset'))
             except Exception as e:
                 logger.error(e, exc_info=True)
                 return DatasetResponse(status=JsonValues.FAILURE, message=str(e))
@@ -1307,6 +1329,9 @@ class WebApp:
                 if dataset is None:
                     return DatasetResponse(status=JsonValues.FAILURE, message="Dataset not found")
                 return DatasetResponse(status=JsonValues.SUCCESS, dataset=dataset)
+            except IntegrityError as e:
+                logger.error(e, exc_info=True)
+                return DatasetResponse(status=JsonValues.FAILURE, message=self._unique_constraint_msg(e, 'dataset'))
             except Exception as e:
                 logger.error(e, exc_info=True)
                 return DatasetResponse(status=JsonValues.FAILURE, message=str(e))
@@ -1446,6 +1471,9 @@ class WebApp:
             try:
                 config = await self._manager.create_model_config(payload)
                 return ModelConfigResponse(status=JsonValues.SUCCESS, config=config)
+            except IntegrityError as e:
+                logger.error(e, exc_info=True)
+                return ModelConfigResponse(status=JsonValues.FAILURE, message=self._unique_constraint_msg(e, 'model configuration'))
             except Exception as e:
                 logger.error(e, exc_info=True)
                 return ModelConfigResponse(status=JsonValues.FAILURE, message=str(e))
@@ -1478,6 +1506,9 @@ class WebApp:
                 if config is None:
                     return ModelConfigResponse(status=JsonValues.FAILURE, message="Model config not found")
                 return ModelConfigResponse(status=JsonValues.SUCCESS, config=config)
+            except IntegrityError as e:
+                logger.error(e, exc_info=True)
+                return ModelConfigResponse(status=JsonValues.FAILURE, message=self._unique_constraint_msg(e, 'model configuration'))
             except Exception as e:
                 logger.error(e, exc_info=True)
                 return ModelConfigResponse(status=JsonValues.FAILURE, message=str(e))

@@ -1,6 +1,6 @@
 import { cancelTasks, createTaskConfig, deleteTaskConfigs, deleteTasks, fetchTaskConfigs, fetchTasksStatus, pauseTasks, pauseTasksInPlace, resumeTasks, resumeTasksInPlace, startTask, updateTaskConfig } from '/app-static/js/shared/api/tasks.js';
 import { ActiveTaskField, EditableField, TaskConfigField } from '/app-static/js/ui/utils/fields/index.js';
-import { createGenericRow, Logger, toast } from '/app-static/js/ui/utils/index.js';
+import { createGenericRow, Logger, showPaneError, toast } from '/app-static/js/ui/utils/index.js';
 
 /**
  * Renders the task configs (left column).
@@ -60,8 +60,9 @@ export function renderTaskConfigs({ target = 'task-config-list', onEdit, onDelet
         configListDiv.appendChild(row);
       });
     }));
+  }).catch(err => {
+    showPaneError(configListDiv, err.message);
   });
-
 
   container.appendChild(document.createElement('hr'));
   const createHeader = document.createElement('h3');
@@ -253,12 +254,14 @@ export function renderActiveTasks({ target = 'active-tasks-list', refresh = null
         const content = await fieldInstance.renderView();
 
         // Restore open/scroll state directly on the pre-rendered content node.
+        // When saved state exists, it wins over the renderView() default so that
+        // a user-collapsed completed task stays collapsed on subsequent polls.
         const saved = openState[taskId];
-        if (saved?.detailsOpen) {
+        if (saved !== undefined) {
           const details = content.querySelector('details');
           if (details) {
-            details.open = true;
-            if (saved.scrollTop) {
+            details.open = saved.detailsOpen;
+            if (saved.detailsOpen && saved.scrollTop) {
               requestAnimationFrame(() => {
                 const pre = details.querySelector('pre');
                 if (pre) pre.scrollTop = saved.scrollTop;
@@ -290,7 +293,8 @@ export function renderActiveTasks({ target = 'active-tasks-list', refresh = null
     } finally {
       container._rendering = false;
     }
-  }).catch(() => {
+  }).catch(err => {
     container._rendering = false;
+    toast(err.message || 'Server is not responding', 5000, 'error');
   });
 }
