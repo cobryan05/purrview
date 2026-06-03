@@ -1,7 +1,7 @@
 import { getImageThumbnailUrl } from '/app-static/js/shared/api/review.js';
 
 const SHOW_DELAY_MS = 300;
-const POPOVER_WIDTH = 320;
+const POPOVER_WIDTH = 500;
 
 /**
  * Create a singleton hover-preview popover for review cards.
@@ -38,7 +38,7 @@ export function createHoverPreview({ imageCache }) {
 
     // Try right of card, vertically centered-ish with card top
     let left = rect.right + 8;
-    let top = rect.top;
+    let top = rect.top - 100;
 
     // Flip to left if it overflows right edge
     if (left + pw > vw) {

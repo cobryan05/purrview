@@ -25,6 +25,65 @@ import { createHoverPreview } from '/app-static/js/app/review/hoverPreview.js';
 const DEFAULT_PAGE_SIZE = 50;
 const MAX_ENTRIES = 500; // hard cap on total cards per page
 
+/**
+ * Loads thumbnail images with a concurrency cap and cancellation support.
+ * Uses fetch() + blob URLs so in-flight requests can be truly aborted when
+ * the user navigates to a new page before thumbnails finish loading.
+ */
+class ThumbnailLoader {
+  constructor({ concurrency = 6 } = {}) {
+    this._concurrency = concurrency;
+    this._queue = [];
+    this._active = 0;
+    this._controllers = new Set();
+  }
+
+  /** Abort all in-flight requests and drop all queued work. Safe to call multiple times. */
+  reset() {
+    this._queue = [];
+    for (const ctrl of this._controllers) ctrl.abort();
+    this._controllers.clear();
+    this._active = 0;
+  }
+
+  /** Enqueue a thumbnail load. Sets imgEl.src (as a blob URL) when a slot is available. */
+  load(imgEl, url) {
+    this._queue.push({ imgEl, url });
+    this._pump();
+  }
+
+  _pump() {
+    while (this._active < this._concurrency && this._queue.length > 0) {
+      const { imgEl, url } = this._queue.shift();
+      this._active++;
+      const ctrl = new AbortController();
+      this._controllers.add(ctrl);
+      fetch(url, { signal: ctrl.signal })
+        .then(r => {
+          if (!r.ok) throw new Error(`HTTP ${r.status}`);
+          return r.blob();
+        })
+        .then(blob => {
+          const objUrl = URL.createObjectURL(blob);
+          imgEl.src = objUrl;
+          const revoke = () => URL.revokeObjectURL(objUrl);
+          imgEl.addEventListener('load', revoke, { once: true });
+          imgEl.addEventListener('error', revoke, { once: true });
+        })
+        .catch(err => {
+          if (err.name !== 'AbortError') {
+            imgEl.alt = 'Load failed';
+          }
+        })
+        .finally(() => {
+          this._controllers.delete(ctrl);
+          this._active--;
+          this._pump();
+        });
+    }
+  }
+}
+
 function makeSelect(className, options, defaultValue) {
   const sel = document.createElement('select');
   sel.className = className;
@@ -121,7 +180,7 @@ export async function createReviewPanel(container, { fetchImages = null } = {}) 
 
   // ── Per-page selector ────────────────────────────────────────────
   const pageSizeSelect = makeSelect('filter-page-size',
-    [['10', '10/page'], ['25', '25/page'], ['50', '50/page'], ['100', '100/page']],
+    [['10', '10 imgs/page'], ['25', '25 imgs/page'], ['50', '50 imgs/page'], ['100', '100 imgs/page']],
     String(DEFAULT_PAGE_SIZE));
 
   // Select-all checkbox
@@ -165,10 +224,10 @@ export async function createReviewPanel(container, { fetchImages = null } = {}) 
   toolbar.appendChild(pageSizeSelect);
   toolbar.appendChild(selectAllLabel);
   toolbar.appendChild(bulkBtn);
-  toolbar.appendChild(statusMsg);
   toolbar.appendChild(prevBtn);
   toolbar.appendChild(pageInfo);
   toolbar.appendChild(nextBtn);
+  toolbar.appendChild(statusMsg);
   toolbar.appendChild(refreshBtn);
   container.appendChild(toolbar);
 
@@ -199,6 +258,7 @@ export async function createReviewPanel(container, { fetchImages = null } = {}) 
   // ── Hover preview ─────────────────────────────────────────────────
   const _imageCache = new Map();
   const hoverPreview = createHoverPreview({ imageCache: _imageCache });
+  const _thumbLoader = new ThumbnailLoader();
 
   // ── State ─────────────────────────────────────────────────────────
   // _allEntries holds ALL entries for the current page (both image and bbox).
@@ -217,6 +277,7 @@ export async function createReviewPanel(container, { fetchImages = null } = {}) 
   let _lastClickedIndex = -1;     // index in _visibleEntries of the last checkbox click
   let _rendering = false;
   let _hasMore = false;
+  let _totalCount = 0;
 
   // _visibleEntries is the filtered subset rendered to DOM (updated by renderFromEntries)
   let _visibleEntries = [];
@@ -238,18 +299,37 @@ export async function createReviewPanel(container, { fetchImages = null } = {}) 
   }
 
   function updateStatusMsg() {
-    const total = _visibleEntries.length;
     const stale = _staleUuids.size;
-    const fresh = total - stale;
-    const singular = _viewFilter === 'images' ? 'image' : 'bbox';
-    const plural = _viewFilter === 'images' ? 'images' : 'bboxes';
-    const unit = total === 1 ? singular : plural;
-    if (total === 0) {
-      statusMsg.textContent = `No matching ${plural} on this page`;
-    } else if (stale === 0) {
-      statusMsg.textContent = `${total} ${unit} on this page`;
+
+    if (_viewFilter === 'images' || _viewFilter === 'bboxes') {
+      const singular = _viewFilter === 'images' ? 'image' : 'bbox';
+      const plural   = _viewFilter === 'images' ? 'images' : 'bboxes';
+      const total = _visibleEntries.length;
+      const unit  = total === 1 ? singular : plural;
+      if (total === 0) {
+        statusMsg.textContent = `No matching ${plural} on this page`;
+      } else if (stale === 0) {
+        statusMsg.textContent = `${total} ${unit} on this page`;
+      } else {
+        const fresh = total - stale;
+        statusMsg.textContent = `${fresh} remaining · ${stale} modified`;
+      }
     } else {
-      statusMsg.textContent = `${fresh} remaining · ${stale} modified`;
+      // 'all' view — count images and bboxes separately
+      let imgCount = 0, bboxCount = 0;
+      for (const e of _visibleEntries) {
+        if (e.kind === 'image') imgCount++;
+        else bboxCount++;
+      }
+      if (imgCount === 0 && bboxCount === 0) {
+        statusMsg.textContent = 'No matching annotations on this page';
+      } else if (stale === 0) {
+        const imgPart  = `${imgCount} ${imgCount === 1 ? 'image' : 'images'}`;
+        const bboxPart = `${bboxCount} ${bboxCount === 1 ? 'bbox' : 'bboxes'}`;
+        statusMsg.textContent = `${bboxPart} across ${imgPart} on this page`;
+      } else {
+        statusMsg.textContent = `${stale} modified on this page`;
+      }
     }
   }
 
@@ -420,6 +500,7 @@ export async function createReviewPanel(container, { fetchImages = null } = {}) 
       prevBtn.disabled = true;
       nextBtn.disabled = true;
       statusMsg.textContent = 'Loading…';
+      _thumbLoader.reset();
       grid.innerHTML = '';
       _selected.clear();
       _staleUuids = new Set();
@@ -439,6 +520,8 @@ export async function createReviewPanel(container, { fetchImages = null } = {}) 
 
       const fs = !fetchImages ? filterPanel.getState() : null;
       let images;
+      let hasMore = false;
+      let totalCount = 0;
       try {
         if (fetchImages) {
           images = await fetchImages({
@@ -449,8 +532,10 @@ export async function createReviewPanel(container, { fetchImages = null } = {}) 
             afterSortValue: cursor?.sortValue ?? null,
             limit: _pageSize,
           });
+          // fetchImages callers don't support has_more; fall back to length heuristic.
+          hasMore = images.length === _pageSize;
         } else {
-          images = await fetchReviewQueue({
+          ({ images, hasMore, totalCount } = await fetchReviewQueue({
             tagUuids: fs.showAllBboxes ? [] : fs.tagUuids,
             showAllBboxes: fs.showAllBboxes,
             labelUuid: labelSelect.value || undefined,
@@ -463,16 +548,19 @@ export async function createReviewPanel(container, { fetchImages = null } = {}) 
             afterSortValue: cursor?.sortValue ?? null,
             imageLabelFilters: fs.imageLabelFilters,
             limit: _pageSize,
-          });
+          }));
         }
       } catch (err) {
         statusMsg.textContent = `Error: ${err.message}`;
         refreshBtn.disabled = false;
+        prevBtn.disabled = _pageCursors.length <= 1;
+        nextBtn.disabled = true;
         _rendering = false;
         return;
       }
 
-      _hasMore = images.length === _pageSize;
+      _hasMore = hasMore;
+      _totalCount = totalCount;
 
       if (images.length > 0) {
         const last = images[images.length - 1];
@@ -517,7 +605,9 @@ export async function createReviewPanel(container, { fetchImages = null } = {}) 
       break fetchLoop;
     }
 
-    pageInfo.textContent = `Page ${_pageCursors.length}`;
+    const totalPages = _totalCount > 0 ? Math.ceil(_totalCount / _pageSize) : null;
+    const pageLabel = totalPages ? `Page ${_pageCursors.length} of ${totalPages}` : `Page ${_pageCursors.length}`;
+    pageInfo.textContent = pageLabel;
     prevBtn.disabled = _pageCursors.length <= 1;
     nextBtn.disabled = !_hasMore;
 
@@ -562,8 +652,8 @@ export async function createReviewPanel(container, { fetchImages = null } = {}) 
     const thumbImg = document.createElement('img');
     thumbImg.className = 'thumb';
     thumbImg.alt = labelName;
-    thumbImg.src = getBboxThumbnailUrl(img.filename, bbox.uuid, 300);
     thumbImg.title = 'Double-click to edit in canvas';
+    _thumbLoader.load(thumbImg, getBboxThumbnailUrl(img.filename, bbox.uuid, 300));
     thumbImg.addEventListener('dblclick', () => {
       clearTimeout(_clickTimer);
       showCanvasModal(bbox, img, labels, async (updatedUIBbox) => {
@@ -656,8 +746,8 @@ export async function createReviewPanel(container, { fetchImages = null } = {}) 
     const thumbImg = document.createElement('img');
     thumbImg.className = 'thumb';
     thumbImg.alt = img.filename.split('/').pop();
-    thumbImg.src = getImageThumbnailUrl(img.filename, 200);
     thumbImg.title = 'Double-click to edit in canvas';
+    _thumbLoader.load(thumbImg, getImageThumbnailUrl(img.filename, 200));
     thumbImg.addEventListener('dblclick', () => {
       clearTimeout(_clickTimer);
       const firstBbox = (img.bboxes ?? [])[0];
@@ -889,6 +979,7 @@ export async function createReviewPanel(container, { fetchImages = null } = {}) 
 
   return {
     destroy() {
+      _thumbLoader.reset();
       hoverPreview.destroy();
       container.innerHTML = '';
     },

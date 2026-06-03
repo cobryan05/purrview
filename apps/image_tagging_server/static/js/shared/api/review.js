@@ -63,7 +63,11 @@ export async function fetchReviewQueue({
   });
   const data = await res.json();
   if (!res.ok || data.status !== 'success') throw new Error(data.message || 'Failed to fetch review queue');
-  return data.images ?? [];
+  return {
+    images: data.images ?? [],
+    hasMore: data.hasMore ?? false,      // StatusResponse uses to_camel alias_generator
+    totalCount: data.totalCount ?? 0,
+  };
 }
 
 /**

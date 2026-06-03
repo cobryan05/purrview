@@ -15,7 +15,7 @@ ALEMBIC_INI_PATH = Path(__file__).parent / "alembic.ini"
 import jstyleson
 from pydantic import TypeAdapter
 from alembic.runtime.migration import MigrationContext
-from sqlalchemy import and_, delete, event, func, or_
+from sqlalchemy import Select, and_, delete, event, func, or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import selectinload, sessionmaker
@@ -96,6 +96,96 @@ DB_FILE = "db.sqlite"
 def _escape_like_pattern(pattern: str) -> str:
     """Escape SQL LIKE metacharacters so user input is treated as literal text."""
     return pattern.replace("!", "!!").replace("%", "!%").replace("_", "!_")
+
+
+def _apply_image_search_filters(stmt: Select, params: ImageSearchParams) -> Select:
+    """Apply all ImageSearchParams filter predicates to *stmt* and return it.
+
+    Does not add ORDER BY, LIMIT, or keyset cursors — those are caller concerns.
+    Works for any Select target (ImageRecord, ImageRecord.uuid, etc.).
+    """
+    # ── Tag / label join ──────────────────────────────────────────────────────
+    # When show_all_bboxes is True or tag_uuids is empty, skip the join so
+    # all images are candidates regardless of bbox tags.
+    if not params.show_all_bboxes and params.tag_uuids:
+        stmt = (
+            stmt
+            .join(BBox, BBox.image_uuid == ImageRecord.uuid)
+            .join(BBoxTagLink, BBoxTagLink.bbox_uuid == BBox.uuid)
+            .where(BBoxTagLink.tag_uuid.in_(params.tag_uuids))
+        )
+        if params.label_uuid:
+            stmt = stmt.where(BBox.label_uuid == params.label_uuid)
+    elif params.label_uuid:
+        # Need the bbox join only to apply the label filter.
+        stmt = (
+            stmt
+            .join(BBox, BBox.image_uuid == ImageRecord.uuid)
+            .where(BBox.label_uuid == params.label_uuid)
+        )
+
+    # ── Filename search ────────────────────────────────────────────────────────
+    if params.filename_search:
+        escaped = _escape_like_pattern(params.filename_search)
+        stmt = stmt.where(ImageRecord.filename.like(f"%{escaped}%", escape="!"))
+    for pattern in params.filename_searches:
+        escaped = _escape_like_pattern(pattern)
+        stmt = stmt.where(ImageRecord.filename.like(f"%{escaped}%", escape="!"))
+
+    # ── Date range on created_at ───────────────────────────────────────────────
+    if params.date_from:
+        stmt = stmt.where(ImageRecord.created_at >= params.date_from)
+    if params.date_to:
+        stmt = stmt.where(ImageRecord.created_at <= params.date_to)
+
+    # ── Date range on updated_at ───────────────────────────────────────────────
+    if params.updated_date_from:
+        stmt = stmt.where(ImageRecord.updated_at >= params.updated_date_from)
+    if params.updated_date_to:
+        stmt = stmt.where(ImageRecord.updated_at <= params.updated_date_to)
+
+    # ── Tag presence/absence filters ──────────────────────────────────────────
+    for tf in params.tag_presence_filters:
+        tag_subq = (
+            select(BBox)
+            .join(BBoxTagLink, BBoxTagLink.bbox_uuid == BBox.uuid)
+            .where(
+                BBox.image_uuid == ImageRecord.uuid,
+                BBoxTagLink.tag_uuid == tf.tag_uuid,
+            )
+            .exists()
+        )
+        stmt = stmt.where(~tag_subq if tf.exclude else tag_subq)
+
+    # ── Image-label filters (EXISTS / NOT EXISTS subqueries) ──────────────────
+    for f in params.image_label_filters:
+        if f.require_verified:
+            # require EXISTS row with PRESENT or ABSENT (not uncertain)
+            subq = (
+                select(ImageLabel)
+                .where(
+                    ImageLabel.image_uuid == ImageRecord.uuid,
+                    ImageLabel.label_uuid == f.label_uuid,
+                    ImageLabel.status.in_(
+                        [ImageLabelStatus.PRESENT, ImageLabelStatus.ABSENT]
+                    ),
+                )
+                .exists()
+            )
+            stmt = stmt.where(subq)
+        else:
+            subq = (
+                select(ImageLabel)
+                .where(
+                    ImageLabel.image_uuid == ImageRecord.uuid,
+                    ImageLabel.label_uuid == f.label_uuid,
+                    ImageLabel.status == f.status,
+                )
+                .exists()
+            )
+            stmt = stmt.where(~subq if f.exclude else subq)
+
+    return stmt
 
 
 class DbClient:
@@ -552,86 +642,7 @@ class DbClient:
                 .distinct()
             )
 
-            # ── Tag filter ─────────────────────────────────────────────────────
-            # When show_all_bboxes is True or tag_uuids is empty, skip the join so
-            # all images are candidates regardless of bbox tags.
-            if not params.show_all_bboxes and params.tag_uuids:
-                stmt = (
-                    stmt
-                    .join(BBox, BBox.image_uuid == ImageRecord.uuid)
-                    .join(BBoxTagLink, BBoxTagLink.bbox_uuid == BBox.uuid)
-                    .where(BBoxTagLink.tag_uuid.in_(params.tag_uuids))
-                )
-                if params.label_uuid:
-                    stmt = stmt.where(BBox.label_uuid == params.label_uuid)
-            elif params.label_uuid:
-                # Need the bbox join only to apply the label filter.
-                stmt = (
-                    stmt
-                    .join(BBox, BBox.image_uuid == ImageRecord.uuid)
-                    .where(BBox.label_uuid == params.label_uuid)
-                )
-
-            # ── Filename search ────────────────────────────────────────────────
-            if params.filename_search:
-                escaped = _escape_like_pattern(params.filename_search)
-                stmt = stmt.where(ImageRecord.filename.like(f"%{escaped}%", escape="!"))
-            for pattern in params.filename_searches:
-                escaped = _escape_like_pattern(pattern)
-                stmt = stmt.where(ImageRecord.filename.like(f"%{escaped}%", escape="!"))
-
-            # ── Date range on created_at ───────────────────────────────────────
-            if params.date_from:
-                stmt = stmt.where(ImageRecord.created_at >= params.date_from)
-            if params.date_to:
-                stmt = stmt.where(ImageRecord.created_at <= params.date_to)
-
-            # ── Date range on updated_at ───────────────────────────────────────
-            if params.updated_date_from:
-                stmt = stmt.where(ImageRecord.updated_at >= params.updated_date_from)
-            if params.updated_date_to:
-                stmt = stmt.where(ImageRecord.updated_at <= params.updated_date_to)
-
-            # ── Tag presence/absence filters ───────────────────────────────────
-            for tf in params.tag_presence_filters:
-                tag_subq = (
-                    select(BBox)
-                    .join(BBoxTagLink, BBoxTagLink.bbox_uuid == BBox.uuid)
-                    .where(
-                        BBox.image_uuid == ImageRecord.uuid,
-                        BBoxTagLink.tag_uuid == tf.tag_uuid,
-                    )
-                    .exists()
-                )
-                stmt = stmt.where(~tag_subq if tf.exclude else tag_subq)
-
-            # ── Image-label filters (EXISTS / NOT EXISTS subqueries) ────────────
-            for f in params.image_label_filters:
-                if f.require_verified:
-                    # require EXISTS row with PRESENT or ABSENT (not uncertain)
-                    subq = (
-                        select(ImageLabel)
-                        .where(
-                            ImageLabel.image_uuid == ImageRecord.uuid,
-                            ImageLabel.label_uuid == f.label_uuid,
-                            ImageLabel.status.in_(
-                                [ImageLabelStatus.PRESENT, ImageLabelStatus.ABSENT]
-                            ),
-                        )
-                        .exists()
-                    )
-                    stmt = stmt.where(subq)
-                else:
-                    subq = (
-                        select(ImageLabel)
-                        .where(
-                            ImageLabel.image_uuid == ImageRecord.uuid,
-                            ImageLabel.label_uuid == f.label_uuid,
-                            ImageLabel.status == f.status,
-                        )
-                        .exists()
-                    )
-                    stmt = stmt.where(~subq if f.exclude else subq)
+            stmt = _apply_image_search_filters(stmt, params)
 
             # ── Sort column ────────────────────────────────────────────────────
             sort_col_map = {
@@ -674,6 +685,18 @@ class DbClient:
 
             result = await session.exec(stmt)
             return result.all()
+
+    async def count_images_search(self, params: ImageSearchParams) -> int:
+        """Return the total count of images matching `params`, ignoring pagination.
+
+        Applies the same filter predicates as list_images_search but without ORDER BY,
+        LIMIT, or keyset cursors so the result reflects the full matched set.
+        """
+        async with self._async_session_maker() as session:
+            inner = _apply_image_search_filters(select(ImageRecord.uuid).distinct(), params)
+            stmt = select(func.count()).select_from(inner.subquery())
+            result = await session.exec(stmt)
+            return result.one()
 
     async def get_bbox_with_image(self, bbox_uuid: str) -> Optional[tuple[BBox, ImageRecord]]:
         """Return a bbox and its parent image record, or None if not found."""

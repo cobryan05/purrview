@@ -255,6 +255,8 @@ class GetImageLabelsResponse(StatusResponse):
 
 class ReviewQueueResponse(StatusResponse):
     images: List[ImageRecordRead] = Field(default_factory=list)
+    has_more: bool = False
+    total_count: int = 0
 
 
 class InvalidateThumbnailsPayload(ApiPayload):
@@ -864,8 +866,8 @@ class WebApp:
             Pass show_all_bboxes=true to bypass the tag filter entirely.
             """
             try:
-                images = await self._manager.get_review_queue(params)
-                return ReviewQueueResponse(images=images)
+                images, has_more, total_count = await self._manager.get_review_queue(params)
+                return ReviewQueueResponse(images=images, has_more=has_more, total_count=total_count)
             except Exception as e:
                 logger.exception("Failed to fetch review queue")
                 return ReviewQueueResponse(status=JsonValues.FAILURE, message=str(e))

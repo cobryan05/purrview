@@ -514,14 +514,14 @@ button.filter-active {
   position: fixed;
   z-index: 1200;
   background: #1a1a1a;
-  border: 1px solid #555;
+  border: 2px solid #aaa;
   border-radius: 6px;
   padding: 4px;
   box-shadow: 0 4px 24px #000a;
   pointer-events: none;
   opacity: 0;
   transition: opacity 0.15s ease;
-  max-width: 320px;
+  max-width: 500px;
 }
 .review-hover-popover.visible {
   opacity: 1;
@@ -532,7 +532,7 @@ button.filter-active {
 }
 .review-hover-popover img.popover-img {
   display: block;
-  max-width: 312px;
+  max-width: 492px;
   height: auto;
   border-radius: 3px;
 }

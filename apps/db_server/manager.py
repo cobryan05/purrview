@@ -486,15 +486,26 @@ class Manager:
         except ValueError:
             return image_filename
 
-    async def get_review_queue(self, params: ImageSearchParams) -> List[ImageRecordRead]:
-        """Return images matching the search parameters for the review queue."""
-        images = await self._db_client.list_images_search(params)
+    async def get_review_queue(self, params: ImageSearchParams) -> tuple[List[ImageRecordRead], bool, int]:
+        """Return (images, has_more, total_count) for the review queue.
+
+        Fetches limit+1 images to detect whether a next page exists without a
+        separate query, and runs a count query in parallel for the total.
+        """
+        fetch_params = params.model_copy(update={"limit": params.limit + 1})
+        batch, total_count = await asyncio.gather(
+            self._db_client.list_images_search(fetch_params),
+            self._db_client.count_images_search(params),
+        )
+        has_more = len(batch) > params.limit
+        images_page = batch[: params.limit]
+
         results = []
-        for img in images:
+        for img in images_page:
             record = ImageRecordRead.model_validate(img)
             record.filename = self._image_rel_path(img.filename)
             results.append(record)
-        return results
+        return results, has_more, total_count
 
     async def list_files(
         self,
@@ -675,25 +686,32 @@ class Manager:
     async def get_bbox_thumbnail(self, bbox_uuid: str, width: int = 200) -> Optional[bytes]:
         """
         Return JPEG bytes for a cropped+resized thumbnail of the given bbox.
-        Serves from disk cache if available, otherwise generates and caches it.
+        Serves from disk cache if available and fresh, otherwise generates and caches it.
+        Cache freshness is validated against bbox.updated_at so edits made outside the
+        review page (e.g. from the image-tagging canvas) are always reflected.
         """
         from PIL import Image as PILImage, ImageDraw
 
-        cache_path = self._thumb_cache_path(bbox_uuid, width)
-        if cache_path.exists():
-            try:
-                cache_path.touch()  # update mtime for LRU tracking
-            except OSError:
-                pass
-            async with aiofiles.open(cache_path, "rb") as f:
-                return await f.read()
-
+        # Fetch bbox first so we can validate cache freshness against bbox.updated_at.
         result = await self._db_client.get_bbox_with_image(bbox_uuid)
         if result is None:
             return None
         bbox, image_record = result
         if image_record is None:
             return None
+
+        cache_path = self._thumb_cache_path(bbox_uuid, width)
+        if cache_path.exists():
+            try:
+                cache_mtime = cache_path.stat().st_mtime
+                if cache_mtime >= bbox.updated_at.timestamp():
+                    cache_path.touch()  # update mtime for LRU tracking
+                    async with aiofiles.open(cache_path, "rb") as f:
+                        return await f.read()
+                # Cache is older than the bbox — delete it and regenerate below.
+                cache_path.unlink(missing_ok=True)
+            except OSError:
+                pass
 
         safe_path = self._resolve_image_file_path(image_record.filename)
         if safe_path is None:
