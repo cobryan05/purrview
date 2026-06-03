@@ -104,16 +104,15 @@ function makeSelect(className, options, defaultValue) {
  * @param {HTMLElement} container - The element to build the panel inside. Will be cleared.
  * @param {{
  *   fetchImages?: (params: {
- *     sortBy: string, sortOrder: string, labelUuid?: string,
+ *     sortBy: string, sortOrder: string,
  *     afterUuid: string|null, afterSortValue: string|null, limit: number
  *   }) => Promise<object[]>
  * }} options
  *   fetchImages — optional custom data-fetcher. When provided the tag/date/filename
  *   filter panel is hidden and this function is called instead of fetchReviewQueue.
- *   Receives sort, pagination, and label params; returns an images array with the
- *   same shape as fetchReviewQueue. All bboxes in returned images are shown (no
- *   client-side tag filtering). When omitted the full filter panel is shown and
- *   fetchReviewQueue is used.
+ *   Receives sort and pagination params; returns an images array with the same shape
+ *   as fetchReviewQueue. All bboxes in returned images are shown (no client-side tag
+ *   filtering). When omitted the full filter panel is shown and fetchReviewQueue is used.
  *
  * @returns {Promise<{ destroy: () => void }>}
  */
@@ -138,20 +137,6 @@ export async function createReviewPanel(container, { fetchImages = null } = {}) 
   // Sort controls — always visible in toolbar (moved from filter panel)
   const sortBySelect = makeSelect('filter-sort-by', [['created_at', 'Date created'], ['updated_at', 'Date modified']], 'created_at');
   const sortOrderSelect = makeSelect('filter-sort-dir', [['desc', 'Newest first'], ['asc', 'Oldest first']], 'desc');
-
-  // Label filter (quick bbox-label filter in toolbar)
-  const labelSelect = document.createElement('select');
-  labelSelect.title = 'Filter by bbox label';
-  const allOption = document.createElement('option');
-  allOption.value = '';
-  allOption.textContent = '— All labels —';
-  labelSelect.appendChild(allOption);
-  for (const lbl of labels.values()) {
-    const opt = document.createElement('option');
-    opt.value = lbl.uuid;
-    opt.textContent = lbl.name;
-    labelSelect.appendChild(opt);
-  }
 
   // ── View filter toggle (All / Images / Bboxes) ───────────────────
   const viewToggle = document.createElement('div');
@@ -219,7 +204,6 @@ export async function createReviewPanel(container, { fetchImages = null } = {}) 
   toolbar.appendChild(filterToggleBtn);
   toolbar.appendChild(sortBySelect);
   toolbar.appendChild(sortOrderSelect);
-  toolbar.appendChild(labelSelect);
   toolbar.appendChild(viewToggle);
   toolbar.appendChild(pageSizeSelect);
   toolbar.appendChild(selectAllLabel);
@@ -236,14 +220,20 @@ export async function createReviewPanel(container, { fetchImages = null } = {}) 
   if (!fetchImages) {
     const tags = await tagsPromise;
 
-    filterPanel = createFilterPanel(labels, tags, () => {
+    function updateFilterBtn() {
+      const n = filterPanel.getActiveFilterCount();
+      filterToggleBtn.textContent = n > 0 ? `☰ Filters (${n})` : '☰ Filters';
       filterToggleBtn.classList.toggle('filter-active', !filterPanel.isDefault());
+    }
+
+    filterPanel = createFilterPanel(labels, tags, () => {
+      updateFilterBtn();
       _pageCursors = [null];
       _lastCursor = null;
       render();
     });
-    filterPanel.element.hidden = true;
     container.appendChild(filterPanel.element);
+    updateFilterBtn(); // reflect initial state (Unverified checked → shows "(1)")
 
     filterToggleBtn.addEventListener('click', () => {
       filterPanel.element.hidden = !filterPanel.element.hidden;
@@ -527,7 +517,6 @@ export async function createReviewPanel(container, { fetchImages = null } = {}) 
           images = await fetchImages({
             sortBy,
             sortOrder,
-            labelUuid: labelSelect.value || undefined,
             afterUuid: cursor?.uuid ?? null,
             afterSortValue: cursor?.sortValue ?? null,
             limit: _pageSize,
@@ -538,7 +527,7 @@ export async function createReviewPanel(container, { fetchImages = null } = {}) 
           ({ images, hasMore, totalCount } = await fetchReviewQueue({
             tagUuids: fs.showAllBboxes ? [] : fs.tagUuids,
             showAllBboxes: fs.showAllBboxes,
-            labelUuid: labelSelect.value || undefined,
+            labelUuid: fs.labelUuid || undefined,
             sortBy,
             sortOrder,
             filenameSearch: fs.filenameSearch || undefined,
@@ -984,7 +973,6 @@ export async function createReviewPanel(container, { fetchImages = null } = {}) 
 
   function resetAndRender() { _pageCursors = [null]; _lastCursor = null; render(); }
   refreshBtn.addEventListener('click', resetAndRender);
-  labelSelect.addEventListener('change', resetAndRender);
   sortBySelect.addEventListener('change', resetAndRender);
   sortOrderSelect.addEventListener('change', resetAndRender);
   pageSizeSelect.addEventListener('change', () => {

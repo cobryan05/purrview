@@ -256,8 +256,10 @@ main.container {
 /* Fixed widths so Pico's width:100% doesn't stretch inputs to fill the row */
 .review-filter-panel input[type="text"]           { width: 130px; }
 .review-filter-panel input[type="datetime-local"] { width: 165px; }
-.filter-sort-by  { max-width: 115px; }
-.filter-sort-dir { max-width: 105px; }
+.filter-sort-by    { max-width: 115px; }
+.filter-sort-dir   { max-width: 105px; }
+.filter-page-size  { max-width: 120px; }
+.filter-label-select { max-width: 140px; }
 
 .filter-tag-checkboxes {
   display: flex;
@@ -273,6 +275,13 @@ main.container {
   cursor: pointer;
   white-space: nowrap;
   font-size: 0.8em;
+  padding: 1px 4px;
+  border-radius: 3px;
+  transition: background 0.1s;
+}
+
+.filter-tag-checkboxes label:has(input:checked) {
+  background: #ffffff18;
 }
 
 .filter-imlabel-builder {

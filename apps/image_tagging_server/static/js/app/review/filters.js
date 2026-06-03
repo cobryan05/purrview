@@ -2,15 +2,15 @@
  * Filter panel for the Review page.
  *
  * createFilterPanel(labels, tags, onFilterChange)
- *   → { element, getState, isDefault }
+ *   → { element, getState, isDefault, getActiveFilterCount }
  *
  * Calls onFilterChange(state) whenever any filter value changes.
- * The panel element starts hidden; the caller controls visibility.
+ * The panel element starts visible; callers may toggle element.hidden as needed.
  *
  * Layout: two compact horizontal rows.
  *
  *   Row 1 (primary):
- *     [□ Unverified …]  |  Date: [from]—[to]  |  File: [____]
+ *     [□ Unverified …]  |  Label: [— All —▼]  |  Date: [from]—[to]  |  File: [____]
  *
  *   Row 2 (labels):
  *     Labels: [— label —▼] [status▼] [□ Exclude] [＋ Add]   chip chip …
@@ -26,6 +26,7 @@ const SYSTEM_TAG_ORDER = [UNVERIFIED_TAG_UUID];
 
 const DEFAULT_STATE = () => ({
   tagUuids: [UNVERIFIED_TAG_UUID],
+  labelUuid: '',
   filenameSearch: '',
   dateFrom: null,
   dateTo: null,
@@ -104,6 +105,37 @@ export function createFilterPanel(labels, tags, onFilterChange) {
 
   primaryRow.appendChild(tagCheckboxes);
 
+  // ── 1b. Bbox label filter ───────────────────────────────────────────────
+  primaryRow.appendChild(makeSep());
+  primaryRow.appendChild(makeLabel('Label:'));
+
+  const sortedLabels = [...labels.values()].sort((a, b) => a.name.localeCompare(b.name));
+
+  // Builds a label <select> with a blank placeholder option followed by all labels.
+  function buildLabelSelect(placeholderText, className) {
+    const sel = document.createElement('select');
+    if (className) sel.className = className;
+    const ph = document.createElement('option');
+    ph.value = '';
+    ph.textContent = placeholderText;
+    sel.appendChild(ph);
+    for (const lbl of sortedLabels) {
+      const opt = document.createElement('option');
+      opt.value = lbl.uuid;
+      opt.textContent = lbl.name;
+      sel.appendChild(opt);
+    }
+    return sel;
+  }
+
+  const bboxLabelSelect = buildLabelSelect('— All —', 'filter-label-select');
+  bboxLabelSelect.title = 'Filter by bbox label';
+  bboxLabelSelect.addEventListener('change', () => {
+    _state.labelUuid = bboxLabelSelect.value;
+    emit();
+  });
+  primaryRow.appendChild(bboxLabelSelect);
+
   // ── 2. Date range ───────────────────────────────────────────────────────
   primaryRow.appendChild(makeSep());
   primaryRow.appendChild(makeLabel('Date:'));
@@ -158,17 +190,7 @@ export function createFilterPanel(labels, tags, onFilterChange) {
   const builderDiv = document.createElement('div');
   builderDiv.className = 'filter-imlabel-builder';
 
-  const labelSelect = document.createElement('select');
-  const labelPlaceholder = document.createElement('option');
-  labelPlaceholder.value = '';
-  labelPlaceholder.textContent = '— label —';
-  labelSelect.appendChild(labelPlaceholder);
-  for (const lbl of [...labels.values()].sort((a, b) => a.name.localeCompare(b.name))) {
-    const opt = document.createElement('option');
-    opt.value = lbl.uuid;
-    opt.textContent = lbl.name;
-    labelSelect.appendChild(opt);
-  }
+  const labelSelect = buildLabelSelect('— label —');
 
   const statusSelect = document.createElement('select');
   for (const [value, text] of [['uncertain', 'Uncertain'], ['present', 'Present'], ['absent', 'Absent']]) {
@@ -236,16 +258,20 @@ export function createFilterPanel(labels, tags, onFilterChange) {
   panel.appendChild(labelsRow);
 
   // ── Public API ────────────────────────────────────────────────────────────
-  function isDefault() {
+  /** Count of active filter "slots" — shown on the toggle button even in default state. */
+  function getActiveFilterCount() {
     const s = _state;
-    return (
-      s.tagUuids.length === 1 &&
-      s.tagUuids[0] === UNVERIFIED_TAG_UUID &&
-      !s.filenameSearch &&
-      !s.dateFrom &&
-      !s.dateTo &&
-      s.imageLabelFilters.length === 0
-    );
+    return s.tagUuids.length
+      + (s.labelUuid ? 1 : 0)
+      + (s.filenameSearch ? 1 : 0)
+      + (s.dateFrom ? 1 : 0)
+      + (s.dateTo ? 1 : 0)
+      + s.imageLabelFilters.length;
+  }
+
+  /** True only when state matches the out-of-the-box defaults (Unverified tag, nothing else). */
+  function isDefault() {
+    return getActiveFilterCount() === 1 && _state.tagUuids[0] === UNVERIFIED_TAG_UUID;
   }
 
   return {
@@ -259,5 +285,6 @@ export function createFilterPanel(labels, tags, onFilterChange) {
       imageLabelFilters: [..._state.imageLabelFilters],
     }),
     isDefault,
+    getActiveFilterCount,
   };
 }
