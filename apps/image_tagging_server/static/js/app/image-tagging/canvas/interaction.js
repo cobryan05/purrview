@@ -2,8 +2,9 @@ import { Logger } from '../../../ui/utils/logging.js';
 import { generateUUID } from '../../../ui/utils/utils.js';
 import { BboxView } from '/app-static/js/app/image-tagging/canvas/views/bboxView.js';
 import { createUIBBbox } from '/app-static/js/shared/domain/image/mapper.js';
-import { clearSelection, setTool, parseToolUuid, isDrawTool, syncBboxDraggable } from './tools.js';
+import { clearSelection, setTool, parseToolUuid, isDrawTool, isTagTool, syncBboxDraggable } from './tools.js';
 import { fetchLabelByUuid } from '/app-static/js/shared/api/labels.js';
+import { fetchTagByUuid } from '/app-static/js/shared/api/tags.js';
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
 import { UNVERIFIED_TAG_UUID, VERIFICATION_TAG_UUIDS } from '/app-static/js/shared/api/review.js';
 import { setCanvasViewport } from './manager.js';
@@ -28,6 +29,33 @@ function applyDefaultVerificationTag(uiBBox) {
  */
 export function stripUnverifiedTag(uiBBox) {
   uiBBox.tags = (uiBBox.tags ?? []).filter(t => t.uuid !== UNVERIFIED_TAG_UUID);
+}
+
+/**
+ * Toggle a tag on a bbox (used by the canvas "tag tool" on double-click).
+ * Adding a verification-group tag removes any other verification tag first.
+ * @param {import('@canvas_types').BboxView} bboxView
+ * @param {string} tagUuid
+ * @param {import('@image_tagging_types').ImageTaggingRuntime} runtime
+ */
+async function toggleBboxTag(bboxView, tagUuid, runtime) {
+  const tag = await fetchTagByUuid(tagUuid);
+  if (!tag) return;
+  const tags = bboxView.uiBBox.tags ?? [];
+  const has = tags.some(t => t.uuid === tagUuid);
+  let next;
+  if (has) {
+    next = tags.filter(t => t.uuid !== tagUuid);
+  } else {
+    const base = VERIFICATION_TAG_UUIDS.has(tagUuid)
+      ? tags.filter(t => !VERIFICATION_TAG_UUIDS.has(t.uuid))
+      : tags;
+    next = [...base, { uuid: tagUuid, icon: tag.icon ?? null }];
+  }
+  bboxView.uiBBox.tags = next;
+  bboxView.refreshIcons(next);
+  runtime.pushState();
+  events.publish(EventTypes.CANVAS_BBOXES_CHANGED, { runtimeId: runtime.id });
 }
 
 const DOUBLE_CLICK_TIME_MS = 400;
@@ -228,7 +256,7 @@ export async function handleMouseUp(e, runtime) {
   if (!runtime.canvas) return;
   const ist = runtime.canvas.interactionState;
   runtime.canvas.stage.container().style.cursor =
-    isDrawTool(runtime.tool) ? 'crosshair' : 'default';
+    isDrawTool(runtime.tool) ? 'crosshair' : isTagTool(runtime.tool) ? 'pointer' : 'default';
 
   if (e.evt.button === 1 || ist.isPanning) {
     ist.isPanning = false;
@@ -276,13 +304,13 @@ export async function handleMouseUp(e, runtime) {
   ist.lastClickPos = pos;
 
   if (hitGroup instanceof BboxView && isDoubleClick) {
-    const { uuid: labelUuid } = parseToolUuid(runtime.tool);
+    const { tool: toolKind, uuid: toolUuid } = parseToolUuid(runtime.tool);
     if (runtime.tool === 'select') {
       events.publish(EventTypes.CANVAS_BBOX_DOUBLE_CLICKED, { bboxId: hitGroup.id(), bboxView: hitGroup, runtimeId: runtime.id });
-    } else if (labelUuid) {
-      const labelData = await fetchLabelByUuid(labelUuid);
+    } else if (toolKind === 'bbox' && toolUuid) {
+      const labelData = await fetchLabelByUuid(toolUuid);
       if (labelData) {
-        hitGroup.uiBBox.label = { uuid: labelUuid, text: labelData.name, color: labelData.color };
+        hitGroup.uiBBox.label = { uuid: toolUuid, text: labelData.name, color: labelData.color };
         hitGroup.updateAppearance(labelData.name, labelData.color);
         stripUnverifiedTag(hitGroup.uiBBox);
         hitGroup.refreshIcons(hitGroup.uiBBox.tags);
@@ -290,8 +318,11 @@ export async function handleMouseUp(e, runtime) {
         runtime.pushState();
         events.publish(EventTypes.CANVAS_BBOXES_CHANGED, { runtimeId: runtime.id });
       }
+    } else if (toolKind === 'tag' && toolUuid) {
+      await toggleBboxTag(hitGroup, toolUuid, runtime);
     }
   }
+
 }
 
 /**

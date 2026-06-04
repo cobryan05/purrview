@@ -5,6 +5,11 @@ export function isDrawTool(tool) {
   return tool === 'bbox' || tool.startsWith('bbox:');
 }
 
+/** True for the tag-application tool ('tag:<tagUuid>'). */
+export function isTagTool(tool) {
+  return tool.startsWith('tag:');
+}
+
 /**
  * Existing bboxes are only draggable in the 'select' tool. While a draw or tag
  * tool is active a pointer-down over a bbox must start drawing / apply, not drag.
@@ -37,7 +42,8 @@ export function setTool(runtime, tool) {
   runtime.setTool(tool);
   clearSelection();
   syncBboxDraggable(runtime);
-  runtime.canvas.stage.container().style.cursor = isDrawTool(tool) ? 'crosshair' : 'default';
+  runtime.canvas.stage.container().style.cursor =
+    isDrawTool(tool) ? 'crosshair' : isTagTool(tool) ? 'pointer' : 'default';
   events.publish(EventTypes.CANVAS_TOOL_CHANGED, { tool, runtimeId: runtime.id });
 }
 

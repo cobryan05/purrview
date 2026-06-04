@@ -1,9 +1,36 @@
 import { deleteSelected } from './image-tagging/canvas/image.js';
 import { setTool } from './image-tagging/canvas/tools.js';
 import { next_image, prev_image } from './image-tagging/files.js';
+import { actionForCombo, eventToCombo } from './image-tagging/hotkeyBindings.js';
 
 /** @type {import('@image_tagging_types').ImageTaggingRuntime[]} */
 const _stack = [];
+
+/**
+ * Run a bound action against a runtime. Returns true if it was handled.
+ * @param {string} action
+ * @param {import('@image_tagging_types').ImageTaggingRuntime} runtime
+ */
+function dispatchAction(action, runtime) {
+  if (action.startsWith('label:')) {
+    setTool(runtime, 'bbox:' + action.slice('label:'.length));
+    return true;
+  }
+  if (action.startsWith('tag:')) {
+    setTool(runtime, 'tag:' + action.slice('tag:'.length));
+    return true;
+  }
+  switch (action) {
+    case 'action:select': setTool(runtime, 'select'); return true;
+    case 'action:bbox': setTool(runtime, 'bbox:'); return true;
+    case 'action:prevImage': prev_image(runtime); return true;
+    case 'action:nextImage': next_image(runtime); return true;
+    case 'action:delete': deleteSelected(runtime); return true;
+    case 'action:undo': runtime.undo(); return true;
+    case 'action:redo': runtime.redo(); return true;
+    default: return false;
+  }
+}
 
 document.addEventListener('keydown', e => {
   const runtime = _stack[_stack.length - 1];
@@ -12,39 +39,10 @@ document.addEventListener('keydown', e => {
   const tag = document.activeElement?.tagName;
   if (tag === 'INPUT' || tag === 'TEXTAREA') return;
 
-  switch (e.key.toLowerCase()) {
-    case 'delete':
-    case 'backspace':
-      e.preventDefault();
-      deleteSelected(runtime);
-      break;
+  const action = actionForCombo(eventToCombo(e));
+  if (!action) return;
 
-    case 'z':
-      if (e.ctrlKey || e.metaKey) {
-        e.preventDefault();
-        e.shiftKey ? runtime.redo() : runtime.undo();
-      }
-      break;
-
-    case 'v':
-      setTool(runtime, 'select');
-      break;
-
-    case 'r':
-      setTool(runtime, 'bbox:');
-      break;
-
-    case '[':
-      prev_image(runtime);
-      break;
-
-    case ']':
-      next_image(runtime);
-      break;
-
-    default:
-      break;
-  }
+  if (dispatchAction(action, runtime)) e.preventDefault();
 });
 
 /**

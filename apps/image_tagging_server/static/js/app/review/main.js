@@ -1210,7 +1210,7 @@ async function showCanvasModal(bbox, img, labels, onSaved) {
 
   // ── Wire shared toolbar (select / bbox / delete) ───────────────────
   toolbarHandle = initToolbar(instance.runtime, toolbarEl, {
-    buttons: ['undo', 'redo', 'select', 'bbox', 'delete'],
+    buttons: ['undo', 'redo', 'select', 'bbox', 'delete', 'hotkeys'],
   });
 
   // ── Wire label panel ───────────────────────────────────────────────

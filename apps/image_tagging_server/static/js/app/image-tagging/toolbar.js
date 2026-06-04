@@ -1,8 +1,9 @@
 import { reloadImage, clearAnnotations, deleteSelected, saveAnnotations } from './canvas/image.js';
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
 import { setTool } from './canvas/tools.js';
+import { openHotkeyModal } from './hotkeyModal.js';
 
-const ALL_BUTTONS = ['reload', 'undo', 'redo', 'select', 'bbox', 'clear', 'delete', 'save'];
+const ALL_BUTTONS = ['reload', 'undo', 'redo', 'select', 'bbox', 'clear', 'delete', 'save', 'hotkeys'];
 
 /**
  * Initialises a canvas toolbar into an explicit container element.
@@ -40,6 +41,7 @@ export function init(runtime, container, options = {}) {
     { key: 'clear',  label: 'Clear',   onClick: () => clearAnnotations(runtime) },
     { key: 'delete', label: 'Delete',  onClick: () => deleteSelected(runtime) },
     { key: 'save',   label: 'Save',    onClick: () => saveAnnotations(runtime) },
+    { key: 'hotkeys', label: '⌨ Hotkeys', onClick: () => openHotkeyModal() },
   ];
 
   buttonDefs
