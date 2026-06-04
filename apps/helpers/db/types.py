@@ -19,6 +19,7 @@ UNVERIFIED_TAG_UUID = "00000000-0000-0000-0000-000000000001"
 
 import jstyleson
 import numpy as np
+import sqlalchemy as sa
 from pydantic import (
     BaseModel,
     BeforeValidator,
@@ -27,7 +28,6 @@ from pydantic import (
     field_validator,
 )
 from pydantic.alias_generators import to_camel
-import sqlalchemy as sa
 from sqlmodel import JSON, Column, DateTime, Field, Relationship, SQLModel
 from typing_extensions import Annotated
 
@@ -210,16 +210,6 @@ class ImageSearchParams(BaseModel):
     # Keyset pagination cursor.
     after_uuid: Optional[str] = None
     after_sort_value: Optional[datetime] = None  # populated when sort_by != "uuid"
-
-
-class FileEntry(BaseModel):
-    name: str
-    path: str
-    is_dir: bool
-    size: int = 0
-    modified_at: Optional[datetime] = None
-    mime_type: Optional[str] = None
-    uuid: Optional[str] = None
 
 
 class BBoxTagLink(SQLModel, table=True):

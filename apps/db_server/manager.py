@@ -54,7 +54,7 @@ from apps.helpers.db.types import (
 from apps.helpers.fileUtils import get_safe_path
 from apps.helpers.imageProviders.Registry import image_provider_registry
 from apps.helpers.types import (
-    FileEntry,
+    FileEntryRead,
 )
 
 logging.basicConfig(stream=sys.stdout)
@@ -539,7 +539,8 @@ class Manager:
         patterns: List[str] = ["*"],
         exclude_patterns: List[str] = ["*.json"],
         recursive: bool = False,
-    ) -> List[FileEntry]:
+        include_db_status: bool = False,
+    ) -> List[FileEntryRead]:
         """
         List all files and directories in the given relative path under the root directory.
 
@@ -548,40 +549,66 @@ class Manager:
             patterns (List[str]): Glob pattern(s) to include (default: "*").
             exclude_patterns (List[str]): Glob pattern(s) to exclude (default: "").
             recursive (bool): Whether to list files recursively (default: False).
+            include_db_status (bool): When True, populate uuid on entries that are
+                registered in the image database (default: False).
 
         Returns:
-            List[FileEntry]: List of FileEntry instances.
+            List[FileEntryRead]: List of FileEntryRead instances.
         """
         if not self._files_root or not self._files_root.is_dir():
             return []
 
-        # get_safe_path returns a Path object now
         safe_path = get_safe_path(self._files_root, rel_path)
         if not safe_path or not safe_path.is_dir():
             return []
 
-        entries: List[FileEntry] = []
+        entries: List[FileEntryRead] = []
 
-        # Use rglob for recursive, glob for shallow
         search_pattern = "**/*" if recursive else "*"
 
         for p in sorted(safe_path.glob(search_pattern)):
-            # Skip hidden files
             if p.name.startswith("."):
                 continue
 
-            # Calculate relative path for pattern matching and return value
             rel_entry_path = p.relative_to(self._files_root)
             rel_str = str(rel_entry_path)
 
-            # Match logic
             is_matched = any(fnmatch.fnmatch(rel_str, pat) for pat in patterns)
             is_excluded = any(fnmatch.fnmatch(rel_str, pat) for pat in exclude_patterns)
 
             if is_matched and not is_excluded:
-                entries.append(FileEntry(name=p.name, type="dir" if p.is_dir() else "file", path=rel_str))
+                entries.append(FileEntryRead(name=p.name, is_dir=p.is_dir(), path=rel_str))
+
+        if include_db_status and entries:
+            abs_paths = [str(self._files_root / e.path) for e in entries if not e.is_dir]
+            in_db_map = await self._db_client.get_filenames_in_db(abs_paths)
+            for e in entries:
+                if not e.is_dir:
+                    info = in_db_map.get(str(self._files_root / e.path))
+                    if info:
+                        e.uuid = info["uuid"]
+                        e.bbox_count = info["bbox_count"]
 
         return entries
+
+    async def create_directory(self, rel_path: str) -> None:
+        """
+        Create a directory under FILES_ROOT.
+
+        Args:
+            rel_path: Path relative to FILES_ROOT (must resolve inside it).
+
+        Raises:
+            ValueError: If the path resolves outside FILES_ROOT or already exists as a file.
+        """
+        if not self._files_root or not self._files_root.is_dir():
+            raise ValueError("FILES_ROOT is not configured")
+        safe_path = get_safe_path(self._files_root, rel_path)
+        if safe_path is None:
+            raise ValueError(f"Path is outside FILES_ROOT: {rel_path!r}")
+        if safe_path.exists() and not safe_path.is_dir():
+            raise ValueError(f"Path already exists as a file: {rel_path!r}")
+        safe_path.mkdir(parents=True, exist_ok=True)
 
     ################################################################################
     # Image Reconciliation API

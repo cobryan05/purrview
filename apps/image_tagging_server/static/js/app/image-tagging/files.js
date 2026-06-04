@@ -23,7 +23,8 @@ export async function init(runtime) {
     container,
     initialPath: '/',
     fileNavigation: runtime.fileNavigation,
-    filter: entry => entry.type === 'dir' || entry.name.match(/\.(jpg|jpeg|png)$/i),
+    showDbStatus: true,
+    filter: entry => entry.isDir || entry.name.match(/\.(jpg|jpeg|png)$/i),
     onFileClick: async (entry, dirPath) => {
       const imageName =
         (dirPath === '/' ? '' : dirPath + '/') + entry.name;

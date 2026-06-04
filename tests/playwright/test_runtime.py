@@ -9,9 +9,6 @@ Run with:
 import pytest
 from playwright.sync_api import Page
 
-
-
-
 # ---------------------------------------------------------------------------
 # Shared JS that creates a runtime with a canvas container and a blank image.
 # The 400×300 image fills the 800×600 container exactly at scale=2 / offset=0.

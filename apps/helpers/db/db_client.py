@@ -595,6 +595,27 @@ class DbClient:
             result = await session.exec(statement)
             return result.one_or_none()
 
+    async def get_filenames_in_db(self, filenames: List[str]) -> Dict[str, Dict[str, Any]]:
+        """
+        Return a mapping of absolute filename → {uuid, bbox_count} for each filename that
+        exists in the images table.  Filenames not in the DB are absent from the result.
+        """
+        if not filenames:
+            return {}
+        async with self._async_session_maker() as session:
+            statement = (
+                select(
+                    ImageRecord.filename,
+                    ImageRecord.uuid,
+                    func.count(BBox.uuid).label("bbox_count"),
+                )
+                .outerjoin(BBox, BBox.image_uuid == ImageRecord.uuid)
+                .where(ImageRecord.filename.in_(filenames))
+                .group_by(ImageRecord.filename, ImageRecord.uuid)
+            )
+            result = await session.exec(statement)
+            return {row[0]: {"uuid": row[1], "bbox_count": row[2]} for row in result.all()}
+
     async def add_image(self, filename: Path, metadata_json: Optional[Dict[str, Any]] = None) -> ImageRecord:
         """
         Add a new image record or return existing object if filename exists.

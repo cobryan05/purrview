@@ -1,6 +1,7 @@
 // fieldFactories.js
 import { ArrayField } from './ArrayField.js'
 import { BboxInfoField } from './BboxInfoField.js';
+import { DirBrowserField } from './DirBrowserField.js';
 import { SourceConfigField } from './SourceConfigField.js';
 import { SourceSelectField } from './SourceSelectField.js';
 import { ImageProviderSelectField } from './ImageProviderSelectField.js';
@@ -152,6 +153,16 @@ export const fieldFactories = {
         onChange?.(val);
       },
       ...rest
+    });
+  },
+
+  async directory(fieldName, fieldMeta, values, onChange) {
+    const { type, required, description, ...rest } = fieldMeta;
+    return new DirBrowserField({
+      ...rest,
+      placeholder: description || 'Select a directory…',
+      value: values[fieldName] || '',
+      onChange: val => onChange?.(val),
     });
   },
 

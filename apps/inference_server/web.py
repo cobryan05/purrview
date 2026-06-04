@@ -293,7 +293,7 @@ class WebApp:
                 if not payload.return_source_img:
                     inference_result.source_image = None
 
-                model = InferenceResultModel.from_dataclass(inference_result)
+                model = InferenceResultModel.model_validate(inference_result)
                 return InferenceResponse(result=model)
             except Exception as e:
                 logger.error(e, exc_info=True)

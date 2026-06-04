@@ -8,15 +8,17 @@ import { imageRecordToUI } from '/app-static/js/shared/domain/image/mapper.js';
  * @param {string} path - The folder path to list files from.
  * @param {string} [pattern="*"] - Glob pattern to filter files.
  * @param {boolean} [recursive=false] - Whether to search subdirectories.
- * @returns {Promise<import('@web_api').FileEntry[]>} Array of file entries from the server.
+ * @param {boolean} [includeDbStatus=false] - When true, each file entry's `uuid` field is
+ *   populated if the file is registered in the image database.
+ * @returns {Promise<import('@web_api').FileEntryRead[]>} Array of file entries from the server.
  * @throws {Error} If the fetch fails or the API returns an error status.
  */
-export async function fetchImageList(path, pattern = "*", recursive = false) {
-  // Construct the URL with search parameters
+export async function fetchImageList(path, pattern = "*", recursive = false, includeDbStatus = false) {
   const params = new URLSearchParams({
-    path: path,
-    pattern: pattern,
+    path,
+    pattern,
     recursive: recursive.toString(),
+    include_db_status: includeDbStatus.toString(),
   });
 
   const res = await apiFetch(`/api/images/list?${params.toString()}`, {
@@ -27,12 +29,29 @@ export async function fetchImageList(path, pattern = "*", recursive = false) {
   /** @type {import('@web_api').ListFilesResponse} */
   const data = await res.json();
 
-  // Check both the HTTP status and our custom status field
   if (!res.ok || data.status !== 'success') {
     throw new Error(data.message || 'Failed to fetch image list');
   }
 
   return data.files || [];
+}
+
+/**
+ * Create a directory under FILES_ROOT.
+ *
+ * @param {string} path - Relative path of the directory to create.
+ * @throws {Error} If the request fails or the server returns an error.
+ */
+export async function createDirectory(path) {
+  const res = await apiFetch('/api/images/mkdir', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || data.status !== 'success') {
+    throw new Error(data.message || 'Failed to create directory');
+  }
 }
 
 /**

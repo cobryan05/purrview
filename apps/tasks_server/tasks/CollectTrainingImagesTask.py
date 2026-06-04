@@ -508,7 +508,7 @@ class CollectTrainingImagesTask(Task):
                 },
             },
             "output_dir": {
-                "type": "string",
+                "type": "directory",
                 "label": "Output Directory",
                 "required": True,
                 "description": "Directory relative to image dataset root where images will be saved",

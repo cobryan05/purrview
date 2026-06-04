@@ -7,7 +7,8 @@ import json
 import logging
 import sys
 from dataclasses import dataclass, field
-from typing import Any, Dict, Generic, List, Optional, Type, TypeVar
+from datetime import datetime
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 from pydantic import (
@@ -35,10 +36,6 @@ class StatusResponse(BaseModel):
     model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)
     status: str = JsonValues.SUCCESS
     message: Optional[str] = None
-
-
-T = TypeVar("T")
-M = TypeVar("M", bound="DataclassMapper")
 
 
 def validate_raw_json_dict(v: Any) -> Dict[str, str]:
@@ -71,46 +68,9 @@ def validate_base64_img(v: Any) -> str:
 Base64Image = Annotated[Optional[str], BeforeValidator(validate_base64_img)]
 
 
-class DataclassMapper(BaseModel, Generic[T]):
-    model_config = ConfigDict(from_attributes=True, alias_generator=to_camel, populate_by_name=True)
-
-    @classmethod
-    def from_dataclass(cls: Type[M], dc: T) -> M:
-        """
-        Converts a standard Python dataclass (and its nested children)
-        into this Pydantic model tree.
-        """
-        return cls.model_validate(dc)
-
-
-@dataclass
-class DetectionResult:
-    bbox: BoundingBoxMetadata
-    confidence: float
-
-
-class DetectionResultModel(DataclassMapper):
-    bbox: BoundingBoxMetadataModel
-    confidence: float
-
-
-@dataclass
-class InferenceResult:
-    source_width: int
-    source_height: int
-    detections: List[DetectionResult]
-    inference_time: Optional[float] = None
-    annotated_image: Optional[np.ndarray] = None
-    source_image: Optional[np.ndarray] = None
-
-
-class InferenceResultModel(DataclassMapper):
-    source_width: int
-    source_height: int
-    detections: List[DetectionResultModel] = []
-    inference_time: Optional[float] = None
-    annotated_image: Optional[Base64Image] = None
-    source_image: Optional[Base64Image] = None
+# ---------------------------------------------------------------------------
+# Bounding-box / inference transport types
+# ---------------------------------------------------------------------------
 
 
 @dataclass
@@ -126,7 +86,9 @@ class BoundingBoxMetadata:
     extra: Dict[str, str] = field(default_factory=dict)
 
 
-class BoundingBoxMetadataModel(DataclassMapper):
+class BoundingBoxMetadataModel(BaseModel):
+    model_config = ConfigDict(from_attributes=True, alias_generator=to_camel, populate_by_name=True)
+
     uuid: str = Field(validation_alias=AliasChoices("bbox_uuid", "uuid"), serialization_alias="uuid")
     x: float
     y: float
@@ -141,13 +103,63 @@ class BoundingBoxMetadataModel(DataclassMapper):
 
 
 @dataclass
-class FileEntry:
-    name: str
-    type: str
-    path: str
+class DetectionResult:
+    bbox: BoundingBoxMetadata
+    confidence: float
 
 
-class FileEntryModel(DataclassMapper):
+class DetectionResultModel(BaseModel):
+    model_config = ConfigDict(from_attributes=True, alias_generator=to_camel, populate_by_name=True)
+
+    bbox: BoundingBoxMetadataModel
+    confidence: float
+
+
+@dataclass
+class InferenceResult:
+    source_width: int
+    source_height: int
+    detections: List[DetectionResult]
+    inference_time: Optional[float] = None
+    annotated_image: Optional[np.ndarray] = None
+    source_image: Optional[np.ndarray] = None
+
+
+class InferenceResultModel(BaseModel):
+    model_config = ConfigDict(from_attributes=True, alias_generator=to_camel, populate_by_name=True)
+
+    source_width: int
+    source_height: int
+    detections: List[DetectionResultModel] = []
+    inference_time: Optional[float] = None
+    annotated_image: Optional[Base64Image] = None
+    source_image: Optional[Base64Image] = None
+
+
+# ---------------------------------------------------------------------------
+# File-system entry types  (transport only — no DB table)
+# ---------------------------------------------------------------------------
+
+
+class FileEntryBase(BaseModel):
+    """Core filesystem fields shared across all representations."""
+
     name: str
-    type: str  # "file" or "dir"
-    path: str  # relative path from root
+    path: str  # relative path from FILES_ROOT
+    is_dir: bool
+
+
+class FileEntryRead(FileEntryBase):
+    """File entry as returned by the API, optionally enriched with DB info."""
+
+    model_config = ConfigDict(
+        from_attributes=True,
+        alias_generator=to_camel,
+        populate_by_name=True,
+    )
+
+    uuid: Optional[str] = None       # DB image UUID if this path is registered; None if not in DB
+    bbox_count: Optional[int] = None  # number of bounding boxes on this image; None if not in DB
+    size: int = 0
+    modified_at: Optional[datetime] = None
+    mime_type: Optional[str] = None

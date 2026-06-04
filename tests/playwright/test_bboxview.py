@@ -9,9 +9,6 @@ Run with:
 import pytest
 from playwright.sync_api import Page
 
-
-
-
 # ---------------------------------------------------------------------------
 # Helper — JS snippet that creates a bare Konva stage+layer inside the page.
 # Included at the start of every evaluate block (after imports).

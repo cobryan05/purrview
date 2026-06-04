@@ -47,7 +47,7 @@ from apps.helpers.db.types import (
 from apps.helpers.types import (
     Base64Image,
     BoundingBoxMetadataModel,
-    FileEntry,
+    FileEntryRead,
     Payload,
     StatusResponse,
 )
@@ -262,7 +262,11 @@ class ListFilesPayload(ApiPayload):
 
 
 class ListFilesResponse(StatusResponse):
-    files: List[FileEntry] = []
+    files: List[FileEntryRead] = []
+
+
+class CreateDirectoryPayload(ApiPayload):
+    path: str
 
 
 class GetImageMetadataPayload(ApiPayload):
@@ -893,17 +897,41 @@ class WebApp:
             tags=[ApiTags.IMAGES],
             operation_id="list_images",
         )
-        async def list_images(path: str = "/", pattern: str = "*", recursive: bool = False) -> ListFilesResponse:
+        async def list_images(
+            path: str = "/",
+            pattern: str = "*",
+            recursive: bool = False,
+            include_db_status: bool = False,
+        ) -> ListFilesResponse:
             """
             List files and directories.
-            Usage: /api/images/list?path=/data&pattern=*.jpg&recursive=true
+            Usage: /api/images/list?path=/data&pattern=*.jpg&recursive=true&include_db_status=true
             """
             try:
-                file_list = await self._manager.list_files(rel_path=path, patterns=[pattern], recursive=recursive)
+                file_list = await self._manager.list_files(
+                    rel_path=path, patterns=[pattern], recursive=recursive, include_db_status=include_db_status
+                )
                 return ListFilesResponse(status=JsonValues.SUCCESS, files=file_list)
             except Exception as e:
                 logger.exception("Failed to list files")
                 return ListFilesResponse(status=JsonValues.FAILURE, message=str(e))
+
+        @self._app.post(
+            "/api/images/mkdir",
+            response_model=StatusResponse,
+            tags=[ApiTags.IMAGES],
+            operation_id="create_directory",
+        )
+        async def create_directory(payload: CreateDirectoryPayload) -> StatusResponse:
+            """Create a directory under FILES_ROOT."""
+            try:
+                await self._manager.create_directory(payload.path)
+                return StatusResponse(status=JsonValues.SUCCESS)
+            except ValueError as e:
+                return StatusResponse(status=JsonValues.FAILURE, message=str(e))
+            except Exception as e:
+                logger.exception("Failed to create directory")
+                return StatusResponse(status=JsonValues.FAILURE, message=str(e))
 
         @self._app.get(
             "/api/images/{image_path:path}/file",
