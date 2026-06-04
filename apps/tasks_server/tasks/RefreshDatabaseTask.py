@@ -52,7 +52,7 @@ class RefreshDatabaseTask(Task):
         self.log("Listing image files on disk")
         list_resp = await asyncio.to_thread(images_api.list_images, path="/", pattern="*", recursive=True)
         file_entries = list_resp.files or []
-        image_files = [e for e in file_entries if e.type == "file"]
+        image_files = [e for e in file_entries if not e.is_dir]
         total = len(image_files)
         self.log(f"Found {total} image files")
 

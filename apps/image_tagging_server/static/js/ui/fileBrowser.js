@@ -1,4 +1,5 @@
 import { fetchImageList, createDirectory } from '/app-static/js/shared/api/images.js';
+import { toast } from '/app-static/js/ui/utils/logging.js';
 
 /**
  * @typedef {import('@ui_types').FileNavigation} FileNavigation
@@ -181,7 +182,7 @@ export class FileBrowser {
           await this.load(this.currentPath);
         } catch (err) {
           nameInput.style.outline = '2px solid red';
-          console.error('Failed to create directory:', err);
+          toast(err.message || 'Failed to create directory', 5000, 'error');
         } finally {
           saveBtn.disabled = false;
         }

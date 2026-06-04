@@ -619,9 +619,10 @@ export async function createReviewPanel(container, { fetchImages = null } = {}) 
       const uuid = entry.img.uuid;
       if (seen.has(uuid)) continue;
       seen.add(uuid);
-      navItems.push({ img: entry.img, bbox: entry.img.bboxes?.[0] ?? null });
+      navItems.push({ img: entry.img, bbox: entry.bbox ?? entry.img.bboxes?.[0] ?? null });
     }
-    const startIndex = Math.max(navItems.findIndex(item => item.img.uuid === targetImgUuid), 0);
+    const foundIndex = navItems.findIndex(item => item.img.uuid === targetImgUuid);
+    const startIndex = foundIndex >= 0 ? foundIndex : 0;
     return {
       items: navItems,
       startIndex,
@@ -633,7 +634,7 @@ export async function createReviewPanel(container, { fetchImages = null } = {}) 
         card.classList.remove('recently-viewed');
         void card.offsetWidth; // force reflow to restart the animation
         card.classList.add('recently-viewed');
-        setTimeout(() => card.classList.remove('recently-viewed'), 2000);
+        card.addEventListener('animationend', () => card.classList.remove('recently-viewed'), { once: true });
       },
     };
   }

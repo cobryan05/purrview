@@ -48,8 +48,11 @@ export async function createDirectory(path) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ path }),
   });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok || data.status !== 'success') {
+  if (!res.ok) {
+    throw new Error(`Failed to create directory (HTTP ${res.status})`);
+  }
+  const data = await res.json();
+  if (data.status !== 'success') {
     throw new Error(data.message || 'Failed to create directory');
   }
 }
