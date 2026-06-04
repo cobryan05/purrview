@@ -1,6 +1,7 @@
 import { init as initImageTagging } from './image-tagging/main.js';
 import { init as initConfiguration } from './configuration/main.js';
 import { init as initReview, applyFilterWhenReady } from './review/main.js';
+import { init as initSettings } from './settings/main.js';
 import { setupMainTabs } from '/app-static/js/app/utils/tabs.js';
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
 import { createImageTaggingRuntime } from './image-tagging/runtime.js';
@@ -31,6 +32,8 @@ export async function init(appState) {
         await initConfiguration?.();
       } else if (tabName === 'tab-review') {
         await initReview?.();
+      } else if (tabName === 'tab-settings') {
+        await initSettings?.();
       }
       initializedFeatures.add(tabName);
     }

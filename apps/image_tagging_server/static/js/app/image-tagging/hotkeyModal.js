@@ -1,6 +1,5 @@
 import { fetchLabels } from '/app-static/js/shared/api/labels.js';
 import { fetchTags } from '/app-static/js/shared/api/tags.js';
-import { createModalShell } from '/app-static/js/ui/utils/modalShell.js';
 import {
   FIXED_ACTIONS,
   initHotkeyBindings,
@@ -13,28 +12,19 @@ import {
 } from './hotkeyBindings.js';
 
 /**
- * Open the (shared) hotkey configuration modal. Bindings apply to every canvas.
- * @returns {Promise<void>}
+ * Render the hotkey config UI into `container`.
+ * Attaches a document-level keydown listener (capture phase) while a key is
+ * being captured; the listener is inert otherwise so it is safe to leave
+ * attached for long-lived panels like the Settings tab.
+ *
+ * @param {HTMLElement} container
+ * @returns {Promise<{ destroy: () => void, reset: () => void }>}
  */
-export async function openHotkeyModal() {
-  // Ensure bindings are loaded from DB before letting the user edit them.
+export async function renderHotkeyPanel(container) {
   const [labels, tags] = await Promise.all([fetchLabels(), fetchTags(), initHotkeyBindings()]);
 
-  const { dialog, open, close } = createModalShell({
-    onClose: () => document.removeEventListener('keydown', onKeyCapture, true),
-  });
-  dialog.style.minWidth = '420px';
-  dialog.style.maxWidth = '560px';
-  dialog.style.maxHeight = '80vh';
-  dialog.style.overflowY = 'auto';
+  container.style.cssText = 'display:flex; flex-direction:column; gap:1em;';
 
-  const title = document.createElement('strong');
-  title.textContent = 'Configure Hotkeys';
-
-  const body = document.createElement('div');
-  body.style.cssText = 'display:flex; flex-direction:column; gap:1em;';
-
-  // capturingActionId is set while we wait for the user to press a key.
   let capturingActionId = null;
 
   /** @param {{id:string,label:string,icon?:string,color?:string}} a */
@@ -90,18 +80,18 @@ export async function openHotkeyModal() {
   }
 
   function renderRows() {
-    body.innerHTML = '';
-    body.appendChild(section('Actions', FIXED_ACTIONS.map(renderRow)));
+    container.innerHTML = '';
+    container.appendChild(section('Actions', FIXED_ACTIONS.map(renderRow)));
 
     const labelRows = [...labels.values()].map(l =>
       renderRow({ id: `label:${l.uuid}`, label: l.name ?? l.uuid, color: l.color })
     );
-    if (labelRows.length) body.appendChild(section('Label tools', labelRows));
+    if (labelRows.length) container.appendChild(section('Label tools', labelRows));
 
     const tagRows = [...tags.values()].map(t =>
       renderRow({ id: `tag:${t.uuid}`, label: t.name ?? t.uuid, icon: t.icon ?? '', color: t.color })
     );
-    if (tagRows.length) body.appendChild(section('Tag tools', tagRows));
+    if (tagRows.length) container.appendChild(section('Tag tools', tagRows));
   }
 
   const onKeyCapture = (e) => {
@@ -113,7 +103,6 @@ export async function openHotkeyModal() {
       renderRows();
       return;
     }
-    // Ignore lone modifier presses; wait for the actual key.
     if (['Control', 'Shift', 'Alt', 'Meta'].includes(e.key)) return;
     setBinding(capturingActionId, eventToCombo(e));
     capturingActionId = null;
@@ -121,21 +110,17 @@ export async function openHotkeyModal() {
   };
   document.addEventListener('keydown', onKeyCapture, true);
 
-  const footer = document.createElement('div');
-  footer.style.cssText = 'display:flex; gap:0.5em; justify-content:space-between; align-items:center;';
-
-  const resetBtn = document.createElement('button');
-  resetBtn.textContent = 'Reset to defaults';
-  resetBtn.className = 'secondary';
-  resetBtn.onclick = () => { resetBindings(); capturingActionId = null; renderRows(); };
-
-  const closeBtn = document.createElement('button');
-  closeBtn.textContent = 'Done';
-  closeBtn.onclick = close;
-
-  footer.append(resetBtn, closeBtn);
-  dialog.append(title, body, footer);
-  open();
-
   renderRows();
+
+  return {
+    destroy() {
+      document.removeEventListener('keydown', onKeyCapture, true);
+    },
+    reset() {
+      resetBindings();
+      capturingActionId = null;
+      renderRows();
+    },
+  };
 }
+

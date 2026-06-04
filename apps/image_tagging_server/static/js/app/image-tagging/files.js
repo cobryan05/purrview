@@ -2,9 +2,11 @@
 import { FileBrowser } from '/app-static/js/ui/fileBrowser.js';
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
 import { guardUnsavedChanges } from './canvas/image.js';
+import { toast } from '/app-static/js/ui/utils/logging.js';
 
 let _initialized = false;
 let browser = null;
+let _lastBoundaryToast = 0;
 
 /**
  * @param {import('@image_tagging_types').ImageTaggingRuntime} runtime
@@ -52,7 +54,14 @@ export async function init(runtime) {
  */
 export async function next_image(runtime) {
   const nav = runtime.fileNavigation;
-  if (!nav.hasNext()) return;
+  if (!nav.hasNext()) {
+    const now = Date.now();
+    if (now - _lastBoundaryToast > 1200) {
+      _lastBoundaryToast = now;
+      toast('End of directory', 3000, 'warning');
+    }
+    return;
+  }
   if (!await guardUnsavedChanges(runtime)) return;
   nav.next();
   const payload = { path: nav.currentPath(), showCanvas: true, runtimeId: runtime.id };
@@ -64,7 +73,14 @@ export async function next_image(runtime) {
  */
 export async function prev_image(runtime) {
   const nav = runtime.fileNavigation;
-  if (!nav.hasPrev()) return;
+  if (!nav.hasPrev()) {
+    const now = Date.now();
+    if (now - _lastBoundaryToast > 1200) {
+      _lastBoundaryToast = now;
+      toast('Beginning of directory', 3000, 'warning');
+    }
+    return;
+  }
   if (!await guardUnsavedChanges(runtime)) return;
   nav.prev();
   const payload = { path: nav.currentPath(), showCanvas: true, runtimeId: runtime.id };

@@ -350,6 +350,23 @@ export async function createReviewPanel(container, { fetchImages = null } = {}) 
     }
   }
 
+  function _refreshBboxCard(card, uiBbox, imgFilename, bboxUuid) {
+    const thumb = card.querySelector('.thumb');
+    if (thumb) thumb.src = getBboxThumbnailUrl(imgFilename, bboxUuid, 300) + `&t=${Date.now()}`;
+    const chip = card.querySelector('.label-chip');
+    if (chip) {
+      if (uiBbox.label) {
+        chip.textContent = uiBbox.label.text;
+        chip.style.cssText = `background:${uiBbox.label.color}33;border:1px solid ${uiBbox.label.color};`;
+      } else {
+        chip.textContent = '(unknown)';
+        chip.style.cssText = 'background:#88888833;border:1px solid #888;';
+      }
+    }
+    const stillUnverified = (uiBbox.tags ?? []).some(t => t.uuid === UNVERIFIED_TAG_UUID);
+    if (!stillUnverified) markCardStale(card, 'verified');
+  }
+
   function updateTypeFading() {
     grid.querySelectorAll('.review-card').forEach(card => {
       const shouldFade = _selectionKind !== null && card.dataset.kind !== _selectionKind;
@@ -626,6 +643,13 @@ export async function createReviewPanel(container, { fetchImages = null } = {}) 
     return {
       items: navItems,
       startIndex,
+      onSaved(savedImg, savedBboxesMap) {
+        if (!savedImg || !savedBboxesMap) return;
+        for (const [bboxUuid, uiBbox] of savedBboxesMap) {
+          const card = grid.querySelector(`[data-bbox-uuid="${bboxUuid}"]`);
+          if (card) _refreshBboxCard(card, uiBbox, savedImg.filename, bboxUuid);
+        }
+      },
       onClose(closedImg) {
         if (!closedImg) return;
         const card = grid.querySelector(`[data-image-uuid="${closedImg.uuid}"]`);
@@ -690,22 +714,7 @@ export async function createReviewPanel(container, { fetchImages = null } = {}) 
             if (updatedUIBbox === undefined) {
               markCardStale(card, 'deleted');
             } else {
-              const thumb = card.querySelector('.thumb');
-              if (thumb) thumb.src = getBboxThumbnailUrl(img.filename, bbox.uuid, 300) + `&t=${Date.now()}`;
-
-              const chip = card.querySelector('.label-chip');
-              if (chip) {
-                if (updatedUIBbox.label) {
-                  chip.textContent = updatedUIBbox.label.text;
-                  chip.style.cssText = `background:${updatedUIBbox.label.color}33;border:1px solid ${updatedUIBbox.label.color};`;
-                } else {
-                  chip.textContent = '(unknown)';
-                  chip.style.cssText = 'background:#88888833;border:1px solid #888;';
-                }
-              }
-
-              const stillUnverified = (updatedUIBbox.tags ?? []).some(t => t.uuid === UNVERIFIED_TAG_UUID);
-              if (!stillUnverified) markCardStale(card, 'verified');
+              _refreshBboxCard(card, updatedUIBbox, img.filename, bbox.uuid);
             }
           }
         }
@@ -1265,7 +1274,7 @@ async function showCanvasModal(bbox, img, labels, onSaved, navContext = null) {
 
   // ── Wire shared toolbar (select / bbox / delete) ───────────────────
   toolbarHandle = initToolbar(instance.runtime, toolbarEl, {
-    buttons: ['undo', 'redo', 'select', 'bbox', 'delete', 'hotkeys'],
+    buttons: ['undo', 'redo', 'select', 'bbox', 'delete'],
   });
 
   // ── Wire label panel ───────────────────────────────────────────────
@@ -1340,10 +1349,20 @@ async function showCanvasModal(bbox, img, labels, onSaved, navContext = null) {
       async () => {
         const item = navContext.items[_navIndex];
         if (!item) return;
+        // For the start image, prefer the originally-opened bbox so the highlight
+        // matches the card the user double-clicked, not the first occurrence in navItems.
+        const targetBbox = (_navIndex === navContext.startIndex) ? bbox : (item.bbox ?? null);
+        titleEl.textContent = `Edit: ${item.img.filename.split('/').slice(-2).join('/')}`;
+        try {
+          await instance.loadImage(item.img.filename);
+        } catch (err) {
+          Logger.error('Canvas modal: failed to load image during navigation', err);
+          toast('Failed to load image', 3000, 'error');
+          titleEl.textContent = `Edit: ${_currentImg.filename.split('/').slice(-2).join('/')}`;
+          return; // Don't update state — canvas and _currentImg stay in sync
+        }
         _currentImg = item.img;
-        _currentBbox = item.bbox ?? null;
-        titleEl.textContent = `Edit: ${_currentImg.filename.split('/').slice(-2).join('/')}`;
-        await instance.loadImage(_currentImg.filename);
+        _currentBbox = targetBbox;
         if (_currentBbox) _highlightBbox(_currentBbox.uuid);
       },
     );
@@ -1370,10 +1389,13 @@ async function showCanvasModal(bbox, img, labels, onSaved, navContext = null) {
       bbox.uuid, // always include the originally-opened bbox
     ])];
     await invalidateBboxThumbnails(allUuids);
-    const updatedUIBbox = instance.runtime.state.image.bboxes.get(
-      currentBbox?.uuid ?? bbox.uuid,
-    );
+    const currentBboxesMap = new Map(instance.runtime.state.image.bboxes);
+    const updatedUIBbox = currentBboxesMap.get(currentBbox?.uuid ?? bbox.uuid);
     closeModal();
+    if (currentImg?.uuid !== img.uuid) {
+      // Navigated to a different image before saving — let navContext refresh its cards.
+      navContext?.onSaved?.(currentImg, currentBboxesMap);
+    }
     navContext?.onClose?.(currentImg);
     await onSaved(updatedUIBbox, currentImg);
   }

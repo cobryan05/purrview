@@ -17,7 +17,7 @@ main.container {
 }
 
 .main-tab-button {
-  width: 100%;
+  flex: 1;
   text-align: center;
   padding: 0.5em 0;
   cursor: pointer;
@@ -28,6 +28,21 @@ main.container {
   border-bottom: 2px solid transparent;
   transition: border-color 0.2s;
   font-size: 1.1em;
+}
+
+.main-tab-button--icon {
+  flex: 0 0 auto;
+  padding: 0.5em 0.75em;
+  font-size: 1.2em;
+  opacity: 0.6;
+}
+
+.main-tab-button--icon:hover {
+  opacity: 1;
+}
+
+.main-tab-button--icon.active {
+  opacity: 1;
 }
 
 .main-tab-button:hover {
@@ -1081,4 +1096,33 @@ button.filter-active {
 }
 .task-section-header:first-child {
   margin-top: 0;
+}
+
+/* ===== Settings tab ===== */
+.settings-wrap {
+  max-width: 560px;
+  padding: 1em 0.5em;
+  display: flex;
+  flex-direction: column;
+  gap: 2em;
+}
+
+.settings-section {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75em;
+}
+
+.settings-section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid #ccc;
+  padding-bottom: 0.4em;
+}
+
+.settings-hotkey-body {
+  display: flex;
+  flex-direction: column;
+  gap: 1em;
 }
