@@ -1,10 +1,16 @@
 services:
+  # =========================================================
+  #  Inference / Main Web Server (Production Profile)
+  # =========================================================
   whiskerwatcher:
     container_name: whiskerwatcher
     build:
       context: .
       dockerfile: Dockerfile
-      target: ${BUILD_TARGET:-inference-app}
+      target: inference-app
+      args:
+        - APPUSER_UID=${APPUSER_UID:-1001}
+        - APPUSER_GID=${APPUSER_GID:-1001}
     deploy:
       resources:
         reservations:
@@ -19,34 +25,27 @@ services:
       - ./data/:/data
       - ./conf:/conf
       - ./logs:/logs
-
-      - ./models:/app/models
-      - ./image_datasets:/app/image_datasets
-
-      - ./apps:/app/apps
-      - ./templates:/app/templates
-      - ./static/images:/app/static/images
-      - ./tests:/app/tests
-      - ./pytest.ini:/app/pytest.ini
-
-      - .:/project
-      - ./.vscode_container:/app/.vscode
-      - ./requirements.txt:/app/requirements.txt
-      - ./pyproject.toml:/app/pyproject.toml
     ports:
-      - "7999:7999"  # Whisker-Watcher apps
+      - "7999:7999"  # Whisker-Watcher main app
       - "8553:8554"  # RTSP relay
       - "9001:9001"  # Supervisord
     restart: unless-stopped
+    profiles: ["prod"]
     depends_on:
       - whiskerwatcher_training
 
+  # =========================================================
+  #  Training Server (Production Profile)
+  # =========================================================
   whiskerwatcher_training:
     container_name: whiskerwatcher_training
     build:
       context: .
       dockerfile: Dockerfile
-      target: ${TRAINING_BUILD_TARGET:-training-app}
+      target: training-app
+      args:
+        - APPUSER_UID=${APPUSER_UID:-1001}
+        - APPUSER_GID=${APPUSER_GID:-1001}
     deploy:
       resources:
         reservations:
@@ -60,24 +59,89 @@ services:
       - ./data/:/data
       - ./conf:/conf
       - ./logs:/logs
+    ports:
+      - "8005:8005"   # Training API server
+      - "9002:9001"   # Supervisord dashboard
+    restart: unless-stopped
+    profiles: ["prod"]
+
+  # =========================================================
+  #  Inference Core Workspace (Development Profile)
+  # =========================================================
+  whiskerwatcher-dev:
+    container_name: whiskerwatcher_dev
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: dev
+      args:
+        - APPUSER_UID=${APPUSER_UID:-1001}
+        - APPUSER_GID=${APPUSER_GID:-1001}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: [ '0' ]
+              capabilities: [ gpu ]
+    environment:
+      THUMB_CACHE_MAX_MB: 100
+      TRAINING_SERVER_HOST: whiskerwatcher_training_dev
+    volumes:
+      - ./data/:/data
+      - ./conf:/conf
+      - ./logs:/logs
+      - ./models:/app/models
+      - ./image_datasets:/app/image_datasets
+      - ./apps:/app/apps
+      - ./templates:/app/templates
+      - ./static/images:/app/static/images
+      - ./tests:/app/tests
+      - ./pytest.ini:/app/pytest.ini
+      - .:/project
+      - ./.vscode_container:/app/.vscode
+      - ./requirements.txt:/app/requirements.txt
+      - ./pyproject.toml:/app/pyproject.toml
+    ports:
+      - "7999:7999"
+      - "8553:8554"
+      - "9001:9001"
+    restart: "no"
+    profiles: ["dev"]
+    depends_on:
+      - whiskerwatcher-training-dev
+
+  # =========================================================
+  #  Training Pipeline Workspace (Development Profile)
+  # =========================================================
+  whiskerwatcher-training-dev:
+    container_name: whiskerwatcher_training_dev
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: training-dev
+      args:
+        - APPUSER_UID=${APPUSER_UID:-1001}
+        - APPUSER_GID=${APPUSER_GID:-1001}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: [ '0' ]
+              capabilities: [ gpu ]
+    environment:
+      DB_SERVER_HOST: whiskerwatcher-dev
+    volumes:
+      - ./data/:/data
+      - ./conf:/conf
+      - ./logs:/logs
       - ./apps:/app/apps
       - ./models:/app/models
       - ./image_datasets:/app/image_datasets
+      - .:/project
     ports:
-      - "8005:8005"   # Training server
-      - "9002:9001"   # Supervisord (mapped to 9002 on host to avoid conflict with whiskerwatcher)
-    restart: unless-stopped
-
-  # To convert models put them in the 'models' directory and run, eg:
-  # > docker compose --profile yolo2onnx run yolo2onnx /models/yolov5.pt v5
-  # > docker compose --profile yolo2onnx run yolo2onnx /models/yolov7.pt v7
-  yolo2onnx:
-    build:
-      context: ./apps/yolo2onnx
-      dockerfile: Dockerfile
-    image: yolo2onnx
-    entrypoint: ["python", "convert.py"]
-    volumes:
-      - ./models:/models
-      - ./yolo2onnx.pip_cache:/root/.cache/pip
-    profiles: ["yolo2onnx"] # Don't build unless requested
+      - "8005:8005"
+      - "9002:9001"
+    restart: "no"
+    profiles: ["dev"]
