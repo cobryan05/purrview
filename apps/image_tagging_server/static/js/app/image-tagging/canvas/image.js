@@ -78,7 +78,39 @@ export function clearAnnotations(runtime) {
   layer.draw();
   runtime.pushState();
   events.publish(EventTypes.CANVAS_BBOXES_CHANGED, { runtimeId: runtime.id });
-}/**
+}
+
+/**
+ * Remove every bbox that has no resolved label (rendered grey) — i.e. inference
+ * detections whose class never matched a real label. Bboxes carrying a valid
+ * `label.uuid` are kept.
+ * @param {import('@image_tagging_types').ImageTaggingRuntime} runtime
+ */
+export function clearUnmatched(runtime) {
+  if (!runtime.canvas) return;
+  const { layer, transformer } = runtime.canvas;
+
+  let removed = 0;
+  [...layer.getChildren()].forEach(child => {
+    if (child.name() !== 'bbox' || !(child instanceof BboxView)) return;
+    if (child.uiBBox.label?.uuid) return;
+    transformer?.nodes(transformer.nodes().filter(n => n !== child && n.getParent() !== child));
+    runtime.state.image?.bboxes.delete(child.uiBBox.uuid);
+    child.destroy();
+    removed++;
+  });
+
+  if (!removed) {
+    toast('No unmatched labels to clear.');
+    return;
+  }
+
+  layer.draw();
+  runtime.pushState();
+  events.publish(EventTypes.CANVAS_BBOXES_CHANGED, { runtimeId: runtime.id });
+}
+
+/**
  * @param {import('@image_tagging_types').ImageTaggingRuntime} runtime
  */
 export async function saveAnnotations(runtime) {

@@ -246,3 +246,85 @@ async def test_mixed_tracked_and_untracked_images(tmp_path):
     assert f"{_SOURCE}:1" in saved_ids
     assert len(saved_ids) == 2  # the untracked image does not contribute an ID
     assert task._resume_data["images_saved"] == 3
+
+
+# ─── Model priority + IoU dedup (D3) ──────────────────────────────────────────
+
+
+def _detection_at(x, y, w, h, label_uuid=_LABEL_UUID, confidence=0.9) -> MagicMock:
+    det = MagicMock()
+    det.confidence = confidence
+    det.bbox.label_uuid = label_uuid
+    det.bbox.x, det.bbox.y, det.bbox.width, det.bbox.height = x, y, w, h
+    det.bbox.class_str = "object"
+    return det
+
+
+async def test_init_preserves_model_priority_order():
+    """Config order is retained (and de-duplicated) as model priority order."""
+    params = {
+        **_PARAMS,
+        "model_label_config": [
+            {"modelName": "model-a", "labelValues": {_LABEL_UUID: 0.5}},
+            {"modelName": "model-b", "labelValues": {_LABEL_UUID: 0.5}},
+            {"modelName": "model-a", "labelValues": {_LABEL_UUID: 0.5}},
+        ],
+    }
+    task = _make_task(params=params)
+    await task._init(params, resume_data=None)
+    assert task._model_names == ["model-a", "model-b"]
+
+
+async def test_run_inference_dedups_overlapping_boxes_keeping_priority():
+    """When two models detect overlapping boxes (IoU >= threshold), only the
+    higher-priority (earlier-configured) model's detection survives."""
+    params = {
+        **_PARAMS,
+        "model_label_config": [
+            {"modelName": "model-a", "labelValues": {_LABEL_UUID: 0.5}},
+            {"modelName": "model-b", "labelValues": {_LABEL_UUID: 0.5}},
+        ],
+    }
+    task = _make_task(params=params)
+    await task._init(params, resume_data=None)
+
+    high_priority = _detection_at(0.0, 0.0, 0.5, 0.5, confidence=0.6)
+    overlapping = _detection_at(0.01, 0.01, 0.5, 0.5, confidence=0.95)  # IoU ~0.96
+
+    def _inference(name, payload):
+        result = MagicMock()
+        result.result.detections = [high_priority] if name == "model-a" else [overlapping]
+        return result
+
+    inference_api = MagicMock()
+    inference_api.inference.side_effect = _inference
+
+    matching = await task._run_inference(inference_api, "b64", {"model-a": None, "model-b": None})
+    assert matching == [high_priority]
+
+
+async def test_run_inference_keeps_non_overlapping_boxes():
+    """Distinct (non-overlapping) detections from different models are all kept."""
+    params = {
+        **_PARAMS,
+        "model_label_config": [
+            {"modelName": "model-a", "labelValues": {_LABEL_UUID: 0.5}},
+            {"modelName": "model-b", "labelValues": {_LABEL_UUID: 0.5}},
+        ],
+    }
+    task = _make_task(params=params)
+    await task._init(params, resume_data=None)
+
+    box_a = _detection_at(0.0, 0.0, 0.2, 0.2)
+    box_b = _detection_at(0.7, 0.7, 0.2, 0.2)
+
+    def _inference(name, payload):
+        result = MagicMock()
+        result.result.detections = [box_a] if name == "model-a" else [box_b]
+        return result
+
+    inference_api = MagicMock()
+    inference_api.inference.side_effect = _inference
+
+    matching = await task._run_inference(inference_api, "b64", {"model-a": None, "model-b": None})
+    assert matching == [box_a, box_b]

@@ -163,11 +163,9 @@ export function renderActiveTasks({ target = 'active-tasks-list', refresh = null
         };
       });
 
-      // Build every row in parallel inside a detached div.  The live DOM is
-      // untouched until everything is ready.
-      const newListDiv = document.createElement('div');
-
-      await Promise.all(Object.entries(tasks || {}).map(async ([taskId, task]) => {
+      // Build every row in parallel.  The live DOM is untouched until
+      // everything is ready, then partitioned into Active / Completed sections.
+      const built = await Promise.all(Object.entries(tasks || {}).map(async ([taskId, task]) => {
         const status = task.instance?.status;
 
         const deleteButton = {
@@ -213,19 +211,6 @@ export function renderActiveTasks({ target = 'active-tasks-list', refresh = null
             catch (error) { toast(error.message || 'Failed to resume task', 5000, 'error'); }
           }
         };
-        const rerunButton = {
-          text: 'Rerun', emoji: '🔁',
-          onClick: async () => {
-            try {
-              // Delete the current instance (may be paused, completed, or errored)
-              // before creating a fresh one so we don't leave orphaned checkpoints.
-              await deleteTasks({ taskUuids: [taskId] });
-              await startTask({ configUuid: task.config?.uuid });
-              refresh?.();
-            } catch (error) { toast(error.message || 'Failed to start task', 5000, 'error'); }
-          }
-        };
-
         const isPausedInPlace = task.is_paused_in_place === true;
         let leftButtons = [];
         let rightButtons = [];
@@ -238,13 +223,14 @@ export function renderActiveTasks({ target = 'active-tasks-list', refresh = null
         } else if (status === 'pending') {
           rightButtons = [stopButton];
         } else if (status === 'paused') {
-          // Suspended — has a checkpoint; resume restarts from it
+          // Suspended — has a checkpoint; resume restarts from it.
+          // No rerun here: rerun/retry is only offered on terminal tasks.
           leftButtons = [deleteButton];
-          rightButtons = [resumeButton, rerunButton];
+          rightButtons = [resumeButton];
         } else {
           // completed, error
           leftButtons = [deleteButton];
-          rightButtons = [rerunButton];
+          rightButtons = [];
         }
 
         // Pre-render field content so we get a direct DOM handle for state
@@ -280,8 +266,22 @@ export function renderActiveTasks({ target = 'active-tasks-list', refresh = null
 
         const row = createGenericRow({ field: preRendered, leftButtons, rightButtons });
         row.dataset.taskUuid = taskId;
-        newListDiv.appendChild(row);
+        return { row, isCompleted: status === 'completed' || status === 'error' };
       }));
+
+      // Partition into Active (running/pending/paused) and Completed (completed/error)
+      // sections, preserving the server-provided task order within each.
+      const newListDiv = document.createElement('div');
+      const appendSection = (title, rows) => {
+        if (!rows.length) return;
+        const header = document.createElement('h4');
+        header.className = 'task-section-header';
+        header.textContent = title;
+        newListDiv.appendChild(header);
+        rows.forEach(row => newListDiv.appendChild(row));
+      };
+      appendSection('Active', built.filter(b => !b.isCompleted).map(b => b.row));
+      appendSection('Completed', built.filter(b => b.isCompleted).map(b => b.row));
 
       // Atomic swap: old content stays visible until this exact line.
       container.innerHTML = '';

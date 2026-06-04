@@ -1,6 +1,7 @@
 import { fetchModelsList, clearModelsCache } from '/app-static/js/shared/api/models.js';
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
 import { Logger } from '/app-static/js/ui/utils/index.js';
+import { clearUnmatched } from './canvas/image.js';
 
 /**
  * Creates a self-contained inference panel: model list + Run/Refresh buttons.
@@ -29,7 +30,13 @@ export async function createInferencePanel(runtime, container) {
   refreshBtn.textContent = 'Refresh';
   refreshBtn.addEventListener('click', handleRefresh);
 
-  actionsEl.append(runBtn, refreshBtn);
+  // Removes inference detections whose class never matched a real label (grey boxes).
+  const clearGreyBtn = document.createElement('button');
+  clearGreyBtn.textContent = 'Clear Grey';
+  clearGreyBtn.title = 'Remove unmatched (grey) detections from the canvas';
+  clearGreyBtn.addEventListener('click', () => clearUnmatched(runtime));
+
+  actionsEl.append(runBtn, refreshBtn, clearGreyBtn);
 
   // ── Model list ────────────────────────────────────────────────────
   const listEl = document.createElement('div');

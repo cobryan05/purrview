@@ -15,14 +15,24 @@ export class ArrayField extends Field {
     instance._fields = []; // store wrapped subfields
 
     for (let idx = 0; idx < instance._value.length; idx++) {
-      const val = instance._value[idx];
-      const subfield = await instance._fieldFactory(val, (newValue) => {
-        instance._value[idx] = newValue;
-        instance._onChange?.(instance._value);
-      });
-      instance._fields[idx] = subfield;
+      instance._fields[idx] = await instance._makeSubfield(instance._value[idx]);
     }
     return instance;
+  }
+
+  /**
+   * Build a subfield whose change handler resolves its own current index at call
+   * time (via indexOf) instead of capturing a fixed index. This keeps `_value` in
+   * sync even after rows are deleted or reordered.
+   */
+  async _makeSubfield(val) {
+    let subfield;
+    subfield = await this._fieldFactory(val, (newValue) => {
+      const i = this._fields.indexOf(subfield);
+      if (i >= 0) this._value[i] = newValue;
+      this._onChange?.(this._value);
+    });
+    return subfield;
   }
 
   async renderEdit() {
@@ -32,6 +42,16 @@ export class ArrayField extends Field {
     // Ensure fields array matches value array
     this._fields = this._fields || [];
 
+    // Swap items at `from`/`to` in both the value and field arrays so order is
+    // preserved on getValue() and re-render.
+    const move = (from, to) => {
+      if (to < 0 || to >= this._value.length) return;
+      [this._value[from], this._value[to]] = [this._value[to], this._value[from]];
+      [this._fields[from], this._fields[to]] = [this._fields[to], this._fields[from]];
+      renderItems();
+      this._onChange?.(this._value);
+    };
+
     const renderItems = async () => {
       container.innerHTML = '';
 
@@ -40,6 +60,7 @@ export class ArrayField extends Field {
         row.style.display = 'flex';
         row.style.alignItems = 'center';
         row.style.gap = '0.5em';
+
         const fieldEdit = await this._fields[idx].renderEdit();
         const deleteBtn = createEmojiButton({
           text: 'Delete',
@@ -53,6 +74,24 @@ export class ArrayField extends Field {
         });
         row.appendChild(deleteBtn);
         row.appendChild(fieldEdit);
+
+        // Reorder controls (right side). Hidden when there's nothing to reorder.
+        if (this._value.length > 1) {
+          const upBtn = createEmojiButton({
+            text: 'Move up', emoji: '🔼',
+            onClick: () => move(idx, idx - 1),
+          });
+          upBtn.disabled = idx === 0;
+          const downBtn = createEmojiButton({
+            text: 'Move down', emoji: '🔽',
+            onClick: () => move(idx, idx + 1),
+          });
+          downBtn.disabled = idx === this._value.length - 1;
+          upBtn.style.marginLeft = 'auto'; // push the arrow pair to the right edge
+          row.appendChild(upBtn);
+          row.appendChild(downBtn);
+        }
+
         container.appendChild(row);
       }
 
@@ -61,11 +100,7 @@ export class ArrayField extends Field {
         emoji: '➕',
         onClick: async () => {
           this._value.push(null);
-          const idx = this._value.length - 1;
-          this._fields.push(await this._fieldFactory(null, (newValue) => {
-            this._value[idx] = newValue;
-            this._onChange?.(this._value);
-          }));
+          this._fields.push(await this._makeSubfield(null));
           renderItems();
           this._onChange?.(this._value);
         }

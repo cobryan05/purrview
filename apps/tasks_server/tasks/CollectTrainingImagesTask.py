@@ -41,6 +41,23 @@ logging.basicConfig()
 logger = logging.getLogger(__file__)
 logger.setLevel(logging.DEBUG)
 
+# Two detections from different models are treated as the same physical object when
+# their boxes overlap at or above this IoU; the higher-priority (earlier-configured)
+# model's detection is kept. Kept as a module constant for now — may later be routed
+# to the task-config UI.
+SAME_BBOX_IOU_THRESHOLD = 0.65
+
+
+def _bbox_iou(a, b) -> float:
+    """Intersection-over-union of two bbox-like objects exposing x/y/width/height."""
+    inter_w = max(0.0, min(a.x + a.width, b.x + b.width) - max(a.x, b.x))
+    inter_h = max(0.0, min(a.y + a.height, b.y + b.height) - max(a.y, b.y))
+    inter = inter_w * inter_h
+    if inter <= 0.0:
+        return 0.0
+    union = (a.width * a.height) + (b.width * b.height) - inter
+    return inter / union if union > 0.0 else 0.0
+
 
 @dataclass
 class TargetLabel:
@@ -58,17 +75,20 @@ class CollectTrainingImagesTask(Task):
 
         # model_label_config: [{modelName, labelValues: {labelUuid: confidence}}]
         model_label_config: list[dict] = params.get("model_label_config", [])
-        model_names_set: set[str] = set()
+        # Preserve config order: it doubles as model priority — earlier-configured
+        # models win when two models produce overlapping (same-bbox) detections.
+        ordered_model_names: list[str] = []
         # Flatten to label_uuid → min_confidence; skip zero-confidence (disabled in UI)
         label_conf: dict[str, float] = {}
         for item in model_label_config:
-            if item.get("modelName"):
-                model_names_set.add(item["modelName"])
+            name = item.get("modelName")
+            if name and name not in ordered_model_names:
+                ordered_model_names.append(name)
             for label_uuid, conf in item.get("labelValues", {}).items():
                 conf_f = float(conf)
                 if conf_f > 0:
                     label_conf[label_uuid] = min(label_conf.get(label_uuid, 1.0), conf_f)
-        self._model_names: list[str] = list(model_names_set)
+        self._model_names: list[str] = ordered_model_names
 
         self._target_labels: list[TargetLabel] = [
             TargetLabel(label_uuid=u, min_confidence=c) for u, c in label_conf.items()
@@ -376,7 +396,16 @@ class CollectTrainingImagesTask(Task):
                             matching.append(det)
             except Exception:
                 logger.exception(f"Inference error on model {name}")
-        return matching
+
+        # Priority dedup: `matching` is in model-priority order (models run in config
+        # order), so drop any detection overlapping an already-kept higher-priority
+        # box at/above the IoU threshold.
+        deduped: list = []
+        for det in matching:
+            if any(_bbox_iou(det.bbox, kept.bbox) >= SAME_BBOX_IOU_THRESHOLD for kept in deduped):
+                continue
+            deduped.append(det)
+        return deduped
 
     async def _save_image(
         self,

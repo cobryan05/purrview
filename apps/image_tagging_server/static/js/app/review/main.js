@@ -608,9 +608,12 @@ export async function createReviewPanel(container, { fetchImages = null } = {}) 
 
   // ── Bbox card builder ─────────────────────────────────────────────
   function buildCard(bbox, img, labels, index) {
-    const label = bbox.labelUuid ? labels.get(bbox.labelUuid) : null;
+    // Prefer the label embedded in the API response (always present and current);
+    // fall back to the labels Map only when the response omits it.
+    const label = bbox.label ?? (bbox.labelUuid ? labels.get(bbox.labelUuid) : null);
     const labelName = label?.name ?? '(unknown)';
     const labelColor = label?.color ?? '#888';
+    const isVerified = !(bbox.tags ?? []).some(t => t.uuid === UNVERIFIED_TAG_UUID);
     const confidence = bbox.metadataJson?.confidence
       ? `${(parseFloat(bbox.metadataJson.confidence) * 100).toFixed(0)}%`
       : '';
@@ -685,12 +688,19 @@ export async function createReviewPanel(container, { fetchImages = null } = {}) 
     chip.textContent = labelName;
     chip.style.cssText = `background:${labelColor}33;border:1px solid ${labelColor};`;
 
+    const verifyChip = document.createElement('span');
+    verifyChip.className = 'verify-chip';
+    verifyChip.textContent = isVerified ? '✓ Verified' : '◌ Unverified';
+    verifyChip.classList.toggle('verify-chip--verified', isVerified);
+    verifyChip.title = isVerified ? 'Verified' : 'Not yet verified';
+
     const meta = document.createElement('div');
     meta.style.cssText = 'margin-top:0.2em;color:#aaa;font-size:0.75em;';
     const shortPath = img.filename.split('/').slice(-2).join('/');
     meta.textContent = confidence ? `${confidence} · ${shortPath}` : shortPath;
 
     info.appendChild(chip);
+    info.appendChild(verifyChip);
     info.appendChild(meta);
     card.appendChild(cb);
     card.appendChild(thumbImg);

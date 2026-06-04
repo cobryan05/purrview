@@ -440,6 +440,22 @@ button.filter-active {
   font-size: 0.85em;
 }
 
+.verify-chip {
+  display: inline-block;
+  margin-left: 0.35em;
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-size: 0.75em;
+  color: #c9a227;
+  border: 1px solid #c9a22755;
+  background: #c9a22718;
+}
+.verify-chip--verified {
+  color: #3fb950;
+  border-color: #3fb95055;
+  background: #3fb95018;
+}
+
 /* ===== Review: View Filter Toggle ===== */
 .review-view-toggle {
   display: flex;
@@ -812,4 +828,18 @@ button.filter-active {
   max-height: 40vh;
   overflow-y: auto;
   font-size: 0.8em;
+}
+
+/* Active vs Completed task sections (ui/tasks.js) */
+.task-section-header {
+  margin: 0.75em 0 0.4em;
+  padding-bottom: 0.2em;
+  font-size: 0.85em;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--pico-muted-color, #888);
+  border-bottom: 1px solid var(--pico-muted-border-color, #444);
+}
+.task-section-header:first-child {
+  margin-top: 0;
 }
