@@ -75,9 +75,11 @@ export function toast(message, duration = 5000, type = "info", maxToasts = 3) {
 
   const toast = document.createElement('div');
   toast.textContent = message;
-  let background = '#333';
+  let background = '#555';
   if (type === 'error') {
-    background = '#c0392b'; // reddish background for errors
+    background = '#c0392b';
+  } else if (type === 'warning') {
+    background = '#b8620a';
   }
   Object.assign(toast.style, {
     background,

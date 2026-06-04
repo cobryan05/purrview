@@ -534,6 +534,19 @@ button.filter-active {
   outline-offset: -2px;
 }
 
+/* ===== Review: Recently-viewed flash (after closing canvas modal) ===== */
+@keyframes recently-viewed-flash {
+  0%   { outline: 4px solid #ffcc0000; outline-offset: -2px; box-shadow: 0 0 0px #ffcc0000; }
+  8%   { outline: 4px solid #ffcc00ff; outline-offset: -2px; box-shadow: 0 0 20px 4px #ffcc0099; }
+  35%  { outline: 4px solid #ffcc00ee; outline-offset: -2px; box-shadow: 0 0 14px 2px #ffcc0066; }
+  100% { outline: 4px solid #ffcc0000; outline-offset: -2px; box-shadow: 0 0 0px  0px #ffcc0000; }
+}
+.review-card.recently-viewed {
+  animation: recently-viewed-flash 3s ease-out forwards;
+  position: relative;
+  z-index: 2; /* float above neighbours so the glow isn't clipped */
+}
+
 /* ===== Review: Hover preview popover ===== */
 .review-hover-popover {
   position: fixed;

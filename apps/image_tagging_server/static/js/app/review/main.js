@@ -13,9 +13,11 @@ import {
 } from '/app-static/js/shared/api/review.js';
 import { setImageLabel } from '/app-static/js/shared/api/imageLabels.js';
 import { Logger, toast } from '/app-static/js/ui/utils/logging.js';
+import { showUnsavedChangesModal } from '/app-static/js/ui/utils/confirmModal.js';
 import { CheckboxField } from '/app-static/js/ui/utils/fields/CheckboxField.js';
 import { createCanvasInstance } from '/app-static/js/app/image-tagging/canvas/instance.js';
 import { saveAnnotations } from '/app-static/js/app/image-tagging/canvas/image.js';
+import { events, EventTypes } from '/app-static/js/shared/events/index.js';
 import { init as initToolbar } from '/app-static/js/app/image-tagging/toolbar.js';
 import { initLabelPanel } from '/app-static/js/app/image-tagging/canvas/labelPanel.js';
 import { initInspector } from '/app-static/js/ui/inspector.js';
@@ -606,6 +608,36 @@ export async function createReviewPanel(container, { fetchImages = null } = {}) 
     _rendering = false;
   }
 
+  // ── Nav context builder for canvas modal ─────────────────────────
+  // Builds a deduplicated list of images from the current visible entries,
+  // finds the start index for the given image UUID, and attaches an onClose
+  // callback that scrolls to + briefly highlights the last-viewed card.
+  function _buildNavContext(targetImgUuid) {
+    const seen = new Set();
+    const navItems = [];
+    for (const entry of _visibleEntries) {
+      const uuid = entry.img.uuid;
+      if (seen.has(uuid)) continue;
+      seen.add(uuid);
+      navItems.push({ img: entry.img, bbox: entry.img.bboxes?.[0] ?? null });
+    }
+    const startIndex = Math.max(navItems.findIndex(item => item.img.uuid === targetImgUuid), 0);
+    return {
+      items: navItems,
+      startIndex,
+      onClose(closedImg) {
+        if (!closedImg) return;
+        const card = grid.querySelector(`[data-image-uuid="${closedImg.uuid}"]`);
+        if (!card) return;
+        card.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        card.classList.remove('recently-viewed');
+        void card.offsetWidth; // force reflow to restart the animation
+        card.classList.add('recently-viewed');
+        setTimeout(() => card.classList.remove('recently-viewed'), 2000);
+      },
+    };
+  }
+
   // ── Bbox card builder ─────────────────────────────────────────────
   function buildCard(bbox, img, labels, index) {
     // Prefer the label embedded in the API response (always present and current);
@@ -648,36 +680,37 @@ export async function createReviewPanel(container, { fetchImages = null } = {}) 
     _thumbLoader.load(thumbImg, getBboxThumbnailUrl(img.filename, bbox.uuid, 300));
     thumbImg.addEventListener('dblclick', () => {
       clearTimeout(_clickTimer);
-      showCanvasModal(bbox, img, labels, async (updatedUIBbox) => {
-        const card = grid.querySelector(`[data-bbox-uuid="${bbox.uuid}"]`);
-        if (!card) return;
-
-        if (updatedUIBbox === undefined) {
-          markCardStale(card, 'deleted');
-        } else {
-          const thumb = card.querySelector('.thumb');
-          if (thumb) thumb.src = getBboxThumbnailUrl(img.filename, bbox.uuid, 300) + `&t=${Date.now()}`;
-
-          const chip = card.querySelector('.label-chip');
-          if (chip) {
-            if (updatedUIBbox.label) {
-              chip.textContent = updatedUIBbox.label.text;
-              chip.style.cssText = `background:${updatedUIBbox.label.color}33;border:1px solid ${updatedUIBbox.label.color};`;
+      const navCtx = _buildNavContext(img.uuid);
+      showCanvasModal(bbox, img, labels, async (updatedUIBbox, currentImg) => {
+        if (currentImg?.uuid === img.uuid) {
+          // Saved from the originally-opened image — update the specific bbox card.
+          const card = grid.querySelector(`[data-bbox-uuid="${bbox.uuid}"]`);
+          if (card) {
+            if (updatedUIBbox === undefined) {
+              markCardStale(card, 'deleted');
             } else {
-              chip.textContent = '(unknown)';
-              chip.style.cssText = 'background:#88888833;border:1px solid #888;';
+              const thumb = card.querySelector('.thumb');
+              if (thumb) thumb.src = getBboxThumbnailUrl(img.filename, bbox.uuid, 300) + `&t=${Date.now()}`;
+
+              const chip = card.querySelector('.label-chip');
+              if (chip) {
+                if (updatedUIBbox.label) {
+                  chip.textContent = updatedUIBbox.label.text;
+                  chip.style.cssText = `background:${updatedUIBbox.label.color}33;border:1px solid ${updatedUIBbox.label.color};`;
+                } else {
+                  chip.textContent = '(unknown)';
+                  chip.style.cssText = 'background:#88888833;border:1px solid #888;';
+                }
+              }
+
+              const stillUnverified = (updatedUIBbox.tags ?? []).some(t => t.uuid === UNVERIFIED_TAG_UUID);
+              if (!stillUnverified) markCardStale(card, 'verified');
             }
           }
-
-          const stillUnverified = (updatedUIBbox.tags ?? []).some(t => t.uuid === UNVERIFIED_TAG_UUID);
-          if (!stillUnverified) {
-            markCardStale(card, 'verified');
-          }
         }
-
         updateBulkBtn();
         updateStatusMsg();
-      });
+      }, navCtx);
     });
 
     const info = document.createElement('div');
@@ -751,10 +784,11 @@ export async function createReviewPanel(container, { fetchImages = null } = {}) 
       clearTimeout(_clickTimer);
       const firstBbox = (img.bboxes ?? [])[0];
       if (firstBbox) {
-        showCanvasModal(firstBbox, img, labels, async () => {
+        const navCtx = _buildNavContext(img.uuid);
+        showCanvasModal(firstBbox, img, labels, async (_updatedUIBbox, _currentImg) => {
           updateBulkBtn();
           updateStatusMsg();
-        });
+        }, navCtx);
       }
     });
 
@@ -1131,16 +1165,26 @@ let _modalOpen = false;
 
 /**
  * Open a full canvas editor modal for a single bbox.
- * @param {object} bbox  The bbox object from the review queue
- * @param {object} img   The parent image object
- * @param {Map} labels   Labels map (uuid → { name, color })
- * @param {(updatedBbox?: object) => Promise<void>} onSaved  Called after a successful save with
- *   the updated UIBBox (undefined if the bbox was deleted inside the editor)
+ *
+ * @param {object} bbox    The bbox to open (highlighted in the canvas)
+ * @param {object} img     The parent image object
+ * @param {Map}    labels  Labels map (uuid → { name, color })
+ * @param {(updatedBbox: object|undefined, currentImg: object) => Promise<void>} onSaved
+ *   Called after a successful save. `updatedBbox` is the updated UIBBox for the
+ *   initially-opened bbox (undefined if deleted). `currentImg` is the image that
+ *   was on-screen when Save & Close was pressed (may differ from `img` after nav).
+ * @param {{ items: {img,bbox}[], startIndex: number, onClose?: (img) => void }|null} [navContext]
+ *   Optional navigation context. When provided, the [ ] hotkeys navigate through
+ *   `items`; `onClose` is called after the modal closes with the last-viewed image.
  */
-async function showCanvasModal(bbox, img, labels, onSaved) {
+async function showCanvasModal(bbox, img, labels, onSaved, navContext = null) {
   if (_modalOpen) return;
   _modalOpen = true;
-  const shortPath = img.filename.split('/').slice(-2).join('/');
+
+  // ── Navigation state ──────────────────────────────────────────────
+  let _navIndex = navContext?.startIndex ?? 0;
+  let _currentImg = img;
+  let _currentBbox = bbox;
 
   // ── Build DOM ─────────────────────────────────────────────────────
   const overlay = document.createElement('div');
@@ -1152,20 +1196,20 @@ async function showCanvasModal(bbox, img, labels, onSaved) {
   // Header
   const header = document.createElement('div');
   header.className = 'canvas-modal-header';
-  const title = document.createElement('span');
-  title.className = 'canvas-modal-title';
-  title.textContent = `Edit: ${shortPath}`;
+  const titleEl = document.createElement('span');
+  titleEl.className = 'canvas-modal-title';
+  titleEl.textContent = `Edit: ${img.filename.split('/').slice(-2).join('/')}`;
   const closeBtn = document.createElement('button');
   closeBtn.className = 'canvas-modal-close';
   closeBtn.textContent = '✕';
-  closeBtn.title = 'Close without saving';
-  header.append(title, closeBtn);
+  closeBtn.title = 'Close';
+  header.append(titleEl, closeBtn);
 
   // Toolbar
   const toolbarEl = document.createElement('div');
   toolbarEl.className = 'canvas-modal-toolbar';
 
-  // Content area: label panel (left) + canvas (right)
+  // Content area: label panel (left) + canvas (right) + inspector
   const contentArea = document.createElement('div');
   contentArea.className = 'canvas-modal-content';
 
@@ -1184,7 +1228,7 @@ async function showCanvasModal(bbox, img, labels, onSaved) {
 
   contentArea.append(labelPanelEl, canvasWrap, inspectorPanel);
 
-  // Footer
+  // Footer — Save & Close starts dimmed (no unsaved changes yet)
   const footer = document.createElement('div');
   footer.className = 'canvas-modal-footer';
 
@@ -1194,7 +1238,7 @@ async function showCanvasModal(bbox, img, labels, onSaved) {
 
   const saveBtn = document.createElement('button');
   saveBtn.textContent = 'Save & Close';
-  saveBtn.style.cssText = 'background:#ff003322;border:1px solid #ff0033;border-radius:3px;padding:0.3em 1em;cursor:pointer;color:#ff6666;';
+  saveBtn.style.cssText = 'background:#33333322;border:1px solid #555;border-radius:3px;padding:0.3em 1em;cursor:pointer;color:#888;';
   footer.append(cancelBtn, saveBtn);
 
   dialog.append(header, toolbarEl, contentArea, footer);
@@ -1229,16 +1273,85 @@ async function showCanvasModal(bbox, img, labels, onSaved) {
   // ── Wire inspector panel (double-click a bbox to edit tags/label) ──
   unsubInspector = initInspector(instance.runtime, { container: inspectorPanel, openTab: false });
 
-  // Highlight the target bbox
-  const layer = instance.runtime.canvas.layer;
-  const targetView = layer.findOne('#' + bbox.uuid);
-  if (targetView) {
-    instance.runtime.canvas.transformer.nodes([targetView]);
-    layer.draw();
+  // Highlight the initially-opened bbox
+  function _highlightBbox(bboxUuid) {
+    const layer = instance.runtime.canvas.layer;
+    const view = layer.findOne('#' + bboxUuid);
+    if (view) {
+      instance.runtime.canvas.transformer.nodes([view]);
+      layer.draw();
+    }
+  }
+  _highlightBbox(bbox.uuid);
+
+  // ── Save button state: highlight only when there are unsaved changes ──
+  function _updateSaveBtn() {
+    if (saveBtn.disabled) return; // don't override while saving
+    const dirty = instance.runtime.isDirty;
+    saveBtn.style.cssText = dirty
+      ? 'background:#ff003322;border:1px solid #ff0033;border-radius:3px;padding:0.3em 1em;cursor:pointer;color:#ff6666;'
+      : 'background:#33333322;border:1px solid #555;border-radius:3px;padding:0.3em 1em;cursor:pointer;color:#888;';
+  }
+  const unsubDirty = events.subscribeToCanvas(
+    instance.runtime.id, EventTypes.CANVAS_BBOXES_CHANGED, _updateSaveBtn,
+  );
+
+  // ── Navigation: wire [ ] hotkeys to navigate within the results page ──
+  let unsubNavLoad = null;
+  if (navContext?.items?.length) {
+    // Duck-typed FileNavigation used by files.js's next_image / prev_image.
+    // Those functions also call guardUnsavedChanges before advancing, so the
+    // "are you sure?" dialog is handled for free on nav-hotkey presses.
+    let _lastBoundaryToast = 0;
+    const navObj = {
+      hasNext() {
+        const ok = _navIndex < navContext.items.length - 1;
+        if (!ok) {
+          const now = Date.now();
+          if (now - _lastBoundaryToast > 1200) {
+            _lastBoundaryToast = now;
+            toast('End of results page — go to the next page for more', 3000, 'warning');
+          }
+        }
+        return ok;
+      },
+      hasPrev() {
+        const ok = _navIndex > 0;
+        if (!ok) {
+          const now = Date.now();
+          if (now - _lastBoundaryToast > 1200) {
+            _lastBoundaryToast = now;
+            toast('Beginning of results page — go to the previous page for more', 3000, 'warning');
+          }
+        }
+        return ok;
+      },
+      next() { _navIndex = Math.min(_navIndex + 1, navContext.items.length - 1); },
+      prev() { _navIndex = Math.max(_navIndex - 1, 0); },
+      currentPath() { return navContext.items[_navIndex]?.img.filename ?? null; },
+    };
+    instance.runtime.setFileNavigation(navObj);
+
+    // When files.js publishes LOAD_IMAGE_ONTO_CANVAS for our runtime, load the
+    // new image into this same modal canvas.
+    unsubNavLoad = events.subscribeToCanvas(
+      instance.runtime.id, EventTypes.LOAD_IMAGE_ONTO_CANVAS,
+      async () => {
+        const item = navContext.items[_navIndex];
+        if (!item) return;
+        _currentImg = item.img;
+        _currentBbox = item.bbox ?? null;
+        titleEl.textContent = `Edit: ${_currentImg.filename.split('/').slice(-2).join('/')}`;
+        await instance.loadImage(_currentImg.filename);
+        if (_currentBbox) _highlightBbox(_currentBbox.uuid);
+      },
+    );
   }
 
-  // ── Close / Save ───────────────────────────────────────────────────
+  // ── Teardown ───────────────────────────────────────────────────────
   function closeModal() {
+    unsubDirty();
+    if (unsubNavLoad) unsubNavLoad();
     unsubInspector();
     toolbarHandle.destroy();
     labelHandle.destroy();
@@ -1247,40 +1360,78 @@ async function showCanvasModal(bbox, img, labels, onSaved) {
     _modalOpen = false;
   }
 
-  // Use closeBtn.disabled as the "save in flight" sentinel so the backdrop
-  // handler doesn't need a separate flag.
-  closeBtn.addEventListener('click', closeModal);
-  cancelBtn.addEventListener('click', closeModal);
+  // ── Shared save-then-close path ────────────────────────────────────
+  async function _doSaveAndClose() {
+    const currentImg  = _currentImg;
+    const currentBbox = _currentBbox;
+    const allUuids = [...new Set([
+      ...instance.runtime.state.image.bboxes.keys(),
+      bbox.uuid, // always include the originally-opened bbox
+    ])];
+    await invalidateBboxThumbnails(allUuids);
+    const updatedUIBbox = instance.runtime.state.image.bboxes.get(
+      currentBbox?.uuid ?? bbox.uuid,
+    );
+    closeModal();
+    navContext?.onClose?.(currentImg);
+    await onSaved(updatedUIBbox, currentImg);
+  }
+
+  // ── Close guard: prompt when there are unsaved changes ────────────
+  async function tryClose() {
+    if (instance.runtime.isDirty) {
+      const choice = await showUnsavedChangesModal();
+      if (choice === 'cancel') return;
+      if (choice === 'save') {
+        saveBtn.disabled = true;
+        cancelBtn.disabled = true;
+        closeBtn.disabled = true;
+        const saved = await saveAnnotations(instance.runtime);
+        if (!saved) {
+          saveBtn.disabled = false;
+          cancelBtn.disabled = false;
+          closeBtn.disabled = false;
+          _updateSaveBtn();
+          return; // save failed — keep modal open
+        }
+        await _doSaveAndClose();
+        return;
+      }
+      // 'discard': fall through to close without saving
+    }
+    const currentImg = _currentImg;
+    closeModal();
+    navContext?.onClose?.(currentImg);
+  }
+
+  closeBtn.addEventListener('click', tryClose);
+  cancelBtn.addEventListener('click', tryClose);
   overlay.addEventListener('click', e => {
-    if (e.target === overlay && !closeBtn.disabled) closeModal();
+    if (e.target === overlay && !closeBtn.disabled) tryClose();
   });
 
+  // ── Save & Close button ────────────────────────────────────────────
   saveBtn.addEventListener('click', async () => {
+    if (!instance.runtime.isDirty) return; // nothing to save — button is dimmed
     saveBtn.disabled = true;
     cancelBtn.disabled = true;
-    closeBtn.disabled = true; // block close while save is in-flight
+    closeBtn.disabled = true;
     saveBtn.textContent = 'Saving…';
 
     let saved = false;
     try {
       saved = await saveAnnotations(instance.runtime);
-      if (saved) {
-        const allUuids = [...instance.runtime.state.image.bboxes.keys()];
-        await invalidateBboxThumbnails([...new Set([...allUuids, bbox.uuid])]);
-      }
     } catch (err) {
       Logger.error('Canvas modal: save failed', err);
     }
+
     if (saved) {
-      // Read the bbox's updated state from the canvas runtime before destroying it.
-      // Returns undefined if the user deleted this bbox inside the editor.
-      const updatedUIBbox = instance.runtime.state.image.bboxes.get(bbox.uuid);
-      closeModal();
-      await onSaved(updatedUIBbox);
+      await _doSaveAndClose();
     } else {
       saveBtn.disabled = false;
       cancelBtn.disabled = false;
-      closeBtn.disabled = false; // re-enable close on failure
+      closeBtn.disabled = false;
+      _updateSaveBtn();
       saveBtn.textContent = 'Save & Close';
     }
   });
