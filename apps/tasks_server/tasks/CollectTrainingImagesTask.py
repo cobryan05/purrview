@@ -402,7 +402,11 @@ class CollectTrainingImagesTask(Task):
         # box at/above the IoU threshold.
         deduped: list = []
         for det in matching:
-            if any(_bbox_iou(det.bbox, kept.bbox) >= SAME_BBOX_IOU_THRESHOLD for kept in deduped):
+            if any(
+                det.bbox.label_uuid == kept.bbox.label_uuid
+                and _bbox_iou(det.bbox, kept.bbox) >= SAME_BBOX_IOU_THRESHOLD
+                for kept in deduped
+            ):
                 continue
             deduped.append(det)
         return deduped

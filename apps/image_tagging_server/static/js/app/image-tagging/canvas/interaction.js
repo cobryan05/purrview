@@ -292,7 +292,7 @@ export async function handleMouseUp(e, runtime) {
       syncBboxDraggable(runtime);
       // Drawing uses manual mouse positioning, not Konva drag — 'dragend' does not fire here.
       runtime.pushState();
-      events.publish(EventTypes.CANVAS_BBOX_CLICKED, { bboxId: uiBBox.uuid, runtimeId: runtime.id });
+      events.publish(EventTypes.CANVAS_BBOX_CLICKED, { bboxId: uiBBox.uuid, bboxView: ist.pendingDraggedBbox, runtimeId: runtime.id });
       events.publish(EventTypes.CANVAS_BBOXES_CHANGED, { runtimeId: runtime.id });
     }
 

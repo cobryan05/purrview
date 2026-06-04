@@ -8,6 +8,8 @@ import { createTagPanel } from '/app-static/js/ui/inspector.js';
 /**
  * @param {import('@image_tagging_types').ImageTaggingRuntime} runtime
  */
+let _tagPanel = null;
+
 export async function init(runtime) {
   let _inferenceInit = false;
 
@@ -33,7 +35,10 @@ export async function init(runtime) {
   // Must be alive before the first CANVAS_BBOX_CLICKED or CANVAS_TOOL_CHANGED
   // event so single-click updates and tag-tool highlights work immediately.
   const paneEl = document.getElementById('tab-inspector');
-  if (paneEl) createTagPanel(paneEl, runtime); // internally async; events subscribe synchronously
+  if (paneEl) {
+    _tagPanel?.destroy();  // clean up any prior instance if init() is called again
+    _tagPanel = createTagPanel(paneEl, runtime);
+  }
 
   // ── Default tab ───────────────────────────────────────────────────────────
   if (container) {

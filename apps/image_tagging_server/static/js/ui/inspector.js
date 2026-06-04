@@ -409,7 +409,12 @@ export function createTagPanel(container, runtime) {
 
   async function _mount() {
     container.innerHTML = '';
-    [_tagsMap, _labelsMap] = await Promise.all([fetchTags(), fetchLabels()]);
+    try {
+      [_tagsMap, _labelsMap] = await Promise.all([fetchTags(), fetchLabels()]);
+    } catch (err) {
+      console.error('Bbox Info panel: failed to load tags/labels', err);
+      return;
+    }
 
     container.appendChild(_buildLabelSection());
     container.appendChild(_buildTagList());

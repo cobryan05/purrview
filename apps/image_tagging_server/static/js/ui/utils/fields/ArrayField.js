@@ -44,11 +44,11 @@ export class ArrayField extends Field {
 
     // Swap items at `from`/`to` in both the value and field arrays so order is
     // preserved on getValue() and re-render.
-    const move = (from, to) => {
+    const move = async (from, to) => {
       if (to < 0 || to >= this._value.length) return;
       [this._value[from], this._value[to]] = [this._value[to], this._value[from]];
       [this._fields[from], this._fields[to]] = [this._fields[to], this._fields[from]];
-      renderItems();
+      await renderItems();
       this._onChange?.(this._value);
     };
 
@@ -65,10 +65,10 @@ export class ArrayField extends Field {
         const deleteBtn = createEmojiButton({
           text: 'Delete',
           emoji: '🗑️',
-          onClick: () => {
+          onClick: async () => {
             this._value.splice(idx, 1);
             this._fields.splice(idx, 1); // also remove corresponding subfield
-            renderItems();
+            await renderItems();
             this._onChange?.(this._value);
           }
         });
@@ -79,12 +79,12 @@ export class ArrayField extends Field {
         if (this._value.length > 1) {
           const upBtn = createEmojiButton({
             text: 'Move up', emoji: '🔼',
-            onClick: () => move(idx, idx - 1),
+            onClick: async () => { await move(idx, idx - 1); },
           });
           upBtn.disabled = idx === 0;
           const downBtn = createEmojiButton({
             text: 'Move down', emoji: '🔽',
-            onClick: () => move(idx, idx + 1),
+            onClick: async () => { await move(idx, idx + 1); },
           });
           downBtn.disabled = idx === this._value.length - 1;
           upBtn.style.marginLeft = 'auto'; // push the arrow pair to the right edge
@@ -101,7 +101,7 @@ export class ArrayField extends Field {
         onClick: async () => {
           this._value.push(null);
           this._fields.push(await this._makeSubfield(null));
-          renderItems();
+          await renderItems();
           this._onChange?.(this._value);
         }
       });
@@ -109,7 +109,7 @@ export class ArrayField extends Field {
       container.appendChild(addBtn);
     };
 
-    renderItems();
+    await renderItems();
     return container;
   }
 
