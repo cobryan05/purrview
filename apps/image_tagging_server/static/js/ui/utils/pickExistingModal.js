@@ -1,3 +1,5 @@
+import { createModalShell } from './modalShell.js';
+
 /**
  * Shows a modal that lets the user pick one item from a Map of existing items.
  *
@@ -8,25 +10,11 @@
  */
 export function pickExistingModal({ items, getLabel }) {
   return new Promise((resolve) => {
-    const overlay = document.createElement('div');
-    overlay.style.cssText = `
-      position: fixed; inset: 0;
-      background: rgba(0,0,0,0.5);
-      display: flex; align-items: center; justify-content: center;
-      z-index: 9999;
-    `;
+    let result = null;
+    const { dialog, open, close } = createModalShell({ onClose: () => resolve(result) });
+    dialog.style.minWidth = '280px';
 
-    const dialog = document.createElement('div');
-    dialog.style.cssText = `
-      background: var(--pico-background-color, #fff);
-      border-radius: 8px;
-      padding: 1.5em;
-      min-width: 280px;
-      max-width: 480px;
-      display: flex;
-      flex-direction: column;
-      gap: 1em;
-    `;
+    const finish = (value) => { result = value; close(); };
 
     const title = document.createElement('strong');
     title.textContent = 'Copy From Existing';
@@ -46,33 +34,14 @@ export function pickExistingModal({ items, getLabel }) {
 
     const cancelBtn = document.createElement('button');
     cancelBtn.textContent = 'Cancel';
-    cancelBtn.onclick = () => {
-      document.body.removeChild(overlay);
-      resolve(null);
-    };
+    cancelBtn.onclick = () => finish(null);
 
     const okBtn = document.createElement('button');
     okBtn.textContent = 'Copy';
-    okBtn.onclick = () => {
-      const selectedKey = select.value;
-      document.body.removeChild(overlay);
-      resolve(items.get(selectedKey) ?? null);
-    };
+    okBtn.onclick = () => finish(items.get(select.value) ?? null);
 
-    buttons.appendChild(cancelBtn);
-    buttons.appendChild(okBtn);
-    dialog.appendChild(title);
-    dialog.appendChild(select);
-    dialog.appendChild(buttons);
-    overlay.appendChild(dialog);
-    document.body.appendChild(overlay);
-
-    // Close on backdrop click
-    overlay.addEventListener('click', (e) => {
-      if (e.target === overlay) {
-        document.body.removeChild(overlay);
-        resolve(null);
-      }
-    });
+    buttons.append(cancelBtn, okBtn);
+    dialog.append(title, select, buttons);
+    open();
   });
 }

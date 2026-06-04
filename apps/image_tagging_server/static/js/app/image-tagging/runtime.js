@@ -48,6 +48,11 @@ export function createImageTaggingRuntime() {
   /** True when the current image has unsaved annotation changes. */
   let _dirty = false;
 
+  /** Re-sync which bboxes are draggable for the current tool/canvas. */
+  function _syncDraggable() {
+    syncBboxDraggable({ canvas: _canvasState, tool: _currentTool });
+  }
+
   /** Push a snapshot of the current bbox state. Clears the redo stack. */
   function pushState() {
     if (!_imgTaggingState?.image) return;
@@ -63,7 +68,7 @@ export function createImageTaggingRuntime() {
     const prev = _undoStack[_undoStack.length - 1];         // peek new top
     _imgTaggingState.image.bboxes = _cloneBboxes(prev);     // restore (clone keeps stack clean)
     rerenderBboxViews(_canvasState, _imgTaggingState.image.bboxes);
-    syncBboxDraggable({ canvas: _canvasState, tool: _currentTool });
+    _syncDraggable();
     _dirty = true;
     events.publish(EventTypes.CANVAS_BBOXES_CHANGED, { runtimeId: _id });
   }
@@ -74,7 +79,7 @@ export function createImageTaggingRuntime() {
     _undoStack.push(next);
     _imgTaggingState.image.bboxes = _cloneBboxes(next);
     rerenderBboxViews(_canvasState, _imgTaggingState.image.bboxes);
-    syncBboxDraggable({ canvas: _canvasState, tool: _currentTool });
+    _syncDraggable();
     _dirty = true;
     events.publish(EventTypes.CANVAS_BBOXES_CHANGED, { runtimeId: _id });
   }
@@ -136,7 +141,7 @@ export function createImageTaggingRuntime() {
     }
     _imgTaggingState.image = image;
     setCanvasImage(_canvasState, _imgTaggingState.image);
-    syncBboxDraggable({ canvas: _canvasState, tool: _currentTool });
+    _syncDraggable();
     clearHistory();
     pushState();  // baseline — the "can't undo past this" floor
     _dirty = false;  // a freshly loaded image starts clean

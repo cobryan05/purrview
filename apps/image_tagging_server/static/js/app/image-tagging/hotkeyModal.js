@@ -1,5 +1,6 @@
 import { fetchLabels } from '/app-static/js/shared/api/labels.js';
 import { fetchTags } from '/app-static/js/shared/api/tags.js';
+import { createModalShell } from '/app-static/js/ui/utils/modalShell.js';
 import {
   FIXED_ACTIONS,
   combosForAction,
@@ -17,27 +18,13 @@ import {
 export async function openHotkeyModal() {
   const [labels, tags] = await Promise.all([fetchLabels(), fetchTags()]);
 
-  const overlay = document.createElement('div');
-  overlay.style.cssText = `
-    position: fixed; inset: 0;
-    background: rgba(0,0,0,0.5);
-    display: flex; align-items: center; justify-content: center;
-    z-index: 9999;
-  `;
-
-  const dialog = document.createElement('div');
-  dialog.style.cssText = `
-    background: var(--pico-background-color, #fff);
-    border-radius: 8px;
-    padding: 1.5em;
-    min-width: 420px;
-    max-width: 560px;
-    max-height: 80vh;
-    overflow-y: auto;
-    display: flex;
-    flex-direction: column;
-    gap: 1em;
-  `;
+  const { dialog, open, close } = createModalShell({
+    onClose: () => document.removeEventListener('keydown', onKeyCapture, true),
+  });
+  dialog.style.minWidth = '420px';
+  dialog.style.maxWidth = '560px';
+  dialog.style.maxHeight = '80vh';
+  dialog.style.overflowY = 'auto';
 
   const title = document.createElement('strong');
   title.textContent = 'Configure Hotkeys';
@@ -142,18 +129,11 @@ export async function openHotkeyModal() {
 
   const closeBtn = document.createElement('button');
   closeBtn.textContent = 'Done';
-
-  const close = () => {
-    document.removeEventListener('keydown', onKeyCapture, true);
-    if (overlay.parentNode) document.body.removeChild(overlay);
-  };
   closeBtn.onclick = close;
-  overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
 
   footer.append(resetBtn, closeBtn);
   dialog.append(title, body, footer);
-  overlay.appendChild(dialog);
-  document.body.appendChild(overlay);
+  open();
 
   renderRows();
 }

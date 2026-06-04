@@ -1,3 +1,5 @@
+import { createModalShell } from './modalShell.js';
+
 /**
  * Modal asking the user what to do about unsaved annotation changes.
  *
@@ -5,25 +7,8 @@
  */
 export function showUnsavedChangesModal() {
   return new Promise((resolve) => {
-    const overlay = document.createElement('div');
-    overlay.style.cssText = `
-      position: fixed; inset: 0;
-      background: rgba(0,0,0,0.5);
-      display: flex; align-items: center; justify-content: center;
-      z-index: 9999;
-    `;
-
-    const dialog = document.createElement('div');
-    dialog.style.cssText = `
-      background: var(--pico-background-color, #fff);
-      border-radius: 8px;
-      padding: 1.5em;
-      min-width: 320px;
-      max-width: 480px;
-      display: flex;
-      flex-direction: column;
-      gap: 1em;
-    `;
+    let result = 'cancel';
+    const { dialog, open, close } = createModalShell({ onClose: () => resolve(result) });
 
     const title = document.createElement('strong');
     title.textContent = 'Unsaved changes';
@@ -35,33 +20,25 @@ export function showUnsavedChangesModal() {
     buttons.style.cssText = 'display: flex; gap: 0.5em; justify-content: flex-end; flex-wrap: wrap;';
 
     /** @param {'save'|'discard'|'cancel'} value */
-    const close = (value) => {
-      if (overlay.parentNode) document.body.removeChild(overlay);
-      resolve(value);
-    };
+    const finish = (value) => { result = value; close(); };
 
     const cancelBtn = document.createElement('button');
     cancelBtn.textContent = 'Cancel';
     cancelBtn.className = 'secondary';
-    cancelBtn.onclick = () => close('cancel');
+    cancelBtn.onclick = () => finish('cancel');
 
     const discardBtn = document.createElement('button');
     discardBtn.textContent = 'Discard & continue';
     discardBtn.className = 'contrast';
-    discardBtn.onclick = () => close('discard');
+    discardBtn.onclick = () => finish('discard');
 
     const saveBtn = document.createElement('button');
     saveBtn.textContent = 'Save & continue';
-    saveBtn.onclick = () => close('save');
+    saveBtn.onclick = () => finish('save');
 
     buttons.append(cancelBtn, discardBtn, saveBtn);
     dialog.append(title, message, buttons);
-    overlay.appendChild(dialog);
-    document.body.appendChild(overlay);
-
-    overlay.addEventListener('click', (e) => {
-      if (e.target === overlay) close('cancel');
-    });
+    open();
     saveBtn.focus();
   });
 }
