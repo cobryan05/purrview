@@ -385,12 +385,19 @@ export function handleClick(e, runtime) {
     return;
   }
 
-  // Repeated clicks (or double-clicks) at ~the same point rotate through the
-  // stack of overlapping boxes; clicking elsewhere starts from the smallest.
+  // A single click selects the smallest box under the pointer. Double-clicking
+  // at ~the same point rotates to the next box in the overlapping stack;
+  // clicking elsewhere starts over from the smallest. The index persists across
+  // the two clicks of a double-click so each double-click advances by exactly one.
   const sameSpot = ist.cycleAnchor &&
     Math.hypot(pos.x - ist.cycleAnchor.x, pos.y - ist.cycleAnchor.y) < DOUBLE_CLICK_DISTANCE_PX;
-  const prevIdx = ist.selectedBbox ? groups.indexOf(ist.selectedBbox) : -1;
-  ist.cycleIndex = (sameSpot && prevIdx !== -1) ? (prevIdx + 1) % groups.length : 0;
+  if (!sameSpot) {
+    ist.cycleIndex = 0;
+  } else if (ist.lastWasDoubleClick) {
+    ist.cycleIndex = (ist.cycleIndex + 1) % groups.length;
+  } else {
+    ist.cycleIndex = ist.cycleIndex % groups.length;
+  }
   ist.cycleAnchor = pos;
 
   const bboxGroup = groups[ist.cycleIndex];
