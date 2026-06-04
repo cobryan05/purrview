@@ -17,6 +17,7 @@ class APPS(str, Enum):
     TASKS_SERVER = "tasks_server"
     DB_SERVER = "db_server"
     RELAY_BUFFER_SERVER = "relay_buffer_server"
+    TRAINING_SERVER = "training_server"
     MEDIA_MTX_RTSP = "media_mtx_rtsp"
     MEDIA_MTX_API = "media_mtx_api"
 
@@ -31,22 +32,50 @@ APP_BASE_PORTS = {
     APPS.TASKS_SERVER: 8002,
     APPS.DB_SERVER: 8003,
     APPS.RELAY_BUFFER_SERVER: 8004,
+    APPS.TRAINING_SERVER: 8005,
 }
 
 APPS_CONFIG = {
     APPS.IMAGE_TAGGING_SERVER: AppConfig(
-        "Image Tagging Server", "localhost", APP_BASE_PORTS[APPS.IMAGE_TAGGING_SERVER] + _port_offset
+        "Image Tagging Server",
+        os.environ.get("IMAGE_TAGGING_SERVER_HOST", "localhost"),
+        APP_BASE_PORTS[APPS.IMAGE_TAGGING_SERVER] + _port_offset,
     ),
     APPS.INFERENCE_SERVER: AppConfig(
-        "Inference Server", "localhost", APP_BASE_PORTS[APPS.INFERENCE_SERVER] + _port_offset
+        "Inference Server",
+        os.environ.get("INFERENCE_SERVER_HOST", "localhost"),
+        APP_BASE_PORTS[APPS.INFERENCE_SERVER] + _port_offset,
     ),
-    APPS.TASKS_SERVER: AppConfig("Tasks Server", "localhost", APP_BASE_PORTS[APPS.TASKS_SERVER] + _port_offset),
-    APPS.DB_SERVER: AppConfig("DB Server", "localhost", APP_BASE_PORTS[APPS.DB_SERVER] + _port_offset),
+    APPS.TASKS_SERVER: AppConfig(
+        "Tasks Server",
+        os.environ.get("TASKS_SERVER_HOST", "localhost"),
+        APP_BASE_PORTS[APPS.TASKS_SERVER] + _port_offset,
+    ),
+    APPS.DB_SERVER: AppConfig(
+        "DB Server",
+        os.environ.get("DB_SERVER_HOST", "localhost"),
+        APP_BASE_PORTS[APPS.DB_SERVER] + _port_offset,
+    ),
     APPS.RELAY_BUFFER_SERVER: AppConfig(
-        "RTSP/Relay Buffer Server", "localhost", APP_BASE_PORTS[APPS.RELAY_BUFFER_SERVER] + _port_offset
+        "RTSP/Relay Buffer Server",
+        os.environ.get("RELAY_BUFFER_SERVER_HOST", "localhost"),
+        APP_BASE_PORTS[APPS.RELAY_BUFFER_SERVER] + _port_offset,
     ),
-    APPS.MEDIA_MTX_RTSP: AppConfig("MediaMTXRtsp", "localhost", 8554),
-    APPS.MEDIA_MTX_API: AppConfig("MediaMTXApi", "localhost", 9997),
+    APPS.TRAINING_SERVER: AppConfig(
+        "Training Server",
+        os.environ.get("TRAINING_SERVER_HOST", "localhost"),
+        APP_BASE_PORTS[APPS.TRAINING_SERVER] + _port_offset,
+    ),
+    APPS.MEDIA_MTX_RTSP: AppConfig(
+        "MediaMTXRtsp",
+        os.environ.get("MEDIA_MTX_RTSP_HOST", "localhost"),
+        8554,
+    ),
+    APPS.MEDIA_MTX_API: AppConfig(
+        "MediaMTXApi",
+        os.environ.get("MEDIA_MTX_API_HOST", "localhost"),
+        9997,
+    ),
 }
 
 DB_DIR = Path(os.environ.get("DB_DIR", "/data/db/"))

@@ -42,6 +42,12 @@ if "tasks" in targets:
     with open(os.path.join(output_dir, "tasks_server_openapi.json"), "w", encoding="utf-8") as f:
         json.dump(tasks_server_app.openapi(), f, indent=2)
 
+if "training" in targets:
+    from .training_server.main import app as training_server_app
+
+    with open(os.path.join(output_dir, "training_server_openapi.json"), "w", encoding="utf-8") as f:
+        json.dump(training_server_app.openapi(), f, indent=2)
+
 if "image_tagging" in targets or "frontend" in targets:
     from .image_tagging_server.main import app as image_tagging_server_app
 

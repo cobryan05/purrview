@@ -4,7 +4,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-      target: ${BUILD_TARGET:-base}
+      target: ${BUILD_TARGET:-inference-app}
     deploy:
       resources:
         reservations:
@@ -14,6 +14,7 @@ services:
               capabilities: [ gpu ]
     environment:
       THUMB_CACHE_MAX_MB: 100
+      TRAINING_SERVER_HOST: whiskerwatcher_training
     volumes:
       - ./data/:/data
       - ./conf:/conf
@@ -37,6 +38,35 @@ services:
       - "8553:8554"  # RTSP relay
       - "9001:9001"  # Supervisord
     restart: unless-stopped
+    depends_on:
+      - whiskerwatcher_training
+
+  whiskerwatcher_training:
+    container_name: whiskerwatcher_training
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: ${TRAINING_BUILD_TARGET:-training-app}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: [ '0' ]
+              capabilities: [ gpu ]
+    environment:
+      DB_SERVER_HOST: whiskerwatcher
+    volumes:
+      - ./data/:/data
+      - ./conf:/conf
+      - ./logs:/logs
+      - ./apps:/app/apps
+      - ./models:/app/models
+      - ./image_datasets:/app/image_datasets
+    ports:
+      - "8005:8005"   # Training server
+      - "9002:9001"   # Supervisord (mapped to 9002 on host to avoid conflict with whiskerwatcher)
+    restart: unless-stopped
 
   # To convert models put them in the 'models' directory and run, eg:
   # > docker compose --profile yolo2onnx run yolo2onnx /models/yolov5.pt v5
@@ -51,14 +81,3 @@ services:
       - ./models:/models
       - ./yolo2onnx.pip_cache:/root/.cache/pip
     profiles: ["yolo2onnx"] # Don't build unless requested
-
-  whiskerwatcher_training:
-    build:
-      context: ./apps/yolo2onnx
-      dockerfile: Dockerfile
-    image: yolo2onnx
-    entrypoint: ["python", "convert.py"]
-    volumes:
-      - ./models:/models
-      - ./yolo2onnx.pip_cache:/root/.cache/pip
-    profiles: ["training"] # Don't build unless requested

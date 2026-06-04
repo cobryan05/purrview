@@ -45,6 +45,9 @@ MODEL_CONFIGS_PROXY = ReverseProxy(
 SETTINGS_PROXY = ReverseProxy(
     host=APPS_CONFIG[APPS.DB_SERVER].host, port=APPS_CONFIG[APPS.DB_SERVER].port, path="/api/settings"
 )
+TRAINING_PROXY = ReverseProxy(
+    host=APPS_CONFIG[APPS.TRAINING_SERVER].host, port=APPS_CONFIG[APPS.TRAINING_SERVER].port, path="/api/training"
+)
 
 
 class WebApp:
@@ -149,3 +152,7 @@ class WebApp:
         @self._app.api_route("/api/settings/{path:path}", methods=["GET", "PUT"])
         async def proxy_settings(request: Request, path: str):
             return await SETTINGS_PROXY.handle_request(path, request)
+
+        @self._app.api_route("/api/training/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
+        async def proxy_training(request: Request, path: str):
+            return await TRAINING_PROXY.handle_request(path, request)
