@@ -409,7 +409,7 @@ export function handleClick(e, runtime) {
   transformer.nodes([bboxGroup]);
   transformer.moveToTop();
   bboxGroup.on('transformend.transformer', () => transformer.forceUpdate());
-  events.publish(EventTypes.CANVAS_BBOX_CLICKED, { bboxId: bboxGroup.id(), runtimeId: runtime.id });
+  events.publish(EventTypes.CANVAS_BBOX_CLICKED, { bboxId: bboxGroup.id(), bboxView: bboxGroup, runtimeId: runtime.id });
 
   // A double-click opens the inspector for whichever box we just cycled to.
   if (ist.lastWasDoubleClick) {

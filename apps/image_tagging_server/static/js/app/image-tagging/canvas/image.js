@@ -123,6 +123,7 @@ export async function saveAnnotations(runtime) {
     await updateImage(runtime.state.image);
     runtime.markClean();
     events.publish(EventTypes.CANVAS_BBOXES_CHANGED, { runtimeId: runtime.id });
+    events.publish(EventTypes.CANVAS_ANNOTATIONS_SAVED, { runtimeId: runtime.id });
     toast('Annotations saved successfully!');
     return true;
   }

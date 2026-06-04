@@ -281,6 +281,12 @@ async function mountSelectMode(container, { runtime, filter }) {
   let _lastSelectedUuid = null;
   /** @type {Map<string, 'absent'>} — explicit absence marks from the server */
   let serverStates = new Map();
+  /**
+   * Pending label-presence changes not yet flushed to the server.
+   * Key = label UUID, value = status string or null (null means reset to 'uncertain').
+   * Populated on user interaction; flushed when canvas annotations are saved.
+   */
+  let pendingFlush = new Map();
   let derivedPresent = computeDerivedPresent(runtime?.state?.image?.bboxes);
 
   /** @type {Map<string, (status: string) => void>} */
@@ -289,6 +295,16 @@ async function mountSelectMode(container, { runtime, filter }) {
   function effectiveStatus(uuid) {
     if (derivedPresent.has(uuid)) return 'present';
     return serverStates.get(uuid) ?? 'uncertain';
+  }
+
+  /** Update both local maps together; the single write site prevents drift between them. */
+  function setLocalPresence(uuid, status) {
+    if (status === 'uncertain') {
+      serverStates.delete(uuid);
+    } else {
+      serverStates.set(uuid, /** @type {'absent'} */ (status));
+    }
+    pendingFlush.set(uuid, status);
   }
 
   function renderSelectRows(parentUuid, indent) {
@@ -322,23 +338,16 @@ async function mountSelectMode(container, { runtime, filter }) {
       applyStatus(effectiveStatus(label.uuid));
       rowUpdaters.set(label.uuid, applyStatus);
 
-      btn.addEventListener('click', async (e) => {
+      btn.addEventListener('click', (e) => {
         e.stopPropagation();
         if (!currentImagePath) return;
         const current = effectiveStatus(label.uuid);
         if (STATUS_CFG[current]?.locked) return;
         const next = STATUS_CYCLE[current] ?? 'uncertain';
-        try {
-          await setImageLabel(currentImagePath, label.uuid, next);
-          if (next === 'uncertain') {
-            serverStates.delete(label.uuid);
-          } else {
-            serverStates.set(label.uuid, /** @type {'absent'} */ (next));
-          }
-          applyStatus(effectiveStatus(label.uuid));
-        } catch (err) {
-          console.error('Failed to set image label:', err);
-        }
+        // Update local state immediately for UI feedback; defer API call to save.
+        setLocalPresence(label.uuid, next);
+        applyStatus(effectiveStatus(label.uuid));
+        runtime?.markDirty?.();
       });
 
       row.prepend(btn);
@@ -353,26 +362,23 @@ async function mountSelectMode(container, { runtime, filter }) {
     }
   }
 
-  async function bulkOp(uuids, applyFn, errorMsg) {
+  function bulkOp(uuids, status) {
     if (!currentImagePath) { toast('No image loaded'); return; }
-    try {
-      await Promise.all(uuids.map(applyFn));
-    } catch (err) {
-      toast(err.message || errorMsg, 5000, 'error');
-    }
-    refreshStatusButtons();
+    uuids.forEach(uuid => {
+      setLocalPresence(uuid, status);
+      rowUpdaters.get(uuid)?.(effectiveStatus(uuid));
+    });
+    if (uuids.length) runtime?.markDirty?.();
   }
 
   markAbsentBtn.addEventListener('click', () => bulkOp(
     [...rowUpdaters.keys()].filter(uuid => effectiveStatus(uuid) !== 'present'),
-    uuid => setImageLabel(currentImagePath, uuid, 'absent').then(() => serverStates.set(uuid, 'absent')),
-    'Failed to mark labels absent',
+    'absent',
   ));
 
   resetAllBtn.addEventListener('click', () => bulkOp(
     [...serverStates.keys()],
-    uuid => setImageLabel(currentImagePath, uuid, 'uncertain').then(() => serverStates.delete(uuid)),
-    'Failed to reset labels',
+    'uncertain',
   ));
 
   renderSelectRows(null, 0);
@@ -391,11 +397,13 @@ async function mountSelectMode(container, { runtime, filter }) {
     });
   }
 
-  // Fetch server label states when a new image is loaded
+  // Fetch server label states when a new image is loaded; discard any pending unsaved changes.
   const unsubImage = events.subscribeToCanvas(
     runtime.id,
     EventTypes.IMAGE_LOADED_ONTO_CANVAS,
     async ({ path }) => {
+      // Discard any pending presence changes for the previous image.
+      pendingFlush.clear();
       currentImagePath = path;
       const seq = ++_loadSeq;
       let states;
@@ -420,6 +428,37 @@ async function mountSelectMode(container, { runtime, filter }) {
     () => {
       derivedPresent = computeDerivedPresent(runtime?.state?.image?.bboxes);
       refreshStatusButtons();
+    }
+  );
+
+  // Flush pending presence changes to the server when the canvas is saved.
+  const unsubSaved = events.subscribeToCanvas(
+    runtime.id,
+    EventTypes.CANVAS_ANNOTATIONS_SAVED,
+    async () => {
+      if (!currentImagePath || !pendingFlush.size) return;
+      // Capture path and entries atomically; clear only after we know what succeeded.
+      const pathAtSave = currentImagePath;
+      const entries = [...pendingFlush];
+      pendingFlush.clear();
+      const results = await Promise.allSettled(
+        entries.map(([uuid, status]) => setImageLabel(pathAtSave, uuid, status))
+      );
+      results.forEach(r => {
+        if (r.status === 'rejected') console.error('Failed to persist image label:', r.reason);
+      });
+      const failed = entries.filter((_, i) => results[i].status === 'rejected');
+      if (failed.length) {
+        if (currentImagePath === pathAtSave) {
+          // Re-queue only entries that haven't been superseded by a newer user
+          // interaction while the save was in flight.
+          failed.forEach(([uuid, status]) => {
+            if (!pendingFlush.has(uuid)) pendingFlush.set(uuid, status);
+          });
+        }
+        // Always show the error — data was lost whether or not we can retry.
+        toast(`${failed.length} label state(s) failed to save`, 5000, 'error');
+      }
     }
   );
 
@@ -478,6 +517,7 @@ async function mountSelectMode(container, { runtime, filter }) {
     destroy() {
       unsubImage();
       unsubBboxes();
+      unsubSaved();
       unsubTool();
     },
   };

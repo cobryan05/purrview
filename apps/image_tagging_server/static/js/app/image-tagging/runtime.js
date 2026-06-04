@@ -84,6 +84,12 @@ export function createImageTaggingRuntime() {
     events.publish(EventTypes.CANVAS_BBOXES_CHANGED, { runtimeId: _id });
   }
 
+  /** Set the unsaved-changes flag (e.g. when label presence changes outside bbox edits). */
+  function markDirty() {
+    _dirty = true;
+    events.publish(EventTypes.CANVAS_BBOXES_CHANGED, { runtimeId: _id });
+  }
+
   /** Clear the unsaved-changes flag (call after a successful save). */
   function markClean() {
     _dirty = false;
@@ -195,6 +201,7 @@ export function createImageTaggingRuntime() {
     pushState,
     undo,
     redo,
+    markDirty,
     markClean,
     clearHistory,
   };

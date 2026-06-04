@@ -272,16 +272,44 @@ export function renderActiveTasks({ target = 'active-tasks-list', refresh = null
       // Partition into Active (running/pending/paused) and Completed (completed/error)
       // sections, preserving the server-provided task order within each.
       const newListDiv = document.createElement('div');
-      const appendSection = (title, rows) => {
+      const activeRows = built.filter(b => !b.isCompleted).map(b => b.row);
+      const completedRows = built.filter(b => b.isCompleted).map(b => b.row);
+
+      const appendSection = (title, rows, actionEl = null) => {
         if (!rows.length) return;
-        const header = document.createElement('h4');
-        header.className = 'task-section-header';
-        header.textContent = title;
-        newListDiv.appendChild(header);
+        const h4 = document.createElement('h4');
+        h4.className = 'task-section-header';
+        h4.textContent = title;
+        if (actionEl) {
+          const headerRow = document.createElement('div');
+          Object.assign(headerRow.style, { display: 'flex', alignItems: 'center', gap: '0.5em' });
+          h4.style.margin = '0';
+          headerRow.appendChild(h4);
+          headerRow.appendChild(actionEl);
+          newListDiv.appendChild(headerRow);
+        } else {
+          newListDiv.appendChild(h4);
+        }
         rows.forEach(row => newListDiv.appendChild(row));
       };
-      appendSection('Active', built.filter(b => !b.isCompleted).map(b => b.row));
-      appendSection('Completed', built.filter(b => b.isCompleted).map(b => b.row));
+      appendSection('Active', activeRows);
+
+      if (completedRows.length) {
+        const clearBtn = document.createElement('button');
+        clearBtn.textContent = 'Clear completed';
+        Object.assign(clearBtn.style, { fontSize: '0.75em', padding: '2px 8px' });
+        clearBtn.addEventListener('click', async () => {
+          const completedIds = completedRows.map(row => row.dataset.taskUuid).filter(Boolean);
+          if (!completedIds.length) return;
+          try {
+            await deleteTasks({ taskUuids: completedIds });
+            refresh?.();
+          } catch (error) {
+            toast(error.message || 'Failed to clear completed tasks', 5000, 'error');
+          }
+        });
+        appendSection('Completed', completedRows, clearBtn);
+      }
 
       // Atomic swap: old content stays visible until this exact line.
       container.innerHTML = '';

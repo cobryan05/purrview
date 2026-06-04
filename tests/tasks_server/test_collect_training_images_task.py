@@ -26,7 +26,11 @@ from apps.helpers.imageProviders.imageProvider import (
     ImageProviderMetadata,
     ImageWithProviderMetadata,
 )
-from apps.tasks_server.tasks.CollectTrainingImagesTask import CollectTrainingImagesTask
+from apps.tasks_server.tasks.CollectTrainingImagesTask import (
+    SAME_BBOX_IOU_THRESHOLD,
+    CollectTrainingImagesTask,
+    _bbox_iou,
+)
 
 # ─── Shared constants ─────────────────────────────────────────────────────────
 
@@ -328,3 +332,75 @@ async def test_run_inference_keeps_non_overlapping_boxes():
 
     matching = await task._run_inference(inference_api, "b64", {"model-a": None, "model-b": None})
     assert matching == [box_a, box_b]
+
+
+# ─── _bbox_iou unit tests ─────────────────────────────────────────────────────
+
+
+def _box(x, y, w, h):
+    """Return a simple namespace object with the attributes _bbox_iou expects."""
+    b = MagicMock()
+    b.x, b.y, b.width, b.height = x, y, w, h
+    return b
+
+
+def test_bbox_iou_identical_boxes_returns_one():
+    """Two identical boxes have IoU of exactly 1.0."""
+    box = _box(0.1, 0.1, 0.4, 0.4)
+    assert _bbox_iou(box, box) == pytest.approx(1.0)
+
+
+def test_bbox_iou_no_overlap_returns_zero():
+    """Boxes that don't touch have IoU of 0.0."""
+    a = _box(0.0, 0.0, 0.2, 0.2)
+    b = _box(0.5, 0.5, 0.2, 0.2)
+    assert _bbox_iou(a, b) == 0.0
+
+
+def test_bbox_iou_at_threshold_triggers_dedup():
+    """A pair of boxes whose IoU equals SAME_BBOX_IOU_THRESHOLD satisfies the >= condition."""
+    # Two boxes with exactly 50% linear overlap in each dimension → IoU = 0.25/0.75 = 0.333…
+    # Build a pair that sits right at the threshold value instead.
+    # Use unit boxes shifted so IoU is just above threshold (verified numerically).
+    # Box A: [0, 0, 1, 1]; Box B: [0.18, 0.18, 1, 1] → intersection ≈ 0.82² ≈ 0.6724
+    # union = 1 + 1 - 0.6724 = 1.3276 → IoU ≈ 0.506, still below 0.65.
+    # Instead verify the boundary directly: construct a pair with known IoU >= threshold.
+    # Two boxes: A=[0,0,1,1], B=[0.1,0.1,1,1]
+    # inter_w = min(1,1.1) - max(0,0.1) = 1 - 0.1 = 0.9; same for h → inter = 0.81
+    # union = 1 + 1 - 0.81 = 1.19 → IoU ≈ 0.6807 >= 0.65
+    a = _box(0.0, 0.0, 1.0, 1.0)
+    b = _box(0.1, 0.1, 1.0, 1.0)
+    iou = _bbox_iou(a, b)
+    assert iou >= SAME_BBOX_IOU_THRESHOLD, f"Expected IoU >= {SAME_BBOX_IOU_THRESHOLD}, got {iou}"
+
+
+def test_bbox_iou_below_threshold_does_not_dedup():
+    """A pair of boxes with IoU well below the threshold is not treated as the same object."""
+    # Two 0.3×0.3 boxes with small overlap: A=[0,0,0.3,0.3], B=[0.25,0.25,0.3,0.3]
+    # inter_w = min(0.3,0.55) - max(0,0.25) = 0.3 - 0.25 = 0.05; same for h → inter = 0.0025
+    # union = 0.09 + 0.09 - 0.0025 = 0.1775 → IoU ≈ 0.014, well below 0.65
+    a = _box(0.0, 0.0, 0.3, 0.3)
+    b = _box(0.25, 0.25, 0.3, 0.3)
+    iou = _bbox_iou(a, b)
+    assert iou < SAME_BBOX_IOU_THRESHOLD
+
+
+# ─── Single-model multi-box dedup ─────────────────────────────────────────────
+
+
+async def test_run_inference_single_model_multiple_boxes_all_kept():
+    """Multiple non-overlapping detections from a single model all survive dedup."""
+    task = _make_task()
+    await task._init(_PARAMS, resume_data=None)
+
+    box1 = _detection_at(0.0, 0.0, 0.2, 0.2)
+    box2 = _detection_at(0.4, 0.4, 0.2, 0.2)
+    box3 = _detection_at(0.8, 0.0, 0.1, 0.1)
+
+    inference_api = MagicMock()
+    result = MagicMock()
+    result.result.detections = [box1, box2, box3]
+    inference_api.inference.return_value = result
+
+    matching = await task._run_inference(inference_api, "b64", {_MODEL_NAME: None})
+    assert matching == [box1, box2, box3]

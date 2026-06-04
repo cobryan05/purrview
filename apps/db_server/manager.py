@@ -303,6 +303,18 @@ class Manager:
         return await self._db_client.list_tags()
 
     ################################################################################
+    # USER SETTINGS API
+    ################################################################################
+
+    async def get_setting(self, key: str) -> Optional[str]:
+        """Return stored value for key, or None if not set."""
+        return await self._db_client.get_setting(key)
+
+    async def set_setting(self, key: str, value: str) -> None:
+        """Upsert a user setting."""
+        await self._db_client.set_setting(key, value)
+
+    ################################################################################
     # IMAGES API
     ################################################################################
 

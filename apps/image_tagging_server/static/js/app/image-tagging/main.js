@@ -4,6 +4,7 @@ import { addInferenceResults, loadImageOntoCanvas } from './canvas/image.js';
 import { init as initFiles } from './files.js';
 import { init as initSidebar } from './sidebar.js';
 import { init as initToolbar } from './toolbar.js';
+import { initHotkeyBindings } from './hotkeyBindings.js';
 import { setupWorkspaceTabs } from '/app-static/js/app/utils/tabs.js';
 import { runInference } from '/app-static/js/shared/api/inference.js';
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
@@ -15,6 +16,9 @@ import { Logger } from '/app-static/js/ui/utils/index.js';
  * @param {HTMLElement} tab_pane
  */
 export async function init(runtime, tab_pane) {
+  // Load hotkey bindings from DB early so keydown handlers have the right map.
+  initHotkeyBindings().catch(err => console.warn('Hotkey init failed:', err));
+
   runtime.setPaneRef(tab_pane);
   runtime.setFileNavigation(new FileNavigation());
 

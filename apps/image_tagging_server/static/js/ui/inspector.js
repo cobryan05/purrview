@@ -1,9 +1,11 @@
 import { BboxInfoField, EditableField } from '/app-static/js/ui/utils/fields/index.js';
 import { createGenericRow, Logger } from '/app-static/js/ui/utils/index.js';
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
-import { fetchLabelByUuid } from '/app-static/js/shared/api/labels.js';
-import { fetchTags } from '/app-static/js/shared/api/tags.js';
-import { UNVERIFIED_TAG_UUID } from '/app-static/js/shared/api/review.js';
+import { fetchLabels, fetchLabelByUuid } from '/app-static/js/shared/api/labels.js';
+import { fetchTags, fetchTagByUuid } from '/app-static/js/shared/api/tags.js';
+import { UNVERIFIED_TAG_UUID, VERIFICATION_TAG_UUIDS } from '/app-static/js/shared/api/review.js';
+import { setTool } from '/app-static/js/app/image-tagging/canvas/tools.js';
+import { stripUnverifiedTag } from '/app-static/js/app/image-tagging/canvas/interaction.js';
 
 /**
  * Opens the inspector tab in the sidebar and highlights it briefly.
@@ -161,4 +163,310 @@ export function initInspector(runtime, { container = null, openTab = true } = {}
       });
     }
   );
+}
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Tag Panel — live bbox inspector that also serves as the tag-tool picker.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Create a persistent "Bbox Info" panel in `container` for `runtime`.
+ *
+ * Two sections:
+ *   1. Label dropdown — shows the selected bbox's class.  Changing the dropdown
+ *      immediately updates the canvas appearance and pushes to the undo stack;
+ *      the data only reaches the DB when the user hits the canvas Save button.
+ *      Shown only when a bbox is selected (single- or double-click in select mode).
+ *   2. Tag list — always visible.  Clicking a row selects `tag:<uuid>` as the
+ *      active canvas tool (highlighted like the active label row).  The checkbox
+ *      reflects whether that tag is on the selected bbox; toggling applies/removes
+ *      the tag without switching tool.
+ *
+ * Single-click updates the inspector content.
+ * Double-click additionally switches the sidebar to this tab (handled in sidebar.js).
+ *
+ * @param {HTMLElement} container
+ * @param {import('@image_tagging_types').ImageTaggingRuntime} runtime
+ * @returns {{ destroy(): void }}
+ */
+export function createTagPanel(container, runtime) {
+  /** @type {import('@canvas_types').BboxView|null} */
+  let _selectedBbox = null;
+  /** @type {Map<string, object>} */
+  let _tagsMap = new Map();
+  /** @type {Map<string, object>} */
+  let _labelsMap = new Map();
+  let _activeTool = runtime.tool ?? 'select';
+
+  // ── DOM refs ──────────────────────────────────────────────────────────────
+  let _labelContent = null;   // mutable child of the label section
+  let _tagRows = new Map();   // uuid → { row, checkbox }
+
+  // ── Styles ────────────────────────────────────────────────────────────────
+  Object.assign(container.style, {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '0',
+    overflowY: 'auto',
+    padding: '4px',
+  });
+
+  // ── Label section ─────────────────────────────────────────────────────────
+
+  function _buildLabelSection() {
+    const section = document.createElement('div');
+    section.style.cssText = 'padding: 4px 6px 8px; border-bottom: 1px solid #333; margin-bottom: 4px;';
+
+    const hdr = document.createElement('div');
+    hdr.textContent = 'Class';
+    hdr.style.cssText = 'font-weight:bold; font-size:0.8em; text-transform:uppercase; letter-spacing:0.05em; color:#aaa; padding: 4px 0 6px;';
+    section.appendChild(hdr);
+
+    _labelContent = document.createElement('div');
+    section.appendChild(_labelContent);
+
+    return section;
+  }
+
+  function _refreshLabelSection() {
+    if (!_labelContent) return;
+    _labelContent.innerHTML = '';
+
+    if (!_selectedBbox) {
+      const hint = document.createElement('div');
+      hint.style.cssText = 'font-size:0.82em; color:#666; font-style:italic;';
+      hint.textContent = 'Click a bbox to inspect it';
+      _labelContent.appendChild(hint);
+      return;
+    }
+
+    const currentLabelUuid = _selectedBbox.uiBBox.label?.uuid ?? '';
+
+    const select = document.createElement('select');
+    select.style.cssText = 'width:100%; font-size:0.85em; padding:2px 4px;';
+
+    const noneOpt = document.createElement('option');
+    noneOpt.value = '';
+    noneOpt.textContent = '— none —';
+    select.appendChild(noneOpt);
+
+    for (const label of _labelsMap.values()) {
+      const opt = document.createElement('option');
+      opt.value = label.uuid;
+      opt.textContent = label.name;
+      if (label.uuid === currentLabelUuid) opt.selected = true;
+      select.appendChild(opt);
+    }
+
+    // Immediate update on change — no Save button needed in the panel.
+    // The canvas toolbar Save button is what persists to the DB.
+    select.onchange = () => {
+      if (!_selectedBbox) return;
+      const newUuid = select.value || null;
+      const oldUuid = _selectedBbox.uiBBox.label?.uuid ?? null;
+      if (newUuid === oldUuid) return;
+
+      if (newUuid) {
+        const labelData = _labelsMap.get(newUuid);
+        if (!labelData) return;
+        _selectedBbox.uiBBox.label = { uuid: newUuid, text: labelData.name, color: labelData.color };
+        _selectedBbox.updateAppearance(labelData.name, labelData.color);
+        stripUnverifiedTag(_selectedBbox.uiBBox);
+        _selectedBbox.refreshIcons(_selectedBbox.uiBBox.tags);
+      } else {
+        _selectedBbox.uiBBox.label = undefined;
+        _selectedBbox.updateAppearance('', 'grey');
+        // Removing label → re-mark as unverified so it returns to the review queue.
+        const tags = _selectedBbox.uiBBox.tags ?? [];
+        if (!tags.some(t => t.uuid === UNVERIFIED_TAG_UUID)) {
+          _selectedBbox.uiBBox.tags = [...tags, { uuid: UNVERIFIED_TAG_UUID, icon: null }];
+          _selectedBbox.refreshIcons(_selectedBbox.uiBBox.tags);
+        }
+      }
+      runtime.pushState();
+      events.publish(EventTypes.CANVAS_BBOXES_CHANGED, { runtimeId: runtime.id });
+    };
+
+    _labelContent.appendChild(select);
+  }
+
+  // ── Tag list ──────────────────────────────────────────────────────────────
+
+  function _buildTagList() {
+    const wrap = document.createElement('div');
+
+    const hdr = document.createElement('div');
+    hdr.textContent = 'Tags';
+    hdr.style.cssText = 'font-weight:bold; font-size:0.8em; text-transform:uppercase; letter-spacing:0.05em; color:#aaa; padding:4px 6px 6px;';
+    wrap.appendChild(hdr);
+
+    if (_tagsMap.size === 0) {
+      const empty = document.createElement('div');
+      empty.style.cssText = 'font-size:0.82em; color:#666; font-style:italic; padding:4px 6px;';
+      empty.textContent = 'No tags defined';
+      wrap.appendChild(empty);
+      return wrap;
+    }
+
+    _tagRows.clear();
+    for (const tag of _tagsMap.values()) {
+      const { uuid, name, icon, color } = tag;
+
+      const row = document.createElement('div');
+      row.dataset.uuid = uuid;
+      row.className = 'tag-panel-row';
+      Object.assign(row.style, {
+        display: 'flex',
+        alignItems: 'center',
+        gap: '0.4em',
+        padding: '4px 6px',
+        borderRadius: '3px',
+        cursor: 'pointer',
+        userSelect: 'none',
+      });
+
+      const cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.style.cssText = 'margin:0; flex-shrink:0; cursor:pointer;';
+      cb.title = 'Toggle tag on selected bbox';
+      cb.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        if (!_selectedBbox) return;
+        await _toggleTagOnBbox(uuid);
+      });
+
+      const swatch = document.createElement('span');
+      Object.assign(swatch.style, {
+        width: '8px', height: '8px', borderRadius: '50%',
+        flexShrink: '0', background: color ?? '#888', display: 'inline-block',
+      });
+
+      const iconEl = document.createElement('span');
+      iconEl.textContent = icon ?? '';
+      iconEl.style.cssText = 'font-size:0.9em; flex-shrink:0;';
+      if (!icon) iconEl.style.display = 'none';
+
+      const nameEl = document.createElement('span');
+      nameEl.textContent = name;
+      nameEl.style.fontSize = '0.88em';
+
+      row.append(cb, swatch, iconEl, nameEl);
+
+      row.addEventListener('click', () => {
+        setTool(runtime, `tag:${uuid}`);
+      });
+
+      _tagRows.set(uuid, { row, checkbox: cb });
+      wrap.appendChild(row);
+    }
+
+    return wrap;
+  }
+
+  async function _toggleTagOnBbox(tagUuid) {
+    if (!_selectedBbox) return;
+    const tag = _tagsMap.get(tagUuid) ?? await fetchTagByUuid(tagUuid);
+    if (!tag) return;
+    const tags = _selectedBbox.uiBBox.tags ?? [];
+    const has = tags.some(t => t.uuid === tagUuid);
+    let next;
+    if (has) {
+      next = tags.filter(t => t.uuid !== tagUuid);
+    } else {
+      const base = VERIFICATION_TAG_UUIDS.has(tagUuid)
+        ? tags.filter(t => !VERIFICATION_TAG_UUIDS.has(t.uuid))
+        : tags;
+      next = [...base, { uuid: tagUuid, icon: tag.icon ?? null }];
+    }
+    _selectedBbox.uiBBox.tags = next;
+    _selectedBbox.refreshIcons(next);
+    runtime.pushState();
+    events.publish(EventTypes.CANVAS_BBOXES_CHANGED, { runtimeId: runtime.id });
+    _refreshCheckboxes();
+  }
+
+  // ── Refresh helpers ───────────────────────────────────────────────────────
+
+  function _refreshCheckboxes() {
+    const activeTags = new Set((_selectedBbox?.uiBBox?.tags ?? []).map(t => t.uuid));
+    for (const [uuid, { checkbox }] of _tagRows) {
+      checkbox.checked = activeTags.has(uuid);
+      checkbox.disabled = !_selectedBbox;
+    }
+  }
+
+  function _refreshHighlights() {
+    const activeTagUuid = _activeTool.startsWith('tag:') ? _activeTool.slice(4) : null;
+    for (const [uuid, { row }] of _tagRows) {
+      const isActive = uuid === activeTagUuid;
+      row.style.outline = isActive ? '2px solid #ff0033' : '';
+      row.style.background = isActive ? '#ff003322' : '';
+    }
+  }
+
+  // ── Full mount ────────────────────────────────────────────────────────────
+
+  async function _mount() {
+    container.innerHTML = '';
+    [_tagsMap, _labelsMap] = await Promise.all([fetchTags(), fetchLabels()]);
+
+    container.appendChild(_buildLabelSection());
+    container.appendChild(_buildTagList());
+
+    _refreshLabelSection();
+    _refreshCheckboxes();
+    _refreshHighlights();
+  }
+
+  // ── Event subscriptions ───────────────────────────────────────────────────
+
+  // Shared handler: update inspector content when a bbox is selected.
+  // Used by both single-click and double-click; double-click fires click first,
+  // so we skip the refresh when the bbox hasn't changed.
+  function _onBboxSelected({ bboxView }) {
+    if (!bboxView || bboxView === _selectedBbox) return;
+    _selectedBbox = bboxView;
+    _refreshLabelSection();
+    _refreshCheckboxes();
+  }
+
+  const _unsubClick    = events.subscribeToCanvas(runtime.id, EventTypes.CANVAS_BBOX_CLICKED,        _onBboxSelected);
+  // Double-click tab switch is handled by sidebar.js; content update is via _onBboxSelected.
+  const _unsubDblClick = events.subscribeToCanvas(runtime.id, EventTypes.CANVAS_BBOX_DOUBLE_CLICKED, _onBboxSelected);
+
+  const _unsubBboxChanged = events.subscribeToCanvas(
+    runtime.id, EventTypes.CANVAS_BBOXES_CHANGED,
+    () => _refreshCheckboxes()
+  );
+
+  const _unsubToolChanged = events.subscribeToCanvas(
+    runtime.id, EventTypes.CANVAS_TOOL_CHANGED,
+    ({ tool }) => {
+      _activeTool = tool;
+      _refreshHighlights();
+    }
+  );
+
+  const _unsubImageLoaded = events.subscribeToCanvas(
+    runtime.id, EventTypes.IMAGE_LOADED_ONTO_CANVAS,
+    () => {
+      _selectedBbox = null;
+      _refreshLabelSection();
+      _refreshCheckboxes();
+    }
+  );
+
+  // Initial render.
+  _mount();
+
+  return {
+    destroy() {
+      _unsubClick();
+      _unsubDblClick();
+      _unsubBboxChanged();
+      _unsubToolChanged();
+      _unsubImageLoaded();
+    },
+  };
 }

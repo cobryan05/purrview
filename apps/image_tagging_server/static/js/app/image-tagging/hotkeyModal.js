@@ -3,6 +3,7 @@ import { fetchTags } from '/app-static/js/shared/api/tags.js';
 import { createModalShell } from '/app-static/js/ui/utils/modalShell.js';
 import {
   FIXED_ACTIONS,
+  initHotkeyBindings,
   combosForAction,
   setBinding,
   clearBinding,
@@ -16,7 +17,8 @@ import {
  * @returns {Promise<void>}
  */
 export async function openHotkeyModal() {
-  const [labels, tags] = await Promise.all([fetchLabels(), fetchTags()]);
+  // Ensure bindings are loaded from DB before letting the user edit them.
+  const [labels, tags] = await Promise.all([fetchLabels(), fetchTags(), initHotkeyBindings()]);
 
   const { dialog, open, close } = createModalShell({
     onClose: () => document.removeEventListener('keydown', onKeyCapture, true),

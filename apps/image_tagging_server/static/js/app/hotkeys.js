@@ -22,7 +22,7 @@ function dispatchAction(action, runtime) {
   }
   switch (action) {
     case 'action:select': setTool(runtime, 'select'); return true;
-    case 'action:bbox': setTool(runtime, 'bbox:'); return true;
+    case 'action:bbox': setTool(runtime, 'bbox'); return true;
     case 'action:prevImage': prev_image(runtime); return true;
     case 'action:nextImage': next_image(runtime); return true;
     case 'action:delete': deleteSelected(runtime); return true;

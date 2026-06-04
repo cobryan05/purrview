@@ -61,6 +61,7 @@ from .types import (
     TagPresenceFilter,
     TaskConfig,
     TaskInstance,
+    UserSetting,
 )
 
 _SYSTEM_TAGS = [
@@ -1276,6 +1277,22 @@ class DbClient:
             await session.commit()
         await self._sync_tags_to_json()
         return True
+
+    ################################################################################
+    # User Settings
+    ################################################################################
+
+    async def get_setting(self, key: str) -> Optional[str]:
+        """Return the stored value for key, or None if not set."""
+        async with self._async_session_maker() as session:
+            obj = await session.get(UserSetting, key)
+            return obj.value if obj else None
+
+    async def set_setting(self, key: str, value: str) -> None:
+        """Upsert a key-value pair in user_settings."""
+        async with self._async_session_maker() as session:
+            await session.merge(UserSetting(key=key, value=value))
+            await session.commit()
 
     ################################################################################
     # Sources

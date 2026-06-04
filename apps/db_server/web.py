@@ -154,6 +154,18 @@ class ClearOrphanGeneratedTagsResponse(StatusResponse):
 
 
 ########
+# User Settings
+########
+class SettingResponse(StatusResponse):
+    key: str
+    value: Optional[str] = None
+
+
+class SetSettingPayload(ApiPayload):
+    value: str
+
+
+########
 # Image Reconciliation
 ########
 class ImageStub(BaseModel):
@@ -793,6 +805,38 @@ class WebApp:
             except Exception as e:
                 logger.error(e, exc_info=True)
                 return ClearOrphanGeneratedTagsResponse(status=JsonValues.FAILURE, message=str(e))
+
+        ################################################################################
+        # User Settings API
+        ################################################################################
+
+        @self._app.get(
+            "/api/settings/{key}", response_model=SettingResponse, tags=[ApiTags.SETTINGS], operation_id="get_setting"
+        )
+        async def get_setting_api(key: str) -> SettingResponse:
+            """Return the stored value for a user-settings key."""
+            try:
+                value = await self._manager.get_setting(key)
+                if value is None:
+                    raise HTTPException(status_code=404, detail=f"Setting '{key}' not found")
+                return SettingResponse(status=JsonValues.SUCCESS, key=key, value=value)
+            except HTTPException:
+                raise
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return SettingResponse(status=JsonValues.FAILURE, key=key, message=str(e))
+
+        @self._app.put(
+            "/api/settings/{key}", response_model=SettingResponse, tags=[ApiTags.SETTINGS], operation_id="set_setting"
+        )
+        async def set_setting_api(key: str, request: SetSettingPayload) -> SettingResponse:
+            """Upsert a user-settings key-value pair."""
+            try:
+                await self._manager.set_setting(key, request.value)
+                return SettingResponse(status=JsonValues.SUCCESS, key=key, value=request.value)
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return SettingResponse(status=JsonValues.FAILURE, key=key, message=str(e))
 
         ################################################################################
         # Images API

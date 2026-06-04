@@ -70,4 +70,9 @@ export const EventTypes = Object.freeze({
    * Payload: { tagUuids: string[] }
    */
   OPEN_REVIEW_WITH_FILTERS: "review:open_with_filters",
+  /**
+   * Fired after canvas annotations (bboxes + image labels) have been successfully saved.
+   * Payload: { runtimeId: string }
+   */
+  CANVAS_ANNOTATIONS_SAVED: "canvas:annotations:saved",
 });

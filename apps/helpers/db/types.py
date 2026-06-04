@@ -27,6 +27,7 @@ from pydantic import (
     field_validator,
 )
 from pydantic.alias_generators import to_camel
+import sqlalchemy as sa
 from sqlmodel import JSON, Column, DateTime, Field, Relationship, SQLModel
 from typing_extensions import Annotated
 
@@ -80,6 +81,13 @@ class TimestampModel(SQLModel):
             "onupdate": lambda: datetime.now(timezone.utc),
         },
     )
+
+
+class UserSetting(SQLModel, table=True):
+    """Simple key-value store for per-user (per-browser) persistent settings."""
+    __tablename__ = "user_settings"
+    key: str = Field(primary_key=True)
+    value: str = Field(default="", sa_column=Column(sa.Text))
 
 
 class LabelBase(SQLModel):
