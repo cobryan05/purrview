@@ -93,7 +93,13 @@ COPY requirements-dev.txt .
 RUN pip install --no-cache-dir -r requirements-dev.txt \
   && echo 'cd /project/apps 2>/dev/null || cd /app/apps' >> /home/appuser/.bashrc
 
+# Install Playwright OS-level dependencies (requires root)
+RUN playwright install-deps chromium
+
 USER appuser
+
+# Install Playwright browser binaries as appuser
+RUN playwright install chromium
 
 # Install claude-cli as appuser; binary lands in ~/.local/bin
 RUN curl -fsSL https://claude.ai/install.sh | bash

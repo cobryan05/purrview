@@ -2,3 +2,5 @@ isort
 pytest>=8
 pytest-asyncio>=0.24
 pytest-xdist>=3
+playwright>=1.44
+pytest-playwright>=0.5
