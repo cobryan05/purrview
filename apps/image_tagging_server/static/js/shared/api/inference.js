@@ -1,4 +1,5 @@
 // inferenceApi.js
+import { apiFetch } from './apiUtils.js';
 
 import { generateUUID, Logger, toast } from '/app-static/js/ui/utils/index.js';
 
@@ -25,7 +26,7 @@ export async function runInference(model_name, image) {
 
   toast(`Sending recognition request for model ${model_name}...`);
   // Send recognition request
-  const res = await fetch(`/api/models/${model_name}/infer`, {
+  const res = await apiFetch(`/api/models/${model_name}/infer`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',

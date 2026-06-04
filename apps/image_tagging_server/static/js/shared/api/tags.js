@@ -1,5 +1,5 @@
 import { createCachedFetcher } from '/app-static/js/ui/utils/data/createCachedFetcher.js';
-import { ignoreKeyReturn } from './apiUtils.js';
+import { apiFetch, ignoreKeyReturn } from './apiUtils.js';
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
 
 /** -----------------------------
@@ -7,7 +7,7 @@ import { events, EventTypes } from '/app-static/js/shared/events/index.js';
  * -----------------------------
  */
 export const tagsFetcher = createCachedFetcher(async (keys) => {
-  const res = await fetch('/api/tags/list');
+  const res = await apiFetch('/api/tags/list');
   if (!res.ok) {
     const err = await res.json();
     throw new Error(err.message || 'Failed to fetch tags');
@@ -47,7 +47,7 @@ export async function fetchTagByUuid(uuid) {
  * -----------------------------
  */
 export async function createNewTag(name, color, icon = null) {
-  const res = await fetch('/api/tags/add', {
+  const res = await apiFetch('/api/tags/add', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ name, color, icon }),
@@ -70,7 +70,7 @@ export async function createNewTag(name, color, icon = null) {
 }
 
 export async function updateTag(uuid, name, color, icon = undefined) {
-  const res = await fetch('/api/tags/update', {
+  const res = await apiFetch('/api/tags/update', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ tagUuid: uuid, data: { name, color, icon } }),
@@ -92,7 +92,7 @@ export async function updateTag(uuid, name, color, icon = undefined) {
 }
 
 export async function deleteTag(uuid) {
-  const res = await fetch('/api/tags/delete', {
+  const res = await apiFetch('/api/tags/delete', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ tagUuid: uuid }),

@@ -1,12 +1,12 @@
 import { createCachedFetcher } from '/app-static/js/ui/utils/data/createCachedFetcher.js';
-import { ignoreKeyReturn } from './apiUtils.js';
+import { apiFetch, ignoreKeyReturn } from './apiUtils.js';
 
 /** -----------------------------
  * LABEL CACHE
  * -----------------------------
  */
 export const labelsFetcher = createCachedFetcher(async (keys) => {
-  const res = await fetch('/api/labels');
+  const res = await apiFetch('/api/labels');
 
   /** @type {import('@web_api').ListLabelsResponse} */
   const data = await res.json();
@@ -49,7 +49,7 @@ export async function fetchLabelByUuid(uuid) {
  * -----------------------------
  */
 export async function createNewLabel(name, color, parentUuid = null) {
-  const res = await fetch('/api/labels', {
+  const res = await apiFetch('/api/labels', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ name, color, parentUuid }),
@@ -66,7 +66,7 @@ export async function createNewLabel(name, color, parentUuid = null) {
 
 
 export async function updateLabel(uuid, name, color) {
-  const res = await fetch(`/api/labels/${uuid}`, {
+  const res = await apiFetch(`/api/labels/${uuid}`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ name, color }),
@@ -83,7 +83,7 @@ export async function updateLabel(uuid, name, color) {
 
 
 export async function deleteLabel(uuid) {
-  const res = await fetch(`/api/labels/${uuid}`, {
+  const res = await apiFetch(`/api/labels/${uuid}`, {
     method: 'DELETE',
   });
 

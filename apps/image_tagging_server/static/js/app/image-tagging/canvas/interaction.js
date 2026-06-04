@@ -2,7 +2,7 @@ import { Logger } from '../../../ui/utils/logging.js';
 import { generateUUID } from '../../../ui/utils/utils.js';
 import { BboxView } from '/app-static/js/app/image-tagging/canvas/views/bboxView.js';
 import { createUIBBbox } from '/app-static/js/shared/domain/image/mapper.js';
-import { clearSelection, setTool, parseToolUuid } from './tools.js';
+import { clearSelection, setTool, parseToolUuid, isDrawTool, syncBboxDraggable } from './tools.js';
 import { fetchLabelByUuid } from '/app-static/js/shared/api/labels.js';
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
 import { UNVERIFIED_TAG_UUID, VERIFICATION_TAG_UUIDS } from '/app-static/js/shared/api/review.js';
@@ -90,14 +90,21 @@ function getPointerPosition(canvasState) {
 function findGroupAtPoint(runtime, pos) {
   const layer = runtime.canvas.layer;
   const children = layer.getChildren(node => node.name() === 'bbox');
+  let best = null;
+  let bestArea = Infinity;
   for (const group of children) {
     const rect = group.getClientRect({ relativeTo: layer });
     if (pos.x >= rect.x && pos.x <= rect.x + rect.width &&
       pos.y >= rect.y && pos.y <= rect.y + rect.height) {
-      return group;
+      // When boxes are stacked, prefer the smallest so inner boxes stay reachable.
+      const area = rect.width * rect.height;
+      if (area < bestArea) {
+        best = group;
+        bestArea = area;
+      }
     }
   }
-  return null;
+  return best;
 }
 
 /**
@@ -124,8 +131,8 @@ export async function handleMouseDown(e, runtime) {
     return;
   }
 
-  // Left click on empty canvas in select mode: pan
-  if (e.evt.button === 0 && runtime.tool === 'select') {
+  // Left click on empty canvas with a non-draw tool: pan
+  if (e.evt.button === 0 && !isDrawTool(runtime.tool)) {
     const pos = getPointerPosition(runtime.canvas);
     if (pos && !findGroupAtPoint(runtime, pos)) {
       ist.isPanning = true;
@@ -135,7 +142,8 @@ export async function handleMouseDown(e, runtime) {
     }
   }
 
-  if (e.evt.button !== 0 || ist.isPanning || runtime.tool === 'select') return;
+  // Draw tools always start a new bbox, even when the pointer is over an existing one.
+  if (e.evt.button !== 0 || ist.isPanning || !isDrawTool(runtime.tool)) return;
 
   const pos = getPointerPosition(runtime.canvas);
   if (!pos) return;
@@ -168,7 +176,7 @@ export async function handleMouseMove(e, runtime) {
   if (!pos) return;
 
   const currentTool = runtime.tool;
-  if (currentTool != 'select') {
+  if (isDrawTool(currentTool)) {
     createCrosshairLines(runtime.canvas);
     ist.crosshairV.points([pos.x, 0, pos.x, stage.height()]);
     ist.crosshairH.points([0, pos.y, stage.width(), pos.y]);
@@ -219,9 +227,8 @@ export async function handleMouseMove(e, runtime) {
 export async function handleMouseUp(e, runtime) {
   if (!runtime.canvas) return;
   const ist = runtime.canvas.interactionState;
-  const isSelectTool = runtime.tool === 'select';
   runtime.canvas.stage.container().style.cursor =
-    isSelectTool ? 'default' : 'crosshair';
+    isDrawTool(runtime.tool) ? 'crosshair' : 'default';
 
   if (e.evt.button === 1 || ist.isPanning) {
     ist.isPanning = false;
@@ -247,6 +254,7 @@ export async function handleMouseUp(e, runtime) {
       runtime.state.image.bboxes.set(uiBBox.uuid, uiBBox);
       applyDefaultVerificationTag(uiBBox);
       ist.pendingDraggedBbox.refreshIcons(uiBBox.tags);
+      syncBboxDraggable(runtime);
       // Drawing uses manual mouse positioning, not Konva drag — 'dragend' does not fire here.
       runtime.pushState();
       events.publish(EventTypes.CANVAS_BBOX_CLICKED, { bboxId: uiBBox.uuid, runtimeId: runtime.id });

@@ -33,6 +33,9 @@ export async function initCanvasStage(runtime) {
   // mutate uiBBox first, so by the time the event bubbles here the data is final.
   const onBboxMutated = e => {
     if (e.target.name() === 'bbox') {
+      // Bubbles after BboxView's own handler has committed the new attrs, so the
+      // transformer can re-sync to the final bounds instead of snapping back.
+      runtime.canvas?.transformer?.forceUpdate();
       runtime.pushState();
       events.publish(EventTypes.CANVAS_BBOXES_CHANGED, { runtimeId: runtime.id });
     }

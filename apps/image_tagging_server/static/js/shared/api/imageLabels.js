@@ -1,10 +1,11 @@
+import { apiFetch } from './apiUtils.js';
 /**
  * @param {string} imagePath
  * @returns {Promise<Map<string, 'present'|'absent'>>}
  *   Map from labelUuid → status.  Labels absent from the map are UNCERTAIN.
  */
 export async function fetchImageLabels(imagePath) {
-  const res = await fetch(`/api/images/${encodeURIComponent(imagePath)}/labels`, {
+  const res = await apiFetch(`/api/images/${encodeURIComponent(imagePath)}/labels`, {
     method: 'GET',
     headers: { 'Accept': 'application/json' },
   });
@@ -32,7 +33,7 @@ export async function fetchImageLabels(imagePath) {
  *   'uncertain' - clear an existing explicit ABSENT (reverts to default)
  */
 export async function setImageLabel(imagePath, labelUuid, status) {
-  const res = await fetch('/api/images/labels/set', {
+  const res = await apiFetch('/api/images/labels/set', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ imagePath, labelUuid, status }),

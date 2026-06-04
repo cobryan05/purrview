@@ -1,5 +1,22 @@
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
 
+/** True for tools that draw new bboxes ('bbox' and 'bbox:<labelUuid>'). */
+export function isDrawTool(tool) {
+  return tool === 'bbox' || tool.startsWith('bbox:');
+}
+
+/**
+ * Existing bboxes are only draggable in the 'select' tool. While a draw or tag
+ * tool is active a pointer-down over a bbox must start drawing / apply, not drag.
+ * @param {import('@image_tagging_types').ImageTaggingRuntime} runtime
+ */
+export function syncBboxDraggable(runtime) {
+  const layer = runtime?.canvas?.layer;
+  if (!layer) return;
+  const draggable = runtime.tool === 'select';
+  layer.find('.bbox').forEach(n => n.draggable(draggable));
+}
+
 // Clear selection implementation
 export function clearSelection() {
   // const transformer = state.imageTagging.canvas.transformer;
@@ -19,7 +36,8 @@ export function clearSelection() {
 export function setTool(runtime, tool) {
   runtime.setTool(tool);
   clearSelection();
-  runtime.canvas.stage.container().style.cursor = tool === 'select' ? 'default' : 'crosshair';
+  syncBboxDraggable(runtime);
+  runtime.canvas.stage.container().style.cursor = isDrawTool(tool) ? 'crosshair' : 'default';
   events.publish(EventTypes.CANVAS_TOOL_CHANGED, { tool, runtimeId: runtime.id });
 }
 

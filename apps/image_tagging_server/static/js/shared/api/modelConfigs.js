@@ -1,12 +1,12 @@
 import { createCachedFetcher } from '/app-static/js/ui/utils/data/createCachedFetcher.js';
-import { ignoreKeyReturn } from './apiUtils.js';
+import { apiFetch, ignoreKeyReturn } from './apiUtils.js';
 
 /** -----------------------------
  * CACHE
  * -----------------------------
  */
 const modelConfigsFetcher = createCachedFetcher(async (keys) => {
-  const res = await fetch('/api/model-configs');
+  const res = await apiFetch('/api/model-configs');
   const data = await res.json();
   if (!res.ok || data.status !== 'success') {
     throw new Error(data.message || 'Failed to fetch model configs');
@@ -16,7 +16,7 @@ const modelConfigsFetcher = createCachedFetcher(async (keys) => {
 });
 
 const typenamesFetcher = createCachedFetcher(async (keys) => {
-  const res = await fetch('/api/model-configs/typenames');
+  const res = await apiFetch('/api/model-configs/typenames');
   const data = await res.json();
   if (!res.ok || data.status !== 'success') {
     throw new Error(data.message || 'Failed to fetch model typenames');
@@ -45,7 +45,7 @@ export async function fetchModelTypenames() {
  * -----------------------------
  */
 export async function createModelConfig({ name, description = '', nodes = [] }) {
-  const res = await fetch('/api/model-configs', {
+  const res = await apiFetch('/api/model-configs', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ name, description, nodes }),
@@ -64,7 +64,7 @@ export async function updateModelConfig(uuid, { name, description, nodes }) {
   if (description !== undefined) body.description = description;
   if (nodes !== undefined) body.nodes = nodes;
 
-  const res = await fetch(`/api/model-configs/${uuid}`, {
+  const res = await apiFetch(`/api/model-configs/${uuid}`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
@@ -78,7 +78,7 @@ export async function updateModelConfig(uuid, { name, description, nodes }) {
 }
 
 export async function deleteModelConfig(uuid) {
-  const res = await fetch(`/api/model-configs/${uuid}`, { method: 'DELETE' });
+  const res = await apiFetch(`/api/model-configs/${uuid}`, { method: 'DELETE' });
   const data = await res.json();
   if (!res.ok || data.status !== 'success') {
     throw new Error(data.message || 'Failed to delete model config');

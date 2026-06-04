@@ -1,5 +1,5 @@
 import { createCachedFetcher } from '/app-static/js/ui/utils/data/createCachedFetcher.js';
-import { ignoreKeyReturn } from './apiUtils.js';
+import { apiFetch, ignoreKeyReturn } from './apiUtils.js';
 
 export const TaskStatus = Object.freeze({
   NEW: "new",
@@ -13,7 +13,7 @@ export const TaskStatus = Object.freeze({
 
 /* ---- Task type list --- */
 async function fetchTaskTypeListFromServer(keys) {
-  const res = await fetch('/api/tasks/types/list');
+  const res = await apiFetch('/api/tasks/types/list');
   if (!res.ok) {
     const err = await res.json();
     throw new Error(err.message || 'Failed to fetch task types');
@@ -39,7 +39,7 @@ export function clearTaskTypeCache() {
  * @throws {Error} If the fetch fails or the API response is invalid.
  */
 async function fetchTasksSchemaFromServer(typenames) {
-  const res = await fetch('/api/tasks/types/schema', {
+  const res = await apiFetch('/api/tasks/types/schema', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ taskTypenames: typenames }),
@@ -87,7 +87,7 @@ export function clearTaskSchemaCache() {
  */
 export async function fetchTaskConfigs(uuids = null) {
   const fetchAll = uuids == null;
-  const res = await fetch('/api/tasks/configs/get', {
+  const res = await apiFetch('/api/tasks/configs/get', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ configUuids: fetchAll ? null : uuids }),
@@ -106,7 +106,7 @@ export async function fetchTaskConfigs(uuids = null) {
 export const taskConfigFetcher = createCachedFetcher(fetchTaskConfigs);
 
 export async function deleteTaskConfigs({ uuids }) {
-  const res = await fetch('/api/tasks/configs/delete', {
+  const res = await apiFetch('/api/tasks/configs/delete', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ configUuids: uuids }),
@@ -121,7 +121,7 @@ export async function deleteTaskConfigs({ uuids }) {
 }
 
 export async function createTaskConfig(config) {
-  const res = await fetch('/api/tasks/configs/create', {
+  const res = await apiFetch('/api/tasks/configs/create', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(config),
@@ -145,7 +145,7 @@ export async function createTaskConfig(config) {
 
 
 export async function updateTaskConfig(config) {
-  const res = await fetch('/api/tasks/configs/update', {
+  const res = await apiFetch('/api/tasks/configs/update', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ configUuid: config.uuid, ...config }),
@@ -170,7 +170,7 @@ export async function updateTaskConfig(config) {
  * @throws {Error} If the fetch fails or the API response is invalid.
  */
 async function fetchTaskResultFromServer(taskUuids) {
-  const res = await fetch('/api/tasks/instances/result', {
+  const res = await apiFetch('/api/tasks/instances/result', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ taskUuids }),
@@ -211,7 +211,7 @@ export async function fetchTasksResult({ taskUuids, cacheResults = true }) {
  * @throws {Error} If the fetch fails or the API response is invalid.
  */
 export async function startTask({ configUuid }) {
-  const res = await fetch('/api/tasks/instances/start', {
+  const res = await apiFetch('/api/tasks/instances/start', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ configUuid }),
@@ -235,7 +235,7 @@ export async function startTask({ configUuid }) {
  * @throws {Error} If the fetch fails or the API response is invalid.
  */
 export async function fetchTasksStatus({ taskUuids } = {}) {
-  const res = await fetch('/api/tasks/instances/get', {
+  const res = await apiFetch('/api/tasks/instances/get', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ taskUuids }),
@@ -255,7 +255,7 @@ export async function fetchTasksStatus({ taskUuids } = {}) {
 }
 /** POST taskUuids to a task-instance operation endpoint; throws on failure. */
 async function _taskOp(endpoint, taskUuids) {
-  const res = await fetch(endpoint, {
+  const res = await apiFetch(endpoint, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ taskUuids }),

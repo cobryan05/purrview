@@ -1,4 +1,5 @@
 // imagesApi.js
+import { apiFetch } from './apiUtils.js';
 import { imageRecordToUI } from '/app-static/js/shared/domain/image/mapper.js';
 
 /**
@@ -18,7 +19,7 @@ export async function fetchImageList(path, pattern = "*", recursive = false) {
     recursive: recursive.toString(),
   });
 
-  const res = await fetch(`/api/images/list?${params.toString()}`, {
+  const res = await apiFetch(`/api/images/list?${params.toString()}`, {
     method: 'GET',
     headers: { 'Accept': 'application/json' },
   });
@@ -44,7 +45,7 @@ export async function fetchImageList(path, pattern = "*", recursive = false) {
 export async function fetchImage(path) {
   const url = `/api/images/${encodeURIComponent(path)}/file`;
 
-  const res = await fetch(url, {
+  const res = await apiFetch(url, {
     method: "GET",
     headers: { "Accept": "application/json" },
   });
@@ -103,7 +104,7 @@ export async function updateImage(uiImage) {
     boxes,
   };
 
-  const res = await fetch('/api/images/metadata/update', {
+  const res = await apiFetch('/api/images/metadata/update', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload)

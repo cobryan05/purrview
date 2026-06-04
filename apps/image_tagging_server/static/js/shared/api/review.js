@@ -1,3 +1,4 @@
+import { apiFetch } from './apiUtils.js';
 // System tag UUIDs (must match constants in apps/helpers/db/db_client.py)
 export const UNVERIFIED_TAG_UUID = '00000000-0000-0000-0000-000000000001';
 
@@ -56,7 +57,7 @@ export async function fetchReviewQueue({
     }));
   }
 
-  const res = await fetch('/api/images/review', {
+  const res = await apiFetch('/api/images/review', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
@@ -78,7 +79,7 @@ export async function fetchReviewQueue({
  */
 export async function updateImageBboxes(imagePath, bboxes) {
   const payload = { imagePath, boxes: bboxes };
-  const res = await fetch('/api/images/metadata/update', {
+  const res = await apiFetch('/api/images/metadata/update', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
@@ -140,7 +141,7 @@ export function getImageThumbnailUrl(imagePath, width = 200) {
  * @param {{ labelUuid: string, tagUuids: string[] }} opts
  */
 export async function updateBbox(bboxUuid, { labelUuid, tagUuids }) {
-  const res = await fetch(`/api/images/bbox/${bboxUuid}`, {
+  const res = await apiFetch(`/api/images/bbox/${bboxUuid}`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ labelUuid, tagUuids }),
@@ -153,7 +154,7 @@ export async function updateBbox(bboxUuid, { labelUuid, tagUuids }) {
  * @param {string} bboxUuid
  */
 export async function deleteBbox(bboxUuid) {
-  const res = await fetch(`/api/images/bbox/${bboxUuid}`, { method: 'DELETE' });
+  const res = await apiFetch(`/api/images/bbox/${bboxUuid}`, { method: 'DELETE' });
   if (!res.ok) throw new Error(`deleteBbox failed: ${res.status}`);
 }
 
@@ -163,7 +164,7 @@ export async function deleteBbox(bboxUuid) {
  */
 export async function invalidateBboxThumbnails(bboxUuids) {
   if (!bboxUuids.length) return;
-  const res = await fetch('/api/images/bbox/thumbnails/invalidate', {
+  const res = await apiFetch('/api/images/bbox/thumbnails/invalidate', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ bboxUuids }),

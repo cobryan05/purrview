@@ -2,37 +2,25 @@ import { BboxView } from '/app-static/js/app/image-tagging/canvas/views/bboxView
 import { fetchImage, updateImage } from '/app-static/js/shared/api/images.js';
 import { fetchLabels } from '/app-static/js/shared/api/labels.js';
 import { createUIBBbox } from '/app-static/js/shared/domain/image/mapper.js';
-import { Logger, toast } from '/app-static/js/ui/utils/index.js';
+import { Logger, toast, showUnsavedChangesModal } from '/app-static/js/ui/utils/index.js';
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
 import { UNVERIFIED_TAG_UUID } from '/app-static/js/shared/api/review.js';
 import { fetchTags } from '/app-static/js/shared/api/tags.js';
+import { syncBboxDraggable } from './tools.js';
 
 /**
+ * Prompt about unsaved changes before navigating away from the current image.
+ * Returns true if navigation should proceed (nothing dirty, discarded, or saved).
+ * Must be called BEFORE advancing any file-navigation index so Cancel is a no-op.
  * @param {import('@image_tagging_types').ImageTaggingRuntime} runtime
+ * @returns {Promise<boolean>}
  */
-/**
- * Returns true if the current canvas image has any unsaved (dirty) bboxes.
- * @param {import('@image_tagging_types').ImageTaggingRuntime} runtime
- */
-function hasDirtyChanges(runtime) {
-  const bboxes = runtime.state?.image?.bboxes;
-  if (!bboxes) return false;
-  for (const bbox of bboxes.values()) {
-    if (bbox.dirty) return true;
-  }
-  return false;
-}
-
-/**
- * Marks all bboxes on the current image as clean (not dirty).
- * @param {import('@image_tagging_types').ImageTaggingRuntime} runtime
- */
-function markSaved(runtime) {
-  const bboxes = runtime.state?.image?.bboxes;
-  if (!bboxes) return;
-  for (const bbox of bboxes.values()) {
-    bbox.dirty = false;
-  }
+export async function guardUnsavedChanges(runtime) {
+  if (!runtime?.isDirty) return true;
+  const choice = await showUnsavedChangesModal();
+  if (choice === 'cancel') return false;
+  if (choice === 'save') return await saveAnnotations(runtime);
+  return true; // discard
 }
 
 export async function reloadImage(runtime) {
@@ -53,12 +41,8 @@ export async function loadImageOntoCanvas(runtime, imageName) {
 
   if (!runtime.canvas) return;
 
-  // Warn if switching to a different image with unsaved changes
-  const currentPath = runtime.state?.image?.image_path;
-  if (currentPath && currentPath !== imageName && hasDirtyChanges(runtime)) {
-    const proceed = confirm('You have unsaved annotation changes. Discard them and load the new image?');
-    if (!proceed) return;
-  }
+  // Unsaved-changes guarding happens at navigation triggers (files.js) *before*
+  // the file index moves, so this loader stays a pure load.
 
   // Create a new load id and invalidate all previous loads for this canvas instance
   const loadId = ++runtime.canvas.activeImageLoadId;
@@ -105,7 +89,8 @@ export async function saveAnnotations(runtime) {
 
   try {
     await updateImage(runtime.state.image);
-    markSaved(runtime);
+    runtime.markClean();
+    events.publish(EventTypes.CANVAS_BBOXES_CHANGED, { runtimeId: runtime.id });
     toast('Annotations saved successfully!');
     return true;
   }
@@ -227,6 +212,7 @@ export async function addInferenceResults(runtime, results) {
     layer.add(bboxView);
   }
 
+  syncBboxDraggable(runtime);
   layer.draw();
   if (results.detections.length) runtime.pushState();
   events.publish(EventTypes.CANVAS_BBOXES_CHANGED, { runtimeId: runtime.id });

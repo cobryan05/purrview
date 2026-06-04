@@ -64,12 +64,18 @@ export function init(runtime, container, options = {}) {
   // Capture refs once at construction time to avoid repeated DOM queries per event.
   const undoBtn = container.querySelector('[data-toolbar-key="undo"]');
   const redoBtn = container.querySelector('[data-toolbar-key="redo"]');
-  const _syncUndoRedo = () => {
+  const saveBtn = container.querySelector('[data-toolbar-key="save"]');
+  const _syncButtons = () => {
     if (undoBtn) undoBtn.disabled = !runtime.canUndo;
     if (redoBtn) redoBtn.disabled = !runtime.canRedo;
+    if (saveBtn) {
+      // Highlight + enable Save only when there are unsaved changes.
+      saveBtn.disabled = !runtime.isDirty;
+      saveBtn.classList.toggle('selected', runtime.isDirty);
+    }
   };
-  _syncUndoRedo();
-  const unsubBboxChanged = events.subscribeToCanvas(runtime.id, EventTypes.CANVAS_BBOXES_CHANGED, _syncUndoRedo);
+  _syncButtons();
+  const unsubBboxChanged = events.subscribeToCanvas(runtime.id, EventTypes.CANVAS_BBOXES_CHANGED, _syncButtons);
 
   return { destroy: () => { unsubToolChanged(); unsubBboxChanged(); } };
 }

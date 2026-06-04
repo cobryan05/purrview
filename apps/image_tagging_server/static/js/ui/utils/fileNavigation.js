@@ -43,6 +43,22 @@ export class FileNavigation {
   }
 
   /**
+   * Whether a next file exists from the current position.
+   * @returns {boolean}
+   */
+  hasNext() {
+    return this._files.length > 0 && this._index < this._files.length - 1;
+  }
+
+  /**
+   * Whether a previous file exists from the current position.
+   * @returns {boolean}
+   */
+  hasPrev() {
+    return this._index > 0;
+  }
+
+  /**
    * Move to the next file in the list
    * @returns {string|null} The selected file name, or null if none
    */

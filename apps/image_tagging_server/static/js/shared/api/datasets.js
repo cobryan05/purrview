@@ -1,5 +1,5 @@
 import { createCachedFetcher } from '/app-static/js/ui/utils/data/createCachedFetcher.js';
-import { ignoreKeyReturn } from './apiUtils.js';
+import { apiFetch, ignoreKeyReturn } from './apiUtils.js';
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
 
 /** -----------------------------
@@ -7,7 +7,7 @@ import { events, EventTypes } from '/app-static/js/shared/events/index.js';
  * -----------------------------
  */
 const datasetsFetcher = createCachedFetcher(async (keys) => {
-  const res = await fetch('/api/datasets');
+  const res = await apiFetch('/api/datasets');
   if (!res.ok) {
     const err = await res.json();
     throw new Error(err.message || 'Failed to fetch datasets');
@@ -35,7 +35,7 @@ export async function fetchDatasetByUuid(uuid) {
 
 /** GET /api/datasets/{uuid}/labels */
 export async function fetchDatasetLabels(datasetUuid) {
-  const res = await fetch(`/api/datasets/${datasetUuid}/labels`);
+  const res = await apiFetch(`/api/datasets/${datasetUuid}/labels`);
   if (!res.ok) {
     const err = await res.json();
     throw new Error(err.message || 'Failed to fetch dataset labels');
@@ -57,7 +57,7 @@ export async function fetchDatasetImages(datasetUuid, params = {}) {
   if (params.after_sort_value != null) query.set('after_sort_value', params.after_sort_value);
 
   const url = `/api/datasets/${datasetUuid}/images${query.toString() ? '?' + query.toString() : ''}`;
-  const res = await fetch(url, { method: 'POST' });
+  const res = await apiFetch(url, { method: 'POST' });
   if (!res.ok) {
     const err = await res.json();
     throw new Error(err.message || 'Failed to fetch dataset images');
@@ -71,7 +71,7 @@ export async function fetchDatasetImages(datasetUuid, params = {}) {
 
 /** POST /api/datasets — body uses snake_case (DatasetCreate does not extend Payload) */
 export async function createDataset({ name, description = '', filterJson = null, labelUuids = [] }) {
-  const res = await fetch('/api/datasets', {
+  const res = await apiFetch('/api/datasets', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ name, description, filter_json: filterJson, label_uuids: labelUuids }),
@@ -99,7 +99,7 @@ export async function updateDataset(uuid, patch) {
   if (patch.filterJson !== undefined) body.filter_json = patch.filterJson;
   if (patch.labelUuids != null) body.label_uuids = patch.labelUuids;
 
-  const res = await fetch(`/api/datasets/${uuid}`, {
+  const res = await apiFetch(`/api/datasets/${uuid}`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
@@ -123,7 +123,7 @@ export async function updateDataset(uuid, patch) {
 export async function previewDatasetImages({ filterJson, labelUuids = [], limit = 500 } = {}) {
   const query = new URLSearchParams({ limit });
   const url = `/api/datasets/preview?${query}`;
-  const res = await fetch(url, {
+  const res = await apiFetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -144,7 +144,7 @@ export async function previewDatasetImages({ filterJson, labelUuids = [], limit 
 
 /** DELETE /api/datasets/{uuid} */
 export async function deleteDataset(uuid) {
-  const res = await fetch(`/api/datasets/${uuid}`, { method: 'DELETE' });
+  const res = await apiFetch(`/api/datasets/${uuid}`, { method: 'DELETE' });
 
   if (!res.ok) {
     const err = await res.json();

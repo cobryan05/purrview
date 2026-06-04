@@ -1,6 +1,7 @@
 // files.js
 import { FileBrowser } from '/app-static/js/ui/fileBrowser.js';
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
+import { guardUnsavedChanges } from './canvas/image.js';
 
 let _initialized = false;
 let browser = null;
@@ -23,9 +24,15 @@ export async function init(runtime) {
     initialPath: '/',
     fileNavigation: runtime.fileNavigation,
     filter: entry => entry.type === 'dir' || entry.name.match(/\.(jpg|jpeg|png)$/i),
-    onFileClick: (entry, dirPath) => {
+    onFileClick: async (entry, dirPath) => {
       const imageName =
         (dirPath === '/' ? '' : dirPath + '/') + entry.name;
+
+      // Reloading the currently-open image is intentional (no guard); switching
+      // to a different image first guards against unsaved changes.
+      if (imageName !== runtime.state?.image?.image_path) {
+        if (!await guardUnsavedChanges(runtime)) return;
+      }
 
       /**
       * @typedef {import('@events').CanvasImageLoadPayload}
@@ -43,20 +50,24 @@ export async function init(runtime) {
  * @param {import('@image_tagging_types').ImageTaggingRuntime} runtime
  */
 export async function next_image(runtime) {
-  if (runtime.fileNavigation.next()) {
-    const payload = { path: runtime.fileNavigation.currentPath(), showCanvas: true, runtimeId: runtime.id };
-    events.publish(EventTypes.LOAD_IMAGE_ONTO_CANVAS, payload);
-  }
+  const nav = runtime.fileNavigation;
+  if (!nav.hasNext()) return;
+  if (!await guardUnsavedChanges(runtime)) return;
+  nav.next();
+  const payload = { path: nav.currentPath(), showCanvas: true, runtimeId: runtime.id };
+  events.publish(EventTypes.LOAD_IMAGE_ONTO_CANVAS, payload);
 }
 
 /**
  * @param {import('@image_tagging_types').ImageTaggingRuntime} runtime
  */
 export async function prev_image(runtime) {
-  if (runtime.fileNavigation.prev()) {
-    const payload = { path: runtime.fileNavigation.currentPath(), showCanvas: true, runtimeId: runtime.id };
-    events.publish(EventTypes.LOAD_IMAGE_ONTO_CANVAS, payload);
-  }
+  const nav = runtime.fileNavigation;
+  if (!nav.hasPrev()) return;
+  if (!await guardUnsavedChanges(runtime)) return;
+  nav.prev();
+  const payload = { path: nav.currentPath(), showCanvas: true, runtimeId: runtime.id };
+  events.publish(EventTypes.LOAD_IMAGE_ONTO_CANVAS, payload);
 }
 
 export { _initialized as isInitialized };

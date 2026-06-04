@@ -1,3 +1,49 @@
+import { toast } from '/app-static/js/ui/utils/logging.js';
+
+// Maps an API path prefix to the backend service it is proxied to, so a
+// connectivity failure can name the service that is actually down.
+const SERVICE_BY_PREFIX = [
+  ['/api/models', 'Inference'],
+  ['/api/inference', 'Inference'],
+  ['/api/tasks', 'Tasks'],
+];
+
+function serviceNameForUrl(url) {
+  const path = String(url);
+  for (const [prefix, name] of SERVICE_BY_PREFIX) {
+    if (path.startsWith(prefix)) return name;
+  }
+  // Labels, tags, images, datasets, sources, model-configs all live in db_server.
+  return 'Database';
+}
+
+// Coalesce bursts of failures (e.g. a page-load fan-out) into one toast per service.
+const _lastToastAt = new Map();
+const TOAST_THROTTLE_MS = 4000;
+
+/**
+ * fetch() wrapper that surfaces a clear "<service> server is not responding"
+ * toast on network/connection failures. HTTP error responses (4xx/5xx) still
+ * resolve normally and remain the caller's responsibility to handle.
+ *
+ * @param {string|URL} url
+ * @param {RequestInit} [options]
+ * @returns {Promise<Response>}
+ */
+export async function apiFetch(url, options) {
+  try {
+    return await fetch(url, options);
+  } catch (err) {
+    const service = serviceNameForUrl(url);
+    const now = Date.now();
+    if (now - (_lastToastAt.get(service) ?? 0) > TOAST_THROTTLE_MS) {
+      _lastToastAt.set(service, now);
+      toast(`${service} server is not responding`, 5000, 'error');
+    }
+    throw err;
+  }
+}
+
 /**
  * Wraps a function so it accepts single keys or objects containing keys,
  * normalizes keys into arrays, and returns a single result if a single key was given.

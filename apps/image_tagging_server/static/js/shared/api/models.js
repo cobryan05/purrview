@@ -1,9 +1,9 @@
 // modelsApi.js
 import { createCachedFetcher } from '/app-static/js/ui/utils/data/createCachedFetcher.js';
-import { wrapSingleKey, ignoreKeyReturn } from './apiUtils.js';
+import { apiFetch, wrapSingleKey, ignoreKeyReturn } from './apiUtils.js';
 
 export const modelsFetcher = createCachedFetcher(async (keys) => {
-  const res = await fetch('/api/models');
+  const res = await apiFetch('/api/models');
   const data = await res.json();
 
   if (!res.ok || data.status === 'failure') {
@@ -18,7 +18,7 @@ export const modelsFetcher = createCachedFetcher(async (keys) => {
 });
 
 export const modelLabelsFetcher = createCachedFetcher(async (modelNames) => {
-  const res = await fetch('/api/models/classes/bulk', {
+  const res = await apiFetch('/api/models/classes/bulk', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ modelNames }),
@@ -82,7 +82,7 @@ export async function associateLabel(modelName, modelClass, labelUuid) {
 
   // Path updated to /api/models/{model_name}/classes/{class_name}/label
   // Method updated to PUT as suggested for RESTful updates
-  const res = await fetch(`/api/models/${modelName}/classes/${modelClass}/label`, {
+  const res = await apiFetch(`/api/models/${modelName}/classes/${modelClass}/label`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
