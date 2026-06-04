@@ -115,24 +115,31 @@ function getPointerPosition(canvasState) {
  * @param {{x: number, y: number}} pos - The pointer position in canvas coordinates.
  * @returns {import('@canvas_types').BboxView|null} The bbox view under the pointer, or null if none.
  */
-function findGroupAtPoint(runtime, pos) {
+/**
+ * Return every bbox group under the pointer, smallest-area first so inner/stacked
+ * boxes stay reachable.
+ * @param {import('@image_tagging_types').ImageTaggingRuntime} runtime
+ * @param {{x: number, y: number}} pos
+ * @returns {import('@canvas_types').BboxView[]}
+ */
+function findGroupsAtPoint(runtime, pos) {
   const layer = runtime.canvas.layer;
   const children = layer.getChildren(node => node.name() === 'bbox');
-  let best = null;
-  let bestArea = Infinity;
+  const hits = [];
   for (const group of children) {
     const rect = group.getClientRect({ relativeTo: layer });
     if (pos.x >= rect.x && pos.x <= rect.x + rect.width &&
       pos.y >= rect.y && pos.y <= rect.y + rect.height) {
-      // When boxes are stacked, prefer the smallest so inner boxes stay reachable.
-      const area = rect.width * rect.height;
-      if (area < bestArea) {
-        best = group;
-        bestArea = area;
-      }
+      hits.push({ group, area: rect.width * rect.height });
     }
   }
-  return best;
+  hits.sort((a, b) => a.area - b.area);
+  return hits.map(h => h.group);
+}
+
+/** Return the smallest bbox group under the pointer, if any. */
+function findGroupAtPoint(runtime, pos) {
+  return findGroupsAtPoint(runtime, pos)[0] ?? null;
 }
 
 /**
@@ -302,12 +309,13 @@ export async function handleMouseUp(e, runtime) {
   const isDoubleClick = (clickDist != null && timeDelta < DOUBLE_CLICK_TIME_MS && clickDist < DOUBLE_CLICK_DISTANCE_PX);
   ist.lastClickTime = now;
   ist.lastClickPos = pos;
+  ist.lastWasDoubleClick = isDoubleClick;
 
+  // Select-tool selection (including stacked-bbox cycling) is handled in
+  // handleClick, which fires right after this on the same gesture.
   if (hitGroup instanceof BboxView && isDoubleClick) {
     const { tool: toolKind, uuid: toolUuid } = parseToolUuid(runtime.tool);
-    if (runtime.tool === 'select') {
-      events.publish(EventTypes.CANVAS_BBOX_DOUBLE_CLICKED, { bboxId: hitGroup.id(), bboxView: hitGroup, runtimeId: runtime.id });
-    } else if (toolKind === 'bbox' && toolUuid) {
+    if (toolKind === 'bbox' && toolUuid) {
       const labelData = await fetchLabelByUuid(toolUuid);
       if (labelData) {
         hitGroup.uiBBox.label = { uuid: toolUuid, text: labelData.name, color: labelData.color };
@@ -358,35 +366,49 @@ export async function handleWheel(e, runtime) {
  */
 export function handleClick(e, runtime) {
   if (!runtime.canvas) return;
-  const { stage, layer, transformer } = runtime.canvas;
+  const { layer, transformer } = runtime.canvas;
   const ist = runtime.canvas.interactionState;
 
-  // Walk up from the click target to find a BboxView group
-  let node = e.target;
-  let bboxGroup = null;
-  while (node && node !== stage) {
-    if (node instanceof BboxView) {
-      bboxGroup = node;
-      break;
-    }
-    node = node.getParent();
-  }
+  // Selection (and stacked-bbox cycling) only happens with the select tool.
+  if (runtime.tool !== 'select') return;
 
-  if (bboxGroup instanceof BboxView) {
-    if (ist.selectedBbox && ist.selectedBbox !== bboxGroup) {
-      ist.selectedBbox.off('transformend.transformer');
-      ist.selectedBbox = null;
-    }
-    ist.selectedBbox = bboxGroup;
-    transformer.nodes([bboxGroup]);
-    transformer.moveToTop();
-    bboxGroup.on('transformend.transformer', () => transformer.forceUpdate());
-    events.publish(EventTypes.CANVAS_BBOX_CLICKED, { bboxId: bboxGroup.id(), runtimeId: runtime.id });
-  } else if (e.target === stage) {
+  const pos = getPointerPosition(runtime.canvas);
+  const groups = pos ? findGroupsAtPoint(runtime, pos) : [];
+
+  // Clicked empty space → clear selection.
+  if (!groups.length) {
     ist.selectedBbox?.off('transformend.transformer');
     ist.selectedBbox = null;
+    ist.cycleAnchor = null;
     transformer.nodes([]);
+    layer.batchDraw();
+    return;
   }
+
+  // Repeated clicks (or double-clicks) at ~the same point rotate through the
+  // stack of overlapping boxes; clicking elsewhere starts from the smallest.
+  const sameSpot = ist.cycleAnchor &&
+    Math.hypot(pos.x - ist.cycleAnchor.x, pos.y - ist.cycleAnchor.y) < DOUBLE_CLICK_DISTANCE_PX;
+  const prevIdx = ist.selectedBbox ? groups.indexOf(ist.selectedBbox) : -1;
+  ist.cycleIndex = (sameSpot && prevIdx !== -1) ? (prevIdx + 1) % groups.length : 0;
+  ist.cycleAnchor = pos;
+
+  const bboxGroup = groups[ist.cycleIndex];
+
+  if (ist.selectedBbox && ist.selectedBbox !== bboxGroup) {
+    ist.selectedBbox.off('transformend.transformer');
+  }
+  ist.selectedBbox = bboxGroup;
+  transformer.nodes([bboxGroup]);
+  transformer.moveToTop();
+  bboxGroup.on('transformend.transformer', () => transformer.forceUpdate());
+  events.publish(EventTypes.CANVAS_BBOX_CLICKED, { bboxId: bboxGroup.id(), runtimeId: runtime.id });
+
+  // A double-click opens the inspector for whichever box we just cycled to.
+  if (ist.lastWasDoubleClick) {
+    events.publish(EventTypes.CANVAS_BBOX_DOUBLE_CLICKED, { bboxId: bboxGroup.id(), bboxView: bboxGroup, runtimeId: runtime.id });
+  }
+
   layer.batchDraw();
 }
 

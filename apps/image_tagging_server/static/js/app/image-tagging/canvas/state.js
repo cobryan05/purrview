@@ -44,6 +44,10 @@ export function createCanvasState(container) {
     lastPanPos: null,
     lastClickTime: 0,
     lastClickPos: null,
+    lastWasDoubleClick: false,
+    // Stacked-bbox selection cycling: anchor point + index of the last pick.
+    cycleAnchor: null,
+    cycleIndex: 0,
     crosshairV: null,
     crosshairH: null,
   };
