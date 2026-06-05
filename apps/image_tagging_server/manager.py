@@ -1,5 +1,6 @@
 """Manager for Image Tagging Server"""
 
+import asyncio
 import logging
 import sys
 from typing import Any, Dict, Optional
@@ -56,11 +57,11 @@ class Manager:
             logger.warning(f"Could not load server URL overrides from DB: {e}")
 
     async def _read_db_setting(self, key: str) -> Optional[str]:
-        """Read a setting from db_server via HTTP."""
+        """Read a setting from db_server via HTTP. Returns None on error or empty value."""
         try:
             res = await self._test_client.get(f"{self._db_server_url}/api/settings/{key}")
             if res.status_code == 200:
-                return res.json().get("value")
+                return res.json().get("value") or None
             return None
         except Exception as e:
             logger.debug(f"Could not read setting '{key}': {e}")
@@ -68,15 +69,19 @@ class Manager:
 
     async def _reload_url_overrides(self) -> None:
         """Re-read URL overrides from DB and rebuild proxies."""
-        inference_url = await self._read_db_setting(INFERENCE_URL_SETTING_KEY)
-        training_url = await self._read_db_setting(TRAINING_URL_SETTING_KEY)
+        inference_url, training_url = await asyncio.gather(
+            self._read_db_setting(INFERENCE_URL_SETTING_KEY),
+            self._read_db_setting(TRAINING_URL_SETTING_KEY),
+        )
 
-        self._inference_url_override = inference_url or None
-        self._training_url_override = training_url or None
+        self._inference_url_override = inference_url
+        self._training_url_override = training_url
 
         effective_inference = self._inference_url_override or self._default_inference_url
         effective_training = self._training_url_override or self._default_training_url
 
+        await self._inference_proxy.client.aclose()
+        await self._training_proxy.client.aclose()
         self._inference_proxy = ReverseProxy(base_url=effective_inference, path="/api/models")
         self._training_proxy = ReverseProxy(base_url=effective_training, path="/api/training")
 

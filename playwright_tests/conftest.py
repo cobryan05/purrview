@@ -113,13 +113,13 @@ def live_server() -> Generator[str, None, None]:
         inference_api_client=inf_api,
         tasks_api_client=tasks_api,
         db_api_client=db_api,
+        default_training_url="http://training:8005",
     )
 
     # --- patch all module-level proxy objects ---
     proxies_and_mocks = [
         ("IMAGE_PROXY", _make_images_mock()),
         ("LABEL_PROXY", _make_label_mock()),
-        ("MODELS_PROXY", _make_models_mock()),
         ("SOURCES_PROXY", _make_sources_mock()),
         ("TAG_PROXY", _make_tag_mock()),
         ("TASKS_PROXY", _make_tasks_mock()),
@@ -132,6 +132,18 @@ def live_server() -> Generator[str, None, None]:
         proxy_obj = getattr(web_module, attr)
         originals.append((proxy_obj, proxy_obj.handle_request))
         proxy_obj.handle_request = mock_fn
+
+    # Prevent start() from rebuilding proxies (it reads from DB which isn't
+    # reachable in tests, but still replaces the proxy instances we patched).
+    async def _noop_start():
+        pass
+    manager.start = _noop_start
+
+    # --- patch manager's dynamic proxies (inference + training) ---
+    originals.append((manager.inference_proxy, manager.inference_proxy.handle_request))
+    manager.inference_proxy.handle_request = _make_models_mock()
+    originals.append((manager.training_proxy, manager.training_proxy.handle_request))
+    manager.training_proxy.handle_request = _make_tasks_mock()
 
     # --- build and start the ASGI app ---
     web_app = WebApp(app_name="test", manager=manager)

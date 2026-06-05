@@ -106,7 +106,7 @@ export class FileBrowser {
         { offset: this._offset, limit: FileBrowser.PAGE_SIZE },
       );
       const filtered = files.filter(this.filter);
-      this._entries = this._entries.concat(filtered);
+      this._entries.push(...filtered);
       this._hasMore = hasMore;
       this._offset += files.length;
       this.fileNavigation?.appendFiles(filtered.map(e => e.name));
@@ -155,7 +155,8 @@ export class FileBrowser {
     // Remove then re-add the flash class so re-revealing the same file re-triggers the animation.
     activeEl.classList.remove('fb-entry--flash', 'fb-grid-cell--flash');
     void activeEl.getBoundingClientRect(); // force reflow to restart animation
-    activeEl.classList.add(activeEl.classList.contains('fb-grid-cell--active') ? 'fb-grid-cell--flash' : 'fb-entry--flash');
+    const flashClass = [...activeEl.classList].find(c => c.endsWith('--active')).replace('--active', '--flash');
+    activeEl.classList.add(flashClass);
   }
 
   // ─── private helpers ────────────────────────────────────────────────────────
@@ -306,18 +307,22 @@ export class FileBrowser {
     return a;
   }
 
+  /** @private Append `.` and `..` virtual nav entries using the supplied factory. */
+  _appendNavItems(container, makeItem) {
+    if (this.mode === 'dir' && this.onDirSelect) {
+      container.appendChild(makeItem('.', () => this.onDirSelect(this.currentPath)));
+    }
+    const parentPath = this._parentPath();
+    if (parentPath !== null) {
+      container.appendChild(makeItem('..', () => this.load(parentPath)));
+    }
+  }
+
   _renderList(parent, entries) {
     const ul = document.createElement('ul');
     ul.className = 'fb-list';
 
-    // Virtual navigation entries at the top of the list.
-    if (this.mode === 'dir' && this.onDirSelect) {
-      ul.appendChild(this._makeNavEntry('.', () => this.onDirSelect(this.currentPath)));
-    }
-    const parentPath = this._parentPath();
-    if (parentPath !== null) {
-      ul.appendChild(this._makeNavEntry('..', () => this.load(parentPath)));
-    }
+    this._appendNavItems(ul, (label, cb) => this._makeNavEntry(label, cb));
 
     entries.forEach(entry => {
       const li = document.createElement('li');
@@ -361,14 +366,7 @@ export class FileBrowser {
     const grid = document.createElement('div');
     grid.className = 'fb-grid';
 
-    // Virtual navigation entries at the top of the grid.
-    if (this.mode === 'dir' && this.onDirSelect) {
-      grid.appendChild(this._makeNavCell('.', () => this.onDirSelect(this.currentPath)));
-    }
-    const parentPath = this._parentPath();
-    if (parentPath !== null) {
-      grid.appendChild(this._makeNavCell('..', () => this.load(parentPath)));
-    }
+    this._appendNavItems(grid, (label, cb) => this._makeNavCell(label, cb));
 
     entries.forEach(entry => {
       const cell = document.createElement('div');

@@ -1,4 +1,5 @@
 import { renderHotkeyPanel } from '/app-static/js/app/image-tagging/hotkeyModal.js';
+import { apiFetch } from '/app-static/js/shared/api/apiUtils.js';
 import { getSetting, setSetting } from '/app-static/js/shared/api/settings.js';
 
 let _initialized = false;
@@ -174,7 +175,7 @@ function _buildServerRow({ label, serverType, settingKey, defaultUrl, currentOve
     statusLine.dataset.state = 'muted';
     statusLine.textContent = `Testing ${url}…`;
     try {
-      const res = await fetch('/api/test-server', {
+      const res = await apiFetch('/api/test-server', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ url, server_type: serverType }),
@@ -208,7 +209,7 @@ function _buildServerRow({ label, serverType, settingKey, defaultUrl, currentOve
         await setSetting(settingKey, '');
       }
       // Tell backend to reload proxies
-      const res = await fetch('/api/reload-server-config', { method: 'POST' });
+      const res = await apiFetch('/api/reload-server-config', { method: 'POST' });
       const data = await res.json();
       if (data.status === 'success') {
         const effective = url || defaultUrl;
