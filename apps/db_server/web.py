@@ -263,6 +263,7 @@ class ListFilesPayload(ApiPayload):
 
 class ListFilesResponse(StatusResponse):
     files: List[FileEntryRead] = []
+    has_more: bool = False
 
 
 class CreateDirectoryPayload(ApiPayload):
@@ -902,16 +903,19 @@ class WebApp:
             pattern: str = "*",
             recursive: bool = False,
             include_db_status: bool = False,
+            offset: int = Query(default=0, ge=0),
+            limit: int = Query(default=200, ge=1, le=2000),
         ) -> ListFilesResponse:
             """
             List files and directories.
-            Usage: /api/images/list?path=/data&pattern=*.jpg&recursive=true&include_db_status=true
+            Usage: /api/images/list?path=/data&pattern=*.jpg&recursive=true&include_db_status=true&offset=0&limit=200
             """
             try:
-                file_list = await self._manager.list_files(
-                    rel_path=path, patterns=[pattern], recursive=recursive, include_db_status=include_db_status
+                file_list, has_more = await self._manager.list_files(
+                    rel_path=path, patterns=[pattern], recursive=recursive,
+                    include_db_status=include_db_status, offset=offset, limit=limit,
                 )
-                return ListFilesResponse(status=JsonValues.SUCCESS, files=file_list)
+                return ListFilesResponse(status=JsonValues.SUCCESS, files=file_list, has_more=has_more)
             except Exception as e:
                 logger.exception("Failed to list files")
                 return ListFilesResponse(status=JsonValues.FAILURE, message=str(e))

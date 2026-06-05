@@ -60,7 +60,11 @@ export class FileBrowser {
     this.allowCreateDir = allowCreateDir;
     this._viewMode = 'list'; // 'list' | 'grid'
     this._entries = [];
+    this._offset = 0;
+    this._hasMore = false;
   }
+
+  static get PAGE_SIZE() { return 200; }
 
   /** Initialize the browser by loading the initial path. */
   async init() {
@@ -68,18 +72,44 @@ export class FileBrowser {
   }
 
   /**
-   * Load a directory and re-render.
+   * Load a directory from the beginning and re-render.
    * @param {string} path
    */
   async load(path) {
     this.currentPath = path;
+    this._entries = [];
+    this._offset = 0;
+    this._hasMore = false;
+    this.fileNavigation?.setDirectory(path, []);
     this.container.innerHTML = '<div class="fb-loading">Loading…</div>';
+    await this._loadPage();
+  }
+
+  /**
+   * Load the next page of entries if more are available.
+   * @returns {Promise<boolean>} True if a page was fetched, false if already at end.
+   */
+  async loadNextPage() {
+    if (!this._hasMore) return false;
+    await this._loadPage();
+    return true;
+  }
+
+  /**
+   * Fetch the next page of entries and append them, then re-render.
+   * @private
+   */
+  async _loadPage() {
     try {
-      const entries = await fetchImageList(path, '*', false, this.showDbStatus);
-      this._entries = entries.filter(this.filter);
-      if (this.fileNavigation) {
-        this.fileNavigation.setDirectory(path, this._entries.map(e => e.name));
-      }
+      const { files, hasMore } = await fetchImageList(
+        this.currentPath, '*', false, this.showDbStatus,
+        { offset: this._offset, limit: FileBrowser.PAGE_SIZE },
+      );
+      const filtered = files.filter(this.filter);
+      this._entries = this._entries.concat(filtered);
+      this._hasMore = hasMore;
+      this._offset += files.length;
+      this.fileNavigation?.appendFiles(filtered.map(e => e.name));
       this.rerender();
     } catch (err) {
       this.container.innerHTML = '<div class="fb-error">Failed to load directory.</div>';
@@ -102,12 +132,30 @@ export class FileBrowser {
       this._renderList(wrapper, this._entries);
     }
 
+    if (this._hasMore) {
+      this._renderLoadMore(wrapper);
+    }
+
     this.container.appendChild(wrapper);
   }
 
   /** Returns the currently loaded entries. */
   getEntries() {
     return this._entries;
+  }
+
+  /**
+   * Scroll the active entry into view and briefly flash it.
+   * No-op if there is no active entry in the current render.
+   */
+  scrollToActive() {
+    const activeEl = this.container.querySelector('.fb-entry--active, .fb-grid-cell--active');
+    if (!activeEl) return;
+    activeEl.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    // Remove then re-add the flash class so re-revealing the same file re-triggers the animation.
+    activeEl.classList.remove('fb-entry--flash', 'fb-grid-cell--flash');
+    void activeEl.getBoundingClientRect(); // force reflow to restart animation
+    activeEl.classList.add(activeEl.classList.contains('fb-grid-cell--active') ? 'fb-grid-cell--flash' : 'fb-entry--flash');
   }
 
   // ─── private helpers ────────────────────────────────────────────────────────
@@ -227,6 +275,14 @@ export class FileBrowser {
     }
   }
 
+  /** @returns {string|null} Parent directory path, or null when already at root. */
+  _parentPath() {
+    if (this.currentPath === '/') return null;
+    const parts = this.currentPath.split('/').filter(Boolean);
+    parts.pop();
+    return parts.length === 0 ? '/' : '/' + parts.join('/');
+  }
+
   _renderBreadcrumb(parent) {
     const bc = document.createElement('div');
     bc.className = 'fb-breadcrumb';
@@ -253,6 +309,15 @@ export class FileBrowser {
   _renderList(parent, entries) {
     const ul = document.createElement('ul');
     ul.className = 'fb-list';
+
+    // Virtual navigation entries at the top of the list.
+    if (this.mode === 'dir' && this.onDirSelect) {
+      ul.appendChild(this._makeNavEntry('.', () => this.onDirSelect(this.currentPath)));
+    }
+    const parentPath = this._parentPath();
+    if (parentPath !== null) {
+      ul.appendChild(this._makeNavEntry('..', () => this.load(parentPath)));
+    }
 
     entries.forEach(entry => {
       const li = document.createElement('li');
@@ -296,6 +361,15 @@ export class FileBrowser {
     const grid = document.createElement('div');
     grid.className = 'fb-grid';
 
+    // Virtual navigation entries at the top of the grid.
+    if (this.mode === 'dir' && this.onDirSelect) {
+      grid.appendChild(this._makeNavCell('.', () => this.onDirSelect(this.currentPath)));
+    }
+    const parentPath = this._parentPath();
+    if (parentPath !== null) {
+      grid.appendChild(this._makeNavCell('..', () => this.load(parentPath)));
+    }
+
     entries.forEach(entry => {
       const cell = document.createElement('div');
       cell.className = 'fb-grid-cell';
@@ -337,6 +411,43 @@ export class FileBrowser {
     });
 
     parent.appendChild(grid);
+  }
+
+  /** @private Build a navigation row/cell for `.` or `..` entries. */
+  _makeNavItem(outerTag, prefix, innerTag, label, onClick) {
+    const outer = document.createElement(outerTag);
+    outer.className = `${prefix} ${prefix}--nav`;
+    const icon = document.createElement(innerTag);
+    icon.className = `${prefix}__icon`;
+    icon.textContent = '📁';
+    const name = document.createElement(innerTag);
+    name.className = `${prefix}__name`;
+    name.textContent = label;
+    outer.append(icon, name);
+    outer.addEventListener('click', onClick);
+    return outer;
+  }
+
+  /** Build a list-view navigation row (`.` or `..`). */
+  _makeNavEntry(label, onClick) { return this._makeNavItem('li', 'fb-entry', 'span', label, onClick); }
+
+  /** Build a grid-view navigation cell (`.` or `..`). */
+  _makeNavCell(label, onClick)  { return this._makeNavItem('div', 'fb-grid-cell', 'div', label, onClick); }
+
+  _renderLoadMore(parent) {
+    const footer = document.createElement('div');
+    footer.className = 'fb-load-more';
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'fb-load-more-btn';
+    btn.textContent = `Load more…`;
+    btn.addEventListener('click', async () => {
+      btn.disabled = true;
+      btn.textContent = 'Loading…';
+      await this._loadPage();
+    });
+    footer.appendChild(btn);
+    parent.appendChild(footer);
   }
 
   _handleEntryClick(entry) {

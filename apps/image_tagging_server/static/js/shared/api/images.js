@@ -3,22 +3,25 @@ import { apiFetch } from './apiUtils.js';
 import { imageRecordToUI } from '/app-static/js/shared/domain/image/mapper.js';
 
 /**
- * Fetch a list of files from the API.
+ * Fetch a page of files from the API.
  *
  * @param {string} path - The folder path to list files from.
  * @param {string} [pattern="*"] - Glob pattern to filter files.
  * @param {boolean} [recursive=false] - Whether to search subdirectories.
  * @param {boolean} [includeDbStatus=false] - When true, each file entry's `uuid` field is
  *   populated if the file is registered in the image database.
- * @returns {Promise<import('@web_api').FileEntryRead[]>} Array of file entries from the server.
+ * @param {{ offset?: number, limit?: number }} [pagination] - Pagination options.
+ * @returns {Promise<{ files: import('@web_api').FileEntryRead[], hasMore: boolean }>}
  * @throws {Error} If the fetch fails or the API returns an error status.
  */
-export async function fetchImageList(path, pattern = "*", recursive = false, includeDbStatus = false) {
+export async function fetchImageList(path, pattern = "*", recursive = false, includeDbStatus = false, { offset = 0, limit = 200 } = {}) {
   const params = new URLSearchParams({
     path,
     pattern,
     recursive: recursive.toString(),
     include_db_status: includeDbStatus.toString(),
+    offset: offset.toString(),
+    limit: limit.toString(),
   });
 
   const res = await apiFetch(`/api/images/list?${params.toString()}`, {
@@ -33,7 +36,7 @@ export async function fetchImageList(path, pattern = "*", recursive = false, inc
     throw new Error(data.message || 'Failed to fetch image list');
   }
 
-  return data.files || [];
+  return { files: data.files || [], hasMore: data.hasMore ?? false };
 }
 
 /**

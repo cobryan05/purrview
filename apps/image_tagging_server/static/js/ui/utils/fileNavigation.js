@@ -98,6 +98,16 @@ export class FileNavigation {
   }
 
   /**
+   * Append additional file names without disturbing the current index.
+   * Use this when more entries are loaded (e.g. pagination) after the
+   * initial setDirectory call.
+   * @param {string[]} files - Additional file names to append
+   */
+  appendFiles(files) {
+    this._files.push(...files);
+  }
+
+  /**
    * Get a copy of the current file list
    * @returns {string[]}
    */

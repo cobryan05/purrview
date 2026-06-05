@@ -54,6 +54,33 @@ export function init(runtime, container, options = {}) {
       container.appendChild(b);
     });
 
+  const filenameEl = document.createElement('span');
+  filenameEl.dataset.toolbarKey = 'filename';
+  Object.assign(filenameEl.style, {
+    marginLeft: 'auto',
+    alignSelf: 'center',
+    padding: '0 0.5em',
+    fontSize: '0.85em',
+    opacity: '0.75',
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap',
+    maxWidth: '40%',
+    cursor: 'pointer',
+  });
+  filenameEl.addEventListener('click', () => {
+    container.closest('#tab-image-tagging')
+      ?.querySelector('[data-tab="tab-files"]')
+      ?.click();
+  });
+  container.appendChild(filenameEl);
+
+  const unsubImageLoaded = events.subscribeToCanvas(runtime.id, EventTypes.IMAGE_LOADED_ONTO_CANVAS, ({ path }) => {
+    const name = path ? path.split('/').pop() : '';
+    filenameEl.textContent = name;
+    filenameEl.title = path ?? '';
+  });
+
   const unsubToolChanged = events.subscribeToCanvas(runtime.id, EventTypes.CANVAS_TOOL_CHANGED, ({ tool }) => {
     container.querySelectorAll('button[data-tool]').forEach(btn => {
       const toolBase = tool.split(':')[0]; // handles 'bbox:label-uuid'
@@ -77,5 +104,5 @@ export function init(runtime, container, options = {}) {
   _syncButtons();
   const unsubBboxChanged = events.subscribeToCanvas(runtime.id, EventTypes.CANVAS_BBOXES_CHANGED, _syncButtons);
 
-  return { destroy: () => { unsubToolChanged(); unsubBboxChanged(); } };
+  return { destroy: () => { unsubToolChanged(); unsubBboxChanged(); unsubImageLoaded(); } };
 }

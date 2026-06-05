@@ -723,6 +723,16 @@ button.filter-active {
   outline-offset: -2px;
 }
 
+@keyframes fb-flash {
+  0%   { background-color: rgba(0, 112, 243, 0.35); }
+  100% { background-color: transparent; }
+}
+
+.fb-entry--flash,
+.fb-grid-cell--flash {
+  animation: fb-flash 0.8s ease-out;
+}
+
 .fb-entry__icon {
   flex-shrink: 0;
 }

@@ -540,9 +540,11 @@ class Manager:
         exclude_patterns: List[str] = ["*.json"],
         recursive: bool = False,
         include_db_status: bool = False,
-    ) -> List[FileEntryRead]:
+        offset: int = 0,
+        limit: int = 200,
+    ) -> tuple[List[FileEntryRead], bool]:
         """
-        List all files and directories in the given relative path under the root directory.
+        List files and directories in the given relative path under the root directory.
 
         Args:
             rel_path (str): Relative path from the root directory (default: "/").
@@ -551,33 +553,39 @@ class Manager:
             recursive (bool): Whether to list files recursively (default: False).
             include_db_status (bool): When True, populate uuid on entries that are
                 registered in the image database (default: False).
+            offset (int): Number of entries to skip (default: 0).
+            limit (int): Maximum number of entries to return (default: 200).
 
         Returns:
-            List[FileEntryRead]: List of FileEntryRead instances.
+            Tuple of (entries page, has_more flag).
         """
         if not self._files_root or not self._files_root.is_dir():
-            return []
+            return [], False
 
         safe_path = get_safe_path(self._files_root, rel_path)
         if not safe_path or not safe_path.is_dir():
-            return []
+            return [], False
 
-        entries: List[FileEntryRead] = []
+        search_pattern = "**/*" if recursive else None
 
-        search_pattern = "**/*" if recursive else "*"
+        # Collect and sort all matching paths by name (string sort — no stat calls yet).
+        raw = sorted(safe_path.glob(search_pattern) if recursive else safe_path.iterdir(), key=lambda p: p.name)
 
-        for p in sorted(safe_path.glob(search_pattern)):
+        filtered = []
+        for p in raw:
             if p.name.startswith("."):
                 continue
-
-            rel_entry_path = p.relative_to(self._files_root)
-            rel_str = str(rel_entry_path)
-
+            rel_str = str(p.relative_to(self._files_root))
             is_matched = any(fnmatch.fnmatch(rel_str, pat) for pat in patterns)
             is_excluded = any(fnmatch.fnmatch(rel_str, pat) for pat in exclude_patterns)
-
             if is_matched and not is_excluded:
-                entries.append(FileEntryRead(name=p.name, is_dir=p.is_dir(), path=rel_str))
+                filtered.append(p)
+
+        has_more = len(filtered) > offset + limit
+        page = filtered[offset : offset + limit]
+
+        # Stat calls (is_dir) and FileEntryRead construction only for the page slice.
+        entries = [FileEntryRead(name=p.name, is_dir=p.is_dir(), path=str(p.relative_to(self._files_root))) for p in page]
 
         if include_db_status and entries:
             abs_paths = [str(self._files_root / e.path) for e in entries if not e.is_dir]
@@ -589,7 +597,7 @@ class Manager:
                         e.uuid = info["uuid"]
                         e.bbox_count = info["bbox_count"]
 
-        return entries
+        return entries, has_more
 
     async def create_directory(self, rel_path: str) -> None:
         """

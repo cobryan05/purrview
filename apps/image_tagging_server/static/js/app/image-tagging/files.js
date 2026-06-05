@@ -9,12 +9,33 @@ let browser = null;
 let _lastBoundaryToast = 0;
 
 /**
+ * Navigate the browser to the directory containing the currently loaded image,
+ * select it in the navigation state, rerender, then scroll to and flash it.
  * @param {import('@image_tagging_types').ImageTaggingRuntime} runtime
  */
+async function revealCurrentFile(runtime) {
+  const imagePath = runtime.state?.image?.image_path;
+  if (!imagePath) {
+    browser.rerender();
+    return;
+  }
+  const parts = imagePath.split('/');
+  const filename = parts.pop();
+  const dir = parts.join('/') || '/';
+
+  if (browser.currentPath !== dir) {
+    // load() resets FileNavigation via setDirectory; re-select afterwards.
+    await browser.load(dir);
+    runtime.fileNavigation.select(filename);
+  }
+  browser.rerender();
+  browser.scrollToActive();
+}
+
 export async function init(runtime) {
   if (_initialized) {
-      browser.rerender();
-      return;
+    await revealCurrentFile(runtime);
+    return;
   }
   _initialized = true;
 
@@ -55,12 +76,15 @@ export async function init(runtime) {
 export async function next_image(runtime) {
   const nav = runtime.fileNavigation;
   if (!nav.hasNext()) {
-    const now = Date.now();
-    if (now - _lastBoundaryToast > 1200) {
-      _lastBoundaryToast = now;
-      toast('End of directory', 3000, 'warning');
+    await browser?.loadNextPage();
+    if (!nav.hasNext()) {
+      const now = Date.now();
+      if (now - _lastBoundaryToast > 1200) {
+        _lastBoundaryToast = now;
+        toast('End of directory', 3000, 'warning');
+      }
+      return;
     }
-    return;
   }
   if (!await guardUnsavedChanges(runtime)) return;
   nav.next();
