@@ -96,12 +96,8 @@ services:
       - ./apps:/app/apps
       - ./templates:/app/templates
       - ./static/images:/app/static/images
-      - ./tests:/app/tests
-      - ./pytest.ini:/app/pytest.ini
       - .:/project
-      - ./.vscode_container:/app/.vscode
-      - ./requirements.txt:/app/requirements.txt
-      - ./pyproject.toml:/app/pyproject.toml
+      - ./.vscode:/app/.vscode
     ports:
       - "7999:7999"
       - "8553:8554"
