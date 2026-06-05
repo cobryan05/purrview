@@ -2,7 +2,9 @@ import struct
 import zlib
 
 import pytest
+import nest_asyncio
 
+nest_asyncio.apply()
 
 def pytest_addoption(parser):
     parser.addoption("--run-smoke", action="store_true", default=False, help="Run smoke tests against live services")
