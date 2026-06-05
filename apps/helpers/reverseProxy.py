@@ -3,9 +3,12 @@ from fastapi import Request, Response
 
 
 class ReverseProxy:
-    def __init__(self, host: str, port: int, path: str):
-        path = path if path.startswith("/") else f"/{path}"
-        self.target_base_url = f"http://{host}:{port}{path}"
+    def __init__(self, host: str = None, port: int = None, path: str = "", *, base_url: str = None):
+        path_part = path if not path or path.startswith("/") else f"/{path}"
+        if base_url is not None:
+            self.target_base_url = base_url.rstrip("/") + path_part
+        else:
+            self.target_base_url = f"http://{host}:{port}{path_part}"
         self.client = httpx.AsyncClient(timeout=None)
 
     async def handle_request(self, path: str, request: Request):

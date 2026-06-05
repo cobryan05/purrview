@@ -17,6 +17,8 @@ tasks_host = APPS_CONFIG[APPS.TASKS_SERVER].host
 tasks_port = APPS_CONFIG[APPS.TASKS_SERVER].port
 db_host = APPS_CONFIG[APPS.DB_SERVER].host
 db_port = APPS_CONFIG[APPS.DB_SERVER].port
+training_host = APPS_CONFIG[APPS.TRAINING_SERVER].host
+training_port = APPS_CONFIG[APPS.TRAINING_SERVER].port
 
 
 inference_client_conf = inference_client.Configuration(f"http://{inference_host}:{inference_port}")
@@ -27,7 +29,10 @@ db_client_conf = db_client.Configuration(f"http://{db_host}:{db_port}")
 db_api_client = db_client.ApiClient(db_client_conf)
 
 manager = Manager(
-    inference_api_client=inference_api_client, db_api_client=db_api_client, tasks_api_client=tasks_api_client
+    inference_api_client=inference_api_client,
+    db_api_client=db_api_client,
+    tasks_api_client=tasks_api_client,
+    default_training_url=f"http://{training_host}:{training_port}",
 )
 web_app = WebApp(app_name=config.name, manager=manager)
 

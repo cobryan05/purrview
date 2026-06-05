@@ -1136,3 +1136,76 @@ button.filter-active {
   flex-direction: column;
   gap: 1em;
 }
+
+/* Collapsible sections */
+.settings-section-header--collapsible {
+  cursor: default;
+  user-select: none;
+}
+
+.settings-collapse-chevron {
+  font-size: 0.75em;
+  color: #888;
+  transition: transform 0.15s;
+  line-height: 1;
+}
+
+
+/* Server configuration rows */
+.settings-server-row {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35em;
+  padding: 0.75em 0;
+  border-bottom: 1px solid #eee;
+}
+
+.settings-server-row:last-child {
+  border-bottom: none;
+}
+
+.settings-server-label {
+  font-weight: 600;
+  font-size: 0.9em;
+}
+
+.settings-server-input-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5em;
+}
+
+.settings-server-input {
+  flex: 1;
+  min-width: 0;
+  font-size: 0.9em;
+  padding: 0.3em 0.5em;
+  margin: 0;
+}
+
+.settings-server-btn {
+  flex-shrink: 0;
+  font-size: 0.85em;
+  padding: 0.3em 0.7em;
+}
+
+.settings-server-status {
+  font-size: 0.82em;
+  min-height: 1.2em;
+}
+
+.settings-server-status[data-state='ok'] {
+  color: var(--pico-color-green-500, #2e7d32);
+}
+
+.settings-server-status[data-state='error'] {
+  color: var(--pico-color-red-500, #c62828);
+}
+
+.settings-server-status[data-state='muted'] {
+  color: #888;
+}
+
+.settings-server-status[data-state='info'] {
+  color: var(--pico-color-blue-500, #1565c0);
+}

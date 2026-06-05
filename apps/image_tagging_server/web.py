@@ -7,6 +7,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from pydantic import BaseModel
 
 from apps import APPS, APPS_CONFIG
 from apps.helpers.reverseProxy import ReverseProxy
@@ -26,9 +27,6 @@ IMAGE_PROXY = ReverseProxy(
 LABEL_PROXY = ReverseProxy(
     host=APPS_CONFIG[APPS.DB_SERVER].host, port=APPS_CONFIG[APPS.DB_SERVER].port, path="/api/labels"
 )
-MODELS_PROXY = ReverseProxy(
-    host=APPS_CONFIG[APPS.INFERENCE_SERVER].host, port=APPS_CONFIG[APPS.INFERENCE_SERVER].port, path="/api/models"
-)
 SOURCES_PROXY = ReverseProxy(
     host=APPS_CONFIG[APPS.DB_SERVER].host, port=APPS_CONFIG[APPS.DB_SERVER].port, path="/api/sources"
 )
@@ -45,9 +43,11 @@ MODEL_CONFIGS_PROXY = ReverseProxy(
 SETTINGS_PROXY = ReverseProxy(
     host=APPS_CONFIG[APPS.DB_SERVER].host, port=APPS_CONFIG[APPS.DB_SERVER].port, path="/api/settings"
 )
-TRAINING_PROXY = ReverseProxy(
-    host=APPS_CONFIG[APPS.TRAINING_SERVER].host, port=APPS_CONFIG[APPS.TRAINING_SERVER].port, path="/api/training"
-)
+
+
+class TestServerPayload(BaseModel):
+    url: str
+    server_type: str  # "inference_server" or "training_server"
 
 
 class WebApp:
@@ -81,6 +81,7 @@ class WebApp:
             app (FastAPI): The FastAPI application instance.
         """
         logging.info("Application is starting up...")
+        await self._manager.start()
 
         yield  # This allows the app to run
 
@@ -127,7 +128,7 @@ class WebApp:
 
         @self._app.api_route("/api/models/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
         async def proxy_models(request: Request, path: str):
-            return await MODELS_PROXY.handle_request(path, request)
+            return await self._manager.inference_proxy.handle_request(path, request)
 
         @self._app.api_route("/api/sources/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
         async def proxy_sources(request: Request, path: str):
@@ -155,4 +156,21 @@ class WebApp:
 
         @self._app.api_route("/api/training/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
         async def proxy_training(request: Request, path: str):
-            return await TRAINING_PROXY.handle_request(path, request)
+            return await self._manager.training_proxy.handle_request(path, request)
+
+        @self._app.post("/api/test-server", response_class=JSONResponse)
+        async def test_server(payload: TestServerPayload) -> JSONResponse:
+            """Test connectivity to an inference or training server URL."""
+            result = await self._manager.test_server(payload.url, payload.server_type)
+            return JSONResponse(content=result)
+
+        @self._app.post("/api/reload-server-config", response_class=JSONResponse)
+        async def reload_server_config() -> JSONResponse:
+            """Reload server URL overrides from DB settings and rebuild proxies."""
+            try:
+                await self._manager.reload_url_overrides()
+                config = await self._manager.get_server_config()
+                return JSONResponse(content={"status": WebApp.SUCCESS_KEY, "config": config})
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return JSONResponse(content={"status": WebApp.FAILURE_KEY, "message": str(e)})

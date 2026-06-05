@@ -21,6 +21,7 @@ def manager():
         inference_api_client=inf_api,
         tasks_api_client=tasks_api,
         db_api_client=db_api,
+        default_training_url="http://training:8005",
     )
 
 
@@ -32,8 +33,12 @@ async def http_client(manager, monkeypatch):
 
     import apps.image_tagging_server.web as web_module
 
-    for proxy_attr in ("IMAGE_PROXY", "LABEL_PROXY", "MODELS_PROXY", "SOURCES_PROXY", "TAG_PROXY", "TASKS_PROXY"):
+    for proxy_attr in ("IMAGE_PROXY", "LABEL_PROXY", "SOURCES_PROXY", "TAG_PROXY", "TASKS_PROXY"):
         monkeypatch.setattr(getattr(web_module, proxy_attr), "handle_request", proxy_mock)
+
+    # Patch the manager's dynamic proxies (inference + training)
+    monkeypatch.setattr(manager.inference_proxy, "handle_request", proxy_mock)
+    monkeypatch.setattr(manager.training_proxy, "handle_request", proxy_mock)
 
     web_app = WebApp(app_name="test", manager=manager)
     transport = ASGITransport(app=web_app.app())

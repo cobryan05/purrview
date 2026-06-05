@@ -9,6 +9,7 @@ async def test_server_config_returns_hosts(http_client):
     assert data["config"]["inference_server"] == "http://inference:8001"
     assert data["config"]["tasks_server"] == "http://tasks:8002"
     assert data["config"]["db_server"] == "http://db:8003"
+    assert data["config"]["training_server"] == "http://training:8005"
 
 
 async def test_home_page_returns_html(http_client):
