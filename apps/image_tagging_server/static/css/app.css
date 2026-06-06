@@ -843,6 +843,41 @@ button.filter-active {
   color: var(--pico-del-color, #c00);
 }
 
+/* Hover preview popover (ui/fileEntryHoverPreview.js) */
+.fb-hover-popover {
+  position: fixed;
+  z-index: 1200;
+  background: #1a1a1a;
+  border: 2px solid #aaa;
+  border-radius: 6px;
+  padding: 4px;
+  box-shadow: 0 4px 24px #000a;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+  max-width: 320px;
+}
+.fb-hover-popover.visible {
+  opacity: 1;
+}
+.fb-hover-popover .fb-popover-img-wrap {
+  position: relative;
+  display: block;
+}
+.fb-hover-popover img.fb-popover-img {
+  display: block;
+  max-width: 312px;
+  height: auto;
+  border-radius: 3px;
+}
+.fb-hover-popover canvas.fb-popover-canvas {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  width: 100% !important;
+  height: 100% !important;
+}
+
 /* DirBrowserField (ui/utils/fields/DirBrowserField.js) */
 .fb-dir-field {
   display: flex;

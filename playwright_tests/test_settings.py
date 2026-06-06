@@ -14,6 +14,7 @@ test_configuration_sources.py / test_configuration_labels.py.
 Run with:
     pytest playwright_tests/test_settings.py -p no:xdist -p no:asyncio -v
 """
+import base64
 import json
 
 import pytest
@@ -456,3 +457,74 @@ class TestFileBrowserNavigation:
 
         assert file_calls, "Expected a fetch to /api/images/{path}/file after clicking the file entry"
         assert "a.jpg" in file_calls[0]
+
+
+# ---------------------------------------------------------------------------
+# 8. Hover preview (ui/fileEntryHoverPreview.js)
+# ---------------------------------------------------------------------------
+
+TINY_PNG_B64 = (
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk"
+    "+A8AAQUBAScY42YAAAAASUVORK5CYII="
+)
+
+
+class TestFileBrowserHoverPreview:
+    def test_hover_shows_annotated_thumbnail_for_db_image(self, page: Page, base_url: str):
+        """Hovering a filename for an image registered in the DB pops up a thumbnail
+        with bboxes drawn from /api/images/metadata/get."""
+        _mock_image_list(page, {"/": [{"offset": 0, "entries": ROOT_ENTRIES_PAGE_1, "has_more": False}]})
+
+        png_bytes = base64.b64decode(TINY_PNG_B64)
+        page.route(
+            "**/thumbnail*",
+            lambda route: route.fulfill(status=200, content_type="image/png", body=png_bytes),
+        )
+
+        metadata_calls = []
+
+        def handle_metadata(route: Route):
+            body = json.loads(route.request.post_data or "{}")
+            metadata_calls.append(body.get("imagePath"))
+            route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps({
+                    "status": "success",
+                    "image": {
+                        "uuid": "img-uuid-a",
+                        "filename": "a.jpg",
+                        "bboxes": [
+                            {
+                                "uuid": "bbox-1", "x": 0.1, "y": 0.1, "width": 0.2, "height": 0.2,
+                                "label": {"uuid": "label-1", "name": "Cat", "color": "#ff0000"},
+                                "tags": [],
+                            },
+                        ],
+                    },
+                }),
+            )
+
+        page.route("**/api/images/metadata/get", handle_metadata)
+
+        _navigate_to_files(page, base_url)
+
+        name = page.locator("#tab-files .fb-entry", has_text="a.jpg").locator(".fb-entry__name")
+        name.hover()
+        page.wait_for_selector(".fb-hover-popover.visible", timeout=4000)
+
+        popover = page.locator(".fb-hover-popover")
+        expect(popover.locator("img.fb-popover-img")).to_be_visible()
+        expect(popover.locator("canvas.fb-popover-canvas")).to_be_visible()
+        assert metadata_calls and metadata_calls[0] == "a.jpg"
+
+    def test_hover_does_not_attach_preview_to_directories(self, page: Page, base_url: str):
+        """Directory entries get no hover preview — the popover is never created."""
+        _mock_image_list(page, {"/": [{"offset": 0, "entries": ROOT_ENTRIES_PAGE_1, "has_more": False}]})
+        _navigate_to_files(page, base_url)
+
+        dir_name = page.locator("#tab-files .fb-entry", has_text="subdir").locator(".fb-entry__name")
+        dir_name.hover()
+        page.wait_for_timeout(600)
+
+        expect(page.locator(".fb-hover-popover")).to_have_count(0)

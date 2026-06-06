@@ -1,5 +1,6 @@
 import { fetchImageList, createDirectory } from '/app-static/js/shared/api/images.js';
 import { toast } from '/app-static/js/ui/utils/logging.js';
+import { attachFileEntryHoverPreview } from '/app-static/js/ui/fileEntryHoverPreview.js';
 
 /**
  * @typedef {import('@ui_types').FileNavigation} FileNavigation
@@ -340,6 +341,7 @@ export class FileBrowser {
       const name = document.createElement('span');
       name.className = 'fb-entry__name';
       name.textContent = entry.name;
+      attachFileEntryHoverPreview(name, entry);
       nameRow.appendChild(name);
 
       if (this.showDbStatus && entry.uuid) {
@@ -391,6 +393,7 @@ export class FileBrowser {
       label.className = 'fb-grid-cell__name';
       label.textContent = entry.name;
       label.title = entry.name;
+      attachFileEntryHoverPreview(label, entry);
       cell.appendChild(label);
 
       if (this.showDbStatus && entry.uuid) {

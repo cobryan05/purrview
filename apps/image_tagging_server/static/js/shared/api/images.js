@@ -101,6 +101,27 @@ export async function fetchImage(path) {
   return ret;
 }
 
+/**
+ * Fetch lightweight metadata (including bboxes) for an image, without binary data.
+ * Returns null if the image isn't registered in the database.
+ *
+ * @param {string} path - Relative path of the image.
+ * @returns {Promise<import('@web_api').ImageRecordRead|null>}
+ * @throws {Error} If the request fails.
+ */
+export async function fetchImageMetadata(path) {
+  const res = await apiFetch('/api/images/metadata/get', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ imagePath: path }),
+  });
+
+  /** @type {import('@web_api').GetImageMetadataResponse} */
+  const data = await res.json();
+  if (!res.ok || data.status !== 'success') return null;
+  return data.image ?? null;
+}
+
 /* ---- Metadata Updating --- */
 /**
  * @param {import('@domain_image').UIImage} uiImage
