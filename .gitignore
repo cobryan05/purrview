@@ -3,6 +3,11 @@
 .serena/
 docker-compose.override.yml
 
+# Markdown files (notes, plans, etc.) — only README is committed
+*.md
+!README.md
+!README.MD
+
 static/js/htmx
 static/css/pico.min.css
 static/js/api-types/
