@@ -21,7 +21,8 @@ import { events, EventTypes } from '/app-static/js/shared/events/index.js';
 import { init as initToolbar } from '/app-static/js/app/image-tagging/toolbar.js';
 import { initLabelPanel } from '/app-static/js/app/image-tagging/canvas/labelPanel.js';
 import { initInspector } from '/app-static/js/ui/inspector.js';
-import { createHoverPreview } from '/app-static/js/app/review/hoverPreview.js';
+import { createHoverPreview } from '/app-static/js/ui/thumbnailHoverPreview.js';
+import { createEntryView } from '/app-static/js/ui/entryView.js';
 
 
 const DEFAULT_PAGE_SIZE = 50;
@@ -126,14 +127,31 @@ export async function createReviewPanel(container, { fetchImages = null } = {}) 
   const labels = await labelsPromise;
 
   // ── Toolbar ───────────────────────────────────────────────────────
+  // Built as logical groups (search/filter · view mode · selection · pagination ·
+  // status) separated by thin rules, so adding/removing a control doesn't
+  // reflow the whole bar — each cluster wraps and aligns independently.
   const toolbar = document.createElement('div');
   toolbar.className = 'review-toolbar';
 
+  function makeToolbarGroup(...children) {
+    const group = document.createElement('div');
+    group.className = 'review-toolbar__group';
+    group.append(...children);
+    return group;
+  }
+
+  function makeToolbarSep() {
+    const sep = document.createElement('span');
+    sep.className = 'review-toolbar__sep';
+    sep.setAttribute('aria-hidden', 'true');
+    return sep;
+  }
+
   // Filter toggle — only visible in full-filter mode
   const filterToggleBtn = document.createElement('button');
+  filterToggleBtn.className = 'review-toolbar__btn';
   filterToggleBtn.textContent = '☰ Filters';
   filterToggleBtn.title = 'Toggle search filters';
-  filterToggleBtn.style.cssText = 'padding:0.3em 0.8em;cursor:pointer;';
   if (fetchImages) filterToggleBtn.hidden = true;
 
   // Sort controls — always visible in toolbar (moved from filter panel)
@@ -172,7 +190,7 @@ export async function createReviewPanel(container, { fetchImages = null } = {}) 
 
   // Select-all checkbox
   const selectAllLabel = document.createElement('label');
-  selectAllLabel.style.cssText = 'display:flex;align-items:center;gap:0.3em;cursor:pointer;white-space:nowrap;';
+  selectAllLabel.className = 'review-toolbar__select-all';
   const selectAllCb = document.createElement('input');
   selectAllCb.type = 'checkbox';
   selectAllLabel.appendChild(selectAllCb);
@@ -180,44 +198,72 @@ export async function createReviewPanel(container, { fetchImages = null } = {}) 
 
   // Bulk Apply button
   const bulkBtn = document.createElement('button');
+  bulkBtn.className = 'review-toolbar__btn review-toolbar__btn--primary';
   bulkBtn.textContent = 'Bulk Apply (0)';
   bulkBtn.disabled = true;
-  bulkBtn.style.cssText = 'padding:0.3em 0.8em;cursor:pointer;';
 
   // Refresh
   const refreshBtn = document.createElement('button');
+  refreshBtn.className = 'review-toolbar__btn';
   refreshBtn.textContent = 'Refresh';
-  refreshBtn.style.cssText = 'padding:0.3em 0.8em;cursor:pointer;margin-left:auto;';
 
   // Pagination
   const pageInfo = document.createElement('span');
-  pageInfo.style.cssText = 'color:#aaa;font-size:0.9em;white-space:nowrap;';
+  pageInfo.className = 'review-toolbar__page-info';
   const prevBtn = document.createElement('button');
+  prevBtn.className = 'review-toolbar__btn';
   prevBtn.textContent = '‹ Prev';
-  prevBtn.style.padding = '0.3em 0.6em';
   const nextBtn = document.createElement('button');
+  nextBtn.className = 'review-toolbar__btn';
   nextBtn.textContent = 'Next ›';
-  nextBtn.style.padding = '0.3em 0.6em';
 
   // Status message
   const statusMsg = document.createElement('span');
-  statusMsg.style.cssText = 'color:#aaa;font-size:0.9em;';
+  statusMsg.className = 'review-toolbar__status';
 
-  toolbar.appendChild(filterToggleBtn);
-  toolbar.appendChild(sortBySelect);
-  toolbar.appendChild(sortOrderSelect);
-  toolbar.appendChild(viewToggle);
-  toolbar.appendChild(pageSizeSelect);
-  toolbar.appendChild(selectAllLabel);
-  toolbar.appendChild(bulkBtn);
-  toolbar.appendChild(prevBtn);
-  toolbar.appendChild(pageInfo);
-  toolbar.appendChild(nextBtn);
-  toolbar.appendChild(statusMsg);
-  toolbar.appendChild(refreshBtn);
+  // ── Entry view (grid/list scaffold) ───────────────────────────────
+  const entryView = createEntryView({
+    storageKey: 'review-view',
+    defaultView: 'grid',
+    showToggle: true,
+    listClass: 'review-list',
+    gridClass: 'review-grid',
+    renderCell: (entry, i) => entry.kind === 'image'
+      ? buildImageCard(entry.img, labels, i)
+      : buildCard(entry.bbox, entry.img, labels, i),
+    renderRow: (entry, i) => entry.kind === 'image'
+      ? buildImageRow(entry.img, labels, i)
+      : buildBboxRow(entry.bbox, entry.img, labels, i),
+  });
+  // `grid` aliases the live container holding cards/rows — selection, stale-marking,
+  // group-highlight, overlay refresh, bulk apply and nav-context queries all go through it.
+  const grid = entryView.layout;
+
+  // ── Query bar: filter · sort · view mode · page size · refresh ────
+  // Controls that change *what* is shown. Stays compact so it never wraps.
+  toolbar.append(
+    makeToolbarGroup(filterToggleBtn, sortBySelect, sortOrderSelect),
+    makeToolbarSep(),
+    makeToolbarGroup(viewToggle, entryView.element, pageSizeSelect),
+    makeToolbarGroup(refreshBtn),
+  );
   container.appendChild(toolbar);
 
+  // ── Action bar: sits directly above the results ───────────────────
+  // Controls that act on the current page (select, bulk-apply) and navigate
+  // between pages (prev/next). Placing them flush against the results makes
+  // the spatial relationship obvious and eliminates the "empty space" gap.
+  const actionBar = document.createElement('div');
+  actionBar.className = 'review-action-bar';
+  actionBar.append(
+    makeToolbarGroup(selectAllLabel, bulkBtn),
+    makeToolbarGroup(prevBtn, pageInfo, nextBtn),
+    makeToolbarGroup(statusMsg),
+  );
+  container.appendChild(actionBar);
+
   // ── Filter panel (full mode only) ─────────────────────────────────
+  // Inserted between the query toolbar and the action bar.
   let filterPanel = null;
   if (!fetchImages) {
     const tags = await tagsPromise;
@@ -234,7 +280,7 @@ export async function createReviewPanel(container, { fetchImages = null } = {}) 
       _lastCursor = null;
       render();
     });
-    container.appendChild(filterPanel.element);
+    container.insertBefore(filterPanel.element, actionBar);
     updateFilterBtn(); // reflect initial state (Unverified checked → shows "(1)")
 
     filterToggleBtn.addEventListener('click', () => {
@@ -242,10 +288,7 @@ export async function createReviewPanel(container, { fetchImages = null } = {}) 
     });
   }
 
-  // ── Grid container ────────────────────────────────────────────────
-  const grid = document.createElement('div');
-  grid.className = 'review-grid';
-  container.appendChild(grid);
+  container.appendChild(entryView.layout);
 
   // ── Hover preview ─────────────────────────────────────────────────
   const _imageCache = new Map();
@@ -472,26 +515,19 @@ export async function createReviewPanel(container, { fetchImages = null } = {}) 
       return true; // 'all'
     });
 
-    grid.innerHTML = '';
     updateBulkBtn();
 
     if (_visibleEntries.length === 0) {
-      const empty = document.createElement('p');
-      empty.textContent = _hasMore
+      entryView.setEmptyText(_hasMore
         ? 'No matching annotations on this page.'
-        : 'No matching annotations found.';
-      empty.style.color = '#aaa';
-      grid.appendChild(empty);
+        : 'No matching annotations found.');
+      entryView.setEntries([]);
       updateStatusMsg();
       return;
     }
 
-    _visibleEntries.forEach((entry, index) => {
-      const card = entry.kind === 'image'
-        ? buildImageCard(entry.img, labels, index)
-        : buildCard(entry.bbox, entry.img, labels, index);
-      grid.appendChild(card);
-    });
+    entryView.setEmptyText('');
+    entryView.setEntries(_visibleEntries);
 
     updateStatusMsg();
   }
@@ -519,6 +555,7 @@ export async function createReviewPanel(container, { fetchImages = null } = {}) 
       _selectionKind = null;
       _lastCursor = null;
       _lastClickedIndex = -1;
+      for (const { objectUrl } of _imageCache.values()) URL.revokeObjectURL(objectUrl);
       _imageCache.clear();
       _imageCardRefreshers.clear();
       updateBulkBtn();
@@ -663,6 +700,59 @@ export async function createReviewPanel(container, { fetchImages = null } = {}) 
     };
   }
 
+  // ── Shared card-interaction helpers ──────────────────────────────
+
+  /**
+   * Attach the checkbox-click and 220ms debounced row-click listeners used by
+   * all four card/row builders. Returns a `clearTimer()` function for dblclick
+   * handlers to cancel a pending single-click before opening the canvas modal.
+   */
+  function attachSelectListeners(el, cb, id, kind, index) {
+    cb.addEventListener('click', (e) => {
+      applySelect(cb, el, id, kind, index, e.shiftKey, cb.checked);
+    });
+    let _timer = null;
+    el.addEventListener('click', (e) => {
+      if (e.target === cb || cb.disabled) return;
+      if (e.shiftKey) e.preventDefault();
+      clearTimeout(_timer);
+      const shiftKey = e.shiftKey;
+      const newChecked = !cb.checked;
+      _timer = setTimeout(() => {
+        if (!el.isConnected) return;
+        applySelect(cb, el, id, kind, index, shiftKey, newChecked);
+      }, 220);
+    });
+    return () => clearTimeout(_timer);
+  }
+
+  /**
+   * Populate `container` with deduplicated label chips for `img.bboxes`.
+   * Falls back to an "unlabeled" chip when boxes exist but none have a label.
+   */
+  function appendLabelChips(container, bboxes, labels) {
+    const seen = new Set();
+    for (const bbox of bboxes) {
+      const luuid = bbox.labelUuid;
+      if (!luuid || seen.has(luuid)) continue;
+      seen.add(luuid);
+      const lbl = labels.get(luuid);
+      if (!lbl) continue;
+      const chip = document.createElement('span');
+      chip.className = 'label-chip';
+      chip.textContent = lbl.name;
+      chip.style.cssText = `background:${lbl.color}33;border:1px solid ${lbl.color};`;
+      container.appendChild(chip);
+    }
+    if (seen.size === 0 && bboxes.length > 0) {
+      const chip = document.createElement('span');
+      chip.className = 'label-chip';
+      chip.textContent = 'unlabeled';
+      chip.style.cssText = 'background:#88888833;border:1px solid #888;';
+      container.appendChild(chip);
+    }
+  }
+
   // ── Bbox card builder ─────────────────────────────────────────────
   function buildCard(bbox, img, labels, index) {
     // Prefer the label embedded in the API response (always present and current);
@@ -683,20 +773,7 @@ export async function createReviewPanel(container, { fetchImages = null } = {}) 
 
     const cb = document.createElement('input');
     cb.type = 'checkbox';
-
-    cb.addEventListener('click', (e) => {
-      applySelect(cb, card, bbox.uuid, 'bbox', index, e.shiftKey, cb.checked);
-    });
-
-    let _clickTimer = null;
-    card.addEventListener('click', (e) => {
-      if (e.target === cb || cb.disabled) return;
-      if (e.shiftKey) e.preventDefault();
-      clearTimeout(_clickTimer);
-      const shiftKey = e.shiftKey;
-      const newChecked = !cb.checked;
-      _clickTimer = setTimeout(() => applySelect(cb, card, bbox.uuid, 'bbox', index, shiftKey, newChecked), 220);
-    });
+    const clearTimer = attachSelectListeners(card, cb, bbox.uuid, 'bbox', index);
 
     const thumbImg = document.createElement('img');
     thumbImg.className = 'thumb';
@@ -704,7 +781,7 @@ export async function createReviewPanel(container, { fetchImages = null } = {}) 
     thumbImg.title = 'Double-click to edit in canvas';
     _thumbLoader.load(thumbImg, getBboxThumbnailUrl(img.filename, bbox.uuid, 300));
     thumbImg.addEventListener('dblclick', () => {
-      clearTimeout(_clickTimer);
+      clearTimer();
       const navCtx = _buildNavContext(img.uuid);
       showCanvasModal(bbox, img, labels, async (updatedUIBbox, currentImg) => {
         if (currentImg?.uuid === img.uuid) {
@@ -769,20 +846,7 @@ export async function createReviewPanel(container, { fetchImages = null } = {}) 
 
     const cb = document.createElement('input');
     cb.type = 'checkbox';
-
-    cb.addEventListener('click', (e) => {
-      applySelect(cb, card, img.uuid, 'image', index, e.shiftKey, cb.checked);
-    });
-
-    let _clickTimer = null;
-    card.addEventListener('click', (e) => {
-      if (e.target === cb || cb.disabled) return;
-      if (e.shiftKey) e.preventDefault();
-      clearTimeout(_clickTimer);
-      const shiftKey = e.shiftKey;
-      const newChecked = !cb.checked;
-      _clickTimer = setTimeout(() => applySelect(cb, card, img.uuid, 'image', index, shiftKey, newChecked), 220);
-    });
+    const clearTimer = attachSelectListeners(card, cb, img.uuid, 'image', index);
 
     // Double-click thumbnail → open canvas modal on first available bbox
     const thumbImg = document.createElement('img');
@@ -791,7 +855,7 @@ export async function createReviewPanel(container, { fetchImages = null } = {}) 
     thumbImg.title = 'Double-click to edit in canvas';
     _thumbLoader.load(thumbImg, getImageThumbnailUrl(img.filename, 200));
     thumbImg.addEventListener('dblclick', () => {
-      clearTimeout(_clickTimer);
+      clearTimer();
       const firstBbox = (img.bboxes ?? [])[0];
       if (firstBbox) {
         const navCtx = _buildNavContext(img.uuid);
@@ -864,29 +928,9 @@ export async function createReviewPanel(container, { fetchImages = null } = {}) 
 
     // Deduplicated label chips
     const bboxes = img.bboxes ?? [];
-    const seenLabels = new Set();
     const chipsRow = document.createElement('div');
     chipsRow.style.cssText = 'display:flex;flex-wrap:wrap;gap:2px;margin-bottom:0.2em;';
-    for (const bbox of bboxes) {
-      const luuid = bbox.labelUuid;
-      if (!luuid || seenLabels.has(luuid)) continue;
-      seenLabels.add(luuid);
-      const lbl = labels.get(luuid);
-      if (!lbl) continue;
-      const chip = document.createElement('span');
-      chip.className = 'label-chip';
-      chip.textContent = lbl.name;
-      chip.style.cssText = `background:${lbl.color}33;border:1px solid ${lbl.color};`;
-      chipsRow.appendChild(chip);
-    }
-    // Only show "unlabeled" chip when there are boxes but none have a resolved label.
-    if (seenLabels.size === 0 && bboxes.length > 0) {
-      const chip = document.createElement('span');
-      chip.className = 'label-chip';
-      chip.textContent = 'unlabeled';
-      chip.style.cssText = 'background:#88888833;border:1px solid #888;';
-      chipsRow.appendChild(chip);
-    }
+    appendLabelChips(chipsRow, bboxes, labels);
 
     // Verification status line (verified / unverified counts).
     const statusRow = document.createElement('div');
@@ -923,6 +967,155 @@ export async function createReviewPanel(container, { fetchImages = null } = {}) 
     });
 
     return card;
+  }
+
+  // ── Bbox list-row builder (compact card for list view) ────────────
+  function buildBboxRow(bbox, img, labels, index) {
+    const label = bbox.label ?? (bbox.labelUuid ? labels.get(bbox.labelUuid) : null);
+    const labelName = label?.name ?? '(unknown)';
+    const labelColor = label?.color ?? '#888';
+    const isVerified = !(bbox.tags ?? []).some(t => t.uuid === UNVERIFIED_TAG_UUID);
+    const confidence = bbox.metadataJson?.confidence
+      ? `${(parseFloat(bbox.metadataJson.confidence) * 100).toFixed(0)}%`
+      : '';
+
+    const row = document.createElement('li');
+    row.className = 'review-row review-card';
+    row.dataset.bboxUuid = bbox.uuid;
+    row.dataset.imageUuid = img.uuid;
+    row.dataset.kind = 'bbox';
+
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    const clearTimer = attachSelectListeners(row, cb, bbox.uuid, 'bbox', index);
+
+    const thumbImg = document.createElement('img');
+    thumbImg.className = 'thumb';
+    thumbImg.alt = labelName;
+    thumbImg.title = 'Double-click to edit in canvas';
+    _thumbLoader.load(thumbImg, getBboxThumbnailUrl(img.filename, bbox.uuid, 96));
+    thumbImg.addEventListener('dblclick', () => {
+      clearTimer();
+      const navCtx = _buildNavContext(img.uuid);
+      showCanvasModal(bbox, img, labels, async (updatedUIBbox, currentImg) => {
+        if (currentImg?.uuid === img.uuid) {
+          const card = grid.querySelector(`[data-bbox-uuid="${bbox.uuid}"]`);
+          if (card) {
+            if (updatedUIBbox === undefined) {
+              markCardStale(card, 'deleted');
+            } else {
+              _refreshBboxCard(card, updatedUIBbox, img.filename, bbox.uuid);
+            }
+          }
+        }
+        updateBulkBtn();
+        updateStatusMsg();
+      }, navCtx);
+    });
+
+    const info = document.createElement('div');
+    info.className = 'card-info';
+
+    const chip = document.createElement('span');
+    chip.className = 'label-chip';
+    chip.textContent = labelName;
+    chip.style.cssText = `background:${labelColor}33;border:1px solid ${labelColor};`;
+
+    const verifyChip = document.createElement('span');
+    verifyChip.className = 'verify-chip';
+    verifyChip.textContent = isVerified ? '✓ Verified' : '◌ Unverified';
+    verifyChip.classList.toggle('verify-chip--verified', isVerified);
+    verifyChip.title = isVerified ? 'Verified' : 'Not yet verified';
+
+    const meta = document.createElement('span');
+    meta.className = 'review-row__meta';
+    const shortPath = img.filename.split('/').slice(-2).join('/');
+    meta.textContent = confidence ? `${confidence} · ${shortPath}` : shortPath;
+
+    info.appendChild(chip);
+    info.appendChild(verifyChip);
+    info.appendChild(meta);
+    row.appendChild(cb);
+    row.appendChild(thumbImg);
+    row.appendChild(info);
+
+    attachGroupHighlight(row, img.uuid);
+    hoverPreview.attach(row, {
+      imagePath: img.filename,
+      imageUuid: img.uuid,
+      allBboxes: img.bboxes,
+      hoveredBboxUuid: bbox.uuid,
+    });
+
+    return row;
+  }
+
+  // ── Image list-row builder (compact card for list view) ───────────
+  function buildImageRow(img, labels, index) {
+    const row = document.createElement('li');
+    row.className = 'review-row review-card review-card--image';
+    row.dataset.imageUuid = img.uuid;
+    row.dataset.kind = 'image';
+
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    const clearTimer = attachSelectListeners(row, cb, img.uuid, 'image', index);
+
+    // Double-click thumbnail → open canvas modal on first available bbox
+    const thumbImg = document.createElement('img');
+    thumbImg.className = 'thumb';
+    thumbImg.alt = img.filename.split('/').pop();
+    thumbImg.title = 'Double-click to edit in canvas';
+    _thumbLoader.load(thumbImg, getImageThumbnailUrl(img.filename, 96));
+    thumbImg.addEventListener('dblclick', () => {
+      clearTimer();
+      const firstBbox = (img.bboxes ?? [])[0];
+      if (firstBbox) {
+        const navCtx = _buildNavContext(img.uuid);
+        showCanvasModal(firstBbox, img, labels, async (_updatedUIBbox, _currentImg) => {
+          updateBulkBtn();
+          updateStatusMsg();
+        }, navCtx);
+      }
+    });
+
+    // Bbox count badge — list rows skip the per-row overlay canvas to stay light
+    // (hover preview still shows annotations), so this row is NOT registered in
+    // _imageCardRefreshers; bulk overlay redraws simply no-op for it.
+    const countBadge = document.createElement('span');
+    countBadge.className = 'bbox-count-badge';
+    const bc = (img.bboxes ?? []).length;
+    countBadge.textContent = `${bc} box${bc !== 1 ? 'es' : ''}`;
+
+    const info = document.createElement('div');
+    info.className = 'card-info';
+
+    // Deduplicated label chips
+    const bboxes = img.bboxes ?? [];
+    const chipsRow = document.createElement('span');
+    chipsRow.className = 'review-row__chips';
+    appendLabelChips(chipsRow, bboxes, labels);
+
+    const meta = document.createElement('span');
+    meta.className = 'review-row__meta';
+    meta.textContent = img.filename.split('/').slice(-2).join('/');
+
+    info.appendChild(chipsRow);
+    info.appendChild(meta);
+    row.appendChild(cb);
+    row.appendChild(thumbImg);
+    row.appendChild(countBadge);
+    row.appendChild(info);
+
+    attachGroupHighlight(row, img.uuid);
+    hoverPreview.attach(row, {
+      imagePath: img.filename,
+      imageUuid: img.uuid,
+      allBboxes: img.bboxes,
+      hoveredBboxUuid: null,
+    });
+
+    return row;
   }
 
   // ── Select all ────────────────────────────────────────────────────
@@ -1058,6 +1251,7 @@ export async function createReviewPanel(container, { fetchImages = null } = {}) 
     destroy() {
       _thumbLoader.reset();
       hoverPreview.destroy();
+      entryView.destroy();
       container.innerHTML = '';
     },
     filterPanel,

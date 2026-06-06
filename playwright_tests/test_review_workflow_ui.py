@@ -19,6 +19,7 @@ Run with:
 """
 import base64
 import json
+import re
 
 import pytest
 from playwright.sync_api import Page, Route, expect
@@ -234,7 +235,7 @@ class TestSingleSelection:
         _mock_tags(page, [{**UNVERIFIED_TAG, "name": "Unverified", "color": "#888", "kind": "system"}])
 
         _navigate_to_review(page, base_url)
-        bulk_btn = page.locator("#review-root .review-toolbar button", has_text="Bulk Apply")
+        bulk_btn = page.locator("#review-root .review-action-bar button", has_text="Bulk Apply")
         expect(bulk_btn).to_have_text("Bulk Apply (0)")
         expect(bulk_btn).to_be_disabled()
 
@@ -266,7 +267,7 @@ class TestShiftClickRangeSelection:
 
         for i in range(3):
             expect(cards.nth(i).locator("input[type=checkbox]")).to_be_checked()
-        bulk_btn = page.locator("#review-root .review-toolbar button", has_text="Bulk Apply")
+        bulk_btn = page.locator("#review-root .review-action-bar button", has_text="Bulk Apply")
         expect(bulk_btn).to_have_text("Bulk Apply (3)")
 
 
@@ -292,7 +293,7 @@ class TestSelectAll:
 
         for i in range(3):
             expect(cards.nth(i).locator("input[type=checkbox]")).to_be_checked()
-        bulk_btn = page.locator("#review-root .review-toolbar button", has_text="Bulk Apply")
+        bulk_btn = page.locator("#review-root .review-action-bar button", has_text="Bulk Apply")
         expect(bulk_btn).to_have_text("Bulk Apply (3)")
 
         # Unchecking clears the selection again
@@ -330,7 +331,7 @@ class TestBulkBboxAction:
         page.locator("#review-root [data-bbox-uuid='bbox-1'] input[type=checkbox]").click()
         page.locator("#review-root [data-bbox-uuid='bbox-3'] input[type=checkbox]").click()
 
-        page.locator("#review-root .review-toolbar button", has_text="Bulk Apply").click()
+        page.locator("#review-root .review-action-bar button", has_text="Bulk Apply").click()
 
         modal = page.locator(".app-modal-overlay, div:has(> strong:text-is('Apply to 2 selected bboxes'))").last
         expect(page.locator("strong", has_text="Apply to 2 selected bboxes")).to_be_visible()
@@ -375,7 +376,7 @@ class TestBulkImageAction:
         for i in range(2):
             cards.nth(i).locator("input[type=checkbox]").click()
 
-        page.locator("#review-root .review-toolbar button", has_text="Bulk Apply").click()
+        page.locator("#review-root .review-action-bar button", has_text="Bulk Apply").click()
 
         modal_title = page.locator("strong", has_text="Apply to 2 selected images")
         expect(modal_title).to_be_visible()
@@ -403,8 +404,8 @@ class TestPagination:
 
         _navigate_to_review(page, base_url)
 
-        prev_btn = page.locator("#review-root .review-toolbar button", has_text="Prev")
-        next_btn = page.locator("#review-root .review-toolbar button", has_text="Next")
+        prev_btn = page.locator("#review-root .review-action-bar button", has_text="Prev")
+        next_btn = page.locator("#review-root .review-action-bar button", has_text="Next")
 
         img_card_1 = page.locator("#review-root [data-image-uuid='img-1'][data-kind='image']")
         img_card_3 = page.locator("#review-root [data-image-uuid='img-3'][data-kind='image']")
@@ -447,7 +448,7 @@ class TestFilterToggleButton:
         page.wait_for_timeout(300)
 
         expect(toggle_btn).to_have_text("☰ Filters (2)")
-        expect(toggle_btn).to_have_class("filter-active")
+        expect(toggle_btn).to_have_class(re.compile(r"\bfilter-active\b"))
 
 
 # ---------------------------------------------------------------------------
@@ -468,7 +469,7 @@ class TestCanvasModalRoundTrip:
         # so the <img class="thumb"> has nonzero size and can be double-clicked.
         png_bytes = base64.b64decode(TINY_PNG_B64)
         page.route(
-            "**/thumbnail*",
+            "**/thumbnail?*",
             lambda route: route.fulfill(status=200, content_type="image/png", body=png_bytes),
         )
         page.route(
@@ -543,3 +544,92 @@ class TestGroupHighlight:
         page.wait_for_timeout(200)
         expect(bbox_card).to_have_class("review-card")
         expect(image_card).to_have_class("review-card review-card--image")
+
+
+# ---------------------------------------------------------------------------
+# 12. List view (ui/entryView.js)
+# ---------------------------------------------------------------------------
+
+class TestListView:
+    def test_toggle_to_list_view_renders_rows_and_persists(self, page: Page, base_url: str):
+        """Switching the entryView toggle to list view renders `.review-row`
+        elements (instead of grid `.review-card` cells), and the choice survives
+        a reload via localStorage `review-view` — mirroring the file browser's
+        `fb-view` persistence."""
+        _mock_review_queue(page, PAGE_1_IMAGES)
+        _mock_labels(page, [LABEL_CAT, LABEL_DOG])
+        _mock_tags(page, [{**UNVERIFIED_TAG, "name": "Unverified", "color": "#888", "kind": "system"}])
+
+        _navigate_to_review(page, base_url)
+
+        # Default filter shows 2 image cards + 2 unverified-bbox cards = 4 entries
+        expect(page.locator("#review-root .review-card")).to_have_count(4)
+        expect(page.locator("#review-root .review-row")).to_have_count(0)
+
+        page.locator("#review-root .fb-view-toggle button[title='List view']").click()
+        page.wait_for_timeout(200)
+
+        expect(page.locator("#review-root .review-row")).to_have_count(4)
+        expect(page.locator("#review-root .review-list")).to_have_count(1)
+        expect(page.locator("#review-root .review-grid")).to_have_count(0)
+        assert page.evaluate("() => localStorage.getItem('review-view')") == "list"
+
+        # Reload — list view should be remembered
+        page.reload()
+        page.wait_for_load_state("networkidle")
+        page.locator(".main-tab-button[data-tab='tab-review']").click()
+        page.wait_for_load_state("networkidle")
+        page.wait_for_selector("#review-root .review-list", timeout=4000)
+        expect(page.locator("#review-root .review-row")).to_have_count(4)
+
+
+    def test_list_view_selection_and_canvas_modal(self, page: Page, base_url: str):
+        """In list view, checking a row's checkbox enables Bulk Apply (same
+        `applySelect` wiring as grid cards), and double-clicking a row's
+        thumbnail opens the canvas modal — proving `entryView.layout` queries
+        and handlers work identically across both render paths."""
+        _mock_review_queue(page, PAGE_1_IMAGES)
+        _mock_labels(page, [LABEL_CAT, LABEL_DOG])
+        _mock_tags(page, [{**UNVERIFIED_TAG, "name": "Unverified", "color": "#888", "kind": "system"}])
+        _mock_misc_review_endpoints(page)
+
+        # Thumbnails are fetched as raw bytes via fetch().blob() — serve a tiny real PNG
+        # so the <img class="thumb"> has nonzero size and can be double-clicked.
+        png_bytes = base64.b64decode(TINY_PNG_B64)
+        page.route(
+            "**/thumbnail?*",
+            lambda route: route.fulfill(status=200, content_type="image/png", body=png_bytes),
+        )
+        page.route(
+            "**/api/images/*/file",
+            lambda route: route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps({
+                    "status": "success",
+                    "imageBase64": TINY_PNG_B64,
+                    "mimeType": "image/png",
+                    "image": {"uuid": "img-1", "filename": "folder/image1.jpg", "bboxes": [BBOX_1, BBOX_2]},
+                }),
+            ),
+        )
+
+        _navigate_to_review(page, base_url)
+        page.locator("#review-root .fb-view-toggle button[title='List view']").click()
+        page.wait_for_timeout(200)
+
+        rows = page.locator("#review-root .review-row")
+        expect(rows).to_have_count(4)
+
+        bulk_btn = page.locator("#review-root .review-action-bar button", has_text="Bulk Apply")
+        expect(bulk_btn).to_have_text("Bulk Apply (0)")
+
+        row = page.locator("#review-root [data-bbox-uuid='bbox-1']")
+        row.locator("input[type=checkbox]").click()
+        expect(bulk_btn).to_have_text("Bulk Apply (1)")
+        expect(bulk_btn).to_be_enabled()
+
+        row.locator("img.thumb").dblclick()
+        modal = page.locator(".canvas-modal-overlay")
+        expect(modal).to_be_visible(timeout=8000)
+        expect(modal.locator(".canvas-modal-title")).to_have_text("Edit: folder/image1.jpg")

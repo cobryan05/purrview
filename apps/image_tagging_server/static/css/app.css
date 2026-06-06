@@ -193,23 +193,115 @@ main.container {
   display: block;
 }
 
-/* ===== Review Grid ===== */
+/* ===== Review: Query toolbar ===== */
+/* Top bar: filters toggle · sort controls · view mode (All/Images/Bboxes + grid/list) · page size · refresh */
 .review-toolbar {
   display: flex;
   align-items: center;
   gap: 0.5em;
-  padding: 0.5em 0;
+  padding: 0.4em 0;
   flex-wrap: wrap;
   flex-shrink: 0;
 }
 
-/* Compact form controls in the toolbar (mirrors filter-panel overrides) */
-.review-toolbar select {
+/* The last group (Refresh) floats to the right */
+.review-toolbar .review-toolbar__group:last-child {
+  margin-left: auto;
+}
+
+/* ===== Review: Action bar ===== */
+/* Sits directly above the result grid — select-all, bulk-apply, prev/next, status.
+   Tighter padding so it reads as part of the results area, not the toolbar. */
+.review-action-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.5em;
+  padding: 0.3em 0;
+  border-top: 1px solid #2e2e2e;
+  margin-top: 0.2em;
+  flex-wrap: wrap;
+  flex-shrink: 0;
+}
+
+/* Pagination group gets pushed right so prev/next/status sit at the end */
+.review-action-bar .review-toolbar__group:nth-child(2) {
+  margin-left: auto;
+}
+
+/* Shared group/sep helpers used in both bars */
+.review-toolbar__group {
+  display: flex;
+  align-items: center;
+  gap: 0.4em;
+}
+
+.review-toolbar__sep {
+  display: inline-block;
+  width: 1px;
+  height: 1.4em;
+  background: #444;
+  flex-shrink: 0;
+  align-self: center;
+}
+
+/* Compact form controls in both bars */
+.review-toolbar select,
+.review-action-bar select {
   --pico-form-element-spacing-vertical: 0.15em;
   --pico-form-element-spacing-horizontal: 0.4em;
   font-size: 0.85em;
   height: auto;
   margin-bottom: 0;
+}
+
+/* Shared button style used in both bars */
+.review-toolbar__btn {
+  padding: 0.25em 0.65em;
+  font-size: 0.85em;
+  cursor: pointer;
+  border: 1px solid #555;
+  border-radius: 3px;
+  background: #2a2a2a;
+  color: #ccc;
+  white-space: nowrap;
+}
+
+.review-toolbar__btn:hover:not(:disabled) {
+  background: #3a3a3a;
+  color: #fff;
+}
+
+.review-toolbar__btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.review-toolbar__btn--primary:not(:disabled) {
+  border-color: #ff0033;
+  color: #ff6666;
+  background: #ff003318;
+}
+
+.review-toolbar__btn--primary:not(:disabled):hover {
+  background: #ff003330;
+  color: #fff;
+}
+
+.review-toolbar__select-all {
+  display: flex;
+  align-items: center;
+  gap: 0.3em;
+  cursor: pointer;
+  white-space: nowrap;
+  font-size: 0.85em;
+  color: #ccc;
+}
+
+.review-toolbar__page-info,
+.review-toolbar__status {
+  color: #888;
+  font-size: 0.82em;
+  white-space: nowrap;
 }
 
 .review-filter-panel {
@@ -493,6 +585,32 @@ button.filter-active {
   border: 1px solid #ff0033;
 }
 
+/* In the review toolbar the shared `.fb-view-toggle` (grid/list icons) is
+   visually merged with `.review-view-toggle` (All/Images/Bboxes) — it drops
+   its own border and left-radius so the two pills butt up against each other
+   and read as a single segmented control. */
+.review-toolbar .fb-view-toggle {
+  margin-left: 0;
+  border: 1px solid #555;
+  border-left: none;
+  border-radius: 0 4px 4px 0;
+}
+/* The review-view-toggle on its right edge also square-off so they join neatly */
+.review-toolbar .review-view-toggle {
+  border-radius: 4px 0 0 4px;
+}
+.review-toolbar .fb-view-toggle button {
+  padding: 0.2em 0.6em;
+  font-size: 0.85em;
+  color: #aaa;
+  line-height: 1;
+}
+.review-toolbar .fb-view-toggle button.active {
+  background: #3a3a3a;
+  color: #ddd;
+  border: none;
+}
+
 /* ===== Review: Image-mode card ===== */
 .review-card--image {
   background: #141e2e;
@@ -562,8 +680,87 @@ button.filter-active {
   z-index: 2; /* float above neighbours so the glow isn't clipped */
 }
 
-/* ===== Review: Hover preview popover ===== */
-.review-hover-popover {
+/* ===== Review: List view (rows reuse .review-card for selection/state/highlight rules) ===== */
+.review-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3em;
+  padding-bottom: 2em;
+}
+
+.review-row {
+  display: flex;
+  align-items: center;
+  gap: 0.6em;
+  padding: 0.3em 0.5em;
+}
+
+.review-row .thumb {
+  width: 64px;
+  height: 64px;
+  object-fit: contain;
+  background: #111;
+  border-radius: 4px;
+  flex-shrink: 0;
+  cursor: pointer;
+}
+
+.review-row input[type=checkbox] {
+  position: static;
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+  accent-color: #ff0033;
+}
+
+.review-row .card-info {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.3em;
+  padding: 0;
+  font-size: 0.8em;
+  min-width: 0;
+  flex: 1;
+}
+
+.review-row .card-state-badge {
+  margin-bottom: 0;
+}
+
+.review-row .bbox-count-badge {
+  position: static;
+  flex-shrink: 0;
+  background: #333;
+}
+
+.review-row__meta,
+.review-row__chips {
+  color: #aaa;
+  font-size: 0.85em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.review-row__chips {
+  display: inline-flex;
+  gap: 2px;
+  white-space: normal;
+}
+
+/* ===== Thumbnail hover-preview popover (ui/thumbnailHoverPreview.js) =====
+   Shared by review cards and file-browser entries. The module also emits the
+   legacy `review-hover-popover` / `fb-hover-popover` classes (and their inner
+   element classes) for backward compatibility with existing selectors, but
+   styling is driven from the `.thumb-hover-popover` / `.popover-*` classes
+   below to avoid a same-specificity cascade conflict between the two old
+   rule-sets (which previously sized the popover differently). */
+.thumb-hover-popover {
   position: fixed;
   z-index: 1200;
   background: #1a1a1a;
@@ -576,20 +773,20 @@ button.filter-active {
   transition: opacity 0.15s ease;
   max-width: 500px;
 }
-.review-hover-popover.visible {
+.thumb-hover-popover.visible {
   opacity: 1;
 }
-.review-hover-popover .popover-img-wrap {
+.thumb-hover-popover .popover-img-wrap {
   position: relative;
   display: block;
 }
-.review-hover-popover img.popover-img {
+.thumb-hover-popover img.popover-img {
   display: block;
   max-width: 492px;
   height: auto;
   border-radius: 3px;
 }
-.review-hover-popover canvas.popover-canvas {
+.thumb-hover-popover canvas.popover-canvas {
   position: absolute;
   inset: 0;
   pointer-events: none;
@@ -768,7 +965,7 @@ button.filter-active {
 /* Grid / thumbnail view */
 .fb-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(90px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(110px, 1fr));
   gap: 0.5em;
   align-content: start;
 }
@@ -795,8 +992,8 @@ button.filter-active {
 }
 
 .fb-grid-cell__thumb {
-  width: 80px;
-  height: 60px;
+  width: 100%;
+  aspect-ratio: 4/3;
   object-fit: cover;
   border-radius: 3px;
   background: var(--pico-secondary-background, #ddd);
@@ -841,41 +1038,6 @@ button.filter-active {
 
 .fb-error {
   color: var(--pico-del-color, #c00);
-}
-
-/* Hover preview popover (ui/fileEntryHoverPreview.js) */
-.fb-hover-popover {
-  position: fixed;
-  z-index: 1200;
-  background: #1a1a1a;
-  border: 2px solid #aaa;
-  border-radius: 6px;
-  padding: 4px;
-  box-shadow: 0 4px 24px #000a;
-  pointer-events: none;
-  opacity: 0;
-  transition: opacity 0.15s ease;
-  max-width: 320px;
-}
-.fb-hover-popover.visible {
-  opacity: 1;
-}
-.fb-hover-popover .fb-popover-img-wrap {
-  position: relative;
-  display: block;
-}
-.fb-hover-popover img.fb-popover-img {
-  display: block;
-  max-width: 312px;
-  height: auto;
-  border-radius: 3px;
-}
-.fb-hover-popover canvas.fb-popover-canvas {
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  width: 100% !important;
-  height: 100% !important;
 }
 
 /* DirBrowserField (ui/utils/fields/DirBrowserField.js) */

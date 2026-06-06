@@ -477,7 +477,7 @@ class TestFileBrowserHoverPreview:
 
         png_bytes = base64.b64decode(TINY_PNG_B64)
         page.route(
-            "**/thumbnail*",
+            "**/thumbnail?*",
             lambda route: route.fulfill(status=200, content_type="image/png", body=png_bytes),
         )
 
@@ -528,3 +528,60 @@ class TestFileBrowserHoverPreview:
         page.wait_for_timeout(600)
 
         expect(page.locator(".fb-hover-popover")).to_have_count(0)
+
+
+# ---------------------------------------------------------------------------
+# 8. Grid/list view toggle (ui/entryView.js, gated by `showThumbnails`)
+# ---------------------------------------------------------------------------
+# `showThumbnails` is never enabled on the Files tab in the live app today, so
+# the toggle is unreachable through normal navigation — instantiate FileBrowser
+# directly with `showThumbnails: true` to exercise entryView's grid/list paths.
+
+class TestFileBrowserViewToggle:
+    def test_toggle_switches_views_and_persists(self, page: Page, base_url: str):
+        """With `showThumbnails: true`, the grid/list toggle (shared `entryView`)
+        re-renders entries as `.fb-grid-cell`/`.fb-entry`, and the chosen view is
+        remembered across instances via localStorage `fb-view` — mirroring the
+        review page's `review-view` persistence."""
+        _mock_image_list(page, {"/": [{"offset": 0, "entries": ROOT_ENTRIES_PAGE_1, "has_more": False}]})
+        page.goto(base_url)
+        page.wait_for_load_state("networkidle")
+        page.evaluate("() => localStorage.removeItem('fb-view')")
+
+        page.evaluate("""async () => {
+            const { FileBrowser } = await import('/app-static/js/ui/fileBrowser.js');
+            const container = document.createElement('div');
+            container.id = 'fb-toggle-test';
+            document.body.appendChild(container);
+            window.__fb = new FileBrowser({ container, showThumbnails: true });
+            await window.__fb.init();
+        }""")
+
+        try:
+            root = page.locator("#fb-toggle-test")
+            expect(root.locator(".fb-entry", has_text="a.jpg")).to_be_visible()
+            expect(root.locator(".fb-grid-cell")).to_have_count(0)
+
+            root.locator(".fb-view-toggle button[title='Grid view']").click()
+            page.wait_for_timeout(150)
+
+            expect(root.locator(".fb-grid-cell", has_text="a.jpg")).to_be_visible()
+            expect(root.locator(".fb-entry")).to_have_count(0)
+            assert page.evaluate("() => localStorage.getItem('fb-view')") == "grid"
+
+            # A fresh instance (simulating reload) should pick up the persisted choice
+            page.evaluate("""async () => {
+                window.__fb.container.innerHTML = '';
+                const { FileBrowser } = await import('/app-static/js/ui/fileBrowser.js');
+                window.__fb2 = new FileBrowser({ container: window.__fb.container, showThumbnails: true });
+                await window.__fb2.init();
+            }""")
+            page.wait_for_timeout(150)
+            expect(root.locator(".fb-grid-cell", has_text="a.jpg")).to_be_visible()
+            expect(root.locator(".fb-entry")).to_have_count(0)
+        finally:
+            page.evaluate("""() => {
+                window.__fb?.container?.remove();
+                delete window.__fb;
+                delete window.__fb2;
+            }""")

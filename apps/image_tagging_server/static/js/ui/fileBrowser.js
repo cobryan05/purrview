@@ -1,6 +1,7 @@
 import { fetchImageList, createDirectory } from '/app-static/js/shared/api/images.js';
 import { toast } from '/app-static/js/ui/utils/logging.js';
-import { attachFileEntryHoverPreview } from '/app-static/js/ui/fileEntryHoverPreview.js';
+import { attachFileEntryHoverPreview } from '/app-static/js/ui/thumbnailHoverPreview.js';
+import { createEntryView } from '/app-static/js/ui/entryView.js';
 
 /**
  * @typedef {import('@ui_types').FileNavigation} FileNavigation
@@ -59,10 +60,20 @@ export class FileBrowser {
     this.showThumbnails = showThumbnails;
     this.showDbStatus = showDbStatus;
     this.allowCreateDir = allowCreateDir;
-    this._viewMode = 'list'; // 'list' | 'grid'
     this._entries = [];
     this._offset = 0;
     this._hasMore = false;
+
+    this._view = createEntryView({
+      storageKey: 'fb-view',
+      defaultView: 'list',
+      showToggle: this.showThumbnails,
+      listClass: 'fb-list',
+      gridClass: 'fb-grid',
+      renderRow: (entry) => this._makeListEntry(entry),
+      renderCell: (entry) => this._makeGridCell(entry),
+      renderLeading: (view) => this._makeNavLeading(view),
+    });
   }
 
   static get PAGE_SIZE() { return 200; }
@@ -125,13 +136,10 @@ export class FileBrowser {
     wrapper.className = 'fb-container';
 
     this._renderToolbar(wrapper);
+    wrapper.appendChild(this._view.element);
     this._renderBreadcrumb(wrapper);
-
-    if (this._viewMode === 'grid' && this.showThumbnails) {
-      this._renderGrid(wrapper, this._entries);
-    } else {
-      this._renderList(wrapper, this._entries);
-    }
+    this._view.setEntries(this._entries);
+    wrapper.appendChild(this._view.layout);
 
     if (this._hasMore) {
       this._renderLoadMore(wrapper);
@@ -150,14 +158,7 @@ export class FileBrowser {
    * No-op if there is no active entry in the current render.
    */
   scrollToActive() {
-    const activeEl = this.container.querySelector('.fb-entry--active, .fb-grid-cell--active');
-    if (!activeEl) return;
-    activeEl.scrollIntoView({ block: 'center', behavior: 'smooth' });
-    // Remove then re-add the flash class so re-revealing the same file re-triggers the animation.
-    activeEl.classList.remove('fb-entry--flash', 'fb-grid-cell--flash');
-    void activeEl.getBoundingClientRect(); // force reflow to restart animation
-    const flashClass = [...activeEl.classList].find(c => c.endsWith('--active')).replace('--active', '--flash');
-    activeEl.classList.add(flashClass);
+    this._view.scrollToActive('.fb-entry--active, .fb-grid-cell--active');
   }
 
   // ─── private helpers ────────────────────────────────────────────────────────
@@ -249,29 +250,6 @@ export class FileBrowser {
       toolbar.appendChild(inputRow);
     }
 
-    // View toggle (only when thumbnails feature is enabled)
-    if (this.showThumbnails) {
-      const toggle = document.createElement('div');
-      toggle.className = 'fb-view-toggle';
-
-      const listBtn = document.createElement('button');
-      listBtn.type = 'button';
-      listBtn.textContent = '☰';
-      listBtn.title = 'List view';
-      if (this._viewMode === 'list') listBtn.classList.add('active');
-      listBtn.addEventListener('click', () => { this._viewMode = 'list'; this.rerender(); });
-
-      const gridBtn = document.createElement('button');
-      gridBtn.type = 'button';
-      gridBtn.textContent = '⊞';
-      gridBtn.title = 'Grid view';
-      if (this._viewMode === 'grid') gridBtn.classList.add('active');
-      gridBtn.addEventListener('click', () => { this._viewMode = 'grid'; this.rerender(); });
-
-      toggle.append(listBtn, gridBtn);
-      toolbar.appendChild(toggle);
-    }
-
     if (toolbar.childElementCount > 0) {
       parent.appendChild(toolbar);
     }
@@ -319,99 +297,101 @@ export class FileBrowser {
     }
   }
 
-  _renderList(parent, entries) {
-    const ul = document.createElement('ul');
-    ul.className = 'fb-list';
+  /** @private Build the list-view row for an entry (passed to `entryView` as `renderRow`). */
+  _makeListEntry(entry) {
+    const li = document.createElement('li');
+    li.className = 'fb-entry';
+    if (this.fileNavigation?.current() === entry.name) li.classList.add('fb-entry--active');
 
-    this._appendNavItems(ul, (label, cb) => this._makeNavEntry(label, cb));
+    const icon = document.createElement('span');
+    icon.className = 'fb-entry__icon';
+    icon.textContent = entry.isDir ? '📁' : '🖼️';
 
-    entries.forEach(entry => {
-      const li = document.createElement('li');
-      li.className = 'fb-entry';
-      if (this.fileNavigation?.current() === entry.name) li.classList.add('fb-entry--active');
+    // Name + badge sit together in a flex wrapper so the badge follows the text
+    const nameRow = document.createElement('span');
+    nameRow.className = 'fb-entry__name-row';
 
-      const icon = document.createElement('span');
-      icon.className = 'fb-entry__icon';
-      icon.textContent = entry.isDir ? '📁' : '🖼️';
+    const name = document.createElement('span');
+    name.className = 'fb-entry__name';
+    name.textContent = entry.name;
+    attachFileEntryHoverPreview(name, entry);
+    nameRow.appendChild(name);
 
-      // Name + badge sit together in a flex wrapper so the badge follows the text
-      const nameRow = document.createElement('span');
-      nameRow.className = 'fb-entry__name-row';
+    if (this.showDbStatus && entry.uuid) {
+      const badge = document.createElement('span');
+      badge.className = 'fb-entry__db-badge';
+      const count = entry.bboxCount ?? entry.bbox_count;
+      badge.textContent = count > 0 ? `${count} box${count === 1 ? '' : 'es'}` : 'DB';
+      badge.title = count > 0
+        ? `In database — ${count} bounding box${count === 1 ? '' : 'es'}`
+        : 'Registered in database (no boxes)';
+      nameRow.appendChild(badge);
+    }
 
-      const name = document.createElement('span');
-      name.className = 'fb-entry__name';
-      name.textContent = entry.name;
-      attachFileEntryHoverPreview(name, entry);
-      nameRow.appendChild(name);
-
-      if (this.showDbStatus && entry.uuid) {
-        const badge = document.createElement('span');
-        badge.className = 'fb-entry__db-badge';
-        const count = entry.bboxCount ?? entry.bbox_count;
-        badge.textContent = count > 0 ? `${count} box${count === 1 ? '' : 'es'}` : 'DB';
-        badge.title = count > 0
-          ? `In database — ${count} bounding box${count === 1 ? '' : 'es'}`
-          : 'Registered in database (no boxes)';
-        nameRow.appendChild(badge);
-      }
-
-      li.append(icon, nameRow);
-
-      li.addEventListener('click', () => this._handleEntryClick(entry));
-      ul.appendChild(li);
-    });
-
-    parent.appendChild(ul);
+    li.append(icon, nameRow);
+    li.addEventListener('click', () => this._handleEntryClick(entry));
+    return li;
   }
 
-  _renderGrid(parent, entries) {
-    const grid = document.createElement('div');
-    grid.className = 'fb-grid';
+  /** @private Build the grid-view cell for an entry (passed to `entryView` as `renderCell`). */
+  _makeGridCell(entry) {
+    const cell = document.createElement('div');
+    cell.className = 'fb-grid-cell';
+    if (this.fileNavigation?.current() === entry.name) cell.classList.add('fb-grid-cell--active');
 
-    this._appendNavItems(grid, (label, cb) => this._makeNavCell(label, cb));
+    if (entry.isDir) {
+      const icon = document.createElement('div');
+      icon.className = 'fb-grid-cell__icon';
+      icon.textContent = '📁';
+      cell.appendChild(icon);
+    } else {
+      const img = document.createElement('img');
+      img.className = 'fb-grid-cell__thumb';
+      img.loading = 'lazy';
+      img.src = `/api/images/${encodeURIComponent(entry.path)}/thumbnail?width=120`;
+      img.alt = entry.name;
+      cell.appendChild(img);
+    }
 
-    entries.forEach(entry => {
-      const cell = document.createElement('div');
-      cell.className = 'fb-grid-cell';
-      if (this.fileNavigation?.current() === entry.name) cell.classList.add('fb-grid-cell--active');
+    const label = document.createElement('div');
+    label.className = 'fb-grid-cell__name';
+    label.textContent = entry.name;
+    label.title = entry.name;
+    cell.appendChild(label);
 
-      if (entry.isDir) {
-        const icon = document.createElement('div');
-        icon.className = 'fb-grid-cell__icon';
-        icon.textContent = '📁';
-        cell.appendChild(icon);
-      } else {
-        const img = document.createElement('img');
-        img.className = 'fb-grid-cell__thumb';
-        img.loading = 'lazy';
-        img.src = `/api/images/${encodeURIComponent(entry.path)}/thumbnail?width=80`;
-        img.alt = entry.name;
-        cell.appendChild(img);
-      }
+    // Hovering anywhere over the cell (including the thumbnail) shows a larger
+    // annotated preview. Attaching to the cell rather than just the label means
+    // the hover fires when the cursor is over the image area, not only the text.
+    attachFileEntryHoverPreview(cell, entry);
 
-      const label = document.createElement('div');
-      label.className = 'fb-grid-cell__name';
-      label.textContent = entry.name;
-      label.title = entry.name;
-      attachFileEntryHoverPreview(label, entry);
-      cell.appendChild(label);
+    if (this.showDbStatus && entry.uuid) {
+      const badge = document.createElement('div');
+      badge.className = 'fb-grid-cell__db-badge';
+      const count = entry.bboxCount ?? entry.bbox_count;
+      badge.textContent = count > 0 ? `${count}` : '✓';
+      badge.title = count > 0
+        ? `In database — ${count} bounding box${count === 1 ? '' : 'es'}`
+        : 'Registered in database (no boxes)';
+      cell.appendChild(badge);
+    }
 
-      if (this.showDbStatus && entry.uuid) {
-        const badge = document.createElement('div');
-        badge.className = 'fb-grid-cell__db-badge';
-        const count = entry.bboxCount ?? entry.bbox_count;
-        badge.textContent = count > 0 ? `${count}` : '✓';
-        badge.title = count > 0
-          ? `In database — ${count} bounding box${count === 1 ? '' : 'es'}`
-          : 'Registered in database (no boxes)';
-        cell.appendChild(badge);
-      }
+    cell.addEventListener('click', () => this._handleEntryClick(entry));
+    return cell;
+  }
 
-      cell.addEventListener('click', () => this._handleEntryClick(entry));
-      grid.appendChild(cell);
-    });
-
-    parent.appendChild(grid);
+  /**
+   * @private Build the `.`/`..` virtual nav items for the current view mode,
+   * wrapped in a fragment so `entryView` can prepend them to the layout.
+   * @param {'list'|'grid'} view
+   * @returns {DocumentFragment|null}
+   */
+  _makeNavLeading(view) {
+    const fragment = document.createDocumentFragment();
+    const makeItem = view === 'grid'
+      ? (label, cb) => this._makeNavCell(label, cb)
+      : (label, cb) => this._makeNavEntry(label, cb);
+    this._appendNavItems(fragment, makeItem);
+    return fragment.childElementCount > 0 ? fragment : null;
   }
 
   /** @private Build a navigation row/cell for `.` or `..` entries. */
