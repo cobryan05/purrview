@@ -863,10 +863,11 @@ export async function createReviewPanel(container, { fetchImages = null } = {}) 
     info.className = 'card-info';
 
     // Deduplicated label chips
+    const bboxes = img.bboxes ?? [];
     const seenLabels = new Set();
     const chipsRow = document.createElement('div');
     chipsRow.style.cssText = 'display:flex;flex-wrap:wrap;gap:2px;margin-bottom:0.2em;';
-    for (const bbox of (img.bboxes ?? [])) {
+    for (const bbox of bboxes) {
       const luuid = bbox.labelUuid;
       if (!luuid || seenLabels.has(luuid)) continue;
       seenLabels.add(luuid);
@@ -878,12 +879,28 @@ export async function createReviewPanel(container, { fetchImages = null } = {}) 
       chip.style.cssText = `background:${lbl.color}33;border:1px solid ${lbl.color};`;
       chipsRow.appendChild(chip);
     }
-    if (seenLabels.size === 0) {
+    // Only show "unlabeled" chip when there are boxes but none have a resolved label.
+    if (seenLabels.size === 0 && bboxes.length > 0) {
       const chip = document.createElement('span');
       chip.className = 'label-chip';
-      chip.textContent = '(no labels)';
+      chip.textContent = 'unlabeled';
       chip.style.cssText = 'background:#88888833;border:1px solid #888;';
       chipsRow.appendChild(chip);
+    }
+
+    // Verification status line (verified / unverified counts).
+    const statusRow = document.createElement('div');
+    statusRow.style.cssText = 'color:#aaa;font-size:0.75em;margin-bottom:0.15em;';
+    if (bboxes.length > 0) {
+      let unverified = 0;
+      for (const bbox of bboxes) {
+        if ((bbox.tags ?? []).some(t => t.uuid === UNVERIFIED_TAG_UUID)) unverified++;
+      }
+      const verified = bboxes.length - unverified;
+      const parts = [];
+      if (verified > 0) parts.push(`✓ ${verified}`);
+      if (unverified > 0) parts.push(`? ${unverified}`);
+      statusRow.textContent = parts.join('  ');
     }
 
     const meta = document.createElement('div');
@@ -891,6 +908,7 @@ export async function createReviewPanel(container, { fetchImages = null } = {}) 
     meta.textContent = img.filename.split('/').slice(-2).join('/');
 
     info.appendChild(chipsRow);
+    if (bboxes.length > 0) info.appendChild(statusRow);
     info.appendChild(meta);
     card.appendChild(cb);
     card.appendChild(thumbWrap);

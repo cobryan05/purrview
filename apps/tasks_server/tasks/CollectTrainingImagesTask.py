@@ -325,6 +325,10 @@ class CollectTrainingImagesTask(Task):
                         self._resume_data = self._build_resume_data()
                         self._data_ready_flag.set()
 
+                    # Yield to the event loop between frames so HTTP handlers get cycles
+                    # even when providers deliver images as fast as they can be processed.
+                    await asyncio.sleep(0)
+
                 # If all remaining active providers were rate-limited this iteration,
                 # yield briefly to avoid busy-spinning.
                 if not any_fetched:
@@ -424,7 +428,7 @@ class CollectTrainingImagesTask(Task):
         filename = f"{source_name}_{frame_idx}.png"
         rel_path = str(Path(self._output_dir) / filename)
         abs_path = files_root / self._output_dir / filename
-        abs_path.parent.mkdir(parents=True, exist_ok=True)
+        await asyncio.to_thread(abs_path.parent.mkdir, parents=True, exist_ok=True)
 
         # cv2.imwrite is CPU-bound (PNG compression) + I/O; run off the event loop
         t0 = time.perf_counter()

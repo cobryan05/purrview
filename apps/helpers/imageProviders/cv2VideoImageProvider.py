@@ -4,6 +4,7 @@ import asyncio
 import glob
 import logging
 from collections.abc import Iterator
+from pathlib import Path
 from typing import Any, Optional
 
 import cv2
@@ -25,7 +26,26 @@ class Cv2VideoImageProvider(ImageProvider):
     def provider_type(self) -> ImageProviderType:
         return ImageProviderType.LIVE_STREAM if self._loop else ImageProviderType.FIXED
 
-    def __init__(self, paths: list[str], loop: bool = False, frame_stride: int = 1, recursive: bool = True):
+    def __init__(
+        self,
+        paths: list[str] = None,
+        loop: bool = False,
+        frame_stride: int = 1,
+        recursive: bool = True,
+        rootdir: str = "",
+        globs: list[str] = None,
+    ):
+        # Support two calling conventions:
+        #   Legacy:  paths=["/data/**/*.mp4", ...]   (absolute glob patterns)
+        #   New:     rootdir="/data", globs=["**/*.mp4", "*.jpg"]
+        if not paths and rootdir:
+            raw_globs = globs if globs else ["**/*"]
+            if isinstance(raw_globs, str):
+                raw_globs = [raw_globs]
+            paths = [str(Path(rootdir) / g) for g in raw_globs]
+        elif paths is None:
+            paths = []
+
         if isinstance(paths, str):
             paths = [paths]
 
@@ -181,13 +201,20 @@ class Cv2VideoImageProvider(ImageProvider):
             - schema: dict (optional, for nested objects)
         """
         return {
-            "paths": {
-                "type": "array",
-                "label": "Media Paths",
+            "rootdir": {
+                "type": "directory",
+                "label": "Root Directory",
                 "required": True,
+                "description": "Root directory to search for media files.",
+            },
+            "globs": {
+                "type": "array",
+                "label": "Glob Patterns",
+                "required": False,
+                "default": ["**/*"],
                 "items": {
                     "type": "string",
-                    "description": "File paths to image or video files, accepts glob patterns.",
+                    "description": "Pattern relative to root directory (e.g. **/*.mp4, *.jpg).",
                 },
             },
             "loop": {

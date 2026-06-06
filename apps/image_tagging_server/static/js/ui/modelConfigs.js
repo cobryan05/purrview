@@ -153,7 +153,7 @@ function renderConfigForm({ config, typenames, labelsMap, onSave, onCancel, onDi
 
   let _dirty = false;
   function _markDirty() {
-    if (!_dirty) { _dirty = true; onDirtyChange?.(() => _dirty); }
+    if (!_dirty) { _dirty = true; saveBtn.disabled = false; onDirtyChange?.(() => _dirty); }
   }
 
   // ---- Name + Description -------------------------------------------------
@@ -256,6 +256,7 @@ function renderConfigForm({ config, typenames, labelsMap, onSave, onCancel, onDi
   const saveBtn = document.createElement('button');
   saveBtn.type = 'button';
   saveBtn.textContent = config ? 'Save' : 'Create';
+  saveBtn.disabled = true;
   saveBtn.addEventListener('click', async () => {
     const name = nameInput.value.trim();
     if (!name) { toast('Name is required', 3000, 'error'); return; }

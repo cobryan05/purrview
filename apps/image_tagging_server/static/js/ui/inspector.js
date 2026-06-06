@@ -168,10 +168,11 @@ export function initInspector(runtime, { container = null, openTab = true } = {}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Tag Panel — live bbox inspector that also serves as the tag-tool picker.
+// Lives in the "Tags" sidebar tab.
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * Create a persistent "Bbox Info" panel in `container` for `runtime`.
+ * Create a persistent "Tags" panel in `container` for `runtime`.
  *
  * Two sections:
  *   1. Label dropdown — shows the selected bbox's class.  Changing the dropdown
@@ -183,8 +184,9 @@ export function initInspector(runtime, { container = null, openTab = true } = {}
  *      reflects whether that tag is on the selected bbox; toggling applies/removes
  *      the tag without switching tool.
  *
- * Single-click updates the inspector content.
- * Double-click additionally switches the sidebar to this tab (handled in sidebar.js).
+ * Single-click updates the panel content.
+ * Double-click and tag-tool selection additionally switch the sidebar to this
+ * tab (handled in sidebar.js).
  *
  * @param {HTMLElement} container
  * @param {import('@image_tagging_types').ImageTaggingRuntime} runtime
@@ -204,10 +206,11 @@ export function createTagPanel(container, runtime) {
   let _tagRows = new Map();   // uuid → { row, checkbox }
 
   // ── Styles ────────────────────────────────────────────────────────────────
+  // NOTE: `container` is the shared `.sidebar-tab-pane` element itself (not an
+  // inner wrapper) — its visibility is toggled via the `.active` class, which
+  // sets `display`. Don't set `display` here: an inline style would win over
+  // the class rule and make this pane visible on every tab.
   Object.assign(container.style, {
-    display: 'flex',
-    flexDirection: 'column',
-    gap: '0',
     overflowY: 'auto',
     padding: '4px',
   });
@@ -412,7 +415,7 @@ export function createTagPanel(container, runtime) {
     try {
       [_tagsMap, _labelsMap] = await Promise.all([fetchTags(), fetchLabels()]);
     } catch (err) {
-      console.error('Bbox Info panel: failed to load tags/labels', err);
+      console.error('Tags panel: failed to load tags/labels', err);
       return;
     }
 
@@ -426,7 +429,7 @@ export function createTagPanel(container, runtime) {
 
   // ── Event subscriptions ───────────────────────────────────────────────────
 
-  // Shared handler: update inspector content when a bbox is selected.
+  // Shared handler: update panel content when a bbox is selected.
   // Used by both single-click and double-click; double-click fires click first,
   // so we skip the refresh when the bbox hasn't changed.
   function _onBboxSelected({ bboxView }) {

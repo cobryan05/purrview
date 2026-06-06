@@ -31,7 +31,7 @@ export async function init(runtime) {
   const listEl = document.getElementById('labels-tool-list');
   if (listEl) await createLabelList(listEl, { mode: 'select', runtime });
 
-  // ── Eager init: bbox info / tag panel ─────────────────────────────────────
+  // ── Eager init: tags / bbox info panel ────────────────────────────────────
   // Must be alive before the first CANVAS_BBOX_CLICKED or CANVAS_TOOL_CHANGED
   // event so single-click updates and tag-tool highlights work immediately.
   const paneEl = document.getElementById('tab-inspector');
@@ -47,7 +47,7 @@ export async function init(runtime) {
 
   // ── Tab switching rules ───────────────────────────────────────────────────
 
-  // Bbox tool → Labels tab; tag tool → Bbox Info tab.
+  // Bbox tool → Labels tab; tag tool → Tags tab (where their pickers live).
   events.subscribeToCanvas(runtime.id, EventTypes.CANVAS_TOOL_CHANGED, ({ tool }) => {
     const { tool: kind } = parseToolUuid(tool);
     if (kind === 'bbox') {
@@ -57,7 +57,7 @@ export async function init(runtime) {
     }
   });
 
-  // Double-clicking a bbox in select mode → switch to Bbox Info tab.
+  // Double-clicking a bbox in select mode → switch to Tags tab.
   events.subscribeToCanvas(runtime.id, EventTypes.CANVAS_BBOX_DOUBLE_CLICKED, () => {
     activateTab('tab-inspector');
   });
