@@ -4,6 +4,10 @@ Tests for shared/domain/image/mapper.js
 createUIBBbox and bboxReadToUI are pure data transformers; they do import
 BboxView (which references the Konva global) so we must navigate to base_url
 first so Konva is available.
+
+All tests share one pre-navigated `shared_page` (module-scoped, see
+conftest.py) instead of reloading the SPA per test — they only call pure
+functions and touch no DOM/SPA state, so a single navigation suffices.
 """
 import pytest
 from playwright.sync_api import Page
@@ -11,17 +15,13 @@ from playwright.sync_api import Page
 UNVERIFIED_TAG_UUID = "00000000-0000-0000-0000-000000000001"
 
 
-def goto(page: Page, base_url: str):
-    page.goto(base_url)
-
-
 # ---------------------------------------------------------------------------
 # createUIBBbox
 # ---------------------------------------------------------------------------
 
 class TestCreateUIBBbox:
-    def test_defaults(self, page: Page, base_url: str):
-        goto(page, base_url)
+    def test_defaults(self, shared_page: Page):
+        page = shared_page
         result = page.evaluate("""async () => {
             const { createUIBBbox } = await import('/app-static/js/shared/domain/image/mapper.js');
             const bbox = createUIBBbox();
@@ -44,8 +44,8 @@ class TestCreateUIBBbox:
         assert result["selected"] is False
         assert result["dirty"] is True
 
-    def test_overrides_applied(self, page: Page, base_url: str):
-        goto(page, base_url)
+    def test_overrides_applied(self, shared_page: Page):
+        page = shared_page
         result = page.evaluate("""async () => {
             const { createUIBBbox } = await import('/app-static/js/shared/domain/image/mapper.js');
             return createUIBBbox({
@@ -65,8 +65,8 @@ class TestCreateUIBBbox:
         assert result["selected"] is True
         assert result["dirty"] is False
 
-    def test_partial_overrides_leave_defaults(self, page: Page, base_url: str):
-        goto(page, base_url)
+    def test_partial_overrides_leave_defaults(self, shared_page: Page):
+        page = shared_page
         result = page.evaluate("""async () => {
             const { createUIBBbox } = await import('/app-static/js/shared/domain/image/mapper.js');
             return createUIBBbox({ x: 0.5 });
@@ -81,8 +81,8 @@ class TestCreateUIBBbox:
 # ---------------------------------------------------------------------------
 
 class TestBboxReadToUI:
-    def test_with_label_maps_fields(self, page: Page, base_url: str):
-        goto(page, base_url)
+    def test_with_label_maps_fields(self, shared_page: Page):
+        page = shared_page
         result = page.evaluate("""async () => {
             const { bboxReadToUI } = await import('/app-static/js/shared/domain/image/mapper.js');
             const raw = {
@@ -108,9 +108,9 @@ class TestBboxReadToUI:
         assert result["dirty"] is False
         assert result["selected"] is False
 
-    def test_no_label_no_verification_tag_adds_unverified(self, page: Page, base_url: str):
+    def test_no_label_no_verification_tag_adds_unverified(self, shared_page: Page):
         """A bbox with no label and no existing verification tag gets UNVERIFIED added."""
-        goto(page, base_url)
+        page = shared_page
         result = page.evaluate("""async () => {
             const { bboxReadToUI } = await import('/app-static/js/shared/domain/image/mapper.js');
             const raw = { uuid: 'b', x: 0, y: 0, width: 0.1, height: 0.1, label: null, tags: [] };
@@ -119,9 +119,9 @@ class TestBboxReadToUI:
         }""")
         assert UNVERIFIED_TAG_UUID in result
 
-    def test_with_label_does_not_add_unverified(self, page: Page, base_url: str):
+    def test_with_label_does_not_add_unverified(self, shared_page: Page):
         """A human-assigned label means the bbox was reviewed — UNVERIFIED stays out."""
-        goto(page, base_url)
+        page = shared_page
         result = page.evaluate(f"""async () => {{
             const {{ bboxReadToUI }} = await import('/app-static/js/shared/domain/image/mapper.js');
             const raw = {{
@@ -134,9 +134,9 @@ class TestBboxReadToUI:
         }}""")
         assert UNVERIFIED_TAG_UUID not in result
 
-    def test_existing_verification_tag_not_duplicated(self, page: Page, base_url: str):
+    def test_existing_verification_tag_not_duplicated(self, shared_page: Page):
         """If the DB row already has a verification tag, UNVERIFIED is not added."""
-        goto(page, base_url)
+        page = shared_page
         result = page.evaluate(f"""async () => {{
             const {{ bboxReadToUI }} = await import('/app-static/js/shared/domain/image/mapper.js');
             const UNVERIFIED = '{UNVERIFIED_TAG_UUID}';
@@ -151,9 +151,9 @@ class TestBboxReadToUI:
         }}""")
         assert result == 1  # present but not duplicated
 
-    def test_tag_icon_null_preserved(self, page: Page, base_url: str):
+    def test_tag_icon_null_preserved(self, shared_page: Page):
         """Null icons in raw tags are kept as null, not coerced."""
-        goto(page, base_url)
+        page = shared_page
         result = page.evaluate(f"""async () => {{
             const {{ bboxReadToUI }} = await import('/app-static/js/shared/domain/image/mapper.js');
             const UNVERIFIED = '{UNVERIFIED_TAG_UUID}';
@@ -168,8 +168,8 @@ class TestBboxReadToUI:
         }}""")
         assert result is None
 
-    def test_coordinates_preserved(self, page: Page, base_url: str):
-        goto(page, base_url)
+    def test_coordinates_preserved(self, shared_page: Page):
+        page = shared_page
         result = page.evaluate("""async () => {
             const { bboxReadToUI } = await import('/app-static/js/shared/domain/image/mapper.js');
             const raw = {

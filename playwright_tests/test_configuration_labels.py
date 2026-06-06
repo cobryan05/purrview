@@ -68,10 +68,13 @@ def _mock_labels(page: Page, labels: list):
 
 
 class TestLabelPaneStructure:
-    def test_labels_list_container_visible(self, page: Page, base_url: str):
-        """The #labels-list div is present after entering Labels & Tags."""
+    def test_pane_structure(self, page: Page, base_url: str):
+        """The labels pane renders its container and add-label control in one navigation."""
+        _mock_labels(page, [])
         _navigate_to_labels(page, base_url)
         expect(page.locator("#labels-list")).to_be_visible()
+        page.wait_for_selector("#labels-list button[title='Add label']", timeout=4000)
+        expect(page.locator("#labels-list button[title='Add label']")).to_be_visible()
 
     def test_no_js_errors_on_labels_tab(self, page: Page, base_url: str):
         """No console errors during Labels pane load."""
@@ -81,14 +84,6 @@ class TestLabelPaneStructure:
         page.wait_for_timeout(1000)
         uncaught = [e for e in errors if "TypeError" in e or "Uncaught" in e]
         assert uncaught == [], f"Uncaught JS errors: {uncaught}"
-
-    def test_add_root_label_button_present(self, page: Page, base_url: str):
-        """An 'Add label' button (title='Add label') appears for creating root labels."""
-        _mock_labels(page, [])
-        _navigate_to_labels(page, base_url)
-        # Wait for the label list component to render
-        page.wait_for_selector("#labels-list button[title='Add label']", timeout=4000)
-        expect(page.locator("#labels-list button[title='Add label']")).to_be_visible()
 
 
 # ---------------------------------------------------------------------------

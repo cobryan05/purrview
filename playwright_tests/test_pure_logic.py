@@ -2,8 +2,10 @@
 Pure-logic unit tests — no real network, minimal DOM.
 
 Each test imports a specific module inside the browser via page.evaluate so
-/app-static/ imports resolve correctly.  A fresh page per test means all
-module-level singletons (caches, event listeners, etc.) start clean.
+/app-static/ imports resolve correctly. All tests share one pre-navigated
+`shared_page` (module-scoped, see conftest.py) — they create fresh instances
+or call `events.clear()` for the EventBus singleton, so no module-level state
+leaks between tests.
 """
 import re
 
@@ -11,21 +13,12 @@ import pytest
 from playwright.sync_api import Page
 
 # ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-def goto(page: Page, base_url: str):
-    """Navigate and wait for initial load (gives Konva time to register as global)."""
-    page.goto(base_url)
-
-
-# ---------------------------------------------------------------------------
 # viewport.js — computeViewport
 # ---------------------------------------------------------------------------
 
 class TestComputeViewport:
-    def test_landscape_image_fits_by_width(self, page: Page, base_url: str):
-        goto(page, base_url)
+    def test_landscape_image_fits_by_width(self, shared_page: Page):
+        page = shared_page
         result = page.evaluate("""async () => {
             const { computeViewport } = await import('/app-static/js/app/image-tagging/canvas/viewport.js');
             // container 800x600, image 400x200 (landscape) → scale limited by width
@@ -35,8 +28,8 @@ class TestComputeViewport:
         assert result["offsetY"] > 0   # vertically centred
         assert result["offsetX"] == 0  # fills width exactly
 
-    def test_portrait_image_fits_by_height(self, page: Page, base_url: str):
-        goto(page, base_url)
+    def test_portrait_image_fits_by_height(self, shared_page: Page):
+        page = shared_page
         result = page.evaluate("""async () => {
             const { computeViewport } = await import('/app-static/js/app/image-tagging/canvas/viewport.js');
             // container 400x800, image 100x400 → height-limited
@@ -46,8 +39,8 @@ class TestComputeViewport:
         assert result["offsetX"] > 0
         assert result["offsetY"] == 0
 
-    def test_square_image_square_container(self, page: Page, base_url: str):
-        goto(page, base_url)
+    def test_square_image_square_container(self, shared_page: Page):
+        page = shared_page
         result = page.evaluate("""async () => {
             const { computeViewport } = await import('/app-static/js/app/image-tagging/canvas/viewport.js');
             return computeViewport(500, 500, 500, 500);
@@ -56,16 +49,16 @@ class TestComputeViewport:
         assert result["offsetX"] == 0
         assert result["offsetY"] == 0
 
-    def test_large_image_scales_down(self, page: Page, base_url: str):
-        goto(page, base_url)
+    def test_large_image_scales_down(self, shared_page: Page):
+        page = shared_page
         result = page.evaluate("""async () => {
             const { computeViewport } = await import('/app-static/js/app/image-tagging/canvas/viewport.js');
             return computeViewport(200, 200, 1000, 1000);
         }""")
         assert result["scale"] == pytest.approx(0.2)
 
-    def test_image_width_and_height_preserved(self, page: Page, base_url: str):
-        goto(page, base_url)
+    def test_image_width_and_height_preserved(self, shared_page: Page):
+        page = shared_page
         result = page.evaluate("""async () => {
             const { computeViewport } = await import('/app-static/js/app/image-tagging/canvas/viewport.js');
             return computeViewport(800, 600, 320, 240);
@@ -75,8 +68,8 @@ class TestComputeViewport:
 
 
 class TestScreenToImage:
-    def test_zero_offset_identity(self, page: Page, base_url: str):
-        goto(page, base_url)
+    def test_zero_offset_identity(self, shared_page: Page):
+        page = shared_page
         result = page.evaluate("""async () => {
             const { screenToImage } = await import('/app-static/js/app/image-tagging/canvas/viewport.js');
             const vp = { offsetX: 0, offsetY: 0, scale: 1 };
@@ -85,8 +78,8 @@ class TestScreenToImage:
         assert result["x"] == pytest.approx(100)
         assert result["y"] == pytest.approx(200)
 
-    def test_with_offset_and_scale(self, page: Page, base_url: str):
-        goto(page, base_url)
+    def test_with_offset_and_scale(self, shared_page: Page):
+        page = shared_page
         result = page.evaluate("""async () => {
             const { screenToImage } = await import('/app-static/js/app/image-tagging/canvas/viewport.js');
             const vp = { offsetX: 50, offsetY: 100, scale: 2 };
@@ -102,50 +95,50 @@ class TestScreenToImage:
 # ---------------------------------------------------------------------------
 
 class TestToolPredicates:
-    def test_isDrawTool_bare_bbox(self, page: Page, base_url: str):
-        goto(page, base_url)
+    def test_isDrawTool_bare_bbox(self, shared_page: Page):
+        page = shared_page
         assert page.evaluate("""async () => {
             const { isDrawTool } = await import('/app-static/js/app/image-tagging/canvas/tools.js');
             return isDrawTool('bbox');
         }""") is True
 
-    def test_isDrawTool_bbox_with_uuid(self, page: Page, base_url: str):
-        goto(page, base_url)
+    def test_isDrawTool_bbox_with_uuid(self, shared_page: Page):
+        page = shared_page
         assert page.evaluate("""async () => {
             const { isDrawTool } = await import('/app-static/js/app/image-tagging/canvas/tools.js');
             return isDrawTool('bbox:some-uuid-here');
         }""") is True
 
-    def test_isDrawTool_select_is_false(self, page: Page, base_url: str):
-        goto(page, base_url)
+    def test_isDrawTool_select_is_false(self, shared_page: Page):
+        page = shared_page
         assert page.evaluate("""async () => {
             const { isDrawTool } = await import('/app-static/js/app/image-tagging/canvas/tools.js');
             return isDrawTool('select');
         }""") is False
 
-    def test_isDrawTool_tag_is_false(self, page: Page, base_url: str):
-        goto(page, base_url)
+    def test_isDrawTool_tag_is_false(self, shared_page: Page):
+        page = shared_page
         assert page.evaluate("""async () => {
             const { isDrawTool } = await import('/app-static/js/app/image-tagging/canvas/tools.js');
             return isDrawTool('tag:some-uuid');
         }""") is False
 
-    def test_isTagTool_with_uuid(self, page: Page, base_url: str):
-        goto(page, base_url)
+    def test_isTagTool_with_uuid(self, shared_page: Page):
+        page = shared_page
         assert page.evaluate("""async () => {
             const { isTagTool } = await import('/app-static/js/app/image-tagging/canvas/tools.js');
             return isTagTool('tag:some-uuid');
         }""") is True
 
-    def test_isTagTool_select_is_false(self, page: Page, base_url: str):
-        goto(page, base_url)
+    def test_isTagTool_select_is_false(self, shared_page: Page):
+        page = shared_page
         assert page.evaluate("""async () => {
             const { isTagTool } = await import('/app-static/js/app/image-tagging/canvas/tools.js');
             return isTagTool('select');
         }""") is False
 
-    def test_isTagTool_bbox_is_false(self, page: Page, base_url: str):
-        goto(page, base_url)
+    def test_isTagTool_bbox_is_false(self, shared_page: Page):
+        page = shared_page
         assert page.evaluate("""async () => {
             const { isTagTool } = await import('/app-static/js/app/image-tagging/canvas/tools.js');
             return isTagTool('bbox:uuid');
@@ -153,16 +146,16 @@ class TestToolPredicates:
 
 
 class TestParseToolUuid:
-    def test_select_has_null_uuid(self, page: Page, base_url: str):
-        goto(page, base_url)
+    def test_select_has_null_uuid(self, shared_page: Page):
+        page = shared_page
         result = page.evaluate("""async () => {
             const { parseToolUuid } = await import('/app-static/js/app/image-tagging/canvas/tools.js');
             return parseToolUuid('select');
         }""")
         assert result == {"tool": "select", "uuid": None}
 
-    def test_bare_bbox_has_null_uuid(self, page: Page, base_url: str):
-        goto(page, base_url)
+    def test_bare_bbox_has_null_uuid(self, shared_page: Page):
+        page = shared_page
         result = page.evaluate("""async () => {
             const { parseToolUuid } = await import('/app-static/js/app/image-tagging/canvas/tools.js');
             return parseToolUuid('bbox:');
@@ -170,16 +163,16 @@ class TestParseToolUuid:
         assert result["tool"] == "bbox"
         assert result["uuid"] is None
 
-    def test_bbox_with_uuid(self, page: Page, base_url: str):
-        goto(page, base_url)
+    def test_bbox_with_uuid(self, shared_page: Page):
+        page = shared_page
         result = page.evaluate("""async () => {
             const { parseToolUuid } = await import('/app-static/js/app/image-tagging/canvas/tools.js');
             return parseToolUuid('bbox:abc-123');
         }""")
         assert result == {"tool": "bbox", "uuid": "abc-123"}
 
-    def test_tag_with_uuid(self, page: Page, base_url: str):
-        goto(page, base_url)
+    def test_tag_with_uuid(self, shared_page: Page):
+        page = shared_page
         result = page.evaluate("""async () => {
             const { parseToolUuid } = await import('/app-static/js/app/image-tagging/canvas/tools.js');
             return parseToolUuid('tag:def-456');
@@ -192,8 +185,8 @@ class TestParseToolUuid:
 # ---------------------------------------------------------------------------
 
 class TestEventBus:
-    def test_subscribe_and_publish_delivers_payload(self, page: Page, base_url: str):
-        goto(page, base_url)
+    def test_subscribe_and_publish_delivers_payload(self, shared_page: Page):
+        page = shared_page
         result = page.evaluate("""async () => {
             const { events } = await import('/app-static/js/shared/events/bus.js');
             events.clear();
@@ -204,8 +197,8 @@ class TestEventBus:
         }""")
         assert result == {"value": 42}
 
-    def test_unsubscribe_stops_delivery(self, page: Page, base_url: str):
-        goto(page, base_url)
+    def test_unsubscribe_stops_delivery(self, shared_page: Page):
+        page = shared_page
         result = page.evaluate("""async () => {
             const { events } = await import('/app-static/js/shared/events/bus.js');
             events.clear();
@@ -218,8 +211,8 @@ class TestEventBus:
         }""")
         assert result == 1
 
-    def test_multiple_handlers_all_called(self, page: Page, base_url: str):
-        goto(page, base_url)
+    def test_multiple_handlers_all_called(self, shared_page: Page):
+        page = shared_page
         result = page.evaluate("""async () => {
             const { events } = await import('/app-static/js/shared/events/bus.js');
             events.clear();
@@ -231,9 +224,9 @@ class TestEventBus:
         }""")
         assert sorted(result) == ["a", "b"]
 
-    def test_subscribeToCanvas_passes_global_event(self, page: Page, base_url: str):
+    def test_subscribeToCanvas_passes_global_event(self, shared_page: Page):
         """Events with no runtimeId in payload reach all subscribeToCanvas listeners."""
-        goto(page, base_url)
+        page = shared_page
         result = page.evaluate("""async () => {
             const { events } = await import('/app-static/js/shared/events/bus.js');
             events.clear();
@@ -244,8 +237,8 @@ class TestEventBus:
         }""")
         assert result is True
 
-    def test_subscribeToCanvas_filters_wrong_runtimeId(self, page: Page, base_url: str):
-        goto(page, base_url)
+    def test_subscribeToCanvas_filters_wrong_runtimeId(self, shared_page: Page):
+        page = shared_page
         result = page.evaluate("""async () => {
             const { events } = await import('/app-static/js/shared/events/bus.js');
             events.clear();
@@ -256,8 +249,8 @@ class TestEventBus:
         }""")
         assert result is False
 
-    def test_subscribeToCanvas_accepts_matching_runtimeId(self, page: Page, base_url: str):
-        goto(page, base_url)
+    def test_subscribeToCanvas_accepts_matching_runtimeId(self, shared_page: Page):
+        page = shared_page
         result = page.evaluate("""async () => {
             const { events } = await import('/app-static/js/shared/events/bus.js');
             events.clear();
@@ -268,8 +261,8 @@ class TestEventBus:
         }""")
         assert result is True
 
-    def test_clear_removes_all_listeners(self, page: Page, base_url: str):
-        goto(page, base_url)
+    def test_clear_removes_all_listeners(self, shared_page: Page):
+        page = shared_page
         result = page.evaluate("""async () => {
             const { events } = await import('/app-static/js/shared/events/bus.js');
             events.clear();
@@ -287,8 +280,8 @@ class TestEventBus:
 # ---------------------------------------------------------------------------
 
 class TestCreateCachedFetcher:
-    def test_first_fetch_calls_fn(self, page: Page, base_url: str):
-        goto(page, base_url)
+    def test_first_fetch_calls_fn(self, shared_page: Page):
+        page = shared_page
         result = page.evaluate("""async () => {
             const { createCachedFetcher } = await import('/app-static/js/ui/utils/data/createCachedFetcher.js');
             let callCount = 0;
@@ -304,8 +297,8 @@ class TestCreateCachedFetcher:
         assert result["val"] == "v_key1"
         assert result["callCount"] == 1
 
-    def test_second_fetch_is_cache_hit(self, page: Page, base_url: str):
-        goto(page, base_url)
+    def test_second_fetch_is_cache_hit(self, shared_page: Page):
+        page = shared_page
         result = page.evaluate("""async () => {
             const { createCachedFetcher } = await import('/app-static/js/ui/utils/data/createCachedFetcher.js');
             let callCount = 0;
@@ -319,8 +312,8 @@ class TestCreateCachedFetcher:
         }""")
         assert result == 1
 
-    def test_concurrent_fetches_deduplicated(self, page: Page, base_url: str):
-        goto(page, base_url)
+    def test_concurrent_fetches_deduplicated(self, shared_page: Page):
+        page = shared_page
         result = page.evaluate("""async () => {
             const { createCachedFetcher } = await import('/app-static/js/ui/utils/data/createCachedFetcher.js');
             let callCount = 0;
@@ -336,8 +329,8 @@ class TestCreateCachedFetcher:
         assert result["r2"] == "v_key1"
         assert result["callCount"] == 1
 
-    def test_clear_forces_refetch(self, page: Page, base_url: str):
-        goto(page, base_url)
+    def test_clear_forces_refetch(self, shared_page: Page):
+        page = shared_page
         result = page.evaluate("""async () => {
             const { createCachedFetcher } = await import('/app-static/js/ui/utils/data/createCachedFetcher.js');
             let callCount = 0;
@@ -352,8 +345,8 @@ class TestCreateCachedFetcher:
         }""")
         assert result == 2
 
-    def test_set_preloads_cache(self, page: Page, base_url: str):
-        goto(page, base_url)
+    def test_set_preloads_cache(self, shared_page: Page):
+        page = shared_page
         result = page.evaluate("""async () => {
             const { createCachedFetcher } = await import('/app-static/js/ui/utils/data/createCachedFetcher.js');
             let callCount = 0;
@@ -365,8 +358,8 @@ class TestCreateCachedFetcher:
         assert result["val"] == "preloaded"
         assert result["callCount"] == 0
 
-    def test_array_key_returns_map(self, page: Page, base_url: str):
-        goto(page, base_url)
+    def test_array_key_returns_map(self, shared_page: Page):
+        page = shared_page
         result = page.evaluate("""async () => {
             const { createCachedFetcher } = await import('/app-static/js/ui/utils/data/createCachedFetcher.js');
             const fetcher = createCachedFetcher(async (keys) => {
@@ -383,8 +376,8 @@ class TestCreateCachedFetcher:
 # ---------------------------------------------------------------------------
 
 class TestFileNavigation:
-    def test_empty_navigation(self, page: Page, base_url: str):
-        goto(page, base_url)
+    def test_empty_navigation(self, shared_page: Page):
+        page = shared_page
         result = page.evaluate("""async () => {
             const { FileNavigation } = await import('/app-static/js/ui/utils/fileNavigation.js');
             const nav = new FileNavigation();
@@ -394,8 +387,8 @@ class TestFileNavigation:
         assert result["hasNext"] is False
         assert result["hasPrev"] is False
 
-    def test_setDirectory_resets_index(self, page: Page, base_url: str):
-        goto(page, base_url)
+    def test_setDirectory_resets_index(self, shared_page: Page):
+        page = shared_page
         result = page.evaluate("""async () => {
             const { FileNavigation } = await import('/app-static/js/ui/utils/fileNavigation.js');
             const nav = new FileNavigation(['a', 'b', 'c'], '/dir');
@@ -406,8 +399,8 @@ class TestFileNavigation:
         assert result["current"] is None
         assert result["files"] == ["x", "y"]
 
-    def test_select_by_name(self, page: Page, base_url: str):
-        goto(page, base_url)
+    def test_select_by_name(self, shared_page: Page):
+        page = shared_page
         result = page.evaluate("""async () => {
             const { FileNavigation } = await import('/app-static/js/ui/utils/fileNavigation.js');
             const nav = new FileNavigation(['a.jpg', 'b.jpg', 'c.jpg'], '/dir');
@@ -416,8 +409,8 @@ class TestFileNavigation:
         }""")
         assert result == "b.jpg"
 
-    def test_select_nonexistent_does_nothing(self, page: Page, base_url: str):
-        goto(page, base_url)
+    def test_select_nonexistent_does_nothing(self, shared_page: Page):
+        page = shared_page
         result = page.evaluate("""async () => {
             const { FileNavigation } = await import('/app-static/js/ui/utils/fileNavigation.js');
             const nav = new FileNavigation(['a.jpg'], '/dir');
@@ -426,8 +419,8 @@ class TestFileNavigation:
         }""")
         assert result is None
 
-    def test_next_and_prev(self, page: Page, base_url: str):
-        goto(page, base_url)
+    def test_next_and_prev(self, shared_page: Page):
+        page = shared_page
         result = page.evaluate("""async () => {
             const { FileNavigation } = await import('/app-static/js/ui/utils/fileNavigation.js');
             const nav = new FileNavigation(['a', 'b', 'c'], '/dir');
@@ -440,8 +433,8 @@ class TestFileNavigation:
         }""")
         assert result == ["b", "c", "c", "b"]
 
-    def test_has_next_has_prev_boundaries(self, page: Page, base_url: str):
-        goto(page, base_url)
+    def test_has_next_has_prev_boundaries(self, shared_page: Page):
+        page = shared_page
         result = page.evaluate("""async () => {
             const { FileNavigation } = await import('/app-static/js/ui/utils/fileNavigation.js');
             const nav = new FileNavigation(['a', 'b'], '/dir');
@@ -454,8 +447,8 @@ class TestFileNavigation:
         assert result["atFirst"] == {"hasNext": True, "hasPrev": False}
         assert result["atLast"] == {"hasNext": False, "hasPrev": True}
 
-    def test_currentPath_joins_dir_and_file(self, page: Page, base_url: str):
-        goto(page, base_url)
+    def test_currentPath_joins_dir_and_file(self, shared_page: Page):
+        page = shared_page
         result = page.evaluate("""async () => {
             const { FileNavigation } = await import('/app-static/js/ui/utils/fileNavigation.js');
             const nav = new FileNavigation(['img.jpg'], '/my/dir');
@@ -464,8 +457,8 @@ class TestFileNavigation:
         }""")
         assert result == "/my/dir/img.jpg"
 
-    def test_currentPath_root_dir_no_double_slash(self, page: Page, base_url: str):
-        goto(page, base_url)
+    def test_currentPath_root_dir_no_double_slash(self, shared_page: Page):
+        page = shared_page
         result = page.evaluate("""async () => {
             const { FileNavigation } = await import('/app-static/js/ui/utils/fileNavigation.js');
             const nav = new FileNavigation(['img.jpg'], '/');
@@ -474,8 +467,8 @@ class TestFileNavigation:
         }""")
         assert result == "img.jpg"
 
-    def test_getFiles_returns_copy(self, page: Page, base_url: str):
-        goto(page, base_url)
+    def test_getFiles_returns_copy(self, shared_page: Page):
+        page = shared_page
         result = page.evaluate("""async () => {
             const { FileNavigation } = await import('/app-static/js/ui/utils/fileNavigation.js');
             const nav = new FileNavigation(['a', 'b', 'c'], '/dir');
@@ -491,8 +484,8 @@ class TestFileNavigation:
 # ---------------------------------------------------------------------------
 
 class TestGenerateUUID:
-    def test_format_matches_rfc4122(self, page: Page, base_url: str):
-        goto(page, base_url)
+    def test_format_matches_rfc4122(self, shared_page: Page):
+        page = shared_page
         uuid = page.evaluate("""async () => {
             const { generateUUID } = await import('/app-static/js/ui/utils/utils.js');
             return generateUUID();
@@ -502,8 +495,8 @@ class TestGenerateUUID:
             uuid,
         ), f"UUID format wrong: {uuid}"
 
-    def test_two_calls_are_distinct(self, page: Page, base_url: str):
-        goto(page, base_url)
+    def test_two_calls_are_distinct(self, shared_page: Page):
+        page = shared_page
         result = page.evaluate("""async () => {
             const { generateUUID } = await import('/app-static/js/ui/utils/utils.js');
             return [generateUUID(), generateUUID()];
@@ -516,8 +509,8 @@ class TestGenerateUUID:
 # ---------------------------------------------------------------------------
 
 class TestIgnoreKeyReturn:
-    def test_single_key_returns_value(self, page: Page, base_url: str):
-        goto(page, base_url)
+    def test_single_key_returns_value(self, shared_page: Page):
+        page = shared_page
         result = page.evaluate("""async () => {
             const { ignoreKeyReturn } = await import('/app-static/js/shared/api/apiUtils.js');
             const m = ignoreKeyReturn(['k1'], 'hello');
@@ -525,8 +518,8 @@ class TestIgnoreKeyReturn:
         }""")
         assert result == "hello"
 
-    def test_multiple_keys_all_get_same_value(self, page: Page, base_url: str):
-        goto(page, base_url)
+    def test_multiple_keys_all_get_same_value(self, shared_page: Page):
+        page = shared_page
         result = page.evaluate("""async () => {
             const { ignoreKeyReturn } = await import('/app-static/js/shared/api/apiUtils.js');
             const m = ignoreKeyReturn(['a', 'b', 'c'], 42);
@@ -540,8 +533,8 @@ class TestIgnoreKeyReturn:
 # ---------------------------------------------------------------------------
 
 class TestBuildHierarchy:
-    def test_root_and_children(self, page: Page, base_url: str):
-        goto(page, base_url)
+    def test_root_and_children(self, shared_page: Page):
+        page = shared_page
         result = page.evaluate("""async () => {
             const { buildHierarchy } = await import('/app-static/js/ui/labelList.js');
             const labels = new Map([
@@ -558,8 +551,8 @@ class TestBuildHierarchy:
         assert result["rootUuids"] == ["uuid1"]
         assert sorted(result["uuid1Children"]) == ["uuid2", "uuid3"]
 
-    def test_children_sorted_alphabetically(self, page: Page, base_url: str):
-        goto(page, base_url)
+    def test_children_sorted_alphabetically(self, shared_page: Page):
+        page = shared_page
         result = page.evaluate("""async () => {
             const { buildHierarchy } = await import('/app-static/js/ui/labelList.js');
             const labels = new Map([
@@ -573,8 +566,8 @@ class TestBuildHierarchy:
         }""")
         assert result == ["Aardvark", "Mouse", "Zebra"]
 
-    def test_filter_excludes_labels(self, page: Page, base_url: str):
-        goto(page, base_url)
+    def test_filter_excludes_labels(self, shared_page: Page):
+        page = shared_page
         result = page.evaluate("""async () => {
             const { buildHierarchy } = await import('/app-static/js/ui/labelList.js');
             const labels = new Map([
@@ -587,8 +580,8 @@ class TestBuildHierarchy:
         }""")
         assert result == ["Alpha"]
 
-    def test_empty_map_returns_empty_hierarchy(self, page: Page, base_url: str):
-        goto(page, base_url)
+    def test_empty_map_returns_empty_hierarchy(self, shared_page: Page):
+        page = shared_page
         result = page.evaluate("""async () => {
             const { buildHierarchy } = await import('/app-static/js/ui/labelList.js');
             const h = buildHierarchy(new Map(), null);

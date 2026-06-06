@@ -154,24 +154,13 @@ def _setup_full_task_mocks(page: Page, configs=None, tasks=None):
 
 
 class TestTaskPaneStructure:
-    def test_task_config_list_container_visible(self, page: Page, base_url: str):
-        """The #task-config-list div is present on the Task Management tab."""
+    def test_pane_structure(self, page: Page, base_url: str):
+        """The task pane renders both list containers and key headings in one navigation."""
         _setup_full_task_mocks(page)
         _navigate_to_tasks(page, base_url)
         expect(page.locator("#task-config-list")).to_be_visible()
-
-    def test_active_tasks_list_container_present(self, page: Page, base_url: str):
-        """The #active-tasks-list div is present in the DOM on the Task Management tab.
-        The div may be empty (zero height) when no tasks exist, but it must be attached."""
-        _setup_full_task_mocks(page)
-        _navigate_to_tasks(page, base_url)
         # Use to_be_attached: an empty div is not "visible" to Playwright (zero height)
         expect(page.locator("#active-tasks-list")).to_be_attached()
-
-    def test_create_task_config_header_present(self, page: Page, base_url: str):
-        """A 'Create New Task Config' heading appears in the task config section."""
-        _setup_full_task_mocks(page)
-        _navigate_to_tasks(page, base_url)
         page.wait_for_selector("#task-config-list h3", timeout=4000)
         headers = page.locator("#task-config-list h3").all_text_contents()
         assert any("Create" in h for h in headers), f"No 'Create' header. Got: {headers}"

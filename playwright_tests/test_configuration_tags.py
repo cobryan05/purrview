@@ -68,27 +68,13 @@ def _mock_tags(page: Page, tags: list):
 
 
 class TestTagPaneStructure:
-    def test_tags_list_container_is_visible(self, page: Page, base_url: str):
-        """The #tags-list div is present after entering the Labels & Tags tab."""
+    def test_pane_structure(self, page: Page, base_url: str):
+        """The tags pane renders its container, controls, and inputs in one navigation."""
         _navigate_to_tags(page, base_url)
         expect(page.locator("#tags-list")).to_be_visible()
-
-    def test_add_tag_button_is_present(self, page: Page, base_url: str):
-        """An 'Add tag' emoji-button (title='Add tag') appears in the tags section."""
-        _navigate_to_tags(page, base_url)
         page.wait_for_selector("#tags-list button[title='Add tag']", timeout=4000)
         expect(page.locator("#tags-list button[title='Add tag']")).to_be_visible()
-
-    def test_refresh_button_is_present(self, page: Page, base_url: str):
-        """A Refresh emoji-button (title='Refresh') appears in the tags section."""
-        _navigate_to_tags(page, base_url)
-        page.wait_for_selector("#tags-list button[title='Refresh']", timeout=4000)
         expect(page.locator("#tags-list button[title='Refresh']")).to_be_visible()
-
-    def test_tag_name_input_is_present(self, page: Page, base_url: str):
-        """The new-tag name input (placeholder='New Tag Name') is visible."""
-        _navigate_to_tags(page, base_url)
-        page.wait_for_selector("#tags-list input[placeholder='New Tag Name']", timeout=4000)
         expect(page.locator("#tags-list input[placeholder='New Tag Name']")).to_be_visible()
 
     def test_no_js_errors_on_tags_tab(self, page: Page, base_url: str):

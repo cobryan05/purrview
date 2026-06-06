@@ -3,6 +3,12 @@ Tests for image-tagging/runtime.js — undo / redo, dirty-state lifecycle,
 and undo-stack capping.
 Phase 2 canvas tests — require Konva as a global (navigate to base_url).
 
+Intentionally NOT migrated to the shared-page fixture: each test appends a
+fixed-position canvas container to <body> and creates a Konva stage/runtime
+without ever removing them, so a shared page would accumulate overlapping
+stages/containers across tests and risk cross-test interference. A fresh
+page per test keeps each Konva runtime isolated.
+
 Run with:
     pytest tests/playwright/test_runtime.py -p no:xdist --override-ini="addopts=" -v
 """

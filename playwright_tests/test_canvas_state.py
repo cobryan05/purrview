@@ -2,6 +2,12 @@
 Tests for canvas/state.js (createCanvasState) and canvas/manager.js (rerenderBboxViews).
 Phase 2 canvas tests — require Konva to be available as a global (navigate to base_url).
 
+Intentionally NOT migrated to the shared-page fixture: each test appends a
+fixed-position canvas container to <body> and creates a Konva stage without
+ever removing it, so a shared page would accumulate overlapping stages across
+tests and risk cross-test interference. A fresh page per test keeps each
+Konva stage isolated.
+
 Run with:
     pytest tests/playwright/test_canvas_state.py -p no:xdist --override-ini="addopts=" -v
 """

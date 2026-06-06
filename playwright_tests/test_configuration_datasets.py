@@ -101,10 +101,32 @@ def _mock_tags_empty(page: Page):
 
 
 class TestDatasetPaneStructure:
-    def test_dataset_management_box_visible(self, page: Page, base_url: str):
-        """The #dataset-management-box div is present on the Dataset Management tab."""
+    def test_pane_structure(self, page: Page, base_url: str):
+        """The dataset pane renders its container and creation affordances in one navigation."""
+        _mock_datasets(page, [])
         _navigate_to_datasets(page, base_url)
         expect(page.locator("#dataset-management-box")).to_be_visible()
+
+        page.wait_for_timeout(1000)
+        content = page.locator("#dataset-management-box").inner_text()
+        assert "New Dataset" in content or "Create Dataset" in content or "Dataset name" in content, (
+            f"No dataset creation affordance found. Content: {content!r}"
+        )
+
+        # Click "+ New Dataset" if it exists to reveal the create form
+        new_btn = page.locator("#dataset-management-box button", has_text="New Dataset")
+        if new_btn.count() > 0:
+            new_btn.first.click()
+            page.wait_for_timeout(500)
+
+        page.wait_for_selector(
+            "#dataset-management-box button, #dataset-management-box input[placeholder='Dataset name']",
+            timeout=3000,
+        )
+        content = page.locator("#dataset-management-box").inner_text()
+        assert "Create Dataset" in content or "Dataset name" in content, (
+            f"No 'Create Dataset' button or name input. Content: {content!r}"
+        )
 
     def test_no_js_errors_on_datasets_tab(self, page: Page, base_url: str):
         """No console errors while loading the Dataset Management pane."""
@@ -114,39 +136,6 @@ class TestDatasetPaneStructure:
         page.wait_for_timeout(1200)
         uncaught = [e for e in errors if "TypeError" in e or "Uncaught" in e]
         assert uncaught == [], f"Uncaught JS errors: {uncaught}"
-
-    def test_new_dataset_button_or_form_present(self, page: Page, base_url: str):
-        """A '+ New Dataset' button or New Dataset form is present."""
-        _mock_datasets(page, [])
-        _navigate_to_datasets(page, base_url)
-        page.wait_for_timeout(1000)
-        # Either a '+ New Dataset' button or the create form section is visible
-        content = page.locator("#dataset-management-box").inner_text()
-        assert "New Dataset" in content or "Create Dataset" in content or "Dataset name" in content, (
-            f"No dataset creation affordance found. Content: {content!r}"
-        )
-
-    def test_create_dataset_button_present(self, page: Page, base_url: str):
-        """A 'Create Dataset' button is present (inside the create form section)."""
-        _mock_datasets(page, [])
-        _navigate_to_datasets(page, base_url)
-        page.wait_for_timeout(800)
-
-        # Click "+ New Dataset" if it exists to reveal the form
-        new_btn = page.locator("#dataset-management-box button", has_text="New Dataset")
-        if new_btn.count() > 0:
-            new_btn.first.click()
-            page.wait_for_timeout(500)
-
-        # Now look for the Create Dataset button
-        page.wait_for_selector(
-            "#dataset-management-box button, #dataset-management-box input[placeholder='Dataset name']",
-            timeout=3000,
-        )
-        content = page.locator("#dataset-management-box").inner_text()
-        assert "Create Dataset" in content or "Dataset name" in content, (
-            f"No 'Create Dataset' button or name input. Content: {content!r}"
-        )
 
 
 # ---------------------------------------------------------------------------

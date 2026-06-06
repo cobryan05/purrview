@@ -5,14 +5,13 @@ Tests for:
 
 These tests build minimal DOM structures inside the live browser page so that
 /app-static/ imports resolve, then exercise the component behaviour via JS.
+
+All tests share one pre-navigated `shared_page` (module-scoped, see
+conftest.py); each test creates its own container/overlay elements scoped to
+a fresh `setupMainTabs`/`createModalShell` call and removes them afterward.
 """
 import pytest
 from playwright.sync_api import Page
-
-
-def goto(page: Page, base_url: str):
-    page.goto(base_url)
-
 
 # ---------------------------------------------------------------------------
 # Tabs — setupMainTabs (uses .main-tab-button / .main-tab-pane selectors)
@@ -38,8 +37,8 @@ _TAB_TEARDOWN = "container.remove();"
 
 
 class TestTabsInitialState:
-    def test_first_button_active_on_setup(self, page: Page, base_url: str):
-        goto(page, base_url)
+    def test_first_button_active_on_setup(self, shared_page: Page):
+        page = shared_page
         result = page.evaluate(f"""async () => {{
             {_TAB_SETUP}
             const btnA = container.querySelector('[data-tab="tab-a"]');
@@ -49,8 +48,8 @@ class TestTabsInitialState:
         }}""")
         assert result is True
 
-    def test_first_pane_active_on_setup(self, page: Page, base_url: str):
-        goto(page, base_url)
+    def test_first_pane_active_on_setup(self, shared_page: Page):
+        page = shared_page
         result = page.evaluate(f"""async () => {{
             {_TAB_SETUP}
             const paneA = container.querySelector('#tab-a');
@@ -60,8 +59,8 @@ class TestTabsInitialState:
         }}""")
         assert result is True
 
-    def test_second_pane_not_active_initially(self, page: Page, base_url: str):
-        goto(page, base_url)
+    def test_second_pane_not_active_initially(self, shared_page: Page):
+        page = shared_page
         result = page.evaluate(f"""async () => {{
             {_TAB_SETUP}
             const paneB = container.querySelector('#tab-b');
@@ -71,8 +70,8 @@ class TestTabsInitialState:
         }}""")
         assert result is False
 
-    def test_onTabChange_fires_for_initial_activation(self, page: Page, base_url: str):
-        goto(page, base_url)
+    def test_onTabChange_fires_for_initial_activation(self, shared_page: Page):
+        page = shared_page
         result = page.evaluate(f"""async () => {{
             {_TAB_SETUP}
             {_TAB_TEARDOWN}
@@ -82,8 +81,8 @@ class TestTabsInitialState:
 
 
 class TestTabsSwitching:
-    def test_click_second_button_activates_second_pane(self, page: Page, base_url: str):
-        goto(page, base_url)
+    def test_click_second_button_activates_second_pane(self, shared_page: Page):
+        page = shared_page
         result = page.evaluate(f"""async () => {{
             {_TAB_SETUP}
             container.querySelector('[data-tab="tab-b"]').click();
@@ -101,8 +100,8 @@ class TestTabsSwitching:
         assert result["btnA"] is False
         assert result["btnB"] is True
 
-    def test_exactly_one_pane_active_after_switch(self, page: Page, base_url: str):
-        goto(page, base_url)
+    def test_exactly_one_pane_active_after_switch(self, shared_page: Page):
+        page = shared_page
         result = page.evaluate(f"""async () => {{
             {_TAB_SETUP}
             container.querySelector('[data-tab="tab-b"]').click();
@@ -114,8 +113,8 @@ class TestTabsSwitching:
         assert result["activePanes"] == 1
         assert result["activeBtns"] == 1
 
-    def test_onTabChange_fires_with_correct_name(self, page: Page, base_url: str):
-        goto(page, base_url)
+    def test_onTabChange_fires_with_correct_name(self, shared_page: Page):
+        page = shared_page
         result = page.evaluate(f"""async () => {{
             {_TAB_SETUP}
             callbacks.length = 0;   // clear setup callbacks
@@ -125,9 +124,9 @@ class TestTabsSwitching:
         }}""")
         assert result == ["tab-b"]
 
-    def test_clicking_active_tab_does_not_fire_callback(self, page: Page, base_url: str):
+    def test_clicking_active_tab_does_not_fire_callback(self, shared_page: Page):
         """Re-clicking the already-active tab is a no-op (activateTab guards on same-tab)."""
-        goto(page, base_url)
+        page = shared_page
         result = page.evaluate(f"""async () => {{
             {_TAB_SETUP}
             callbacks.length = 0;
@@ -137,8 +136,8 @@ class TestTabsSwitching:
         }}""")
         assert result == 0
 
-    def test_activateTab_api_works(self, page: Page, base_url: str):
-        goto(page, base_url)
+    def test_activateTab_api_works(self, shared_page: Page):
+        page = shared_page
         result = page.evaluate(f"""async () => {{
             {_TAB_SETUP}
             activateTab('tab-b');
@@ -148,8 +147,8 @@ class TestTabsSwitching:
         }}""")
         assert result is True
 
-    def test_activateTab_nonexistent_does_nothing(self, page: Page, base_url: str):
-        goto(page, base_url)
+    def test_activateTab_nonexistent_does_nothing(self, shared_page: Page):
+        page = shared_page
         result = page.evaluate(f"""async () => {{
             {_TAB_SETUP}
             activateTab('tab-xyz');   // no such tab — should not crash
@@ -163,8 +162,8 @@ class TestTabsSwitching:
 class TestWorkspaceTabs:
     """setupWorkspaceTabs uses .workspace-tab-button / .workspace-tab-pane selectors."""
 
-    def test_workspace_tabs_work_independently(self, page: Page, base_url: str):
-        goto(page, base_url)
+    def test_workspace_tabs_work_independently(self, shared_page: Page):
+        page = shared_page
         result = page.evaluate("""async () => {
             const { setupWorkspaceTabs } = await import('/app-static/js/app/utils/tabs.js');
 
@@ -195,8 +194,8 @@ class TestWorkspaceTabs:
 # ---------------------------------------------------------------------------
 
 class TestModalShell:
-    def test_open_appends_overlay_to_body(self, page: Page, base_url: str):
-        goto(page, base_url)
+    def test_open_appends_overlay_to_body(self, shared_page: Page):
+        page = shared_page
         result = page.evaluate("""async () => {
             const { createModalShell } = await import('/app-static/js/ui/utils/modalShell.js');
             const { overlay, open, close } = createModalShell();
@@ -207,8 +206,8 @@ class TestModalShell:
         }""")
         assert result is True
 
-    def test_close_removes_overlay_from_body(self, page: Page, base_url: str):
-        goto(page, base_url)
+    def test_close_removes_overlay_from_body(self, shared_page: Page):
+        page = shared_page
         result = page.evaluate("""async () => {
             const { createModalShell } = await import('/app-static/js/ui/utils/modalShell.js');
             const { overlay, open, close } = createModalShell();
@@ -218,9 +217,9 @@ class TestModalShell:
         }""")
         assert result is False
 
-    def test_close_is_idempotent(self, page: Page, base_url: str):
+    def test_close_is_idempotent(self, shared_page: Page):
         """Calling close() twice should not throw."""
-        goto(page, base_url)
+        page = shared_page
         result = page.evaluate("""async () => {
             const { createModalShell } = await import('/app-static/js/ui/utils/modalShell.js');
             const { overlay, open, close } = createModalShell();
@@ -231,8 +230,8 @@ class TestModalShell:
         }""")
         assert result == "ok"
 
-    def test_onClose_called_exactly_once(self, page: Page, base_url: str):
-        goto(page, base_url)
+    def test_onClose_called_exactly_once(self, shared_page: Page):
+        page = shared_page
         result = page.evaluate("""async () => {
             const { createModalShell } = await import('/app-static/js/ui/utils/modalShell.js');
             let callCount = 0;
@@ -244,8 +243,8 @@ class TestModalShell:
         }""")
         assert result == 1
 
-    def test_backdrop_click_closes_modal(self, page: Page, base_url: str):
-        goto(page, base_url)
+    def test_backdrop_click_closes_modal(self, shared_page: Page):
+        page = shared_page
         result = page.evaluate("""async () => {
             const { createModalShell } = await import('/app-static/js/ui/utils/modalShell.js');
             let closed = false;
@@ -258,8 +257,8 @@ class TestModalShell:
         assert result["closed"] is True
         assert result["stillInDom"] is False
 
-    def test_dialog_click_does_not_close(self, page: Page, base_url: str):
-        goto(page, base_url)
+    def test_dialog_click_does_not_close(self, shared_page: Page):
+        page = shared_page
         result = page.evaluate("""async () => {
             const { createModalShell } = await import('/app-static/js/ui/utils/modalShell.js');
             let closed = false;
@@ -274,8 +273,8 @@ class TestModalShell:
         assert result["closed"] is False
         assert result["stillOpen"] is True
 
-    def test_overlay_and_dialog_are_elements(self, page: Page, base_url: str):
-        goto(page, base_url)
+    def test_overlay_and_dialog_are_elements(self, shared_page: Page):
+        page = shared_page
         result = page.evaluate("""async () => {
             const { createModalShell } = await import('/app-static/js/ui/utils/modalShell.js');
             const { overlay, dialog } = createModalShell();

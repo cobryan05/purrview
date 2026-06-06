@@ -4,15 +4,15 @@ Tests for app/review/filters.js — createFilterPanel
 The filter panel is a pure DOM component: it accepts label/tag Maps, builds a
 UI, and exposes getState/setState/isDefault/getActiveFilterCount.  No network
 calls are made by the panel itself; all API dependency is injected via the Maps.
+
+All tests share one pre-navigated `shared_page` (module-scoped, see
+conftest.py); each test builds and removes its own panel element so the
+shared page stays clean.
 """
 import pytest
 from playwright.sync_api import Page
 
 UNVERIFIED_UUID = "00000000-0000-0000-0000-000000000001"
-
-
-def goto(page: Page, base_url: str):
-    page.goto(base_url)
 
 
 # Shared JS preamble used in many tests — builds a filter panel with one tag.
@@ -37,8 +37,8 @@ _TEARDOWN = "panel.element.remove();"
 
 
 class TestFilterPanelDefaults:
-    def test_default_is_unverified_tag_checked(self, page: Page, base_url: str):
-        goto(page, base_url)
+    def test_default_is_unverified_tag_checked(self, shared_page: Page):
+        page = shared_page
         result = page.evaluate(f"""async () => {{
             {_SETUP}
             const state = panel.getState();
@@ -47,8 +47,8 @@ class TestFilterPanelDefaults:
         }}""")
         assert UNVERIFIED_UUID in result
 
-    def test_is_default_true_initially(self, page: Page, base_url: str):
-        goto(page, base_url)
+    def test_is_default_true_initially(self, shared_page: Page):
+        page = shared_page
         result = page.evaluate(f"""async () => {{
             {_SETUP}
             const d = panel.isDefault();
@@ -57,8 +57,8 @@ class TestFilterPanelDefaults:
         }}""")
         assert result is True
 
-    def test_active_filter_count_is_one_initially(self, page: Page, base_url: str):
-        goto(page, base_url)
+    def test_active_filter_count_is_one_initially(self, shared_page: Page):
+        page = shared_page
         result = page.evaluate(f"""async () => {{
             {_SETUP}
             const c = panel.getActiveFilterCount();
@@ -67,8 +67,8 @@ class TestFilterPanelDefaults:
         }}""")
         assert result == 1
 
-    def test_label_uuid_empty_initially(self, page: Page, base_url: str):
-        goto(page, base_url)
+    def test_label_uuid_empty_initially(self, shared_page: Page):
+        page = shared_page
         result = page.evaluate(f"""async () => {{
             {_SETUP}
             const state = panel.getState();
@@ -77,8 +77,8 @@ class TestFilterPanelDefaults:
         }}""")
         assert result == ""
 
-    def test_filename_search_empty_initially(self, page: Page, base_url: str):
-        goto(page, base_url)
+    def test_filename_search_empty_initially(self, shared_page: Page):
+        page = shared_page
         result = page.evaluate(f"""async () => {{
             {_SETUP}
             const state = panel.getState();
@@ -89,8 +89,8 @@ class TestFilterPanelDefaults:
 
 
 class TestFilterPanelTagCheckbox:
-    def test_unchecking_unverified_removes_from_state(self, page: Page, base_url: str):
-        goto(page, base_url)
+    def test_unchecking_unverified_removes_from_state(self, shared_page: Page):
+        page = shared_page
         result = page.evaluate(f"""async () => {{
             {_SETUP}
             // Uncheck the UNVERIFIED checkbox
@@ -103,9 +103,9 @@ class TestFilterPanelTagCheckbox:
         }}""")
         assert UNVERIFIED_UUID not in result["tagUuids"]
 
-    def test_no_tags_checked_sets_show_all(self, page: Page, base_url: str):
+    def test_no_tags_checked_sets_show_all(self, shared_page: Page):
         """When no tag checkboxes are checked, showAllBboxes should be true."""
-        goto(page, base_url)
+        page = shared_page
         result = page.evaluate(f"""async () => {{
             {_SETUP}
             // Uncheck all checkboxes
@@ -119,8 +119,8 @@ class TestFilterPanelTagCheckbox:
         }}""")
         assert result is True
 
-    def test_checking_second_tag_adds_to_state(self, page: Page, base_url: str):
-        goto(page, base_url)
+    def test_checking_second_tag_adds_to_state(self, shared_page: Page):
+        page = shared_page
         result = page.evaluate(f"""async () => {{
             {_SETUP}
             const cb = panel.element.querySelector('input[value="tag-reviewed"]');
@@ -133,8 +133,8 @@ class TestFilterPanelTagCheckbox:
         assert "tag-reviewed" in result
         assert UNVERIFIED_UUID in result  # was already checked
 
-    def test_unchecking_makes_not_default(self, page: Page, base_url: str):
-        goto(page, base_url)
+    def test_unchecking_makes_not_default(self, shared_page: Page):
+        page = shared_page
         result = page.evaluate(f"""async () => {{
             {_SETUP}
             const cb = panel.element.querySelector('input[value="{UNVERIFIED_UUID}"]');
@@ -148,8 +148,8 @@ class TestFilterPanelTagCheckbox:
 
 
 class TestFilterPanelLabelSelect:
-    def test_selecting_label_updates_state(self, page: Page, base_url: str):
-        goto(page, base_url)
+    def test_selecting_label_updates_state(self, shared_page: Page):
+        page = shared_page
         result = page.evaluate(f"""async () => {{
             {_SETUP}
             const sel = panel.element.querySelector('select.filter-label-select');
@@ -161,8 +161,8 @@ class TestFilterPanelLabelSelect:
         }}""")
         assert result["labelUuid"] == "lbl-cat"
 
-    def test_selecting_label_increments_count(self, page: Page, base_url: str):
-        goto(page, base_url)
+    def test_selecting_label_increments_count(self, shared_page: Page):
+        page = shared_page
         result = page.evaluate(f"""async () => {{
             {_SETUP}
             const sel = panel.element.querySelector('select.filter-label-select');
@@ -173,8 +173,8 @@ class TestFilterPanelLabelSelect:
         }}""")
         assert result == 2  # UNVERIFIED tag + label
 
-    def test_clearing_label_decrements_count(self, page: Page, base_url: str):
-        goto(page, base_url)
+    def test_clearing_label_decrements_count(self, shared_page: Page):
+        page = shared_page
         result = page.evaluate(f"""async () => {{
             {_SETUP}
             const sel = panel.element.querySelector('select.filter-label-select');
@@ -189,8 +189,8 @@ class TestFilterPanelLabelSelect:
 
 
 class TestFilterPanelImageLabelFilters:
-    def test_add_image_label_filter(self, page: Page, base_url: str):
-        goto(page, base_url)
+    def test_add_image_label_filter(self, shared_page: Page):
+        page = shared_page
         result = page.evaluate(f"""async () => {{
             {_SETUP}
             // Select the label in the builder
@@ -206,8 +206,8 @@ class TestFilterPanelImageLabelFilters:
         assert len(result) == 1
         assert result[0]["labelUuid"] == "lbl-cat"
 
-    def test_add_filter_increments_count(self, page: Page, base_url: str):
-        goto(page, base_url)
+    def test_add_filter_increments_count(self, shared_page: Page):
+        page = shared_page
         result = page.evaluate(f"""async () => {{
             {_SETUP}
             const labelSel = panel.element.querySelector('.filter-imlabel-builder select');
@@ -219,8 +219,8 @@ class TestFilterPanelImageLabelFilters:
         }}""")
         assert result == 2  # tag + image-label filter
 
-    def test_add_without_label_does_nothing(self, page: Page, base_url: str):
-        goto(page, base_url)
+    def test_add_without_label_does_nothing(self, shared_page: Page):
+        page = shared_page
         result = page.evaluate(f"""async () => {{
             {_SETUP}
             // Don't select a label — click Add anyway
@@ -231,8 +231,8 @@ class TestFilterPanelImageLabelFilters:
         }}""")
         assert result == 0
 
-    def test_remove_chip_removes_from_state(self, page: Page, base_url: str):
-        goto(page, base_url)
+    def test_remove_chip_removes_from_state(self, shared_page: Page):
+        page = shared_page
         result = page.evaluate(f"""async () => {{
             {_SETUP}
             const labelSel = panel.element.querySelector('.filter-imlabel-builder select');
@@ -250,8 +250,8 @@ class TestFilterPanelImageLabelFilters:
 
 
 class TestFilterPanelSetState:
-    def test_set_state_updates_tag_checkboxes(self, page: Page, base_url: str):
-        goto(page, base_url)
+    def test_set_state_updates_tag_checkboxes(self, shared_page: Page):
+        page = shared_page
         result = page.evaluate(f"""async () => {{
             {_SETUP}
             panel.setState({{ tagUuids: ['tag-reviewed'] }});
@@ -264,8 +264,8 @@ class TestFilterPanelSetState:
         assert result["reviewed"] is True
         assert result["unverified"] is False
 
-    def test_set_state_updates_label_select(self, page: Page, base_url: str):
-        goto(page, base_url)
+    def test_set_state_updates_label_select(self, shared_page: Page):
+        page = shared_page
         result = page.evaluate(f"""async () => {{
             {_SETUP}
             panel.setState({{ labelUuid: 'lbl-dog' }});
@@ -275,8 +275,8 @@ class TestFilterPanelSetState:
         }}""")
         assert result == "lbl-dog"
 
-    def test_set_state_fires_on_filter_change(self, page: Page, base_url: str):
-        goto(page, base_url)
+    def test_set_state_fires_on_filter_change(self, shared_page: Page):
+        page = shared_page
         result = page.evaluate(f"""async () => {{
             {_SETUP}
             panel.setState({{ labelUuid: 'lbl-cat' }});

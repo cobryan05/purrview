@@ -175,3 +175,20 @@ def live_server() -> Generator[str, None, None]:
 def base_url(live_server: str) -> str:
     """Override pytest-playwright's base_url to point at our test server."""
     return live_server
+
+
+@pytest.fixture(scope="module")
+def shared_page(browser, base_url):
+    """
+    A single pre-navigated page shared by every test in a module.
+
+    Pure-logic tests that import an ES module and exercise a function don't
+    need a fresh SPA reload each time — they build/tear down their own DOM.
+    Reusing one page removes a full Konva/Pico/module re-init per test, which
+    is the dominant cost of the Playwright suite. Tests using this fixture
+    must clean up any DOM nodes they create.
+    """
+    page = browser.new_page()
+    page.goto(base_url)
+    yield page
+    page.close()

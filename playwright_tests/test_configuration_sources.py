@@ -103,23 +103,13 @@ def _mock_provider_schema(page: Page, schema: dict | None = None):
 
 
 class TestSourcePaneStructure:
-    def test_source_management_box_visible(self, page: Page, base_url: str):
-        """The #source-management-box div is present on the Source Management tab."""
+    def test_pane_structure(self, page: Page, base_url: str):
+        """The sources pane renders its container and key headings in one navigation."""
         _navigate_to_sources(page, base_url)
         expect(page.locator("#source-management-box")).to_be_visible()
-
-    def test_sources_header_present(self, page: Page, base_url: str):
-        """An 'h3' with text 'Sources' is rendered."""
-        _navigate_to_sources(page, base_url)
         page.wait_for_selector("#source-management-box h3", timeout=4000)
         headers = page.locator("#source-management-box h3").all_text_contents()
         assert any("Sources" in h for h in headers), f"No 'Sources' header found. Got: {headers}"
-
-    def test_create_source_header_present(self, page: Page, base_url: str):
-        """A 'Create Source' heading is visible in the form area."""
-        _navigate_to_sources(page, base_url)
-        page.wait_for_selector("#source-management-box h3", timeout=4000)
-        headers = page.locator("#source-management-box h3").all_text_contents()
         assert any("Create" in h for h in headers), f"No 'Create' header found. Got: {headers}"
 
     def test_no_js_errors_on_sources_tab(self, page: Page, base_url: str):
