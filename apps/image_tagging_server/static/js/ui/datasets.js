@@ -5,10 +5,12 @@ import {
   createDataset, updateDataset, deleteDataset,
 } from '/app-static/js/shared/api/datasets.js';
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
-import { toast } from '/app-static/js/ui/utils/index.js';
+import { toast, makeFieldRow } from '/app-static/js/ui/utils/index.js';
+import { showConfirmModal, showUnsavedConfigChangesModal } from '/app-static/js/ui/utils/confirmModal.js';
 
 let _rendering = false;
 let _unsubDatasets = null;
+let _navGuardController = null;
 
 // -------------------------------------------------------
 // Label checkbox picker
@@ -23,16 +25,18 @@ function renderLabelCheckboxList(container, labelsMap, selectedUuids, onChange) 
   const selectAllBtn = document.createElement('button');
   selectAllBtn.type = 'button';
   selectAllBtn.textContent = 'Select All';
+  selectAllBtn.className = 'panel-btn';
   selectAllBtn.style.marginRight = '4px';
   const clearAllBtn = document.createElement('button');
   clearAllBtn.type = 'button';
   clearAllBtn.textContent = 'Clear All';
+  clearAllBtn.className = 'panel-btn';
   controls.appendChild(selectAllBtn);
   controls.appendChild(clearAllBtn);
   container.appendChild(controls);
 
   const list = document.createElement('div');
-  list.style.cssText = 'height:300px; min-height:60px; overflow-y:auto; border:1px solid var(--pico-border-color, #ddd); padding:4px; border-radius:4px; resize:vertical;';
+  list.className = 'panel-tree-box';
   container.appendChild(list);
 
   // Build hierarchy from labelsMap (Map<uuid, label>)
@@ -126,8 +130,9 @@ function describeCondition(cond, tagsMap) {
 function renderConditionsEditor(parentEl, initialConditions, tagsMap, { onChange } = {}) {
   let conditions = [...initialConditions];
 
-  const heading = document.createElement('h5');
-  heading.style.margin = '8px 0 4px';
+  const heading = document.createElement('p');
+  heading.className = 'panel-section-label';
+  heading.style.marginTop = '0.6em';
   heading.textContent = 'Filter Conditions';
   parentEl.appendChild(heading);
 
@@ -155,7 +160,7 @@ function renderConditionsEditor(parentEl, initialConditions, tagsMap, { onChange
       const rmBtn = document.createElement('button');
       rmBtn.type = 'button';
       rmBtn.textContent = '✕';
-      rmBtn.style.padding = '2px 8px';
+      rmBtn.className = 'panel-btn secondary';
       const idx = i;
       rmBtn.addEventListener('click', () => {
         conditions.splice(idx, 1);
@@ -173,7 +178,7 @@ function renderConditionsEditor(parentEl, initialConditions, tagsMap, { onChange
   const addSection = document.createElement('details');
   addSection.style.marginTop = '6px';
   const summary = document.createElement('summary');
-  summary.style.cssText = 'cursor:pointer; font-weight:bold;';
+  summary.style.cssText = 'cursor:pointer; font-weight:bold; font-size:0.85em;';
   summary.textContent = '+ Add Filter Condition';
   addSection.appendChild(summary);
   parentEl.appendChild(addSection);
@@ -287,6 +292,7 @@ function renderConditionsEditor(parentEl, initialConditions, tagsMap, { onChange
         const addBtn = document.createElement('button');
         addBtn.type = 'button';
         addBtn.textContent = 'Add';
+        addBtn.className = 'panel-btn';
         addBtn.addEventListener('click', () => {
           const condType = type === 'image_age' ? 'image_age' : 'bbox_age';
           const cond = { type: condType, field: fieldSelect?.value ?? 'updated_at' };
@@ -330,6 +336,7 @@ function renderConditionsEditor(parentEl, initialConditions, tagsMap, { onChange
         const addBtn = document.createElement('button');
         addBtn.type = 'button';
         addBtn.textContent = 'Add';
+        addBtn.className = 'panel-btn';
         addBtn.addEventListener('click', () => {
           if (!tagSel.value) { toast('Choose a tag', 5000, 'error'); return; }
           conditions.push({ type: 'tag', tag_uuid: tagSel.value, exclude });
@@ -347,6 +354,7 @@ function renderConditionsEditor(parentEl, initialConditions, tagsMap, { onChange
         const addBtn = document.createElement('button');
         addBtn.type = 'button';
         addBtn.textContent = 'Add';
+        addBtn.className = 'panel-btn';
         addBtn.addEventListener('click', () => {
           conditions.push({ type: 'dataset_label_status', check });
           renderList();
@@ -370,6 +378,7 @@ function renderConditionsEditor(parentEl, initialConditions, tagsMap, { onChange
         const addBtn = document.createElement('button');
         addBtn.type = 'button';
         addBtn.textContent = 'Add';
+        addBtn.className = 'panel-btn';
         addBtn.addEventListener('click', () => {
           if (!inp.value.trim()) { toast('Enter a pattern', 5000, 'error'); return; }
           conditions.push({ type: 'filename', pattern: inp.value.trim() });
@@ -389,48 +398,30 @@ function renderConditionsEditor(parentEl, initialConditions, tagsMap, { onChange
 }
 
 // -------------------------------------------------------
-// Shared form fields builder
+// Dataset form body — fields only (no buttons)
+// Returns { getName, getDescription, getLabelUuids, getConditions }
 // -------------------------------------------------------
 
 function buildDatasetForm(container, { name = '', description = '', labelUuids = [], filterConditions = [] }, labelsMap, tagsMap, { onAnyChange } = {}) {
-  let _dirty = false;
-
-  function _markDirty() {
-    if (!_dirty) {
-      _dirty = true;
-      onAnyChange?.();
-    }
-  }
-
   // Name
-  const nameLabel = document.createElement('label');
-  nameLabel.style.display = 'block';
-  nameLabel.textContent = 'Name';
   const nameInput = document.createElement('input');
   nameInput.type = 'text';
   nameInput.value = name;
-  nameInput.placeholder = 'Dataset name';
-  nameInput.style.width = '100%';
-  nameInput.addEventListener('input', _markDirty);
-  nameLabel.appendChild(nameInput);
-  container.appendChild(nameLabel);
+  nameInput.placeholder = 'Required';
+  nameInput.addEventListener('input', () => onAnyChange?.());
+  container.appendChild(makeFieldRow('Name', nameInput));
 
   // Description
-  const descLabel = document.createElement('label');
-  descLabel.style.display = 'block';
-  descLabel.style.marginTop = '8px';
-  descLabel.textContent = 'Description';
-  const descInput = document.createElement('textarea');
+  const descInput = document.createElement('input');
+  descInput.type = 'text';
   descInput.value = description;
-  descInput.placeholder = 'Optional description';
-  descInput.style.cssText = 'width:100%; height:60px; resize:vertical;';
-  descInput.addEventListener('input', _markDirty);
-  descLabel.appendChild(descInput);
-  container.appendChild(descLabel);
+  descInput.placeholder = 'Optional';
+  descInput.addEventListener('input', () => onAnyChange?.());
+  container.appendChild(makeFieldRow('Description', descInput));
 
   // Label picker
-  const labelHeading = document.createElement('h5');
-  labelHeading.style.margin = '8px 0 4px';
+  const labelHeading = document.createElement('p');
+  labelHeading.className = 'panel-section-label';
   labelHeading.textContent = 'Labels';
   container.appendChild(labelHeading);
 
@@ -439,256 +430,18 @@ function buildDatasetForm(container, { name = '', description = '', labelUuids =
   container.appendChild(labelPickerEl);
   renderLabelCheckboxList(labelPickerEl, labelsMap, selectedLabelUuids, (uuids) => {
     selectedLabelUuids = uuids;
-    _markDirty();
+    onAnyChange?.();
   });
 
   // Conditions
-  const condEditor = renderConditionsEditor(container, filterConditions, tagsMap, { onChange: _markDirty });
+  const condEditor = renderConditionsEditor(container, filterConditions, tagsMap, { onChange: onAnyChange });
 
   return {
     getName: () => nameInput.value.trim(),
     getDescription: () => descInput.value.trim(),
     getLabelUuids: () => selectedLabelUuids,
     getConditions: () => condEditor.getConditions(),
-    isDirty: () => _dirty,
-    markClean: () => { _dirty = false; },
   };
-}
-
-// -------------------------------------------------------
-// Detail panel (edit existing dataset)
-// -------------------------------------------------------
-
-function _renderDetailPanel(container, dataset, { labelsMap, tagsMap, onDeleted, onDirtyChange }) {
-  container.innerHTML = '';
-
-  const h4 = document.createElement('h4');
-  h4.style.marginBottom = '8px';
-  h4.textContent = dataset.name;
-  container.appendChild(h4);
-
-  const form = buildDatasetForm(
-    container,
-    {
-      name: dataset.name,
-      description: dataset.description || '',
-      labelUuids: dataset.label_uuids ?? [],
-      filterConditions: dataset.filter_json?.conditions ?? [],
-    },
-    labelsMap,
-    tagsMap,
-    { onAnyChange: () => { updateSaveBtnStyle(); onDirtyChange?.(() => form.isDirty()); } },
-  );
-
-  // Track current name so the delete confirm stays accurate after a rename+save
-  let currentName = dataset.name;
-
-  // Register dirty getter immediately so navigation checks work from the start
-  onDirtyChange?.(() => form.isDirty());
-
-  // ── Action buttons ───────────────────────────────────────────────
-  const actionsEl = document.createElement('div');
-  actionsEl.style.cssText = 'margin-top:12px; display:flex; gap:8px; flex-wrap:wrap; align-items:center;';
-  container.appendChild(actionsEl);
-
-  // View group: Preview + Open in Review
-  const viewGroup = document.createElement('div');
-  viewGroup.style.cssText = 'display:flex; gap:8px; flex-wrap:wrap;';
-  actionsEl.appendChild(viewGroup);
-
-  // Separator
-  const sep = document.createElement('div');
-  sep.style.cssText = 'width:1px; min-height:28px; background:var(--pico-border-color,#ddd); align-self:stretch; margin:0 2px;';
-  actionsEl.appendChild(sep);
-
-  // Edit group: Save + Delete
-  const editGroup = document.createElement('div');
-  editGroup.style.cssText = 'display:flex; gap:8px; flex-wrap:wrap;';
-  actionsEl.appendChild(editGroup);
-
-  // Preview Count — uses current form state, not the last-saved dataset
-  const previewBtn = document.createElement('button');
-  previewBtn.type = 'button';
-  previewBtn.textContent = 'Preview Count';
-  previewBtn.addEventListener('click', async () => {
-    previewBtn.disabled = true;
-    previewBtn.textContent = 'Loading…';
-    try {
-      const { images, hasMore } = await previewDatasetImages({
-        filterJson: { conditions: form.getConditions() },
-        labelUuids: form.getLabelUuids(),
-        limit: 500,
-      });
-      const suffix = hasMore ? '500+' : String(images.length);
-      toast(`Dataset contains ${suffix} images${form.isDirty() ? ' (unsaved)' : ''}`, 4000);
-    } catch (err) {
-      toast(err.message || 'Failed to preview', 5000, 'error');
-    } finally {
-      previewBtn.disabled = false;
-      previewBtn.textContent = 'Preview Count';
-    }
-  });
-  viewGroup.appendChild(previewBtn);
-
-  // Browse Images — opens an inline review modal for this dataset
-  const browseBtn = document.createElement('button');
-  browseBtn.type = 'button';
-  browseBtn.textContent = 'Browse Images';
-  browseBtn.addEventListener('click', async () => {
-    browseBtn.disabled = true;
-    try {
-      const { showReviewModal } = await import('/app-static/js/app/review/main.js');
-      await showReviewModal({
-        title: `Browse: ${dataset.name}`,
-        fetchImages: async ({ sortBy, sortOrder, afterUuid, afterSortValue, limit }) =>
-          fetchDatasetImages(dataset.uuid, {
-            sort_by: sortBy,
-            sort_order: sortOrder,
-            after_uuid: afterUuid,
-            after_sort_value: afterSortValue,
-            limit,
-          }),
-      });
-    } finally {
-      browseBtn.disabled = false;
-    }
-  });
-  viewGroup.appendChild(browseBtn);
-
-  // Save
-  const saveBtn = document.createElement('button');
-  saveBtn.type = 'button';
-  saveBtn.textContent = 'Save';
-
-  function updateSaveBtnStyle() {
-    if (form.isDirty()) {
-      saveBtn.style.outline = '2px solid var(--pico-primary-background, #36c)';
-      saveBtn.style.outlineOffset = '2px';
-      saveBtn.style.fontWeight = 'bold';
-      saveBtn.textContent = 'Save ●';
-    } else {
-      saveBtn.style.outline = '';
-      saveBtn.style.outlineOffset = '';
-      saveBtn.style.fontWeight = '';
-      saveBtn.textContent = 'Save';
-    }
-  }
-
-  saveBtn.addEventListener('click', async () => {
-    const name = form.getName();
-    if (!name) { toast('Name is required', 5000, 'error'); return; }
-    saveBtn.disabled = true;
-    try {
-      const updated = await updateDataset(dataset.uuid, {
-        name,
-        description: form.getDescription(),
-        filterJson: { conditions: form.getConditions() },
-        labelUuids: form.getLabelUuids(),
-      });
-      h4.textContent = updated.name;
-      currentName = updated.name;
-      form.markClean();
-      updateSaveBtnStyle();
-      onDirtyChange?.(() => form.isDirty());
-      toast('Dataset saved', 3000);
-    } catch (err) {
-      toast(err.message || 'Failed to save', 5000, 'error');
-    } finally {
-      saveBtn.disabled = false;
-    }
-  });
-  editGroup.appendChild(saveBtn);
-
-  // Delete
-  const deleteBtn = document.createElement('button');
-  deleteBtn.type = 'button';
-  deleteBtn.textContent = 'Delete';
-  deleteBtn.style.color = '#c00';
-  deleteBtn.addEventListener('click', async () => {
-    if (!window.confirm(`Delete dataset "${currentName}"?`)) return;
-    deleteBtn.disabled = true;
-    try {
-      await deleteDataset(dataset.uuid);
-      onDirtyChange?.(() => false);
-      toast('Dataset deleted', 3000);
-      onDeleted?.();
-    } catch (err) {
-      toast(err.message || 'Failed to delete', 5000, 'error');
-      deleteBtn.disabled = false;
-    }
-  });
-  editGroup.appendChild(deleteBtn);
-}
-
-// -------------------------------------------------------
-// Create panel (new dataset)
-// -------------------------------------------------------
-
-function _renderCreatePanel(container, { labelsMap, tagsMap, onCreated, onDirtyChange }) {
-  container.innerHTML = '';
-
-  const h4 = document.createElement('h4');
-  h4.style.marginBottom = '8px';
-  h4.textContent = 'New Dataset';
-  container.appendChild(h4);
-
-  const form = buildDatasetForm(container, {}, labelsMap, tagsMap, {
-    onAnyChange: () => onDirtyChange?.(() => form.isDirty()),
-  });
-
-  onDirtyChange?.(() => form.isDirty());
-
-  const btnRow = document.createElement('div');
-  btnRow.style.cssText = 'margin-top:12px; display:flex; gap:8px; flex-wrap:wrap;';
-  container.appendChild(btnRow);
-
-  const previewBtn = document.createElement('button');
-  previewBtn.type = 'button';
-  previewBtn.textContent = 'Preview Count';
-  previewBtn.addEventListener('click', async () => {
-    previewBtn.disabled = true;
-    previewBtn.textContent = 'Loading…';
-    try {
-      const { images, hasMore } = await previewDatasetImages({
-        filterJson: { conditions: form.getConditions() },
-        labelUuids: form.getLabelUuids(),
-        limit: 500,
-      });
-      const suffix = hasMore ? '500+' : String(images.length);
-      toast(`Filter matches ${suffix} images`, 4000);
-    } catch (err) {
-      toast(err.message || 'Failed to preview', 5000, 'error');
-    } finally {
-      previewBtn.disabled = false;
-      previewBtn.textContent = 'Preview Count';
-    }
-  });
-  btnRow.appendChild(previewBtn);
-
-  const createBtn = document.createElement('button');
-  createBtn.type = 'button';
-  createBtn.textContent = 'Create Dataset';
-  createBtn.addEventListener('click', async () => {
-    const name = form.getName();
-    if (!name) { toast('Name is required', 5000, 'error'); return; }
-    createBtn.disabled = true;
-    try {
-      const dataset = await createDataset({
-        name,
-        description: form.getDescription(),
-        filterJson: { conditions: form.getConditions() },
-        labelUuids: form.getLabelUuids(),
-      });
-      form.markClean();
-      onDirtyChange?.(() => false);
-      toast(`Dataset "${dataset.name}" created`, 3000);
-      await onCreated?.(dataset);
-    } catch (err) {
-      toast(err.message || 'Failed to create dataset', 5000, 'error');
-      createBtn.disabled = false;
-    }
-  });
-  btnRow.appendChild(createBtn);
 }
 
 // -------------------------------------------------------
@@ -699,142 +452,372 @@ export async function renderDatasetManager({ target = 'dataset-management-box' }
   if (_rendering) return;
   _rendering = true;
 
+  // Replace any previously-installed nav guard (handles re-render on tab revisit)
+  _navGuardController?.abort();
+  _navGuardController = new AbortController();
+
+  const container = document.getElementById(target);
+  if (!container) { _rendering = false; return; }
+  container.innerHTML = '';
+
   try {
-    const container = document.getElementById(target);
-    if (!container) return;
-    container.innerHTML = '';
+    // Warm all three caches in parallel so first panel open is near-instant
+    await Promise.all([fetchLabels(), fetchTags(), fetchDatasets()]);
 
-    const panel = document.createElement('div');
-    panel.className = 'config-panel';
-    container.appendChild(panel);
+    const split = document.createElement('div');
+    split.style.cssText = 'display: flex; gap: 1em; align-items: flex-start;';
+    container.appendChild(split);
 
-    const leftCol = document.createElement('div');
-    leftCol.className = 'config-column';
-    panel.appendChild(leftCol);
+    // ── Left: list panel ──────────────────────────────────────────────────
+    const listPanel = document.createElement('div');
+    listPanel.className = 'panel-box ds-list-panel';
+    split.appendChild(listPanel);
 
-    const rightCol = document.createElement('div');
-    rightCol.className = 'config-column';
-    panel.appendChild(rightCol);
+    const listBar = document.createElement('div');
+    listBar.className = 'panel-box__bar';
+    const listTitle = document.createElement('span');
+    listTitle.className = 'panel-box__title';
+    listTitle.textContent = 'Datasets';
+    listBar.appendChild(listTitle);
+    listPanel.appendChild(listBar);
 
-    // Warm caches so first panel open is near-instant
-    await Promise.all([fetchLabels(), fetchTags()]);
+    const listBody = document.createElement('div');
+    listBody.className = 'panel-box__body';
+    listPanel.appendChild(listBody);
 
+    const listFooter = document.createElement('div');
+    listFooter.className = 'panel-box__footer';
+    listPanel.appendChild(listFooter);
+
+    // Footer "+ New" button is static — created once here, not on every refreshList.
+    const newBtn = document.createElement('button');
+    newBtn.type = 'button';
+    newBtn.textContent = '+ New';
+    newBtn.className = 'panel-btn';
+    newBtn.style.cssText = 'width: 100%; margin-bottom: 0;';
+    newBtn.addEventListener('click', () => _showForm(null));
+    listFooter.appendChild(newBtn);
+
+    // ── Right: editor panel ───────────────────────────────────────────────
+    const editorPanel = document.createElement('div');
+    editorPanel.className = 'panel-box ds-editor';
+    split.appendChild(editorPanel);
+
+    const editorBar = document.createElement('div');
+    editorBar.className = 'panel-box__bar';
+    editorPanel.appendChild(editorBar);
+
+    const editorBody = document.createElement('div');
+    editorBody.className = 'panel-box__body';
+    editorPanel.appendChild(editorBody);
+
+    // ── Shared state ──────────────────────────────────────────────────────
     let _selectedUuid = null;
+    let _dirty = false;
+    let _currentDoSave = null;
+    let _switching = false;
 
-    // Dirty-state tracker for the currently displayed right panel.
-    // Both _renderDetailPanel and _renderCreatePanel register a getter via onDirtyChange.
-    let _getDirtyState = () => false;
-
-    function _confirmIfDirty() {
-      if (!_getDirtyState()) return true;
-      return window.confirm('You have unsaved changes. Discard them?');
+    async function _confirmIfDirty() {
+      if (!_dirty) return true;
+      const result = await showUnsavedConfigChangesModal();
+      if (result === 'cancel') return false;
+      if (result === 'save') return await (_currentDoSave?.() ?? false);
+      return true; // 'discard'
     }
 
-    // Update row highlight in-place without re-fetching the list
     function _updateListSelection(uuid) {
-      for (const row of leftCol.querySelectorAll('[data-dataset-uuid]')) {
-        const sel = row.dataset.datasetUuid === uuid;
-        row.style.background = sel ? 'var(--pico-primary-background, #eef)' : '';
-        row.style.borderColor = sel ? 'var(--pico-primary-border, #aad)' : 'transparent';
+      for (const item of listBody.querySelectorAll('.ds-list-item')) {
+        item.classList.toggle('active', item.dataset.datasetUuid === uuid);
       }
     }
 
-    async function showDetail(dataset) {
-      if (!_confirmIfDirty()) return;
-      _selectedUuid = dataset.uuid;
-      _getDirtyState = () => false;
-      // Re-fetch so the label/tag pickers always reflect current data
-      const [labelsMap, tagsMap] = await Promise.all([fetchLabels(), fetchTags()]);
-      _renderDetailPanel(rightCol, dataset, {
-        labelsMap,
-        tagsMap,
-        onDirtyChange: (getter) => { _getDirtyState = getter; },
-        onDeleted: () => {
-          _selectedUuid = null;
-          _getDirtyState = () => false;
-          rightCol.innerHTML = '';
-        },
-      });
-      _updateListSelection(dataset.uuid);
+    /**
+     * Build the editor header bar. Returns { setDirty, setSaving, updateTitle }.
+     * onDelete is undefined for the "new dataset" form.
+     */
+    function _buildEditorBar({ dataset, onSave, onDelete }) {
+      editorBar.innerHTML = '';
+      let _saving = false;
+
+      const dirtyDot = document.createElement('span');
+      dirtyDot.className = 'panel-dirty-dot';
+
+      const titleSpan = document.createElement('span');
+      titleSpan.className = 'panel-box__title';
+      titleSpan.textContent = dataset ? dataset.name : 'New Dataset';
+
+      const saveBtn = document.createElement('button');
+      saveBtn.type = 'button';
+      saveBtn.textContent = dataset ? 'Save' : 'Create';
+      saveBtn.className = 'panel-btn';
+      saveBtn.disabled = true;
+      saveBtn.addEventListener('click', onSave);
+
+      const setDirty = (v) => {
+        _dirty = v;
+        dirtyDot.classList.toggle('visible', v);
+        if (!_saving) saveBtn.disabled = !v;
+      };
+      const setSaving = (v) => {
+        _saving = v;
+        saveBtn.disabled = v || !_dirty;
+      };
+
+      editorBar.append(dirtyDot, titleSpan);
+
+      if (dataset && onDelete) {
+        const deleteBtn = document.createElement('button');
+        deleteBtn.type = 'button';
+        deleteBtn.textContent = 'Delete';
+        deleteBtn.className = 'panel-btn secondary';
+        deleteBtn.addEventListener('click', async () => {
+          // Disable save during the async confirm to prevent a concurrent save+delete.
+          setSaving(true);
+          const ok = await showConfirmModal({
+            title: 'Delete dataset',
+            message: `Delete "${dataset.name}"? This cannot be undone.`,
+            confirmText: 'Delete',
+            cancelText: 'Cancel',
+            danger: true,
+          });
+          if (!ok) { setSaving(false); return; }
+          deleteBtn.disabled = true;
+          try {
+            await onDelete();
+          } catch (err) {
+            toast(err.message, 5000, 'error');
+            deleteBtn.disabled = false;
+            setSaving(false);
+          }
+        });
+        editorBar.appendChild(deleteBtn);
+      }
+
+      editorBar.appendChild(saveBtn);
+
+      return {
+        setDirty,
+        setSaving,
+        updateTitle: (name) => { titleSpan.textContent = name; },
+      };
     }
 
-    async function showCreate() {
-      if (!_confirmIfDirty()) return;
-      _selectedUuid = null;
-      _getDirtyState = () => false;
-      const [labelsMap, tagsMap] = await Promise.all([fetchLabels(), fetchTags()]);
-      _renderCreatePanel(rightCol, {
-        labelsMap,
-        tagsMap,
-        onDirtyChange: (getter) => { _getDirtyState = getter; },
-        onCreated: async (dataset) => {
-          _getDirtyState = () => false;
-          await showDetail(dataset);
-        },
-      });
-      _updateListSelection(null);
+    // Single entry point for both edit (dataset != null) and create (dataset == null).
+    async function _showForm(dataset, { force = false } = {}) {
+      if (_switching && !force) return;
+      _switching = true;
+      try {
+        if (!force && !await _confirmIfDirty()) return;
+        _dirty = false;
+        _currentDoSave = null;
+        _selectedUuid = dataset?.uuid ?? null;
+
+        // Re-fetch so pickers always reflect current data
+        const [labelsMap, tagsMap] = await Promise.all([fetchLabels(), fetchTags()]);
+        editorBody.innerHTML = '';
+
+        const { setDirty, setSaving, updateTitle } = _buildEditorBar({
+          dataset,
+          onSave: () => _doSave(true),
+          onDelete: dataset ? async () => {
+            await deleteDataset(dataset.uuid);
+            toast('Dataset deleted', 3000);
+            await refreshList();
+            await _showForm(null, { force: true });
+          } : undefined,
+        });
+
+        // Render form fields into editorBody
+        const formHandle = buildDatasetForm(
+          editorBody,
+          {
+            name: dataset?.name ?? '',
+            description: dataset?.description ?? '',
+            labelUuids: dataset?.label_uuids ?? [],
+            filterConditions: dataset?.filter_json?.conditions ?? [],
+          },
+          labelsMap,
+          tagsMap,
+          { onAnyChange: () => setDirty(true) },
+        );
+
+        // View actions (available in edit mode; preview also available in create mode)
+        const hr = document.createElement('hr');
+        hr.style.cssText = 'margin: 0.8em 0 0.5em; opacity: 0.4;';
+        editorBody.appendChild(hr);
+
+        const viewRow = document.createElement('div');
+        viewRow.style.cssText = 'display: flex; gap: 8px; flex-wrap: wrap;';
+        editorBody.appendChild(viewRow);
+
+        const previewBtn = document.createElement('button');
+        previewBtn.type = 'button';
+        previewBtn.textContent = 'Preview Count';
+        previewBtn.className = 'panel-btn';
+        previewBtn.style.marginBottom = '0';
+        previewBtn.addEventListener('click', async () => {
+          previewBtn.disabled = true;
+          previewBtn.textContent = 'Loading…';
+          try {
+            const { images, hasMore } = await previewDatasetImages({
+              filterJson: { conditions: formHandle.getConditions() },
+              labelUuids: formHandle.getLabelUuids(),
+              limit: 500,
+            });
+            const suffix = hasMore ? '500+' : String(images.length);
+            const unsaved = _dirty ? ' (unsaved)' : '';
+            toast(`Dataset contains ${suffix} images${unsaved}`, 4000);
+          } catch (err) {
+            toast(err.message || 'Failed to preview', 5000, 'error');
+          } finally {
+            previewBtn.disabled = false;
+            previewBtn.textContent = 'Preview Count';
+          }
+        });
+        viewRow.appendChild(previewBtn);
+
+        if (dataset) {
+          const browseBtn = document.createElement('button');
+          browseBtn.type = 'button';
+          browseBtn.textContent = 'Browse Images';
+          browseBtn.className = 'panel-btn';
+          browseBtn.style.marginBottom = '0';
+          browseBtn.addEventListener('click', async () => {
+            browseBtn.disabled = true;
+            try {
+              const { showReviewModal } = await import('/app-static/js/app/review/main.js');
+              await showReviewModal({
+                title: `Browse: ${dataset.name}`,
+                fetchImages: async ({ sortBy, sortOrder, afterUuid, afterSortValue, limit }) =>
+                  fetchDatasetImages(dataset.uuid, {
+                    sort_by: sortBy,
+                    sort_order: sortOrder,
+                    after_uuid: afterUuid,
+                    after_sort_value: afterSortValue,
+                    limit,
+                  }),
+              });
+            } finally {
+              browseBtn.disabled = false;
+            }
+          });
+          viewRow.appendChild(browseBtn);
+        }
+
+        // Shared save logic used by both the Save button (navigateAfterCreate=true)
+        // and the nav-guard (_currentDoSave, navigateAfterCreate=false).
+        async function _doSave(navigateAfterCreate = false) {
+          const name = formHandle.getName();
+          if (!name) { toast('Name is required', 3000, 'error'); return false; }
+          setSaving(true);
+          try {
+            if (dataset) {
+              const updated = await updateDataset(dataset.uuid, {
+                name,
+                description: formHandle.getDescription(),
+                filterJson: { conditions: formHandle.getConditions() },
+                labelUuids: formHandle.getLabelUuids(),
+              });
+              setDirty(false);
+              setSaving(false);
+              updateTitle(updated.name);
+              toast('Dataset saved', 3000);
+              const nameEl = listBody.querySelector(`[data-dataset-uuid="${dataset.uuid}"] .ds-list-item__name`);
+              if (nameEl) nameEl.textContent = updated.name;
+            } else {
+              const created = await createDataset({
+                name,
+                description: formHandle.getDescription(),
+                filterJson: { conditions: formHandle.getConditions() },
+                labelUuids: formHandle.getLabelUuids(),
+              });
+              setDirty(false);
+              toast(`Dataset "${created.name}" created`, 3000);
+              await refreshList();
+              if (navigateAfterCreate) {
+                await _showForm(created, { force: true });
+              } else {
+                setSaving(false);
+              }
+            }
+            return true;
+          } catch (err) {
+            toast(err.message, 5000, 'error');
+            setSaving(false);
+            return false;
+          }
+        }
+
+        _currentDoSave = () => _doSave(false);
+        _updateListSelection(dataset?.uuid ?? null);
+      } finally {
+        _switching = false;
+      }
     }
 
     async function refreshList() {
-      leftCol.innerHTML = '';
-
-      const h4 = document.createElement('h4');
-      h4.style.marginBottom = '8px';
-      h4.textContent = 'Datasets';
-      leftCol.appendChild(h4);
+      listBody.innerHTML = '';
 
       const datasetsMap = await fetchDatasets();
 
-      const listEl = document.createElement('div');
-      leftCol.appendChild(listEl);
-
       if (datasetsMap.size === 0) {
         const empty = document.createElement('p');
-        empty.style.cssText = 'color:var(--pico-muted-color,#888); font-style:italic; font-size:0.85em;';
+        empty.style.cssText = 'color: var(--pico-muted-color, #888); font-style: italic; font-size: 0.85em; padding: 0.5em 0.75em; margin: 0;';
         empty.textContent = 'No datasets yet.';
-        listEl.appendChild(empty);
+        listBody.appendChild(empty);
       }
 
       for (const dataset of datasetsMap.values()) {
-        const row = document.createElement('div');
-        row.style.cssText = 'cursor:pointer; padding:6px 8px; margin-bottom:4px; border-radius:4px; border:1px solid transparent; background:var(--pico-card-background-color);';
-        row.dataset.datasetUuid = dataset.uuid;
+        const item = document.createElement('div');
+        item.className = 'ds-list-item';
+        item.dataset.datasetUuid = dataset.uuid;
 
         const nameLine = document.createElement('div');
-        nameLine.style.fontWeight = 'bold';
+        nameLine.className = 'ds-list-item__name';
         nameLine.textContent = dataset.name;
-        row.appendChild(nameLine);
+        item.appendChild(nameLine);
 
         if (dataset.description) {
           const descLine = document.createElement('div');
-          descLine.style.cssText = 'font-size:0.82em; color:var(--pico-muted-color,#666); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:220px;';
+          descLine.className = 'ds-list-item__desc';
           descLine.textContent = dataset.description;
-          row.appendChild(descLine);
+          item.appendChild(descLine);
         }
 
         const metaLine = document.createElement('div');
-        metaLine.style.cssText = 'font-size:0.75em; color:var(--pico-muted-color,#999);';
+        metaLine.className = 'ds-list-item__meta';
         metaLine.textContent = `${dataset.label_uuids?.length ?? 0} labels`;
-        row.appendChild(metaLine);
+        item.appendChild(metaLine);
 
-        row.addEventListener('mouseenter', () => { if (row.dataset.datasetUuid !== _selectedUuid) row.style.background = 'var(--pico-card-sectioning-background-color, #f5f5f5)'; });
-        row.addEventListener('mouseleave', () => { if (row.dataset.datasetUuid !== _selectedUuid) row.style.background = 'var(--pico-card-background-color)'; });
-        row.addEventListener('click', async () => { await showDetail(dataset); });
-        listEl.appendChild(row);
+        item.addEventListener('click', () => _showForm(dataset));
+        listBody.appendChild(item);
       }
 
-      const newBtn = document.createElement('button');
-      newBtn.type = 'button';
-      newBtn.textContent = '+ New Dataset';
-      newBtn.style.cssText = 'margin-top:8px; width:100%;';
-      newBtn.addEventListener('click', async () => {
-        try { await showCreate(); } catch (err) { toast(err.message || 'Failed to open form', 5000, 'error'); }
-      });
-      leftCol.appendChild(newBtn);
-
-      // Re-apply selection styling after DOM is rebuilt
       _updateListSelection(_selectedUuid);
     }
+
+    // ── Navigation guard ─────────────────────────────────────────────────
+    // Intercept workspace-tab and main-tab clicks while there are unsaved changes.
+    const guardSignal = _navGuardController.signal;
+    document.addEventListener('click', async (e) => {
+      const btn = e.target.closest('.workspace-tab-button, .main-tab-button');
+      if (!btn) return;
+      const targetTab = btn.dataset.tab;
+      // Allow clicking the Datasets tab itself or the Configuration main tab (no navigation away)
+      if (targetTab === 'tab-dataset-management' || targetTab === 'tab-configuration') return;
+      if (!_dirty) return;
+
+      e.stopPropagation();
+      const result = await showUnsavedConfigChangesModal();
+      if (result === 'cancel') return;
+      if (result === 'save') {
+        const ok = await _currentDoSave?.();
+        if (!ok) return;
+      }
+      if (guardSignal.aborted) return; // guard superseded by a re-render; discard is stale
+      _dirty = false;
+      btn.click(); // re-fire now that guard is satisfied
+    }, { capture: true, signal: guardSignal });
 
     // Replace any previous subscription so we don't double-refresh on tab re-activation
     _unsubDatasets?.();
@@ -843,7 +826,12 @@ export async function renderDatasetManager({ target = 'dataset-management-box' }
     });
 
     await refreshList();
-    await showCreate();
+    await _showForm(null, { force: true });
+  } catch (err) {
+    const errMsg = document.createElement('p');
+    errMsg.style.color = 'red';
+    errMsg.textContent = `Error loading datasets: ${err.message}`;
+    container.appendChild(errMsg);
   } finally {
     _rendering = false;
   }

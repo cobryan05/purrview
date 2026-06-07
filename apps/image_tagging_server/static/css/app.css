@@ -1477,6 +1477,65 @@ button.filter-active {
 .mc-submodel-name { font-weight: 600; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mc-submodel-type-label { font-size: 0.82em; color: var(--pico-muted-color, #888); white-space: nowrap; }
 
+/* ===== Dataset config: list panel (left column) ===== */
+.ds-list-panel {
+  flex: 0 0 220px;
+  min-width: 170px;
+}
+.ds-list-panel .panel-box__body {
+  max-height: 55vh;
+  padding: 0;
+}
+.ds-list-item {
+  padding: 0.45em 0.75em;
+  cursor: pointer;
+  border-bottom: 1px solid var(--pico-muted-border-color, rgba(0, 0, 0, 0.07));
+  transition: background 0.1s;
+}
+.ds-list-item:last-child { border-bottom: none; }
+.ds-list-item:hover {
+  background: var(--pico-card-sectioning-background-color, rgba(0, 0, 0, 0.05));
+}
+.ds-list-item.active {
+  background: var(--pico-primary-background, #e8eeff);
+  padding-left: calc(0.75em - 2px);
+  border-left: 2px solid var(--pico-primary, #0070f3);
+}
+.ds-list-item__name {
+  font-size: 0.88em;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ds-list-item__desc {
+  font-size: 0.76em;
+  color: var(--pico-muted-color, #888);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  margin-top: 1px;
+}
+.ds-list-item__meta {
+  font-size: 0.72em;
+  color: var(--pico-muted-color, #aaa);
+  margin-top: 1px;
+}
+
+/* ===== Dataset config: editor panel (right column) ===== */
+.ds-editor {
+  flex: 1;
+  min-width: 0;
+}
+/* Editor bar title is the active dataset name, not a section label */
+.ds-editor .panel-box__title {
+  font-size: 0.95em;
+  font-weight: 600;
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--pico-color, inherit);
+}
+
 /* Annotation JSON */
 #annotation-json {
   max-height: 40vh;

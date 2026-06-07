@@ -3,14 +3,14 @@ Tests for the Dataset Management configuration UI.
 
 Exercises renderDatasetManager() inside
 Configuration > Dataset Management > #dataset-management-box:
-  - DOM structure (container present, create form visible)
-  - Dataset list loading (datasets appear with edit/delete buttons)
-  - Create flow (fill name → Create Dataset → /api/datasets POST called)
-  - Delete flow (confirm dialog; API called or suppressed)
+  - DOM structure (list panel + editor panel, create form visible by default)
+  - Dataset list loading (datasets appear in the list)
+  - Create flow (fill name → Create → /api/datasets POST called)
+  - Delete flow (modal confirm; API called or suppressed)
   - Label checkbox picker (Select All / Clear All controls)
 
 Run with:
-    pytest tests/playwright/test_configuration_datasets.py -p no:xdist -v
+    pytest playwright_tests/test_configuration_datasets.py -p no:xdist -p no:asyncio -v
 """
 import json
 
@@ -37,7 +37,7 @@ ROOT_LABEL = {
 }
 
 # ---------------------------------------------------------------------------
-# Navigation helper
+# Navigation / mocking helpers
 # ---------------------------------------------------------------------------
 
 
@@ -49,12 +49,13 @@ def _navigate_to_datasets(page: Page, base_url: str):
     page.wait_for_load_state("networkidle")
     page.locator("#tab-configuration .workspace-tab-button[data-tab='tab-dataset-management']").click()
     page.wait_for_load_state("networkidle")
+    # New DOM: panel-box structure
+    page.wait_for_selector("#dataset-management-box .ds-list-panel", timeout=4000)
 
 
 def _mock_datasets(page: Page, datasets: list | None = None):
     """Intercept GET /api/datasets to return the given datasets list."""
     datasets = datasets or []
-    datasets_map = {d["uuid"]: d for d in datasets}
     page.route(
         lambda url: url.split("?")[0].endswith("/api/datasets") and not any(
             s in url for s in ["/images", "/labels", "/preview"]
@@ -95,6 +96,29 @@ def _mock_tags_empty(page: Page):
     )
 
 
+def _editor(page: Page):
+    """The editor panel (right side)."""
+    return page.locator("#dataset-management-box .ds-editor")
+
+
+def _editor_bar(page: Page):
+    """The sticky header bar of the editor panel."""
+    return page.locator("#dataset-management-box .ds-editor .panel-box__bar")
+
+
+def _editor_body(page: Page):
+    """The scrollable body of the editor panel."""
+    return page.locator("#dataset-management-box .ds-editor .panel-box__body")
+
+
+def _open_detail_panel(page: Page):
+    """Click the bold dataset name item to reveal the detail panel with Save/Delete buttons."""
+    page.wait_for_timeout(800)
+    # The ds-list-item__name div has exactly the dataset name as its text content.
+    page.get_by_text(FAKE_DATASET["name"], exact=True).first.click()
+    page.wait_for_timeout(600)
+
+
 # ---------------------------------------------------------------------------
 # DOM structure
 # ---------------------------------------------------------------------------
@@ -102,31 +126,26 @@ def _mock_tags_empty(page: Page):
 
 class TestDatasetPaneStructure:
     def test_pane_structure(self, page: Page, base_url: str):
-        """The dataset pane renders its container and creation affordances in one navigation."""
+        """The dataset pane renders list panel + editor panel; create form is shown by default."""
         _mock_datasets(page, [])
+        _mock_labels(page, [])
+        _mock_tags_empty(page)
         _navigate_to_datasets(page, base_url)
-        expect(page.locator("#dataset-management-box")).to_be_visible()
 
-        page.wait_for_timeout(1000)
-        content = page.locator("#dataset-management-box").inner_text()
-        assert "New Dataset" in content or "Create Dataset" in content or "Dataset name" in content, (
-            f"No dataset creation affordance found. Content: {content!r}"
-        )
+        # Left panel: list panel exists
+        expect(page.locator("#dataset-management-box .ds-list-panel")).to_be_visible()
 
-        # Click "+ New Dataset" if it exists to reveal the create form
-        new_btn = page.locator("#dataset-management-box button", has_text="New Dataset")
-        if new_btn.count() > 0:
-            new_btn.first.click()
-            page.wait_for_timeout(500)
+        # Footer has a "+ New" button
+        expect(page.locator("#dataset-management-box .ds-list-panel button", has_text="+ New")).to_be_visible()
 
-        page.wait_for_selector(
-            "#dataset-management-box button, #dataset-management-box input[placeholder='Dataset name']",
-            timeout=3000,
-        )
-        content = page.locator("#dataset-management-box").inner_text()
-        assert "Create Dataset" in content or "Dataset name" in content, (
-            f"No 'Create Dataset' button or name input. Content: {content!r}"
-        )
+        # Editor panel defaults to create form; title is in the panel bar
+        expect(_editor_bar(page)).to_contain_text("New Dataset")
+
+        # Create button is in the editor bar (disabled until name entered)
+        expect(_editor_bar(page).locator("button", has_text="Create")).to_be_visible()
+
+        # Name input with "Required" placeholder is in the editor body
+        expect(_editor_body(page).locator("input[placeholder='Required']")).to_be_visible()
 
     def test_no_js_errors_on_datasets_tab(self, page: Page, base_url: str):
         """No console errors while loading the Dataset Management pane."""
@@ -149,27 +168,20 @@ class TestDatasetListLoading:
         _mock_datasets(page, [FAKE_DATASET])
         _navigate_to_datasets(page, base_url)
         page.wait_for_timeout(1000)
-        content = page.locator("#dataset-management-box").inner_text()
-        assert FAKE_DATASET["name"] in content, (
-            f"Dataset name '{FAKE_DATASET['name']}' not found in: {content!r}"
-        )
+        list_item = page.locator("#dataset-management-box [data-dataset-uuid]")
+        expect(list_item.locator(".ds-list-item__name")).to_have_text(FAKE_DATASET["name"])
 
     def test_dataset_has_delete_affordance(self, page: Page, base_url: str):
-        """Clicking a dataset name opens a detail panel that contains a Delete button."""
+        """Clicking a dataset item opens the edit form in the editor panel with a Delete button."""
         _mock_datasets(page, [FAKE_DATASET])
         _mock_labels(page, [])
         _mock_tags_empty(page)
         _navigate_to_datasets(page, base_url)
-        page.wait_for_timeout(1000)
+        _open_detail_panel(page)
 
-        # The dataset nameLine div has exactly the dataset name as text;
-        # clicking it (via event bubbling) triggers the row's click handler.
-        page.get_by_text(FAKE_DATASET["name"], exact=True).first.click()
-        page.wait_for_timeout(600)
-
-        # The detail panel has a red "Delete" button
-        delete_btn = page.locator("#dataset-management-box button", has_text="Delete")
-        expect(delete_btn.first).to_be_visible()
+        # The editor bar should show the dataset name and a Delete button
+        expect(_editor_bar(page)).to_contain_text(FAKE_DATASET["name"])
+        expect(_editor_bar(page).locator("button", has_text="Delete")).to_be_visible()
 
     def test_multiple_datasets_all_shown(self, page: Page, base_url: str):
         """Multiple datasets are all rendered in the list."""
@@ -180,9 +192,9 @@ class TestDatasetListLoading:
         _mock_datasets(page, datasets)
         _navigate_to_datasets(page, base_url)
         page.wait_for_timeout(1000)
-        content = page.locator("#dataset-management-box").inner_text()
+        content = page.locator("#dataset-management-box .ds-list-panel").inner_text()
         for ds in datasets:
-            assert ds["name"] in content, f"Dataset '{ds['name']}' not in content: {content!r}"
+            assert ds["name"] in content, f"Dataset '{ds['name']}' not in list content: {content!r}"
 
 
 # ---------------------------------------------------------------------------
@@ -192,7 +204,7 @@ class TestDatasetListLoading:
 
 class TestCreateDataset:
     def test_create_dataset_calls_api(self, page: Page, base_url: str):
-        """Filling in a name and clicking Create Dataset POSTs to /api/datasets."""
+        """Filling in a name and clicking Create POSTs to /api/datasets."""
         create_calls: list[dict] = []
 
         def handle_create(route: Route):
@@ -219,20 +231,11 @@ class TestCreateDataset:
         _navigate_to_datasets(page, base_url)
         page.wait_for_timeout(800)
 
-        # Reveal form if hidden behind a "New Dataset" button
-        new_btn = page.locator("#dataset-management-box button", has_text="New Dataset")
-        if new_btn.count() > 0:
-            new_btn.first.click()
-            page.wait_for_timeout(500)
+        # Create form is visible by default — fill the name input
+        _editor_body(page).locator("input[placeholder='Required']").fill("My New Dataset")
 
-        # Fill the name
-        page.wait_for_selector(
-            "#dataset-management-box input[placeholder='Dataset name']", timeout=4000
-        )
-        page.locator("#dataset-management-box input[placeholder='Dataset name']").fill("My New Dataset")
-
-        # Click Create Dataset
-        page.locator("#dataset-management-box button", has_text="Create Dataset").click()
+        # Click Create in the sticky editor header bar
+        _editor_bar(page).locator("button", has_text="Create").click()
         page.wait_for_timeout(800)
 
         assert create_calls, "Expected POST to /api/datasets"
@@ -240,7 +243,7 @@ class TestCreateDataset:
         assert payload.get("name") == "My New Dataset"
 
     def test_create_dataset_name_required(self, page: Page, base_url: str):
-        """Clicking Create Dataset without a name does not call the API."""
+        """Clicking Create without a name does not call the API."""
         calls: list[bool] = []
 
         def handle_create(route: Route):
@@ -262,17 +265,10 @@ class TestCreateDataset:
         _navigate_to_datasets(page, base_url)
         page.wait_for_timeout(800)
 
-        new_btn = page.locator("#dataset-management-box button", has_text="New Dataset")
-        if new_btn.count() > 0:
-            new_btn.first.click()
-            page.wait_for_timeout(500)
-
-        # Click Create Dataset without filling the name
-        create_btn = page.locator("#dataset-management-box button", has_text="Create Dataset")
-        if create_btn.count() > 0:
-            create_btn.first.click()
-            page.wait_for_timeout(500)
-            assert not calls, "API must NOT be called when name is empty"
+        # Create button in the sticky bar is disabled until name is entered
+        create_btn = _editor_bar(page).locator("button", has_text="Create")
+        expect(create_btn).to_be_disabled()
+        assert not calls, "API must NOT be called when name is empty"
 
     def test_label_checkbox_picker_shows_labels(self, page: Page, base_url: str):
         """Labels from /api/labels appear as checkboxes in the create form."""
@@ -283,17 +279,8 @@ class TestCreateDataset:
         _navigate_to_datasets(page, base_url)
         page.wait_for_timeout(800)
 
-        new_btn = page.locator("#dataset-management-box button", has_text="New Dataset")
-        if new_btn.count() > 0:
-            new_btn.first.click()
-            page.wait_for_timeout(600)
-
-        # The label should appear as a checkbox label somewhere in the box
-        page.wait_for_timeout(800)
-        content = page.locator("#dataset-management-box").inner_text()
-        assert ROOT_LABEL["name"] in content, (
-            f"Label '{ROOT_LABEL['name']}' not found in dataset form. Content: {content!r}"
-        )
+        # The label should appear somewhere in the editor body
+        expect(_editor_body(page)).to_contain_text(ROOT_LABEL["name"])
 
     def test_label_select_all_button_present(self, page: Page, base_url: str):
         """A 'Select All' button is visible in the label picker."""
@@ -304,13 +291,7 @@ class TestCreateDataset:
         _navigate_to_datasets(page, base_url)
         page.wait_for_timeout(800)
 
-        new_btn = page.locator("#dataset-management-box button", has_text="New Dataset")
-        if new_btn.count() > 0:
-            new_btn.first.click()
-            page.wait_for_timeout(600)
-
-        page.wait_for_timeout(600)
-        select_all = page.locator("#dataset-management-box button", has_text="Select All")
+        select_all = _editor_body(page).locator("button", has_text="Select All")
         expect(select_all.first).to_be_visible()
 
 
@@ -320,35 +301,24 @@ class TestCreateDataset:
 
 
 class TestDeleteDataset:
-    def _open_detail_panel(self, page: Page):
-        """Click the bold dataset name div to reveal the detail panel with Save/Delete buttons."""
-        page.wait_for_timeout(800)
-        # The nameLine div has exactly the dataset name as its text content.
-        # Clicking it bubbles to the row's click handler which calls showDetail().
-        page.get_by_text(FAKE_DATASET["name"], exact=True).first.click()
-        page.wait_for_timeout(600)
-
     def test_delete_shows_confirm_dialog(self, page: Page, base_url: str):
-        """Clicking Delete in the dataset detail panel opens a confirm() dialog."""
+        """Clicking Delete in the editor bar opens a modal dialog naming the dataset."""
         _mock_datasets(page, [FAKE_DATASET])
         _mock_labels(page, [])
         _mock_tags_empty(page)
         _navigate_to_datasets(page, base_url)
-        self._open_detail_panel(page)
+        _open_detail_panel(page)
 
-        delete_btn = page.locator("#dataset-management-box button", has_text="Delete")
-        expect(delete_btn.first).to_be_visible()
+        _editor_bar(page).locator("button", has_text="Delete").click()
+        page.wait_for_timeout(300)
 
-        dialogs: list[str] = []
-        page.on("dialog", lambda d: (dialogs.append(d.message), d.dismiss()))
-        delete_btn.first.click()
-        page.wait_for_timeout(400)
-
-        assert dialogs, "Expected a confirm() dialog"
-        assert FAKE_DATASET["name"] in dialogs[0], "Dialog should mention dataset name"
+        # Custom modal (not window.confirm) — verify it appears with the dataset name
+        modal = page.locator(".app-modal-dialog")
+        expect(modal).to_be_visible()
+        expect(modal).to_contain_text(FAKE_DATASET["name"])
 
     def test_delete_accepted_calls_api(self, page: Page, base_url: str):
-        """Accepting the delete dialog calls DELETE /api/datasets/{uuid}."""
+        """Confirming the delete modal sends a DELETE to /api/datasets/{uuid}."""
         delete_calls: list[str] = []
 
         def handle_delete(route: Route):
@@ -368,20 +338,20 @@ class TestDeleteDataset:
         page.route("**/api/datasets/**", handle_delete)
 
         _navigate_to_datasets(page, base_url)
-        self._open_detail_panel(page)
+        _open_detail_panel(page)
 
-        delete_btn = page.locator("#dataset-management-box button", has_text="Delete")
-        expect(delete_btn.first).to_be_visible()
+        _editor_bar(page).locator("button", has_text="Delete").click()
+        page.wait_for_timeout(300)
 
-        page.on("dialog", lambda d: d.accept())
-        delete_btn.first.click()
+        # Confirm by clicking "Delete" inside the modal
+        page.locator(".app-modal-dialog button", has_text="Delete").click()
         page.wait_for_timeout(600)
 
         assert delete_calls, "Expected DELETE request to /api/datasets/{uuid}"
         assert FAKE_DATASET["uuid"] in delete_calls[0]
 
     def test_delete_dismissed_does_not_call_api(self, page: Page, base_url: str):
-        """Dismissing the confirm dialog does NOT delete the dataset."""
+        """Cancelling the delete modal must NOT delete the dataset."""
         calls: list[bool] = []
 
         def handle_delete(route: Route):
@@ -398,13 +368,13 @@ class TestDeleteDataset:
         page.route("**/api/datasets/**", handle_delete)
 
         _navigate_to_datasets(page, base_url)
-        self._open_detail_panel(page)
+        _open_detail_panel(page)
 
-        delete_btn = page.locator("#dataset-management-box button", has_text="Delete")
-        expect(delete_btn.first).to_be_visible()
+        _editor_bar(page).locator("button", has_text="Delete").click()
+        page.wait_for_timeout(300)
 
-        page.on("dialog", lambda d: d.dismiss())
-        delete_btn.first.click()
+        # Cancel the modal — no API call should happen
+        page.locator(".app-modal-dialog button", has_text="Cancel").click()
         page.wait_for_timeout(500)
 
-        assert not calls, "API must NOT be called when delete is dismissed"
+        assert not calls, "API must NOT be called when delete is cancelled"

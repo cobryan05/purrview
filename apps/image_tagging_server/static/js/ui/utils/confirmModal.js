@@ -75,20 +75,37 @@ export function showConfirmModal({
 }
 
 /**
- * Modal asking the user what to do about unsaved annotation changes.
+ * Modal asking the user what to do about unsaved changes.
  *
+ * @param {Object} [opts]
+ * @param {string} [opts.message]      — body text (default: annotation-specific wording)
+ * @param {string} [opts.discardText]  — label for the discard button
  * @returns {Promise<'save'|'discard'|'cancel'>}
  */
-export function showUnsavedChangesModal() {
+export function showUnsavedChangesModal({
+  message = 'You have unsaved annotation changes. What would you like to do?',
+  discardText = 'Discard & continue',
+} = {}) {
   return _buildModal({
     title: 'Unsaved changes',
-    message: 'You have unsaved annotation changes. What would you like to do?',
+    message,
     buttons: [
       { text: 'Cancel', value: 'cancel', className: 'secondary' },
-      { text: 'Discard & continue', value: 'discard', className: 'contrast' },
+      { text: discardText, value: 'discard', className: 'contrast' },
       { text: 'Save & continue', value: 'save' },
     ],
-    defaultFocusIndex: 2,   // focus 'Save & continue' (matches original behaviour)
+    defaultFocusIndex: 2,
     defaultCloseValue: 'cancel',
+  });
+}
+
+/**
+ * Variant of showUnsavedChangesModal for config panels (datasets, model configs, etc.).
+ * @returns {Promise<'save'|'discard'|'cancel'>}
+ */
+export function showUnsavedConfigChangesModal() {
+  return showUnsavedChangesModal({
+    message: 'You have unsaved changes. What would you like to do?',
+    discardText: "Don't save & continue",
   });
 }

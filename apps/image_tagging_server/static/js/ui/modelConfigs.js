@@ -7,8 +7,8 @@ import {
   fetchModelTypenames,
   updateModelConfig,
 } from '/app-static/js/shared/api/modelConfigs.js';
-import { showConfirmModal } from '/app-static/js/ui/utils/confirmModal.js';
-import { toast } from '/app-static/js/ui/utils/index.js';
+import { showConfirmModal, showUnsavedConfigChangesModal } from '/app-static/js/ui/utils/confirmModal.js';
+import { toast, makeFieldRow } from '/app-static/js/ui/utils/index.js';
 
 let _rendering = false;
 let _navGuardController = null; // AbortController for the tab-navigation guard
@@ -141,16 +141,6 @@ function renderConfigForm({ config, typenames, labelsMap, onDirtyChange }) {
   const el = document.createElement('div');
 
   function _markDirty() { onDirtyChange?.(true); }
-
-  function makeFieldRow(labelText, input) {
-    const row = document.createElement('div');
-    row.className = 'panel-field-row';
-    const lbl = document.createElement('label');
-    lbl.textContent = labelText;
-    row.appendChild(lbl);
-    row.appendChild(input);
-    return row;
-  }
 
   // Name
   const nameInput = document.createElement('input');
@@ -306,16 +296,15 @@ export async function renderModelConfigManager({ target = 'model-config-box' } =
     let _selectedUuid = null;
     let _dirty = false;
     let _currentFormHandle = null;
+    let _currentDoSave = null; // async () => boolean — current form's save-only fn (no re-render)
     let _switching = false; // true while a showEdit/showCreate transition is in progress
 
     async function _confirmIfDirty() {
       if (!_dirty) return true;
-      return showConfirmModal({
-        title: 'Unsaved changes',
-        message: 'You have unsaved changes. Discard them and continue?',
-        confirmText: 'Discard',
-        cancelText: 'Keep editing',
-      });
+      const result = await showUnsavedConfigChangesModal();
+      if (result === 'cancel') return false;
+      if (result === 'save') return await (_currentDoSave?.() ?? false);
+      return true; // 'discard'
     }
 
     function _updateListSelection(uuid) {
@@ -369,7 +358,7 @@ export async function renderModelConfigManager({ target = 'model-config-box' } =
         deleteBtn.className = 'panel-btn secondary';
         deleteBtn.addEventListener('click', async () => {
           // Disable save during the async confirm to prevent a concurrent save+delete.
-          saveBtn.disabled = true;
+          setSaving(true);
           const ok = await showConfirmModal({
             title: 'Delete configuration',
             message: `Delete "${config.name}"? This cannot be undone.`,
@@ -406,6 +395,7 @@ export async function renderModelConfigManager({ target = 'model-config-box' } =
         if (!force && !await _confirmIfDirty()) return;
         _currentFormHandle?.destroy();
         _currentFormHandle = null;
+        _currentDoSave = null;
         _dirty = false;
         _selectedUuid = config?.uuid ?? null;
 
@@ -453,6 +443,34 @@ export async function renderModelConfigManager({ target = 'model-config-box' } =
         });
         _currentFormHandle = formHandle;
         editorBody.appendChild(formHandle.el);
+
+        // Save-only function for the dirty-navigation guard (no re-render after save).
+        _currentDoSave = async () => {
+          const { name, description, nodes } = formHandle.getSaveData();
+          if (!name) { toast('Name is required', 3000, 'error'); return false; }
+          if (!nodes[0]?.model_typename) { toast('Root model type is required', 3000, 'error'); return false; }
+          setSaving(true);
+          try {
+            if (config) {
+              const updated = await updateModelConfig(config.uuid, { name, description, nodes });
+              setDirty(false);
+              toast('Saved', 3000);
+              const nameEl = listBody.querySelector(`[data-config-uuid="${config.uuid}"] .mc-list-item__name`);
+              if (nameEl) nameEl.textContent = updated.name;
+            } else {
+              const created = await createModelConfig({ name, description, nodes });
+              setDirty(false);
+              toast(`Created "${created.name}"`, 3000);
+              await refreshList();
+            }
+            setSaving(false);
+            return true;
+          } catch (err) {
+            toast(err.message, 5000, 'error');
+            setSaving(false);
+            return false;
+          }
+        };
 
         _updateListSelection(config?.uuid ?? null);
       } finally {
@@ -517,13 +535,12 @@ export async function renderModelConfigManager({ target = 'model-config-box' } =
       if (!_dirty) return;
 
       e.stopPropagation();
-      const discard = await showConfirmModal({
-        title: 'Unsaved changes',
-        message: 'You have unsaved changes that will be lost if you navigate away.',
-        confirmText: 'Discard & leave',
-        cancelText: 'Keep editing',
-      });
-      if (!discard) return;
+      const result = await showUnsavedConfigChangesModal();
+      if (result === 'cancel') return;
+      if (result === 'save') {
+        const ok = await _currentDoSave?.();
+        if (!ok) return;
+      }
       if (guardSignal.aborted) return; // guard superseded by a re-render; discard is stale
       _dirty = false;
       btn.click(); // re-fire now that guard is satisfied

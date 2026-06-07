@@ -1,6 +1,22 @@
 // Utility functions
 
 /**
+ * Creates a labelled field row for panel forms.
+ * @param {string} labelText
+ * @param {HTMLElement} input
+ * @returns {HTMLElement} div.panel-field-row
+ */
+export function makeFieldRow(labelText, input) {
+  const row = document.createElement('div');
+  row.className = 'panel-field-row';
+  const lbl = document.createElement('label');
+  lbl.textContent = labelText;
+  row.appendChild(lbl);
+  row.appendChild(input);
+  return row;
+}
+
+/**
  * Wraps a given DOM node in a styled box with a border and padding.
  * @param {HTMLElement} node - The DOM node to be wrapped.
  * @param {Object} [opts] - Optional style overrides.
