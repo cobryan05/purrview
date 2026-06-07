@@ -26,9 +26,9 @@ from playwright.sync_api import Page, Route, expect
 # Fake data
 # ---------------------------------------------------------------------------
 
-LABEL_CAT = {"uuid": "lbl-cat", "name": "Cat", "color": "#ff0000", "parent_uuid": None}
-LABEL_KITTEN = {"uuid": "lbl-kitten", "name": "Kitten", "color": "#ff8888", "parent_uuid": "lbl-cat"}
-LABEL_DOG = {"uuid": "lbl-dog", "name": "Dog", "color": "#00ff00", "parent_uuid": None}
+LABEL_CAT = {"uuid": "lbl-cat", "name": "Cat", "color": "#ff0000", "parentUuid": None}
+LABEL_KITTEN = {"uuid": "lbl-kitten", "name": "Kitten", "color": "#ff8888", "parentUuid": "lbl-cat"}
+LABEL_DOG = {"uuid": "lbl-dog", "name": "Dog", "color": "#00ff00", "parentUuid": None}
 
 TYPENAMES = ["yolov8n", "yolov8s", "yolov5m"]
 
@@ -37,8 +37,8 @@ EXISTING_CONFIG = {
     "name": "Animal Detector",
     "description": "Cats & dogs",
     "nodes": [
-        {"label_uuid": None, "model_typename": "yolov8n"},
-        {"label_uuid": "lbl-cat", "model_typename": "yolov8s"},
+        {"labelUuid": None, "modelTypename": "yolov8n"},
+        {"labelUuid": "lbl-cat", "modelTypename": "yolov8s"},
     ],
 }
 
@@ -204,7 +204,7 @@ class TestCreateModelConfig:
         payload = calls[0]
         assert payload["name"] == "My Config"
 
-        nodes_by_label = {n["label_uuid"]: n["model_typename"] for n in payload["nodes"]}
+        nodes_by_label = {n["labelUuid"]: n["modelTypename"] for n in payload["nodes"]}
         assert nodes_by_label[None] == "yolov5m"
         assert nodes_by_label["lbl-cat"] == "yolov5m"
         assert nodes_by_label["lbl-dog"] == "yolov5m"
@@ -283,7 +283,7 @@ class TestEditModelConfig:
         assert calls, "Expected PATCH to /api/model-configs/cfg-1"
         payload = calls[0]
         assert payload["name"] == "Animal Detector v2"
-        nodes_by_label = {n["label_uuid"]: n["model_typename"] for n in payload["nodes"]}
+        nodes_by_label = {n["labelUuid"]: n["modelTypename"] for n in payload["nodes"]}
         assert nodes_by_label["lbl-cat"] == "yolov5m"
 
 
@@ -325,7 +325,7 @@ class TestClearAssignment:
 
         assert calls, "Expected PATCH to /api/model-configs/cfg-1"
         payload = calls[0]
-        labels_in_payload = {n["label_uuid"] for n in payload["nodes"]}
+        labels_in_payload = {n["labelUuid"] for n in payload["nodes"]}
         assert "lbl-cat" not in labels_in_payload
         assert None in labels_in_payload  # root node always present
 

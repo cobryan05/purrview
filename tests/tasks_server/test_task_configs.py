@@ -99,6 +99,19 @@ async def test_update_task_config_unknown_type_returns_failure(http_client):
     assert resp.json()["status"] == "failure"
 
 
+async def test_task_config_params_serialization_key(http_client):
+    """TaskConfigRead serializes the params field as 'params', not 'params_json' or 'paramsJson'."""
+    resp = await http_client.post(
+        "/api/tasks/configs/get",
+        json={"configUuids": [CONFIG_UUID]},
+    )
+    assert resp.status_code == 200
+    config = resp.json()["configs"][CONFIG_UUID]
+    assert "params" in config, "TaskConfigRead must serialize the params field as 'params'"
+    assert "params_json" not in config, "old alias 'params_json' must no longer appear in the response"
+    assert "paramsJson" not in config, "to_camel of 'params' is 'params', not 'paramsJson'"
+
+
 async def test_server_config(http_client):
     resp = await http_client.get("/server-config")
     assert resp.status_code == 200

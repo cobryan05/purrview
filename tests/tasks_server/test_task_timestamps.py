@@ -21,7 +21,7 @@ async def _start_long_task(manager, tasks_api_mock, duration=60.0):
                 uuid=CONFIG_UUID,
                 name="test-config",
                 typename="TestTask",
-                params_json={"duration": duration},
+                params={"duration": duration},
                 marked_for_delete=False,
                 description=None,
             )
@@ -52,7 +52,7 @@ async def test_completed_task_records_ended_at_and_logs(manager, tasks_api_mock)
                 uuid=CONFIG_UUID,
                 name="test-config",
                 typename="TestTask",
-                params_json={"duration": 0.0},
+                params={"duration": 0.0},
                 marked_for_delete=False,
                 description=None,
             )

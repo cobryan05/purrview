@@ -67,7 +67,7 @@ class Manager:
                 result = task_info.task.get_results()
                 if result:
                     results[tid] = result
-                    if task_info.config.params_json.get(Task.InternalKeys.ONESHOT_RESULT, False):
+                    if task_info.config.params.get(Task.InternalKeys.ONESHOT_RESULT, False):
                         tasks_to_delete.append(tid)
             else:
                 not_running.append(tid)
@@ -372,7 +372,7 @@ class Manager:
         try:
             task_info.instance.status = task_info.task.get_status()
             await self._save_task_data(task_info, ended_at=datetime.now(timezone.utc))
-            if task_info.config.params_json.get(Task.InternalKeys.ONESHOT_RESULT, False):
+            if task_info.config.params.get(Task.InternalKeys.ONESHOT_RESULT, False):
                 self._pending_oneshot_deletes.add(task_info.instance.uuid)
         except Exception:
             logger.exception(f"Error completing task {task_info.instance.uuid}; forcing ERROR status")
@@ -427,7 +427,7 @@ class Manager:
     ) -> Optional[TaskInfo]:
         # Inject the config display name so tasks can use it for generated artifact names
         # without needing a separate API call.  Use a copy to avoid mutating the config.
-        task_params = {**config.params_json, "_config_name": config.name}
+        task_params = {**config.params, "_config_name": config.name}
         task = task_registry[config.typename](task_config_uuid=config.uuid, params=task_params, manager=self)
         if resume_instance:
             instance = resume_instance
@@ -493,7 +493,7 @@ class Manager:
         if running_tasks:
             coros = []
             for inst in running_tasks:
-                if inst.resume_data_json:
+                if inst.resume_data:
                     recovered_status = db_models.TaskStatus.PAUSED
                     logger.info(f"Task {inst.uuid} interrupted with checkpoint — marking paused (resumable)")
                 else:

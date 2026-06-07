@@ -50,33 +50,33 @@ FAKE_CONFIG = {
     "uuid": "eeeeeeee-0000-0000-0000-000000000001",
     "name": "Nightly Refresh",
     "typename": TASK_TYPE,
-    "params_json": {"remove_deleted": True, "sync_mode": "merge"},
+    "params": {"remove_deleted": True, "sync_mode": "merge"},
 }
 
 RUNNING_TASK = {
     "instance": {
         "uuid": "ffffffff-0000-0000-0000-000000000001",
         "status": "running",
-        "started_at": "2024-01-01T00:00:00",
-        "ended_at": None,
+        "startedAt": "2024-01-01T00:00:00",
+        "endedAt": None,
     },
     "config": {"name": "Nightly Refresh", "uuid": FAKE_CONFIG["uuid"]},
     "progress": 42.0,
-    "is_paused_in_place": False,
-    "log_lines": ["Starting…", "Processing images…"],
+    "isPausedInPlace": False,
+    "logLines": ["Starting…", "Processing images…"],
 }
 
 COMPLETED_TASK = {
     "instance": {
         "uuid": "ffffffff-0000-0000-0000-000000000002",
         "status": "completed",
-        "started_at": "2024-01-01T00:00:00",
-        "ended_at": "2024-01-01T00:05:00",
+        "startedAt": "2024-01-01T00:00:00",
+        "endedAt": "2024-01-01T00:05:00",
     },
     "config": {"name": "Nightly Refresh", "uuid": FAKE_CONFIG["uuid"]},
     "progress": 100.0,
-    "is_paused_in_place": False,
-    "log_lines": ["Done."],
+    "isPausedInPlace": False,
+    "logLines": ["Done."],
 }
 
 # ---------------------------------------------------------------------------

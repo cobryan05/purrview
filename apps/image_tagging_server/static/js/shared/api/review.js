@@ -37,21 +37,21 @@ export async function fetchReviewQueue({
   limit = 50,
 } = {}) {
   const body = {
-    tag_uuids: tagUuids,
-    show_all_bboxes: showAllBboxes,
-    sort_by: sortBy,
-    sort_order: sortOrder,
+    tagUuids,
+    showAllBboxes,
+    sortBy,
+    sortOrder,
     limit,
   };
-  if (labelUuid) body.label_uuid = labelUuid;
-  if (filenameSearch) body.filename_search = filenameSearch;
-  if (dateFrom) body.date_from = dateFrom;
-  if (dateTo) body.date_to = dateTo;
-  if (afterUuid) body.after_uuid = afterUuid;
-  if (afterSortValue) body.after_sort_value = afterSortValue;
+  if (labelUuid) body.labelUuid = labelUuid;
+  if (filenameSearch) body.filenameSearch = filenameSearch;
+  if (dateFrom) body.dateFrom = dateFrom;
+  if (dateTo) body.dateTo = dateTo;
+  if (afterUuid) body.afterUuid = afterUuid;
+  if (afterSortValue) body.afterSortValue = afterSortValue;
   if (imageLabelFilters.length > 0) {
-    body.image_label_filters = imageLabelFilters.map(f => ({
-      label_uuid: f.labelUuid,
+    body.imageLabelFilters = imageLabelFilters.map(f => ({
+      labelUuid: f.labelUuid,
       status: f.status,
       exclude: f.exclude,
     }));

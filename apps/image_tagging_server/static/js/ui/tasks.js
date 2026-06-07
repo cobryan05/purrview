@@ -42,7 +42,7 @@ export function renderTaskConfigs({ target = 'task-config-list', onEdit, onDelet
           }
         }
       };
-      TaskConfigField.create({ value: config.params_json, ...config }).then(fieldInstance => {
+      TaskConfigField.create({ value: config.params, ...config }).then(fieldInstance => {
         const row = createGenericRow({
           field: new EditableField({
             field: fieldInstance,
@@ -109,8 +109,8 @@ export function renderTaskConfigs({ target = 'task-config-list', onEdit, onDelet
 function _taskFingerprint(tasks) {
   return Object.entries(tasks || {})
     .map(([id, t]) => {
-      const logs = t.log_lines ?? [];
-      return `${id}:${t.instance?.status}:${t.is_paused_in_place ?? false}:${Math.round(t.progress ?? 0)}:${logs.length}:${logs[logs.length - 1] ?? ''}:${t.instance?.started_at ?? ''}:${t.instance?.ended_at ?? ''}`;
+      const logs = t.logLines ?? [];
+      return `${id}:${t.instance?.status}:${t.isPausedInPlace ?? false}:${Math.round(t.progress ?? 0)}:${logs.length}:${logs[logs.length - 1] ?? ''}:${t.instance?.startedAt ?? ''}:${t.instance?.endedAt ?? ''}`;
     })
     .sort()
     .join('|');
@@ -211,7 +211,7 @@ export function renderActiveTasks({ target = 'active-tasks-list', refresh = null
             catch (error) { toast(error.message || 'Failed to resume task', 5000, 'error'); }
           }
         };
-        const isPausedInPlace = task.is_paused_in_place === true;
+        const isPausedInPlace = task.isPausedInPlace === true;
         let leftButtons = [];
         let rightButtons = [];
         if (status === 'running' && !isPausedInPlace) {

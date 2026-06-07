@@ -28,8 +28,8 @@ def _make_instance(uuid: str, status: str, resume_data=None) -> db_models.TaskIn
         uuid=uuid,
         config_uuid="cfg-uuid",
         status=status,
-        resume_data_json=resume_data,
-        result_json=None,
+        resume_data=resume_data,
+        result=None,
         error_message=None,
     )
 

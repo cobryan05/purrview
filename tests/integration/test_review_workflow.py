@@ -95,7 +95,7 @@ async def _put_image(files_root, client, filename="img.png", label_uuid=None, ta
 
 
 async def _review(client, tag_uuids=None, show_all=False, **extra):
-    # ImageSearchParams uses snake_case (no alias_generator)
+    # ImageSearchParams accepts both snake_case (field names) and camelCase (aliases)
     params = {"show_all_bboxes": show_all}
     if tag_uuids is not None:
         params["tag_uuids"] = tag_uuids
@@ -108,7 +108,7 @@ async def _review(client, tag_uuids=None, show_all=False, **extra):
 async def _image_labels(client, path):
     r = await client.get(f"/api/images/{path}/labels")
     assert r.status_code == 200
-    return {row["label_uuid"]: row["status"] for row in r.json()["labels"]}
+    return {row["labelUuid"]: row["status"] for row in r.json()["labels"]}
 
 
 # ──────────────────────────────────────────────────────────────────────────────

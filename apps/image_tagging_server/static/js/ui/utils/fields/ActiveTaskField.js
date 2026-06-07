@@ -16,35 +16,33 @@ export class ActiveTaskField extends Field {
 
   static async create({ ...rest } = {}) {
     const instance = new ActiveTaskField({ ...rest });
-    const { uuid, status, error_message, created_at, started_at, ended_at } = instance._value.instance || {};
+    const { uuid, status, errorMessage, createdAt, startedAt, endedAt } = instance._value.instance || {};
     const { name, typename } = instance._value.config || {};
     instance._name = name || typename || uuid;
     instance._uuid = uuid;
     instance._status = status;
-    instance._message = error_message;
+    instance._message = errorMessage;
     instance._progress = instance._value.progress ?? 0;
-    instance._statusMessage = instance._value.status_message ?? '';
-    instance._isPausedInPlace = instance._value.is_paused_in_place === true;
+    instance._statusMessage = instance._value.statusMessage ?? '';
+    instance._isPausedInPlace = instance._value.isPausedInPlace === true;
     // For active tasks use the live ring-buffer (may be empty on first poll).
-    // For finished/suspended tasks fall back to the persisted log_json column.
+    // For finished/suspended tasks fall back to the persisted logLines field.
     // Checking status rather than log length avoids showing a previous run's
     // persisted logs on the first poll of a fresh run.
-    const liveLogs = instance._value.log_lines ?? [];
+    const liveLogs = instance._value.logLines ?? [];
     const isActive = status === 'running' || status === 'pending';
-    // TaskInstanceRead serializes with field aliases: log_lines→log_json, result→result_json.
-    // Read the aliased keys from the JSON response.
     instance._logLines = (liveLogs.length > 0 || isActive)
       ? liveLogs
-      : (instance._value.instance?.log_json ?? []);
-    instance._createdAt = created_at ? new Date(created_at) : null;
-    instance._startedAt = started_at ? new Date(started_at) : null;
-    instance._endedAt = ended_at ? new Date(ended_at) : null;
+      : (instance._value.instance?.logLines ?? []);
+    instance._createdAt = createdAt ? new Date(createdAt) : null;
+    instance._startedAt = startedAt ? new Date(startedAt) : null;
+    instance._endedAt = endedAt ? new Date(endedAt) : null;
     instance._durationSec = (instance._startedAt && instance._endedAt)
       ? Math.round((instance._endedAt - instance._startedAt) / 1000)
       : null;
     instance._logJoined = instance._logLines.join('\n');
     instance._typename = typename;
-    instance._actions = instance._value.instance?.result_json?.actions ?? [];
+    instance._actions = instance._value.instance?.result?.actions ?? [];
     return instance;
   }
 

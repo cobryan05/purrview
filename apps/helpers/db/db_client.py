@@ -181,7 +181,7 @@ def _apply_image_search_filters(stmt: Select, params: ImageSearchParams) -> Sele
     # Images must have at least one bbox whose label is in the dataset's label set.
     if params.label_uuids:
         subq = (
-            select(BBox.uuid)
+            select(BBox)
             .where(
                 BBox.image_uuid == ImageRecord.uuid,
                 BBox.label_uuid.in_(params.label_uuids),
@@ -1805,7 +1805,7 @@ class DbClient:
                 "uuid": d.uuid,
                 "name": d.name,
                 "description": d.description,
-                "filter_json": d.filter_json,
+                "filter_json": d.filter_json.model_dump(mode="json"),
                 "label_uuids": d.label_uuids,
             }
             for d in datasets
@@ -2067,7 +2067,7 @@ class DbClient:
         # When the dataset has label_uuids, restrict to images that have at least
         # one bbox annotated with one of those labels.
         if dataset.label_uuids:
-            params.label_uuids = list(dataset.label_uuids)
+            params.label_uuids = dataset.label_uuids
         return params
 
     async def _list_images_for_dataset(
@@ -2086,7 +2086,7 @@ class DbClient:
         BboxAgeCondition entries are applied as an additional in-DB filter after
         the base query.
         """
-        criteria = DatasetFilterCriteria.model_validate({"conditions": dataset.filter_json.get("conditions", [])})
+        criteria = dataset.filter_json
 
         # Fetch limit+1 rows so we can distinguish "exactly limit" from "more exist".
         params = self.build_dataset_search_params(

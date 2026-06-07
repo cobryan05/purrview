@@ -20,8 +20,8 @@ _SETUP = f"""
     const {{ createFilterPanel }} = await import('/app-static/js/app/review/filters.js');
 
     const labels = new Map([
-        ['lbl-cat', {{ uuid: 'lbl-cat', name: 'Cat', parent_uuid: null }}],
-        ['lbl-dog', {{ uuid: 'lbl-dog', name: 'Dog', parent_uuid: null }}],
+        ['lbl-cat', {{ uuid: 'lbl-cat', name: 'Cat', parentUuid: null }}],
+        ['lbl-dog', {{ uuid: 'lbl-dog', name: 'Dog', parentUuid: null }}],
     ]);
     const tags = new Map([
         ['{UNVERIFIED_UUID}', {{ uuid: '{UNVERIFIED_UUID}', name: 'Unverified', color: null }}],

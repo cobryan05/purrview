@@ -84,7 +84,7 @@ def tasks_api_mock():
         uuid=CONFIG_UUID,
         name="test-config",
         typename="TestTask",
-        params_json={"duration": 60.0},
+        params={"duration": 60.0},
         marked_for_delete=False,
         description=None,
     )
@@ -92,8 +92,8 @@ def tasks_api_mock():
         uuid=TASK_UUID,
         config_uuid=CONFIG_UUID,
         status=TaskStatus.PENDING,
-        resume_data_json=None,
-        result_json=None,
+        resume_data=None,
+        result=None,
         error_message=None,
     )
     mock.create_task_config.return_value = MagicMock(config=mock_config)

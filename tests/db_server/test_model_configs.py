@@ -82,10 +82,10 @@ async def test_create_with_nodes(http_client):
     ]
     cfg = await _create_config(http_client, "WithNodes", nodes=nodes)
     assert len(cfg["nodes"]) == 2
-    typenames = {n["model_typename"] for n in cfg["nodes"]}
+    typenames = {n["modelTypename"] for n in cfg["nodes"]}
     assert typenames == {"YoloV8", "TestModel"}
-    root_node = next(n for n in cfg["nodes"] if n["label_uuid"] is None)
-    assert root_node["model_typename"] == "YoloV8"
+    root_node = next(n for n in cfg["nodes"] if n["labelUuid"] is None)
+    assert root_node["modelTypename"] == "YoloV8"
 
 
 async def test_update_scalar_fields(http_client):
@@ -124,7 +124,7 @@ async def test_update_nodes_wholesale(http_client):
     body = r.json()
     assert body["status"] == "success"
     assert len(body["config"]["nodes"]) == 2
-    typenames = {n["model_typename"] for n in body["config"]["nodes"]}
+    typenames = {n["modelTypename"] for n in body["config"]["nodes"]}
     assert typenames == {"YoloV8", "TestModel"}
 
 
@@ -202,7 +202,7 @@ async def test_label_delete_cascades_node(http_client):
     assert body["config"] is not None
     remaining_nodes = body["config"]["nodes"]
     assert len(remaining_nodes) == 1
-    assert remaining_nodes[0]["label_uuid"] is None
+    assert remaining_nodes[0]["labelUuid"] is None
 
 
 async def test_invalid_typename_rejected(http_client):
@@ -241,5 +241,5 @@ async def test_root_node_label_uuid_none(http_client):
         nodes=[{"label_uuid": None, "model_typename": "YoloV8"}],
     )
     assert len(cfg["nodes"]) == 1
-    assert cfg["nodes"][0]["label_uuid"] is None
-    assert cfg["nodes"][0]["model_typename"] == "YoloV8"
+    assert cfg["nodes"][0]["labelUuid"] is None
+    assert cfg["nodes"][0]["modelTypename"] == "YoloV8"

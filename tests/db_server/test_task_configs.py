@@ -5,6 +5,7 @@ with a real SQLite DB, exercising the persistence layer used by tasks_server.
 """
 
 import pytest
+import db_client.models as db_models
 
 from apps.helpers.consts import TaskStatus
 
@@ -32,7 +33,7 @@ async def test_create_task_config(http_client):
     config = body["config"]
     assert config["name"] == "my-task"
     assert config["typename"] == "CollectImages"
-    assert config["params_json"]["steps"] == 10
+    assert config["params"]["steps"] == 10
     assert "uuid" in config
 
 
@@ -92,7 +93,7 @@ async def test_update_task_config_params(http_client):
     )
 
     list_r = await http_client.get("/api/task-configs")
-    params = list_r.json()["configs"][config_uuid]["params_json"]
+    params = list_r.json()["configs"][config_uuid]["params"]
     assert params["a"] == 99
     assert params["b"] == "new"
 
@@ -110,7 +111,7 @@ async def test_update_task_config_marked_for_delete(http_client):
     )
 
     list_r = await http_client.get("/api/task-configs")
-    assert list_r.json()["configs"][config_uuid]["marked_for_delete"] is True
+    assert list_r.json()["configs"][config_uuid]["markedForDelete"] is True
 
 
 async def test_delete_task_configs(http_client):
@@ -155,7 +156,7 @@ async def test_create_task_instance(http_client, config_uuid):
     body = r.json()
     assert body["status"] == "success"
     instance = body["instance"]
-    assert instance["config_uuid"] == config_uuid
+    assert instance["configUuid"] == config_uuid
     assert "uuid" in instance
 
 
@@ -233,7 +234,7 @@ async def test_set_and_get_resume_data(http_client, config_uuid):
 
     list_r = await http_client.get("/api/task-instances")
     instances = {i["uuid"]: i for i in list_r.json()["instances"]}
-    resume = instances[inst_uuid]["resume_data_json"]
+    resume = instances[inst_uuid]["resumeData"]
     assert resume["checkpoint"] == 7
     assert resume["items"] == [1, 2, 3]
 
@@ -271,4 +272,36 @@ async def test_delete_config_with_instance_marks_for_delete(http_client, config_
     configs = list_r.json()["configs"]
     # Config still present but marked for delete.
     assert config_uuid in configs
-    assert configs[config_uuid]["marked_for_delete"] is True
+    assert configs[config_uuid]["markedForDelete"] is True
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Generated-client compatibility
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+async def test_generated_client_parses_camelcase_instance_response(http_client):
+    """The db_server response is camelCase; the generated db_client must parse it.
+
+    Regression: after alias_generator=to_camel was added to TaskInstanceRead,
+    the JSON key changed from config_uuid to configUuid.  The generated client's
+    from_dict() hard-codes obj.get("config_uuid"), so it returns None and then
+    fails StrictStr validation — producing the UI warning
+    "1 validation error for TaskInstanceRead config_uuid".
+    """
+    create_r = await http_client.post(
+        "/api/task-configs",
+        json={"name": "camel-compat-test", "typename": "T", "params": {}},
+    )
+    config_uuid = create_r.json()["config"]["uuid"]
+
+    await http_client.post("/api/task-instances", json={"configUuid": config_uuid})
+
+    list_r = await http_client.get("/api/task-instances")
+    assert list_r.status_code == 200
+
+    for inst_json in list_r.json()["instances"]:
+        # This is exactly what tasks_server does: parse the HTTP response
+        # from db_server through the generated client model.
+        parsed = db_models.TaskInstanceRead.from_dict(inst_json)
+        assert parsed.config_uuid == config_uuid  # Was None before client regen

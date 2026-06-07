@@ -43,7 +43,7 @@ export function buildHierarchy(labelsMap, filter) {
   const byParent = new Map();
   for (const label of labelsMap.values()) {
     if (filter && !filter(label)) continue;
-    const key = label.parent_uuid ?? null;
+    const key = label.parentUuid ?? null;
     if (!byParent.has(key)) byParent.set(key, []);
     byParent.get(key).push(label);
   }
@@ -551,7 +551,7 @@ async function mountModelConfigMode(container, {
 
   const childCountMap = new Map();
   for (const label of labelsMap.values()) {
-    if (label.parent_uuid) childCountMap.set(label.parent_uuid, (childCountMap.get(label.parent_uuid) ?? 0) + 1);
+    if (label.parentUuid) childCountMap.set(label.parentUuid, (childCountMap.get(label.parentUuid) ?? 0) + 1);
   }
   const selected = new Set(initialSelected);
   const submodels = new Map(initialSubmodels);

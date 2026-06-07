@@ -69,12 +69,12 @@ export async function fetchDatasetImages(datasetUuid, params = {}) {
   return data.images;
 }
 
-/** POST /api/datasets — body uses snake_case (DatasetCreate does not extend Payload) */
+/** POST /api/datasets */
 export async function createDataset({ name, description = '', filterJson = null, labelUuids = [] }) {
   const res = await apiFetch('/api/datasets', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name, description, filter_json: filterJson, label_uuids: labelUuids }),
+    body: JSON.stringify({ name, description, filterJson, labelUuids }),
   });
 
   if (!res.ok) {
@@ -91,13 +91,13 @@ export async function createDataset({ name, description = '', filterJson = null,
   return data.dataset;
 }
 
-/** PATCH /api/datasets/{uuid} — body uses snake_case */
+/** PATCH /api/datasets/{uuid} */
 export async function updateDataset(uuid, patch) {
   const body = {};
   if (patch.name != null) body.name = patch.name;
   if (patch.description !== undefined) body.description = patch.description;
-  if (patch.filterJson !== undefined) body.filter_json = patch.filterJson;
-  if (patch.labelUuids != null) body.label_uuids = patch.labelUuids;
+  if (patch.filterJson !== undefined) body.filterJson = patch.filterJson;
+  if (patch.labelUuids != null) body.labelUuids = patch.labelUuids;
 
   const res = await apiFetch(`/api/datasets/${uuid}`, {
     method: 'PATCH',
@@ -127,8 +127,8 @@ export async function previewDatasetImages({ filterJson, labelUuids = [], limit 
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      filter_json: filterJson || { conditions: [] },
-      label_uuids: labelUuids,
+      filterJson: filterJson || { conditions: [] },
+      labelUuids,
     }),
   });
   if (!res.ok) {

@@ -55,7 +55,7 @@ async def test_get_task_info_after_start(http_client):
 
 async def test_cancel_running_task(http_client, tasks_api_mock):
     # Make the configured TestTask run for a short time so cancel has effect
-    tasks_api_mock.list_task_configs.return_value.configs[CONFIG_UUID].params_json = {"duration": 5}
+    tasks_api_mock.list_task_configs.return_value.configs[CONFIG_UUID].params = {"duration": 5}
 
     await http_client.post(
         "/api/tasks/instances/start",
@@ -111,7 +111,7 @@ async def test_start_task_writes_running_status_to_db(manager, tasks_api_mock):
                 uuid=CONFIG_UUID,
                 name="test-config",
                 typename="TestTask",
-                params_json={"duration": 60.0},
+                params={"duration": 60.0},
                 marked_for_delete=False,
                 description=None,
             )
@@ -142,7 +142,7 @@ async def test_get_task_info_uses_in_memory_status_not_stale_db(manager, tasks_a
                 uuid=CONFIG_UUID,
                 name="test-config",
                 typename="TestTask",
-                params_json={"duration": 60.0},
+                params={"duration": 60.0},
                 marked_for_delete=False,
                 description=None,
             )
@@ -154,8 +154,8 @@ async def test_get_task_info_uses_in_memory_status_not_stale_db(manager, tasks_a
         uuid=TASK_UUID,
         config_uuid=CONFIG_UUID,
         status=TaskStatus.NEW,
-        resume_data_json=None,
-        result_json=None,
+        resume_data=None,
+        result=None,
         error_message=None,
     )
     tasks_api_mock.list_task_instances.return_value = MagicMock(instances=[stale_instance])

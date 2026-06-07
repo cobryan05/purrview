@@ -52,7 +52,7 @@ async def test_set_timestamps_started_at(http_client):
     assert r2.status_code == 200
     instances = r2.json()["instances"]
     assert len(instances) == 1
-    assert instances[0]["started_at"] is not None
+    assert instances[0]["startedAt"] is not None
 
 
 async def test_set_timestamps_ended_at_and_logs(http_client):
@@ -83,9 +83,9 @@ async def test_set_timestamps_ended_at_and_logs(http_client):
     r2 = await http_client.get("/api/task-instances", params={"uuids": [inst]})
     assert r2.status_code == 200
     instance = r2.json()["instances"][0]
-    assert instance["started_at"] is not None
-    assert instance["ended_at"] is not None
-    assert instance["log_json"] == logs
+    assert instance["startedAt"] is not None
+    assert instance["endedAt"] is not None
+    assert instance["logLines"] == logs
 
 
 async def test_set_timestamps_partial_update_preserves_other_fields(http_client):
@@ -107,8 +107,8 @@ async def test_set_timestamps_partial_update_preserves_other_fields(http_client)
 
     r = await http_client.get("/api/task-instances", params={"uuids": [inst]})
     instance = r.json()["instances"][0]
-    assert instance["started_at"] is not None
-    assert instance["ended_at"] is not None
+    assert instance["startedAt"] is not None
+    assert instance["endedAt"] is not None
 
 
 async def test_set_timestamps_unknown_instance_is_noop(http_client):
@@ -134,4 +134,4 @@ async def test_log_json_roundtrip(http_client):
     assert r.json()["status"] == "success"
 
     r2 = await http_client.get("/api/task-instances", params={"uuids": [inst]})
-    assert r2.json()["instances"][0]["log_json"] == logs
+    assert r2.json()["instances"][0]["logLines"] == logs

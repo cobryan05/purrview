@@ -18,6 +18,7 @@ from sqlalchemy.exc import IntegrityError
 from apps.db_server.manager import Manager
 from apps.helpers.consts import ApiTags, JsonKeys, JsonValues, TaskStatus
 from apps.helpers.db.types import (
+    ApiModel,
     BBoxUpdate,
     DatasetCreate,
     DatasetFilterCriteria,
@@ -29,6 +30,7 @@ from apps.helpers.db.types import (
     ImageRecordUpdate,
     ImageSearchParams,
     Label,
+    LabelRead,
     LabelUpdate,
     ModelConfigCreate,
     ModelConfigRead,
@@ -37,6 +39,7 @@ from apps.helpers.db.types import (
     SourceRead,
     Tag,
     TagBase,
+    TagRead,
     TagUpdate,
     TaskConfigRead,
     TaskInstanceRead,
@@ -83,7 +86,7 @@ class AddLabelPayload(ApiPayload):
 
 
 class AddLabelResponse(StatusResponse):
-    label: Optional[Label] = None
+    label: Optional[LabelRead] = None
 
 
 class DeleteLabelPayload(ApiPayload):
@@ -99,7 +102,7 @@ class ListLabelsPayload(ApiPayload):
 
 
 class ListLabelsResponse(StatusResponse):
-    labels: List[Label] = Field(default_factory=list)
+    labels: List[LabelRead] = Field(default_factory=list)
 
 
 class UpdateLabelPayload(ApiPayload):
@@ -121,7 +124,7 @@ class AddTagPayload(TagBase):
 
 
 class AddTagResponse(StatusResponse):
-    tag: Optional[Tag] = None
+    tag: Optional[TagRead] = None
 
 
 class DeleteTagPayload(ApiPayload):
@@ -137,7 +140,7 @@ class ListTagsPayload(ApiPayload):
 
 
 class ListTagsResponse(StatusResponse):
-    tags: List[Tag] = Field(default_factory=list)
+    tags: List[TagRead] = Field(default_factory=list)
 
 
 class UpdateTagPayload(ApiPayload):
@@ -406,13 +409,12 @@ class DatasetImagesResponse(StatusResponse):
 
 
 class DatasetLabelsResponse(StatusResponse):
-    labels: List[Label] = Field(default_factory=list)
+    labels: List[LabelRead] = Field(default_factory=list)
 
 
-class DatasetPreviewPayload(BaseModel):
+class DatasetPreviewPayload(ApiModel):
     """Request body for the unsaved-preview endpoint."""
 
-    model_config = ConfigDict(populate_by_name=True)
     filter_json: DatasetFilterCriteria = Field(default_factory=DatasetFilterCriteria)
     label_uuids: List[str] = Field(default_factory=list)
 

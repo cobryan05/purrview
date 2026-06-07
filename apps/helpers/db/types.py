@@ -61,6 +61,22 @@ def validate_base64_img(v: Any) -> str:
 Base64Image = Annotated[Optional[str], BeforeValidator(validate_base64_img)]
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Shared API model bases — centralise alias_generator=to_camel so every new
+# model automatically gets camelCase serialisation at the API boundary.
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class ApiModel(BaseModel):
+    """Base for camelCase API models (create / update / filter payloads)."""
+    model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)
+
+
+class OrmModel(BaseModel):
+    """Base for ORM-backed read models. Adds from_attributes=True to ApiModel config."""
+    model_config = ConfigDict(from_attributes=True, alias_generator=to_camel, populate_by_name=True)
+
+
 class TagKind(str, Enum):
     GENERIC = "generic"
     SYSTEM = "system"
@@ -119,7 +135,7 @@ class Label(LabelBase, TimestampModel, table=True):
     bboxes: List["BBox"] = Relationship(back_populates="label")
 
 
-class LabelRead(BaseModel):
+class LabelRead(OrmModel):
     """
     The public read-only representation of an annotation label.
     """
@@ -128,8 +144,6 @@ class LabelRead(BaseModel):
     name: str
     color: Optional[str] = None
     parent_uuid: Optional[str] = None
-
-    model_config = ConfigDict(from_attributes=True)
 
 
 class LabelUpdate(BaseModel):
@@ -159,21 +173,15 @@ class ImageRecord(ImageRecordBase, TimestampModel, table=True):
     )
 
 
-class ImageRecordRead(BaseModel):
+class ImageRecordRead(OrmModel):
     uuid: str
     filename: str
     bboxes: List["BBoxRead"]
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 
-    model_config = ConfigDict(
-        from_attributes=True,
-        alias_generator=to_camel,
-        populate_by_name=True,
-    )
 
-
-class ImageLabelFilter(BaseModel):
+class ImageLabelFilter(ApiModel):
     """A single condition on the image_labels table used when searching images."""
 
     label_uuid: str
@@ -182,14 +190,14 @@ class ImageLabelFilter(BaseModel):
     require_verified: bool = False  # if True: EXISTS (status IN PRESENT, ABSENT); status/exclude ignored
 
 
-class TagPresenceFilter(BaseModel):
+class TagPresenceFilter(ApiModel):
     """Require or exclude images based on bbox-level tag presence."""
 
     tag_uuid: str
     exclude: bool = False  # False = require at least one bbox has this tag; True = require none do
 
 
-class ImageSearchParams(BaseModel):
+class ImageSearchParams(ApiModel):
     show_all_bboxes: bool = False
     tag_uuids: List[str] = Field(default_factory=list)
     label_uuid: Optional[str] = None
@@ -263,7 +271,7 @@ class BBox(BBoxBase, TimestampModel, table=True):
     tags: List["Tag"] = Relationship(back_populates="bboxes", link_model=BBoxTagLink)
 
 
-class BBoxRead(BaseModel):
+class BBoxRead(OrmModel):
     """The public read-only representation of a bounding box."""
 
     uuid: str
@@ -276,10 +284,8 @@ class BBoxRead(BaseModel):
     label: Optional[LabelRead] = None
     tags: List["TagRead"] = []
 
-    model_config = ConfigDict(from_attributes=True)
 
-
-class BBoxUpdate(BaseModel):
+class BBoxUpdate(ApiModel):
     """Input data for creating or replacing a bounding box."""
 
     uuid: str
@@ -294,8 +300,6 @@ class BBoxUpdate(BaseModel):
     # rebuild can resolve references even when UUIDs differ after re-generation.
     label_name: Optional[str] = None
     tag_names: List[str] = []
-
-    model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)
 
 
 class ImageRecordUpdate(BaseModel):
@@ -325,14 +329,12 @@ class Tag(TagBase, TimestampModel, table=True):
     bboxes: List[BBox] = Relationship(back_populates="tags", link_model=BBoxTagLink)
 
 
-class TagRead(BaseModel):
+class TagRead(OrmModel):
     uuid: str
     name: str
     color: Optional[str] = None
     icon: Optional[str] = None
     kind: TagKind = TagKind.GENERIC
-
-    model_config = ConfigDict(from_attributes=True)
 
 
 class SourceBase(SQLModel):
@@ -346,13 +348,11 @@ class Source(SourceBase, TimestampModel, table=True):
     uuid: str = Field(default_factory=lambda: str(uuid4()), primary_key=True)
 
 
-class SourceRead(BaseModel):
+class SourceRead(OrmModel):
     uuid: str
     name: str
     typename: str
     params: Dict[str, Any]
-
-    model_config = ConfigDict(from_attributes=True)
 
 
 class SourceUpdate(BaseModel):
@@ -393,30 +393,26 @@ class TaskInstance(TaskInstanceBase, TimestampModel, table=True):
     config: TaskConfig = Relationship(back_populates="instances")
 
 
-class TaskConfigRead(BaseModel):
+class TaskConfigRead(OrmModel):
     uuid: str
     name: str
     typename: str
     description: Optional[str] = None
-    params: Dict[str, Any] = Field(alias="params_json")
+    params: Dict[str, Any] = Field(validation_alias="params_json")
     marked_for_delete: bool = False
 
-    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
 
-
-class TaskInstanceRead(BaseModel):
+class TaskInstanceRead(OrmModel):
     uuid: str
     config_uuid: str
     status: str
-    resume_data: Optional[Dict[str, Any]] = Field(default=None, alias="resume_data_json")
-    result: Optional[Dict[str, Any]] = Field(default=None, alias="result_json")
+    resume_data: Optional[Dict[str, Any]] = Field(default=None, validation_alias="resume_data_json")
+    result: Optional[Dict[str, Any]] = Field(default=None, validation_alias="result_json")
     error_message: Optional[str] = None
     created_at: Optional[datetime] = None
     started_at: Optional[datetime] = None
     ended_at: Optional[datetime] = None
-    log_lines: Optional[List[str]] = Field(default=None, alias="log_json")
-
-    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+    log_lines: Optional[List[str]] = Field(default=None, validation_alias="log_json")
 
 
 class TaskResult(BaseModel):
@@ -434,12 +430,10 @@ class ImageLabel(SQLModel, table=True):
     )
 
 
-class ImageLabelRead(BaseModel):
+class ImageLabelRead(OrmModel):
     image_uuid: str
     label_uuid: str
     status: ImageLabelStatus
-
-    model_config = ConfigDict(from_attributes=True)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -447,7 +441,7 @@ class ImageLabelRead(BaseModel):
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-class ImageAgeCondition(BaseModel):
+class ImageAgeCondition(ApiModel):
     """Filter by image created_at or updated_at."""
 
     type: Literal["image_age"] = "image_age"
@@ -457,7 +451,7 @@ class ImageAgeCondition(BaseModel):
     before: Optional[datetime] = None  # absolute upper bound
 
 
-class BboxAgeCondition(BaseModel):
+class BboxAgeCondition(ApiModel):
     """Filter images by whether any of their bboxes were recently created/updated.
     Requires bbox.created_at / bbox.updated_at columns (added in add_timestamps_to_bboxes migration)."""
 
@@ -468,7 +462,7 @@ class BboxAgeCondition(BaseModel):
     before: Optional[datetime] = None
 
 
-class TagCondition(BaseModel):
+class TagCondition(ApiModel):
     """Require or exclude images based on any bbox carrying a specific tag."""
 
     type: Literal["tag"] = "tag"
@@ -476,7 +470,7 @@ class TagCondition(BaseModel):
     exclude: bool = False  # False = require at least one bbox has this tag; True = require none do
 
 
-class DatasetLabelStatusCondition(BaseModel):
+class DatasetLabelStatusCondition(ApiModel):
     """Filter on the image_labels status for this dataset's own relevant labels."""
 
     type: Literal["dataset_label_status"] = "dataset_label_status"
@@ -485,7 +479,7 @@ class DatasetLabelStatusCondition(BaseModel):
     # "exclude_uncertain" → same semantics (kept separate for UI clarity)
 
 
-class FilenameCondition(BaseModel):
+class FilenameCondition(ApiModel):
     """Substring match on image filename."""
 
     type: Literal["filename"] = "filename"
@@ -504,7 +498,7 @@ FilterCondition = Annotated[
 ]
 
 
-class DatasetFilterCriteria(BaseModel):
+class DatasetFilterCriteria(ApiModel):
     """Stored as JSON in datasets.filter_json. AND-combined list of conditions.
     Conditions of type DatasetLabelStatusCondition operate over the dataset's own label_uuids."""
 
@@ -538,31 +532,28 @@ class DatasetLabelLink(SQLModel, table=True):
     dataset: Optional[Dataset] = Relationship(back_populates="label_links")
 
 
-class DatasetRead(BaseModel):
+class DatasetRead(OrmModel):
     uuid: str
     name: str
     description: Optional[str] = None
-    filter_json: Dict[str, Any] = Field(default_factory=dict)
+    filter_json: DatasetFilterCriteria = Field(default_factory=DatasetFilterCriteria)
     label_uuids: List[str] = Field(default_factory=list)
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
-    model_config = ConfigDict(from_attributes=True)
 
 
-class DatasetCreate(BaseModel):
+class DatasetCreate(ApiModel):
     name: str
     description: Optional[str] = None
     filter_json: DatasetFilterCriteria = Field(default_factory=DatasetFilterCriteria)
     label_uuids: List[str] = Field(default_factory=list)
 
 
-class DatasetUpdate(BaseModel):
+class DatasetUpdate(ApiModel):
     name: Optional[str] = None
     description: Optional[str] = None
     filter_json: Optional[DatasetFilterCriteria] = None
-    label_uuids: Optional[List[str]] = (
-        None  # None = no change; [] = remove all   # None = no change; [] = remove all   # None = no change; [] = remove all
-    )
+    label_uuids: Optional[List[str]] = None  # None = no change; [] = remove all
 
 
 # ─── Model Configurations ────────────────────────────────────────────────────
@@ -590,35 +581,33 @@ class ModelConfig(TimestampModel, table=True):
     )
 
 
-class ModelConfigNodeRead(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
+class ModelConfigNodeRead(OrmModel):
     uuid: str
     label_uuid: Optional[str] = None
     model_typename: str
 
 
-class ModelConfigRead(BaseModel):
+class ModelConfigRead(OrmModel):
     uuid: str
     name: str
     description: Optional[str] = None
     nodes: List[ModelConfigNodeRead] = Field(default_factory=list)
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
-    model_config = ConfigDict(from_attributes=True)
 
 
-class ModelConfigNodeWrite(BaseModel):
+class ModelConfigNodeWrite(ApiModel):
     label_uuid: Optional[str] = None  # None = root node
     model_typename: str
 
 
-class ModelConfigCreate(BaseModel):
+class ModelConfigCreate(ApiModel):
     name: str
     description: Optional[str] = None
     nodes: List[ModelConfigNodeWrite] = Field(default_factory=list)
 
 
-class ModelConfigUpdate(BaseModel):
+class ModelConfigUpdate(ApiModel):
     name: Optional[str] = None
     description: Optional[str] = None
     nodes: Optional[List[ModelConfigNodeWrite]] = None  # None=no change; []=remove all

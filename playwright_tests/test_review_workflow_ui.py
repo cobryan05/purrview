@@ -36,8 +36,8 @@ TINY_PNG_B64 = (
 # Fake data
 # ---------------------------------------------------------------------------
 
-LABEL_CAT = {"uuid": "lbl-cat", "name": "Cat", "color": "#ff0000", "parent_uuid": None}
-LABEL_DOG = {"uuid": "lbl-dog", "name": "Dog", "color": "#00ff00", "parent_uuid": None}
+LABEL_CAT = {"uuid": "lbl-cat", "name": "Cat", "color": "#ff0000", "parentUuid": None}
+LABEL_DOG = {"uuid": "lbl-dog", "name": "Dog", "color": "#00ff00", "parentUuid": None}
 
 UNVERIFIED_TAG = {"uuid": UNVERIFIED_TAG_UUID, "icon": None}
 REVIEWED_TAG = {"uuid": "tag-reviewed", "name": "Reviewed", "color": "#4c4", "icon": None, "kind": "user"}
@@ -111,7 +111,7 @@ def _mock_paged_review_queue(page: Page, page1: list, page2: list):
     """Serve `page1` for the initial fetch (after_uuid is null) and `page2` after that."""
     def handle(route: Route):
         body = json.loads(route.request.post_data or "{}")
-        images = page2 if body.get("after_uuid") else page1
+        images = page2 if body.get("afterUuid") else page1
         has_more = images is page1
         route.fulfill(
             status=200,

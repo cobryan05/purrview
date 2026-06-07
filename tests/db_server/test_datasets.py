@@ -150,7 +150,7 @@ async def test_create_dataset_with_label_uuids(http_client):
     label_uuid = r.json()["label"]["uuid"]
 
     ds = await _create_dataset(http_client, "cats", label_uuids=[label_uuid])
-    assert label_uuid in ds["label_uuids"]
+    assert label_uuid in ds["labelUuids"]
 
 
 async def test_update_dataset_replaces_labels(http_client):
@@ -160,11 +160,11 @@ async def test_update_dataset_replaces_labels(http_client):
     lbl2 = r2.json()["label"]["uuid"]
 
     ds = await _create_dataset(http_client, "animals", label_uuids=[lbl1])
-    assert ds["label_uuids"] == [lbl1]
+    assert ds["labelUuids"] == [lbl1]
 
     r = await http_client.patch(f"/api/datasets/{ds['uuid']}", json={"label_uuids": [lbl2]})
     assert r.json()["status"] == "success"
-    assert r.json()["dataset"]["label_uuids"] == [lbl2]
+    assert r.json()["dataset"]["labelUuids"] == [lbl2]
 
 
 async def test_delete_dataset(http_client):
@@ -187,14 +187,14 @@ async def test_label_delete_removes_link(http_client):
     r = await http_client.post("/api/labels", json={"name": "cat", "color": "#FF0000"})
     label_uuid = r.json()["label"]["uuid"]
     ds = await _create_dataset(http_client, "linked", label_uuids=[label_uuid])
-    assert label_uuid in ds["label_uuids"]
+    assert label_uuid in ds["labelUuids"]
 
     await http_client.delete(f"/api/labels/{label_uuid}")
 
     r = await http_client.get("/api/datasets")
     datasets = r.json()["datasets"]
     found = next(d for d in datasets if d["uuid"] == ds["uuid"])
-    assert label_uuid not in found["label_uuids"]
+    assert label_uuid not in found["labelUuids"]
 
 
 async def test_get_dataset_labels_endpoint(http_client):
@@ -248,7 +248,7 @@ async def test_filter_json_valid_condition_accepted(http_client):
         "valid-cond",
         conditions=[{"type": "filename", "pattern": "test"}],
     )
-    conds = ds["filter_json"]["conditions"]
+    conds = ds["filterJson"]["conditions"]
     assert len(conds) == 1
     assert conds[0]["type"] == "filename"
 
@@ -577,7 +577,7 @@ async def test_patch_name_and_description(http_client):
     updated = r.json()["dataset"]
     assert updated["name"] == "updated-name"
     assert updated["description"] == "updated desc"
-    assert updated["label_uuids"] == ds["label_uuids"]  # unchanged
+    assert updated["labelUuids"] == ds["labelUuids"]  # unchanged
 
 
 async def test_patch_filter_json(http_client):
@@ -593,8 +593,8 @@ async def test_patch_filter_json(http_client):
     )
     assert r.json()["status"] == "success"
     updated = r.json()["dataset"]
-    assert updated["filter_json"] == new_filter
-    assert label_uuid in updated["label_uuids"]  # label_uuids unchanged
+    assert updated["filterJson"] == new_filter
+    assert label_uuid in updated["labelUuids"]  # labelUuids unchanged
 
 
 async def test_duplicate_dataset_name_rejected(http_client):
@@ -615,7 +615,7 @@ async def test_delete_dataset_cascades_label_links(http_client):
     label_uuid = r.json()["label"]["uuid"]
 
     ds = await _create_dataset(http_client, "cascade-test", label_uuids=[label_uuid])
-    assert label_uuid in ds["label_uuids"]
+    assert label_uuid in ds["labelUuids"]
 
     del_r = await http_client.delete(f"/api/datasets/{ds['uuid']}")
     assert del_r.json()["status"] == "success"
@@ -816,6 +816,108 @@ async def test_updated_at_upper_bound_filter(http_client, files_root, db_client)
 # ─────────────────────────────────────────────────────────────────────────────
 # ImageSearchParams — created_at range (date_from / date_to)
 # ─────────────────────────────────────────────────────────────────────────────
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# New feature: label_uuids image filter
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+async def test_dataset_images_filtered_by_label_uuids(http_client, files_root):
+    """A dataset with label_uuids restricts results to images with a bbox using one of those labels.
+
+    This isolates the EXISTS subquery in _apply_image_search_filters (db_client.py) from the
+    DatasetLabelStatusCondition path — no status condition is used here.
+    """
+    r = await http_client.post("/api/labels", json={"name": "cat-lu", "color": "#FF0000"})
+    cat_uuid = r.json()["label"]["uuid"]
+    r = await http_client.post("/api/labels", json={"name": "dog-lu", "color": "#0000FF"})
+    dog_uuid = r.json()["label"]["uuid"]
+
+    for name in ("lu_cat.png", "lu_dog.png", "lu_none.png"):
+        _png(files_root, name)
+
+    # lu_cat has a cat bbox, lu_dog has a dog bbox only, lu_none has no bbox
+    await _add_bbox(http_client, "lu_cat.png", cat_uuid)
+    await _add_bbox(http_client, "lu_dog.png", dog_uuid)
+    await _register(http_client, "lu_none.png")
+
+    # Dataset linked only to "cat" — no conditions
+    ds = await _create_dataset(http_client, "label-uuid-filter", label_uuids=[cat_uuid])
+    result = await _dataset_images(http_client, ds["uuid"])
+    names = [img["filename"] for img in result["images"]]
+
+    assert "lu_cat.png" in names, "image with a cat bbox must be included"
+    assert "lu_dog.png" not in names, "image with only a dog bbox must be excluded"
+    assert "lu_none.png" not in names, "image with no bboxes must be excluded"
+
+    # Sanity: adding dog_uuid to the dataset exposes the dog image too
+    r2 = await http_client.patch(
+        f"/api/datasets/{ds['uuid']}",
+        json={"label_uuids": [cat_uuid, dog_uuid]},
+    )
+    assert r2.json()["status"] == "success"
+    result2 = await _dataset_images(http_client, ds["uuid"])
+    names2 = [img["filename"] for img in result2["images"]]
+    assert "lu_cat.png" in names2
+    assert "lu_dog.png" in names2
+    assert "lu_none.png" not in names2
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Pagination sentinel — non-bbox-age path
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+async def test_has_more_correct_on_simple_path(http_client, files_root):
+    """has_more uses the limit+1 sentinel on the non-bbox-age code path."""
+    for name in ("img_sp1.png", "img_sp2.png", "img_sp3.png"):
+        _png(files_root, name)
+        await _register(http_client, name)
+
+    # No conditions → takes the simple branch (no bbox_age filtering)
+    ds = await _create_dataset(http_client, "simple-sentinel-ds")
+
+    # Fetch 2 of 3 — has_more must be True
+    page1 = await _dataset_images(http_client, ds["uuid"], limit=2)
+    assert len(page1["images"]) == 2
+    assert page1["hasMore"] is True, "has_more must be True when more results exist"
+
+    # Fetch all 3 — has_more must be False
+    page_all = await _dataset_images(http_client, ds["uuid"], limit=10)
+    assert len(page_all["images"]) == 3
+    assert page_all["hasMore"] is False, "has_more must be False when all results fit on one page"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# /api/datasets/preview endpoint
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+async def test_preview_dataset_images_camelcase_contract(http_client, files_root):
+    """POST /api/datasets/preview accepts camelCase body, returns images+hasMore."""
+    r = await http_client.post("/api/labels", json={"name": "cat-pv", "color": "#FF0000"})
+    cat_uuid = r.json()["label"]["uuid"]
+
+    for name in ("pv_cat.png", "pv_other.png"):
+        _png(files_root, name)
+
+    await _add_bbox(http_client, "pv_cat.png", cat_uuid)
+    await _register(http_client, "pv_other.png")
+
+    # camelCase body — tests the new alias_generator=to_camel on DatasetPreviewPayload
+    r = await http_client.post(
+        "/api/datasets/preview",
+        params={"limit": 50},
+        json={"filterJson": {"conditions": []}, "labelUuids": [cat_uuid]},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["status"] == "success"
+    names = [img["filename"] for img in body["images"]]
+    assert "pv_cat.png" in names, "image with a matching bbox label must appear"
+    assert "pv_other.png" not in names, "image without a matching bbox label must be excluded"
+    assert body["hasMore"] is False
 
 
 async def test_created_at_range_filter(http_client, files_root, db_client):

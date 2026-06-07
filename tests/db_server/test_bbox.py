@@ -73,7 +73,7 @@ async def test_patch_bbox_updates_label(http_client, setup_image_with_bbox, labe
     meta_r = await http_client.post("/api/images/metadata/get", json={"imagePath": "bbox_test.png"})
     bboxes = meta_r.json()["image"]["bboxes"]
     assert len(bboxes) == 1
-    assert bboxes[0]["label_uuid"] == other_uuid
+    assert bboxes[0]["labelUuid"] == other_uuid
 
 
 async def test_patch_bbox_updates_tags(http_client, setup_image_with_bbox, label_uuid):
@@ -143,12 +143,12 @@ async def test_delete_bbox_recomputes_image_labels(http_client, image_file, labe
     )
 
     labels_r = await http_client.get("/api/images/bbox_test.png/labels")
-    assert label_uuid in {row["label_uuid"] for row in labels_r.json()["labels"]}
+    assert label_uuid in {row["labelUuid"] for row in labels_r.json()["labels"]}
 
     await http_client.delete(f"/api/images/bbox/{bid}")
 
     labels_r = await http_client.get("/api/images/bbox_test.png/labels")
-    assert label_uuid not in {row["label_uuid"] for row in labels_r.json()["labels"]}
+    assert label_uuid not in {row["labelUuid"] for row in labels_r.json()["labels"]}
 
 
 # ──────────────────────────────────────────────────────────────────────────────

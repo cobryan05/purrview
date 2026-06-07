@@ -26,7 +26,7 @@ async def _start_pausable_task(manager, tasks_api_mock, iterations=50):
                 uuid=CONFIG_UUID,
                 name="test-config",
                 typename="PausableTestTask",
-                params_json={"iterations": iterations},
+                params={"iterations": iterations},
                 marked_for_delete=False,
                 description=None,
             )
@@ -84,7 +84,7 @@ async def test_get_tasks_info_reports_is_paused_in_place(manager, tasks_api_mock
     )
     assert resp.status_code == 200
     data = resp.json()
-    assert data["tasks"][TASK_UUID]["is_paused_in_place"] is True
+    assert data["tasks"][TASK_UUID]["isPausedInPlace"] is True
 
     await manager.cancel_tasks([TASK_UUID])
 
@@ -102,7 +102,7 @@ async def test_get_tasks_info_reports_is_paused_in_place_false_after_resume(mana
         json={"taskUuids": [TASK_UUID]},
     )
     data = resp.json()
-    assert data["tasks"][TASK_UUID]["is_paused_in_place"] is False
+    assert data["tasks"][TASK_UUID]["isPausedInPlace"] is False
 
     await manager.cancel_tasks([TASK_UUID])
 

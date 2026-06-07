@@ -10,7 +10,7 @@ export async function fetchImageLabels(imagePath) {
     headers: { 'Accept': 'application/json' },
   });
 
-  /** @type {{ status: string, labels?: Array<{ label_uuid: string, status: string }> }} */
+  /** @type {{ status: string, labels?: Array<{ labelUuid: string, status: string }> }} */
   const data = await res.json().catch(() => ({}));
 
   if (!res.ok || data.status !== 'success') {
@@ -20,7 +20,7 @@ export async function fetchImageLabels(imagePath) {
   /** @type {Map<string, 'present'|'absent'>} */
   const map = new Map();
   for (const row of (data.labels ?? [])) {
-    map.set(row.label_uuid, row.status);
+    map.set(row.labelUuid, row.status);
   }
   return map;
 }

@@ -5,8 +5,8 @@ import {
   createDataset, updateDataset, deleteDataset,
 } from '/app-static/js/shared/api/datasets.js';
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
-import { toast, makeFieldRow } from '/app-static/js/ui/utils/index.js';
-import { showConfirmModal, showUnsavedConfigChangesModal } from '/app-static/js/ui/utils/confirmModal.js';
+import { toast, makeFieldRow, buildPanelEditorBar } from '/app-static/js/ui/utils/index.js';
+import { showUnsavedConfigChangesModal } from '/app-static/js/ui/utils/confirmModal.js';
 
 let _rendering = false;
 let _unsubDatasets = null;
@@ -42,7 +42,7 @@ function renderLabelCheckboxList(container, labelsMap, selectedUuids, onChange) 
   // Build hierarchy from labelsMap (Map<uuid, label>)
   const byParent = new Map();
   for (const label of labelsMap.values()) {
-    const key = label.parent_uuid ?? null;
+    const key = label.parentUuid ?? null;
     if (!byParent.has(key)) byParent.set(key, []);
     byParent.get(key).push(label);
   }
@@ -97,21 +97,21 @@ function describeCondition(cond, tagsMap) {
   switch (cond.type) {
     case 'image_age': {
       const field = cond.field === 'updated_at' ? 'Updated' : 'Created';
-      if (cond.within_days) return `Image ${field} within ${cond.within_days} days`;
+      if (cond.withinDays) return `Image ${field} within ${cond.withinDays} days`;
       if (cond.after && cond.before) return `Image ${field} between ${cond.after.slice(0, 10)} and ${cond.before.slice(0, 10)}`;
       if (cond.after) return `Image ${field} after ${cond.after.slice(0, 10)}`;
       if (cond.before) return `Image ${field} before ${cond.before.slice(0, 10)}`;
       return `Image ${field} (unspecified)`;
     }
     case 'bbox_age': {
-      if (cond.within_days) return `BBox updated within ${cond.within_days} days`;
+      if (cond.withinDays) return `BBox updated within ${cond.withinDays} days`;
       if (cond.after && cond.before) return `BBox updated between ${cond.after.slice(0, 10)} and ${cond.before.slice(0, 10)}`;
       if (cond.after) return `BBox updated after ${cond.after.slice(0, 10)}`;
       if (cond.before) return `BBox updated before ${cond.before.slice(0, 10)}`;
       return 'BBox updated (unspecified)';
     }
     case 'tag': {
-      const tagName = tagsMap.get(cond.tag_uuid)?.name ?? cond.tag_uuid;
+      const tagName = tagsMap.get(cond.tagUuid)?.name ?? cond.tagUuid;
       return cond.exclude ? `Tag absent: ${tagName}` : `Tag present: ${tagName}`;
     }
     case 'dataset_label_status':
@@ -299,7 +299,7 @@ function renderConditionsEditor(parentEl, initialConditions, tagsMap, { onChange
           if (modeSelect.value === 'within_days') {
             const v = parseInt(inputsEl.querySelector('[data-key="within_days"]')?.value);
             if (!v || v < 1) { toast('Enter a valid number of days', 5000, 'error'); return; }
-            cond.within_days = v;
+            cond.withinDays = v;
           } else {
             const a = inputsEl.querySelector('[data-key="after"]')?.value;
             const b = inputsEl.querySelector('[data-key="before"]')?.value;
@@ -339,7 +339,7 @@ function renderConditionsEditor(parentEl, initialConditions, tagsMap, { onChange
         addBtn.className = 'panel-btn';
         addBtn.addEventListener('click', () => {
           if (!tagSel.value) { toast('Choose a tag', 5000, 'error'); return; }
-          conditions.push({ type: 'tag', tag_uuid: tagSel.value, exclude });
+          conditions.push({ type: 'tag', tagUuid: tagSel.value, exclude });
           renderList();
           resetAddForm();
           onChange?.();
@@ -513,12 +513,12 @@ export async function renderDatasetManager({ target = 'dataset-management-box' }
 
     // ── Shared state ──────────────────────────────────────────────────────
     let _selectedUuid = null;
-    let _dirty = false;
+    let _barHandle = null; // set by _showForm; tracks dirty state via getDirty()/setDirty()
     let _currentDoSave = null;
     let _switching = false;
 
     async function _confirmIfDirty() {
-      if (!_dirty) return true;
+      if (!_barHandle?.getDirty()) return true;
       const result = await showUnsavedConfigChangesModal();
       if (result === 'cancel') return false;
       if (result === 'save') return await (_currentDoSave?.() ?? false);
@@ -531,84 +531,13 @@ export async function renderDatasetManager({ target = 'dataset-management-box' }
       }
     }
 
-    /**
-     * Build the editor header bar. Returns { setDirty, setSaving, updateTitle }.
-     * onDelete is undefined for the "new dataset" form.
-     */
-    function _buildEditorBar({ dataset, onSave, onDelete }) {
-      editorBar.innerHTML = '';
-      let _saving = false;
-
-      const dirtyDot = document.createElement('span');
-      dirtyDot.className = 'panel-dirty-dot';
-
-      const titleSpan = document.createElement('span');
-      titleSpan.className = 'panel-box__title';
-      titleSpan.textContent = dataset ? dataset.name : 'New Dataset';
-
-      const saveBtn = document.createElement('button');
-      saveBtn.type = 'button';
-      saveBtn.textContent = dataset ? 'Save' : 'Create';
-      saveBtn.className = 'panel-btn';
-      saveBtn.disabled = true;
-      saveBtn.addEventListener('click', onSave);
-
-      const setDirty = (v) => {
-        _dirty = v;
-        dirtyDot.classList.toggle('visible', v);
-        if (!_saving) saveBtn.disabled = !v;
-      };
-      const setSaving = (v) => {
-        _saving = v;
-        saveBtn.disabled = v || !_dirty;
-      };
-
-      editorBar.append(dirtyDot, titleSpan);
-
-      if (dataset && onDelete) {
-        const deleteBtn = document.createElement('button');
-        deleteBtn.type = 'button';
-        deleteBtn.textContent = 'Delete';
-        deleteBtn.className = 'panel-btn secondary';
-        deleteBtn.addEventListener('click', async () => {
-          // Disable save during the async confirm to prevent a concurrent save+delete.
-          setSaving(true);
-          const ok = await showConfirmModal({
-            title: 'Delete dataset',
-            message: `Delete "${dataset.name}"? This cannot be undone.`,
-            confirmText: 'Delete',
-            cancelText: 'Cancel',
-            danger: true,
-          });
-          if (!ok) { setSaving(false); return; }
-          deleteBtn.disabled = true;
-          try {
-            await onDelete();
-          } catch (err) {
-            toast(err.message, 5000, 'error');
-            deleteBtn.disabled = false;
-            setSaving(false);
-          }
-        });
-        editorBar.appendChild(deleteBtn);
-      }
-
-      editorBar.appendChild(saveBtn);
-
-      return {
-        setDirty,
-        setSaving,
-        updateTitle: (name) => { titleSpan.textContent = name; },
-      };
-    }
-
     // Single entry point for both edit (dataset != null) and create (dataset == null).
     async function _showForm(dataset, { force = false } = {}) {
       if (_switching && !force) return;
       _switching = true;
       try {
         if (!force && !await _confirmIfDirty()) return;
-        _dirty = false;
+        _barHandle = null; // mark clean while async fetches are in flight
         _currentDoSave = null;
         _selectedUuid = dataset?.uuid ?? null;
 
@@ -616,8 +545,11 @@ export async function renderDatasetManager({ target = 'dataset-management-box' }
         const [labelsMap, tagsMap] = await Promise.all([fetchLabels(), fetchTags()]);
         editorBody.innerHTML = '';
 
-        const { setDirty, setSaving, updateTitle } = _buildEditorBar({
-          dataset,
+        _barHandle = buildPanelEditorBar({
+          container: editorBar,
+          item: dataset,
+          newTitle: 'New Dataset',
+          deleteTitle: 'Delete dataset',
           onSave: () => _doSave(true),
           onDelete: dataset ? async () => {
             await deleteDataset(dataset.uuid);
@@ -626,6 +558,7 @@ export async function renderDatasetManager({ target = 'dataset-management-box' }
             await _showForm(null, { force: true });
           } : undefined,
         });
+        const { setDirty, setSaving, updateTitle, getDirty } = _barHandle;
 
         // Render form fields into editorBody
         const formHandle = buildDatasetForm(
@@ -633,8 +566,8 @@ export async function renderDatasetManager({ target = 'dataset-management-box' }
           {
             name: dataset?.name ?? '',
             description: dataset?.description ?? '',
-            labelUuids: dataset?.label_uuids ?? [],
-            filterConditions: dataset?.filter_json?.conditions ?? [],
+            labelUuids: dataset?.labelUuids ?? [],
+            filterConditions: dataset?.filterJson?.conditions ?? [],
           },
           labelsMap,
           tagsMap,
@@ -671,17 +604,23 @@ export async function renderDatasetManager({ target = 'dataset-management-box' }
             });
             const countStr = hasMore ? '500+' : String(allImages.length);
             const imageWord = allImages.length === 1 && !hasMore ? 'image' : 'images';
-            const unsavedNote = _dirty ? ' — unsaved' : '';
+            const unsavedNote = getDirty() ? ' — unsaved' : '';
 
             // Open the modal without awaiting — the data is already loaded and the
             // button should reset as soon as the modal appears, not after panel init.
             showReviewModal({
               title: `Preview: ${countStr} ${imageWord}${unsavedNote}`,
               // Client-side pagination over the cached preview results
-              fetchImages: async ({ afterUuid, limit }) => {
-                if (!afterUuid) return allImages.slice(0, limit);
-                const idx = allImages.findIndex(img => img.uuid === afterUuid);
-                return idx >= 0 ? allImages.slice(idx + 1, idx + 1 + limit) : [];
+              fetchImages: async ({ afterUuid, limit, sortBy = 'created_at', sortOrder = 'desc' }) => {
+                const sortProp = sortBy.replace(/_([a-z])/g, (_, c) => c.toUpperCase()); // snake_case → camelCase
+                const dir = sortOrder === 'asc' ? 1 : -1;
+                const sorted = [...allImages].sort((a, b) => {
+                  const va = a[sortProp] ?? '', vb = b[sortProp] ?? '';
+                  return va < vb ? -dir : va > vb ? dir : 0;
+                });
+                if (!afterUuid) return sorted.slice(0, limit);
+                const idx = sorted.findIndex(img => img.uuid === afterUuid);
+                return idx >= 0 ? sorted.slice(idx + 1, idx + 1 + limit) : [];
               },
             }).catch(err => toast(err.message || 'Failed to open preview', 5000, 'error'));
           } catch (err) {
@@ -776,7 +715,7 @@ export async function renderDatasetManager({ target = 'dataset-management-box' }
 
         const metaLine = document.createElement('div');
         metaLine.className = 'ds-list-item__meta';
-        metaLine.textContent = `${dataset.label_uuids?.length ?? 0} labels`;
+        metaLine.textContent = `${dataset.labelUuids?.length ?? 0} labels`;
         item.appendChild(metaLine);
 
         item.addEventListener('click', () => _showForm(dataset));
@@ -795,7 +734,7 @@ export async function renderDatasetManager({ target = 'dataset-management-box' }
       const targetTab = btn.dataset.tab;
       // Allow clicking the Datasets tab itself or the Configuration main tab (no navigation away)
       if (targetTab === 'tab-dataset-management' || targetTab === 'tab-configuration') return;
-      if (!_dirty) return;
+      if (!_barHandle?.getDirty()) return;
 
       e.stopPropagation();
       const result = await showUnsavedConfigChangesModal();
@@ -805,7 +744,7 @@ export async function renderDatasetManager({ target = 'dataset-management-box' }
         if (!ok) return;
       }
       if (guardSignal.aborted) return; // guard superseded by a re-render; discard is stale
-      _dirty = false;
+      _barHandle?.setDirty(false);
       btn.click(); // re-fire now that guard is satisfied
     }, { capture: true, signal: guardSignal });
 

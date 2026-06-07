@@ -26,14 +26,14 @@ ROOT_LABEL = {
     "uuid": "cccccccc-0000-0000-0000-000000000001",
     "name": "Cat",
     "color": "#ff0000",
-    "parent_uuid": None,
+    "parentUuid": None,
 }
 
 CHILD_LABEL = {
     "uuid": "cccccccc-0000-0000-0000-000000000002",
     "name": "Kitten",
     "color": "#00ff00",
-    "parent_uuid": "cccccccc-0000-0000-0000-000000000001",
+    "parentUuid": "cccccccc-0000-0000-0000-000000000001",
 }
 
 # ---------------------------------------------------------------------------

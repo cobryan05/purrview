@@ -546,7 +546,10 @@ export async function createReviewPanel(container, { fetchImages = null } = {}) 
       nextBtn.disabled = true;
       statusMsg.textContent = 'Loading…';
       _thumbLoader.reset();
-      grid.innerHTML = '';
+      // Use setEntries([]) so entryView._entries and the DOM stay in sync — a
+      // direct grid.innerHTML = '' would leave _entries stale, causing a
+      // view-toggle click during the async fetch to re-render the old page.
+      entryView.setEntries([]);
       _selected.clear();
       _staleUuids = new Set();
       _deletedUuids = new Set();
@@ -575,10 +578,12 @@ export async function createReviewPanel(container, { fetchImages = null } = {}) 
             sortOrder,
             afterUuid: cursor?.uuid ?? null,
             afterSortValue: cursor?.sortValue ?? null,
-            limit: _pageSize,
+            limit: _pageSize + 1,
           });
-          // fetchImages callers don't support has_more; fall back to length heuristic.
-          hasMore = images.length === _pageSize;
+          // Sentinel pattern: request one extra row to distinguish "exactly limit" from
+          // "more exist" without relying on an unreliable length === limit heuristic.
+          hasMore = images.length > _pageSize;
+          images = images.slice(0, _pageSize);
         } else {
           ({ images, hasMore, totalCount } = await fetchReviewQueue({
             tagUuids: fs.showAllBboxes ? [] : fs.tagUuids,

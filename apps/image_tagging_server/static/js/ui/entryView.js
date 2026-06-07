@@ -89,13 +89,46 @@ export function createEntryView({
     onToggle?.(view);
   }
 
-  function setEntries(entries) {
+  /**
+   * Replace the full entry list and re-render. Accepts an optional emptyText to
+   * avoid the ordering constraint of a separate setEmptyText() call.
+   * @param {any[]} entries
+   * @param {string} [emptyText] - if provided, replaces the current empty-state text
+   */
+  function setEntries(entries, emptyText = undefined) {
     _entries = entries;
+    if (emptyText !== undefined) _emptyText = emptyText;
     rerender();
   }
 
+  /**
+   * Set the empty-state message shown when entries is []. Triggers a re-render
+   * so callers can call setEmptyText in any order relative to setEntries.
+   * @param {string} text
+   */
   function setEmptyText(text) {
     _emptyText = text;
+    if (_entries.length === 0) rerender();
+  }
+
+  /**
+   * Append new entries to the current list without a full DOM rebuild.
+   * Falls back to a full rerender if the layout has not been rendered yet.
+   * @param {any[]} newEntries
+   */
+  function appendEntries(newEntries) {
+    if (!newEntries.length) return;
+    const wrapper = layout.firstElementChild;
+    if (!wrapper) { _entries = newEntries; rerender(); return; }
+    const startIndex = _entries.length;
+    _entries = [..._entries, ...newEntries];
+    const renderEntry = _view === 'grid' ? renderCell : renderRow;
+    if (renderEntry) {
+      newEntries.forEach((entry, i) => wrapper.appendChild(renderEntry(entry, startIndex + i)));
+    }
+    // Remove empty-state paragraph if it was showing (shouldn't normally happen, but be safe)
+    const emptyP = wrapper.querySelector('p');
+    if (emptyP && _entries.length > 0) emptyP.remove();
   }
 
   function rerender() {
@@ -144,5 +177,5 @@ export function createEntryView({
     _entries = [];
   }
 
-  return { element, layout, setEntries, setEmptyText, rerender, getView, setView, scrollToActive, destroy };
+  return { element, layout, setEntries, setEmptyText, appendEntries, rerender, getView, setView, scrollToActive, destroy };
 }

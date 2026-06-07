@@ -108,10 +108,14 @@ export class FileBrowser {
   }
 
   /**
-   * Fetch the next page of entries and append them, then re-render.
+   * Fetch the next page of entries and update the view.
+   * First page: full rerender (toolbar, breadcrumb, entries, load-more button).
+   * Subsequent pages: append entries without rebuilding the toolbar or breadcrumb,
+   * and surgically update the load-more button instead of replacing it.
    * @private
    */
   async _loadPage() {
+    const isAppend = this._offset > 0;
     try {
       const { files, hasMore } = await fetchImageList(
         this.currentPath, '*', false, this.showDbStatus,
@@ -122,7 +126,20 @@ export class FileBrowser {
       this._hasMore = hasMore;
       this._offset += files.length;
       this.fileNavigation?.appendFiles(filtered.map(e => e.name));
-      this.rerender();
+      if (isAppend) {
+        // Append-only update: avoid rebuilding toolbar/breadcrumb on every page load.
+        this._view.appendEntries(filtered);
+        const footer = this.container.querySelector('.fb-load-more');
+        if (hasMore) {
+          // Re-enable the existing button; _renderLoadMore already wired the click handler.
+          const btn = footer?.querySelector('.fb-load-more-btn');
+          if (btn) { btn.disabled = false; btn.textContent = 'Load more…'; }
+        } else {
+          footer?.remove();
+        }
+      } else {
+        this.rerender();
+      }
     } catch (err) {
       this.container.innerHTML = '<div class="fb-error">Failed to load directory.</div>';
       console.error(err);

@@ -76,4 +76,4 @@ async def test_create_child_label(http_client):
     assert child_r.status_code == 200
     body = child_r.json()
     assert body["status"] == "success"
-    assert body["label"]["parent_uuid"] == parent_uuid
+    assert body["label"]["parentUuid"] == parent_uuid

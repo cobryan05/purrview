@@ -65,12 +65,12 @@ export class TaskConfigField extends Field {
     return instance;
   }
 
-  async _prefillFrom({ typename, params_json, name }) {
+  async _prefillFrom({ typename, params, name }) {
     this._dropDownField.setValue(typename);
     this._textField.setValue(`Copy of ${name}`);
     try {
       const schema = await fetchTaskTypeSchemas([typename]).then(s => s.get(typename));
-      this._schemaField = await SchemaField.create({ schema, values: params_json });
+      this._schemaField = await SchemaField.create({ schema, values: params });
       await this._rerenderSchema();
     } catch (err) {
       Logger.error('Failed to load schema for copied task config:', err);

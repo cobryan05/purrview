@@ -538,9 +538,9 @@ class TestBuildHierarchy:
         result = page.evaluate("""async () => {
             const { buildHierarchy } = await import('/app-static/js/ui/labelList.js');
             const labels = new Map([
-                ['uuid1', { uuid: 'uuid1', name: 'Animal', parent_uuid: null }],
-                ['uuid2', { uuid: 'uuid2', name: 'Cat',    parent_uuid: 'uuid1' }],
-                ['uuid3', { uuid: 'uuid3', name: 'Dog',    parent_uuid: 'uuid1' }],
+                ['uuid1', { uuid: 'uuid1', name: 'Animal', parentUuid: null}],
+                ['uuid2', { uuid: 'uuid2', name: 'Cat',    parentUuid: 'uuid1' }],
+                ['uuid3', { uuid: 'uuid3', name: 'Dog',    parentUuid: 'uuid1' }],
             ]);
             const h = buildHierarchy(labels, null);
             return {
@@ -556,10 +556,10 @@ class TestBuildHierarchy:
         result = page.evaluate("""async () => {
             const { buildHierarchy } = await import('/app-static/js/ui/labelList.js');
             const labels = new Map([
-                ['p', { uuid: 'p', name: 'Parent', parent_uuid: null }],
-                ['z', { uuid: 'z', name: 'Zebra', parent_uuid: 'p' }],
-                ['a', { uuid: 'a', name: 'Aardvark', parent_uuid: 'p' }],
-                ['m', { uuid: 'm', name: 'Mouse', parent_uuid: 'p' }],
+                ['p', { uuid: 'p', name: 'Parent', parentUuid: null}],
+                ['z', { uuid: 'z', name: 'Zebra', parentUuid: 'p' }],
+                ['a', { uuid: 'a', name: 'Aardvark', parentUuid: 'p' }],
+                ['m', { uuid: 'm', name: 'Mouse', parentUuid: 'p' }],
             ]);
             const h = buildHierarchy(labels, null);
             return (h.get('p') || []).map(l => l.name);
@@ -571,8 +571,8 @@ class TestBuildHierarchy:
         result = page.evaluate("""async () => {
             const { buildHierarchy } = await import('/app-static/js/ui/labelList.js');
             const labels = new Map([
-                ['a', { uuid: 'a', name: 'Alpha', parent_uuid: null }],
-                ['b', { uuid: 'b', name: 'Beta',  parent_uuid: null }],
+                ['a', { uuid: 'a', name: 'Alpha', parentUuid: null}],
+                ['b', { uuid: 'b', name: 'Beta',  parentUuid: null}],
             ]);
             // filter: only include labels whose name starts with 'A'
             const h = buildHierarchy(labels, lbl => lbl.name.startsWith('A'));

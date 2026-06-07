@@ -25,15 +25,15 @@ FAKE_DATASET = {
     "uuid": "11111111-aaaa-0000-0000-000000000001",
     "name": "Training Set Alpha",
     "description": "Main training dataset",
-    "label_uuids": [],
-    "filter_json": {"conditions": []},
+    "labelUuids": [],
+    "filterJson": {"conditions": []},
 }
 
 ROOT_LABEL = {
     "uuid": "cccccccc-0000-0000-0000-000000000001",
     "name": "Cat",
     "color": "#ff0000",
-    "parent_uuid": None,
+    "parentUuid": None,
 }
 
 # ---------------------------------------------------------------------------

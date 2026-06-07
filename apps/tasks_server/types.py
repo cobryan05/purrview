@@ -2,9 +2,9 @@ from dataclasses import dataclass
 from typing import Optional
 
 import db_client.models as db_models
-from pydantic import BaseModel, Field
+from pydantic import Field
 
-from apps.helpers.db.types import TaskConfigRead, TaskInstanceRead
+from apps.helpers.db.types import ApiModel, TaskConfigRead, TaskInstanceRead
 from apps.tasks_server.tasks.Task import Task
 
 
@@ -15,7 +15,7 @@ class TaskInfo:
     task: Optional[Task] = None
 
 
-class TaskInfoRead(BaseModel):
+class TaskInfoRead(ApiModel):
     config: TaskConfigRead
     instance: Optional[TaskInstanceRead] = None
     progress: float = 0.0

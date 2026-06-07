@@ -76,7 +76,7 @@ export async function runPreviewSourceTest({ provider, providerParams, target = 
 
       if (Date.now() - startTime > 30_000) {
         taskInfo.instance.status = TaskStatus.ERROR;
-        taskInfo.instance.error_message = 'Timed out after 30s';
+        taskInfo.instance.errorMessage = 'Timed out after 30s';
         await renderTaskStatus(taskInfo);
         break;
       }

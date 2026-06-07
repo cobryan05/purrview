@@ -37,7 +37,7 @@ async def _get_image_labels(http_client, image_path: str) -> dict:
     r = await http_client.get(f"/api/images/{image_path}/labels")
     assert r.status_code == 200
     body = r.json()
-    return {row["label_uuid"]: row["status"] for row in body.get("labels", [])}
+    return {row["labelUuid"]: row["status"] for row in body.get("labels", [])}
 
 
 async def _update_bboxes(http_client, image_path, boxes):

@@ -7,8 +7,8 @@ import {
   fetchModelTypenames,
   updateModelConfig,
 } from '/app-static/js/shared/api/modelConfigs.js';
-import { showConfirmModal, showUnsavedConfigChangesModal } from '/app-static/js/ui/utils/confirmModal.js';
-import { toast, makeFieldRow } from '/app-static/js/ui/utils/index.js';
+import { showUnsavedConfigChangesModal } from '/app-static/js/ui/utils/confirmModal.js';
+import { toast, makeFieldRow, buildPanelEditorBar } from '/app-static/js/ui/utils/index.js';
 
 let _rendering = false;
 let _navGuardController = null; // AbortController for the tab-navigation guard
@@ -22,10 +22,10 @@ let _navGuardController = null; // AbortController for the tab-navigation guard
  * Falls back to rootTypename.
  */
 function inheritedTypename(uuid, labelsMap, submodels, rootTypename) {
-  let p = labelsMap.get(uuid)?.parent_uuid ?? null;
+  let p = labelsMap.get(uuid)?.parentUuid ?? null;
   while (p !== null) {
     if (submodels.has(p)) return submodels.get(p);
-    p = labelsMap.get(p)?.parent_uuid ?? null;
+    p = labelsMap.get(p)?.parentUuid ?? null;
   }
   return rootTypename;
 }
@@ -41,26 +41,26 @@ function parseNodes(nodes, labelsMap) {
   const nonRoot = [];
 
   for (const n of (nodes ?? [])) {
-    if (n.label_uuid === null) rootTypename = n.model_typename;
+    if (n.labelUuid === null) rootTypename = n.modelTypename;
     else nonRoot.push(n);
   }
 
   // Sort by depth so ancestor submodels are registered before descendants.
   const depthOf = (uuid) => {
-    let d = 0, p = labelsMap.get(uuid)?.parent_uuid ?? null;
-    while (p) { d++; p = labelsMap.get(p)?.parent_uuid ?? null; }
+    let d = 0, p = labelsMap.get(uuid)?.parentUuid ?? null;
+    while (p) { d++; p = labelsMap.get(p)?.parentUuid ?? null; }
     return d;
   };
-  nonRoot.sort((a, b) => depthOf(a.label_uuid) - depthOf(b.label_uuid));
+  nonRoot.sort((a, b) => depthOf(a.labelUuid) - depthOf(b.labelUuid));
 
   const submodels = new Map();
   const selected = new Set();
 
-  for (const { label_uuid, model_typename } of nonRoot) {
-    selected.add(label_uuid);
-    const inh = inheritedTypename(label_uuid, labelsMap, submodels, rootTypename);
-    if (model_typename !== inh) {
-      submodels.set(label_uuid, model_typename);
+  for (const { labelUuid, modelTypename } of nonRoot) {
+    selected.add(labelUuid);
+    const inh = inheritedTypename(labelUuid, labelsMap, submodels, rootTypename);
+    if (modelTypename !== inh) {
+      submodels.set(labelUuid, modelTypename);
     }
   }
 
@@ -72,13 +72,13 @@ function parseNodes(nodes, labelsMap) {
  * Union of selected labels and submodel-boundary labels.
  */
 function computeNodes(selected, submodels, rootTypename, labelsMap) {
-  const nodes = [{ label_uuid: null, model_typename: rootTypename }];
+  const nodes = [{ labelUuid: null, modelTypename: rootTypename }];
   const allUuids = new Set([...selected, ...submodels.keys()]);
   for (const uuid of allUuids) {
     const typename = submodels.has(uuid)
       ? submodels.get(uuid)
       : inheritedTypename(uuid, labelsMap, submodels, rootTypename);
-    nodes.push({ label_uuid: uuid, model_typename: typename });
+    nodes.push({ labelUuid: uuid, modelTypename: typename });
   }
   return nodes;
 }
@@ -294,13 +294,13 @@ export async function renderModelConfigManager({ target = 'model-config-box' } =
 
     // ── Shared state ──────────────────────────────────────────────────────
     let _selectedUuid = null;
-    let _dirty = false;
+    let _barHandle = null; // set by _showForm; tracks dirty state via getDirty()/setDirty()
     let _currentFormHandle = null;
     let _currentDoSave = null; // async () => boolean — current form's save-only fn (no re-render)
     let _switching = false; // true while a showEdit/showCreate transition is in progress
 
     async function _confirmIfDirty() {
-      if (!_dirty) return true;
+      if (!_barHandle?.getDirty()) return true;
       const result = await showUnsavedConfigChangesModal();
       if (result === 'cancel') return false;
       if (result === 'save') return await (_currentDoSave?.() ?? false);
@@ -317,76 +317,6 @@ export async function renderModelConfigManager({ target = 'model-config-box' } =
      * Rebuild the editor header bar. Returns handles to update dynamic parts.
      * onDelete is optional (omit for the "new config" form).
      */
-    function _buildEditorBar({ config, onSave, onDelete }) {
-      editorBar.innerHTML = '';
-      let _saving = false; // true while a save/create network request is in flight
-
-      const dirtyDot = document.createElement('span');
-      dirtyDot.className = 'panel-dirty-dot';
-
-      const titleSpan = document.createElement('span');
-      titleSpan.className = 'panel-box__title';
-      titleSpan.textContent = config ? config.name : 'New Configuration';
-
-      const saveBtn = document.createElement('button');
-      saveBtn.type = 'button';
-      saveBtn.textContent = config ? 'Save' : 'Create';
-      saveBtn.className = 'panel-btn';
-      saveBtn.disabled = true;
-      saveBtn.addEventListener('click', onSave);
-
-      // Hoisted so the deleteBtn handler can reference setSaving directly.
-      const setDirty = (v) => {
-        _dirty = v;
-        dirtyDot.classList.toggle('visible', v);
-        // Don't re-enable the button while a save is in flight — setDirty(true) fires
-        // on every keystroke and would otherwise allow a second concurrent submission.
-        if (!_saving) saveBtn.disabled = !v;
-      };
-      const setSaving = (v) => {
-        _saving = v;
-        // Always disable while saving; restore to dirty-based state when done.
-        saveBtn.disabled = v || !_dirty;
-      };
-
-      editorBar.append(dirtyDot, titleSpan);
-
-      if (config && onDelete) {
-        const deleteBtn = document.createElement('button');
-        deleteBtn.type = 'button';
-        deleteBtn.textContent = 'Delete';
-        deleteBtn.className = 'panel-btn secondary';
-        deleteBtn.addEventListener('click', async () => {
-          // Disable save during the async confirm to prevent a concurrent save+delete.
-          setSaving(true);
-          const ok = await showConfirmModal({
-            title: 'Delete configuration',
-            message: `Delete "${config.name}"? This cannot be undone.`,
-            confirmText: 'Delete',
-            cancelText: 'Cancel',
-            danger: true,
-          });
-          if (!ok) {
-            setSaving(false); // restore save button based on dirty state
-            return;
-          }
-          deleteBtn.disabled = true;
-          try {
-            await onDelete();
-          } catch (err) {
-            toast(err.message, 5000, 'error');
-            deleteBtn.disabled = false;
-            setSaving(false);
-          }
-        });
-        editorBar.appendChild(deleteBtn);
-      }
-
-      editorBar.appendChild(saveBtn);
-
-      return { setDirty, setSaving };
-    }
-
     // Single entry point for both edit (config != null) and create (config == null).
     async function _showForm(config, { force = false } = {}) {
       if (_switching && !force) return;
@@ -396,18 +326,21 @@ export async function renderModelConfigManager({ target = 'model-config-box' } =
         _currentFormHandle?.destroy();
         _currentFormHandle = null;
         _currentDoSave = null;
-        _dirty = false;
+        _barHandle = null; // mark clean while async fetches are in flight
         _selectedUuid = config?.uuid ?? null;
 
         const [labelsMap, typenames] = await Promise.all([fetchLabels(), fetchModelTypenames()]);
         editorBody.innerHTML = '';
 
-        const { setDirty, setSaving } = _buildEditorBar({
-          config,
+        _barHandle = buildPanelEditorBar({
+          container: editorBar,
+          item: config,
+          newTitle: 'New Configuration',
+          deleteTitle: 'Delete configuration',
           onSave: async () => {
             const { name, description, nodes } = _currentFormHandle.getSaveData();
             if (!name) { toast('Name is required', 3000, 'error'); return; }
-            if (!nodes[0]?.model_typename) { toast('Root model type is required', 3000, 'error'); return; }
+            if (!nodes[0]?.modelTypename) { toast('Root model type is required', 3000, 'error'); return; }
             setSaving(true);
             try {
               if (config) {
@@ -436,6 +369,7 @@ export async function renderModelConfigManager({ target = 'model-config-box' } =
             await _showForm(null, { force: true });
           } : undefined,
         });
+        const { setDirty, setSaving } = _barHandle;
 
         const formHandle = renderConfigForm({
           config, typenames, labelsMap,
@@ -448,7 +382,7 @@ export async function renderModelConfigManager({ target = 'model-config-box' } =
         _currentDoSave = async () => {
           const { name, description, nodes } = formHandle.getSaveData();
           if (!name) { toast('Name is required', 3000, 'error'); return false; }
-          if (!nodes[0]?.model_typename) { toast('Root model type is required', 3000, 'error'); return false; }
+          if (!nodes[0]?.modelTypename) { toast('Root model type is required', 3000, 'error'); return false; }
           setSaving(true);
           try {
             if (config) {
@@ -532,7 +466,7 @@ export async function renderModelConfigManager({ target = 'model-config-box' } =
       const targetTab = btn.dataset.tab;
       // Allow clicking the Models tab itself or the Configuration main tab (no navigation away)
       if (targetTab === 'tab-model-management' || targetTab === 'tab-configuration') return;
-      if (!_dirty) return;
+      if (!_barHandle?.getDirty()) return;
 
       e.stopPropagation();
       const result = await showUnsavedConfigChangesModal();
@@ -542,7 +476,7 @@ export async function renderModelConfigManager({ target = 'model-config-box' } =
         if (!ok) return;
       }
       if (guardSignal.aborted) return; // guard superseded by a re-render; discard is stale
-      _dirty = false;
+      _barHandle?.setDirty(false);
       btn.click(); // re-fire now that guard is satisfied
     }, { capture: true, signal: guardSignal });
 
