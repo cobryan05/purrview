@@ -8,7 +8,7 @@ Configuration > Models > #model-config-box (apps/.../ui/modelConfigs.js):
   - Edit flow: opening an existing config pre-fills the form and a submodel panel
   - Save flow: editing & saving PATCHes /api/model-configs/{uuid} with new nodes
   - Clearing an assignment removes it from the saved payload
-  - Delete flow (confirm dialog; API called or suppressed)
+  - Delete flow (modal confirm; API called or suppressed)
 
 Mirrors the structure/style of test_configuration_datasets.py. Follows the
 route-interception pattern from test_configuration_labels.py / _sources.py —
@@ -55,7 +55,8 @@ def _navigate_to_model_configs(page: Page, base_url: str):
     page.wait_for_load_state("networkidle")
     page.locator("#tab-configuration .workspace-tab-button[data-tab='tab-model-management']").click()
     page.wait_for_load_state("networkidle")
-    page.wait_for_selector("#model-config-box .config-panel", timeout=4000)
+    # New DOM: panel-box structure instead of config-panel
+    page.wait_for_selector("#model-config-box .mc-list-panel", timeout=4000)
 
 
 def _mock_model_configs(page: Page, configs: list | None = None):
@@ -99,6 +100,21 @@ def _label_row(page: Page, uuid: str):
     return page.locator(f"#model-config-box [data-uuid='{uuid}']")
 
 
+def _editor(page: Page):
+    """The editor panel (right side)."""
+    return page.locator("#model-config-box .mc-editor")
+
+
+def _editor_bar(page: Page):
+    """The sticky header bar of the editor panel."""
+    return page.locator("#model-config-box .mc-editor .panel-box__bar")
+
+
+def _editor_body(page: Page):
+    """The scrollable body of the editor panel."""
+    return page.locator("#model-config-box .mc-editor .panel-box__body")
+
+
 # ---------------------------------------------------------------------------
 # 1. DOM structure
 # ---------------------------------------------------------------------------
@@ -114,13 +130,16 @@ class TestModelConfigPaneStructure:
 
         _navigate_to_model_configs(page, base_url)
 
+        # Left panel: list item with name and assignment count
         list_row = page.locator("#model-config-box [data-config-uuid='cfg-1']")
-        expect(list_row.locator(".mc-name")).to_have_text("Animal Detector")
+        expect(list_row.locator(".mc-list-item__name")).to_have_text("Animal Detector")
         expect(list_row).to_contain_text("2 assignments")
-        expect(page.locator("#model-config-box button", has_text="+ New Configuration")).to_be_visible()
 
-        # Defaults to the "create" form (showCreate runs after refreshList).
-        expect(page.locator("#model-config-box h4", has_text="New Model Configuration")).to_be_visible()
+        # Footer button for creating a new config
+        expect(page.locator("#model-config-box .mc-list-panel button", has_text="+ New")).to_be_visible()
+
+        # Right panel defaults to the "create" form; title is in the panel bar span
+        expect(_editor_bar(page)).to_contain_text("New Configuration")
 
         for lbl in (LABEL_CAT, LABEL_KITTEN, LABEL_DOG):
             row = _label_row(page, lbl["uuid"])
@@ -168,8 +187,8 @@ class TestCreateModelConfig:
 
         _navigate_to_model_configs(page, base_url)
 
-        form = page.locator("#model-config-box .config-column").nth(1)
-        form.locator("input[type=text]").first.fill("My Config")
+        # Fill form fields in the editor body
+        _editor_body(page).locator("input[type=text]").first.fill("My Config")
 
         root_select = page.locator("#model-config-box select").first
         root_select.select_option("yolov5m")
@@ -177,7 +196,8 @@ class TestCreateModelConfig:
         _label_row(page, "lbl-cat").locator("input[type=checkbox]").first.click()
         _label_row(page, "lbl-dog").locator("input[type=checkbox]").first.click()
 
-        form.locator("button", has_text="Create").click()
+        # Create button lives in the sticky editor header bar
+        _editor_bar(page).locator("button", has_text="Create").click()
         page.wait_for_timeout(700)
 
         assert calls, "Expected POST to /api/model-configs"
@@ -209,10 +229,12 @@ class TestEditModelConfig:
         page.locator("#model-config-box [data-config-uuid='cfg-1']").click()
         page.wait_for_timeout(500)
 
-        expect(page.locator("#model-config-box h4", has_text="Animal Detector")).to_be_visible()
-        form = page.locator("#model-config-box .config-column").nth(1)
-        expect(form.locator("input[type=text]").first).to_have_value("Animal Detector")
-        expect(form.locator("input[type=text]").nth(1)).to_have_value("Cats & dogs")
+        # Title is now in the panel bar span (not an h4)
+        expect(_editor_bar(page)).to_contain_text("Animal Detector")
+
+        # Form fields in the editor body
+        expect(_editor_body(page).locator("input[type=text]").first).to_have_value("Animal Detector")
+        expect(_editor_body(page).locator("input[type=text]").nth(1)).to_have_value("Cats & dogs")
         expect(page.locator("#model-config-box select").first).to_have_value("yolov8n")
 
         cat_row = _label_row(page, "lbl-cat")
@@ -220,12 +242,13 @@ class TestEditModelConfig:
         sub_toggle = cat_row.locator("label", has_text="sub model").locator("input[type=checkbox]")
         expect(sub_toggle).to_be_checked()
 
-        # Submodel panel renders a per-label model-type select, defaulted to the node's typename.
-        expect(page.locator("#model-config-box h4", has_text="Sub Model Configurations")).to_be_visible()
+        # Submodel panel: "Sub-model overrides" section label (was "Sub Model Configurations" h4)
+        expect(page.locator("#model-config-box .panel-section-label", has_text="Sub-model overrides")).to_be_visible()
         submodel_select = page.locator("#model-config-box select").nth(1)
         expect(submodel_select).to_have_value("yolov8s")
 
-        expect(page.locator("#model-config-box button", has_text="🗑️ Delete")).to_be_visible()
+        # Delete button is in the sticky editor header bar (no emoji)
+        expect(_editor_bar(page).locator("button", has_text="Delete")).to_be_visible()
 
     def test_save_sends_updated_name_and_nodes(self, page: Page, base_url: str):
         """Editing the name and changing the submodel's typename PATCHes the config
@@ -247,14 +270,14 @@ class TestEditModelConfig:
         page.locator("#model-config-box [data-config-uuid='cfg-1']").click()
         page.wait_for_timeout(500)
 
-        form = page.locator("#model-config-box .config-column").nth(1)
-        name_input = form.locator("input[type=text]").first
+        name_input = _editor_body(page).locator("input[type=text]").first
         name_input.fill("Animal Detector v2")
 
         submodel_select = page.locator("#model-config-box select").nth(1)
         submodel_select.select_option("yolov5m")
 
-        form.locator("button", has_text="Save").click()
+        # Save button is in the sticky editor header bar
+        _editor_bar(page).locator("button", has_text="Save").click()
         page.wait_for_timeout(700)
 
         assert calls, "Expected PATCH to /api/model-configs/cfg-1"
@@ -293,11 +316,11 @@ class TestClearAssignment:
         expect(cat_row.locator("input[type=checkbox]").first).to_be_checked()
         cat_row.locator("input[type=checkbox]").first.click()  # uncheck
 
-        # Unchecking clears the submodel too — its panel disappears.
-        expect(page.locator("#model-config-box h4", has_text="Sub Model Configurations")).to_have_count(0)
+        # Unchecking clears the submodel too — its section label disappears
+        expect(page.locator("#model-config-box .panel-section-label", has_text="Sub-model overrides")).to_have_count(0)
 
-        form = page.locator("#model-config-box .config-column").nth(1)
-        form.locator("button", has_text="Save").click()
+        # Save button is in the sticky editor header bar
+        _editor_bar(page).locator("button", has_text="Save").click()
         page.wait_for_timeout(700)
 
         assert calls, "Expected PATCH to /api/model-configs/cfg-1"
@@ -314,7 +337,7 @@ class TestClearAssignment:
 
 class TestDeleteModelConfig:
     def test_delete_shows_confirm_dialog(self, page: Page, base_url: str):
-        """Clicking Delete opens a browser confirm() dialog naming the config."""
+        """Clicking Delete opens a modal dialog naming the config."""
         _mock_model_configs(page, [EXISTING_CONFIG])
         _mock_typenames(page)
         _mock_labels(page, [LABEL_CAT, LABEL_KITTEN, LABEL_DOG])
@@ -323,16 +346,17 @@ class TestDeleteModelConfig:
         page.locator("#model-config-box [data-config-uuid='cfg-1']").click()
         page.wait_for_timeout(500)
 
-        dialogs = []
-        page.on("dialog", lambda d: (dialogs.append(d.message), d.dismiss()))
-        page.locator("#model-config-box button", has_text="🗑️ Delete").click()
-        page.wait_for_timeout(400)
+        # Delete button is in the sticky editor header bar (no emoji)
+        _editor_bar(page).locator("button", has_text="Delete").click()
+        page.wait_for_timeout(300)
 
-        assert dialogs, "Expected a confirm() dialog"
-        assert "Animal Detector" in dialogs[0]
+        # Custom modal (not window.confirm) — verify it appears with the config name
+        modal = page.locator(".app-modal-dialog")
+        expect(modal).to_be_visible()
+        expect(modal).to_contain_text("Animal Detector")
 
     def test_delete_accepted_calls_api(self, page: Page, base_url: str):
-        """Accepting the delete confirmation sends a DELETE to /api/model-configs/{uuid}."""
+        """Confirming the delete modal sends a DELETE to /api/model-configs/{uuid}."""
         _mock_model_configs(page, [EXISTING_CONFIG])
         _mock_typenames(page)
         _mock_labels(page, [LABEL_CAT, LABEL_KITTEN, LABEL_DOG])
@@ -352,15 +376,18 @@ class TestDeleteModelConfig:
         page.locator("#model-config-box [data-config-uuid='cfg-1']").click()
         page.wait_for_timeout(500)
 
-        page.on("dialog", lambda d: d.accept())
-        page.locator("#model-config-box button", has_text="🗑️ Delete").click()
+        _editor_bar(page).locator("button", has_text="Delete").click()
+        page.wait_for_timeout(300)
+
+        # Confirm by clicking "Delete" inside the modal
+        page.locator(".app-modal-dialog button", has_text="Delete").click()
         page.wait_for_timeout(600)
 
         assert calls, "Expected DELETE to /api/model-configs/cfg-1"
         assert calls[0].rstrip("/").endswith("/cfg-1")
 
     def test_delete_dismissed_does_not_call_api(self, page: Page, base_url: str):
-        """Dismissing the confirm dialog must NOT send a delete request."""
+        """Cancelling the delete modal must NOT send a delete request."""
         _mock_model_configs(page, [EXISTING_CONFIG])
         _mock_typenames(page)
         _mock_labels(page, [LABEL_CAT, LABEL_KITTEN, LABEL_DOG])
@@ -377,8 +404,11 @@ class TestDeleteModelConfig:
         page.locator("#model-config-box [data-config-uuid='cfg-1']").click()
         page.wait_for_timeout(500)
 
-        page.on("dialog", lambda d: d.dismiss())
-        page.locator("#model-config-box button", has_text="🗑️ Delete").click()
+        _editor_bar(page).locator("button", has_text="Delete").click()
+        page.wait_for_timeout(300)
+
+        # Cancel the modal — no API call should happen
+        page.locator(".app-modal-dialog button", has_text="Cancel").click()
         page.wait_for_timeout(500)
 
         assert not calls, "API must NOT be called when delete is cancelled"

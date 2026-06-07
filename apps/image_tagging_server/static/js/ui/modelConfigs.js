@@ -7,9 +7,11 @@ import {
   fetchModelTypenames,
   updateModelConfig,
 } from '/app-static/js/shared/api/modelConfigs.js';
+import { showConfirmModal } from '/app-static/js/ui/utils/confirmModal.js';
 import { toast } from '/app-static/js/ui/utils/index.js';
 
 let _rendering = false;
+let _navGuardController = null; // AbortController for the tab-navigation guard
 
 // -------------------------------------------------------
 // Node ↔ UI state conversion
@@ -82,20 +84,16 @@ function computeNodes(selected, submodels, rootTypename, labelsMap) {
 }
 
 // -------------------------------------------------------
-// Submodel config panels (rendered below the label tree)
+// Submodel panels
 // -------------------------------------------------------
 
-/**
- * Renders the "Sub Model Configurations" section, one card per enabled submodel.
- * Uses no explicit background — inherits theming from the page.
- */
 function renderSubmodelPanels(container, submodels, labelsMap, typenames, onTypenameChange) {
   container.innerHTML = '';
   if (submodels.size === 0) return;
 
-  const hdr = document.createElement('h4');
-  hdr.style.marginBottom = '8px';
-  hdr.textContent = 'Sub Model Configurations';
+  const hdr = document.createElement('p');
+  hdr.className = 'panel-section-label';
+  hdr.textContent = 'Sub-model overrides';
   container.appendChild(hdr);
 
   for (const [uuid, typename] of submodels) {
@@ -103,31 +101,23 @@ function renderSubmodelPanels(container, submodels, labelsMap, typenames, onType
     const labelColor = labelsMap.get(uuid)?.color ?? '#888';
 
     const card = document.createElement('div');
-    card.style.cssText = [
-      'display: flex', 'align-items: center', 'gap: 10px',
-      'padding: 8px 12px', 'margin-bottom: 8px',
-      'border: 1px solid var(--pico-border-color)',
-      'border-radius: 5px',
-    ].join('; ');
+    card.className = 'mc-submodel-card';
 
-    // Color swatch
     const swatch = document.createElement('span');
-    swatch.style.cssText = [
-      `background: ${labelColor}`,
-      'width: 12px', 'height: 12px', 'border-radius: 50%',
-      'flex-shrink: 0', 'display: inline-block',
-    ].join('; ');
+    swatch.className = 'mc-submodel-swatch';
+    swatch.style.background = labelColor;
 
     const nameSpan = document.createElement('span');
-    nameSpan.style.cssText = 'font-weight: bold; font-size: 0.9em; flex: 1;';
+    nameSpan.className = 'mc-submodel-name';
     nameSpan.textContent = labelName;
 
-    const lbl = document.createElement('label');
-    lbl.textContent = 'Model type:';
-    lbl.style.cssText = 'font-size: 0.85em; white-space: nowrap; margin-bottom: 0;';
+    const typeLabel = document.createElement('label');
+    typeLabel.className = 'mc-submodel-type-label';
+    typeLabel.textContent = 'Model:';
 
     const sel = document.createElement('select');
-    sel.style.cssText = 'margin-bottom: 0;';
+    // 'width: auto' overrides Pico's 'width: 100%' which would collapse the name span to zero
+    sel.style.cssText = 'margin-bottom: 0; width: auto; flex-shrink: 0;';
     typenames.forEach(tn => {
       const o = document.createElement('option');
       o.value = tn; o.textContent = tn;
@@ -136,64 +126,54 @@ function renderSubmodelPanels(container, submodels, labelsMap, typenames, onType
     });
     sel.addEventListener('change', () => onTypenameChange(uuid, sel.value));
 
-    card.appendChild(swatch);
-    card.appendChild(nameSpan);
-    card.appendChild(lbl);
-    card.appendChild(sel);
+    card.append(swatch, nameSpan, typeLabel, sel);
     container.appendChild(card);
   }
 }
 
 // -------------------------------------------------------
-// Config form (create / edit)
+// Config form body
+// Returns { el, getSaveData, destroy }
+// Action buttons live in the panel header bar; not included here.
 // -------------------------------------------------------
 
-function renderConfigForm({ config, typenames, labelsMap, onSave, onCancel, onDirtyChange }) {
-  const form = document.createElement('div');
+function renderConfigForm({ config, typenames, labelsMap, onDirtyChange }) {
+  const el = document.createElement('div');
 
-  let _dirty = false;
-  function _markDirty() {
-    if (!_dirty) { _dirty = true; saveBtn.disabled = false; onDirtyChange?.(() => _dirty); }
-  }
+  function _markDirty() { onDirtyChange?.(true); }
 
-  // ---- Name + Description -------------------------------------------------
-  function makeInputRow(labelText, input) {
+  function makeFieldRow(labelText, input) {
     const row = document.createElement('div');
-    row.style.cssText = 'display: flex; align-items: center; gap: 10px; margin-bottom: 6px;';
+    row.className = 'panel-field-row';
     const lbl = document.createElement('label');
     lbl.textContent = labelText;
-    lbl.style.cssText = 'width: 100px; flex-shrink: 0; font-size: 0.9em; margin-bottom: 0;';
-    input.style.cssText = 'flex: 1; min-width: 0; margin-bottom: 0;';
-    row.appendChild(lbl); row.appendChild(input);
+    row.appendChild(lbl);
+    row.appendChild(input);
     return row;
   }
 
+  // Name
   const nameInput = document.createElement('input');
   nameInput.type = 'text';
   nameInput.value = config?.name ?? '';
   nameInput.placeholder = 'Required';
   nameInput.addEventListener('input', _markDirty);
-  form.appendChild(makeInputRow('Name:', nameInput));
+  el.appendChild(makeFieldRow('Name', nameInput));
 
+  // Description
   const descInput = document.createElement('input');
   descInput.type = 'text';
   descInput.value = config?.description ?? '';
   descInput.placeholder = 'Optional';
   descInput.addEventListener('input', _markDirty);
-  form.appendChild(makeInputRow('Description:', descInput));
+  el.appendChild(makeFieldRow('Description', descInput));
 
-  // ---- Root model type ----------------------------------------------------
+  // Root model type
   const { rootTypename: initRoot, selected: initSelected, submodels: initSubmodels } =
     parseNodes(config?.nodes, labelsMap);
   let rootTypename = initRoot || typenames[0] || '';
 
-  const rootRow = document.createElement('div');
-  rootRow.style.cssText = 'display: flex; align-items: center; gap: 10px; margin-bottom: 14px;';
-  const rootLbl = document.createElement('label');
-  rootLbl.textContent = 'Root model type:';
-  rootLbl.style.cssText = 'white-space: nowrap; font-size: 0.9em; margin-bottom: 0;';
   const rootSel = document.createElement('select');
-  rootSel.style.cssText = 'margin-bottom: 0;';
   typenames.forEach(tn => {
     const o = document.createElement('option');
     o.value = tn; o.textContent = tn;
@@ -201,43 +181,39 @@ function renderConfigForm({ config, typenames, labelsMap, onSave, onCancel, onDi
     rootSel.appendChild(o);
   });
   rootSel.addEventListener('change', () => { rootTypename = rootSel.value; _markDirty(); });
-  rootRow.appendChild(rootLbl);
-  rootRow.appendChild(rootSel);
-  form.appendChild(rootRow);
+  el.appendChild(makeFieldRow('Root model', rootSel));
 
-  // ---- Label tree (shared component) -------------------------------------
-  const treeSection = document.createElement('div');
-  treeSection.style.cssText = [
-    'border: 1px solid var(--pico-border-color)',
-    'border-radius: 5px',
-    'padding: 8px',
-    'margin-bottom: 12px',
-    'max-height: 380px',
-    'overflow-y: auto',
-  ].join('; ');
-  form.appendChild(treeSection);
+  // Divider
+  const hr = document.createElement('hr');
+  hr.style.cssText = 'margin: 0.6em 0; opacity: 0.4;';
+  el.appendChild(hr);
 
-  treeSection.addEventListener('change', _markDirty);
+  // Label tree
+  const treeLabel = document.createElement('p');
+  treeLabel.className = 'panel-section-label';
+  treeLabel.style.marginTop = '0';
+  treeLabel.textContent = 'Label assignments';
+  el.appendChild(treeLabel);
 
-  // ---- Submodel panels (populated dynamically) ---------------------------
+  const treeBox = document.createElement('div');
+  treeBox.className = 'panel-tree-box';
+  treeBox.addEventListener('change', _markDirty);
+  el.appendChild(treeBox);
+
+  // Submodel panels (populated dynamically by tree callbacks)
   const submodelsContainer = document.createElement('div');
-  submodelsContainer.style.marginBottom = '12px';
-  form.appendChild(submodelsContainer);
+  el.appendChild(submodelsContainer);
 
-  // Track live submodel state (updated by the tree callbacks).
   let currentSubmodels = new Map(initSubmodels);
+  let treeHandle = null;
 
   function refreshPanels(submodels) {
     currentSubmodels = submodels;
-    renderSubmodelPanels(
-      submodelsContainer, submodels, labelsMap, typenames,
-      (uuid, newTypename) => { currentSubmodels.set(uuid, newTypename); },
-    );
+    renderSubmodelPanels(submodelsContainer, submodels, labelsMap, typenames,
+      (uuid, newTypename) => { currentSubmodels.set(uuid, newTypename); _markDirty(); });
   }
 
-  // Mount the label tree via the shared component.
-  let treeHandle = null;
-  createLabelList(treeSection, {
+  createLabelList(treeBox, {
     mode: 'model-config',
     labelsMap,
     initialSelected: initSelected,
@@ -246,46 +222,20 @@ function renderConfigForm({ config, typenames, labelsMap, onSave, onCancel, onDi
     onSubmodelsChanged: (submodels) => { refreshPanels(submodels); _markDirty(); },
   }).then(handle => {
     treeHandle = handle;
-    refreshPanels(initSubmodels); // render initial panels
+    refreshPanels(initSubmodels);
   });
 
-  // ---- Buttons ------------------------------------------------------------
-  const btnRow = document.createElement('div');
-  btnRow.style.cssText = 'display: flex; gap: 8px;';
-
-  const saveBtn = document.createElement('button');
-  saveBtn.type = 'button';
-  saveBtn.textContent = config ? 'Save' : 'Create';
-  saveBtn.disabled = true;
-  saveBtn.addEventListener('click', async () => {
-    const name = nameInput.value.trim();
-    if (!name) { toast('Name is required', 3000, 'error'); return; }
-    if (!rootTypename) { toast('Root model type is required', 3000, 'error'); return; }
-    saveBtn.disabled = true;
-    try {
-      const selected = treeHandle?.getSelected() ?? new Set();
-      await onSave({
-        name,
+  return {
+    el,
+    getSaveData() {
+      return {
+        name: nameInput.value.trim(),
         description: descInput.value.trim(),
-        nodes: computeNodes(selected, currentSubmodels, rootTypename, labelsMap),
-      });
-    } catch (err) {
-      toast(err.message, 5000, 'error');
-      saveBtn.disabled = false;
-    }
-  });
-  btnRow.appendChild(saveBtn);
-
-  if (onCancel) {
-    const cancelBtn = document.createElement('button');
-    cancelBtn.type = 'button';
-    cancelBtn.textContent = 'Cancel';
-    cancelBtn.addEventListener('click', () => { treeHandle?.destroy(); onCancel(); });
-    btnRow.appendChild(cancelBtn);
-  }
-
-  form.appendChild(btnRow);
-  return form;
+        nodes: computeNodes(treeHandle?.getSelected() ?? new Set(), currentSubmodels, rootTypename, labelsMap),
+      };
+    },
+    destroy() { treeHandle?.destroy(); },
+  };
 }
 
 // -------------------------------------------------------
@@ -296,178 +246,291 @@ export async function renderModelConfigManager({ target = 'model-config-box' } =
   if (_rendering) return;
   _rendering = true;
 
+  // Replace any previously-installed nav guard (handles re-render on tab revisit)
+  _navGuardController?.abort();
+  _navGuardController = new AbortController();
+
   const container = document.getElementById(target);
   if (!container) { _rendering = false; return; }
   container.innerHTML = '';
 
   try {
-    const panel = document.createElement('div');
-    panel.className = 'config-panel';
-    container.appendChild(panel);
+    const split = document.createElement('div');
+    split.style.cssText = 'display: flex; gap: 1em; align-items: flex-start;';
+    container.appendChild(split);
 
-    const leftCol = document.createElement('div');
-    leftCol.className = 'config-column';
-    panel.appendChild(leftCol);
+    // ── Left: list panel ──────────────────────────────────────────────────
+    const listPanel = document.createElement('div');
+    listPanel.className = 'panel-box mc-list-panel';
+    split.appendChild(listPanel);
 
-    const rightCol = document.createElement('div');
-    rightCol.className = 'config-column';
-    panel.appendChild(rightCol);
+    const listBar = document.createElement('div');
+    listBar.className = 'panel-box__bar';
+    const listTitle = document.createElement('span');
+    listTitle.className = 'panel-box__title';
+    listTitle.textContent = 'Configurations';
+    listBar.appendChild(listTitle);
+    listPanel.appendChild(listBar);
 
+    const listBody = document.createElement('div');
+    listBody.className = 'panel-box__body';
+    listPanel.appendChild(listBody);
+
+    const listFooter = document.createElement('div');
+    listFooter.className = 'panel-box__footer';
+    listPanel.appendChild(listFooter);
+
+    // Footer "+ New" button is static — created once here, not on every refreshList.
+    const newBtn = document.createElement('button');
+    newBtn.type = 'button';
+    newBtn.textContent = '+ New';
+    newBtn.className = 'panel-btn';
+    newBtn.style.cssText = 'width: 100%; margin-bottom: 0;';
+    newBtn.addEventListener('click', () => _showForm(null));
+    listFooter.appendChild(newBtn);
+
+    // ── Right: editor panel ───────────────────────────────────────────────
+    const editorPanel = document.createElement('div');
+    editorPanel.className = 'panel-box mc-editor';
+    split.appendChild(editorPanel);
+
+    const editorBar = document.createElement('div');
+    editorBar.className = 'panel-box__bar';
+    editorPanel.appendChild(editorBar);
+
+    const editorBody = document.createElement('div');
+    editorBody.className = 'panel-box__body';
+    editorPanel.appendChild(editorBody);
+
+    // ── Shared state ──────────────────────────────────────────────────────
     let _selectedUuid = null;
-    let _getDirtyState = () => false;
+    let _dirty = false;
+    let _currentFormHandle = null;
+    let _switching = false; // true while a showEdit/showCreate transition is in progress
 
-    function _confirmIfDirty() {
-      if (!_getDirtyState()) return true;
-      return window.confirm('You have unsaved changes. Discard them?');
+    async function _confirmIfDirty() {
+      if (!_dirty) return true;
+      return showConfirmModal({
+        title: 'Unsaved changes',
+        message: 'You have unsaved changes. Discard them and continue?',
+        confirmText: 'Discard',
+        cancelText: 'Keep editing',
+      });
     }
 
     function _updateListSelection(uuid) {
-      for (const row of leftCol.querySelectorAll('[data-config-uuid]')) {
-        const sel = row.dataset.configUuid === uuid;
-        row.style.background = sel ? 'var(--pico-primary-background, #eef)' : '';
-        row.style.borderColor = sel ? 'var(--pico-primary-border, #aad)' : 'transparent';
+      for (const item of listBody.querySelectorAll('.mc-list-item')) {
+        item.classList.toggle('active', item.dataset.configUuid === uuid);
       }
     }
 
-    async function showEdit(config, { force = false } = {}) {
-      if (!force && !_confirmIfDirty()) return;
-      _getDirtyState = () => false;
-      _selectedUuid = config.uuid;
-      const [labelsMap, typenames] = await Promise.all([fetchLabels(), fetchModelTypenames()]);
-      rightCol.innerHTML = '';
+    /**
+     * Rebuild the editor header bar. Returns handles to update dynamic parts.
+     * onDelete is optional (omit for the "new config" form).
+     */
+    function _buildEditorBar({ config, onSave, onDelete }) {
+      editorBar.innerHTML = '';
+      let _saving = false; // true while a save/create network request is in flight
 
-      const h4 = document.createElement('h4');
-      h4.style.marginBottom = '8px';
-      h4.textContent = config.name;
-      rightCol.appendChild(h4);
+      const dirtyDot = document.createElement('span');
+      dirtyDot.className = 'panel-dirty-dot';
 
-      rightCol.appendChild(renderConfigForm({
-        config, typenames, labelsMap,
-        onDirtyChange: (getter) => { _getDirtyState = getter; },
-        onSave: async ({ name, description, nodes }) => {
-          const updated = await updateModelConfig(config.uuid, { name, description, nodes });
-          _getDirtyState = () => false;
-          toast('Saved', 3000);
-          const nameEl = leftCol.querySelector(`[data-config-uuid="${config.uuid}"] .mc-name`);
-          if (nameEl) nameEl.textContent = updated.name;
-          await showEdit(updated, { force: true });
-        },
-      }));
+      const titleSpan = document.createElement('span');
+      titleSpan.className = 'panel-box__title';
+      titleSpan.textContent = config ? config.name : 'New Configuration';
 
-      const deleteBtn = document.createElement('button');
-      deleteBtn.type = 'button';
-      deleteBtn.textContent = '🗑️ Delete';
-      deleteBtn.style.cssText = 'margin-top:8px;';
-      deleteBtn.addEventListener('click', async () => {
-        if (!window.confirm(`Delete model config "${config.name}"?`)) return;
-        deleteBtn.disabled = true;
-        try {
-          await deleteModelConfig(config.uuid);
-          toast('Deleted', 3000);
-          await refreshList();
-          await showCreate({ force: true });
-        } catch (err) {
-          toast(err.message, 5000, 'error');
-          deleteBtn.disabled = false;
-        }
-      });
-      rightCol.appendChild(deleteBtn);
+      const saveBtn = document.createElement('button');
+      saveBtn.type = 'button';
+      saveBtn.textContent = config ? 'Save' : 'Create';
+      saveBtn.className = 'panel-btn';
+      saveBtn.disabled = true;
+      saveBtn.addEventListener('click', onSave);
 
-      _updateListSelection(config.uuid);
+      // Hoisted so the deleteBtn handler can reference setSaving directly.
+      const setDirty = (v) => {
+        _dirty = v;
+        dirtyDot.classList.toggle('visible', v);
+        // Don't re-enable the button while a save is in flight — setDirty(true) fires
+        // on every keystroke and would otherwise allow a second concurrent submission.
+        if (!_saving) saveBtn.disabled = !v;
+      };
+      const setSaving = (v) => {
+        _saving = v;
+        // Always disable while saving; restore to dirty-based state when done.
+        saveBtn.disabled = v || !_dirty;
+      };
+
+      editorBar.append(dirtyDot, titleSpan);
+
+      if (config && onDelete) {
+        const deleteBtn = document.createElement('button');
+        deleteBtn.type = 'button';
+        deleteBtn.textContent = 'Delete';
+        deleteBtn.className = 'panel-btn secondary';
+        deleteBtn.addEventListener('click', async () => {
+          // Disable save during the async confirm to prevent a concurrent save+delete.
+          saveBtn.disabled = true;
+          const ok = await showConfirmModal({
+            title: 'Delete configuration',
+            message: `Delete "${config.name}"? This cannot be undone.`,
+            confirmText: 'Delete',
+            cancelText: 'Cancel',
+            danger: true,
+          });
+          if (!ok) {
+            setSaving(false); // restore save button based on dirty state
+            return;
+          }
+          deleteBtn.disabled = true;
+          try {
+            await onDelete();
+          } catch (err) {
+            toast(err.message, 5000, 'error');
+            deleteBtn.disabled = false;
+            setSaving(false);
+          }
+        });
+        editorBar.appendChild(deleteBtn);
+      }
+
+      editorBar.appendChild(saveBtn);
+
+      return { setDirty, setSaving };
     }
 
-    async function showCreate({ force = false } = {}) {
-      if (!force && !_confirmIfDirty()) return;
-      _getDirtyState = () => false;
-      _selectedUuid = null;
-      const [labelsMap, typenames] = await Promise.all([fetchLabels(), fetchModelTypenames()]);
-      rightCol.innerHTML = '';
+    // Single entry point for both edit (config != null) and create (config == null).
+    async function _showForm(config, { force = false } = {}) {
+      if (_switching && !force) return;
+      _switching = true;
+      try {
+        if (!force && !await _confirmIfDirty()) return;
+        _currentFormHandle?.destroy();
+        _currentFormHandle = null;
+        _dirty = false;
+        _selectedUuid = config?.uuid ?? null;
 
-      const h4 = document.createElement('h4');
-      h4.style.marginBottom = '8px';
-      h4.textContent = 'New Model Configuration';
-      rightCol.appendChild(h4);
+        const [labelsMap, typenames] = await Promise.all([fetchLabels(), fetchModelTypenames()]);
+        editorBody.innerHTML = '';
 
-      rightCol.appendChild(renderConfigForm({
-        config: null, typenames, labelsMap,
-        onDirtyChange: (getter) => { _getDirtyState = getter; },
-        onSave: async ({ name, description, nodes }) => {
-          const created = await createModelConfig({ name, description, nodes });
-          _getDirtyState = () => false;
-          toast(`Created "${created.name}"`, 3000);
-          await refreshList();
-          await showEdit(created, { force: true });
-        },
-      }));
+        const { setDirty, setSaving } = _buildEditorBar({
+          config,
+          onSave: async () => {
+            const { name, description, nodes } = _currentFormHandle.getSaveData();
+            if (!name) { toast('Name is required', 3000, 'error'); return; }
+            if (!nodes[0]?.model_typename) { toast('Root model type is required', 3000, 'error'); return; }
+            setSaving(true);
+            try {
+              if (config) {
+                const updated = await updateModelConfig(config.uuid, { name, description, nodes });
+                setDirty(false);
+                toast('Saved', 3000);
+                const nameEl = listBody.querySelector(`[data-config-uuid="${config.uuid}"] .mc-list-item__name`);
+                if (nameEl) nameEl.textContent = updated.name;
+                await _showForm(updated, { force: true });
+              } else {
+                const created = await createModelConfig({ name, description, nodes });
+                setDirty(false);
+                toast(`Created "${created.name}"`, 3000);
+                await refreshList();
+                await _showForm(created, { force: true });
+              }
+            } catch (err) {
+              toast(err.message, 5000, 'error');
+              setSaving(false);
+            }
+          },
+          onDelete: config ? async () => {
+            await deleteModelConfig(config.uuid);
+            toast('Deleted', 3000);
+            await refreshList();
+            await _showForm(null, { force: true });
+          } : undefined,
+        });
 
-      _updateListSelection(null);
+        const formHandle = renderConfigForm({
+          config, typenames, labelsMap,
+          onDirtyChange: setDirty,
+        });
+        _currentFormHandle = formHandle;
+        editorBody.appendChild(formHandle.el);
+
+        _updateListSelection(config?.uuid ?? null);
+      } finally {
+        _switching = false;
+      }
     }
 
     async function refreshList() {
-      leftCol.innerHTML = '';
-
-      const h4 = document.createElement('h4');
-      h4.style.marginBottom = '8px';
-      h4.textContent = 'Model Configurations';
-      leftCol.appendChild(h4);
+      listBody.innerHTML = '';
 
       const configsMap = await fetchModelConfigs();
-      const listEl = document.createElement('div');
-      leftCol.appendChild(listEl);
 
       if (configsMap.size === 0) {
         const empty = document.createElement('p');
-        empty.style.cssText = 'color:var(--pico-muted-color,#888); font-style:italic; font-size:0.85em;';
+        empty.style.cssText = 'color: var(--pico-muted-color, #888); font-style: italic; font-size: 0.85em; padding: 0.5em 0.75em; margin: 0;';
         empty.textContent = 'No configurations yet.';
-        listEl.appendChild(empty);
+        listBody.appendChild(empty);
       }
 
       for (const config of configsMap.values()) {
-        const row = document.createElement('div');
-        row.style.cssText = 'cursor:pointer; padding:6px 8px; margin-bottom:4px; border-radius:4px; border:1px solid transparent; background:var(--pico-card-background-color);';
-        row.dataset.configUuid = config.uuid;
+        const item = document.createElement('div');
+        item.className = 'mc-list-item';
+        item.dataset.configUuid = config.uuid;
 
         const nameLine = document.createElement('div');
-        nameLine.className = 'mc-name';
-        nameLine.style.fontWeight = 'bold';
+        nameLine.className = 'mc-list-item__name';
         nameLine.textContent = config.name;
-        row.appendChild(nameLine);
+        item.appendChild(nameLine);
 
         if (config.description) {
           const descLine = document.createElement('div');
-          descLine.style.cssText = 'font-size:0.82em; color:var(--pico-muted-color,#666); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:220px;';
+          descLine.className = 'mc-list-item__desc';
           descLine.textContent = config.description;
-          row.appendChild(descLine);
+          item.appendChild(descLine);
         }
 
         const metaLine = document.createElement('div');
-        metaLine.style.cssText = 'font-size:0.75em; color:var(--pico-muted-color,#999);';
+        metaLine.className = 'mc-list-item__meta';
         const n = config.nodes?.length ?? 0;
         metaLine.textContent = `${n} assignment${n === 1 ? '' : 's'}`;
-        row.appendChild(metaLine);
+        item.appendChild(metaLine);
 
-        row.addEventListener('mouseenter', () => {
-          if (row.dataset.configUuid !== _selectedUuid) row.style.background = 'var(--pico-card-sectioning-background-color, #f5f5f5)';
-        });
-        row.addEventListener('mouseleave', () => {
-          if (row.dataset.configUuid !== _selectedUuid) row.style.background = 'var(--pico-card-background-color)';
-        });
-        row.addEventListener('click', () => showEdit(config));
-        listEl.appendChild(row);
+        item.addEventListener('click', () => _showForm(config));
+        listBody.appendChild(item);
       }
-
-      const newBtn = document.createElement('button');
-      newBtn.type = 'button';
-      newBtn.textContent = '+ New Configuration';
-      newBtn.style.cssText = 'margin-top:8px; width:100%;';
-      newBtn.addEventListener('click', () => showCreate());
-      leftCol.appendChild(newBtn);
 
       _updateListSelection(_selectedUuid);
     }
 
+    // ── Navigation guard ─────────────────────────────────────────────────
+    // Intercept workspace-tab and main-tab clicks while there are unsaved changes.
+    // Uses capture phase so we can stop propagation before the tab system sees it.
+    // guardSignal is captured now so the async continuation can detect if this guard
+    // has been superseded by a re-render (signal.aborted → stale, don't act).
+    const guardSignal = _navGuardController.signal;
+    document.addEventListener('click', async (e) => {
+      const btn = e.target.closest('.workspace-tab-button, .main-tab-button');
+      if (!btn) return;
+      const targetTab = btn.dataset.tab;
+      // Allow clicking the Models tab itself or the Configuration main tab (no navigation away)
+      if (targetTab === 'tab-model-management' || targetTab === 'tab-configuration') return;
+      if (!_dirty) return;
+
+      e.stopPropagation();
+      const discard = await showConfirmModal({
+        title: 'Unsaved changes',
+        message: 'You have unsaved changes that will be lost if you navigate away.',
+        confirmText: 'Discard & leave',
+        cancelText: 'Keep editing',
+      });
+      if (!discard) return;
+      if (guardSignal.aborted) return; // guard superseded by a re-render; discard is stale
+      _dirty = false;
+      btn.click(); // re-fire now that guard is satisfied
+    }, { capture: true, signal: guardSignal });
+
     await refreshList();
-    await showCreate({ force: true });
+    await _showForm(null, { force: true });
   } catch (err) {
     const errMsg = document.createElement('p');
     errMsg.style.color = 'red';

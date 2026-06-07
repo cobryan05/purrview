@@ -1,44 +1,94 @@
 import { createModalShell } from './modalShell.js';
 
 /**
+ * Internal builder shared by all exported modal functions.
+ *
+ * @param {Object} opts
+ * @param {string} opts.title
+ * @param {string} opts.message
+ * @param {Array<{text: string, value: any, className?: string}>} opts.buttons
+ * @param {number} [opts.defaultFocusIndex=0]  — which button receives focus after open
+ * @param {any}    [opts.defaultCloseValue]     — resolved value when modal is dismissed without a button
+ * @returns {Promise<any>}
+ */
+function _buildModal({ title, message, buttons, defaultFocusIndex = 0, defaultCloseValue = null }) {
+  return new Promise((resolve) => {
+    let resolved = false;
+    const finish = (value) => { resolved = true; close(); resolve(value); };
+    const { dialog, open, close } = createModalShell({
+      onClose: () => { if (!resolved) resolve(defaultCloseValue); },
+    });
+
+    const titleEl = document.createElement('strong');
+    titleEl.textContent = title;
+
+    const msgEl = document.createElement('div');
+    msgEl.style.cssText = 'font-size: 0.9em;';
+    msgEl.textContent = message;
+
+    const btnRow = document.createElement('div');
+    btnRow.style.cssText = 'display: flex; gap: 0.5em; justify-content: flex-end; flex-wrap: wrap;';
+
+    const btnEls = buttons.map(({ text, value, className }) => {
+      const btn = document.createElement('button');
+      btn.textContent = text;
+      if (className) btn.className = className;
+      btn.onclick = () => finish(value);
+      btnRow.appendChild(btn);
+      return btn;
+    });
+
+    dialog.append(titleEl, msgEl, btnRow);
+    open();
+    btnEls[defaultFocusIndex]?.focus();
+  });
+}
+
+/**
+ * Generic single-confirm modal.
+ *
+ * @param {Object} opts
+ * @param {string} opts.title
+ * @param {string} opts.message
+ * @param {string} [opts.confirmText='Confirm']
+ * @param {string} [opts.cancelText='Cancel']
+ * @param {boolean} [opts.danger=false] — styles confirm button as destructive (contrast)
+ * @returns {Promise<boolean>} true = confirmed, false = cancelled/dismissed
+ */
+export function showConfirmModal({
+  title,
+  message,
+  confirmText = 'Confirm',
+  cancelText = 'Cancel',
+  danger = false,
+} = {}) {
+  return _buildModal({
+    title,
+    message,
+    buttons: [
+      { text: cancelText, value: false, className: 'secondary' },
+      { text: confirmText, value: true, className: danger ? 'contrast' : undefined },
+    ],
+    defaultFocusIndex: 0,   // default to safe 'Cancel' action
+    defaultCloseValue: false,
+  });
+}
+
+/**
  * Modal asking the user what to do about unsaved annotation changes.
  *
  * @returns {Promise<'save'|'discard'|'cancel'>}
  */
 export function showUnsavedChangesModal() {
-  return new Promise((resolve) => {
-    let result = 'cancel';
-    const { dialog, open, close } = createModalShell({ onClose: () => resolve(result) });
-
-    const title = document.createElement('strong');
-    title.textContent = 'Unsaved changes';
-
-    const message = document.createElement('div');
-    message.textContent = 'You have unsaved annotation changes. What would you like to do?';
-
-    const buttons = document.createElement('div');
-    buttons.style.cssText = 'display: flex; gap: 0.5em; justify-content: flex-end; flex-wrap: wrap;';
-
-    /** @param {'save'|'discard'|'cancel'} value */
-    const finish = (value) => { result = value; close(); };
-
-    const cancelBtn = document.createElement('button');
-    cancelBtn.textContent = 'Cancel';
-    cancelBtn.className = 'secondary';
-    cancelBtn.onclick = () => finish('cancel');
-
-    const discardBtn = document.createElement('button');
-    discardBtn.textContent = 'Discard & continue';
-    discardBtn.className = 'contrast';
-    discardBtn.onclick = () => finish('discard');
-
-    const saveBtn = document.createElement('button');
-    saveBtn.textContent = 'Save & continue';
-    saveBtn.onclick = () => finish('save');
-
-    buttons.append(cancelBtn, discardBtn, saveBtn);
-    dialog.append(title, message, buttons);
-    open();
-    saveBtn.focus();
+  return _buildModal({
+    title: 'Unsaved changes',
+    message: 'You have unsaved annotation changes. What would you like to do?',
+    buttons: [
+      { text: 'Cancel', value: 'cancel', className: 'secondary' },
+      { text: 'Discard & continue', value: 'discard', className: 'contrast' },
+      { text: 'Save & continue', value: 'save' },
+    ],
+    defaultFocusIndex: 2,   // focus 'Save & continue' (matches original behaviour)
+    defaultCloseValue: 'cancel',
   });
 }
