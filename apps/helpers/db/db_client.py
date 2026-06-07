@@ -177,6 +177,19 @@ def _apply_image_search_filters(stmt: Select, params: ImageSearchParams) -> Sele
             )
             stmt = stmt.where(~subq if f.exclude else subq)
 
+    # ── Dataset label filter ───────────────────────────────────────────────────
+    # Images must have at least one bbox whose label is in the dataset's label set.
+    if params.label_uuids:
+        subq = (
+            select(BBox.uuid)
+            .where(
+                BBox.image_uuid == ImageRecord.uuid,
+                BBox.label_uuid.in_(params.label_uuids),
+            )
+            .exists()
+        )
+        stmt = stmt.where(subq)
+
     return stmt
 
 
@@ -208,6 +221,11 @@ class DbClient:
         def _set_sqlite_pragma(dbapi_conn, connection_record):
             cursor = dbapi_conn.cursor()
             cursor.execute("PRAGMA foreign_keys=ON")
+            # WAL mode allows concurrent reads during writes, preventing long
+            # image-search queries from blocking all other db_server requests.
+            cursor.execute("PRAGMA journal_mode=WAL")
+            # NORMAL is safe with WAL and avoids the fsync overhead of FULL.
+            cursor.execute("PRAGMA synchronous=NORMAL")
             cursor.close()
 
         self._async_session_maker = sessionmaker(self._engine, class_=AsyncSession, expire_on_commit=False)
@@ -2046,6 +2064,10 @@ class DbClient:
         params.image_label_filters = image_label_filters
         params.tag_presence_filters = tag_presence_filters
         params.filename_searches = filename_searches
+        # When the dataset has label_uuids, restrict to images that have at least
+        # one bbox annotated with one of those labels.
+        if dataset.label_uuids:
+            params.label_uuids = list(dataset.label_uuids)
         return params
 
     async def _list_images_for_dataset(
@@ -2066,10 +2088,11 @@ class DbClient:
         """
         criteria = DatasetFilterCriteria.model_validate({"conditions": dataset.filter_json.get("conditions", [])})
 
+        # Fetch limit+1 rows so we can distinguish "exactly limit" from "more exist".
         params = self.build_dataset_search_params(
             dataset,
             criteria,
-            limit=limit,
+            limit=limit + 1,
             sort_by=sort_by,
             sort_order=sort_order,
             after_uuid=after_uuid,
@@ -2081,14 +2104,16 @@ class DbClient:
 
         if not bbox_age_conditions:
             results = await self.list_images_search(params)
-            return results, len(results) == limit
+            has_more = len(results) > limit
+            return results[:limit], has_more
 
         # Apply bbox-age filters with an additional DB query against the matched UUID set.
-        # has_more is derived from the base page size so we never terminate pagination
+        # has_more is derived from the base page so we never terminate pagination
         # early when the in-DB filter reduces the page below `limit`.
         now = datetime.now(timezone.utc)
         results = await self.list_images_search(params)
-        has_more = len(results) == limit  # conservative: base page was full
+        has_more = len(results) > limit
+        results = results[:limit]  # trim the sentinel row before further filtering
 
         if not results:
             return results, False

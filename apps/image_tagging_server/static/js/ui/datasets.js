@@ -1,7 +1,7 @@
 import { fetchLabels } from '/app-static/js/shared/api/labels.js';
 import { fetchTags } from '/app-static/js/shared/api/tags.js';
 import {
-  fetchDatasets, fetchDatasetImages, previewDatasetImages,
+  fetchDatasets, previewDatasetImages,
   createDataset, updateDataset, deleteDataset,
 } from '/app-static/js/shared/api/datasets.js';
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
@@ -641,7 +641,7 @@ export async function renderDatasetManager({ target = 'dataset-management-box' }
           { onAnyChange: () => setDirty(true) },
         );
 
-        // View actions (available in edit mode; preview also available in create mode)
+        // Preview Images — always available, reflects current (possibly unsaved) form state
         const hr = document.createElement('hr');
         hr.style.cssText = 'margin: 0.8em 0 0.5em; opacity: 0.4;';
         editorBody.appendChild(hr);
@@ -652,57 +652,46 @@ export async function renderDatasetManager({ target = 'dataset-management-box' }
 
         const previewBtn = document.createElement('button');
         previewBtn.type = 'button';
-        previewBtn.textContent = 'Preview Count';
+        previewBtn.textContent = 'Preview Images';
         previewBtn.className = 'panel-btn';
         previewBtn.style.marginBottom = '0';
         previewBtn.addEventListener('click', async () => {
           previewBtn.disabled = true;
           previewBtn.textContent = 'Loading…';
           try {
-            const { images, hasMore } = await previewDatasetImages({
-              filterJson: { conditions: formHandle.getConditions() },
-              labelUuids: formHandle.getLabelUuids(),
-              limit: 500,
+            const { showReviewModal } = await import('/app-static/js/app/review/main.js');
+
+            // Capture current (possibly unsaved) form state
+            const filterJson = { conditions: formHandle.getConditions() };
+            const labelUuids = formHandle.getLabelUuids();
+
+            // Fetch matching images via the preview endpoint (no save required)
+            const { images: allImages, hasMore } = await previewDatasetImages({
+              filterJson, labelUuids, limit: 500,
             });
-            const suffix = hasMore ? '500+' : String(images.length);
-            const unsaved = _dirty ? ' (unsaved)' : '';
-            toast(`Dataset contains ${suffix} images${unsaved}`, 4000);
+            const countStr = hasMore ? '500+' : String(allImages.length);
+            const imageWord = allImages.length === 1 && !hasMore ? 'image' : 'images';
+            const unsavedNote = _dirty ? ' — unsaved' : '';
+
+            // Open the modal without awaiting — the data is already loaded and the
+            // button should reset as soon as the modal appears, not after panel init.
+            showReviewModal({
+              title: `Preview: ${countStr} ${imageWord}${unsavedNote}`,
+              // Client-side pagination over the cached preview results
+              fetchImages: async ({ afterUuid, limit }) => {
+                if (!afterUuid) return allImages.slice(0, limit);
+                const idx = allImages.findIndex(img => img.uuid === afterUuid);
+                return idx >= 0 ? allImages.slice(idx + 1, idx + 1 + limit) : [];
+              },
+            }).catch(err => toast(err.message || 'Failed to open preview', 5000, 'error'));
           } catch (err) {
             toast(err.message || 'Failed to preview', 5000, 'error');
           } finally {
             previewBtn.disabled = false;
-            previewBtn.textContent = 'Preview Count';
+            previewBtn.textContent = 'Preview Images';
           }
         });
         viewRow.appendChild(previewBtn);
-
-        if (dataset) {
-          const browseBtn = document.createElement('button');
-          browseBtn.type = 'button';
-          browseBtn.textContent = 'Browse Images';
-          browseBtn.className = 'panel-btn';
-          browseBtn.style.marginBottom = '0';
-          browseBtn.addEventListener('click', async () => {
-            browseBtn.disabled = true;
-            try {
-              const { showReviewModal } = await import('/app-static/js/app/review/main.js');
-              await showReviewModal({
-                title: `Browse: ${dataset.name}`,
-                fetchImages: async ({ sortBy, sortOrder, afterUuid, afterSortValue, limit }) =>
-                  fetchDatasetImages(dataset.uuid, {
-                    sort_by: sortBy,
-                    sort_order: sortOrder,
-                    after_uuid: afterUuid,
-                    after_sort_value: afterSortValue,
-                    limit,
-                  }),
-              });
-            } finally {
-              browseBtn.disabled = false;
-            }
-          });
-          viewRow.appendChild(browseBtn);
-        }
 
         // Shared save logic used by both the Save button (navigateAfterCreate=true)
         // and the nav-guard (_currentDoSave, navigateAfterCreate=false).
@@ -733,7 +722,8 @@ export async function renderDatasetManager({ target = 'dataset-management-box' }
               });
               setDirty(false);
               toast(`Dataset "${created.name}" created`, 3000);
-              await refreshList();
+              // refreshList() is triggered by the DATASETS_UPDATED event fired inside
+              // createDataset(); calling it again here would race and duplicate list items.
               if (navigateAfterCreate) {
                 await _showForm(created, { force: true });
               } else {

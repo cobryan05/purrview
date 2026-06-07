@@ -639,9 +639,11 @@ export async function createReviewPanel(container, { fetchImages = null } = {}) 
         _hasMore = true; // there are more, user must paginate
       }
 
-      // Auto-skip empty pages (when client-side tag filter leaves nothing)
+      // Auto-skip empty pages (when client-side tag filter leaves nothing).
+      // Skip only in full-filter mode — in custom fetchImages mode (preview) we
+      // want to show image entries even when they have no bbox annotations.
       const bboxEntries = _allEntries.filter(e => e.kind === 'bbox');
-      if (bboxEntries.length === 0 && _hasMore && autoSkipped < MAX_AUTO_SKIP) {
+      if (!fetchImages && bboxEntries.length === 0 && _hasMore && autoSkipped < MAX_AUTO_SKIP) {
         autoSkipped++;
         _pageCursors[_pageCursors.length - 1] = _lastCursor;
         continue fetchLoop;

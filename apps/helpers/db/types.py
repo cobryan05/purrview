@@ -207,6 +207,9 @@ class ImageSearchParams(BaseModel):
     updated_date_to: Optional[datetime] = None
     # Tag presence/absence filters (complement to tag_uuids positive-only filter).
     tag_presence_filters: List["TagPresenceFilter"] = Field(default_factory=list)
+    # Dataset label filter: images must have at least one bbox with one of these label uuids.
+    # Empty list = no label filter (all images pass).
+    label_uuids: List[str] = Field(default_factory=list)
     # Keyset pagination cursor.
     after_uuid: Optional[str] = None
     after_sort_value: Optional[datetime] = None  # populated when sort_by != "uuid"
@@ -252,8 +255,8 @@ class BBoxBase(SQLModel):
 class BBox(BBoxBase, TimestampModel, table=True):
     __tablename__ = "bboxes"
     uuid: str = Field(default_factory=lambda: str(uuid4()), primary_key=True)
-    image_uuid: str = Field(foreign_key="images.uuid", ondelete="CASCADE")
-    label_uuid: str = Field(foreign_key="labels.uuid")
+    image_uuid: str = Field(foreign_key="images.uuid", index=True, ondelete="CASCADE")
+    label_uuid: str = Field(foreign_key="labels.uuid", index=True)
 
     image: ImageRecord = Relationship(back_populates="bboxes")
     label: Label = Relationship(back_populates="bboxes")

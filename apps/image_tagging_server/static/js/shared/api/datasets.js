@@ -139,7 +139,7 @@ export async function previewDatasetImages({ filterJson, labelUuids = [], limit 
   if (data.status !== 'success') {
     throw new Error(data.message || 'Failed to preview dataset');
   }
-  return { images: data.images, hasMore: data.has_more };
+  return { images: data.images, hasMore: data.hasMore };
 }
 
 /** DELETE /api/datasets/{uuid} */
