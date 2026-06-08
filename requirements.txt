@@ -1,4 +1,6 @@
 aiofiles
+imagehash
+pybktree
 aiosqlite
 alembic
 dacite

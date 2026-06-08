@@ -27,6 +27,7 @@ from apps.helpers.consts import TaskStatus
 
 from .types import (
     AVAILABLE_MODEL_TYPENAMES,
+    DUPLICATE_TAG_UUID,
     UNVERIFIED_TAG_UUID,
     BBox,
     BboxAgeCondition,
@@ -73,6 +74,15 @@ _SYSTEM_TAGS = [
         exclusive_group="verification",
         protected=True,
         icon="?",
+    ),
+    Tag(
+        uuid=DUPLICATE_TAG_UUID,
+        name="Duplicate",
+        color="#e05c5c",
+        kind=TagKind.SYSTEM,
+        exclusive_group=None,
+        protected=True,
+        icon="⊘",
     ),
 ]
 
@@ -367,6 +377,7 @@ class DbClient:
         json_path = image_path.with_suffix(".json")
         metadata_dict = {}
         json_uuid = None
+        json_phash: Optional[str] = None
         json_bboxes: List[BBox] = []
         # Per-bbox supplementary data extracted before constructing BBox objects.
         box_tag_uuids: Dict[str, List[str]] = {}  # bbox_uuid → tag UUID list
@@ -377,6 +388,7 @@ class DbClient:
             try:
                 metadata_dict = jstyleson.loads(json_path.read_text())
                 json_uuid = metadata_dict.get("uuid")
+                json_phash = metadata_dict.get("phash")
                 for box_data in metadata_dict.get("boxes", []):
                     raw = dict(box_data)
                     tag_uuids_list = raw.pop("tag_uuids", [])
@@ -525,6 +537,7 @@ class DbClient:
                     filename=str(image_path),
                     bboxes=json_bboxes,
                     metadata_json=metadata_dict,
+                    phash=json_phash,
                 )
                 session.add(db_record)
                 bboxes_needing_links = [b.uuid for b in json_bboxes if box_tag_uuids.get(b.uuid)]
@@ -532,6 +545,8 @@ class DbClient:
                 # Old BBoxTagLink rows are cascade-deleted when the old BBox rows are removed.
                 db_record.bboxes = json_bboxes
                 db_record.metadata_json = metadata_dict
+                if json_phash:
+                    db_record.phash = json_phash
                 session.add(db_record)
                 bboxes_needing_links = [b.uuid for b in json_bboxes if box_tag_uuids.get(b.uuid)]
             else:
@@ -939,7 +954,8 @@ class DbClient:
             await session.commit()
 
     def write_image_metadata_to_json(
-        self, json_path: Path, image_uuid: str, filename: str, update: ImageRecordUpdate
+        self, json_path: Path, image_uuid: str, filename: str, update: ImageRecordUpdate,
+        image_phash: Optional[str] = None,
     ) -> None:
         """Write image metadata to the JSON sidecar file."""
         existing: Dict[str, Any] = {}
@@ -948,27 +964,67 @@ class DbClient:
                 existing = jstyleson.loads(json_path.read_text())
             except Exception as e:
                 logger.warning(f"Could not parse sidecar {json_path}, overwriting: {e}")
-        existing.update(
-            {
-                "uuid": image_uuid,
-                "filename": filename,
-                "boxes": [
-                    {
-                        "uuid": b.uuid,
-                        "label_uuid": b.label_uuid,
-                        "label_name": b.label_name,
-                        "x": b.x,
-                        "y": b.y,
-                        "width": b.width,
-                        "height": b.height,
-                        "tag_uuids": b.tag_uuids,
-                        "tag_names": b.tag_names,
-                    }
-                    for b in update.bboxes
-                ],
-            }
-        )
+        new_data: Dict[str, Any] = {
+            "uuid": image_uuid,
+            "filename": filename,
+            "boxes": [
+                {
+                    "uuid": b.uuid,
+                    "label_uuid": b.label_uuid,
+                    "label_name": b.label_name,
+                    "x": b.x,
+                    "y": b.y,
+                    "width": b.width,
+                    "height": b.height,
+                    "tag_uuids": b.tag_uuids,
+                    "tag_names": b.tag_names,
+                    **({"phash": b.phash} if b.phash else {}),
+                }
+                for b in update.bboxes
+            ],
+        }
+        if image_phash:
+            new_data["phash"] = image_phash
+        existing.update(new_data)
         json_path.write_text(json.dumps(existing, indent=2))
+
+    async def get_all_image_phashes(self) -> List[Dict[str, str]]:
+        """Return [{uuid, phash}] for all images with a non-null phash."""
+        async with self._async_session_maker() as session:
+            result = await session.exec(
+                select(ImageRecord.uuid, ImageRecord.phash).where(ImageRecord.phash.is_not(None))  # type: ignore[arg-type]
+            )
+            return [{"uuid": row[0], "phash": row[1]} for row in result.all()]
+
+    async def get_all_bbox_phashes(self) -> List[Dict[str, str]]:
+        """Return [{uuid, label_uuid, phash}] for all bboxes with a non-null phash."""
+        async with self._async_session_maker() as session:
+            result = await session.exec(
+                select(BBox.uuid, BBox.label_uuid, BBox.phash).where(BBox.phash.is_not(None))  # type: ignore[arg-type]
+            )
+            return [{"uuid": row[0], "label_uuid": row[1], "phash": row[2]} for row in result.all()]
+
+    async def update_phashes(
+        self,
+        image_uuid: str,
+        image_phash: str,
+        bbox_phashes: List[Dict[str, str]],
+    ) -> None:
+        """Write image phash and bbox phashes to the DB in a single transaction.
+
+        bbox_phashes is a list of {"uuid": ..., "phash": ...} dicts.
+        """
+        import sqlalchemy as _sa
+
+        async with self._async_session_maker() as session:
+            await session.exec(  # type: ignore[call-overload]
+                _sa.update(ImageRecord).where(ImageRecord.uuid == image_uuid).values(phash=image_phash)
+            )
+            for bp in bbox_phashes:
+                await session.exec(  # type: ignore[call-overload]
+                    _sa.update(BBox).where(BBox.uuid == bp["uuid"]).values(phash=bp["phash"])
+                )
+            await session.commit()
 
     ################################################################################
     # Labels

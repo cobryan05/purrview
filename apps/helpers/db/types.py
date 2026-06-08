@@ -16,6 +16,7 @@ class ImageLabelStatus(str, Enum):
 
 # System tag UUIDs — keep in sync with static/js/shared/api/review.js
 UNVERIFIED_TAG_UUID = "00000000-0000-0000-0000-000000000001"
+DUPLICATE_TAG_UUID = "00000000-0000-0000-0000-000000000002"
 
 import jstyleson
 import numpy as np
@@ -151,7 +152,6 @@ class LabelUpdate(BaseModel):
     color: Optional[str] = None
     parent_uuid: Optional[str] = None
 
-
 class ImageRecordBase(SQLModel):
     """
     Base schema for an image and its metadata
@@ -159,6 +159,7 @@ class ImageRecordBase(SQLModel):
 
     filename: str = Field(unique=True, index=True)
     metadata_json: Dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    phash: Optional[str] = None
 
 
 class ImageRecord(ImageRecordBase, TimestampModel, table=True):
@@ -251,6 +252,7 @@ class BBoxBase(SQLModel):
     width: float
     height: float
     metadata_json: Dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    phash: Optional[str] = None
 
     @field_validator("x", "y", "width", "height")
     @classmethod
@@ -300,6 +302,7 @@ class BBoxUpdate(ApiModel):
     # rebuild can resolve references even when UUIDs differ after re-generation.
     label_name: Optional[str] = None
     tag_names: List[str] = []
+    phash: Optional[str] = None
 
 
 class ImageRecordUpdate(BaseModel):

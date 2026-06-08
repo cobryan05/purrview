@@ -25,6 +25,8 @@ from inference_client.models.inference_payload import InferencePayload
 from inference_client.models.pin_model_payload import PinModelPayload
 
 from apps.helpers.db.db_client import UNVERIFIED_TAG_UUID
+from apps.helpers.db.types import DUPLICATE_TAG_UUID
+from apps.helpers.hashUtils import phash_from_numpy, phash_from_numpy_crop
 from apps.helpers.imageProviders.imageProvider import (
     ImageProvider,
     ImageProviderType,
@@ -117,6 +119,14 @@ class CollectTrainingImagesTask(Task):
         self._config_name: str = params.get("_config_name", "")
         # Set in _run() when a TASK_GENERATED tag is created or found; used in result actions.
         self._task_tag_uuid: Optional[str] = None
+
+        # Deduplication params
+        self._enable_dedup: bool = bool(params.get("enable_dedup", False))
+        self._image_hash_size: int = int(params.get("image_hash_size", 8))
+        self._bbox_hash_size: int = int(params.get("bbox_hash_size", 16))
+        self._image_dup_threshold: int = int(params.get("image_dup_threshold", 5))
+        self._bbox_dup_threshold: int = int(params.get("bbox_dup_threshold", 8))
+        self._skip_duplicates: bool = bool(params.get("skip_duplicates", False))
 
     async def _run(self) -> dict[str, Any]:
         self._unverified_tag_uuid = UNVERIFIED_TAG_UUID
@@ -430,6 +440,14 @@ class CollectTrainingImagesTask(Task):
         abs_path = files_root / self._output_dir / filename
         await asyncio.to_thread(abs_path.parent.mkdir, parents=True, exist_ok=True)
 
+        # Run dedup check before writing to disk (no disk I/O needed — image is in memory).
+        dup_flags: list[bool] = [False] * len(matching)
+        if self._enable_dedup and provided.image is not None:
+            dup_flags = await self._check_dedup(images_api, provided.image, matching)
+            if self._skip_duplicates and all(dup_flags):
+                logger.debug("Skipping all-duplicate frame: %s", filename)
+                return None
+
         # cv2.imwrite is CPU-bound (PNG compression) + I/O; run off the event loop
         t0 = time.perf_counter()
         if not await asyncio.to_thread(cv2.imwrite, str(abs_path), provided.image):
@@ -438,20 +456,24 @@ class CollectTrainingImagesTask(Task):
             return None
         logger.debug(f"Image write: {1000*(time.perf_counter()-t0):.1f}ms → {abs_path}")
 
-        boxes = [
-            BoundingBoxMetadataModel(
-                bbox_uuid=str(uuid4()),
-                x=det.bbox.x,
-                y=det.bbox.y,
-                width=det.bbox.width,
-                height=det.bbox.height,
-                label_uuid=det.bbox.label_uuid,
-                class_str=det.bbox.class_str,
-                tag_uuids=[self._unverified_tag_uuid, *self._extra_tag_uuids],
-                extra={"confidence": str(det.confidence)},
+        boxes = []
+        for i, det in enumerate(matching):
+            extra_tags = list(self._extra_tag_uuids)
+            if dup_flags[i]:
+                extra_tags.append(str(DUPLICATE_TAG_UUID))
+            boxes.append(
+                BoundingBoxMetadataModel(
+                    bbox_uuid=str(uuid4()),
+                    x=det.bbox.x,
+                    y=det.bbox.y,
+                    width=det.bbox.width,
+                    height=det.bbox.height,
+                    label_uuid=det.bbox.label_uuid,
+                    class_str=det.bbox.class_str,
+                    tag_uuids=[self._unverified_tag_uuid, *extra_tags],
+                    extra={"confidence": str(det.confidence)},
+                )
             )
-            for det in matching
-        ]
 
         try:
             t_meta = time.perf_counter()
@@ -466,6 +488,61 @@ class CollectTrainingImagesTask(Task):
             return None
 
         return filename
+
+    async def _check_dedup(
+        self,
+        images_api: ImagesApi,
+        image_bgr,
+        matching: list,
+    ) -> list[bool]:
+        """Return per-detection duplicate flags.
+
+        A detection is a duplicate only when BOTH the whole-image phash AND the
+        bbox crop phash match existing entries (within their respective thresholds).
+        """
+        from db_client.models.find_similar_images_payload import FindSimilarImagesPayload
+        from db_client.models.find_similar_bboxes_payload import FindSimilarBboxesPayload
+
+        try:
+            image_phash = await asyncio.to_thread(
+                phash_from_numpy, image_bgr, self._image_hash_size
+            )
+            img_resp = await asyncio.to_thread(
+                images_api.find_similar_images,
+                FindSimilarImagesPayload(phash=image_phash, threshold=self._image_dup_threshold),
+            )
+            image_is_dup = bool(getattr(img_resp, "matches", None))
+
+            dup_flags: list[bool] = []
+            for det in matching:
+                try:
+                    bbox_phash = await asyncio.to_thread(
+                        phash_from_numpy_crop,
+                        image_bgr,
+                        det.bbox.x,
+                        det.bbox.y,
+                        det.bbox.width,
+                        det.bbox.height,
+                        self._bbox_hash_size,
+                    )
+                    bbox_resp = await asyncio.to_thread(
+                        images_api.find_similar_bboxes,
+                        FindSimilarBboxesPayload(
+                            phash=bbox_phash,
+                            threshold=self._bbox_dup_threshold,
+                            label_uuid=det.bbox.label_uuid,
+                        ),
+                    )
+                    bbox_is_dup = bool(getattr(bbox_resp, "matches", None))
+                    dup_flags.append(image_is_dup and bbox_is_dup)
+                except Exception:
+                    logger.exception("bbox dedup check failed for detection")
+                    dup_flags.append(False)
+        except Exception:
+            logger.exception("image dedup check failed")
+            dup_flags = [False] * len(matching)
+
+        return dup_flags
 
     async def _deinit(self) -> None:
         pass
@@ -486,6 +563,12 @@ class CollectTrainingImagesTask(Task):
                     "apply_tags",
                     "generate_task_tag",
                     "task_tag_name",
+                    "enable_dedup",
+                    "image_hash_size",
+                    "bbox_hash_size",
+                    "image_dup_threshold",
+                    "bbox_dup_threshold",
+                    "skip_duplicates",
                 ]
             },
             "snapshot_interval": {
@@ -546,5 +629,41 @@ class CollectTrainingImagesTask(Task):
                 "label": "Generated tag name (optional)",
                 "description": "Custom name for the per-task generated tag. Defaults to the config name if left blank.",
                 "default": "",
+            },
+            "enable_dedup": {
+                "type": "boolean",
+                "label": "Enable Deduplication",
+                "description": "Check each frame against the perceptual hash index and tag duplicate detections.",
+                "default": False,
+            },
+            "image_hash_size": {
+                "type": "int",
+                "label": "Image Hash Size",
+                "description": "Hash grid dimension for whole-image phash (8=64-bit). Must match the value used when building the index.",
+                "default": 8,
+            },
+            "bbox_hash_size": {
+                "type": "int",
+                "label": "BBox Hash Size",
+                "description": "Hash grid dimension for bbox crop phash (16=256-bit). Must match the value used when building the index.",
+                "default": 16,
+            },
+            "image_dup_threshold": {
+                "type": "int",
+                "label": "Image Duplicate Threshold",
+                "description": "Max Hamming distance for two whole-image phashes to be considered the same scene.",
+                "default": 5,
+            },
+            "bbox_dup_threshold": {
+                "type": "int",
+                "label": "BBox Duplicate Threshold",
+                "description": "Max Hamming distance for two bbox crop phashes to be considered the same object appearance.",
+                "default": 8,
+            },
+            "skip_duplicates": {
+                "type": "boolean",
+                "label": "Skip All-Duplicate Frames",
+                "description": "If every detection in a frame is a duplicate, skip saving the image entirely.",
+                "default": False,
             },
         }

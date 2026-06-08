@@ -431,6 +431,56 @@ class ModelConfigResponse(StatusResponse):
     config: Optional[ModelConfigRead] = None
 
 
+########
+# Perceptual Hash
+########
+class FindSimilarImagesPayload(ApiPayload):
+    phash: str
+    threshold: int = 5
+
+
+class SimilarImageMatch(ApiModel):
+    image_uuid: str
+    distance: int
+
+
+class FindSimilarImagesResponse(StatusResponse):
+    matches: List[SimilarImageMatch] = Field(default_factory=list)
+
+
+class FindSimilarBboxesPayload(ApiPayload):
+    phash: str
+    threshold: int = 8
+    label_uuid: Optional[str] = None
+
+
+class SimilarBboxMatch(ApiModel):
+    bbox_uuid: str
+    image_uuid: Optional[str] = None
+    label_uuid: str
+    distance: int
+
+
+class FindSimilarBboxesResponse(StatusResponse):
+    matches: List[SimilarBboxMatch] = Field(default_factory=list)
+
+
+class RebuildHashIndexResponse(StatusResponse):
+    image_count: int = 0
+    bbox_count: int = 0
+    duration_ms: float = 0.0
+
+
+class RecomputePhashPayload(ApiPayload):
+    image_hash_size: Optional[int] = None
+    bbox_hash_size: Optional[int] = None
+
+
+class RecomputePhashResponse(StatusResponse):
+    image_phash: Optional[str] = None
+    bbox_count: int = 0
+
+
 class WebApp:
     """Web application for managing the database"""
 
@@ -1147,6 +1197,95 @@ class WebApp:
             except Exception as e:
                 logger.error(e, exc_info=True)
                 return PruneImagesResponse(status=JsonValues.FAILURE, message=str(e))
+
+        ################################################################################
+        # Perceptual Hash API
+        ################################################################################
+
+        @self._app.post(
+            "/api/images/find-similar",
+            response_model=FindSimilarImagesResponse,
+            tags=[ApiTags.IMAGES],
+            operation_id="find_similar_images",
+        )
+        async def find_similar_images(payload: FindSimilarImagesPayload) -> FindSimilarImagesResponse:
+            try:
+                matches = self._manager.find_similar_images(payload.phash, payload.threshold)
+                return FindSimilarImagesResponse(
+                    status=JsonValues.SUCCESS,
+                    matches=[SimilarImageMatch(image_uuid=uuid, distance=dist) for uuid, dist in matches],
+                )
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return FindSimilarImagesResponse(status=JsonValues.FAILURE, message=str(e))
+
+        @self._app.post(
+            "/api/images/bbox/find-similar",
+            response_model=FindSimilarBboxesResponse,
+            tags=[ApiTags.IMAGES],
+            operation_id="find_similar_bboxes",
+        )
+        async def find_similar_bboxes(payload: FindSimilarBboxesPayload) -> FindSimilarBboxesResponse:
+            try:
+                matches = self._manager.find_similar_bboxes(
+                    payload.phash, payload.label_uuid, payload.threshold
+                )
+                return FindSimilarBboxesResponse(
+                    status=JsonValues.SUCCESS,
+                    matches=[
+                        SimilarBboxMatch(bbox_uuid=bbox_uuid, label_uuid=lbl, distance=dist)
+                        for bbox_uuid, dist, lbl in matches
+                    ],
+                )
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return FindSimilarBboxesResponse(status=JsonValues.FAILURE, message=str(e))
+
+        @self._app.post(
+            "/api/images/phash/rebuild-index",
+            response_model=RebuildHashIndexResponse,
+            tags=[ApiTags.IMAGES],
+            operation_id="rebuild_hash_index",
+        )
+        async def rebuild_hash_index() -> RebuildHashIndexResponse:
+            try:
+                stats = await self._manager.rebuild_hash_index()
+                return RebuildHashIndexResponse(
+                    status=JsonValues.SUCCESS,
+                    image_count=stats["image_count"],
+                    bbox_count=stats["bbox_count"],
+                    duration_ms=stats["duration_ms"],
+                )
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return RebuildHashIndexResponse(status=JsonValues.FAILURE, message=str(e))
+
+        @self._app.post(
+            "/api/images/{image_uuid}/phash/recompute",
+            response_model=RecomputePhashResponse,
+            tags=[ApiTags.IMAGES],
+            operation_id="recompute_image_phash",
+        )
+        async def recompute_image_phash(
+            image_uuid: str,
+            payload: RecomputePhashPayload,
+        ) -> RecomputePhashResponse:
+            try:
+                result = await self._manager.recompute_image_phash(
+                    image_uuid,
+                    image_hash_size=payload.image_hash_size,
+                    bbox_hash_size=payload.bbox_hash_size,
+                )
+                if result is None:
+                    return RecomputePhashResponse(status=JsonValues.FAILURE, message="Image not found")
+                return RecomputePhashResponse(
+                    status=JsonValues.SUCCESS,
+                    image_phash=result["image_phash"],
+                    bbox_count=result["bbox_count"],
+                )
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return RecomputePhashResponse(status=JsonValues.FAILURE, message=str(e))
 
         ################################################################################
         # Task Configs API

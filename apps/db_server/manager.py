@@ -51,7 +51,14 @@ from apps.helpers.db.types import (
     TaskResultData,
     TaskResumeData,
 )
+from apps.db_server.hash_index import HashIndex
 from apps.helpers.fileUtils import get_safe_path
+from apps.helpers.hashUtils import (
+    compute_bbox_phash,
+    compute_image_phash,
+    phash_from_numpy,
+    phash_from_numpy_crop,
+)
 from apps.helpers.imageProviders.Registry import image_provider_registry
 from apps.helpers.types import (
     FileEntryRead,
@@ -73,6 +80,13 @@ class Manager:
         self._files_root: Path = files_root
         self._task: Optional[asyncio.Task] = None  # Background task for periodic operations
         self._config = {}
+        self._image_hash_size: int = int(os.environ.get("IMAGE_HASH_SIZE", "8"))
+        self._bbox_hash_size: int = int(os.environ.get("BBOX_HASH_SIZE", "16"))
+        self._hash_index = HashIndex(
+            db_client,
+            image_hash_size=self._image_hash_size,
+            bbox_hash_size=self._bbox_hash_size,
+        )
 
     async def get_server_config(self) -> Dict[str, Any]:
         return self._config.copy()
@@ -86,6 +100,7 @@ class Manager:
     async def _init(self):
         """Initialization that should run on event loop"""
         await self._db_client.init_db()
+        await self._hash_index.build()
 
     async def _worker_task(self):
         """Periodic worker task that runs at regular intervals"""
@@ -93,6 +108,11 @@ class Manager:
             await self._init()
             while True:
                 await asyncio.sleep(Manager.POLLING_INTERVAL)
+                # Opportunistically rebuild the hash index when the tombstone
+                # ratio has crossed the threshold.  Doing it here (between
+                # requests rather than inside a request handler) avoids opening
+                # a concurrent DB session while another transaction is active.
+                await self._hash_index.rebuild_if_needed()
         except asyncio.CancelledError:
             print("Periodic task was cancelled.")
         finally:
@@ -366,6 +386,39 @@ class Manager:
             return None
         image = await self._db_client.add_image(safe_path)
         await self._db_client.write_image_metadata_to_db(image.uuid, update)
+
+        # Compute phashes on first write (image.phash is None for new images).
+        image_phash: Optional[str] = image.phash
+        if image_phash is None:
+            try:
+                image_bgr = await asyncio.to_thread(__import__("cv2").imread, str(safe_path))
+                if image_bgr is not None:
+                    image_phash = await asyncio.to_thread(
+                        phash_from_numpy, image_bgr, self._image_hash_size
+                    )
+                    # Compute per-bbox phashes using the re-written update bboxes.
+                    bbox_phash_list = []
+                    for b in update.bboxes:
+                        try:
+                            bp = await asyncio.to_thread(
+                                phash_from_numpy_crop,
+                                image_bgr, b.x, b.y, b.width, b.height,
+                                self._bbox_hash_size,
+                            )
+                            bbox_phash_list.append({"uuid": b.uuid, "phash": bp})
+                        except Exception:
+                            logger.exception("bbox phash error for %s", b.uuid)
+                    await self._db_client.update_phashes(image.uuid, image_phash, bbox_phash_list)
+                    # Update hash index.
+                    self._hash_index.add_image(image.uuid, image_phash)
+                    for bp_entry in bbox_phash_list:
+                        label_uuid = next((b.label_uuid for b in update.bboxes if b.uuid == bp_entry["uuid"]), None)
+                        if label_uuid:
+                            self._hash_index.add_bbox(bp_entry["uuid"], label_uuid, bp_entry["phash"])
+            except Exception:
+                logger.exception("phash computation failed for %s", image_rel_path)
+                image_phash = None
+
         # Re-read from DB; get_image_by_filename eager-loads bboxes → label + tags,
         # so we can include names in the sidecar for rebuild robustness.
         updated = await self._db_client.get_image_by_filename(safe_path)
@@ -382,6 +435,7 @@ class Manager:
                         height=b.height,
                         tag_uuids=[t.uuid for t in (b.tags or [])],
                         tag_names=[t.name for t in (b.tags or [])],
+                        phash=b.phash,
                     )
                     for b in updated.bboxes
                 ]
@@ -392,6 +446,7 @@ class Manager:
                 image.uuid,
                 image.filename,
                 enriched_update,
+                updated.phash,
             )
             await self._recompute_image_labels(image.uuid, enriched_update)
         else:
@@ -404,8 +459,12 @@ class Manager:
         result = await self._db_client.get_bbox_with_image(bbox_uuid)
         if result is None or result[1] is None:
             return False
-        _, image_record = result
+        bbox, image_record = result
+        old_label_uuid = bbox.label_uuid
         await self._db_client.update_single_bbox(bbox_uuid, label_uuid, tag_uuids)
+        # Move bbox in hash index if label changed and bbox has a phash.
+        if label_uuid and label_uuid != old_label_uuid and bbox.phash and old_label_uuid:
+            self._hash_index.move_bbox(bbox_uuid, old_label_uuid, label_uuid, bbox.phash)
         await self._sync_image_state(image_record)
         return True
 
@@ -414,7 +473,10 @@ class Manager:
         result = await self._db_client.get_bbox_with_image(bbox_uuid)
         if result is None or result[1] is None:
             return False
-        _, image_record = result
+        bbox, image_record = result
+        # Tombstone in hash index before DB deletion.
+        if bbox.label_uuid:
+            self._hash_index.remove_bbox(bbox_uuid, bbox.label_uuid)
         await self._db_client.delete_single_bbox(bbox_uuid)
         await self._sync_image_state(image_record)
         return True
@@ -733,9 +795,131 @@ class Manager:
             if abs_path is not None and abs_path.exists():
                 continue
             logger.info("prune_missing_images: deleting %s (%s)", filename, uuid)
+            # Remove from hash index before DB deletion.
+            image_record = await self._db_client.get_image_by_uuid(uuid)
+            if image_record:
+                if image_record.phash:
+                    self._hash_index.remove_image(uuid)
+                for bbox in (image_record.bboxes or []):
+                    if bbox.phash and bbox.label_uuid:
+                        self._hash_index.remove_bbox(bbox.uuid, bbox.label_uuid)
             await self._db_client.delete_image(uuid)
             deleted += 1
         return deleted
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Perceptual hash index public API
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def find_similar_images(self, phash: str, threshold: int) -> List[Tuple[str, int]]:
+        """Return [(image_uuid, distance)] for images within *threshold* of *phash*."""
+        return self._hash_index.find_similar_images(phash, threshold)
+
+    def find_similar_bboxes(
+        self,
+        phash: str,
+        label_uuid: Optional[str],
+        threshold: int,
+    ) -> List[Tuple[str, int, str]]:
+        """Return [(bbox_uuid, distance, label_uuid)] within *threshold* of *phash*."""
+        return self._hash_index.find_similar_bboxes(phash, label_uuid, threshold)
+
+    async def rebuild_hash_index(self) -> dict:
+        """Rebuild the BK-tree index from the DB and return stats."""
+        stats = await self._hash_index.rebuild()
+        return {
+            "image_count": stats.image_count,
+            "bbox_count": stats.bbox_count,
+            "duration_ms": stats.duration_ms,
+        }
+
+    async def recompute_image_phash(
+        self,
+        image_uuid: str,
+        image_hash_size: Optional[int] = None,
+        bbox_hash_size: Optional[int] = None,
+    ) -> Optional[dict]:
+        """Re-read image from disk, recompute phashes, update DB + index.
+
+        Returns {"image_phash": str, "bbox_count": int} on success, None if not found.
+        """
+        import cv2 as _cv2
+
+        img_hs = image_hash_size or self._image_hash_size
+        bbox_hs = bbox_hash_size or self._bbox_hash_size
+
+        image_record = await self._db_client.get_image_by_uuid(image_uuid)
+        if image_record is None:
+            return None
+
+        safe_path = get_safe_path(self._files_root, image_record.filename)
+        if safe_path is None or not safe_path.exists():
+            logger.warning("recompute_image_phash: file not found for %s", image_uuid)
+            return None
+
+        image_bgr = await asyncio.to_thread(_cv2.imread, str(safe_path))
+        if image_bgr is None:
+            logger.warning("recompute_image_phash: cv2.imread failed for %s", safe_path)
+            return None
+
+        image_phash = await asyncio.to_thread(phash_from_numpy, image_bgr, img_hs)
+
+        bbox_phash_list = []
+        for bbox in (image_record.bboxes or []):
+            try:
+                bp = await asyncio.to_thread(
+                    phash_from_numpy_crop,
+                    image_bgr, bbox.x, bbox.y, bbox.width, bbox.height, bbox_hs,
+                )
+                bbox_phash_list.append({"uuid": bbox.uuid, "phash": bp})
+            except Exception:
+                logger.exception("bbox phash error for %s", bbox.uuid)
+
+        await self._db_client.update_phashes(image_uuid, image_phash, bbox_phash_list)
+
+        # Remove old hash index entries, then re-add updated ones.
+        if image_record.phash:
+            self._hash_index.remove_image(image_uuid)
+        for bbox in (image_record.bboxes or []):
+            if bbox.phash and bbox.label_uuid:
+                self._hash_index.remove_bbox(bbox.uuid, bbox.label_uuid)
+
+        self._hash_index.add_image(image_uuid, image_phash)
+        for bp_entry in bbox_phash_list:
+            bbox_obj = next((b for b in (image_record.bboxes or []) if b.uuid == bp_entry["uuid"]), None)
+            if bbox_obj and bbox_obj.label_uuid:
+                self._hash_index.add_bbox(bp_entry["uuid"], bbox_obj.label_uuid, bp_entry["phash"])
+
+        # Refresh sidecar with updated phashes.
+        updated_record = await self._db_client.get_image_by_filename(safe_path)
+        if updated_record:
+            enriched_update = ImageRecordUpdate(
+                bboxes=[
+                    BBoxUpdate(
+                        uuid=b.uuid,
+                        label_uuid=b.label_uuid,
+                        label_name=b.label.name if b.label else None,
+                        x=b.x,
+                        y=b.y,
+                        width=b.width,
+                        height=b.height,
+                        tag_uuids=[t.uuid for t in (b.tags or [])],
+                        tag_names=[t.name for t in (b.tags or [])],
+                        phash=b.phash,
+                    )
+                    for b in updated_record.bboxes
+                ]
+            )
+            await asyncio.to_thread(
+                self._db_client.write_image_metadata_to_json,
+                self._get_json_sidefile(safe_path),
+                image_uuid,
+                image_record.filename,
+                enriched_update,
+                image_phash,
+            )
+
+        return {"image_phash": image_phash, "bbox_count": len(bbox_phash_list)}
 
     async def clear_orphan_generated_tags(self) -> int:
         """Delete TASK_GENERATED tags with no associated bboxes.

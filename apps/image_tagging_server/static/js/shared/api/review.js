@@ -1,6 +1,7 @@
 import { apiFetch } from './apiUtils.js';
-// System tag UUIDs (must match constants in apps/helpers/db/db_client.py)
+// System tag UUIDs (must match constants in apps/helpers/db/types.py)
 export const UNVERIFIED_TAG_UUID = '00000000-0000-0000-0000-000000000001';
+export const DUPLICATE_TAG_UUID = '00000000-0000-0000-0000-000000000002';
 
 export const VERIFICATION_TAG_UUIDS = new Set([UNVERIFIED_TAG_UUID]);
 
