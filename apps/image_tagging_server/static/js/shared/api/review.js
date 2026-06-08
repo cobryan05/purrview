@@ -29,9 +29,11 @@ export const VERIFICATION_TAG_UUIDS = new Set([UNVERIFIED_TAG_UUID]);
  */
 export async function fetchReviewQueue({
   tagUuids = [UNVERIFIED_TAG_UUID],
+  tagExcludeUuids = [],
   showAllBboxes = false,
   tagMatchMode = 'any',
   labelUuids = [],
+  labelExcludeUuids = [],
   labelMatchMode = 'any',
   labelIncludeChildren = false,
   labelUuid,
@@ -43,6 +45,7 @@ export async function fetchReviewQueue({
   afterUuid = null,
   afterSortValue = null,
   imageLabelFilters = [],
+  requireBboxes = false,
   limit = 50,
 } = {}) {
   const body = {
@@ -53,10 +56,17 @@ export async function fetchReviewQueue({
     sortOrder,
     limit,
   };
+  if (requireBboxes) body.requireBboxes = true;
   if (labelUuids.length > 0) {
     body.labelUuids = labelUuids;
     body.labelMatchMode = labelMatchMode;
     if (labelIncludeChildren) body.labelIncludeChildren = true;
+  }
+  if (tagExcludeUuids.length > 0) {
+    body.tagPresenceFilters = tagExcludeUuids.map(uuid => ({ tagUuid: uuid, exclude: true }));
+  }
+  if (labelExcludeUuids.length > 0) {
+    body.labelExclusions = labelExcludeUuids;
   }
   if (labelUuid) body.labelUuid = labelUuid;
   if (filenameSearch) body.filenameSearch = filenameSearch;

@@ -11,6 +11,12 @@ import { activeModel } from '/app-static/js/shared/activeModel.js';
 let _rendering = false;
 let _unsubDatasets = null;
 let _navGuardController = null;
+let _pendingPrefill = null;
+
+/** Queue filter values to pre-fill the next new-dataset form (consumed once on open). */
+export function setPendingDatasetPrefill({ conditions, labelUuids, name = '', description = '' }) {
+  _pendingPrefill = { conditions, labelUuids, name, description };
+}
 
 // -------------------------------------------------------
 // Label checkbox picker
@@ -430,11 +436,20 @@ function buildDatasetForm(container, { name = '', description = '', labelUuids =
   container.appendChild(labelHeading);
 
   let selectedLabelUuids = [...labelUuids];
+
+  const labelFilterNotice = document.createElement('p');
+  labelFilterNotice.className = 'label-filter-notice';
+  labelFilterNotice.hidden = true;
+  container.appendChild(labelFilterNotice);
+
   const labelPickerEl = document.createElement('div');
   container.appendChild(labelPickerEl);
 
   function rerenderLabelPicker() {
     const displayMap = activeModel.applyLabelFilter(labelsMap);
+    const hidden = labelsMap.size - displayMap.size;
+    labelFilterNotice.textContent = `⚠ ${hidden} label${hidden !== 1 ? 's' : ''} hidden by model filter`;
+    labelFilterNotice.hidden = hidden === 0;
     renderLabelCheckboxList(labelPickerEl, displayMap, selectedLabelUuids, (uuids) => {
       selectedLabelUuids = uuids;
       onAnyChange?.();
@@ -586,13 +601,15 @@ export async function renderDatasetManager({ target = 'dataset-management-box' }
         const { setDirty, setSaving, updateTitle, getDirty } = _barHandle;
 
         // Render form fields into editorBody (destroy cleans up active-filter subscription)
+        const prefill = dataset ? null : _pendingPrefill;
+        if (!dataset) _pendingPrefill = null;
         const formHandle = buildDatasetForm(
           editorBody,
           {
-            name: dataset?.name ?? '',
-            description: dataset?.description ?? '',
-            labelUuids: dataset?.labelUuids ?? [],
-            filterConditions: dataset?.filterJson?.conditions ?? [],
+            name: dataset?.name ?? prefill?.name ?? '',
+            description: dataset?.description ?? prefill?.description ?? '',
+            labelUuids: dataset?.labelUuids ?? prefill?.labelUuids ?? [],
+            filterConditions: dataset?.filterJson?.conditions ?? prefill?.conditions ?? [],
           },
           labelsMap,
           tagsMap,

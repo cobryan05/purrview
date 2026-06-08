@@ -325,6 +325,13 @@ async function mountSelectMode(container, { runtime, filter }) {
 
   const rawLabelsMap = await fetchLabels();
   const labelsMap = activeModel.applyLabelFilter(rawLabelsMap);
+  if (labelsMap.size < rawLabelsMap.size) {
+    const hidden = rawLabelsMap.size - labelsMap.size;
+    const notice = document.createElement('div');
+    notice.className = 'label-filter-notice';
+    notice.textContent = `⚠ ${hidden} label${hidden !== 1 ? 's' : ''} hidden by model filter`;
+    container.appendChild(notice);
+  }
   const byParent = buildHierarchy(labelsMap, filter);
 
   let currentImagePath = null;

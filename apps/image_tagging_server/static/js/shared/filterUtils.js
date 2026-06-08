@@ -17,10 +17,13 @@
 export function reviewStateToDatasetForm(reviewState) {
   const conditions = [];
 
-  // Tags → TagCondition (one per tag, always non-exclude)
+  // Tags → TagCondition (one per tag)
   for (const tagUuid of reviewState.tagUuids ?? []) {
     // Skip the built-in UNVERIFIED_TAG_UUID — it's a UI default, not a meaningful dataset filter
     conditions.push({ type: 'tag', tagUuid, exclude: false });
+  }
+  for (const tagUuid of reviewState.tagExcludeUuids ?? []) {
+    conditions.push({ type: 'tag', tagUuid, exclude: true });
   }
 
   // Date range → BboxAgeCondition
@@ -63,8 +66,10 @@ export function datasetFormToReviewState(filterJson, labelUuids) {
   const conditions = filterJson?.conditions ?? [];
   const state = {
     tagUuids: [],
+    tagExcludeUuids: [],
     tagMatchMode: 'any',
     labelUuids: labelUuids ?? [],
+    labelExcludeUuids: [],
     labelMatchMode: 'any',
     labelIncludeChildren: false,
     filenameSearch: '',
@@ -77,6 +82,7 @@ export function datasetFormToReviewState(filterJson, labelUuids) {
     switch (cond.type) {
       case 'tag':
         if (!cond.exclude) state.tagUuids.push(cond.tagUuid);
+        else state.tagExcludeUuids.push(cond.tagUuid);
         break;
 
       case 'bbox_age':

@@ -265,6 +265,29 @@ def _apply_image_search_filters(stmt: Select, params: ImageSearchParams) -> Sele
             )
             stmt = stmt.where(subq)
 
+    # ── Require at least one bbox ─────────────────────────────────────────────
+    # Only needed when no other filter already implies bbox existence (e.g. the
+    # positive tag filter uses a JOIN that already guarantees a bbox row, and the
+    # label_uuids filter uses an EXISTS).  Adding it redundantly is harmless.
+    if params.require_bboxes:
+        bbox_exists_subq = (
+            select(BBox.uuid)
+            .where(BBox.image_uuid == ImageRecord.uuid)
+            .correlate(ImageRecord)
+            .exists()
+        )
+        stmt = stmt.where(bbox_exists_subq)
+
+    # ── Label exclusions (NOT EXISTS per label UUID) ───────────────────────────
+    for label_uuid in params.label_exclusions:
+        label_subq = (
+            select(BBox)
+            .where(BBox.image_uuid == ImageRecord.uuid, BBox.label_uuid == label_uuid)
+            .correlate(ImageRecord)
+            .exists()
+        )
+        stmt = stmt.where(~label_subq)
+
     return stmt
 
 

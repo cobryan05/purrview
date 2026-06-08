@@ -28,8 +28,10 @@ const SYSTEM_TAG_ORDER = [UNVERIFIED_TAG_UUID];
 
 const DEFAULT_STATE = () => ({
   tagUuids: [UNVERIFIED_TAG_UUID],
+  tagExcludeUuids: [],
   tagMatchMode: 'any',
   labelUuids: [],
+  labelExcludeUuids: [],
   labelMatchMode: 'any',
   labelIncludeChildren: false,
   filenameSearch: '',
@@ -62,8 +64,9 @@ export function createFilterPanel(labels, tags, onFilterChange) {
     defaultSelected: [UNVERIFIED_TAG_UUID],
     defaultMode: 'any',
     filterKey: 'tags',
-    onChange: (selected, mode) => {
+    onChange: (selected, excluded, mode) => {
       _state.tagUuids = selected;
+      _state.tagExcludeUuids = excluded;
       _state.tagMatchMode = mode;
       emit();
     },
@@ -96,8 +99,9 @@ export function createFilterPanel(labels, tags, onFilterChange) {
           emit();
         },
       },
-      onChange: (selected, mode) => {
+      onChange: (selected, excluded, mode) => {
         _state.labelUuids = selected;
+        _state.labelExcludeUuids = excluded;
         _state.labelMatchMode = mode;
         emit();
       },
@@ -105,6 +109,13 @@ export function createFilterPanel(labels, tags, onFilterChange) {
 
     labelsDropdownContainer.innerHTML = '';
     labelsDropdownContainer.appendChild(_labelsDropdown.element);
+    if (filteredLabels.size < labels.size) {
+      const hidden = labels.size - filteredLabels.size;
+      const notice = document.createElement('span');
+      notice.className = 'label-filter-notice';
+      notice.textContent = `⚠ ${hidden} label${hidden !== 1 ? 's' : ''} hidden by model filter`;
+      labelsDropdownContainer.appendChild(notice);
+    }
 
     // Rebuild the advanced-filter label select if it already exists
     if (_advLabelSelect) {
@@ -123,6 +134,7 @@ export function createFilterPanel(labels, tags, onFilterChange) {
 
     // Reset label state on rebuild (filtered items may differ)
     _state.labelUuids = [];
+    _state.labelExcludeUuids = [];
     _state.labelMatchMode = 'any';
     _state.labelIncludeChildren = false;
   }
@@ -280,7 +292,9 @@ export function createFilterPanel(labels, tags, onFilterChange) {
   function getActiveFilterCount() {
     const s = _state;
     return s.tagUuids.length
+      + s.tagExcludeUuids.length
       + s.labelUuids.length
+      + s.labelExcludeUuids.length
       + (s.filenameSearch ? 1 : 0)
       + (s.dateFrom ? 1 : 0)
       + (s.dateTo ? 1 : 0)
@@ -291,8 +305,10 @@ export function createFilterPanel(labels, tags, onFilterChange) {
     const s = _state;
     return (
       s.tagUuids.length === 1 && s.tagUuids[0] === UNVERIFIED_TAG_UUID
+      && s.tagExcludeUuids.length === 0
       && s.tagMatchMode === 'any'
       && s.labelUuids.length === 0
+      && s.labelExcludeUuids.length === 0
       && s.labelMatchMode === 'any'
       && !s.filenameSearch
       && !s.dateFrom
@@ -309,11 +325,11 @@ export function createFilterPanel(labels, tags, onFilterChange) {
   function setState(partial) {
     _state = { ..._state, ...partial };
 
-    if (partial.tagUuids !== undefined || partial.tagMatchMode !== undefined) {
-      tagsDropdown.setState(_state.tagUuids, _state.tagMatchMode);
+    if (partial.tagUuids !== undefined || partial.tagMatchMode !== undefined || partial.tagExcludeUuids !== undefined) {
+      tagsDropdown.setState(_state.tagUuids, _state.tagMatchMode, undefined, _state.tagExcludeUuids);
     }
-    if (partial.labelUuids !== undefined || partial.labelMatchMode !== undefined || partial.labelIncludeChildren !== undefined) {
-      _labelsDropdown?.setState(_state.labelUuids, _state.labelMatchMode, _state.labelIncludeChildren);
+    if (partial.labelUuids !== undefined || partial.labelMatchMode !== undefined || partial.labelIncludeChildren !== undefined || partial.labelExcludeUuids !== undefined) {
+      _labelsDropdown?.setState(_state.labelUuids, _state.labelMatchMode, _state.labelIncludeChildren, _state.labelExcludeUuids);
     }
     if (partial.dateFrom !== undefined) {
       dateFromInput.value = _state.dateFrom
@@ -348,7 +364,8 @@ export function createFilterPanel(labels, tags, onFilterChange) {
     getState: () => ({
       ..._state,
       // showAllBboxes: true skips the server-side tag filter entirely.
-      // "no tags selected" → show everything rather than nothing.
+      // "no tags included" → show everything rather than nothing (exclusions
+      // are passed separately via tagExcludeUuids and handled server-side).
       showAllBboxes: _state.tagUuids.length === 0,
     }),
     setState,

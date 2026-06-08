@@ -42,7 +42,13 @@ export class ActiveTaskField extends Field {
       : null;
     instance._logJoined = instance._logLines.join('\n');
     instance._typename = typename;
-    instance._actions = instance._value.instance?.result?.actions ?? [];
+    // Merge live status actions (available while running) with completed-result actions.
+    const resultActions = instance._value.instance?.result?.actions ?? [];
+    const statusActions = instance._value.statusActions ?? [];
+    // Deduplicate by label: result actions win (they come from the completed final state).
+    const seenLabels = new Set(resultActions.map(a => a.label));
+    const mergedActions = [...resultActions, ...statusActions.filter(a => !seenLabels.has(a.label))];
+    instance._actions = mergedActions;
     return instance;
   }
 

@@ -110,7 +110,8 @@ function _taskFingerprint(tasks) {
   return Object.entries(tasks || {})
     .map(([id, t]) => {
       const logs = t.logLines ?? [];
-      return `${id}:${t.instance?.status}:${t.isPausedInPlace ?? false}:${Math.round(t.progress ?? 0)}:${logs.length}:${logs[logs.length - 1] ?? ''}:${t.instance?.startedAt ?? ''}:${t.instance?.endedAt ?? ''}`;
+      const actionCount = (t.statusActions ?? []).length + (t.instance?.result?.actions ?? []).length;
+      return `${id}:${t.instance?.status}:${t.isPausedInPlace ?? false}:${Math.round(t.progress ?? 0)}:${logs.length}:${logs[logs.length - 1] ?? ''}:${t.instance?.startedAt ?? ''}:${t.instance?.endedAt ?? ''}:${actionCount}`;
     })
     .sort()
     .join('|');

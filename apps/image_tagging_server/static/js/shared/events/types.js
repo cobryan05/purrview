@@ -80,4 +80,9 @@ export const EventTypes = Object.freeze({
    * Payload: { config: ModelConfigRead | null, filterEnabled: boolean }
    */
   ACTIVE_MODEL_CHANGED: "model:active:changed",
+  /**
+   * Fired when the user wants to export review filters to a new dataset.
+   * Payload: { conditions: object[], labelUuids: string[] }
+   */
+  EXPORT_FILTERS_TO_DATASET: "dataset:export_from_review",
 });

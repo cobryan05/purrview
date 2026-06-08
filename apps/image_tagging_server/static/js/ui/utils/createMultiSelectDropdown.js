@@ -55,6 +55,7 @@ export function createMultiSelectDropdown({
   filterKey,
 }) {
   let _selected = [...defaultSelected];
+  let _excluded = new Set();
   let _mode = defaultMode;
   let _hierarchyToggle = hierarchyToggle?.default ?? false;
   let _open = false;
@@ -117,7 +118,7 @@ export function createMultiSelectDropdown({
       e.stopPropagation();
       _mode = 'any';
       _syncMode();
-      onChange([..._selected], _mode);
+      onChange([..._selected], [..._excluded], _mode);
     });
 
     allBtn.addEventListener('mousedown', (e) => e.stopPropagation());
@@ -125,7 +126,7 @@ export function createMultiSelectDropdown({
       e.stopPropagation();
       _mode = 'all';
       _syncMode();
-      onChange([..._selected], _mode);
+      onChange([..._selected], [..._excluded], _mode);
     });
   }
 
@@ -151,6 +152,47 @@ export function createMultiSelectDropdown({
     });
   }
 
+  // ── Select All / Select None ───────────────────────────────────────────────
+  const selectAllRow = document.createElement('div');
+  selectAllRow.className = 'ms-select-all-row';
+
+  const selectAllBtn = document.createElement('button');
+  selectAllBtn.type = 'button';
+  selectAllBtn.className = 'ms-select-all-btn';
+  selectAllBtn.textContent = 'Select All';
+
+  const selectNoneBtn = document.createElement('button');
+  selectNoneBtn.type = 'button';
+  selectNoneBtn.className = 'ms-select-all-btn';
+  selectNoneBtn.textContent = 'Select None';
+
+  selectAllRow.append(selectAllBtn, selectNoneBtn);
+  panelEl.appendChild(selectAllRow);
+
+  selectAllBtn.addEventListener('mousedown', (e) => e.stopPropagation());
+  selectAllBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    _excluded.clear();
+    checkboxMap.forEach((cb) => { cb.checked = true; });
+    _selected = [...checkboxMap.keys()];
+    _syncTrigger();
+    _syncExcluded();
+    _syncImplied();
+    onChange([..._selected], [..._excluded], _mode);
+  });
+
+  selectNoneBtn.addEventListener('mousedown', (e) => e.stopPropagation());
+  selectNoneBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    _excluded.clear();
+    checkboxMap.forEach((cb) => { cb.checked = false; });
+    _selected = [];
+    _syncTrigger();
+    _syncExcluded();
+    _syncImplied();
+    onChange([..._selected], [..._excluded], _mode);
+  });
+
   // ── Build parent→children map for "implied" highlight ─────────────────────
   // Items may carry a parentUuid field (e.g. label hierarchy).  We use it to
   // shade descendant checkboxes when the hierarchy toggle is on.
@@ -170,6 +212,8 @@ export function createMultiSelectDropdown({
 
   /** @type {Map<string, HTMLInputElement>} uuid → checkbox */
   const checkboxMap = new Map();
+  /** @type {Map<string, HTMLButtonElement>} uuid → not-toggle button */
+  const notBtnMap = new Map();
   /** @type {Map<string, HTMLLabelElement>} uuid → item label element */
   const itemElMap = new Map();
 
@@ -194,18 +238,55 @@ export function createMultiSelectDropdown({
     checkboxMap.set(item.uuid, cb);
     itemElMap.set(item.uuid, lbl);
     lbl.appendChild(cb);
-    lbl.appendChild(document.createTextNode(' ' + item.name));
+
+    const nameSpan = document.createElement('span');
+    nameSpan.className = 'ms-item__name';
+    nameSpan.textContent = ' ' + item.name;
+    lbl.appendChild(nameSpan);
+
+    // Per-row "not" toggle: excludes this item from results
+    const notBtn = document.createElement('button');
+    notBtn.type = 'button';
+    notBtn.className = 'ms-item__not-btn';
+    notBtn.title = 'Exclude this item';
+    notBtn.textContent = '≠';
+    notBtnMap.set(item.uuid, notBtn);
+    lbl.appendChild(notBtn);
+
     itemsDiv.appendChild(lbl);
 
     // Prevent mousedown from closing panel before change fires
     lbl.addEventListener('mousedown', (e) => e.stopPropagation());
     cb.addEventListener('change', () => {
+      if (cb.checked && _excluded.has(item.uuid)) {
+        _excluded.delete(item.uuid);
+      }
       _selected = [...checkboxMap.entries()]
         .filter(([, input]) => input.checked)
         .map(([uuid]) => uuid);
       _syncTrigger();
+      _syncExcluded();
       _syncImplied();
-      onChange([..._selected], _mode);
+      onChange([..._selected], [..._excluded], _mode);
+    });
+
+    notBtn.addEventListener('mousedown', (e) => e.stopPropagation());
+    notBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (_excluded.has(item.uuid)) {
+        _excluded.delete(item.uuid);
+      } else {
+        _excluded.add(item.uuid);
+        // Uncheck include if it was on
+        if (cb.checked) {
+          cb.checked = false;
+          _selected = _selected.filter(u => u !== item.uuid);
+        }
+      }
+      _syncTrigger();
+      _syncExcluded();
+      _syncImplied();
+      onChange([..._selected], [..._excluded], _mode);
     });
   }
 
@@ -267,17 +348,33 @@ export function createMultiSelectDropdown({
   }
 
   function _syncTrigger() {
+    const excCount = _excluded.size;
     let summary;
-    if (_selected.length === 0) {
+    if (_selected.length === 0 && excCount === 0) {
       summary = 'All';
-    } else if (_selected.length === 1) {
+    } else if (_selected.length === 1 && excCount === 0) {
       const item = items.find(i => i.uuid === _selected[0]);
       summary = item ? item.name : '1 selected';
+    } else if (_selected.length === 0 && excCount === 1) {
+      const excItem = items.find(i => i.uuid === [..._excluded][0]);
+      summary = excItem ? `not ${excItem.name}` : '1 excluded';
     } else {
-      summary = `${_selected.length} selected`;
+      const parts = [];
+      if (_selected.length > 0) parts.push(`${_selected.length} incl`);
+      if (excCount > 0) parts.push(`${excCount} excl`);
+      summary = parts.join(', ');
     }
     trigger.textContent = `${label}: ${summary} ▾`;
-    trigger.classList.toggle('ms-dropdown__trigger--active', _selected.length > 0);
+    trigger.classList.toggle('ms-dropdown__trigger--active', _selected.length > 0 || excCount > 0);
+  }
+
+  function _syncExcluded() {
+    for (const [uuid, lbl] of itemElMap) {
+      const isExcluded = _excluded.has(uuid);
+      lbl.classList.toggle('ms-item--excluded', isExcluded);
+      const notBtn = notBtnMap.get(uuid);
+      if (notBtn) notBtn.classList.toggle('active', isExcluded);
+    }
   }
 
   /**
@@ -312,23 +409,37 @@ export function createMultiSelectDropdown({
 
   _syncMode();
   _syncTrigger();
+  _syncExcluded();
   _syncImplied();
 
   // ── Public API ──────────────────────────────────────────────────────────────
   return {
     element: wrapper,
     getSelected: () => [..._selected],
+    getExcluded: () => [..._excluded],
     getMode: () => _mode,
     getHierarchyToggle: () => _hierarchyToggle,
 
     /**
-     * Programmatically update selection, mode, and/or hierarchy toggle without
-     * firing onChange. Pass null/undefined to leave a field unchanged.
+     * Programmatically update selection, mode, hierarchy toggle, and/or
+     * exclusions without firing onChange. Pass null/undefined to leave a
+     * field unchanged.
      */
-    setState(selected, mode, includeDescendants) {
+    setState(selected, mode, includeDescendants, excluded) {
       if (selected != null) {
         _selected = [...selected];
         checkboxMap.forEach((cb, uuid) => { cb.checked = _selected.includes(uuid); });
+      }
+      if (excluded != null) {
+        _excluded = new Set(excluded);
+        // Clear include for anything now excluded
+        for (const uuid of _excluded) {
+          const cb = checkboxMap.get(uuid);
+          if (cb?.checked) {
+            cb.checked = false;
+            _selected = _selected.filter(u => u !== uuid);
+          }
+        }
       }
       if (mode != null) {
         _mode = mode;
@@ -339,6 +450,7 @@ export function createMultiSelectDropdown({
         _hierarchyCb.checked = _hierarchyToggle;
       }
       _syncTrigger();
+      _syncExcluded();
       _syncImplied();
     },
 

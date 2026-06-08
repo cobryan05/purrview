@@ -228,6 +228,11 @@ class ImageSearchParams(ApiModel):
     # "any" = image has a bbox with ANY of the selected tags (OR logic, default)
     # "all" = image has a bbox with EACH of the selected tags (AND logic, one per bbox ok)
     tag_match_mode: Literal["any", "all"] = "any"
+    # Per-label exclusion: image must NOT have any bbox with these label UUIDs.
+    label_exclusions: List[str] = Field(default_factory=list)
+    # When True, only images that have at least one bbox are returned.
+    # Useful for bbox-view pagination so empty-bbox images don't dilute pages.
+    require_bboxes: bool = False
     # Keyset pagination cursor.
     after_uuid: Optional[str] = None
     after_sort_value: Optional[datetime] = None  # populated when sort_by != "uuid"

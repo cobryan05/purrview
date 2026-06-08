@@ -378,6 +378,16 @@ main.container {
 .filter-sort-dir   { max-width: 105px; }
 .filter-page-size  { width: auto; }
 .filter-label-select { max-width: 140px; }
+.filter-presets-select { max-width: 140px; }
+
+/* Shown whenever the active model filter is hiding labels from a picker or list */
+.label-filter-notice {
+  font-size: 0.72em;
+  color: #b8901a;
+  display: block;
+  padding: 2px 0;
+  white-space: nowrap;
+}
 
 .review-toolbar__sort-label {
   font-size: 0.78em;
@@ -611,6 +621,29 @@ button.filter-active {
   color: var(--pico-primary, #88aaff);
 }
 
+.ms-select-all-row {
+  display: flex;
+  gap: 0.25rem;
+  margin-bottom: 0.4rem;
+}
+
+.ms-select-all-btn {
+  flex: 1;
+  padding: 0.15rem 0.3rem;
+  font-size: 0.75em;
+  background: none;
+  border: 1px solid var(--pico-muted-border-color, #555);
+  border-radius: 3px;
+  cursor: pointer;
+  color: var(--pico-muted-color, #888);
+  white-space: nowrap;
+}
+
+.ms-select-all-btn:hover {
+  border-color: var(--pico-primary, #5588ff);
+  color: var(--pico-color, #ccc);
+}
+
 /* Scrollable item list */
 .ms-dropdown__items {
   display: flex;
@@ -657,6 +690,54 @@ button.filter-active {
 }
 .ms-item--implied:hover {
   background: rgba(99, 102, 241, 0.18);
+}
+
+.ms-item__name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ms-item__not-btn {
+  flex-shrink: 0;
+  padding: 0 4px;
+  font-size: 0.75em;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  cursor: pointer;
+  background: none;
+  color: var(--pico-muted-color, #888);
+  opacity: 0.35;
+  line-height: 1.4;
+  margin-left: auto;
+}
+
+.ms-item__not-btn:hover {
+  opacity: 1;
+  color: #d44;
+  border-color: #d44;
+}
+
+.ms-item__not-btn.active {
+  opacity: 1;
+  color: #d44;
+  border-color: #d44;
+  background: rgba(221, 68, 68, 0.12);
+}
+
+.ms-item--excluded {
+  color: #d44;
+}
+
+.ms-item--excluded .ms-item__name {
+  text-decoration: line-through;
+  opacity: 0.75;
+}
+
+.ms-item--excluded .ms-item__swatch {
+  opacity: 0.5;
 }
 
 .review-grid {

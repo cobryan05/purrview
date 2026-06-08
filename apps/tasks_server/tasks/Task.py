@@ -193,6 +193,10 @@ class Task(ABC):
         """Returns any message to return with task status"""
         return ""
 
+    def get_status_actions(self) -> list[dict]:
+        """Returns action buttons to show in the live task status UI while the task is running."""
+        return []
+
     def get_progress(self) -> float:
         """Return the current progress of the task."""
         return self._progress

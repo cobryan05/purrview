@@ -24,7 +24,6 @@ import { initLabelPanel } from '/app-static/js/app/image-tagging/canvas/labelPan
 import { initInspector } from '/app-static/js/ui/inspector.js';
 import { createHoverPreview } from '/app-static/js/ui/thumbnailHoverPreview.js';
 import { createEntryView } from '/app-static/js/ui/entryView.js';
-import { createDataset } from '/app-static/js/shared/api/datasets.js';
 import { reviewStateToDatasetForm, datasetFormToReviewState } from '/app-static/js/shared/filterUtils.js';
 
 
@@ -122,7 +121,7 @@ function makeSelect(className, options, defaultValue) {
  *
  * @returns {Promise<{ destroy: () => void }>}
  */
-export async function createReviewPanel(container, { fetchImages = null } = {}) {
+export async function createReviewPanel(container, { fetchImages = null, datasetActions = true } = {}) {
   container.innerHTML = '';
 
   const labelsPromise = fetchLabels().catch(() => new Map());
@@ -184,7 +183,10 @@ export async function createReviewPanel(container, { fetchImages = null } = {}) 
         b.classList.toggle('active', b.dataset.viewKey === key));
       _selected.clear();
       _selectionKind = null;
-      renderFromEntries();
+      // Full re-fetch so requireBboxes takes effect (bboxes view filters
+      // out empty-bbox images server-side for correct pagination).
+      _pageCursors.length = 1;
+      render();
     });
     viewToggle.appendChild(btn);
   }
@@ -305,29 +307,73 @@ export async function createReviewPanel(container, { fetchImages = null } = {}) 
     toolbar.insertBefore(filterControlsGroup, toolbar.firstChild);
     toolbar.insertBefore(makeToolbarSep(), toolbar.children[1]);
 
-    // "Save as Dataset" button — converts current review filters to a new dataset
-    const saveAsDatasetBtn = document.createElement('button');
-    saveAsDatasetBtn.className = 'review-toolbar__btn';
-    saveAsDatasetBtn.textContent = '⊞ Save as Dataset';
-    saveAsDatasetBtn.title = 'Save current filters as a new dataset';
-    saveAsDatasetBtn.addEventListener('click', async () => {
-      const name = prompt('Dataset name:');
-      if (!name?.trim()) return;
-      const description = prompt('Description (optional):') ?? '';
-      try {
-        const { conditions, labelUuids } = reviewStateToDatasetForm(filterPanel.getState());
-        const created = await createDataset({
-          name: name.trim(),
-          description: description.trim(),
-          filterJson: { conditions },
-          labelUuids,
-        });
-        toast(`Dataset "${created.name}" created`, 3000);
-      } catch (err) {
-        toast(err.message || 'Failed to create dataset', 5000, 'error');
+    // ── Filter presets + dataset export (hidden in modal/preview contexts) ──
+    if (datasetActions) {
+    const _PRESETS_KEY = 'review-filter-presets';
+    const _loadPresets = () => {
+      try { return JSON.parse(localStorage.getItem(_PRESETS_KEY) ?? '[]'); } catch { return []; }
+    };
+    const _savePresets = (list) => localStorage.setItem(_PRESETS_KEY, JSON.stringify(list));
+
+    const presetsSelect = document.createElement('select');
+    presetsSelect.className = 'filter-presets-select';
+    presetsSelect.title = 'Apply a saved filter preset';
+
+    function _rebuildPresetsDropdown() {
+      presetsSelect.innerHTML = '';
+      const ph = document.createElement('option');
+      ph.value = '';
+      ph.textContent = '— Presets —';
+      presetsSelect.appendChild(ph);
+      for (const p of _loadPresets()) {
+        const opt = document.createElement('option');
+        opt.value = p.name;
+        opt.textContent = p.name;
+        presetsSelect.appendChild(opt);
       }
+      presetsSelect.value = '';
+    }
+    _rebuildPresetsDropdown();
+
+    presetsSelect.addEventListener('change', () => {
+      const name = presetsSelect.value;
+      if (!name) return;
+      const preset = _loadPresets().find(p => p.name === name);
+      if (preset) filterPanel.setState(preset.state);
+      presetsSelect.value = '';
     });
-    toolbar.append(makeToolbarSep(), makeToolbarGroup(saveAsDatasetBtn));
+
+    const savePresetBtn = document.createElement('button');
+    savePresetBtn.className = 'review-toolbar__btn';
+    savePresetBtn.textContent = '⊙ Save Filter Preset';
+    savePresetBtn.title = 'Save current filters as a named preset';
+    savePresetBtn.addEventListener('click', () => {
+      const name = prompt('Preset name:');
+      if (!name?.trim()) return;
+      const trimmed = name.trim();
+      const presets = _loadPresets();
+      const idx = presets.findIndex(p => p.name === trimmed);
+      const state = filterPanel.getState();
+      if (idx !== -1) presets[idx].state = state;
+      else presets.push({ name: trimmed, state });
+      _savePresets(presets);
+      _rebuildPresetsDropdown();
+      toast(`Preset "${trimmed}" saved`, 3000);
+    });
+
+    // ── Export to Datasets ────────────────────────────────────────────
+    const exportToDatasetBtn = document.createElement('button');
+    exportToDatasetBtn.className = 'review-toolbar__btn';
+    exportToDatasetBtn.textContent = '⊞ Open in Datasets Tab';
+    exportToDatasetBtn.title = 'Export current filters to a new dataset in the Datasets editor';
+    exportToDatasetBtn.addEventListener('click', () => {
+      const { conditions, labelUuids } = reviewStateToDatasetForm(filterPanel.getState());
+      events.publish(EventTypes.EXPORT_FILTERS_TO_DATASET, { conditions, labelUuids });
+      toast('Opening Datasets editor…', 2000);
+    });
+
+    toolbar.append(makeToolbarSep(), makeToolbarGroup(presetsSelect, savePresetBtn, exportToDatasetBtn));
+    } // end if (datasetActions)
   }
 
   // ── Hover preview ─────────────────────────────────────────────────
@@ -627,11 +673,14 @@ export async function createReviewPanel(container, { fetchImages = null } = {}) 
         } else {
           ({ images, hasMore, totalCount } = await fetchReviewQueue({
             tagUuids: fs.showAllBboxes ? [] : fs.tagUuids,
+            tagExcludeUuids: fs.tagExcludeUuids ?? [],
             showAllBboxes: fs.showAllBboxes,
             tagMatchMode: fs.tagMatchMode,
             labelUuids: fs.labelUuids,
+            labelExcludeUuids: fs.labelExcludeUuids ?? [],
             labelMatchMode: fs.labelMatchMode,
             labelIncludeChildren: fs.labelIncludeChildren,
+            requireBboxes: _viewFilter === 'bboxes',
             sortBy,
             sortOrder,
             filenameSearch: fs.filenameSearch || undefined,
@@ -1420,6 +1469,7 @@ export async function showReviewModal({ title = 'Browse Images', fetchImages, ed
     const panel = await createReviewPanel(content, {
       // null fetchImages → full filter panel is shown
       // We'll pre-populate it below via filterPanel.setState()
+      datasetActions: false,
     });
 
     // Wire "Update Dataset" button now that panel is ready

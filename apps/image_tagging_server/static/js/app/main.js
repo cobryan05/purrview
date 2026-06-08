@@ -7,6 +7,7 @@ import { events, EventTypes } from '/app-static/js/shared/events/index.js';
 import { createImageTaggingRuntime } from './image-tagging/runtime.js';
 import { activeModel } from '/app-static/js/shared/activeModel.js';
 import { mountActiveModelBar } from '/app-static/js/ui/activeModelBar.js';
+import { setPendingDatasetPrefill } from '/app-static/js/ui/datasets.js';
 
 const initializedFeatures = new Set();
 
@@ -56,6 +57,20 @@ export async function init(appState) {
     // applyFilterWhenReady applies immediately if the panel is already up, or
     // queues the state so init() applies it once createReviewPanel resolves.
     applyFilterWhenReady({ tagUuids: tagUuids ?? [] });
+  });
+
+  events.subscribe(EventTypes.EXPORT_FILTERS_TO_DATASET, ({ conditions, labelUuids }) => {
+    setPendingDatasetPrefill({
+      conditions,
+      labelUuids,
+      name: 'New Imported Dataset',
+      description: 'New dataset imported from search filters',
+    });
+    activateMainTab(container, 'tab-configuration');
+    // Delay workspace-tab click until after the configuration pane mounts/settles.
+    setTimeout(() => {
+      activateWorkspaceTab('#tab-configuration', 'tab-dataset-management');
+    }, 50);
   });
 
 
