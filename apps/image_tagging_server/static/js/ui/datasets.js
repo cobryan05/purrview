@@ -1,12 +1,12 @@
 import { fetchLabels } from '/app-static/js/shared/api/labels.js';
 import { fetchTags } from '/app-static/js/shared/api/tags.js';
 import {
-  fetchDatasets, previewDatasetImages,
-  createDataset, updateDataset, deleteDataset,
+  fetchDatasets, createDataset, updateDataset, deleteDataset,
 } from '/app-static/js/shared/api/datasets.js';
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
 import { toast, makeFieldRow, buildPanelEditorBar } from '/app-static/js/ui/utils/index.js';
 import { showUnsavedConfigChangesModal } from '/app-static/js/ui/utils/confirmModal.js';
+import { activeModel } from '/app-static/js/shared/activeModel.js';
 
 let _rendering = false;
 let _unsubDatasets = null;
@@ -394,6 +394,10 @@ function renderConditionsEditor(parentEl, initialConditions, tagsMap, { onChange
 
   return {
     getConditions: () => [...conditions],
+    setConditions: (newConditions) => {
+      conditions = [...newConditions];
+      renderList();
+    },
   };
 }
 
@@ -428,10 +432,18 @@ function buildDatasetForm(container, { name = '', description = '', labelUuids =
   let selectedLabelUuids = [...labelUuids];
   const labelPickerEl = document.createElement('div');
   container.appendChild(labelPickerEl);
-  renderLabelCheckboxList(labelPickerEl, labelsMap, selectedLabelUuids, (uuids) => {
-    selectedLabelUuids = uuids;
-    onAnyChange?.();
-  });
+
+  function rerenderLabelPicker() {
+    const displayMap = activeModel.applyLabelFilter(labelsMap);
+    renderLabelCheckboxList(labelPickerEl, displayMap, selectedLabelUuids, (uuids) => {
+      selectedLabelUuids = uuids;
+      onAnyChange?.();
+    });
+  }
+  rerenderLabelPicker();
+
+  // Re-render picker when the active model filter toggle changes
+  const unsubActiveFilter = events.subscribe(EventTypes.ACTIVE_MODEL_CHANGED, rerenderLabelPicker);
 
   // Conditions
   const condEditor = renderConditionsEditor(container, filterConditions, tagsMap, { onChange: onAnyChange });
@@ -441,6 +453,16 @@ function buildDatasetForm(container, { name = '', description = '', labelUuids =
     getDescription: () => descInput.value.trim(),
     getLabelUuids: () => selectedLabelUuids,
     getConditions: () => condEditor.getConditions(),
+    setLabelUuids: (uuids) => {
+      selectedLabelUuids = [...uuids];
+      rerenderLabelPicker();
+      onAnyChange?.();
+    },
+    setConditions: (newConditions) => {
+      condEditor.setConditions(newConditions);
+      onAnyChange?.();
+    },
+    destroy: () => unsubActiveFilter(),
   };
 }
 
@@ -516,6 +538,7 @@ export async function renderDatasetManager({ target = 'dataset-management-box' }
     let _barHandle = null; // set by _showForm; tracks dirty state via getDirty()/setDirty()
     let _currentDoSave = null;
     let _switching = false;
+    let _formDestroyFn = null; // cleanup for active-filter subscription in current form
 
     async function _confirmIfDirty() {
       if (!_barHandle?.getDirty()) return true;
@@ -537,6 +560,8 @@ export async function renderDatasetManager({ target = 'dataset-management-box' }
       _switching = true;
       try {
         if (!force && !await _confirmIfDirty()) return;
+        _formDestroyFn?.();
+        _formDestroyFn = null;
         _barHandle = null; // mark clean while async fetches are in flight
         _currentDoSave = null;
         _selectedUuid = dataset?.uuid ?? null;
@@ -560,7 +585,7 @@ export async function renderDatasetManager({ target = 'dataset-management-box' }
         });
         const { setDirty, setSaving, updateTitle, getDirty } = _barHandle;
 
-        // Render form fields into editorBody
+        // Render form fields into editorBody (destroy cleans up active-filter subscription)
         const formHandle = buildDatasetForm(
           editorBody,
           {
@@ -573,6 +598,7 @@ export async function renderDatasetManager({ target = 'dataset-management-box' }
           tagsMap,
           { onAnyChange: () => setDirty(true) },
         );
+        _formDestroyFn = formHandle.destroy ?? null;
 
         // Preview Images — always available, reflects current (possibly unsaved) form state
         const hr = document.createElement('hr');
@@ -594,33 +620,22 @@ export async function renderDatasetManager({ target = 'dataset-management-box' }
           try {
             const { showReviewModal } = await import('/app-static/js/app/review/main.js');
 
-            // Capture current (possibly unsaved) form state
-            const filterJson = { conditions: formHandle.getConditions() };
-            const labelUuids = formHandle.getLabelUuids();
-
-            // Fetch matching images via the preview endpoint (no save required)
-            const { images: allImages, hasMore } = await previewDatasetImages({
-              filterJson, labelUuids, limit: 500,
-            });
-            const countStr = hasMore ? '500+' : String(allImages.length);
-            const imageWord = allImages.length === 1 && !hasMore ? 'image' : 'images';
             const unsavedNote = getDirty() ? ' — unsaved' : '';
+            const previewTitle = `Preview: ${dataset?.name ?? 'New Dataset'}${unsavedNote}`;
 
-            // Open the modal without awaiting — the data is already loaded and the
-            // button should reset as soon as the modal appears, not after panel init.
+            // For existing datasets: open an editable preview with live filter panel
+            // that can push changes back to the in-memory form (user must still Save).
+            // For new (unsaved) datasets: same editable mode.
             showReviewModal({
-              title: `Preview: ${countStr} ${imageWord}${unsavedNote}`,
-              // Client-side pagination over the cached preview results
-              fetchImages: async ({ afterUuid, limit, sortBy = 'created_at', sortOrder = 'desc' }) => {
-                const sortProp = sortBy.replace(/_([a-z])/g, (_, c) => c.toUpperCase()); // snake_case → camelCase
-                const dir = sortOrder === 'asc' ? 1 : -1;
-                const sorted = [...allImages].sort((a, b) => {
-                  const va = a[sortProp] ?? '', vb = b[sortProp] ?? '';
-                  return va < vb ? -dir : va > vb ? dir : 0;
-                });
-                if (!afterUuid) return sorted.slice(0, limit);
-                const idx = sorted.findIndex(img => img.uuid === afterUuid);
-                return idx >= 0 ? sorted.slice(idx + 1, idx + 1 + limit) : [];
+              title: previewTitle,
+              editableDataset: {
+                filterJson: { conditions: formHandle.getConditions() },
+                labelUuids: formHandle.getLabelUuids(),
+                onUpdateFilters: (conditions, labelUuids) => {
+                  formHandle.setConditions(conditions);
+                  formHandle.setLabelUuids(labelUuids);
+                  setDirty(true);
+                },
               },
             }).catch(err => toast(err.message || 'Failed to open preview', 5000, 'error'));
           } catch (err) {

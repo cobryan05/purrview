@@ -12,6 +12,7 @@
  */
 
 import { fetchLabels, clearLabelsCache, createNewLabel, deleteLabel, updateLabel } from '/app-static/js/shared/api/labels.js';
+import { activeModel } from '/app-static/js/shared/activeModel.js';
 import { fetchImageLabels, setImageLabel } from '/app-static/js/shared/api/imageLabels.js';
 import { UNVERIFIED_TAG_UUID } from '/app-static/js/shared/api/review.js';
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
@@ -322,7 +323,8 @@ async function mountSelectMode(container, { runtime, filter }) {
   bulkRow.appendChild(resetAllBtn);
   container.appendChild(bulkRow);
 
-  const labelsMap = await fetchLabels();
+  const rawLabelsMap = await fetchLabels();
+  const labelsMap = activeModel.applyLabelFilter(rawLabelsMap);
   const byParent = buildHierarchy(labelsMap, filter);
 
   let currentImagePath = null;
@@ -754,8 +756,14 @@ export async function createLabelList(container, options = {}) {
 
   await mount();
 
+  // In select mode, re-render whenever the active model filter changes.
+  let _unsubActiveFilter = null;
+  if (mode === 'select') {
+    _unsubActiveFilter = events.subscribe(EventTypes.ACTIVE_MODEL_CHANGED, () => mount());
+  }
+
   return {
-    destroy() { _destroyFn(); },
+    destroy() { _destroyFn(); _unsubActiveFilter?.(); },
     refresh() { return mount(); },
     getSelected() { return _handle?.getSelected?.() ?? new Set(); },
     getSubmodels() { return _handle?.getSubmodels?.() ?? new Map(); },

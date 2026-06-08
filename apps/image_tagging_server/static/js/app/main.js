@@ -5,6 +5,8 @@ import { init as initSettings } from './settings/main.js';
 import { setupMainTabs } from '/app-static/js/app/utils/tabs.js';
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
 import { createImageTaggingRuntime } from './image-tagging/runtime.js';
+import { activeModel } from '/app-static/js/shared/activeModel.js';
+import { mountActiveModelBar } from '/app-static/js/ui/activeModelBar.js';
 
 const initializedFeatures = new Set();
 
@@ -22,6 +24,10 @@ const _appState = {
  * @param {AppState} appState
  */
 export async function init(appState) {
+  // Initialise session-scoped active model state (reads sessionStorage + fetches config if needed)
+  await activeModel.init();
+  mountActiveModelBar('active-model-bar');
+
   // Use the new helper to manage top-level tabs
 
   const { container, activateTab } = setupMainTabs('#main-tabs', async (tabName, button, pane) => {

@@ -24,6 +24,8 @@ import { initLabelPanel } from '/app-static/js/app/image-tagging/canvas/labelPan
 import { initInspector } from '/app-static/js/ui/inspector.js';
 import { createHoverPreview } from '/app-static/js/ui/thumbnailHoverPreview.js';
 import { createEntryView } from '/app-static/js/ui/entryView.js';
+import { createDataset } from '/app-static/js/shared/api/datasets.js';
+import { reviewStateToDatasetForm, datasetFormToReviewState } from '/app-static/js/shared/filterUtils.js';
 
 
 const DEFAULT_PAGE_SIZE = 50;
@@ -302,6 +304,30 @@ export async function createReviewPanel(container, { fetchImages = null } = {}) 
     const filterControlsGroup = makeToolbarGroup(...filterPanel.toolbarControls);
     toolbar.insertBefore(filterControlsGroup, toolbar.firstChild);
     toolbar.insertBefore(makeToolbarSep(), toolbar.children[1]);
+
+    // "Save as Dataset" button — converts current review filters to a new dataset
+    const saveAsDatasetBtn = document.createElement('button');
+    saveAsDatasetBtn.className = 'review-toolbar__btn';
+    saveAsDatasetBtn.textContent = '⊞ Save as Dataset';
+    saveAsDatasetBtn.title = 'Save current filters as a new dataset';
+    saveAsDatasetBtn.addEventListener('click', async () => {
+      const name = prompt('Dataset name:');
+      if (!name?.trim()) return;
+      const description = prompt('Description (optional):') ?? '';
+      try {
+        const { conditions, labelUuids } = reviewStateToDatasetForm(filterPanel.getState());
+        const created = await createDataset({
+          name: name.trim(),
+          description: description.trim(),
+          filterJson: { conditions },
+          labelUuids,
+        });
+        toast(`Dataset "${created.name}" created`, 3000);
+      } catch (err) {
+        toast(err.message || 'Failed to create dataset', 5000, 'error');
+      }
+    });
+    toolbar.append(makeToolbarSep(), makeToolbarGroup(saveAsDatasetBtn));
   }
 
   // ── Hover preview ─────────────────────────────────────────────────
@@ -1325,12 +1351,20 @@ export async function init() {
  *
  * @param {{
  *   title?: string,
- *   fetchImages?: (params: object) => Promise<object[]>
+ *   fetchImages?: (params: object) => Promise<object[]>,
+ *   editableDataset?: {
+ *     filterJson: object,
+ *     labelUuids: string[],
+ *     onUpdateFilters: (conditions: object[], labelUuids: string[]) => void
+ *   }
  * }} options
- *   title      — shown in the modal header bar.
- *   fetchImages — passed straight through to createReviewPanel; see its docs.
+ *   title           — shown in the modal header bar.
+ *   fetchImages     — passed straight through to createReviewPanel; see its docs.
+ *   editableDataset — when provided, shows a live filter panel pre-populated from
+ *                     the dataset's conditions. "Update Dataset" button pushes changes
+ *                     back to the caller via onUpdateFilters (caller must still Save).
  */
-export async function showReviewModal({ title = 'Browse Images', fetchImages } = {}) {
+export async function showReviewModal({ title = 'Browse Images', fetchImages, editableDataset } = {}) {
   const overlay = document.createElement('div');
   overlay.style.cssText = 'position:fixed;inset:0;background:#0009;display:flex;align-items:center;justify-content:center;z-index:900;';
 
@@ -1349,7 +1383,21 @@ export async function showReviewModal({ title = 'Browse Images', fetchImages } =
   closeBtn.title = 'Close';
   closeBtn.style.cssText = 'margin-left:auto;cursor:pointer;padding:0.2em 0.6em;';
 
-  header.append(titleEl, closeBtn);
+  header.append(titleEl);
+
+  // "Update Dataset" button — shown when modal is in editable-dataset mode
+  if (editableDataset?.onUpdateFilters) {
+    const updateBtn = document.createElement('button');
+    updateBtn.textContent = 'Update Dataset';
+    updateBtn.title = 'Apply current filters back to the dataset form (you must still Save to persist)';
+    updateBtn.style.cssText = 'cursor:pointer;padding:0.2em 0.8em;';
+    // Will be wired up after the review panel is created and filterPanel is accessible
+    header.appendChild(updateBtn);
+    // Store for wiring after panel init
+    header._updateBtn = updateBtn;
+  }
+
+  header.appendChild(closeBtn);
 
   // Scrollable content area for the panel
   const content = document.createElement('div');
@@ -1363,7 +1411,33 @@ export async function showReviewModal({ title = 'Browse Images', fetchImages } =
   closeBtn.addEventListener('click', close);
   overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
 
-  await createReviewPanel(content, { fetchImages });
+  // editableDataset mode: show live-filtered panel pre-populated from dataset conditions.
+  // fetchImages is wired to previewDatasetImages with the current filter state.
+  if (editableDataset) {
+    // Use a ref so the fetchImages closure can always use the latest filter state.
+    let _currentFilterState = datasetFormToReviewState(editableDataset.filterJson, editableDataset.labelUuids);
+
+    const panel = await createReviewPanel(content, {
+      // null fetchImages → full filter panel is shown
+      // We'll pre-populate it below via filterPanel.setState()
+    });
+
+    // Wire "Update Dataset" button now that panel is ready
+    if (header._updateBtn && panel.filterPanel) {
+      header._updateBtn.addEventListener('click', () => {
+        const { conditions, labelUuids } = reviewStateToDatasetForm(panel.filterPanel.getState());
+        editableDataset.onUpdateFilters(conditions, labelUuids);
+        toast('Filters applied to dataset form — click Save to persist', 3000);
+      });
+    }
+
+    // Pre-populate the filter panel from the dataset's saved conditions
+    if (panel.filterPanel) {
+      panel.filterPanel.setState(_currentFilterState);
+    }
+  } else {
+    await createReviewPanel(content, { fetchImages });
+  }
 }
 
 // ── Bulk action execution ─────────────────────────────────────────────

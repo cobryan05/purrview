@@ -20,6 +20,8 @@
 import { UNVERIFIED_TAG_UUID } from '/app-static/js/shared/api/review.js';
 import { createMultiSelectDropdown } from '/app-static/js/ui/utils/index.js';
 import { flattenHierarchy } from '/app-static/js/ui/labelList.js';
+import { activeModel } from '/app-static/js/shared/activeModel.js';
+import { events, EventTypes } from '/app-static/js/shared/events/index.js';
 
 // System tags appear first in the tags dropdown, in this order.
 const SYSTEM_TAG_ORDER = [UNVERIFIED_TAG_UUID];
@@ -67,29 +69,66 @@ export function createFilterPanel(labels, tags, onFilterChange) {
     },
   });
   // ── Toolbar: Labels multi-select dropdown (tree-ordered, with depth indentation) ──
-  // flattenHierarchy returns labels in depth-first order with a .depth field on each.
-  const flatLabels = flattenHierarchy(labels);
+  // Wrapped in a container div so it can be rebuilt when the active-model filter changes.
+  const labelsDropdownContainer = document.createElement('div');
+  let _labelsDropdown = null;
+  // advLabelSelect is declared below (inside advancedDetails); stored here so buildLabelsControls can update it.
+  let _advLabelSelect = null;
 
-  const labelsDropdown = createMultiSelectDropdown({
-    label: 'Labels',
-    items: flatLabels.map(l => ({ uuid: l.uuid, name: l.name, color: l.color || null, depth: l.depth, parentUuid: l.parentUuid ?? null })),
-    defaultSelected: [],
-    defaultMode: 'any',
-    filterKey: 'labels',
-    hierarchyToggle: {
-      label: 'Include child labels',
-      default: false,
-      onChange: (val) => {
-        _state.labelIncludeChildren = val;
+  function buildLabelsControls() {
+    const filteredLabels = activeModel.applyLabelFilter(labels);
+    const flatLabels = flattenHierarchy(filteredLabels);
+
+    // Destroy previous dropdown instance
+    _labelsDropdown?.destroy();
+
+    _labelsDropdown = createMultiSelectDropdown({
+      label: 'Labels',
+      items: flatLabels.map(l => ({ uuid: l.uuid, name: l.name, color: l.color || null, depth: l.depth, parentUuid: l.parentUuid ?? null })),
+      defaultSelected: [],
+      defaultMode: 'any',
+      filterKey: 'labels',
+      hierarchyToggle: {
+        label: 'Include child labels',
+        default: false,
+        onChange: (val) => {
+          _state.labelIncludeChildren = val;
+          emit();
+        },
+      },
+      onChange: (selected, mode) => {
+        _state.labelUuids = selected;
+        _state.labelMatchMode = mode;
         emit();
       },
-    },
-    onChange: (selected, mode) => {
-      _state.labelUuids = selected;
-      _state.labelMatchMode = mode;
-      emit();
-    },
-  });
+    });
+
+    labelsDropdownContainer.innerHTML = '';
+    labelsDropdownContainer.appendChild(_labelsDropdown.element);
+
+    // Rebuild the advanced-filter label select if it already exists
+    if (_advLabelSelect) {
+      _advLabelSelect.innerHTML = '';
+      const ph = document.createElement('option');
+      ph.value = '';
+      ph.textContent = '— label —';
+      _advLabelSelect.appendChild(ph);
+      for (const lbl of flatLabels) {
+        const opt = document.createElement('option');
+        opt.value = lbl.uuid;
+        opt.textContent = lbl.name;
+        _advLabelSelect.appendChild(opt);
+      }
+    }
+
+    // Reset label state on rebuild (filtered items may differ)
+    _state.labelUuids = [];
+    _state.labelMatchMode = 'any';
+    _state.labelIncludeChildren = false;
+  }
+
+  buildLabelsControls();
+  const _unsubActiveFilter = events.subscribe(EventTypes.ACTIVE_MODEL_CHANGED, buildLabelsControls);
 
 
   // ── Panel root ─────────────────────────────────────────────────────────────
@@ -172,16 +211,9 @@ export function createFilterPanel(labels, tags, onFilterChange) {
   builderDiv.className = 'filter-imlabel-builder';
 
   const advLabelSelect = document.createElement('select');
-  const ph = document.createElement('option');
-  ph.value = '';
-  ph.textContent = '— label —';
-  advLabelSelect.appendChild(ph);
-  for (const lbl of flatLabels) {
-    const opt = document.createElement('option');
-    opt.value = lbl.uuid;
-    opt.textContent = lbl.name;
-    advLabelSelect.appendChild(opt);
-  }
+  _advLabelSelect = advLabelSelect;
+  // Options are populated by buildLabelsControls() (already called above); rebuild now to populate this element.
+  buildLabelsControls();
 
   const statusSelect = document.createElement('select');
   for (const [value, text] of [['uncertain', 'Uncertain'], ['present', 'Present'], ['absent', 'Absent']]) {
@@ -281,7 +313,7 @@ export function createFilterPanel(labels, tags, onFilterChange) {
       tagsDropdown.setState(_state.tagUuids, _state.tagMatchMode);
     }
     if (partial.labelUuids !== undefined || partial.labelMatchMode !== undefined || partial.labelIncludeChildren !== undefined) {
-      labelsDropdown.setState(_state.labelUuids, _state.labelMatchMode, _state.labelIncludeChildren);
+      _labelsDropdown?.setState(_state.labelUuids, _state.labelMatchMode, _state.labelIncludeChildren);
     }
     if (partial.dateFrom !== undefined) {
       dateFromInput.value = _state.dateFrom
@@ -305,13 +337,14 @@ export function createFilterPanel(labels, tags, onFilterChange) {
 
   function destroy() {
     tagsDropdown.destroy();
-    labelsDropdown.destroy();
+    _labelsDropdown?.destroy();
+    _unsubActiveFilter();
   }
 
   return {
     element: panel,
     /** Dropdown elements to place in the sticky toolbar (Tags + Labels). */
-    toolbarControls: [tagsDropdown.element, labelsDropdown.element],
+    toolbarControls: [tagsDropdown.element, labelsDropdownContainer],
     getState: () => ({
       ..._state,
       // showAllBboxes: true skips the server-side tag filter entirely.
