@@ -195,6 +195,17 @@ main.container {
 
 /* ===== Review: Query toolbar ===== */
 /* Top bar: filters toggle · sort controls · view mode (All/Images/Bboxes + grid/list) · page size · refresh */
+/* ===== Review: Sticky top wrapper ===== */
+/* Pins toolbar + action bar to the top of the scroll container so both bars
+   remain accessible while reviewing/scrolling a long results page. Works in
+   both the tab context (page scroll) and modal context (overflow:auto div). */
+.review-sticky-top {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  background: var(--pico-background-color, #121212);
+}
+
 .review-toolbar {
   display: flex;
   align-items: center;
@@ -365,8 +376,15 @@ main.container {
 .review-filter-panel input[type="datetime-local"] { width: 165px; }
 .filter-sort-by    { max-width: 115px; }
 .filter-sort-dir   { max-width: 105px; }
-.filter-page-size  { max-width: 120px; }
+.filter-page-size  { width: auto; }
 .filter-label-select { max-width: 140px; }
+
+.review-toolbar__sort-label {
+  font-size: 0.78em;
+  color: var(--pico-muted-color, #888);
+  white-space: nowrap;
+  user-select: none;
+}
 
 .filter-tag-checkboxes {
   display: flex;
@@ -390,6 +408,38 @@ main.container {
 .filter-tag-checkboxes label:has(input:checked) {
   background: #ffffff18;
 }
+
+/* Advanced filters accordion */
+.filter-advanced {
+  border: none;
+  padding: 0;
+  margin: 0;
+}
+
+.filter-advanced__summary {
+  cursor: pointer;
+  user-select: none;
+  list-style: none; /* remove default triangle in some browsers */
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25em;
+  padding: 1px 0;
+}
+
+/* Custom triangle indicator */
+.filter-advanced__summary::before {
+  content: '▸';
+  font-size: 0.7em;
+  transition: transform 0.15s;
+  display: inline-block;
+}
+
+details[open] .filter-advanced__summary::before {
+  transform: rotate(90deg);
+}
+
+/* Suppress the default <summary> marker in Firefox / Chrome */
+.filter-advanced__summary::-webkit-details-marker { display: none; }
 
 .filter-imlabel-builder {
   display: flex;
@@ -462,6 +512,151 @@ button.filter-active {
   border: 1px solid #ff0033;
   border-radius: 3px;
   color: #ff6666;
+}
+
+/* ===== Multi-select dropdown (createMultiSelectDropdown) ===== */
+/* Reusable trigger-button + floating panel with checkbox list.
+   Used in the review filter toolbar (Tags, Labels) and anywhere else
+   a compact multi-select is needed. */
+
+.ms-dropdown {
+  position: relative;
+  display: inline-block;
+}
+
+.ms-dropdown__trigger {
+  white-space: nowrap;
+  font-size: 0.82em;
+  padding: 0.2em 0.55em;
+  cursor: pointer;
+  border: 1px solid var(--pico-form-element-border-color, #555);
+  border-radius: 3px;
+  background: var(--pico-form-element-background-color, #1e1e2e);
+  color: var(--pico-form-element-color, #ccc);
+}
+
+/* Highlighted when at least one item is selected */
+.ms-dropdown__trigger--active {
+  border-color: var(--pico-primary, #5588ff);
+  color: var(--pico-primary, #5588ff);
+}
+
+.ms-dropdown__panel {
+  position: absolute;
+  top: calc(100% + 3px);
+  left: 0;
+  z-index: 200;
+  min-width: 160px;
+  min-height: 60px;
+  background: var(--pico-card-background-color, #1a1a2e);
+  border: 1px solid var(--pico-muted-border-color, #444);
+  border-radius: 5px;
+  padding: 0.4rem 0.5rem;
+  box-shadow: 0 4px 14px rgba(0,0,0,0.5);
+  /* User-resizable — requires overflow != visible */
+  resize: both;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Items list fills remaining height when panel is resized */
+.ms-dropdown__panel .ms-dropdown__items {
+  flex: 1 1 auto;
+  min-height: 0;
+  max-height: none;
+}
+
+/* "Any of / All of" toggle row */
+.ms-hierarchy-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.75em;
+  color: var(--pico-muted-color, #888);
+  cursor: pointer;
+  padding: 0.2rem 0;
+  margin-bottom: 0.3rem;
+  border-bottom: 1px solid var(--pico-muted-border-color, #333);
+  white-space: nowrap;
+  user-select: none;
+}
+
+.ms-hierarchy-toggle input[type="checkbox"] {
+  flex-shrink: 0;
+  margin: 0;
+}
+
+.ms-mode-row {
+  display: flex;
+  gap: 0.25rem;
+  margin-bottom: 0.4rem;
+}
+
+.ms-mode-btn {
+  flex: 1;
+  padding: 0.15rem 0.3rem;
+  font-size: 0.75em;
+  background: none;
+  border: 1px solid var(--pico-muted-border-color, #555);
+  border-radius: 3px;
+  cursor: pointer;
+  color: var(--pico-muted-color, #888);
+  white-space: nowrap;
+}
+
+.ms-mode-btn.active {
+  background: var(--pico-primary-background, #1a3a6e);
+  border-color: var(--pico-primary, #5588ff);
+  color: var(--pico-primary, #88aaff);
+}
+
+/* Scrollable item list */
+.ms-dropdown__items {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  max-height: 220px;
+  overflow-y: auto;
+}
+
+.ms-item {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  cursor: pointer;
+  padding: 0.18rem 0.25rem;
+  border-radius: 3px;
+  white-space: nowrap;
+  font-size: 0.82em;
+}
+
+.ms-item:hover {
+  background: rgba(255,255,255,0.06);
+}
+
+.ms-item input[type="checkbox"] {
+  flex-shrink: 0;
+  margin: 0;
+}
+
+.ms-item__swatch {
+  display: inline-block;
+  width: 0.65em;
+  height: 0.65em;
+  border-radius: 2px;
+  flex-shrink: 0;
+}
+
+/* Items whose ancestor is selected and "Include children" is on */
+.ms-item--implied {
+  opacity: 0.6;
+  background: rgba(99, 102, 241, 0.10);
+  border-left: 2px solid rgba(99, 102, 241, 0.45);
+  padding-left: calc(0.25rem - 2px); /* compensate for border */
+}
+.ms-item--implied:hover {
+  background: rgba(99, 102, 241, 0.18);
 }
 
 .review-grid {

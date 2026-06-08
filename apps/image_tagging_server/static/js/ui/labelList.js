@@ -53,6 +53,55 @@ export function buildHierarchy(labelsMap, filter) {
   return byParent;
 }
 
+/**
+ * Walk the hierarchy tree depth-first and return a flat array, each item
+ * augmented with a `depth` field (0 = root).  Useful for rendering tree-shaped
+ * data in a flat list (e.g. multi-select dropdowns) while preserving order and
+ * parent-child relationships visually via indentation.
+ *
+ * @param {Map<string, object>} labelsMap
+ * @param {((label: object) => boolean)|null} [filter]
+ * @returns {Array<object & { depth: number }>}
+ */
+export function flattenHierarchy(labelsMap, filter = null) {
+  const byParent = buildHierarchy(labelsMap, filter);
+  const result = [];
+  function visit(parentUuid, depth) {
+    for (const label of (byParent.get(parentUuid ?? null) ?? [])) {
+      result.push({ ...label, depth });
+      visit(label.uuid, depth + 1);
+    }
+  }
+  visit(null, 0);
+  return result;
+}
+
+/**
+ * Expand a list of label UUIDs to include all their descendants (recursively).
+ * Uses the labelsMap to build a parent→children relationship.
+ *
+ * @param {string[]} labelUuids
+ * @param {Map<string, object>} labelsMap
+ * @returns {Set<string>}
+ */
+export function expandWithDescendants(labelUuids, labelsMap) {
+  if (!labelUuids?.length || !labelsMap?.size) return new Set(labelUuids ?? []);
+  // Reuse buildHierarchy's parent→children map rather than re-deriving it.
+  const byParent = buildHierarchy(labelsMap);
+  const result = new Set(labelUuids);
+  const queue = [...labelUuids];
+  while (queue.length > 0) {
+    const uuid = queue.shift();
+    for (const child of (byParent.get(uuid) ?? [])) {
+      if (!result.has(child.uuid)) {
+        result.add(child.uuid);
+        queue.push(child.uuid);
+      }
+    }
+  }
+  return result;
+}
+
 // ─── Shared row builder ──────────────────────────────────────────────────────
 
 /**

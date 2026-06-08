@@ -130,10 +130,97 @@ async def test_label_filter_includes_matching(http_client, files_root, label_uui
     await _add_bbox(http_client, "cat-img.png", label_uuid, [UNVERIFIED_TAG_UUID])
     await _add_bbox(http_client, "dog-img.png", label2_uuid, [UNVERIFIED_TAG_UUID])
 
-    images = await _review(http_client, tag_uuids=[UNVERIFIED_TAG_UUID], label_uuid=label_uuid)
+    images = await _review(http_client, tag_uuids=[UNVERIFIED_TAG_UUID], label_uuids=[label_uuid])
     filenames = [img["filename"] for img in images]
     assert any("cat-img.png" in f for f in filenames)
     assert not any("dog-img.png" in f for f in filenames)
+
+
+async def test_label_filter_any_of(http_client, files_root, label_uuid, label2_uuid):
+    """label_uuids with label_match_mode='any' returns images that have EITHER label."""
+    r = await http_client.post("/api/labels", json={"name": "bird", "color": "#0ff"})
+    bird_uuid = r.json()["label"]["uuid"]
+
+    _make_image(files_root, "cat2.png")
+    _make_image(files_root, "dog2.png")
+    _make_image(files_root, "bird2.png")
+    await _add_bbox(http_client, "cat2.png", label_uuid, [UNVERIFIED_TAG_UUID])
+    await _add_bbox(http_client, "dog2.png", label2_uuid, [UNVERIFIED_TAG_UUID])
+    await _add_bbox(http_client, "bird2.png", bird_uuid, [UNVERIFIED_TAG_UUID])
+
+    images = await _review(
+        http_client,
+        tag_uuids=[UNVERIFIED_TAG_UUID],
+        label_uuids=[label_uuid, label2_uuid],
+        label_match_mode="any",
+    )
+    filenames = [img["filename"] for img in images]
+    assert any("cat2.png" in f for f in filenames)
+    assert any("dog2.png" in f for f in filenames)
+    assert not any("bird2.png" in f for f in filenames)
+
+
+async def test_label_include_children(http_client, files_root, label_uuid):
+    """label_include_children=True matches images with the label OR any child label."""
+    # Create a child label under label_uuid
+    r = await http_client.post("/api/labels", json={"name": "tabby", "color": "#abc", "parentUuid": label_uuid})
+    child_uuid = r.json()["label"]["uuid"]
+
+    _make_image(files_root, "parent-label.png")
+    _make_image(files_root, "child-label.png")
+    _make_image(files_root, "unrelated.png")
+    r2 = await http_client.post("/api/labels", json={"name": "dog", "color": "#0f0"})
+    other_uuid = r2.json()["label"]["uuid"]
+
+    await _add_bbox(http_client, "parent-label.png", label_uuid, [UNVERIFIED_TAG_UUID])
+    await _add_bbox(http_client, "child-label.png", child_uuid, [UNVERIFIED_TAG_UUID])
+    await _add_bbox(http_client, "unrelated.png", other_uuid, [UNVERIFIED_TAG_UUID])
+
+    # Without include_children: only the parent-label image matches
+    images_no_children = await _review(
+        http_client, show_all_bboxes=True, label_uuids=[label_uuid], label_include_children=False,
+    )
+    names_no = [img["filename"] for img in images_no_children]
+    assert any("parent-label.png" in n for n in names_no)
+    assert not any("child-label.png" in n for n in names_no)
+
+    # With include_children: both parent and child images match
+    images_with_children = await _review(
+        http_client, show_all_bboxes=True, label_uuids=[label_uuid], label_include_children=True,
+    )
+    names_with = [img["filename"] for img in images_with_children]
+    assert any("parent-label.png" in n for n in names_with)
+    assert any("child-label.png" in n for n in names_with)
+    assert not any("unrelated.png" in n for n in names_with)
+
+
+async def test_label_filter_all_of(http_client, files_root, label_uuid, label2_uuid):
+    """label_uuids with label_match_mode='all' returns only images that have BOTH labels."""
+    _make_image(files_root, "both.png")
+    _make_image(files_root, "cat-only.png")
+    # Add two bboxes (different labels) to "both.png" in one call so neither overwrites the other.
+    r = await http_client.post(
+        "/api/images/metadata/update",
+        json={
+            "imagePath": "both.png",
+            "boxes": [
+                {"uuid": str(uuid.uuid4()), "labelUuid": label_uuid,  "x": 0.1, "y": 0.1, "width": 0.2, "height": 0.2, "tagUuids": [UNVERIFIED_TAG_UUID]},
+                {"uuid": str(uuid.uuid4()), "labelUuid": label2_uuid, "x": 0.3, "y": 0.3, "width": 0.1, "height": 0.1, "tagUuids": [UNVERIFIED_TAG_UUID]},
+            ],
+        },
+    )
+    assert r.status_code == 200
+    await _add_bbox(http_client, "cat-only.png", label_uuid, [UNVERIFIED_TAG_UUID])
+
+    images = await _review(
+        http_client,
+        show_all_bboxes=True,
+        label_uuids=[label_uuid, label2_uuid],
+        label_match_mode="all",
+    )
+    filenames = [img["filename"] for img in images]
+    assert any("both.png" in f for f in filenames)
+    assert not any("cat-only.png" in f for f in filenames)
 
 
 # ──────────────────────────────────────────────────────────────────────────────

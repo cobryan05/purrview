@@ -1,4 +1,5 @@
 export * from './createButton.js';
+export * from './createMultiSelectDropdown.js';
 export * from './confirmModal.js';
 export * from './modalShell.js';
 export * from './data/createCachedFetcher.js';

@@ -216,9 +216,18 @@ class ImageSearchParams(ApiModel):
     updated_date_to: Optional[datetime] = None
     # Tag presence/absence filters (complement to tag_uuids positive-only filter).
     tag_presence_filters: List["TagPresenceFilter"] = Field(default_factory=list)
-    # Dataset label filter: images must have at least one bbox with one of these label uuids.
-    # Empty list = no label filter (all images pass).
+    # Dataset / review label filter: images must have at least one bbox with one of these
+    # label uuids ("any") or all of them ("all").  Empty list = no label filter.
     label_uuids: List[str] = Field(default_factory=list)
+    # "any" = image has a bbox with ANY of the selected labels (OR logic, default)
+    # "all" = image has a bbox with EACH of the selected labels (AND logic)
+    label_match_mode: Literal["any", "all"] = "any"
+    # When True, label_uuids is expanded to include all descendant labels in the
+    # hierarchy before filtering (e.g. "cat" also matches "tabby", "siamese", …).
+    label_include_children: bool = False
+    # "any" = image has a bbox with ANY of the selected tags (OR logic, default)
+    # "all" = image has a bbox with EACH of the selected tags (AND logic, one per bbox ok)
+    tag_match_mode: Literal["any", "all"] = "any"
     # Keyset pagination cursor.
     after_uuid: Optional[str] = None
     after_sort_value: Optional[datetime] = None  # populated when sort_by != "uuid"

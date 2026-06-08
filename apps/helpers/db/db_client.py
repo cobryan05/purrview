@@ -107,26 +107,71 @@ def _escape_like_pattern(pattern: str) -> str:
     return pattern.replace("!", "!!").replace("%", "!%").replace("_", "!_")
 
 
+def _label_uuids_with_descendants(label_uuids: List[str], cte_name: str = "label_desc") -> Select:
+    """Return a SELECT of all label UUIDs that are the given labels OR any of
+    their descendants (recursive).  Uses a recursive CTE so no separate query
+    is needed; SQLite has supported recursive CTEs since 3.8.3 (2014).
+
+    The returned statement is meant to be used in an IN() or EXISTS context,
+    e.g. ``BBox.label_uuid.in_(_label_uuids_with_descendants(uuids))``.
+
+    ``cte_name`` must be unique within the enclosing SQLAlchemy statement.
+    When this function is called multiple times in the same statement (e.g.
+    once per label in a loop), pass a distinct name each time to avoid a
+    SQLAlchemy ``CompileError: Multiple, unrelated CTEs found with the same
+    name``.
+    """
+    # Anchor: the explicitly requested labels
+    anchor = select(Label.uuid).where(Label.uuid.in_(label_uuids))
+    cte = anchor.cte(cte_name, recursive=True)
+    # Recursive: children of any label already in the CTE
+    recursive_part = select(Label.uuid).where(Label.parent_uuid == cte.c.uuid)
+    cte = cte.union_all(recursive_part)
+    return select(cte.c.uuid)
+
+
 def _apply_image_search_filters(stmt: Select, params: ImageSearchParams) -> Select:
     """Apply all ImageSearchParams filter predicates to *stmt* and return it.
 
     Does not add ORDER BY, LIMIT, or keyset cursors — those are caller concerns.
     Works for any Select target (ImageRecord, ImageRecord.uuid, etc.).
     """
-    # ── Tag / label join ──────────────────────────────────────────────────────
-    # When show_all_bboxes is True or tag_uuids is empty, skip the join so
-    # all images are candidates regardless of bbox tags.
+    # ── Tag filter ────────────────────────────────────────────────────────────
+    # When show_all_bboxes is True or tag_uuids is empty, skip so all images
+    # are candidates regardless of bbox tags.
     if not params.show_all_bboxes and params.tag_uuids:
-        stmt = (
-            stmt.join(BBox, BBox.image_uuid == ImageRecord.uuid)
-            .join(BBoxTagLink, BBoxTagLink.bbox_uuid == BBox.uuid)
-            .where(BBoxTagLink.tag_uuid.in_(params.tag_uuids))
+        if params.tag_match_mode == "all":
+            # Image must have at least one bbox carrying EACH selected tag
+            # (the bboxes can be different).
+            for tag_uuid in params.tag_uuids:
+                tag_subq = (
+                    select(BBox)
+                    .join(BBoxTagLink, BBoxTagLink.bbox_uuid == BBox.uuid)
+                    .where(BBox.image_uuid == ImageRecord.uuid, BBoxTagLink.tag_uuid == tag_uuid)
+                    .correlate(ImageRecord)
+                    .exists()
+                )
+                stmt = stmt.where(tag_subq)
+        else:
+            # "any of" — current JOIN approach: image has a bbox with ANY selected tag.
+            stmt = (
+                stmt.join(BBox, BBox.image_uuid == ImageRecord.uuid)
+                .join(BBoxTagLink, BBoxTagLink.bbox_uuid == BBox.uuid)
+                .where(BBoxTagLink.tag_uuid.in_(params.tag_uuids))
+            )
+
+    # ── Single-label backward-compat filter ───────────────────────────────────
+    # Kept for API callers that still send label_uuid.  New callers should use
+    # label_uuids instead.  Applies an EXISTS subquery so it composes cleanly
+    # with the tag filter above regardless of which join path was taken.
+    if params.label_uuid and params.label_uuid not in params.label_uuids:
+        subq = (
+            select(BBox)
+            .where(BBox.image_uuid == ImageRecord.uuid, BBox.label_uuid == params.label_uuid)
+            .correlate(ImageRecord)
+            .exists()
         )
-        if params.label_uuid:
-            stmt = stmt.where(BBox.label_uuid == params.label_uuid)
-    elif params.label_uuid:
-        # Need the bbox join only to apply the label filter.
-        stmt = stmt.join(BBox, BBox.image_uuid == ImageRecord.uuid).where(BBox.label_uuid == params.label_uuid)
+        stmt = stmt.where(subq)
 
     # ── Filename search ────────────────────────────────────────────────────────
     if params.filename_search:
@@ -187,18 +232,38 @@ def _apply_image_search_filters(stmt: Select, params: ImageSearchParams) -> Sele
             )
             stmt = stmt.where(~subq if f.exclude else subq)
 
-    # ── Dataset label filter ───────────────────────────────────────────────────
-    # Images must have at least one bbox whose label is in the dataset's label set.
+    # ── Dataset / review label filter ─────────────────────────────────────────
     if params.label_uuids:
-        subq = (
-            select(BBox)
-            .where(
-                BBox.image_uuid == ImageRecord.uuid,
-                BBox.label_uuid.in_(params.label_uuids),
+        if params.label_match_mode == "all":
+            # Image must have at least one bbox with EACH selected label (or any
+            # of its descendants when label_include_children is True).
+            for i, label_uuid in enumerate(params.label_uuids):
+                if params.label_include_children:
+                    label_set = _label_uuids_with_descendants([label_uuid], cte_name=f"label_desc_{i}")
+                    condition = BBox.label_uuid.in_(label_set)
+                else:
+                    condition = BBox.label_uuid == label_uuid
+                label_subq = (
+                    select(BBox)
+                    .where(BBox.image_uuid == ImageRecord.uuid, condition)
+                    .correlate(ImageRecord)
+                    .exists()
+                )
+                stmt = stmt.where(label_subq)
+        else:
+            # "any of" — image has a bbox with ANY of the selected labels (or
+            # their descendants when label_include_children is True).
+            if params.label_include_children:
+                label_condition = BBox.label_uuid.in_(_label_uuids_with_descendants(params.label_uuids))
+            else:
+                label_condition = BBox.label_uuid.in_(params.label_uuids)
+            subq = (
+                select(BBox)
+                .where(BBox.image_uuid == ImageRecord.uuid, label_condition)
+                .correlate(ImageRecord)
+                .exists()
             )
-            .exists()
-        )
-        stmt = stmt.where(subq)
+            stmt = stmt.where(subq)
 
     return stmt
 

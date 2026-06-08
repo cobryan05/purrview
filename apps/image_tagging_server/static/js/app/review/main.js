@@ -1,6 +1,7 @@
 import { fetchLabels } from '/app-static/js/shared/api/labels.js';
 import { fetchTags } from '/app-static/js/shared/api/tags.js';
 import { createFilterPanel } from '/app-static/js/app/review/filters.js';
+import { expandWithDescendants } from '/app-static/js/ui/labelList.js';
 import {
   fetchReviewQueue,
   updateImageBboxes,
@@ -155,6 +156,9 @@ export async function createReviewPanel(container, { fetchImages = null } = {}) 
   if (fetchImages) filterToggleBtn.hidden = true;
 
   // Sort controls — always visible in toolbar (moved from filter panel)
+  const sortLabel = document.createElement('span');
+  sortLabel.className = 'review-toolbar__sort-label';
+  sortLabel.textContent = 'Sort:';
   const sortBySelect = makeSelect('filter-sort-by', [['created_at', 'Date created'], ['updated_at', 'Date modified']], 'created_at');
   const sortOrderSelect = makeSelect('filter-sort-dir', [['desc', 'Newest first'], ['asc', 'Oldest first']], 'desc');
 
@@ -168,7 +172,7 @@ export async function createReviewPanel(container, { fetchImages = null } = {}) 
   ];
   for (const { key, label } of viewBtns) {
     const btn = document.createElement('button');
-    btn.className = 'view-btn' + (key === 'all' ? ' active' : '');
+    btn.className = 'view-btn' + (key === 'bboxes' ? ' active' : '');
     btn.dataset.viewKey = key;
     btn.textContent = label;
     btn.addEventListener('click', () => {
@@ -185,7 +189,7 @@ export async function createReviewPanel(container, { fetchImages = null } = {}) 
 
   // ── Per-page selector ────────────────────────────────────────────
   const pageSizeSelect = makeSelect('filter-page-size',
-    [['10', '10 imgs/page'], ['25', '25 imgs/page'], ['50', '50 imgs/page'], ['100', '100 imgs/page']],
+    [['10', '10/pg'], ['25', '25/pg'], ['50', '50/pg'], ['100', '100/pg'], ['250', '250/pg'], ['500', '500/pg']],
     String(DEFAULT_PAGE_SIZE));
 
   // Select-all checkbox
@@ -242,17 +246,13 @@ export async function createReviewPanel(container, { fetchImages = null } = {}) 
   // ── Query bar: filter · sort · view mode · page size · refresh ────
   // Controls that change *what* is shown. Stays compact so it never wraps.
   toolbar.append(
-    makeToolbarGroup(filterToggleBtn, sortBySelect, sortOrderSelect),
+    makeToolbarGroup(filterToggleBtn, sortLabel, sortBySelect, sortOrderSelect),
     makeToolbarSep(),
     makeToolbarGroup(viewToggle, entryView.element, pageSizeSelect),
     makeToolbarGroup(refreshBtn),
   );
-  container.appendChild(toolbar);
 
-  // ── Action bar: sits directly above the results ───────────────────
-  // Controls that act on the current page (select, bulk-apply) and navigate
-  // between pages (prev/next). Placing them flush against the results makes
-  // the spatial relationship obvious and eliminates the "empty space" gap.
+  // ── Action bar: select-all, bulk-apply, prev/next, status ─────────
   const actionBar = document.createElement('div');
   actionBar.className = 'review-action-bar';
   actionBar.append(
@@ -260,10 +260,20 @@ export async function createReviewPanel(container, { fetchImages = null } = {}) 
     makeToolbarGroup(prevBtn, pageInfo, nextBtn),
     makeToolbarGroup(statusMsg),
   );
-  container.appendChild(actionBar);
+
+  // ── Sticky top wrapper ────────────────────────────────────────────
+  // Pins toolbar + action bar (and the expandable filter panel) to the top
+  // of the scroll container. The filter panel lives here so expanding it
+  // never requires scrolling back up to find the filter controls.
+  const stickyTop = document.createElement('div');
+  stickyTop.className = 'review-sticky-top';
+  stickyTop.append(toolbar, actionBar);
+  container.appendChild(stickyTop);
+  container.appendChild(entryView.layout);
 
   // ── Filter panel (full mode only) ─────────────────────────────────
-  // Inserted between the query toolbar and the action bar.
+  // Lives inside stickyTop so it expands in-place and never scrolls away.
+  // Starts hidden; the ☰ Filters button toggles it.
   let filterPanel = null;
   if (!fetchImages) {
     const tags = await tagsPromise;
@@ -280,15 +290,19 @@ export async function createReviewPanel(container, { fetchImages = null } = {}) 
       _lastCursor = null;
       render();
     });
-    container.insertBefore(filterPanel.element, actionBar);
+    filterPanel.element.hidden = true;
+    stickyTop.appendChild(filterPanel.element);
     updateFilterBtn(); // reflect initial state (Unverified checked → shows "(1)")
 
     filterToggleBtn.addEventListener('click', () => {
       filterPanel.element.hidden = !filterPanel.element.hidden;
     });
-  }
 
-  container.appendChild(entryView.layout);
+    // Inject Tags + Labels dropdowns into the toolbar as the first group.
+    const filterControlsGroup = makeToolbarGroup(...filterPanel.toolbarControls);
+    toolbar.insertBefore(filterControlsGroup, toolbar.firstChild);
+    toolbar.insertBefore(makeToolbarSep(), toolbar.children[1]);
+  }
 
   // ── Hover preview ─────────────────────────────────────────────────
   const _imageCache = new Map();
@@ -299,7 +313,7 @@ export async function createReviewPanel(container, { fetchImages = null } = {}) 
   // _allEntries holds ALL entries for the current page (both image and bbox).
   // _viewFilter controls which subset is rendered to DOM.
   let _allEntries = [];       // Array<{ kind: 'bbox', bbox, img } | { kind: 'image', img }>
-  let _viewFilter = 'all';    // 'all' | 'images' | 'bboxes'
+  let _viewFilter = 'bboxes';  // 'all' | 'images' | 'bboxes'
   let _selectionKind = null;  // 'bbox' | 'image' | null — type of currently selected cards
   let _pageSize = DEFAULT_PAGE_SIZE;
   let _imageCardRefreshers = new Map(); // img.uuid → () => void — redraws bbox overlay
@@ -588,7 +602,10 @@ export async function createReviewPanel(container, { fetchImages = null } = {}) 
           ({ images, hasMore, totalCount } = await fetchReviewQueue({
             tagUuids: fs.showAllBboxes ? [] : fs.tagUuids,
             showAllBboxes: fs.showAllBboxes,
-            labelUuid: fs.labelUuid || undefined,
+            tagMatchMode: fs.tagMatchMode,
+            labelUuids: fs.labelUuids,
+            labelMatchMode: fs.labelMatchMode,
+            labelIncludeChildren: fs.labelIncludeChildren,
             sortBy,
             sortOrder,
             filenameSearch: fs.filenameSearch || undefined,
@@ -625,11 +642,18 @@ export async function createReviewPanel(container, { fetchImages = null } = {}) 
       // Build _allEntries: for each image, one ImageEntry then its matching BboxEntries.
       const showAll = fetchImages || fs?.showAllBboxes;
       const tagSet = (fs && !showAll) ? new Set(fs.tagUuids) : null;
+      const activeLabelUuids = (fs?.labelUuids?.length > 0)
+        ? (fs.labelIncludeChildren
+            ? expandWithDescendants(fs.labelUuids, labels)
+            : new Set(fs.labelUuids))
+        : null;
 
       for (const img of images) {
-        const matching = (img.bboxes || []).filter(b =>
-          showAll || (b.tags || []).some(t => tagSet.has(t.uuid))
-        );
+        const matching = (img.bboxes || []).filter(b => {
+          const tagMatch = showAll || (b.tags || []).some(t => tagSet.has(t.uuid));
+          const labelMatch = !activeLabelUuids || activeLabelUuids.has(b.labelUuid);
+          return tagMatch && labelMatch;
+        });
         // Always add an image-level entry
         _allEntries.push({ kind: 'image', img });
         // Add bbox entries for each matching bbox

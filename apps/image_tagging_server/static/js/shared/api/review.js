@@ -9,9 +9,13 @@ export const VERIFICATION_TAG_UUIDS = new Set([UNVERIFIED_TAG_UUID]);
  * Search the review queue with flexible filters and cursor-based pagination.
  *
  * @param {{
- *   tagUuids?: string[],          // bbox tags to include (OR); default [UNVERIFIED_TAG_UUID]
+ *   tagUuids?: string[],          // bbox tags to include; default [UNVERIFIED_TAG_UUID]
  *   showAllBboxes?: boolean,       // ignore tagUuids, show all bboxes
- *   labelUuid?: string,            // optional bbox label filter
+ *   tagMatchMode?: 'any'|'all',   // OR (default) or AND across tagUuids
+ *   labelUuids?: string[],         // bbox label filter (multi-select)
+ *   labelMatchMode?: 'any'|'all', // OR (default) or AND across labelUuids
+ *   labelIncludeChildren?: boolean, // also match child labels in the hierarchy
+ *   labelUuid?: string,            // legacy single-label filter (still accepted by backend)
  *   sortBy?: 'created_at'|'updated_at'|'uuid',
  *   sortOrder?: 'asc'|'desc',
  *   filenameSearch?: string,
@@ -26,6 +30,10 @@ export const VERIFICATION_TAG_UUIDS = new Set([UNVERIFIED_TAG_UUID]);
 export async function fetchReviewQueue({
   tagUuids = [UNVERIFIED_TAG_UUID],
   showAllBboxes = false,
+  tagMatchMode = 'any',
+  labelUuids = [],
+  labelMatchMode = 'any',
+  labelIncludeChildren = false,
   labelUuid,
   sortBy = 'created_at',
   sortOrder = 'desc',
@@ -40,10 +48,16 @@ export async function fetchReviewQueue({
   const body = {
     tagUuids,
     showAllBboxes,
+    tagMatchMode,
     sortBy,
     sortOrder,
     limit,
   };
+  if (labelUuids.length > 0) {
+    body.labelUuids = labelUuids;
+    body.labelMatchMode = labelMatchMode;
+    if (labelIncludeChildren) body.labelIncludeChildren = true;
+  }
   if (labelUuid) body.labelUuid = labelUuid;
   if (filenameSearch) body.filenameSearch = filenameSearch;
   if (dateFrom) body.dateFrom = dateFrom;
