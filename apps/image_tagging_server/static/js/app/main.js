@@ -2,7 +2,7 @@ import { init as initImageTagging } from './image-tagging/main.js';
 import { init as initConfiguration } from './configuration/main.js';
 import { init as initReview, applyFilterWhenReady } from './review/main.js';
 import { init as initSettings } from './settings/main.js';
-import { setupMainTabs } from '/app-static/js/app/utils/tabs.js';
+import { setupMainTabs, navigateTabs } from '/app-static/js/app/utils/tabs.js';
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
 import { createImageTaggingRuntime } from './image-tagging/runtime.js';
 import { activeModel } from '/app-static/js/shared/activeModel.js';
@@ -66,11 +66,7 @@ export async function init(appState) {
       name: 'New Imported Dataset',
       description: 'New dataset imported from search filters',
     });
-    activateMainTab(container, 'tab-configuration');
-    // Delay workspace-tab click until after the configuration pane mounts/settles.
-    setTimeout(() => {
-      activateWorkspaceTab('#tab-configuration', 'tab-dataset-management');
-    }, 50);
+    navigateTabs('tab-configuration', 'tab-dataset-management');
   });
 
 
@@ -83,6 +79,16 @@ export async function init(appState) {
 function activateMainTab(container, tabId) {
   container.querySelector(`[data-tab="${tabId}"]`)?.click();
 }
+
+/**
+ * Navigate to a main tab and then (after a short delay) to a workspace sub-tab.
+ * The delay gives the main-tab's lazy-init time to mount its pane before the
+ * workspace-tab click fires.  Both arguments are tab ids (the data-tab value).
+ *
+ * @param {string} mainTabId       e.g. 'tab-configuration'
+ * @param {string} workspaceTabId  e.g. 'tab-dataset-management'
+ */
+
 
 function activateWorkspaceTab(featureId, tabId) {
   document

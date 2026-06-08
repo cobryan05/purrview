@@ -66,3 +66,18 @@ export function setupWorkspaceTabs(containerOrSelector, onTabChange) {
 export function setupSidebarTabs(containerOrSelector, onTabChange) {
   return setupTabs(containerOrSelector, '.sidebar-tab-button', '.sidebar-tab-pane', onTabChange);
 }
+
+/**
+ * Navigate to a main tab then, after a short delay, to a workspace sub-tab.
+ * The delay lets the main-tab's lazy-init mount its pane before the workspace
+ * click fires.  Pass the bare tab id (data-tab value) for each argument.
+ *
+ * @param {string} mainTabId       e.g. 'tab-configuration'
+ * @param {string} workspaceTabId  e.g. 'tab-dataset-management'
+ */
+export function navigateTabs(mainTabId, workspaceTabId) {
+  document.querySelector(`.main-tab-button[data-tab="${mainTabId}"]`)?.click();
+  setTimeout(() => {
+    document.querySelector(`#${mainTabId} [data-tab="${workspaceTabId}"]`)?.click();
+  }, 50);
+}

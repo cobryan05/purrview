@@ -16,7 +16,7 @@
  *       default: false,
  *       onChange: (val) => { ... },
  *     },
- *     onChange: (selectedUuids, mode) => { ... },
+ *     onChange: (selectedUuids, excludedUuids, mode) => { ... },
  *   });
  *   toolbar.appendChild(dd.element);
  *
@@ -31,16 +31,17 @@
  *     default?: boolean,
  *     onChange: (val: boolean) => void,
  *   },
- *   onChange: (selected: string[], mode: 'any'|'all') => void,
+ *   onChange: (selected: string[], excluded: string[], mode: 'any'|'all') => void,
  *   filterKey?: string,          // data-filter-key attr + localStorage size key
  * }} opts
  *
  * @returns {{
  *   element: HTMLElement,
  *   getSelected: () => string[],
+ *   getExcluded: () => string[],
  *   getMode: () => 'any'|'all',
  *   getHierarchyToggle: () => boolean,
- *   setState: (selected?: string[]|null, mode?: 'any'|'all'|null, hierarchyToggle?: boolean|null) => void,
+ *   setState: (selected?: string[]|null, mode?: 'any'|'all'|null, hierarchyToggle?: boolean|null, excluded?: string[]|null) => void,
  *   destroy: () => void,
  * }}
  */

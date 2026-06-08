@@ -404,3 +404,38 @@ async def test_run_inference_single_model_multiple_boxes_all_kept():
 
     matching = await task._run_inference(inference_api, "b64", {_MODEL_NAME: None})
     assert matching == [box1, box2, box3]
+
+
+# ─── get_status_actions ───────────────────────────────────────────────────────
+
+
+def test_get_status_actions_no_tag_uuid():
+    """get_status_actions returns [] when no task-tag UUID has been assigned."""
+    task = CollectTrainingImagesTask.__new__(CollectTrainingImagesTask)
+    task._task_tag_uuid = None
+    assert task.get_status_actions() == []
+
+
+def test_get_status_actions_with_tag_uuid():
+    """get_status_actions returns an open_review action when a tag UUID is set."""
+    task = CollectTrainingImagesTask.__new__(CollectTrainingImagesTask)
+    task._task_tag_uuid = "some-tag-uuid"
+    actions = task.get_status_actions()
+    assert len(actions) == 1
+    action = actions[0]
+    assert action["type"] == "open_review"
+    assert action["label"] == "Browse results"
+    assert action["payload"] == {"tag_uuids": ["some-tag-uuid"]}
+
+
+def test_generate_task_tag_default_is_false():
+    """generate_task_tag must default to False so pre-existing configs are unaffected."""
+    task = CollectTrainingImagesTask.__new__(CollectTrainingImagesTask)
+    # Simulate _init reading params with no explicit generate_task_tag key
+    params = {
+        "source_uuids": ["src"],
+        "output_dir": "out",
+        "model_label_config": [],
+    }
+    result = bool(params.get("generate_task_tag", False))
+    assert result is False, "Default must remain False to avoid tagging existing task configs silently"

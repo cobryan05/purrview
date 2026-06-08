@@ -61,6 +61,31 @@ export function renderBoxed(node, opts = {}) {
 }
 
 /**
+ * Returns the text for a label-filter notice, or '' if hiddenCount is 0.
+ * @param {number} hiddenCount
+ * @returns {string}
+ */
+export function labelFilterNoticeText(hiddenCount) {
+  if (hiddenCount <= 0) return '';
+  return `⚠ ${hiddenCount} label${hiddenCount !== 1 ? 's' : ''} hidden by model filter`;
+}
+
+/**
+ * Creates a <span class="label-filter-notice"> element for use when the active
+ * model filter hides some labels. Returns null when hiddenCount is 0.
+ * @param {number} hiddenCount
+ * @returns {HTMLElement|null}
+ */
+export function makeLabelFilterNotice(hiddenCount) {
+  const text = labelFilterNoticeText(hiddenCount);
+  if (!text) return null;
+  const el = document.createElement('span');
+  el.className = 'label-filter-notice';
+  el.textContent = text;
+  return el;
+}
+
+/**
  * Generates a UUID (Universally Unique Identifier).
  * Uses the browser's crypto API if available, otherwise falls back to a random implementation.
  * @returns {string} A UUID string.

@@ -11,6 +11,7 @@
 
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
 import { activeModel } from '/app-static/js/shared/activeModel.js';
+import { navigateTabs } from '/app-static/js/app/utils/tabs.js';
 
 /**
  * @param {string} containerId  id of the mount <div>
@@ -45,11 +46,7 @@ export function mountActiveModelBar(containerId = 'active-model-bar') {
       nameBtn.textContent = config.name;
       nameBtn.title = 'Go to model configuration';
       nameBtn.addEventListener('click', () => {
-        document.querySelector('.main-tab-button[data-tab="tab-configuration"]')?.click();
-        // Delay workspace-tab click until after the config pane mounts
-        setTimeout(() => {
-          document.querySelector('.workspace-tab-button[data-tab="tab-model-management"]')?.click();
-        }, 50);
+        navigateTabs('tab-configuration', 'tab-model-management');
       });
       left.appendChild(nameBtn);
 

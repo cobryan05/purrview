@@ -18,7 +18,7 @@ import { UNVERIFIED_TAG_UUID } from '/app-static/js/shared/api/review.js';
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
 import { setTool } from '../app/image-tagging/canvas/tools.js';
 import { EditableField, TextBoxColorField } from '/app-static/js/ui/utils/fields/index.js';
-import { createGenericRow, toast } from '/app-static/js/ui/utils/index.js';
+import { createGenericRow, toast, makeLabelFilterNotice } from '/app-static/js/ui/utils/index.js';
 
 const DEFAULT_COLOR = '#cccccc';
 
@@ -325,13 +325,8 @@ async function mountSelectMode(container, { runtime, filter }) {
 
   const rawLabelsMap = await fetchLabels();
   const labelsMap = activeModel.applyLabelFilter(rawLabelsMap);
-  if (labelsMap.size < rawLabelsMap.size) {
-    const hidden = rawLabelsMap.size - labelsMap.size;
-    const notice = document.createElement('div');
-    notice.className = 'label-filter-notice';
-    notice.textContent = `⚠ ${hidden} label${hidden !== 1 ? 's' : ''} hidden by model filter`;
-    container.appendChild(notice);
-  }
+  const filterNotice = makeLabelFilterNotice(rawLabelsMap.size - labelsMap.size);
+  if (filterNotice) container.appendChild(filterNotice);
   const byParent = buildHierarchy(labelsMap, filter);
 
   let currentImagePath = null;

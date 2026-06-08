@@ -18,7 +18,7 @@
  *                               ▸ Advanced filters (collapsible)
  */
 import { UNVERIFIED_TAG_UUID } from '/app-static/js/shared/api/review.js';
-import { createMultiSelectDropdown } from '/app-static/js/ui/utils/index.js';
+import { createMultiSelectDropdown, makeLabelFilterNotice } from '/app-static/js/ui/utils/index.js';
 import { flattenHierarchy } from '/app-static/js/ui/labelList.js';
 import { activeModel } from '/app-static/js/shared/activeModel.js';
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
@@ -75,8 +75,10 @@ export function createFilterPanel(labels, tags, onFilterChange) {
   // Wrapped in a container div so it can be rebuilt when the active-model filter changes.
   const labelsDropdownContainer = document.createElement('div');
   let _labelsDropdown = null;
-  // advLabelSelect is declared below (inside advancedDetails); stored here so buildLabelsControls can update it.
-  let _advLabelSelect = null;
+  // Create advLabelSelect here (before buildLabelsControls) so the first call
+  // can populate it immediately — avoiding a second full rebuild call later.
+  const advLabelSelect = document.createElement('select');
+  let _advLabelSelect = advLabelSelect;
 
   function buildLabelsControls() {
     const filteredLabels = activeModel.applyLabelFilter(labels);
@@ -109,13 +111,8 @@ export function createFilterPanel(labels, tags, onFilterChange) {
 
     labelsDropdownContainer.innerHTML = '';
     labelsDropdownContainer.appendChild(_labelsDropdown.element);
-    if (filteredLabels.size < labels.size) {
-      const hidden = labels.size - filteredLabels.size;
-      const notice = document.createElement('span');
-      notice.className = 'label-filter-notice';
-      notice.textContent = `⚠ ${hidden} label${hidden !== 1 ? 's' : ''} hidden by model filter`;
-      labelsDropdownContainer.appendChild(notice);
-    }
+    const notice = makeLabelFilterNotice(labels.size - filteredLabels.size);
+    if (notice) labelsDropdownContainer.appendChild(notice);
 
     // Rebuild the advanced-filter label select if it already exists
     if (_advLabelSelect) {
@@ -222,10 +219,8 @@ export function createFilterPanel(labels, tags, onFilterChange) {
   const builderDiv = document.createElement('div');
   builderDiv.className = 'filter-imlabel-builder';
 
-  const advLabelSelect = document.createElement('select');
-  _advLabelSelect = advLabelSelect;
-  // Options are populated by buildLabelsControls() (already called above); rebuild now to populate this element.
-  buildLabelsControls();
+  // advLabelSelect was created above (before the first buildLabelsControls() call)
+  // so options are already populated — no second call needed.
 
   const statusSelect = document.createElement('select');
   for (const [value, text] of [['uncertain', 'Uncertain'], ['present', 'Present'], ['absent', 'Absent']]) {
@@ -323,6 +318,15 @@ export function createFilterPanel(labels, tags, onFilterChange) {
    * @param {Partial<ReturnType<typeof DEFAULT_STATE>>} partial
    */
   function setState(partial) {
+    // Normalize: if tagUuids is being replaced but tagExcludeUuids is absent
+    // (e.g. a preset saved before exclusions existed), default the exclude list
+    // to [] so stale exclusions aren't silently preserved.
+    if (partial.tagUuids !== undefined && !('tagExcludeUuids' in partial)) {
+      partial = { ...partial, tagExcludeUuids: [] };
+    }
+    if (partial.labelUuids !== undefined && !('labelExcludeUuids' in partial)) {
+      partial = { ...partial, labelExcludeUuids: [] };
+    }
     _state = { ..._state, ...partial };
 
     if (partial.tagUuids !== undefined || partial.tagMatchMode !== undefined || partial.tagExcludeUuids !== undefined) {

@@ -8,6 +8,8 @@
  * - imageLabelFilters map approximately to DatasetLabelStatusCondition.
  */
 
+import { UNVERIFIED_TAG_UUID } from '/app-static/js/shared/api/review.js';
+
 /**
  * Convert a review filter state to the dataset filter shape.
  *
@@ -17,9 +19,10 @@
 export function reviewStateToDatasetForm(reviewState) {
   const conditions = [];
 
-  // Tags → TagCondition (one per tag)
+  // Tags → TagCondition (one per tag).
+  // Skip the built-in UNVERIFIED_TAG_UUID — it's a UI default, not a meaningful dataset filter.
   for (const tagUuid of reviewState.tagUuids ?? []) {
-    // Skip the built-in UNVERIFIED_TAG_UUID — it's a UI default, not a meaningful dataset filter
+    if (tagUuid === UNVERIFIED_TAG_UUID) continue;
     conditions.push({ type: 'tag', tagUuid, exclude: false });
   }
   for (const tagUuid of reviewState.tagExcludeUuids ?? []) {
@@ -89,6 +92,13 @@ export function datasetFormToReviewState(filterJson, labelUuids) {
       case 'image_age':
         if (cond.after) state.dateFrom = cond.after;
         if (cond.before) state.dateTo = cond.before;
+        if (cond.withinDays) {
+          // Convert relative "within N days" to an absolute dateFrom at the
+          // time of conversion — the review panel only supports absolute dates.
+          const d = new Date();
+          d.setDate(d.getDate() - cond.withinDays);
+          state.dateFrom = d.toISOString();
+        }
         break;
 
       case 'filename':

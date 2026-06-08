@@ -113,7 +113,7 @@ class CollectTrainingImagesTask(Task):
 
         # Tag params — resolved to UUIDs in _run() once API clients are available.
         self._apply_tag_uuids: list[str] = list(params.get("apply_tags", []))
-        self._generate_task_tag: bool = bool(params.get("generate_task_tag", True))
+        self._generate_task_tag: bool = bool(params.get("generate_task_tag", False))
         self._task_tag_name_override: str = params.get("task_tag_name", "") or ""
         # _config_name is injected by the manager (reserved key, not user-facing).
         self._config_name: str = params.get("_config_name", "")
@@ -633,7 +633,7 @@ class CollectTrainingImagesTask(Task):
                 "type": "boolean",
                 "label": "Tag images with a tag unique to this task",
                 "description": "Creates a dedicated tag for this task config and applies it to all saved images. Useful for reviewing just this task's output.",
-                "default": True,
+                "default": False,
             },
             "task_tag_name": {
                 "type": "string",

@@ -359,3 +359,118 @@ async def test_image_label_filter_exclude(http_client, files_root, label_uuid):
     filenames = [img["filename"] for img in images]
     assert not any("excl-verf.png" in f for f in filenames)
     assert any("excl-unv.png" in f for f in filenames)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# require_bboxes
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+async def test_require_bboxes_excludes_empty_images(http_client, files_root, label_uuid):
+    """require_bboxes=True must exclude images that have no bboxes."""
+    _make_image(files_root, "has-bbox.png")
+    _make_image(files_root, "no-bbox.png")
+    await _add_bbox(http_client, "has-bbox.png", label_uuid, [])
+    # Register no-bbox.png in the DB without any bboxes.
+    r = await http_client.post(
+        "/api/images/metadata/update",
+        json={"imagePath": "no-bbox.png", "boxes": []},
+    )
+    assert r.status_code == 200
+
+    images = await _review(http_client, show_all_bboxes=True, require_bboxes=True)
+    filenames = [img["filename"] for img in images]
+    assert any("has-bbox.png" in f for f in filenames)
+    assert not any("no-bbox.png" in f for f in filenames)
+
+
+async def test_require_bboxes_false_includes_empty_images(http_client, files_root, label_uuid):
+    """require_bboxes=False (default) must include images with no bboxes."""
+    _make_image(files_root, "with-box.png")
+    _make_image(files_root, "empty.png")
+    await _add_bbox(http_client, "with-box.png", label_uuid, [])
+    # Register empty.png in the DB (no bboxes) by calling metadata/update with boxes=[].
+    r = await http_client.post(
+        "/api/images/metadata/update",
+        json={"imagePath": "empty.png", "boxes": []},
+    )
+    assert r.status_code == 200
+
+    images = await _review(http_client, show_all_bboxes=True, require_bboxes=False)
+    filenames = [img["filename"] for img in images]
+    assert any("with-box.png" in f for f in filenames)
+    assert any("empty.png" in f for f in filenames)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# label_exclusions
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+async def test_label_exclusions_removes_matching_images(http_client, files_root, label_uuid, label2_uuid):
+    """label_exclusions=[X] must exclude images that have any bbox with label X."""
+    _make_image(files_root, "cat-excl.png")
+    _make_image(files_root, "dog-excl.png")
+    await _add_bbox(http_client, "cat-excl.png", label_uuid, [])
+    await _add_bbox(http_client, "dog-excl.png", label2_uuid, [])
+
+    # Exclude the 'cat' label — only the dog image should remain
+    images = await _review(
+        http_client,
+        show_all_bboxes=True,
+        label_exclusions=[label_uuid],
+    )
+    filenames = [img["filename"] for img in images]
+    assert not any("cat-excl.png" in f for f in filenames)
+    assert any("dog-excl.png" in f for f in filenames)
+
+
+async def test_label_exclusions_multiple(http_client, files_root, label_uuid, label2_uuid):
+    """label_exclusions with multiple UUIDs applies AND logic — excludes any image matching ANY exclusion."""
+    r = await http_client.post("/api/labels", json={"name": "bird-ex", "color": "#0f0"})
+    bird_uuid = r.json()["label"]["uuid"]
+
+    _make_image(files_root, "cat-m.png")
+    _make_image(files_root, "dog-m.png")
+    _make_image(files_root, "bird-m.png")
+    await _add_bbox(http_client, "cat-m.png", label_uuid, [])
+    await _add_bbox(http_client, "dog-m.png", label2_uuid, [])
+    await _add_bbox(http_client, "bird-m.png", bird_uuid, [])
+
+    # Exclude cat AND dog — only bird should remain
+    images = await _review(
+        http_client,
+        show_all_bboxes=True,
+        label_exclusions=[label_uuid, label2_uuid],
+    )
+    filenames = [img["filename"] for img in images]
+    assert not any("cat-m.png" in f for f in filenames)
+    assert not any("dog-m.png" in f for f in filenames)
+    assert any("bird-m.png" in f for f in filenames)
+
+
+async def test_require_bboxes_with_label_exclusions(http_client, files_root, label_uuid, label2_uuid):
+    """require_bboxes=True combined with label_exclusions works correctly."""
+    _make_image(files_root, "combo-cat.png")
+    _make_image(files_root, "combo-dog.png")
+    _make_image(files_root, "combo-empty.png")
+    await _add_bbox(http_client, "combo-cat.png", label_uuid, [])
+    await _add_bbox(http_client, "combo-dog.png", label2_uuid, [])
+    # Register combo-empty.png with no bboxes
+    r = await http_client.post(
+        "/api/images/metadata/update",
+        json={"imagePath": "combo-empty.png", "boxes": []},
+    )
+    assert r.status_code == 200
+
+    images = await _review(
+        http_client,
+        show_all_bboxes=True,
+        require_bboxes=True,
+        label_exclusions=[label_uuid],
+    )
+    filenames = [img["filename"] for img in images]
+    # cat excluded by label_exclusions; empty excluded by require_bboxes; dog survives
+    assert not any("combo-cat.png" in f for f in filenames)
+    assert not any("combo-empty.png" in f for f in filenames)
+    assert any("combo-dog.png" in f for f in filenames)

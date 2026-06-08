@@ -4,7 +4,7 @@ import {
   fetchDatasets, createDataset, updateDataset, deleteDataset,
 } from '/app-static/js/shared/api/datasets.js';
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
-import { toast, makeFieldRow, buildPanelEditorBar } from '/app-static/js/ui/utils/index.js';
+import { toast, makeFieldRow, buildPanelEditorBar, labelFilterNoticeText } from '/app-static/js/ui/utils/index.js';
 import { showUnsavedConfigChangesModal } from '/app-static/js/ui/utils/confirmModal.js';
 import { activeModel } from '/app-static/js/shared/activeModel.js';
 
@@ -448,7 +448,7 @@ function buildDatasetForm(container, { name = '', description = '', labelUuids =
   function rerenderLabelPicker() {
     const displayMap = activeModel.applyLabelFilter(labelsMap);
     const hidden = labelsMap.size - displayMap.size;
-    labelFilterNotice.textContent = `⚠ ${hidden} label${hidden !== 1 ? 's' : ''} hidden by model filter`;
+    labelFilterNotice.textContent = labelFilterNoticeText(hidden);
     labelFilterNotice.hidden = hidden === 0;
     renderLabelCheckboxList(labelPickerEl, displayMap, selectedLabelUuids, (uuids) => {
       selectedLabelUuids = uuids;
