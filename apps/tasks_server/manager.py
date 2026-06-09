@@ -3,7 +3,7 @@
 import asyncio
 import logging
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Union
 
 import db_client
@@ -350,6 +350,13 @@ class Manager:
 
         return stopped_tasks
 
+    async def update_task_heartbeat(self, task_uuid: str) -> None:
+        """Forward a heartbeat ping to the DB server for the given task instance."""
+        await asyncio.to_thread(
+            TasksApi(self._db_api_client).set_task_instance_heartbeat,
+            task_uuid,
+        )
+
     async def get_tasks_type_schema(self, typenames: Union[List[str], str]) -> dict[str, dict]:
         if isinstance(typenames, str):
             typenames = [typenames]
@@ -440,6 +447,7 @@ class Manager:
             instance = resp.instance
         task_info: TaskInfo = TaskInfo(task=task, config=config, instance=instance)
 
+        task.set_instance_uuid(instance.uuid)
         self._running_tasks[instance.uuid] = task_info
         await task.start()
         instance.status = TaskStatus.RUNNING
@@ -508,9 +516,54 @@ class Manager:
                 )
             await asyncio.gather(*coros)
 
+    async def _check_stale_tasks(self) -> None:
+        """Mark running tasks as error when their heartbeat has gone stale.
+
+        A task's heartbeat goes stale if the asyncio Task died without updating
+        its DB status (e.g. the _on_task_complete DB write failed). Tasks that
+        are still alive in _running_tasks are excluded from the check.
+        Threshold = 4 × HEARTBEAT_INTERVAL so a single missed beat doesn't
+        trigger a false positive.
+        """
+        stale_threshold = timedelta(seconds=Task.HEARTBEAT_INTERVAL * 4)
+        now = datetime.now(timezone.utc)
+        try:
+            resp = await asyncio.to_thread(TasksApi(self._db_api_client).list_task_instances)
+            all_instances = resp.instances or []
+            stale = []
+            for inst in all_instances:
+                if inst.status != TaskStatus.RUNNING:
+                    continue
+                if inst.uuid in self._running_tasks:
+                    continue  # alive in this process
+                if inst.heartbeat_at is None:
+                    continue  # no heartbeat yet — started before heartbeat support
+                hb = inst.heartbeat_at
+                if hb.tzinfo is None:
+                    hb = hb.replace(tzinfo=timezone.utc)
+                if (now - hb) > stale_threshold:
+                    stale.append(inst)
+            if stale:
+                coros = []
+                for inst in stale:
+                    logger.warning("Task %s has stale heartbeat — marking error", inst.uuid)
+                    coros.append(
+                        asyncio.to_thread(
+                            TasksApi(self._db_api_client).set_task_instance_status,
+                            inst.uuid,
+                            db_models.SetTaskStatusPayload(status=TaskStatus.ERROR),
+                        )
+                    )
+                await asyncio.gather(*coros)
+        except Exception:
+            logger.exception("Error checking stale tasks")
+
     async def _worker_task(self):
         try:
             await self._init()
+            while True:
+                await asyncio.sleep(60)
+                await self._check_stale_tasks()
         except asyncio.CancelledError:
             logger.info("Periodic task was cancelled.")
         except Exception as e:

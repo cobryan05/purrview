@@ -114,6 +114,7 @@ class DatabaseMaintenanceTask(Task):
         if self._remove_deleted and not self._cancel_flag.is_set():
             self._status_msg = "Pruning missing images"
             self.log("Pruning DB records for missing images")
+            await self.heartbeat(force=True)
             try:
                 prune_resp = await asyncio.to_thread(
                     images_api.prune_missing_images,
@@ -130,6 +131,7 @@ class DatabaseMaintenanceTask(Task):
         if self._clear_orphan_tags and not self._cancel_flag.is_set():
             self._status_msg = "Clearing orphan tags"
             self.log("Clearing orphan TASK_GENERATED tags")
+            await self.heartbeat(force=True)
             try:
                 tags_resp = await asyncio.to_thread(tags_api.clear_orphan_generated_tags)
                 tags_cleared = getattr(tags_resp, "deleted_count", 0) or 0
@@ -184,6 +186,7 @@ class DatabaseMaintenanceTask(Task):
             if not self._cancel_flag.is_set():
                 self._status_msg = "Rebuilding hash index"
                 self.log("Rebuilding BK-tree hash index")
+                await self.heartbeat(force=True)
                 try:
                     rebuild_resp: RebuildHashIndexResponse = await asyncio.to_thread(
                         images_api.rebuild_hash_index

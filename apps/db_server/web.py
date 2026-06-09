@@ -1485,6 +1485,20 @@ class WebApp:
                 logger.error(e, exc_info=True)
                 return StatusResponse(status=JsonValues.FAILURE, message=str(e))
 
+        @self._app.patch(
+            "/api/task-instances/{instance_uuid}/heartbeat",
+            response_model=StatusResponse,
+            tags=[ApiTags.TASKS],
+            operation_id="set_task_instance_heartbeat",
+        )
+        async def set_task_instance_heartbeat(instance_uuid: str) -> StatusResponse:
+            try:
+                await self._manager.update_task_heartbeat(instance_uuid)
+                return StatusResponse(status=JsonValues.SUCCESS)
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return StatusResponse(status=JsonValues.FAILURE, message=str(e))
+
         @self._app.post(
             "/api/task-instances/results",
             response_model=GetTaskResultsResponse,

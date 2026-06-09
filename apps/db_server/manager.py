@@ -1009,6 +1009,9 @@ class Manager:
             instance_uuid, started_at=started_at, ended_at=ended_at, log_json=log_json
         )
 
+    async def update_task_heartbeat(self, instance_uuid: str) -> None:
+        await self._db_client.update_task_heartbeat(instance_uuid)
+
     async def get_task_results(self, task_uuids: List[str]) -> Dict[str, TaskResultData]:
         results = await self._db_client.get_task_results(task_uuids)
         return results or {}

@@ -1869,6 +1869,14 @@ class DbClient:
                 session.add(instance)
                 await session.commit()
 
+    async def update_task_heartbeat(self, task_uuid: str) -> None:
+        async with self._async_session_maker() as session:
+            instance = await session.get(TaskInstance, task_uuid)
+            if instance:
+                instance.heartbeat_at = datetime.now(timezone.utc)
+                session.add(instance)
+                await session.commit()
+
     async def set_task_status(self, task_uuid: str, new_status: str) -> None:
         async with self._async_session_maker() as session:
             instance = await session.get(TaskInstance, task_uuid)

@@ -45,6 +45,7 @@ class PreviewSourceTask(Task):
             cancel_task = asyncio.create_task(self._cancel_flag.wait())
             image_task = asyncio.create_task(provider.getNextImage())
 
+            await self.heartbeat(force=True)
             try:
                 done, pending = await asyncio.wait(
                     {image_task, cancel_task},

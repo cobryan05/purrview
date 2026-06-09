@@ -34,7 +34,16 @@ export function createGenericRow({
     container.style.gap = '0.25em';
 
     btns.forEach(({ text, emoji, onClick }) => {
-      const btn = createEmojiButton({ text, emoji, onClick: () => onClick?.({ field, row }) });
+      const btn = createEmojiButton({ text, emoji });
+      btn.onclick = async () => {
+        if (btn.disabled) return;
+        btn.disabled = true;
+        try {
+          await onClick?.({ field, row });
+        } finally {
+          btn.disabled = false;
+        }
+      };
       container.appendChild(btn);
     });
 

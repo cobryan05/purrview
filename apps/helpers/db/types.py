@@ -400,6 +400,7 @@ class TaskInstanceBase(SQLModel):
     expires_at: Optional[datetime] = None
     started_at: Optional[datetime] = Field(default=None, sa_type=DateTime(timezone=True))
     ended_at: Optional[datetime] = Field(default=None, sa_type=DateTime(timezone=True))
+    heartbeat_at: Optional[datetime] = Field(default=None, sa_type=DateTime(timezone=True))
     log_json: Optional[List[str]] = Field(default=None, sa_column=Column(JSON))
 
 
@@ -429,6 +430,7 @@ class TaskInstanceRead(OrmModel):
     created_at: Optional[datetime] = None
     started_at: Optional[datetime] = None
     ended_at: Optional[datetime] = None
+    heartbeat_at: Optional[datetime] = None
     log_lines: Optional[List[str]] = Field(default=None, validation_alias="log_json")
 
 

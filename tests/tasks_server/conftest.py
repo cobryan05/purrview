@@ -107,6 +107,7 @@ def tasks_api_mock():
     mock.set_task_instance_result.return_value = MagicMock()
     mock.set_task_instance_resume_data.return_value = MagicMock()
     mock.set_task_instance_timestamps.return_value = MagicMock()
+    mock.set_task_instance_heartbeat.return_value = MagicMock()
     mock.get_task_results.return_value = MagicMock(results={})
     return mock
 

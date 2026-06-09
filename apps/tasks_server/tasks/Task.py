@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import sys
+import time
 from abc import ABC, abstractmethod
 from collections import deque
 from enum import Enum
@@ -24,8 +25,13 @@ class Task(ABC):
         ONESHOT_RESULT = "_oneshot_result"  # delete the task when the result is fetched
         # TODO: Task *configs* need a way to delete or else Preview tasks can build up
 
+    # How often (seconds) a running task pings the DB to confirm it is alive.
+    # The stale-check threshold in the manager uses a multiple of this value.
+    HEARTBEAT_INTERVAL: int = 30
+
     def __init__(self, task_config_uuid: str, params: dict[str, Any], manager: Manager):
         self._config_uuid: str = task_config_uuid
+        self._instance_uuid: Optional[str] = None
         self._status: TaskStatus = TaskStatus.PENDING
         self._params: dict[str, Any] = params
         self._task: asyncio.Task | None = None
@@ -42,6 +48,7 @@ class Task(ABC):
         self._data_req_flag: asyncio.Event = asyncio.Event()
         self._data_ready_flag: asyncio.Event = asyncio.Event()
         self._manager: Manager = manager
+        self._last_heartbeat_time: float = 0.0
 
     @abstractmethod
     async def _init(self, params: dict[str, Any], resume_data: Optional[dict[str, Any]]) -> None:
@@ -153,7 +160,11 @@ class Task(ABC):
         Cooperative pause checkpoint. Call this from task run loops.
         Blocks while paused; returns immediately when resumed or if cancel is requested.
         Uses asyncio.Event.wait() — zero polling overhead.
+
+        Also sends a rate-limited heartbeat so the manager can detect tasks
+        that have silently stopped iterating.
         """
+        await self.heartbeat()
         if self._resume_event.is_set():
             return  # fast path: not paused
         cancel_task = asyncio.create_task(self._cancel_flag.wait())
@@ -180,6 +191,33 @@ class Task(ABC):
     def set_resume_data(self, data: dict[str, Any]) -> None:
         """Return the resume data for the task."""
         self._resume_data = data
+
+    def set_instance_uuid(self, instance_uuid: str) -> None:
+        """Set the DB instance UUID so the heartbeat loop can update it."""
+        self._instance_uuid = instance_uuid
+
+    async def heartbeat(self, force: bool = False) -> None:
+        """Update the DB heartbeat timestamp to confirm this task is still progressing.
+
+        Rate-limited: the DB write only fires once per HEARTBEAT_INTERVAL seconds
+        unless *force* is True.  Pass ``force=True`` before a single long-running
+        ``await`` so the timestamp is fresh going into it — otherwise a slow
+        operation would cause the stale-heartbeat checker to incorrectly mark
+        the task as dead.
+
+        Called automatically by ``_check_pause()``; call explicitly from ``_run()``
+        before any await that may take longer than HEARTBEAT_INTERVAL to complete.
+        """
+        if not self._instance_uuid:
+            return
+        now = time.monotonic()
+        if not force and (now - self._last_heartbeat_time) < self.HEARTBEAT_INTERVAL:
+            return
+        self._last_heartbeat_time = now
+        try:
+            await self._manager.update_task_heartbeat(self._instance_uuid)
+        except Exception:
+            logger.warning("Heartbeat update failed for task %s", self._instance_uuid)
 
     def get_resume_data(self) -> dict[str, Any]:
         """Return the resume data for the task."""

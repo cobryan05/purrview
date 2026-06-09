@@ -5,7 +5,7 @@ import { createGenericRow, Logger, showPaneError, toast } from '/app-static/js/u
 /**
  * Renders the task configs (left column).
  */
-export function renderTaskConfigs({ target = 'task-config-list', onEdit, onDelete, onStartTask, onCreateTask, refresh = null }) {
+export function renderTaskConfigs({ target = 'task-config-list', onEdit, onDelete, onCreateTask, refresh = null }) {
   const container = document.getElementById(target);
   if (!container) return;
   container.innerHTML = '';
@@ -35,8 +35,8 @@ export function renderTaskConfigs({ target = 'task-config-list', onEdit, onDelet
         onClick: async () => {
           try {
             await startTask({ configUuid });
-            onStartTask?.();
-            refresh?.()
+            toast('Task started', 2000);
+            refresh?.();
           } catch (error) {
             toast(error.message || 'Failed to start task', 5000, 'error');
           }
