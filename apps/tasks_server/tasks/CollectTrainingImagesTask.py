@@ -70,6 +70,11 @@ class TargetLabel:
 
 @register_task()
 class CollectTrainingImagesTask(Task):
+    # Per-call retry limits and timeouts for I/O operations that can hang indefinitely.
+    _MAX_RETRIES: int = 3
+    _FETCH_TIMEOUT_S: float = 30.0    # seconds to wait for a single getNextImage() call
+    _INFERENCE_TIMEOUT_S: float = 60.0  # seconds per inference call (allows for model load)
+
     async def _init(self, params: dict[str, Any], resume_data: Optional[dict[str, Any]]) -> None:
         self._status_msg: str = "Initializing"
         self.log("Initializing task parameters")
@@ -303,7 +308,25 @@ class CollectTrainingImagesTask(Task):
                             continue
 
                     t0 = time.perf_counter()
-                    provided = await provider.getNextImage()
+                    provided = None
+                    for _attempt in range(self._MAX_RETRIES):
+                        try:
+                            provided = await asyncio.wait_for(
+                                provider.getNextImage(), timeout=self._FETCH_TIMEOUT_S
+                            )
+                            break
+                        except asyncio.TimeoutError:
+                            if _attempt < self._MAX_RETRIES - 1:
+                                logger.warning(
+                                    "Fetch timeout on attempt %d/%d, retrying", _attempt + 1, self._MAX_RETRIES
+                                )
+                            else:
+                                self.log(
+                                    f"Provider timed out {self._MAX_RETRIES} times — removing from active sources"
+                                )
+                                logger.warning(
+                                    "Removing provider after %d consecutive fetch timeouts", self._MAX_RETRIES
+                                )
                     t_fetch = time.perf_counter()
                     if provided is None:
                         active.discard(provider)
@@ -426,28 +449,46 @@ class CollectTrainingImagesTask(Task):
         """Runs all configured models; returns detections meeting per-label confidence thresholds."""
         matching = []
         for name in self._model_names:
-            try:
-                t_start = time.perf_counter()
-                result = await asyncio.to_thread(
-                    inference_api.inference,
-                    name,
-                    InferencePayload(
-                        image_base64=base64_img,
-                        conf_thresh=self._min_all_conf,
-                        pin_id=pin_ids.get(name),
-                    ),
-                )
-                logger.debug(
-                    f"Inference HTTP round-trip model='{name}': {1000*(time.perf_counter()-t_start):.1f}ms "
-                    f"({len(result.result.detections or [])} detections)"
-                )
-                for det in result.result.detections or []:
-                    luuid = det.bbox.label_uuid
-                    if luuid and luuid in self._target_label_map:
-                        if det.confidence >= self._target_label_map[luuid]:
-                            matching.append(det)
-            except Exception:
-                logger.exception(f"Inference error on model {name}")
+            for _attempt in range(self._MAX_RETRIES):
+                try:
+                    t_start = time.perf_counter()
+                    result = await asyncio.wait_for(
+                        asyncio.to_thread(
+                            inference_api.inference,
+                            name,
+                            InferencePayload(
+                                image_base64=base64_img,
+                                conf_thresh=self._min_all_conf,
+                                pin_id=pin_ids.get(name),
+                            ),
+                        ),
+                        timeout=self._INFERENCE_TIMEOUT_S,
+                    )
+                    logger.debug(
+                        f"Inference HTTP round-trip model='{name}': {1000*(time.perf_counter()-t_start):.1f}ms "
+                        f"({len(result.result.detections or [])} detections)"
+                    )
+                    for det in result.result.detections or []:
+                        luuid = det.bbox.label_uuid
+                        if luuid and luuid in self._target_label_map:
+                            if det.confidence >= self._target_label_map[luuid]:
+                                matching.append(det)
+                    break  # success — move on to next model
+                except asyncio.TimeoutError:
+                    if _attempt < self._MAX_RETRIES - 1:
+                        logger.warning(
+                            "Inference timeout on model '%s' (attempt %d/%d), retrying",
+                            name, _attempt + 1, self._MAX_RETRIES,
+                        )
+                    else:
+                        logger.warning(
+                            "Inference timed out %d times for model '%s', skipping frame",
+                            self._MAX_RETRIES, name,
+                        )
+                        self.log(f"Inference timeout on '{name}' after {self._MAX_RETRIES} retries — skipping frame")
+                except Exception:
+                    logger.exception(f"Inference error on model {name}")
+                    break  # don't retry on non-timeout exceptions
 
         # Priority dedup: `matching` is in model-priority order (models run in config
         # order), so drop any detection overlapping an already-kept higher-priority
