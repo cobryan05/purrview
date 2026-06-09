@@ -33,7 +33,7 @@ from apps.helpers.imageProviders.imageProvider import (
     ImageProviderType,
     ImageWithProviderMetadata,
 )
-from apps.helpers.imageUtils import base64_encode_png
+from apps.helpers.imageUtils import base64_encode_jpg
 
 from .Registry import register_task
 from .Task import Task
@@ -349,12 +349,12 @@ class CollectTrainingImagesTask(Task):
                         self._fixed_frames_processed += 1
 
                     # Use pre-encoded data from the prefetch worker when available;
-                    # otherwise encode here (CPU-bound PNG compression, off the event loop).
+                    # otherwise encode here
                     if provided.encoded_b64 is not None:
                         base64_img = provided.encoded_b64
                         t_encode = time.perf_counter()
                     else:
-                        base64_img = await asyncio.to_thread(base64_encode_png, provided.image)
+                        base64_img = await asyncio.to_thread(base64_encode_jpg, provided.image)
                         t_encode = time.perf_counter()
 
                     matching = await self._run_inference(inference_api, base64_img, pin_ids)

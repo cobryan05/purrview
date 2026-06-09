@@ -3,7 +3,7 @@ import logging
 from typing import Any, Optional
 
 from apps.helpers.imageProviders.Registry import image_provider_registry
-from apps.helpers.imageUtils import base64_encode_png
+from apps.helpers.imageUtils import base64_encode_jpg
 
 from .Registry import register_task
 from .Task import Task
@@ -54,7 +54,7 @@ class PreviewSourceTask(Task):
 
                 if image_task in done:
                     try:
-                        image_base64 = base64_encode_png(image_task.result().image)
+                        image_base64 = base64_encode_jpg(image_task.result().image)
                         ret["image"] = image_base64
                         self.log("Image received successfully")
                     except Exception:

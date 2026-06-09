@@ -5,16 +5,88 @@ from typing import List
 
 import cv2
 import numpy as np
-
+import json
+import lz4.frame
 from apps.helpers.types import DetectionResult
 
 
-def base64_encode_png(image: np.ndarray):
-    # Encode image to PNG and base64 encode
+def base64_encode_png(image: np.ndarray) -> str:
+    """Encodes an image to PNG format and packages it into a unified base64 packet."""
     success, buffer = cv2.imencode(".png", image)
     if not success:
-        raise RuntimeError("Failed to encode image")
-    return base64.b64encode(buffer).decode("utf-8")
+        raise RuntimeError("Failed to encode PNG image")
+
+    b64_payload = base64.b64encode(buffer).decode("utf-8")
+
+    packet = {"format": "png", "metadata": {}, "data": b64_payload}
+    return json.dumps(packet)
+
+
+def base64_encode_jpg(image: np.ndarray, quality: int = 85) -> str:
+    """Encodes an image to JPEG format and packages it into a unified base64 packet."""
+    success, buffer = cv2.imencode(
+        ".jpg", image, [int(cv2.IMWRITE_JPEG_QUALITY), quality]
+    )
+    if not success:
+        raise RuntimeError("Failed to encode JPEG image")
+
+    b64_payload = base64.b64encode(buffer).decode("utf-8")
+
+    packet = {"format": "jpeg", "metadata": {}, "data": b64_payload}
+    return json.dumps(packet)
+
+
+def base64_encode_lz4(image: np.ndarray) -> str:
+    """Compresses raw pixel bytes via LZ4 and packages it with necessary array shape metadata."""
+    raw_bytes = image.tobytes()
+    metadata = {
+        "shape": image.shape,
+        "dtype": str(image.dtype),
+    }
+    compressed_bytes = lz4.frame.compress(raw_bytes)
+    b64_payload = base64.b64encode(compressed_bytes).decode("utf-8")
+
+    packet = {"format": "lz4", "metadata": metadata, "data": b64_payload}
+    return json.dumps(packet)
+
+def base64_decode_image(json_packet_str: str) -> np.ndarray:
+    """Universal reader that decodes an image packet from png, jpeg, or lz4 format
+
+    back into a numpy array (OpenCV image format).
+    """
+    try:
+        packet = json.loads(json_packet_str)
+    except json.JSONDecodeError:
+        # Assume it's a raw base64 string for PNG
+        b64_data = json_packet_str
+        packet = {"format": "png", "data": b64_data, "metadata": {}}
+
+    fmt = packet.get("format")
+    b64_data = packet.get("data")
+    metadata = packet.get("metadata", {})
+
+    if not fmt or not b64_data:
+        raise ValueError("Invalid packet structure: missing 'format' or 'data'.")
+
+    binary_data = base64.b64decode(b64_data.encode("utf-8"))
+
+    if fmt in ("jpeg", "png"):
+        np_arr = np.frombuffer(binary_data, dtype=np.uint8)
+        image = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+        if image is None:
+            raise RuntimeError(f"cv2.imdecode failed to parse {fmt} buffer.")
+        return image
+
+    elif fmt == "lz4":
+        if "shape" not in metadata or "dtype" not in metadata:
+            raise ValueError("LZ4 packets require 'shape' and 'dtype' metadata.")
+
+        raw_bytes = lz4.frame.decompress(binary_data)
+        flat_array = np.frombuffer(raw_bytes, dtype=metadata["dtype"])
+        return flat_array.reshape(metadata["shape"])
+
+    else:
+        raise ValueError(f"Unsupported decoding format: '{fmt}'")
 
 
 def letterbox(image, size=640, color=(114, 114, 114)):

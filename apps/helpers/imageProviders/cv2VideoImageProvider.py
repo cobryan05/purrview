@@ -10,7 +10,7 @@ from typing import Any, Optional
 
 import cv2
 
-from apps.helpers.imageUtils import base64_encode_png
+from apps.helpers.imageUtils import base64_encode_jpg
 
 from .imageProvider import ImageProvider, ImageProviderType, ImageWithProviderMetadata
 from .Registry import register_image_provider
@@ -144,7 +144,7 @@ class Cv2VideoImageProvider(ImageProvider):
                 img.metadata.frame_idx = self._vidFrameCnt
                 self._vidFrameCnt += self._frame_stride
                 if self.pre_encode:
-                    img.encoded_b64 = await asyncio.to_thread(base64_encode_png, frame)
+                    img.encoded_b64 = await asyncio.to_thread(base64_encode_jpg, frame)
                 await self._prefetch_queue.put(img)
 
                 self._advance_stride()

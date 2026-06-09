@@ -16,6 +16,7 @@ from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 
 from apps.helpers.consts import ApiTags, JsonKeys, JsonValues
+from apps.helpers.imageUtils import base64_decode_image
 from apps.helpers.types import (
     InferenceResult,
     InferenceResultModel,
@@ -278,9 +279,7 @@ class WebApp:
         )
         async def inference_api(model_name: str, payload: InferencePayload) -> InferenceResponse:
             try:
-                np_bytes = base64.b64decode(payload.image_base64)
-                np_image = np.frombuffer(np_bytes, np.uint8)
-                image_array: np.ndarray = cv2.imdecode(np_image, cv2.IMREAD_COLOR)
+                image_array: np.ndarray = base64_decode_image(payload.image_base64)
 
                 inference_result: InferenceResult = await self._manager.recognize(
                     model_name=model_name,
