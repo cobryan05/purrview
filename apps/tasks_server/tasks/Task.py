@@ -265,3 +265,12 @@ class Task(ABC):
             await asyncio.wait_for(self._task_done.wait(), timeout)
         except TimeoutError:
             raise asyncio.TimeoutError("Timed out waiting for task to complete.")
+
+    @staticmethod
+    async def _read_int_setting(settings_api: Any, key: str, default: int) -> int:
+        """Read an integer setting from the DB settings API; return default on any failure."""
+        try:
+            resp = await asyncio.to_thread(settings_api.get_setting, key)
+            return int(resp.value)
+        except Exception:
+            return default

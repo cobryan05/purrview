@@ -1848,11 +1848,31 @@ button.filter-active {
   gap: 0.75em;
 }
 
+/* App-level warning/caution colour tokens — Pico has no amber semantic variables.
+   Override for dark mode so the box remains readable against dark backgrounds. */
+:root {
+  --app-warning-color: #7a5800;
+  --app-warning-bg: #fff8e1;
+  --app-warning-border: #ffe082;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme]) {
+    --app-warning-color: #ffe082;
+    --app-warning-bg: #2a1f00;
+    --app-warning-border: #7a5800;
+  }
+}
+:root[data-theme="dark"] {
+  --app-warning-color: #ffe082;
+  --app-warning-bg: #2a1f00;
+  --app-warning-border: #7a5800;
+}
+
 .settings-section-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  border-bottom: 1px solid #ccc;
+  border-bottom: 1px solid var(--pico-muted-border-color, #ccc);
   padding-bottom: 0.4em;
 }
 
@@ -1870,7 +1890,7 @@ button.filter-active {
 
 .settings-collapse-chevron {
   font-size: 0.75em;
-  color: #888;
+  color: var(--pico-muted-color, #888);
   transition: transform 0.15s;
   line-height: 1;
 }
@@ -1882,7 +1902,7 @@ button.filter-active {
   flex-direction: column;
   gap: 0.35em;
   padding: 0.75em 0;
-  border-bottom: 1px solid #eee;
+  border-bottom: 1px solid var(--pico-muted-border-color, #eee);
 }
 
 .settings-server-row:last-child {
@@ -1908,6 +1928,14 @@ button.filter-active {
   margin: 0;
 }
 
+.settings-server-input--narrow {
+  max-width: 6em;
+}
+
+.settings-section-header h4 {
+  margin: 0;
+}
+
 .settings-server-btn {
   flex-shrink: 0;
   font-size: 0.85em;
@@ -1928,11 +1956,27 @@ button.filter-active {
 }
 
 .settings-server-status[data-state='muted'] {
-  color: #888;
+  color: var(--pico-muted-color, #888);
 }
 
 .settings-server-status[data-state='info'] {
   color: var(--pico-color-blue-500, #1565c0);
+}
+
+.settings-server-desc {
+  font-size: 0.82em;
+  color: var(--pico-muted-color, #888);
+  margin-bottom: 0.2em;
+}
+
+.settings-dedup-warning {
+  font-size: 0.82em;
+  color: var(--app-warning-color);
+  background: var(--app-warning-bg);
+  border: 1px solid var(--app-warning-border);
+  border-radius: 4px;
+  padding: 0.4em 0.7em;
+  margin: 0;
 }
 
 /* ===== Active Model Bar ===== */

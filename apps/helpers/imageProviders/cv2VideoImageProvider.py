@@ -3,6 +3,7 @@
 import asyncio
 import glob
 import logging
+import os
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any, Optional
@@ -28,26 +29,22 @@ class Cv2VideoImageProvider(ImageProvider):
 
     def __init__(
         self,
-        paths: list[str] = None,
+        rootdir: str = "",
         loop: bool = False,
         frame_stride: int = 1,
         recursive: bool = True,
-        rootdir: str = "",
         globs: list[str] = None,
     ):
-        # Support two calling conventions:
-        #   Legacy:  paths=["/data/**/*.mp4", ...]   (absolute glob patterns)
-        #   New:     rootdir="/data", globs=["**/*.mp4", "*.jpg"]
-        if not paths and rootdir:
-            raw_globs = globs if globs else ["**/*"]
-            if isinstance(raw_globs, str):
-                raw_globs = [raw_globs]
-            paths = [str(Path(rootdir) / g) for g in raw_globs]
-        elif paths is None:
-            paths = []
-
-        if isinstance(paths, str):
-            paths = [paths]
+        # The file browser returns paths relative to FILES_ROOT (e.g. "videos/cats").
+        # Absolute-looking paths (e.g. "/videos" at root) are also FILES_ROOT-relative,
+        # not filesystem root — strip the anchor and resolve under FILES_ROOT.
+        _files_root = Path(os.environ.get("FILES_ROOT", "/app/image_datasets"))
+        rootdir_path = Path(rootdir)
+        if not rootdir_path.is_absolute():
+            rootdir_path = _files_root / rootdir_path
+        else:
+            rootdir_path = _files_root / rootdir_path.relative_to(rootdir_path.anchor)
+        paths = [str(rootdir_path / g) for g in (globs or ["**/*"])]
 
         paths_expanded: list[str] = []
         for pattern in paths:

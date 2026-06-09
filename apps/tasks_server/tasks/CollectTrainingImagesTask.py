@@ -12,6 +12,7 @@ import cv2
 import db_client
 import inference_client
 from db_client.api.images_api import ImagesApi
+from db_client.api.settings_api import SettingsApi
 from db_client.api.tags_api import TagsApi
 from db_client.models.add_tag_payload import AddTagPayload
 from db_client.models.bounding_box_metadata_model import BoundingBoxMetadataModel
@@ -122,11 +123,19 @@ class CollectTrainingImagesTask(Task):
 
         # Deduplication params
         self._enable_dedup: bool = bool(params.get("enable_dedup", False))
-        self._image_hash_size: int = int(params.get("image_hash_size", 8))
-        self._bbox_hash_size: int = int(params.get("bbox_hash_size", 16))
         self._image_dup_threshold: int = int(params.get("image_dup_threshold", 5))
         self._bbox_dup_threshold: int = int(params.get("bbox_dup_threshold", 8))
-        self._skip_duplicates: bool = bool(params.get("skip_duplicates", False))
+        self._duplicate_action: str = params.get("duplicate_action", "tag")
+        # Dedup stats — persisted across pause/resume so totals are cumulative.
+        self._dup_frames_discarded: int = resume_data.get("dup_frames_discarded", 0) if resume_data else 0
+        self._dup_detections_tagged: int = resume_data.get("dup_detections_tagged", 0) if resume_data else 0
+        # Hash sizes are global settings (must match the index; changing them requires
+        # recomputing all stored hashes). Read from DB settings, fall back to defaults.
+        _settings_api = SettingsApi(self._manager.get_db_api_client())
+        self._image_hash_size, self._bbox_hash_size = await asyncio.gather(
+            self._read_int_setting(_settings_api, "dedup_image_hash_size", 8),
+            self._read_int_setting(_settings_api, "dedup_bbox_hash_size", 16),
+        )
 
     async def _run(self) -> dict[str, Any]:
         self._unverified_tag_uuid = UNVERIFIED_TAG_UUID
@@ -221,6 +230,19 @@ class CollectTrainingImagesTask(Task):
                 return f"Processed {self._fixed_frames_processed}/{total} frames, Saved {self._images_saved} images"
             return f"Processed {self._images_processed} frames, Saved {self._images_saved} images"
 
+        def _dup_stats_str() -> str:
+            if not self._enable_dedup:
+                return ""
+            parts = []
+            if self._dup_frames_discarded:
+                parts.append(f"{self._dup_frames_discarded} frames discarded (all-dup)")
+            if self._dup_detections_tagged:
+                parts.append(f"{self._dup_detections_tagged} dup detections tagged")
+            return (", " + ", ".join(parts)) if parts else ""
+
+        def _full_status() -> str:
+            return _status_msg_str() + _dup_stats_str()
+
         def _collect_saves() -> None:
             """Harvest results from any completed save tasks and update counters."""
             still_pending = []
@@ -255,6 +277,7 @@ class CollectTrainingImagesTask(Task):
 
         self._status_msg = "Running"
         self.log(f"Starting collection (resuming from {self._images_saved} images)")
+        _last_heartbeat: float = 0.0
         for provider in providers:
             # Enable pre-encoding in the prefetch worker so encode cost is pipelined
             # with the previous frame's inference rather than sitting on the critical path.
@@ -266,7 +289,7 @@ class CollectTrainingImagesTask(Task):
             while active and not self._cancel_flag.is_set():
                 await self._check_pause()
                 _collect_saves()
-                self._status_msg = _status_msg_str()
+                self._status_msg = _full_status()
 
                 any_fetched = False
                 for provider in list(active):
@@ -344,6 +367,13 @@ class CollectTrainingImagesTask(Task):
                 if not any_fetched:
                     await asyncio.sleep(0.05)
 
+                # Heartbeat: log current status every 30 s so the task doesn't look stuck
+                # when providers deliver frames but none match the detection criteria.
+                _now = time.perf_counter()
+                if _now - _last_heartbeat >= 30.0:
+                    _last_heartbeat = _now
+                    self.log(_full_status())
+
         finally:
             await _drain_saves()
             for provider in providers:
@@ -360,7 +390,13 @@ class CollectTrainingImagesTask(Task):
 
         self._resume_data = self._build_resume_data()
         self._data_ready_flag.set()
+        self.log(f"Complete: {self._images_saved} images saved, {self._images_processed} frames processed"
+                 + (f", {self._dup_frames_discarded} frames discarded (all-dup)" if self._dup_frames_discarded else "")
+                 + (f", {self._dup_detections_tagged} dup detections tagged" if self._dup_detections_tagged else ""))
         result: dict[str, Any] = {"images_saved": self._images_saved}
+        if self._enable_dedup:
+            result["dup_frames_discarded"] = self._dup_frames_discarded
+            result["dup_detections_tagged"] = self._dup_detections_tagged
         if self._task_tag_uuid:
             result["actions"] = [
                 {
@@ -377,6 +413,8 @@ class CollectTrainingImagesTask(Task):
             "images_processed": self._images_processed,
             "fixed_frames_processed": self._fixed_frames_processed,
             "processed_ids": list(self._processed_ids),
+            "dup_frames_discarded": self._dup_frames_discarded,
+            "dup_detections_tagged": self._dup_detections_tagged,
         }
 
     async def _run_inference(
@@ -442,10 +480,11 @@ class CollectTrainingImagesTask(Task):
 
         # Run dedup check before writing to disk (no disk I/O needed — image is in memory).
         dup_flags: list[bool] = [False] * len(matching)
-        if self._enable_dedup and provided.image is not None:
+        if self._enable_dedup and provided.image is not None and self._duplicate_action != "ignore":
             dup_flags = await self._check_dedup(images_api, provided.image, matching)
-            if self._skip_duplicates and all(dup_flags):
-                logger.debug("Skipping all-duplicate frame: %s", filename)
+            if self._duplicate_action == "discard" and all(dup_flags):
+                self._dup_frames_discarded += 1
+                logger.debug("Discarding all-duplicate frame: %s", filename)
                 return None
 
         # cv2.imwrite is CPU-bound (PNG compression) + I/O; run off the event loop
@@ -455,6 +494,10 @@ class CollectTrainingImagesTask(Task):
             self.log(f"Failed to write image: {filename}")
             return None
         logger.debug(f"Image write: {1000*(time.perf_counter()-t0):.1f}ms → {abs_path}")
+
+        dup_tagged_count = sum(1 for f in dup_flags if f)
+        if dup_tagged_count:
+            self._dup_detections_tagged += dup_tagged_count
 
         boxes = []
         for i, det in enumerate(matching):
@@ -575,11 +618,9 @@ class CollectTrainingImagesTask(Task):
                     "generate_task_tag",
                     "task_tag_name",
                     "enable_dedup",
-                    "image_hash_size",
-                    "bbox_hash_size",
                     "image_dup_threshold",
                     "bbox_dup_threshold",
-                    "skip_duplicates",
+                    "duplicate_action",
                 ]
             },
             "snapshot_interval": {
@@ -647,18 +688,6 @@ class CollectTrainingImagesTask(Task):
                 "description": "Check each frame against the perceptual hash index and tag duplicate detections.",
                 "default": False,
             },
-            "image_hash_size": {
-                "type": "int",
-                "label": "Image Hash Size",
-                "description": "Hash grid dimension for whole-image phash (8=64-bit). Must match the value used when building the index.",
-                "default": 8,
-            },
-            "bbox_hash_size": {
-                "type": "int",
-                "label": "BBox Hash Size",
-                "description": "Hash grid dimension for bbox crop phash (16=256-bit). Must match the value used when building the index.",
-                "default": 16,
-            },
             "image_dup_threshold": {
                 "type": "int",
                 "label": "Image Duplicate Threshold",
@@ -671,10 +700,15 @@ class CollectTrainingImagesTask(Task):
                 "description": "Max Hamming distance for two bbox crop phashes to be considered the same object appearance.",
                 "default": 8,
             },
-            "skip_duplicates": {
-                "type": "boolean",
-                "label": "Skip All-Duplicate Frames",
-                "description": "If every detection in a frame is a duplicate, skip saving the image entirely.",
-                "default": False,
+            "duplicate_action": {
+                "type": "select",
+                "label": "Action on Duplicate",
+                "description": "What to do when a detection matches an existing entry in the perceptual hash index.",
+                "options": [
+                    {"value": "tag", "label": "Tag — save the image and mark duplicate detections"},
+                    {"value": "discard", "label": "Discard — skip the frame entirely when all detections are duplicates"},
+                    {"value": "ignore", "label": "Ignore — save normally without any duplicate marking"},
+                ],
+                "default": "tag",
             },
         }

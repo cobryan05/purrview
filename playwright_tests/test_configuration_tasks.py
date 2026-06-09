@@ -24,7 +24,7 @@ from playwright.sync_api import Page, Route, expect
 # Fake data
 # ---------------------------------------------------------------------------
 
-TASK_TYPE = "RefreshDatabaseTask"
+TASK_TYPE = "DatabaseMaintenanceTask"
 
 # Minimal schema — boolean + select fields; tests boolean-checkbox and select rendering.
 REFRESH_DB_SCHEMA = {
@@ -213,7 +213,7 @@ class TestTaskConfigList:
 class TestTaskTypeDropdown:
     def test_type_dropdown_populated_from_api(self, page: Page, base_url: str):
         """The task type <select> lists types returned by /api/tasks/types/list."""
-        types = ["RefreshDatabaseTask", "CollectTrainingImagesTask"]
+        types = ["DatabaseMaintenanceTask", "CollectTrainingImagesTask"]
         _mock_task_types(page, types)
         _mock_task_schema(page)
         _mock_task_configs(page, {})

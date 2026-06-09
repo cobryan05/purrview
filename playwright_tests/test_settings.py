@@ -126,7 +126,7 @@ class TestServerConfigRows:
         _mock_settings_get(page)
         _navigate_to_settings(page, base_url)
 
-        rows = page.locator("#tab-settings .settings-server-row")
+        rows = page.locator("#settings-section-server .settings-server-row")
         expect(rows).to_have_count(2)
 
         labels = rows.locator(".settings-server-label").all_text_contents()
