@@ -239,3 +239,43 @@ class TestBuildFromDB:
         assert s["image_valid"] == 1
         assert s["image_tombstones"] == 0
         assert s["needs_rebuild"] is False
+
+    async def test_build_does_not_block_event_loop(self, idx):
+        """_construct_trees must run off the event loop via asyncio.to_thread.
+
+        If called synchronously, BK-tree construction on a large dataset blocks
+        all concurrent requests until the build completes.
+        """
+        import threading
+        from unittest.mock import patch
+
+        ran_in_thread = False
+        original = idx._construct_trees
+
+        def tracked_construct(image_rows, bbox_rows):
+            nonlocal ran_in_thread
+            ran_in_thread = threading.current_thread() is not threading.main_thread()
+            return original(image_rows, bbox_rows)
+
+        with patch.object(idx, "_construct_trees", tracked_construct):
+            await idx.build()
+
+        assert ran_in_thread, "_construct_trees must run in a worker thread, not on the event loop"
+
+    async def test_rebuild_does_not_block_event_loop(self, idx):
+        """rebuild() has the same non-blocking requirement as build()."""
+        import threading
+        from unittest.mock import patch
+
+        ran_in_thread = False
+        original = idx._construct_trees
+
+        def tracked_construct(image_rows, bbox_rows):
+            nonlocal ran_in_thread
+            ran_in_thread = threading.current_thread() is not threading.main_thread()
+            return original(image_rows, bbox_rows)
+
+        with patch.object(idx, "_construct_trees", tracked_construct):
+            await idx.rebuild()
+
+        assert ran_in_thread, "_construct_trees must run in a worker thread, not on the event loop"

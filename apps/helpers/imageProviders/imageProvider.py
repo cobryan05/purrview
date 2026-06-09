@@ -25,6 +25,7 @@ class ImageWithProviderMetadata:
     image: np.ndarray
     metadata: ImageProviderMetadata = field(default_factory=ImageProviderMetadata)
     encoded_b64: Optional[str] = None
+    image_phash: Optional[str] = None  # pre-computed by prefetch worker when pre_phash=True
 
 
 class ImageProvider:

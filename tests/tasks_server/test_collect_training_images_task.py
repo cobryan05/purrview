@@ -428,6 +428,52 @@ def test_get_status_actions_with_tag_uuid():
     assert action["payload"] == {"tag_uuids": ["some-tag-uuid"]}
 
 
+async def test_run_inference_runs_all_models_even_when_first_has_no_detections():
+    """All models must be called regardless of whether earlier models return detections.
+
+    This verifies the parallel execution does not short-circuit on empty results.
+    """
+    params = {
+        **_PARAMS,
+        "model_label_config": [
+            {"modelName": "model-a", "labelValues": {_LABEL_UUID: 0.5}},
+            {"modelName": "model-b", "labelValues": {_LABEL_UUID: 0.5}},
+        ],
+    }
+    task = _make_task(params=params)
+    await task._init(params, resume_data=None)
+
+    box_b = _detection_at(0.7, 0.7, 0.2, 0.2)
+
+    called = []
+
+    def _inference(name, payload):
+        called.append(name)
+        result = MagicMock()
+        result.result.detections = [] if name == "model-a" else [box_b]
+        return result
+
+    inference_api = MagicMock()
+    inference_api.inference.side_effect = _inference
+
+    matching = await task._run_inference(inference_api, "b64", {"model-a": None, "model-b": None})
+
+    assert "model-a" in called
+    assert "model-b" in called
+    assert matching == [box_b]
+
+
+async def test_save_image_writes_jpeg_not_png(tmp_path):
+    """_save_image must produce .jpg output files; no .png files should be created."""
+    images = [_tracked_image(0), _tracked_image(1)]
+    await _run_task(images, detect=True, tmp_path=tmp_path)
+
+    jpg_files = list(tmp_path.rglob("*.jpg"))
+    png_files = list(tmp_path.rglob("*.png"))
+    assert len(jpg_files) == 2, f"Expected 2 .jpg files, found: {jpg_files}"
+    assert png_files == [], f"No .png files expected, found: {png_files}"
+
+
 def test_generate_task_tag_default_is_false():
     """generate_task_tag must default to False so pre-existing configs are unaffected."""
     task = CollectTrainingImagesTask.__new__(CollectTrainingImagesTask)

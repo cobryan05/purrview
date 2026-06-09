@@ -3,6 +3,7 @@ import logging
 import os
 import time
 import uuid as uuid_module
+from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
@@ -62,6 +63,14 @@ def _bbox_iou(a, b) -> float:
     return inter / union if union > 0.0 else 0.0
 
 
+def _compute_bbox_phashes(image_bgr, matching, hash_size: int) -> list:
+    """Compute phash for every detection's bbox crop. Runs off the event loop."""
+    return [
+        phash_from_numpy_crop(image_bgr, d.bbox.x, d.bbox.y, d.bbox.width, d.bbox.height, hash_size)
+        for d in matching
+    ]
+
+
 @dataclass
 class TargetLabel:
     label_uuid: str
@@ -74,6 +83,10 @@ class CollectTrainingImagesTask(Task):
     _MAX_RETRIES: int = 3
     _FETCH_TIMEOUT_S: float = 30.0    # seconds to wait for a single getNextImage() call
     _INFERENCE_TIMEOUT_S: float = 60.0  # seconds per inference call (allows for model load)
+    # Dedup pipeline buffer: allows this many matched frames to queue for dedup before
+    # inference blocks.  A small buffer absorbs per-frame jitter without wasting memory
+    # (each slot holds a numpy array reference, not a copy).
+    _DEDUP_QUEUE_SIZE: int = 4
 
     async def _init(self, params: dict[str, Any], resume_data: Optional[dict[str, Any]]) -> None:
         self._status_msg: str = "Initializing"
@@ -215,9 +228,9 @@ class CollectTrainingImagesTask(Task):
         inference_api = InferenceApi(inference_api_client)
         files_root = Path(os.environ.get("FILES_ROOT", "/app/image_datasets"))
 
-        # Background save tasks: list of (Task, unique_id).  Saves run concurrently
-        # with fetch/encode/infer so the ~100 ms metadata write is hidden.
-        pending_saves: list[tuple[asyncio.Task, Optional[str]]] = []
+        # Shared save-task list: appended by _dedup_worker (dedup path) or directly here
+        # (no-dedup path), harvested by _collect_saves() on each main-loop iteration.
+        self._pending_saves: list[tuple[asyncio.Task, Optional[str]]] = []
 
         # Separate out FIXED providers so we can compute real progress from their frame counts.
         # For LIVE_SNAPSHOT and LIVE_STREAM providers we track last-fetch time for rate limiting.
@@ -251,7 +264,7 @@ class CollectTrainingImagesTask(Task):
         def _collect_saves() -> None:
             """Harvest results from any completed save tasks and update counters."""
             still_pending = []
-            for task, uid in pending_saves:
+            for task, uid in self._pending_saves:
                 if task.done():
                     try:
                         filename = task.result()
@@ -271,24 +284,51 @@ class CollectTrainingImagesTask(Task):
                             self._update_progress(min(100.0, self._fixed_frames_processed / total * 100.0))
                 else:
                     still_pending.append((task, uid))
-            pending_saves.clear()
-            pending_saves.extend(still_pending)
+            self._pending_saves.clear()
+            self._pending_saves.extend(still_pending)
 
         async def _drain_saves() -> None:
             """Wait for all in-flight saves then collect their results."""
-            if pending_saves:
-                await asyncio.gather(*(t for t, _ in pending_saves), return_exceptions=True)
+            if self._pending_saves:
+                await asyncio.gather(*(t for t, _ in self._pending_saves), return_exceptions=True)
             _collect_saves()
 
         self._status_msg = "Running"
         self.log(f"Starting collection (resuming from {self._images_saved} images)")
         _last_heartbeat: float = 0.0
+        # PERF BEGIN — rolling per-frame timing stats (bounded window to cap memory)
+        _PERF_SUMMARY_INTERVAL = 50
+        _PERF_WINDOW = 200
+        _perf_fetch_ms: deque = deque(maxlen=_PERF_WINDOW)
+        _perf_encode_ms: deque = deque(maxlen=_PERF_WINDOW)
+        _perf_infer_ms: deque = deque(maxlen=_PERF_WINDOW)
+        _perf_frame_count: int = 0
+
+        def _ms_stats(lst) -> str:
+            n = len(lst)
+            return f"min={min(lst):.0f} avg={sum(lst)/n:.0f} max={max(lst):.0f}" if n else "n/a"
+        # PERF END
+        self._meta_write_lock = asyncio.Lock()
+
         for provider in providers:
             # Enable pre-encoding in the prefetch worker so encode cost is pipelined
             # with the previous frame's inference rather than sitting on the critical path.
             if hasattr(provider, "pre_encode"):
                 provider.pre_encode = True
+            # Enable pre-phash when dedup is on so the hash is available before inference ends.
+            if self._enable_dedup and hasattr(provider, "pre_phash"):
+                provider.pre_phash = True
+                provider.image_hash_size = self._image_hash_size
             await provider.start()
+
+        # Dedup coroutine: started only when dedup is enabled.  Receives matched frames
+        # from the main loop via a bounded queue (maxsize=1) and pipelines dedup one
+        # frame behind inference so throughput ≈ max(inference_time, dedup_time).
+        dedup_task: Optional[asyncio.Task] = None
+        if self._enable_dedup:
+            self._dedup_queue: asyncio.Queue = asyncio.Queue(maxsize=self._DEDUP_QUEUE_SIZE)
+            dedup_task = asyncio.create_task(self._dedup_worker(images_api, files_root))
+
         try:
             active = set(providers)
             while active and not self._cancel_flag.is_set():
@@ -307,7 +347,7 @@ class CollectTrainingImagesTask(Task):
                         if time.perf_counter() - last_fetch.get(id(provider), 0) < interval:
                             continue
 
-                    t0 = time.perf_counter()
+                    t0 = time.perf_counter()  # PERF
                     provided = None
                     for _attempt in range(self._MAX_RETRIES):
                         try:
@@ -349,33 +389,59 @@ class CollectTrainingImagesTask(Task):
                         self._fixed_frames_processed += 1
 
                     # Use pre-encoded data from the prefetch worker when available;
-                    # otherwise encode here
-                    if provided.encoded_b64 is not None:
+                    # otherwise encode here (on the critical path).
+                    _pre_encoded = provided.encoded_b64 is not None
+                    if _pre_encoded:
                         base64_img = provided.encoded_b64
-                        t_encode = time.perf_counter()
+                        t_encode = time.perf_counter()  # PERF
                     else:
                         base64_img = await asyncio.to_thread(base64_encode_jpg, provided.image)
-                        t_encode = time.perf_counter()
+                        t_encode = time.perf_counter()  # PERF
 
                     matching = await self._run_inference(inference_api, base64_img, pin_ids)
-                    t_infer = time.perf_counter()
+                    t_infer = time.perf_counter()  # PERF
 
-                    if not matching:
-                        logger.debug(
-                            f"Frame timing (no match): fetch={1000*(t_fetch-t0):.1f}ms "
-                            f"encode={1000*(t_encode-t_fetch):.1f}ms "
-                            f"infer={1000*(t_infer-t_encode):.1f}ms"
+                    # PERF BEGIN
+                    _fetch_ms = 1000 * (t_fetch - t0)
+                    _encode_ms = 1000 * (t_encode - t_fetch)
+                    _infer_ms = 1000 * (t_infer - t_encode)
+                    _perf_fetch_ms.append(_fetch_ms)
+                    _perf_encode_ms.append(_encode_ms)
+                    _perf_infer_ms.append(_infer_ms)
+                    _perf_frame_count += 1
+                    _enc_label = "pre_enc" if _pre_encoded else "on_the_fly"
+                    logger.debug(
+                        "Frame timing (%s): fetch=%.1fms encode=%.1fms(%s) infer=%.1fms%s",
+                        "matched" if matching else "no match",
+                        _fetch_ms, _encode_ms, _enc_label, _infer_ms,
+                        " (dedup queued)" if (matching and self._enable_dedup) else
+                        " (save dispatched)" if matching else "",
+                    )
+                    if _perf_frame_count % _PERF_SUMMARY_INTERVAL == 0:
+                        logger.info(
+                            "[pipeline summary] frames=%d fetch=%sms encode=%sms(%s) infer=%sms",
+                            _perf_frame_count, _ms_stats(_perf_fetch_ms), _ms_stats(_perf_encode_ms),
+                            _enc_label, _ms_stats(_perf_infer_ms),
                         )
-                    else:
-                        logger.debug(
-                            f"Frame timing (matched): fetch={1000*(t_fetch-t0):.1f}ms "
-                            f"encode={1000*(t_encode-t_fetch):.1f}ms "
-                            f"infer={1000*(t_infer-t_encode):.1f}ms (save dispatched)"
-                        )
-                        save_task = asyncio.create_task(self._save_image(images_api, provided, matching, files_root))
-                        pending_saves.append((save_task, unique_id))
+                    # PERF END
+
+                    if matching:
+                        if self._enable_dedup:
+                            # Hand off to the dedup coroutine.  This may block briefly if
+                            # the worker is still processing the previous frame (queue
+                            # maxsize=1), providing natural backpressure.
+                            await self._dedup_queue.put((provided, matching))
+                        else:
+                            save_task = asyncio.create_task(
+                                self._save_image(images_api, provided, matching, [False] * len(matching), files_root)
+                            )
+                            self._pending_saves.append((save_task, unique_id))
 
                     if self._data_req_flag.is_set():
+                        # Drain the dedup queue first so all matched frames are accounted
+                        # for in the resume snapshot (join() waits for task_done() in worker).
+                        if self._enable_dedup:
+                            await self._dedup_queue.join()
                         await _drain_saves()
                         self._data_req_flag.clear()
                         self._resume_data = self._build_resume_data()
@@ -398,6 +464,12 @@ class CollectTrainingImagesTask(Task):
                     self.log(_full_status())
 
         finally:
+            # Shut down the dedup coroutine cleanly before draining saves so that any
+            # frames still queued for dedup get processed and their save tasks are in
+            # _pending_saves before we wait on them.
+            if dedup_task is not None:
+                await self._dedup_queue.put(None)  # sentinel
+                await dedup_task
             await _drain_saves()
             for provider in providers:
                 await provider.stop()
@@ -413,6 +485,13 @@ class CollectTrainingImagesTask(Task):
 
         self._resume_data = self._build_resume_data()
         self._data_ready_flag.set()
+        # PERF BEGIN
+        if _perf_frame_count:
+            logger.info(
+                "[pipeline final] frames=%d fetch=%sms encode=%sms infer=%sms",
+                _perf_frame_count, _ms_stats(_perf_fetch_ms), _ms_stats(_perf_encode_ms), _ms_stats(_perf_infer_ms),
+            )
+        # PERF END
         self.log(f"Complete: {self._images_saved} images saved, {self._images_processed} frames processed"
                  + (f", {self._dup_frames_discarded} frames discarded (all-dup)" if self._dup_frames_discarded else "")
                  + (f", {self._dup_detections_tagged} dup detections tagged" if self._dup_detections_tagged else ""))
@@ -446,12 +525,13 @@ class CollectTrainingImagesTask(Task):
         base64_img: str,
         pin_ids: dict[str, Optional[str]],
     ) -> list:
-        """Runs all configured models; returns detections meeting per-label confidence thresholds."""
-        matching = []
-        for name in self._model_names:
+        """Runs all configured models in parallel; returns detections meeting per-label confidence thresholds."""
+
+        async def _run_model(name: str) -> list:
+            """Call one model with retries; return its filtered detections."""
             for _attempt in range(self._MAX_RETRIES):
                 try:
-                    t_start = time.perf_counter()
+                    t_start = time.perf_counter()  # PERF
                     result = await asyncio.wait_for(
                         asyncio.to_thread(
                             inference_api.inference,
@@ -464,16 +544,22 @@ class CollectTrainingImagesTask(Task):
                         ),
                         timeout=self._INFERENCE_TIMEOUT_S,
                     )
+                    # PERF BEGIN
                     logger.debug(
-                        f"Inference HTTP round-trip model='{name}': {1000*(time.perf_counter()-t_start):.1f}ms "
-                        f"({len(result.result.detections or [])} detections)"
+                        "Inference HTTP round-trip model='%s': %.1fms (%d detections) "
+                        "[compare to processImage total= in inference_server log for HTTP overhead]",
+                        name,
+                        1000 * (time.perf_counter() - t_start),
+                        len(result.result.detections or []),
                     )
+                    # PERF END
+                    dets = []
                     for det in result.result.detections or []:
                         luuid = det.bbox.label_uuid
                         if luuid and luuid in self._target_label_map:
                             if det.confidence >= self._target_label_map[luuid]:
-                                matching.append(det)
-                    break  # success — move on to next model
+                                dets.append(det)
+                    return dets
                 except asyncio.TimeoutError:
                     if _attempt < self._MAX_RETRIES - 1:
                         logger.warning(
@@ -489,9 +575,30 @@ class CollectTrainingImagesTask(Task):
                 except Exception:
                     logger.exception(f"Inference error on model {name}")
                     break  # don't retry on non-timeout exceptions
+            return []
 
-        # Priority dedup: `matching` is in model-priority order (models run in config
-        # order), so drop any detection overlapping an already-kept higher-priority
+        # Run all models concurrently.  asyncio.gather preserves input order, so
+        # results_per_model[i] corresponds to self._model_names[i] (priority order).
+        # return_exceptions=True ensures that a CancelledError or unexpected
+        # BaseException in one coroutine doesn't discard results from sibling models.
+        raw_results = await asyncio.gather(
+            *(_run_model(name) for name in self._model_names),
+            return_exceptions=True,
+        )
+
+        # _run_model catches all Exception internally; only BaseExceptions (e.g.
+        # CancelledError) can appear here.  Re-raise CancelledError so the outer
+        # task cancellation propagates correctly; treat anything else as empty.
+        results_per_model: list[list] = []
+        for r in raw_results:
+            if isinstance(r, asyncio.CancelledError):
+                raise r
+            results_per_model.append(r if isinstance(r, list) else [])
+
+        # Flatten in priority order then apply cross-model IoU dedup.
+        matching = [det for dets in results_per_model for det in dets]
+
+        # Priority dedup: drop any detection overlapping an already-kept higher-priority
         # box at/above the IoU threshold.
         deduped: list = []
         for det in matching:
@@ -509,32 +616,28 @@ class CollectTrainingImagesTask(Task):
         images_api: ImagesApi,
         provided: ImageWithProviderMetadata,
         matching: list,
+        dup_flags: list[bool],
         files_root: Path,
     ) -> Optional[str]:
         """Writes image to disk and persists bounding-box metadata. Returns filename on success, None on failure."""
+        t_save_start = time.perf_counter()  # PERF
         source_name = ImageHelper.sanitize_filename(provided.metadata.source or "unknown")
         frame_idx = provided.metadata.frame_idx or 0
-        filename = f"{source_name}_{frame_idx}.png"
+        filename = f"{source_name}_{frame_idx}.jpg"
         rel_path = str(Path(self._output_dir) / filename)
         abs_path = files_root / self._output_dir / filename
         await asyncio.to_thread(abs_path.parent.mkdir, parents=True, exist_ok=True)
 
-        # Run dedup check before writing to disk (no disk I/O needed — image is in memory).
-        dup_flags: list[bool] = [False] * len(matching)
-        if self._enable_dedup and provided.image is not None and self._duplicate_action != "ignore":
-            dup_flags = await self._check_dedup(images_api, provided.image, matching)
-            if self._duplicate_action == "discard" and all(dup_flags):
-                self._dup_frames_discarded += 1
-                logger.debug("Discarding all-duplicate frame: %s", filename)
-                return None
-
-        # cv2.imwrite is CPU-bound (PNG compression) + I/O; run off the event loop
-        t0 = time.perf_counter()
-        if not await asyncio.to_thread(cv2.imwrite, str(abs_path), provided.image):
+        # cv2.imwrite is CPU-bound + I/O; run off the event loop.
+        # Save as JPEG (faster write, smaller files; lossless PNG not needed for training data).
+        t_write = time.perf_counter()  # PERF
+        if not await asyncio.to_thread(
+            cv2.imwrite, str(abs_path), provided.image, [cv2.IMWRITE_JPEG_QUALITY, 95]
+        ):
             logger.warning(f"Failed to write image to {abs_path}")
             self.log(f"Failed to write image: {filename}")
             return None
-        logger.debug(f"Image write: {1000*(time.perf_counter()-t0):.1f}ms → {abs_path}")
+        logger.debug("Image write: %.1fms → %s", 1000 * (time.perf_counter() - t_write), abs_path)  # PERF
 
         dup_tagged_count = sum(1 for f in dup_flags if f)
         if dup_tagged_count:
@@ -560,73 +663,122 @@ class CollectTrainingImagesTask(Task):
             )
 
         try:
-            t_meta = time.perf_counter()
-            await asyncio.to_thread(
-                images_api.update_image_metadata,
-                UpdateMetadataPayload(image_path=rel_path, boxes=boxes),
-            )
-            logger.debug(f"Metadata save: {1000*(time.perf_counter()-t_meta):.1f}ms for {filename}")
+            t_meta = time.perf_counter()  # PERF
+            # Serialise DB writes to avoid SQLite write-lock contention between concurrent saves.
+            async with self._meta_write_lock:
+                await asyncio.to_thread(
+                    images_api.update_image_metadata,
+                    UpdateMetadataPayload(image_path=rel_path, boxes=boxes),
+                )
+            logger.debug("Metadata save: %.1fms for %s", 1000 * (time.perf_counter() - t_meta), filename)  # PERF
         except Exception:
             logger.exception(f"Failed to save metadata for {rel_path}")
             self.log(f"Failed to save metadata: {filename}")
             return None
 
+        logger.debug("_save_image total: %.1fms for %s", 1000 * (time.perf_counter() - t_save_start), filename)  # PERF
         return filename
 
-    async def _check_dedup(
+    async def _dedup_worker(
         self,
         images_api: ImagesApi,
-        image_bgr,
-        matching: list,
-    ) -> list[bool]:
-        """Return per-detection duplicate flags.
+        files_root: Path,
+    ) -> None:
+        """Consume matched frames one at a time, run bulk dedup, dispatch saves.
 
-        A detection is a duplicate only when BOTH the whole-image phash AND the
-        bbox crop phash match existing entries (within their respective thresholds).
+        Runs as a single background coroutine so dedup is serialised (no thread-pool
+        explosion) while still pipelining one frame behind the main loop's inference.
+        Shuts down when it receives None from _dedup_queue.
         """
-        from db_client.models.find_similar_images_payload import FindSimilarImagesPayload
-        from db_client.models.find_similar_bboxes_payload import FindSimilarBboxesPayload
+        from db_client.models.bbox_dedup_item import BboxDedupItem
+        from db_client.models.check_dedup_bulk_payload import CheckDedupBulkPayload
 
-        try:
-            image_phash = await asyncio.to_thread(
-                phash_from_numpy, image_bgr, self._image_hash_size
-            )
-            img_resp = await asyncio.to_thread(
-                images_api.find_similar_images,
-                FindSimilarImagesPayload(phash=image_phash, threshold=self._image_dup_threshold),
-            )
-            image_is_dup = bool(getattr(img_resp, "matches", None))
+        while True:
+            item = await self._dedup_queue.get()
+            try:
+                if item is None:
+                    break  # sentinel — main loop is done
 
-            dup_flags: list[bool] = []
-            for det in matching:
-                try:
-                    bbox_phash = await asyncio.to_thread(
-                        phash_from_numpy_crop,
-                        image_bgr,
-                        det.bbox.x,
-                        det.bbox.y,
-                        det.bbox.width,
-                        det.bbox.height,
-                        self._bbox_hash_size,
+                provided, matching = item
+
+                # When action is 'ignore', skip dedup entirely and save without any tagging.
+                if self._duplicate_action == "ignore":
+                    unique_id = None
+                    if provided.metadata.source is not None and provided.metadata.frame_idx is not None:
+                        unique_id = f"{provided.metadata.source}:{provided.metadata.frame_idx}"
+                    save_task = asyncio.create_task(
+                        self._save_image(images_api, provided, matching, [False] * len(matching), files_root)
                     )
-                    bbox_resp = await asyncio.to_thread(
-                        images_api.find_similar_bboxes,
-                        FindSimilarBboxesPayload(
-                            phash=bbox_phash,
-                            threshold=self._bbox_dup_threshold,
-                            label_uuid=det.bbox.label_uuid,
-                        ),
-                    )
-                    bbox_is_dup = bool(getattr(bbox_resp, "matches", None))
-                    dup_flags.append(image_is_dup and bbox_is_dup)
-                except Exception:
-                    logger.exception("bbox dedup check failed for detection")
-                    dup_flags.append(False)
-        except Exception:
-            logger.exception("image dedup check failed")
-            dup_flags = [False] * len(matching)
+                    self._pending_saves.append((save_task, unique_id))
+                    continue
 
-        return dup_flags
+                # Batch all bbox phashes in one thread dispatch.
+                # PERF
+                t_bbox_hash = time.perf_counter()
+                # /PERF
+                bbox_phashes: list[str] = await asyncio.to_thread(
+                    _compute_bbox_phashes, provided.image, matching, self._bbox_hash_size
+                )
+
+                # Image phash is pre-computed by the prefetch worker; fall back to
+                # computing here only for providers that don't support pre_phash.
+                image_phash = provided.image_phash
+                if image_phash is None:
+                    image_phash = await asyncio.to_thread(
+                        phash_from_numpy, provided.image, self._image_hash_size
+                    )
+
+                # Single bulk HTTP call — replaces N+1 separate calls.
+                # PERF
+                t_http = time.perf_counter()
+                # /PERF
+                resp = await asyncio.to_thread(
+                    images_api.check_dedup_bulk,
+                    CheckDedupBulkPayload(
+                        image_phash=image_phash,
+                        image_threshold=self._image_dup_threshold,
+                        bboxes=[
+                            BboxDedupItem(
+                                phash=bp,
+                                label_uuid=det.bbox.label_uuid,
+                                threshold=self._bbox_dup_threshold,
+                            )
+                            for det, bp in zip(matching, bbox_phashes)
+                        ],
+                    ),
+                )
+                # PERF
+                t_done = time.perf_counter()
+                logger.debug(
+                    "dedup bulk: bbox_hash=%.1fms http=%.1fms total=%.1fms image_is_dup=%s",
+                    1000 * (t_http - t_bbox_hash),
+                    1000 * (t_done - t_http),
+                    1000 * (t_done - t_bbox_hash),
+                    resp.image_is_dup,
+                )
+                # /PERF
+
+                dup_flags: list[bool] = list(resp.bbox_flags) if resp.bbox_flags else [False] * len(matching)
+
+                if self._duplicate_action == "discard" and all(dup_flags):
+                    self._dup_frames_discarded += 1
+                    logger.debug("Discarding all-duplicate frame: %s", provided.metadata.source)
+                    continue
+
+                save_task = asyncio.create_task(
+                    self._save_image(images_api, provided, matching, dup_flags, files_root)
+                )
+                unique_id: Optional[str] = None
+                if provided.metadata.source is not None and provided.metadata.frame_idx is not None:
+                    unique_id = f"{provided.metadata.source}:{provided.metadata.frame_idx}"
+                self._pending_saves.append((save_task, unique_id))
+
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("_dedup_worker: unexpected error processing frame")
+            finally:
+                self._dedup_queue.task_done()
 
     async def _deinit(self) -> None:
         pass

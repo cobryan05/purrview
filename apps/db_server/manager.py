@@ -824,6 +824,10 @@ class Manager:
         """Return [(bbox_uuid, distance, label_uuid)] within *threshold* of *phash*."""
         return self._hash_index.find_similar_bboxes(phash, label_uuid, threshold)
 
+    def check_dedup_bulk(self, image_phash: str, image_threshold: int, bboxes: list) -> dict:
+        """Bulk duplicate check: one image phash + N bbox phashes → one in-memory call."""
+        return self._hash_index.check_dedup_bulk(image_phash, image_threshold, bboxes)
+
     async def rebuild_hash_index(self) -> dict:
         """Rebuild the BK-tree index from the DB and return stats."""
         stats = await self._hash_index.rebuild()

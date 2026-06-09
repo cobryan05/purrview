@@ -90,7 +90,7 @@ class HashIndex:
         t0 = time.perf_counter()
         image_rows = await self._db_client.get_all_image_phashes()
         bbox_rows = await self._db_client.get_all_bbox_phashes()
-        stats = self._construct_trees(image_rows, bbox_rows)
+        stats = await asyncio.to_thread(self._construct_trees, image_rows, bbox_rows)
         stats.duration_ms = (time.perf_counter() - t0) * 1000
         logger.info(
             "HashIndex built: %d images, %d bboxes in %.1f ms",
@@ -136,7 +136,7 @@ class HashIndex:
         t0 = time.perf_counter()
         image_rows = await self._db_client.get_all_image_phashes()
         bbox_rows = await self._db_client.get_all_bbox_phashes()
-        stats_build = self._construct_trees(image_rows, bbox_rows)
+        stats_build = await asyncio.to_thread(self._construct_trees, image_rows, bbox_rows)
         duration_ms = (time.perf_counter() - t0) * 1000
         logger.info(
             "HashIndex rebuilt: %d images, %d bboxes in %.1f ms",
@@ -256,6 +256,30 @@ class HashIndex:
                 if item[1] in valid:
                     results.append((item[1], dist, lbl))
         return results
+
+    def check_dedup_bulk(
+        self,
+        image_phash: str,
+        image_threshold: int,
+        bboxes: List[Dict],
+    ) -> Dict:
+        """Check image + all bbox phashes in one call.
+
+        Args:
+            bboxes: list of dicts with keys {phash, label_uuid, threshold}
+
+        Returns:
+            {image_is_dup: bool, bbox_flags: [bool]}
+            bbox_flags[i] is True when BOTH the image AND bbox i are duplicates.
+        """
+        image_is_dup = bool(self.find_similar_images(image_phash, image_threshold))
+        bbox_flags = [
+            image_is_dup and bool(
+                self.find_similar_bboxes(b["phash"], b["label_uuid"], b["threshold"])
+            )
+            for b in bboxes
+        ]
+        return {"image_is_dup": image_is_dup, "bbox_flags": bbox_flags}
 
     # ─────────────────────────────────────────────────────────────────────────
     # Stats & tombstone checks

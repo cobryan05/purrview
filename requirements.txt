@@ -1,4 +1,5 @@
 aiofiles
+aiopath
 imagehash
 pybktree
 aiosqlite
@@ -10,6 +11,7 @@ ffmpeg-python
 httpx
 jinja2
 jstyleson
+lz4
 numpy
 onnx
 onnxruntime-gpu

@@ -1,5 +1,5 @@
 import { TaskStatus, cancelTasks, createTaskConfig, deleteTasks, deleteTaskConfigs, fetchTasksResult, fetchTasksStatus, startTask } from '/app-static/js/shared/api/tasks.js';
-import { toast } from '/app-static/js/ui/utils/index.js';
+import { decodeBase64JsonImage, toast } from '/app-static/js/ui/utils/index.js';
 import { ActiveTaskField } from '/app-static/js/ui/utils/fields/ActiveTaskField.js';
 
 // Global guard for only one running preview task
@@ -89,11 +89,12 @@ export async function runPreviewSourceTest({ provider, providerParams, target = 
       const result = res.get(taskUuid);
 
       if (result?.data?.image) {
-        const img = document.createElement('img');
-        img.src = `data:image/png;base64,${result.data.image}`;
-        img.alt = 'Preview result';
-        img.style.maxWidth = '100%';
-        taskDisplay.insertBefore(img, taskDisplay.firstChild);
+        const img_data = await decodeBase64JsonImage(result.data.image);
+        if (img_data) {
+          img_data.alt = 'Preview result';
+          img_data.style.maxWidth = '100%';
+          taskDisplay.insertBefore(img_data, taskDisplay.firstChild);
+        }
       }
     }
   } catch (err) {

@@ -101,3 +101,47 @@ export function generateUUID() {
     return v.toString(16);
   });
 }
+
+
+/**
+ * Universal reader that decodes an image packet from png or jpeg format
+ * back into an HTMLImageElement Promise.
+ * @param {string} jsonPacketStr - The JSON packet string or raw base64 string.
+ * @returns {Promise<HTMLImageElement>} Resolves with a fully loaded image element.
+ */
+export async function decodeBase64JsonImage(jsonPacketStr) {
+  let fmt = "png";
+  let b64Data = "";
+
+  try {
+    const packet = JSON.parse(jsonPacketStr);
+    fmt = packet.format || "png";
+    b64Data = packet.data || "";
+  } catch (e) {
+    // If it's a JSON parse error, assume it's a raw base64 string for a PNG
+    b64Data = jsonPacketStr;
+    fmt = "png";
+  }
+
+  if (!b64Data) {
+    throw new Error("Invalid packet structure: missing 'data' or empty base64 string.");
+  }
+  if (fmt !== "jpeg" && fmt !== "png") {
+    throw new Error(`Unsupported decoding format or feature omitted: '${fmt}'`);
+  }
+
+  // Clean up any duplicated data headers if present
+  const cleanBase64 = b64Data.replace(/^data:image\/\w+;base64,/, "");
+
+  // Return an asynchronous image loading promise (the JS equivalent of decoding)
+  return new Promise((resolve, reject) => {
+    const img = document.createElement("img");
+
+    img.onload = () => resolve(img);
+    img.onerror = () => reject(new Error(`Browser failed to parse and decode ${fmt} buffer.`));
+
+    // Map format keys safely to standard browser MIME types
+    const mimeType = fmt === "jpeg" ? "image/jpeg" : "image/png";
+    img.src = `data:${mimeType};base64,${cleanBase64}`;
+  });
+}

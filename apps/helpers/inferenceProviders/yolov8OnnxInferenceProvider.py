@@ -59,10 +59,10 @@ class YOLOv8ONNXInferenceProvider(InferenceProvider):
         original_shape = image.shape[:2]
         imgH, imgW = original_shape
 
-        t0 = time.perf_counter()
+        t0 = time.perf_counter()  # PERF
         image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
         img, scale, pad = YoloUtils.preprocess_image(image_rgb, self.input_shape)
-        t_pre = time.perf_counter()
+        t_pre = time.perf_counter()  # PERF
 
         if self.cuda_executor:
             loop = asyncio.get_running_loop()
@@ -77,7 +77,7 @@ class YOLOv8ONNXInferenceProvider(InferenceProvider):
         preds = preds_list[0]
         # -----------------------------------
 
-        t_onnx = time.perf_counter()
+        t_onnx = time.perf_counter()  # PERF
 
         # Handle (batch, classes, boxes) -> (batch, boxes, classes)
         if preds.shape[1] < preds.shape[2]:
@@ -91,13 +91,14 @@ class YOLOv8ONNXInferenceProvider(InferenceProvider):
             pad=pad,
             original_shape=original_shape,
         )
-        t_post = time.perf_counter()
+        t_post = time.perf_counter()  # PERF
+        # PERF BEGIN
         logger.debug(
-            f"processImage: preprocess={1000*(t_pre-t0):.1f}ms "
-            f"onnx={1000*(t_onnx-t_pre):.1f}ms "
-            f"postprocess={1000*(t_post-t_onnx):.1f}ms "
-            f"total={1000*(t_post-t0):.1f}ms ({len(detections)} raw dets)"
+            "processImage: preprocess=%.1fms onnx=%.1fms postprocess=%.1fms total=%.1fms (%d raw dets)",
+            1000 * (t_pre - t0), 1000 * (t_onnx - t_pre),
+            1000 * (t_post - t_onnx), 1000 * (t_post - t0), len(detections),
         )
+        # PERF END
 
         detection_results: List[DetectionResult] = []
         for det in detections:
@@ -105,7 +106,12 @@ class YOLOv8ONNXInferenceProvider(InferenceProvider):
             confidence = float(det[4])
             # TODO: Why is class_id + 1? Is this a data error or a code error?
             class_id = int(det[5])
-            class_name = self.class_names[class_id + 1] if self.class_names else None
+            _name_idx = class_id + 1
+            class_name = (
+                self.class_names[_name_idx]
+                if self.class_names and _name_idx < len(self.class_names)
+                else None
+            )
 
             # Convert absolute xyxy to relative x1y1wh for BBox
             rel_bbox = BBox.fromX1Y1X2Y2(x_min, y_min, x_max, y_max, imgW, imgH)

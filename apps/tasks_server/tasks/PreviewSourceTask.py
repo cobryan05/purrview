@@ -54,7 +54,10 @@ class PreviewSourceTask(Task):
 
                 if image_task in done:
                     try:
-                        image_base64 = base64_encode_jpg(image_task.result().image)
+                        result = image_task.result()
+                        if not result:
+                            raise ValueError("Invalid image result")
+                        image_base64 = base64_encode_jpg(result.image)
                         ret["image"] = image_base64
                         self.log("Image received successfully")
                     except Exception:

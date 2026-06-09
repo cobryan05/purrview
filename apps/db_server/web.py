@@ -471,6 +471,23 @@ class RebuildHashIndexResponse(StatusResponse):
     duration_ms: float = 0.0
 
 
+class BboxDedupItem(ApiModel):
+    phash: str
+    label_uuid: Optional[str] = None
+    threshold: int = 8
+
+
+class CheckDedupBulkPayload(ApiPayload):
+    image_phash: str
+    image_threshold: int = 5
+    bboxes: List[BboxDedupItem] = Field(default_factory=list)
+
+
+class CheckDedupBulkResponse(StatusResponse):
+    image_is_dup: bool = False
+    bbox_flags: List[bool] = Field(default_factory=list)
+
+
 class RecomputePhashPayload(ApiPayload):
     image_hash_size: Optional[int] = None
     bbox_hash_size: Optional[int] = None
@@ -1240,6 +1257,31 @@ class WebApp:
             except Exception as e:
                 logger.error(e, exc_info=True)
                 return FindSimilarBboxesResponse(status=JsonValues.FAILURE, message=str(e))
+
+        @self._app.post(
+            "/api/images/dedup-check",
+            response_model=CheckDedupBulkResponse,
+            tags=[ApiTags.IMAGES],
+            operation_id="check_dedup_bulk",
+        )
+        async def check_dedup_bulk(payload: CheckDedupBulkPayload) -> CheckDedupBulkResponse:
+            try:
+                result = self._manager.check_dedup_bulk(
+                    payload.image_phash,
+                    payload.image_threshold,
+                    [
+                        {"phash": b.phash, "label_uuid": b.label_uuid, "threshold": b.threshold}
+                        for b in payload.bboxes
+                    ],
+                )
+                return CheckDedupBulkResponse(
+                    status=JsonValues.SUCCESS,
+                    image_is_dup=result["image_is_dup"],
+                    bbox_flags=result["bbox_flags"],
+                )
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return CheckDedupBulkResponse(status=JsonValues.FAILURE, message=str(e))
 
         @self._app.post(
             "/api/images/phash/rebuild-index",
