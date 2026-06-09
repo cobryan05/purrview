@@ -1,6 +1,8 @@
+import asyncio
 import logging
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
 from typing import List, Optional
 from uuid import uuid4
 
@@ -27,8 +29,22 @@ class YOLOv8ONNXInferenceProvider(InferenceProvider):
         conf_thresh: float = 0.251,
         iou_thresh: float = 0.45,
     ):
-        self.session = ort.InferenceSession(model_path, providers=["CUDAExecutionProvider", "CPUExecutionProvider"])
-        logger.info(f"ONNX providers active: {self.session.get_providers()}")
+        self.session = ort.InferenceSession(
+            model_path, providers=["CUDAExecutionProvider", "CPUExecutionProvider"]
+        )
+        active_providers = self.session.get_providers()
+        logger.info(f"ONNX providers active: {active_providers}")
+
+        use_cuda = "CUDAExecutionProvider" in active_providers
+
+        # If using CUDA, spin up a dedicated single-threaded executor
+        # to prevent CUDA memory/context errors from shifting threads.
+        if use_cuda:
+            logger.info("Initializing dedicated background thread executor for CUDA.")
+            self.cuda_executor = ThreadPoolExecutor(max_workers=1)
+        else:
+            self.cuda_executor = None
+
         self.input_name = self.session.get_inputs()[0].name
         try:
             self.input_shape = YoloUtils.get_input_shape(self.session)  # (h, w)
@@ -48,7 +64,19 @@ class YOLOv8ONNXInferenceProvider(InferenceProvider):
         img, scale, pad = YoloUtils.preprocess_image(image_rgb, self.input_shape)
         t_pre = time.perf_counter()
 
-        preds = self.session.run(None, {self.input_name: img})[0]
+        if self.cuda_executor:
+            loop = asyncio.get_running_loop()
+            preds_list = await loop.run_in_executor(
+                self.cuda_executor, self.session.run, None, {self.input_name: img}
+            )
+        else:
+            preds_list = await asyncio.to_thread(
+                self.session.run, None, {self.input_name: img}
+            )
+
+        preds = preds_list[0]
+        # -----------------------------------
+
         t_onnx = time.perf_counter()
 
         # Handle (batch, classes, boxes) -> (batch, boxes, classes)
@@ -75,15 +103,22 @@ class YOLOv8ONNXInferenceProvider(InferenceProvider):
         for det in detections:
             x_min, y_min, x_max, y_max = map(float, det[:4])
             confidence = float(det[4])
-            class_id = int(det[5])
             # TODO: Why is class_id + 1? Is this a data error or a code error?
+            class_id = int(det[5])
             class_name = self.class_names[class_id + 1] if self.class_names else None
 
             # Convert absolute xyxy to relative x1y1wh for BBox
             rel_bbox = BBox.fromX1Y1X2Y2(x_min, y_min, x_max, y_max, imgW, imgH)
             x, y, width, height = rel_bbox.asRX1Y1WH()
 
-            bbox = BoundingBoxMetadata(uuid=str(uuid4()), class_str=class_name, x=x, y=y, width=width, height=height)
+            bbox = BoundingBoxMetadata(
+                uuid=str(uuid4()),
+                class_str=class_name,
+                x=x,
+                y=y,
+                width=width,
+                height=height,
+            )
             res = DetectionResult(bbox=bbox, confidence=confidence)
             detection_results.append(res)
 
@@ -94,3 +129,8 @@ class YOLOv8ONNXInferenceProvider(InferenceProvider):
             inference_time=None,
             source_image=image,
         )
+
+    def __del__(self):
+        """Clean up background threads safely when provider object is destroyed."""
+        if hasattr(self, "cuda_executor") and self.cuda_executor is not None:
+            self.cuda_executor.shutdown(wait=False)
