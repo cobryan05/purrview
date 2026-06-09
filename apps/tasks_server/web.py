@@ -1,8 +1,10 @@
 """Web API for Tasks Server"""
 
+import asyncio
 import html
 import json
 import logging
+import signal
 import sys
 from contextlib import asynccontextmanager
 from typing import Dict, List, Optional, Union
@@ -213,6 +215,22 @@ class WebApp:
             app (FastAPI): The FastAPI application instance.
         """
         logging.info("Application is starting up...")
+
+        # Register SIGUSR1 as a live task-stack dumper.
+        # Usage: kill -USR1 $(pgrep -f tasks_server)
+        # Output goes to stderr (check logs/tasks_server.log or supervisord stderr).
+        _loop = asyncio.get_event_loop()
+
+        def _dump_asyncio_tasks(sig, frame):
+            tasks = asyncio.all_tasks(_loop)
+            print(f"\n=== asyncio task dump: {len(tasks)} task(s) ===", file=sys.stderr, flush=True)
+            for t in tasks:
+                print(f"\n--- {t.get_name()}  done={t.done()} ---", file=sys.stderr)
+                t.print_stack(file=sys.stderr)
+            print("=== end task dump ===\n", file=sys.stderr, flush=True)
+
+        signal.signal(signal.SIGUSR1, _dump_asyncio_tasks)
+        logging.info("SIGUSR1 handler registered — send 'kill -USR1 <pid>' to dump asyncio tasks to stderr")
 
         self._manager.start()  # Start the manager's periodic task
         yield  # This allows the app to run
