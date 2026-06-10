@@ -265,7 +265,7 @@ class BBoxTagLink(SQLModel, table=True):
 
     __tablename__ = "bbox_tags"
     bbox_uuid: str = Field(foreign_key="bboxes.uuid", primary_key=True, ondelete="CASCADE")
-    tag_uuid: str = Field(foreign_key="tags.uuid", primary_key=True, ondelete="CASCADE")
+    tag_uuid: str = Field(foreign_key="tags.uuid", primary_key=True, ondelete="CASCADE", index=True)
 
 
 class BBoxBase(SQLModel):

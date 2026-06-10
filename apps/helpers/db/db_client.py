@@ -156,7 +156,18 @@ def _apply_image_search_filters(stmt: Select, params: ImageSearchParams) -> Sele
 
     Does not add ORDER BY, LIMIT, or keyset cursors — those are caller concerns.
     Works for any Select target (ImageRecord, ImageRecord.uuid, etc.).
+
+    Performance note: bbox-related filters (tag, label, require_bboxes,
+    label_exclusions) are expressed as non-correlated IN / NOT IN subqueries
+    rather than correlated EXISTS.  SQLite materialises the inner SELECT once
+    as a hash table and then the outer scan does O(1) membership probes, which
+    is dramatically faster than re-evaluating a correlated EXISTS for every row
+    in a large images table.
     """
+    # Track whether any filter that already guarantees at least one bbox has
+    # been applied, so we can skip the redundant require_bboxes subquery.
+    _bbox_implied = False
+
     # ── Tag filter ────────────────────────────────────────────────────────────
     # When show_all_bboxes is True or tag_uuids is empty, skip so all images
     # are candidates regardless of bbox tags.
@@ -165,39 +176,35 @@ def _apply_image_search_filters(stmt: Select, params: ImageSearchParams) -> Sele
             # Image must have at least one bbox carrying EACH selected tag
             # (the bboxes can be different).
             for tag_uuid in params.tag_uuids:
-                tag_subq = (
-                    select(BBox)
+                image_uuids = (
+                    select(BBox.image_uuid)
                     .join(BBoxTagLink, BBoxTagLink.bbox_uuid == BBox.uuid)
-                    .where(BBox.image_uuid == ImageRecord.uuid, BBoxTagLink.tag_uuid == tag_uuid)
-                    .correlate(ImageRecord)
-                    .exists()
+                    .where(BBoxTagLink.tag_uuid == tag_uuid)
+                    .distinct()
                 )
-                stmt = stmt.where(tag_subq)
+                stmt = stmt.where(ImageRecord.uuid.in_(image_uuids))
         else:
-            # "any of" — EXISTS semi-join: image has a bbox with ANY selected tag.
-            # Using EXISTS instead of a JOIN avoids duplicate image rows (no DISTINCT
-            # needed) and lets SQLite walk the images index and stop early at LIMIT.
-            tag_subq = (
-                select(BBox)
+            # "any of" — image has a bbox tagged with ANY of the selected tags.
+            image_uuids = (
+                select(BBox.image_uuid)
                 .join(BBoxTagLink, BBoxTagLink.bbox_uuid == BBox.uuid)
-                .where(BBox.image_uuid == ImageRecord.uuid, BBoxTagLink.tag_uuid.in_(params.tag_uuids))
-                .correlate(ImageRecord)
-                .exists()
+                .where(BBoxTagLink.tag_uuid.in_(params.tag_uuids))
+                .distinct()
             )
-            stmt = stmt.where(tag_subq)
+            stmt = stmt.where(ImageRecord.uuid.in_(image_uuids))
+        _bbox_implied = True
 
     # ── Single-label backward-compat filter ───────────────────────────────────
     # Kept for API callers that still send label_uuid.  New callers should use
-    # label_uuids instead.  Applies an EXISTS subquery so it composes cleanly
-    # with the tag filter above regardless of which join path was taken.
+    # label_uuids instead.
     if params.label_uuid and params.label_uuid not in params.label_uuids:
-        subq = (
-            select(BBox)
-            .where(BBox.image_uuid == ImageRecord.uuid, BBox.label_uuid == params.label_uuid)
-            .correlate(ImageRecord)
-            .exists()
+        image_uuids = (
+            select(BBox.image_uuid)
+            .where(BBox.label_uuid == params.label_uuid)
+            .distinct()
         )
-        stmt = stmt.where(subq)
+        stmt = stmt.where(ImageRecord.uuid.in_(image_uuids))
+        _bbox_implied = True
 
     # ── Filename search ────────────────────────────────────────────────────────
     if params.filename_search:
@@ -221,19 +228,21 @@ def _apply_image_search_filters(stmt: Select, params: ImageSearchParams) -> Sele
 
     # ── Tag presence/absence filters ──────────────────────────────────────────
     for tf in params.tag_presence_filters:
-        tag_subq = (
-            select(BBox)
+        image_uuids = (
+            select(BBox.image_uuid)
             .join(BBoxTagLink, BBoxTagLink.bbox_uuid == BBox.uuid)
-            .where(
-                BBox.image_uuid == ImageRecord.uuid,
-                BBoxTagLink.tag_uuid == tf.tag_uuid,
-            )
-            .correlate(ImageRecord)
-            .exists()
+            .where(BBoxTagLink.tag_uuid == tf.tag_uuid)
+            .distinct()
         )
-        stmt = stmt.where(~tag_subq if tf.exclude else tag_subq)
+        if tf.exclude:
+            stmt = stmt.where(ImageRecord.uuid.not_in(image_uuids))
+        else:
+            stmt = stmt.where(ImageRecord.uuid.in_(image_uuids))
+            _bbox_implied = True
 
     # ── Image-label filters (EXISTS / NOT EXISTS subqueries) ──────────────────
+    # These filter on the image_labels table (not bboxes), which is small and
+    # accessed by PK — correlated EXISTS is fine here.
     for f in params.image_label_filters:
         if f.require_verified:
             # require EXISTS row with PRESENT or ABSENT (not uncertain)
@@ -270,13 +279,12 @@ def _apply_image_search_filters(stmt: Select, params: ImageSearchParams) -> Sele
                     condition = BBox.label_uuid.in_(label_set)
                 else:
                     condition = BBox.label_uuid == label_uuid
-                label_subq = (
-                    select(BBox)
-                    .where(BBox.image_uuid == ImageRecord.uuid, condition)
-                    .correlate(ImageRecord)
-                    .exists()
+                image_uuids = (
+                    select(BBox.image_uuid)
+                    .where(condition)
+                    .distinct()
                 )
-                stmt = stmt.where(label_subq)
+                stmt = stmt.where(ImageRecord.uuid.in_(image_uuids))
         else:
             # "any of" — image has a bbox with ANY of the selected labels (or
             # their descendants when label_include_children is True).
@@ -284,36 +292,28 @@ def _apply_image_search_filters(stmt: Select, params: ImageSearchParams) -> Sele
                 label_condition = BBox.label_uuid.in_(_label_uuids_with_descendants(params.label_uuids))
             else:
                 label_condition = BBox.label_uuid.in_(params.label_uuids)
-            subq = (
-                select(BBox)
-                .where(BBox.image_uuid == ImageRecord.uuid, label_condition)
-                .correlate(ImageRecord)
-                .exists()
+            image_uuids = (
+                select(BBox.image_uuid)
+                .where(label_condition)
+                .distinct()
             )
-            stmt = stmt.where(subq)
+            stmt = stmt.where(ImageRecord.uuid.in_(image_uuids))
+        _bbox_implied = True
 
     # ── Require at least one bbox ─────────────────────────────────────────────
-    # Only needed when no other filter already implies bbox existence (e.g. the
-    # positive tag filter uses a JOIN that already guarantees a bbox row, and the
-    # label_uuids filter uses an EXISTS).  Adding it redundantly is harmless.
-    if params.require_bboxes:
-        bbox_exists_subq = (
-            select(BBox.uuid)
-            .where(BBox.image_uuid == ImageRecord.uuid)
-            .correlate(ImageRecord)
-            .exists()
-        )
-        stmt = stmt.where(bbox_exists_subq)
+    # Skip when any earlier filter already guarantees bbox existence.
+    if params.require_bboxes and not _bbox_implied:
+        image_uuids = select(BBox.image_uuid).distinct()
+        stmt = stmt.where(ImageRecord.uuid.in_(image_uuids))
 
-    # ── Label exclusions (NOT EXISTS per label UUID) ───────────────────────────
+    # ── Label exclusions (NOT IN per label UUID) ───────────────────────────────
     for label_uuid in params.label_exclusions:
-        label_subq = (
-            select(BBox)
-            .where(BBox.image_uuid == ImageRecord.uuid, BBox.label_uuid == label_uuid)
-            .correlate(ImageRecord)
-            .exists()
+        image_uuids = (
+            select(BBox.image_uuid)
+            .where(BBox.label_uuid == label_uuid)
+            .distinct()
         )
-        stmt = stmt.where(~label_subq)
+        stmt = stmt.where(ImageRecord.uuid.not_in(image_uuids))
 
     return stmt
 

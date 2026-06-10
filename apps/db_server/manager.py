@@ -98,7 +98,13 @@ class Manager:
         # TTL is intentionally short so writes that happen while browsing are
         # reflected within a few seconds when the user hits Refresh.
         self._count_cache: dict[str, tuple[int, float]] = {}
-        self._COUNT_CACHE_TTL = 60.0  # seconds
+        self._COUNT_CACHE_TTL = 60.0
+        # Maximum seconds to wait for the count query before returning -1.
+        # count_images_search does a full table scan with no LIMIT; on large
+        # datasets (100k+ images) with complex multi-EXISTS filters it can take
+        # many seconds.  The list query (LIMIT 51) completes quickly thanks to
+        # index early-termination, so we cap the count independently.
+        self._COUNT_QUERY_TIMEOUT = 3.0  # seconds
 
     async def get_server_config(self) -> Dict[str, Any]:
         return self._config.copy()
@@ -601,24 +607,49 @@ class Manager:
         except ValueError:
             return image_filename
 
-    async def get_review_queue(self, params: ImageSearchParams) -> tuple[List[ImageRecordRead], bool, int]:
-        """Return (images, has_more, total_count) for the review queue.
+    async def _count_images_bounded(self, params: ImageSearchParams) -> int:
+        """Run count_images_search with a timeout; return -1 if it exceeds the limit.
 
-        Fetches limit+1 images to detect whether a next page exists without a
-        separate query.  The count query is only issued on the first page
-        (after_uuid is None) — subsequent pages return -1 so the frontend can
-        display the cached value from the first fetch.
-
-        The count result is cached for COUNT_CACHE_TTL seconds keyed on the
-        filter predicates (sort order and pagination cursor are excluded).  This
-        avoids re-running the expensive full-table scan when the user only
-        changes sort order or hits Refresh within the TTL window.
+        Uses asyncio.shield so the inner DB coroutine is NOT cancelled on timeout —
+        it continues running in the background and properly closes its session when
+        done.  This avoids leaving dangling SQLite connections while still letting
+        the caller return quickly with -1 instead of blocking for minutes on large
+        datasets.
         """
+        t0 = time.monotonic()
+        inner: asyncio.Task[int] = asyncio.ensure_future(
+            self._db_client.count_images_search(params)
+        )
+        try:
+            result = await asyncio.wait_for(asyncio.shield(inner), timeout=self._COUNT_QUERY_TIMEOUT)
+            logger.info("[review] count query completed in %.3fs → %d", time.monotonic() - t0, result)
+            return result
+        except asyncio.TimeoutError:
+            elapsed = time.monotonic() - t0
+            logger.warning(
+                "[review] count query timed out after %.3fs (timeout=%.1fs); "
+                "returning -1, background query continues",
+                elapsed,
+                self._COUNT_QUERY_TIMEOUT,
+            )
+            # Consume any future exception so Python doesn't warn about
+            # "Task exception was never retrieved" when the task eventually ends.
+            inner.add_done_callback(lambda t: t.exception() if not t.cancelled() else None)
+            return -1
+
+    async def get_review_queue(self, params: ImageSearchParams) -> tuple[List[ImageRecordRead], bool, int]:
+        """Return (images, has_more, total_count) for the review queue."""
+        t0 = time.monotonic()
+        logger.info(
+            "[review] request: label_uuids=%s tag_uuids=%s require_bboxes=%s after_uuid=%s",
+            params.label_uuids,
+            params.tag_uuids,
+            params.require_bboxes,
+            params.after_uuid,
+        )
         fetch_params = params.model_copy(update={"limit": params.limit + 1})
 
         if params.after_uuid is None:
-            # Build a cache key from the filter predicates only; sort/page fields
-            # are excluded because they don't affect the count result.
             cache_key = hashlib.md5(
                 params.model_dump_json(
                     exclude={"sort_by", "sort_order", "limit", "after_uuid", "after_sort_value"}
@@ -629,19 +660,31 @@ class Manager:
             cached = self._count_cache.get(cache_key)
 
             if cached is not None and (now - cached[1]) < self._COUNT_CACHE_TTL:
-                # Fresh cached count — just fetch the page data.
+                logger.info("[review] count cache hit (key=%s, age=%.1fs)", cache_key[:8], now - cached[1])
+                t1 = time.monotonic()
                 batch = await self._db_client.list_images_search(fetch_params)
+                logger.info("[review] list query completed in %.3fs → %d rows", time.monotonic() - t1, len(batch))
                 total_count = cached[0]
             else:
-                # Cache miss or expired — run both queries in parallel.
+                logger.info("[review] count cache miss (key=%s) — running list+count in parallel", cache_key[:8])
+                t1 = time.monotonic()
                 batch, total_count = await asyncio.gather(
                     self._db_client.list_images_search(fetch_params),
-                    self._db_client.count_images_search(params),
+                    self._count_images_bounded(params),
                 )
-                self._count_cache[cache_key] = (total_count, now)
+                logger.info(
+                    "[review] gather done in %.3fs: list=%d rows, total_count=%d",
+                    time.monotonic() - t1,
+                    len(batch),
+                    total_count,
+                )
+                if total_count >= 0:
+                    self._count_cache[cache_key] = (total_count, now)
         else:
+            t1 = time.monotonic()
             batch = await self._db_client.list_images_search(fetch_params)
-            total_count = -1  # caller should use cached value from first page
+            logger.info("[review] list query (paginated) completed in %.3fs → %d rows", time.monotonic() - t1, len(batch))
+            total_count = -1
 
         has_more = len(batch) > params.limit
         images_page = batch[: params.limit]
@@ -651,6 +694,8 @@ class Manager:
             record = ImageRecordRead.model_validate(img)
             record.filename = self._image_rel_path(img.filename)
             results.append(record)
+
+        logger.info("[review] total handler time %.3fs → %d images, has_more=%s", time.monotonic() - t0, len(results), has_more)
         return results, has_more, total_count
 
     async def list_files(
