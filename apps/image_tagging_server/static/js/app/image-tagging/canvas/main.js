@@ -27,7 +27,7 @@ export async function initCanvasStage(runtime) {
   stage.on('mouseup', e => handleMouseUp(e, runtime));
   stage.on('wheel', e => handleWheel(e, runtime));
   stage.on('click', e => handleClick(e, runtime));
-  stage.on('contextmenu', e => handleContextMenu(e, runtime));
+  stage.on('contextmenu', async e => { await handleContextMenu(e, runtime); });
 
   // Snapshot bbox state after drag/transform completes. BboxView's own handlers
   // mutate uiBBox first, so by the time the event bubbles here the data is final.

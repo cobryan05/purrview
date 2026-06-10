@@ -4,8 +4,8 @@ These hit the db_server's /api/task-configs and /api/task-instances endpoints
 with a real SQLite DB, exercising the persistence layer used by tasks_server.
 """
 
-import pytest
 import db_client.models as db_models
+import pytest
 
 from apps.helpers.consts import TaskStatus
 

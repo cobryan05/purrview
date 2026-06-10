@@ -3,11 +3,11 @@
 import asyncio
 import fnmatch
 import hashlib
-import time
 import io
 import logging
 import os
 import sys
+import time
 from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -18,6 +18,7 @@ import jstyleson
 from sqlalchemy.orm import make_transient
 
 from apps import CACHE_DIR, THUMB_CACHE_MAX_MB
+from apps.db_server.hash_index import HashIndex
 from apps.helpers.consts import TaskStatus
 from apps.helpers.db.db_client import (
     DbClient,
@@ -26,7 +27,6 @@ from apps.helpers.db.db_client import (
 from apps.helpers.db.types import (
     AVAILABLE_MODEL_TYPENAMES,
     FALSE_POS_TAG_UUID,
-    LabelType,
     UNVERIFIED_TAG_UUID,
     BBoxUpdate,
     DatasetCreate,
@@ -39,6 +39,7 @@ from apps.helpers.db.types import (
     ImageRecordUpdate,
     ImageSearchParams,
     Label,
+    LabelType,
     ModelConfigCreate,
     ModelConfigNodeWrite,
     ModelConfigRead,
@@ -54,7 +55,6 @@ from apps.helpers.db.types import (
     TaskResultData,
     TaskResumeData,
 )
-from apps.db_server.hash_index import HashIndex
 from apps.helpers.fileUtils import get_safe_path
 from apps.helpers.hashUtils import (
     compute_bbox_phash,

@@ -22,7 +22,6 @@ import pytest
 
 from apps.helpers.imageProviders.cv2VideoImageProvider import Cv2VideoImageProvider
 
-
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 
 

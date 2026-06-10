@@ -9,6 +9,8 @@ import { events, EventTypes } from '/app-static/js/shared/events/index.js';
 import { UNVERIFIED_TAG_UUID, VERIFICATION_TAG_UUIDS } from '/app-static/js/shared/api/review.js';
 import { setCanvasViewport } from './manager.js';
 import { screenToImage } from './viewport.js';
+import { openContextMenuForObjects } from '/app-static/js/ui/contextMenu/registry.js';
+import { makeCanvasBboxAdapter, makeCanvasSurfaceAdapter } from './contextTargets.js';
 
 /**
  * Mutates uiBBox.tags in-place: if no verification tag is present, adds UNVERIFIED.
@@ -38,7 +40,7 @@ export function stripUnverifiedTag(uiBBox) {
  * @param {string} tagUuid
  * @param {import('@image_tagging_types').ImageTaggingRuntime} runtime
  */
-async function toggleBboxTag(bboxView, tagUuid, runtime) {
+export async function toggleBboxTag(bboxView, tagUuid, runtime) {
   const tag = await fetchTagByUuid(tagUuid);
   if (!tag) return;
   const tags = bboxView.uiBBox.tags ?? [];
@@ -424,8 +426,8 @@ export function handleClick(e, runtime) {
  * @param {import('@image_tagging_types').ImageTaggingRuntime} runtime - The image tagging runtime for this canvas.
  * @returns {Promise<void>}
  */
-export function handleContextMenu(e, runtime) {
-  const { stage, layer } = runtime.canvas;
+export async function handleContextMenu(e, runtime) {
+  const { stage } = runtime.canvas;
   e.evt.preventDefault();
 
   // Find bbox under the right-click, if any
@@ -436,18 +438,22 @@ export function handleContextMenu(e, runtime) {
     node = node.getParent();
   }
 
-  clearSelection();
+  const obj = bboxGroup
+    ? { adapters: { bbox: makeCanvasBboxAdapter(bboxGroup, runtime) } }
+    : { adapters: { canvas: makeCanvasSurfaceAdapter(runtime) } };
 
-  // If right-clicked on a labelled bbox, toggle to that bbox's label tool.
-  // All other cases (unlabelled bbox or empty canvas) use the same generic toggle.
+  const opened = await openContextMenuForObjects([obj], { x: e.evt.clientX, y: e.evt.clientY });
+  if (opened) return;
+
+  // FALLBACK: original tool-toggle behavior (unchanged)
+  clearSelection();
   const bboxLabelUuid = bboxGroup?.uiBBox?.label?.uuid;
   if (bboxLabelUuid) {
     setTool(runtime, runtime.tool === `bbox:${bboxLabelUuid}` ? 'select' : `bbox:${bboxLabelUuid}`);
   } else {
     setTool(runtime, runtime.tool === 'select' ? 'bbox:' : 'select');
   }
-
-  layer.draw();
+  runtime.canvas.layer.draw();
 }
 
 

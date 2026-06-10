@@ -5,8 +5,8 @@ import logging
 import sys
 from typing import Any, Dict, Optional
 
-import httpx
 import db_client
+import httpx
 import inference_client
 import tasks_client
 

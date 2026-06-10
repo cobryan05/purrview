@@ -13,10 +13,13 @@ import {
   invalidateBboxThumbnails,
   UNVERIFIED_TAG_UUID,
   FALSE_POS_TAG_UUID,
+  REJECTION_TAG_UUID,
   VERIFICATION_TAG_UUIDS,
   swapVerificationTag,
 } from '/app-static/js/shared/api/review.js';
 import { setImageLabel } from '/app-static/js/shared/api/imageLabels.js';
+import { attachContext } from '/app-static/js/ui/contextMenu/index.js';
+import { getPrimaryRuntimeId } from '/app-static/js/app/image-tagging/runtime.js';
 import { Logger, toast } from '/app-static/js/ui/utils/logging.js';
 import { showUnsavedChangesModal } from '/app-static/js/ui/utils/confirmModal.js';
 import { CheckboxField } from '/app-static/js/ui/utils/fields/CheckboxField.js';
@@ -421,6 +424,164 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
   let _visibleEntries = [];
 
   const entryId = e => e.kind === 'image' ? e.img.uuid : e.bbox.uuid;
+
+  // ── All UUIDs treated as verification indicators for the Clear action ─────
+  const ALL_VERIFICATION_UUIDS = new Set([
+    REJECTION_TAG_UUID,
+    ...VERIFICATION_TAG_UUIDS,
+  ]);
+
+  // ── Review bbox adapter factory ────────────────────────────────────────────
+  function makeReviewBboxAdapter(entry, card) {
+    const { bbox, img } = entry;
+
+    function currentTagUuids() {
+      return (bbox.tags ?? []).map(t => t.uuid);
+    }
+
+    async function _applyUpdate(labelUuid, tagUuids) {
+      await updateBbox(bbox.uuid, { labelUuid, tagUuids });
+      await invalidateBboxThumbnails([bbox.uuid]);
+      // Update in-memory bbox tags, preserving icon values for known tags
+      const existing = new Map((bbox.tags ?? []).map(t => [t.uuid, t]));
+      bbox.tags = tagUuids.map(u => existing.get(u) ?? { uuid: u, icon: null });
+    }
+
+    return {
+      getLabelUuid() { return bbox.labelUuid ?? bbox.label?.uuid ?? null; },
+      getTagUuids() { return currentTagUuids(); },
+
+      async applyLabel(uuid) {
+        const existingTagUuids = currentTagUuids();
+        // Assigning a label strips verification tags
+        const newTagUuids = uuid
+          ? existingTagUuids.filter(u => !VERIFICATION_TAG_UUIDS.has(u))
+          : existingTagUuids;
+        await _applyUpdate(uuid, newTagUuids);
+        // Update in-memory label
+        if (uuid) {
+          bbox.labelUuid = uuid;
+          const label = labels.get(uuid);
+          if (label) bbox.label = label;
+        } else {
+          bbox.labelUuid = null;
+          bbox.label = null;
+        }
+        // Refresh card
+        const thumb = card.querySelector('.thumb');
+        if (thumb) thumb.src = getBboxThumbnailUrl(img.filename, bbox.uuid, 300) + `&t=${Date.now()}`;
+        if (uuid) {
+          const label = labels.get(uuid);
+          if (label) {
+            const chip = card.querySelector('.label-chip');
+            if (chip) {
+              chip.textContent = label.name;
+              chip.style.cssText = `background:${label.color}33;border:1px solid ${label.color};`;
+            }
+            const bboxInImg = img.bboxes?.find(b => b.uuid === bbox.uuid);
+            if (bboxInImg) { bboxInImg.labelUuid = uuid; bboxInImg.label = label; }
+          }
+          markCardStale(card, 'relabeled');
+        }
+        _imageCardRefreshers.get(img.uuid)?.();
+      },
+
+      async toggleTag(uuid) {
+        const tags = currentTagUuids();
+        const has = tags.includes(uuid);
+        let newTagUuids;
+        if (has) {
+          newTagUuids = tags.filter(u => u !== uuid);
+        } else if (VERIFICATION_TAG_UUIDS.has(uuid)) {
+          // Swap within the verification exclusive group
+          newTagUuids = swapVerificationTag(tags, uuid);
+        } else {
+          newTagUuids = [...tags, uuid];
+        }
+        const labelUuid = bbox.labelUuid ?? bbox.label?.uuid;
+        await _applyUpdate(labelUuid, newTagUuids);
+        markCardStale(card, 'tagged');
+        _imageCardRefreshers.get(img.uuid)?.();
+      },
+
+      async setVerification(uuid) {
+        const tags = currentTagUuids();
+        let newTagUuids;
+        if (uuid === null) {
+          // Clear all verification indicators
+          newTagUuids = tags.filter(u => !ALL_VERIFICATION_UUIDS.has(u));
+        } else if (uuid === REJECTION_TAG_UUID) {
+          // REJECTION has no exclusive group — just add
+          newTagUuids = tags.includes(uuid) ? tags : [...tags, uuid];
+        } else {
+          // Swap within verification exclusive group (UNVERIFIED ↔ FALSE_POS)
+          newTagUuids = swapVerificationTag(tags, uuid);
+        }
+        const labelUuid = bbox.labelUuid ?? bbox.label?.uuid;
+        await _applyUpdate(labelUuid, newTagUuids);
+        // Refresh thumb
+        const thumb = card.querySelector('.thumb');
+        if (thumb) thumb.src = getBboxThumbnailUrl(img.filename, bbox.uuid, 300) + `&t=${Date.now()}`;
+        markCardStale(card, 'verified');
+        _imageCardRefreshers.get(img.uuid)?.();
+      },
+
+      async remove() {
+        await deleteBbox(bbox.uuid);
+        await invalidateBboxThumbnails([bbox.uuid]);
+        markCardStale(card, 'deleted');
+        const idx = img.bboxes?.findIndex(b => b.uuid === bbox.uuid) ?? -1;
+        if (idx !== -1) img.bboxes.splice(idx, 1);
+        _imageCardRefreshers.get(img.uuid)?.();
+      },
+    };
+  }
+
+  // ── Review image adapter factory ───────────────────────────────────────────
+  function makeReviewImageAdapter(entry) {
+    const { img } = entry;
+    return {
+      getPath() { return img.filename; },
+
+      openOnCanvas() {
+        events.publish(EventTypes.LOAD_IMAGE_ONTO_CANVAS, {
+          path: img.filename,
+          showCanvas: true,
+          runtimeId: getPrimaryRuntimeId(),
+        });
+      },
+
+      async setLabelPresence(uuid, status) {
+        await setImageLabel(img.filename, uuid, status);
+      },
+    };
+  }
+
+  // ── Context-object builder for cards ──────────────────────────────────────
+  function _buildContextObject(entry, card, kind) {
+    if (kind === 'bbox') {
+      return { adapters: { bbox: makeReviewBboxAdapter(entry, card) } };
+    }
+    return { adapters: { image: makeReviewImageAdapter(entry) } };
+  }
+
+  function _resolveContextObjects(entry, card, kind) {
+    const id = entryId(entry);
+    if (_selected.has(id) && _selected.size > 1) {
+      // Multi-select: return objects for all selected entries of the same kind
+      return _visibleEntries
+        .filter(e => e.kind === kind && _selected.has(entryId(e)))
+        .map(e => {
+          const eid = entryId(e);
+          const selector = kind === 'image'
+            ? `[data-image-uuid="${eid}"][data-kind="image"]`
+            : `[data-bbox-uuid="${eid}"]`;
+          const c = grid.querySelector(selector) ?? card;
+          return _buildContextObject(e, c, kind);
+        });
+    }
+    return [_buildContextObject(entry, card, kind)];
+  }
 
   function updateBulkBtn() {
     // Count only active entries of the current selection kind so the select-all
@@ -955,6 +1116,8 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
       hoveredBboxUuid: bbox.uuid,
     });
 
+    attachContext(card, ev => _resolveContextObjects({ kind: 'bbox', bbox, img }, card, 'bbox'));
+
     return card;
   }
 
@@ -1087,6 +1250,8 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
       hoveredBboxUuid: null,
     });
 
+    attachContext(card, ev => _resolveContextObjects({ kind: 'image', img }, card, 'image'));
+
     return card;
   }
 
@@ -1163,6 +1328,8 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
       allBboxes: img.bboxes,
       hoveredBboxUuid: bbox.uuid,
     });
+
+    attachContext(row, ev => _resolveContextObjects({ kind: 'bbox', bbox, img }, row, 'bbox'));
 
     return row;
   }

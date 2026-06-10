@@ -14,7 +14,6 @@ import pytest
 import apps.tasks_server.tasks  # noqa: F401  — registers all task types
 from apps.tasks_server.tasks.Registry import task_registry
 
-
 _MOCK_MANAGER = MagicMock()
 
 

@@ -4,7 +4,8 @@ import { init as initReview, applyFilterWhenReady } from './review/main.js';
 import { init as initSettings } from './settings/main.js';
 import { setupMainTabs, navigateTabs } from '/app-static/js/app/utils/tabs.js';
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
-import { createImageTaggingRuntime } from './image-tagging/runtime.js';
+import { createImageTaggingRuntime, setPrimaryRuntimeId } from './image-tagging/runtime.js';
+import { initContextMenus } from '/app-static/js/ui/contextMenu/index.js';
 import { activeModel } from '/app-static/js/shared/activeModel.js';
 import { mountActiveModelBar } from '/app-static/js/ui/activeModelBar.js';
 import { setPendingDatasetPrefill } from '/app-static/js/ui/datasets.js';
@@ -19,7 +20,8 @@ const initializedFeatures = new Set();
 /** @type {AppState} */
 const _appState = {
   imgRuntime: createImageTaggingRuntime()
-}
+};
+setPrimaryRuntimeId(_appState.imgRuntime.id);
 
 /**
  * @param {AppState} appState
@@ -28,6 +30,9 @@ export async function init(appState) {
   // Initialise session-scoped active model state (reads sessionStorage + fetches config if needed)
   await activeModel.init();
   mountActiveModelBar('active-model-bar');
+
+  // Initialise the right-click context menu system
+  initContextMenus();
 
   // Use the new helper to manage top-level tabs
 

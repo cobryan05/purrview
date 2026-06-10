@@ -1,8 +1,8 @@
 import struct
 import zlib
 
-import pytest
 import nest_asyncio
+import pytest
 
 nest_asyncio.apply()
 

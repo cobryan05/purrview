@@ -31,7 +31,6 @@ from apps.tasks_server.tasks.Registry import register_task
 from apps.tasks_server.tasks.Task import Task
 from tests.tasks_server.conftest import CONFIG_UUID, TASK_UUID
 
-
 # ---------------------------------------------------------------------------
 # A looping test task that calls _check_pause() every iteration.
 # This is the integration point: _check_pause() → heartbeat().

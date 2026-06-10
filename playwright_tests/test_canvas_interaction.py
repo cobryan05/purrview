@@ -671,11 +671,11 @@ class TestContextMenu:
 
             // Right-click on empty canvas → should switch to 'bbox'
             setPtr(700, 500);
-            handleContextMenu(makeEvt(2), runtime);
+            await handleContextMenu(makeEvt(2), runtime);
             const after1 = runtime.tool;
 
             // Right-click again → back to 'select'
-            handleContextMenu(makeEvt(2), runtime);
+            await handleContextMenu(makeEvt(2), runtime);
             const after2 = runtime.tool;
 
             return { after1, after2 };
@@ -683,8 +683,8 @@ class TestContextMenu:
         assert result['after1'] == 'bbox:'
         assert result['after2'] == 'select'
 
-    def test_right_click_labelled_bbox_toggles_label_tool(self, page: Page, base_url: str):
-        """Right-clicking a labelled bbox switches to bbox:<label-uuid>; right-clicking again returns to select."""
+    def test_right_click_labelled_bbox_opens_context_menu(self, page: Page, base_url: str):
+        """Right-clicking a labelled bbox opens the context menu (bbox provider is registered by main.js)."""
         page.goto(base_url)
         result = page.evaluate("""async () => {
             const { createImageTaggingRuntime } = await import('/app-static/js/app/image-tagging/runtime.js');
@@ -707,20 +707,19 @@ class TestContextMenu:
             // handleContextMenu detects the clicked bbox via e.target (Konva node walk).
             // Use the actual Konva BboxView as e.target so the labelled-bbox branch fires.
             const bboxView = runtime.canvas.stage.findOne('#b1');
-            const ctxEvt = { target: bboxView, evt: { preventDefault: () => {} } };
+            const ctxEvt = { target: bboxView, evt: { clientX: 100, clientY: 100, preventDefault: () => {} } };
 
-            // First right-click on the labelled bbox: select → bbox:cat-uuid
-            handleContextMenu(ctxEvt, runtime);
-            const afterFirst = runtime.tool;
+            // Right-click on the bbox: the 'bbox' provider is registered by main.js at page
+            // load, so openContextMenuForObjects opens a context menu and returns true.
+            // The old tool-toggle fallback is therefore bypassed.
+            await handleContextMenu(ctxEvt, runtime);
+            const toolUnchanged = runtime.tool === 'select';
+            const menuVisible = !!document.querySelector('.ctx-menu');
 
-            // Second right-click: bbox:cat-uuid → select
-            handleContextMenu(ctxEvt, runtime);
-            const afterSecond = runtime.tool;
-
-            return { afterFirst, afterSecond };
+            return { toolUnchanged, menuVisible };
         }""")
-        assert result['afterFirst'] == 'bbox:cat-uuid'
-        assert result['afterSecond'] == 'select'
+        assert result['toolUnchanged'], "tool should stay 'select' — context menu handled the click"
+        assert result['menuVisible'], "context menu element should be present in the DOM"
 
 
 # ---------------------------------------------------------------------------

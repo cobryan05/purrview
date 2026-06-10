@@ -206,3 +206,14 @@ export function createImageTaggingRuntime() {
     clearHistory,
   };
 }
+
+// ── Primary runtime id accessor ───────────────────────────────────────────────
+// Used by the Review context-menu adapter to address the main canvas.
+
+let _primaryRuntimeId = null;
+
+/** Record the id of the app's main ImageTaggingRuntime. */
+export function setPrimaryRuntimeId(id) { _primaryRuntimeId = id; }
+
+/** Retrieve the id of the app's main ImageTaggingRuntime. */
+export function getPrimaryRuntimeId() { return _primaryRuntimeId; }

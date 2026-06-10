@@ -9,7 +9,6 @@ import pytest
 from apps.helpers.db.db_client import DbClient
 from tests.conftest import make_png
 
-
 # ── Fixtures ─────────────────────────────────────────────────────────────────
 
 

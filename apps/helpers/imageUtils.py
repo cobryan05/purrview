@@ -1,12 +1,13 @@
 """Image utilities"""
 
 import base64
+import json
 from typing import List
 
 import cv2
-import numpy as np
-import json
 import lz4.frame
+import numpy as np
+
 from apps.helpers.types import DetectionResult
 
 
