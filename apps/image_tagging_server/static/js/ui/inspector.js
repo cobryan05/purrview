@@ -4,6 +4,7 @@ import { events, EventTypes } from '/app-static/js/shared/events/index.js';
 import { fetchLabels, fetchLabelByUuid } from '/app-static/js/shared/api/labels.js';
 import { fetchTags, fetchTagByUuid } from '/app-static/js/shared/api/tags.js';
 import { UNVERIFIED_TAG_UUID, VERIFICATION_TAG_UUIDS } from '/app-static/js/shared/api/review.js';
+import { isDynamicLabelsVisible } from '/app-static/js/shared/activeModel.js';
 import { setTool } from '/app-static/js/app/image-tagging/canvas/tools.js';
 import { stripUnverifiedTag } from '/app-static/js/app/image-tagging/canvas/interaction.js';
 
@@ -254,10 +255,12 @@ export function createTagPanel(container, runtime) {
     noneOpt.textContent = '— none —';
     select.appendChild(noneOpt);
 
+    const showDynamic = isDynamicLabelsVisible();
     for (const label of _labelsMap.values()) {
+      if (label.labelType === 'dynamic' && !showDynamic) continue;
       const opt = document.createElement('option');
       opt.value = label.uuid;
-      opt.textContent = label.name;
+      opt.textContent = label.labelType === 'dynamic' ? `${label.name} [dynamic]` : label.name;
       if (label.uuid === currentLabelUuid) opt.selected = true;
       select.appendChild(opt);
     }
@@ -465,6 +468,12 @@ export function createTagPanel(container, runtime) {
     }
   );
 
+  // Re-render the label section when the dynamic labels visibility toggle changes.
+  const _unsubDynamic = events.subscribe(
+    EventTypes.DYNAMIC_LABELS_VISIBILITY_CHANGED,
+    () => _refreshLabelSection()
+  );
+
   // Initial render.
   _mount();
 
@@ -475,6 +484,7 @@ export function createTagPanel(container, runtime) {
       _unsubBboxChanged();
       _unsubToolChanged();
       _unsubImageLoaded();
+      _unsubDynamic();
     },
   };
 }

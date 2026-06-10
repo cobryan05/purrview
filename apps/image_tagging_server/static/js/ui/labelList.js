@@ -12,7 +12,7 @@
  */
 
 import { fetchLabels, clearLabelsCache, createNewLabel, deleteLabel, updateLabel } from '/app-static/js/shared/api/labels.js';
-import { activeModel } from '/app-static/js/shared/activeModel.js';
+import { activeModel, isDynamicLabelsVisible } from '/app-static/js/shared/activeModel.js';
 import { fetchImageLabels, setImageLabel } from '/app-static/js/shared/api/imageLabels.js';
 import { UNVERIFIED_TAG_UUID } from '/app-static/js/shared/api/review.js';
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
@@ -230,8 +230,13 @@ async function mountEditMode(container, { filter, onRerender }) {
   });
   container.appendChild(inner);
 
-  const labelsMap = await fetchLabels();
-  const byParent = buildHierarchy(labelsMap, filter);
+  const allLabels = await fetchLabels();
+  // Dynamic labels are not managed in the edit-mode CRUD list — they are created
+  // on-the-fly via the dynamic label picker in the review/annotation workflow.
+  const hideDynamic = (label) => label.labelType !== 'dynamic';
+  const composedFilter = filter ? (label) => hideDynamic(label) && filter(label) : hideDynamic;
+  const labelsMap = new Map([...allLabels].filter(([, l]) => composedFilter(l)));
+  const byParent = buildHierarchy(labelsMap, null);
 
   renderEditRows(byParent, inner, null, 0, onRerender);
 
@@ -324,7 +329,11 @@ async function mountSelectMode(container, { runtime, filter }) {
   container.appendChild(bulkRow);
 
   const rawLabelsMap = await fetchLabels();
-  const labelsMap = activeModel.applyLabelFilter(rawLabelsMap);
+  const modelFilteredMap = activeModel.applyLabelFilter(rawLabelsMap);
+  // Hide dynamic labels from the canvas select panel unless the toggle is on
+  const labelsMap = isDynamicLabelsVisible()
+    ? modelFilteredMap
+    : new Map([...modelFilteredMap].filter(([, l]) => l.labelType !== 'dynamic'));
   const filterNotice = makeLabelFilterNotice(rawLabelsMap.size - labelsMap.size);
   if (filterNotice) container.appendChild(filterNotice);
   const byParent = buildHierarchy(labelsMap, filter);
@@ -758,14 +767,16 @@ export async function createLabelList(container, options = {}) {
 
   await mount();
 
-  // In select mode, re-render whenever the active model filter changes.
+  // In select mode, re-render whenever the active model filter or dynamic labels toggle changes.
   let _unsubActiveFilter = null;
+  let _unsubDynamicLabels = null;
   if (mode === 'select') {
     _unsubActiveFilter = events.subscribe(EventTypes.ACTIVE_MODEL_CHANGED, () => mount());
+    _unsubDynamicLabels = events.subscribe(EventTypes.DYNAMIC_LABELS_VISIBILITY_CHANGED, () => mount());
   }
 
   return {
-    destroy() { _destroyFn(); _unsubActiveFilter?.(); },
+    destroy() { _destroyFn(); _unsubActiveFilter?.(); _unsubDynamicLabels?.(); },
     refresh() { return mount(); },
     getSelected() { return _handle?.getSelected?.() ?? new Set(); },
     getSubmodels() { return _handle?.getSubmodels?.() ?? new Map(); },

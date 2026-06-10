@@ -77,3 +77,30 @@ async def test_create_child_label(http_client):
     body = child_r.json()
     assert body["status"] == "success"
     assert body["label"]["parentUuid"] == parent_uuid
+
+
+async def test_label_type_roundtrip_from_migration_default(db_client, http_client):
+    """
+    Regression: the migration adds label_type with server_default='standard' (lowercase
+    enum value).  sa.Enum(LabelType) without values_callable stores/expects names
+    ('STANDARD'), so it rejects 'standard' on read.  The ORM column must be configured
+    to use values, not names, so rows written by the migration default survive a round-trip.
+    """
+    import sqlalchemy as sa
+
+    # Insert a row the way the migration's server_default does: lowercase value.
+    async with db_client._engine.begin() as conn:
+        await conn.execute(
+            sa.text(
+                "INSERT INTO labels (uuid, name, label_type, created_at, updated_at)"
+                " VALUES (:uuid, :name, :lt, datetime('now'), datetime('now'))"
+            ),
+            {"uuid": "test-migration-default", "name": "cat", "lt": "standard"},
+        )
+
+    # Fetching labels must succeed and return the correct label_type value.
+    r = await http_client.get("/api/labels")
+    assert r.status_code == 200, r.text
+    labels = r.json()["labels"]
+    assert len(labels) == 1
+    assert labels[0]["labelType"] == "standard"

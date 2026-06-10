@@ -349,8 +349,14 @@ class TestBulkBboxAction:
         modal = page.locator(".app-modal-overlay, div:has(> strong:text-is('Apply to 2 selected bboxes'))").last
         expect(page.locator("strong", has_text="Apply to 2 selected bboxes")).to_be_visible()
 
-        # 'Change Label' (relabel) is selected by default — choose Dog.
-        page.locator("div:has(> strong:text-is('Apply to 2 selected bboxes')) select").select_option("lbl-dog")
+        # 'Change Label' (relabel) is selected by default.
+        # Use the dynamic label picker: type to filter then click the Dog result.
+        modal_locator = page.locator("div:has(> strong:text-is('Apply to 2 selected bboxes'))")
+        picker_input = modal_locator.locator("input[type=text]")
+        picker_input.click()
+        picker_input.fill("Dog")
+        # The results dropdown appears; click the result row for Dog scoped to the modal.
+        modal_locator.get_by_text("Dog", exact=True).click()
         page.locator("div:has(> strong:text-is('Apply to 2 selected bboxes')) button", has_text="Apply").click()
         page.wait_for_timeout(600)
 

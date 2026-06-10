@@ -18,14 +18,17 @@ import { fetchModelConfigs } from '/app-static/js/shared/api/modelConfigs.js';
 
 const SESSION_UUID_KEY = 'wtch_active_model_uuid';
 const SESSION_FILTER_KEY = 'wtch_model_filter_enabled';
+const SESSION_DYNAMIC_LABELS_KEY = 'wtch_show_dynamic_labels';
 
 /** @type {import('/app-static/js/shared/api/modelConfigs.js').ModelConfigRead | null} */
 let _config = null;
 let _filterEnabled = false;
+let _showDynamicLabels = false;
 
 /** Initialise from sessionStorage. Call once at app startup before other modules read state. */
 export async function init() {
   _filterEnabled = sessionStorage.getItem(SESSION_FILTER_KEY) === 'true';
+  _showDynamicLabels = sessionStorage.getItem(SESSION_DYNAMIC_LABELS_KEY) === 'true';
 
   const savedUuid = sessionStorage.getItem(SESSION_UUID_KEY);
   if (savedUuid) {
@@ -89,6 +92,18 @@ export function setLabelFilterEnabled(enabled) {
   _publish();
 }
 
+/** @returns {boolean} */
+export function isDynamicLabelsVisible() {
+  return _showDynamicLabels;
+}
+
+/** @param {boolean} visible */
+export function setDynamicLabelsVisible(visible) {
+  _showDynamicLabels = !!visible;
+  sessionStorage.setItem(SESSION_DYNAMIC_LABELS_KEY, String(_showDynamicLabels));
+  events.publish(EventTypes.DYNAMIC_LABELS_VISIBILITY_CHANGED, _showDynamicLabels);
+}
+
 function _publish() {
   events.publish(EventTypes.ACTIVE_MODEL_CHANGED, {
     config: _config,
@@ -134,5 +149,7 @@ export const activeModel = {
   setActiveModel,
   isLabelFilterEnabled,
   setLabelFilterEnabled,
+  isDynamicLabelsVisible,
+  setDynamicLabelsVisible,
   applyLabelFilter,
 };

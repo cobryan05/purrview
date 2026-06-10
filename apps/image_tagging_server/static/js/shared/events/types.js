@@ -85,4 +85,9 @@ export const EventTypes = Object.freeze({
    * Payload: { conditions: object[], labelUuids: string[] }
    */
   EXPORT_FILTERS_TO_DATASET: "dataset:export_from_review",
+  /**
+   * Fired when the "Show dynamic labels" toggle changes.
+   * Payload: boolean (true = show dynamic labels)
+   */
+  DYNAMIC_LABELS_VISIBILITY_CHANGED: "labels:dynamic:visibility_changed",
 });

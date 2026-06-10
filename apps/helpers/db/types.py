@@ -17,6 +17,8 @@ class ImageLabelStatus(str, Enum):
 # System tag UUIDs — keep in sync with static/js/shared/api/review.js
 UNVERIFIED_TAG_UUID = "00000000-0000-0000-0000-000000000001"
 DUPLICATE_TAG_UUID = "00000000-0000-0000-0000-000000000002"
+FALSE_POS_TAG_UUID = "00000000-0000-0000-0000-000000000003"
+REJECTION_TAG_UUID = "00000000-0000-0000-0000-000000000004"
 
 import jstyleson
 import numpy as np
@@ -84,6 +86,11 @@ class TagKind(str, Enum):
     TASK_GENERATED = "task_generated"
 
 
+class LabelType(str, Enum):
+    STANDARD = "standard"
+    DYNAMIC = "dynamic"
+
+
 class TimestampModel(SQLModel):
     """
     An abstract mixin for tracking record lifecycle using timezone-aware UTC timestamps.
@@ -105,8 +112,6 @@ class UserSetting(SQLModel, table=True):
     __tablename__ = "user_settings"
     key: str = Field(primary_key=True)
     value: str = Field(default="", sa_column=Column(sa.Text))
-
-
 class LabelBase(SQLModel):
     """
     Base schema for object classification labels.
@@ -115,11 +120,13 @@ class LabelBase(SQLModel):
         name: The display name of the label (e.g., 'Car', 'Pedestrian').
         color: A hex or CSS color string used for UI visualization.
         parent_uuid: Reference to a parent label uuid. Deletion is restricted if children exist.
+        label_type: Whether this is a standard dataset label or a dynamic user-created label.
     """
 
     name: str
     color: Optional[str] = None
     parent_uuid: Optional[str] = Field(default=None, foreign_key="labels.uuid", ondelete="RESTRICT")
+    label_type: LabelType = Field(default=LabelType.STANDARD)
 
 
 class Label(LabelBase, TimestampModel, table=True):
@@ -129,6 +136,17 @@ class Label(LabelBase, TimestampModel, table=True):
 
     __tablename__ = "labels"
     uuid: str = Field(default_factory=lambda: str(uuid4()), primary_key=True)
+    # Override to store enum values ("standard", "dynamic") not names ("STANDARD", "DYNAMIC").
+    # sa.Enum(LabelType) defaults to names; values_callable forces value-based storage,
+    # which matches the migration's server_default and frontend expectations.
+    label_type: LabelType = Field(
+        default=LabelType.STANDARD,
+        sa_column=Column(
+            sa.Enum(LabelType, values_callable=lambda x: [e.value for e in x]),
+            nullable=False,
+            server_default="standard",
+        ),
+    )
     parent: Optional["Label"] = Relationship(
         back_populates="children", sa_relationship_kwargs={"remote_side": "Label.uuid"}
     )
@@ -145,12 +163,14 @@ class LabelRead(OrmModel):
     name: str
     color: Optional[str] = None
     parent_uuid: Optional[str] = None
+    label_type: LabelType = LabelType.STANDARD
 
 
 class LabelUpdate(BaseModel):
     name: Optional[str] = None
     color: Optional[str] = None
     parent_uuid: Optional[str] = None
+    label_type: Optional[LabelType] = None
 
 class ImageRecordBase(SQLModel):
     """

@@ -1,4 +1,5 @@
 import { fetchLabels } from '/app-static/js/shared/api/labels.js';
+import { createDynamicLabelPicker } from '/app-static/js/ui/utils/dynamicLabelPicker.js';
 import { fetchTags } from '/app-static/js/shared/api/tags.js';
 import { createFilterPanel } from '/app-static/js/app/review/filters.js';
 import { expandWithDescendants } from '/app-static/js/ui/labelList.js';
@@ -11,6 +12,9 @@ import {
   getImageThumbnailUrl,
   invalidateBboxThumbnails,
   UNVERIFIED_TAG_UUID,
+  FALSE_POS_TAG_UUID,
+  VERIFICATION_TAG_UUIDS,
+  swapVerificationTag,
 } from '/app-static/js/shared/api/review.js';
 import { setImageLabel } from '/app-static/js/shared/api/imageLabels.js';
 import { Logger, toast } from '/app-static/js/ui/utils/logging.js';
@@ -121,6 +125,19 @@ function makeSelect(className, options, defaultValue) {
  *
  * @returns {Promise<{ destroy: () => void }>}
  */
+/** Build and return a verify-status chip span for a bbox's tag UUIDs. */
+function buildVerifyChip(tagUuids) {
+  const isFalsePos = tagUuids.includes(FALSE_POS_TAG_UUID);
+  const isVerified = !tagUuids.includes(UNVERIFIED_TAG_UUID) && !isFalsePos;
+  const chip = document.createElement('span');
+  chip.className = 'verify-chip';
+  chip.textContent = isFalsePos ? '✗ False Pos.' : isVerified ? '✓ Verified' : '◌ Unverified';
+  chip.classList.toggle('verify-chip--verified', isVerified);
+  chip.classList.toggle('verify-chip--false-pos', isFalsePos);
+  chip.title = isFalsePos ? 'False Positive' : isVerified ? 'Verified' : 'Not yet verified';
+  return chip;
+}
+
 export async function createReviewPanel(container, { fetchImages = null, datasetActions = true } = {}) {
   container.innerHTML = '';
 
@@ -702,7 +719,9 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
       }
 
       _hasMore = hasMore;
-      _totalCount = totalCount;
+      // totalCount is -1 on non-first pages (server skips the expensive count
+      // query when a keyset cursor is present). Preserve the cached value.
+      if (totalCount >= 0) _totalCount = totalCount;
 
       if (images.length > 0) {
         const last = images[images.length - 1];
@@ -866,7 +885,7 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
     const label = bbox.label ?? (bbox.labelUuid ? labels.get(bbox.labelUuid) : null);
     const labelName = label?.name ?? '(unknown)';
     const labelColor = label?.color ?? '#888';
-    const isVerified = !(bbox.tags ?? []).some(t => t.uuid === UNVERIFIED_TAG_UUID);
+    const bboxTagUuids = (bbox.tags ?? []).map(t => t.uuid);
     const confidence = bbox.metadataJson?.confidence
       ? `${(parseFloat(bbox.metadataJson.confidence) * 100).toFixed(0)}%`
       : '';
@@ -914,11 +933,7 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
     chip.textContent = labelName;
     chip.style.cssText = `background:${labelColor}33;border:1px solid ${labelColor};`;
 
-    const verifyChip = document.createElement('span');
-    verifyChip.className = 'verify-chip';
-    verifyChip.textContent = isVerified ? '✓ Verified' : '◌ Unverified';
-    verifyChip.classList.toggle('verify-chip--verified', isVerified);
-    verifyChip.title = isVerified ? 'Verified' : 'Not yet verified';
+    const verifyChip = buildVerifyChip(bboxTagUuids);
 
     const meta = document.createElement('div');
     meta.style.cssText = 'margin-top:0.2em;color:#aaa;font-size:0.75em;';
@@ -1080,7 +1095,7 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
     const label = bbox.label ?? (bbox.labelUuid ? labels.get(bbox.labelUuid) : null);
     const labelName = label?.name ?? '(unknown)';
     const labelColor = label?.color ?? '#888';
-    const isVerified = !(bbox.tags ?? []).some(t => t.uuid === UNVERIFIED_TAG_UUID);
+    const rowTagUuids = (bbox.tags ?? []).map(t => t.uuid);
     const confidence = bbox.metadataJson?.confidence
       ? `${(parseFloat(bbox.metadataJson.confidence) * 100).toFixed(0)}%`
       : '';
@@ -1127,11 +1142,7 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
     chip.textContent = labelName;
     chip.style.cssText = `background:${labelColor}33;border:1px solid ${labelColor};`;
 
-    const verifyChip = document.createElement('span');
-    verifyChip.className = 'verify-chip';
-    verifyChip.textContent = isVerified ? '✓ Verified' : '◌ Unverified';
-    verifyChip.classList.toggle('verify-chip--verified', isVerified);
-    verifyChip.title = isVerified ? 'Verified' : 'Not yet verified';
+    const verifyChip = buildVerifyChip(rowTagUuids);
 
     const meta = document.createElement('span');
     meta.className = 'review-row__meta';
@@ -1284,8 +1295,8 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
         }
       });
     } else {
-      await showBulkActionModal(selectedEntries, labels, async (action, newLabelUuid, selectedTagUuids) => {
-        const { failCount, succeededEntries } = await executeBulkAction(action, selectedEntries, newLabelUuid, selectedTagUuids);
+      await showBulkActionModal(selectedEntries, labels, async (action, newLabelUuid, selectedTagUuids, tagsMap) => {
+        const { failCount, succeededEntries } = await executeBulkAction(action, selectedEntries, newLabelUuid, selectedTagUuids, tagsMap);
 
         for (const { bbox, img } of succeededEntries) {
           const card = grid.querySelector(`[data-bbox-uuid="${bbox.uuid}"]`);
@@ -1492,7 +1503,7 @@ export async function showReviewModal({ title = 'Browse Images', fetchImages, ed
 
 // ── Bulk action execution ─────────────────────────────────────────────
 
-async function executeBulkAction(action, entries, newLabelUuid, selectedTagUuids = []) {
+async function executeBulkAction(action, entries, newLabelUuid, selectedTagUuids = [], tagsMap = new Map()) {
   const toInvalidate = [];
   const succeededEntries = [];
   let failCount = 0;
@@ -1504,8 +1515,16 @@ async function executeBulkAction(action, entries, newLabelUuid, selectedTagUuids
         await deleteBbox(bbox.uuid);
       } else if (action === 'addTags') {
         const currentTagUuids = (bbox.tags || []).map(t => t.uuid);
-        // Union: merge selected tags into existing, dedup
-        const tagUuids = [...new Set([...currentTagUuids, ...selectedTagUuids])];
+        // For tags in an exclusive group: remove any existing tags from the same group
+        // before adding the new one (e.g. adding FALSE_POS must remove UNVERIFIED).
+        let base = [...currentTagUuids];
+        for (const tagUuid of selectedTagUuids) {
+          const tag = tagsMap.get(tagUuid);
+          if (tag?.exclusiveGroup) {
+            base = base.filter(u => tagsMap.get(u)?.exclusiveGroup !== tag.exclusiveGroup);
+          }
+        }
+        const tagUuids = [...new Set([...base, ...selectedTagUuids])];
         const labelUuid = bbox.labelUuid ?? bbox.label?.uuid;
         await updateBbox(bbox.uuid, { labelUuid, tagUuids });
       } else if (action === 'removeTags') {
@@ -1515,13 +1534,14 @@ async function executeBulkAction(action, entries, newLabelUuid, selectedTagUuids
         const labelUuid = bbox.labelUuid ?? bbox.label?.uuid;
         await updateBbox(bbox.uuid, { labelUuid, tagUuids });
       } else {
-        // relabel: change the label, strip UNVERIFIED only when a real label is being
-        // assigned — if newLabelUuid is empty/null (e.g. no labels exist in the system)
-        // keep UNVERIFIED so the bbox stays visible in the review queue.
-        const shouldStripUnverified = !!newLabelUuid;
+        // relabel: change the label. When a real label is assigned, strip verification
+        // tags (UNVERIFIED, FALSE_POS) so the bbox leaves the review queue.
+        // If newLabelUuid is undefined (picker not used), keep existing label unchanged.
+        const existingLabelUuid = bbox.labelUuid ?? bbox.label?.uuid;
+        const assigningLabel = newLabelUuid !== undefined && !!newLabelUuid;
+        const labelUuid = assigningLabel ? newLabelUuid : existingLabelUuid;
         const currentTagUuids = (bbox.tags || []).map(t => t.uuid)
-          .filter(u => !shouldStripUnverified || u !== UNVERIFIED_TAG_UUID);
-        const labelUuid = newLabelUuid ?? (bbox.labelUuid ?? bbox.label?.uuid);
+          .filter(u => !assigningLabel || !VERIFICATION_TAG_UUIDS.has(u));
         await updateBbox(bbox.uuid, { labelUuid, tagUuids: currentTagUuids });
       }
       toInvalidate.push(bbox.uuid);
@@ -1830,15 +1850,19 @@ async function showCanvasModal(bbox, img, labels, onSaved, navContext = null) {
 // ── Bulk action modal ─────────────────────────────────────────────────
 
 async function showBulkActionModal(entries, labels, onConfirm) {
-  // Fetch fresh tags so recently-created tags always appear in the picker.
-  const tags = await fetchTags().catch(() => new Map());
+  // Fetch fresh tags and ALL labels (standard + dynamic) for the pickers.
+  const [tags, allLabels] = await Promise.all([
+    fetchTags().catch(() => new Map()),
+    fetchLabels().catch(() => new Map()),
+  ]);
+
   const overlay = document.createElement('div');
   overlay.style.cssText = `position:fixed;inset:0;background:#0008;display:flex;
     align-items:center;justify-content:center;z-index:1000;`;
 
   const dialog = document.createElement('div');
   dialog.style.cssText = `background:#222;border:1px solid #555;border-radius:6px;
-    padding:1.5em;min-width:300px;display:flex;flex-direction:column;gap:0.8em;`;
+    padding:1.5em;min-width:320px;display:flex;flex-direction:column;gap:0.8em;`;
 
   const title = document.createElement('strong');
   title.textContent = `Apply to ${entries.length} selected bbox${entries.length === 1 ? '' : 'es'}`;
@@ -1873,17 +1897,18 @@ async function showBulkActionModal(entries, labels, onConfirm) {
     radioGroup.appendChild(lbl);
   }
 
-  // Label picker (shown only for relabel)
+  // Label picker — dynamic search/create picker showing ALL labels (standard + dynamic)
+  let _selectedLabelUuid = undefined; // undefined = no change; null = clear label
+  const dynPicker = createDynamicLabelPicker(allLabels, {
+    onSelect: (uuid) => { _selectedLabelUuid = uuid; },
+  });
   const labelPickerRow = document.createElement('div');
-  const labelPicker = document.createElement('select');
-  for (const lbl of labels.values()) {
-    const opt = document.createElement('option');
-    opt.value = lbl.uuid;
-    opt.textContent = lbl.name;
-    labelPicker.appendChild(opt);
-  }
-  labelPickerRow.appendChild(document.createTextNode('New label: '));
-  labelPickerRow.appendChild(labelPicker);
+  labelPickerRow.style.cssText = 'display:flex;flex-direction:column;gap:0.3em;';
+  const labelPickerHdr = document.createElement('div');
+  labelPickerHdr.textContent = 'New label:';
+  labelPickerHdr.style.cssText = 'font-size:0.85em;color:#aaa;';
+  labelPickerRow.appendChild(labelPickerHdr);
+  labelPickerRow.appendChild(dynPicker.element);
 
   // Tag picker (shown only for addTags / removeTags)
   const tagOptions = Array.from(tags.values())
@@ -1900,20 +1925,23 @@ async function showBulkActionModal(entries, labels, onConfirm) {
   const btnRow = document.createElement('div');
   btnRow.style.cssText = 'display:flex;gap:0.5em;justify-content:flex-end;';
 
+  function close() { dynPicker.destroy(); overlay.remove(); }
+
   const cancelBtn = document.createElement('button');
   cancelBtn.textContent = 'Cancel';
-  cancelBtn.addEventListener('click', () => overlay.remove());
+  cancelBtn.addEventListener('click', close);
 
   const okBtn = document.createElement('button');
   okBtn.textContent = 'Apply';
   okBtn.style.cssText = 'background:#ff003322;border:1px solid #ff0033;border-radius:3px;padding:0.2em 0.8em;cursor:pointer;';
   okBtn.addEventListener('click', async () => {
-    overlay.remove();
-    const newLabelUuid = selectedAction === 'relabel' ? labelPicker.value : null;
+    close();
+    // _selectedLabelUuid: undefined = picker not used (no change), null = clear label, string = set label
+    const newLabelUuid = selectedAction === 'relabel' ? (_selectedLabelUuid ?? undefined) : undefined;
     const selectedTagUuids = (selectedAction === 'addTags' || selectedAction === 'removeTags')
       ? tagCheckboxField.getValue()
       : [];
-    await onConfirm(selectedAction, newLabelUuid, selectedTagUuids);
+    await onConfirm(selectedAction, newLabelUuid, selectedTagUuids, tags);
   });
 
   btnRow.appendChild(cancelBtn);
@@ -1922,7 +1950,7 @@ async function showBulkActionModal(entries, labels, onConfirm) {
   overlay.appendChild(dialog);
   document.body.appendChild(overlay);
 
-  overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove(); });
+  overlay.addEventListener('click', e => { if (e.target === overlay) close(); });
 }
 
 async function showImageBulkActionModal(entries, labels, onConfirm) {

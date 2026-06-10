@@ -82,7 +82,7 @@ export function createFilterPanel(labels, tags, onFilterChange) {
 
   function buildLabelsControls() {
     const filteredLabels = activeModel.applyLabelFilter(labels);
-    const flatLabels = flattenHierarchy(filteredLabels);
+    const flatLabels = flattenHierarchy(filteredLabels, l => l.labelType !== 'dynamic');
 
     // Destroy previous dropdown instance
     _labelsDropdown?.destroy();

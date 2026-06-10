@@ -15,7 +15,7 @@ ALEMBIC_INI_PATH = Path(__file__).parent / "alembic.ini"
 import jstyleson
 from alembic.runtime.migration import MigrationContext
 from pydantic import TypeAdapter
-from sqlalchemy import Select, and_, delete, event, func, or_
+from sqlalchemy import Select, and_, delete, event, func, or_, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import selectinload, sessionmaker
@@ -28,6 +28,9 @@ from apps.helpers.consts import TaskStatus
 from .types import (
     AVAILABLE_MODEL_TYPENAMES,
     DUPLICATE_TAG_UUID,
+    FALSE_POS_TAG_UUID,
+    LabelType,
+    REJECTION_TAG_UUID,
     UNVERIFIED_TAG_UUID,
     BBox,
     BboxAgeCondition,
@@ -83,6 +86,24 @@ _SYSTEM_TAGS = [
         exclusive_group=None,
         protected=True,
         icon="⊘",
+    ),
+    Tag(
+        uuid=FALSE_POS_TAG_UUID,
+        name="False Positive",
+        color="#c0392b",
+        kind=TagKind.SYSTEM,
+        exclusive_group="verification",
+        protected=True,
+        icon="✗",
+    ),
+    Tag(
+        uuid=REJECTION_TAG_UUID,
+        name="Rejection",
+        color="#8e44ad",
+        kind=TagKind.SYSTEM,
+        exclusive_group=None,
+        protected=True,
+        icon="⊗",
     ),
 ]
 
@@ -153,12 +174,17 @@ def _apply_image_search_filters(stmt: Select, params: ImageSearchParams) -> Sele
                 )
                 stmt = stmt.where(tag_subq)
         else:
-            # "any of" — current JOIN approach: image has a bbox with ANY selected tag.
-            stmt = (
-                stmt.join(BBox, BBox.image_uuid == ImageRecord.uuid)
+            # "any of" — EXISTS semi-join: image has a bbox with ANY selected tag.
+            # Using EXISTS instead of a JOIN avoids duplicate image rows (no DISTINCT
+            # needed) and lets SQLite walk the images index and stop early at LIMIT.
+            tag_subq = (
+                select(BBox)
                 .join(BBoxTagLink, BBoxTagLink.bbox_uuid == BBox.uuid)
-                .where(BBoxTagLink.tag_uuid.in_(params.tag_uuids))
+                .where(BBox.image_uuid == ImageRecord.uuid, BBoxTagLink.tag_uuid.in_(params.tag_uuids))
+                .correlate(ImageRecord)
+                .exists()
             )
+            stmt = stmt.where(tag_subq)
 
     # ── Single-label backward-compat filter ───────────────────────────────────
     # Kept for API callers that still send label_uuid.  New callers should use
@@ -202,6 +228,7 @@ def _apply_image_search_filters(stmt: Select, params: ImageSearchParams) -> Sele
                 BBox.image_uuid == ImageRecord.uuid,
                 BBoxTagLink.tag_uuid == tf.tag_uuid,
             )
+            .correlate(ImageRecord)
             .exists()
         )
         stmt = stmt.where(~tag_subq if tf.exclude else tag_subq)
@@ -324,6 +351,9 @@ class DbClient:
             cursor.execute("PRAGMA journal_mode=WAL")
             # NORMAL is safe with WAL and avoids the fsync overhead of FULL.
             cursor.execute("PRAGMA synchronous=NORMAL")
+            # 64 MB page cache per connection; reduces repeated disk I/O on
+            # image/bbox index scans (default is only ~2 MB).
+            cursor.execute("PRAGMA cache_size=-65536")
             cursor.close()
 
         self._async_session_maker = sessionmaker(self._engine, class_=AsyncSession, expire_on_commit=False)
@@ -410,6 +440,14 @@ class DbClient:
 
         if dataset_count == 0:
             await self.sync_datasets_from_json()
+
+        # Refresh query-planner statistics so SQLite picks optimal indexes for
+        # the current data distribution.  PRAGMA optimize is incremental — it
+        # only runs ANALYZE on tables/indexes whose stats are stale, so it is
+        # cheap on subsequent startups once the stats are fresh.
+        if not self._memory:
+            async with self._engine.connect() as conn:
+                await conn.execute(text("PRAGMA optimize"))
 
     async def _seed_system_tags(self) -> None:
         """Ensure system tags always exist (idempotent).
@@ -789,7 +827,6 @@ class DbClient:
                         selectinload(BBox.tags),
                     )
                 )
-                .distinct()
             )
 
             stmt = _apply_image_search_filters(stmt, params)
@@ -847,7 +884,7 @@ class DbClient:
         LIMIT, or keyset cursors so the result reflects the full matched set.
         """
         async with self._async_session_maker() as session:
-            inner = _apply_image_search_filters(select(ImageRecord.uuid).distinct(), params)
+            inner = _apply_image_search_filters(select(ImageRecord.uuid), params)
             stmt = select(func.count()).select_from(inner.subquery())
             result = await session.exec(stmt)
             return result.one()
@@ -1270,9 +1307,10 @@ class DbClient:
         color: Optional[str] = None,
         uuid: Optional[str] = None,
         parent_uuid: Optional[str] = None,
+        label_type: LabelType = LabelType.STANDARD,
     ) -> Label:
         """Insert a label and return the created object."""
-        new_label = Label(uuid=uuid or str(uuid4()), name=name, color=color, parent_uuid=parent_uuid)
+        new_label = Label(uuid=uuid or str(uuid4()), name=name, color=color, parent_uuid=parent_uuid, label_type=label_type)
 
         async with self._async_session_maker() as session:
             session.add(new_label)

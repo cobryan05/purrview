@@ -31,6 +31,7 @@ from apps.helpers.db.types import (
     ImageSearchParams,
     Label,
     LabelRead,
+    LabelType,
     LabelUpdate,
     ModelConfigCreate,
     ModelConfigRead,
@@ -83,6 +84,7 @@ class AddLabelPayload(ApiPayload):
     name: str
     color: str
     parent_uuid: Optional[str] = None
+    label_type: LabelType = LabelType.STANDARD
 
 
 class AddLabelResponse(StatusResponse):
@@ -587,7 +589,7 @@ class WebApp:
             """
             try:
                 label = await self._manager.create_new_label(
-                    request.name, request.color, parent_uuid=request.parent_uuid
+                    request.name, request.color, parent_uuid=request.parent_uuid, label_type=request.label_type
                 )
 
                 return AddLabelResponse(status=JsonValues.SUCCESS, label=label)
@@ -644,6 +646,7 @@ class WebApp:
                     label_uuid=label_uuid,
                     name=request.name,
                     color=request.color,
+                    label_type=request.label_type,
                 )
                 return UpdateLabelResponse(status=JsonValues.SUCCESS)
             except Exception as e:

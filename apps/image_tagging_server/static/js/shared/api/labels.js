@@ -48,11 +48,11 @@ export async function fetchLabelByUuid(uuid) {
  * CRUD FUNCTIONS
  * -----------------------------
  */
-export async function createNewLabel(name, color, parentUuid = null) {
+export async function createNewLabel(name, color, parentUuid = null, labelType = 'standard') {
   const res = await apiFetch('/api/labels', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name, color, parentUuid }),
+    body: JSON.stringify({ name, color, parentUuid, labelType }),
   });
 
   const data = await res.json();
@@ -62,6 +62,7 @@ export async function createNewLabel(name, color, parentUuid = null) {
   }
 
   labelsFetcher.clear();
+  return data.label ?? null;
 }
 
 

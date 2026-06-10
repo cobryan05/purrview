@@ -10,7 +10,7 @@
  */
 
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
-import { activeModel } from '/app-static/js/shared/activeModel.js';
+import { activeModel, isDynamicLabelsVisible, setDynamicLabelsVisible } from '/app-static/js/shared/activeModel.js';
 import { navigateTabs } from '/app-static/js/app/utils/tabs.js';
 
 /**
@@ -82,12 +82,33 @@ export function mountActiveModelBar(containerId = 'active-model-bar') {
       right.append(' Filter labels to model');
       bar.appendChild(right);
     }
+
+    // ── Always visible: dynamic labels toggle ─────────────────────────────
+    const dynLabel = document.createElement('label');
+    dynLabel.className = 'active-model-bar__filter-label';
+
+    const dynToggle = document.createElement('input');
+    dynToggle.type = 'checkbox';
+    dynToggle.checked = isDynamicLabelsVisible();
+    dynToggle.addEventListener('change', () => {
+      setDynamicLabelsVisible(dynToggle.checked);
+    });
+
+    dynLabel.appendChild(dynToggle);
+    dynLabel.append(' Show dynamic labels');
+    bar.appendChild(dynLabel);
   }
 
   render();
 
-  const unsub = events.subscribe(EventTypes.ACTIVE_MODEL_CHANGED, render);
+  const unsubModel = events.subscribe(EventTypes.ACTIVE_MODEL_CHANGED, render);
+  const unsubDyn = events.subscribe(EventTypes.DYNAMIC_LABELS_VISIBILITY_CHANGED, render);
 
   // Return a destroy handle in case the bar ever needs to be torn down
-  return { destroy: unsub };
+  return {
+    destroy() {
+      unsubModel();
+      unsubDyn();
+    },
+  };
 }

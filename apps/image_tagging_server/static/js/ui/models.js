@@ -1,4 +1,5 @@
 import { fetchLabels } from '/app-static/js/shared/api/labels.js';
+import { isDynamicLabelsVisible } from '/app-static/js/shared/activeModel.js';
 import { associateLabel, clearModelsCache, fetchModelsLabelMappings, fetchModelsList } from '/app-static/js/shared/api/models.js';
 import { DropDownField, EditableField, LabelDropDownField } from '/app-static/js/ui/utils/fields/index.js';
 import { createGenericRow, Logger, showPaneError, toast } from '/app-static/js/ui/utils/index.js';
@@ -60,11 +61,14 @@ export function renderModelLabelAssignments({
     fetchLabels()
   ]).then(([labelMap, allLabels]) => {
     // Convert labels to the format required by DropDownField
-    const labelItems = Array.from(allLabels.values()).map(label => ({
-      key: label.uuid,
-      text: label.name,
-      color: label.color || '#cccccc'
-    }));
+    const showDynamic = isDynamicLabelsVisible();
+    const labelItems = Array.from(allLabels.values())
+      .filter(label => label.labelType !== 'dynamic' || showDynamic)
+      .map(label => ({
+        key: label.uuid,
+        text: label.name,
+        color: label.color || '#cccccc',
+      }));
 
     labelMap.forEach((assignedUuid, modelClass) => {
       const assignedLabel = allLabels.get(assignedUuid);

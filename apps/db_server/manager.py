@@ -3,6 +3,7 @@
 import asyncio
 import fnmatch
 import hashlib
+import time
 import io
 import logging
 import os
@@ -24,6 +25,8 @@ from apps.helpers.db.db_client import (
 )
 from apps.helpers.db.types import (
     AVAILABLE_MODEL_TYPENAMES,
+    FALSE_POS_TAG_UUID,
+    LabelType,
     UNVERIFIED_TAG_UUID,
     BBoxUpdate,
     DatasetCreate,
@@ -68,6 +71,9 @@ logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger(__file__)
 logger.setLevel(logging.DEBUG)
 
+# Bboxes with any of these tags are excluded from PRESENT image-label tracking.
+_BBOX_SKIP_TAGS = frozenset({UNVERIFIED_TAG_UUID, FALSE_POS_TAG_UUID})
+
 
 class Manager:
     """Manages interactions with the database"""
@@ -87,6 +93,12 @@ class Manager:
             image_hash_size=self._image_hash_size,
             bbox_hash_size=self._bbox_hash_size,
         )
+        # Short-lived cache for expensive count queries.  Key is an MD5 of the
+        # filter predicates (sort/page fields excluded); value is (count, ts).
+        # TTL is intentionally short so writes that happen while browsing are
+        # reflected within a few seconds when the user hits Refresh.
+        self._count_cache: dict[str, tuple[int, float]] = {}
+        self._COUNT_CACHE_TTL = 60.0  # seconds
 
     async def get_server_config(self) -> Dict[str, Any]:
         return self._config.copy()
@@ -122,14 +134,16 @@ class Manager:
     # LABELS API
     ################################################################################
 
-    async def create_new_label(self, name: str, color: str, parent_uuid: Optional[str] = None) -> Label:
+    async def create_new_label(
+        self, name: str, color: str, parent_uuid: Optional[str] = None, label_type: LabelType = LabelType.STANDARD
+    ) -> Label:
         """
         Adds a new label to the database
 
         Returns:
             Label: Label added to database
         """
-        ret = await self._db_client.add_label(name, color, parent_uuid=parent_uuid)
+        ret = await self._db_client.add_label(name, color, parent_uuid=parent_uuid, label_type=label_type)
         # TODO CJO: await self._db_client.export_labels_from_db_to_json(str(self._labels_json))
         return ret
 
@@ -145,16 +159,26 @@ class Manager:
         await self._db_client.delete_label(label_uuid)
         # TODO CJO: await self._db_client.export_labels_from_db_to_json(str(self._labels_json))
 
-    async def update_label(self, label_uuid: str, name: Optional[str] = None, color: Optional[str] = None) -> None:
+    async def update_label(
+        self,
+        label_uuid: str,
+        name: Optional[str] = None,
+        color: Optional[str] = None,
+        label_type: Optional[LabelType] = None,
+    ) -> None:
         """
-        Update a label's name and/or color.
+        Update a label's name, color, and/or label_type.
 
         Args:
             label_uuid (str): uuid of the label to update.
             name (Optional[str]): New name for the label.
             color (Optional[str]): New color for the label.
+            label_type (Optional[LabelType]): New label type.
         """
-        await self._db_client.update_label(label_uuid=label_uuid, name=name, color=color)
+        await self._db_client.update_label(
+            label_uuid=label_uuid, name=name, color=color,
+            **({} if label_type is None else {"label_type": label_type}),
+        )
         # TODO CJO: await self._db_client.export_labels_from_db_to_json(str(self._labels_json))
 
     async def get_label_uuid_map(self) -> Dict[str, Label]:
@@ -519,9 +543,12 @@ class Manager:
 
         Only PRESENT rows are written/deleted here.  ABSENT rows are always
         set explicitly by the user via set_image_label and are never touched.
+
+        Bboxes tagged UNVERIFIED or FALSE_POSITIVE are excluded from PRESENT tracking,
+        as they have not been confirmed as true positive annotations.
         """
         present_label_uuids = {
-            b.label_uuid for b in update.bboxes if b.label_uuid and UNVERIFIED_TAG_UUID not in b.tag_uuids
+            b.label_uuid for b in update.bboxes if b.label_uuid and not _BBOX_SKIP_TAGS.intersection(b.tag_uuids)
         }
         for label_uuid in present_label_uuids:
             await self._db_client.set_image_label(image_uuid, label_uuid, ImageLabelStatus.PRESENT)
@@ -578,13 +605,44 @@ class Manager:
         """Return (images, has_more, total_count) for the review queue.
 
         Fetches limit+1 images to detect whether a next page exists without a
-        separate query, and runs a count query in parallel for the total.
+        separate query.  The count query is only issued on the first page
+        (after_uuid is None) — subsequent pages return -1 so the frontend can
+        display the cached value from the first fetch.
+
+        The count result is cached for COUNT_CACHE_TTL seconds keyed on the
+        filter predicates (sort order and pagination cursor are excluded).  This
+        avoids re-running the expensive full-table scan when the user only
+        changes sort order or hits Refresh within the TTL window.
         """
         fetch_params = params.model_copy(update={"limit": params.limit + 1})
-        batch, total_count = await asyncio.gather(
-            self._db_client.list_images_search(fetch_params),
-            self._db_client.count_images_search(params),
-        )
+
+        if params.after_uuid is None:
+            # Build a cache key from the filter predicates only; sort/page fields
+            # are excluded because they don't affect the count result.
+            cache_key = hashlib.md5(
+                params.model_dump_json(
+                    exclude={"sort_by", "sort_order", "limit", "after_uuid", "after_sort_value"}
+                ).encode(),
+                usedforsecurity=False,
+            ).hexdigest()
+            now = time.monotonic()
+            cached = self._count_cache.get(cache_key)
+
+            if cached is not None and (now - cached[1]) < self._COUNT_CACHE_TTL:
+                # Fresh cached count — just fetch the page data.
+                batch = await self._db_client.list_images_search(fetch_params)
+                total_count = cached[0]
+            else:
+                # Cache miss or expired — run both queries in parallel.
+                batch, total_count = await asyncio.gather(
+                    self._db_client.list_images_search(fetch_params),
+                    self._db_client.count_images_search(params),
+                )
+                self._count_cache[cache_key] = (total_count, now)
+        else:
+            batch = await self._db_client.list_images_search(fetch_params)
+            total_count = -1  # caller should use cached value from first page
+
         has_more = len(batch) > params.limit
         images_page = batch[: params.limit]
 

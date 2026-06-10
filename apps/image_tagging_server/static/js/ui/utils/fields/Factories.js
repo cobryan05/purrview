@@ -12,6 +12,7 @@ import { CheckboxField } from './CheckboxField.js';
 import { DropDownField } from './DropDownField.js';
 import { fetchTags, createNewTag } from '/app-static/js/shared/api/tags.js';
 import { fetchLabels } from '/app-static/js/shared/api/labels.js';
+import { isDynamicLabelsVisible } from '/app-static/js/shared/activeModel.js';
 // Factory map
 export const fieldFactories = {
   async array(fieldName, fieldMeta, values, onChange) {
@@ -77,11 +78,14 @@ export const fieldFactories = {
     const { ...rest } = fieldMeta;
 
     const labelList = await fetchLabels();
-    const labelOptions = Array.from(labelList.values()).map(label => ({
-      key: label.uuid,
-      text: label.name,
-      color: label.color || '#cccccc'
-    }))
+    const showDynamic = isDynamicLabelsVisible();
+    const labelOptions = Array.from(labelList.values())
+      .filter(label => label.labelType !== 'dynamic' || showDynamic)
+      .map(label => ({
+        key: label.uuid,
+        text: label.labelType === 'dynamic' ? `${label.name} [dynamic]` : label.name,
+        color: label.color || '#cccccc',
+      }))
 
     return await new DropDownField({
       value: values[fieldName],
