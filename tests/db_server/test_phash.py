@@ -3,7 +3,8 @@
 Covers:
   - phash computed and stored in DB on first image write
   - phash written to JSON sidecar
-  - DB helper methods: get_all_image_phashes, get_all_bbox_phashes, update_phashes
+  - DB helper methods: get_all_image_phashes, get_all_bbox_phashes, update_phashes,
+                       get_image_phashes_page, get_bbox_phashes_page
   - HTTP endpoints: find-similar-images, find-similar-bboxes,
                     rebuild-index, recompute-phash
 """
@@ -206,6 +207,69 @@ class TestDbHelpers:
 
         assert img_row is not None and img_row["phash"] == new_image_phash
         assert bbox_row is not None and bbox_row["phash"] == new_bbox_phash
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Paginated DB helpers: get_image_phashes_page / get_bbox_phashes_page
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestPhashPage:
+    """Tests for the paginated phash query helpers added alongside the bulk variants."""
+
+    async def test_image_page_empty_db_returns_empty_list(self, db_client):
+        rows = await db_client.get_image_phashes_page(0, 10)
+        assert rows == []
+
+    async def test_image_page_returns_row_with_correct_fields(
+        self, db_client, written_image
+    ):
+        image_uuid, _ = written_image
+        rows = await db_client.get_image_phashes_page(0, 10)
+        assert len(rows) >= 1
+        row = rows[0]
+        assert "uuid" in row and "phash" in row
+        assert row["uuid"] == image_uuid
+
+    async def test_image_page_excludes_null_phash(self, db_client):
+        # Image inserted without going through the write pipeline has no phash
+        from pathlib import Path as _Path
+        await db_client.add_image(_Path("no_phash.jpg"))
+        rows = await db_client.get_image_phashes_page(0, 10)
+        assert rows == []
+
+    async def test_image_page_offset_skips_rows(self, db_client, written_image):
+        # Only one image in DB; offset=1 must return nothing
+        rows = await db_client.get_image_phashes_page(1, 10)
+        assert rows == []
+
+    async def test_image_page_limit_caps_result(self, db_client, written_image):
+        # Seed a second image with a phash via update_phashes
+        from pathlib import Path as _Path
+        second = await db_client.add_image(_Path("second.jpg"))
+        await db_client.update_phashes(second.uuid, "b" * 16, [])
+        all_rows = await db_client.get_image_phashes_page(0, 100)
+        assert len(all_rows) == 2
+        limited = await db_client.get_image_phashes_page(0, 1)
+        assert len(limited) == 1
+
+    async def test_bbox_page_empty_db_returns_empty_list(self, db_client):
+        rows = await db_client.get_bbox_phashes_page(0, 10)
+        assert rows == []
+
+    async def test_bbox_page_returns_row_with_correct_fields(
+        self, db_client, written_image
+    ):
+        _, bbox_uuid = written_image
+        rows = await db_client.get_bbox_phashes_page(0, 10)
+        assert len(rows) >= 1
+        row = rows[0]
+        assert "uuid" in row and "label_uuid" in row and "phash" in row
+        assert row["uuid"] == bbox_uuid
+
+    async def test_bbox_page_offset_skips_rows(self, db_client, written_image):
+        rows = await db_client.get_bbox_phashes_page(1, 10)
+        assert rows == []
 
 
 # ─────────────────────────────────────────────────────────────────────────────

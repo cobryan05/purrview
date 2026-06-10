@@ -1092,6 +1092,28 @@ class DbClient:
             )
             return [{"uuid": row[0], "label_uuid": row[1], "phash": row[2]} for row in result.all()]
 
+    async def get_image_phashes_page(self, offset: int, limit: int) -> List[Dict[str, str]]:
+        """Return up to `limit` [{uuid, phash}] rows starting at `offset`."""
+        async with self._async_session_maker() as session:
+            result = await session.exec(
+                select(ImageRecord.uuid, ImageRecord.phash)
+                .where(ImageRecord.phash.is_not(None))  # type: ignore[arg-type]
+                .offset(offset)
+                .limit(limit)
+            )
+            return [{"uuid": row[0], "phash": row[1]} for row in result.all()]
+
+    async def get_bbox_phashes_page(self, offset: int, limit: int) -> List[Dict[str, str]]:
+        """Return up to `limit` [{uuid, label_uuid, phash}] rows starting at `offset`."""
+        async with self._async_session_maker() as session:
+            result = await session.exec(
+                select(BBox.uuid, BBox.label_uuid, BBox.phash)
+                .where(BBox.phash.is_not(None))  # type: ignore[arg-type]
+                .offset(offset)
+                .limit(limit)
+            )
+            return [{"uuid": row[0], "label_uuid": row[1], "phash": row[2]} for row in result.all()]
+
     async def update_phashes(
         self,
         image_uuid: str,

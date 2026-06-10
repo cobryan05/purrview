@@ -279,3 +279,64 @@ class TestBuildFromDB:
             await idx.rebuild()
 
         assert ran_in_thread, "_construct_trees must run in a worker thread, not on the event loop"
+
+    async def test_load_phashes_returns_all_rows(self, idx, db_client):
+        """_load_phashes must accumulate every row regardless of CHUNK_SIZE."""
+        from pathlib import Path
+
+        # Seed 3 images with phashes
+        for i in range(3):
+            img = await db_client.add_image(Path(f"img_{i}.jpg"))
+            await db_client.update_phashes(img.uuid, "a" * 16, [])
+
+        # Force chunking: process 2 rows per page so we need 2 pages for 3 images
+        idx.CHUNK_SIZE = 2
+        image_rows, bbox_rows = await idx._load_phashes()
+
+        assert len(image_rows) == 3
+        assert all("uuid" in r and "phash" in r for r in image_rows)
+        assert bbox_rows == []  # no bboxes seeded
+
+    async def test_load_phashes_yields_between_full_pages(self, idx, db_client):
+        """_load_phashes must call asyncio.sleep(0) after each full page so the
+        event loop can process other requests during startup / rebuild."""
+        import asyncio
+        from pathlib import Path
+        from unittest.mock import patch
+
+        # Seed 3 images: with CHUNK_SIZE=2 the first page is full → one sleep expected
+        for i in range(3):
+            img = await db_client.add_image(Path(f"chunk_{i}.jpg"))
+            await db_client.update_phashes(img.uuid, "b" * 16, [])
+
+        idx.CHUNK_SIZE = 2
+        sleep_calls = []
+
+        async def _track_sleep(delay):
+            sleep_calls.append(delay)
+
+        with patch.object(asyncio, "sleep", _track_sleep):
+            await idx._load_phashes()
+
+        assert 0 in sleep_calls, "asyncio.sleep(0) must be called between full pages"
+
+    async def test_load_phashes_no_sleep_when_single_page(self, idx, db_client):
+        """_load_phashes must NOT yield when all rows fit in the first page."""
+        import asyncio
+        from pathlib import Path
+        from unittest.mock import patch
+
+        # 2 images with CHUNK_SIZE=500 → single page, no sleep
+        for i in range(2):
+            img = await db_client.add_image(Path(f"small_{i}.jpg"))
+            await db_client.update_phashes(img.uuid, "c" * 16, [])
+
+        sleep_calls = []
+
+        async def _track_sleep(delay):
+            sleep_calls.append(delay)
+
+        with patch.object(asyncio, "sleep", _track_sleep):
+            await idx._load_phashes()
+
+        assert sleep_calls == [], "No sleep expected when all rows fit in one page"

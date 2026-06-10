@@ -55,6 +55,7 @@ class HashIndex:
     """BK-tree index for whole-image and per-label bbox perceptual-hash lookup."""
 
     REBUILD_THRESHOLD = 0.15  # rebuild when dead entries exceed 15% of tree size
+    CHUNK_SIZE = 500  # rows per page when loading phashes from the DB
 
     def __init__(
         self,
@@ -85,11 +86,32 @@ class HashIndex:
     # Build / rebuild
     # ─────────────────────────────────────────────────────────────────────────
 
+    async def _paginate(self, fetch_fn) -> List[Dict[str, str]]:
+        """Page through a db fetch function, yielding to the event loop between full pages."""
+        rows: List[Dict[str, str]] = []
+        offset = 0
+        while True:
+            chunk = await fetch_fn(offset, self.CHUNK_SIZE)
+            rows.extend(chunk)
+            if len(chunk) < self.CHUNK_SIZE:
+                break
+            offset += self.CHUNK_SIZE
+            await asyncio.sleep(0)
+        return rows
+
+    async def _load_phashes(self) -> Tuple[List[Dict[str, str]], List[Dict[str, str]]]:
+        """Fetch all image and bbox phash rows in pages, yielding to the event loop
+        between chunks so other requests are not starved during startup or rebuild."""
+        image_rows, bbox_rows = await asyncio.gather(
+            self._paginate(self._db_client.get_image_phashes_page),
+            self._paginate(self._db_client.get_bbox_phashes_page),
+        )
+        return image_rows, bbox_rows
+
     async def build(self) -> BuildStats:
         """Load all non-null phash rows from the DB and build BK-trees."""
         t0 = time.perf_counter()
-        image_rows = await self._db_client.get_all_image_phashes()
-        bbox_rows = await self._db_client.get_all_bbox_phashes()
+        image_rows, bbox_rows = await self._load_phashes()
         stats = await asyncio.to_thread(self._construct_trees, image_rows, bbox_rows)
         stats.duration_ms = (time.perf_counter() - t0) * 1000
         logger.info(
@@ -134,8 +156,7 @@ class HashIndex:
     async def rebuild(self) -> RebuildStats:
         """Full reload from DB — resets all tombstone counters."""
         t0 = time.perf_counter()
-        image_rows = await self._db_client.get_all_image_phashes()
-        bbox_rows = await self._db_client.get_all_bbox_phashes()
+        image_rows, bbox_rows = await self._load_phashes()
         stats_build = await asyncio.to_thread(self._construct_trees, image_rows, bbox_rows)
         duration_ms = (time.perf_counter() - t0) * 1000
         logger.info(

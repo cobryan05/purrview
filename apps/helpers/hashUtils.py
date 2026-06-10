@@ -81,5 +81,11 @@ def compute_bbox_phash(
 
 
 def hamming(a: str, b: str) -> int:
-    """Hamming distance between two imagehash hex strings."""
-    return int(imagehash.hex_to_hash(a) - imagehash.hex_to_hash(b))
+    """Hamming distance between two imagehash hex strings.
+
+    Operates directly on the integer value of the hex strings — no imagehash
+    object allocation, no numpy round-trip.  Equivalent to the old
+    ``int(imagehash.hex_to_hash(a) - imagehash.hex_to_hash(b))`` but orders of
+    magnitude faster when called O(N log N) times during BK-tree construction.
+    """
+    return (int(a, 16) ^ int(b, 16)).bit_count()
