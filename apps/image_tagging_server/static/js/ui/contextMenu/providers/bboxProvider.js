@@ -16,11 +16,14 @@ import { fetchLabels } from '/app-static/js/shared/api/labels.js';
 import { fetchTags, createNewTag } from '/app-static/js/shared/api/tags.js';
 import { createDynamicLabelPicker } from '/app-static/js/ui/utils/dynamicLabelPicker.js';
 import { showConfirmModal } from '/app-static/js/ui/utils/confirmModal.js';
+import { openSimilarImagesModal, openSimilarBboxesModal } from '/app-static/js/ui/similarSearch.js';
+import { buildSimilarPanel } from '../similarPanelBuilder.js';
 import {
   FALSE_POS_TAG_UUID,
   REJECTION_TAG_UUID,
   UNVERIFIED_TAG_UUID,
 } from '/app-static/js/shared/api/review.js';
+
 
 /** Run an async fn over every adapter in sequence. */
 async function runAll(adapters, fn) {
@@ -181,6 +184,26 @@ registerContextProvider('bbox', async (adapters, ctx) => {
         }
         await runAll(adapters, a => a.remove());
       },
+    },
+
+    // ── Similar search ─────────────────────────────────────────────────────
+    {
+      label: 'Search for similar bboxes…',
+      disabled: count > 1,
+      submenu: () => buildSimilarPanel((threshold) => {
+        const bboxUuid = adapters[0].getBboxUuid?.() ?? null;
+        ctx.close();
+        if (bboxUuid) openSimilarBboxesModal({ bboxUuid, threshold });
+      }, 8),
+    },
+    {
+      label: 'Search for similar images…',
+      disabled: count > 1,
+      submenu: () => buildSimilarPanel((threshold) => {
+        const imageUuid = adapters[0].getImageUuid?.() ?? null;
+        ctx.close();
+        if (imageUuid) openSimilarImagesModal({ imageUuid, threshold });
+      }),
     },
   ];
 

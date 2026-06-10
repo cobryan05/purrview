@@ -10,6 +10,8 @@
 import { registerContextProvider } from '../registry.js';
 import { asyncPanel } from '../menu.js';
 import { fetchLabels } from '/app-static/js/shared/api/labels.js';
+import { openSimilarImagesModal } from '/app-static/js/ui/similarSearch.js';
+import { buildSimilarPanel } from '../similarPanelBuilder.js';
 
 /**
  * Build a label-list panel for the Mark-label flyouts.
@@ -48,6 +50,7 @@ async function _buildLabelListPanel(onSelect) {
   return wrap;
 }
 
+
 registerContextProvider('image', async (adapters, ctx) => {
   const count = ctx.count;
 
@@ -75,6 +78,17 @@ registerContextProvider('image', async (adapters, ctx) => {
         for (const a of adapters) await a.setLabelPresence(uuid, 'uncertain');
         ctx.close();
       })),
+    },
+
+    // ── Similar search ─────────────────────────────────────────────────────
+    {
+      label: 'Search for similar images…',
+      disabled: count > 1,
+      submenu: () => buildSimilarPanel((threshold) => {
+        const imageUuid = adapters[0].getUuid?.();
+        ctx.close();
+        if (imageUuid) openSimilarImagesModal({ imageUuid, threshold });
+      }),
     },
   ];
 

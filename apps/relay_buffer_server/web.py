@@ -110,6 +110,15 @@ class WebApp:
                 response_data = {"status": "failure", "message": str(e)}
             return JSONResponse(content=response_data)
 
+        @self._app.get("/status", operation_id="relay_buffer_server_status", response_class=JSONResponse)
+        async def relay_buffer_server_status():
+            streams = self._manager.get_streams()
+            return JSONResponse(content={
+                "service": "relay_buffer_server",
+                "status": "ok",
+                "streams": {"active": len(streams)},
+            })
+
         @self._app.post(
             "/api/streams/create",
             response_class=JSONResponse,

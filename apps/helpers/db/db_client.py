@@ -900,6 +900,33 @@ class DbClient:
             image = await session.get(ImageRecord, bbox.image_uuid)
             return bbox, image
 
+    async def get_image_uuids_for_bboxes(self, bbox_uuids: List[str]) -> Dict[str, str]:
+        """Return {bbox_uuid: image_uuid} for a batch of bbox UUIDs."""
+        if not bbox_uuids:
+            return {}
+        async with self._async_session_maker() as session:
+            stmt = select(BBox.uuid, BBox.image_uuid).where(BBox.uuid.in_(bbox_uuids))
+            result = await session.exec(stmt)
+            return {b_uuid: img_uuid for b_uuid, img_uuid in result.all()}
+
+    async def get_images_by_uuids(self, uuids: List[str]) -> List[ImageRecord]:
+        """Return full ImageRecord rows (with bboxes + tags) for a list of image UUIDs."""
+        if not uuids:
+            return []
+        async with self._async_session_maker() as session:
+            stmt = (
+                select(ImageRecord)
+                .where(ImageRecord.uuid.in_(uuids))
+                .options(
+                    selectinload(ImageRecord.bboxes).options(
+                        selectinload(BBox.label),
+                        selectinload(BBox.tags),
+                    )
+                )
+            )
+            result = await session.exec(stmt)
+            return result.all()
+
     async def update_single_bbox(self, bbox_uuid: str, label_uuid: Optional[str], tag_uuids: List[str]) -> None:
         """Update one bbox's label and replace its tag links in place.
 

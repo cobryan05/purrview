@@ -467,10 +467,29 @@ class FindSimilarBboxesResponse(StatusResponse):
     matches: List[SimilarBboxMatch] = Field(default_factory=list)
 
 
+class FindSimilarImagesByUuidPayload(ApiPayload):
+    image_uuid: str
+    threshold: int = 5
+
+
+class FindSimilarBboxesByUuidPayload(ApiPayload):
+    bbox_uuid: str
+    threshold: int = 8
+    label_uuid: Optional[str] = None
+
+
 class RebuildHashIndexResponse(StatusResponse):
     image_count: int = 0
     bbox_count: int = 0
     duration_ms: float = 0.0
+
+
+class BatchByUuidsPayload(ApiPayload):
+    image_uuids: List[str]
+
+
+class BatchImagesResponse(StatusResponse):
+    images: List[dict] = Field(default_factory=list)
 
 
 class BboxDedupItem(ApiModel):
@@ -573,6 +592,14 @@ class WebApp:
             except Exception as e:
                 response_data = {JsonKeys.STATUS: JsonValues.FAILURE, JsonKeys.MESSAGE: str(e)}
             return JSONResponse(content=response_data)
+
+        @self._app.get("/status", operation_id="db_server_status", response_class=JSONResponse)
+        async def db_server_status():
+            try:
+                status = await self._manager.get_status()
+                return JSONResponse(content=status)
+            except Exception as e:
+                return JSONResponse(content={"service": "db_server", "status": "error", "message": str(e)})
 
         ################################################################################
         # Labels API
@@ -1149,6 +1176,31 @@ class WebApp:
             return Response(content=png_bytes, media_type="image/png")
 
         @self._app.get(
+            "/api/images/by-uuid/{image_uuid}/thumbnail",
+            tags=[ApiTags.IMAGES],
+            operation_id="get_image_thumbnail_by_uuid",
+        )
+        async def get_image_thumbnail_by_uuid(image_uuid: str, width: int = 640) -> Response:
+            filename = await self._manager.get_image_filename_by_uuid(image_uuid)
+            if filename is None:
+                raise HTTPException(status_code=404, detail="Image not found")
+            png_bytes = await self._manager.get_image_thumbnail(filename, width=width)
+            if png_bytes is None:
+                raise HTTPException(status_code=404, detail="Thumbnail not available")
+            return Response(content=png_bytes, media_type="image/png")
+
+        @self._app.get(
+            "/api/images/bboxes/{bbox_uuid}/thumbnail",
+            tags=[ApiTags.IMAGES],
+            operation_id="get_bbox_thumbnail_by_uuid",
+        )
+        async def get_bbox_thumbnail_by_uuid(bbox_uuid: str, width: int = 200) -> Response:
+            png_bytes = await self._manager.get_bbox_thumbnail(bbox_uuid, width=width)
+            if png_bytes is None:
+                raise HTTPException(status_code=404, detail="Thumbnail not available")
+            return Response(content=png_bytes, media_type="image/png")
+
+        @self._app.get(
             "/api/images/{image_path:path}/thumbnail",
             tags=[ApiTags.IMAGES],
             operation_id="get_image_thumbnail",
@@ -1162,6 +1214,18 @@ class WebApp:
         ################################################################################
         # Image Reconciliation API
         ################################################################################
+
+        @self._app.get(
+            "/api/images/by-uuid/{image_uuid}/meta",
+            tags=[ApiTags.IMAGES],
+            operation_id="get_image_meta_by_uuid",
+        )
+        async def get_image_meta_by_uuid(image_uuid: str) -> JSONResponse:
+            """Return {uuid, filename} for a single image by UUID."""
+            filename = await self._manager.get_image_filename_by_uuid(image_uuid)
+            if filename is None:
+                raise HTTPException(status_code=404, detail="Image not found")
+            return JSONResponse(content={"uuid": image_uuid, "filename": filename})
 
         @self._app.get(
             "/api/images/stubs",
@@ -1260,6 +1324,62 @@ class WebApp:
             except Exception as e:
                 logger.error(e, exc_info=True)
                 return FindSimilarBboxesResponse(status=JsonValues.FAILURE, message=str(e))
+
+        @self._app.post(
+            "/api/images/find-similar-by-image-uuid",
+            response_model=FindSimilarImagesResponse,
+            tags=[ApiTags.IMAGES],
+            operation_id="find_similar_images_by_uuid",
+        )
+        async def find_similar_images_by_uuid(payload: FindSimilarImagesByUuidPayload) -> FindSimilarImagesResponse:
+            try:
+                matches = await self._manager.find_similar_images_by_uuid(payload.image_uuid, payload.threshold)
+                return FindSimilarImagesResponse(
+                    status=JsonValues.SUCCESS,
+                    matches=[SimilarImageMatch(image_uuid=uuid, distance=dist) for uuid, dist in matches],
+                )
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return FindSimilarImagesResponse(status=JsonValues.FAILURE, message=str(e))
+
+        @self._app.post(
+            "/api/images/bbox/find-similar-by-bbox-uuid",
+            response_model=FindSimilarBboxesResponse,
+            tags=[ApiTags.IMAGES],
+            operation_id="find_similar_bboxes_by_uuid",
+        )
+        async def find_similar_bboxes_by_uuid(payload: FindSimilarBboxesByUuidPayload) -> FindSimilarBboxesResponse:
+            try:
+                matches = await self._manager.find_similar_bboxes_by_uuid(
+                    payload.bbox_uuid, payload.label_uuid, payload.threshold
+                )
+                return FindSimilarBboxesResponse(
+                    status=JsonValues.SUCCESS,
+                    matches=[
+                        SimilarBboxMatch(bbox_uuid=bbox_uuid, image_uuid=image_uuid, label_uuid=lbl, distance=dist)
+                        for bbox_uuid, image_uuid, dist, lbl in matches
+                    ],
+                )
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return FindSimilarBboxesResponse(status=JsonValues.FAILURE, message=str(e))
+
+        @self._app.post(
+            "/api/images/batch-by-uuids",
+            response_model=BatchImagesResponse,
+            tags=[ApiTags.IMAGES],
+            operation_id="batch_images_by_uuids",
+        )
+        async def batch_images_by_uuids(payload: BatchByUuidsPayload) -> BatchImagesResponse:
+            try:
+                images = await self._manager.get_images_by_uuids(payload.image_uuids)
+                return BatchImagesResponse(
+                    status=JsonValues.SUCCESS,
+                    images=[img.model_dump(by_alias=True) for img in images],
+                )
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return BatchImagesResponse(status=JsonValues.FAILURE, message=str(e))
 
         @self._app.post(
             "/api/images/dedup-check",

@@ -333,3 +333,11 @@ class Manager:
             logger.info("Periodic task was cancelled.")  # Handle task cancellation
         finally:
             logger.info("Periodic task cleanup.")  # Perform cleanup when the task is stopped
+
+    def get_status(self) -> dict:
+        """Return service health and diagnostic info."""
+        return {
+            "service": "inference_server",
+            "status": "ok",
+            "models": {"loaded": len(self._pinned_models), "available": len(self._avail_models)},
+        }

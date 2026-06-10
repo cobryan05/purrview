@@ -196,6 +196,10 @@ class WebApp:
                 response_data = {JsonKeys.STATUS: JsonValues.FAILURE, JsonKeys.MESSAGE: str(e)}
             return JSONResponse(content=response_data)
 
+        @self._app.get("/status", operation_id="inference_server_status", response_class=JSONResponse)
+        async def inference_server_status():
+            return JSONResponse(content=self._manager.get_status())
+
         @self._app.get(
             "/api/models",
             response_model=ModelListResponse,

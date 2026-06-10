@@ -927,6 +927,60 @@ class Manager:
         """Return [(bbox_uuid, distance, label_uuid)] within *threshold* of *phash*."""
         return self._hash_index.find_similar_bboxes(phash, label_uuid, threshold)
 
+    async def find_similar_images_by_uuid(self, image_uuid: str, threshold: int) -> List[Tuple[str, int]]:
+        """Return [(image_uuid, distance)] for images similar to the given image UUID, excluding the query image."""
+        image = await self._db_client.get_image_by_uuid(image_uuid)
+        if image is None or image.phash is None:
+            return []
+        matches = self._hash_index.find_similar_images(image.phash, threshold)
+        return [(uuid, dist) for uuid, dist in matches if uuid != image_uuid]
+
+    async def find_similar_bboxes_by_uuid(
+        self,
+        bbox_uuid: str,
+        label_uuid: Optional[str],
+        threshold: int,
+    ) -> List[Tuple[str, Optional[str], int, str]]:
+        """Return [(bbox_uuid, image_uuid, distance, label_uuid)] for bboxes similar to the given bbox UUID, excluding the query bbox."""
+        result = await self._db_client.get_bbox_with_image(bbox_uuid)
+        if result is None:
+            return []
+        bbox, _ = result
+        if bbox.phash is None:
+            return []
+        matches = self._hash_index.find_similar_bboxes(bbox.phash, label_uuid, threshold)
+        # Exclude the query bbox itself (distance 0 self-match)
+        matches = [(b_uuid, dist, lbl) for b_uuid, dist, lbl in matches if b_uuid != bbox_uuid]
+        if not matches:
+            return []
+        # Enrich with image UUIDs via a single batch query
+        bbox_uuids = [b_uuid for b_uuid, _dist, _lbl in matches]
+        image_uuid_map = await self._db_client.get_image_uuids_for_bboxes(bbox_uuids)
+        return [(b_uuid, image_uuid_map.get(b_uuid), dist, lbl) for b_uuid, dist, lbl in matches]
+
+    async def get_images_by_uuids(self, image_uuids: List[str]) -> List[ImageRecordRead]:
+        """Return full ImageRecordRead objects for a list of image UUIDs, in any order."""
+        records = await self._db_client.get_images_by_uuids(image_uuids)
+        result = []
+        for img in records:
+            read = ImageRecordRead.model_validate(img)
+            read.filename = self._image_rel_path(img.filename)
+            result.append(read)
+        return result
+
+    async def get_status(self) -> dict:
+        """Return service health and diagnostic info."""
+        return {
+            "service": "db_server",
+            "status": "ok",
+            "hash_index": self._hash_index.stats(),
+        }
+
+    async def get_image_filename_by_uuid(self, image_uuid: str) -> Optional[str]:
+        """Return the relative filename for an image UUID, or None if not found."""
+        image = await self._db_client.get_image_by_uuid(image_uuid)
+        return self._image_rel_path(image.filename) if image else None
+
     def check_dedup_bulk(self, image_phash: str, image_threshold: int, bboxes: list) -> dict:
         """Bulk duplicate check: one image phash + N bbox phashes → one in-memory call."""
         return self._hash_index.check_dedup_bulk(image_phash, image_threshold, bboxes)

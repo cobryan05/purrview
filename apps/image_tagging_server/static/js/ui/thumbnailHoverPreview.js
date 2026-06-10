@@ -1,5 +1,6 @@
 import { fetchImageMetadata } from '/app-static/js/shared/api/images.js';
 import { getImageThumbnailUrl } from '/app-static/js/shared/api/review.js';
+import { getSetting } from '/app-static/js/shared/api/settings.js';
 
 /**
  * Hover-triggered popover that shows an annotated thumbnail preview for an
@@ -9,8 +10,33 @@ import { getImageThumbnailUrl } from '/app-static/js/shared/api/review.js';
  * (file-browser entries, bboxes fetched lazily, no cache).
  */
 
-const DEFAULT_SHOW_DELAY_MS = 300;
+const DEFAULT_SHOW_DELAY_MS = 500;
 const DEFAULT_THUMB_WIDTH = 640;
+
+/**
+ * Module-level configured hover delay. Starts at DEFAULT_SHOW_DELAY_MS and can
+ * be updated at runtime by calling setConfiguredHoverDelay().
+ */
+let _configuredDelayMs = DEFAULT_SHOW_DELAY_MS;
+
+/**
+ * Update the hover popup delay for all preview instances.
+ * @param {number} ms  Delay in milliseconds.
+ */
+export function setConfiguredHoverDelay(ms) {
+  _configuredDelayMs = ms;
+}
+
+// Async init: load any persisted delay setting from the settings API.
+(async () => {
+  try {
+    const stored = await getSetting('ui_hover_delay_ms');
+    if (stored !== null) {
+      const ms = parseInt(stored, 10);
+      if (Number.isFinite(ms) && ms >= 0 && ms <= 10000) _configuredDelayMs = ms;
+    }
+  } catch (_) {}
+})();
 
 /**
  * @param {{
@@ -20,7 +46,7 @@ const DEFAULT_THUMB_WIDTH = 640;
  * }} [opts]
  * @returns {{ attach(el: HTMLElement, meta: object): void, destroy(): void }}
  */
-export function createHoverPreview({ imageCache, thumbWidth = DEFAULT_THUMB_WIDTH, showDelayMs = DEFAULT_SHOW_DELAY_MS } = {}) {
+export function createHoverPreview({ imageCache, thumbWidth = DEFAULT_THUMB_WIDTH, showDelayMs = null } = {}) {
   // Created lazily on first hover (mirrors the old file-browser singleton) so
   // pages that never hover an image never grow a stray DOM node.
   let popover = null;
@@ -196,7 +222,9 @@ export function createHoverPreview({ imageCache, thumbWidth = DEFAULT_THUMB_WIDT
   function attach(el, meta) {
     el.addEventListener('mouseenter', () => {
       clearTimeout(_timer);
-      _timer = setTimeout(() => show(el, meta), showDelayMs);
+      // Read _configuredDelayMs at hover time so runtime changes take effect
+      // immediately without needing to recreate hover-preview instances.
+      _timer = setTimeout(() => show(el, meta), showDelayMs ?? _configuredDelayMs);
     });
     el.addEventListener('mouseleave', hide);
   }

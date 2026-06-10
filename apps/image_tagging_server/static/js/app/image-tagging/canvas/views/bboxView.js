@@ -110,6 +110,12 @@ export class BboxView extends Konva.Group {
         this.uiBBox.width = newWidth / sw;
         this.uiBBox.height = newHeight / sh;
       }
+
+      // Re-sync the Transformer's handles to the post-normalization bounds.
+      // The Transformer may have cached the pre-normalization geometry; calling
+      // forceUpdate() here (synchronously, after attrs are committed) ensures
+      // the anchor box reflects the true final size rather than snapping back.
+      this.getLayer()?.findOne('Transformer')?.forceUpdate();
     });
   }
 

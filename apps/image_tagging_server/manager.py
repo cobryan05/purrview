@@ -3,14 +3,14 @@
 import asyncio
 import logging
 import sys
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 import db_client
 import httpx
 import inference_client
 import tasks_client
 
-from apps import APPS
+from apps import APPS, APPS_CONFIG
 from apps.helpers.reverseProxy import ReverseProxy
 
 logging.basicConfig(stream=sys.stdout)
@@ -145,3 +145,29 @@ class Manager:
             "inference_server_url_override": self._inference_url_override,
             "training_server_url_override": self._training_url_override,
         }
+
+    async def get_all_service_status(self) -> List[dict]:
+        """Probe each backend service's /status endpoint and return aggregated results."""
+        import asyncio
+
+        relay_cfg = APPS_CONFIG[APPS.RELAY_BUFFER_SERVER]
+        services = [
+            ("db_server", self._db_server_url),
+            ("inference_server", self._default_inference_url),
+            ("tasks_server", self._tasks_api_client.configuration.host),
+            ("training_server", self._default_training_url),
+            ("relay_buffer_server", f"http://{relay_cfg.host}:{relay_cfg.port}"),
+        ]
+
+        async def _probe(name: str, base_url: str) -> dict:
+            try:
+                resp = await self._test_client.get(f"{base_url}/status", timeout=3.0)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    data.setdefault("service", name)
+                    return data
+                return {"service": name, "status": "error", "message": f"HTTP {resp.status_code}"}
+            except Exception as e:
+                return {"service": name, "status": "unreachable", "message": str(e)}
+
+        return list(await asyncio.gather(*[_probe(name, url) for name, url in services]))

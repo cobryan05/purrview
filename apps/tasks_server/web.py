@@ -314,6 +314,10 @@ class WebApp:
                 response_data = {"status": WebApp.FAILURE_KEY, "message": str(e)}
             return JSONResponse(content=response_data)
 
+        @self._app.get("/status", operation_id="tasks_server_status", response_class=JSONResponse)
+        async def tasks_server_status():
+            return JSONResponse(content=self._manager.get_status())
+
         @self._app.get(
             "/api/tasks/types/list",
             response_model=ListTaskTypesResponse,

@@ -570,3 +570,11 @@ class Manager:
             logger.exception(e)
         finally:
             logger.info("Periodic task cleanup.")
+
+    def get_status(self) -> dict:
+        """Return service health and diagnostic info."""
+        return {
+            "service": "tasks_server",
+            "status": "ok",
+            "tasks": {"running": len(self._running_tasks)},
+        }

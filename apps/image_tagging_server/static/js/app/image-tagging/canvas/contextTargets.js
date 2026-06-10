@@ -64,6 +64,14 @@ async function _toggleBboxTag(bboxView, tagUuid, runtime) {
  */
 export function makeCanvasBboxAdapter(bboxView, runtime) {
   return {
+    getBboxUuid() {
+      return bboxView.uiBBox.uuid ?? null;
+    },
+
+    getImageUuid() {
+      return runtime.state.image?.uuid ?? null;
+    },
+
     getLabelUuid() {
       return bboxView.uiBBox.label?.uuid ?? null;
     },
@@ -137,5 +145,9 @@ export function makeCanvasBboxAdapter(bboxView, runtime) {
  * canvas falls through to the original draw-tool toggle.
  */
 export function makeCanvasSurfaceAdapter(runtime) {
-  return {};
+  return {
+    getImageUuid() {
+      return runtime.state.image?.uuid ?? null;
+    },
+  };
 }

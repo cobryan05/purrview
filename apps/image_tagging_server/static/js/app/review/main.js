@@ -448,6 +448,8 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
     }
 
     return {
+      getBboxUuid() { return bbox.uuid ?? null; },
+      getImageUuid() { return img.uuid ?? null; },
       getLabelUuid() { return bbox.labelUuid ?? bbox.label?.uuid ?? null; },
       getTagUuids() { return currentTagUuids(); },
 
@@ -542,6 +544,7 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
     const { img } = entry;
     return {
       getPath() { return img.filename; },
+      getUuid() { return img.uuid ?? null; },
 
       openOnCanvas() {
         events.publish(EventTypes.LOAD_IMAGE_ONTO_CANVAS, {

@@ -158,6 +158,16 @@ class WebApp:
         async def proxy_training(request: Request, path: str):
             return await self._manager.training_proxy.handle_request(path, request)
 
+        @self._app.get("/api/service-status", response_class=JSONResponse)
+        async def service_status() -> JSONResponse:
+            """Probe all backend services and return their status."""
+            try:
+                results = await self._manager.get_all_service_status()
+                return JSONResponse(content={"status": WebApp.SUCCESS_KEY, "services": results})
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return JSONResponse(content={"status": WebApp.FAILURE_KEY, "message": str(e)})
+
         @self._app.post("/api/test-server", response_class=JSONResponse)
         async def test_server(payload: TestServerPayload) -> JSONResponse:
             """Test connectivity to an inference or training server URL."""

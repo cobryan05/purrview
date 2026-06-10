@@ -127,6 +127,58 @@ export async function fetchImageMetadata(path) {
  * @param {import('@domain_image').UIImage} uiImage
  * @throws {Error} If the update fails or the API response is invalid.
  */
+/**
+ * Find images similar to the given image UUID.
+ * @param {string} imageUuid
+ * @param {number} threshold
+ * @returns {Promise<Array<{imageUuid: string, distance: number}>>}
+ */
+export async function findSimilarImagesByUuid(imageUuid, threshold = 5) {
+  const res = await apiFetch('/api/images/find-similar-by-image-uuid', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ imageUuid, threshold }),
+  });
+  const data = await res.json();
+  if (!res.ok || data.status !== 'success') throw new Error(data.message || 'Failed to find similar images');
+  return (data.matches ?? []).map(m => ({ imageUuid: m.imageUuid, distance: m.distance }));
+}
+
+/**
+ * Find bboxes similar to the given bbox UUID.
+ * @param {string} bboxUuid
+ * @param {number} threshold
+ * @param {string|null} [labelUuid]
+ * @returns {Promise<Array<{bboxUuid: string, imageUuid: string|null, labelUuid: string, distance: number}>>}
+ */
+export async function findSimilarBboxesByUuid(bboxUuid, threshold = 8, labelUuid = null) {
+  const res = await apiFetch('/api/images/bbox/find-similar-by-bbox-uuid', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ bboxUuid, threshold, labelUuid }),
+  });
+  const data = await res.json();
+  if (!res.ok || data.status !== 'success') throw new Error(data.message || 'Failed to find similar bboxes');
+  return (data.matches ?? []).map(m => ({
+    bboxUuid: m.bboxUuid,
+    imageUuid: m.imageUuid ?? null,
+    labelUuid: m.labelUuid,
+    distance: m.distance,
+  }));
+}
+
+export async function fetchImagesByUuids(imageUuids) {
+  if (!imageUuids || imageUuids.length === 0) return [];
+  const res = await apiFetch('/api/images/batch-by-uuids', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ imageUuids }),
+  });
+  const data = await res.json();
+  if (!res.ok || data.status !== 'success') throw new Error(data.message || 'Failed to fetch images by UUIDs');
+  return data.images ?? [];
+}
+
 export async function updateImage(uiImage) {
   if (!uiImage.image_path || !uiImage.bboxes) {
     throw new Error("No image path provided");

@@ -27,6 +27,15 @@ from playwright.sync_api import Page, Route, expect
 
 def _navigate_to_settings(page: Page, base_url: str):
     """Open the app and activate the Settings tab."""
+    # Mock service-status so the status panel loads instantly (avoids probing real services).
+    page.route(
+        "**/api/service-status",
+        lambda route: route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps({"status": "success", "services": []}),
+        ),
+    )
     page.goto(base_url)
     page.wait_for_load_state("networkidle")
     page.locator(".main-tab-button[data-tab='tab-settings']").click()
