@@ -69,8 +69,8 @@ _SETUP = """
 # ---------------------------------------------------------------------------
 
 class TestStripUnverifiedTag:
-    def test_removes_unverified_tag(self, page: Page, base_url: str):
-        page.goto(base_url)
+    def test_removes_unverified_tag(self, shared_page: Page):
+        page = shared_page
         result = page.evaluate(f"""async () => {{
             const {{ stripUnverifiedTag }} = await import('/app-static/js/app/image-tagging/canvas/interaction.js');
 
@@ -81,8 +81,8 @@ class TestStripUnverifiedTag:
         }}""")
         assert UNVERIFIED_TAG_UUID not in result
 
-    def test_leaves_non_verification_tags_intact(self, page: Page, base_url: str):
-        page.goto(base_url)
+    def test_leaves_non_verification_tags_intact(self, shared_page: Page):
+        page = shared_page
         result = page.evaluate(f"""async () => {{
             const {{ stripUnverifiedTag }} = await import('/app-static/js/app/image-tagging/canvas/interaction.js');
 
@@ -98,8 +98,8 @@ class TestStripUnverifiedTag:
         }}""")
         assert result == ['keep-me']
 
-    def test_noop_when_no_unverified_tag(self, page: Page, base_url: str):
-        page.goto(base_url)
+    def test_noop_when_no_unverified_tag(self, shared_page: Page):
+        page = shared_page
         result = page.evaluate("""async () => {
             const { stripUnverifiedTag } = await import('/app-static/js/app/image-tagging/canvas/interaction.js');
 
@@ -115,9 +115,9 @@ class TestStripUnverifiedTag:
 # ---------------------------------------------------------------------------
 
 class TestDrawBbox:
-    def test_drawn_bbox_appears_in_runtime_state(self, page: Page, base_url: str):
+    def test_drawn_bbox_appears_in_runtime_state(self, shared_page: Page):
         """mousedown → mousemove → mouseup with draw tool registers bbox in state."""
-        page.goto(base_url)
+        page = shared_page
         result = page.evaluate("""async () => {
             const { createImageTaggingRuntime } = await import('/app-static/js/app/image-tagging/runtime.js');
             const { handleMouseDown, handleMouseMove, handleMouseUp } =
@@ -133,9 +133,9 @@ class TestDrawBbox:
         }""")
         assert result == 1
 
-    def test_drawn_bbox_without_label_gets_unverified_tag(self, page: Page, base_url: str):
+    def test_drawn_bbox_without_label_gets_unverified_tag(self, shared_page: Page):
         """applyDefaultVerificationTag fires inside handleMouseUp on a new unlabelled bbox."""
-        page.goto(base_url)
+        page = shared_page
         result = page.evaluate(f"""async () => {{
             const {{ createImageTaggingRuntime }} = await import('/app-static/js/app/image-tagging/runtime.js');
             const {{ handleMouseDown, handleMouseMove, handleMouseUp }} =
@@ -151,8 +151,8 @@ class TestDrawBbox:
         }}""")
         assert UNVERIFIED_TAG_UUID in result
 
-    def test_drawing_pushes_state_and_marks_dirty(self, page: Page, base_url: str):
-        page.goto(base_url)
+    def test_drawing_pushes_state_and_marks_dirty(self, shared_page: Page):
+        page = shared_page
         result = page.evaluate("""async () => {
             const { createImageTaggingRuntime } = await import('/app-static/js/app/image-tagging/runtime.js');
             const { handleMouseDown, handleMouseMove, handleMouseUp } =
@@ -168,9 +168,9 @@ class TestDrawBbox:
         assert result['canUndo'] is True
         assert result['isDirty'] is True
 
-    def test_too_small_drag_does_not_register_bbox(self, page: Page, base_url: str):
+    def test_too_small_drag_does_not_register_bbox(self, shared_page: Page):
         """A drag of < BBOX_MIN_PX (10 px) in each axis must be discarded."""
-        page.goto(base_url)
+        page = shared_page
         result = page.evaluate("""async () => {
             const { createImageTaggingRuntime } = await import('/app-static/js/app/image-tagging/runtime.js');
             const { handleMouseDown, handleMouseMove, handleMouseUp } =
@@ -186,9 +186,9 @@ class TestDrawBbox:
         }""")
         assert result == 0
 
-    def test_drawn_bbox_coordinates_normalised_to_image_space(self, page: Page, base_url: str):
+    def test_drawn_bbox_coordinates_normalised_to_image_space(self, shared_page: Page):
         """After drawing, uiBBox.{x,y,width,height} are in [0,1] image space."""
-        page.goto(base_url)
+        page = shared_page
         result = page.evaluate("""async () => {
             const { createImageTaggingRuntime } = await import('/app-static/js/app/image-tagging/runtime.js');
             const { handleMouseDown, handleMouseMove, handleMouseUp } =
@@ -215,9 +215,9 @@ class TestDrawBbox:
 # ---------------------------------------------------------------------------
 
 class TestLabelAssignment:
-    def test_double_click_assigns_label(self, page: Page, base_url: str):
+    def test_double_click_assigns_label(self, shared_page: Page):
         """Double-clicking a bbox with bbox:<uuid> tool assigns the label."""
-        page.goto(base_url)
+        page = shared_page
         result = page.evaluate("""async () => {
             const { createImageTaggingRuntime } = await import('/app-static/js/app/image-tagging/runtime.js');
             const { createUIBBbox } = await import('/app-static/js/shared/domain/image/mapper.js');
@@ -258,9 +258,9 @@ class TestLabelAssignment:
         assert result['uuid'] == 'cat-uuid'
         assert result['text'] == 'Cat'
 
-    def test_double_click_label_strips_unverified_tag(self, page: Page, base_url: str):
+    def test_double_click_label_strips_unverified_tag(self, shared_page: Page):
         """Assigning a label removes the UNVERIFIED tag (human confirmed the detection)."""
-        page.goto(base_url)
+        page = shared_page
         result = page.evaluate(f"""async () => {{
             const {{ createImageTaggingRuntime }} = await import('/app-static/js/app/image-tagging/runtime.js');
             const {{ createUIBBbox }} = await import('/app-static/js/shared/domain/image/mapper.js');
@@ -299,8 +299,8 @@ class TestLabelAssignment:
 # ---------------------------------------------------------------------------
 
 class TestTagToggle:
-    def test_double_click_adds_tag(self, page: Page, base_url: str):
-        page.goto(base_url)
+    def test_double_click_adds_tag(self, shared_page: Page):
+        page = shared_page
         result = page.evaluate("""async () => {
             const { createImageTaggingRuntime } = await import('/app-static/js/app/image-tagging/runtime.js');
             const { createUIBBbox } = await import('/app-static/js/shared/domain/image/mapper.js');
@@ -329,9 +329,9 @@ class TestTagToggle:
         }""")
         assert 'reviewed-uuid' in result
 
-    def test_double_click_removes_existing_tag(self, page: Page, base_url: str):
+    def test_double_click_removes_existing_tag(self, shared_page: Page):
         """Double-clicking again toggles the tag off."""
-        page.goto(base_url)
+        page = shared_page
         result = page.evaluate("""async () => {
             const { createImageTaggingRuntime } = await import('/app-static/js/app/image-tagging/runtime.js');
             const { createUIBBbox } = await import('/app-static/js/shared/domain/image/mapper.js');
@@ -364,10 +364,10 @@ class TestTagToggle:
         }""")
         assert 'reviewed-uuid' not in result
 
-    def test_toggle_on_verification_tag_preserves_nonverification_tags(self, page: Page, base_url: str):
+    def test_toggle_on_verification_tag_preserves_nonverification_tags(self, shared_page: Page):
         """Toggle-on of a verification tag uses VERIFICATION_TAG_UUIDS to build the base:
         existing verification tags are stripped while non-verification tags are kept."""
-        page.goto(base_url)
+        page = shared_page
         result = page.evaluate(f"""async () => {{
             const {{ createImageTaggingRuntime }} = await import('/app-static/js/app/image-tagging/runtime.js');
             const {{ createUIBBbox }} = await import('/app-static/js/shared/domain/image/mapper.js');
@@ -418,8 +418,8 @@ class TestTagToggle:
 # ---------------------------------------------------------------------------
 
 class TestSelection:
-    def test_click_on_bbox_selects_it_in_transformer(self, page: Page, base_url: str):
-        page.goto(base_url)
+    def test_click_on_bbox_selects_it_in_transformer(self, shared_page: Page):
+        page = shared_page
         result = page.evaluate("""async () => {
             const { createImageTaggingRuntime } = await import('/app-static/js/app/image-tagging/runtime.js');
             const { createUIBBbox } = await import('/app-static/js/shared/domain/image/mapper.js');
@@ -443,8 +443,8 @@ class TestSelection:
         }""")
         assert result == 1
 
-    def test_click_empty_canvas_clears_selection(self, page: Page, base_url: str):
-        page.goto(base_url)
+    def test_click_empty_canvas_clears_selection(self, shared_page: Page):
+        page = shared_page
         result = page.evaluate("""async () => {
             const { createImageTaggingRuntime } = await import('/app-static/js/app/image-tagging/runtime.js');
             const { createUIBBbox } = await import('/app-static/js/shared/domain/image/mapper.js');
@@ -476,8 +476,8 @@ class TestSelection:
         }""")
         assert result == {'afterSelect': 1, 'afterClear': 0}
 
-    def test_click_fires_bbox_clicked_event(self, page: Page, base_url: str):
-        page.goto(base_url)
+    def test_click_fires_bbox_clicked_event(self, shared_page: Page):
+        page = shared_page
         result = page.evaluate("""async () => {
             const { createImageTaggingRuntime } = await import('/app-static/js/app/image-tagging/runtime.js');
             const { createUIBBbox } = await import('/app-static/js/shared/domain/image/mapper.js');
@@ -513,9 +513,9 @@ class TestSelection:
 # ---------------------------------------------------------------------------
 
 class TestOverlapCycling:
-    def test_first_click_selects_smallest_bbox(self, page: Page, base_url: str):
+    def test_first_click_selects_smallest_bbox(self, shared_page: Page):
         """With two overlapping bboxes, the first click picks the smallest (by area)."""
-        page.goto(base_url)
+        page = shared_page
         result = page.evaluate("""async () => {
             const { createImageTaggingRuntime } = await import('/app-static/js/app/image-tagging/runtime.js');
             const { createUIBBbox } = await import('/app-static/js/shared/domain/image/mapper.js');
@@ -543,9 +543,9 @@ class TestOverlapCycling:
         }""")
         assert result == 'small'
 
-    def test_double_click_cycles_to_larger_bbox(self, page: Page, base_url: str):
+    def test_double_click_cycles_to_larger_bbox(self, shared_page: Page):
         """Double-clicking at the same spot advances the cycle index to the larger bbox."""
-        page.goto(base_url)
+        page = shared_page
         result = page.evaluate("""async () => {
             const { createImageTaggingRuntime } = await import('/app-static/js/app/image-tagging/runtime.js');
             const { createUIBBbox } = await import('/app-static/js/shared/domain/image/mapper.js');
@@ -577,8 +577,8 @@ class TestOverlapCycling:
         }""")
         assert result == 'big'
 
-    def test_third_double_click_wraps_back_to_small(self, page: Page, base_url: str):
-        page.goto(base_url)
+    def test_third_double_click_wraps_back_to_small(self, shared_page: Page):
+        page = shared_page
         result = page.evaluate("""async () => {
             const { createImageTaggingRuntime } = await import('/app-static/js/app/image-tagging/runtime.js');
             const { createUIBBbox } = await import('/app-static/js/shared/domain/image/mapper.js');
@@ -612,9 +612,9 @@ class TestOverlapCycling:
         }""")
         assert result == 'small'
 
-    def test_click_different_spot_resets_cycle(self, page: Page, base_url: str):
+    def test_click_different_spot_resets_cycle(self, shared_page: Page):
         """Clicking at a different location starts a fresh cycle (smallest first)."""
-        page.goto(base_url)
+        page = shared_page
         result = page.evaluate("""async () => {
             const { createImageTaggingRuntime } = await import('/app-static/js/app/image-tagging/runtime.js');
             const { createUIBBbox } = await import('/app-static/js/shared/domain/image/mapper.js');
@@ -657,9 +657,9 @@ class TestOverlapCycling:
 # ---------------------------------------------------------------------------
 
 class TestContextMenu:
-    def test_right_click_empty_canvas_toggles_bbox_select(self, page: Page, base_url: str):
+    def test_right_click_empty_canvas_toggles_bbox_select(self, shared_page: Page):
         """Right-clicking empty canvas: select→bbox or bbox→select."""
-        page.goto(base_url)
+        page = shared_page
         result = page.evaluate("""async () => {
             const { createImageTaggingRuntime } = await import('/app-static/js/app/image-tagging/runtime.js');
             const { handleContextMenu } =
@@ -683,9 +683,9 @@ class TestContextMenu:
         assert result['after1'] == 'bbox:'
         assert result['after2'] == 'select'
 
-    def test_right_click_labelled_bbox_opens_context_menu(self, page: Page, base_url: str):
+    def test_right_click_labelled_bbox_opens_context_menu(self, shared_page: Page):
         """Right-clicking a labelled bbox opens the context menu (bbox provider is registered by main.js)."""
-        page.goto(base_url)
+        page = shared_page
         result = page.evaluate("""async () => {
             const { createImageTaggingRuntime } = await import('/app-static/js/app/image-tagging/runtime.js');
             const { createUIBBbox } = await import('/app-static/js/shared/domain/image/mapper.js');
@@ -727,8 +727,8 @@ class TestContextMenu:
 # ---------------------------------------------------------------------------
 
 class TestDeleteSelected:
-    def test_deletes_selected_bbox(self, page: Page, base_url: str):
-        page.goto(base_url)
+    def test_deletes_selected_bbox(self, shared_page: Page):
+        page = shared_page
         result = page.evaluate("""async () => {
             const { createImageTaggingRuntime } = await import('/app-static/js/app/image-tagging/runtime.js');
             const { createUIBBbox } = await import('/app-static/js/shared/domain/image/mapper.js');
@@ -757,8 +757,8 @@ class TestDeleteSelected:
         }""")
         assert result == {'beforeDelete': 1, 'afterDelete': 0}
 
-    def test_delete_with_nothing_selected_is_noop(self, page: Page, base_url: str):
-        page.goto(base_url)
+    def test_delete_with_nothing_selected_is_noop(self, shared_page: Page):
+        page = shared_page
         result = page.evaluate("""async () => {
             const { createImageTaggingRuntime } = await import('/app-static/js/app/image-tagging/runtime.js');
             const { createUIBBbox } = await import('/app-static/js/shared/domain/image/mapper.js');
@@ -786,8 +786,8 @@ class TestDeleteSelected:
 # ---------------------------------------------------------------------------
 
 class TestClearAnnotations:
-    def test_clear_removes_all_bboxes(self, page: Page, base_url: str):
-        page.goto(base_url)
+    def test_clear_removes_all_bboxes(self, shared_page: Page):
+        page = shared_page
         result = page.evaluate("""async () => {
             const { createImageTaggingRuntime } = await import('/app-static/js/app/image-tagging/runtime.js');
             const { createUIBBbox } = await import('/app-static/js/shared/domain/image/mapper.js');
@@ -809,8 +809,8 @@ class TestClearAnnotations:
         }""")
         assert result == {'bboxMapSize': 0, 'layerBboxCount': 0}
 
-    def test_clear_pushes_state_so_undo_restores(self, page: Page, base_url: str):
-        page.goto(base_url)
+    def test_clear_pushes_state_so_undo_restores(self, shared_page: Page):
+        page = shared_page
         result = page.evaluate("""async () => {
             const { createImageTaggingRuntime } = await import('/app-static/js/app/image-tagging/runtime.js');
             const { createUIBBbox } = await import('/app-static/js/shared/domain/image/mapper.js');

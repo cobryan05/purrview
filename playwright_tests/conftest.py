@@ -177,6 +177,35 @@ def base_url(live_server: str) -> str:
     return live_server
 
 
+def _block_sse(page) -> None:
+    """
+    Intercept the two SSE endpoints so they return empty closed responses.
+
+    Without this, EventSource connections to /api/notices/stream and
+    /api/tasks/stream are kept open forever, preventing
+    wait_for_load_state("networkidle") from ever resolving.
+    """
+    for pattern in ("**/api/notices/stream", "**/api/tasks/stream"):
+        page.route(
+            pattern,
+            lambda route: route.fulfill(
+                status=200, content_type="text/event-stream", body=""
+            ),
+        )
+
+
+@pytest.fixture()
+def page(context, base_url):  # noqa: F811
+    """
+    Override pytest-playwright's page fixture to block SSE endpoints.
+    All tests that receive a `page: Page` argument get this version.
+    """
+    p = context.new_page()
+    _block_sse(p)
+    yield p
+    p.close()
+
+
 @pytest.fixture(scope="module")
 def shared_page(browser, base_url):
     """
@@ -186,9 +215,32 @@ def shared_page(browser, base_url):
     need a fresh SPA reload each time — they build/tear down their own DOM.
     Reusing one page removes a full Konva/Pico/module re-init per test, which
     is the dominant cost of the Playwright suite. Tests using this fixture
-    must clean up any DOM nodes they create.
+    must clean up any DOM nodes they create, or rely on the autouse
+    _canvas_dom_cleanup fixture below which removes fixed-position test
+    containers after each test.
     """
     page = browser.new_page()
+    _block_sse(page)
     page.goto(base_url)
     yield page
     page.close()
+
+
+@pytest.fixture(autouse=True)
+def _canvas_dom_cleanup(request):
+    """
+    After each test that uses shared_page, remove any fixed-position div
+    containers and context-menu elements that canvas/Konva tests create but
+    don't tear down themselves.  This lets those tests share a single page
+    (shared_page) instead of calling page.goto() on every test, eliminating
+    the dominant startup cost of the Playwright suite.
+
+    No-op for tests that don't use shared_page (the funcargs check guards it).
+    """
+    yield
+    sp = request.node.funcargs.get("shared_page")
+    if sp is not None:
+        sp.evaluate(
+            "document.querySelectorAll('body > div[style*=\"position:fixed\"]').forEach(d => d.remove());"
+            "document.querySelectorAll('.ctx-menu').forEach(m => m.remove());"
+        )

@@ -3,11 +3,9 @@ Tests for image-tagging/runtime.js — undo / redo, dirty-state lifecycle,
 and undo-stack capping.
 Phase 2 canvas tests — require Konva as a global (navigate to base_url).
 
-Intentionally NOT migrated to the shared-page fixture: each test appends a
-fixed-position canvas container to <body> and creates a Konva stage/runtime
-without ever removing them, so a shared page would accumulate overlapping
-stages/containers across tests and risk cross-test interference. A fresh
-page per test keeps each Konva runtime isolated.
+Uses the shared-page fixture with the autouse _canvas_dom_cleanup fixture
+(conftest.py) to remove fixed-position test containers after each test, so
+Konva runtimes don't accumulate across tests.
 
 Run with:
     pytest tests/playwright/test_runtime.py -p no:xdist --override-ini="addopts=" -v
@@ -51,9 +49,9 @@ _RUNTIME_SETUP = """
 # ---------------------------------------------------------------------------
 
 class TestPushStateAndUndo:
-    def test_no_undo_after_fresh_setImage(self, page: Page, base_url: str):
+    def test_no_undo_after_fresh_setImage(self, shared_page: Page):
         """setImage calls clearHistory+pushState; that baseline is not undoable."""
-        page.goto(base_url)
+        page = shared_page
         result = page.evaluate("""async () => {
             const { createImageTaggingRuntime } = await import('/app-static/js/app/image-tagging/runtime.js');
 
@@ -64,8 +62,8 @@ class TestPushStateAndUndo:
         assert result['canUndo'] is False
         assert result['canRedo'] is False
 
-    def test_push_state_enables_undo(self, page: Page, base_url: str):
-        page.goto(base_url)
+    def test_push_state_enables_undo(self, shared_page: Page):
+        page = shared_page
         result = page.evaluate("""async () => {
             const { createImageTaggingRuntime } = await import('/app-static/js/app/image-tagging/runtime.js');
 
@@ -78,8 +76,8 @@ class TestPushStateAndUndo:
         }""")
         assert result is True
 
-    def test_undo_restores_previous_bbox_map(self, page: Page, base_url: str):
-        page.goto(base_url)
+    def test_undo_restores_previous_bbox_map(self, shared_page: Page):
+        page = shared_page
         result = page.evaluate("""async () => {
             const { createImageTaggingRuntime } = await import('/app-static/js/app/image-tagging/runtime.js');
 
@@ -98,8 +96,8 @@ class TestPushStateAndUndo:
         }""")
         assert result == {'afterAdd': 1, 'afterUndo': 0}
 
-    def test_redo_reapplies_undone_state(self, page: Page, base_url: str):
-        page.goto(base_url)
+    def test_redo_reapplies_undone_state(self, shared_page: Page):
+        page = shared_page
         result = page.evaluate("""async () => {
             const { createImageTaggingRuntime } = await import('/app-static/js/app/image-tagging/runtime.js');
 
@@ -116,8 +114,8 @@ class TestPushStateAndUndo:
         }""")
         assert result == {'beforeRedo': 0, 'afterRedo': 1}
 
-    def test_push_after_undo_clears_redo_stack(self, page: Page, base_url: str):
-        page.goto(base_url)
+    def test_push_after_undo_clears_redo_stack(self, shared_page: Page):
+        page = shared_page
         result = page.evaluate("""async () => {
             const { createImageTaggingRuntime } = await import('/app-static/js/app/image-tagging/runtime.js');
 
@@ -138,9 +136,9 @@ class TestPushStateAndUndo:
         assert result['canRedoBefore'] is True
         assert result['canRedoAfter'] is False
 
-    def test_undo_stack_capped_at_101_entries(self, page: Page, base_url: str):
+    def test_undo_stack_capped_at_101_entries(self, shared_page: Page):
         """After 110 pushes only 100 undos are available (stack capped at 101)."""
-        page.goto(base_url)
+        page = shared_page
         result = page.evaluate("""async () => {
             const { createImageTaggingRuntime } = await import('/app-static/js/app/image-tagging/runtime.js');
 
@@ -160,9 +158,9 @@ class TestPushStateAndUndo:
         }""")
         assert result == 100  # 101-entry stack → 100 undos from the top
 
-    def test_multiple_undo_steps(self, page: Page, base_url: str):
+    def test_multiple_undo_steps(self, shared_page: Page):
         """Two pushes → two undos → canUndo becomes false."""
-        page.goto(base_url)
+        page = shared_page
         result = page.evaluate("""async () => {
             const { createImageTaggingRuntime } = await import('/app-static/js/app/image-tagging/runtime.js');
 
@@ -183,9 +181,9 @@ class TestPushStateAndUndo:
         }""")
         assert result == {'after1': 1, 'after2': 0, 'canUndo': False}
 
-    def test_undo_at_baseline_is_noop(self, page: Page, base_url: str):
+    def test_undo_at_baseline_is_noop(self, shared_page: Page):
         """Calling undo when canUndo is false must not throw."""
-        page.goto(base_url)
+        page = shared_page
         result = page.evaluate("""async () => {
             const { createImageTaggingRuntime } = await import('/app-static/js/app/image-tagging/runtime.js');
 
@@ -204,8 +202,8 @@ class TestPushStateAndUndo:
 # ---------------------------------------------------------------------------
 
 class TestDirtyState:
-    def test_starts_clean_after_setImage(self, page: Page, base_url: str):
-        page.goto(base_url)
+    def test_starts_clean_after_setImage(self, shared_page: Page):
+        page = shared_page
         result = page.evaluate("""async () => {
             const { createImageTaggingRuntime } = await import('/app-static/js/app/image-tagging/runtime.js');
 
@@ -215,8 +213,8 @@ class TestDirtyState:
         }""")
         assert result is False
 
-    def test_dirty_after_pushState(self, page: Page, base_url: str):
-        page.goto(base_url)
+    def test_dirty_after_pushState(self, shared_page: Page):
+        page = shared_page
         result = page.evaluate("""async () => {
             const { createImageTaggingRuntime } = await import('/app-static/js/app/image-tagging/runtime.js');
 
@@ -229,8 +227,8 @@ class TestDirtyState:
         }""")
         assert result is True
 
-    def test_markClean_clears_dirty_flag(self, page: Page, base_url: str):
-        page.goto(base_url)
+    def test_markClean_clears_dirty_flag(self, shared_page: Page):
+        page = shared_page
         result = page.evaluate("""async () => {
             const { createImageTaggingRuntime } = await import('/app-static/js/app/image-tagging/runtime.js');
 
@@ -244,8 +242,8 @@ class TestDirtyState:
         }""")
         assert result is False
 
-    def test_markDirty_sets_dirty_flag(self, page: Page, base_url: str):
-        page.goto(base_url)
+    def test_markDirty_sets_dirty_flag(self, shared_page: Page):
+        page = shared_page
         result = page.evaluate("""async () => {
             const { createImageTaggingRuntime } = await import('/app-static/js/app/image-tagging/runtime.js');
 
@@ -257,9 +255,9 @@ class TestDirtyState:
         }""")
         assert result is True
 
-    def test_dirty_after_undo(self, page: Page, base_url: str):
+    def test_dirty_after_undo(self, shared_page: Page):
         """Undo counts as a mutation — isDirty becomes true."""
-        page.goto(base_url)
+        page = shared_page
         result = page.evaluate("""async () => {
             const { createImageTaggingRuntime } = await import('/app-static/js/app/image-tagging/runtime.js');
 

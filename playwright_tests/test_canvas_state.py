@@ -2,11 +2,9 @@
 Tests for canvas/state.js (createCanvasState) and canvas/manager.js (rerenderBboxViews).
 Phase 2 canvas tests — require Konva to be available as a global (navigate to base_url).
 
-Intentionally NOT migrated to the shared-page fixture: each test appends a
-fixed-position canvas container to <body> and creates a Konva stage without
-ever removing it, so a shared page would accumulate overlapping stages across
-tests and risk cross-test interference. A fresh page per test keeps each
-Konva stage isolated.
+Uses the shared-page fixture with the autouse _canvas_dom_cleanup fixture
+(conftest.py) to remove fixed-position test containers after each test, so
+Konva stages don't accumulate across tests.
 
 Run with:
     pytest tests/playwright/test_canvas_state.py -p no:xdist --override-ini="addopts=" -v
@@ -19,8 +17,8 @@ from playwright.sync_api import Page
 # ---------------------------------------------------------------------------
 
 class TestCreateCanvasState:
-    def test_returns_required_fields(self, page: Page, base_url: str):
-        page.goto(base_url)
+    def test_returns_required_fields(self, shared_page: Page):
+        page = shared_page
         result = page.evaluate("""async () => {
             const { createCanvasState } = await import('/app-static/js/app/image-tagging/canvas/state.js');
 
@@ -48,8 +46,8 @@ class TestCreateCanvasState:
             'containerIsDiv': True,
         }
 
-    def test_stage_sized_to_container(self, page: Page, base_url: str):
-        page.goto(base_url)
+    def test_stage_sized_to_container(self, shared_page: Page):
+        page = shared_page
         result = page.evaluate("""async () => {
             const { createCanvasState } = await import('/app-static/js/app/image-tagging/canvas/state.js');
 
@@ -64,9 +62,9 @@ class TestCreateCanvasState:
         assert result['w'] == 800
         assert result['h'] == 600
 
-    def test_transformer_config(self, page: Page, base_url: str):
+    def test_transformer_config(self, shared_page: Page):
         """Transformer must never rotate, must have correct anchor/ratio settings."""
-        page.goto(base_url)
+        page = shared_page
         result = page.evaluate("""async () => {
             const { createCanvasState } = await import('/app-static/js/app/image-tagging/canvas/state.js');
 
@@ -86,8 +84,8 @@ class TestCreateCanvasState:
         assert result['anchorSize'] == 10
         assert result['keepRatio'] is False
 
-    def test_viewport_initialized_to_zeros(self, page: Page, base_url: str):
-        page.goto(base_url)
+    def test_viewport_initialized_to_zeros(self, shared_page: Page):
+        page = shared_page
         result = page.evaluate("""async () => {
             const { createCanvasState } = await import('/app-static/js/app/image-tagging/canvas/state.js');
 
@@ -102,8 +100,8 @@ class TestCreateCanvasState:
             'imageHeight': 0, 'imageWidth': 0,
         }
 
-    def test_interaction_state_initialized_to_null_and_false(self, page: Page, base_url: str):
-        page.goto(base_url)
+    def test_interaction_state_initialized_to_null_and_false(self, shared_page: Page):
+        page = shared_page
         result = page.evaluate("""async () => {
             const { createCanvasState } = await import('/app-static/js/app/image-tagging/canvas/state.js');
 
@@ -139,8 +137,8 @@ class TestCreateCanvasState:
 # ---------------------------------------------------------------------------
 
 class TestRerenderBboxViews:
-    def test_creates_one_view_per_bbox(self, page: Page, base_url: str):
-        page.goto(base_url)
+    def test_creates_one_view_per_bbox(self, shared_page: Page):
+        page = shared_page
         result = page.evaluate("""async () => {
             const { createCanvasState } = await import('/app-static/js/app/image-tagging/canvas/state.js');
             const { rerenderBboxViews } = await import('/app-static/js/app/image-tagging/canvas/manager.js');
@@ -164,8 +162,8 @@ class TestRerenderBboxViews:
         }""")
         assert result == 2
 
-    def test_destroys_old_views_before_new_render(self, page: Page, base_url: str):
-        page.goto(base_url)
+    def test_destroys_old_views_before_new_render(self, shared_page: Page):
+        page = shared_page
         result = page.evaluate("""async () => {
             const { createCanvasState } = await import('/app-static/js/app/image-tagging/canvas/state.js');
             const { rerenderBboxViews } = await import('/app-static/js/app/image-tagging/canvas/manager.js');
@@ -196,8 +194,8 @@ class TestRerenderBboxViews:
         }""")
         assert result == {'afterFirst': 2, 'afterSecond': 1}
 
-    def test_empty_map_removes_all_views(self, page: Page, base_url: str):
-        page.goto(base_url)
+    def test_empty_map_removes_all_views(self, shared_page: Page):
+        page = shared_page
         result = page.evaluate("""async () => {
             const { createCanvasState } = await import('/app-static/js/app/image-tagging/canvas/state.js');
             const { rerenderBboxViews } = await import('/app-static/js/app/image-tagging/canvas/manager.js');
@@ -221,9 +219,9 @@ class TestRerenderBboxViews:
         }""")
         assert result == 0
 
-    def test_clears_transformer_selection_on_rerender(self, page: Page, base_url: str):
+    def test_clears_transformer_selection_on_rerender(self, shared_page: Page):
         """Transformer must be cleared so the selection handles don't outlive the view."""
-        page.goto(base_url)
+        page = shared_page
         result = page.evaluate("""async () => {
             const { createCanvasState } = await import('/app-static/js/app/image-tagging/canvas/state.js');
             const { rerenderBboxViews } = await import('/app-static/js/app/image-tagging/canvas/manager.js');

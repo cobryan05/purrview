@@ -58,9 +58,9 @@ _CLEANUP = """
 # ---------------------------------------------------------------------------
 
 class TestCanvasBboxApplyLabel:
-    def test_right_click_bbox_menu_opens_with_apply_label(self, page: Page, base_url: str):
+    def test_right_click_bbox_menu_opens_with_apply_label(self, shared_page: Page):
         """Right-clicking a canvas bbox opens .ctx-menu containing 'Apply label'."""
-        page.goto(base_url)
+        page = shared_page
         result = page.evaluate(f"""async () => {{
             const {{ createImageTaggingRuntime }} = await import('/app-static/js/app/image-tagging/runtime.js');
             const {{ createUIBBbox }} = await import('/app-static/js/shared/domain/image/mapper.js');
@@ -107,9 +107,9 @@ class TestCanvasBboxApplyLabel:
         assert any('Apply label' in item for item in result['items']), \
             f"Expected 'Apply label' in menu items, got: {result['items']}"
 
-    def test_apply_label_relabels_bbox_and_strips_verification(self, page: Page, base_url: str):
+    def test_apply_label_relabels_bbox_and_strips_verification(self, shared_page: Page):
         """Selecting a label from the context menu relabels the bbox and strips UNVERIFIED."""
-        page.goto(base_url)
+        page = shared_page
         result = page.evaluate(f"""async () => {{
             const {{ createImageTaggingRuntime }} = await import('/app-static/js/app/image-tagging/runtime.js');
             const {{ createUIBBbox }} = await import('/app-static/js/shared/domain/image/mapper.js');
@@ -155,9 +155,9 @@ class TestCanvasBboxApplyLabel:
 # ---------------------------------------------------------------------------
 
 class TestCanvasBboxVerification:
-    def test_set_false_positive_swaps_verification_tag(self, page: Page, base_url: str):
+    def test_set_false_positive_swaps_verification_tag(self, shared_page: Page):
         """setVerification(FALSE_POS) removes UNVERIFIED and adds FALSE_POS."""
-        page.goto(base_url)
+        page = shared_page
         result = page.evaluate(f"""async () => {{
             const {{ createImageTaggingRuntime }} = await import('/app-static/js/app/image-tagging/runtime.js');
             const {{ createUIBBbox }} = await import('/app-static/js/shared/domain/image/mapper.js');
@@ -194,9 +194,9 @@ class TestCanvasBboxVerification:
         assert FALSE_POS_TAG_UUID in result['tagUuids'], "FALSE_POS tag should be present"
         assert UNVERIFIED_TAG_UUID not in result['tagUuids'], "UNVERIFIED tag should be removed"
 
-    def test_set_verification_null_clears_all_verification_tags(self, page: Page, base_url: str):
+    def test_set_verification_null_clears_all_verification_tags(self, shared_page: Page):
         """setVerification(null) removes UNVERIFIED, FALSE_POS, and REJECTION."""
-        page.goto(base_url)
+        page = shared_page
         result = page.evaluate(f"""async () => {{
             const {{ createImageTaggingRuntime }} = await import('/app-static/js/app/image-tagging/runtime.js');
             const {{ createUIBBbox }} = await import('/app-static/js/shared/domain/image/mapper.js');
@@ -234,9 +234,9 @@ class TestCanvasBboxVerification:
         assert REJECTION_TAG_UUID not in result['tagUuids']
         assert 'other-tag' in result['tagUuids'], "Non-verification tags should be preserved"
 
-    def test_right_click_verification_menu_opens(self, page: Page, base_url: str):
+    def test_right_click_verification_menu_opens(self, shared_page: Page):
         """Context menu contains 'Verification' item when right-clicking a bbox."""
-        page.goto(base_url)
+        page = shared_page
         result = page.evaluate(f"""async () => {{
             const {{ createImageTaggingRuntime }} = await import('/app-static/js/app/image-tagging/runtime.js');
             const {{ createUIBBbox }} = await import('/app-static/js/shared/domain/image/mapper.js');
@@ -274,9 +274,9 @@ class TestCanvasBboxVerification:
 # ---------------------------------------------------------------------------
 
 class TestReviewBboxAdapterDelete:
-    def test_review_bbox_adapter_remove_calls_deleteBbox(self, page: Page, base_url: str):
+    def test_review_bbox_adapter_remove_calls_deleteBbox(self, shared_page: Page):
         """makeReviewBboxAdapter.remove() calls deleteBbox and marks the card stale."""
-        page.goto(base_url)
+        page = shared_page
         result = page.evaluate(f"""async () => {{
             // Import registry and providers (so 'bbox' is registered)
             const {{ initContextMenus }} = await import('/app-static/js/ui/contextMenu/index.js');
@@ -353,9 +353,9 @@ class TestReviewBboxAdapterDelete:
 # ---------------------------------------------------------------------------
 
 class TestReviewImageAdapterOpenOnCanvas:
-    def test_open_on_canvas_publishes_load_event(self, page: Page, base_url: str):
+    def test_open_on_canvas_publishes_load_event(self, shared_page: Page):
         """openOnCanvas() publishes LOAD_IMAGE_ONTO_CANVAS with the correct path."""
-        page.goto(base_url)
+        page = shared_page
         result = page.evaluate(f"""async () => {{
             const {{ events, EventTypes }} = await import('/app-static/js/shared/events/index.js');
             const {{ setPrimaryRuntimeId, getPrimaryRuntimeId }} =
@@ -401,9 +401,9 @@ class TestReviewImageAdapterOpenOnCanvas:
 # ---------------------------------------------------------------------------
 
 class TestContextMenuRegistryIntersection:
-    def test_common_types_only_shows_shared_actions(self, page: Page, base_url: str):
+    def test_common_types_only_shows_shared_actions(self, shared_page: Page):
         """openContextMenuForObjects with mixed types shows only intersection of types."""
-        page.goto(base_url)
+        page = shared_page
         result = page.evaluate("""async () => {
             const { registerContextProvider, openContextMenuForObjects } =
                 await import('/app-static/js/ui/contextMenu/registry.js');
@@ -440,9 +440,9 @@ class TestContextMenuRegistryIntersection:
         assert result['typeAInvocations'][0] == 2, "type-A should receive 2 adapters"
         assert len(result['typeBInvocations']) == 0, "type-B provider should NOT be called (not shared)"
 
-    def test_no_common_types_returns_false(self, page: Page, base_url: str):
+    def test_no_common_types_returns_false(self, shared_page: Page):
         """openContextMenuForObjects with no common types returns false and opens no menu."""
-        page.goto(base_url)
+        page = shared_page
         result = page.evaluate("""async () => {
             const { openContextMenuForObjects } =
                 await import('/app-static/js/ui/contextMenu/registry.js');
@@ -465,9 +465,9 @@ class TestContextMenuRegistryIntersection:
 # ---------------------------------------------------------------------------
 
 class TestCanvasFallthrough:
-    def test_empty_canvas_right_click_falls_through_to_tool_toggle(self, page: Page, base_url: str):
+    def test_empty_canvas_right_click_falls_through_to_tool_toggle(self, shared_page: Page):
         """Right-clicking empty canvas (no 'canvas' providers) falls through to tool toggle."""
-        page.goto(base_url)
+        page = shared_page
         result = page.evaluate(f"""async () => {{
             const {{ createImageTaggingRuntime }} = await import('/app-static/js/app/image-tagging/runtime.js');
             const {{ handleContextMenu }} = await import('/app-static/js/app/image-tagging/canvas/interaction.js');
@@ -507,9 +507,9 @@ class TestCanvasFallthrough:
 # ---------------------------------------------------------------------------
 
 class TestMenuEngine:
-    def test_open_menu_creates_ctx_menu_element(self, page: Page, base_url: str):
+    def test_open_menu_creates_ctx_menu_element(self, shared_page: Page):
         """openMenu creates a .ctx-menu div with the correct items."""
-        page.goto(base_url)
+        page = shared_page
         result = page.evaluate("""async () => {
             const { openMenu, closeActiveMenu } = await import('/app-static/js/ui/contextMenu/menu.js');
 
@@ -552,9 +552,9 @@ class TestMenuEngine:
         assert result['triggered'] == ['one']
         assert result['closedAfterClick'], "Menu should close after clicking an item"
 
-    def test_escape_closes_menu(self, page: Page, base_url: str):
+    def test_escape_closes_menu(self, shared_page: Page):
         """Pressing Escape closes the active menu."""
-        page.goto(base_url)
+        page = shared_page
         result = page.evaluate("""async () => {
             const { openMenu } = await import('/app-static/js/ui/contextMenu/menu.js');
 
@@ -575,9 +575,9 @@ class TestMenuEngine:
         assert result['visibleBefore'] is True
         assert result['visibleAfter'] is False
 
-    def test_outside_click_closes_menu(self, page: Page, base_url: str):
+    def test_outside_click_closes_menu(self, shared_page: Page):
         """Clicking outside the menu closes it."""
-        page.goto(base_url)
+        page = shared_page
         result = page.evaluate("""async () => {
             const { openMenu } = await import('/app-static/js/ui/contextMenu/menu.js');
 

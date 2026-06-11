@@ -28,9 +28,9 @@ _STAGE_SETUP = """
 # ---------------------------------------------------------------------------
 
 class TestBboxViewConstructor:
-    def test_positions_correctly_with_viewport(self, page: Page, base_url: str):
+    def test_positions_correctly_with_viewport(self, shared_page: Page):
         """x = uiBBox.x * imageWidth * scale + offsetX  (and similar for y/w/h)."""
-        page.goto(base_url)
+        page = shared_page
         result = page.evaluate("""async () => {
             const { BboxView } = await import('/app-static/js/app/image-tagging/canvas/views/bboxView.js');
 
@@ -52,8 +52,8 @@ class TestBboxViewConstructor:
         assert result['w'] == pytest.approx(400)
         assert result['h'] == pytest.approx(300)
 
-    def test_name_is_bbox_and_id_is_uuid(self, page: Page, base_url: str):
-        page.goto(base_url)
+    def test_name_is_bbox_and_id_is_uuid(self, shared_page: Page):
+        page = shared_page
         result = page.evaluate("""async () => {
             const { BboxView } = await import('/app-static/js/app/image-tagging/canvas/views/bboxView.js');
 
@@ -68,8 +68,8 @@ class TestBboxViewConstructor:
         assert result['name'] == 'bbox'
         assert result['id'] == 'my-id'
 
-    def test_label_color_used_for_rect_stroke(self, page: Page, base_url: str):
-        page.goto(base_url)
+    def test_label_color_used_for_rect_stroke(self, shared_page: Page):
+        page = shared_page
         result = page.evaluate("""async () => {
             const { BboxView } = await import('/app-static/js/app/image-tagging/canvas/views/bboxView.js');
 
@@ -88,8 +88,8 @@ class TestBboxViewConstructor:
         }""")
         assert result == '#ff0000'
 
-    def test_grey_stroke_when_no_label(self, page: Page, base_url: str):
-        page.goto(base_url)
+    def test_grey_stroke_when_no_label(self, shared_page: Page):
+        page = shared_page
         result = page.evaluate("""async () => {
             const { BboxView } = await import('/app-static/js/app/image-tagging/canvas/views/bboxView.js');
 
@@ -104,8 +104,8 @@ class TestBboxViewConstructor:
         }""")
         assert result == 'grey'
 
-    def test_icon_text_built_from_tags(self, page: Page, base_url: str):
-        page.goto(base_url)
+    def test_icon_text_built_from_tags(self, shared_page: Page):
+        page = shared_page
         result = page.evaluate("""async () => {
             const { BboxView } = await import('/app-static/js/app/image-tagging/canvas/views/bboxView.js');
 
@@ -122,8 +122,8 @@ class TestBboxViewConstructor:
         }""")
         assert result == '🐈✓'
 
-    def test_duplicate_icons_deduplicated(self, page: Page, base_url: str):
-        page.goto(base_url)
+    def test_duplicate_icons_deduplicated(self, shared_page: Page):
+        page = shared_page
         result = page.evaluate("""async () => {
             const { BboxView } = await import('/app-static/js/app/image-tagging/canvas/views/bboxView.js');
 
@@ -140,8 +140,8 @@ class TestBboxViewConstructor:
         }""")
         assert result == '✓'
 
-    def test_null_icons_excluded_from_icon_text(self, page: Page, base_url: str):
-        page.goto(base_url)
+    def test_null_icons_excluded_from_icon_text(self, shared_page: Page):
+        page = shared_page
         result = page.evaluate("""async () => {
             const { BboxView } = await import('/app-static/js/app/image-tagging/canvas/views/bboxView.js');
 
@@ -158,8 +158,8 @@ class TestBboxViewConstructor:
         }""")
         assert result == '✓'
 
-    def test_no_tags_gives_empty_icon_text(self, page: Page, base_url: str):
-        page.goto(base_url)
+    def test_no_tags_gives_empty_icon_text(self, shared_page: Page):
+        page = shared_page
         result = page.evaluate("""async () => {
             const { BboxView } = await import('/app-static/js/app/image-tagging/canvas/views/bboxView.js');
 
@@ -179,9 +179,9 @@ class TestBboxViewConstructor:
 # ---------------------------------------------------------------------------
 
 class TestBboxViewUpdateViewport:
-    def test_repositions_to_new_viewport(self, page: Page, base_url: str):
+    def test_repositions_to_new_viewport(self, shared_page: Page):
         """After zooming/panning the viewport, updateViewport moves the view."""
-        page.goto(base_url)
+        page = shared_page
         result = page.evaluate("""async () => {
             const { BboxView } = await import('/app-static/js/app/image-tagging/canvas/views/bboxView.js');
 
@@ -203,9 +203,9 @@ class TestBboxViewUpdateViewport:
         assert result['x'] == pytest.approx(300)
         assert result['y'] == pytest.approx(200)
 
-    def test_resizes_to_new_scale(self, page: Page, base_url: str):
+    def test_resizes_to_new_scale(self, shared_page: Page):
         """Dimensions scale with the viewport."""
-        page.goto(base_url)
+        page = shared_page
         result = page.evaluate("""async () => {
             const { BboxView } = await import('/app-static/js/app/image-tagging/canvas/views/bboxView.js');
 
@@ -231,8 +231,8 @@ class TestBboxViewUpdateViewport:
 # ---------------------------------------------------------------------------
 
 class TestBboxViewUpdateAppearance:
-    def test_updates_label_text_and_color(self, page: Page, base_url: str):
-        page.goto(base_url)
+    def test_updates_label_text_and_color(self, shared_page: Page):
+        page = shared_page
         result = page.evaluate("""async () => {
             const { BboxView } = await import('/app-static/js/app/image-tagging/canvas/views/bboxView.js');
 
@@ -261,8 +261,8 @@ class TestBboxViewUpdateAppearance:
 # ---------------------------------------------------------------------------
 
 class TestBboxViewRefreshIcons:
-    def test_updates_icon_text_from_new_tags(self, page: Page, base_url: str):
-        page.goto(base_url)
+    def test_updates_icon_text_from_new_tags(self, shared_page: Page):
+        page = shared_page
         result = page.evaluate("""async () => {
             const { BboxView } = await import('/app-static/js/app/image-tagging/canvas/views/bboxView.js');
 
@@ -282,8 +282,8 @@ class TestBboxViewRefreshIcons:
         assert result['before'] == ''
         assert result['after'] == '🐾'
 
-    def test_refreshIcons_deduplicates(self, page: Page, base_url: str):
-        page.goto(base_url)
+    def test_refreshIcons_deduplicates(self, shared_page: Page):
+        page = shared_page
         result = page.evaluate("""async () => {
             const { BboxView } = await import('/app-static/js/app/image-tagging/canvas/views/bboxView.js');
 
@@ -310,9 +310,9 @@ class TestBboxViewRefreshIcons:
 # ---------------------------------------------------------------------------
 
 class TestBboxViewDragNormalization:
-    def test_drag_updates_uibbox_coordinates(self, page: Page, base_url: str):
+    def test_drag_updates_uibbox_coordinates(self, shared_page: Page):
         """Firing 'dragend' after moving the group normalises uiBBox.x/y back to [0,1] space."""
-        page.goto(base_url)
+        page = shared_page
         result = page.evaluate("""async () => {
             const { BboxView } = await import('/app-static/js/app/image-tagging/canvas/views/bboxView.js');
 
@@ -336,9 +336,9 @@ class TestBboxViewDragNormalization:
         assert result['x'] == pytest.approx(0.5)
         assert result['y'] == pytest.approx(0.5)
 
-    def test_transform_resets_scale_and_updates_size(self, page: Page, base_url: str):
+    def test_transform_resets_scale_and_updates_size(self, shared_page: Page):
         """After transform, scaleX/Y must be reset to 1 and width/height baked in."""
-        page.goto(base_url)
+        page = shared_page
         result = page.evaluate("""async () => {
             const { BboxView } = await import('/app-static/js/app/image-tagging/canvas/views/bboxView.js');
 
