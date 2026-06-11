@@ -1,5 +1,6 @@
 import { createCachedFetcher } from '/app-static/js/ui/utils/data/createCachedFetcher.js';
 import { apiFetch, ignoreKeyReturn } from './apiUtils.js';
+import { events, EventTypes } from '/app-static/js/shared/events/index.js';
 
 /** -----------------------------
  * LABEL CACHE
@@ -62,6 +63,7 @@ export async function createNewLabel(name, color, parentUuid = null, labelType =
   }
 
   labelsFetcher.clear();
+  events.publish(EventTypes.LABELS_UPDATED);
   return data.label ?? null;
 }
 
@@ -80,6 +82,7 @@ export async function updateLabel(uuid, name, color) {
   }
 
   labelsFetcher.clear();
+  events.publish(EventTypes.LABELS_UPDATED);
 }
 
 
@@ -95,4 +98,5 @@ export async function deleteLabel(uuid) {
   }
 
   labelsFetcher.clear();
+  events.publish(EventTypes.LABELS_UPDATED);
 }

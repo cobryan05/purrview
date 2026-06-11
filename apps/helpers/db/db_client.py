@@ -1040,6 +1040,56 @@ class DbClient:
             result = await session.exec(select(ImageRecord.uuid, ImageRecord.filename))
             return [{"uuid": uuid, "filename": filename} for uuid, filename in result.all()]
 
+    async def get_image_hash_data_by_prefixes(
+        self, prefixes: List[str]
+    ) -> tuple:
+        """Return hash data for all images whose filename falls under any of the given prefixes.
+
+        *prefixes* must be absolute paths (already resolved).  A filename matches when it equals
+        a prefix exactly or starts with ``prefix + "/"``.
+
+        Returns ``(image_rows, bbox_rows)`` where:
+          - ``image_rows`` is a list of ``(uuid, phash)`` tuples
+          - ``bbox_rows``  is a list of ``(uuid, phash, label_uuid)`` tuples for every bbox
+            that belongs to a matched image
+        """
+        if not prefixes:
+            return [], []
+        async with self._async_session_maker() as session:
+            conditions = or_(
+                *[
+                    or_(
+                        ImageRecord.filename == p,
+                        ImageRecord.filename.like(p + "/%"),
+                    )
+                    for p in prefixes
+                ]
+            )
+            img_result = await session.exec(select(ImageRecord.uuid, ImageRecord.phash).where(conditions))
+            image_rows = img_result.all()
+            if not image_rows:
+                return [], []
+
+            image_uuids = [r[0] for r in image_rows]
+            bbox_result = await session.exec(
+                select(BBox.uuid, BBox.phash, BBox.label_uuid).where(BBox.image_uuid.in_(image_uuids))
+            )
+            bbox_rows = bbox_result.all()
+
+        return image_rows, bbox_rows
+
+    async def delete_images_bulk(self, uuids: List[str]) -> int:
+        """Delete image records in bulk.  BBoxes cascade-delete automatically.
+
+        Returns the number of image records deleted.
+        """
+        if not uuids:
+            return 0
+        async with self._async_session_maker() as session:
+            result = await session.exec(delete(ImageRecord).where(ImageRecord.uuid.in_(uuids)))
+            await session.commit()
+            return result.rowcount or 0
+
     async def get_image_stubs_needing_phash(self, image_hex_len: int, bbox_hex_len: int) -> List[Dict[str, str]]:
         """Return [{uuid, filename}] for images that are missing a phash or have one at the wrong size.
 

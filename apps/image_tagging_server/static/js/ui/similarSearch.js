@@ -123,15 +123,24 @@ function buildThresholdSlider(initial, { min = 0, max = 64, onChange }) {
 export async function openSimilarImagesModal({ imageUuid, threshold = null }) {
   const sliderMax = await getImageHashMax();
   let _threshold = threshold !== null ? threshold : await _readThreshold('dedup_image_threshold', sliderMax);
-  let _cachedImages = null;
+
+  // Sorted match list — [{imageUuid, distance}] ascending by distance.
+  // Null until the first query resolves; reset when threshold changes.
+  let _sortedMatches = null;
   let _queryPromise = findSimilarImagesByUuid(imageUuid, _threshold);
   let _refresh = null;
+
+  async function _ensureMatches() {
+    if (_sortedMatches !== null) return;
+    const matches = await _queryPromise;
+    _sortedMatches = [...matches].sort((a, b) => a.distance - b.distance);
+  }
 
   const { element: sliderEl } = buildThresholdSlider(_threshold, {
     max: sliderMax,
     onChange(newThreshold) {
       _threshold = newThreshold;
-      _cachedImages = null;
+      _sortedMatches = null;
       _queryPromise = findSimilarImagesByUuid(imageUuid, _threshold);
       _refresh?.();
     },
@@ -142,17 +151,21 @@ export async function openSimilarImagesModal({ imageUuid, threshold = null }) {
     headerControls: sliderEl,
     initialViewFilter: 'images',
     referenceImageUuids: new Set([imageUuid]),
-    fetchImages: async () => {
-      if (_cachedImages !== null) return _cachedImages;
-      const matches = await _queryPromise;
-      if (!matches.length) { _cachedImages = []; return []; }
-      const imageUuids = matches.map(m => m.imageUuid);
-      const images = await fetchImagesByUuids(imageUuids);
-      // Sort by similarity distance (most similar first — reference at distance 0 will be first)
-      const orderMap = new Map(matches.map((m, i) => [m.imageUuid, i]));
-      images.sort((a, b) => (orderMap.get(a.uuid) ?? 9999) - (orderMap.get(b.uuid) ?? 9999));
-      _cachedImages = images;
-      return _cachedImages;
+    fetchImages: async ({ afterUuid = null, limit }) => {
+      await _ensureMatches();
+      if (!_sortedMatches.length) return [];
+
+      const startIdx = afterUuid !== null
+        ? _sortedMatches.findIndex(m => m.imageUuid === afterUuid) + 1
+        : 0;
+
+      const page = _sortedMatches.slice(startIdx, startIdx + limit);
+      if (!page.length) return [];
+
+      const images = await fetchImagesByUuids(page.map(m => m.imageUuid));
+      // Re-order to match distance sort (fetchImagesByUuids returns in arbitrary order)
+      const orderMap = new Map(page.map((m, i) => [m.imageUuid, i]));
+      return images.sort((a, b) => (orderMap.get(a.uuid) ?? 9999) - (orderMap.get(b.uuid) ?? 9999));
     },
   });
 }
@@ -166,7 +179,6 @@ export async function openSimilarImagesModal({ imageUuid, threshold = null }) {
 export async function openSimilarBboxesModal({ bboxUuid, bboxCoords, imageUuid, threshold = null, labelUuid = null }) {
   const sliderMax = await getBboxHashMax();
   let _threshold = threshold !== null ? threshold : await _readThreshold('dedup_bbox_threshold', sliderMax);
-  let _cachedImages = null;
 
   // If live coordinates are provided (e.g. bbox moved on canvas but not yet saved),
   // compute the phash server-side from those coords; otherwise fall back to UUID lookup.
@@ -177,11 +189,42 @@ export async function openSimilarBboxesModal({ bboxUuid, bboxCoords, imageUuid, 
   let _queryPromise = _query(_threshold);
   let _refresh = null;
 
+  // Derived from the match list; reset when threshold changes.
+  // _imageOrder: [{imageUuid, minDist}] sorted ascending by minDist
+  // _imageBboxes: Map<imageUuid, Set<bboxUuid>>
+  let _imageOrder = null;
+  let _imageBboxes = null;
+
+  async function _ensureMatches() {
+    if (_imageOrder !== null) return;
+    const matches = await _queryPromise;
+
+    const imageMinDist = new Map();   // imageUuid → minimum distance across its matching bboxes
+    const imageBboxes = new Map();    // imageUuid → Set<bboxUuid>
+
+    for (const { bboxUuid: bu, imageUuid: iu, distance } of matches) {
+      if (!iu) continue;
+      if (!imageBboxes.has(iu)) {
+        imageBboxes.set(iu, new Set());
+        imageMinDist.set(iu, distance);
+      } else {
+        imageMinDist.set(iu, Math.min(imageMinDist.get(iu), distance));
+      }
+      imageBboxes.get(iu).add(bu);
+    }
+
+    _imageBboxes = imageBboxes;
+    _imageOrder = [...imageMinDist.entries()]
+      .sort((a, b) => a[1] - b[1])
+      .map(([iu, minDist]) => ({ imageUuid: iu, minDist }));
+  }
+
   const { element: sliderEl } = buildThresholdSlider(_threshold, {
     max: sliderMax,
     onChange(newThreshold) {
       _threshold = newThreshold;
-      _cachedImages = null;
+      _imageOrder = null;
+      _imageBboxes = null;
       _queryPromise = _query(_threshold);
       _refresh?.();
     },
@@ -191,24 +234,27 @@ export async function openSimilarBboxesModal({ bboxUuid, bboxCoords, imageUuid, 
     title: 'Similar Bboxes',
     headerControls: sliderEl,
     referenceBboxUuids: new Set([bboxUuid]),
-    fetchImages: async () => {
-      if (_cachedImages !== null) return _cachedImages;
-      const matches = await _queryPromise;
-      if (!matches.length) { _cachedImages = []; return []; }
+    fetchImages: async ({ afterUuid = null, limit }) => {
+      await _ensureMatches();
+      if (!_imageOrder.length) return [];
 
-      const imageUuidSet = new Set(matches.filter(m => m.imageUuid).map(m => m.imageUuid));
-      if (!imageUuidSet.size) { _cachedImages = []; return []; }
+      const startIdx = afterUuid !== null
+        ? _imageOrder.findIndex(e => e.imageUuid === afterUuid) + 1
+        : 0;
 
-      const matchedBboxUuids = new Set(matches.map(m => m.bboxUuid));
-      const images = await fetchImagesByUuids([...imageUuidSet]);
+      const page = _imageOrder.slice(startIdx, startIdx + limit);
+      if (!page.length) return [];
 
-      // Narrow each image's bbox list to only the matched bboxes so the review
-      // panel highlights exactly the relevant annotations.
-      _cachedImages = images.map(img => ({
-        ...img,
-        bboxes: (img.bboxes || []).filter(b => matchedBboxUuids.has(b.uuid)),
-      }));
-      return _cachedImages;
+      const images = await fetchImagesByUuids(page.map(e => e.imageUuid));
+
+      // Re-order by distance and narrow each image's bboxes to only matched ones
+      const orderMap = new Map(page.map((e, i) => [e.imageUuid, i]));
+      return images
+        .sort((a, b) => (orderMap.get(a.uuid) ?? 9999) - (orderMap.get(b.uuid) ?? 9999))
+        .map(img => ({
+          ...img,
+          bboxes: (img.bboxes || []).filter(b => _imageBboxes.get(img.uuid)?.has(b.uuid)),
+        }));
     },
   });
 }

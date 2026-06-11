@@ -40,8 +40,11 @@ export async function initCanvasStage(runtime) {
       events.publish(EventTypes.CANVAS_BBOXES_CHANGED, { runtimeId: runtime.id });
     }
   };
+  // transformend is NOT wired here: Konva fires it from the Transformer node,
+  // so e.target is the Transformer (not the BboxView group) and the
+  // e.target.name() === 'bbox' guard would never pass. Resize is handled by
+  // the per-bbox 'transformend.transformer' listener attached in handleClick.
   stage.on('dragend', onBboxMutated);
-  stage.on('transformend', onBboxMutated);
 
   const observer = new ResizeObserver(() => handleResize({}, runtime));
   observer.observe(runtime.canvas.container);

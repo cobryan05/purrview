@@ -235,7 +235,7 @@ class HashIndex:
     # ─────────────────────────────────────────────────────────────────────────
 
     def find_similar_images(self, phash: str, threshold: int) -> List[Tuple[str, int]]:
-        """Return [(image_uuid, distance)] for images within *threshold* of *phash*.
+        """Return [(image_uuid, distance)] for images within *threshold* of *phash*, sorted by distance ascending.
 
         Dead (tombstoned) entries are filtered via *_valid_images*.
         """
@@ -247,11 +247,13 @@ class HashIndex:
         except Exception:
             logger.exception("HashIndex.find_similar_images error")
             return []
-        return [
+        results = [
             (item[1], dist)
             for dist, item in raw
             if item[1] in self._valid_images
         ]
+        results.sort(key=lambda x: x[1])
+        return results
 
     def find_similar_bboxes(
         self,
@@ -259,7 +261,7 @@ class HashIndex:
         label_uuid: Optional[str],
         threshold: int,
     ) -> List[Tuple[str, int, str]]:
-        """Return [(bbox_uuid, distance, label_uuid)] within *threshold* of *phash*.
+        """Return [(bbox_uuid, distance, label_uuid)] within *threshold* of *phash*, sorted by distance ascending.
 
         If *label_uuid* is None, searches all per-label trees.
         """
@@ -280,6 +282,7 @@ class HashIndex:
             for dist, item in raw:
                 if item[1] in valid:
                     results.append((item[1], dist, lbl))
+        results.sort(key=lambda x: x[1])
         return results
 
     def check_dedup_bulk(

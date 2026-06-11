@@ -404,18 +404,39 @@ export function handleClick(e, runtime) {
 
   const bboxGroup = groups[ist.cycleIndex];
 
+  // Capture whether this exact box was already selected BEFORE this click.
+  // Used below to decide between tool-switch and inspector-open on double-click.
+  const wasAlreadySelected = (ist.selectedBbox === bboxGroup);
+
   if (ist.selectedBbox && ist.selectedBbox !== bboxGroup) {
     ist.selectedBbox.off('transformend.transformer');
   }
   ist.selectedBbox = bboxGroup;
   transformer.nodes([bboxGroup]);
   transformer.moveToTop();
-  bboxGroup.on('transformend.transformer', () => transformer.forceUpdate());
+
+  // Resize handler: Konva fires transformend from the Transformer node (not the
+  // BboxView group), so the stage-level bubbling guard won't catch it. Wire it
+  // directly on the group so we reliably get pushState + dirty notification.
+  bboxGroup.on('transformend.transformer', () => {
+    transformer.forceUpdate();
+    runtime.pushState();
+    events.publish(EventTypes.CANVAS_BBOXES_CHANGED, { runtimeId: runtime.id });
+  });
+
   events.publish(EventTypes.CANVAS_BBOX_CLICKED, { bboxId: bboxGroup.id(), bboxView: bboxGroup, runtimeId: runtime.id });
 
-  // A double-click opens the inspector for whichever box we just cycled to.
+  // Double-click action:
+  //   • Already-selected box in select mode → switch to that box's label tool
+  //     so the user can immediately relabel / verify with another double-click.
+  //   • All other cases → open the inspector.
   if (ist.lastWasDoubleClick) {
-    events.publish(EventTypes.CANVAS_BBOX_DOUBLE_CLICKED, { bboxId: bboxGroup.id(), bboxView: bboxGroup, runtimeId: runtime.id });
+    const labelUuid = bboxGroup.uiBBox?.label?.uuid;
+    if (wasAlreadySelected && labelUuid) {
+      setTool(runtime, `bbox:${labelUuid}`);
+    } else {
+      events.publish(EventTypes.CANVAS_BBOX_DOUBLE_CLICKED, { bboxId: bboxGroup.id(), bboxView: bboxGroup, runtimeId: runtime.id });
+    }
   }
 
   layer.batchDraw();

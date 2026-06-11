@@ -178,12 +178,13 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
   filterToggleBtn.title = 'Toggle search filters';
   if (fetchImages) filterToggleBtn.hidden = true;
 
-  // Sort controls — always visible in toolbar (moved from filter panel)
+  // Sort controls — hidden when a custom fetchImages is provided (caller controls ordering)
   const sortLabel = document.createElement('span');
   sortLabel.className = 'review-toolbar__sort-label';
   sortLabel.textContent = 'Sort:';
   const sortBySelect = makeSelect('filter-sort-by', [['created_at', 'Date created'], ['updated_at', 'Date modified']], 'created_at');
   const sortOrderSelect = makeSelect('filter-sort-dir', [['desc', 'Newest first'], ['asc', 'Oldest first']], 'desc');
+  if (fetchImages) { sortLabel.hidden = true; sortBySelect.hidden = true; sortOrderSelect.hidden = true; }
 
   // ── View filter toggle (All / Images / Bboxes) ───────────────────
   const viewToggle = document.createElement('div');

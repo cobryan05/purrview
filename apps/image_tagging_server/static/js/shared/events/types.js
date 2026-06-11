@@ -115,4 +115,9 @@ export const EventTypes = Object.freeze({
    * }
    */
   IMAGE_BBOXES_CHANGED: "image:bboxes:changed",
+  /**
+   * Fired after any label is created, updated, or deleted.
+   * Consumers that display a label list should re-fetch and re-render.
+   */
+  LABELS_UPDATED: "labels:updated",
 });

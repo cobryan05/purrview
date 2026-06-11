@@ -420,18 +420,28 @@ class Manager:
             logger.warning(f"Path not found or inaccessible: {image_rel_path}")
             return None
         image = await self._db_client.add_image(safe_path)
+
+        # Capture old bbox entries BEFORE the DB write so we can remove stale hash
+        # index entries.  write_image_metadata_to_db does a full DELETE + INSERT, so
+        # old phashes are gone once it returns.
+        old_image_record = await self._db_client.get_image_by_uuid(image.uuid)
+        old_bboxes = old_image_record.bboxes if old_image_record else []
+
         await self._db_client.write_image_metadata_to_db(image.uuid, update)
 
-        # Compute phashes on first write (image.phash is None for new images).
+        # Image phash is computed once (first write only — the file never changes).
+        # Bbox phashes must always be (re-)computed because the user may have moved or
+        # resized boxes since the last save, which changes the cropped pixel region.
         image_phash: Optional[str] = image.phash
-        if image_phash is None:
+        if image_phash is None or update.bboxes:
             try:
                 image_bgr = await asyncio.to_thread(__import__("cv2").imread, str(safe_path))
                 if image_bgr is not None:
-                    image_phash = await asyncio.to_thread(
-                        phash_from_numpy, image_bgr, self._image_hash_size
-                    )
-                    # Compute per-bbox phashes using the re-written update bboxes.
+                    if image_phash is None:
+                        image_phash = await asyncio.to_thread(
+                            phash_from_numpy, image_bgr, self._image_hash_size
+                        )
+                    # Always (re-)compute per-bbox phashes.
                     bbox_phash_list = []
                     for b in update.bboxes:
                         try:
@@ -445,14 +455,20 @@ class Manager:
                             logger.exception("bbox phash error for %s", b.uuid)
                     await self._db_client.update_phashes(image.uuid, image_phash, bbox_phash_list)
                     # Update hash index.
-                    self._hash_index.add_image(image.uuid, image_phash)
+                    if image.phash is None and image_phash:
+                        self._hash_index.add_image(image.uuid, image_phash)
+                    # Tombstone all previous bbox entries (covers deleted, moved, and
+                    # resized boxes), then insert the freshly-computed replacements.
+                    for old_bbox in old_bboxes:
+                        if old_bbox.phash and old_bbox.label_uuid:
+                            self._hash_index.remove_bbox(old_bbox.uuid, old_bbox.label_uuid)
                     for bp_entry in bbox_phash_list:
                         label_uuid = next((b.label_uuid for b in update.bboxes if b.uuid == bp_entry["uuid"]), None)
                         if label_uuid:
                             self._hash_index.add_bbox(bp_entry["uuid"], label_uuid, bp_entry["phash"])
             except Exception:
                 logger.exception("phash computation failed for %s", image_rel_path)
-                image_phash = None
+                image_phash = image.phash  # revert to previously-stored value on error
 
         # Re-read from DB; get_image_by_filename eager-loads bboxes → label + tags,
         # so we can include names in the sidecar for rebuild robustness.
@@ -924,7 +940,7 @@ class Manager:
 
         Each entry in *directories* is a path relative to FILES_ROOT.  The DB stores
         filenames as absolute paths, so each input directory is resolved to an absolute
-        path before prefix-matching.  Hash-index entries are removed before each deletion
+        path before prefix-matching.  Hash-index entries are removed before deletion
         so the BK-tree stays consistent.
 
         Returns the number of image records deleted.
@@ -940,23 +956,23 @@ class Manager:
         ]
         if not norm_dirs:
             return 0
-        stubs = await self._db_client.get_all_image_stubs()
-        deleted = 0
-        for stub in stubs:
-            uuid = stub["uuid"]
-            filename = stub["filename"].rstrip("/")
-            if not any(filename == d or filename.startswith(d + "/") for d in norm_dirs):
-                continue
-            logger.info("delete_images_by_directory: deleting %s (%s)", filename, uuid)
-            image_record = await self._db_client.get_image_by_uuid(uuid)
-            if image_record:
-                if image_record.phash:
-                    self._hash_index.remove_image(uuid)
-                for bbox in (image_record.bboxes or []):
-                    if bbox.phash and bbox.label_uuid:
-                        self._hash_index.remove_bbox(bbox.uuid, bbox.label_uuid)
-            await self._db_client.delete_image(uuid)
-            deleted += 1
+
+        # Two targeted queries instead of a full-table scan + N per-record fetches.
+        image_rows, bbox_rows = await self._db_client.get_image_hash_data_by_prefixes(norm_dirs)
+        if not image_rows:
+            return 0
+
+        # Update the in-memory hash index before bulk-deleting.
+        for img_uuid, img_phash in image_rows:
+            if img_phash:
+                self._hash_index.remove_image(img_uuid)
+        for bbox_uuid, bbox_phash, bbox_label_uuid in bbox_rows:
+            if bbox_phash and bbox_label_uuid:
+                self._hash_index.remove_bbox(bbox_uuid, bbox_label_uuid)
+
+        image_uuids = [r[0] for r in image_rows]
+        deleted = await self._db_client.delete_images_bulk(image_uuids)
+        logger.info("delete_images_by_directory: deleted %d images under %s", deleted, norm_dirs)
         return deleted
 
     # ─────────────────────────────────────────────────────────────────────────
