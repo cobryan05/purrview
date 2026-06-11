@@ -95,6 +95,7 @@ class Manager:
         )
         self._rebuild_in_progress: bool = False
         self._hash_index_ready: bool = False  # False until initial build completes on startup
+        self._build_phase: str = ""  # "loading" or "constructing" during initial index build
         # Short-lived cache for expensive count queries.  Key is an MD5 of the
         # filter predicates (sort/page fields excluded); value is (count, ts).
         # TTL is intentionally short so writes that happen while browsing are
@@ -120,7 +121,8 @@ class Manager:
     async def _init(self):
         """Initialization that should run on event loop"""
         await self._db_client.init_db()
-        await self._hash_index.build()
+        await self._hash_index.build(on_phase=lambda p: setattr(self, "_build_phase", p))
+        self._build_phase = ""
         self._hash_index_ready = True
 
     async def _worker_task(self):
@@ -1014,9 +1016,17 @@ class Manager:
         """Return service health and diagnostic info."""
         notices: list[dict] = []
         if not self._hash_index_ready:
-            notices.append({"key": "hash_build", "level": "info", "message": "Building similarity index…"})
+            phase_detail = {
+                "loading": " (loading hashes from DB…)",
+                "constructing": " (constructing search trees…)",
+            }.get(self._build_phase, "…")
+            notices.append({
+                "key": "hash_build",
+                "level": "info",
+                "message": f"Building similarity index{phase_detail} — similar search unavailable until complete",
+            })
         elif self._rebuild_in_progress:
-            notices.append({"key": "hash_rebuild", "level": "warning", "message": "Hash index rebuilding…"})
+            notices.append({"key": "hash_rebuild", "level": "warning", "message": "Hash index rebuilding — similar search may return stale results"})
         return {
             "service": "db_server",
             "status": "ok",

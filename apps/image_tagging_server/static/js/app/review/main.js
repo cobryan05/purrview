@@ -214,7 +214,7 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
 
   // ── Per-page selector ────────────────────────────────────────────
   const pageSizeSelect = makeSelect('filter-page-size',
-    [['10', '10/pg'], ['25', '25/pg'], ['50', '50/pg'], ['100', '100/pg'], ['250', '250/pg'], ['500', '500/pg']],
+    [['10', '10 imgs/pg'], ['25', '25 imgs/pg'], ['50', '50 imgs/pg'], ['100', '100 imgs/pg'], ['250', '250 imgs/pg'], ['500', '500 imgs/pg']],
     String(DEFAULT_PAGE_SIZE));
 
   // Select-all checkbox
@@ -948,7 +948,8 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
 
     const totalPages = _totalCount > 0 ? Math.ceil(_totalCount / _pageSize) : null;
     const pageLabel = totalPages ? `Page ${_pageCursors.length} of ${totalPages}` : `Page ${_pageCursors.length}`;
-    pageInfo.textContent = pageLabel;
+    const cardCount = _allEntries.length;
+    pageInfo.textContent = `${pageLabel} · ${cardCount} card${cardCount === 1 ? '' : 's'}`;
     prevBtn.disabled = _pageCursors.length <= 1;
     nextBtn.disabled = !_hasMore;
 

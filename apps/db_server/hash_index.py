@@ -108,10 +108,14 @@ class HashIndex:
         )
         return image_rows, bbox_rows
 
-    async def build(self) -> BuildStats:
+    async def build(self, on_phase=None) -> BuildStats:
         """Load all non-null phash rows from the DB and build BK-trees."""
         t0 = time.perf_counter()
+        if on_phase:
+            on_phase("loading")
         image_rows, bbox_rows = await self._load_phashes()
+        if on_phase:
+            on_phase("constructing")
         stats = await asyncio.to_thread(self._construct_trees, image_rows, bbox_rows)
         stats.duration_ms = (time.perf_counter() - t0) * 1000
         logger.info(
