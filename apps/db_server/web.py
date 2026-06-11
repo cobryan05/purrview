@@ -201,6 +201,14 @@ class PruneImagesResponse(StatusResponse):
     deleted_count: int = 0
 
 
+class DeleteImagesByDirectoryPayload(ApiPayload):
+    directories: List[str] = Field(default_factory=list)
+
+
+class DeleteImagesByDirectoryResponse(StatusResponse):
+    deleted_count: int = 0
+
+
 ########
 # Image Providers
 ########
@@ -1313,6 +1321,23 @@ class WebApp:
             except Exception as e:
                 logger.error(e, exc_info=True)
                 return PruneImagesResponse(status=JsonValues.FAILURE, message=str(e))
+
+        @self._app.post(
+            "/api/images/delete-by-directory",
+            response_model=DeleteImagesByDirectoryResponse,
+            tags=[ApiTags.IMAGES],
+            operation_id="delete_images_by_directory",
+        )
+        async def delete_images_by_directory(
+            payload: DeleteImagesByDirectoryPayload,
+        ) -> DeleteImagesByDirectoryResponse:
+            """Delete all DB records (and their bboxes) for images under the given directory paths."""
+            try:
+                count = await self._manager.delete_images_by_directory(payload.directories)
+                return DeleteImagesByDirectoryResponse(status=JsonValues.SUCCESS, deleted_count=count)
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return DeleteImagesByDirectoryResponse(status=JsonValues.FAILURE, message=str(e))
 
         ################################################################################
         # Perceptual Hash API

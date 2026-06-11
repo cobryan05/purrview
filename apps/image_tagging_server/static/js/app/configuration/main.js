@@ -32,7 +32,7 @@ export async function init() {
       // Initial render via fetch so the tab feels instant on first open.
       refreshTaskTab();
 
-      // SSE stream for live task updates — no polling, server pushes on change.
+      // SSE stream for live task updates — server pushes on change.
       taskEventSource = new EventSource('/api/tasks/stream');
       taskEventSource.onmessage = (e) => {
         try {

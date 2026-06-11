@@ -919,6 +919,46 @@ class Manager:
             deleted += 1
         return deleted
 
+    async def delete_images_by_directory(self, directories: List[str]) -> int:
+        """Delete all DB image records (and their bboxes) whose path falls under any given directory.
+
+        Each entry in *directories* is a path relative to FILES_ROOT.  The DB stores
+        filenames as absolute paths, so each input directory is resolved to an absolute
+        path before prefix-matching.  Hash-index entries are removed before each deletion
+        so the BK-tree stays consistent.
+
+        Returns the number of image records deleted.
+        """
+        if not directories:
+            return 0
+        # Resolve to absolute paths — the DB stores filenames as absolute paths
+        # (e.g. /app/image_datasets/timelapse_out2/frame001.jpg).
+        norm_dirs = [
+            str(p).rstrip("/")
+            for d in directories
+            if (p := get_safe_path(self._files_root, d))
+        ]
+        if not norm_dirs:
+            return 0
+        stubs = await self._db_client.get_all_image_stubs()
+        deleted = 0
+        for stub in stubs:
+            uuid = stub["uuid"]
+            filename = stub["filename"].rstrip("/")
+            if not any(filename == d or filename.startswith(d + "/") for d in norm_dirs):
+                continue
+            logger.info("delete_images_by_directory: deleting %s (%s)", filename, uuid)
+            image_record = await self._db_client.get_image_by_uuid(uuid)
+            if image_record:
+                if image_record.phash:
+                    self._hash_index.remove_image(uuid)
+                for bbox in (image_record.bboxes or []):
+                    if bbox.phash and bbox.label_uuid:
+                        self._hash_index.remove_bbox(bbox.uuid, bbox.label_uuid)
+            await self._db_client.delete_image(uuid)
+            deleted += 1
+        return deleted
+
     # ─────────────────────────────────────────────────────────────────────────
     # Perceptual hash index public API
     # ─────────────────────────────────────────────────────────────────────────

@@ -3,6 +3,7 @@
 import asyncio
 import logging
 import os
+import threading
 import time
 from pathlib import Path
 from typing import Any, Optional
@@ -95,46 +96,100 @@ class Cv2VideoImageProvider(ImageProvider):
             self._vid.set(cv2.CAP_PROP_POS_FRAMES, self._vidFrameCnt)
 
     async def _discover_files_async(self) -> None:
-        """Async directory scan using aiopath so globbing never blocks the event loop.
+        """Async directory scan — os.walk in a thread, batches streamed via a queue.
 
-        Files are published to self._paths in batches as they are discovered so that the
-        prefetch worker can begin processing early while the scan is still ongoing.
+        os.walk is used instead of aiopath.rglob("*") + is_file() because:
+        - Its filenames list contains only files; no per-entry stat() needed.
+        - Directory/file separation uses d_type from readdir on Linux/macOS — free.
+        - A single pass is made regardless of how many glob patterns are configured;
+          pattern matching is done in userspace as each file name is encountered.
+
+        Batches are pushed onto an asyncio.Queue as they fill, so the prefetch
+        worker can start reading images before the walk finishes.
         """
-        from aiopath import AsyncPath
+        from pathlib import PurePath
 
         BATCH_SIZE = 64
-
-        root = AsyncPath(self._rootdir_path)
-        if not await root.is_dir():
-            logger.warning(f"Root directory path does not exist: {self._rootdir_path}")
+        root = self._rootdir_path
+        if not root.is_dir():
+            logger.warning("Root directory path does not exist: %s", root)
             return
 
+        catch_all = any(g in {"**/*", "*"} for g in self._globs)
+        # Strip leading "**/" before matching: PurePath.match() is right-anchored, so
+        # "*.png" already matches any .png at any depth without the "**/" prefix.
+        # Keeping "**/" causes files directly in root to fail (no extra component to absorb it).
+        patterns = None if catch_all else [g[3:] if g.startswith("**/") else g for g in self._globs]
+        use_recursive = self._recursive or any("**" in g for g in self._globs)
+
+        # threading.Event is used (not asyncio.Event) so is_set() is safe to call
+        # from the worker thread without GIL caveats.
+        stop_event = threading.Event()
+        loop = asyncio.get_running_loop()
+        # Unbounded so the walk thread never blocks on put; path strings are tiny.
+        result_queue: asyncio.Queue = asyncio.Queue()
+
+        def _walk() -> None:
+            batch: list[str] = []
+
+            def _flush() -> None:
+                if batch:
+                    loop.call_soon_threadsafe(result_queue.put_nowait, list(batch))
+                    batch.clear()
+
+            def _accept(path_str: str) -> None:
+                _, ext = os.path.splitext(path_str.lower())
+                if ext in self.SKIP_EXTENSIONS:
+                    return
+                if patterns is not None:
+                    try:
+                        rel = PurePath(path_str).relative_to(root)
+                    except ValueError:
+                        return
+                    if not any(rel.match(g) for g in patterns):
+                        return
+                batch.append(path_str)
+                if len(batch) >= BATCH_SIZE:
+                    _flush()
+
+            try:
+                if use_recursive:
+                    for dirpath, dirnames, filenames in os.walk(str(root)):
+                        if stop_event.is_set():
+                            dirnames.clear()  # prune os.walk — stops further recursion
+                            break
+                        for fname in filenames:
+                            _accept(os.path.join(dirpath, fname))
+                else:
+                    with os.scandir(str(root)) as it:
+                        for entry in it:
+                            if stop_event.is_set():
+                                break
+                            if entry.is_file(follow_symlinks=True):
+                                _accept(entry.path)
+
+                if not stop_event.is_set():
+                    _flush()
+            finally:
+                # Always send the sentinel so the consumer never hangs, even on exception.
+                loop.call_soon_threadsafe(result_queue.put_nowait, None)
+
+        loop.run_in_executor(None, _walk)
+
         unique_seen: set[str] = set()
-        batch: list[str] = []
-
-        for g in self._globs:
-            if self._recursive or "**" in g:
-                iterator = root.rglob(g)
-            else:
-                iterator = root.glob(g)
-
-            async for p in iterator:
-                if await p.is_file():
-                    path_str = str(p)
-                    _, ext = os.path.splitext(path_str.lower())
-                    if ext in self.SKIP_EXTENSIONS:
-                        continue
+        try:
+            while True:
+                batch = await result_queue.get()
+                if batch is None:
+                    break
+                for path_str in batch:
                     if path_str not in unique_seen:
                         unique_seen.add(path_str)
-                        batch.append(path_str)
-                        if len(batch) >= BATCH_SIZE:
-                            self._paths.extend(batch)
-                            self._total_frames += len(batch)
-                            batch.clear()
-
-        if batch:
-            self._paths.extend(batch)
-            self._total_frames += len(batch)
+                        self._paths.append(path_str)
+                        self._total_frames += 1
+        except asyncio.CancelledError:
+            stop_event.set()
+            raise
 
     async def _background_discovery_worker(self) -> None:
         try:

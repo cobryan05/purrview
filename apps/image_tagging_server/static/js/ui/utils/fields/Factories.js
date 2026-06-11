@@ -13,6 +13,7 @@ import { DropDownField } from './DropDownField.js';
 import { fetchTags, createNewTag } from '/app-static/js/shared/api/tags.js';
 import { fetchLabels } from '/app-static/js/shared/api/labels.js';
 import { isDynamicLabelsVisible } from '/app-static/js/shared/activeModel.js';
+import { GroupField } from './GroupField.js';
 // Factory map
 export const fieldFactories = {
   async array(fieldName, fieldMeta, values, onChange) {
@@ -303,4 +304,20 @@ export const fieldFactories = {
       },
     };
   },
+
+  async group(fieldName, fieldMeta, values, onChange) {
+    const { type, label = '', collapsed = false, fields = {}, ...rest } = fieldMeta;
+    return GroupField.create({
+      label,
+      collapsed,
+      fields,
+      // Pass the full parent values dict so each sub-field can find its own key.
+      values,
+      onChange,
+      ...rest,
+    });
+  },
 };
+
+// 'number' is an alias for 'int' — both render a numeric text input.
+fieldFactories.number = fieldFactories.int;

@@ -7,6 +7,7 @@ export { ColorSwatchField } from './ColorSwatchField.js';
 export { DropDownField } from './DropDownField.js';
 export { EditableField } from './EditableField.js';
 export { Field } from './Field.js';
+export { GroupField } from './GroupField.js';
 export { LabelDropDownField } from './LabelDropDownField.js';
 export { ModelLabelSelectField } from './ModelLabelSelectField.js';
 export { RadioField } from './RadioField.js';

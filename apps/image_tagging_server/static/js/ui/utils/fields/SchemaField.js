@@ -45,9 +45,9 @@ export class SchemaField extends Field {
   }
 
   /**
- * Renders the form children using the callback for each item
- * @returns {HTMLElement} The form container.
- */
+   * Renders the form children using the callback for each item
+   * @returns {HTMLElement} The form container.
+   */
   async _renderFieldsWith(fieldRenderCallback) {
     const container = document.createElement('div');
     container.style.display = 'flex';
@@ -72,6 +72,13 @@ export class SchemaField extends Field {
     }
 
     for (const [fieldName, fieldInstance] of fieldEntries) {
+      if (fieldInstance._isGroup) {
+        // The group renders its own <details><summary> header — no outer wrapper needed.
+        const node = await fieldRenderCallback(fieldInstance);
+        container.appendChild(node);
+        continue;
+      }
+
       const fieldContainer = document.createElement('div');
       fieldContainer.style.display = 'flex';
       fieldContainer.style.flexDirection = 'column';
@@ -100,11 +107,16 @@ export class SchemaField extends Field {
     let field;
 
     if (factory) {
-      field = await factory(fieldName, fieldMeta, this._init_values,
-        (value) => {
+      field = await factory(fieldName, fieldMeta, this._init_values, (value) => {
+        if (field._isGroup) {
+          // Groups return a flat dict — merge it into the parent values rather
+          // than nesting it under the group's own key.
+          Object.assign(this._init_values, value);
+        } else {
           this._init_values[fieldName] = value;
-          this._onChange?.(this._init_values);
-        });
+        }
+        this._onChange?.(this._init_values);
+      });
     } else {
       // Fallback generic input
       field = new TextField({
@@ -124,12 +136,17 @@ export class SchemaField extends Field {
 
   /**
    * Returns the current values of the form.
+   * Group fields are spread into the flat result rather than nested under their key.
    * @returns {object} The current values.
    */
   getValue() {
     const values = {};
     for (const [fieldName, fieldInstance] of Object.entries(this._fields)) {
-      values[fieldName] = fieldInstance.getValue();
+      if (fieldInstance._isGroup) {
+        Object.assign(values, fieldInstance.getValue());
+      } else {
+        values[fieldName] = fieldInstance.getValue();
+      }
     }
     return values;
   }

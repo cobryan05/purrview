@@ -17,6 +17,7 @@ from db_client.models.image_stubs_needing_phash_payload import ImageStubsNeeding
 from db_client.models.prune_images_payload import PruneImagesPayload
 from db_client.models.rebuild_hash_index_response import RebuildHashIndexResponse
 from db_client.models.recompute_phash_payload import RecomputePhashPayload
+from db_client.models.delete_images_by_directory_payload import DeleteImagesByDirectoryPayload
 from db_client.models.reconcile_image_payload import ReconcileImagePayload
 
 from apps.helpers.consts import TaskStatus
@@ -54,6 +55,7 @@ class DatabaseMaintenanceTask(Task):
     # Approximate relative cost of each phase — used to portion the progress bar.
     _PHASE_WEIGHTS: dict[str, float] = {
         "reconcile": 50,
+        "remove_dirs": 15,
         "prune": 10,
         "tags": 3,
         "hash": 30,
@@ -69,6 +71,10 @@ class DatabaseMaintenanceTask(Task):
         self._fill_missing_phashes: bool = bool(params.get("fill_missing_phashes", False))
         self._recompute_phashes: bool = bool(params.get("recompute_phashes", False))
         self._phash_concurrency: int = max(1, int(params.get("phash_concurrency", 4)))
+        self._remove_directories: list[str] = list(params.get("remove_directories") or [])
+        self._remove_directories_delete_sidecars: bool = bool(
+            params.get("remove_directories_delete_sidecars", True)
+        )
 
         if self._sync_mode not in _VALID_SYNC_MODES:
             raise ValueError(f"Invalid sync_mode: {self._sync_mode!r}. Must be one of {_VALID_SYNC_MODES}")
@@ -84,10 +90,11 @@ class DatabaseMaintenanceTask(Task):
 
         # Build a dynamic progress budget: only allocate space to active phases.
         active = []
-        if self._sync_jsons:         active.append("reconcile")
-        if self._remove_deleted:     active.append("prune")
-        if self._clear_orphan_tags:  active.append("tags")
-        if _has_hash_work:           active.extend(["hash", "rebuild"])
+        if self._sync_jsons:                      active.append("reconcile")
+        if self._remove_directories:              active.append("remove_dirs")
+        if self._remove_deleted:                  active.append("prune")
+        if self._clear_orphan_tags:               active.append("tags")
+        if _has_hash_work:                        active.extend(["hash", "rebuild"])
 
         total_w = sum(self._PHASE_WEIGHTS[p] for p in active) or 1
         ends: dict[str, float] = {}
@@ -105,7 +112,12 @@ class DatabaseMaintenanceTask(Task):
             known_disk_uuids = r.pop("known_disk_uuids")
             summary.update(r)
 
-        # ── 2. Prune ──────────────────────────────────────────────────────────
+        # ── 2. Remove directories ─────────────────────────────────────────────
+        if self._remove_directories and not self._cancel_flag.is_set():
+            r = await self._step_remove_directories(images_api, ends.get("remove_dirs", 100.0))
+            summary.update(r)
+
+        # ── 3. Prune ──────────────────────────────────────────────────────────
         if self._remove_deleted and not self._cancel_flag.is_set():
             # If reconcile ran, known_disk_uuids carries sidecar UUIDs so moved
             # files are protected.  If reconcile was skipped, pass [] — the backend
@@ -114,11 +126,11 @@ class DatabaseMaintenanceTask(Task):
                 images_api, known_disk_uuids, ends.get("prune", 100.0)
             )
 
-        # ── 3. Clear orphan tags ──────────────────────────────────────────────
+        # ── 4. Clear orphan tags ──────────────────────────────────────────────
         if self._clear_orphan_tags and not self._cancel_flag.is_set():
             summary["tags_cleared"] = await self._step_clear_tags(tags_api, ends.get("tags", 100.0))
 
-        # ── 4. Hash work ──────────────────────────────────────────────────────
+        # ── 5. Hash work ──────────────────────────────────────────────────────
         if _has_hash_work and not self._cancel_flag.is_set():
             settings_api = SettingsApi(db_api_client)
             h = await self._step_hash(
@@ -132,12 +144,14 @@ class DatabaseMaintenanceTask(Task):
         self._status_msg = "Done"
 
         log_parts: list[str] = []
-        if "files_found" in summary:   log_parts.append(f"{summary['files_found']} files on disk")
-        if "reconciled" in summary:    log_parts.append(f"{summary['reconciled']} synced")
-        if "moved" in summary:         log_parts.append(f"{summary['moved']} moves detected")
-        if "errors" in summary:        log_parts.append(f"{summary['errors']} errors")
-        if "pruned" in summary:        log_parts.append(f"{summary['pruned']} pruned")
-        if "tags_cleared" in summary:  log_parts.append(f"{summary['tags_cleared']} orphan tags cleared")
+        if "files_found" in summary:      log_parts.append(f"{summary['files_found']} files on disk")
+        if "reconciled" in summary:       log_parts.append(f"{summary['reconciled']} synced")
+        if "moved" in summary:            log_parts.append(f"{summary['moved']} moves detected")
+        if "errors" in summary:           log_parts.append(f"{summary['errors']} errors")
+        if "dirs_removed" in summary:     log_parts.append(f"{summary['dirs_removed']} dir records removed")
+        if "sidecars_deleted" in summary: log_parts.append(f"{summary['sidecars_deleted']} sidecars deleted")
+        if "pruned" in summary:           log_parts.append(f"{summary['pruned']} pruned")
+        if "tags_cleared" in summary:     log_parts.append(f"{summary['tags_cleared']} orphan tags cleared")
         if "phash_processed" in summary:
             verb = "recomputed" if self._recompute_phashes else "filled"
             log_parts.append(f"{summary['phash_processed']} hashes {verb}")
@@ -222,6 +236,56 @@ class DatabaseMaintenanceTask(Task):
             logger.exception("prune_missing_images failed")
         self._update_progress(end_pct)
         return pruned
+
+    async def _step_remove_directories(self, images_api, end_pct: float) -> dict:
+        """Delete all DB records for images under the requested directories.
+
+        Optionally also removes the JSON sidecar files from disk.
+        """
+        dirs = self._remove_directories
+        self._status_msg = f"Removing {len(dirs)} director{'y' if len(dirs) == 1 else 'ies'} from DB…"
+        self.log(f"Removing DB records for images under: {dirs}")
+        await self.heartbeat(force=True)
+
+        dirs_removed = 0
+        sidecars_deleted = 0
+        try:
+            del_resp = await asyncio.to_thread(
+                images_api.delete_images_by_directory,
+                DeleteImagesByDirectoryPayload(directories=dirs),
+            )
+            dirs_removed = getattr(del_resp, "deleted_count", 0) or 0
+            self.log(f"Removed {dirs_removed} image records from DB")
+        except Exception:
+            logger.exception("delete_images_by_directory failed")
+        else:
+            if self._remove_directories_delete_sidecars and not self._cancel_flag.is_set():
+                self._status_msg = "Deleting sidecar files…"
+                files_root = Path(os.environ.get("FILES_ROOT", "/app/image_datasets")).resolve()
+                for rel_dir in dirs:
+                    if self._cancel_flag.is_set():
+                        break
+                    # Guard against path traversal: resolve and verify the result stays under files_root.
+                    abs_dir = (files_root / rel_dir.lstrip("/")).resolve()
+                    try:
+                        abs_dir.relative_to(files_root)
+                    except ValueError:
+                        logger.warning("Skipping directory outside files root: %s", rel_dir)
+                        continue
+                    if not abs_dir.is_dir():
+                        continue
+                    for sidecar in abs_dir.rglob("*.json"):
+                        if self._cancel_flag.is_set():
+                            break
+                        try:
+                            sidecar.unlink()
+                            sidecars_deleted += 1
+                        except Exception:
+                            logger.exception("Failed to delete sidecar %s", sidecar)
+                self.log(f"Deleted {sidecars_deleted} sidecar files")
+
+        self._update_progress(end_pct)
+        return {"dirs_removed": dirs_removed, "sidecars_deleted": sidecars_deleted}
 
     async def _step_clear_tags(self, tags_api, end_pct: float) -> int:
         """Remove TASK_GENERATED tags no longer attached to any bounding box."""
@@ -363,79 +427,125 @@ class DatabaseMaintenanceTask(Task):
     def params_schema(cls) -> dict[str, dict[str, Any]]:
         return {
             "meta": {
-                "order": [
-                    "sync_jsons",
-                    "sync_mode",
-                    "remove_deleted",
-                    "clear_orphan_tags",
-                    "fill_missing_phashes",
-                    "recompute_phashes",
-                    "phash_concurrency",
-                ]
+                "order": ["sidecar_sync", "remove_records", "tag_cleanup", "perceptual_hashes"]
             },
-            "sync_jsons": {
-                "type": "boolean",
-                "label": "Sync image JSON sidecars",
-                "description": "Reconcile each image file against its JSON sidecar. Detects moved files.",
-                "default": True,
+            "sidecar_sync": {
+                "type": "group",
+                "label": "Maintenance",
+                "collapsed": False,
+                "fields": {
+                    "sync_jsons": {
+                        "type": "boolean",
+                        "label": "Sync image JSON sidecars",
+                        "description": "Reconcile each image file against its JSON sidecar. Detects moved files.",
+                        "default": True,
+                    },
+                    "sync_mode": {
+                        "type": "select",
+                        "label": "Sync mode",
+                        "description": "Direction of data flow when reconciling image sidecars with the DB.",
+                        "options": [
+                            {"value": "merge", "label": "Merge (add JSON-only bboxes to DB, keep existing)"},
+                            {"value": "replace_db_with_json", "label": "Replace DB with JSON (JSON wins)"},
+                            {"value": "replace_json_with_db", "label": "Replace JSON with DB (DB wins)"},
+                            {"value": "keep_newer", "label": "Keep newer (compare timestamps)"},
+                        ],
+                        "default": "merge",
+                    },
+                    "remove_deleted": {
+                        "type": "boolean",
+                        "label": "Remove missing images (DB only — does NOT delete files)",
+                        "description": (
+                            "Remove DB records for images whose file no longer exists on disk. "
+                            "Does NOT delete any image files from the filesystem. "
+                            "If 'Sync sidecars' is also on, moved files are protected via sidecar UUIDs. "
+                            "If 'Sync sidecars' is off, file existence is checked directly — no extra disk scan."
+                        ),
+                        "default": True,
+                    },
+                },
             },
-            "sync_mode": {
-                "type": "select",
-                "label": "Sync mode",
-                "description": "Direction of data flow when reconciling image sidecars with the DB.",
-                "options": [
-                    {"value": "merge", "label": "Merge (add JSON-only bboxes to DB, keep existing)"},
-                    {"value": "replace_db_with_json", "label": "Replace DB with JSON (JSON wins)"},
-                    {"value": "replace_json_with_db", "label": "Replace JSON with DB (DB wins)"},
-                    {"value": "keep_newer", "label": "Keep newer (compare timestamps)"},
-                ],
-                "default": "merge",
+            "remove_records": {
+                "type": "group",
+                "label": "Remove Records",
+                "collapsed": False,
+                "fields": {
+                    "remove_directories": {
+                        "type": "array",
+                        "label": "Remove directories from DB",
+                        "description": (
+                            "Remove all DB records (images and their bounding boxes) for images under these "
+                            "directories. Does not delete image files from disk."
+                        ),
+                        "default": [],
+                        "items": {
+                            "type": "directory",
+                            "label": "Directory",
+                            "description": "Directory path relative to the image dataset root",
+                            "required": True,
+                        },
+                    },
+                    "remove_directories_delete_sidecars": {
+                        "type": "boolean",
+                        "label": "Also delete sidecar files from the directories",
+                        "description": (
+                            "Also delete the JSON sidecar (.json) files from disk for each directory listed "
+                            "in 'Remove directories from DB'. Only applies when that list is non-empty — "
+                            "has no effect otherwise."
+                        ),
+                        "default": True,
+                    },
+                },
             },
-            "remove_deleted": {
-                "type": "boolean",
-                "label": "Remove deleted images",
-                "description": (
-                    "Delete DB records for images no longer on disk. "
-                    "If 'Sync sidecars' is also on, moved files are protected via sidecar UUIDs. "
-                    "If 'Sync sidecars' is off, file existence is checked directly — no extra disk scan."
-                ),
-                "default": True,
+            "tag_cleanup": {
+                "type": "group",
+                "label": "Tag Cleanup",
+                "collapsed": False,
+                "fields": {
+                    "clear_orphan_tags": {
+                        "type": "boolean",
+                        "label": "Clear orphan generated tags",
+                        "description": "Remove task-generated tags that are no longer attached to any bounding box.",
+                        "default": True,
+                    },
+                },
             },
-            "clear_orphan_tags": {
-                "type": "boolean",
-                "label": "Clear orphan generated tags",
-                "description": "Remove task-generated tags that are no longer attached to any bounding box.",
-                "default": True,
-            },
-            "fill_missing_phashes": {
-                "type": "boolean",
-                "label": "Fill missing perceptual hashes",
-                "description": (
-                    "Compute phashes only for images/bboxes that have no hash or were hashed at a different size "
-                    "than the current Settings. Much faster than a full recompute when most data is already hashed. "
-                    "Rebuilds the BK-tree index when done."
-                ),
-                "default": False,
-            },
-            "recompute_phashes": {
-                "type": "boolean",
-                "label": "Recompute ALL perceptual hashes",
-                "description": (
-                    "Recompute phashes for every image using the hash sizes configured in Settings, "
-                    "then rebuild the BK-tree deduplication index. Required after changing hash sizes. "
-                    "Use 'Fill missing' instead if you only want to backfill new images."
-                ),
-                "default": False,
-            },
-            "phash_concurrency": {
-                "type": "number",
-                "label": "Hash concurrency",
-                "description": (
-                    "Number of images to hash in parallel. Higher values saturate disk and CPU faster "
-                    "but use more memory. 4 is a safe default; raise to 8–16 on fast SSDs."
-                ),
-                "default": 4,
-                "min": 1,
-                "max": 32,
+            "perceptual_hashes": {
+                "type": "group",
+                "label": "Perceptual Hashes",
+                "collapsed": False,
+                "fields": {
+                    "fill_missing_phashes": {
+                        "type": "boolean",
+                        "label": "Fill missing perceptual hashes",
+                        "description": (
+                            "Compute phashes only for images/bboxes that have no hash or were hashed at a "
+                            "different size than the current Settings. Much faster than a full recompute when "
+                            "most data is already hashed. Rebuilds the BK-tree index when done."
+                        ),
+                        "default": False,
+                    },
+                    "recompute_phashes": {
+                        "type": "boolean",
+                        "label": "Recompute ALL perceptual hashes",
+                        "description": (
+                            "Recompute phashes for every image using the hash sizes configured in Settings, "
+                            "then rebuild the BK-tree deduplication index. Required after changing hash sizes. "
+                            "Use 'Fill missing' instead if you only want to backfill new images."
+                        ),
+                        "default": False,
+                    },
+                    "phash_concurrency": {
+                        "type": "number",
+                        "label": "Hash concurrency",
+                        "description": (
+                            "Number of images to hash in parallel. Higher values saturate disk and CPU faster "
+                            "but use more memory. 4 is a safe default; raise to 8–16 on fast SSDs."
+                        ),
+                        "default": 4,
+                        "min": 1,
+                        "max": 32,
+                    },
+                },
             },
         }

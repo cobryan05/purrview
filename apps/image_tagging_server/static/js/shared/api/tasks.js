@@ -273,20 +273,3 @@ export const resumeTasks        = ({ taskUuids }) => _taskOp('/api/tasks/instanc
 export const pauseTasksInPlace  = ({ taskUuids }) => _taskOp('/api/tasks/instances/pause-in-place',  taskUuids);
 export const resumeTasksInPlace = ({ taskUuids }) => _taskOp('/api/tasks/instances/resume-in-place', taskUuids);
 
-/**
- * Wait for a task to complete and return its result
- */
-export async function waitForTaskResult(taskUuid, { intervalMs = 1000, timeoutMs = 60000 } = {}) {
-  const startTime = Date.now();
-
-  while (true) {
-    const status = await fetchTasksStatus({ taskUuids: [taskUuid] });
-
-    if (status === TaskStatus.COMPLETED) return await fetchTasksResult({ taskUuids: [taskUuid] });
-    if (status === TaskStatus.ERROR) throw new Error(`Task ${taskUuid} failed`);
-
-    if (Date.now() - startTime > timeoutMs) throw new Error(`Timeout waiting for task ${taskUuid}`);
-
-    await new Promise(r => setTimeout(r, intervalMs));
-  }
-}

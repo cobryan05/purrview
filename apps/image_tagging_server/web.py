@@ -141,6 +141,8 @@ class WebApp:
         async def proxy_tags(request: Request, path: str):
             return await TAG_PROXY.handle_request(path, request)
 
+        _SSE_HEADERS = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
+
         @self._app.get("/api/tasks/stream")
         async def tasks_stream(request: Request) -> StreamingResponse:
             """SSE stream — pushes a data frame whenever task state changes."""
@@ -206,8 +208,6 @@ class WebApp:
             except Exception as e:
                 logger.error(e, exc_info=True)
                 return JSONResponse(content={"notices": []})
-
-        _SSE_HEADERS = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
 
         @self._app.get("/api/notices/stream")
         async def notices_stream(request: Request) -> StreamingResponse:

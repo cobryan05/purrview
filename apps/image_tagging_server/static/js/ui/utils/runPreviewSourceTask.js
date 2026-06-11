@@ -120,25 +120,29 @@ export async function runPreviewSourceTest({ provider, providerParams, target = 
 
       const evtSource = new EventSource('/api/tasks/stream');
       let timeoutId;
-      _abortSSE = () => { clearTimeout(timeoutId); evtSource.close(); resolve(); };
+      let settled = false;
+
+      const _settle = (fn, ...args) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timeoutId);
+        evtSource.close();
+        fn(...args);
+      };
+
+      _abortSSE = () => _settle(resolve);
 
       timeoutId = setTimeout(async () => {
-        evtSource.close();
         if (lastTaskInfo) {
           const timedOut = { ...lastTaskInfo, instance: { ...lastTaskInfo.instance, status: TaskStatus.ERROR, errorMessage: 'Timed out after 30s' } };
           lastFingerprint = null;
           await renderTaskStatus(timedOut);
         }
-        resolve();
+        _settle(resolve);
       }, 30_000);
 
       evtSource.onmessage = async (e) => {
-        if (cancelled) {
-          clearTimeout(timeoutId);
-          evtSource.close();
-          resolve();
-          return;
-        }
+        if (cancelled) { _settle(resolve); return; }
         let data;
         try { data = JSON.parse(e.data); } catch { return; }
 
@@ -149,9 +153,7 @@ export async function runPreviewSourceTest({ provider, providerParams, target = 
 
         const status = taskInfo.instance?.status;
         if (status === TaskStatus.COMPLETED || status === TaskStatus.ERROR) {
-          clearTimeout(timeoutId);
-          evtSource.close();
-          resolve();
+          _settle(resolve);
         }
       };
 
@@ -159,8 +161,7 @@ export async function runPreviewSourceTest({ provider, providerParams, target = 
         // EventSource auto-reconnects on transient errors (readyState CONNECTING).
         // Only treat it as fatal if the connection is fully closed.
         if (evtSource.readyState === EventSource.CLOSED) {
-          clearTimeout(timeoutId);
-          reject(new Error('SSE connection closed unexpectedly'));
+          _settle(reject, new Error('SSE connection closed unexpectedly'));
         }
       };
     });
