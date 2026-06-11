@@ -8,13 +8,13 @@ import { renderActiveTasks, renderTaskConfigs } from '/app-static/js/ui/tasks.js
 import { renderDatasetManager } from '/app-static/js/ui/datasets.js';
 
 export async function init() {
-  let taskPollInterval = null;
+  let taskEventSource = null;
 
   const { container, activateTab } = setupWorkspaceTabs("#tab-configuration", async (tabName, button, pane) => {
-    // Stop any existing task polling when switching tabs
-    if (taskPollInterval !== null) {
-      clearInterval(taskPollInterval);
-      taskPollInterval = null;
+    // Close task SSE stream when leaving the task management tab.
+    if (taskEventSource !== null) {
+      taskEventSource.close();
+      taskEventSource = null;
     }
 
     if (tabName === 'tab-tag-management') {
@@ -24,17 +24,25 @@ export async function init() {
     } else if (tabName === 'tab-source-management') {
       renderSourceManager({ target: "source-management-box" });
     } else if (tabName === 'tab-task-management') {
-      const refreshActiveTasks = () => {
-        renderActiveTasks({ target: 'active-tasks-list', refresh: refreshTaskTab });
-      };
       const refreshTaskTab = () => {
         renderActiveTasks({ target: 'active-tasks-list', refresh: refreshTaskTab });
         renderTaskConfigs({ target: 'task-config-list', refresh: refreshTaskTab });
       };
+
+      // Initial render via fetch so the tab feels instant on first open.
       refreshTaskTab();
 
-      // Poll active tasks every 2.5s to show live progress and logs
-      taskPollInterval = setInterval(refreshActiveTasks, 2500);
+      // SSE stream for live task updates — no polling, server pushes on change.
+      taskEventSource = new EventSource('/api/tasks/stream');
+      taskEventSource.onmessage = (e) => {
+        try {
+          const data = JSON.parse(e.data);
+          if (data?.tasks) {
+            renderActiveTasks({ target: 'active-tasks-list', tasks: data.tasks, refresh: refreshTaskTab });
+          }
+        } catch {}
+      };
+      // EventSource reconnects automatically on error; no extra handling needed.
     } else if (tabName === 'tab-dataset-management') {
       await renderDatasetManager({ target: 'dataset-management-box' });
     } else if (tabName === 'tab-model-management') {

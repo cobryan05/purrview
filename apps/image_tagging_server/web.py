@@ -4,7 +4,10 @@ import sys
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse, JSONResponse
+import asyncio
+import json
+
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
@@ -177,6 +180,60 @@ class WebApp:
             except Exception as e:
                 logger.error(e, exc_info=True)
                 return JSONResponse(content={"notices": []})
+
+        _SSE_HEADERS = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
+
+        @self._app.get("/api/notices/stream")
+        async def notices_stream(request: Request) -> StreamingResponse:
+            """SSE stream — pushes a data frame whenever the aggregated notice list changes."""
+            async def _gen():
+                last_json: str | None = None
+                last_hb = asyncio.get_running_loop().time()
+                try:
+                    while True:
+                        try:
+                            notices = await self._manager.get_raw_notices()
+                            j = json.dumps(notices)
+                        except Exception:
+                            j = "[]"
+                        now = asyncio.get_running_loop().time()
+                        if j != last_json:
+                            last_json = j
+                            last_hb = now
+                            yield f"data: {j}\n\n"
+                        elif now - last_hb > 15:
+                            last_hb = now
+                            yield ":\n\n"  # keep-alive comment
+                        await asyncio.sleep(2)
+                except asyncio.CancelledError:
+                    pass
+            return StreamingResponse(_gen(), media_type="text/event-stream", headers=_SSE_HEADERS)
+
+        @self._app.get("/api/tasks/stream")
+        async def tasks_stream(request: Request) -> StreamingResponse:
+            """SSE stream — pushes a data frame whenever task state changes."""
+            async def _gen():
+                last_json: str | None = None
+                last_hb = asyncio.get_running_loop().time()
+                try:
+                    while True:
+                        try:
+                            data = await self._manager.get_tasks_for_stream()
+                            j = json.dumps(data)
+                        except Exception:
+                            j = "{}"
+                        now = asyncio.get_running_loop().time()
+                        if j != last_json:
+                            last_json = j
+                            last_hb = now
+                            yield f"data: {j}\n\n"
+                        elif now - last_hb > 15:
+                            last_hb = now
+                            yield ":\n\n"  # keep-alive comment
+                        await asyncio.sleep(0.5)
+                except asyncio.CancelledError:
+                    pass
+            return StreamingResponse(_gen(), media_type="text/event-stream", headers=_SSE_HEADERS)
 
         @self._app.post("/api/test-server", response_class=JSONResponse)
         async def test_server(payload: TestServerPayload) -> JSONResponse:

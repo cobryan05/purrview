@@ -129,11 +129,11 @@ function _taskFingerprint(tasks) {
  * This means the pane never goes blank — the old content is replaced only when
  * the new content is fully ready.
  */
-export function renderActiveTasks({ target = 'active-tasks-list', refresh = null }) {
+export function renderActiveTasks({ target = 'active-tasks-list', refresh = null, tasks: preloadedTasks = null }) {
   const container = document.getElementById(target);
   if (!container) return;
 
-  // Skip polling when the Configuration main tab or Task Management sub-tab is not visible.
+  // Skip when the Configuration main tab or Task Management sub-tab is not visible.
   if (!document.getElementById('tab-configuration')?.classList.contains('active') ||
       !document.getElementById('tab-task-management')?.classList.contains('active')) {
     return;
@@ -143,7 +143,12 @@ export function renderActiveTasks({ target = 'active-tasks-list', refresh = null
   if (container._rendering) return;
   container._rendering = true;
 
-  fetchTasksStatus().then(async response => {
+  // Use pre-loaded data from SSE if provided, otherwise fetch from the API.
+  const dataPromise = preloadedTasks != null
+    ? Promise.resolve({ tasks: preloadedTasks })
+    : fetchTasksStatus();
+
+  dataPromise.then(async response => {
     try {
       const { tasks } = response;
 

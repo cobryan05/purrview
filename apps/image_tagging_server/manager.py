@@ -190,3 +190,18 @@ class Manager:
         self._notices_cache = notices
         self._notices_cache_ts = now
         return notices
+
+    async def get_raw_notices(self) -> list[dict]:
+        """Fetch notices from all backends without caching (used by SSE stream)."""
+        statuses = await self.get_all_service_status()
+        return [n for svc in statuses for n in svc.get("notices", [])]
+
+    async def get_tasks_for_stream(self) -> dict:
+        """Fetch current task status from tasks_server for SSE streaming."""
+        url = f"{self._tasks_api_client.configuration.host}/api/tasks/instances/get"
+        try:
+            r = await self._test_client.post(url, json={}, timeout=5.0)
+            r.raise_for_status()
+            return r.json()
+        except Exception:
+            return {}

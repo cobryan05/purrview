@@ -6,15 +6,11 @@
  *   import { mountNoticesBar } from '/app-static/js/ui/noticesBar.js';
  *   mountNoticesBar('notices-bar');
  *
- * Polls /api/notices every 5 seconds.  The bar is hidden when there are no
- * active notices and shown automatically when any arrive.
+ * Subscribes to /api/notices/stream (SSE) for push updates. The bar is
+ * hidden when there are no active notices and shown automatically when any arrive.
  *
  * Notice shape: { key: string, level: "info"|"warning"|"error", message: string }
  */
-
-import { fetchNotices } from '/app-static/js/shared/api/notices.js';
-
-const POLL_INTERVAL_MS = 5000;
 
 const LEVEL_ICONS = {
   info: 'ℹ',
@@ -58,22 +54,23 @@ export function mountNoticesBar(containerId = 'notices-bar') {
     }
   }
 
-  async function poll() {
-    try {
-      const { notices } = await fetchNotices();
-      render(notices);
-    } catch {
-      // Silently ignore — notices are advisory only
-    }
+  let _source = null;
+
+  function _connect() {
+    _source?.close();
+    _source = new EventSource('/api/notices/stream');
+    _source.onmessage = (e) => {
+      try { render(JSON.parse(e.data)); } catch {}
+    };
+    // EventSource reconnects automatically on error — no explicit handler needed.
   }
 
-  // Initial fetch, then poll on interval
-  poll();
-  const intervalId = setInterval(poll, POLL_INTERVAL_MS);
+  _connect();
 
   return {
     destroy() {
-      clearInterval(intervalId);
+      _source?.close();
+      _source = null;
     },
   };
 }
