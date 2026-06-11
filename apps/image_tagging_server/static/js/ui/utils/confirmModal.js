@@ -100,6 +100,27 @@ export function showUnsavedChangesModal({
 }
 
 /**
+ * Show a conflict dialog when external bbox changes overlap with unsaved canvas edits.
+ * Returns 'reload' (discard canvas changes, fetch fresh) or 'keep' (ignore external changes).
+ * @param {{ conflictCount?: number }} [opts]
+ * @returns {Promise<'reload'|'keep'>}
+ */
+export function showExternalChangesModal({ conflictCount = 0 } = {}) {
+  const noun = conflictCount === 1 ? 'bbox' : 'bboxes';
+  const verb = conflictCount === 1 ? 'was' : 'were';
+  return _buildModal({
+    title: 'External changes detected',
+    message: `${conflictCount} ${noun} you are editing ${verb} modified by another panel. What would you like to do?`,
+    buttons: [
+      { text: 'Keep my changes', value: 'keep', className: 'secondary' },
+      { text: 'Reload image', value: 'reload', className: 'contrast' },
+    ],
+    defaultFocusIndex: 0,
+    defaultCloseValue: 'keep',
+  });
+}
+
+/**
  * Variant of showUnsavedChangesModal for config panels (datasets, model configs, etc.).
  * @returns {Promise<'save'|'discard'|'cancel'>}
  */

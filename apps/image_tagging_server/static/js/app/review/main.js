@@ -21,7 +21,8 @@ import { setImageLabel } from '/app-static/js/shared/api/imageLabels.js';
 import { attachContext } from '/app-static/js/ui/contextMenu/index.js';
 import { getPrimaryRuntimeId } from '/app-static/js/app/image-tagging/runtime.js';
 import { Logger, toast } from '/app-static/js/ui/utils/logging.js';
-import { showUnsavedChangesModal } from '/app-static/js/ui/utils/confirmModal.js';
+import { showUnsavedChangesModal, showExternalChangesModal } from '/app-static/js/ui/utils/confirmModal.js';
+import { rerenderBboxViews } from '/app-static/js/app/image-tagging/canvas/manager.js';
 import { nextModalZIndex, registerEscHandler, unregisterEscHandler } from '/app-static/js/ui/utils/modalZIndex.js';
 import { CheckboxField } from '/app-static/js/ui/utils/fields/CheckboxField.js';
 import { createCanvasInstance } from '/app-static/js/app/image-tagging/canvas/instance.js';
@@ -487,6 +488,12 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
           markCardStale(card, 'relabeled');
         }
         _imageCardRefreshers.get(img.uuid)?.();
+        events.publish(EventTypes.IMAGE_BBOXES_CHANGED, {
+          imageUuid: img.uuid,
+          imageFilename: img.filename,
+          updatedBboxes: new Map([[bbox.uuid, bbox]]),
+          deletedBboxUuids: [],
+        });
       },
 
       async toggleTag(uuid) {
@@ -505,6 +512,12 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
         await _applyUpdate(labelUuid, newTagUuids);
         markCardStale(card, 'tagged');
         _imageCardRefreshers.get(img.uuid)?.();
+        events.publish(EventTypes.IMAGE_BBOXES_CHANGED, {
+          imageUuid: img.uuid,
+          imageFilename: img.filename,
+          updatedBboxes: new Map([[bbox.uuid, bbox]]),
+          deletedBboxUuids: [],
+        });
       },
 
       async setVerification(uuid) {
@@ -527,6 +540,12 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
         if (thumb) thumb.src = getBboxThumbnailUrl(img.filename, bbox.uuid, 300) + `&t=${Date.now()}`;
         markCardStale(card, 'verified');
         _imageCardRefreshers.get(img.uuid)?.();
+        events.publish(EventTypes.IMAGE_BBOXES_CHANGED, {
+          imageUuid: img.uuid,
+          imageFilename: img.filename,
+          updatedBboxes: new Map([[bbox.uuid, bbox]]),
+          deletedBboxUuids: [],
+        });
       },
 
       async remove() {
@@ -536,6 +555,12 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
         const idx = img.bboxes?.findIndex(b => b.uuid === bbox.uuid) ?? -1;
         if (idx !== -1) img.bboxes.splice(idx, 1);
         _imageCardRefreshers.get(img.uuid)?.();
+        events.publish(EventTypes.IMAGE_BBOXES_CHANGED, {
+          imageUuid: img.uuid,
+          imageFilename: img.filename,
+          updatedBboxes: new Map(),
+          deletedBboxUuids: [bbox.uuid],
+        });
       },
     };
   }
@@ -1590,11 +1615,64 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
     _imageCardRefreshers.get(imageUuid)?.();
   });
 
+  // Subscribe to IMAGE_BBOXES_CHANGED so incremental bbox edits (context-menu
+  // label/tag actions, bulk ops) done in sub-modals or sibling panels are
+  // reflected in this panel's cards without a full page reload.
+  const _unsubBboxChanged = events.subscribe(EventTypes.IMAGE_BBOXES_CHANGED, ({ imageUuid, imageFilename, updatedBboxes, deletedBboxUuids } = {}) => {
+    if (!imageUuid) return;
+    // Update cards for modified bboxes
+    for (const [bboxUuid, uiBbox] of (updatedBboxes ?? [])) {
+      // Keep the in-memory entry in sync so image-card overlays and hover
+      // previews reflect the new label/tag state without a re-fetch.
+      for (const entry of _allEntries) {
+        if (entry.kind === 'bbox' && entry.bbox.uuid === bboxUuid) {
+          if (uiBbox.label !== undefined) {
+            entry.bbox.label = uiBbox.label;
+            entry.bbox.labelUuid = uiBbox.labelUuid ?? uiBbox.label?.uuid ?? entry.bbox.labelUuid;
+          }
+          if (uiBbox.tags !== undefined) entry.bbox.tags = uiBbox.tags;
+          break;
+        }
+      }
+      const card = grid.querySelector(`[data-bbox-uuid="${bboxUuid}"]`);
+      if (!card) continue;
+      // Refresh thumbnail with cache-buster
+      const thumb = card.querySelector('.thumb');
+      if (thumb) thumb.src = getBboxThumbnailUrl(imageFilename, bboxUuid, 300) + `&t=${Date.now()}`;
+      // Refresh label chip — handle both UIBbox (.text) and API bbox (.name) label shapes
+      const labelChip = card.querySelector('.label-chip');
+      if (labelChip && uiBbox.label) {
+        labelChip.textContent = uiBbox.label.text ?? uiBbox.label.name;
+        labelChip.style.cssText = `background:${uiBbox.label.color}33;border:1px solid ${uiBbox.label.color};`;
+      }
+      // Refresh verify chip
+      const verifyChipEl = card.querySelector('.verify-chip');
+      if (verifyChipEl && uiBbox.tags !== undefined) {
+        verifyChipEl.replaceWith(buildVerifyChip((uiBbox.tags ?? []).map(t => t.uuid)));
+      }
+    }
+    // Handle deleted bboxes
+    for (const bboxUuid of (deletedBboxUuids ?? [])) {
+      const card = grid.querySelector(`[data-bbox-uuid="${bboxUuid}"]`);
+      if (card) markCardStale(card, 'deleted');
+      // Remove from in-memory image bboxes so overlay redraws correctly
+      for (const entry of _allEntries) {
+        if (entry.img?.uuid === imageUuid && Array.isArray(entry.img.bboxes)) {
+          const idx = entry.img.bboxes.findIndex(b => b.uuid === bboxUuid);
+          if (idx !== -1) { entry.img.bboxes.splice(idx, 1); break; }
+        }
+      }
+    }
+    // Redraw the image-card bbox overlay for affected images
+    _imageCardRefreshers.get(imageUuid)?.();
+  });
+
   render();
 
   return {
     destroy() {
       _unsubImageSaved();
+      _unsubBboxChanged();
       _thumbLoader.reset();
       hoverPreview.destroy();
       entryView.destroy();
@@ -1798,6 +1876,61 @@ async function executeBulkAction(action, entries, newLabelUuid, selectedTagUuids
 let _modalOpen = false;
 
 /**
+ * Compute which bbox UUIDs differ between the undo-baseline snapshot (taken at
+ * image load) and the current canvas state.  Used for conflict detection when
+ * an external IMAGE_BBOXES_CHANGED event arrives while the canvas is dirty.
+ * @param {Map<string,object>|null} baseline  _undoStack[0] from the runtime
+ * @param {Map<string,object>} current        runtime.state.image.bboxes
+ * @returns {Set<string>}
+ */
+function _computeUserChangedBboxUuids(baseline, current) {
+  const changed = new Set();
+  if (!baseline) return changed;
+  for (const [uuid] of current) {
+    if (!baseline.has(uuid)) { changed.add(uuid); continue; }
+    const b = baseline.get(uuid);
+    const c = current.get(uuid);
+    const bTags = (b.tags ?? []).map(t => t.uuid).sort().join(',');
+    const cTags = (c.tags ?? []).map(t => t.uuid).sort().join(',');
+    if (b.labelUuid !== c.labelUuid || bTags !== cTags ||
+        b.x !== c.x || b.y !== c.y || b.width !== c.width || b.height !== c.height) {
+      changed.add(uuid);
+    }
+  }
+  for (const [uuid] of baseline) {
+    if (!current.has(uuid)) changed.add(uuid); // deleted by user
+  }
+  return changed;
+}
+
+/**
+ * Apply external bbox changes to the canvas runtime, skipping any bboxes the
+ * user has already modified.  Re-renders the canvas layer afterwards.
+ * @param {import('@image_tagging_types').ImageTaggingRuntime} runtime
+ * @param {Map<string,object>|null} updatedBboxes
+ * @param {string[]} deletedBboxUuids
+ * @param {Set<string>} userChangedUuids
+ */
+function _mergeExternalBboxChanges(runtime, updatedBboxes, deletedBboxUuids, userChangedUuids) {
+  const bboxes = runtime.state.image.bboxes;
+  let anyChange = false;
+  for (const [uuid, uiBbox] of (updatedBboxes ?? [])) {
+    if (userChangedUuids.has(uuid)) continue;
+    const existing = bboxes.get(uuid);
+    if (!existing) continue; // bbox not present on this canvas — skip
+    if (uiBbox.label !== undefined) existing.label = uiBbox.label;
+    if (uiBbox.labelUuid !== undefined) existing.labelUuid = uiBbox.labelUuid;
+    if (uiBbox.tags !== undefined) existing.tags = uiBbox.tags;
+    anyChange = true;
+  }
+  for (const uuid of (deletedBboxUuids ?? [])) {
+    if (userChangedUuids.has(uuid)) continue;
+    if (bboxes.delete(uuid)) anyChange = true;
+  }
+  if (anyChange) rerenderBboxViews(runtime.canvas, bboxes);
+}
+
+/**
  * Open a full canvas editor modal for a single bbox.
  *
  * @param {object} bbox    The bbox to open (highlighted in the canvas)
@@ -1882,9 +2015,10 @@ async function showCanvasModal(bbox, img, labels, onSaved, navContext = null) {
 
   // ── Create canvas instance ─────────────────────────────────────────
   let instance;
-  let toolbarHandle  = { destroy: () => {} };
-  let labelHandle    = { destroy: () => {} };
-  let unsubInspector = () => {};
+  let toolbarHandle    = { destroy: () => {} };
+  let labelHandle      = { destroy: () => {} };
+  let unsubInspector   = () => {};
+  let unsubBboxChanged = () => {};
 
   try {
     instance = await createCanvasInstance(canvasWrap, { tool: 'select' });
@@ -1993,10 +2127,67 @@ async function showCanvasModal(bbox, img, labels, onSaved, navContext = null) {
     );
   }
 
+  // ── External-change handler ────────────────────────────────────────
+  // Listens for bbox modifications made in sub-modals (e.g. similar-search
+  // panels) while this canvas is open.
+  //   • Clean canvas  → auto-reload the image so the user sees the latest state.
+  //   • Dirty, no overlap → merge the external changes for non-user-touched bboxes.
+  //   • Dirty, overlap    → prompt: reload (losing edits) or keep canvas changes.
+  let _handlingExternalChange = false;
+  unsubBboxChanged = events.subscribe(EventTypes.IMAGE_BBOXES_CHANGED, async ({ imageUuid, imageFilename, updatedBboxes, deletedBboxUuids } = {}) => {
+    if (!imageUuid || imageUuid !== _currentImg?.uuid) return;
+    if (_handlingExternalChange) return;
+    _handlingExternalChange = true;
+    try {
+      if (!instance.runtime.isDirty) {
+        // Canvas has no unsaved edits — reload transparently.
+        try {
+          await instance.loadImage(_currentImg.filename);
+          toast('Canvas refreshed with external changes', 2000);
+        } catch (err) {
+          Logger.error('Canvas modal: auto-reload after external change failed', err);
+        }
+        return;
+      }
+
+      const baseline = instance.runtime.undoBaseline;
+      const current  = instance.runtime.state.image.bboxes;
+      const userChangedUuids = _computeUserChangedBboxUuids(baseline, current);
+
+      const externalUuids = new Set([
+        ...(updatedBboxes?.keys() ?? []),
+        ...(deletedBboxUuids ?? []),
+      ]);
+      const hasOverlap = [...externalUuids].some(u => userChangedUuids.has(u));
+
+      if (!hasOverlap) {
+        // No conflict — merge external changes into non-user-touched bboxes.
+        _mergeExternalBboxChanges(instance.runtime, updatedBboxes, deletedBboxUuids, userChangedUuids);
+        toast('External changes merged into canvas', 2000);
+        return;
+      }
+
+      // Overlap — ask the user what to do.
+      const choice = await showExternalChangesModal({ conflictCount: [...externalUuids].filter(u => userChangedUuids.has(u)).length });
+      if (choice === 'reload') {
+        try {
+          await instance.loadImage(_currentImg.filename);
+        } catch (err) {
+          Logger.error('Canvas modal: conflict reload failed', err);
+          toast('Reload failed', 3000, 'error');
+        }
+      }
+      // 'keep': leave the canvas as-is
+    } finally {
+      _handlingExternalChange = false;
+    }
+  });
+
   // ── Teardown ───────────────────────────────────────────────────────
   let _canvasEscClose = null;
   function closeModal() {
     if (_canvasEscClose) unregisterEscHandler(_canvasEscClose);
+    unsubBboxChanged();
     unsubDirty();
     if (unsubNavLoad) unsubNavLoad();
     unsubInspector();

@@ -188,6 +188,8 @@ export function createImageTaggingRuntime() {
     get canUndo() { return _undoStack.length > 1; },
     get canRedo() { return _redoStack.length > 0; },
     get isDirty() { return _dirty; },
+    /** The baseline bbox snapshot taken at image load — used for conflict detection. */
+    get undoBaseline() { return _undoStack.length > 0 ? _undoStack[0] : null; },
 
     setImageTaggingPane,
     setPaneRef,

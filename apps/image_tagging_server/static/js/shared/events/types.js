@@ -95,4 +95,24 @@ export const EventTypes = Object.freeze({
    * Payload: { imageUuid: string, imageFilename: string, bboxes: Map<string, UIBbox> }
    */
   IMAGE_ANNOTATIONS_SAVED: "image:annotations:saved",
+  /**
+   * Fired when bbox(es) on an image are modified AND the change has been
+   * committed to the database (e.g., context-menu label/tag actions or bulk
+   * operations in a review panel).
+   *
+   * IMPORTANT: NEVER publish this event for in-memory-only canvas changes.
+   * In-canvas edits (inspector, draw, resize) must use CANVAS_BBOXES_CHANGED
+   * (scoped to the runtime) until the user clicks "Save & Close", at which
+   * point IMAGE_ANNOTATIONS_SAVED is fired instead.
+   *
+   * All open panels and canvas modals showing bboxes from this image should
+   * react — review panels refresh cards, canvas modals check for conflicts.
+   * Payload: {
+   *   imageUuid: string,
+   *   imageFilename: string,
+   *   updatedBboxes: Map<string, object>,   // bboxUuid → updated bbox (label + tags updated)
+   *   deletedBboxUuids: string[]
+   * }
+   */
+  IMAGE_BBOXES_CHANGED: "image:bboxes:changed",
 });
