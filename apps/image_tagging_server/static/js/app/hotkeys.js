@@ -1,6 +1,6 @@
 import { deleteSelected } from './image-tagging/canvas/image.js';
 import { setTool } from './image-tagging/canvas/tools.js';
-import { next_image, prev_image } from './image-tagging/files.js';
+import { next_image, prev_image, deleteCurrentImage } from './image-tagging/files.js';
 import { actionForCombo, eventToCombo } from './image-tagging/hotkeyBindings.js';
 
 /** @type {import('@image_tagging_types').ImageTaggingRuntime[]} */
@@ -26,6 +26,7 @@ function dispatchAction(action, runtime) {
     case 'action:prevImage': prev_image(runtime); return true;
     case 'action:nextImage': next_image(runtime); return true;
     case 'action:delete': deleteSelected(runtime); return true;
+    case 'action:deleteImage': deleteCurrentImage(runtime); return true;
     case 'action:undo': runtime.undo(); return true;
     case 'action:redo': runtime.redo(); return true;
     default: return false;

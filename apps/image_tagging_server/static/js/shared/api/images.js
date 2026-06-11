@@ -237,3 +237,20 @@ export async function updateImage(uiImage) {
     throw new Error(`${updateRes.message}`);
   }
 }
+
+/**
+ * Permanently delete an image from the DB and disk.
+ * @param {string} imageUuid
+ * @returns {Promise<{ imageUuid: string, filename: string }>}
+ */
+export async function deleteImage(imageUuid) {
+  const res = await apiFetch(`/api/images/${encodeURIComponent(imageUuid)}`, {
+    method: 'DELETE',
+  });
+
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || data.status !== 'success') {
+    throw new Error(data.message || `Failed to delete image ${imageUuid}`);
+  }
+  return { imageUuid: data.imageUuid, filename: data.filename };
+}

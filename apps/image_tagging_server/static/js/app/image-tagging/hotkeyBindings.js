@@ -20,6 +20,7 @@ export const FIXED_ACTIONS = [
   { id: 'action:prevImage', label: 'Previous image' },
   { id: 'action:nextImage', label: 'Next image' },
   { id: 'action:delete', label: 'Delete selected bbox' },
+  { id: 'action:deleteImage', label: 'Delete current image' },
   { id: 'action:undo', label: 'Undo' },
   { id: 'action:redo', label: 'Redo' },
 ];
@@ -33,6 +34,8 @@ const DEFAULT_BINDINGS = {
   'backspace': 'action:delete',
   'ctrl+z': 'action:undo',
   'ctrl+shift+z': 'action:redo',
+  'shift+delete': 'action:deleteImage',
+  'shift+backspace': 'action:deleteImage',
 };
 
 /** @type {Record<string,string>|null} */

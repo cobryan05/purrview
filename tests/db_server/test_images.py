@@ -87,3 +87,49 @@ async def test_get_image_file_not_found(http_client):
     assert r.status_code == 200
     body = r.json()
     assert body["status"] == "failure"
+
+
+async def test_delete_image_not_found(http_client):
+    r = await http_client.delete("/api/images/00000000-0000-0000-0000-000000000000")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["status"] == "failure"
+    assert "not found" in body["message"].lower()
+
+
+async def test_delete_image_removes_file_and_record(http_client, image_file, files_root):
+    # Create a sidecar so the image can be reconciled into the DB with a stable UUID.
+    import json as _json
+    import uuid as _uuid
+    stable_uuid = str(_uuid.uuid4())
+    sidecar = image_file.with_suffix(".json")
+    sidecar.write_text(_json.dumps({"uuid": stable_uuid, "boxes": []}))
+
+    r = await http_client.post("/api/images/reconcile", json={"relPath": "test.png", "syncMode": "replace_db_with_json"})
+    assert r.status_code == 200
+
+    # Confirm the record is in the DB.
+    r = await http_client.post("/api/images/metadata/get", json={"imagePath": "test.png"})
+    assert r.status_code == 200
+    image_uuid = r.json()["image"]["uuid"]
+    assert image_uuid == stable_uuid
+
+    assert image_file.exists()
+    assert sidecar.exists()
+
+    # Delete via the API.
+    r = await http_client.delete(f"/api/images/{image_uuid}")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["status"] == "success"
+    assert body["imageUuid"] == image_uuid
+
+    # File and sidecar should be gone from disk.
+    assert not image_file.exists()
+    assert not sidecar.exists()
+
+    # DB record should be gone too.
+    r2 = await http_client.post("/api/images/metadata/get", json={"imagePath": "test.png"})
+    assert r2.status_code == 200
+    # file no longer exists, so metadata returns failure
+    assert r2.json()["status"] == "failure"

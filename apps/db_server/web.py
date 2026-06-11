@@ -515,6 +515,11 @@ class BatchImagesResponse(StatusResponse):
     images: List[dict] = Field(default_factory=list)
 
 
+class DeleteImageResponse(StatusResponse):
+    image_uuid: Optional[str] = None
+    filename: Optional[str] = None
+
+
 class BboxDedupItem(ApiModel):
     phash: str
     label_uuid: Optional[str] = None
@@ -1338,6 +1343,23 @@ class WebApp:
             except Exception as e:
                 logger.error(e, exc_info=True)
                 return DeleteImagesByDirectoryResponse(status=JsonValues.FAILURE, message=str(e))
+
+        @self._app.delete(
+            "/api/images/{image_uuid}",
+            response_model=DeleteImageResponse,
+            tags=[ApiTags.IMAGES],
+            operation_id="delete_image",
+        )
+        async def delete_image_api(image_uuid: str) -> DeleteImageResponse:
+            """Permanently delete an image: removes the DB record, image file, and JSON sidecar."""
+            try:
+                rel_path = await self._manager.delete_image_permanently(image_uuid)
+                if rel_path is None:
+                    return DeleteImageResponse(status=JsonValues.FAILURE, message="Image not found")
+                return DeleteImageResponse(status=JsonValues.SUCCESS, image_uuid=image_uuid, filename=rel_path)
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return DeleteImageResponse(status=JsonValues.FAILURE, message=str(e))
 
         ################################################################################
         # Perceptual Hash API

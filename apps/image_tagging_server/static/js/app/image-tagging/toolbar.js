@@ -1,8 +1,9 @@
 import { reloadImage, clearAnnotations, deleteSelected, saveAnnotations } from './canvas/image.js';
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
 import { setTool } from './canvas/tools.js';
+import { deleteCurrentImage } from './files.js';
 
-const ALL_BUTTONS = ['reload', 'undo', 'redo', 'select', 'bbox', 'clear', 'delete', 'save'];
+const ALL_BUTTONS = ['reload', 'undo', 'redo', 'select', 'bbox', 'clear', 'delete', 'save', 'deleteImage'];
 
 /**
  * Initialises a canvas toolbar into an explicit container element.
@@ -39,7 +40,8 @@ export function init(runtime, container, options = {}) {
     { key: 'bbox',   label: 'BBox',    onClick: () => setTool(runtime, 'bbox'),   dataTool: 'bbox' },
     { key: 'clear',  label: 'Clear',   onClick: () => clearAnnotations(runtime) },
     { key: 'delete', label: 'Delete',  onClick: () => deleteSelected(runtime) },
-    { key: 'save',   label: 'Save',    onClick: () => saveAnnotations(runtime) },
+    { key: 'save',        label: 'Save',       onClick: () => saveAnnotations(runtime) },
+    { key: 'deleteImage', label: '🗑', title: 'Delete image (Shift+Del)', onClick: () => deleteCurrentImage(runtime) },
   ];
 
   buttonDefs
@@ -51,6 +53,7 @@ export function init(runtime, container, options = {}) {
       b.dataset.toolbarKey = btn.key;
       b.addEventListener('click', btn.onClick);
       if (btn.dataTool) b.dataset.tool = btn.dataTool;
+      if (btn.title) b.title = btn.title;
       container.appendChild(b);
     });
 
@@ -92,6 +95,7 @@ export function init(runtime, container, options = {}) {
   const undoBtn = container.querySelector('[data-toolbar-key="undo"]');
   const redoBtn = container.querySelector('[data-toolbar-key="redo"]');
   const saveBtn = container.querySelector('[data-toolbar-key="save"]');
+  const deleteImageBtn = container.querySelector('[data-toolbar-key="deleteImage"]');
   const _syncButtons = () => {
     if (undoBtn) undoBtn.disabled = !runtime.canUndo;
     if (redoBtn) redoBtn.disabled = !runtime.canRedo;
@@ -100,9 +104,12 @@ export function init(runtime, container, options = {}) {
       saveBtn.disabled = !runtime.isDirty;
       saveBtn.classList.toggle('selected', runtime.isDirty);
     }
+    if (deleteImageBtn) deleteImageBtn.disabled = !runtime.state?.image;
   };
   _syncButtons();
   const unsubBboxChanged = events.subscribeToCanvas(runtime.id, EventTypes.CANVAS_BBOXES_CHANGED, _syncButtons);
+  // Also sync when a new image finishes loading (so deleteImage button enables).
+  const unsubImageLoadedSync = events.subscribeToCanvas(runtime.id, EventTypes.IMAGE_LOADED_ONTO_CANVAS, _syncButtons);
 
-  return { destroy: () => { unsubToolChanged(); unsubBboxChanged(); unsubImageLoaded(); } };
+  return { destroy: () => { unsubToolChanged(); unsubBboxChanged(); unsubImageLoaded(); unsubImageLoadedSync(); } };
 }

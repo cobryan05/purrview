@@ -21,7 +21,8 @@ import { setImageLabel } from '/app-static/js/shared/api/imageLabels.js';
 import { attachContext } from '/app-static/js/ui/contextMenu/index.js';
 import { getPrimaryRuntimeId } from '/app-static/js/app/image-tagging/runtime.js';
 import { Logger, toast } from '/app-static/js/ui/utils/logging.js';
-import { showUnsavedChangesModal, showExternalChangesModal } from '/app-static/js/ui/utils/confirmModal.js';
+import { showUnsavedChangesModal, showExternalChangesModal, showConfirmModal } from '/app-static/js/ui/utils/confirmModal.js';
+import { deleteImage } from '/app-static/js/shared/api/images.js';
 import { rerenderBboxViews } from '/app-static/js/app/image-tagging/canvas/manager.js';
 import { nextModalZIndex, registerEscHandler, unregisterEscHandler } from '/app-static/js/ui/utils/modalZIndex.js';
 import { CheckboxField } from '/app-static/js/ui/utils/fields/CheckboxField.js';
@@ -1511,6 +1512,37 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
 
     if (_selectionKind === 'image') {
       await showImageBulkActionModal(selectedEntries, labels, async (action, labelUuid) => {
+        if (action === 'delete') {
+          const n = selectedEntries.length;
+          const noun = n === 1 ? 'image' : 'images';
+          const confirmed = await showConfirmModal({
+            title: `Delete ${n} ${noun}`,
+            message: `Permanently delete ${n} selected ${noun}? This removes the files and all their annotations from disk. This cannot be undone.`,
+            confirmText: 'Delete',
+            danger: true,
+          });
+          if (!confirmed) return;
+
+          let failCount = 0;
+          for (const { img } of selectedEntries) {
+            try {
+              await deleteImage(img.uuid);
+              const card = grid.querySelector(`[data-image-uuid="${img.uuid}"][data-kind="image"]`);
+              if (card) markCardStale(card, 'deleted');
+              events.publish(EventTypes.IMAGE_DELETED, { imageUuid: img.uuid, imagePath: img.filename });
+            } catch (err) {
+              Logger.error(`Delete image failed for ${img.uuid}: ${err.message}`);
+              failCount++;
+            }
+          }
+          clearSelection();
+          updateStatusMsg();
+          if (failCount > 0) {
+            statusMsg.textContent += ` (${failCount} deletion${failCount === 1 ? '' : 's'} failed — check console)`;
+          }
+          return;
+        }
+
         const { failCount, succeededEntries } = await executeBulkImageAction(action, selectedEntries, labelUuid);
         for (const { img } of succeededEntries) {
           const card = grid.querySelector(`[data-image-uuid="${img.uuid}"][data-kind="image"]`);
@@ -1608,6 +1640,13 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
     _imageCardRefreshers.get(imageUuid)?.();
   });
 
+  // Mark image cards stale-deleted when an image is deleted from any panel.
+  const _unsubImageDeleted = events.subscribe(EventTypes.IMAGE_DELETED, ({ imageUuid } = {}) => {
+    if (!imageUuid) return;
+    const card = grid.querySelector(`[data-image-uuid="${imageUuid}"][data-kind="image"]`);
+    if (card) markCardStale(card, 'deleted');
+  });
+
   // Subscribe to IMAGE_BBOXES_CHANGED so incremental bbox edits (context-menu
   // label/tag actions, bulk ops) done in sub-modals or sibling panels are
   // reflected in this panel's cards without a full page reload.
@@ -1665,6 +1704,7 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
   return {
     destroy() {
       _unsubImageSaved();
+      _unsubImageDeleted();
       _unsubBboxChanged();
       _thumbLoader.reset();
       hoverPreview.destroy();
@@ -2404,6 +2444,7 @@ async function showImageBulkActionModal(entries, labels, onConfirm) {
   const actions = [
     { value: 'setAbsent', label: 'Mark label Absent (negative label)' },
     { value: 'setUncertain', label: 'Clear Absent → Uncertain' },
+    { value: 'delete', label: 'Delete Images' },
   ];
 
   const radioGroup = document.createElement('div');
@@ -2418,7 +2459,10 @@ async function showImageBulkActionModal(entries, labels, onConfirm) {
     radio.name = 'image-bulk-action';
     radio.value = action.value;
     if (action.value === 'setAbsent') radio.checked = true;
-    radio.addEventListener('change', () => { selectedAction = action.value; });
+    radio.addEventListener('change', () => {
+      selectedAction = action.value;
+      labelPickerRow.style.display = selectedAction === 'delete' ? 'none' : '';
+    });
     lbl.appendChild(radio);
     lbl.appendChild(document.createTextNode(action.label));
     radioGroup.appendChild(lbl);

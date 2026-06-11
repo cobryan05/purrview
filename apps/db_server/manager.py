@@ -975,6 +975,56 @@ class Manager:
         logger.info("delete_images_by_directory: deleted %d images under %s", deleted, norm_dirs)
         return deleted
 
+    async def delete_image_permanently(self, image_uuid: str) -> Optional[str]:
+        """Delete a single image from the DB and from disk (file + JSON sidecar).
+
+        Removes the image and its bboxes from the hash index before DB deletion
+        so the BK-tree stays consistent.
+
+        Returns the FILES_ROOT-relative path of the deleted image, or None if
+        the image UUID was not found in the DB.
+        """
+        image_record = await self._db_client.get_image_by_uuid(image_uuid)
+        if not image_record:
+            return None
+
+        filename = image_record.filename
+
+        # Remove from hash index before DB deletion.
+        if image_record.phash:
+            self._hash_index.remove_image(image_uuid)
+        for bbox in image_record.bboxes or []:
+            if bbox.phash and bbox.label_uuid:
+                self._hash_index.remove_bbox(bbox.uuid, bbox.label_uuid)
+
+        # Delete DB record (bboxes cascade).
+        await self._db_client.delete_image(image_uuid)
+
+        # Delete image file from disk.
+        image_path = (
+            Path(filename)
+            if Path(filename).is_absolute()
+            else get_safe_path(self._files_root, filename)
+        )
+        if image_path and image_path.exists():
+            try:
+                image_path.unlink()
+            except Exception as e:
+                logger.warning("delete_image_permanently: failed to delete file %s: %s", image_path, e)
+
+        # Delete JSON sidecar.
+        if image_path:
+            sidecar_path = self._get_json_sidefile(image_path)
+            if sidecar_path.exists():
+                try:
+                    sidecar_path.unlink()
+                except Exception as e:
+                    logger.warning("delete_image_permanently: failed to delete sidecar %s: %s", sidecar_path, e)
+
+        rel_path = self._image_rel_path(filename)
+        logger.info("delete_image_permanently: deleted %s (%s)", filename, image_uuid)
+        return rel_path
+
     # ─────────────────────────────────────────────────────────────────────────
     # Perceptual hash index public API
     # ─────────────────────────────────────────────────────────────────────────

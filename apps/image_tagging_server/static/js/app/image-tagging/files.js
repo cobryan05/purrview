@@ -3,6 +3,8 @@ import { FileBrowser } from '/app-static/js/ui/fileBrowser.js';
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
 import { guardUnsavedChanges } from './canvas/image.js';
 import { toast } from '/app-static/js/ui/utils/logging.js';
+import { showConfirmModal } from '/app-static/js/ui/utils/confirmModal.js';
+import { deleteImage } from '/app-static/js/shared/api/images.js';
 
 let _initialized = false;
 let browser = null;
@@ -110,6 +112,63 @@ export async function prev_image(runtime) {
   nav.prev();
   const payload = { path: nav.currentPath(), showCanvas: true, runtimeId: runtime.id };
   events.publish(EventTypes.LOAD_IMAGE_ONTO_CANVAS, payload);
+}
+
+/**
+ * Permanently delete the currently loaded image (DB record + file + sidecar),
+ * navigate away, and refresh the file browser.
+ * @param {import('@image_tagging_types').ImageTaggingRuntime} runtime
+ */
+export async function deleteCurrentImage(runtime) {
+  const image = runtime.state?.image;
+  if (!image?.uuid) return;
+
+  const { uuid: imageUuid, image_path: imagePath } = image;
+  const filename = imagePath.split('/').pop();
+
+  const confirmed = await showConfirmModal({
+    title: 'Delete image',
+    message: `Permanently delete "${filename}"? This removes the file and all its annotations from disk. This cannot be undone.`,
+    confirmText: 'Delete',
+    danger: true,
+  });
+  if (!confirmed) return;
+
+  // Delete from DB + disk first so the error path is clean.
+  try {
+    await deleteImage(imageUuid);
+  } catch (err) {
+    toast(`Failed to delete image: ${err.message}`, 4000, 'error');
+    return;
+  }
+
+  // Navigate away: prefer next, fall back to prev.
+  const nav = runtime.fileNavigation;
+  let nextPath = null;
+  if (nav.hasNext()) {
+    nav.next();
+    nextPath = nav.currentPath();
+  } else if (nav.hasPrev()) {
+    nav.prev();
+    nextPath = nav.currentPath();
+  }
+
+  if (nextPath) {
+    events.publish(EventTypes.LOAD_IMAGE_ONTO_CANVAS, { path: nextPath, showCanvas: true, runtimeId: runtime.id });
+  }
+
+  // Refresh the file browser so the deleted entry disappears.
+  if (browser) {
+    const dir = imagePath.includes('/') ? imagePath.slice(0, imagePath.lastIndexOf('/')) : '/';
+    await browser.load(dir);
+    if (nextPath) {
+      const nextFilename = nextPath.split('/').pop();
+      nav.select(nextFilename);
+    }
+    browser.rerender();
+  }
+
+  events.publish(EventTypes.IMAGE_DELETED, { imageUuid, imagePath });
 }
 
 export { _initialized as isInitialized };

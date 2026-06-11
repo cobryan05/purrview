@@ -120,4 +120,9 @@ export const EventTypes = Object.freeze({
    * Consumers that display a label list should re-fetch and re-render.
    */
   LABELS_UPDATED: "labels:updated",
+  /**
+   * Fired after an image is permanently deleted from the DB and disk.
+   * Payload: { imageUuid: string, imagePath: string }
+   */
+  IMAGE_DELETED: "image:deleted",
 });
