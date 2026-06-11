@@ -167,6 +167,22 @@ export async function findSimilarBboxesByUuid(bboxUuid, threshold = 8, labelUuid
   }));
 }
 
+export async function findSimilarBboxesByCoords(imageUuid, x, y, w, h, threshold = 8, labelUuid = null) {
+  const res = await apiFetch('/api/images/bbox/find-similar-by-coords', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ imageUuid, x, y, w, h, threshold, labelUuid }),
+  });
+  const data = await res.json();
+  if (!res.ok || data.status !== 'success') throw new Error(data.message || 'Failed to find similar bboxes');
+  return (data.matches ?? []).map(m => ({
+    bboxUuid: m.bboxUuid,
+    imageUuid: m.imageUuid ?? null,
+    labelUuid: m.labelUuid,
+    distance: m.distance,
+  }));
+}
+
 export async function fetchImagesByUuids(imageUuids) {
   if (!imageUuids || imageUuids.length === 0) return [];
   const res = await apiFetch('/api/images/batch-by-uuids', {

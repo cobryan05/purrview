@@ -191,8 +191,12 @@ registerContextProvider('bbox', async (adapters, ctx) => {
       disabled: count > 1,
       onSelect: () => {
         const bboxUuid = adapters[0].getBboxUuid?.() ?? null;
+        const bboxCoords = adapters[0].getBboxCoords?.() ?? null;
+        const imageUuid = adapters[0].getImageUuid?.() ?? null;
         ctx.close();
-        if (bboxUuid) openSimilarBboxesModal({ bboxUuid, threshold: 8 });
+        if (bboxUuid || (bboxCoords && imageUuid)) {
+          openSimilarBboxesModal({ bboxUuid, bboxCoords, imageUuid, threshold: 8 });
+        }
       },
     },
     {

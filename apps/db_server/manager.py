@@ -980,6 +980,26 @@ class Manager:
         image_uuid_map = await self._db_client.get_image_uuids_for_bboxes(bbox_uuids)
         return [(b_uuid, image_uuid_map.get(b_uuid), dist, lbl) for b_uuid, dist, lbl in matches]
 
+    async def find_similar_bboxes_by_coords(
+        self,
+        image_uuid: str,
+        x: float,
+        y: float,
+        w: float,
+        h: float,
+        label_uuid: Optional[str],
+        threshold: int,
+    ) -> List[Tuple[str, Optional[str], int, str]]:
+        """Compute a phash from a (possibly unsaved) bbox region and return similar bboxes."""
+        image = await self._db_client.get_image_by_uuid(image_uuid)
+        if image is None:
+            return []
+        image_path = Path(image.filename)
+        if not image_path.is_absolute():
+            image_path = self._files_root / image_path
+        phash = compute_bbox_phash(image_path, x, y, w, h)
+        return await self.find_similar_bboxes_enriched(phash, label_uuid, threshold)
+
     async def get_images_by_uuids(self, image_uuids: List[str]) -> List[ImageRecordRead]:
         """Return full ImageRecordRead objects for a list of image UUIDs, in any order."""
         records = await self._db_client.get_images_by_uuids(image_uuids)

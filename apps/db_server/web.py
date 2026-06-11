@@ -483,6 +483,16 @@ class FindSimilarBboxesByUuidPayload(ApiPayload):
     label_uuid: Optional[str] = None
 
 
+class FindSimilarBboxesByCoordsPayload(ApiPayload):
+    image_uuid: str
+    x: float
+    y: float
+    w: float
+    h: float
+    threshold: int = 8
+    label_uuid: Optional[str] = None
+
+
 class RebuildHashIndexResponse(StatusResponse):
     image_count: int = 0
     bbox_count: int = 0
@@ -1374,6 +1384,36 @@ class WebApp:
             try:
                 matches = await self._manager.find_similar_bboxes_by_uuid(
                     payload.bbox_uuid, payload.label_uuid, payload.threshold
+                )
+                return FindSimilarBboxesResponse(
+                    status=JsonValues.SUCCESS,
+                    matches=[
+                        SimilarBboxMatch(bbox_uuid=bbox_uuid, image_uuid=image_uuid, label_uuid=lbl, distance=dist)
+                        for bbox_uuid, image_uuid, dist, lbl in matches
+                    ],
+                )
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return FindSimilarBboxesResponse(status=JsonValues.FAILURE, message=str(e))
+
+        @self._app.post(
+            "/api/images/bbox/find-similar-by-coords",
+            response_model=FindSimilarBboxesResponse,
+            tags=[ApiTags.IMAGES],
+            operation_id="find_similar_bboxes_by_coords",
+        )
+        async def find_similar_bboxes_by_coords(
+            payload: FindSimilarBboxesByCoordsPayload,
+        ) -> FindSimilarBboxesResponse:
+            try:
+                matches = await self._manager.find_similar_bboxes_by_coords(
+                    payload.image_uuid,
+                    payload.x,
+                    payload.y,
+                    payload.w,
+                    payload.h,
+                    payload.label_uuid,
+                    payload.threshold,
                 )
                 return FindSimilarBboxesResponse(
                     status=JsonValues.SUCCESS,

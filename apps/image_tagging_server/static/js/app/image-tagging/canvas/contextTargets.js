@@ -72,6 +72,11 @@ export function makeCanvasBboxAdapter(bboxView, runtime) {
       return runtime.state.image?.uuid ?? null;
     },
 
+    getBboxCoords() {
+      const { x, y, width, height } = bboxView.uiBBox;
+      return { x, y, w: width, h: height };
+    },
+
     getLabelUuid() {
       return bboxView.uiBBox.label?.uuid ?? null;
     },

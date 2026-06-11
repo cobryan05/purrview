@@ -16,6 +16,7 @@ import { showReviewModal } from '/app-static/js/app/review/main.js';
 import {
   findSimilarImagesByUuid,
   findSimilarBboxesByUuid,
+  findSimilarBboxesByCoords,
   fetchImagesByUuids,
 } from '/app-static/js/shared/api/images.js';
 
@@ -105,17 +106,24 @@ export async function openSimilarImagesModal({ imageUuid, threshold }) {
  *
  * @param {{ bboxUuid: string, threshold: number, labelUuid?: string|null }} params
  */
-export async function openSimilarBboxesModal({ bboxUuid, threshold, labelUuid = null }) {
+export async function openSimilarBboxesModal({ bboxUuid, bboxCoords, imageUuid, threshold, labelUuid = null }) {
   let _threshold = threshold;
   let _cachedImages = null;
-  let _queryPromise = findSimilarBboxesByUuid(bboxUuid, _threshold, labelUuid);
+
+  // If live coordinates are provided (e.g. bbox moved on canvas but not yet saved),
+  // compute the phash server-side from those coords; otherwise fall back to UUID lookup.
+  const _query = (t) => bboxCoords && imageUuid
+    ? findSimilarBboxesByCoords(imageUuid, bboxCoords.x, bboxCoords.y, bboxCoords.w, bboxCoords.h, t, labelUuid)
+    : findSimilarBboxesByUuid(bboxUuid, t, labelUuid);
+
+  let _queryPromise = _query(_threshold);
   let _refresh = null;
 
   const { element: sliderEl } = buildThresholdSlider(_threshold, {
     onChange(newThreshold) {
       _threshold = newThreshold;
       _cachedImages = null;
-      _queryPromise = findSimilarBboxesByUuid(bboxUuid, _threshold, labelUuid);
+      _queryPromise = _query(_threshold);
       _refresh?.();
     },
   });
