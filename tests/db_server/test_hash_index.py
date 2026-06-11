@@ -340,3 +340,58 @@ class TestBuildFromDB:
             await idx._load_phashes()
 
         assert sleep_calls == [], "No sleep expected when all rows fit in one page"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# on_phase callback
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestOnPhaseCallback:
+    """build() invokes the on_phase callback at the correct points."""
+
+    async def test_phases_reported_in_order(self, idx):
+        phases = []
+        await idx.build(on_phase=phases.append)
+        assert phases == ["loading", "constructing"]
+
+    async def test_loading_fires_before_db_query(self, idx):
+        """'loading' must be reported before _load_phashes runs."""
+        from unittest.mock import AsyncMock, patch
+
+        captured = []
+
+        async def _spy_load():
+            captured.append(list(phases))
+            return [], []
+
+        phases = []
+        with patch.object(idx, "_load_phashes", _spy_load):
+            await idx.build(on_phase=phases.append)
+
+        assert captured[0] == ["loading"], (
+            "on_phase('loading') must fire before _load_phashes"
+        )
+
+    async def test_constructing_fires_before_tree_build(self, idx):
+        """'constructing' must be reported before _construct_trees runs."""
+        from unittest.mock import patch
+
+        captured = []
+        original = idx._construct_trees
+
+        def _spy_construct(image_rows, bbox_rows):
+            captured.append(list(phases))
+            return original(image_rows, bbox_rows)
+
+        phases = []
+        with patch.object(idx, "_construct_trees", _spy_construct):
+            await idx.build(on_phase=phases.append)
+
+        assert captured[0] == ["loading", "constructing"], (
+            "on_phase('constructing') must fire before _construct_trees"
+        )
+
+    async def test_build_without_on_phase_does_not_raise(self, idx):
+        """on_phase is optional; omitting it must not raise."""
+        await idx.build()  # no on_phase argument

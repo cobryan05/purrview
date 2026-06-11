@@ -19,10 +19,8 @@ registerContextProvider('canvas', (adapters, ctx) => {
     {
       label: 'Search for similar images…',
       submenu: () => asyncPanel('200px', async () => {
-        const [defaultThreshold, hashMax] = await Promise.all([
-          getImageDefaultThreshold(),
-          getImageHashMax(),
-        ]);
+        const hashMax = await getImageHashMax();
+        const defaultThreshold = await getImageDefaultThreshold(hashMax);
         return buildSimilarPanel((threshold) => {
           ctx.close();
           openSimilarImagesModal({ imageUuid, threshold });

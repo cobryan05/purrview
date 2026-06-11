@@ -95,7 +95,7 @@ class Manager:
         )
         self._rebuild_in_progress: bool = False
         self._hash_index_ready: bool = False  # False until initial build completes on startup
-        self._build_phase: str = ""  # "loading" or "constructing" during initial index build
+        self._build_phase: str | None = None  # "loading" or "constructing" during initial index build
         # Short-lived cache for expensive count queries.  Key is an MD5 of the
         # filter predicates (sort/page fields excluded); value is (count, ts).
         # TTL is intentionally short so writes that happen while browsing are
@@ -122,7 +122,7 @@ class Manager:
         """Initialization that should run on event loop"""
         await self._db_client.init_db()
         await self._hash_index.build(on_phase=lambda p: setattr(self, "_build_phase", p))
-        self._build_phase = ""
+        self._build_phase = None
         self._hash_index_ready = True
 
     async def _worker_task(self):

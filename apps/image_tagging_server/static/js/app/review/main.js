@@ -449,6 +449,15 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
       bbox.tags = tagUuids.map(u => existing.get(u) ?? { uuid: u, icon: null });
     }
 
+    function _publishBboxChanged({ deleted = false } = {}) {
+      events.publish(EventTypes.IMAGE_BBOXES_CHANGED, {
+        imageUuid: img.uuid,
+        imageFilename: img.filename,
+        updatedBboxes: deleted ? new Map() : new Map([[bbox.uuid, bbox]]),
+        deletedBboxUuids: deleted ? [bbox.uuid] : [],
+      });
+    }
+
     return {
       getBboxUuid() { return bbox.uuid ?? null; },
       getImageUuid() { return img.uuid ?? null; },
@@ -488,12 +497,7 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
           markCardStale(card, 'relabeled');
         }
         _imageCardRefreshers.get(img.uuid)?.();
-        events.publish(EventTypes.IMAGE_BBOXES_CHANGED, {
-          imageUuid: img.uuid,
-          imageFilename: img.filename,
-          updatedBboxes: new Map([[bbox.uuid, bbox]]),
-          deletedBboxUuids: [],
-        });
+        _publishBboxChanged();
       },
 
       async toggleTag(uuid) {
@@ -512,12 +516,7 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
         await _applyUpdate(labelUuid, newTagUuids);
         markCardStale(card, 'tagged');
         _imageCardRefreshers.get(img.uuid)?.();
-        events.publish(EventTypes.IMAGE_BBOXES_CHANGED, {
-          imageUuid: img.uuid,
-          imageFilename: img.filename,
-          updatedBboxes: new Map([[bbox.uuid, bbox]]),
-          deletedBboxUuids: [],
-        });
+        _publishBboxChanged();
       },
 
       async setVerification(uuid) {
@@ -540,12 +539,7 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
         if (thumb) thumb.src = getBboxThumbnailUrl(img.filename, bbox.uuid, 300) + `&t=${Date.now()}`;
         markCardStale(card, 'verified');
         _imageCardRefreshers.get(img.uuid)?.();
-        events.publish(EventTypes.IMAGE_BBOXES_CHANGED, {
-          imageUuid: img.uuid,
-          imageFilename: img.filename,
-          updatedBboxes: new Map([[bbox.uuid, bbox]]),
-          deletedBboxUuids: [],
-        });
+        _publishBboxChanged();
       },
 
       async remove() {
@@ -555,12 +549,7 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
         const idx = img.bboxes?.findIndex(b => b.uuid === bbox.uuid) ?? -1;
         if (idx !== -1) img.bboxes.splice(idx, 1);
         _imageCardRefreshers.get(img.uuid)?.();
-        events.publish(EventTypes.IMAGE_BBOXES_CHANGED, {
-          imageUuid: img.uuid,
-          imageFilename: img.filename,
-          updatedBboxes: new Map(),
-          deletedBboxUuids: [bbox.uuid],
-        });
+        _publishBboxChanged({ deleted: true });
       },
     };
   }

@@ -44,10 +44,14 @@ export async function runPreviewSourceTest({ provider, providerParams, target = 
   let taskUuid;
   let lastFingerprint = null;
   let lastTaskInfo = null;
+  // Filled in when the SSE Promise starts; called by the cancel handler so
+  // cancellation takes effect immediately rather than waiting for the 30s timeout.
+  let _abortSSE = null;
 
   cancelBtn.onclick = async () => {
     cancelled = true;
     cancelBtn.disabled = true;
+    _abortSSE?.();   // immediately break out of the SSE wait
     try {
       await cancelTasks({ taskUuids: [taskUuid] });
       await deleteTasks({ taskUuids: [taskUuid] });
@@ -110,9 +114,15 @@ export async function runPreviewSourceTest({ provider, providerParams, target = 
     await deleteTaskConfigs({ uuids: [configUuid] });
 
     await new Promise((resolve, reject) => {
-      const evtSource = new EventSource('/api/tasks/stream');
+      // Guard: if cancel was pressed during the task-setup awaits above, bail out
+      // immediately rather than starting the SSE stream and waiting up to 30 s.
+      if (cancelled) { resolve(); return; }
 
-      const timeoutId = setTimeout(async () => {
+      const evtSource = new EventSource('/api/tasks/stream');
+      let timeoutId;
+      _abortSSE = () => { clearTimeout(timeoutId); evtSource.close(); resolve(); };
+
+      timeoutId = setTimeout(async () => {
         evtSource.close();
         if (lastTaskInfo) {
           const timedOut = { ...lastTaskInfo, instance: { ...lastTaskInfo.instance, status: TaskStatus.ERROR, errorMessage: 'Timed out after 30s' } };
@@ -171,6 +181,7 @@ export async function runPreviewSourceTest({ provider, providerParams, target = 
   } catch (err) {
     toast(`Preview failed: ${err.message}`, 5000, "error");
   } finally {
+    _abortSSE = null;
     cancelBtn.remove();
     previewTaskActive = false;
 

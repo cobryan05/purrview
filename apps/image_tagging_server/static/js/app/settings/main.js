@@ -312,18 +312,15 @@ async function _buildDedupSection() {
   });
 
   // When hash size changes, auto-update the paired threshold input to the 20% default
-  imgHashSelect.addEventListener('change', () => {
-    const n = parseInt(imgHashSelect.value, 10);
-    const max = n * n;
-    imgThreshInput.max = String(max);
-    imgThreshInput.value = String(Math.round(max * 0.2));
-  });
-  bboxHashSelect.addEventListener('change', () => {
-    const n = parseInt(bboxHashSelect.value, 10);
-    const max = n * n;
-    bboxThreshInput.max = String(max);
-    bboxThreshInput.value = String(Math.round(max * 0.2));
-  });
+  function _wireHashToThreshold(hashSelect, threshInput) {
+    hashSelect.addEventListener('change', () => {
+      const max = parseInt(hashSelect.value, 10) ** 2;
+      threshInput.max = String(max);
+      threshInput.value = String(Math.round(max * 0.2));
+    });
+  }
+  _wireHashToThreshold(imgHashSelect, imgThreshInput);
+  _wireHashToThreshold(bboxHashSelect, bboxThreshInput);
 
   section.append(imgHashRow, imgThreshRow, bboxHashRow, bboxThreshRow);
   return section;

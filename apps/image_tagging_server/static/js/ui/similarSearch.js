@@ -27,23 +27,17 @@ import {
 } from '/app-static/js/shared/api/images.js';
 import { getSetting } from '/app-static/js/shared/api/settings.js';
 
-async function _imageHashMax() {
+/** @returns {Promise<number>} */
+export async function getImageHashMax() {
   const v = await getSetting('dedup_image_hash_size').catch(() => null);
-  const n = parseInt(v, 10) || 8;
-  return n * n;
+  return (parseInt(v, 10) || 8) ** 2;
 }
 
 /** @returns {Promise<number>} */
-export async function getImageHashMax() { return _imageHashMax(); }
-
-async function _bboxHashMax() {
+export async function getBboxHashMax() {
   const v = await getSetting('dedup_bbox_hash_size').catch(() => null);
-  const n = parseInt(v, 10) || 16;
-  return n * n;
+  return (parseInt(v, 10) || 16) ** 2;
 }
-
-/** @returns {Promise<number>} */
-export async function getBboxHashMax() { return _bboxHashMax(); }
 
 // ── Default threshold helpers ──────────────────────────────────────────────────
 
@@ -59,14 +53,22 @@ async function _readThreshold(key, max) {
   return Math.round(max * 0.2);
 }
 
-/** @returns {Promise<number>} */
-export async function getImageDefaultThreshold() {
-  return _readThreshold('dedup_image_threshold', await _imageHashMax());
+/**
+ * @param {number|null} [hashMax]  Pass a pre-fetched hash max to avoid a
+ *   redundant getSetting call when the caller already has it.
+ * @returns {Promise<number>}
+ */
+export async function getImageDefaultThreshold(hashMax = null) {
+  return _readThreshold('dedup_image_threshold', hashMax ?? await getImageHashMax());
 }
 
-/** @returns {Promise<number>} */
-export async function getBboxDefaultThreshold() {
-  return _readThreshold('dedup_bbox_threshold', await _bboxHashMax());
+/**
+ * @param {number|null} [hashMax]  Pass a pre-fetched hash max to avoid a
+ *   redundant getSetting call when the caller already has it.
+ * @returns {Promise<number>}
+ */
+export async function getBboxDefaultThreshold(hashMax = null) {
+  return _readThreshold('dedup_bbox_threshold', hashMax ?? await getBboxHashMax());
 }
 
 // ── Shared slider builder ──────────────────────────────────────────────────────
@@ -119,7 +121,7 @@ function buildThresholdSlider(initial, { min = 0, max = 64, onChange }) {
  * @param {{ imageUuid: string, threshold: number }} params
  */
 export async function openSimilarImagesModal({ imageUuid, threshold = null }) {
-  const sliderMax = await _imageHashMax();
+  const sliderMax = await getImageHashMax();
   let _threshold = threshold !== null ? threshold : await _readThreshold('dedup_image_threshold', sliderMax);
   let _cachedImages = null;
   let _queryPromise = findSimilarImagesByUuid(imageUuid, _threshold);
@@ -162,7 +164,7 @@ export async function openSimilarImagesModal({ imageUuid, threshold = null }) {
  * @param {{ bboxUuid: string, threshold: number, labelUuid?: string|null }} params
  */
 export async function openSimilarBboxesModal({ bboxUuid, bboxCoords, imageUuid, threshold = null, labelUuid = null }) {
-  const sliderMax = await _bboxHashMax();
+  const sliderMax = await getBboxHashMax();
   let _threshold = threshold !== null ? threshold : await _readThreshold('dedup_bbox_threshold', sliderMax);
   let _cachedImages = null;
 
