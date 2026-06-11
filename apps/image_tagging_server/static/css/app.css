@@ -948,6 +948,14 @@ button.filter-active {
   outline-offset: -2px;
 }
 
+/* ===== Review: Reference card (the query item in a similarity search) ===== */
+.review-card--reference {
+  border-color: #c9a22788;
+}
+.card-state-badge.state-reference {
+  background: #c9a22718; border: 1px solid #c9a227; color: #f0c857;
+}
+
 /* ===== Review: Recently-viewed flash (after closing canvas modal) ===== */
 @keyframes recently-viewed-flash {
   0%   { outline: 4px solid #ffcc0000; outline-offset: -2px; box-shadow: 0 0 0px #ffcc0000; }

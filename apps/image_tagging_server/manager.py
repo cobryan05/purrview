@@ -3,6 +3,7 @@
 import asyncio
 import logging
 import sys
+import time
 from typing import Any, Dict, List, Optional
 
 import db_client
@@ -48,6 +49,11 @@ class Manager:
         self._training_proxy = ReverseProxy(base_url=self._default_training_url, path="/api/training")
 
         self._test_client = httpx.AsyncClient(timeout=5.0)
+
+        # Cache for aggregated service notices; refreshed at most every 5 seconds.
+        self._notices_cache_ts: float = 0.0
+        self._notices_cache: list[dict] = []
+        self._NOTICES_CACHE_TTL: float = 5.0
 
     async def start(self) -> None:
         """Load URL overrides from DB settings on startup."""
@@ -148,8 +154,6 @@ class Manager:
 
     async def get_all_service_status(self) -> List[dict]:
         """Probe each backend service's /status endpoint and return aggregated results."""
-        import asyncio
-
         relay_cfg = APPS_CONFIG[APPS.RELAY_BUFFER_SERVER]
         services = [
             ("db_server", self._db_server_url),
@@ -171,3 +175,18 @@ class Manager:
                 return {"service": name, "status": "unreachable", "message": str(e)}
 
         return list(await asyncio.gather(*[_probe(name, url) for name, url in services]))
+
+    async def get_notices(self) -> list[dict]:
+        """Return aggregated service notices from all backends, with a 5-second cache."""
+        now = time.monotonic()
+        if now - self._notices_cache_ts < self._NOTICES_CACHE_TTL:
+            return self._notices_cache
+
+        statuses = await self.get_all_service_status()
+        notices: list[dict] = []
+        for svc in statuses:
+            notices.extend(svc.get("notices", []))
+
+        self._notices_cache = notices
+        self._notices_cache_ts = now
+        return notices

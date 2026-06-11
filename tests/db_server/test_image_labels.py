@@ -9,7 +9,7 @@ import uuid
 
 import pytest
 
-from apps.helpers.db.types import UNVERIFIED_TAG_UUID
+from apps.helpers.db.types import FALSE_POS_TAG_UUID, UNVERIFIED_TAG_UUID
 from tests.conftest import make_png
 
 
@@ -212,6 +212,57 @@ async def test_bbox_patch_to_confirmed_gives_present(http_client, image_file, la
     )
     assert patch_r.status_code == 204
 
+    labels = await _get_image_labels(http_client, "labels_test.png")
+    assert labels[label_uuid] == "present"
+
+
+async def test_false_positive_bbox_produces_no_row(http_client, image_file, label_uuid):
+    """A bbox tagged FALSE_POSITIVE must not generate a PRESENT image_label row."""
+    await _update_bboxes(
+        http_client,
+        "labels_test.png",
+        [
+            {
+                "uuid": str(uuid.uuid4()),
+                "labelUuid": label_uuid,
+                "x": 0.1,
+                "y": 0.1,
+                "width": 0.2,
+                "height": 0.2,
+                "tagUuids": [FALSE_POS_TAG_UUID],
+            }
+        ],
+    )
+    labels = await _get_image_labels(http_client, "labels_test.png")
+    assert label_uuid not in labels
+
+
+async def test_one_confirmed_bbox_gives_present_despite_false_positive_sibling(http_client, image_file, label_uuid):
+    """If any bbox for a label is confirmed, the label is PRESENT even if a sibling is FALSE_POSITIVE."""
+    await _update_bboxes(
+        http_client,
+        "labels_test.png",
+        [
+            {
+                "uuid": str(uuid.uuid4()),
+                "labelUuid": label_uuid,
+                "x": 0.1,
+                "y": 0.1,
+                "width": 0.1,
+                "height": 0.1,
+                "tagUuids": [FALSE_POS_TAG_UUID],
+            },
+            {
+                "uuid": str(uuid.uuid4()),
+                "labelUuid": label_uuid,
+                "x": 0.5,
+                "y": 0.5,
+                "width": 0.1,
+                "height": 0.1,
+                "tagUuids": [],
+            },
+        ],
+    )
     labels = await _get_image_labels(http_client, "labels_test.png")
     assert labels[label_uuid] == "present"
 

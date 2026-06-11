@@ -141,7 +141,7 @@ function buildVerifyChip(tagUuids) {
   return chip;
 }
 
-export async function createReviewPanel(container, { fetchImages = null, datasetActions = true } = {}) {
+export async function createReviewPanel(container, { fetchImages = null, datasetActions = true, referenceBboxUuids = new Set(), referenceImageUuids = new Set() } = {}) {
   container.innerHTML = '';
 
   const labelsPromise = fetchLabels().catch(() => new Map());
@@ -673,6 +673,12 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
         chip.style.cssText = 'background:#88888833;border:1px solid #888;';
       }
     }
+    // Refresh the verify chip to reflect the saved tag state
+    const verifyChipEl = card.querySelector('.verify-chip');
+    if (verifyChipEl) {
+      const newChip = buildVerifyChip((uiBbox.tags ?? []).map(t => t.uuid));
+      verifyChipEl.replaceWith(newChip);
+    }
     const stillUnverified = (uiBbox.tags ?? []).some(t => t.uuid === UNVERIFIED_TAG_UUID);
     if (!stillUnverified) markCardStale(card, 'verified');
   }
@@ -1092,6 +1098,14 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
     const info = document.createElement('div');
     info.className = 'card-info';
 
+    if (referenceBboxUuids.has(bbox.uuid)) {
+      card.classList.add('review-card--reference');
+      const refBadge = document.createElement('div');
+      refBadge.className = 'card-state-badge state-reference';
+      refBadge.textContent = '◉ Reference';
+      info.appendChild(refBadge);
+    }
+
     const chip = document.createElement('span');
     chip.className = 'label-chip';
     chip.textContent = labelName;
@@ -1213,6 +1227,14 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
     const info = document.createElement('div');
     info.className = 'card-info';
 
+    if (referenceImageUuids.has(img.uuid)) {
+      card.classList.add('review-card--reference');
+      const refBadge = document.createElement('div');
+      refBadge.className = 'card-state-badge state-reference';
+      refBadge.textContent = '◉ Reference';
+      info.appendChild(refBadge);
+    }
+
     // Deduplicated label chips
     const bboxes = img.bboxes ?? [];
     const chipsRow = document.createElement('div');
@@ -1305,6 +1327,14 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
     const info = document.createElement('div');
     info.className = 'card-info';
 
+    if (referenceBboxUuids.has(bbox.uuid)) {
+      row.classList.add('review-card--reference');
+      const refBadge = document.createElement('span');
+      refBadge.className = 'card-state-badge state-reference';
+      refBadge.textContent = '◉ Reference';
+      info.appendChild(refBadge);
+    }
+
     const chip = document.createElement('span');
     chip.className = 'label-chip';
     chip.textContent = labelName;
@@ -1376,6 +1406,14 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
 
     const info = document.createElement('div');
     info.className = 'card-info';
+
+    if (referenceImageUuids.has(img.uuid)) {
+      row.classList.add('review-card--reference');
+      const refBadge = document.createElement('span');
+      refBadge.className = 'card-state-badge state-reference';
+      refBadge.textContent = '◉ Reference';
+      info.appendChild(refBadge);
+    }
 
     // Deduplicated label chips
     const bboxes = img.bboxes ?? [];
@@ -1493,6 +1531,13 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
                 const bboxInImg = img.bboxes?.find(b => b.uuid === bbox.uuid);
                 if (bboxInImg) { bboxInImg.labelUuid = newLabelUuid; bboxInImg.label = label; }
               }
+              // Assigning a real label strips verification tags — mirror that in memory
+              // and refresh the verify chip so the card reflects the new state immediately.
+              bbox.tags = (bbox.tags ?? []).filter(t => !VERIFICATION_TAG_UUIDS.has(t.uuid));
+              const verifyChipEl = card.querySelector('.verify-chip');
+              if (verifyChipEl) {
+                verifyChipEl.replaceWith(buildVerifyChip(bbox.tags.map(t => t.uuid)));
+              }
               markCardStale(card, 'relabeled');
             } else if (action === 'addTags' || action === 'removeTags') {
               markCardStale(card, 'tagged');
@@ -1532,16 +1577,29 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
     resetAndRender();
   });
 
+  // Subscribe to IMAGE_ANNOTATIONS_SAVED so saves from any nested canvas modal
+  // (or any other panel) propagate back to this panel's cards automatically.
+  const _unsubImageSaved = events.subscribe(EventTypes.IMAGE_ANNOTATIONS_SAVED, ({ imageUuid, imageFilename, bboxes } = {}) => {
+    if (!bboxes?.size || !imageUuid) return;
+    for (const [bboxUuid, uiBbox] of bboxes) {
+      const card = grid.querySelector(`[data-bbox-uuid="${bboxUuid}"]`);
+      if (card) _refreshBboxCard(card, uiBbox, imageFilename, bboxUuid);
+    }
+    _imageCardRefreshers.get(imageUuid)?.();
+  });
+
   render();
 
   return {
     destroy() {
+      _unsubImageSaved();
       _thumbLoader.reset();
       hoverPreview.destroy();
       entryView.destroy();
       container.innerHTML = '';
     },
     filterPanel,
+    refresh: resetAndRender,
   };
 }
 
@@ -1594,7 +1652,7 @@ export async function init() {
  *                     the dataset's conditions. "Update Dataset" button pushes changes
  *                     back to the caller via onUpdateFilters (caller must still Save).
  */
-export async function showReviewModal({ title = 'Browse Images', fetchImages, editableDataset } = {}) {
+export async function showReviewModal({ title = 'Browse Images', fetchImages, editableDataset, headerControls, referenceBboxUuids = new Set(), referenceImageUuids = new Set() } = {}) {
   const overlay = document.createElement('div');
   overlay.style.cssText = 'position:fixed;inset:0;background:#0009;display:flex;align-items:center;justify-content:center;z-index:900;';
 
@@ -1614,6 +1672,9 @@ export async function showReviewModal({ title = 'Browse Images', fetchImages, ed
   closeBtn.style.cssText = 'margin-left:auto;cursor:pointer;padding:0.2em 0.6em;';
 
   header.append(titleEl);
+
+  // Optional caller-supplied controls injected after the title (e.g. threshold slider)
+  if (headerControls) header.appendChild(headerControls);
 
   // "Update Dataset" button — shown when modal is in editable-dataset mode
   if (editableDataset?.onUpdateFilters) {
@@ -1666,8 +1727,10 @@ export async function showReviewModal({ title = 'Browse Images', fetchImages, ed
     if (panel.filterPanel) {
       panel.filterPanel.setState(_currentFilterState);
     }
+    return panel.refresh;
   } else {
-    await createReviewPanel(content, { fetchImages });
+    const panel = await createReviewPanel(content, { fetchImages, referenceBboxUuids, referenceImageUuids });
+    return panel.refresh;
   }
 }
 
@@ -1949,6 +2012,13 @@ async function showCanvasModal(bbox, img, labels, onSaved, navContext = null) {
     const currentBboxesMap = new Map(instance.runtime.state.image.bboxes);
     const updatedUIBbox = currentBboxesMap.get(currentBbox?.uuid ?? bbox.uuid);
     closeModal();
+    // Broadcast to all review panels (including nested / parent modals) so
+    // every card showing a bbox from this image gets refreshed.
+    events.publish(EventTypes.IMAGE_ANNOTATIONS_SAVED, {
+      imageUuid: currentImg?.uuid,
+      imageFilename: currentImg?.filename ?? currentImg?.image_path,
+      bboxes: currentBboxesMap,
+    });
     if (currentImg?.uuid !== img.uuid) {
       // Navigated to a different image before saving — let navContext refresh its cards.
       navContext?.onSaved?.(currentImg, currentBboxesMap);

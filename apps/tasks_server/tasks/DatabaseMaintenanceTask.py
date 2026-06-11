@@ -13,10 +13,13 @@ import jstyleson
 from db_client.api.images_api import ImagesApi
 from db_client.api.settings_api import SettingsApi
 from db_client.api.tags_api import TagsApi
+from db_client.models.image_stubs_needing_phash_payload import ImageStubsNeedingPhashPayload
 from db_client.models.prune_images_payload import PruneImagesPayload
 from db_client.models.rebuild_hash_index_response import RebuildHashIndexResponse
 from db_client.models.recompute_phash_payload import RecomputePhashPayload
 from db_client.models.reconcile_image_payload import ReconcileImagePayload
+
+from apps.helpers.consts import TaskStatus
 
 from .Registry import register_task
 from .Task import Task
@@ -30,16 +33,32 @@ _VALID_SYNC_MODES = {"merge", "replace_db_with_json", "replace_json_with_db", "k
 
 @register_task()
 class DatabaseMaintenanceTask(Task):
-    """Reconcile the DB against image files on disk, and optionally recompute all perceptual hashes.
+    """Modular DB maintenance: each option is independent and skips unnecessary work.
 
-    Scan order guarantees both move orderings converge:
-      1. Reconcile each file found on disk (move detection + sidecar sync).
-         Collect sidecar UUIDs as known_disk_uuids.
-      2. Prune DB records whose file is missing and whose UUID is not known.
-      3. Clear orphan TASK_GENERATED tags.
-      4. (Optional) Recompute perceptual hashes for every image using hash sizes
-         from global Settings, then rebuild the BK-tree index.
+    Phases (each independently toggleable):
+      sync_jsons      — Walk disk, sync each file's JSON sidecar with the DB.
+                        Also the only phase that detects moved files.
+      remove_deleted  — Delete DB records whose image file is gone.
+                        If sync_jsons ran first, sidecar UUIDs protect moved files.
+                        If sync_jsons is off, the backend checks file existence directly
+                        (no disk walk needed).
+      clear_orphan_tags — Remove TASK_GENERATED tags no longer attached to any bbox.
+      fill_missing_phashes — Hash only images/bboxes missing a hash or hashed at a
+                        different size.  Much faster than a full recompute.
+      recompute_phashes — Recompute every phash regardless of existing values.
+                        Implies fill_missing_phashes (subsumes it).
+
+    Disk listing is skipped entirely when only hash work or tag clearing is requested.
     """
+
+    # Approximate relative cost of each phase — used to portion the progress bar.
+    _PHASE_WEIGHTS: dict[str, float] = {
+        "reconcile": 50,
+        "prune": 10,
+        "tags": 3,
+        "hash": 30,
+        "rebuild": 7,
+    }
 
     async def _init(self, params: dict[str, Any], resume_data: Optional[dict[str, Any]]) -> None:
         self._status_msg: str = "Initializing"
@@ -47,38 +66,102 @@ class DatabaseMaintenanceTask(Task):
         self._sync_jsons: bool = bool(params.get("sync_jsons", True))
         self._sync_mode: str = params.get("sync_mode", "merge")
         self._clear_orphan_tags: bool = bool(params.get("clear_orphan_tags", True))
+        self._fill_missing_phashes: bool = bool(params.get("fill_missing_phashes", False))
         self._recompute_phashes: bool = bool(params.get("recompute_phashes", False))
+        self._phash_concurrency: int = max(1, int(params.get("phash_concurrency", 4)))
 
         if self._sync_mode not in _VALID_SYNC_MODES:
             raise ValueError(f"Invalid sync_mode: {self._sync_mode!r}. Must be one of {_VALID_SYNC_MODES}")
+
+    # ── Orchestrator ───────────────────────────────────────────────────────────
 
     async def _run(self) -> dict[str, Any]:
         db_api_client = self._manager.get_db_api_client()
         images_api = ImagesApi(db_api_client)
         tags_api = TagsApi(db_api_client)
 
-        # ── 1. List files on disk ─────────────────────────────────────────────
-        self._status_msg = "Listing files"
+        _has_hash_work = self._recompute_phashes or self._fill_missing_phashes
+
+        # Build a dynamic progress budget: only allocate space to active phases.
+        active = []
+        if self._sync_jsons:         active.append("reconcile")
+        if self._remove_deleted:     active.append("prune")
+        if self._clear_orphan_tags:  active.append("tags")
+        if _has_hash_work:           active.extend(["hash", "rebuild"])
+
+        total_w = sum(self._PHASE_WEIGHTS[p] for p in active) or 1
+        ends: dict[str, float] = {}
+        cum = 0.0
+        for p in active:
+            cum += self._PHASE_WEIGHTS[p] / total_w * 100.0
+            ends[p] = cum
+
+        summary: dict[str, Any] = {}
+
+        # ── 1. Reconcile (disk scan + sidecar sync) ───────────────────────────
+        known_disk_uuids: list[str] = []
+        if self._sync_jsons and not self._cancel_flag.is_set():
+            r = await self._step_reconcile(images_api, 0.0, ends["reconcile"])
+            known_disk_uuids = r.pop("known_disk_uuids")
+            summary.update(r)
+
+        # ── 2. Prune ──────────────────────────────────────────────────────────
+        if self._remove_deleted and not self._cancel_flag.is_set():
+            # If reconcile ran, known_disk_uuids carries sidecar UUIDs so moved
+            # files are protected.  If reconcile was skipped, pass [] — the backend
+            # checks file existence directly (no second disk walk needed).
+            summary["pruned"] = await self._step_prune(
+                images_api, known_disk_uuids, ends.get("prune", 100.0)
+            )
+
+        # ── 3. Clear orphan tags ──────────────────────────────────────────────
+        if self._clear_orphan_tags and not self._cancel_flag.is_set():
+            summary["tags_cleared"] = await self._step_clear_tags(tags_api, ends.get("tags", 100.0))
+
+        # ── 4. Hash work ──────────────────────────────────────────────────────
+        if _has_hash_work and not self._cancel_flag.is_set():
+            settings_api = SettingsApi(db_api_client)
+            h = await self._step_hash(
+                images_api, settings_api,
+                hash_end=ends.get("hash", 95.0),
+                rebuild_end=ends.get("rebuild", 100.0),
+            )
+            summary.update(h)
+
+        self._update_progress(100.0)
+        self._status_msg = "Done"
+
+        log_parts: list[str] = []
+        if "files_found" in summary:   log_parts.append(f"{summary['files_found']} files on disk")
+        if "reconciled" in summary:    log_parts.append(f"{summary['reconciled']} synced")
+        if "moved" in summary:         log_parts.append(f"{summary['moved']} moves detected")
+        if "errors" in summary:        log_parts.append(f"{summary['errors']} errors")
+        if "pruned" in summary:        log_parts.append(f"{summary['pruned']} pruned")
+        if "tags_cleared" in summary:  log_parts.append(f"{summary['tags_cleared']} orphan tags cleared")
+        if "phash_processed" in summary:
+            verb = "recomputed" if self._recompute_phashes else "filled"
+            log_parts.append(f"{summary['phash_processed']} hashes {verb}")
+        self.log("Complete: " + (", ".join(log_parts) or "nothing to do"))
+        return summary
+
+    # ── Phase helpers ──────────────────────────────────────────────────────────
+
+    async def _step_reconcile(self, images_api, start_pct: float, end_pct: float) -> dict:
+        """Walk disk, sync each file's JSON sidecar with the DB, collect sidecar UUIDs."""
+        self._status_msg = "Listing files on disk…"
         self.log("Listing image files on disk")
+        await self.heartbeat(force=True)
+
         list_resp = await asyncio.to_thread(images_api.list_images, path="/", pattern="*", recursive=True)
-        file_entries = list_resp.files or []
-        image_files = [e for e in file_entries if not e.is_dir]
+        image_files = [e for e in (list_resp.files or []) if not e.is_dir]
         total = len(image_files)
         self.log(f"Found {total} image files")
 
-        # Progress budget: share 0–55 % across reconcile/prune/tags; leave 55–100 for phashes.
-        reconcile_end = 55.0 if self._recompute_phashes else 70.0
-        prune_end = 75.0 if self._recompute_phashes else 90.0
-        tags_end = 80.0 if self._recompute_phashes else 100.0
-
-        # ── 2. Reconcile each file + collect known disk UUIDs ─────────────────
-        reconciled = 0
-        moved = 0
-        errors = 0
-        known_disk_uuids: list[str] = []
-
         label = "Reconciling" if self._sync_jsons else "Scanning"
-        self._status_msg = f"{label} 0/{total}"
+        self._status_msg = f"{label} 0 / {total}"
+
+        known_disk_uuids: list[str] = []
+        reconciled = moved = errors = 0
 
         for i, entry in enumerate(image_files):
             if self._cancel_flag.is_set():
@@ -91,136 +174,158 @@ class DatabaseMaintenanceTask(Task):
             if sidecar_uuid:
                 known_disk_uuids.append(sidecar_uuid)
 
-            if self._sync_jsons:
-                try:
-                    result = await asyncio.to_thread(
-                        images_api.reconcile_image,
-                        ReconcileImagePayload(rel_path=rel_path, sync_mode=self._sync_mode),
-                    )
-                    action = getattr(result, "action", "")
-                    if action == "moved":
-                        moved += 1
-                    elif action not in ("skipped",):
-                        reconciled += 1
-                except Exception:
-                    logger.exception("reconcile_image failed for %s", rel_path)
-                    errors += 1
-
-            self._update_progress((i + 1) / max(total, 1) * reconcile_end)
-            self._status_msg = f"{label} {i + 1}/{total}"
-
-        # ── 3. Prune missing images ───────────────────────────────────────────
-        pruned = 0
-        if self._remove_deleted and not self._cancel_flag.is_set():
-            self._status_msg = "Pruning missing images"
-            self.log("Pruning DB records for missing images")
-            await self.heartbeat(force=True)
             try:
-                prune_resp = await asyncio.to_thread(
-                    images_api.prune_missing_images,
-                    PruneImagesPayload(known_disk_uuids=known_disk_uuids),
+                result = await asyncio.to_thread(
+                    images_api.reconcile_image,
+                    ReconcileImagePayload(rel_path=rel_path, sync_mode=self._sync_mode),
                 )
-                pruned = getattr(prune_resp, "deleted_count", 0) or 0
-                self.log(f"Pruned {pruned} missing image records")
+                action = getattr(result, "action", "")
+                if action == "moved":
+                    moved += 1
+                elif action not in ("skipped",):
+                    reconciled += 1
             except Exception:
-                logger.exception("prune_missing_images failed")
-            self._update_progress(prune_end)
+                logger.exception("reconcile_image failed for %s", rel_path)
+                errors += 1
 
-        # ── 4. Clear orphan generated tags ────────────────────────────────────
+            self._update_progress(start_pct + (i + 1) / max(total, 1) * (end_pct - start_pct))
+            self._status_msg = f"{label} {i + 1} / {total}"
+
+        return {
+            "known_disk_uuids": known_disk_uuids,
+            "files_found": total,
+            "reconciled": reconciled,
+            "moved": moved,
+            "errors": errors,
+        }
+
+    async def _step_prune(self, images_api, known_disk_uuids: list[str], end_pct: float) -> int:
+        """Delete DB records for images no longer on disk.
+
+        When known_disk_uuids is non-empty (populated by a preceding reconcile pass),
+        those UUIDs shield moved files from deletion.  When empty (reconcile was
+        skipped), the backend checks each record's file path directly — no disk walk
+        needed in the task.
+        """
+        self._status_msg = "Pruning missing images…"
+        self.log("Pruning DB records for missing images")
+        await self.heartbeat(force=True)
+        pruned = 0
+        try:
+            prune_resp = await asyncio.to_thread(
+                images_api.prune_missing_images,
+                PruneImagesPayload(known_disk_uuids=known_disk_uuids),
+            )
+            pruned = getattr(prune_resp, "deleted_count", 0) or 0
+            self.log(f"Pruned {pruned} missing image records")
+        except Exception:
+            logger.exception("prune_missing_images failed")
+        self._update_progress(end_pct)
+        return pruned
+
+    async def _step_clear_tags(self, tags_api, end_pct: float) -> int:
+        """Remove TASK_GENERATED tags no longer attached to any bounding box."""
+        self._status_msg = "Clearing orphan tags…"
+        self.log("Clearing orphan TASK_GENERATED tags")
+        await self.heartbeat(force=True)
         tags_cleared = 0
-        if self._clear_orphan_tags and not self._cancel_flag.is_set():
-            self._status_msg = "Clearing orphan tags"
-            self.log("Clearing orphan TASK_GENERATED tags")
-            await self.heartbeat(force=True)
-            try:
-                tags_resp = await asyncio.to_thread(tags_api.clear_orphan_generated_tags)
-                tags_cleared = getattr(tags_resp, "deleted_count", 0) or 0
-                self.log(f"Cleared {tags_cleared} orphan tags")
-            except Exception:
-                logger.exception("clear_orphan_generated_tags failed")
-            self._update_progress(tags_end)
+        try:
+            tags_resp = await asyncio.to_thread(tags_api.clear_orphan_generated_tags)
+            tags_cleared = getattr(tags_resp, "deleted_count", 0) or 0
+            self.log(f"Cleared {tags_cleared} orphan tags")
+        except Exception:
+            logger.exception("clear_orphan_generated_tags failed")
+        self._update_progress(end_pct)
+        return tags_cleared
 
-        # ── 5. Recompute perceptual hashes ────────────────────────────────────
+    async def _step_hash(
+        self,
+        images_api,
+        settings_api,
+        hash_end: float,
+        rebuild_end: float,
+    ) -> dict:
+        """Compute perceptual hashes concurrently, then rebuild the BK-tree index."""
+        image_hash_size, bbox_hash_size = await asyncio.gather(
+            self._read_int_setting(settings_api, "dedup_image_hash_size", 8),
+            self._read_int_setting(settings_api, "dedup_bbox_hash_size", 16),
+        )
+        image_hex_len = image_hash_size * image_hash_size // 4
+        bbox_hex_len = bbox_hash_size * bbox_hash_size // 4
+
+        if self._recompute_phashes:
+            self._status_msg = "Listing images for full phash recompute…"
+            self.log(f"Recomputing ALL phashes (image_hash_size={image_hash_size}, bbox_hash_size={bbox_hash_size})")
+            await self.heartbeat(force=True)
+            stubs_resp = await asyncio.to_thread(images_api.list_image_stubs)
+            mode_label = "Recomputing"
+        else:
+            self._status_msg = "Finding images with missing / wrong-size phashes…"
+            self.log(f"Filling missing phashes (image_hex_len={image_hex_len}, bbox_hex_len={bbox_hex_len})")
+            await self.heartbeat(force=True)
+            stubs_resp = await asyncio.to_thread(
+                images_api.list_image_stubs_needing_phash,
+                ImageStubsNeedingPhashPayload(image_hex_len=image_hex_len, bbox_hex_len=bbox_hex_len),
+            )
+            mode_label = "Hashing"
+
+        stubs = stubs_resp.stubs or []
+        phash_total = len(stubs)
+        self.log(f"{mode_label} hashes for {phash_total} images (concurrency={self._phash_concurrency})")
+        self._status_msg = f"{mode_label} 0 / {phash_total}"
+
+        # hash_end is the progress target after all images are done; reserve the
+        # last slice of that range for the rebuild step.
+        hash_start = self._progress
+        hash_work_end = hash_start + (hash_end - hash_start) * 0.92
+
         phash_processed = 0
         phash_errors = 0
-        if self._recompute_phashes and not self._cancel_flag.is_set():
-            settings_api = SettingsApi(db_api_client)
-            image_hash_size, bbox_hash_size = await asyncio.gather(
-                self._read_int_setting(settings_api, "dedup_image_hash_size", 8),
-                self._read_int_setting(settings_api, "dedup_bbox_hash_size", 16),
-            )
-            self.log(f"Recomputing phashes (image_hash_size={image_hash_size}, bbox_hash_size={bbox_hash_size})")
+        sem = asyncio.Semaphore(self._phash_concurrency)
+        payload = RecomputePhashPayload(image_hash_size=image_hash_size, bbox_hash_size=bbox_hash_size)
 
-            # Re-list stubs after reconcile/prune so the set is current.
-            self._status_msg = "Listing images for phash recompute"
-            stubs_resp = await asyncio.to_thread(images_api.list_image_stubs)
-            stubs = stubs_resp.stubs or []
-            phash_total = len(stubs)
-            self.log(f"Recomputing hashes for {phash_total} images")
-
-            for i, stub in enumerate(stubs):
+        async def _hash_one(stub) -> None:
+            nonlocal phash_processed, phash_errors
+            if self._cancel_flag.is_set():
+                return
+            async with sem:
                 if self._cancel_flag.is_set():
-                    self.log("Cancelled during phash recompute")
-                    break
-                await self._check_pause()
-
+                    return
                 try:
-                    await asyncio.to_thread(
-                        images_api.recompute_image_phash,
-                        stub.uuid,
-                        RecomputePhashPayload(
-                            image_hash_size=image_hash_size,
-                            bbox_hash_size=bbox_hash_size,
-                        ),
-                    )
+                    await asyncio.to_thread(images_api.recompute_image_phash, stub.uuid, payload)
                     phash_processed += 1
                 except Exception:
                     logger.exception("recompute_image_phash failed for %s", stub.uuid)
                     self.log(f"Error hashing {stub.uuid}")
                     phash_errors += 1
 
-                self._update_progress(tags_end + (i + 1) / max(phash_total, 1) * (95.0 - tags_end))
-                self._status_msg = f"Hashing {i + 1}/{phash_total} — {phash_processed} done, {phash_errors} errors"
-                await asyncio.sleep(0)
+                done = phash_processed + phash_errors
+                self._update_progress(hash_start + done / max(phash_total, 1) * (hash_work_end - hash_start))
+                self._status_msg = (
+                    f"{mode_label} {done} / {phash_total} — {phash_processed} done"
+                    + (f", {phash_errors} errors" if phash_errors else "")
+                )
+                await self.heartbeat()
 
-            if not self._cancel_flag.is_set():
-                self._status_msg = "Rebuilding hash index"
-                self.log("Rebuilding BK-tree hash index")
-                await self.heartbeat(force=True)
-                try:
-                    rebuild_resp: RebuildHashIndexResponse = await asyncio.to_thread(
-                        images_api.rebuild_hash_index
-                    )
-                    img_cnt = getattr(rebuild_resp, "image_count", 0) or 0
-                    bbox_cnt = getattr(rebuild_resp, "bbox_count", 0) or 0
-                    self.log(f"Index rebuilt: {img_cnt} images, {bbox_cnt} bboxes")
-                except Exception:
-                    logger.exception("rebuild_hash_index failed")
-                    self.log("Failed to rebuild hash index")
+        await asyncio.gather(*[_hash_one(stub) for stub in stubs], return_exceptions=True)
 
-        self._update_progress(100.0)
-        self._status_msg = "Done"
-        summary: dict[str, Any] = {
-            "files_found": total,
-            "reconciled": reconciled,
-            "moved": moved,
-            "errors": errors,
-            "pruned": pruned,
-            "tags_cleared": tags_cleared,
-        }
-        log_parts = [
-            f"{total} files",
-            f"{reconciled} synced",
-            f"{moved} moves detected",
-            f"{pruned} pruned",
-            f"{tags_cleared} orphan tags cleared",
-        ]
-        if self._recompute_phashes:
-            summary["phash_processed"] = phash_processed
-            summary["phash_errors"] = phash_errors
-            log_parts.append(f"{phash_processed} hashes recomputed")
-        self.log("Complete: " + ", ".join(log_parts))
-        return summary
+        if not self._cancel_flag.is_set():
+            self._status_msg = "Rebuilding hash index…"
+            self.log("Rebuilding BK-tree hash index")
+            await self.heartbeat(force=True)
+            try:
+                rebuild_resp: RebuildHashIndexResponse = await asyncio.to_thread(images_api.rebuild_hash_index)
+                img_cnt = getattr(rebuild_resp, "image_count", 0) or 0
+                bbox_cnt = getattr(rebuild_resp, "bbox_count", 0) or 0
+                self.log(f"Index rebuilt: {img_cnt} images, {bbox_cnt} bboxes")
+            except Exception:
+                logger.exception("rebuild_hash_index failed")
+                self.log("Failed to rebuild hash index")
+            self._update_progress(rebuild_end)
+
+        return {"phash_processed": phash_processed, "phash_errors": phash_errors}
+
+    # ── Utilities ──────────────────────────────────────────────────────────────
 
     async def _get_sidecar_uuid(self, rel_path: str) -> Optional[str]:
         """Read the sidecar for rel_path and return its uuid field, or None."""
@@ -237,6 +342,20 @@ class DatabaseMaintenanceTask(Task):
     async def _deinit(self) -> None:
         pass
 
+    def get_notices(self) -> list[dict]:
+        status = self.get_status()
+        if status not in (TaskStatus.RUNNING, TaskStatus.PAUSED):
+            return []
+        recompute = getattr(self, "_recompute_phashes", False)
+        fill_missing = getattr(self, "_fill_missing_phashes", False)
+        if recompute:
+            msg = "Recomputing all perceptual hashes — duplicate search results may be incomplete"
+        elif fill_missing:
+            msg = "Computing missing perceptual hashes — duplicate search results may be incomplete"
+        else:
+            return []
+        return [{"key": "hash_in_progress", "level": "warning", "message": msg}]
+
     def get_status_message(self) -> str:
         return self._status_msg
 
@@ -249,7 +368,9 @@ class DatabaseMaintenanceTask(Task):
                     "sync_mode",
                     "remove_deleted",
                     "clear_orphan_tags",
+                    "fill_missing_phashes",
                     "recompute_phashes",
+                    "phash_concurrency",
                 ]
             },
             "sync_jsons": {
@@ -273,7 +394,11 @@ class DatabaseMaintenanceTask(Task):
             "remove_deleted": {
                 "type": "boolean",
                 "label": "Remove deleted images",
-                "description": "Delete DB records for images that are no longer on disk.",
+                "description": (
+                    "Delete DB records for images no longer on disk. "
+                    "If 'Sync sidecars' is also on, moved files are protected via sidecar UUIDs. "
+                    "If 'Sync sidecars' is off, file existence is checked directly — no extra disk scan."
+                ),
                 "default": True,
             },
             "clear_orphan_tags": {
@@ -282,13 +407,35 @@ class DatabaseMaintenanceTask(Task):
                 "description": "Remove task-generated tags that are no longer attached to any bounding box.",
                 "default": True,
             },
-            "recompute_phashes": {
+            "fill_missing_phashes": {
                 "type": "boolean",
-                "label": "Recompute perceptual hashes",
+                "label": "Fill missing perceptual hashes",
                 "description": (
-                    "Recompute phashes for every image using the hash sizes configured in Settings, "
-                    "then rebuild the BK-tree deduplication index. Required after changing hash sizes."
+                    "Compute phashes only for images/bboxes that have no hash or were hashed at a different size "
+                    "than the current Settings. Much faster than a full recompute when most data is already hashed. "
+                    "Rebuilds the BK-tree index when done."
                 ),
                 "default": False,
+            },
+            "recompute_phashes": {
+                "type": "boolean",
+                "label": "Recompute ALL perceptual hashes",
+                "description": (
+                    "Recompute phashes for every image using the hash sizes configured in Settings, "
+                    "then rebuild the BK-tree deduplication index. Required after changing hash sizes. "
+                    "Use 'Fill missing' instead if you only want to backfill new images."
+                ),
+                "default": False,
+            },
+            "phash_concurrency": {
+                "type": "number",
+                "label": "Hash concurrency",
+                "description": (
+                    "Number of images to hash in parallel. Higher values saturate disk and CPU faster "
+                    "but use more memory. 4 is a safe default; raise to 8–16 on fast SSDs."
+                ),
+                "default": 4,
+                "min": 1,
+                "max": 32,
             },
         }

@@ -472,6 +472,11 @@ class FindSimilarImagesByUuidPayload(ApiPayload):
     threshold: int = 5
 
 
+class ImageStubsNeedingPhashPayload(ApiPayload):
+    image_hex_len: int
+    bbox_hex_len: int
+
+
 class FindSimilarBboxesByUuidPayload(ApiPayload):
     bbox_uuid: str
     threshold: int = 8
@@ -1243,6 +1248,23 @@ class WebApp:
                 logger.error(e, exc_info=True)
                 return ListImageStubsResponse(status=JsonValues.FAILURE, message=str(e))
 
+
+        @self._app.post(
+            "/api/images/stubs/needing-phash",
+            response_model=ListImageStubsResponse,
+            tags=[ApiTags.IMAGES],
+            operation_id="list_image_stubs_needing_phash",
+        )
+        async def list_image_stubs_needing_phash(payload: ImageStubsNeedingPhashPayload) -> ListImageStubsResponse:
+            """Return uuid+filename for images whose phash is absent or computed at a different size."""
+            try:
+                raw = await self._manager.list_image_stubs_needing_phash(payload.image_hex_len, payload.bbox_hex_len)
+                stubs = [ImageStub(uuid=s["uuid"], filename=s["filename"]) for s in raw]
+                return ListImageStubsResponse(status=JsonValues.SUCCESS, stubs=stubs)
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return ListImageStubsResponse(status=JsonValues.FAILURE, message=str(e))
+
         @self._app.post(
             "/api/images/reconcile",
             response_model=ReconcileImageResponse,
@@ -1311,14 +1333,14 @@ class WebApp:
         )
         async def find_similar_bboxes(payload: FindSimilarBboxesPayload) -> FindSimilarBboxesResponse:
             try:
-                matches = self._manager.find_similar_bboxes(
+                matches = await self._manager.find_similar_bboxes_enriched(
                     payload.phash, payload.label_uuid, payload.threshold
                 )
                 return FindSimilarBboxesResponse(
                     status=JsonValues.SUCCESS,
                     matches=[
-                        SimilarBboxMatch(bbox_uuid=bbox_uuid, label_uuid=lbl, distance=dist)
-                        for bbox_uuid, dist, lbl in matches
+                        SimilarBboxMatch(bbox_uuid=bbox_uuid, image_uuid=image_uuid, label_uuid=lbl, distance=dist)
+                        for bbox_uuid, image_uuid, dist, lbl in matches
                     ],
                 )
             except Exception as e:

@@ -93,6 +93,7 @@ class Manager:
             image_hash_size=self._image_hash_size,
             bbox_hash_size=self._bbox_hash_size,
         )
+        self._rebuild_in_progress: bool = False
         # Short-lived cache for expensive count queries.  Key is an MD5 of the
         # filter predicates (sort/page fields excluded); value is (count, ts).
         # TTL is intentionally short so writes that happen while browsing are
@@ -791,6 +792,10 @@ class Manager:
         """Return [{uuid, filename}] for every image record without pagination."""
         return await self._db_client.get_all_image_stubs()
 
+    async def list_image_stubs_needing_phash(self, image_hex_len: int, bbox_hex_len: int) -> List[Dict[str, str]]:
+        """Return [{uuid, filename}] for images whose phash is missing or was computed at a different size."""
+        return await self._db_client.get_image_stubs_needing_phash(image_hex_len, bbox_hex_len)
+
     async def reconcile_image(self, rel_path: str, sync_mode: str) -> Dict[str, Any]:
         """Move-aware reconcile of a single image file against the DB.
 
@@ -927,13 +932,30 @@ class Manager:
         """Return [(bbox_uuid, distance, label_uuid)] within *threshold* of *phash*."""
         return self._hash_index.find_similar_bboxes(phash, label_uuid, threshold)
 
+    async def find_similar_bboxes_enriched(
+        self,
+        phash: str,
+        label_uuid: Optional[str],
+        threshold: int,
+    ) -> List[Tuple[str, Optional[str], int, str]]:
+        """Return [(bbox_uuid, image_uuid, distance, label_uuid)] within *threshold* of *phash*.
+
+        Like find_similar_bboxes but enriches each result with its parent image UUID via a
+        single batch query, so callers never have to deal with a missing image_uuid.
+        """
+        matches = self._hash_index.find_similar_bboxes(phash, label_uuid, threshold)
+        if not matches:
+            return []
+        bbox_uuids = [b_uuid for b_uuid, _dist, _lbl in matches]
+        image_uuid_map = await self._db_client.get_image_uuids_for_bboxes(bbox_uuids)
+        return [(b_uuid, image_uuid_map.get(b_uuid), dist, lbl) for b_uuid, dist, lbl in matches]
+
     async def find_similar_images_by_uuid(self, image_uuid: str, threshold: int) -> List[Tuple[str, int]]:
-        """Return [(image_uuid, distance)] for images similar to the given image UUID, excluding the query image."""
+        """Return [(image_uuid, distance)] for images similar to the given image UUID, including the query image itself (distance 0)."""
         image = await self._db_client.get_image_by_uuid(image_uuid)
         if image is None or image.phash is None:
             return []
-        matches = self._hash_index.find_similar_images(image.phash, threshold)
-        return [(uuid, dist) for uuid, dist in matches if uuid != image_uuid]
+        return self._hash_index.find_similar_images(image.phash, threshold)
 
     async def find_similar_bboxes_by_uuid(
         self,
@@ -941,7 +963,7 @@ class Manager:
         label_uuid: Optional[str],
         threshold: int,
     ) -> List[Tuple[str, Optional[str], int, str]]:
-        """Return [(bbox_uuid, image_uuid, distance, label_uuid)] for bboxes similar to the given bbox UUID, excluding the query bbox."""
+        """Return [(bbox_uuid, image_uuid, distance, label_uuid)] for bboxes similar to the given bbox UUID, including the query bbox itself (distance 0)."""
         result = await self._db_client.get_bbox_with_image(bbox_uuid)
         if result is None:
             return []
@@ -949,8 +971,6 @@ class Manager:
         if bbox.phash is None:
             return []
         matches = self._hash_index.find_similar_bboxes(bbox.phash, label_uuid, threshold)
-        # Exclude the query bbox itself (distance 0 self-match)
-        matches = [(b_uuid, dist, lbl) for b_uuid, dist, lbl in matches if b_uuid != bbox_uuid]
         if not matches:
             return []
         # Enrich with image UUIDs via a single batch query
@@ -970,10 +990,14 @@ class Manager:
 
     async def get_status(self) -> dict:
         """Return service health and diagnostic info."""
+        notices: list[dict] = []
+        if self._rebuild_in_progress:
+            notices.append({"key": "hash_rebuild", "level": "warning", "message": "Hash index rebuilding…"})
         return {
             "service": "db_server",
             "status": "ok",
             "hash_index": self._hash_index.stats(),
+            "notices": notices,
         }
 
     async def get_image_filename_by_uuid(self, image_uuid: str) -> Optional[str]:
@@ -987,7 +1011,11 @@ class Manager:
 
     async def rebuild_hash_index(self) -> dict:
         """Rebuild the BK-tree index from the DB and return stats."""
-        stats = await self._hash_index.rebuild()
+        self._rebuild_in_progress = True
+        try:
+            stats = await self._hash_index.rebuild()
+        finally:
+            self._rebuild_in_progress = False
         return {
             "image_count": stats.image_count,
             "bbox_count": stats.bbox_count,

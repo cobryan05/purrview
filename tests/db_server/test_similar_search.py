@@ -138,8 +138,8 @@ class TestDbClientBatchHelpers:
 
 
 class TestFindSimilarByImageUuid:
-    async def test_excludes_source_image_from_results(self, http_client, index_built):
-        """Query image must NOT appear in its own similarity results."""
+    async def test_includes_source_image_in_results(self, http_client, index_built):
+        """Query image must appear in results with distance 0 (exact self-match)."""
         image_uuid, _ = index_built
         r = await http_client.post(
             "/api/images/find-similar-by-image-uuid",
@@ -148,8 +148,9 @@ class TestFindSimilarByImageUuid:
         assert r.status_code == 200
         body = r.json()
         assert body["status"] == "success"
-        returned_uuids = [m["imageUuid"] for m in body["matches"]]
-        assert image_uuid not in returned_uuids
+        matches_by_uuid = {m["imageUuid"]: m for m in body["matches"]}
+        assert image_uuid in matches_by_uuid
+        assert matches_by_uuid[image_uuid]["distance"] == 0
 
     async def test_unknown_uuid_returns_empty(self, http_client):
         r = await http_client.post(
@@ -179,8 +180,8 @@ class TestFindSimilarByImageUuid:
 
 
 class TestFindSimilarByBboxUuid:
-    async def test_excludes_source_bbox_from_results(self, http_client, index_built):
-        """Query bbox must NOT appear in its own similarity results."""
+    async def test_includes_source_bbox_in_results(self, http_client, index_built):
+        """Query bbox must appear in results with distance 0 (exact self-match)."""
         _, bbox_uuid = index_built
         r = await http_client.post(
             "/api/images/bbox/find-similar-by-bbox-uuid",
@@ -189,8 +190,9 @@ class TestFindSimilarByBboxUuid:
         assert r.status_code == 200
         body = r.json()
         assert body["status"] == "success"
-        returned_uuids = [m["bboxUuid"] for m in body["matches"]]
-        assert bbox_uuid not in returned_uuids
+        matches_by_uuid = {m["bboxUuid"]: m for m in body["matches"]}
+        assert bbox_uuid in matches_by_uuid
+        assert matches_by_uuid[bbox_uuid]["distance"] == 0
 
     async def test_unknown_uuid_returns_empty(self, http_client):
         r = await http_client.post(

@@ -15,7 +15,7 @@ ALEMBIC_INI_PATH = Path(__file__).parent / "alembic.ini"
 import jstyleson
 from alembic.runtime.migration import MigrationContext
 from pydantic import TypeAdapter
-from sqlalchemy import Select, and_, delete, event, func, or_, text
+from sqlalchemy import Select, and_, delete, event, exists, func, or_, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import selectinload, sessionmaker
@@ -1038,6 +1038,32 @@ class DbClient:
         """Return [{uuid, filename}] for every image record, with no pagination limit."""
         async with self._async_session_maker() as session:
             result = await session.exec(select(ImageRecord.uuid, ImageRecord.filename))
+            return [{"uuid": uuid, "filename": filename} for uuid, filename in result.all()]
+
+    async def get_image_stubs_needing_phash(self, image_hex_len: int, bbox_hex_len: int) -> List[Dict[str, str]]:
+        """Return [{uuid, filename}] for images that are missing a phash or have one at the wrong size.
+
+        Covers two cases:
+          1. The image's own phash is NULL or has a different hex length than *image_hex_len*.
+          2. Any bbox on the image has a NULL phash or a different hex length than *bbox_hex_len*.
+        """
+        bbox_missing = (
+            select(BBox.uuid)
+            .where(
+                BBox.image_uuid == ImageRecord.uuid,
+                or_(BBox.phash.is_(None), func.length(BBox.phash) != bbox_hex_len),
+            )
+            .exists()
+        )
+        stmt = select(ImageRecord.uuid, ImageRecord.filename).where(
+            or_(
+                ImageRecord.phash.is_(None),
+                func.length(ImageRecord.phash) != image_hex_len,
+                bbox_missing,
+            )
+        )
+        async with self._async_session_maker() as session:
+            result = await session.exec(stmt)
             return [{"uuid": uuid, "filename": filename} for uuid, filename in result.all()]
 
     async def update_image_filename(self, image_uuid: str, new_filename: str) -> bool:

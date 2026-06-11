@@ -90,4 +90,9 @@ export const EventTypes = Object.freeze({
    * Payload: boolean (true = show dynamic labels)
    */
   DYNAMIC_LABELS_VISIBILITY_CHANGED: "labels:dynamic:visibility_changed",
+  /**
+   * Fired after canvas annotations are saved from any modal (including nested).
+   * Payload: { imageUuid: string, imageFilename: string, bboxes: Map<string, UIBbox> }
+   */
+  IMAGE_ANNOTATIONS_SAVED: "image:annotations:saved",
 });

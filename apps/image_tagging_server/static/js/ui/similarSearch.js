@@ -19,6 +19,43 @@ import {
   fetchImagesByUuids,
 } from '/app-static/js/shared/api/images.js';
 
+// ── Shared slider builder ──────────────────────────────────────────────────────
+
+/**
+ * Build a threshold slider control element.
+ * Returns { element, getValue } so callers can read the current value.
+ * `onChange` is called whenever the value changes (debounced to 'change' event
+ * on the range input, not 'input', to avoid hammering the server on drag).
+ */
+function buildThresholdSlider(initial, { min = 0, max = 20, onChange }) {
+  const el = document.createElement('div');
+  el.style.cssText = 'display:flex;align-items:center;gap:0.5em;font-size:0.85em;color:#aaa;margin-left:0.5em;';
+
+  const label = document.createElement('span');
+  label.style.cssText = 'white-space:nowrap;';
+  label.textContent = `Threshold: ${initial}`;
+
+  const slider = document.createElement('input');
+  slider.type = 'range';
+  slider.min = String(min);
+  slider.max = String(max);
+  slider.step = '1';
+  slider.value = String(initial);
+  slider.style.cssText = 'width:120px;accent-color:#c9a227;cursor:pointer;';
+  slider.title = 'Similarity threshold — lower = stricter match';
+
+  // Update label live while dragging, re-query only on release
+  slider.addEventListener('input', () => {
+    label.textContent = `Threshold: ${slider.value}`;
+  });
+  slider.addEventListener('change', () => {
+    onChange(parseInt(slider.value, 10));
+  });
+
+  el.append(label, slider);
+  return { element: el, getValue: () => parseInt(slider.value, 10) };
+}
+
 // ── Public API ─────────────────────────────────────────────────────────────────
 
 /**
@@ -28,23 +65,35 @@ import {
  * @param {{ imageUuid: string, threshold: number }} params
  */
 export async function openSimilarImagesModal({ imageUuid, threshold }) {
-  // Kick off the search now; fetchImages will await it (cached after first call).
-  const matchesPromise = findSimilarImagesByUuid(imageUuid, threshold);
-  let cachedImages = null;
+  let _threshold = threshold;
+  let _cachedImages = null;
+  let _queryPromise = findSimilarImagesByUuid(imageUuid, _threshold);
+  let _refresh = null;
 
-  await showReviewModal({
-    title: `Similar Images (threshold ≤ ${threshold})`,
+  const { element: sliderEl } = buildThresholdSlider(_threshold, {
+    onChange(newThreshold) {
+      _threshold = newThreshold;
+      _cachedImages = null;
+      _queryPromise = findSimilarImagesByUuid(imageUuid, _threshold);
+      _refresh?.();
+    },
+  });
+
+  _refresh = await showReviewModal({
+    title: 'Similar Images',
+    headerControls: sliderEl,
+    referenceImageUuids: new Set([imageUuid]),
     fetchImages: async () => {
-      if (cachedImages !== null) return cachedImages;
-      const matches = await matchesPromise;
-      if (!matches.length) { cachedImages = []; return []; }
+      if (_cachedImages !== null) return _cachedImages;
+      const matches = await _queryPromise;
+      if (!matches.length) { _cachedImages = []; return []; }
       const imageUuids = matches.map(m => m.imageUuid);
       const images = await fetchImagesByUuids(imageUuids);
-      // Sort by similarity distance (most similar first)
+      // Sort by similarity distance (most similar first — reference at distance 0 will be first)
       const orderMap = new Map(matches.map((m, i) => [m.imageUuid, i]));
       images.sort((a, b) => (orderMap.get(a.uuid) ?? 9999) - (orderMap.get(b.uuid) ?? 9999));
-      cachedImages = images;
-      return cachedImages;
+      _cachedImages = images;
+      return _cachedImages;
     },
   });
 }
@@ -56,29 +105,42 @@ export async function openSimilarImagesModal({ imageUuid, threshold }) {
  * @param {{ bboxUuid: string, threshold: number, labelUuid?: string|null }} params
  */
 export async function openSimilarBboxesModal({ bboxUuid, threshold, labelUuid = null }) {
-  const matchesPromise = findSimilarBboxesByUuid(bboxUuid, threshold, labelUuid);
-  let cachedImages = null;
+  let _threshold = threshold;
+  let _cachedImages = null;
+  let _queryPromise = findSimilarBboxesByUuid(bboxUuid, _threshold, labelUuid);
+  let _refresh = null;
 
-  await showReviewModal({
-    title: `Similar Bboxes (threshold ≤ ${threshold})`,
+  const { element: sliderEl } = buildThresholdSlider(_threshold, {
+    onChange(newThreshold) {
+      _threshold = newThreshold;
+      _cachedImages = null;
+      _queryPromise = findSimilarBboxesByUuid(bboxUuid, _threshold, labelUuid);
+      _refresh?.();
+    },
+  });
+
+  _refresh = await showReviewModal({
+    title: 'Similar Bboxes',
+    headerControls: sliderEl,
+    referenceBboxUuids: new Set([bboxUuid]),
     fetchImages: async () => {
-      if (cachedImages !== null) return cachedImages;
-      const matches = await matchesPromise;
-      if (!matches.length) { cachedImages = []; return []; }
+      if (_cachedImages !== null) return _cachedImages;
+      const matches = await _queryPromise;
+      if (!matches.length) { _cachedImages = []; return []; }
 
       const imageUuidSet = new Set(matches.filter(m => m.imageUuid).map(m => m.imageUuid));
-      if (!imageUuidSet.size) { cachedImages = []; return []; }
+      if (!imageUuidSet.size) { _cachedImages = []; return []; }
 
       const matchedBboxUuids = new Set(matches.map(m => m.bboxUuid));
       const images = await fetchImagesByUuids([...imageUuidSet]);
 
       // Narrow each image's bbox list to only the matched bboxes so the review
       // panel highlights exactly the relevant annotations.
-      cachedImages = images.map(img => ({
+      _cachedImages = images.map(img => ({
         ...img,
         bboxes: (img.bboxes || []).filter(b => matchedBboxUuids.has(b.uuid)),
       }));
-      return cachedImages;
+      return _cachedImages;
     },
   });
 }

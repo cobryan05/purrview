@@ -50,7 +50,9 @@ async def test_task_counts_only_file_entries():
     images_api = _images_api_mock(entries)
     tags_api = _tags_api_mock()
 
-    task = _make_task({"sync_jsons": False, "remove_deleted": False, "clear_orphan_tags": False})
+    # sync_jsons=True is required: the disk scan (and is_dir filtering) only
+    # happens when reconcile is active.
+    task = _make_task({"sync_jsons": True, "remove_deleted": False, "clear_orphan_tags": False})
     await task._init(task._params, None)
 
     with (
@@ -67,7 +69,7 @@ async def test_task_empty_dir_returns_zero():
     images_api = _images_api_mock([])
     tags_api = _tags_api_mock()
 
-    task = _make_task({"sync_jsons": False, "remove_deleted": False, "clear_orphan_tags": False})
+    task = _make_task({"sync_jsons": True, "remove_deleted": False, "clear_orphan_tags": False})
     await task._init(task._params, None)
 
     with (
@@ -89,7 +91,7 @@ async def test_task_directory_only_returns_zero():
     images_api = _images_api_mock(entries)
     tags_api = _tags_api_mock()
 
-    task = _make_task({"sync_jsons": False, "remove_deleted": False, "clear_orphan_tags": False})
+    task = _make_task({"sync_jsons": True, "remove_deleted": False, "clear_orphan_tags": False})
     await task._init(task._params, None)
 
     with (
