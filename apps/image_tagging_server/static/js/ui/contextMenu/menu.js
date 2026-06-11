@@ -157,6 +157,7 @@ function _buildItemRows(container, items, menuCtx, registerEl, unregisterEl) {
 
         let _flyoutEl = null;
         let _closeTimer = null;
+        let _innerSiblings = []; // siblings from within this flyout (for cascade close)
 
         const openFlyout = () => {
           clearTimeout(_closeTimer);
@@ -172,7 +173,7 @@ function _buildItemRows(container, items, menuCtx, registerEl, unregisterEl) {
           if (sub instanceof HTMLElement) {
             flyoutEl.appendChild(sub);
           } else if (Array.isArray(sub)) {
-            _buildItemRows(flyoutEl, sub, menuCtx, registerEl, unregisterEl);
+            _innerSiblings = _buildItemRows(flyoutEl, sub, menuCtx, registerEl, unregisterEl);
           }
 
           document.body.appendChild(flyoutEl);
@@ -199,6 +200,9 @@ function _buildItemRows(container, items, menuCtx, registerEl, unregisterEl) {
           if (!_flyoutEl) return;
           // Don't auto-close if an input inside the flyout has focus (user is typing)
           if (_flyoutEl.contains(document.activeElement)) return;
+          // Cascade: close any sub-flyouts opened from within this flyout first
+          _innerSiblings.forEach(s => s.closeFlyout());
+          _innerSiblings = [];
           unregisterEl(_flyoutEl);
           _flyoutEl.remove();
           _flyoutEl = null;
@@ -214,11 +218,16 @@ function _buildItemRows(container, items, menuCtx, registerEl, unregisterEl) {
         row.addEventListener('click', openFlyout);
         row.addEventListener('mouseleave', scheduledClose);
 
-      } else if (item.onSelect) {
-        row.addEventListener('click', async () => {
-          await item.onSelect(menuCtx);
-          menuCtx.close();
-        });
+      } else {
+        // Non-submenu rows: close any open sibling flyout immediately on hover.
+        // Submenu rows are covered by openFlyout → closeAllSiblings.
+        row.addEventListener('mouseenter', closeAllSiblings);
+        if (item.onSelect) {
+          row.addEventListener('click', async () => {
+            await item.onSelect(menuCtx);
+            menuCtx.close();
+          });
+        }
       }
     }
 

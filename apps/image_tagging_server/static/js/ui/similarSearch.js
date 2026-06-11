@@ -8,8 +8,14 @@
  * search again). Each modal gets its own independent canvas runtime.
  *
  * Usage:
- *   openSimilarImagesModal({ imageUuid, threshold })
- *   openSimilarBboxesModal({ bboxUuid, threshold, labelUuid? })
+ *   openSimilarImagesModal({ imageUuid, threshold? })
+ *   openSimilarBboxesModal({ bboxUuid, threshold?, labelUuid? })
+ *
+ * Exported helpers (for settings page / context-menu providers):
+ *   getImageHashMax()          → Promise<number>  (n² for current hash size n)
+ *   getBboxHashMax()           → Promise<number>
+ *   getImageDefaultThreshold() → Promise<number>  (stored setting or 20% of max)
+ *   getBboxDefaultThreshold()  → Promise<number>
  */
 
 import { showReviewModal } from '/app-static/js/app/review/main.js';
@@ -27,10 +33,40 @@ async function _imageHashMax() {
   return n * n;
 }
 
+/** @returns {Promise<number>} */
+export async function getImageHashMax() { return _imageHashMax(); }
+
 async function _bboxHashMax() {
   const v = await getSetting('dedup_bbox_hash_size').catch(() => null);
   const n = parseInt(v, 10) || 16;
   return n * n;
+}
+
+/** @returns {Promise<number>} */
+export async function getBboxHashMax() { return _bboxHashMax(); }
+
+// ── Default threshold helpers ──────────────────────────────────────────────────
+
+/** Read stored threshold setting clamped to max, falling back to 20% of max. */
+async function _readThreshold(key, max) {
+  try {
+    const stored = await getSetting(key);
+    if (stored !== null && stored !== '') {
+      const n = parseInt(stored, 10);
+      if (!isNaN(n) && n >= 1) return Math.min(n, max);
+    }
+  } catch (_) {}
+  return Math.round(max * 0.2);
+}
+
+/** @returns {Promise<number>} */
+export async function getImageDefaultThreshold() {
+  return _readThreshold('dedup_image_threshold', await _imageHashMax());
+}
+
+/** @returns {Promise<number>} */
+export async function getBboxDefaultThreshold() {
+  return _readThreshold('dedup_bbox_threshold', await _bboxHashMax());
 }
 
 // ── Shared slider builder ──────────────────────────────────────────────────────
@@ -47,7 +83,7 @@ function buildThresholdSlider(initial, { min = 0, max = 64, onChange }) {
 
   const label = document.createElement('span');
   label.style.cssText = 'white-space:nowrap;';
-  label.textContent = `Threshold: ${initial}`;
+  label.textContent = 'Threshold:';
 
   const slider = document.createElement('input');
   slider.type = 'range';
@@ -58,15 +94,19 @@ function buildThresholdSlider(initial, { min = 0, max = 64, onChange }) {
   slider.style.cssText = 'width:120px;accent-color:#c9a227;cursor:pointer;';
   slider.title = `Similarity threshold (Hamming distance 0–${max}) — lower = stricter match`;
 
-  // Update label live while dragging, re-query only on release
+  const valueEl = document.createElement('span');
+  valueEl.style.cssText = 'min-width:2.5em;text-align:right;white-space:nowrap;';
+  valueEl.textContent = String(initial);
+
+  // Update value label live while dragging, re-query only on release
   slider.addEventListener('input', () => {
-    label.textContent = `Threshold: ${slider.value}`;
+    valueEl.textContent = slider.value;
   });
   slider.addEventListener('change', () => {
     onChange(parseInt(slider.value, 10));
   });
 
-  el.append(label, slider);
+  el.append(label, slider, valueEl);
   return { element: el, getValue: () => parseInt(slider.value, 10) };
 }
 
@@ -78,13 +118,13 @@ function buildThresholdSlider(initial, { min = 0, max = 64, onChange }) {
  *
  * @param {{ imageUuid: string, threshold: number }} params
  */
-export async function openSimilarImagesModal({ imageUuid, threshold }) {
-  let _threshold = threshold;
+export async function openSimilarImagesModal({ imageUuid, threshold = null }) {
+  const sliderMax = await _imageHashMax();
+  let _threshold = threshold !== null ? threshold : await _readThreshold('dedup_image_threshold', sliderMax);
   let _cachedImages = null;
   let _queryPromise = findSimilarImagesByUuid(imageUuid, _threshold);
   let _refresh = null;
 
-  const sliderMax = await _imageHashMax();
   const { element: sliderEl } = buildThresholdSlider(_threshold, {
     max: sliderMax,
     onChange(newThreshold) {
@@ -121,8 +161,9 @@ export async function openSimilarImagesModal({ imageUuid, threshold }) {
  *
  * @param {{ bboxUuid: string, threshold: number, labelUuid?: string|null }} params
  */
-export async function openSimilarBboxesModal({ bboxUuid, bboxCoords, imageUuid, threshold, labelUuid = null }) {
-  let _threshold = threshold;
+export async function openSimilarBboxesModal({ bboxUuid, bboxCoords, imageUuid, threshold = null, labelUuid = null }) {
+  const sliderMax = await _bboxHashMax();
+  let _threshold = threshold !== null ? threshold : await _readThreshold('dedup_bbox_threshold', sliderMax);
   let _cachedImages = null;
 
   // If live coordinates are provided (e.g. bbox moved on canvas but not yet saved),
@@ -134,7 +175,6 @@ export async function openSimilarBboxesModal({ bboxUuid, bboxCoords, imageUuid, 
   let _queryPromise = _query(_threshold);
   let _refresh = null;
 
-  const sliderMax = await _bboxHashMax();
   const { element: sliderEl } = buildThresholdSlider(_threshold, {
     max: sliderMax,
     onChange(newThreshold) {

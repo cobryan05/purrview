@@ -234,10 +234,6 @@ main.container {
   flex-shrink: 0;
 }
 
-/* Pagination group gets pushed right so prev/next/status sit at the end */
-.review-action-bar .review-toolbar__group:nth-child(2) {
-  margin-left: auto;
-}
 
 /* Shared group/sep helpers used in both bars */
 .review-toolbar__group {
@@ -313,6 +309,18 @@ main.container {
   color: #888;
   font-size: 0.82em;
   white-space: nowrap;
+}
+
+@keyframes status-loading-pulse {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.45; }
+}
+
+.review-toolbar__status--loading {
+  color: #c9a227;
+  font-weight: 600;
+  font-size: 0.9em;
+  animation: status-loading-pulse 1.1s ease-in-out infinite;
 }
 
 .review-filter-panel {

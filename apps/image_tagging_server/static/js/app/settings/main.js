@@ -262,35 +262,147 @@ async function _buildDedupSection() {
     '(use the "Rebuild Hash Index" action on the Images tab).';
   section.appendChild(warning);
 
-  const fields = [
-    {
-      key: 'dedup_image_hash_size',
-      label: 'Image Hash Size',
-      description: 'Grid dimension for whole-image perceptual hash (8 → 64-bit). Default: 8.',
-      defaultVal: 8,
-    },
-    {
-      key: 'dedup_bbox_hash_size',
-      label: 'BBox Hash Size',
-      description: 'Grid dimension for bounding-box crop perceptual hash (16 → 256-bit). Default: 16.',
-      defaultVal: 16,
-    },
-  ];
+  // Load all four settings in parallel
+  const [imgHashStored, bboxHashStored, imgThreshStored, bboxThreshStored] = await Promise.all([
+    getSetting('dedup_image_hash_size').catch(() => null),
+    getSetting('dedup_bbox_hash_size').catch(() => null),
+    getSetting('dedup_image_threshold').catch(() => null),
+    getSetting('dedup_bbox_threshold').catch(() => null),
+  ]);
 
-  for (const field of fields) {
-    let currentVal = field.defaultVal;
-    try {
-      const stored = await getSetting(field.key);
-      if (stored !== null) currentVal = parseInt(stored, 10) || field.defaultVal;
-    } catch (_) {}
+  const imgN    = parseInt(imgHashStored, 10) || 8;
+  const bboxN   = parseInt(bboxHashStored, 10) || 16;
+  const imgMax  = imgN * imgN;
+  const bboxMax = bboxN * bboxN;
 
-    section.appendChild(_buildDedupRow({ ...field, currentVal }));
-  }
+  const _threshVal = (stored, max) => {
+    if (stored !== null && stored !== '') {
+      const n = parseInt(stored, 10);
+      if (!isNaN(n) && n >= 1) return Math.min(n, max);
+    }
+    return Math.round(max * 0.2);
+  };
 
+  const { element: imgHashRow,   select: imgHashSelect  } = _buildHashSizeRow({
+    key: 'dedup_image_hash_size',
+    label: 'Image Hash Size',
+    description: 'Grid dimension n for whole-image perceptual hash (n² bits). Default: 8 → 64-bit.',
+    currentN: imgN,
+  });
+  const { element: imgThreshRow, input:  imgThreshInput  } = _buildThresholdRow({
+    key: 'dedup_image_threshold',
+    label: 'Image Similarity Threshold',
+    description: 'Max Hamming distance for "find similar images" searches. Auto-set to 20% of hash range when hash size changes.',
+    currentVal: _threshVal(imgThreshStored, imgMax),
+    max: imgMax,
+  });
+
+  const { element: bboxHashRow,   select: bboxHashSelect  } = _buildHashSizeRow({
+    key: 'dedup_bbox_hash_size',
+    label: 'BBox Hash Size',
+    description: 'Grid dimension n for bounding-box crop perceptual hash (n² bits). Default: 16 → 256-bit.',
+    currentN: bboxN,
+  });
+  const { element: bboxThreshRow, input:  bboxThreshInput  } = _buildThresholdRow({
+    key: 'dedup_bbox_threshold',
+    label: 'BBox Similarity Threshold',
+    description: 'Max Hamming distance for "find similar bboxes" searches. Auto-set to 20% of hash range when hash size changes.',
+    currentVal: _threshVal(bboxThreshStored, bboxMax),
+    max: bboxMax,
+  });
+
+  // When hash size changes, auto-update the paired threshold input to the 20% default
+  imgHashSelect.addEventListener('change', () => {
+    const n = parseInt(imgHashSelect.value, 10);
+    const max = n * n;
+    imgThreshInput.max = String(max);
+    imgThreshInput.value = String(Math.round(max * 0.2));
+  });
+  bboxHashSelect.addEventListener('change', () => {
+    const n = parseInt(bboxHashSelect.value, 10);
+    const max = n * n;
+    bboxThreshInput.max = String(max);
+    bboxThreshInput.value = String(Math.round(max * 0.2));
+  });
+
+  section.append(imgHashRow, imgThreshRow, bboxHashRow, bboxThreshRow);
   return section;
 }
 
-function _buildDedupRow({ key, label, description, defaultVal, currentVal }) {
+function _buildHashSizeRow({ key, label, description, currentN }) {
+  const HASH_SIZES = [4, 8, 16, 32, 64];
+
+  const row = document.createElement('div');
+  row.className = 'settings-server-row';
+
+  const rowLabel = document.createElement('div');
+  rowLabel.className = 'settings-server-label';
+  rowLabel.textContent = label;
+
+  const desc = document.createElement('div');
+  desc.className = 'settings-server-desc';
+  desc.textContent = description;
+
+  const inputRow = document.createElement('div');
+  inputRow.className = 'settings-server-input-row';
+
+  const select = document.createElement('select');
+  select.className = 'settings-server-input settings-server-input--narrow';
+  for (const n of HASH_SIZES) {
+    const opt = document.createElement('option');
+    opt.value = String(n);
+    opt.textContent = `${n} (${n * n}-bit)`;
+    if (n === currentN) opt.selected = true;
+    select.appendChild(opt);
+  }
+
+  const saveBtn = document.createElement('button');
+  saveBtn.textContent = 'Save';
+  saveBtn.className = 'settings-server-btn';
+
+  inputRow.append(select, saveBtn);
+
+  const statusLine = document.createElement('div');
+  statusLine.className = 'settings-server-status';
+  statusLine.dataset.state = 'muted';
+  statusLine.textContent = `Current: ${currentN} (${currentN * currentN}-bit)`;
+
+  saveBtn.addEventListener('click', async () => {
+    const val = parseInt(select.value, 10);
+    const confirmed = await showConfirmModal({
+      title: 'Change hash size?',
+      message:
+        `Changing the hash size will immediately clear existing stored hashes and begin regeneration. ` +
+        `This cannot be undone. Continue?`,
+      confirmText: 'Change & Regenerate',
+      cancelText: 'Cancel',
+      danger: true,
+    });
+    if (!confirmed) return;
+    saveBtn.disabled = true;
+    saveBtn.textContent = 'Saving…';
+    try {
+      await setSetting(key, String(val));
+      statusLine.textContent = `Saved: ${val} (${val * val}-bit) — hash regeneration has been queued.`;
+      statusLine.dataset.state = 'info';
+      saveBtn.textContent = '✓ Saved';
+      setTimeout(() => {
+        saveBtn.textContent = 'Save';
+        saveBtn.disabled = false;
+      }, 1500);
+    } catch (e) {
+      statusLine.textContent = `✗ ${e.message}`;
+      statusLine.dataset.state = 'error';
+      saveBtn.textContent = 'Save';
+      saveBtn.disabled = false;
+    }
+  });
+
+  row.append(rowLabel, desc, inputRow, statusLine);
+  return { element: row, select };
+}
+
+function _buildThresholdRow({ key, label, description, currentVal, max }) {
   const row = document.createElement('div');
   row.className = 'settings-server-row';
 
@@ -307,8 +419,8 @@ function _buildDedupRow({ key, label, description, defaultVal, currentVal }) {
 
   const input = document.createElement('input');
   input.type = 'number';
-  input.min = '4';
-  input.max = '64';
+  input.min = '1';
+  input.max = String(max);
   input.step = '1';
   input.className = 'settings-server-input settings-server-input--narrow';
   input.value = String(currentVal);
@@ -325,27 +437,18 @@ function _buildDedupRow({ key, label, description, defaultVal, currentVal }) {
   statusLine.textContent = `Current: ${currentVal}`;
 
   saveBtn.addEventListener('click', async () => {
+    const curMax = parseInt(input.max, 10);
     const val = parseInt(input.value, 10);
-    if (!val || val < 4 || val > 64) {
-      statusLine.textContent = 'Value must be between 4 and 64.';
+    if (isNaN(val) || val < 1 || val > curMax) {
+      statusLine.textContent = `Value must be between 1 and ${curMax}.`;
       statusLine.dataset.state = 'error';
       return;
     }
-    const confirmed = await showConfirmModal({
-      title: 'Change hash size?',
-      message:
-        `Changing the hash size will immediately clear existing stored hashes and begin regeneration. ` +
-        `This cannot be undone. Continue?`,
-      confirmText: 'Change & Regenerate',
-      cancelText: 'Cancel',
-      danger: true,
-    });
-    if (!confirmed) return;
     saveBtn.disabled = true;
     saveBtn.textContent = 'Saving…';
     try {
       await setSetting(key, String(val));
-      statusLine.textContent = `Saved: ${val} — hash regeneration has been queued.`;
+      statusLine.textContent = `Saved: ${val}`;
       statusLine.dataset.state = 'info';
       saveBtn.textContent = '✓ Saved';
       setTimeout(() => {
@@ -361,7 +464,7 @@ function _buildDedupRow({ key, label, description, defaultVal, currentVal }) {
   });
 
   row.append(rowLabel, desc, inputRow, statusLine);
-  return row;
+  return { element: row, input };
 }
 
 /**

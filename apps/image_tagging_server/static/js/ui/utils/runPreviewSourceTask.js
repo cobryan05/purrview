@@ -1,9 +1,23 @@
-import { TaskStatus, cancelTasks, createTaskConfig, deleteTasks, deleteTaskConfigs, fetchTasksResult, fetchTasksStatus, startTask } from '/app-static/js/shared/api/tasks.js';
+import { TaskStatus, cancelTasks, createTaskConfig, deleteTasks, deleteTaskConfigs, fetchTasksResult, startTask } from '/app-static/js/shared/api/tasks.js';
 import { decodeBase64JsonImage, toast } from '/app-static/js/ui/utils/index.js';
 import { ActiveTaskField } from '/app-static/js/ui/utils/fields/ActiveTaskField.js';
 
 // Global guard for only one running preview task
 let previewTaskActive = false;
+
+/** Minimal fingerprint so unchanged events skip a pointless re-render. */
+function _fp(task) {
+  const logs = task.logLines ?? [];
+  return [
+    task.instance?.status,
+    task.isPausedInPlace ?? false,
+    Math.round(task.progress ?? 0),
+    logs.length,
+    logs[logs.length - 1] ?? '',
+    task.instance?.startedAt ?? '',
+    task.instance?.endedAt ?? '',
+  ].join(':');
+}
 
 export async function runPreviewSourceTest({ provider, providerParams, target = 'source-preview-box' }) {
   if (previewTaskActive) {
@@ -20,7 +34,6 @@ export async function runPreviewSourceTest({ provider, providerParams, target = 
   targetDiv.innerHTML = '';
 
   let cancelled = false;
-
   previewTaskActive = true;
 
   const cancelBtn = document.createElement('button');
@@ -29,6 +42,9 @@ export async function runPreviewSourceTest({ provider, providerParams, target = 
   const taskDisplay = document.createElement('div');
 
   let taskUuid;
+  let lastFingerprint = null;
+  let lastTaskInfo = null;
+
   cancelBtn.onclick = async () => {
     cancelled = true;
     cancelBtn.disabled = true;
@@ -43,10 +59,43 @@ export async function runPreviewSourceTest({ provider, providerParams, target = 
   targetDiv.appendChild(cancelBtn);
   targetDiv.appendChild(taskDisplay);
 
+  /**
+   * Re-render the task card, preserving open/scroll state so a refresh
+   * doesn't collapse an expanded <details> element.
+   * Returns true if the DOM was actually updated, false if skipped (stale or no change).
+   */
   async function renderTaskStatus(taskInfo) {
+    const fp = _fp(taskInfo);
+    if (fp === lastFingerprint) return false;
+    lastFingerprint = fp;
+    lastTaskInfo = taskInfo;
+
+    // Snapshot open/scroll state before the async render so we can restore it
+    const details = taskDisplay.querySelector('details');
+    const pre = details?.querySelector('pre');
+    const savedOpen = details?.open ?? true;
+    const savedScroll = pre?.scrollTop ?? 0;
+
     const field = await ActiveTaskField.create({ value: taskInfo });
     const el = await field.renderView();
+
+    // If a concurrent render ran while we were awaiting, discard our stale result
+    if (lastFingerprint !== fp) return false;
+
+    // Restore open/scroll on the freshly rendered element
+    const newDetails = el.querySelector('details');
+    if (newDetails && details !== null) {
+      newDetails.open = savedOpen;
+      if (savedOpen && savedScroll) {
+        requestAnimationFrame(() => {
+          const newPre = newDetails.querySelector('pre');
+          if (newPre) newPre.scrollTop = savedScroll;
+        });
+      }
+    }
+
     taskDisplay.replaceChildren(el);
+    return true;
   }
 
   try {
@@ -60,31 +109,53 @@ export async function runPreviewSourceTest({ provider, providerParams, target = 
     taskUuid = await startTask({ configUuid });
     await deleteTaskConfigs({ uuids: [configUuid] });
 
-    const startTime = Date.now();
-    let taskInfo;
-    while (true) {
-      if (cancelled) break;
+    await new Promise((resolve, reject) => {
+      const evtSource = new EventSource('/api/tasks/stream');
 
-      const res = await fetchTasksStatus({ taskUuids: [taskUuid] });
-      taskInfo = res.tasks[taskUuid];
-      await renderTaskStatus(taskInfo);
+      const timeoutId = setTimeout(async () => {
+        evtSource.close();
+        if (lastTaskInfo) {
+          const timedOut = { ...lastTaskInfo, instance: { ...lastTaskInfo.instance, status: TaskStatus.ERROR, errorMessage: 'Timed out after 30s' } };
+          lastFingerprint = null;
+          await renderTaskStatus(timedOut);
+        }
+        resolve();
+      }, 30_000);
 
-      const taskStatus = taskInfo.instance.status;
-      if (taskStatus === TaskStatus.COMPLETED || taskStatus === TaskStatus.ERROR) {
-        break;
-      }
+      evtSource.onmessage = async (e) => {
+        if (cancelled) {
+          clearTimeout(timeoutId);
+          evtSource.close();
+          resolve();
+          return;
+        }
+        let data;
+        try { data = JSON.parse(e.data); } catch { return; }
 
-      if (Date.now() - startTime > 30_000) {
-        taskInfo.instance.status = TaskStatus.ERROR;
-        taskInfo.instance.errorMessage = 'Timed out after 30s';
+        const taskInfo = data.tasks?.[taskUuid];
+        if (!taskInfo) return;
+
         await renderTaskStatus(taskInfo);
-        break;
-      }
 
-      await new Promise((resolve) => setTimeout(resolve, 1000));
-    }
+        const status = taskInfo.instance?.status;
+        if (status === TaskStatus.COMPLETED || status === TaskStatus.ERROR) {
+          clearTimeout(timeoutId);
+          evtSource.close();
+          resolve();
+        }
+      };
 
-    if (!cancelled && taskInfo.instance.status === TaskStatus.COMPLETED) {
+      evtSource.onerror = () => {
+        // EventSource auto-reconnects on transient errors (readyState CONNECTING).
+        // Only treat it as fatal if the connection is fully closed.
+        if (evtSource.readyState === EventSource.CLOSED) {
+          clearTimeout(timeoutId);
+          reject(new Error('SSE connection closed unexpectedly'));
+        }
+      };
+    });
+
+    if (!cancelled && lastTaskInfo?.instance?.status === TaskStatus.COMPLETED) {
       const res = await fetchTasksResult({ taskUuids: [taskUuid], cacheResults: false });
       const result = res.get(taskUuid);
 
@@ -103,7 +174,7 @@ export async function runPreviewSourceTest({ provider, providerParams, target = 
     cancelBtn.remove();
     previewTaskActive = false;
 
-    if (taskUuid) {
+    if (taskUuid && !cancelled) {
       await deleteTasks({ taskUuids: [taskUuid] }).catch(e =>
         console.error("Cleanup failed", e)
       );

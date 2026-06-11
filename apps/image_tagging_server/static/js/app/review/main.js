@@ -627,6 +627,7 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
   }
 
   function updateStatusMsg() {
+    statusMsg.classList.remove('review-toolbar__status--loading');
     const stale = _staleUuids.size;
 
     if (_viewFilter === 'images' || _viewFilter === 'bboxes') {
@@ -844,6 +845,7 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
       prevBtn.disabled = true;
       nextBtn.disabled = true;
       statusMsg.textContent = 'Loading…';
+      statusMsg.classList.add('review-toolbar__status--loading');
       _thumbLoader.reset();
       // Use setEntries([]) so entryView._entries and the DOM stay in sync — a
       // direct grid.innerHTML = '' would leave _entries stale, causing a
@@ -906,6 +908,7 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
           }));
         }
       } catch (err) {
+        statusMsg.classList.remove('review-toolbar__status--loading');
         statusMsg.textContent = `Error: ${err.message}`;
         refreshBtn.disabled = false;
         prevBtn.disabled = _pageCursors.length <= 1;

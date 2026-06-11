@@ -6,7 +6,8 @@
  */
 
 import { registerContextProvider } from '../registry.js';
-import { openSimilarImagesModal } from '/app-static/js/ui/similarSearch.js';
+import { asyncPanel } from '../menu.js';
+import { openSimilarImagesModal, getImageHashMax, getImageDefaultThreshold } from '/app-static/js/ui/similarSearch.js';
 import { buildSimilarPanel } from '../similarPanelBuilder.js';
 
 
@@ -17,9 +18,15 @@ registerContextProvider('canvas', (adapters, ctx) => {
   const items = [
     {
       label: 'Search for similar images…',
-      submenu: () => buildSimilarPanel((threshold) => {
-        ctx.close();
-        openSimilarImagesModal({ imageUuid, threshold });
+      submenu: () => asyncPanel('200px', async () => {
+        const [defaultThreshold, hashMax] = await Promise.all([
+          getImageDefaultThreshold(),
+          getImageHashMax(),
+        ]);
+        return buildSimilarPanel((threshold) => {
+          ctx.close();
+          openSimilarImagesModal({ imageUuid, threshold });
+        }, defaultThreshold, hashMax);
       }),
     },
   ];

@@ -86,7 +86,7 @@ registerContextProvider('image', async (adapters, ctx) => {
       onSelect: () => {
         const imageUuid = adapters[0].getUuid?.();
         ctx.close();
-        if (imageUuid) openSimilarImagesModal({ imageUuid, threshold: 5 });
+        if (imageUuid) openSimilarImagesModal({ imageUuid });
       },
     },
   ];

@@ -11,7 +11,7 @@
  * @param {number} [defaultThreshold=5]
  * @returns {HTMLElement}
  */
-export function buildSimilarPanel(onSubmit, defaultThreshold = 5) {
+export function buildSimilarPanel(onSubmit, defaultThreshold = 5, max = 64) {
   const wrap = document.createElement('div');
   wrap.style.cssText = 'min-width:180px;padding:8px 10px;display:flex;flex-direction:column;gap:6px;';
 
@@ -22,7 +22,7 @@ export function buildSimilarPanel(onSubmit, defaultThreshold = 5) {
   const input = document.createElement('input');
   input.type = 'number';
   input.min = '1';
-  input.max = '64';
+  input.max = String(max);
   input.value = String(defaultThreshold);
   input.style.cssText = 'width:100%;box-sizing:border-box;font-size:0.85em;';
 
@@ -31,7 +31,7 @@ export function buildSimilarPanel(onSubmit, defaultThreshold = 5) {
   btn.style.cssText = 'font-size:0.85em;padding:0.25em 0.6em;';
 
   function _submit() {
-    const t = Math.max(1, Math.min(64, parseInt(input.value, 10) || defaultThreshold));
+    const t = Math.max(1, Math.min(max, parseInt(input.value, 10) || defaultThreshold));
     onSubmit(t);
   }
 

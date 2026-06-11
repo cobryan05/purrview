@@ -141,6 +141,32 @@ class WebApp:
         async def proxy_tags(request: Request, path: str):
             return await TAG_PROXY.handle_request(path, request)
 
+        @self._app.get("/api/tasks/stream")
+        async def tasks_stream(request: Request) -> StreamingResponse:
+            """SSE stream — pushes a data frame whenever task state changes."""
+            async def _gen():
+                last_json: str | None = None
+                last_hb = asyncio.get_running_loop().time()
+                try:
+                    while True:
+                        try:
+                            data = await self._manager.get_tasks_for_stream()
+                            j = json.dumps(data)
+                        except Exception:
+                            j = "{}"
+                        now = asyncio.get_running_loop().time()
+                        if j != last_json:
+                            last_json = j
+                            last_hb = now
+                            yield f"data: {j}\n\n"
+                        elif now - last_hb > 15:
+                            last_hb = now
+                            yield ":\n\n"  # keep-alive comment
+                        await asyncio.sleep(0.5)
+                except asyncio.CancelledError:
+                    pass
+            return StreamingResponse(_gen(), media_type="text/event-stream", headers=_SSE_HEADERS)
+
         @self._app.api_route("/api/tasks/{path:path}", methods=["GET", "POST", "PATCH", "DELETE"])
         async def proxy_tasks(request: Request, path: str):
             return await TASKS_PROXY.handle_request(path, request)
@@ -205,32 +231,6 @@ class WebApp:
                             last_hb = now
                             yield ":\n\n"  # keep-alive comment
                         await asyncio.sleep(2)
-                except asyncio.CancelledError:
-                    pass
-            return StreamingResponse(_gen(), media_type="text/event-stream", headers=_SSE_HEADERS)
-
-        @self._app.get("/api/tasks/stream")
-        async def tasks_stream(request: Request) -> StreamingResponse:
-            """SSE stream — pushes a data frame whenever task state changes."""
-            async def _gen():
-                last_json: str | None = None
-                last_hb = asyncio.get_running_loop().time()
-                try:
-                    while True:
-                        try:
-                            data = await self._manager.get_tasks_for_stream()
-                            j = json.dumps(data)
-                        except Exception:
-                            j = "{}"
-                        now = asyncio.get_running_loop().time()
-                        if j != last_json:
-                            last_json = j
-                            last_hb = now
-                            yield f"data: {j}\n\n"
-                        elif now - last_hb > 15:
-                            last_hb = now
-                            yield ":\n\n"  # keep-alive comment
-                        await asyncio.sleep(0.5)
                 except asyncio.CancelledError:
                     pass
             return StreamingResponse(_gen(), media_type="text/event-stream", headers=_SSE_HEADERS)

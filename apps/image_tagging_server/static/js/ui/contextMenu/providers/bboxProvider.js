@@ -195,7 +195,7 @@ registerContextProvider('bbox', async (adapters, ctx) => {
         const imageUuid = adapters[0].getImageUuid?.() ?? null;
         ctx.close();
         if (bboxUuid || (bboxCoords && imageUuid)) {
-          openSimilarBboxesModal({ bboxUuid, bboxCoords, imageUuid, threshold: 8 });
+          openSimilarBboxesModal({ bboxUuid, bboxCoords, imageUuid });
         }
       },
     },
@@ -205,7 +205,7 @@ registerContextProvider('bbox', async (adapters, ctx) => {
       onSelect: () => {
         const imageUuid = adapters[0].getImageUuid?.() ?? null;
         ctx.close();
-        if (imageUuid) openSimilarImagesModal({ imageUuid, threshold: 5 });
+        if (imageUuid) openSimilarImagesModal({ imageUuid });
       },
     },
   ];
