@@ -1,3 +1,5 @@
+import { nextModalZIndex, registerEscHandler, unregisterEscHandler } from './modalZIndex.js';
+
 /**
  * Build the shared overlay + dialog scaffold used by app modals. Backdrop click
  * and a programmatic close() both tear the modal down and run onClose exactly once.
@@ -20,12 +22,15 @@ export function createModalShell({ onClose } = {}) {
   function close() {
     if (_closed) return;
     _closed = true;
+    unregisterEscHandler(close);
     if (overlay.parentNode) document.body.removeChild(overlay);
     onClose?.();
   }
 
   function open() {
+    overlay.style.zIndex = nextModalZIndex();
     document.body.appendChild(overlay);
+    registerEscHandler(close);
     overlay.addEventListener('click', e => { if (e.target === overlay) close(); });
   }
 

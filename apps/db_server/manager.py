@@ -94,6 +94,7 @@ class Manager:
             bbox_hash_size=self._bbox_hash_size,
         )
         self._rebuild_in_progress: bool = False
+        self._hash_index_ready: bool = False  # False until initial build completes on startup
         # Short-lived cache for expensive count queries.  Key is an MD5 of the
         # filter predicates (sort/page fields excluded); value is (count, ts).
         # TTL is intentionally short so writes that happen while browsing are
@@ -120,6 +121,7 @@ class Manager:
         """Initialization that should run on event loop"""
         await self._db_client.init_db()
         await self._hash_index.build()
+        self._hash_index_ready = True
 
     async def _worker_task(self):
         """Periodic worker task that runs at regular intervals"""
@@ -991,7 +993,9 @@ class Manager:
     async def get_status(self) -> dict:
         """Return service health and diagnostic info."""
         notices: list[dict] = []
-        if self._rebuild_in_progress:
+        if not self._hash_index_ready:
+            notices.append({"key": "hash_build", "level": "info", "message": "Building similarity index…"})
+        elif self._rebuild_in_progress:
             notices.append({"key": "hash_rebuild", "level": "warning", "message": "Hash index rebuilding…"})
         return {
             "service": "db_server",

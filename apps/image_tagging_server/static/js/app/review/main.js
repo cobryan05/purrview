@@ -22,6 +22,7 @@ import { attachContext } from '/app-static/js/ui/contextMenu/index.js';
 import { getPrimaryRuntimeId } from '/app-static/js/app/image-tagging/runtime.js';
 import { Logger, toast } from '/app-static/js/ui/utils/logging.js';
 import { showUnsavedChangesModal } from '/app-static/js/ui/utils/confirmModal.js';
+import { nextModalZIndex, registerEscHandler, unregisterEscHandler } from '/app-static/js/ui/utils/modalZIndex.js';
 import { CheckboxField } from '/app-static/js/ui/utils/fields/CheckboxField.js';
 import { createCanvasInstance } from '/app-static/js/app/image-tagging/canvas/instance.js';
 import { saveAnnotations } from '/app-static/js/app/image-tagging/canvas/image.js';
@@ -141,7 +142,7 @@ function buildVerifyChip(tagUuids) {
   return chip;
 }
 
-export async function createReviewPanel(container, { fetchImages = null, datasetActions = true, referenceBboxUuids = new Set(), referenceImageUuids = new Set() } = {}) {
+export async function createReviewPanel(container, { fetchImages = null, datasetActions = true, referenceBboxUuids = new Set(), referenceImageUuids = new Set(), initialViewFilter = 'bboxes' } = {}) {
   container.innerHTML = '';
 
   const labelsPromise = fetchLabels().catch(() => new Map());
@@ -193,7 +194,7 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
   ];
   for (const { key, label } of viewBtns) {
     const btn = document.createElement('button');
-    btn.className = 'view-btn' + (key === 'bboxes' ? ' active' : '');
+    btn.className = 'view-btn' + (key === initialViewFilter ? ' active' : '');
     btn.dataset.viewKey = key;
     btn.textContent = label;
     btn.addEventListener('click', () => {
@@ -405,7 +406,7 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
   // _allEntries holds ALL entries for the current page (both image and bbox).
   // _viewFilter controls which subset is rendered to DOM.
   let _allEntries = [];       // Array<{ kind: 'bbox', bbox, img } | { kind: 'image', img }>
-  let _viewFilter = 'bboxes';  // 'all' | 'images' | 'bboxes'
+  let _viewFilter = initialViewFilter;  // 'all' | 'images' | 'bboxes'
   let _selectionKind = null;  // 'bbox' | 'image' | null — type of currently selected cards
   let _pageSize = DEFAULT_PAGE_SIZE;
   let _imageCardRefreshers = new Map(); // img.uuid → () => void — redraws bbox overlay
@@ -1652,9 +1653,10 @@ export async function init() {
  *                     the dataset's conditions. "Update Dataset" button pushes changes
  *                     back to the caller via onUpdateFilters (caller must still Save).
  */
-export async function showReviewModal({ title = 'Browse Images', fetchImages, editableDataset, headerControls, referenceBboxUuids = new Set(), referenceImageUuids = new Set() } = {}) {
+export async function showReviewModal({ title = 'Browse Images', fetchImages, editableDataset, headerControls, referenceBboxUuids = new Set(), referenceImageUuids = new Set(), initialViewFilter = 'bboxes' } = {}) {
   const overlay = document.createElement('div');
-  overlay.style.cssText = 'position:fixed;inset:0;background:#0009;display:flex;align-items:center;justify-content:center;z-index:900;';
+  const _modalZ = nextModalZIndex();
+  overlay.style.cssText = `position:fixed;inset:0;background:#0009;display:flex;align-items:center;justify-content:center;z-index:${_modalZ};`;
 
   const dialog = document.createElement('div');
   dialog.style.cssText = 'background:var(--pico-background-color,#121212);border:1px solid #555;border-radius:6px;width:92vw;height:90vh;display:flex;flex-direction:column;overflow:hidden;';
@@ -1698,7 +1700,8 @@ export async function showReviewModal({ title = 'Browse Images', fetchImages, ed
   overlay.appendChild(dialog);
   document.body.appendChild(overlay);
 
-  function close() { overlay.remove(); }
+  function close() { unregisterEscHandler(close); overlay.remove(); }
+  registerEscHandler(close);
   closeBtn.addEventListener('click', close);
   overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
 
@@ -1729,7 +1732,7 @@ export async function showReviewModal({ title = 'Browse Images', fetchImages, ed
     }
     return panel.refresh;
   } else {
-    const panel = await createReviewPanel(content, { fetchImages, referenceBboxUuids, referenceImageUuids });
+    const panel = await createReviewPanel(content, { fetchImages, referenceBboxUuids, referenceImageUuids, initialViewFilter });
     return panel.refresh;
   }
 }
@@ -1873,6 +1876,7 @@ async function showCanvasModal(bbox, img, labels, onSaved, navContext = null) {
 
   dialog.append(header, toolbarEl, contentArea, footer);
   overlay.appendChild(dialog);
+  overlay.style.zIndex = nextModalZIndex();
   document.body.appendChild(overlay);
 
   // ── Create canvas instance ─────────────────────────────────────────
@@ -1989,7 +1993,9 @@ async function showCanvasModal(bbox, img, labels, onSaved, navContext = null) {
   }
 
   // ── Teardown ───────────────────────────────────────────────────────
+  let _canvasEscClose = null;
   function closeModal() {
+    if (_canvasEscClose) unregisterEscHandler(_canvasEscClose);
     unsubDirty();
     if (unsubNavLoad) unsubNavLoad();
     unsubInspector();
@@ -2060,6 +2066,10 @@ async function showCanvasModal(bbox, img, labels, onSaved, navContext = null) {
     if (e.target === overlay && !closeBtn.disabled) tryClose();
   });
 
+  // ESC key — behaves like the Cancel button (shows unsaved-changes dialog if dirty)
+  _canvasEscClose = () => { if (!closeBtn.disabled) tryClose(); };
+  registerEscHandler(_canvasEscClose);
+
   // ── Save & Close button ────────────────────────────────────────────
   saveBtn.addEventListener('click', async () => {
     if (!instance.runtime.isDirty) return; // nothing to save — button is dimmed
@@ -2098,7 +2108,7 @@ async function showBulkActionModal(entries, labels, onConfirm) {
 
   const overlay = document.createElement('div');
   overlay.style.cssText = `position:fixed;inset:0;background:#0008;display:flex;
-    align-items:center;justify-content:center;z-index:1000;`;
+    align-items:center;justify-content:center;z-index:${nextModalZIndex()};`;
 
   const dialog = document.createElement('div');
   dialog.style.cssText = `background:#222;border:1px solid #555;border-radius:6px;
@@ -2165,7 +2175,7 @@ async function showBulkActionModal(entries, labels, onConfirm) {
   const btnRow = document.createElement('div');
   btnRow.style.cssText = 'display:flex;gap:0.5em;justify-content:flex-end;';
 
-  function close() { dynPicker.destroy(); overlay.remove(); }
+  function close() { unregisterEscHandler(close); dynPicker.destroy(); overlay.remove(); }
 
   const cancelBtn = document.createElement('button');
   cancelBtn.textContent = 'Cancel';
@@ -2189,6 +2199,7 @@ async function showBulkActionModal(entries, labels, onConfirm) {
   dialog.append(title, radioGroup, labelPickerRow, tagPickerRow, btnRow);
   overlay.appendChild(dialog);
   document.body.appendChild(overlay);
+  registerEscHandler(close);
 
   overlay.addEventListener('click', e => { if (e.target === overlay) close(); });
 }
@@ -2196,7 +2207,7 @@ async function showBulkActionModal(entries, labels, onConfirm) {
 async function showImageBulkActionModal(entries, labels, onConfirm) {
   const overlay = document.createElement('div');
   overlay.style.cssText = `position:fixed;inset:0;background:#0008;display:flex;
-    align-items:center;justify-content:center;z-index:1000;`;
+    align-items:center;justify-content:center;z-index:${nextModalZIndex()};`;
 
   const dialog = document.createElement('div');
   dialog.style.cssText = `background:#222;border:1px solid #555;border-radius:6px;
@@ -2242,15 +2253,17 @@ async function showImageBulkActionModal(entries, labels, onConfirm) {
   const btnRow = document.createElement('div');
   btnRow.style.cssText = 'display:flex;gap:0.5em;justify-content:flex-end;';
 
+  function closeImageBulk() { unregisterEscHandler(closeImageBulk); overlay.remove(); }
+
   const cancelBtn = document.createElement('button');
   cancelBtn.textContent = 'Cancel';
-  cancelBtn.addEventListener('click', () => overlay.remove());
+  cancelBtn.addEventListener('click', closeImageBulk);
 
   const okBtn = document.createElement('button');
   okBtn.textContent = 'Apply';
   okBtn.style.cssText = 'background:#ff003322;border:1px solid #ff0033;border-radius:3px;padding:0.2em 0.8em;cursor:pointer;';
   okBtn.addEventListener('click', async () => {
-    overlay.remove();
+    closeImageBulk();
     await onConfirm(selectedAction, labelPicker.value);
   });
 
@@ -2259,8 +2272,9 @@ async function showImageBulkActionModal(entries, labels, onConfirm) {
   dialog.append(title, radioGroup, labelPickerRow, btnRow);
   overlay.appendChild(dialog);
   document.body.appendChild(overlay);
+  registerEscHandler(closeImageBulk);
 
-  overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove(); });
+  overlay.addEventListener('click', e => { if (e.target === overlay) closeImageBulk(); });
 }
 
 async function executeBulkImageAction(action, entries, labelUuid) {

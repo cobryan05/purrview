@@ -573,8 +573,13 @@ class Manager:
 
     def get_status(self) -> dict:
         """Return service health and diagnostic info."""
+        notices: list[dict] = []
+        for ti in self._running_tasks.values():
+            if ti.task:
+                notices.extend(ti.task.get_notices())
         return {
             "service": "tasks_server",
             "status": "ok",
             "tasks": {"running": len(self._running_tasks)},
+            "notices": notices,
         }

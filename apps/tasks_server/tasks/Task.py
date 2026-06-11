@@ -235,6 +235,17 @@ class Task(ABC):
         """Returns action buttons to show in the live task status UI while the task is running."""
         return []
 
+    def get_notices(self) -> list[dict]:
+        """Return active advisory notices for this task (shown in the UI notices bar).
+
+        Each notice is a dict with keys:
+            key     — stable identifier (str)
+            level   — "info" | "warning" | "error"
+            message — human-readable string
+        Override in subclasses to surface task-specific status to the frontend.
+        """
+        return []
+
     def get_progress(self) -> float:
         """Return the current progress of the task."""
         return self._progress

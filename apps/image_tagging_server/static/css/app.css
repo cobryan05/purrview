@@ -1992,13 +1992,61 @@ button.filter-active {
   margin: 0;
 }
 
-/* ===== Active Model Bar ===== */
-#active-model-bar {
+/* ===== Bottom Bars Wrapper (notices + active-model stacked) ===== */
+#bottom-bars {
   position: fixed;
   bottom: 0;
   left: 0;
   right: 0;
   z-index: 100;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ===== Notices Bar ===== */
+#notices-bar {
+  /* visibility toggled by noticesBar.js */
+}
+
+.notices-bar__item {
+  display: flex;
+  align-items: center;
+  gap: 0.55em;
+  padding: 0.3em 1.2em;
+  font-size: 0.82em;
+  border-top: 1px solid transparent;
+}
+
+.notices-bar__item--info {
+  background: color-mix(in srgb, #4a9eff 12%, var(--pico-card-background-color, #1e1e2e));
+  border-top-color: #4a9eff55;
+  color: #8ec8ff;
+}
+
+.notices-bar__item--warning {
+  background: color-mix(in srgb, #e8a020 14%, var(--pico-card-background-color, #1e1e2e));
+  border-top-color: #e8a02055;
+  color: #f0c060;
+}
+
+.notices-bar__item--error {
+  background: color-mix(in srgb, #e05050 14%, var(--pico-card-background-color, #1e1e2e));
+  border-top-color: #e0505055;
+  color: #f08080;
+}
+
+.notices-bar__icon {
+  flex-shrink: 0;
+  opacity: 0.85;
+}
+
+.notices-bar__message {
+  flex: 1;
+}
+
+/* ===== Active Model Bar ===== */
+#active-model-bar {
+  /* positioned by #bottom-bars flex container */
 }
 
 .active-model-bar {
@@ -2074,7 +2122,9 @@ button.filter-active {
   width: auto;
 }
 
-/* Give the page enough bottom clearance so the bar doesn't cover content */
+/* Give the page enough bottom clearance so the bottom bars don't cover content.
+   The notices bar may add extra height temporarily, but 2.5em covers the
+   active-model bar; content scrolls away from transient notices. */
 main.container {
   padding-bottom: 2.5em;
 }

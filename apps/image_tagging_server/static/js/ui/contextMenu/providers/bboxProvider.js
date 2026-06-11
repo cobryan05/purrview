@@ -17,7 +17,6 @@ import { fetchTags, createNewTag } from '/app-static/js/shared/api/tags.js';
 import { createDynamicLabelPicker } from '/app-static/js/ui/utils/dynamicLabelPicker.js';
 import { showConfirmModal } from '/app-static/js/ui/utils/confirmModal.js';
 import { openSimilarImagesModal, openSimilarBboxesModal } from '/app-static/js/ui/similarSearch.js';
-import { buildSimilarPanel } from '../similarPanelBuilder.js';
 import {
   FALSE_POS_TAG_UUID,
   REJECTION_TAG_UUID,
@@ -190,20 +189,20 @@ registerContextProvider('bbox', async (adapters, ctx) => {
     {
       label: 'Search for similar bboxes…',
       disabled: count > 1,
-      submenu: () => buildSimilarPanel((threshold) => {
+      onSelect: () => {
         const bboxUuid = adapters[0].getBboxUuid?.() ?? null;
         ctx.close();
-        if (bboxUuid) openSimilarBboxesModal({ bboxUuid, threshold });
-      }, 8),
+        if (bboxUuid) openSimilarBboxesModal({ bboxUuid, threshold: 8 });
+      },
     },
     {
       label: 'Search for similar images…',
       disabled: count > 1,
-      submenu: () => buildSimilarPanel((threshold) => {
+      onSelect: () => {
         const imageUuid = adapters[0].getImageUuid?.() ?? null;
         ctx.close();
-        if (imageUuid) openSimilarImagesModal({ imageUuid, threshold });
-      }),
+        if (imageUuid) openSimilarImagesModal({ imageUuid, threshold: 5 });
+      },
     },
   ];
 

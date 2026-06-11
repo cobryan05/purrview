@@ -168,6 +168,16 @@ class WebApp:
                 logger.error(e, exc_info=True)
                 return JSONResponse(content={"status": WebApp.FAILURE_KEY, "message": str(e)})
 
+        @self._app.get("/api/notices", response_class=JSONResponse)
+        async def get_notices() -> JSONResponse:
+            """Return aggregated advisory notices from all backend services."""
+            try:
+                notices = await self._manager.get_notices()
+                return JSONResponse(content={"notices": notices})
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return JSONResponse(content={"notices": []})
+
         @self._app.post("/api/test-server", response_class=JSONResponse)
         async def test_server(payload: TestServerPayload) -> JSONResponse:
             """Test connectivity to an inference or training server URL."""

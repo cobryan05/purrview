@@ -8,6 +8,7 @@ import { createImageTaggingRuntime, setPrimaryRuntimeId } from './image-tagging/
 import { initContextMenus } from '/app-static/js/ui/contextMenu/index.js';
 import { activeModel } from '/app-static/js/shared/activeModel.js';
 import { mountActiveModelBar } from '/app-static/js/ui/activeModelBar.js';
+import { mountNoticesBar } from '/app-static/js/ui/noticesBar.js';
 import { setPendingDatasetPrefill } from '/app-static/js/ui/datasets.js';
 
 const initializedFeatures = new Set();
@@ -30,6 +31,7 @@ export async function init(appState) {
   // Initialise session-scoped active model state (reads sessionStorage + fetches config if needed)
   await activeModel.init();
   mountActiveModelBar('active-model-bar');
+  mountNoticesBar('notices-bar');
 
   // Initialise the right-click context menu system
   initContextMenus();

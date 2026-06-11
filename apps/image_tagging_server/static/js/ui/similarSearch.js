@@ -82,6 +82,7 @@ export async function openSimilarImagesModal({ imageUuid, threshold }) {
   _refresh = await showReviewModal({
     title: 'Similar Images',
     headerControls: sliderEl,
+    initialViewFilter: 'images',
     referenceImageUuids: new Set([imageUuid]),
     fetchImages: async () => {
       if (_cachedImages !== null) return _cachedImages;
