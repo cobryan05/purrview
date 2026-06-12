@@ -63,12 +63,21 @@ def _bbox_iou(a, b) -> float:
     return inter / union if union > 0.0 else 0.0
 
 
-def _compute_bbox_phashes(image_bgr, matching, hash_size: int) -> list:
-    """Compute phash for every detection's bbox crop. Runs off the event loop."""
-    return [
-        phash_from_numpy_crop(image_bgr, d.bbox.x, d.bbox.y, d.bbox.width, d.bbox.height, hash_size)
+def _compute_jpeg_phashes(image_bgr, matching, image_hash_size: int, bbox_hash_size: int, quality: int = 95) -> tuple:
+    """Compute image and bbox phashes via a JPEG round-trip. Runs off the event loop.
+
+    The BK-tree stores phashes derived from JPEG files (cv2.imread after imwrite at quality 95).
+    Encoding/decoding here at the same quality produces phashes consistent with those stored values,
+    avoiding false non-matches caused by raw-frame vs JPEG-decoded pixel differences.
+    """
+    _, buf = cv2.imencode(".jpg", image_bgr, [cv2.IMWRITE_JPEG_QUALITY, quality])
+    jpeg_frame = cv2.imdecode(buf, cv2.IMREAD_COLOR)
+    img_phash = phash_from_numpy(jpeg_frame, image_hash_size)
+    bbox_phashes = [
+        phash_from_numpy_crop(jpeg_frame, d.bbox.x, d.bbox.y, d.bbox.width, d.bbox.height, bbox_hash_size)
         for d in matching
     ]
+    return img_phash, bbox_phashes
 
 
 @dataclass
@@ -315,10 +324,6 @@ class CollectTrainingImagesTask(Task):
             # with the previous frame's inference rather than sitting on the critical path.
             if hasattr(provider, "pre_encode"):
                 provider.pre_encode = True
-            # Enable pre-phash when dedup is on so the hash is available before inference ends.
-            if self._enable_dedup and hasattr(provider, "pre_phash"):
-                provider.pre_phash = True
-                provider.image_hash_size = self._image_hash_size
             await provider.start()
 
         # Dedup coroutine: started only when dedup is enabled.  Receives matched frames
@@ -712,21 +717,14 @@ class CollectTrainingImagesTask(Task):
                     self._pending_saves.append((save_task, unique_id))
                     continue
 
-                # Batch all bbox phashes in one thread dispatch.
+                # Compute image and bbox phashes via JPEG round-trip so they match the
+                # phashes stored in the BK-tree (which are derived from the saved JPEG file).
                 # PERF
                 t_bbox_hash = time.perf_counter()
                 # /PERF
-                bbox_phashes: list[str] = await asyncio.to_thread(
-                    _compute_bbox_phashes, provided.image, matching, self._bbox_hash_size
+                image_phash, bbox_phashes = await asyncio.to_thread(
+                    _compute_jpeg_phashes, provided.image, matching, self._image_hash_size, self._bbox_hash_size
                 )
-
-                # Image phash is pre-computed by the prefetch worker; fall back to
-                # computing here only for providers that don't support pre_phash.
-                image_phash = provided.image_phash
-                if image_phash is None:
-                    image_phash = await asyncio.to_thread(
-                        phash_from_numpy, provided.image, self._image_hash_size
-                    )
 
                 # Single bulk HTTP call — replaces N+1 separate calls.
                 # PERF
@@ -758,7 +756,8 @@ class CollectTrainingImagesTask(Task):
                 )
                 # /PERF
 
-                dup_flags: list[bool] = list(resp.bbox_flags) if resp.bbox_flags else [False] * len(matching)
+                # bbox_flags: per-detection duplicate flags (pure bbox similarity, image-independent).
+                bbox_flags: list[bool] = list(resp.bbox_flags) if resp.bbox_flags else [False] * len(matching)
 
                 # Image-level discard: skip the frame when the whole scene is a perceptual duplicate.
                 if self._duplicate_action == "discard_image" and resp.image_is_dup:
@@ -767,10 +766,15 @@ class CollectTrainingImagesTask(Task):
                     continue
 
                 # Bbox-level discard: keep if any detection is new; discard only if all are duplicates.
-                if self._duplicate_action == "discard" and all(dup_flags):
+                if self._duplicate_action == "discard" and all(bbox_flags):
                     self._dup_frames_discarded += 1
                     logger.debug("Discarding all-duplicate frame: %s", provided.metadata.source)
                     continue
+
+                # For "tag" action: gate the dup marker on image similarity too, so we don't
+                # mark a bbox as a duplicate just because it visually resembles one in a
+                # completely different scene.
+                dup_flags: list[bool] = [resp.image_is_dup and f for f in bbox_flags]
 
                 save_task = asyncio.create_task(
                     self._save_image(images_api, provided, matching, dup_flags, files_root)
@@ -779,6 +783,12 @@ class CollectTrainingImagesTask(Task):
                 if provided.metadata.source is not None and provided.metadata.frame_idx is not None:
                     unique_id = f"{provided.metadata.source}:{provided.metadata.frame_idx}"
                 self._pending_saves.append((save_task, unique_id))
+                # Must wait for the save to complete before checking the next frame:
+                # update_image_metadata adds the phash to the in-memory BK-tree index, and
+                # check_dedup_bulk reads from that same index — if we move on before the save
+                # finishes, every subsequent frame sees an empty/stale index and is never
+                # flagged as a duplicate.
+                await save_task
 
             except asyncio.CancelledError:
                 raise
