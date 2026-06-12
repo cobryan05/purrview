@@ -112,6 +112,18 @@ function buildThresholdSlider(initial, { min = 0, max = 64, onChange }) {
   return { element: el, getValue: () => parseInt(slider.value, 10) };
 }
 
+// ── Shared pagination helper ───────────────────────────────────────────────────
+
+/**
+ * Return the start index for a keyset-paginated slice of an ordered array.
+ * Each element must have an `imageUuid` property.
+ * @param {Array<{imageUuid: string}>} order
+ * @param {string|null} afterUuid
+ */
+function _startIdx(order, afterUuid) {
+  return afterUuid !== null ? order.findIndex(e => e.imageUuid === afterUuid) + 1 : 0;
+}
+
 // ── Public API ─────────────────────────────────────────────────────────────────
 
 /**
@@ -132,8 +144,8 @@ export async function openSimilarImagesModal({ imageUuid, threshold = null }) {
 
   async function _ensureMatches() {
     if (_sortedMatches !== null) return;
-    const matches = await _queryPromise;
-    _sortedMatches = [...matches].sort((a, b) => a.distance - b.distance);
+    // Backend already returns results sorted by distance ascending.
+    _sortedMatches = await _queryPromise;
   }
 
   const { element: sliderEl } = buildThresholdSlider(_threshold, {
@@ -155,10 +167,7 @@ export async function openSimilarImagesModal({ imageUuid, threshold = null }) {
       await _ensureMatches();
       if (!_sortedMatches.length) return [];
 
-      const startIdx = afterUuid !== null
-        ? _sortedMatches.findIndex(m => m.imageUuid === afterUuid) + 1
-        : 0;
-
+      const startIdx = _startIdx(_sortedMatches, afterUuid);
       const page = _sortedMatches.slice(startIdx, startIdx + limit);
       if (!page.length) return [];
 
@@ -238,10 +247,7 @@ export async function openSimilarBboxesModal({ bboxUuid, bboxCoords, imageUuid, 
       await _ensureMatches();
       if (!_imageOrder.length) return [];
 
-      const startIdx = afterUuid !== null
-        ? _imageOrder.findIndex(e => e.imageUuid === afterUuid) + 1
-        : 0;
-
+      const startIdx = _startIdx(_imageOrder, afterUuid);
       const page = _imageOrder.slice(startIdx, startIdx + limit);
       if (!page.length) return [];
 

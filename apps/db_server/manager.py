@@ -462,8 +462,9 @@ class Manager:
                     for old_bbox in old_bboxes:
                         if old_bbox.phash and old_bbox.label_uuid:
                             self._hash_index.remove_bbox(old_bbox.uuid, old_bbox.label_uuid)
+                    uuid_to_label = {b.uuid: b.label_uuid for b in update.bboxes}
                     for bp_entry in bbox_phash_list:
-                        label_uuid = next((b.label_uuid for b in update.bboxes if b.uuid == bp_entry["uuid"]), None)
+                        label_uuid = uuid_to_label.get(bp_entry["uuid"])
                         if label_uuid:
                             self._hash_index.add_bbox(bp_entry["uuid"], label_uuid, bp_entry["phash"])
             except Exception:
@@ -1001,11 +1002,8 @@ class Manager:
         await self._db_client.delete_image(image_uuid)
 
         # Delete image file from disk.
-        image_path = (
-            Path(filename)
-            if Path(filename).is_absolute()
-            else get_safe_path(self._files_root, filename)
-        )
+        _p = Path(filename)
+        image_path = _p if _p.is_absolute() else get_safe_path(self._files_root, filename)
         if image_path and image_path.exists():
             try:
                 image_path.unlink()

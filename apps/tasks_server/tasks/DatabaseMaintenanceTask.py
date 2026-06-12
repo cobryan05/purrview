@@ -4,7 +4,6 @@ and optionally recompute perceptual hashes for all images using the global hash-
 
 import asyncio
 import logging
-import os
 from pathlib import Path
 from typing import Any, Optional
 
@@ -20,7 +19,9 @@ from db_client.models.recompute_phash_payload import RecomputePhashPayload
 from db_client.models.delete_images_by_directory_payload import DeleteImagesByDirectoryPayload
 from db_client.models.reconcile_image_payload import ReconcileImagePayload
 
+from apps import FILES_ROOT
 from apps.helpers.consts import TaskStatus
+from apps.helpers.fileUtils import get_safe_path
 
 from .Registry import register_task
 from .Task import Task
@@ -261,15 +262,11 @@ class DatabaseMaintenanceTask(Task):
         else:
             if self._remove_directories_delete_sidecars and not self._cancel_flag.is_set():
                 self._status_msg = "Deleting sidecar files…"
-                files_root = Path(os.environ.get("FILES_ROOT", "/app/image_datasets")).resolve()
                 for rel_dir in dirs:
                     if self._cancel_flag.is_set():
                         break
-                    # Guard against path traversal: resolve and verify the result stays under files_root.
-                    abs_dir = (files_root / rel_dir.lstrip("/")).resolve()
-                    try:
-                        abs_dir.relative_to(files_root)
-                    except ValueError:
+                    abs_dir = get_safe_path(FILES_ROOT, rel_dir)
+                    if abs_dir is None:
                         logger.warning("Skipping directory outside files root: %s", rel_dir)
                         continue
                     if not abs_dir.is_dir():
@@ -394,8 +391,7 @@ class DatabaseMaintenanceTask(Task):
     async def _get_sidecar_uuid(self, rel_path: str) -> Optional[str]:
         """Read the sidecar for rel_path and return its uuid field, or None."""
         try:
-            files_root = Path(os.environ.get("FILES_ROOT", "/app/image_datasets"))
-            sidecar_path = (files_root / rel_path).with_suffix(".json")
+            sidecar_path = (FILES_ROOT / rel_path).with_suffix(".json")
             if not sidecar_path.exists():
                 return None
             data = jstyleson.loads(sidecar_path.read_text())

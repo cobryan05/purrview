@@ -82,6 +82,7 @@ export function init(runtime, container, options = {}) {
     const name = path ? path.split('/').pop() : '';
     filenameEl.textContent = name;
     filenameEl.title = path ?? '';
+    _syncButtons();
   });
 
   const unsubToolChanged = events.subscribeToCanvas(runtime.id, EventTypes.CANVAS_TOOL_CHANGED, ({ tool }) => {
@@ -108,8 +109,6 @@ export function init(runtime, container, options = {}) {
   };
   _syncButtons();
   const unsubBboxChanged = events.subscribeToCanvas(runtime.id, EventTypes.CANVAS_BBOXES_CHANGED, _syncButtons);
-  // Also sync when a new image finishes loading (so deleteImage button enables).
-  const unsubImageLoadedSync = events.subscribeToCanvas(runtime.id, EventTypes.IMAGE_LOADED_ONTO_CANVAS, _syncButtons);
 
-  return { destroy: () => { unsubToolChanged(); unsubBboxChanged(); unsubImageLoaded(); unsubImageLoadedSync(); } };
+  return { destroy: () => { unsubToolChanged(); unsubBboxChanged(); unsubImageLoaded(); } };
 }

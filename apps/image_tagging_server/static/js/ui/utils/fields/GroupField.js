@@ -26,9 +26,10 @@ export class GroupField extends Field {
   constructor({ collapsed = false, ...rest } = {}) {
     super(rest);
     this._collapsed = collapsed;
-    /** Marker read by SchemaField to spread this field's values into the parent dict. */
-    this._isGroup = true;
   }
+
+  /** @override — GroupField values are spread into the parent dict, not nested. */
+  flattenIntoParent() { return true; }
 
   /**
    * @param {string}   label     - Header text shown in the <summary>.

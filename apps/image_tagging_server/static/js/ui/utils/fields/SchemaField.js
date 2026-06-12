@@ -72,7 +72,7 @@ export class SchemaField extends Field {
     }
 
     for (const [fieldName, fieldInstance] of fieldEntries) {
-      if (fieldInstance._isGroup) {
+      if (fieldInstance.flattenIntoParent()) {
         // The group renders its own <details><summary> header — no outer wrapper needed.
         const node = await fieldRenderCallback(fieldInstance);
         container.appendChild(node);
@@ -108,7 +108,7 @@ export class SchemaField extends Field {
 
     if (factory) {
       field = await factory(fieldName, fieldMeta, this._init_values, (value) => {
-        if (field._isGroup) {
+        if (field.flattenIntoParent()) {
           // Groups return a flat dict — merge it into the parent values rather
           // than nesting it under the group's own key.
           Object.assign(this._init_values, value);
@@ -142,7 +142,7 @@ export class SchemaField extends Field {
   getValue() {
     const values = {};
     for (const [fieldName, fieldInstance] of Object.entries(this._fields)) {
-      if (fieldInstance._isGroup) {
+      if (fieldInstance.flattenIntoParent()) {
         Object.assign(values, fieldInstance.getValue());
       } else {
         values[fieldName] = fieldInstance.getValue();

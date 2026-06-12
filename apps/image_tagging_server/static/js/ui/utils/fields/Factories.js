@@ -221,8 +221,10 @@ export const fieldFactories = {
     if (!allow_add_tag) return checkboxField;
 
     // Wrap with an inline "add new tag" affordance.
+    // flattenIntoParent must be present: SchemaField calls it on every field instance.
     return {
       getEditMode: () => true,
+      flattenIntoParent: () => false,
       getValue: () => checkboxField.getValue(),
       renderView: async () => checkboxField.renderView(),
       renderEdit: async () => {

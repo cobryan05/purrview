@@ -80,5 +80,6 @@ APPS_CONFIG = {
 
 DB_DIR = Path(os.environ.get("DB_DIR", "/data/db/"))
 CACHE_DIR = Path(os.environ.get("CACHE_DIR", "/data/cache/"))
+FILES_ROOT = Path(os.environ.get("FILES_ROOT", "/app/image_datasets"))
 # Maximum thumbnail cache size in MB. Set to 0 to disable the limit.
 THUMB_CACHE_MAX_MB = int(os.environ.get("THUMB_CACHE_MAX_MB", "100"))
