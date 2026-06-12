@@ -84,6 +84,13 @@ main.container {
   padding: 0.5em;
   border-left: 1px solid #ccc;
   box-sizing: border-box;
+  /* Flex column so the active pane fills remaining height and scrolls.
+     max-height gives flex children a definite height to work against;
+     the value matches the canvas (80vh - 2.5rem) + toolbar + tab header. */
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  max-height: calc(80vh + 2rem);
 }
 
 /* ===== Workspace tabs ===== */
@@ -194,6 +201,14 @@ main.container {
 
 .sidebar-tab-pane.active {
   display: block;
+}
+
+/* Active pane fills remaining sidebar height and scrolls independently */
+#sidebar .sidebar-tab-pane.active,
+.canvas-modal-sidebar .sidebar-tab-pane.active {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
 }
 
 /* ===== Review: Query toolbar ===== */
@@ -1437,25 +1452,12 @@ button.filter-active {
   color: #ffd700;
 }
 
-/* Content area: label panel (left) + canvas (right) */
+/* Content area: canvas (left) + sidebar (right) */
 .canvas-modal-content {
   display: flex;
   flex: 1;
   min-height: 0;
   overflow: hidden;
-}
-
-.canvas-modal-label-panel {
-  width: 150px;
-  min-width: 120px;
-  flex-shrink: 0;
-  overflow-y: auto;
-  border-right: 1px solid #333;
-  background: #161616;
-}
-
-.canvas-modal-label-panel .label-panel-row:hover {
-  background: #2a2a2a !important;
 }
 
 .canvas-modal-canvas {
@@ -1470,23 +1472,30 @@ button.filter-active {
   color: #ffd700;
 }
 
-.canvas-modal-inspector {
+/* Right sidebar — mirrors the main canvas #sidebar */
+.canvas-modal-sidebar {
   width: 220px;
   min-width: 180px;
   flex-shrink: 0;
-  overflow-x: hidden;
-  overflow-y: auto;
   border-left: 1px solid #333;
   background: #161616;
-  padding: 0.5em;
+  padding: 0.4em;
+  box-sizing: border-box;
+  /* Flex column so active pane fills remaining height and scrolls */
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
 }
 
-.canvas-modal-inspector-hint {
-  color: #555;
-  font-size: 0.8em;
-  text-align: center;
-  padding: 1.5em 0.5em;
-  line-height: 1.4;
+/* Tone down tab header border to match modal dark palette; never shrink */
+.canvas-modal-sidebar .sidebar-tab-header {
+  border-color: #444;
+  flex-shrink: 0;
+}
+
+/* Label rows in the modal sidebar get a hover highlight */
+.canvas-modal-sidebar .label-panel-row:hover {
+  background: #2a2a2a !important;
 }
 
 .canvas-modal-footer {
@@ -1557,19 +1566,6 @@ button.filter-active {
   font-style: italic;
 }
 
-/* Inference column inside the canvas modal */
-.canvas-modal-inference {
-  width: 160px;
-  min-width: 130px;
-  flex-shrink: 0;
-  overflow-y: auto;
-  border-left: 1px solid #333;
-  background: #161616;
-}
-
-.canvas-modal-inference .inference-model-list {
-  max-height: none;
-}
 
 /* ===== Configuration ===== */
 .config-panel {
@@ -1582,6 +1578,8 @@ button.filter-active {
 .config-column {
   flex: 1 1 300px;
   min-width: 250px;
+  max-height: 70vh;
+  overflow-y: auto;
 }
 
 /* ===== Panel box — reusable bordered panel with sticky header + scrollable body =====

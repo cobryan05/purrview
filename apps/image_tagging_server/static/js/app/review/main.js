@@ -2,7 +2,7 @@ import { fetchLabels } from '/app-static/js/shared/api/labels.js';
 import { createDynamicLabelPicker } from '/app-static/js/ui/utils/dynamicLabelPicker.js';
 import { fetchTags } from '/app-static/js/shared/api/tags.js';
 import { createFilterPanel } from '/app-static/js/app/review/filters.js';
-import { expandWithDescendants } from '/app-static/js/ui/labelList.js';
+import { expandWithDescendants, createLabelList } from '/app-static/js/ui/labelList.js';
 import {
   fetchReviewQueue,
   updateImageBboxes,
@@ -30,8 +30,9 @@ import { createCanvasInstance } from '/app-static/js/app/image-tagging/canvas/in
 import { saveAnnotations } from '/app-static/js/app/image-tagging/canvas/image.js';
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
 import { init as initToolbar } from '/app-static/js/app/image-tagging/toolbar.js';
-import { initLabelPanel } from '/app-static/js/app/image-tagging/canvas/labelPanel.js';
-import { initInspector } from '/app-static/js/ui/inspector.js';
+import { createTagPanel } from '/app-static/js/ui/inspector.js';
+import { setupSidebarTabs } from '/app-static/js/app/utils/tabs.js';
+import { parseToolUuid } from '/app-static/js/app/image-tagging/canvas/tools.js';
 import { createHoverPreview } from '/app-static/js/ui/thumbnailHoverPreview.js';
 import { createEntryView } from '/app-static/js/ui/entryView.js';
 import { reviewStateToDatasetForm, datasetFormToReviewState } from '/app-static/js/shared/filterUtils.js';
@@ -2009,24 +2010,46 @@ async function showCanvasModal(bbox, img, labels, onSaved, navContext = null) {
   const toolbarEl = document.createElement('div');
   toolbarEl.className = 'canvas-modal-toolbar';
 
-  // Content area: label panel (left) + canvas (right) + inspector
+  // Content area: canvas (left) + sidebar with tabs (Labels / Inference / Tags)
   const contentArea = document.createElement('div');
   contentArea.className = 'canvas-modal-content';
-
-  const labelPanelEl = document.createElement('div');
-  labelPanelEl.className = 'canvas-modal-label-panel';
 
   const canvasWrap = document.createElement('div');
   canvasWrap.className = 'canvas-modal-canvas';
 
-  const inspectorPanel = document.createElement('div');
-  inspectorPanel.className = 'canvas-modal-inspector';
-  const inspectorHint = document.createElement('div');
-  inspectorHint.className = 'canvas-modal-inspector-hint';
-  inspectorHint.textContent = 'Double-click a box to edit its tags & label';
-  inspectorPanel.appendChild(inspectorHint);
+  // ── Right sidebar: tab header + three panes ───────────────────────
+  const sidebarEl = document.createElement('div');
+  sidebarEl.className = 'canvas-modal-sidebar';
 
-  contentArea.append(labelPanelEl, canvasWrap, inspectorPanel);
+  const sidebarTabHeader = document.createElement('div');
+  sidebarTabHeader.className = 'sidebar-tab-header';
+
+  const _mkTabBtn = (tab, label) => {
+    const btn = document.createElement('span');
+    btn.className = 'sidebar-tab-button';
+    btn.dataset.tab = tab;
+    btn.textContent = label;
+    return btn;
+  };
+  sidebarTabHeader.append(
+    _mkTabBtn('modal-tab-labels', 'Labels'),
+    _mkTabBtn('modal-tab-tags',   'Tags'),
+  );
+
+  const _mkTabPane = (id) => {
+    const pane = document.createElement('div');
+    pane.className = 'sidebar-tab-pane';
+    pane.id = id;
+    return pane;
+  };
+  const paneLabels = _mkTabPane('modal-tab-labels');
+  const paneTags   = _mkTabPane('modal-tab-tags');
+
+  const labelListEl = document.createElement('div');
+  paneLabels.appendChild(labelListEl);
+
+  sidebarEl.append(sidebarTabHeader, paneLabels, paneTags);
+  contentArea.append(canvasWrap, sidebarEl);
 
   // Footer — Save & Close starts dimmed (no unsaved changes yet)
   const footer = document.createElement('div');
@@ -2050,7 +2073,9 @@ async function showCanvasModal(bbox, img, labels, onSaved, navContext = null) {
   let instance;
   let toolbarHandle    = { destroy: () => {} };
   let labelHandle      = { destroy: () => {} };
-  let unsubInspector   = () => {};
+  let tagPanelHandle   = { destroy: () => {} };
+  let unsubToolChanged = () => {};
+  let unsubDblClick    = () => {};
   let unsubBboxChanged = () => {};
 
   try {
@@ -2069,11 +2094,27 @@ async function showCanvasModal(bbox, img, labels, onSaved, navContext = null) {
     buttons: ['undo', 'redo', 'select', 'bbox', 'delete'],
   });
 
-  // ── Wire label panel ───────────────────────────────────────────────
-  labelHandle = await initLabelPanel(instance.runtime, labelPanelEl);
+  // ── Setup sidebar tabs ─────────────────────────────────────────────
+  const { activateTab: activateSidebarTab } = setupSidebarTabs(sidebarEl);
 
-  // ── Wire inspector panel (double-click a bbox to edit tags/label) ──
-  unsubInspector = initInspector(instance.runtime, { container: inspectorPanel, openTab: false });
+  // ── Wire label list ────────────────────────────────────────────────
+  labelHandle = await createLabelList(labelListEl, { mode: 'select', runtime: instance.runtime });
+
+  // ── Wire tag panel (class + tag toggles, responds to bbox clicks) ──
+  tagPanelHandle = createTagPanel(paneTags, instance.runtime);
+
+  // ── Sidebar tab-switching rules ────────────────────────────────────
+  // BBox tool → Labels tab; tag tool → Tags tab (mirrors main canvas sidebar).
+  unsubToolChanged = events.subscribeToCanvas(instance.runtime.id, EventTypes.CANVAS_TOOL_CHANGED, ({ tool }) => {
+    const { tool: kind } = parseToolUuid(tool);
+    if (kind === 'bbox') activateSidebarTab('modal-tab-labels');
+    else if (kind === 'tag') activateSidebarTab('modal-tab-tags');
+  });
+
+  // Double-clicking a bbox → switch to Tags tab.
+  unsubDblClick = events.subscribeToCanvas(instance.runtime.id, EventTypes.CANVAS_BBOX_DOUBLE_CLICKED, () => {
+    activateSidebarTab('modal-tab-tags');
+  });
 
   // Highlight the initially-opened bbox
   function _highlightBbox(bboxUuid) {
@@ -2223,7 +2264,9 @@ async function showCanvasModal(bbox, img, labels, onSaved, navContext = null) {
     unsubBboxChanged();
     unsubDirty();
     if (unsubNavLoad) unsubNavLoad();
-    unsubInspector();
+    unsubToolChanged();
+    unsubDblClick();
+    tagPanelHandle.destroy();
     toolbarHandle.destroy();
     labelHandle.destroy();
     instance.destroy();
