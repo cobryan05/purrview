@@ -133,3 +133,48 @@ async def test_delete_image_removes_file_and_record(http_client, image_file, fil
     assert r2.status_code == 200
     # file no longer exists, so metadata returns failure
     assert r2.json()["status"] == "failure"
+
+
+async def test_delete_image_db_only_not_found(http_client):
+    r = await http_client.delete("/api/images/00000000-0000-0000-0000-000000000000/db-only")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["status"] == "failure"
+    assert "not found" in body["message"].lower()
+
+
+async def test_delete_image_db_only_keeps_file(http_client, image_file, files_root):
+    """DB-only delete removes the DB record and sidecar but leaves the image file on disk."""
+    import json as _json
+    import uuid as _uuid
+
+    stable_uuid = str(_uuid.uuid4())
+    sidecar = image_file.with_suffix(".json")
+    sidecar.write_text(_json.dumps({"uuid": stable_uuid, "boxes": []}))
+
+    r = await http_client.post("/api/images/reconcile", json={"relPath": "test.png", "syncMode": "replace_db_with_json"})
+    assert r.status_code == 200
+
+    # Confirm the record is in the DB with the expected UUID.
+    r = await http_client.post("/api/images/metadata/get", json={"imagePath": "test.png"})
+    assert r.status_code == 200
+    image_uuid = r.json()["image"]["uuid"]
+    assert image_uuid == stable_uuid
+
+    assert image_file.exists()
+    assert sidecar.exists()
+
+    # Delete from DB only.
+    r = await http_client.delete(f"/api/images/{image_uuid}/db-only")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["status"] == "success"
+    assert body["imageUuid"] == image_uuid
+
+    # Image file must still exist; sidecar must be removed (prevents re-import on reconcile).
+    assert image_file.exists(), "image file should NOT be deleted in db-only mode"
+    assert not sidecar.exists(), "sidecar SHOULD be deleted so reconcile cannot re-import the record"
+
+    # DB record must be gone: by-uuid lookup returns 404 without triggering re-sync.
+    r2 = await http_client.get(f"/api/images/by-uuid/{image_uuid}/meta")
+    assert r2.status_code == 404

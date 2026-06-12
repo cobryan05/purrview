@@ -1361,6 +1361,23 @@ class WebApp:
                 logger.error(e, exc_info=True)
                 return DeleteImageResponse(status=JsonValues.FAILURE, message=str(e))
 
+        @self._app.delete(
+            "/api/images/{image_uuid}/db-only",
+            response_model=DeleteImageResponse,
+            tags=[ApiTags.IMAGES],
+            operation_id="delete_image_db_only",
+        )
+        async def delete_image_db_only_api(image_uuid: str) -> DeleteImageResponse:
+            """Remove an image from the DB and hash index without deleting files from disk."""
+            try:
+                rel_path = await self._manager.delete_image_db_only(image_uuid)
+                if rel_path is None:
+                    return DeleteImageResponse(status=JsonValues.FAILURE, message="Image not found")
+                return DeleteImageResponse(status=JsonValues.SUCCESS, image_uuid=image_uuid, filename=rel_path)
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return DeleteImageResponse(status=JsonValues.FAILURE, message=str(e))
+
         ################################################################################
         # Perceptual Hash API
         ################################################################################

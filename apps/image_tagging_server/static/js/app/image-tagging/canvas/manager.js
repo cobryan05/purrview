@@ -100,3 +100,18 @@ export function rerenderBboxViews(canvas, bboxes, viewport) {
   bboxes.forEach(bbox => layer.add(new BboxView(bbox, vp)));
   layer.batchDraw();
 }
+
+/**
+ * Reset the canvas viewport to the default fit-to-container zoom.
+ * @param {import('@image_tagging_types').CanvasState} canvas
+ */
+export function resetCanvasZoom(canvas) {
+  if (!canvas?.viewport?.imageWidth) return;
+  const viewport = computeViewport(
+    canvas.container.clientWidth,
+    canvas.container.clientHeight,
+    canvas.viewport.imageWidth,
+    canvas.viewport.imageHeight,
+  );
+  setCanvasViewport(canvas, viewport);
+}

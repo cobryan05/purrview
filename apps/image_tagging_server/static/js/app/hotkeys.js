@@ -1,4 +1,5 @@
 import { deleteSelected } from './image-tagging/canvas/image.js';
+import { resetCanvasZoom } from './image-tagging/canvas/manager.js';
 import { setTool } from './image-tagging/canvas/tools.js';
 import { next_image, prev_image, deleteCurrentImage } from './image-tagging/files.js';
 import { actionForCombo, eventToCombo } from './image-tagging/hotkeyBindings.js';
@@ -29,6 +30,7 @@ function dispatchAction(action, runtime) {
     case 'action:deleteImage': deleteCurrentImage(runtime); return true;
     case 'action:undo': runtime.undo(); return true;
     case 'action:redo': runtime.redo(); return true;
+    case 'action:resetZoom': resetCanvasZoom(runtime.canvas); return true;
     default: return false;
   }
 }

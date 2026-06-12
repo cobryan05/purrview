@@ -1023,6 +1023,47 @@ class Manager:
         logger.info("delete_image_permanently: deleted %s (%s)", filename, image_uuid)
         return rel_path
 
+    async def delete_image_db_only(self, image_uuid: str) -> Optional[str]:
+        """Remove a single image from the DB (and hash index) without deleting the image file.
+
+        The JSON sidecar is deleted so that a subsequent reconcile does not
+        re-import the old record back into the DB.  The image file itself is
+        left on disk.
+
+        Returns the FILES_ROOT-relative path of the removed image, or None if
+        the image UUID was not found in the DB.
+        """
+        image_record = await self._db_client.get_image_by_uuid(image_uuid)
+        if not image_record:
+            return None
+
+        filename = image_record.filename
+
+        # Remove from hash index before DB deletion.
+        if image_record.phash:
+            self._hash_index.remove_image(image_uuid)
+        for bbox in image_record.bboxes or []:
+            if bbox.phash and bbox.label_uuid:
+                self._hash_index.remove_bbox(bbox.uuid, bbox.label_uuid)
+
+        # Delete DB record (bboxes cascade); image file is untouched.
+        await self._db_client.delete_image(image_uuid)
+
+        # Delete the JSON sidecar so reconcile cannot re-import the old record.
+        _p = Path(filename)
+        image_path = _p if _p.is_absolute() else get_safe_path(self._files_root, filename)
+        if image_path:
+            sidecar_path = self._get_json_sidefile(image_path)
+            if sidecar_path.exists():
+                try:
+                    sidecar_path.unlink()
+                except Exception as e:
+                    logger.warning("delete_image_db_only: failed to delete sidecar %s: %s", sidecar_path, e)
+
+        rel_path = self._image_rel_path(filename)
+        logger.info("delete_image_db_only: removed from DB %s (%s)", filename, image_uuid)
+        return rel_path
+
     # ─────────────────────────────────────────────────────────────────────────
     # Perceptual hash index public API
     # ─────────────────────────────────────────────────────────────────────────

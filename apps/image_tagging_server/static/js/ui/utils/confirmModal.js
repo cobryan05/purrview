@@ -75,6 +75,25 @@ export function showConfirmModal({
 }
 
 /**
+ * Show a modal to choose how to delete an image.
+ * @param {string} filename  - Display name of the image being deleted.
+ * @returns {Promise<'disk'|'db'|null>}  'disk' = delete from disk+DB, 'db' = DB only, null = cancelled.
+ */
+export function showDeleteImageModal(filename) {
+  return _buildModal({
+    title: 'Delete image',
+    message: `"${filename}" — choose how to remove this image:`,
+    buttons: [
+      { text: 'Cancel',          value: null,   className: 'secondary' },
+      { text: 'Remove from DB',  value: 'db',   className: undefined },
+      { text: 'Delete from disk', value: 'disk', className: 'contrast' },
+    ],
+    defaultFocusIndex: 0,
+    defaultCloseValue: null,
+  });
+}
+
+/**
  * Modal asking the user what to do about unsaved changes.
  *
  * @param {Object} [opts]

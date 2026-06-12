@@ -254,3 +254,15 @@ export async function deleteImage(imageUuid) {
   }
   return { imageUuid: data.imageUuid, filename: data.filename };
 }
+
+export async function deleteImageDbOnly(imageUuid) {
+  const res = await apiFetch(`/api/images/${encodeURIComponent(imageUuid)}/db-only`, {
+    method: 'DELETE',
+  });
+
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || data.status !== 'success') {
+    throw new Error(data.message || `Failed to remove image ${imageUuid} from DB`);
+  }
+  return { imageUuid: data.imageUuid, filename: data.filename };
+}

@@ -3,8 +3,8 @@ import { FileBrowser } from '/app-static/js/ui/fileBrowser.js';
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
 import { guardUnsavedChanges } from './canvas/image.js';
 import { toast } from '/app-static/js/ui/utils/logging.js';
-import { showConfirmModal } from '/app-static/js/ui/utils/confirmModal.js';
-import { deleteImage } from '/app-static/js/shared/api/images.js';
+import { showDeleteImageModal } from '/app-static/js/ui/utils/confirmModal.js';
+import { deleteImage, deleteImageDbOnly } from '/app-static/js/shared/api/images.js';
 
 let _initialized = false;
 let browser = null;
@@ -126,17 +126,15 @@ export async function deleteCurrentImage(runtime) {
   const { uuid: imageUuid, image_path: imagePath } = image;
   const filename = imagePath.split('/').pop();
 
-  const confirmed = await showConfirmModal({
-    title: 'Delete image',
-    message: `Permanently delete "${filename}"? This removes the file and all its annotations from disk. This cannot be undone.`,
-    confirmText: 'Delete',
-    danger: true,
-  });
-  if (!confirmed) return;
+  const choice = await showDeleteImageModal(filename);
+  if (!choice) return;
 
-  // Delete from DB + disk first so the error path is clean.
   try {
-    await deleteImage(imageUuid);
+    if (choice === 'disk') {
+      await deleteImage(imageUuid);
+    } else {
+      await deleteImageDbOnly(imageUuid);
+    }
   } catch (err) {
     toast(`Failed to delete image: ${err.message}`, 4000, 'error');
     return;
