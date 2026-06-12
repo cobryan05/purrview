@@ -109,6 +109,7 @@ export class BboxView extends Konva.Group {
         this.uiBBox.y = (this.y() - this._viewport.offsetY) / sh;
         this.uiBBox.width = newWidth / sw;
         this.uiBBox.height = newHeight / sh;
+        this.uiBBox.dirty = true;
       }
 
       // Re-sync the Transformer's handles to the post-normalization bounds.

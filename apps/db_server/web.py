@@ -1417,7 +1417,7 @@ class WebApp:
         async def find_similar_bboxes(payload: FindSimilarBboxesPayload) -> FindSimilarBboxesResponse:
             try:
                 matches = await self._manager.find_similar_bboxes_enriched(
-                    payload.phash, payload.label_uuids or None, payload.threshold,
+                    payload.phash, payload.label_uuids, payload.threshold,
                     payload.tag_uuids, payload.exclude_tag_uuids, payload.tag_match_mode,
                 )
                 return FindSimilarBboxesResponse(
@@ -1457,7 +1457,7 @@ class WebApp:
         async def find_similar_bboxes_by_uuid(payload: FindSimilarBboxesByUuidPayload) -> FindSimilarBboxesResponse:
             try:
                 matches = await self._manager.find_similar_bboxes_by_uuid(
-                    payload.bbox_uuid, payload.label_uuids or None, payload.threshold,
+                    payload.bbox_uuid, payload.label_uuids, payload.threshold,
                     payload.tag_uuids, payload.exclude_tag_uuids, payload.tag_match_mode,
                 )
                 return FindSimilarBboxesResponse(
@@ -1487,7 +1487,7 @@ class WebApp:
                     payload.y,
                     payload.w,
                     payload.h,
-                    payload.label_uuids or None,
+                    payload.label_uuids,
                     payload.threshold,
                     payload.tag_uuids,
                     payload.exclude_tag_uuids,

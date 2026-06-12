@@ -310,3 +310,215 @@ class TestBboxThumbnailByUuid:
     async def test_unknown_uuid_returns_404(self, http_client):
         r = await http_client.get(f"/api/images/bboxes/{uuid_mod.uuid4()}/thumbnail")
         assert r.status_code == 404
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# filter_bboxes_by_tags (db_client)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestFilterBboxesByTags:
+    """Unit tests for DbClient.filter_bboxes_by_tags — any/all/exclude modes."""
+
+    @pytest.fixture
+    async def two_tags(self, http_client):
+        """Create two tags; return (tag_a_uuid, tag_b_uuid)."""
+        ra = await http_client.post("/api/tags/add", json={"name": "tag-a", "color": "#FF0000"})
+        rb = await http_client.post("/api/tags/add", json={"name": "tag-b", "color": "#00FF00"})
+        return ra.json()["tag"]["uuid"], rb.json()["tag"]["uuid"]
+
+    @pytest.fixture
+    async def two_bboxes(self, http_client, image_file, label_uuid, two_tags):
+        """bbox1 has tag-a only; bbox2 has tag-a and tag-b."""
+        tag_a, tag_b = two_tags
+        bid1, bid2 = str(uuid_mod.uuid4()), str(uuid_mod.uuid4())
+        r = await http_client.post(
+            "/api/images/metadata/update",
+            json={
+                "imagePath": "similar_test.png",
+                "boxes": [
+                    {
+                        "uuid": bid1,
+                        "labelUuid": label_uuid,
+                        "x": 0.1, "y": 0.1, "width": 0.3, "height": 0.3,
+                        "tagUuids": [tag_a],
+                    },
+                    {
+                        "uuid": bid2,
+                        "labelUuid": label_uuid,
+                        "x": 0.5, "y": 0.5, "width": 0.3, "height": 0.3,
+                        "tagUuids": [tag_a, tag_b],
+                    },
+                ],
+            },
+        )
+        assert r.status_code == 200
+        return bid1, bid2, tag_a, tag_b
+
+    async def test_empty_input_returns_empty(self, db_client):
+        result = await db_client.filter_bboxes_by_tags([], [], [])
+        assert result == set()
+
+    async def test_no_filters_returns_all(self, db_client, two_bboxes):
+        bid1, bid2, _, _ = two_bboxes
+        result = await db_client.filter_bboxes_by_tags([bid1, bid2], [], [])
+        assert result == {bid1, bid2}
+
+    async def test_any_mode_selects_bboxes_with_any_required_tag(self, db_client, two_bboxes):
+        """'any' with tag-b: only bbox2 carries it."""
+        bid1, bid2, _, tag_b = two_bboxes
+        result = await db_client.filter_bboxes_by_tags([bid1, bid2], [tag_b], [], "any")
+        assert result == {bid2}
+
+    async def test_any_mode_shared_tag_includes_both(self, db_client, two_bboxes):
+        """'any' with tag-a: both bboxes carry it."""
+        bid1, bid2, tag_a, _ = two_bboxes
+        result = await db_client.filter_bboxes_by_tags([bid1, bid2], [tag_a], [], "any")
+        assert result == {bid1, bid2}
+
+    async def test_all_mode_requires_every_tag(self, db_client, two_bboxes):
+        """'all' requiring tag-a AND tag-b: only bbox2 has both."""
+        bid1, bid2, tag_a, tag_b = two_bboxes
+        result = await db_client.filter_bboxes_by_tags([bid1, bid2], [tag_a, tag_b], [], "all")
+        assert result == {bid2}
+
+    async def test_all_mode_single_tag_matches_all_carrying_it(self, db_client, two_bboxes):
+        """'all' requiring only tag-a: both have it."""
+        bid1, bid2, tag_a, _ = two_bboxes
+        result = await db_client.filter_bboxes_by_tags([bid1, bid2], [tag_a], [], "all")
+        assert result == {bid1, bid2}
+
+    async def test_exclude_removes_bboxes_with_excluded_tag(self, db_client, two_bboxes):
+        """Excluding tag-b removes bbox2."""
+        bid1, bid2, _, tag_b = two_bboxes
+        result = await db_client.filter_bboxes_by_tags([bid1, bid2], [], [tag_b])
+        assert result == {bid1}
+
+    async def test_include_any_and_exclude_combined(self, db_client, two_bboxes):
+        """'any' tag-a, exclude tag-b → bbox1 only (bbox2 has tag-b)."""
+        bid1, bid2, tag_a, tag_b = two_bboxes
+        result = await db_client.filter_bboxes_by_tags([bid1, bid2], [tag_a], [tag_b], "any")
+        assert result == {bid1}
+
+    async def test_require_missing_tag_returns_empty(self, db_client, two_bboxes):
+        """Requiring a tag that no bbox has returns empty set."""
+        bid1, bid2, _, _ = two_bboxes
+        result = await db_client.filter_bboxes_by_tags(
+            [bid1, bid2], [str(uuid_mod.uuid4())], [], "any"
+        )
+        assert result == set()
+
+    async def test_exclude_all_returns_empty(self, db_client, two_bboxes):
+        """Excluding both tags that bboxes carry returns empty set."""
+        bid1, bid2, tag_a, tag_b = two_bboxes
+        result = await db_client.filter_bboxes_by_tags([bid1, bid2], [], [tag_a, tag_b])
+        assert result == set()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Tag and label filtering in find-similar-by-bbox-uuid
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestSimilarBboxesFiltering:
+    """API-level tag and label_uuids filtering for bbox similarity search."""
+
+    @pytest.fixture
+    async def tagged_index(self, http_client, image_file, label_uuid):
+        """
+        Two near-identical bboxes: one carries a custom tag, one does not.
+        Hash index is rebuilt so similarity search works.
+        Returns (bbox_tagged_uuid, bbox_untagged_uuid, tag_uuid).
+        """
+        tag_r = await http_client.post(
+            "/api/tags/add", json={"name": "verified", "color": "#ABCDEF"}
+        )
+        tag_uuid = tag_r.json()["tag"]["uuid"]
+        bid_tagged, bid_bare = str(uuid_mod.uuid4()), str(uuid_mod.uuid4())
+        r = await http_client.post(
+            "/api/images/metadata/update",
+            json={
+                "imagePath": "similar_test.png",
+                "boxes": [
+                    {
+                        "uuid": bid_tagged,
+                        "labelUuid": label_uuid,
+                        "x": 0.1, "y": 0.1, "width": 0.5, "height": 0.5,
+                        "tagUuids": [tag_uuid],
+                    },
+                    {
+                        "uuid": bid_bare,
+                        "labelUuid": label_uuid,
+                        "x": 0.15, "y": 0.15, "width": 0.5, "height": 0.5,
+                        "tagUuids": [],
+                    },
+                ],
+            },
+        )
+        assert r.status_code == 200
+        rb = await http_client.post("/api/images/phash/rebuild-index")
+        assert rb.json()["status"] == "success"
+        return bid_tagged, bid_bare, tag_uuid
+
+    async def test_tag_filter_includes_only_matching_bboxes(self, http_client, tagged_index):
+        """tagUuids=[tag] keeps only bboxes that carry that tag."""
+        bid_tagged, bid_bare, tag_uuid = tagged_index
+        r = await http_client.post(
+            "/api/images/bbox/find-similar-by-bbox-uuid",
+            json={"bboxUuid": bid_tagged, "threshold": 64, "tagUuids": [tag_uuid]},
+        )
+        assert r.status_code == 200
+        uuids = {m["bboxUuid"] for m in r.json()["matches"]}
+        assert bid_tagged in uuids
+        assert bid_bare not in uuids
+
+    async def test_exclude_tag_removes_tagged_bboxes(self, http_client, tagged_index):
+        """excludeTagUuids=[tag] removes bboxes that carry the tag."""
+        bid_tagged, bid_bare, tag_uuid = tagged_index
+        r = await http_client.post(
+            "/api/images/bbox/find-similar-by-bbox-uuid",
+            json={"bboxUuid": bid_bare, "threshold": 64, "excludeTagUuids": [tag_uuid]},
+        )
+        assert r.status_code == 200
+        uuids = {m["bboxUuid"] for m in r.json()["matches"]}
+        assert bid_bare in uuids
+        assert bid_tagged not in uuids
+
+    async def test_no_tag_filter_returns_all_similar(self, http_client, tagged_index):
+        """Without tag filters both bboxes appear in results."""
+        bid_tagged, bid_bare, _ = tagged_index
+        r = await http_client.post(
+            "/api/images/bbox/find-similar-by-bbox-uuid",
+            json={"bboxUuid": bid_tagged, "threshold": 64},
+        )
+        assert r.status_code == 200
+        uuids = {m["bboxUuid"] for m in r.json()["matches"]}
+        assert bid_tagged in uuids
+        assert bid_bare in uuids
+
+    async def test_label_uuids_restricts_to_matching_label(self, http_client, image_file):
+        """labelUuids filters to only those label trees in the BK-tree search."""
+        # Create two labels, one bbox each, index both.
+        la = (await http_client.post("/api/labels", json={"name": "cat", "color": "#111111"})).json()["label"]["uuid"]
+        lb = (await http_client.post("/api/labels", json={"name": "bird", "color": "#222222"})).json()["label"]["uuid"]
+        bid_a, bid_b = str(uuid_mod.uuid4()), str(uuid_mod.uuid4())
+        await http_client.post(
+            "/api/images/metadata/update",
+            json={
+                "imagePath": "similar_test.png",
+                "boxes": [
+                    {"uuid": bid_a, "labelUuid": la, "x": 0.1, "y": 0.1, "width": 0.5, "height": 0.5, "tagUuids": []},
+                    {"uuid": bid_b, "labelUuid": lb, "x": 0.1, "y": 0.1, "width": 0.5, "height": 0.5, "tagUuids": []},
+                ],
+            },
+        )
+        await http_client.post("/api/images/phash/rebuild-index")
+
+        r = await http_client.post(
+            "/api/images/bbox/find-similar-by-bbox-uuid",
+            json={"bboxUuid": bid_a, "threshold": 64, "labelUuids": [la]},
+        )
+        assert r.status_code == 200
+        uuids = {m["bboxUuid"] for m in r.json()["matches"]}
+        assert bid_a in uuids
+        assert bid_b not in uuids

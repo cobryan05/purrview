@@ -202,8 +202,10 @@ export async function openSimilarBboxesModal({ bboxUuid, bboxCoords, imageUuid, 
   let _excludeTagUuids = [];
   let _tagMatchMode = 'any';
 
-  // If live coordinates are provided (e.g. bbox moved on canvas but not yet saved),
-  // compute the phash server-side from those coords; otherwise fall back to UUID lookup.
+  // Use coords only when the bbox is dirty (moved/resized since last save, or brand-new).
+  // getBboxCoords() returns null for clean (saved, unmodified) bboxes, which forces the
+  // UUID path and guarantees the source bbox appears at distance 0 in results.
+  // For dirty bboxes the coords path searches by the current crop position, which is correct.
   const _query = (t) => bboxCoords && imageUuid
     ? findSimilarBboxesByCoords(imageUuid, bboxCoords.x, bboxCoords.y, bboxCoords.w, bboxCoords.h, t, _labelUuids, _tagUuids, _excludeTagUuids, _tagMatchMode)
     : findSimilarBboxesByUuid(bboxUuid, t, _labelUuids, _tagUuids, _excludeTagUuids, _tagMatchMode);

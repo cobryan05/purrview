@@ -7,7 +7,7 @@ import { fetchLabelByUuid } from '/app-static/js/shared/api/labels.js';
 import { fetchTagByUuid } from '/app-static/js/shared/api/tags.js';
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
 import { UNVERIFIED_TAG_UUID, VERIFICATION_TAG_UUIDS } from '/app-static/js/shared/api/review.js';
-import { setCanvasViewport } from './manager.js';
+import { setCanvasViewport, visibleContainerHeight } from './manager.js';
 import { screenToImage } from './viewport.js';
 import { openContextMenuForObjects } from '/app-static/js/ui/contextMenu/registry.js';
 import { makeCanvasBboxAdapter, makeCanvasSurfaceAdapter } from './contextTargets.js';
@@ -499,15 +499,5 @@ export async function handleResize(e, runtime) {
     return;
   }
 
-  // Subtract any overlap with the fixed #bottom-bars so the image doesn't
-  // get centered into the area hidden behind the status bar.
-  const bottomBars = document.getElementById('bottom-bars');
-  let visibleHeight = height;
-  if (bottomBars) {
-    const barsTop = bottomBars.getBoundingClientRect().top;
-    const overlap = container.getBoundingClientRect().bottom - barsTop;
-    if (overlap > 0) visibleHeight = height - overlap;
-  }
-
-  await setCanvasViewport(canvas, canvas.viewport, { width, height: visibleHeight });
+  await setCanvasViewport(canvas, canvas.viewport, { width, height: visibleContainerHeight(container) });
 }

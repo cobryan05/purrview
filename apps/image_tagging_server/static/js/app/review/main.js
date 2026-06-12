@@ -1828,6 +1828,7 @@ export async function showReviewModal({ title = 'Browse Images', fetchImages, ed
       // null fetchImages → full filter panel is shown
       // We'll pre-populate it below via filterPanel.setState()
       datasetActions: false,
+      toolbarControls,
     });
 
     // Wire "Update Dataset" button now that panel is ready
@@ -2017,7 +2018,9 @@ async function showCanvasModal(bbox, img, labels, onSaved, navContext = null) {
   const canvasWrap = document.createElement('div');
   canvasWrap.className = 'canvas-modal-canvas';
 
-  // ── Right sidebar: tab header + three panes ───────────────────────
+  // ── Right sidebar: tab header + two panes ────────────────────────
+  const MODAL_TABS = { labels: 'modal-tab-labels', tags: 'modal-tab-tags' };
+
   const sidebarEl = document.createElement('div');
   sidebarEl.className = 'canvas-modal-sidebar';
 
@@ -2032,8 +2035,8 @@ async function showCanvasModal(bbox, img, labels, onSaved, navContext = null) {
     return btn;
   };
   sidebarTabHeader.append(
-    _mkTabBtn('modal-tab-labels', 'Labels'),
-    _mkTabBtn('modal-tab-tags',   'Tags'),
+    _mkTabBtn(MODAL_TABS.labels, 'Labels'),
+    _mkTabBtn(MODAL_TABS.tags,   'Tags'),
   );
 
   const _mkTabPane = (id) => {
@@ -2042,8 +2045,8 @@ async function showCanvasModal(bbox, img, labels, onSaved, navContext = null) {
     pane.id = id;
     return pane;
   };
-  const paneLabels = _mkTabPane('modal-tab-labels');
-  const paneTags   = _mkTabPane('modal-tab-tags');
+  const paneLabels = _mkTabPane(MODAL_TABS.labels);
+  const paneTags   = _mkTabPane(MODAL_TABS.tags);
 
   const labelListEl = document.createElement('div');
   paneLabels.appendChild(labelListEl);
@@ -2107,13 +2110,13 @@ async function showCanvasModal(bbox, img, labels, onSaved, navContext = null) {
   // BBox tool → Labels tab; tag tool → Tags tab (mirrors main canvas sidebar).
   unsubToolChanged = events.subscribeToCanvas(instance.runtime.id, EventTypes.CANVAS_TOOL_CHANGED, ({ tool }) => {
     const { tool: kind } = parseToolUuid(tool);
-    if (kind === 'bbox') activateSidebarTab('modal-tab-labels');
-    else if (kind === 'tag') activateSidebarTab('modal-tab-tags');
+    if (kind === 'bbox') activateSidebarTab(MODAL_TABS.labels);
+    else if (kind === 'tag') activateSidebarTab(MODAL_TABS.tags);
   });
 
   // Double-clicking a bbox → switch to Tags tab.
   unsubDblClick = events.subscribeToCanvas(instance.runtime.id, EventTypes.CANVAS_BBOX_DOUBLE_CLICKED, () => {
-    activateSidebarTab('modal-tab-tags');
+    activateSidebarTab(MODAL_TABS.tags);
   });
 
   // Highlight the initially-opened bbox

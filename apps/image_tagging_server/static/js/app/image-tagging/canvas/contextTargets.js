@@ -73,6 +73,11 @@ export function makeCanvasBboxAdapter(bboxView, runtime) {
     },
 
     getBboxCoords() {
+      // Return null for clean (saved, unmodified) bboxes so callers can use the
+      // UUID path, which guarantees the source bbox appears at distance 0.
+      // For dirty bboxes (moved/resized since last save, or newly drawn), return
+      // live coords so the search reflects the current crop position.
+      if (!bboxView.uiBBox.dirty) return null;
       const { x, y, width, height } = bboxView.uiBBox;
       return { x, y, w: width, h: height };
     },

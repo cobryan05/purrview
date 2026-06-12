@@ -11,7 +11,7 @@ import time
 from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Literal, Optional, Set, Tuple
 
 import aiofiles
 import jstyleson
@@ -924,14 +924,9 @@ class Manager:
             if abs_path is not None and abs_path.exists():
                 continue
             logger.info("prune_missing_images: deleting %s (%s)", filename, uuid)
-            # Remove from hash index before DB deletion.
             image_record = await self._db_client.get_image_by_uuid(uuid)
             if image_record:
-                if image_record.phash:
-                    self._hash_index.remove_image(uuid)
-                for bbox in (image_record.bboxes or []):
-                    if bbox.phash and bbox.label_uuid:
-                        self._hash_index.remove_bbox(bbox.uuid, bbox.label_uuid)
+                self._remove_from_hash_index(image_record)
             await self._db_client.delete_image(uuid)
             deleted += 1
         return deleted
@@ -976,6 +971,22 @@ class Manager:
         logger.info("delete_images_by_directory: deleted %d images under %s", deleted, norm_dirs)
         return deleted
 
+    def _resolve_image_path(self, filename: str) -> Optional[Path]:
+        """Resolve a filename (possibly absolute or relative) to a Path.
+
+        Returns an absolute Path, or None if ``get_safe_path`` rejects it.
+        """
+        _p = Path(filename)
+        return _p if _p.is_absolute() else get_safe_path(self._files_root, filename)
+
+    def _remove_from_hash_index(self, image_record) -> None:
+        """Remove an image and all its bboxes from the in-memory hash index."""
+        if image_record.phash:
+            self._hash_index.remove_image(image_record.uuid)
+        for bbox in image_record.bboxes or []:
+            if bbox.phash and bbox.label_uuid:
+                self._hash_index.remove_bbox(bbox.uuid, bbox.label_uuid)
+
     async def delete_image_permanently(self, image_uuid: str) -> Optional[str]:
         """Delete a single image from the DB and from disk (file + JSON sidecar).
 
@@ -992,18 +1003,13 @@ class Manager:
         filename = image_record.filename
 
         # Remove from hash index before DB deletion.
-        if image_record.phash:
-            self._hash_index.remove_image(image_uuid)
-        for bbox in image_record.bboxes or []:
-            if bbox.phash and bbox.label_uuid:
-                self._hash_index.remove_bbox(bbox.uuid, bbox.label_uuid)
+        self._remove_from_hash_index(image_record)
 
         # Delete DB record (bboxes cascade).
         await self._db_client.delete_image(image_uuid)
 
         # Delete image file from disk.
-        _p = Path(filename)
-        image_path = _p if _p.is_absolute() else get_safe_path(self._files_root, filename)
+        image_path = self._resolve_image_path(filename)
         if image_path and image_path.exists():
             try:
                 image_path.unlink()
@@ -1039,26 +1045,21 @@ class Manager:
 
         filename = image_record.filename
 
-        # Remove from hash index before DB deletion.
-        if image_record.phash:
-            self._hash_index.remove_image(image_uuid)
-        for bbox in image_record.bboxes or []:
-            if bbox.phash and bbox.label_uuid:
-                self._hash_index.remove_bbox(bbox.uuid, bbox.label_uuid)
-
-        # Delete DB record (bboxes cascade); image file is untouched.
-        await self._db_client.delete_image(image_uuid)
-
-        # Delete the JSON sidecar so reconcile cannot re-import the old record.
-        _p = Path(filename)
-        image_path = _p if _p.is_absolute() else get_safe_path(self._files_root, filename)
+        # Delete the JSON sidecar FIRST so that if it cannot be removed we
+        # abort before touching the DB.  A swallowed failure here would leave
+        # the sidecar on disk after the DB record is gone, causing the next
+        # reconcile run to silently re-import (resurrect) the deleted record.
+        image_path = self._resolve_image_path(filename)
         if image_path:
             sidecar_path = self._get_json_sidefile(image_path)
             if sidecar_path.exists():
-                try:
-                    sidecar_path.unlink()
-                except Exception as e:
-                    logger.warning("delete_image_db_only: failed to delete sidecar %s: %s", sidecar_path, e)
+                sidecar_path.unlink()  # let exception propagate; caller handles it
+
+        # Remove from hash index before DB deletion.
+        self._remove_from_hash_index(image_record)
+
+        # Delete DB record (bboxes cascade); image file is untouched.
+        await self._db_client.delete_image(image_uuid)
 
         rel_path = self._image_rel_path(filename)
         logger.info("delete_image_db_only: removed from DB %s (%s)", filename, image_uuid)
@@ -1088,7 +1089,7 @@ class Manager:
         threshold: int,
         tag_uuids: Optional[List[str]] = None,
         exclude_tag_uuids: Optional[List[str]] = None,
-        tag_match_mode: str = "any",
+        tag_match_mode: Literal["any", "all"] = "any",
     ) -> List[Tuple[str, Optional[str], int, str]]:
         """Return [(bbox_uuid, image_uuid, distance, label_uuid)] within *threshold* of *phash*.
 
@@ -1100,19 +1101,20 @@ class Manager:
         matches = self._hash_index.find_similar_bboxes(phash, label_uuids, threshold)
         if not matches:
             return []
-        bbox_uuids = [b_uuid for b_uuid, _dist, _lbl in matches]
 
         # Apply tag filter if any tags are specified.
-        req = tag_uuids or []
-        excl = exclude_tag_uuids or []
-        if req or excl:
-            passing = await self._db_client.filter_bboxes_by_tags(bbox_uuids, req, excl, tag_match_mode)
+        if tag_uuids or exclude_tag_uuids:
+            passing = await self._db_client.filter_bboxes_by_tags(
+                [b for b, _, _ in matches],
+                tag_uuids or [],
+                exclude_tag_uuids or [],
+                tag_match_mode,
+            )
             matches = [(b, d, l) for b, d, l in matches if b in passing]
             if not matches:
                 return []
-            bbox_uuids = [b_uuid for b_uuid, _dist, _lbl in matches]
 
-        image_uuid_map = await self._db_client.get_image_uuids_for_bboxes(bbox_uuids)
+        image_uuid_map = await self._db_client.get_image_uuids_for_bboxes([b for b, _, _ in matches])
         return [(b_uuid, image_uuid_map.get(b_uuid), dist, lbl) for b_uuid, dist, lbl in matches]
 
     async def find_similar_images_by_uuid(self, image_uuid: str, threshold: int) -> List[Tuple[str, int]]:
@@ -1129,7 +1131,7 @@ class Manager:
         threshold: int,
         tag_uuids: Optional[List[str]] = None,
         exclude_tag_uuids: Optional[List[str]] = None,
-        tag_match_mode: str = "any",
+        tag_match_mode: Literal["any", "all"] = "any",
     ) -> List[Tuple[str, Optional[str], int, str]]:
         """Return [(bbox_uuid, image_uuid, distance, label_uuid)] for bboxes similar to the given bbox UUID, including the query bbox itself (distance 0)."""
         result = await self._db_client.get_bbox_with_image(bbox_uuid)
@@ -1153,7 +1155,7 @@ class Manager:
         threshold: int,
         tag_uuids: Optional[List[str]] = None,
         exclude_tag_uuids: Optional[List[str]] = None,
-        tag_match_mode: str = "any",
+        tag_match_mode: Literal["any", "all"] = "any",
     ) -> List[Tuple[str, Optional[str], int, str]]:
         """Compute a phash from a (possibly unsaved) bbox region and return similar bboxes."""
         image = await self._db_client.get_image_by_uuid(image_uuid)
