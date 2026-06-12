@@ -1210,10 +1210,17 @@ class Manager:
         """Bulk duplicate check: one image phash + N bbox phashes → one in-memory call."""
         return self._hash_index.check_dedup_bulk(image_phash, image_threshold, bboxes)
 
-    async def rebuild_hash_index(self) -> dict:
-        """Rebuild the BK-tree index from the DB and return stats."""
+    async def rebuild_hash_index(self, clear_first: bool = False) -> dict:
+        """Rebuild the BK-tree index from the DB and return stats.
+
+        If clear_first is True, all stored phashes are NULLed before the rebuild
+        so the tree starts empty. Use this when the global hash size changes —
+        old hashes are incompatible and would produce nonsense distances.
+        """
         self._rebuild_in_progress = True
         try:
+            if clear_first:
+                await self._db_client.clear_all_phashes()
             stats = await self._hash_index.rebuild()
         finally:
             self._rebuild_in_progress = False

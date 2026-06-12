@@ -760,6 +760,13 @@ class CollectTrainingImagesTask(Task):
 
                 dup_flags: list[bool] = list(resp.bbox_flags) if resp.bbox_flags else [False] * len(matching)
 
+                # Image-level discard: skip the frame when the whole scene is a perceptual duplicate.
+                if self._duplicate_action == "discard_image" and resp.image_is_dup:
+                    self._dup_frames_discarded += 1
+                    logger.debug("Discarding image-duplicate frame: %s", provided.metadata.source)
+                    continue
+
+                # Bbox-level discard: keep if any detection is new; discard only if all are duplicates.
                 if self._duplicate_action == "discard" and all(dup_flags):
                     self._dup_frames_discarded += 1
                     logger.debug("Discarding all-duplicate frame: %s", provided.metadata.source)
@@ -810,10 +817,7 @@ class CollectTrainingImagesTask(Task):
                     "apply_tags",
                     "generate_task_tag",
                     "task_tag_name",
-                    "enable_dedup",
-                    "image_dup_threshold",
-                    "bbox_dup_threshold",
-                    "duplicate_action",
+                    "dedup_group",
                 ]
             },
             "snapshot_interval": {
@@ -875,33 +879,41 @@ class CollectTrainingImagesTask(Task):
                 "description": "Custom name for the per-task generated tag. Defaults to the config name if left blank.",
                 "default": "",
             },
-            "enable_dedup": {
-                "type": "boolean",
-                "label": "Enable Deduplication",
-                "description": "Check each frame against the perceptual hash index and tag duplicate detections.",
-                "default": False,
-            },
-            "image_dup_threshold": {
-                "type": "int",
-                "label": "Image Duplicate Threshold",
-                "description": "Max Hamming distance for two whole-image phashes to be considered the same scene.",
-                "default": 5,
-            },
-            "bbox_dup_threshold": {
-                "type": "int",
-                "label": "BBox Duplicate Threshold",
-                "description": "Max Hamming distance for two bbox crop phashes to be considered the same object appearance.",
-                "default": 8,
-            },
-            "duplicate_action": {
-                "type": "select",
-                "label": "Action on Duplicate",
-                "description": "What to do when a detection matches an existing entry in the perceptual hash index.",
-                "options": [
-                    {"value": "tag", "label": "Tag — save the image and mark duplicate detections"},
-                    {"value": "discard", "label": "Discard — skip the frame entirely when all detections are duplicates"},
-                    {"value": "ignore", "label": "Ignore — save normally without any duplicate marking"},
-                ],
-                "default": "tag",
+            "dedup_group": {
+                "type": "group",
+                "label": "Deduplication",
+                "collapsed": True,
+                "fields": {
+                    "enable_dedup": {
+                        "type": "boolean",
+                        "label": "Enable Deduplication",
+                        "description": "Check each frame against the perceptual hash index and handle duplicate detections.",
+                        "default": False,
+                    },
+                    "duplicate_action": {
+                        "type": "select",
+                        "label": "Action on Duplicate",
+                        "description": "What to do when a detection matches an existing entry in the perceptual hash index.",
+                        "options": [
+                            {"value": "discard", "label": "Keep if any unique — discard the frame only when all detections are duplicates"},
+                            {"value": "discard_image", "label": "Discard if image matches — skip the frame when the whole scene is a perceptual duplicate"},
+                            {"value": "tag", "label": "Tag — save the image and mark duplicate detections"},
+                            {"value": "ignore", "label": "Ignore — save normally without any duplicate marking"},
+                        ],
+                        "default": "discard",
+                    },
+                    "image_dup_threshold": {
+                        "type": "int",
+                        "label": "Image Duplicate Threshold",
+                        "description": "Max Hamming distance for two whole-image phashes to be considered the same scene.",
+                        "default": 5,
+                    },
+                    "bbox_dup_threshold": {
+                        "type": "int",
+                        "label": "BBox Duplicate Threshold",
+                        "description": "Max Hamming distance for two bbox crop phashes to be considered the same object appearance.",
+                        "default": 8,
+                    },
+                },
             },
         }

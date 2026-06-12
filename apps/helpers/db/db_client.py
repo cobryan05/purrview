@@ -1320,6 +1320,19 @@ class DbClient:
             )
             return [{"uuid": row[0], "label_uuid": row[1], "phash": row[2]} for row in result.all()]
 
+    async def clear_all_phashes(self) -> None:
+        """NULL out every image and bbox phash in a single transaction.
+
+        Called when the global hash size changes — old hashes are incompatible
+        with the new size and must be removed so fresh ones can be computed.
+        """
+        import sqlalchemy as _sa
+
+        async with self._async_session_maker() as session:
+            await session.exec(_sa.update(ImageRecord).values(phash=None))  # type: ignore[call-overload]
+            await session.exec(_sa.update(BBox).values(phash=None))  # type: ignore[call-overload]
+            await session.commit()
+
     async def update_phashes(
         self,
         image_uuid: str,

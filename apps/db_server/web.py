@@ -1566,6 +1566,25 @@ class WebApp:
                 return RebuildHashIndexResponse(status=JsonValues.FAILURE, message=str(e))
 
         @self._app.post(
+            "/api/images/phash/clear-and-rebuild",
+            response_model=RebuildHashIndexResponse,
+            tags=[ApiTags.IMAGES],
+            operation_id="clear_and_rebuild_hash_index",
+        )
+        async def clear_and_rebuild_hash_index() -> RebuildHashIndexResponse:
+            try:
+                stats = await self._manager.rebuild_hash_index(clear_first=True)
+                return RebuildHashIndexResponse(
+                    status=JsonValues.SUCCESS,
+                    image_count=stats["image_count"],
+                    bbox_count=stats["bbox_count"],
+                    duration_ms=stats["duration_ms"],
+                )
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return RebuildHashIndexResponse(status=JsonValues.FAILURE, message=str(e))
+
+        @self._app.post(
             "/api/images/{image_uuid}/phash/recompute",
             response_model=RecomputePhashResponse,
             tags=[ApiTags.IMAGES],

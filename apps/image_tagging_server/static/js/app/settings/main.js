@@ -258,8 +258,8 @@ async function _buildDedupSection() {
   const warning = document.createElement('p');
   warning.className = 'settings-dedup-warning';
   warning.textContent =
-    'Hash sizes must match the index. Changing them requires recomputing all stored image hashes ' +
-    '(use the "Rebuild Hash Index" action on the Images tab).';
+    'Hash sizes must match the index. Saving a new hash size rebuilds the index immediately. ' +
+    'Existing images keep their old hashes until reprocessed — run Database Maintenance (recompute hashes) to update them all at once.';
   section.appendChild(warning);
 
   // Load all four settings in parallel
@@ -369,9 +369,10 @@ function _buildHashSizeRow({ key, label, description, currentN }) {
     const confirmed = await showConfirmModal({
       title: 'Change hash size?',
       message:
-        `Changing the hash size will immediately clear existing stored hashes and begin regeneration. ` +
-        `This cannot be undone. Continue?`,
-      confirmText: 'Change & Regenerate',
+        `Changing the hash size will save the new setting and immediately rebuild the similarity index. ` +
+        `Existing images will get new-size hashes the next time they are processed, or you can run ` +
+        `Database Maintenance (recompute hashes) to update them all at once. Continue?`,
+      confirmText: 'Change & Rebuild',
       cancelText: 'Cancel',
       danger: true,
     });
@@ -380,9 +381,17 @@ function _buildHashSizeRow({ key, label, description, currentN }) {
     saveBtn.textContent = 'Saving…';
     try {
       await setSetting(key, String(val));
-      statusLine.textContent = `Saved: ${val} (${val * val}-bit) — hash regeneration has been queued.`;
+      statusLine.textContent = `Saved: ${val} (${val * val}-bit) — rebuilding index…`;
       statusLine.dataset.state = 'info';
-      saveBtn.textContent = '✓ Saved';
+      saveBtn.textContent = 'Rebuilding…';
+      try {
+        await apiFetch('/api/images/phash/clear-and-rebuild', { method: 'POST' });
+        statusLine.textContent = `Saved: ${val} (${val * val}-bit) — index rebuilt.`;
+      } catch (rebuildErr) {
+        statusLine.textContent = `Saved: ${val} (${val * val}-bit) — index rebuild failed: ${rebuildErr.message}`;
+        statusLine.dataset.state = 'error';
+      }
+      saveBtn.textContent = '✓ Done';
       setTimeout(() => {
         saveBtn.textContent = 'Save';
         saveBtn.disabled = false;

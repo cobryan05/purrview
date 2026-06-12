@@ -4,9 +4,10 @@ Covers:
   - phash computed and stored in DB on first image write
   - phash written to JSON sidecar
   - DB helper methods: get_all_image_phashes, get_all_bbox_phashes, update_phashes,
-                       get_image_phashes_page, get_bbox_phashes_page
+                       get_image_phashes_page, get_bbox_phashes_page,
+                       clear_all_phashes
   - HTTP endpoints: find-similar-images, find-similar-bboxes,
-                    rebuild-index, recompute-phash
+                    rebuild-index, clear-and-rebuild, recompute-phash
 """
 
 import io
@@ -386,6 +387,37 @@ class TestFindSimilarBboxes:
 # ─────────────────────────────────────────────────────────────────────────────
 
 
+class TestClearAllPhashes:
+    async def test_clears_image_phashes(self, db_client, written_image):
+        image_uuid, _ = written_image
+        rows_before = await db_client.get_all_image_phashes()
+        assert any(r["uuid"] == image_uuid for r in rows_before)
+
+        await db_client.clear_all_phashes()
+
+        rows_after = await db_client.get_all_image_phashes()
+        assert rows_after == []
+
+    async def test_clears_bbox_phashes(self, db_client, written_image):
+        _, bbox_uuid = written_image
+        rows_before = await db_client.get_all_bbox_phashes()
+        assert any(r["uuid"] == bbox_uuid for r in rows_before)
+
+        await db_client.clear_all_phashes()
+
+        rows_after = await db_client.get_all_bbox_phashes()
+        assert rows_after == []
+
+    async def test_no_op_on_empty_db(self, db_client):
+        await db_client.clear_all_phashes()  # must not raise
+        assert await db_client.get_all_image_phashes() == []
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# API: rebuild-index
+# ─────────────────────────────────────────────────────────────────────────────
+
+
 class TestRebuildIndex:
     async def test_rebuild_returns_success(self, http_client):
         r = await http_client.post("/api/images/phash/rebuild-index")
@@ -401,6 +433,56 @@ class TestRebuildIndex:
 
     async def test_rebuild_returns_duration_ms(self, http_client):
         r = await http_client.post("/api/images/phash/rebuild-index")
+        assert r.json()["durationMs"] >= 0.0
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# API: clear-and-rebuild
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestClearAndRebuildIndex:
+    async def test_returns_success(self, http_client):
+        r = await http_client.post("/api/images/phash/clear-and-rebuild")
+        assert r.status_code == 200
+        assert r.json()["status"] == "success"
+
+    async def test_returns_zero_counts_because_hashes_were_cleared(
+        self, http_client, written_image
+    ):
+        # An image with a phash exists; after clear-and-rebuild the tree is empty.
+        r = await http_client.post("/api/images/phash/clear-and-rebuild")
+        body = r.json()
+        assert body["imageCount"] == 0
+        assert body["bboxCount"] == 0
+
+    async def test_nulls_stored_phashes_in_db(
+        self, http_client, db_client, written_image
+    ):
+        rows_before = await db_client.get_all_image_phashes()
+        assert len(rows_before) >= 1
+
+        await http_client.post("/api/images/phash/clear-and-rebuild")
+
+        rows_after = await db_client.get_all_image_phashes()
+        assert rows_after == []
+
+    async def test_similarity_search_returns_empty_after_clear(
+        self, http_client, db_client, written_image
+    ):
+        image_uuid, _ = written_image
+        rows = await db_client.get_all_image_phashes()
+        phash = next(r["phash"] for r in rows if r["uuid"] == image_uuid)
+
+        await http_client.post("/api/images/phash/clear-and-rebuild")
+
+        r = await http_client.post(
+            "/api/images/find-similar", json={"phash": phash, "threshold": 64}
+        )
+        assert r.json()["matches"] == []
+
+    async def test_returns_duration_ms(self, http_client):
+        r = await http_client.post("/api/images/phash/clear-and-rebuild")
         assert r.json()["durationMs"] >= 0.0
 
 
