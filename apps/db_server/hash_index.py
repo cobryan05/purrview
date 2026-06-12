@@ -258,17 +258,17 @@ class HashIndex:
     def find_similar_bboxes(
         self,
         phash: str,
-        label_uuid: Optional[str],
+        label_uuids: Optional[List[str]],
         threshold: int,
     ) -> List[Tuple[str, int, str]]:
         """Return [(bbox_uuid, distance, label_uuid)] within *threshold* of *phash*, sorted by distance ascending.
 
-        If *label_uuid* is None, searches all per-label trees.
+        If *label_uuids* is None or empty, searches all per-label trees.
         """
         query = (phash, "")
         results: List[Tuple[str, int, str]] = []
 
-        target_labels = [label_uuid] if label_uuid else list(self._bbox_trees.keys())
+        target_labels = label_uuids if label_uuids else list(self._bbox_trees.keys())
         for lbl in target_labels:
             tree = self._bbox_trees.get(lbl)
             if tree is None:
@@ -303,7 +303,7 @@ class HashIndex:
         image_is_dup = bool(self.find_similar_images(image_phash, image_threshold))
         bbox_flags = [
             image_is_dup and bool(
-                self.find_similar_bboxes(b["phash"], b["label_uuid"], b["threshold"])
+                self.find_similar_bboxes(b["phash"], [b["label_uuid"]], b["threshold"])
             )
             for b in bboxes
         ]

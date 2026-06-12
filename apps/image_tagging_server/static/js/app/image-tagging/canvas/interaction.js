@@ -499,5 +499,15 @@ export async function handleResize(e, runtime) {
     return;
   }
 
-  await setCanvasViewport(canvas, canvas.viewport, { width, height, });
+  // Subtract any overlap with the fixed #bottom-bars so the image doesn't
+  // get centered into the area hidden behind the status bar.
+  const bottomBars = document.getElementById('bottom-bars');
+  let visibleHeight = height;
+  if (bottomBars) {
+    const barsTop = bottomBars.getBoundingClientRect().top;
+    const overlap = container.getBoundingClientRect().bottom - barsTop;
+    if (overlap > 0) visibleHeight = height - overlap;
+  }
+
+  await setCanvasViewport(canvas, canvas.viewport, { width, height: visibleHeight });
 }

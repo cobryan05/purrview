@@ -145,7 +145,7 @@ function buildVerifyChip(tagUuids) {
   return chip;
 }
 
-export async function createReviewPanel(container, { fetchImages = null, datasetActions = true, referenceBboxUuids = new Set(), referenceImageUuids = new Set(), initialViewFilter = 'bboxes' } = {}) {
+export async function createReviewPanel(container, { fetchImages = null, datasetActions = true, referenceBboxUuids = new Set(), referenceImageUuids = new Set(), initialViewFilter = 'bboxes', toolbarControls = null } = {}) {
   container.innerHTML = '';
 
   const labelsPromise = fetchLabels().catch(() => new Map());
@@ -278,6 +278,7 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
     makeToolbarGroup(filterToggleBtn, sortLabel, sortBySelect, sortOrderSelect),
     makeToolbarSep(),
     makeToolbarGroup(viewToggle, entryView.element, pageSizeSelect),
+    ...(toolbarControls ? [makeToolbarSep(), makeToolbarGroup(toolbarControls)] : []),
     makeToolbarGroup(refreshBtn),
   );
 
@@ -1766,7 +1767,7 @@ export async function init() {
  *                     the dataset's conditions. "Update Dataset" button pushes changes
  *                     back to the caller via onUpdateFilters (caller must still Save).
  */
-export async function showReviewModal({ title = 'Browse Images', fetchImages, editableDataset, headerControls, referenceBboxUuids = new Set(), referenceImageUuids = new Set(), initialViewFilter = 'bboxes' } = {}) {
+export async function showReviewModal({ title = 'Browse Images', fetchImages, editableDataset, toolbarControls, referenceBboxUuids = new Set(), referenceImageUuids = new Set(), initialViewFilter = 'bboxes' } = {}) {
   const overlay = document.createElement('div');
   const _modalZ = nextModalZIndex();
   overlay.style.cssText = `position:fixed;inset:0;background:#0009;display:flex;align-items:center;justify-content:center;z-index:${_modalZ};`;
@@ -1788,8 +1789,7 @@ export async function showReviewModal({ title = 'Browse Images', fetchImages, ed
 
   header.append(titleEl);
 
-  // Optional caller-supplied controls injected after the title (e.g. threshold slider)
-  if (headerControls) header.appendChild(headerControls);
+  // (caller-supplied toolbar controls are passed to createReviewPanel instead)
 
   // "Update Dataset" button — shown when modal is in editable-dataset mode
   if (editableDataset?.onUpdateFilters) {
@@ -1845,7 +1845,7 @@ export async function showReviewModal({ title = 'Browse Images', fetchImages, ed
     }
     return panel.refresh;
   } else {
-    const panel = await createReviewPanel(content, { fetchImages, referenceBboxUuids, referenceImageUuids, initialViewFilter });
+    const panel = await createReviewPanel(content, { fetchImages, referenceBboxUuids, referenceImageUuids, initialViewFilter, toolbarControls });
     return panel.refresh;
   }
 }

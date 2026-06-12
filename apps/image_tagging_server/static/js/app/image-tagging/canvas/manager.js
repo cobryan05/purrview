@@ -23,9 +23,10 @@ export async function setCanvasImage(canvas, uiImage) {
   layer.add(konvaImg);
   konvaImg.moveToBottom();
 
+  const visibleHeight = _visibleContainerHeight(canvas.container);
   const viewport = computeViewport(
     canvas.container.clientWidth,
-    canvas.container.clientHeight,
+    visibleHeight,
     uiImage.img.width,
     uiImage.img.height
   );
@@ -33,7 +34,7 @@ export async function setCanvasImage(canvas, uiImage) {
 
   rerenderBboxViews(canvas, uiImage.bboxes, viewport);
 
-  setCanvasViewport(canvas, viewport, { width: canvas.container.clientWidth, height: canvas.container.clientHeight });
+  setCanvasViewport(canvas, viewport, { width: canvas.container.clientWidth, height: visibleHeight });
 }
 
 /**
@@ -105,11 +106,32 @@ export function rerenderBboxViews(canvas, bboxes, viewport) {
  * Reset the canvas viewport to the default fit-to-container zoom.
  * @param {import('@image_tagging_types').CanvasState} canvas
  */
+/**
+ * Returns the visible height of the canvas container after subtracting any
+ * overlap with the fixed #bottom-bars element.
+ * @param {HTMLElement} container
+ * @returns {number}
+ */
+function _visibleContainerHeight(container) {
+  const containerRect = container.getBoundingClientRect();
+  const bottomBars = document.getElementById('bottom-bars');
+  if (bottomBars) {
+    const barsTop = bottomBars.getBoundingClientRect().top;
+    const overlap = containerRect.bottom - barsTop;
+    if (overlap > 0) return container.clientHeight - overlap;
+  }
+  return container.clientHeight;
+}
+
+/**
+ * Reset the canvas viewport to the default fit-to-container zoom.
+ * @param {import('@image_tagging_types').CanvasState} canvas
+ */
 export function resetCanvasZoom(canvas) {
   if (!canvas?.viewport?.imageWidth) return;
   const viewport = computeViewport(
     canvas.container.clientWidth,
-    canvas.container.clientHeight,
+    _visibleContainerHeight(canvas.container),
     canvas.viewport.imageWidth,
     canvas.viewport.imageHeight,
   );

@@ -26,6 +26,9 @@ import {
   fetchImagesByUuids,
 } from '/app-static/js/shared/api/images.js';
 import { getSetting } from '/app-static/js/shared/api/settings.js';
+import { fetchTags } from '/app-static/js/shared/api/tags.js';
+import { fetchLabels } from '/app-static/js/shared/api/labels.js';
+import { createMultiSelectDropdown } from '/app-static/js/ui/utils/index.js';
 
 /** @returns {Promise<number>} */
 export async function getImageHashMax() {
@@ -160,7 +163,7 @@ export async function openSimilarImagesModal({ imageUuid, threshold = null }) {
 
   _refresh = await showReviewModal({
     title: 'Similar Images',
-    headerControls: sliderEl,
+    toolbarControls: sliderEl,
     initialViewFilter: 'images',
     referenceImageUuids: new Set([imageUuid]),
     fetchImages: async ({ afterUuid = null, limit }) => {
@@ -186,23 +189,40 @@ export async function openSimilarImagesModal({ imageUuid, threshold = null }) {
  * @param {{ bboxUuid: string, threshold: number, labelUuid?: string|null }} params
  */
 export async function openSimilarBboxesModal({ bboxUuid, bboxCoords, imageUuid, threshold = null, labelUuid = null }) {
-  const sliderMax = await getBboxHashMax();
+  const [sliderMax, tagsMap, labelsMap] = await Promise.all([
+    getBboxHashMax(),
+    fetchTags().catch(() => new Map()),
+    fetchLabels().catch(() => new Map()),
+  ]);
   let _threshold = threshold !== null ? threshold : await _readThreshold('dedup_bbox_threshold', sliderMax);
+
+  // Label + tag filter state
+  let _labelUuids = labelUuid ? [labelUuid] : [];
+  let _tagUuids = [];
+  let _excludeTagUuids = [];
+  let _tagMatchMode = 'any';
 
   // If live coordinates are provided (e.g. bbox moved on canvas but not yet saved),
   // compute the phash server-side from those coords; otherwise fall back to UUID lookup.
   const _query = (t) => bboxCoords && imageUuid
-    ? findSimilarBboxesByCoords(imageUuid, bboxCoords.x, bboxCoords.y, bboxCoords.w, bboxCoords.h, t, labelUuid)
-    : findSimilarBboxesByUuid(bboxUuid, t, labelUuid);
+    ? findSimilarBboxesByCoords(imageUuid, bboxCoords.x, bboxCoords.y, bboxCoords.w, bboxCoords.h, t, _labelUuids, _tagUuids, _excludeTagUuids, _tagMatchMode)
+    : findSimilarBboxesByUuid(bboxUuid, t, _labelUuids, _tagUuids, _excludeTagUuids, _tagMatchMode);
 
   let _queryPromise = _query(_threshold);
   let _refresh = null;
 
-  // Derived from the match list; reset when threshold changes.
+  // Derived from the match list; reset when threshold or tag filter changes.
   // _imageOrder: [{imageUuid, minDist}] sorted ascending by minDist
   // _imageBboxes: Map<imageUuid, Set<bboxUuid>>
   let _imageOrder = null;
   let _imageBboxes = null;
+
+  function _invalidate() {
+    _imageOrder = null;
+    _imageBboxes = null;
+    _queryPromise = _query(_threshold);
+    _refresh?.();
+  }
 
   async function _ensureMatches() {
     if (_imageOrder !== null) return;
@@ -232,16 +252,45 @@ export async function openSimilarBboxesModal({ bboxUuid, bboxCoords, imageUuid, 
     max: sliderMax,
     onChange(newThreshold) {
       _threshold = newThreshold;
-      _imageOrder = null;
-      _imageBboxes = null;
-      _queryPromise = _query(_threshold);
-      _refresh?.();
+      _invalidate();
     },
   });
 
+  // ── Label filter dropdown ──────────────────────────────────────────────────
+  const labelItems = [...labelsMap.values()].map(l => ({ uuid: l.uuid, name: l.name, color: l.color ?? null }));
+  const labelsDropdown = createMultiSelectDropdown({
+    label: 'Labels',
+    items: labelItems,
+    defaultSelected: _labelUuids,
+    showModeToggle: false,  // label filter is always OR (each label maps to its own BK-tree)
+    onChange(selected) {
+      _labelUuids = selected;
+      _invalidate();
+    },
+  });
+
+  // ── Tag filter dropdown ────────────────────────────────────────────────────
+  const tagItems = [...tagsMap.values()].map(t => ({ uuid: t.uuid, name: t.name, color: t.color ?? null }));
+  const tagsDropdown = createMultiSelectDropdown({
+    label: 'Tags',
+    items: tagItems,
+    showModeToggle: true,
+    onChange(selected, excluded, mode) {
+      _tagUuids = selected;
+      _excludeTagUuids = excluded;
+      _tagMatchMode = mode;
+      _invalidate();
+    },
+  });
+
+  // Wrap slider + label + tag dropdowns side-by-side
+  const headerEl = document.createElement('div');
+  headerEl.style.cssText = 'display:flex;align-items:center;gap:0.75em;flex-wrap:wrap;';
+  headerEl.append(sliderEl, labelsDropdown.element, tagsDropdown.element);
+
   _refresh = await showReviewModal({
     title: 'Similar Bboxes',
-    headerControls: sliderEl,
+    toolbarControls: headerEl,
     referenceBboxUuids: new Set([bboxUuid]),
     fetchImages: async ({ afterUuid = null, limit }) => {
       await _ensureMatches();

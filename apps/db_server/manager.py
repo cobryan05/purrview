@@ -1075,27 +1075,43 @@ class Manager:
     def find_similar_bboxes(
         self,
         phash: str,
-        label_uuid: Optional[str],
+        label_uuids: Optional[List[str]],
         threshold: int,
     ) -> List[Tuple[str, int, str]]:
         """Return [(bbox_uuid, distance, label_uuid)] within *threshold* of *phash*."""
-        return self._hash_index.find_similar_bboxes(phash, label_uuid, threshold)
+        return self._hash_index.find_similar_bboxes(phash, label_uuids, threshold)
 
     async def find_similar_bboxes_enriched(
         self,
         phash: str,
-        label_uuid: Optional[str],
+        label_uuids: Optional[List[str]],
         threshold: int,
+        tag_uuids: Optional[List[str]] = None,
+        exclude_tag_uuids: Optional[List[str]] = None,
+        tag_match_mode: str = "any",
     ) -> List[Tuple[str, Optional[str], int, str]]:
         """Return [(bbox_uuid, image_uuid, distance, label_uuid)] within *threshold* of *phash*.
 
         Like find_similar_bboxes but enriches each result with its parent image UUID via a
         single batch query, so callers never have to deal with a missing image_uuid.
+        Optional tag_uuids / exclude_tag_uuids filter the matching bboxes by their own tags.
+        label_uuids restricts the BK-tree search to those label trees (None/empty = all labels).
         """
-        matches = self._hash_index.find_similar_bboxes(phash, label_uuid, threshold)
+        matches = self._hash_index.find_similar_bboxes(phash, label_uuids, threshold)
         if not matches:
             return []
         bbox_uuids = [b_uuid for b_uuid, _dist, _lbl in matches]
+
+        # Apply tag filter if any tags are specified.
+        req = tag_uuids or []
+        excl = exclude_tag_uuids or []
+        if req or excl:
+            passing = await self._db_client.filter_bboxes_by_tags(bbox_uuids, req, excl, tag_match_mode)
+            matches = [(b, d, l) for b, d, l in matches if b in passing]
+            if not matches:
+                return []
+            bbox_uuids = [b_uuid for b_uuid, _dist, _lbl in matches]
+
         image_uuid_map = await self._db_client.get_image_uuids_for_bboxes(bbox_uuids)
         return [(b_uuid, image_uuid_map.get(b_uuid), dist, lbl) for b_uuid, dist, lbl in matches]
 
@@ -1109,8 +1125,11 @@ class Manager:
     async def find_similar_bboxes_by_uuid(
         self,
         bbox_uuid: str,
-        label_uuid: Optional[str],
+        label_uuids: Optional[List[str]],
         threshold: int,
+        tag_uuids: Optional[List[str]] = None,
+        exclude_tag_uuids: Optional[List[str]] = None,
+        tag_match_mode: str = "any",
     ) -> List[Tuple[str, Optional[str], int, str]]:
         """Return [(bbox_uuid, image_uuid, distance, label_uuid)] for bboxes similar to the given bbox UUID, including the query bbox itself (distance 0)."""
         result = await self._db_client.get_bbox_with_image(bbox_uuid)
@@ -1119,13 +1138,9 @@ class Manager:
         bbox, _ = result
         if bbox.phash is None:
             return []
-        matches = self._hash_index.find_similar_bboxes(bbox.phash, label_uuid, threshold)
-        if not matches:
-            return []
-        # Enrich with image UUIDs via a single batch query
-        bbox_uuids = [b_uuid for b_uuid, _dist, _lbl in matches]
-        image_uuid_map = await self._db_client.get_image_uuids_for_bboxes(bbox_uuids)
-        return [(b_uuid, image_uuid_map.get(b_uuid), dist, lbl) for b_uuid, dist, lbl in matches]
+        return await self.find_similar_bboxes_enriched(
+            bbox.phash, label_uuids, threshold, tag_uuids, exclude_tag_uuids, tag_match_mode
+        )
 
     async def find_similar_bboxes_by_coords(
         self,
@@ -1134,8 +1149,11 @@ class Manager:
         y: float,
         w: float,
         h: float,
-        label_uuid: Optional[str],
+        label_uuids: Optional[List[str]],
         threshold: int,
+        tag_uuids: Optional[List[str]] = None,
+        exclude_tag_uuids: Optional[List[str]] = None,
+        tag_match_mode: str = "any",
     ) -> List[Tuple[str, Optional[str], int, str]]:
         """Compute a phash from a (possibly unsaved) bbox region and return similar bboxes."""
         image = await self._db_client.get_image_by_uuid(image_uuid)
@@ -1145,7 +1163,9 @@ class Manager:
         if not image_path.is_absolute():
             image_path = self._files_root / image_path
         phash = compute_bbox_phash(image_path, x, y, w, h)
-        return await self.find_similar_bboxes_enriched(phash, label_uuid, threshold)
+        return await self.find_similar_bboxes_enriched(
+            phash, label_uuids, threshold, tag_uuids, exclude_tag_uuids, tag_match_mode
+        )
 
     async def get_images_by_uuids(self, image_uuids: List[str]) -> List[ImageRecordRead]:
         """Return full ImageRecordRead objects for a list of image UUIDs, in any order."""

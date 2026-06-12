@@ -4,7 +4,7 @@ import logging
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, TypeVar, Union
+from typing import Any, Dict, List, Literal, Optional, Set, TypeVar, Union
 from uuid import uuid4
 
 from alembic import command as alembic_command
@@ -908,6 +908,72 @@ class DbClient:
             stmt = select(BBox.uuid, BBox.image_uuid).where(BBox.uuid.in_(bbox_uuids))
             result = await session.exec(stmt)
             return {b_uuid: img_uuid for b_uuid, img_uuid in result.all()}
+
+    async def filter_bboxes_by_tags(
+        self,
+        bbox_uuids: List[str],
+        require_tag_uuids: List[str],
+        exclude_tag_uuids: List[str],
+        tag_match_mode: Literal["any", "all"] = "any",
+    ) -> Set[str]:
+        """Return the subset of bbox_uuids that pass the tag filter.
+
+        require_tag_uuids + tag_match_mode control which bboxes are *included*:
+          "any" → bbox must have at least one of the required tags (OR logic)
+          "all" → bbox must have every required tag (AND logic)
+
+        exclude_tag_uuids removes bboxes that carry any of those tags regardless
+        of the include result.
+        """
+        if not bbox_uuids:
+            return set()
+        if not require_tag_uuids and not exclude_tag_uuids:
+            return set(bbox_uuids)
+
+        valid: Set[str] = set(bbox_uuids)
+
+        async with self._async_session_maker() as session:
+            if require_tag_uuids:
+                if tag_match_mode == "all":
+                    # Bbox must carry EACH required tag; intersect per-tag.
+                    for tag_uuid in require_tag_uuids:
+                        stmt = (
+                            select(BBoxTagLink.bbox_uuid)
+                            .where(
+                                BBoxTagLink.bbox_uuid.in_(valid),
+                                BBoxTagLink.tag_uuid == tag_uuid,
+                            )
+                        )
+                        result = await session.exec(stmt)
+                        valid &= set(result.all())
+                        if not valid:
+                            return set()
+                else:
+                    # "any" — bbox has at least one of the required tags.
+                    stmt = (
+                        select(BBoxTagLink.bbox_uuid)
+                        .where(
+                            BBoxTagLink.bbox_uuid.in_(valid),
+                            BBoxTagLink.tag_uuid.in_(require_tag_uuids),
+                        )
+                        .distinct()
+                    )
+                    result = await session.exec(stmt)
+                    valid &= set(result.all())
+
+            if exclude_tag_uuids and valid:
+                stmt = (
+                    select(BBoxTagLink.bbox_uuid)
+                    .where(
+                        BBoxTagLink.bbox_uuid.in_(valid),
+                        BBoxTagLink.tag_uuid.in_(exclude_tag_uuids),
+                    )
+                    .distinct()
+                )
+                result = await session.exec(stmt)
+                valid -= set(result.all())
+
+        return valid
 
     async def get_images_by_uuids(self, uuids: List[str]) -> List[ImageRecord]:
         """Return full ImageRecord rows (with bboxes + tags) for a list of image UUIDs."""

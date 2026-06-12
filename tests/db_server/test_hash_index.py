@@ -110,17 +110,17 @@ class TestImageOperations:
 
 class TestBboxOperations:
     def test_empty_index_returns_no_matches(self, idx):
-        assert idx.find_similar_bboxes(BBOX_RED, label_uuid="lbl-1", threshold=5) == []
+        assert idx.find_similar_bboxes(BBOX_RED, label_uuids=["lbl-1"], threshold=5) == []
 
     def test_added_bbox_found_at_threshold_zero(self, idx):
         idx.add_bbox("bbox-1", "lbl-1", BBOX_RED)
-        results = idx.find_similar_bboxes(BBOX_RED, label_uuid="lbl-1", threshold=0)
+        results = idx.find_similar_bboxes(BBOX_RED, label_uuids=["lbl-1"], threshold=0)
         assert any(u == "bbox-1" for u, _, _ in results)
 
     def test_result_contains_uuid_distance_label(self, idx):
         idx.add_bbox("bbox-1", "lbl-1", BBOX_RED)
         (bbox_uuid, dist, label_uuid), = idx.find_similar_bboxes(
-            BBOX_RED, label_uuid="lbl-1", threshold=0
+            BBOX_RED, label_uuids=["lbl-1"], threshold=0
         )
         assert bbox_uuid == "bbox-1"
         assert dist == 0
@@ -129,7 +129,7 @@ class TestBboxOperations:
     def test_search_restricted_to_specified_label(self, idx):
         idx.add_bbox("bbox-lbl1", "lbl-1", BBOX_RED)
         idx.add_bbox("bbox-lbl2", "lbl-2", BBOX_RED)
-        results = idx.find_similar_bboxes(BBOX_RED, label_uuid="lbl-1", threshold=0)
+        results = idx.find_similar_bboxes(BBOX_RED, label_uuids=["lbl-1"], threshold=0)
         uuids = {u for u, _, _ in results}
         assert "bbox-lbl1" in uuids
         assert "bbox-lbl2" not in uuids
@@ -137,7 +137,7 @@ class TestBboxOperations:
     def test_search_all_labels_when_label_uuid_is_none(self, idx):
         idx.add_bbox("bbox-a", "lbl-1", BBOX_RED)
         idx.add_bbox("bbox-b", "lbl-2", BBOX_RED)
-        results = idx.find_similar_bboxes(BBOX_RED, label_uuid=None, threshold=0)
+        results = idx.find_similar_bboxes(BBOX_RED, label_uuids=None, threshold=0)
         uuids = {u for u, _, _ in results}
         assert "bbox-a" in uuids
         assert "bbox-b" in uuids
@@ -145,7 +145,7 @@ class TestBboxOperations:
     def test_removed_bbox_not_returned(self, idx):
         idx.add_bbox("bbox-1", "lbl-1", BBOX_RED)
         idx.remove_bbox("bbox-1", "lbl-1")
-        results = idx.find_similar_bboxes(BBOX_RED, label_uuid="lbl-1", threshold=20)
+        results = idx.find_similar_bboxes(BBOX_RED, label_uuids=["lbl-1"], threshold=20)
         assert all(u != "bbox-1" for u, _, _ in results)
 
     def test_remove_nonexistent_bbox_does_not_raise(self, idx):
@@ -154,13 +154,13 @@ class TestBboxOperations:
     def test_move_bbox_removes_from_old_label(self, idx):
         idx.add_bbox("bbox-1", "lbl-1", BBOX_RED)
         idx.move_bbox("bbox-1", "lbl-1", "lbl-2", BBOX_RED)
-        results = idx.find_similar_bboxes(BBOX_RED, label_uuid="lbl-1", threshold=0)
+        results = idx.find_similar_bboxes(BBOX_RED, label_uuids=["lbl-1"], threshold=0)
         assert all(u != "bbox-1" for u, _, _ in results)
 
     def test_move_bbox_adds_to_new_label(self, idx):
         idx.add_bbox("bbox-1", "lbl-1", BBOX_RED)
         idx.move_bbox("bbox-1", "lbl-1", "lbl-2", BBOX_RED)
-        results = idx.find_similar_bboxes(BBOX_RED, label_uuid="lbl-2", threshold=0)
+        results = idx.find_similar_bboxes(BBOX_RED, label_uuids=["lbl-2"], threshold=0)
         assert any(u == "bbox-1" for u, _, _ in results)
 
     def test_dissimilar_bbox_excluded_at_low_threshold(self, idx):
@@ -169,7 +169,7 @@ class TestBboxOperations:
         # pattern and can hash to within 1 bit of each other).
         idx.add_bbox("bbox-checker", "lbl-1", BBOX_CHECKER)
         idx.add_bbox("bbox-grad", "lbl-1", BBOX_GRAD)
-        results = idx.find_similar_bboxes(BBOX_CHECKER, label_uuid="lbl-1", threshold=0)
+        results = idx.find_similar_bboxes(BBOX_CHECKER, label_uuids=["lbl-1"], threshold=0)
         uuids = {u for u, _, _ in results}
         assert "bbox-checker" in uuids
         assert "bbox-grad" not in uuids

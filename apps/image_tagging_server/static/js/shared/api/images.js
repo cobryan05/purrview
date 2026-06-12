@@ -151,11 +151,11 @@ export async function findSimilarImagesByUuid(imageUuid, threshold = 5) {
  * @param {string|null} [labelUuid]
  * @returns {Promise<Array<{bboxUuid: string, imageUuid: string|null, labelUuid: string, distance: number}>>}
  */
-export async function findSimilarBboxesByUuid(bboxUuid, threshold = 8, labelUuid = null) {
+export async function findSimilarBboxesByUuid(bboxUuid, threshold = 8, labelUuids = [], tagUuids = [], excludeTagUuids = [], tagMatchMode = 'any') {
   const res = await apiFetch('/api/images/bbox/find-similar-by-bbox-uuid', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ bboxUuid, threshold, labelUuid }),
+    body: JSON.stringify({ bboxUuid, threshold, labelUuids, tagUuids, excludeTagUuids, tagMatchMode }),
   });
   const data = await res.json();
   if (!res.ok || data.status !== 'success') throw new Error(data.message || 'Failed to find similar bboxes');
@@ -167,11 +167,11 @@ export async function findSimilarBboxesByUuid(bboxUuid, threshold = 8, labelUuid
   }));
 }
 
-export async function findSimilarBboxesByCoords(imageUuid, x, y, w, h, threshold = 8, labelUuid = null) {
+export async function findSimilarBboxesByCoords(imageUuid, x, y, w, h, threshold = 8, labelUuids = [], tagUuids = [], excludeTagUuids = [], tagMatchMode = 'any') {
   const res = await apiFetch('/api/images/bbox/find-similar-by-coords', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ imageUuid, x, y, w, h, threshold, labelUuid }),
+    body: JSON.stringify({ imageUuid, x, y, w, h, threshold, labelUuids, tagUuids, excludeTagUuids, tagMatchMode }),
   });
   const data = await res.json();
   if (!res.ok || data.status !== 'success') throw new Error(data.message || 'Failed to find similar bboxes');
