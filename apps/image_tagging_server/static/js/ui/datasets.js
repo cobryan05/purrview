@@ -43,16 +43,24 @@ function buildDatasetForm(container, { name = '', description = '', labelUuids =
   container.appendChild(makeFieldRow('Description', descInput));
 
   // Filter panel (handles Tags + Labels + Date + Filename + Verification)
-  const filterPanel = createFilterPanel(labelsMap, tagsMap, () => onAnyChange?.());
+  // inlineControls: Labels and Tags render as always-expanded scrollable boxes
+  const filterPanel = createFilterPanel(labelsMap, tagsMap, () => onAnyChange?.(), { inlineControls: true });
 
-  // Toolbar controls (Tags + Labels dropdowns) inline
-  const toolbarRow = document.createElement('div');
-  toolbarRow.className = 'ds-filter-toolbar';
-  toolbarRow.style.cssText = 'display:flex; gap:8px; flex-wrap:wrap; margin-bottom:6px;';
-  for (const ctrl of filterPanel.toolbarControls) {
-    toolbarRow.appendChild(ctrl);
+  // Side-by-side expanded boxes for Tags and Labels
+  const inlineRow = document.createElement('div');
+  inlineRow.className = 'ds-inline-controls';
+  const [tagsEl, labelsEl] = filterPanel.toolbarControls;
+  for (const [title, el] of [['Tags', tagsEl], ['Labels', labelsEl]]) {
+    const box = document.createElement('div');
+    box.className = 'ds-inline-control';
+    const lbl = document.createElement('div');
+    lbl.className = 'ds-inline-control__label';
+    lbl.textContent = title;
+    box.appendChild(lbl);
+    box.appendChild(el);
+    inlineRow.appendChild(box);
   }
-  container.appendChild(toolbarRow);
+  container.appendChild(inlineRow);
 
   // Filter panel element (Date + Filename + Verification)
   container.appendChild(filterPanel.element);

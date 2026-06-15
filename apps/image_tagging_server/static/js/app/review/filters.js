@@ -45,7 +45,7 @@ const DEFAULT_STATE = () => ({
  * @param {Map<string, object>} tags     - tag uuid → tag record
  * @param {(state: object) => void} onFilterChange
  */
-export function createFilterPanel(labels, tags, onFilterChange) {
+export function createFilterPanel(labels, tags, onFilterChange, { inlineControls = false } = {}) {
   let _state = DEFAULT_STATE();
 
   function emit() { onFilterChange({ ..._state }); }
@@ -64,6 +64,7 @@ export function createFilterPanel(labels, tags, onFilterChange) {
     defaultSelected: [UNVERIFIED_TAG_UUID],
     defaultMode: 'any',
     filterKey: 'tags',
+    inline: inlineControls,
     onChange: (selected, excluded, mode) => {
       _state.tagUuids = selected;
       _state.tagExcludeUuids = excluded;
@@ -74,6 +75,7 @@ export function createFilterPanel(labels, tags, onFilterChange) {
   // ── Toolbar: Labels multi-select dropdown (tree-ordered, with depth indentation) ──
   // Wrapped in a container div so it can be rebuilt when the active-model filter changes.
   const labelsDropdownContainer = document.createElement('div');
+  if (inlineControls) labelsDropdownContainer.style.width = '100%';
   let _labelsDropdown = null;
 
   function buildLabelsControls() {
@@ -89,6 +91,7 @@ export function createFilterPanel(labels, tags, onFilterChange) {
       defaultSelected: [],
       defaultMode: 'any',
       filterKey: 'labels',
+      inline: inlineControls,
       hierarchyToggle: {
         label: 'Include child labels',
         default: false,

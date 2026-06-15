@@ -54,6 +54,7 @@ export function createMultiSelectDropdown({
   hierarchyToggle = null,
   onChange,
   filterKey,
+  inline = false,
 }) {
   let _selected = [...defaultSelected];
   let _excluded = new Set();
@@ -65,26 +66,27 @@ export function createMultiSelectDropdown({
   /** @type {ResizeObserver|null} */
   let _resizeObserver = null;
 
-  const _sizeKey = filterKey ? `ms-dropdown-size-${filterKey}` : null;
+  // In inline mode skip size persistence (panel is always visible, layout controls size).
+  const _sizeKey = (!inline && filterKey) ? `ms-dropdown-size-${filterKey}` : null;
 
   // ── Wrapper (position:relative anchor for the panel) ──────────────────────
   const wrapper = document.createElement('div');
-  wrapper.className = 'ms-dropdown';
+  wrapper.className = inline ? 'ms-dropdown ms-dropdown--inline' : 'ms-dropdown';
   if (filterKey) wrapper.dataset.filterKey = filterKey;
 
-  // ── Trigger button ─────────────────────────────────────────────────────────
+  // ── Trigger button (omitted in inline mode — panel is always visible) ──────
   const trigger = document.createElement('button');
   trigger.type = 'button';
   trigger.className = 'ms-dropdown__trigger';
-  wrapper.appendChild(trigger);
+  if (!inline) wrapper.appendChild(trigger);
 
-  // ── Floating panel ─────────────────────────────────────────────────────────
+  // ── Panel ──────────────────────────────────────────────────────────────────
   const panelEl = document.createElement('div');
   panelEl.className = 'ms-dropdown__panel';
-  panelEl.style.display = 'none';
+  if (!inline) panelEl.style.display = 'none';
   wrapper.appendChild(panelEl);
 
-  // Restore saved size
+  // Restore saved size (dropdown mode only)
   if (_sizeKey) {
     try {
       const saved = JSON.parse(localStorage.getItem(_sizeKey) || 'null');
@@ -457,7 +459,7 @@ export function createMultiSelectDropdown({
 
     /** Disconnect observers and remove listeners. Call when removing from DOM. */
     destroy() {
-      _closePanel();
+      if (!inline) _closePanel();
       if (_resizeObserver) {
         _resizeObserver.disconnect();
         _resizeObserver = null;

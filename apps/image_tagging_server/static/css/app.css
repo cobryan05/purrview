@@ -560,6 +560,48 @@ button.filter-active {
   display: inline-block;
 }
 
+/* ── Inline (always-expanded) mode — used on the datasets editor page ── */
+.ms-dropdown--inline {
+  display: block;
+}
+
+.ms-dropdown--inline .ms-dropdown__panel {
+  position: static;
+  box-shadow: none;
+  resize: vertical;
+  min-height: 120px;
+  height: 340px;
+  width: 100% !important;
+}
+
+/* Two-column layout for inline Tags + Labels on the dataset form */
+.ds-inline-controls {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 8px;
+  flex-wrap: wrap;
+}
+
+.ds-inline-control {
+  flex: 0 0 180px;
+  display: flex;
+  flex-direction: column;
+}
+
+.ds-inline-control__label {
+  font-size: 0.78em;
+  font-weight: 600;
+  color: var(--pico-muted-color, #888);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 4px;
+}
+
+.ds-inline-control .ms-dropdown--inline {
+  flex: 1;
+  min-height: 0;
+}
+
 .ms-dropdown__trigger {
   white-space: nowrap;
   font-size: 0.82em;
