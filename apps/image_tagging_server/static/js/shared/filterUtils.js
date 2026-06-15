@@ -1,116 +1,57 @@
 /**
- * Bidirectional conversion between Review filter state and Dataset filter conditions.
+ * Bidirectional conversion between Review filter state and Dataset filter criteria.
  *
- * Limitations (documented):
- * - tagMatchMode ('any'|'all') is lost on round-trip: review→dataset always emits
- *   individual TagConditions (equivalent to 'any'); dataset→review always restores 'any'.
- * - labelMatchMode and labelIncludeChildren have no dataset equivalent.
- * - imageLabelFilters map approximately to DatasetLabelStatusCondition.
+ * The dataset filter is now a flat object that mirrors the review filter panel state
+ * exactly, so round-trips are lossless.
  */
 
 import { UNVERIFIED_TAG_UUID } from '/app-static/js/shared/api/review.js';
 
 /**
- * Convert a review filter state to the dataset filter shape.
+ * Convert a review filter state to { filterJson, labelUuids } for saving as a dataset.
  *
  * @param {object} reviewState  - object from filterPanel.getState()
- * @returns {{ conditions: object[], labelUuids: string[] }}
+ * @returns {{ filterJson: object, labelUuids: string[] }}
  */
 export function reviewStateToDatasetForm(reviewState) {
-  const conditions = [];
-
-  // Tags → TagCondition (one per tag).
-  // Skip the built-in UNVERIFIED_TAG_UUID — it's a UI default, not a meaningful dataset filter.
-  for (const tagUuid of reviewState.tagUuids ?? []) {
-    if (tagUuid === UNVERIFIED_TAG_UUID) continue;
-    conditions.push({ type: 'tag', tagUuid, exclude: false });
-  }
-  for (const tagUuid of reviewState.tagExcludeUuids ?? []) {
-    conditions.push({ type: 'tag', tagUuid, exclude: true });
-  }
-
-  // Date range → BboxAgeCondition
-  if (reviewState.dateFrom || reviewState.dateTo) {
-    const cond = { type: 'bbox_age' };
-    if (reviewState.dateFrom) cond.after = reviewState.dateFrom;
-    if (reviewState.dateTo) cond.before = reviewState.dateTo;
-    conditions.push(cond);
-  }
-
-  // Filename search → FilenameCondition
-  if (reviewState.filenameSearch) {
-    conditions.push({ type: 'filename', pattern: reviewState.filenameSearch });
-  }
-
-  // imageLabelFilters → DatasetLabelStatusCondition (best-effort)
-  // If any filter excludes "uncertain", add exclude_uncertain condition.
-  const excludesUncertain = (reviewState.imageLabelFilters ?? []).some(
-    f => f.status === 'uncertain' && f.exclude,
-  );
-  if (excludesUncertain) {
-    conditions.push({ type: 'dataset_label_status', check: 'exclude_uncertain' });
-  }
-
   return {
-    conditions,
+    filterJson: {
+      tagUuids: (reviewState.tagUuids ?? []).filter(u => u !== UNVERIFIED_TAG_UUID),
+      tagExcludeUuids: reviewState.tagExcludeUuids ?? [],
+      tagMatchMode: reviewState.tagMatchMode ?? 'any',
+      labelExcludeUuids: reviewState.labelExcludeUuids ?? [],
+      labelMatchMode: reviewState.labelMatchMode ?? 'any',
+      labelIncludeChildren: reviewState.labelIncludeChildren ?? false,
+      dateFrom: reviewState.dateFrom ?? null,
+      dateTo: reviewState.dateTo ?? null,
+      filenameSearch: reviewState.filenameSearch ?? '',
+      verificationCheck: reviewState.verificationCheck ?? null,
+    },
     labelUuids: reviewState.labelUuids ?? [],
   };
 }
 
 /**
- * Convert dataset filter conditions back to a partial review filter state.
+ * Convert a saved dataset back to a partial review filter state.
  * Used to pre-populate the review filter panel from a saved dataset.
  *
- * @param {{ conditions: object[] }} filterJson
- * @param {string[]} labelUuids
+ * @param {object} filterJson  - dataset.filterJson
+ * @param {string[]} labelUuids - dataset.labelUuids
  * @returns {Partial<object>}  - suitable for filterPanel.setState()
  */
 export function datasetFormToReviewState(filterJson, labelUuids) {
-  const conditions = filterJson?.conditions ?? [];
-  const state = {
-    tagUuids: [],
-    tagExcludeUuids: [],
-    tagMatchMode: 'any',
+  const f = filterJson ?? {};
+  return {
+    tagUuids: f.tagUuids ?? [],
+    tagExcludeUuids: f.tagExcludeUuids ?? [],
+    tagMatchMode: f.tagMatchMode ?? 'any',
     labelUuids: labelUuids ?? [],
-    labelExcludeUuids: [],
-    labelMatchMode: 'any',
-    labelIncludeChildren: false,
-    filenameSearch: '',
-    dateFrom: null,
-    dateTo: null,
-    imageLabelFilters: [],
+    labelExcludeUuids: f.labelExcludeUuids ?? [],
+    labelMatchMode: f.labelMatchMode ?? 'any',
+    labelIncludeChildren: f.labelIncludeChildren ?? false,
+    filenameSearch: f.filenameSearch ?? '',
+    dateFrom: f.dateFrom ?? null,
+    dateTo: f.dateTo ?? null,
+    verificationCheck: f.verificationCheck ?? null,
   };
-
-  for (const cond of conditions) {
-    switch (cond.type) {
-      case 'tag':
-        if (!cond.exclude) state.tagUuids.push(cond.tagUuid);
-        else state.tagExcludeUuids.push(cond.tagUuid);
-        break;
-
-      case 'bbox_age':
-      case 'image_age':
-        if (cond.after) state.dateFrom = cond.after;
-        if (cond.before) state.dateTo = cond.before;
-        if (cond.withinDays) {
-          // Convert relative "within N days" to an absolute dateFrom at the
-          // time of conversion — the review panel only supports absolute dates.
-          const d = new Date();
-          d.setDate(d.getDate() - cond.withinDays);
-          state.dateFrom = d.toISOString();
-        }
-        break;
-
-      case 'filename':
-        state.filenameSearch = cond.pattern ?? '';
-        break;
-
-      case 'dataset_label_status':
-        // No clean mapping to review imageLabelFilters — skip silently.
-        // The condition remains in the dataset but won't appear in the review filter UI.
-        break;
-    }
-  }
-
-  return state;
 }

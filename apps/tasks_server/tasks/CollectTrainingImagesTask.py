@@ -255,8 +255,8 @@ class CollectTrainingImagesTask(Task):
                 return ""
             parts = [
                 f"{self._dedup_frames_checked} checked",
-                f"{self._dedup_image_hits} img dups",
-                f"{self._dedup_bbox_hits} bbox dups",
+                f"{self._dedup_image_hits} img hits",
+                f"{self._dedup_bbox_hits} bbox hits",
             ]
             if self._dup_frames_discarded:
                 parts.append(f"{self._dup_frames_discarded} discarded")
@@ -507,8 +507,8 @@ class CollectTrainingImagesTask(Task):
             f"Complete: {self._images_processed} seen, {self._images_saved} saved"
             + (
                 f", dedup: {self._dedup_frames_checked} checked"
-                f", {self._dedup_image_hits} img dups"
-                f", {self._dedup_bbox_hits} bbox dups"
+                f", {self._dedup_image_hits} img hits"
+                f", {self._dedup_bbox_hits} bbox hits"
                 f", {self._dup_frames_discarded} discarded"
                 f", {self._dup_detections_tagged} tagged"
                 if self._enable_dedup else ""
@@ -788,6 +788,8 @@ class CollectTrainingImagesTask(Task):
                 self._dedup_frames_checked += 1
                 if resp.image_is_dup:
                     self._dedup_image_hits += 1
+                # Raw bbox index hits (image-independent) — diagnostic only; not a count of
+                # bboxes that were tagged/discarded, which requires image_is_dup AND bbox_flag.
                 self._dedup_bbox_hits += sum(1 for f in bbox_flags if f)
                 logger.debug(
                     "dedup result: image_is_dup=%s bbox_flags=%s (img_thresh=%d bbox_thresh=%d)",
@@ -805,7 +807,9 @@ class CollectTrainingImagesTask(Task):
                     continue
 
                 # Bbox-level discard: keep if any detection is new; discard only if all are duplicates.
-                if self._duplicate_action == "discard" and all(bbox_flags):
+                # Gate on image_is_dup too — bbox hashes can collide across unrelated scenes
+                # (same logic as the 'tag' action below, which uses image_is_dup AND bbox_flag).
+                if self._duplicate_action == "discard" and resp.image_is_dup and all(bbox_flags):
                     self._dup_frames_discarded += 1
                     logger.debug("Discarding all-duplicate frame: %s", provided.metadata.source)
                     if self._dup_frames_discarded == 1:

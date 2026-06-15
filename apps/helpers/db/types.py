@@ -253,6 +253,10 @@ class ImageSearchParams(ApiModel):
     # When True, only images that have at least one bbox are returned.
     # Useful for bbox-view pagination so empty-bbox images don't dilute pages.
     require_bboxes: bool = False
+    # Verification check — operates on label_uuids.
+    # "all_verified"   = every label in label_uuids has a verified image_label row (PRESENT or ABSENT)
+    # "has_unverified" = at least one label in label_uuids is uncertain or missing a row
+    label_verification_check: Optional[Literal["all_verified", "has_unverified"]] = None
     # Keyset pagination cursor.
     after_uuid: Optional[str] = None
     after_sort_value: Optional[datetime] = None  # populated when sort_by != "uuid"
@@ -476,72 +480,36 @@ class ImageLabelRead(OrmModel):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Dataset filter condition types
+# Dataset filter criteria
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-class ImageAgeCondition(ApiModel):
-    """Filter by image created_at or updated_at."""
-
-    type: Literal["image_age"] = "image_age"
-    field: Literal["created_at", "updated_at"] = "updated_at"
-    within_days: Optional[int] = None  # relative: last N days (takes priority over after/before)
-    after: Optional[datetime] = None  # absolute lower bound
-    before: Optional[datetime] = None  # absolute upper bound
-
-
-class BboxAgeCondition(ApiModel):
-    """Filter images by whether any of their bboxes were recently created/updated.
-    Requires bbox.created_at / bbox.updated_at columns (added in add_timestamps_to_bboxes migration)."""
-
-    type: Literal["bbox_age"] = "bbox_age"
-    field: Literal["created_at", "updated_at"] = "updated_at"
-    within_days: Optional[int] = None
-    after: Optional[datetime] = None
-    before: Optional[datetime] = None
-
-
-class TagCondition(ApiModel):
-    """Require or exclude images based on any bbox carrying a specific tag."""
-
-    type: Literal["tag"] = "tag"
-    tag_uuid: str
-    exclude: bool = False  # False = require at least one bbox has this tag; True = require none do
-
-
-class DatasetLabelStatusCondition(ApiModel):
-    """Filter on the image_labels status for this dataset's own relevant labels."""
-
-    type: Literal["dataset_label_status"] = "dataset_label_status"
-    check: Literal["all_verified", "exclude_uncertain"]
-    # "all_verified"      → for each dataset label: EXISTS row with status PRESENT or ABSENT
-    # "exclude_uncertain" → same semantics (kept separate for UI clarity)
-
-
-class FilenameCondition(ApiModel):
-    """Substring match on image filename."""
-
-    type: Literal["filename"] = "filename"
-    pattern: str
-
-
-FilterCondition = Annotated[
-    Union[
-        ImageAgeCondition,
-        BboxAgeCondition,
-        TagCondition,
-        DatasetLabelStatusCondition,
-        FilenameCondition,
-    ],
-    Field(discriminator="type"),
-]
-
-
 class DatasetFilterCriteria(ApiModel):
-    """Stored as JSON in datasets.filter_json. AND-combined list of conditions.
-    Conditions of type DatasetLabelStatusCondition operate over the dataset's own label_uuids."""
+    """Stored as JSON in datasets.filter_json. Mirrors the review filter panel state exactly."""
 
-    conditions: List[FilterCondition] = Field(default_factory=list)
+    # Tags
+    tag_uuids: List[str] = Field(default_factory=list)
+    tag_exclude_uuids: List[str] = Field(default_factory=list)
+    tag_match_mode: Literal["any", "all"] = "any"
+    # Label modifiers (label_uuids lives on Dataset.label_uuids / dataset_label_links)
+    label_exclude_uuids: List[str] = Field(default_factory=list)
+    label_match_mode: Literal["any", "all"] = "any"
+    label_include_children: bool = False
+    # Date range on image created_at
+    date_from: Optional[datetime] = None
+    date_to: Optional[datetime] = None
+    # Filename substring
+    filename_search: Optional[str] = None
+    # Verification status check (operates on dataset.label_uuids)
+    # "all_verified"   = every dataset label has a verified image_label row (PRESENT or ABSENT)
+    # "has_unverified" = at least one dataset label is uncertain or missing
+    verification_check: Optional[Literal["all_verified", "has_unverified"]] = None
+
+    model_config = ConfigDict(
+        alias_generator=to_camel,
+        populate_by_name=True,
+        extra="ignore",  # silently drop legacy 'conditions' field
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────

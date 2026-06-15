@@ -1,11 +1,8 @@
 """Tests for the dataset feature — CRUD, filter criteria, and pagination fixes.
 
-Fix coverage:
-  Fix 1 — filter_json validated at write time (invalid type → 422)
-  Fix 2 — DatasetLabelStatusCondition + empty label_uuids → 0 images, not all
-  Fix 3 — has_more reflects base-query page size, not post-bbox-age-filter count
-  Fix 4 — after_sort_value query param accepted and forwarded
-  Fix 5 — multiple FilenameConditions are AND-combined
+This file was updated to use the new flat DatasetFilterCriteria format
+(tagUuids, tagExcludeUuids, labelExcludeUuids, dateFrom, dateTo,
+filenameSearch, verificationCheck) instead of the old conditions[] list.
 """
 
 import uuid
@@ -64,13 +61,13 @@ async def _create_dataset(
     http_client,
     name: str,
     *,
-    conditions: list | None = None,
+    filter_json: dict | None = None,
     label_uuids: list | None = None,
     description: str | None = None,
 ) -> dict:
     payload: dict = {
         "name": name,
-        "filter_json": {"conditions": conditions or []},
+        "filter_json": filter_json or {},
         "label_uuids": label_uuids or [],
     }
     if description is not None:
@@ -113,13 +110,9 @@ async def _backdate_bbox(db_client, bbox_uuid: str, delta: timedelta) -> None:
 
 
 async def _backdate(db_client, filename: str, delta: timedelta) -> None:
-    """Set updated_at on an image to now() - delta directly in the DB.
-
-    The DB stores absolute paths so we match by the trailing basename component.
-    """
+    """Set updated_at on an image to now() - delta directly in the DB."""
     ts = datetime.now(timezone.utc) - delta
     async with db_client._async_session_maker() as session:
-        # filename is a bare name like "old.png"; DB stores the full path.
         result = await session.exec(select(ImageRecord).where(ImageRecord.filename.like(f"%/{filename}")))
         img = result.one()
         img.updated_at = ts
@@ -215,111 +208,134 @@ async def test_get_dataset_labels_not_found(http_client):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Fix 1 — filter_json validated at write time
+# filter_json validation
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-async def test_filter_json_invalid_type_rejected_at_create(http_client):
-    """POST with unknown condition type returns 422, not 200 (Fix 1)."""
+async def test_filter_json_invalid_value_rejected_at_create(http_client):
+    """POST with a field value that doesn't match the literal is rejected with 422."""
     r = await http_client.post(
         "/api/datasets",
         json={
             "name": "bad",
-            "filter_json": {"conditions": [{"type": "nonexistent_condition_type"}]},
+            "filter_json": {"tag_match_mode": "invalid_mode"},
         },
     )
     assert r.status_code == 422
 
 
-async def test_filter_json_invalid_type_rejected_at_update(http_client):
-    """PATCH with unknown condition type returns 422, not 200 (Fix 1)."""
+async def test_filter_json_invalid_value_rejected_at_update(http_client):
+    """PATCH with an invalid field value returns 422."""
     ds = await _create_dataset(http_client, "valid-first")
     r = await http_client.patch(
         f"/api/datasets/{ds['uuid']}",
-        json={"filter_json": {"conditions": [{"type": "also_nonexistent"}]}},
+        json={"filter_json": {"label_match_mode": "also_invalid"}},
     )
     assert r.status_code == 422
 
 
-async def test_filter_json_valid_condition_accepted(http_client):
-    """Valid condition types are accepted at create time."""
+async def test_filter_json_unknown_fields_silently_ignored(http_client):
+    """Unknown fields in filter_json are silently ignored (extra='ignore')."""
+    r = await http_client.post(
+        "/api/datasets",
+        json={
+            "name": "legacy-compat",
+            "filter_json": {"conditions": [{"type": "filename", "pattern": "test"}]},
+        },
+    )
+    # Should succeed — conditions is an unknown field, silently dropped
+    assert r.status_code == 200
+    ds = r.json()["dataset"]
+    # The stored filterJson must NOT contain the legacy conditions key
+    assert "conditions" not in ds["filterJson"]
+
+
+async def test_filter_json_valid_flat_fields_accepted(http_client):
+    """Flat filter fields are accepted and round-trip correctly."""
     ds = await _create_dataset(
         http_client,
-        "valid-cond",
-        conditions=[{"type": "filename", "pattern": "test"}],
+        "valid-flat",
+        filter_json={"filename_search": "test", "tag_match_mode": "all"},
     )
-    conds = ds["filterJson"]["conditions"]
-    assert len(conds) == 1
-    assert conds[0]["type"] == "filename"
+    assert ds["filterJson"]["filenameSearch"] == "test"
+    assert ds["filterJson"]["tagMatchMode"] == "all"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Fix 2 — DatasetLabelStatusCondition + empty label_uuids → 0 images
+# verificationCheck — all_verified with label_uuids
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-async def test_label_status_empty_label_uuids_returns_no_images(http_client, files_root):
-    """DatasetLabelStatusCondition with no labels returns 0 images, not all (Fix 2)."""
+async def test_label_status_empty_label_uuids_returns_all_images(http_client, files_root):
+    """verificationCheck with no label_uuids is a no-op — all images are returned."""
     _png(files_root, "img_fix2.png")
     await _register(http_client, "img_fix2.png")
 
     ds = await _create_dataset(
         http_client,
         "no-labels-status",
-        conditions=[{"type": "dataset_label_status", "check": "all_verified"}],
-        label_uuids=[],  # intentionally empty
+        filter_json={"verification_check": "all_verified"},
+        label_uuids=[],  # intentionally empty — verification check requires labels to do anything
     )
     result = await _dataset_images(http_client, ds["uuid"])
-    assert result["images"] == [], "DatasetLabelStatusCondition with no labels should return 0 images, not all images"
+    # With no label_uuids the verification check is ignored; all images pass
+    names = [img["filename"] for img in result["images"]]
+    assert "img_fix2.png" in names
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Fix 3 — has_more reflects base-query page, not post-filter count
-# ─────────────────────────────────────────────────────────────────────────────
-
-
-async def test_has_more_correct_with_bbox_age_filter(http_client, files_root, db_client):
-    """has_more=True when base page is full, even if bbox-age filter reduces returned count (Fix 3)."""
+async def test_dataset_filter_label_status_all_verified(http_client, files_root):
+    """verificationCheck=all_verified returns only images with verified label rows."""
     r = await http_client.post("/api/labels", json={"name": "cat", "color": "#FF0000"})
     label_uuid = r.json()["label"]["uuid"]
 
-    for name in ("img_ha.png", "img_hb.png", "img_hc.png"):
-        _png(files_root, name)
-
-    # Only img_ha has a bbox (will pass bbox-age filter)
-    await _add_bbox(http_client, "img_ha.png", label_uuid)
-    await _register(http_client, "img_hb.png")
-    await _register(http_client, "img_hc.png")
-
-    # Backdate img_hb and img_hc so img_ha sorts first (most recent updated_at)
-    await _backdate(db_client, "img_hb.png", timedelta(hours=2))
-    await _backdate(db_client, "img_hc.png", timedelta(hours=3))
+    _png(files_root, "confirmed_img.png")
+    _png(files_root, "unconfirmed_img.png")
+    # confirmed: verified bbox (no UNVERIFIED tag) → image_label PRESENT row
+    await _add_bbox(http_client, "confirmed_img.png", label_uuid, tag_uuids=[])
+    # unconfirmed: UNVERIFIED bbox → no image_label row (status = UNCERTAIN)
+    await _add_bbox(http_client, "unconfirmed_img.png", label_uuid, tag_uuids=[UNVERIFIED_TAG_UUID])
 
     ds = await _create_dataset(
         http_client,
-        "bbox-age-has-more",
-        conditions=[{"type": "bbox_age", "field": "updated_at", "within_days": 1}],
+        "verified-only",
+        filter_json={"verification_check": "all_verified"},
+        label_uuids=[label_uuid],
     )
+    result = await _dataset_images(http_client, ds["uuid"])
+    names = [img["filename"] for img in result["images"]]
+    assert "confirmed_img.png" in names
+    assert "unconfirmed_img.png" not in names
 
-    # limit=2: base query returns [img_ha, img_hb] (most recent first, full page)
-    # bbox-age filter: only img_ha passes (img_hb has no bbox)
-    # has_more must be True — base page was full, more images may exist
-    result = await _dataset_images(http_client, ds["uuid"], limit=2)
-    filenames = [img["filename"] for img in result["images"]]
-    assert "img_ha.png" in filenames
-    assert result["hasMore"] is True, (
-        "has_more should be True when the base page was full, even if bbox-age "
-        "filtering reduced the returned count below the limit"
+
+async def test_dataset_label_status_has_unverified(http_client, files_root):
+    """verificationCheck=has_unverified excludes fully-verified images."""
+    r = await http_client.post("/api/labels", json={"name": "cat", "color": "#FF0000"})
+    label_uuid = r.json()["label"]["uuid"]
+
+    _png(files_root, "verified_eu.png")
+    _png(files_root, "uncertain_eu.png")
+    await _add_bbox(http_client, "verified_eu.png", label_uuid, tag_uuids=[])
+    await _add_bbox(http_client, "uncertain_eu.png", label_uuid, tag_uuids=[UNVERIFIED_TAG_UUID])
+
+    ds = await _create_dataset(
+        http_client,
+        "has-unverified",
+        filter_json={"verification_check": "has_unverified"},
+        label_uuids=[label_uuid],
     )
+    result = await _dataset_images(http_client, ds["uuid"])
+    names = [img["filename"] for img in result["images"]]
+    assert "uncertain_eu.png" in names
+    assert "verified_eu.png" not in names
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Fix 4 — after_sort_value query param forwarded through endpoint
+# after_sort_value — keyset pagination
 # ─────────────────────────────────────────────────────────────────────────────
 
 
 async def test_after_sort_value_accepted_in_endpoint(http_client, files_root):
-    """after_sort_value is accepted and used for keyset pagination (Fix 4)."""
+    """after_sort_value is accepted and used for keyset pagination."""
     _png(files_root, "img_pg1.png")
     _png(files_root, "img_pg2.png")
     await _register(http_client, "img_pg1.png")
@@ -353,122 +369,25 @@ async def test_after_sort_value_accepted_in_endpoint(http_client, files_root):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Fix 5 — multiple FilenameConditions are AND-combined
+# filenameSearch — single and compound patterns
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-async def test_multiple_filename_conditions_and_logic(http_client, files_root):
-    """Two FilenameConditions both must match — AND, not last-wins (Fix 5)."""
-    for name in ("cats_and_dogs.png", "cats_only.png", "dogs_only.png"):
+async def test_filename_search_single_pattern(http_client, files_root):
+    """filenameSearch filters images by filename substring."""
+    for name in ("orange_cat.png", "blue_dog.png"):
         _png(files_root, name)
         await _register(http_client, name)
 
     ds = await _create_dataset(
         http_client,
-        "multi-filename",
-        conditions=[
-            {"type": "filename", "pattern": "cats"},
-            {"type": "filename", "pattern": "dogs"},
-        ],
+        "cats-only",
+        filter_json={"filename_search": "orange_cat"},
     )
     result = await _dataset_images(http_client, ds["uuid"])
     names = [img["filename"] for img in result["images"]]
-    assert "cats_and_dogs.png" in names, "Image matching both patterns should be included"
-    assert "cats_only.png" not in names, "Image matching only first pattern should be excluded"
-    assert "dogs_only.png" not in names, "Image matching only second pattern should be excluded"
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Dataset filter — ImageAgeCondition
-# ─────────────────────────────────────────────────────────────────────────────
-
-
-async def test_dataset_filter_image_age(http_client, files_root, db_client):
-    """ImageAgeCondition(field=updated_at, within_days=7) filters correctly."""
-    for name in ("old_img.png", "new_img.png"):
-        _png(files_root, name)
-        await _register(http_client, name)
-
-    await _backdate(db_client, "old_img.png", timedelta(days=60))
-
-    ds = await _create_dataset(
-        http_client,
-        "recent-images",
-        conditions=[{"type": "image_age", "field": "updated_at", "within_days": 7}],
-    )
-    result = await _dataset_images(http_client, ds["uuid"])
-    names = [img["filename"] for img in result["images"]]
-    assert "new_img.png" in names
-    assert "old_img.png" not in names
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Dataset filter — TagCondition
-# ─────────────────────────────────────────────────────────────────────────────
-
-
-async def test_dataset_filter_tag_condition(http_client, files_root):
-    """TagCondition includes/excludes images based on bbox tag presence."""
-    r = await http_client.post("/api/labels", json={"name": "cat", "color": "#FF0000"})
-    label_uuid = r.json()["label"]["uuid"]
-    t = await http_client.post("/api/tags/add", json={"name": "occluded", "color": "#AAAAAA"})
-    tag_uuid = t.json()["tag"]["uuid"]
-
-    _png(files_root, "tagged_img.png")
-    _png(files_root, "untagged_img.png")
-    await _add_bbox(http_client, "tagged_img.png", label_uuid, tag_uuids=[tag_uuid])
-    await _register(http_client, "untagged_img.png")
-
-    # Positive: images that have the tag
-    ds_pos = await _create_dataset(
-        http_client,
-        "has-tag",
-        conditions=[{"type": "tag", "tag_uuid": tag_uuid, "exclude": False}],
-    )
-    result = await _dataset_images(http_client, ds_pos["uuid"])
-    names = [img["filename"] for img in result["images"]]
-    assert "tagged_img.png" in names
-    assert "untagged_img.png" not in names
-
-    # Negative: images that don't have the tag
-    ds_neg = await _create_dataset(
-        http_client,
-        "no-tag",
-        conditions=[{"type": "tag", "tag_uuid": tag_uuid, "exclude": True}],
-    )
-    result2 = await _dataset_images(http_client, ds_neg["uuid"])
-    names2 = [img["filename"] for img in result2["images"]]
-    assert "tagged_img.png" not in names2
-    assert "untagged_img.png" in names2
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Dataset filter — DatasetLabelStatusCondition (with labels)
-# ─────────────────────────────────────────────────────────────────────────────
-
-
-async def test_dataset_filter_label_status(http_client, files_root):
-    """DatasetLabelStatusCondition returns only images with verified label rows."""
-    r = await http_client.post("/api/labels", json={"name": "cat", "color": "#FF0000"})
-    label_uuid = r.json()["label"]["uuid"]
-
-    _png(files_root, "confirmed_img.png")
-    _png(files_root, "unconfirmed_img.png")
-    # confirmed: verified bbox (no UNVERIFIED tag) → image_label PRESENT row
-    await _add_bbox(http_client, "confirmed_img.png", label_uuid, tag_uuids=[])
-    # unconfirmed: UNVERIFIED bbox → no image_label row (status = UNCERTAIN)
-    await _add_bbox(http_client, "unconfirmed_img.png", label_uuid, tag_uuids=[UNVERIFIED_TAG_UUID])
-
-    ds = await _create_dataset(
-        http_client,
-        "verified-only",
-        conditions=[{"type": "dataset_label_status", "check": "all_verified"}],
-        label_uuids=[label_uuid],
-    )
-    result = await _dataset_images(http_client, ds["uuid"])
-    names = [img["filename"] for img in result["images"]]
-    assert "confirmed_img.png" in names
-    assert "unconfirmed_img.png" not in names
+    assert "orange_cat.png" in names
+    assert "blue_dog.png" not in names
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -586,14 +505,14 @@ async def test_patch_filter_json(http_client):
     label_uuid = r.json()["label"]["uuid"]
     ds = await _create_dataset(http_client, "filter-patch-ds", label_uuids=[label_uuid])
 
-    new_filter = {"conditions": [{"type": "filename", "pattern": "cats"}]}
+    new_filter = {"filename_search": "cats"}
     r = await http_client.patch(
         f"/api/datasets/{ds['uuid']}",
         json={"filter_json": new_filter},
     )
     assert r.json()["status"] == "success"
     updated = r.json()["dataset"]
-    assert updated["filterJson"] == new_filter
+    assert updated["filterJson"]["filenameSearch"] == "cats"
     assert label_uuid in updated["labelUuids"]  # labelUuids unchanged
 
 
@@ -603,7 +522,7 @@ async def test_duplicate_dataset_name_rejected(http_client):
 
     r = await http_client.post(
         "/api/datasets",
-        json={"name": "unique-name", "filter_json": {"conditions": []}, "label_uuids": []},
+        json={"name": "unique-name", "filter_json": {}, "label_uuids": []},
     )
     # Handler catches the IntegrityError and returns HTTP 200 with status=failure
     assert r.json()["status"] == "failure"
@@ -631,191 +550,99 @@ async def test_delete_dataset_cascades_label_links(http_client):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# ImageAgeCondition — created_at field
+# date_from / date_to filtering (flat fields on DatasetFilterCriteria)
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-async def test_image_age_condition_created_at_within_days(http_client, files_root, db_client):
-    """ImageAgeCondition with field=created_at and within_days filters on created_at."""
-    for name in ("old_created.png", "new_created.png"):
+async def test_dataset_filter_date_from(http_client, files_root, db_client):
+    """date_from filters images created before the cutoff (date_from maps to created_at)."""
+    for name in ("old_img.png", "new_img.png"):
         _png(files_root, name)
         await _register(http_client, name)
 
-    await _backdate_created_at(db_client, "old_created.png", timedelta(days=60))
+    await _backdate_created_at(db_client, "old_img.png", timedelta(days=60))
 
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
     ds = await _create_dataset(
         http_client,
-        "recent-created",
-        conditions=[{"type": "image_age", "field": "created_at", "within_days": 7}],
+        "recent-images",
+        filter_json={"date_from": cutoff},
     )
     result = await _dataset_images(http_client, ds["uuid"])
     names = [img["filename"] for img in result["images"]]
-    assert "new_created.png" in names
-    assert "old_created.png" not in names
+    assert "new_img.png" in names
+    assert "old_img.png" not in names
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# ImageAgeCondition — absolute after/before range
-# ─────────────────────────────────────────────────────────────────────────────
-
-
-async def test_image_age_condition_after_before_range(http_client, files_root, db_client):
-    """ImageAgeCondition with after/before fields applies an absolute timestamp window."""
-    for name in ("img_range_old.png", "img_range_mid.png", "img_range_new.png"):
-        _png(files_root, name)
-        await _register(http_client, name)
-
-    now = datetime.now(timezone.utc)
-    await _backdate(db_client, "img_range_old.png", timedelta(days=30))
-    await _backdate(db_client, "img_range_mid.png", timedelta(days=10))
-    # img_range_new.png remains at now
-
-    after = (now - timedelta(days=20)).isoformat()
-    before = (now - timedelta(days=5)).isoformat()
-
-    ds = await _create_dataset(
-        http_client,
-        "range-ds",
-        conditions=[
-            {
-                "type": "image_age",
-                "field": "updated_at",
-                "after": after,
-                "before": before,
-            }
-        ],
-    )
-    result = await _dataset_images(http_client, ds["uuid"])
-    names = [img["filename"] for img in result["images"]]
-    assert "img_range_mid.png" in names  # inside the window
-    assert "img_range_old.png" not in names  # before lower bound
-    assert "img_range_new.png" not in names  # after upper bound
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# BboxAgeCondition — actual bbox-timestamp age filtering
-# ─────────────────────────────────────────────────────────────────────────────
-
-
-async def test_bbox_age_condition_excludes_old_bboxes(http_client, files_root, db_client):
-    """BboxAgeCondition filters out images whose bboxes are older than within_days."""
-    r = await http_client.post("/api/labels", json={"name": "cat", "color": "#FF0000"})
-    label_uuid = r.json()["label"]["uuid"]
-
-    _png(files_root, "recent_bbox.png")
-    _png(files_root, "old_bbox.png")
-    recent_bid = await _add_bbox(http_client, "recent_bbox.png", label_uuid)
-    old_bid = await _add_bbox(http_client, "old_bbox.png", label_uuid)
-
-    await _backdate_bbox(db_client, old_bid, timedelta(days=60))
-
-    ds = await _create_dataset(
-        http_client,
-        "recent-bboxes",
-        conditions=[{"type": "bbox_age", "field": "updated_at", "within_days": 7}],
-    )
-    result = await _dataset_images(http_client, ds["uuid"])
-    names = [img["filename"] for img in result["images"]]
-    assert "recent_bbox.png" in names
-    assert "old_bbox.png" not in names
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# FilenameCondition — basic single-pattern
-# ─────────────────────────────────────────────────────────────────────────────
-
-
-async def test_filename_condition_single_pattern(http_client, files_root):
-    """A single FilenameCondition filters images by filename substring."""
-    for name in ("orange_cat.png", "blue_dog.png"):
-        _png(files_root, name)
-        await _register(http_client, name)
-
-    ds = await _create_dataset(
-        http_client,
-        "cats-only",
-        conditions=[{"type": "filename", "pattern": "orange_cat"}],
-    )
-    result = await _dataset_images(http_client, ds["uuid"])
-    names = [img["filename"] for img in result["images"]]
-    assert "orange_cat.png" in names
-    assert "blue_dog.png" not in names
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# DatasetLabelStatusCondition — exclude_uncertain variant
-# ─────────────────────────────────────────────────────────────────────────────
-
-
-async def test_dataset_label_status_exclude_uncertain(http_client, files_root):
-    """exclude_uncertain excludes images with no verified label row (same as all_verified)."""
-    r = await http_client.post("/api/labels", json={"name": "cat", "color": "#FF0000"})
-    label_uuid = r.json()["label"]["uuid"]
-
-    _png(files_root, "verified_eu.png")
-    _png(files_root, "uncertain_eu.png")
-    await _add_bbox(http_client, "verified_eu.png", label_uuid, tag_uuids=[])
-    await _add_bbox(http_client, "uncertain_eu.png", label_uuid, tag_uuids=[UNVERIFIED_TAG_UUID])
-
-    ds = await _create_dataset(
-        http_client,
-        "exclude-uncertain",
-        conditions=[{"type": "dataset_label_status", "check": "exclude_uncertain"}],
-        label_uuids=[label_uuid],
-    )
-    result = await _dataset_images(http_client, ds["uuid"])
-    names = [img["filename"] for img in result["images"]]
-    assert "verified_eu.png" in names
-    assert "uncertain_eu.png" not in names
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Empty conditions — no filter returns all images
-# ─────────────────────────────────────────────────────────────────────────────
-
-
-async def test_empty_conditions_returns_all_images(http_client, files_root):
-    """A dataset with no conditions returns every registered image."""
-    for name in ("img_ec1.png", "img_ec2.png", "img_ec3.png"):
-        _png(files_root, name)
-        await _register(http_client, name)
-
-    ds = await _create_dataset(http_client, "no-conditions")
-    result = await _dataset_images(http_client, ds["uuid"])
-    names = [img["filename"] for img in result["images"]]
-    assert "img_ec1.png" in names
-    assert "img_ec2.png" in names
-    assert "img_ec3.png" in names
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# ImageSearchParams — updated_at upper bound
-# ─────────────────────────────────────────────────────────────────────────────
-
-
-async def test_updated_at_upper_bound_filter(http_client, files_root, db_client):
-    """updated_date_to excludes images updated after the cutoff timestamp."""
+async def test_dataset_filter_date_to(http_client, files_root, db_client):
+    """date_to excludes images created after the cutoff (date_to maps to created_at)."""
     for name in ("old_upper.png", "new_upper.png"):
         _png(files_root, name)
         await _register(http_client, name)
 
-    await _backdate(db_client, "old_upper.png", timedelta(days=30))
-    # new_upper.png has updated_at ≈ now
+    await _backdate_created_at(db_client, "old_upper.png", timedelta(days=30))
 
     cutoff = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
-    r = await http_client.post(
-        "/api/images/review",
-        json={"show_all_bboxes": True, "tag_uuids": [], "updated_date_to": cutoff},
+    ds = await _create_dataset(
+        http_client,
+        "older-images",
+        filter_json={"date_to": cutoff},
     )
-    assert r.status_code == 200
-    names = [img["filename"] for img in r.json()["images"]]
+    result = await _dataset_images(http_client, ds["uuid"])
+    names = [img["filename"] for img in result["images"]]
     assert "old_upper.png" in names
     assert "new_upper.png" not in names
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# ImageSearchParams — created_at range (date_from / date_to)
+# tagUuids / tagExcludeUuids filtering (flat fields)
 # ─────────────────────────────────────────────────────────────────────────────
+
+
+async def test_dataset_filter_tag_include(http_client, files_root):
+    """tag_uuids includes only images whose bboxes carry any of those tags."""
+    r = await http_client.post("/api/labels", json={"name": "cat", "color": "#FF0000"})
+    label_uuid = r.json()["label"]["uuid"]
+    t = await http_client.post("/api/tags/add", json={"name": "occluded", "color": "#AAAAAA"})
+    tag_uuid = t.json()["tag"]["uuid"]
+
+    _png(files_root, "tagged_img.png")
+    _png(files_root, "untagged_img.png")
+    await _add_bbox(http_client, "tagged_img.png", label_uuid, tag_uuids=[tag_uuid])
+    await _register(http_client, "untagged_img.png")
+
+    ds = await _create_dataset(
+        http_client,
+        "has-tag",
+        filter_json={"tag_uuids": [tag_uuid]},
+    )
+    result = await _dataset_images(http_client, ds["uuid"])
+    names = [img["filename"] for img in result["images"]]
+    assert "tagged_img.png" in names
+    assert "untagged_img.png" not in names
+
+
+async def test_dataset_filter_tag_exclude(http_client, files_root):
+    """tag_exclude_uuids excludes images whose bboxes carry any of those tags."""
+    r = await http_client.post("/api/labels", json={"name": "cat", "color": "#FF0000"})
+    label_uuid = r.json()["label"]["uuid"]
+    t = await http_client.post("/api/tags/add", json={"name": "rare", "color": "#BBBBBB"})
+    tag_uuid = t.json()["tag"]["uuid"]
+
+    _png(files_root, "tagged_img2.png")
+    _png(files_root, "untagged_img2.png")
+    await _add_bbox(http_client, "tagged_img2.png", label_uuid, tag_uuids=[tag_uuid])
+    await _register(http_client, "untagged_img2.png")
+
+    ds = await _create_dataset(
+        http_client,
+        "no-tag",
+        filter_json={"tag_exclude_uuids": [tag_uuid]},
+    )
+    result = await _dataset_images(http_client, ds["uuid"])
+    names = [img["filename"] for img in result["images"]]
+    assert "tagged_img2.png" not in names
+    assert "untagged_img2.png" in names
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -824,11 +651,7 @@ async def test_updated_at_upper_bound_filter(http_client, files_root, db_client)
 
 
 async def test_dataset_images_filtered_by_label_uuids(http_client, files_root):
-    """A dataset with label_uuids restricts results to images with a bbox using one of those labels.
-
-    This isolates the EXISTS subquery in _apply_image_search_filters (db_client.py) from the
-    DatasetLabelStatusCondition path — no status condition is used here.
-    """
+    """A dataset with label_uuids restricts results to images with a bbox using one of those labels."""
     r = await http_client.post("/api/labels", json={"name": "cat-lu", "color": "#FF0000"})
     cat_uuid = r.json()["label"]["uuid"]
     r = await http_client.post("/api/labels", json={"name": "dog-lu", "color": "#0000FF"})
@@ -837,12 +660,11 @@ async def test_dataset_images_filtered_by_label_uuids(http_client, files_root):
     for name in ("lu_cat.png", "lu_dog.png", "lu_none.png"):
         _png(files_root, name)
 
-    # lu_cat has a cat bbox, lu_dog has a dog bbox only, lu_none has no bbox
     await _add_bbox(http_client, "lu_cat.png", cat_uuid)
     await _add_bbox(http_client, "lu_dog.png", dog_uuid)
     await _register(http_client, "lu_none.png")
 
-    # Dataset linked only to "cat" — no conditions
+    # Dataset linked only to "cat" — no filter_json
     ds = await _create_dataset(http_client, "label-uuid-filter", label_uuids=[cat_uuid])
     result = await _dataset_images(http_client, ds["uuid"])
     names = [img["filename"] for img in result["images"]]
@@ -865,17 +687,16 @@ async def test_dataset_images_filtered_by_label_uuids(http_client, files_root):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Pagination sentinel — non-bbox-age path
+# Pagination sentinel
 # ─────────────────────────────────────────────────────────────────────────────
 
 
 async def test_has_more_correct_on_simple_path(http_client, files_root):
-    """has_more uses the limit+1 sentinel on the non-bbox-age code path."""
+    """has_more uses the limit+1 sentinel correctly."""
     for name in ("img_sp1.png", "img_sp2.png", "img_sp3.png"):
         _png(files_root, name)
         await _register(http_client, name)
 
-    # No conditions → takes the simple branch (no bbox_age filtering)
     ds = await _create_dataset(http_client, "simple-sentinel-ds")
 
     # Fetch 2 of 3 — has_more must be True
@@ -905,11 +726,11 @@ async def test_preview_dataset_images_camelcase_contract(http_client, files_root
     await _add_bbox(http_client, "pv_cat.png", cat_uuid)
     await _register(http_client, "pv_other.png")
 
-    # camelCase body — tests the new alias_generator=to_camel on DatasetPreviewPayload
+    # camelCase body — flat filterJson with no conditions
     r = await http_client.post(
         "/api/datasets/preview",
         params={"limit": 50},
-        json={"filterJson": {"conditions": []}, "labelUuids": [cat_uuid]},
+        json={"filterJson": {}, "labelUuids": [cat_uuid]},
     )
     assert r.status_code == 200
     body = r.json()
@@ -937,3 +758,22 @@ async def test_created_at_range_filter(http_client, files_root, db_client):
     names = [img["filename"] for img in r.json()["images"]]
     assert "new_cr.png" in names
     assert "old_cr.png" not in names
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Empty filter — no filter returns all images
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+async def test_empty_filter_returns_all_images(http_client, files_root):
+    """A dataset with no filter_json returns every registered image."""
+    for name in ("img_ec1.png", "img_ec2.png", "img_ec3.png"):
+        _png(files_root, name)
+        await _register(http_client, name)
+
+    ds = await _create_dataset(http_client, "no-conditions")
+    result = await _dataset_images(http_client, ds["uuid"])
+    names = [img["filename"] for img in result["images"]]
+    assert "img_ec1.png" in names
+    assert "img_ec2.png" in names
+    assert "img_ec3.png" in names

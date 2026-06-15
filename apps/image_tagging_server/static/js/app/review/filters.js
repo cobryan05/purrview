@@ -3,7 +3,7 @@
  *
  * createFilterPanel(labels, tags, onFilterChange)
  *   → {
- *       element,            // panel DOM node (Date + Filename + Advanced filters)
+ *       element,            // panel DOM node (Date + Filename + Verification row)
  *       toolbarControls,    // [tagsDropdown.element, labelsDropdown.element] — place in toolbar
  *       getState, setState, isDefault, getActiveFilterCount,
  *       destroy,
@@ -15,7 +15,7 @@
  * Layout:
  *   Toolbar (toolbarControls):  [Tags ▾]  [Labels ▾]
  *   Filter panel (element):     Date: [from]–[to]  |  File: [____]
- *                               ▸ Advanced filters (collapsible)
+ *                               Verification: [<select>]
  */
 import { UNVERIFIED_TAG_UUID } from '/app-static/js/shared/api/review.js';
 import { createMultiSelectDropdown, makeLabelFilterNotice } from '/app-static/js/ui/utils/index.js';
@@ -37,7 +37,7 @@ const DEFAULT_STATE = () => ({
   filenameSearch: '',
   dateFrom: null,
   dateTo: null,
-  imageLabelFilters: [],
+  verificationCheck: null,
 });
 
 /**
@@ -75,10 +75,6 @@ export function createFilterPanel(labels, tags, onFilterChange) {
   // Wrapped in a container div so it can be rebuilt when the active-model filter changes.
   const labelsDropdownContainer = document.createElement('div');
   let _labelsDropdown = null;
-  // Create advLabelSelect here (before buildLabelsControls) so the first call
-  // can populate it immediately — avoiding a second full rebuild call later.
-  const advLabelSelect = document.createElement('select');
-  let _advLabelSelect = advLabelSelect;
 
   function buildLabelsControls() {
     const filteredLabels = activeModel.applyLabelFilter(labels);
@@ -113,21 +109,6 @@ export function createFilterPanel(labels, tags, onFilterChange) {
     labelsDropdownContainer.appendChild(_labelsDropdown.element);
     const notice = makeLabelFilterNotice(labels.size - filteredLabels.size);
     if (notice) labelsDropdownContainer.appendChild(notice);
-
-    // Rebuild the advanced-filter label select if it already exists
-    if (_advLabelSelect) {
-      _advLabelSelect.innerHTML = '';
-      const ph = document.createElement('option');
-      ph.value = '';
-      ph.textContent = '— label —';
-      _advLabelSelect.appendChild(ph);
-      for (const lbl of flatLabels) {
-        const opt = document.createElement('option');
-        opt.value = lbl.uuid;
-        opt.textContent = lbl.name;
-        _advLabelSelect.appendChild(opt);
-      }
-    }
 
     // Reset label state on rebuild (filtered items may differ)
     _state.labelUuids = [];
@@ -201,87 +182,30 @@ export function createFilterPanel(labels, tags, onFilterChange) {
   primaryRow.appendChild(filenameInput);
   panel.appendChild(primaryRow);
 
-  // ── Advanced filters (collapsible) ────────────────────────────────────────
-  const advancedDetails = document.createElement('details');
-  advancedDetails.className = 'filter-advanced';
+  // ── Verification row ──────────────────────────────────────────────────────
+  const verificationRow = document.createElement('div');
+  verificationRow.className = 'filter-row-primary';
 
-  const advancedSummary = document.createElement('summary');
-  advancedSummary.className = 'filter-label filter-advanced__summary';
-  advancedSummary.textContent = 'Advanced filters';
-  advancedSummary.title = 'Image-level classification filters (set during bulk confirm)';
-  advancedDetails.appendChild(advancedSummary);
+  verificationRow.appendChild(makeLabel('Verification:'));
 
-  const labelsRow = document.createElement('div');
-  labelsRow.className = 'filter-row-labels';
-  advancedDetails.appendChild(labelsRow);
-
-  // Builder: label select + status + exclude checkbox + Add button
-  const builderDiv = document.createElement('div');
-  builderDiv.className = 'filter-imlabel-builder';
-
-  // advLabelSelect was created above (before the first buildLabelsControls() call)
-  // so options are already populated — no second call needed.
-
-  const statusSelect = document.createElement('select');
-  for (const [value, text] of [['uncertain', 'Uncertain'], ['present', 'Present'], ['absent', 'Absent']]) {
+  const verificationSelect = document.createElement('select');
+  for (const [value, text] of [
+    ['', 'Any'],
+    ['all_verified', 'All labels verified'],
+    ['has_unverified', 'Has unverified labels'],
+  ]) {
     const opt = document.createElement('option');
     opt.value = value;
     opt.textContent = text;
-    statusSelect.appendChild(opt);
+    verificationSelect.appendChild(opt);
   }
-  statusSelect.value = 'absent';
-
-  const excludeLabel = document.createElement('label');
-  excludeLabel.className = 'filter-exclude-label';
-  const excludeCb = document.createElement('input');
-  excludeCb.type = 'checkbox';
-  excludeCb.checked = true;
-  excludeLabel.appendChild(excludeCb);
-  excludeLabel.appendChild(document.createTextNode('Exclude'));
-
-  const addBtn = document.createElement('button');
-  addBtn.textContent = '＋ Add';
-
-  builderDiv.append(advLabelSelect, statusSelect, excludeLabel, addBtn);
-  labelsRow.appendChild(builderDiv);
-
-  const filterList = document.createElement('ul');
-  filterList.className = 'filter-imlabel-list';
-  labelsRow.appendChild(filterList);
-
-  function renderFilterChips() {
-    filterList.innerHTML = '';
-    for (let i = 0; i < _state.imageLabelFilters.length; i++) {
-      const f = _state.imageLabelFilters[i];
-      const labelName = labels.get(f.labelUuid)?.name ?? f.labelUuid;
-      const li = document.createElement('li');
-      li.textContent = `${labelName} is${f.exclude ? ' NOT' : ''} ${f.status}`;
-      const removeBtn = document.createElement('button');
-      removeBtn.textContent = '×';
-      removeBtn.title = 'Remove filter';
-      removeBtn.addEventListener('click', () => {
-        _state.imageLabelFilters.splice(i, 1);
-        renderFilterChips();
-        emit();
-      });
-      li.appendChild(removeBtn);
-      filterList.appendChild(li);
-    }
-  }
-
-  addBtn.addEventListener('click', () => {
-    if (!advLabelSelect.value) return;
-    _state.imageLabelFilters.push({
-      labelUuid: advLabelSelect.value,
-      status: statusSelect.value,
-      exclude: excludeCb.checked,
-    });
-    advLabelSelect.value = '';
-    renderFilterChips();
+  verificationSelect.addEventListener('change', () => {
+    _state.verificationCheck = verificationSelect.value || null;
     emit();
   });
 
-  panel.appendChild(advancedDetails);
+  verificationRow.appendChild(verificationSelect);
+  panel.appendChild(verificationRow);
 
   // ── Public API ────────────────────────────────────────────────────────────
   function getActiveFilterCount() {
@@ -293,7 +217,7 @@ export function createFilterPanel(labels, tags, onFilterChange) {
       + (s.filenameSearch ? 1 : 0)
       + (s.dateFrom ? 1 : 0)
       + (s.dateTo ? 1 : 0)
-      + s.imageLabelFilters.length;
+      + (s.verificationCheck ? 1 : 0);
   }
 
   function isDefault() {
@@ -308,7 +232,7 @@ export function createFilterPanel(labels, tags, onFilterChange) {
       && !s.filenameSearch
       && !s.dateFrom
       && !s.dateTo
-      && s.imageLabelFilters.length === 0
+      && !s.verificationCheck
     );
   }
 
@@ -348,8 +272,8 @@ export function createFilterPanel(labels, tags, onFilterChange) {
     if (partial.filenameSearch !== undefined) {
       filenameInput.value = _state.filenameSearch ?? '';
     }
-    if (partial.imageLabelFilters !== undefined) {
-      renderFilterChips();
+    if (partial.verificationCheck !== undefined) {
+      verificationSelect.value = _state.verificationCheck ?? '';
     }
 
     emit();

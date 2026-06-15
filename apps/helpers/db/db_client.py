@@ -2,7 +2,7 @@ import asyncio
 import json
 import logging
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional, Set, TypeVar, Union
 from uuid import uuid4
@@ -32,17 +32,13 @@ from .types import (
     REJECTION_TAG_UUID,
     UNVERIFIED_TAG_UUID,
     BBox,
-    BboxAgeCondition,
     BBoxTagLink,
     Dataset,
     DatasetCreate,
     DatasetFilterCriteria,
     DatasetLabelLink,
-    DatasetLabelStatusCondition,
     DatasetRead,
     DatasetUpdate,
-    FilenameCondition,
-    ImageAgeCondition,
     ImageLabel,
     ImageLabelFilter,
     ImageLabelStatus,
@@ -60,7 +56,6 @@ from .types import (
     Source,
     SourceRead,
     Tag,
-    TagCondition,
     TagKind,
     TagPresenceFilter,
     TaskConfig,
@@ -299,6 +294,36 @@ def _apply_image_search_filters(stmt: Select, params: ImageSearchParams) -> Sele
             )
             stmt = stmt.where(ImageRecord.uuid.in_(image_uuids))
         _bbox_implied = True
+
+    # ── Verification check (pairs with label_uuids) ───────────────────────────
+    if params.label_verification_check and params.label_uuids:
+        if params.label_verification_check == "all_verified":
+            for lu in params.label_uuids:
+                subq = (
+                    select(ImageLabel)
+                    .where(
+                        ImageLabel.image_uuid == ImageRecord.uuid,
+                        ImageLabel.label_uuid == lu,
+                        ImageLabel.status.in_([ImageLabelStatus.PRESENT, ImageLabelStatus.ABSENT]),
+                    )
+                    .exists()
+                )
+                stmt = stmt.where(subq)
+        elif params.label_verification_check == "has_unverified":
+            # At least one label must NOT have a verified row
+            not_verified = [
+                ~(
+                    select(ImageLabel)
+                    .where(
+                        ImageLabel.image_uuid == ImageRecord.uuid,
+                        ImageLabel.label_uuid == lu,
+                        ImageLabel.status.in_([ImageLabelStatus.PRESENT, ImageLabelStatus.ABSENT]),
+                    )
+                    .exists()
+                )
+                for lu in params.label_uuids
+            ]
+            stmt = stmt.where(or_(*not_verified))
 
     # ── Require at least one bbox ─────────────────────────────────────────────
     # Skip when any earlier filter already guarantees bbox existence.
@@ -2372,7 +2397,6 @@ class DbClient:
     @staticmethod
     def build_dataset_search_params(
         dataset: DatasetRead,
-        criteria: DatasetFilterCriteria,
         *,
         limit: int = 50,
         sort_by: str = "updated_at",
@@ -2380,89 +2404,36 @@ class DbClient:
         after_uuid: Optional[str] = None,
         after_sort_value: Optional[datetime] = None,
     ) -> ImageSearchParams:
-        """Expand a DatasetFilterCriteria into an ImageSearchParams.
+        """Expand a DatasetRead's flat filter criteria into an ImageSearchParams."""
+        f = dataset.filter_json
+        tag_presence_filters: List[TagPresenceFilter] = []
+        # Tag excludes go through tag_presence_filters (work regardless of show_all_bboxes)
+        for u in f.tag_exclude_uuids:
+            tag_presence_filters.append(TagPresenceFilter(tag_uuid=u, exclude=True))
 
-        All conditions in the criteria are AND-combined.
-        DatasetLabelStatusCondition entries are expanded into one ImageLabelFilter
-        per label in dataset.label_uuids.
-        """
-        now = datetime.now(timezone.utc)
+        # show_all_bboxes=True means the tag_uuids include-filter is skipped.
+        # Mirror the review panel: show_all_bboxes=True only when no tag includes.
+        show_all_bboxes = len(f.tag_uuids) == 0
 
-        params = ImageSearchParams(
-            show_all_bboxes=True,
-            tag_uuids=[],
+        return ImageSearchParams(
+            show_all_bboxes=show_all_bboxes,
+            tag_uuids=f.tag_uuids,
+            tag_match_mode=f.tag_match_mode,
+            tag_presence_filters=tag_presence_filters,
+            label_uuids=dataset.label_uuids,
+            label_match_mode=f.label_match_mode,
+            label_include_children=f.label_include_children,
+            label_exclusions=f.label_exclude_uuids,
+            date_from=f.date_from,
+            date_to=f.date_to,
+            filename_search=f.filename_search or None,
+            label_verification_check=f.verification_check,
             limit=limit,
             sort_by=sort_by,
             sort_order=sort_order,
             after_uuid=after_uuid,
             after_sort_value=after_sort_value,
         )
-
-        image_label_filters: List[ImageLabelFilter] = []
-        tag_presence_filters: List[TagPresenceFilter] = []
-        filename_searches: List[str] = []
-
-        for cond in criteria.conditions:
-            if isinstance(cond, ImageAgeCondition):
-                if cond.within_days is not None:
-                    cutoff = now - timedelta(days=cond.within_days)
-                    if cond.field == "created_at":
-                        params.date_from = cutoff
-                    else:
-                        params.updated_date_from = cutoff
-                else:
-                    if cond.field == "created_at":
-                        if cond.after:
-                            params.date_from = cond.after
-                        if cond.before:
-                            params.date_to = cond.before
-                    else:
-                        if cond.after:
-                            params.updated_date_from = cond.after
-                        if cond.before:
-                            params.updated_date_to = cond.before
-
-            elif isinstance(cond, BboxAgeCondition):
-                # Filtered via EXISTS on bboxes.{field}. Handled separately in
-                # list_dataset_images since ImageSearchParams has no bbox-age field.
-                pass  # stored in criteria, executed in list_dataset_images
-
-            elif isinstance(cond, TagCondition):
-                tag_presence_filters.append(TagPresenceFilter(tag_uuid=cond.tag_uuid, exclude=cond.exclude))
-
-            elif isinstance(cond, DatasetLabelStatusCondition):
-                if not dataset.label_uuids:
-                    # Dataset has no labels — condition can never be satisfied.
-                    # Inject an impossible filter so the query returns zero rows.
-                    image_label_filters.append(
-                        ImageLabelFilter(
-                            label_uuid="00000000-0000-0000-0000-000000000000",
-                            status=ImageLabelStatus.PRESENT,
-                            require_verified=True,
-                        )
-                    )
-                else:
-                    # Expand: one filter per dataset label
-                    for label_uuid in dataset.label_uuids:
-                        image_label_filters.append(
-                            ImageLabelFilter(
-                                label_uuid=label_uuid,
-                                status=ImageLabelStatus.PRESENT,  # ignored when require_verified=True
-                                require_verified=True,
-                            )
-                        )
-
-            elif isinstance(cond, FilenameCondition):
-                filename_searches.append(cond.pattern)
-
-        params.image_label_filters = image_label_filters
-        params.tag_presence_filters = tag_presence_filters
-        params.filename_searches = filename_searches
-        # When the dataset has label_uuids, restrict to images that have at least
-        # one bbox annotated with one of those labels.
-        if dataset.label_uuids:
-            params.label_uuids = dataset.label_uuids
-        return params
 
     async def _list_images_for_dataset(
         self,
@@ -2477,64 +2448,19 @@ class DbClient:
         """Execute a DatasetRead's filter criteria and return (images, has_more).
 
         has_more is True if there may be additional results beyond this page.
-        BboxAgeCondition entries are applied as an additional in-DB filter after
-        the base query.
         """
-        criteria = dataset.filter_json
-
         # Fetch limit+1 rows so we can distinguish "exactly limit" from "more exist".
         params = self.build_dataset_search_params(
             dataset,
-            criteria,
             limit=limit + 1,
             sort_by=sort_by,
             sort_order=sort_order,
             after_uuid=after_uuid,
             after_sort_value=after_sort_value,
         )
-
-        # For BboxAgeCondition, apply extra WHERE clauses directly.
-        bbox_age_conditions = [c for c in criteria.conditions if isinstance(c, BboxAgeCondition)]
-
-        if not bbox_age_conditions:
-            results = await self.list_images_search(params)
-            has_more = len(results) > limit
-            return results[:limit], has_more
-
-        # Apply bbox-age filters with an additional DB query against the matched UUID set.
-        # has_more is derived from the base page so we never terminate pagination
-        # early when the in-DB filter reduces the page below `limit`.
-        now = datetime.now(timezone.utc)
         results = await self.list_images_search(params)
         has_more = len(results) > limit
-        results = results[:limit]  # trim the sentinel row before further filtering
-
-        if not results:
-            return results, False
-
-        filtered_uuids = {img.uuid for img in results}
-        async with self._async_session_maker() as session:
-            for cond in bbox_age_conditions:
-                cutoff: Optional[datetime] = None
-                if cond.within_days is not None:
-                    cutoff = now - timedelta(days=cond.within_days)
-                elif cond.after:
-                    cutoff = cond.after
-
-                if cutoff is None and cond.before is None:
-                    continue
-
-                col = BBox.created_at if cond.field == "created_at" else BBox.updated_at
-                stmt = select(BBox.image_uuid).where(BBox.image_uuid.in_(list(filtered_uuids))).distinct()
-                if cutoff:
-                    stmt = stmt.where(col >= cutoff)
-                if cond.before:
-                    stmt = stmt.where(col <= cond.before)
-                result = await session.exec(stmt)
-                matching = set(result.all())
-                filtered_uuids = filtered_uuids & matching
-
-        return [img for img in results if img.uuid in filtered_uuids], has_more
+        return results[:limit], has_more
 
     async def list_dataset_images(
         self,

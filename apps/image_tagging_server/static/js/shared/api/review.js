@@ -49,6 +49,7 @@ export async function fetchReviewQueue({
   afterUuid = null,
   afterSortValue = null,
   imageLabelFilters = [],
+  verificationCheck = null,
   requireBboxes = false,
   limit = 50,
 } = {}) {
@@ -85,6 +86,7 @@ export async function fetchReviewQueue({
       exclude: f.exclude,
     }));
   }
+  if (verificationCheck) body.labelVerificationCheck = verificationCheck;
 
   const res = await apiFetch('/api/images/review', {
     method: 'POST',

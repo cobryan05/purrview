@@ -282,8 +282,8 @@ class TestCreateDataset:
         # The label should appear somewhere in the editor body
         expect(_editor_body(page)).to_contain_text(ROOT_LABEL["name"])
 
-    def test_label_select_all_button_present(self, page: Page, base_url: str):
-        """A 'Select All' button is visible in the label picker."""
+    def test_label_dropdown_present_in_editor(self, page: Page, base_url: str):
+        """A Labels dropdown control is visible in the dataset editor toolbar row."""
         _mock_datasets(page, [])
         _mock_labels(page, [ROOT_LABEL])
         _mock_tags_empty(page)
@@ -291,8 +291,9 @@ class TestCreateDataset:
         _navigate_to_datasets(page, base_url)
         page.wait_for_timeout(800)
 
-        select_all = _editor_body(page).locator("button", has_text="Select All")
-        expect(select_all.first).to_be_visible()
+        # The Labels dropdown button is placed in the ds-filter-toolbar row inside the editor body
+        labels_btn = _editor_body(page).locator(".ds-filter-toolbar button", has_text="Labels")
+        expect(labels_btn.first).to_be_visible()
 
 
 # ---------------------------------------------------------------------------

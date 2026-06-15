@@ -12,6 +12,7 @@ import {
   getImageThumbnailUrl,
   invalidateBboxThumbnails,
   UNVERIFIED_TAG_UUID,
+  VERIFIED_TAG_UUID,
   FALSE_POS_TAG_UUID,
   REJECTION_TAG_UUID,
   VERIFICATION_TAG_UUIDS,
@@ -135,7 +136,7 @@ function makeSelect(className, options, defaultValue) {
 /** Build and return a verify-status chip span for a bbox's tag UUIDs. */
 function buildVerifyChip(tagUuids) {
   const isFalsePos = tagUuids.includes(FALSE_POS_TAG_UUID);
-  const isVerified = !tagUuids.includes(UNVERIFIED_TAG_UUID) && !isFalsePos;
+  const isVerified = tagUuids.includes(VERIFIED_TAG_UUID);
   const chip = document.createElement('span');
   chip.className = 'verify-chip';
   chip.textContent = isFalsePos ? '✗ False Pos.' : isVerified ? '✓ Verified' : '◌ Unverified';
@@ -393,8 +394,8 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
     exportToDatasetBtn.textContent = '⊞ Open in Datasets Tab';
     exportToDatasetBtn.title = 'Export current filters to a new dataset in the Datasets editor';
     exportToDatasetBtn.addEventListener('click', () => {
-      const { conditions, labelUuids } = reviewStateToDatasetForm(filterPanel.getState());
-      events.publish(EventTypes.EXPORT_FILTERS_TO_DATASET, { conditions, labelUuids });
+      const { filterJson, labelUuids } = reviewStateToDatasetForm(filterPanel.getState());
+      events.publish(EventTypes.EXPORT_FILTERS_TO_DATASET, { filterJson, labelUuids });
       toast('Opening Datasets editor…', 2000);
     });
 
@@ -470,9 +471,9 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
 
       async applyLabel(uuid) {
         const existingTagUuids = currentTagUuids();
-        // Assigning a label strips verification tags
+        // Assigning a label strips verification tags and marks VERIFIED
         const newTagUuids = uuid
-          ? existingTagUuids.filter(u => !VERIFICATION_TAG_UUIDS.has(u))
+          ? [...existingTagUuids.filter(u => !VERIFICATION_TAG_UUIDS.has(u)), VERIFIED_TAG_UUID]
           : existingTagUuids;
         await _applyUpdate(uuid, newTagUuids);
         // Update in-memory label
@@ -699,8 +700,8 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
       const newChip = buildVerifyChip((uiBbox.tags ?? []).map(t => t.uuid));
       verifyChipEl.replaceWith(newChip);
     }
-    const stillUnverified = (uiBbox.tags ?? []).some(t => t.uuid === UNVERIFIED_TAG_UUID);
-    if (!stillUnverified) markCardStale(card, 'verified');
+    const nowVerified = (uiBbox.tags ?? []).some(t => t.uuid === VERIFIED_TAG_UUID);
+    if (nowVerified) markCardStale(card, 'verified');
   }
 
   function updateTypeFading() {
@@ -896,7 +897,7 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
             dateTo: fs.dateTo || undefined,
             afterUuid: cursor?.uuid ?? null,
             afterSortValue: cursor?.sortValue ?? null,
-            imageLabelFilters: fs.imageLabelFilters,
+            verificationCheck: fs.verificationCheck,
             limit: _pageSize,
           }));
         }
@@ -1268,11 +1269,13 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
     const statusRow = document.createElement('div');
     statusRow.style.cssText = 'color:#aaa;font-size:0.75em;margin-bottom:0.15em;';
     if (bboxes.length > 0) {
+      let verified = 0;
       let unverified = 0;
       for (const bbox of bboxes) {
-        if ((bbox.tags ?? []).some(t => t.uuid === UNVERIFIED_TAG_UUID)) unverified++;
+        const bboxTags = bbox.tags ?? [];
+        if (bboxTags.some(t => t.uuid === VERIFIED_TAG_UUID)) verified++;
+        else if (bboxTags.some(t => t.uuid === UNVERIFIED_TAG_UUID)) unverified++;
       }
-      const verified = bboxes.length - unverified;
       const parts = [];
       if (verified > 0) parts.push(`✓ ${verified}`);
       if (unverified > 0) parts.push(`? ${unverified}`);
@@ -1585,9 +1588,12 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
                 const bboxInImg = img.bboxes?.find(b => b.uuid === bbox.uuid);
                 if (bboxInImg) { bboxInImg.labelUuid = newLabelUuid; bboxInImg.label = label; }
               }
-              // Assigning a real label strips verification tags — mirror that in memory
+              // Assigning a real label strips verification tags and adds VERIFIED — mirror in memory
               // and refresh the verify chip so the card reflects the new state immediately.
-              bbox.tags = (bbox.tags ?? []).filter(t => !VERIFICATION_TAG_UUIDS.has(t.uuid));
+              bbox.tags = [
+                ...(bbox.tags ?? []).filter(t => !VERIFICATION_TAG_UUIDS.has(t.uuid)),
+                { uuid: VERIFIED_TAG_UUID, icon: null },
+              ];
               const verifyChipEl = card.querySelector('.verify-chip');
               if (verifyChipEl) {
                 verifyChipEl.replaceWith(buildVerifyChip(bbox.tags.map(t => t.uuid)));
@@ -1758,7 +1764,7 @@ export async function init() {
  *   editableDataset?: {
  *     filterJson: object,
  *     labelUuids: string[],
- *     onUpdateFilters: (conditions: object[], labelUuids: string[]) => void
+ *     onUpdateFilters: (filterJson: object, labelUuids: string[]) => void
  *   }
  * }} options
  *   title           — shown in the modal header bar.
@@ -1834,8 +1840,8 @@ export async function showReviewModal({ title = 'Browse Images', fetchImages, ed
     // Wire "Update Dataset" button now that panel is ready
     if (header._updateBtn && panel.filterPanel) {
       header._updateBtn.addEventListener('click', () => {
-        const { conditions, labelUuids } = reviewStateToDatasetForm(panel.filterPanel.getState());
-        editableDataset.onUpdateFilters(conditions, labelUuids);
+        const { filterJson, labelUuids } = reviewStateToDatasetForm(panel.filterPanel.getState());
+        editableDataset.onUpdateFilters(filterJson, labelUuids);
         toast('Filters applied to dataset form — click Save to persist', 3000);
       });
     }
@@ -1885,13 +1891,15 @@ async function executeBulkAction(action, entries, newLabelUuid, selectedTagUuids
         await updateBbox(bbox.uuid, { labelUuid, tagUuids });
       } else {
         // relabel: change the label. When a real label is assigned, strip verification
-        // tags (UNVERIFIED, FALSE_POS) so the bbox leaves the review queue.
+        // tags and add VERIFIED so the bbox leaves the review queue.
         // If newLabelUuid is undefined (picker not used), keep existing label unchanged.
         const existingLabelUuid = bbox.labelUuid ?? bbox.label?.uuid;
         const assigningLabel = newLabelUuid !== undefined && !!newLabelUuid;
         const labelUuid = assigningLabel ? newLabelUuid : existingLabelUuid;
-        const currentTagUuids = (bbox.tags || []).map(t => t.uuid)
-          .filter(u => !assigningLabel || !VERIFICATION_TAG_UUIDS.has(u));
+        let currentTagUuids = (bbox.tags || []).map(t => t.uuid);
+        if (assigningLabel) {
+          currentTagUuids = [...currentTagUuids.filter(u => !VERIFICATION_TAG_UUIDS.has(u)), VERIFIED_TAG_UUID];
+        }
         await updateBbox(bbox.uuid, { labelUuid, tagUuids: currentTagUuids });
       }
       toInvalidate.push(bbox.uuid);

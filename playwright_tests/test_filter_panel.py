@@ -308,55 +308,6 @@ class TestFilterPanelLabelsDropdown:
         assert result is False
 
 
-# ── Advanced / image-label filters ───────────────────────────────────────────
-
-class TestFilterPanelImageLabelFilters:
-    def test_add_image_label_filter(self, shared_page: Page):
-        result = shared_page.evaluate(f"""async () => {{
-            {_SETUP}
-            const labelSel = panel.element.querySelector('.filter-imlabel-builder select');
-            labelSel.value = 'lbl-cat';
-            panel.element.querySelector('.filter-imlabel-builder button').click();
-            const s = panel.getState();
-            {_TEARDOWN}
-            return s.imageLabelFilters;
-        }}""")
-        assert len(result) == 1
-        assert result[0]["labelUuid"] == "lbl-cat"
-
-    def test_add_filter_increments_count(self, shared_page: Page):
-        result = shared_page.evaluate(f"""async () => {{
-            {_SETUP}
-            const labelSel = panel.element.querySelector('.filter-imlabel-builder select');
-            labelSel.value = 'lbl-cat';
-            panel.element.querySelector('.filter-imlabel-builder button').click();
-            {_TEARDOWN}
-            return panel.getActiveFilterCount();
-        }}""")
-        assert result == 2  # tag + image-label filter
-
-    def test_add_without_label_does_nothing(self, shared_page: Page):
-        result = shared_page.evaluate(f"""async () => {{
-            {_SETUP}
-            panel.element.querySelector('.filter-imlabel-builder button').click();
-            {_TEARDOWN}
-            return panel.getState().imageLabelFilters.length;
-        }}""")
-        assert result == 0
-
-    def test_remove_chip_removes_from_state(self, shared_page: Page):
-        result = shared_page.evaluate(f"""async () => {{
-            {_SETUP}
-            const labelSel = panel.element.querySelector('.filter-imlabel-builder select');
-            labelSel.value = 'lbl-cat';
-            panel.element.querySelector('.filter-imlabel-builder button').click();
-            panel.element.querySelector('.filter-imlabel-list button').click();
-            {_TEARDOWN}
-            return panel.getState().imageLabelFilters.length;
-        }}""")
-        assert result == 0
-
-
 # ── setState ──────────────────────────────────────────────────────────────────
 
 class TestFilterPanelSetState:

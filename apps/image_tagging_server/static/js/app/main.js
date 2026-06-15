@@ -66,9 +66,9 @@ export async function init(appState) {
     applyFilterWhenReady({ tagUuids: tagUuids ?? [] });
   });
 
-  events.subscribe(EventTypes.EXPORT_FILTERS_TO_DATASET, ({ conditions, labelUuids }) => {
+  events.subscribe(EventTypes.EXPORT_FILTERS_TO_DATASET, ({ filterJson, labelUuids }) => {
     setPendingDatasetPrefill({
-      conditions,
+      filterJson,
       labelUuids,
       name: 'New Imported Dataset',
       description: 'New dataset imported from search filters',
