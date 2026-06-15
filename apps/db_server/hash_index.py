@@ -193,6 +193,7 @@ class HashIndex:
 
     def add_image(self, uuid: str, phash: str) -> None:
         """Insert an image entry into the index."""
+        self._validate_image_phash(phash, context=f"uuid={uuid}")
         item = (phash, uuid)
         if self._image_tree is None:
             self._image_tree = pybktree.BKTree(_item_distance, [item])
@@ -202,6 +203,7 @@ class HashIndex:
 
     def add_bbox(self, uuid: str, label_uuid: str, phash: str) -> None:
         """Insert a bbox entry into the per-label index."""
+        self._validate_bbox_phash(phash, context=f"uuid={uuid}")
         item = (phash, uuid)
         if label_uuid not in self._bbox_trees:
             self._bbox_trees[label_uuid] = pybktree.BKTree(_item_distance, [item])
@@ -238,7 +240,9 @@ class HashIndex:
         """Return [(image_uuid, distance)] for images within *threshold* of *phash*, sorted by distance ascending.
 
         Dead (tombstoned) entries are filtered via *_valid_images*.
+        Raises ValueError if *phash* doesn't match the current image hash size.
         """
+        self._validate_image_phash(phash)
         if self._image_tree is None:
             return []
         query = (phash, "")
@@ -264,7 +268,9 @@ class HashIndex:
         """Return [(bbox_uuid, distance, label_uuid)] within *threshold* of *phash*, sorted by distance ascending.
 
         If *label_uuids* is None or empty, searches all per-label trees.
+        Raises ValueError if *phash* doesn't match the current bbox hash size.
         """
+        self._validate_bbox_phash(phash)
         query = (phash, "")
         results: List[Tuple[str, int, str]] = []
 
@@ -298,13 +304,14 @@ class HashIndex:
 
         Returns:
             {image_is_dup: bool, bbox_flags: [bool]}
-            bbox_flags[i] is True when BOTH the image AND bbox i are duplicates.
+            image_is_dup: True when the image phash is within image_threshold of any stored image.
+            bbox_flags[i]: True when bbox i's phash is within its threshold of any stored bbox with
+            the same label — independently of image_is_dup.  Callers that need a combined signal
+            (e.g. "tag only when both image and bbox are dups") should AND with image_is_dup themselves.
         """
         image_is_dup = bool(self.find_similar_images(image_phash, image_threshold))
         bbox_flags = [
-            image_is_dup and bool(
-                self.find_similar_bboxes(b["phash"], [b["label_uuid"]], b["threshold"])
-            )
+            bool(self.find_similar_bboxes(b["phash"], [b["label_uuid"]], b["threshold"]))
             for b in bboxes
         ]
         return {"image_is_dup": image_is_dup, "bbox_flags": bbox_flags}
@@ -328,6 +335,43 @@ class HashIndex:
             "bbox_tombstones_by_label": dict(self._bbox_tombstones),
             "needs_rebuild": self._needs_rebuild,
         }
+
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Hash-size validation
+    # ─────────────────────────────────────────────────────────────────────────
+
+    @property
+    def _expected_image_hex_len(self) -> int:
+        """Expected hex-string length for image phashes: hash_size² bits → hash_size²/4 hex chars."""
+        return (self._image_hash_size ** 2) // 4
+
+    @property
+    def _expected_bbox_hex_len(self) -> int:
+        """Expected hex-string length for bbox phashes: hash_size² bits → hash_size²/4 hex chars."""
+        return (self._bbox_hash_size ** 2) // 4
+
+    def _validate_image_phash(self, phash: str, context: str = "") -> None:
+        """Raise ValueError if *phash* length doesn't match the current image hash size."""
+        expected = self._expected_image_hex_len
+        if len(phash) != expected:
+            raise ValueError(
+                f"Image phash length mismatch{' (' + context + ')' if context else ''}: "
+                f"got {len(phash)} hex chars, expected {expected} "
+                f"(image_hash_size={self._image_hash_size}). "
+                "Rebuild the index after changing hash size settings."
+            )
+
+    def _validate_bbox_phash(self, phash: str, context: str = "") -> None:
+        """Raise ValueError if *phash* length doesn't match the current bbox hash size."""
+        expected = self._expected_bbox_hex_len
+        if len(phash) != expected:
+            raise ValueError(
+                f"Bbox phash length mismatch{' (' + context + ')' if context else ''}: "
+                f"got {len(phash)} hex chars, expected {expected} "
+                f"(bbox_hash_size={self._bbox_hash_size}). "
+                "Rebuild the index after changing hash size settings."
+            )
 
     def _check_image_tombstone_ratio(self) -> None:
         total = len(self._valid_images) + self._image_tombstones

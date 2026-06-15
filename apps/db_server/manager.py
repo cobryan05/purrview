@@ -121,6 +121,26 @@ class Manager:
     async def _init(self):
         """Initialization that should run on event loop"""
         await self._db_client.init_db()
+        # Hash sizes are stored in DB settings so the review page, tasks, and the
+        # db_server all reference the same value.  Read them here (after init_db
+        # ensures the settings table exists) and override the env-var defaults set
+        # in __init__.  Falls back silently to the env-var value when the setting
+        # is absent (e.g. first run before the user has opened the settings page).
+        raw_img = await self._db_client.get_setting("dedup_image_hash_size")
+        raw_bbox = await self._db_client.get_setting("dedup_bbox_hash_size")
+        if raw_img is not None:
+            try:
+                self._image_hash_size = int(raw_img)
+            except (ValueError, TypeError):
+                pass
+        if raw_bbox is not None:
+            try:
+                self._bbox_hash_size = int(raw_bbox)
+            except (ValueError, TypeError):
+                pass
+        # Propagate the resolved sizes to the HashIndex before building.
+        self._hash_index._image_hash_size = self._image_hash_size
+        self._hash_index._bbox_hash_size = self._bbox_hash_size
         await self._hash_index.build(on_phase=lambda p: setattr(self, "_build_phase", p))
         self._build_phase = None
         self._hash_index_ready = True

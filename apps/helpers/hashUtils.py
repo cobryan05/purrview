@@ -3,6 +3,11 @@
 All public functions return/accept hex strings for consistent DB storage and
 JSON sidecar serialisation.  The `from_numpy` variants are used during ingestion
 (image already in memory); the disk-read variants are used during backfill.
+
+``PHASH_JPEG_QUALITY`` is the single source of truth for the JPEG quality used
+when saving training images and when computing in-memory phashes via a round-trip
+encode/decode.  Both must match or the same physical image will hash differently
+depending on whether the hash was computed before or after the file was written.
 """
 
 from pathlib import Path
@@ -11,6 +16,11 @@ from typing import Optional
 import imagehash
 import numpy as np
 from PIL import Image
+
+# JPEG quality used when saving training images to disk AND when computing
+# phashes from an in-memory frame via a round-trip encode/decode.  Keeping both
+# in sync here guarantees that pre-save and post-save hashes are identical.
+PHASH_JPEG_QUALITY: int = 95
 
 
 def _numpy_bgr_to_pil(image_bgr: np.ndarray) -> Image.Image:
@@ -89,3 +99,37 @@ def hamming(a: str, b: str) -> int:
     magnitude faster when called O(N log N) times during BK-tree construction.
     """
     return (int(a, 16) ^ int(b, 16)).bit_count()
+
+
+def compute_phashes_with_jpeg_roundtrip(
+    image_bgr: np.ndarray,
+    bboxes_xywh: list[tuple[float, float, float, float]],
+    image_hash_size: int = 8,
+    bbox_hash_size: int = 16,
+) -> tuple[str, list[str]]:
+    """Compute image and bbox phashes via a JPEG round-trip at ``PHASH_JPEG_QUALITY``.
+
+    The BK-tree index stores phashes derived from JPEG files written at
+    ``PHASH_JPEG_QUALITY``.  Encoding/decoding here at the same quality produces
+    phashes that are byte-identical to those stored values, avoiding false
+    non-matches caused by raw-frame vs JPEG-decoded pixel differences.
+
+    Args:
+        image_bgr: OpenCV BGR image array (not yet saved to disk).
+        bboxes_xywh: Normalized (x, y, w, h) tuples for each detection bbox.
+        image_hash_size: Hash grid size for the whole-image phash.
+        bbox_hash_size: Hash grid size for the per-bbox crop phash.
+
+    Returns:
+        ``(image_phash, [bbox_phash, ...])`` — all as hex strings.
+    """
+    import cv2  # local import: cv2 not required by the rest of hashUtils
+
+    _, buf = cv2.imencode(".jpg", image_bgr, [cv2.IMWRITE_JPEG_QUALITY, PHASH_JPEG_QUALITY])
+    jpeg_frame = cv2.imdecode(buf, cv2.IMREAD_COLOR)
+    img_phash = phash_from_numpy(jpeg_frame, image_hash_size)
+    bbox_phashes = [
+        phash_from_numpy_crop(jpeg_frame, x, y, w, h, bbox_hash_size)
+        for x, y, w, h in bboxes_xywh
+    ]
+    return img_phash, bbox_phashes

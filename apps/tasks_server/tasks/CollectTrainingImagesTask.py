@@ -28,7 +28,7 @@ from inference_client.models.pin_model_payload import PinModelPayload
 
 from apps.helpers.db.db_client import UNVERIFIED_TAG_UUID
 from apps.helpers.db.types import DUPLICATE_TAG_UUID
-from apps.helpers.hashUtils import phash_from_numpy, phash_from_numpy_crop
+from apps.helpers.hashUtils import PHASH_JPEG_QUALITY, compute_phashes_with_jpeg_roundtrip
 from apps.helpers.imageProviders.imageProvider import (
     ImageProvider,
     ImageProviderType,
@@ -63,21 +63,9 @@ def _bbox_iou(a, b) -> float:
     return inter / union if union > 0.0 else 0.0
 
 
-def _compute_jpeg_phashes(image_bgr, matching, image_hash_size: int, bbox_hash_size: int, quality: int = 95) -> tuple:
-    """Compute image and bbox phashes via a JPEG round-trip. Runs off the event loop.
-
-    The BK-tree stores phashes derived from JPEG files (cv2.imread after imwrite at quality 95).
-    Encoding/decoding here at the same quality produces phashes consistent with those stored values,
-    avoiding false non-matches caused by raw-frame vs JPEG-decoded pixel differences.
-    """
-    _, buf = cv2.imencode(".jpg", image_bgr, [cv2.IMWRITE_JPEG_QUALITY, quality])
-    jpeg_frame = cv2.imdecode(buf, cv2.IMREAD_COLOR)
-    img_phash = phash_from_numpy(jpeg_frame, image_hash_size)
-    bbox_phashes = [
-        phash_from_numpy_crop(jpeg_frame, d.bbox.x, d.bbox.y, d.bbox.width, d.bbox.height, bbox_hash_size)
-        for d in matching
-    ]
-    return img_phash, bbox_phashes
+# _compute_jpeg_phashes has moved to apps.helpers.hashUtils as
+# compute_phashes_with_jpeg_roundtrip, so the JPEG quality constant and the
+# hash algorithm are shared with the DB server's phash pipeline.
 
 
 @dataclass
@@ -153,9 +141,14 @@ class CollectTrainingImagesTask(Task):
         self._image_dup_threshold: int = int(params.get("image_dup_threshold", 5))
         self._bbox_dup_threshold: int = int(params.get("bbox_dup_threshold", 8))
         self._duplicate_action: str = params.get("duplicate_action", "tag")
-        # Dedup stats — persisted across pause/resume so totals are cumulative.
+        # Dedup outcome stats — persisted across pause/resume so totals are cumulative.
         self._dup_frames_discarded: int = resume_data.get("dup_frames_discarded", 0) if resume_data else 0
         self._dup_detections_tagged: int = resume_data.get("dup_detections_tagged", 0) if resume_data else 0
+        # Finer-grained dedup counters: frames checked, and raw hit counts from the index
+        # (independent of what action was taken — useful for diagnosing threshold issues).
+        self._dedup_frames_checked: int = resume_data.get("dedup_frames_checked", 0) if resume_data else 0
+        self._dedup_image_hits: int = resume_data.get("dedup_image_hits", 0) if resume_data else 0
+        self._dedup_bbox_hits: int = resume_data.get("dedup_bbox_hits", 0) if resume_data else 0
         # Hash sizes are global settings (must match the index; changing them requires
         # recomputing all stored hashes). Read from DB settings, fall back to defaults.
         _settings_api = SettingsApi(self._manager.get_db_api_client())
@@ -260,12 +253,19 @@ class CollectTrainingImagesTask(Task):
         def _dup_stats_str() -> str:
             if not self._enable_dedup:
                 return ""
-            parts = []
+            parts = [
+                f"{self._dedup_frames_checked} checked",
+                f"{self._dedup_image_hits} img dups",
+                f"{self._dedup_bbox_hits} bbox dups",
+            ]
             if self._dup_frames_discarded:
-                parts.append(f"{self._dup_frames_discarded} frames discarded (all-dup)")
+                parts.append(f"{self._dup_frames_discarded} discarded")
             if self._dup_detections_tagged:
-                parts.append(f"{self._dup_detections_tagged} dup detections tagged")
-            return (", " + ", ".join(parts)) if parts else ""
+                parts.append(f"{self._dup_detections_tagged} tagged")
+            queue_depth = self._dedup_queue.qsize()
+            if queue_depth > 0:
+                parts.append(f"{queue_depth} queued")
+            return ", dedup: " + ", ".join(parts)
 
         def _full_status() -> str:
             return _status_msg_str() + _dup_stats_str()
@@ -304,6 +304,12 @@ class CollectTrainingImagesTask(Task):
 
         self._status_msg = "Running"
         self.log(f"Starting collection (resuming from {self._images_saved} images)")
+        if self._enable_dedup:
+            self.log(
+                f"Dedup enabled: action={self._duplicate_action}, "
+                f"img_threshold={self._image_dup_threshold}, bbox_threshold={self._bbox_dup_threshold}, "
+                f"hash_sizes={self._image_hash_size}x{self._bbox_hash_size}"
+            )
         _last_heartbeat: float = 0.0
         # PERF BEGIN — rolling per-frame timing stats (bounded window to cap memory)
         _PERF_SUMMARY_INTERVAL = 50
@@ -497,11 +503,22 @@ class CollectTrainingImagesTask(Task):
                 _perf_frame_count, _ms_stats(_perf_fetch_ms), _ms_stats(_perf_encode_ms), _ms_stats(_perf_infer_ms),
             )
         # PERF END
-        self.log(f"Complete: {self._images_saved} images saved, {self._images_processed} frames processed"
-                 + (f", {self._dup_frames_discarded} frames discarded (all-dup)" if self._dup_frames_discarded else "")
-                 + (f", {self._dup_detections_tagged} dup detections tagged" if self._dup_detections_tagged else ""))
+        self.log(
+            f"Complete: {self._images_processed} seen, {self._images_saved} saved"
+            + (
+                f", dedup: {self._dedup_frames_checked} checked"
+                f", {self._dedup_image_hits} img dups"
+                f", {self._dedup_bbox_hits} bbox dups"
+                f", {self._dup_frames_discarded} discarded"
+                f", {self._dup_detections_tagged} tagged"
+                if self._enable_dedup else ""
+            )
+        )
         result: dict[str, Any] = {"images_saved": self._images_saved}
         if self._enable_dedup:
+            result["dedup_frames_checked"] = self._dedup_frames_checked
+            result["dedup_image_hits"] = self._dedup_image_hits
+            result["dedup_bbox_hits"] = self._dedup_bbox_hits
             result["dup_frames_discarded"] = self._dup_frames_discarded
             result["dup_detections_tagged"] = self._dup_detections_tagged
         if self._task_tag_uuid:
@@ -522,6 +539,9 @@ class CollectTrainingImagesTask(Task):
             "processed_ids": list(self._processed_ids),
             "dup_frames_discarded": self._dup_frames_discarded,
             "dup_detections_tagged": self._dup_detections_tagged,
+            "dedup_frames_checked": self._dedup_frames_checked,
+            "dedup_image_hits": self._dedup_image_hits,
+            "dedup_bbox_hits": self._dedup_bbox_hits,
         }
 
     async def _run_inference(
@@ -637,7 +657,7 @@ class CollectTrainingImagesTask(Task):
         # Save as JPEG (faster write, smaller files; lossless PNG not needed for training data).
         t_write = time.perf_counter()  # PERF
         if not await asyncio.to_thread(
-            cv2.imwrite, str(abs_path), provided.image, [cv2.IMWRITE_JPEG_QUALITY, 95]
+            cv2.imwrite, str(abs_path), provided.image, [cv2.IMWRITE_JPEG_QUALITY, PHASH_JPEG_QUALITY]
         ):
             logger.warning(f"Failed to write image to {abs_path}")
             self.log(f"Failed to write image: {filename}")
@@ -719,11 +739,15 @@ class CollectTrainingImagesTask(Task):
 
                 # Compute image and bbox phashes via JPEG round-trip so they match the
                 # phashes stored in the BK-tree (which are derived from the saved JPEG file).
+                # Uses compute_phashes_with_jpeg_roundtrip from hashUtils, the same helper
+                # the DB server uses, so the JPEG quality is guaranteed to match.
                 # PERF
                 t_bbox_hash = time.perf_counter()
                 # /PERF
+                bboxes_xywh = [(d.bbox.x, d.bbox.y, d.bbox.width, d.bbox.height) for d in matching]
                 image_phash, bbox_phashes = await asyncio.to_thread(
-                    _compute_jpeg_phashes, provided.image, matching, self._image_hash_size, self._bbox_hash_size
+                    compute_phashes_with_jpeg_roundtrip,
+                    provided.image, bboxes_xywh, self._image_hash_size, self._bbox_hash_size,
                 )
 
                 # Single bulk HTTP call — replaces N+1 separate calls.
@@ -759,16 +783,35 @@ class CollectTrainingImagesTask(Task):
                 # bbox_flags: per-detection duplicate flags (pure bbox similarity, image-independent).
                 bbox_flags: list[bool] = list(resp.bbox_flags) if resp.bbox_flags else [False] * len(matching)
 
+                # Track raw hit counts regardless of what action is taken — these are the
+                # primary diagnostic for "why isn't dedup discarding anything?"
+                self._dedup_frames_checked += 1
+                if resp.image_is_dup:
+                    self._dedup_image_hits += 1
+                self._dedup_bbox_hits += sum(1 for f in bbox_flags if f)
+                logger.debug(
+                    "dedup result: image_is_dup=%s bbox_flags=%s (img_thresh=%d bbox_thresh=%d)",
+                    resp.image_is_dup, bbox_flags, self._image_dup_threshold, self._bbox_dup_threshold,
+                )
+
                 # Image-level discard: skip the frame when the whole scene is a perceptual duplicate.
                 if self._duplicate_action == "discard_image" and resp.image_is_dup:
                     self._dup_frames_discarded += 1
                     logger.debug("Discarding image-duplicate frame: %s", provided.metadata.source)
+                    if self._dup_frames_discarded == 1:
+                        self.log("Dedup: discarding first duplicate frame")
+                    elif self._dup_frames_discarded % 50 == 0:
+                        self.log(f"Dedup: {self._dup_frames_discarded} duplicate frames discarded so far")
                     continue
 
                 # Bbox-level discard: keep if any detection is new; discard only if all are duplicates.
                 if self._duplicate_action == "discard" and all(bbox_flags):
                     self._dup_frames_discarded += 1
                     logger.debug("Discarding all-duplicate frame: %s", provided.metadata.source)
+                    if self._dup_frames_discarded == 1:
+                        self.log("Dedup: discarding first all-duplicate frame")
+                    elif self._dup_frames_discarded % 50 == 0:
+                        self.log(f"Dedup: {self._dup_frames_discarded} duplicate frames discarded so far")
                     continue
 
                 # For "tag" action: gate the dup marker on image similarity too, so we don't
