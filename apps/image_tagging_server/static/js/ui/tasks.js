@@ -58,6 +58,8 @@ export function renderTaskConfigs({ target = 'task-config-list', onEdit, onDelet
           rightButtons: [startButton]
         })
         configListDiv.appendChild(row);
+      }).catch(err => {
+        Logger.error('Failed to render task config row:', err);
       });
     }));
   }).catch(err => {

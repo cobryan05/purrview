@@ -15,19 +15,26 @@ export class TaskConfigField extends Field {
 
   static async create({ name = '', typename = null, schema = null, uuid = null, ...rest } = {}) {
     const instance = new TaskConfigField({ ...rest });
-
+    let isInvalid = false;
 
     // If no schema passed but a typename is provided, fetch the schema now
     if (!schema && typename) {
-      schema = await fetchTaskTypeSchemas([typename]).then(schemas => schemas.get(typename));
+      try {
+        schema = await fetchTaskTypeSchemas([typename]).then(schemas => schemas.get(typename));
+      } catch (err) {
+        isInvalid = true;
+      }
     }
 
-    instance._uuid = uuid
+    instance._uuid = uuid;
+    instance._isInvalid = isInvalid;
+    instance._invalidTypename = isInvalid ? typename : null;
     instance._textField = new TextField({ value: name, placeholder: 'Enter new config name' });
     instance._schemaField = await SchemaField.create({ schema: schema ?? {}, values: instance._value || {} });
     const taskTypes = await fetchTaskTypeList();
     const taskTypeOptions = [
       { key: FROM_EXISTING_SENTINEL, text: 'From Existing...' },
+      ...(isInvalid && typename ? [{ key: typename, text: `${typename} (unknown type)` }] : []),
       ...taskTypes,
     ];
 
@@ -90,6 +97,15 @@ export class TaskConfigField extends Field {
     container.style.flexDirection = 'column';
     container.style.width = '100%';
 
+    if (this._isInvalid) {
+      const warning = document.createElement('div');
+      warning.textContent = `⚠ Unknown task type: "${this._invalidTypename}". Delete this config or reassign it to a valid type.`;
+      warning.style.color = 'var(--pico-color-red-500, #c0392b)';
+      warning.style.fontSize = '0.85em';
+      warning.style.marginBottom = '0.25em';
+      container.appendChild(warning);
+    }
+
     // Row 1: dropdown + text
     const topRow = document.createElement('div');
     topRow.style.display = 'flex';
@@ -123,6 +139,14 @@ export class TaskConfigField extends Field {
     container.style.display = 'flex';
     container.style.alignItems = 'center';
     container.style.gap = '0.5em';
+
+    if (this._isInvalid) {
+      const warning = document.createElement('span');
+      warning.textContent = `⚠ Unknown type`;
+      warning.style.color = 'var(--pico-color-red-500, #c0392b)';
+      warning.style.fontSize = '0.85em';
+      container.appendChild(warning);
+    }
 
     container.appendChild(await this._dropDownField.renderView());
     container.appendChild(await this._textField.renderView());
