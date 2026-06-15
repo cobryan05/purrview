@@ -9,7 +9,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from apps.helpers.db.types import UNVERIFIED_TAG_UUID
+from apps.helpers.db.types import UNVERIFIED_TAG_UUID, VERIFIED_TAG_UUID
 from tests.conftest import make_png
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -328,10 +328,10 @@ async def test_cursor_pagination_covers_all_records(http_client, files_root, lab
 
 
 async def test_image_label_filter_present(http_client, files_root, label_uuid):
-    """image_label_filters with PRESENT status should only return confirmed images."""
+    """image_label_filters with PRESENT status should only return verified images."""
     _make_image(files_root, "ilf-verf.png")
     _make_image(files_root, "ilf-unv.png")
-    await _add_bbox(http_client, "ilf-verf.png", label_uuid, [])
+    await _add_bbox(http_client, "ilf-verf.png", label_uuid, [VERIFIED_TAG_UUID])
     await _add_bbox(http_client, "ilf-unv.png", label_uuid, [UNVERIFIED_TAG_UUID])
 
     images = await _review(
@@ -348,7 +348,7 @@ async def test_image_label_filter_exclude(http_client, files_root, label_uuid):
     """Exclude filter: return images that do NOT have a 'present' label."""
     _make_image(files_root, "excl-verf.png")
     _make_image(files_root, "excl-unv.png")
-    await _add_bbox(http_client, "excl-verf.png", label_uuid, [])
+    await _add_bbox(http_client, "excl-verf.png", label_uuid, [VERIFIED_TAG_UUID])
     await _add_bbox(http_client, "excl-unv.png", label_uuid, [UNVERIFIED_TAG_UUID])
 
     images = await _review(

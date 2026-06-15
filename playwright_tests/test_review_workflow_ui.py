@@ -25,6 +25,7 @@ import pytest
 from playwright.sync_api import Page, Route, expect
 
 UNVERIFIED_TAG_UUID = "00000000-0000-0000-0000-000000000001"
+VERIFIED_TAG_UUID = "00000000-0000-0000-0000-000000000005"
 
 # A 1x1 transparent PNG, base64-encoded — small valid image for canvas loadImage().
 TINY_PNG_B64 = (
@@ -40,10 +41,11 @@ LABEL_CAT = {"uuid": "lbl-cat", "name": "Cat", "color": "#ff0000", "parentUuid":
 LABEL_DOG = {"uuid": "lbl-dog", "name": "Dog", "color": "#00ff00", "parentUuid": None}
 
 UNVERIFIED_TAG = {"uuid": UNVERIFIED_TAG_UUID, "icon": None}
+VERIFIED_TAG = {"uuid": VERIFIED_TAG_UUID, "icon": "✓"}
 REVIEWED_TAG = {"uuid": "tag-reviewed", "name": "Reviewed", "color": "#4c4", "icon": None, "kind": "user"}
 
 # bbox-1, bbox-3: still unverified (carry the UNVERIFIED tag)
-# bbox-2: verified (no UNVERIFIED tag)
+# bbox-2: verified (carries the VERIFIED tag)
 BBOX_1 = {
     "uuid": "bbox-1", "x": 0.1, "y": 0.1, "width": 0.2, "height": 0.2,
     "label": {"uuid": "lbl-cat", "name": "Cat", "color": "#ff0000"},
@@ -55,7 +57,7 @@ BBOX_2 = {
     "uuid": "bbox-2", "x": 0.3, "y": 0.3, "width": 0.1, "height": 0.1,
     "label": {"uuid": "lbl-dog", "name": "Dog", "color": "#00ff00"},
     "labelUuid": "lbl-dog",
-    "tags": [],
+    "tags": [VERIFIED_TAG],
     "metadataJson": None,
 }
 BBOX_3 = {
@@ -223,7 +225,11 @@ class TestVerifyChip:
         """The verify chip reads '✓ Verified' for verified bboxes and '◌ Unverified' otherwise."""
         _mock_review_queue(page, PAGE_1_IMAGES)
         _mock_labels(page, [LABEL_CAT, LABEL_DOG])
-        _mock_tags(page, [{**UNVERIFIED_TAG, "name": "Unverified", "color": "#888", "kind": "system"}, REVIEWED_TAG])
+        _mock_tags(page, [
+            {**UNVERIFIED_TAG, "name": "Unverified", "color": "#888", "kind": "system"},
+            {**VERIFIED_TAG, "name": "Verified", "color": "#27ae60", "kind": "system"},
+            REVIEWED_TAG,
+        ])
 
         _navigate_to_review(page, base_url)
         _show_all_bboxes(page)
@@ -363,8 +369,9 @@ class TestBulkBboxAction:
         assert len(calls) == 2, f"Expected 2 PATCH calls, got {calls}"
         for call in calls:
             assert call["body"]["labelUuid"] == "lbl-dog"
-            # Relabeling to a real label strips the UNVERIFIED tag — i.e. "verifies" the bbox.
+            # Relabeling to a real label strips UNVERIFIED and adds VERIFIED.
             assert UNVERIFIED_TAG_UUID not in call["body"]["tagUuids"]
+            assert VERIFIED_TAG_UUID in call["body"]["tagUuids"]
 
 
 # ---------------------------------------------------------------------------

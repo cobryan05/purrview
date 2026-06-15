@@ -9,7 +9,7 @@ async def test_list_tags_contains_system_tags(http_client):
     assert body["status"] == "success"
     names = {t["name"] for t in body["tags"]}
     assert "Unverified" in names
-    assert "Verified" not in names
+    assert "Verified" in names
     assert "FalsePositive" not in names
     # No user-created tags yet.
     assert all(t["kind"] == "system" for t in body["tags"])

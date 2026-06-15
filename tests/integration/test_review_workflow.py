@@ -21,6 +21,7 @@ from apps.db_server.web import WebApp
 from apps.helpers.db.db_client import DbClient
 from apps.helpers.db.types import (
     UNVERIFIED_TAG_UUID,
+    VERIFIED_TAG_UUID,
     ImageLabelStatus,
 )
 from tests.conftest import make_png
@@ -128,7 +129,7 @@ async def test_full_verify_workflow(client, files_root):
 
     r = await client.patch(
         f"/api/images/bbox/{bid}",
-        json={"labelUuid": label, "tagUuids": []},
+        json={"labelUuid": label, "tagUuids": [VERIFIED_TAG_UUID]},
     )
     assert r.status_code == 204
 
@@ -154,7 +155,7 @@ async def test_confirm_workflow_creates_present_label(client, files_root):
 
     r = await client.patch(
         f"/api/images/bbox/{bid}",
-        json={"labelUuid": label, "tagUuids": []},
+        json={"labelUuid": label, "tagUuids": [VERIFIED_TAG_UUID]},
     )
     assert r.status_code == 204
 
@@ -195,7 +196,7 @@ async def test_multiple_images_independent_verification(client, files_root):
     assert sum(1 for f in filenames if "a.png" in f or "b.png" in f or "c.png" in f) == 3
 
     for bid in [bid_a, bid_b]:
-        await client.patch(f"/api/images/bbox/{bid}", json={"labelUuid": label, "tagUuids": []})
+        await client.patch(f"/api/images/bbox/{bid}", json={"labelUuid": label, "tagUuids": [VERIFIED_TAG_UUID]})
 
     images = await _review(client, tag_uuids=[UNVERIFIED_TAG_UUID])
     filenames = [img["filename"] for img in images]
@@ -221,7 +222,7 @@ async def test_image_label_filter_excludes_confirmed(client, files_root):
     """image_label_filters with exclude=True keeps only non-confirmed images."""
     label = await _create_label(client, "fish")
     bid_unv = await _put_image(files_root, client, "unv.png", label, [UNVERIFIED_TAG_UUID])
-    bid_ver = await _put_image(files_root, client, "ver.png", label, [])
+    bid_ver = await _put_image(files_root, client, "ver.png", label, [VERIFIED_TAG_UUID])
 
     images = await _review(
         client,

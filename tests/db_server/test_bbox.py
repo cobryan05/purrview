@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from apps.helpers.db.types import UNVERIFIED_TAG_UUID
+from apps.helpers.db.types import UNVERIFIED_TAG_UUID, VERIFIED_TAG_UUID
 from tests.conftest import make_png
 
 
@@ -122,7 +122,7 @@ async def test_delete_nonexistent_bbox_returns_404(http_client):
 
 
 async def test_delete_bbox_recomputes_image_labels(http_client, image_file, label_uuid):
-    """After deleting the only confirmed bbox for a label, the PRESENT row is removed."""
+    """After deleting the only verified bbox for a label, the PRESENT row is removed."""
     bid = str(uuid.uuid4())
     await http_client.post(
         "/api/images/metadata/update",
@@ -136,7 +136,7 @@ async def test_delete_bbox_recomputes_image_labels(http_client, image_file, labe
                     "y": 0.1,
                     "width": 0.3,
                     "height": 0.3,
-                    "tagUuids": [],
+                    "tagUuids": [VERIFIED_TAG_UUID],
                 }
             ],
         },

@@ -3,10 +3,10 @@ import { createGenericRow, Logger } from '/app-static/js/ui/utils/index.js';
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
 import { fetchLabels, fetchLabelByUuid } from '/app-static/js/shared/api/labels.js';
 import { fetchTags, fetchTagByUuid } from '/app-static/js/shared/api/tags.js';
-import { UNVERIFIED_TAG_UUID, VERIFICATION_TAG_UUIDS } from '/app-static/js/shared/api/review.js';
+import { UNVERIFIED_TAG_UUID, VERIFIED_TAG_UUID, VERIFICATION_TAG_UUIDS } from '/app-static/js/shared/api/review.js';
 import { isDynamicLabelsVisible } from '/app-static/js/shared/activeModel.js';
 import { setTool } from '/app-static/js/app/image-tagging/canvas/tools.js';
-import { stripUnverifiedTag } from '/app-static/js/app/image-tagging/canvas/interaction.js';
+import { applyVerifiedTag } from '/app-static/js/app/image-tagging/canvas/interaction.js';
 
 /**
  * Opens the inspector tab in the sidebar and highlights it briefly.
@@ -71,17 +71,14 @@ export function renderBboxInspector({ bboxView = null, target = 'tab-inspector',
             const labelUuid = val.bbox_info.labelUuid ?? null;
             const labelChanged = labelUuid !== originalLabelUuid;
 
-            // Build new tag list. Only strip UNVERIFIED when the user is actively
-            // assigning/changing a label — not when they're just editing tags on a
-            // bbox that already has a label.
+            // Build new tag list. Swap verification tag when the label changes.
             let savedTagUuids = val.bbox_info.tagUuids ?? [];
             if (labelChanged && labelUuid) {
-              savedTagUuids = savedTagUuids.filter(id => id !== UNVERIFIED_TAG_UUID);
+              // Assigning a label: strip all verification tags and mark VERIFIED.
+              savedTagUuids = [...savedTagUuids.filter(id => !VERIFICATION_TAG_UUIDS.has(id)), VERIFIED_TAG_UUID];
             } else if (labelChanged && !labelUuid) {
-              // Removing a label: re-mark as unverified so the bbox returns to the review queue.
-              if (!savedTagUuids.includes(UNVERIFIED_TAG_UUID)) {
-                savedTagUuids = [...savedTagUuids, UNVERIFIED_TAG_UUID];
-              }
+              // Removing a label: strip all verification tags and mark UNVERIFIED so it returns to the review queue.
+              savedTagUuids = [...savedTagUuids.filter(id => !VERIFICATION_TAG_UUIDS.has(id)), UNVERIFIED_TAG_UUID];
             }
 
             // Immediate optimistic update using any icon data we already have.
@@ -278,17 +275,17 @@ export function createTagPanel(container, runtime) {
         if (!labelData) return;
         _selectedBbox.uiBBox.label = { uuid: newUuid, text: labelData.name, color: labelData.color };
         _selectedBbox.updateAppearance(labelData.name, labelData.color);
-        stripUnverifiedTag(_selectedBbox.uiBBox);
+        applyVerifiedTag(_selectedBbox.uiBBox);
         _selectedBbox.refreshIcons(_selectedBbox.uiBBox.tags);
       } else {
         _selectedBbox.uiBBox.label = undefined;
         _selectedBbox.updateAppearance('', 'grey');
-        // Removing label → re-mark as unverified so it returns to the review queue.
-        const tags = _selectedBbox.uiBBox.tags ?? [];
-        if (!tags.some(t => t.uuid === UNVERIFIED_TAG_UUID)) {
-          _selectedBbox.uiBBox.tags = [...tags, { uuid: UNVERIFIED_TAG_UUID, icon: null }];
-          _selectedBbox.refreshIcons(_selectedBbox.uiBBox.tags);
-        }
+        // Removing label → strip all verification tags and re-mark as UNVERIFIED.
+        _selectedBbox.uiBBox.tags = [
+          ...(_selectedBbox.uiBBox.tags ?? []).filter(t => !VERIFICATION_TAG_UUIDS.has(t.uuid)),
+          { uuid: UNVERIFIED_TAG_UUID, icon: null },
+        ];
+        _selectedBbox.refreshIcons(_selectedBbox.uiBBox.tags);
       }
       runtime.pushState();
       events.publish(EventTypes.CANVAS_BBOXES_CHANGED, { runtimeId: runtime.id });

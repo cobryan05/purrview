@@ -11,7 +11,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 from sqlmodel import select
 
-from apps.helpers.db.types import UNVERIFIED_TAG_UUID, BBox, ImageRecord
+from apps.helpers.db.types import UNVERIFIED_TAG_UUID, VERIFIED_TAG_UUID, BBox, ImageRecord
 from tests.conftest import make_png
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -290,8 +290,8 @@ async def test_dataset_filter_label_status_all_verified(http_client, files_root)
 
     _png(files_root, "confirmed_img.png")
     _png(files_root, "unconfirmed_img.png")
-    # confirmed: verified bbox (no UNVERIFIED tag) → image_label PRESENT row
-    await _add_bbox(http_client, "confirmed_img.png", label_uuid, tag_uuids=[])
+    # confirmed: VERIFIED bbox → image_label PRESENT row
+    await _add_bbox(http_client, "confirmed_img.png", label_uuid, tag_uuids=[VERIFIED_TAG_UUID])
     # unconfirmed: UNVERIFIED bbox → no image_label row (status = UNCERTAIN)
     await _add_bbox(http_client, "unconfirmed_img.png", label_uuid, tag_uuids=[UNVERIFIED_TAG_UUID])
 
@@ -314,7 +314,7 @@ async def test_dataset_label_status_has_unverified(http_client, files_root):
 
     _png(files_root, "verified_eu.png")
     _png(files_root, "uncertain_eu.png")
-    await _add_bbox(http_client, "verified_eu.png", label_uuid, tag_uuids=[])
+    await _add_bbox(http_client, "verified_eu.png", label_uuid, tag_uuids=[VERIFIED_TAG_UUID])
     await _add_bbox(http_client, "uncertain_eu.png", label_uuid, tag_uuids=[UNVERIFIED_TAG_UUID])
 
     ds = await _create_dataset(
@@ -460,8 +460,8 @@ async def test_require_verified_filter(http_client, files_root):
 
     _png(files_root, "confirmed_rv.png")
     _png(files_root, "unconfirmed_rv.png")
-    # confirmed: verified bbox → image_label PRESENT row
-    await _add_bbox(http_client, "confirmed_rv.png", label_uuid, tag_uuids=[])
+    # confirmed: VERIFIED bbox → image_label PRESENT row
+    await _add_bbox(http_client, "confirmed_rv.png", label_uuid, tag_uuids=[VERIFIED_TAG_UUID])
     # unconfirmed: UNVERIFIED bbox → no image_label row
     await _add_bbox(http_client, "unconfirmed_rv.png", label_uuid, tag_uuids=[UNVERIFIED_TAG_UUID])
 

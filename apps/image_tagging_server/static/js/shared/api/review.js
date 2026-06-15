@@ -5,9 +5,10 @@ export const DUPLICATE_TAG_UUID = '00000000-0000-0000-0000-000000000002';
 // Keep in sync with apps/helpers/db/types.py
 export const FALSE_POS_TAG_UUID = '00000000-0000-0000-0000-000000000003';
 export const REJECTION_TAG_UUID = '00000000-0000-0000-0000-000000000004';
+export const VERIFIED_TAG_UUID = '00000000-0000-0000-0000-000000000005';
 
-// FALSE_POS is in the verification exclusive group — mutually exclusive with UNVERIFIED
-export const VERIFICATION_TAG_UUIDS = new Set([UNVERIFIED_TAG_UUID, FALSE_POS_TAG_UUID]);
+// All three are in the verification exclusive group — mutually exclusive per bbox
+export const VERIFICATION_TAG_UUIDS = new Set([UNVERIFIED_TAG_UUID, FALSE_POS_TAG_UUID, VERIFIED_TAG_UUID]);
 
 /**
  * Search the review queue with flexible filters and cursor-based pagination.

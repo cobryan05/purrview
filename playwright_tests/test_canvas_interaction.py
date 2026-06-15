@@ -22,6 +22,7 @@ import pytest
 from playwright.sync_api import Page
 
 UNVERIFIED_TAG_UUID = "00000000-0000-0000-0000-000000000001"
+VERIFIED_TAG_UUID = "00000000-0000-0000-0000-000000000005"
 
 
 
@@ -65,49 +66,59 @@ _SETUP = """
 
 
 # ---------------------------------------------------------------------------
-# stripUnverifiedTag (pure exported function)
+# applyVerifiedTag (pure exported function)
 # ---------------------------------------------------------------------------
 
-class TestStripUnverifiedTag:
-    def test_removes_unverified_tag(self, shared_page: Page):
+class TestApplyVerifiedTag:
+    def test_strips_unverified_and_adds_verified(self, shared_page: Page):
+        """applyVerifiedTag replaces UNVERIFIED with VERIFIED."""
         page = shared_page
         result = page.evaluate(f"""async () => {{
-            const {{ stripUnverifiedTag }} = await import('/app-static/js/app/image-tagging/canvas/interaction.js');
+            const {{ applyVerifiedTag }} = await import('/app-static/js/app/image-tagging/canvas/interaction.js');
 
             const UNVERIFIED = '{UNVERIFIED_TAG_UUID}';
+            const VERIFIED = '{VERIFIED_TAG_UUID}';
             const uiBBox = {{ tags: [{{ uuid: UNVERIFIED, icon: null }}] }};
-            stripUnverifiedTag(uiBBox);
+            applyVerifiedTag(uiBBox);
             return uiBBox.tags.map(t => t.uuid);
         }}""")
         assert UNVERIFIED_TAG_UUID not in result
+        assert VERIFIED_TAG_UUID in result
 
     def test_leaves_non_verification_tags_intact(self, shared_page: Page):
+        """applyVerifiedTag keeps non-verification tags."""
         page = shared_page
         result = page.evaluate(f"""async () => {{
-            const {{ stripUnverifiedTag }} = await import('/app-static/js/app/image-tagging/canvas/interaction.js');
+            const {{ applyVerifiedTag }} = await import('/app-static/js/app/image-tagging/canvas/interaction.js');
 
             const UNVERIFIED = '{UNVERIFIED_TAG_UUID}';
+            const VERIFIED = '{VERIFIED_TAG_UUID}';
             const uiBBox = {{
                 tags: [
                     {{ uuid: UNVERIFIED, icon: null }},
                     {{ uuid: 'keep-me', icon: '★' }},
                 ],
             }};
-            stripUnverifiedTag(uiBBox);
+            applyVerifiedTag(uiBBox);
             return uiBBox.tags.map(t => t.uuid);
         }}""")
-        assert result == ['keep-me']
+        assert 'keep-me' in result
+        assert UNVERIFIED_TAG_UUID not in result
+        assert VERIFIED_TAG_UUID in result
 
-    def test_noop_when_no_unverified_tag(self, shared_page: Page):
+    def test_adds_verified_when_no_verification_tag(self, shared_page: Page):
+        """applyVerifiedTag adds VERIFIED even when no verification tag was present."""
         page = shared_page
-        result = page.evaluate("""async () => {
-            const { stripUnverifiedTag } = await import('/app-static/js/app/image-tagging/canvas/interaction.js');
+        result = page.evaluate(f"""async () => {{
+            const {{ applyVerifiedTag }} = await import('/app-static/js/app/image-tagging/canvas/interaction.js');
 
-            const uiBBox = { tags: [{ uuid: 'other-tag', icon: '✓' }] };
-            stripUnverifiedTag(uiBBox);
+            const VERIFIED = '{VERIFIED_TAG_UUID}';
+            const uiBBox = {{ tags: [{{ uuid: 'other-tag', icon: '✓' }}] }};
+            applyVerifiedTag(uiBBox);
             return uiBBox.tags.map(t => t.uuid);
-        }""")
-        assert result == ['other-tag']
+        }}""")
+        assert 'other-tag' in result
+        assert VERIFIED_TAG_UUID in result
 
 
 # ---------------------------------------------------------------------------
@@ -258,8 +269,8 @@ class TestLabelAssignment:
         assert result['uuid'] == 'cat-uuid'
         assert result['text'] == 'Cat'
 
-    def test_double_click_label_strips_unverified_tag(self, shared_page: Page):
-        """Assigning a label removes the UNVERIFIED tag (human confirmed the detection)."""
+    def test_double_click_label_strips_unverified_and_adds_verified(self, shared_page: Page):
+        """Assigning a label replaces the UNVERIFIED tag with VERIFIED (human confirmed the detection)."""
         page = shared_page
         result = page.evaluate(f"""async () => {{
             const {{ createImageTaggingRuntime }} = await import('/app-static/js/app/image-tagging/runtime.js');
@@ -292,6 +303,7 @@ class TestLabelAssignment:
             return runtime.state.image.bboxes.get('b1').tags.map(t => t.uuid);
         }}""")
         assert UNVERIFIED_TAG_UUID not in result
+        assert VERIFIED_TAG_UUID in result
 
 
 # ---------------------------------------------------------------------------
@@ -379,23 +391,24 @@ class TestTagToggle:
             {_SETUP}
 
             const UNVERIFIED = '{UNVERIFIED_TAG_UUID}';
+            const VERIFIED = '{VERIFIED_TAG_UUID}';
 
             tagsFetcher.set('tagsMap', new Map([
                 [UNVERIFIED, {{ uuid: UNVERIFIED, name: 'Unverified', icon: '?', color: '#f00' }}],
+                [VERIFIED, {{ uuid: VERIFIED, name: 'Verified', icon: '✓', color: '#0f0' }}],
             ]));
 
-            // Start with a non-verification tag present and no UNVERIFIED.
-            // The toggle-on path runs: base = tags.filter(t => !VERIFICATION_TAG_UUIDS.has(t.uuid))
-            // which must preserve 'extra-tag' (not in the set) while stripping any
-            // verification peers (none here, but the filter runs on a non-empty array).
+            // Start with VERIFIED + a non-verification tag.
+            // The toggle-on path for UNVERIFIED strips all verification peers (VERIFIED)
+            // while preserving non-verification tags (extra-tag).
             const b = createUIBBbox({{
                 uuid: 'b1', x: 0.1, y: 0.1, width: 0.2, height: 0.2,
-                tags: [{{ uuid: 'extra-tag', icon: '★' }}],
+                tags: [{{ uuid: VERIFIED, icon: '✓' }}, {{ uuid: 'extra-tag', icon: '★' }}],
             }});
             runtime.state.image.bboxes.set('b1', b);
             rerenderBboxViews(runtime.canvas, runtime.state.image.bboxes, runtime.canvas.viewport);
 
-            // Double-click to toggle UNVERIFIED on
+            // Double-click to toggle UNVERIFIED on (swaps VERIFIED → UNVERIFIED)
             runtime.setTool('tag:' + UNVERIFIED);
             const cx = 160, cy = 120;
             setPtr(cx, cy);
@@ -405,11 +418,13 @@ class TestTagToggle:
             const finalTags = runtime.state.image.bboxes.get('b1').tags.map(t => t.uuid);
             return {{
                 unverifiedCount: finalTags.filter(u => u === UNVERIFIED).length,
+                verifiedCount:   finalTags.filter(u => u === VERIFIED).length,
                 hasExtraTag:     finalTags.includes('extra-tag'),
             }};
         }}""")
-        # UNVERIFIED added exactly once; non-verification 'extra-tag' preserved
+        # UNVERIFIED added exactly once; VERIFIED stripped; non-verification 'extra-tag' preserved
         assert result['unverifiedCount'] == 1
+        assert result['verifiedCount'] == 0
         assert result['hasExtraTag'] is True
 
 

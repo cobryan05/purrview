@@ -14,6 +14,7 @@ import { fetchTagByUuid } from '/app-static/js/shared/api/tags.js';
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
 import {
   UNVERIFIED_TAG_UUID,
+  VERIFIED_TAG_UUID,
   VERIFICATION_TAG_UUIDS,
   REJECTION_TAG_UUID,
 } from '/app-static/js/shared/api/review.js';
@@ -27,9 +28,12 @@ const ALL_VERIFICATION_UUIDS = new Set([
 
 // ── Local helpers (mirrors interaction.js, no import cycle) ───────────────────
 
-/** Strip UNVERIFIED tag in-place. */
-function _stripUnverifiedTag(uiBBox) {
-  uiBBox.tags = (uiBBox.tags ?? []).filter(t => t.uuid !== UNVERIFIED_TAG_UUID);
+/** Strip all verification tags in-place and add VERIFIED. */
+function _applyVerifiedTag(uiBBox) {
+  uiBBox.tags = [
+    ...(uiBBox.tags ?? []).filter(t => !VERIFICATION_TAG_UUIDS.has(t.uuid)),
+    { uuid: VERIFIED_TAG_UUID, icon: null },
+  ];
 }
 
 /**
@@ -96,7 +100,7 @@ export function makeCanvasBboxAdapter(bboxView, runtime) {
         bboxView.uiBBox.label = label
           ? { uuid, text: label.name, color: label.color }
           : null;
-        if (label) _stripUnverifiedTag(bboxView.uiBBox);
+        if (label) _applyVerifiedTag(bboxView.uiBBox);
         bboxView.updateAppearance(label?.name ?? '', label?.color ?? '#888888');
       } else {
         bboxView.uiBBox.label = null;

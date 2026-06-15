@@ -31,6 +31,7 @@ from .types import (
     FALSE_POS_TAG_UUID,
     REJECTION_TAG_UUID,
     UNVERIFIED_TAG_UUID,
+    VERIFIED_TAG_UUID,
     BBox,
     BBoxTagLink,
     Dataset,
@@ -90,6 +91,15 @@ _SYSTEM_TAGS = [
         exclusive_group="verification",
         protected=True,
         icon="✗",
+    ),
+    Tag(
+        uuid=VERIFIED_TAG_UUID,
+        name="Verified",
+        color="#27ae60",
+        kind=TagKind.SYSTEM,
+        exclusive_group="verification",
+        protected=True,
+        icon="✓",
     ),
     Tag(
         uuid=REJECTION_TAG_UUID,

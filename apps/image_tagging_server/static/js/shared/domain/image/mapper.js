@@ -2,7 +2,7 @@
 import { Logger, generateUUID } from '/app-static/js/ui/utils/index.js';
 import { BboxView } from '/app-static/js/app/image-tagging/canvas/views/bboxView.js';
 import { fetchLabelByUuid } from '/app-static/js/shared/api/labels.js';
-import { UNVERIFIED_TAG_UUID, VERIFICATION_TAG_UUIDS } from '/app-static/js/shared/api/review.js';
+import { UNVERIFIED_TAG_UUID, VERIFIED_TAG_UUID, VERIFICATION_TAG_UUIDS } from '/app-static/js/shared/api/review.js';
 
 /**
  * @typedef {import('./types.js').UIImage} UIImage
@@ -79,12 +79,16 @@ export function bboxReadToUI(bboxData) {
 
   const rawTags = (bboxData.tags ?? []).map(t => ({ uuid: t.uuid, icon: t.icon ?? null }));
 
-  // Default to UNVERIFIED if the bbox has no explicit verification tag and no label.
-  // A bbox with a label was human-reviewed (UNVERIFIED was stripped on assignment),
-  // so we don't re-add it on load even if the DB row no longer carries any verification tag.
-  const tags = (rawTags.some(t => VERIFICATION_TAG_UUIDS.has(t.uuid)) || label?.uuid)
-    ? rawTags
-    : [...rawTags, { uuid: UNVERIFIED_TAG_UUID, icon: null }];
+  // Assign a default verification tag if the DB row has none.
+  // Bboxes with a label default to VERIFIED; bboxes without a label default to UNVERIFIED.
+  let tags;
+  if (rawTags.some(t => VERIFICATION_TAG_UUIDS.has(t.uuid))) {
+    tags = rawTags;
+  } else if (label?.uuid) {
+    tags = [...rawTags, { uuid: VERIFIED_TAG_UUID, icon: null }];
+  } else {
+    tags = [...rawTags, { uuid: UNVERIFIED_TAG_UUID, icon: null }];
+  }
 
   /** @type {import('./types.js').UIBbox} */
   const uiBbox = createUIBBbox({

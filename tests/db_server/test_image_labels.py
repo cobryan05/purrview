@@ -9,7 +9,7 @@ import uuid
 
 import pytest
 
-from apps.helpers.db.types import FALSE_POS_TAG_UUID, UNVERIFIED_TAG_UUID
+from apps.helpers.db.types import FALSE_POS_TAG_UUID, UNVERIFIED_TAG_UUID, VERIFIED_TAG_UUID
 from tests.conftest import make_png
 
 
@@ -64,7 +64,7 @@ async def _set_label(http_client, image_path, label_uuid, status):
 
 
 async def test_confirmed_bbox_gives_present(http_client, image_file, label_uuid):
-    """A bbox with no UNVERIFIED tag is 'confirmed' and produces a PRESENT row."""
+    """A bbox with the VERIFIED tag produces a PRESENT row."""
     await _update_bboxes(
         http_client,
         "labels_test.png",
@@ -76,7 +76,7 @@ async def test_confirmed_bbox_gives_present(http_client, image_file, label_uuid)
                 "y": 0.1,
                 "width": 0.2,
                 "height": 0.2,
-                "tagUuids": [],
+                "tagUuids": [VERIFIED_TAG_UUID],
             }
         ],
     )
@@ -104,8 +104,8 @@ async def test_unverified_bbox_produces_no_row(http_client, image_file, label_uu
     assert label_uuid not in labels
 
 
-async def test_non_unverified_bbox_gives_present(http_client, image_file, label_uuid):
-    """A bbox with a non-verification custom tag (but no UNVERIFIED) is PRESENT."""
+async def test_verified_bbox_gives_present(http_client, image_file, label_uuid):
+    """A bbox with VERIFIED tag is PRESENT, even when it also has a custom tag."""
     r = await http_client.post("/api/tags/add", json={"name": "custom-tag"})
     custom_uuid = r.json()["tag"]["uuid"]
     await _update_bboxes(
@@ -119,7 +119,7 @@ async def test_non_unverified_bbox_gives_present(http_client, image_file, label_
                 "y": 0.1,
                 "width": 0.1,
                 "height": 0.1,
-                "tagUuids": [custom_uuid],
+                "tagUuids": [custom_uuid, VERIFIED_TAG_UUID],
             },
         ],
     )
@@ -128,7 +128,7 @@ async def test_non_unverified_bbox_gives_present(http_client, image_file, label_
 
 
 async def test_one_confirmed_bbox_gives_present_despite_unverified_sibling(http_client, image_file, label_uuid):
-    """If any bbox for a label is confirmed, the label is PRESENT even if others are UNVERIFIED."""
+    """If any bbox for a label is VERIFIED, the label is PRESENT even if others are UNVERIFIED."""
     await _update_bboxes(
         http_client,
         "labels_test.png",
@@ -149,7 +149,7 @@ async def test_one_confirmed_bbox_gives_present_despite_unverified_sibling(http_
                 "y": 0.5,
                 "width": 0.1,
                 "height": 0.1,
-                "tagUuids": [],
+                "tagUuids": [VERIFIED_TAG_UUID],
             },
         ],
     )
@@ -164,20 +164,20 @@ async def test_stale_present_row_removed(http_client, image_file, label_uuid, la
         http_client,
         "labels_test.png",
         [
-            {"uuid": bbox1, "labelUuid": label_uuid, "x": 0.1, "y": 0.1, "width": 0.1, "height": 0.1, "tagUuids": []},
-            {"uuid": bbox2, "labelUuid": label2_uuid, "x": 0.5, "y": 0.5, "width": 0.1, "height": 0.1, "tagUuids": []},
+            {"uuid": bbox1, "labelUuid": label_uuid, "x": 0.1, "y": 0.1, "width": 0.1, "height": 0.1, "tagUuids": [VERIFIED_TAG_UUID]},
+            {"uuid": bbox2, "labelUuid": label2_uuid, "x": 0.5, "y": 0.5, "width": 0.1, "height": 0.1, "tagUuids": [VERIFIED_TAG_UUID]},
         ],
     )
     labels = await _get_image_labels(http_client, "labels_test.png")
     assert labels[label_uuid] == "present"
     assert labels[label2_uuid] == "present"
 
-    # Remove confirmed bbox for label2 → its PRESENT row should be cleaned up
+    # Remove VERIFIED bbox for label2 → its PRESENT row should be cleaned up
     await _update_bboxes(
         http_client,
         "labels_test.png",
         [
-            {"uuid": bbox1, "labelUuid": label_uuid, "x": 0.1, "y": 0.1, "width": 0.1, "height": 0.1, "tagUuids": []},
+            {"uuid": bbox1, "labelUuid": label_uuid, "x": 0.1, "y": 0.1, "width": 0.1, "height": 0.1, "tagUuids": [VERIFIED_TAG_UUID]},
         ],
     )
     labels = await _get_image_labels(http_client, "labels_test.png")
@@ -185,8 +185,8 @@ async def test_stale_present_row_removed(http_client, image_file, label_uuid, la
     assert label2_uuid not in labels
 
 
-async def test_bbox_patch_to_confirmed_gives_present(http_client, image_file, label_uuid):
-    """Patching a bbox to remove UNVERIFIED (empty tags) creates a PRESENT row."""
+async def test_bbox_patch_to_verified_gives_present(http_client, image_file, label_uuid):
+    """Patching a bbox to add VERIFIED creates a PRESENT row."""
     bbox_id = str(uuid.uuid4())
     await _update_bboxes(
         http_client,
@@ -208,7 +208,7 @@ async def test_bbox_patch_to_confirmed_gives_present(http_client, image_file, la
 
     patch_r = await http_client.patch(
         f"/api/images/bbox/{bbox_id}",
-        json={"labelUuid": label_uuid, "tagUuids": []},
+        json={"labelUuid": label_uuid, "tagUuids": [VERIFIED_TAG_UUID]},
     )
     assert patch_r.status_code == 204
 
@@ -238,7 +238,7 @@ async def test_false_positive_bbox_produces_no_row(http_client, image_file, labe
 
 
 async def test_one_confirmed_bbox_gives_present_despite_false_positive_sibling(http_client, image_file, label_uuid):
-    """If any bbox for a label is confirmed, the label is PRESENT even if a sibling is FALSE_POSITIVE."""
+    """If any bbox for a label is VERIFIED, the label is PRESENT even if a sibling is FALSE_POSITIVE."""
     await _update_bboxes(
         http_client,
         "labels_test.png",
@@ -259,7 +259,7 @@ async def test_one_confirmed_bbox_gives_present_despite_false_positive_sibling(h
                 "y": 0.5,
                 "width": 0.1,
                 "height": 0.1,
-                "tagUuids": [],
+                "tagUuids": [VERIFIED_TAG_UUID],
             },
         ],
     )
@@ -296,7 +296,7 @@ async def test_explicit_absent_survives_recompute(http_client, image_file, label
                 "y": 0.1,
                 "width": 0.1,
                 "height": 0.1,
-                "tagUuids": [],
+                "tagUuids": [VERIFIED_TAG_UUID],
             }
         ],
     )
@@ -316,7 +316,7 @@ async def test_set_uncertain_clears_absent(http_client, image_file, label_uuid):
 
 
 async def test_confirmed_bbox_overrides_absent(http_client, image_file, label_uuid):
-    """If a confirmed bbox is added for a label that was explicitly ABSENT, PRESENT wins."""
+    """If a VERIFIED bbox is added for a label that was explicitly ABSENT, PRESENT wins."""
     await _update_bboxes(http_client, "labels_test.png", [])
     await _set_label(http_client, "labels_test.png", label_uuid, "absent")
 
@@ -331,7 +331,7 @@ async def test_confirmed_bbox_overrides_absent(http_client, image_file, label_uu
                 "y": 0.1,
                 "width": 0.2,
                 "height": 0.2,
-                "tagUuids": [],
+                "tagUuids": [VERIFIED_TAG_UUID],
             }
         ],
     )

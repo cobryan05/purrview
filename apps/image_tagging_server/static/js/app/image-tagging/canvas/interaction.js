@@ -6,31 +6,36 @@ import { clearSelection, setTool, parseToolUuid, isDrawTool, isTagTool, syncBbox
 import { fetchLabelByUuid } from '/app-static/js/shared/api/labels.js';
 import { fetchTagByUuid } from '/app-static/js/shared/api/tags.js';
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
-import { UNVERIFIED_TAG_UUID, VERIFICATION_TAG_UUIDS } from '/app-static/js/shared/api/review.js';
+import { UNVERIFIED_TAG_UUID, VERIFIED_TAG_UUID, VERIFICATION_TAG_UUIDS } from '/app-static/js/shared/api/review.js';
 import { setCanvasViewport, visibleContainerHeight } from './manager.js';
 import { screenToImage } from './viewport.js';
 import { openContextMenuForObjects } from '/app-static/js/ui/contextMenu/registry.js';
 import { makeCanvasBboxAdapter, makeCanvasSurfaceAdapter } from './contextTargets.js';
 
 /**
- * Mutates uiBBox.tags in-place: if no verification tag is present, adds UNVERIFIED.
- * Bboxes that already carry the UNVERIFIED verification tag are left untouched.
+ * Mutates uiBBox.tags in-place: if no verification tag is present, assigns one based on
+ * whether the bbox has a label (VERIFIED) or not (UNVERIFIED).
  */
 function applyDefaultVerificationTag(uiBBox) {
   const tags = uiBBox.tags ?? [];
   // Skip if already carrying any verification tag.
   if (tags.some(t => VERIFICATION_TAG_UUIDS.has(t.uuid))) return;
-  // Don't mark as unverified if the human already assigned a label.
-  if (uiBBox.label?.uuid) return;
-  uiBBox.tags = [...tags, { uuid: UNVERIFIED_TAG_UUID, icon: null }];
+  if (uiBBox.label?.uuid) {
+    uiBBox.tags = [...tags, { uuid: VERIFIED_TAG_UUID, icon: null }];
+  } else {
+    uiBBox.tags = [...tags, { uuid: UNVERIFIED_TAG_UUID, icon: null }];
+  }
 }
 
 /**
- * Strips the UNVERIFIED tag from a bbox in-place (no-op if not present).
+ * Strips all verification tags from a bbox in-place and adds VERIFIED.
  * Call this whenever a human assigns a label to a bbox.
  */
-export function stripUnverifiedTag(uiBBox) {
-  uiBBox.tags = (uiBBox.tags ?? []).filter(t => t.uuid !== UNVERIFIED_TAG_UUID);
+export function applyVerifiedTag(uiBBox) {
+  uiBBox.tags = [
+    ...(uiBBox.tags ?? []).filter(t => !VERIFICATION_TAG_UUIDS.has(t.uuid)),
+    { uuid: VERIFIED_TAG_UUID, icon: null },
+  ];
 }
 
 /**
@@ -322,7 +327,7 @@ export async function handleMouseUp(e, runtime) {
       if (labelData) {
         hitGroup.uiBBox.label = { uuid: toolUuid, text: labelData.name, color: labelData.color };
         hitGroup.updateAppearance(labelData.name, labelData.color);
-        stripUnverifiedTag(hitGroup.uiBBox);
+        applyVerifiedTag(hitGroup.uiBBox);
         hitGroup.refreshIcons(hitGroup.uiBBox.tags);
         // Labeling is a pure data mutation — no Konva drag/transform event fires for this.
         runtime.pushState();

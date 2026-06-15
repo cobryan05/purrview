@@ -28,6 +28,7 @@ from apps.helpers.db.types import (
     AVAILABLE_MODEL_TYPENAMES,
     FALSE_POS_TAG_UUID,
     UNVERIFIED_TAG_UUID,
+    VERIFIED_TAG_UUID,
     BBoxUpdate,
     DatasetCreate,
     DatasetRead,
@@ -71,8 +72,8 @@ logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger(__file__)
 logger.setLevel(logging.DEBUG)
 
-# Bboxes with any of these tags are excluded from PRESENT image-label tracking.
-_BBOX_SKIP_TAGS = frozenset({UNVERIFIED_TAG_UUID, FALSE_POS_TAG_UUID})
+# Only bboxes explicitly carrying this tag produce PRESENT image-label rows.
+_BBOX_VERIFIED_TAG = VERIFIED_TAG_UUID
 
 
 class Manager:
@@ -596,7 +597,7 @@ class Manager:
         as they have not been confirmed as true positive annotations.
         """
         present_label_uuids = {
-            b.label_uuid for b in update.bboxes if b.label_uuid and not _BBOX_SKIP_TAGS.intersection(b.tag_uuids)
+            b.label_uuid for b in update.bboxes if b.label_uuid and _BBOX_VERIFIED_TAG in b.tag_uuids
         }
         for label_uuid in present_label_uuids:
             await self._db_client.set_image_label(image_uuid, label_uuid, ImageLabelStatus.PRESENT)

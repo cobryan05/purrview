@@ -21,6 +21,7 @@ import {
   FALSE_POS_TAG_UUID,
   REJECTION_TAG_UUID,
   UNVERIFIED_TAG_UUID,
+  VERIFIED_TAG_UUID,
 } from '/app-static/js/shared/api/review.js';
 
 
@@ -149,16 +150,20 @@ registerContextProvider('bbox', async (adapters, ctx) => {
       label: 'Verification',
       submenu: () => [
         {
+          label: 'Mark Verified',
+          onSelect: async () => { await runAll(adapters, a => a.setVerification(VERIFIED_TAG_UUID)); ctx.close(); },
+        },
+        {
+          label: 'Mark Unverified',
+          onSelect: async () => { await runAll(adapters, a => a.setVerification(UNVERIFIED_TAG_UUID)); ctx.close(); },
+        },
+        {
           label: 'Mark False Positive',
           onSelect: async () => { await runAll(adapters, a => a.setVerification(FALSE_POS_TAG_UUID)); ctx.close(); },
         },
         {
           label: 'Mark Rejection',
           onSelect: async () => { await runAll(adapters, a => a.setVerification(REJECTION_TAG_UUID)); ctx.close(); },
-        },
-        {
-          label: 'Mark Unverified',
-          onSelect: async () => { await runAll(adapters, a => a.setVerification(UNVERIFIED_TAG_UUID)); ctx.close(); },
         },
         {
           label: 'Clear verification',
