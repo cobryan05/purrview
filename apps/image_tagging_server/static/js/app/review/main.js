@@ -1,7 +1,7 @@
 import { fetchLabels } from '/app-static/js/shared/api/labels.js';
 import { createDynamicLabelPicker } from '/app-static/js/ui/utils/dynamicLabelPicker.js';
 import { fetchTags } from '/app-static/js/shared/api/tags.js';
-import { isTagVisible } from '/app-static/js/shared/activeModel.js';
+import { filterVisibleTags } from '/app-static/js/shared/activeModel.js';
 import { createFilterPanel } from '/app-static/js/app/review/filters.js';
 import { expandWithDescendants, createLabelList } from '/app-static/js/ui/labelList.js';
 import {
@@ -1941,8 +1941,7 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
     labelPickerHdr.style.cssText = 'font-size:0.85em;color:#aaa;';
     labelPickerRow.append(labelPickerHdr, dynPicker.element);
 
-    const tagOptions = Array.from(tags.values())
-      .filter(isTagVisible)
+    const tagOptions = filterVisibleTags(tags.values())
       .map(tag => ({ key: tag.uuid, text: (tag.icon ? tag.icon + ' ' : '') + tag.name, color: tag.color || '#cccccc' }));
     const tagCheckboxField = new CheckboxField({ value: [], options: tagOptions });
     const tagPickerRow = document.createElement('div');
@@ -2851,8 +2850,7 @@ async function showBulkActionModal(entries, labels, onConfirm, titleText = null)
   labelPickerRow.appendChild(dynPicker.element);
 
   // Tag picker (shown only for addTags / removeTags)
-  const tagOptions = Array.from(tags.values())
-    .filter(isTagVisible)
+  const tagOptions = filterVisibleTags(tags.values())
     .map(tag => ({
       key: tag.uuid,
       text: (tag.icon ? tag.icon + ' ' : '') + tag.name,
@@ -2951,8 +2949,7 @@ async function showImageBulkActionModal(entries, labels, onConfirm, titleText = 
   labelPickerRow.appendChild(labelPicker);
 
   // Tag picker (shown only for addTags / removeTags) — same picker as the bbox bulk modal.
-  const tagOptions = Array.from(tags.values())
-    .filter(isTagVisible)
+  const tagOptions = filterVisibleTags(tags.values())
     .map(tag => ({
       key: tag.uuid,
       text: (tag.icon ? tag.icon + ' ' : '') + tag.name,
@@ -2976,10 +2973,13 @@ async function showImageBulkActionModal(entries, labels, onConfirm, titleText = 
   okBtn.textContent = 'Apply';
   okBtn.style.cssText = 'background:#ff003322;border:1px solid #ff0033;border-radius:3px;padding:0.2em 0.8em;cursor:pointer;';
   okBtn.addEventListener('click', async () => {
+    const isTagAction = selectedAction === 'addTags' || selectedAction === 'removeTags';
+    const selectedTagUuids = isTagAction ? tagCheckboxField.getValue() : [];
+    if (isTagAction && selectedTagUuids.length === 0) {
+      toast('Select at least one tag', 'error');
+      return;
+    }
     closeImageBulk();
-    const selectedTagUuids = (selectedAction === 'addTags' || selectedAction === 'removeTags')
-      ? tagCheckboxField.getValue()
-      : [];
     await onConfirm(selectedAction, labelPicker.value, selectedTagUuids);
   });
 
@@ -2997,21 +2997,36 @@ async function executeBulkImageAction(action, entries, labelUuid, tagUuids = [])
   let failCount = 0;
   const succeededEntries = [];
 
-  for (const entry of entries) {
-    const { img } = entry;
+  if (action === 'addTags' || action === 'removeTags') {
+    // Batch all images into a single server-side pass instead of one HTTP
+    // round-trip per (image, tag) pair.
     try {
-      if (action === 'addTags' || action === 'removeTags') {
-        for (const tagUuid of tagUuids) {
-          await setImageTag(img.filename, tagUuid, action === 'addTags' ? 'add' : 'remove');
-        }
+      const { failCount: serverFailCount } = await bulkApplyImagesByUuids({
+        imageUuids: entries.map(e => e.img.uuid),
+        action,
+        tagUuids,
+      });
+      failCount = serverFailCount;
+      for (const entry of entries) {
+        const { img } = entry;
         const currentTags = img.tags ?? [];
         img.tags = action === 'addTags'
           ? [...currentTags.filter(t => !tagUuids.includes(t.uuid)), ...tagUuids.map(uuid => ({ uuid, icon: null }))]
           : currentTags.filter(t => !tagUuids.includes(t.uuid));
-      } else {
-        const status = action === 'setAbsent' ? 'absent' : 'uncertain';
-        await setImageLabel(img.filename, labelUuid, status);
+        succeededEntries.push(entry);
       }
+    } catch (err) {
+      Logger.error(`Bulk image tag action failed: ${err.message}`);
+      failCount = entries.length;
+    }
+    return { failCount, succeededEntries };
+  }
+
+  for (const entry of entries) {
+    const { img } = entry;
+    try {
+      const status = action === 'setAbsent' ? 'absent' : 'uncertain';
+      await setImageLabel(img.filename, labelUuid, status);
       succeededEntries.push(entry);
     } catch (err) {
       Logger.error(`Image label action failed for ${img.uuid}: ${err.message}`);

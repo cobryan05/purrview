@@ -11,7 +11,7 @@
  */
 
 import { fetchTags, createNewTag } from '/app-static/js/shared/api/tags.js';
-import { isTagVisible } from '/app-static/js/shared/activeModel.js';
+import { filterVisibleTags } from '/app-static/js/shared/activeModel.js';
 
 /** Run an async fn over every adapter in sequence. */
 export async function runAll(adapters, fn) {
@@ -28,7 +28,7 @@ export async function runAll(adapters, fn) {
  */
 export async function buildTagPanel(adapters) {
   const tagsMap = await fetchTags();
-  const visibleTags = [...tagsMap.values()].filter(isTagVisible);
+  const visibleTags = filterVisibleTags(tagsMap.values());
 
   const wrap = document.createElement('div');
   wrap.style.cssText = 'min-width:220px;max-height:300px;overflow-y:auto;padding:4px 0;';

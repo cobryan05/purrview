@@ -20,7 +20,7 @@
 import { UNVERIFIED_TAG_UUID } from '/app-static/js/shared/api/review.js';
 import { createMultiSelectDropdown, makeLabelFilterNotice } from '/app-static/js/ui/utils/index.js';
 import { flattenHierarchy } from '/app-static/js/ui/labelList.js';
-import { activeModel, isTagVisible, isDynamicLabelsVisible } from '/app-static/js/shared/activeModel.js';
+import { activeModel, filterVisibleTags, isDynamicLabelsVisible, groupTagsByKind } from '/app-static/js/shared/activeModel.js';
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
 
 // System tags appear first in the tags dropdown, in this order.
@@ -59,18 +59,12 @@ export function createFilterPanel(labels, tags, onFilterChange, { inlineControls
   // Tags whose kind is globally hidden don't appear in the picker.
   // Icon-less system tags are always excluded (they're used only via presets).
   function _visibleTags() {
-    return [...tags.values()].filter(isTagVisible);
+    return filterVisibleTags(tags.values());
   }
 
   function _buildTagsDropdown() {
     const visible = _visibleTags();
-    const byKind = [
-      { label: 'System',         tags: visible.filter(t => t.kind === 'system') },
-      { label: 'Task-generated', tags: visible.filter(t => t.kind === 'task_generated') },
-      { label: 'Generic',        tags: visible.filter(t => !t.kind || t.kind === 'generic') },
-    ].filter(g => g.tags.length > 0);
-
-    byKind.forEach(g => g.tags.sort((a, b) => a.name.localeCompare(b.name)));
+    const byKind = groupTagsByKind(visible, ['system', 'task_generated', 'generic']);
 
     const useHeaders = byKind.length > 1;
     const items = [];
@@ -199,20 +193,23 @@ export function createFilterPanel(labels, tags, onFilterChange, { inlineControls
   const _unsubActiveFilter = events.subscribe(EventTypes.ACTIVE_MODEL_CHANGED, buildLabelsControls);
   const _unsubDynLabels = events.subscribe(EventTypes.DYNAMIC_LABELS_VISIBILITY_CHANGED, buildLabelsControls);
 
-  // Rebuild the tags dropdown when global tag-kind visibility changes.
+  // Destroy `dropdown`, rebuild it via `buildFn` into `container`, and return the new instance.
+  function _rebuildDropdown(dropdown, container, buildFn) {
+    dropdown.destroy();
+    container.innerHTML = '';
+    const next = buildFn();
+    container.appendChild(next.element);
+    return next;
+  }
+
+  // Rebuild the tags dropdowns when global tag-kind visibility changes.
   const _unsubTagVis = events.subscribe(EventTypes.TAG_KIND_VISIBILITY_CHANGED, () => {
-    tagsDropdown.destroy();
-    tagsContainer.innerHTML = '';
-    tagsDropdown = _buildTagsDropdown();
-    tagsContainer.appendChild(tagsDropdown.element);
+    tagsDropdown = _rebuildDropdown(tagsDropdown, tagsContainer, _buildTagsDropdown);
     // Reset tag state to empty (show all) when visibility changes.
     _state.tagUuids = [];
     _state.tagExcludeUuids = [];
 
-    imageTagsDropdown.destroy();
-    imageTagsContainer.innerHTML = '';
-    imageTagsDropdown = _buildImageTagsDropdown();
-    imageTagsContainer.appendChild(imageTagsDropdown.element);
+    imageTagsDropdown = _rebuildDropdown(imageTagsDropdown, imageTagsContainer, _buildImageTagsDropdown);
     _state.imageTagUuids = [];
     _state.imageTagExcludeUuids = [];
 

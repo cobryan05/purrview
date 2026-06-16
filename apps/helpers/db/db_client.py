@@ -1918,13 +1918,27 @@ class DbClient:
                 )
             )
             existing = set(result.all())
-            for tag_uuid in tag_uuids:
-                if tag_uuid not in existing:
-                    session.add(ImageTagLink(image_uuid=image_uuid, tag_uuid=tag_uuid))
+            to_add = [tag_uuid for tag_uuid in tag_uuids if tag_uuid not in existing]
+            for tag_uuid in to_add:
+                session.add(ImageTagLink(image_uuid=image_uuid, tag_uuid=tag_uuid))
             try:
                 await session.commit()
             except IntegrityError:
+                # A concurrent caller linking the same tag between our SELECT and INSERT is
+                # harmless (it already has the link we wanted). Anything else — e.g. an
+                # invalid tag_uuid/image_uuid violating the FK constraint — must surface
+                # rather than be silently swallowed, so re-check and re-raise if any of the
+                # tags we tried to add are still not linked.
                 await session.rollback()
+                result = await session.exec(
+                    select(ImageTagLink.tag_uuid).where(
+                        ImageTagLink.image_uuid == image_uuid,
+                        ImageTagLink.tag_uuid.in_(to_add),
+                    )
+                )
+                still_missing = set(to_add) - set(result.all())
+                if still_missing:
+                    raise
 
     async def remove_image_tag(self, image_uuid: str, tag_uuid: str) -> None:
         """Unlink a tag from a whole image. No-op if the link doesn't exist."""

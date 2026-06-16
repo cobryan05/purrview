@@ -135,6 +135,39 @@ export function isTagVisible(tag) {
 }
 
 /**
+ * Filter an iterable of tags (e.g. a fetchTags() Map's .values()) down to those
+ * that should appear in pickers/filters, per isTagVisible(). Use this instead of
+ * `[...tags.values()].filter(isTagVisible)` at every picker call site.
+ * @param {Iterable<{kind?: string, icon?: string}>} tags
+ * @returns {object[]}
+ */
+export function filterVisibleTags(tags) {
+  return [...tags].filter(isTagVisible);
+}
+
+/** Display label for each tag kind, used wherever tags are grouped by kind in the UI. */
+export const TAG_KIND_LABELS = { system: 'System', task_generated: 'Task-generated', generic: 'Generic' };
+
+/**
+ * Group an iterable of tags by kind, sorting each group by name.
+ * @param {Iterable<{kind?: string, name: string}>} tags
+ * @param {string[]} order  Kinds in the order groups should appear (unlisted kinds are appended).
+ * @returns {Array<{kind: string, label: string, tags: object[]}>}  non-empty groups only.
+ */
+export function groupTagsByKind(tags, order = ['system', 'task_generated', 'generic']) {
+  const byKind = new Map(order.map(k => [k, []]));
+  for (const tag of tags) {
+    const k = tag.kind ?? 'generic';
+    if (!byKind.has(k)) byKind.set(k, []);
+    byKind.get(k).push(tag);
+  }
+  for (const group of byKind.values()) group.sort((a, b) => a.name.localeCompare(b.name));
+  return [...byKind.entries()]
+    .filter(([, list]) => list.length > 0)
+    .map(([kind, list]) => ({ kind, label: TAG_KIND_LABELS[kind] ?? kind, tags: list }));
+}
+
+/**
  * Set visibility for a tag kind and notify subscribers.
  * @param {string} kind
  * @param {boolean} visible

@@ -12,6 +12,7 @@
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
 import { activeModel, isDynamicLabelsVisible, setDynamicLabelsVisible } from '/app-static/js/shared/activeModel.js';
 import { navigateTabs } from '/app-static/js/app/utils/tabs.js';
+import { openAnchoredPopup } from '/app-static/js/ui/utils/anchoredPopup.js';
 
 
 /**
@@ -23,11 +24,10 @@ export function mountActiveModelBar(containerId = 'active-model-bar') {
 
   // ── Visibility dropdown (flyout above the bar) ──────────────────────────
   let _visPopup = null;
-  let _outsideListener = null;
 
   function _closeVisPopup() {
-    if (_visPopup) { _visPopup.remove(); _visPopup = null; }
-    if (_outsideListener) { document.removeEventListener('mousedown', _outsideListener, true); _outsideListener = null; }
+    _visPopup?.close();
+    _visPopup = null;
   }
 
   function _openVisPopup(anchorEl) {
@@ -37,7 +37,7 @@ export function mountActiveModelBar(containerId = 'active-model-bar') {
     const popup = document.createElement('div');
     popup.className = 'vis-popup';
     popup.style.cssText = [
-      'position:fixed', 'z-index:9999',
+      'z-index:9999',
       'background:var(--pico-card-background-color,#1e1e2e)',
       'border:1px solid var(--pico-muted-border-color,#444)',
       'border-radius:6px', 'padding:6px 0', 'min-width:220px',
@@ -82,20 +82,7 @@ export function mountActiveModelBar(containerId = 'active-model-bar') {
         v => activeModel.setLabelFilterEnabled(v)));
     }
 
-    // Position above the anchor button, right-aligned to button's right edge.
-    document.body.appendChild(popup);
-    const rect = anchorEl.getBoundingClientRect();
-    const popupRect = popup.getBoundingClientRect();
-    const popupH = popupRect.height;
-    const popupW = popupRect.width;
-    popup.style.left = Math.max(4, rect.right - popupW) + 'px';
-    popup.style.top = (rect.top - popupH - 4) + 'px';
-
-    _visPopup = popup;
-    _outsideListener = (e) => {
-      if (!popup.contains(e.target) && e.target !== anchorEl) _closeVisPopup();
-    };
-    document.addEventListener('mousedown', _outsideListener, true);
+    _visPopup = openAnchoredPopup(anchorEl, popup);
   }
 
   function render() {

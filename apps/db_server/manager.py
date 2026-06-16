@@ -743,9 +743,12 @@ class Manager:
 
         Returns (modified_count, fail_count).
         """
+        tag_uuids = tag_uuids or []
+        if action in ("addTags", "removeTags") and not tag_uuids:
+            # Nothing to do — don't report images as "modified" for a no-op.
+            return 0, 0
         modified_count = 0
         fail_count = 0
-        tag_uuids = tag_uuids or []
         for image_uuid in image_uuids:
             try:
                 if action == "delete":

@@ -1,5 +1,6 @@
 // tags.js
 import { clearTagCache, createNewTag, deleteTag, fetchTags, updateTag } from '/app-static/js/shared/api/tags.js';
+import { groupTagsByKind } from '/app-static/js/shared/activeModel.js';
 import { EditableField, TagField } from '/app-static/js/ui/utils/fields/index.js';
 import { createEmojiButton, createGenericRow, showPaneError, toast } from '/app-static/js/ui/utils/index.js';
 const DEFAULT_COLOR = '#cccccc';
@@ -103,20 +104,10 @@ export function renderTagList({ target = 'tags-list', editable = true, onSelectC
     const rerender = () => renderTagList({ target, editable, onSelectCallback });
 
     fetchTags().then(tags => {
-      const KIND_ORDER = ['generic', 'system', 'task_generated'];
-      const KIND_LABELS = { generic: 'Generic', system: 'System', task_generated: 'Task-generated' };
-
-      const byKind = new Map(KIND_ORDER.map(k => [k, []]));
-      for (const tag of tags.values()) {
-        const k = tag.kind ?? 'generic';
-        if (!byKind.has(k)) byKind.set(k, []);
-        byKind.get(k).push(tag);
-      }
-      for (const group of byKind.values()) group.sort((a, b) => a.name.localeCompare(b.name));
+      const byKind = groupTagsByKind(tags.values(), ['generic', 'system', 'task_generated']);
 
       let firstGroup = true;
-      for (const [kind, group] of byKind) {
-        if (!group.length) continue;
+      for (const { label, tags: group } of byKind) {
         if (!firstGroup) {
           const hr = document.createElement('hr');
           hr.style.cssText = 'margin:6px 0; border-color:#444;';
@@ -124,7 +115,7 @@ export function renderTagList({ target = 'tags-list', editable = true, onSelectC
         }
         firstGroup = false;
         const hdr = document.createElement('div');
-        hdr.textContent = KIND_LABELS[kind] ?? kind;
+        hdr.textContent = label;
         hdr.style.cssText = 'font-size:0.75em;font-weight:bold;text-transform:uppercase;letter-spacing:0.05em;color:#888;padding:4px 0 2px;';
         container.appendChild(hdr);
         for (const tag of group) {
