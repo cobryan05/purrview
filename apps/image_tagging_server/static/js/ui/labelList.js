@@ -330,13 +330,15 @@ async function mountSelectMode(container, { runtime, filter }) {
 
   const rawLabelsMap = await fetchLabels();
   const modelFilteredMap = activeModel.applyLabelFilter(rawLabelsMap);
-  // Hide dynamic labels from the canvas select panel unless the toggle is on
-  const labelsMap = isDynamicLabelsVisible()
-    ? modelFilteredMap
-    : new Map([...modelFilteredMap].filter(([, l]) => l.labelType !== 'dynamic'));
-  const filterNotice = makeLabelFilterNotice(rawLabelsMap.size - labelsMap.size);
+  const showDynamic = isDynamicLabelsVisible();
+  const regularMap = new Map([...modelFilteredMap].filter(([, l]) => l.labelType !== 'dynamic'));
+  const dynamicMap = showDynamic
+    ? new Map([...modelFilteredMap].filter(([, l]) => l.labelType === 'dynamic'))
+    : new Map();
+  const filterNotice = makeLabelFilterNotice(rawLabelsMap.size - regularMap.size - dynamicMap.size);
   if (filterNotice) container.appendChild(filterNotice);
-  const byParent = buildHierarchy(labelsMap, filter);
+  const byParent = buildHierarchy(regularMap, filter);
+  const byParentDynamic = buildHierarchy(dynamicMap, filter);
 
   let currentImagePath = null;
   let _loadSeq = 0;
@@ -369,8 +371,8 @@ async function mountSelectMode(container, { runtime, filter }) {
     pendingFlush.set(uuid, status);
   }
 
-  function renderSelectRows(parentUuid, indent) {
-    const children = byParent.get(parentUuid ?? null) ?? [];
+  function renderSelectRows(parentUuid, indent, bp = byParent) {
+    const children = bp.get(parentUuid ?? null) ?? [];
     for (const label of children) {
       const { row } = buildLabelRow(label, indent);
       row.className = 'label-panel-row';
@@ -420,7 +422,7 @@ async function mountSelectMode(container, { runtime, filter }) {
       });
 
       container.appendChild(row);
-      renderSelectRows(label.uuid, indent + 1);
+      renderSelectRows(label.uuid, indent + 1, bp);
     }
   }
 
@@ -444,6 +446,27 @@ async function mountSelectMode(container, { runtime, filter }) {
   ));
 
   renderSelectRows(null, 0);
+
+  if (dynamicMap.size > 0) {
+    const hr = document.createElement('hr');
+    Object.assign(hr.style, { margin: '6px 4px', borderColor: '#444' });
+    container.appendChild(hr);
+
+    const dynHeader = document.createElement('div');
+    dynHeader.textContent = 'Dynamic Labels';
+    Object.assign(dynHeader.style, {
+      fontWeight: 'bold',
+      fontSize: '0.8em',
+      textTransform: 'uppercase',
+      letterSpacing: '0.05em',
+      padding: '2px 6px 6px',
+      color: '#888',
+      fontStyle: 'italic',
+    });
+    container.appendChild(dynHeader);
+
+    renderSelectRows(null, 0, byParentDynamic);
+  }
 
   function refreshStatusButtons() {
     for (const [uuid, update] of rowUpdaters) {

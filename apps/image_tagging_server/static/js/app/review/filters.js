@@ -20,7 +20,7 @@
 import { UNVERIFIED_TAG_UUID } from '/app-static/js/shared/api/review.js';
 import { createMultiSelectDropdown, makeLabelFilterNotice } from '/app-static/js/ui/utils/index.js';
 import { flattenHierarchy } from '/app-static/js/ui/labelList.js';
-import { activeModel } from '/app-static/js/shared/activeModel.js';
+import { activeModel, isTagKindVisible } from '/app-static/js/shared/activeModel.js';
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
 
 // System tags appear first in the tags dropdown, in this order.
@@ -51,29 +51,51 @@ export function createFilterPanel(labels, tags, onFilterChange, { inlineControls
   function emit() { onFilterChange({ ..._state }); }
 
   // ── Toolbar: Tags multi-select dropdown ──────────────────────────────────
-  // System tags without an icon are hidden from UI pickers (used only via presets).
-  const visibleTags = [...tags.values()].filter(t => t.kind !== 'system' || t.icon);
-  const sortedTags = [
-    ...SYSTEM_TAG_ORDER.map(u => tags.get(u)).filter(Boolean),
-    ...visibleTags
-      .filter(t => !SYSTEM_TAG_ORDER.includes(t.uuid))
-      .sort((a, b) => a.name.localeCompare(b.name)),
-  ];
+  // Tags whose kind is globally hidden don't appear in the picker.
+  // Icon-less system tags are always excluded (they're used only via presets).
+  function _visibleTags() {
+    return [...tags.values()].filter(t => {
+      if (t.kind === 'system') return t.icon && isTagKindVisible('system');
+      if (t.kind === 'task_generated') return isTagKindVisible('task_generated');
+      return true; // generic tags always visible
+    });
+  }
 
-  const tagsDropdown = createMultiSelectDropdown({
-    label: 'Tags',
-    items: sortedTags.map(t => ({ uuid: t.uuid, name: t.name, color: t.color || null })),
-    defaultSelected: [UNVERIFIED_TAG_UUID],
-    defaultMode: 'any',
-    filterKey: 'tags',
-    inline: inlineControls,
-    onChange: (selected, excluded, mode) => {
-      _state.tagUuids = selected;
-      _state.tagExcludeUuids = excluded;
-      _state.tagMatchMode = mode;
-      emit();
-    },
-  });
+  function _buildTagsDropdown() {
+    // Unverified always shows first — it's the primary workflow filter and default selection.
+    // Other system tags (Verified, False Positive) respect the global visibility toggle.
+    const unverifiedTag = tags.get(UNVERIFIED_TAG_UUID);
+    const sorted = [
+      ...(unverifiedTag ? [unverifiedTag] : []),
+      ...SYSTEM_TAG_ORDER
+        .filter(u => u !== UNVERIFIED_TAG_UUID)
+        .map(u => tags.get(u))
+        .filter(t => t && isTagKindVisible('system') && t.icon),
+      ..._visibleTags()
+        .filter(t => !SYSTEM_TAG_ORDER.includes(t.uuid))
+        .sort((a, b) => a.name.localeCompare(b.name)),
+    ];
+    return createMultiSelectDropdown({
+      label: 'Tags',
+      items: sorted.map(t => ({ uuid: t.uuid, name: t.name, color: t.color || null })),
+      defaultSelected: unverifiedTag ? [UNVERIFIED_TAG_UUID] : [],
+      defaultMode: 'any',
+      filterKey: 'tags',
+      inline: inlineControls,
+      onChange: (selected, excluded, mode) => {
+        _state.tagUuids = selected;
+        _state.tagExcludeUuids = excluded;
+        _state.tagMatchMode = mode;
+        emit();
+      },
+    });
+  }
+
+  // Stable container so toolbarControls[0] reference stays valid across rebuilds.
+  const tagsContainer = document.createElement('div');
+  if (inlineControls) tagsContainer.style.width = '100%';
+  let tagsDropdown = _buildTagsDropdown();
+  tagsContainer.appendChild(tagsDropdown.element);
   // ── Toolbar: Labels multi-select dropdown (tree-ordered, with depth indentation) ──
   // Wrapped in a container div so it can be rebuilt when the active-model filter changes.
   const labelsDropdownContainer = document.createElement('div');
@@ -124,6 +146,19 @@ export function createFilterPanel(labels, tags, onFilterChange, { inlineControls
 
   buildLabelsControls();
   const _unsubActiveFilter = events.subscribe(EventTypes.ACTIVE_MODEL_CHANGED, buildLabelsControls);
+  const _unsubDynLabels = events.subscribe(EventTypes.DYNAMIC_LABELS_VISIBILITY_CHANGED, buildLabelsControls);
+
+  // Rebuild the tags dropdown when global tag-kind visibility changes.
+  const _unsubTagVis = events.subscribe(EventTypes.TAG_KIND_VISIBILITY_CHANGED, () => {
+    tagsDropdown.destroy();
+    tagsContainer.innerHTML = '';
+    tagsDropdown = _buildTagsDropdown();
+    tagsContainer.appendChild(tagsDropdown.element);
+    // Reset tag state: Unverified is always the default selection.
+    _state.tagUuids = tags.get(UNVERIFIED_TAG_UUID) ? [UNVERIFIED_TAG_UUID] : [];
+    _state.tagExcludeUuids = [];
+    emit();
+  });
 
 
   // ── Panel root ─────────────────────────────────────────────────────────────
@@ -288,12 +323,14 @@ export function createFilterPanel(labels, tags, onFilterChange, { inlineControls
     tagsDropdown.destroy();
     _labelsDropdown?.destroy();
     _unsubActiveFilter();
+    _unsubDynLabels();
+    _unsubTagVis();
   }
 
   return {
     element: panel,
     /** Dropdown elements to place in the sticky toolbar (Tags + Labels). */
-    toolbarControls: [tagsDropdown.element, labelsDropdownContainer],
+    toolbarControls: [tagsContainer, labelsDropdownContainer],
     getState: () => ({
       ..._state,
       // showAllBboxes: true skips the server-side tag filter entirely.

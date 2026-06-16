@@ -19,16 +19,24 @@ import { fetchModelConfigs } from '/app-static/js/shared/api/modelConfigs.js';
 const SESSION_UUID_KEY = 'wtch_active_model_uuid';
 const SESSION_FILTER_KEY = 'wtch_model_filter_enabled';
 const SESSION_DYNAMIC_LABELS_KEY = 'wtch_show_dynamic_labels';
+const SESSION_TAG_VISIBILITY_KEY = 'wtch_tag_kind_visible';
 
 /** @type {import('/app-static/js/shared/api/modelConfigs.js').ModelConfigRead | null} */
 let _config = null;
 let _filterEnabled = false;
 let _showDynamicLabels = false;
+// Per-kind tag visibility: false = hidden from pickers/filters.
+// system tags are hidden by default; task_generated tags are visible.
+let _tagKindVisible = { system: false, task_generated: true };
 
 /** Initialise from sessionStorage. Call once at app startup before other modules read state. */
 export async function init() {
   _filterEnabled = sessionStorage.getItem(SESSION_FILTER_KEY) === 'true';
   _showDynamicLabels = sessionStorage.getItem(SESSION_DYNAMIC_LABELS_KEY) === 'true';
+  try {
+    const savedVis = JSON.parse(sessionStorage.getItem(SESSION_TAG_VISIBILITY_KEY) || 'null');
+    if (savedVis && typeof savedVis === 'object') _tagKindVisible = { ..._tagKindVisible, ...savedVis };
+  } catch { /* ignore parse errors */ }
 
   const savedUuid = sessionStorage.getItem(SESSION_UUID_KEY);
   if (savedUuid) {
@@ -104,6 +112,27 @@ export function setDynamicLabelsVisible(visible) {
   events.publish(EventTypes.DYNAMIC_LABELS_VISIBILITY_CHANGED, _showDynamicLabels);
 }
 
+/**
+ * Returns whether tags of the given kind should appear in UI pickers/filters.
+ * Unknown kinds default to visible (true).
+ * @param {string} kind  e.g. 'system' | 'task_generated' | 'generic'
+ * @returns {boolean}
+ */
+export function isTagKindVisible(kind) {
+  return _tagKindVisible[kind] !== false;
+}
+
+/**
+ * Set visibility for a tag kind and notify subscribers.
+ * @param {string} kind
+ * @param {boolean} visible
+ */
+export function setTagKindVisible(kind, visible) {
+  _tagKindVisible = { ..._tagKindVisible, [kind]: !!visible };
+  sessionStorage.setItem(SESSION_TAG_VISIBILITY_KEY, JSON.stringify(_tagKindVisible));
+  events.publish(EventTypes.TAG_KIND_VISIBILITY_CHANGED, { kind, visible: !!visible });
+}
+
 function _publish() {
   events.publish(EventTypes.ACTIVE_MODEL_CHANGED, {
     config: _config,
@@ -151,5 +180,7 @@ export const activeModel = {
   setLabelFilterEnabled,
   isDynamicLabelsVisible,
   setDynamicLabelsVisible,
+  isTagKindVisible,
+  setTagKindVisible,
   applyLabelFilter,
 };

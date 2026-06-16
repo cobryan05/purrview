@@ -91,6 +91,11 @@ export const EventTypes = Object.freeze({
    */
   DYNAMIC_LABELS_VISIBILITY_CHANGED: "labels:dynamic:visibility_changed",
   /**
+   * Fired when a tag-kind's UI visibility toggles.
+   * Payload: { kind: string, visible: boolean }
+   */
+  TAG_KIND_VISIBILITY_CHANGED: "tags:kind:visibility_changed",
+  /**
    * Fired after canvas annotations are saved from any modal (including nested).
    * Payload: { imageUuid: string, imageFilename: string, bboxes: Map<string, UIBbox> }
    */

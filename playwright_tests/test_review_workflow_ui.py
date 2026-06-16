@@ -168,18 +168,19 @@ def _mock_misc_review_endpoints(page: Page):
 
 
 def _show_all_bboxes(page: Page):
-    """Uncheck the 'Unverified' tag filter so verified bboxes also render.
+    """Clear the tag filter so all bboxes render regardless of verification state.
 
-    Tags are now in a multi-select dropdown in the toolbar: open it, uncheck
-    Unverified, then click away to close.
+    System tags are hidden from the dropdown by default, so we use 'Select None'
+    to clear all tag filters (including the hidden Unverified default), which
+    triggers showAllBboxes=true on the backend.
     """
     # The tags dropdown is added asynchronously after the tags fetch — wait for it.
     trigger = page.locator("#review-root .ms-dropdown[data-filter-key='tags'] .ms-dropdown__trigger")
     trigger.wait_for(state="visible", timeout=5000)
     trigger.click()
     page.wait_for_timeout(150)
-    cb = page.locator(f"#review-root .ms-dropdown[data-filter-key='tags'] input[value='{UNVERIFIED_TAG_UUID}']")
-    cb.uncheck()
+    # Click "Select None" to clear all tag selections (including hidden system tags).
+    page.locator("#review-root .ms-dropdown[data-filter-key='tags'] .ms-select-all-row button:text('Select None')").click()
     # Click outside the dropdown to close it.
     page.mouse.click(0, 0)
     page.wait_for_timeout(300)
