@@ -88,6 +88,19 @@ class BulkApplyAllResponse(StatusResponse):
     fail_count: int = 0
 
 
+class BulkApplyBboxesByUuidsPayload(ApiPayload):
+    bbox_uuids: List[str]
+    action: str  # relabel | delete | addTags | removeTags
+    label_uuid: Optional[str] = None
+    tag_uuids: List[str] = Field(default_factory=list)
+
+
+class BulkApplyImagesByUuidsPayload(ApiPayload):
+    image_uuids: List[str]
+    action: str  # setAbsent | setUncertain | delete
+    label_uuid: Optional[str] = None
+
+
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger(__file__)
 logger.setLevel(logging.DEBUG)
@@ -1266,6 +1279,47 @@ class WebApp:
                 return BulkApplyAllResponse(modified_count=modified_count, fail_count=fail_count)
             except Exception as e:
                 logger.exception("bulk_apply_bboxes failed")
+                return BulkApplyAllResponse(status=JsonValues.FAILURE, message=str(e))
+
+        @self._app.post(
+            "/api/images/bbox/bulk-apply-by-uuids",
+            response_model=BulkApplyAllResponse,
+            tags=[ApiTags.IMAGES],
+            operation_id="bulk_apply_bboxes_by_uuids",
+        )
+        async def bulk_apply_bboxes_by_uuids_endpoint(payload: BulkApplyBboxesByUuidsPayload) -> BulkApplyAllResponse:
+            """Apply an action to an explicit list of bboxes (no filter equivalent,
+            e.g. similarity/diversity search results)."""
+            try:
+                modified_count, fail_count = await self._manager.bulk_apply_bboxes_by_uuids(
+                    bbox_uuids=payload.bbox_uuids,
+                    action=payload.action,
+                    label_uuid=payload.label_uuid,
+                    tag_uuids=payload.tag_uuids,
+                )
+                return BulkApplyAllResponse(modified_count=modified_count, fail_count=fail_count)
+            except Exception as e:
+                logger.exception("bulk_apply_bboxes_by_uuids failed")
+                return BulkApplyAllResponse(status=JsonValues.FAILURE, message=str(e))
+
+        @self._app.post(
+            "/api/images/bulk-apply-by-uuids",
+            response_model=BulkApplyAllResponse,
+            tags=[ApiTags.IMAGES],
+            operation_id="bulk_apply_images_by_uuids",
+        )
+        async def bulk_apply_images_by_uuids_endpoint(payload: BulkApplyImagesByUuidsPayload) -> BulkApplyAllResponse:
+            """Apply an image-level action to an explicit list of images (no filter
+            equivalent, e.g. similarity/diversity search results)."""
+            try:
+                modified_count, fail_count = await self._manager.bulk_apply_images_by_uuids(
+                    image_uuids=payload.image_uuids,
+                    action=payload.action,
+                    label_uuid=payload.label_uuid,
+                )
+                return BulkApplyAllResponse(modified_count=modified_count, fail_count=fail_count)
+            except Exception as e:
+                logger.exception("bulk_apply_images_by_uuids failed")
                 return BulkApplyAllResponse(status=JsonValues.FAILURE, message=str(e))
 
         @self._app.delete(

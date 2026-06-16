@@ -6,6 +6,8 @@ import { expandWithDescendants, createLabelList } from '/app-static/js/ui/labelL
 import {
   fetchReviewQueue,
   bulkApplyAll,
+  bulkApplyBboxesByUuids,
+  bulkApplyImagesByUuids,
   updateImageBboxes,
   updateBbox,
   deleteBbox,
@@ -238,12 +240,12 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
   bulkBtn.textContent = 'Bulk Apply (0)';
   bulkBtn.disabled = true;
 
-  // Bulk Apply All Pages button (all matching results across all pages)
+  // Bulk Apply All button — all matching results across all pages (filter mode),
+  // or the full candidate list (custom fetchImages mode, e.g. similarity search).
   const bulkAllBtn = document.createElement('button');
   bulkAllBtn.className = 'review-toolbar__btn review-toolbar__btn--primary';
-  bulkAllBtn.textContent = 'Apply to All (0)';
+  bulkAllBtn.textContent = 'Apply to All';
   bulkAllBtn.disabled = true;
-  if (fetchImages) bulkAllBtn.hidden = true; // not meaningful in custom-fetchImages mode
 
   // Refresh
   const refreshBtn = document.createElement('button');
@@ -640,6 +642,11 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
       const countStr = _totalCount > 0 ? _totalCount.toLocaleString() : '?';
       bulkAllBtn.textContent = `Apply to All (${countStr})`;
       bulkAllBtn.disabled = _totalCount === 0;
+    } else {
+      // No server-side total in custom-fetchImages mode — the full candidate
+      // count is only known once showApplyToAllCandidatesModal fetches it.
+      bulkAllBtn.textContent = 'Apply to All';
+      bulkAllBtn.disabled = _visibleEntries.length === 0;
     }
   }
 
@@ -1656,8 +1663,99 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
     }
   });
 
-  // ── Bulk Apply All Pages ──────────────────────────────────────────
-  bulkAllBtn.addEventListener('click', () => showBulkAllPagesModal());
+  // ── Bulk Apply All ────────────────────────────────────────────────
+  // In custom-fetchImages mode (similarity/diversity search popups) there is
+  // no server-side filter to re-derive the candidate set from, so "Apply to
+  // All" instead fetches the already-known full candidate list in one call
+  // and applies the action via a single bulk-by-uuid-list backend request —
+  // not a loop of one HTTP call per item.
+  async function applyToAllCandidates() {
+    statusMsg.classList.add('review-toolbar__status--loading');
+    statusMsg.textContent = 'Loading candidates…';
+    let images;
+    try {
+      images = await fetchImages({ afterUuid: null, limit: Number.MAX_SAFE_INTEGER });
+    } catch (err) {
+      statusMsg.classList.remove('review-toolbar__status--loading');
+      statusMsg.textContent = `Error: ${err.message}`;
+      return;
+    }
+    statusMsg.classList.remove('review-toolbar__status--loading');
+
+    const kind = _selectionKind ?? (_viewFilter === 'images' ? 'image' : 'bbox');
+    const entries = kind === 'image'
+      ? images.map(img => ({ kind: 'image', img }))
+      : images.flatMap(img => (img.bboxes || []).map(bbox => ({ kind: 'bbox', bbox, img })));
+
+    if (entries.length === 0) {
+      statusMsg.textContent = 'No candidates to apply to.';
+      return;
+    }
+
+    if (kind === 'image') {
+      await showImageBulkActionModal(entries, labels, async (action, labelUuid) => {
+        if (action === 'delete') {
+          const n = entries.length;
+          const noun = n === 1 ? 'image' : 'images';
+          const confirmed = await showConfirmModal({
+            title: `Delete ${n} ${noun}`,
+            message: `Permanently delete ${n} ${noun} from the full candidate list? This removes the files and all their annotations from disk. This cannot be undone.`,
+            confirmText: 'Delete',
+            danger: true,
+          });
+          if (!confirmed) return;
+        }
+        statusMsg.classList.add('review-toolbar__status--loading');
+        statusMsg.textContent = `Applying to ${entries.length.toLocaleString()} images…`;
+        try {
+          const { modifiedCount, failCount } = await bulkApplyImagesByUuids({
+            imageUuids: entries.map(e => e.img.uuid),
+            action,
+            labelUuid,
+          });
+          if (action === 'delete') {
+            for (const { img } of entries) {
+              events.publish(EventTypes.IMAGE_DELETED, { imageUuid: img.uuid, imagePath: img.filename });
+            }
+          }
+          statusMsg.classList.remove('review-toolbar__status--loading');
+          statusMsg.textContent = `Applied to ${modifiedCount.toLocaleString()} images` +
+            (failCount > 0 ? ` (${failCount} failed — check console)` : '');
+        } catch (err) {
+          statusMsg.classList.remove('review-toolbar__status--loading');
+          statusMsg.textContent = `Bulk apply failed: ${err.message}`;
+          Logger.error('applyToAllCandidates (images) failed:', err);
+        }
+        await render();
+      }, `Apply to all ${entries.length.toLocaleString()} matched image${entries.length === 1 ? '' : 's'}`);
+    } else {
+      await showBulkActionModal(entries, labels, async (action, newLabelUuid, selectedTagUuids) => {
+        statusMsg.classList.add('review-toolbar__status--loading');
+        statusMsg.textContent = `Applying to ${entries.length.toLocaleString()} bboxes…`;
+        try {
+          const { modifiedCount, failCount } = await bulkApplyBboxesByUuids({
+            bboxUuids: entries.map(e => e.bbox.uuid),
+            action,
+            labelUuid: newLabelUuid ?? null,
+            tagUuids: selectedTagUuids,
+          });
+          statusMsg.classList.remove('review-toolbar__status--loading');
+          statusMsg.textContent = `Applied to ${modifiedCount.toLocaleString()} bboxes` +
+            (failCount > 0 ? ` (${failCount} failed — check console)` : '');
+        } catch (err) {
+          statusMsg.classList.remove('review-toolbar__status--loading');
+          statusMsg.textContent = `Bulk apply failed: ${err.message}`;
+          Logger.error('applyToAllCandidates (bboxes) failed:', err);
+        }
+        await render();
+      }, `Apply to all ${entries.length.toLocaleString()} matched bbox${entries.length === 1 ? '' : 'es'}`);
+    }
+  }
+
+  bulkAllBtn.addEventListener('click', () => {
+    if (fetchImages) applyToAllCandidates();
+    else showBulkAllPagesModal();
+  });
 
   // ── Pagination ────────────────────────────────────────────────────
   prevBtn.addEventListener('click', () => {
@@ -1749,6 +1847,263 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
   });
 
   render();
+
+  // ── Bulk Apply All Pages modal ────────────────────────────────────────────
+  // Shows the action picker plus a "first 3 / last 3" preview of the bbox
+  // range that will be affected, so the user can sanity-check the scope.
+  async function showBulkAllPagesModal() {
+    const fs = filterPanel.getState();
+    const sortBy = sortBySelect.value;
+    const sortOrder = sortOrderSelect.value;
+    const totalBboxCount = _totalCount;
+
+    // ── Build bbox-level filter (mirrors the render() subset logic) ──────
+    const showAll = fs.showAllBboxes;
+    const bboxTagFilter = showAll ? [] : (fs.tagUuids ?? []);
+    const bboxLabelFilter = fs.labelUuids?.length > 0
+      ? (fs.labelIncludeChildren
+          ? Array.from(expandWithDescendants(fs.labelUuids, labels))
+          : fs.labelUuids)
+      : [];
+    const bboxTagSet = showAll ? null : new Set(bboxTagFilter);
+    const bboxLabelSet = bboxLabelFilter.length > 0 ? new Set(bboxLabelFilter) : null;
+
+    // ── Fetch tags + labels for pickers ─────────────────────────────────
+    const [tags, allLabels] = await Promise.all([
+      fetchTags().catch(() => new Map()),
+      fetchLabels().catch(() => new Map()),
+    ]);
+
+    // ── Build modal shell ────────────────────────────────────────────────
+    const overlay = document.createElement('div');
+    overlay.style.cssText = `position:fixed;inset:0;background:#0008;display:flex;
+      align-items:center;justify-content:center;z-index:${nextModalZIndex()};`;
+
+    const dialog = document.createElement('div');
+    dialog.style.cssText = `background:#222;border:1px solid #555;border-radius:6px;
+      padding:1.5em;min-width:420px;max-width:600px;display:flex;flex-direction:column;gap:0.9em;`;
+
+    const title = document.createElement('strong');
+    title.textContent = `Apply to All ${totalBboxCount.toLocaleString()} Matching Bboxes`;
+
+    // ── Preview section ──────────────────────────────────────────────────
+    const previewSection = document.createElement('div');
+    previewSection.style.cssText = 'display:flex;flex-direction:column;gap:0.4em;';
+
+    const previewHdr = document.createElement('div');
+    previewHdr.style.cssText = 'font-size:0.82em;color:#aaa;text-transform:uppercase;letter-spacing:0.04em;';
+    previewHdr.textContent = 'Preview range';
+
+    const previewRow = document.createElement('div');
+    previewRow.style.cssText = 'display:flex;align-items:center;gap:0.5em;min-height:88px;';
+
+    const previewStatus = document.createElement('span');
+    previewStatus.style.cssText = 'color:#aaa;font-size:0.85em;';
+    previewStatus.textContent = 'Loading preview…';
+    previewRow.appendChild(previewStatus);
+
+    previewSection.append(previewHdr, previewRow);
+
+    // ── Action picker (same as showBulkActionModal) ─────────────────────
+    const actions = [
+      { value: 'relabel', label: 'Change Label' },
+      { value: 'delete', label: 'Delete Bboxes' },
+      { value: 'addTags', label: 'Add Tags' },
+      { value: 'removeTags', label: 'Remove Tags' },
+    ];
+
+    const radioGroup = document.createElement('div');
+    radioGroup.style.cssText = 'display:flex;flex-direction:column;gap:0.4em;';
+    let selectedAction = 'relabel';
+
+    let _selectedLabelUuid = undefined;
+    const dynPicker = createDynamicLabelPicker(allLabels, {
+      onSelect: (uuid) => { _selectedLabelUuid = uuid; },
+    });
+    const labelPickerRow = document.createElement('div');
+    labelPickerRow.style.cssText = 'display:flex;flex-direction:column;gap:0.3em;';
+    const labelPickerHdr = document.createElement('div');
+    labelPickerHdr.textContent = 'New label:';
+    labelPickerHdr.style.cssText = 'font-size:0.85em;color:#aaa;';
+    labelPickerRow.append(labelPickerHdr, dynPicker.element);
+
+    const tagOptions = Array.from(tags.values())
+      .map(tag => ({ key: tag.uuid, text: (tag.icon ? tag.icon + ' ' : '') + tag.name, color: tag.color || '#cccccc' }));
+    const tagCheckboxField = new CheckboxField({ value: [], options: tagOptions });
+    const tagPickerRow = document.createElement('div');
+    tagPickerRow.style.cssText = 'max-height:180px;overflow-y:auto;display:none;flex-direction:column;gap:0.3em;padding:0.3em 0;';
+    tagPickerRow.appendChild(await tagCheckboxField.renderEdit());
+
+    for (const action of actions) {
+      const lbl = document.createElement('label');
+      lbl.style.cssText = 'display:flex;align-items:center;gap:0.5em;cursor:pointer;';
+      const radio = document.createElement('input');
+      radio.type = 'radio';
+      radio.name = 'bulk-all-action';
+      radio.value = action.value;
+      if (action.value === 'relabel') radio.checked = true;
+      radio.addEventListener('change', () => {
+        selectedAction = action.value;
+        labelPickerRow.style.display = selectedAction === 'relabel' ? '' : 'none';
+        tagPickerRow.style.display = (selectedAction === 'addTags' || selectedAction === 'removeTags') ? 'flex' : 'none';
+      });
+      lbl.append(radio, document.createTextNode(action.label));
+      radioGroup.appendChild(lbl);
+    }
+
+    // ── Warning ──────────────────────────────────────────────────────────
+    const warning = document.createElement('div');
+    warning.style.cssText = 'font-size:0.85em;color:#e8a020;background:#e8a02015;border:1px solid #e8a02044;border-radius:4px;padding:0.5em 0.7em;';
+    warning.textContent = `⚠ This will modify all ${totalBboxCount.toLocaleString()} bboxes matching your current filters, across every page. This cannot be undone.`;
+
+    // ── Buttons ──────────────────────────────────────────────────────────
+    const btnRow = document.createElement('div');
+    btnRow.style.cssText = 'display:flex;gap:0.5em;justify-content:flex-end;';
+
+    function close() { unregisterEscHandler(close); dynPicker.destroy(); overlay.remove(); }
+
+    const cancelBtn = document.createElement('button');
+    cancelBtn.textContent = 'Cancel';
+    cancelBtn.addEventListener('click', close);
+
+    const okBtn = document.createElement('button');
+    okBtn.textContent = `Apply to All ${totalBboxCount.toLocaleString()}`;
+    okBtn.style.cssText = 'background:#ff003322;border:1px solid #ff0033;border-radius:3px;padding:0.2em 0.8em;cursor:pointer;';
+    okBtn.addEventListener('click', async () => {
+      close();
+      const newLabelUuid = selectedAction === 'relabel' ? (_selectedLabelUuid ?? undefined) : undefined;
+      const selectedTagUuids = (selectedAction === 'addTags' || selectedAction === 'removeTags')
+        ? tagCheckboxField.getValue()
+        : [];
+      statusMsg.textContent = `Applying to all ${totalBboxCount.toLocaleString()} bboxes…`;
+      statusMsg.classList.add('review-toolbar__status--loading');
+      try {
+        const { modifiedCount, failCount } = await bulkApplyAll({
+          tagUuids: fs.showAllBboxes ? [] : (fs.tagUuids ?? []),
+          tagExcludeUuids: fs.tagExcludeUuids ?? [],
+          showAllBboxes: fs.showAllBboxes,
+          tagMatchMode: fs.tagMatchMode,
+          labelUuids: fs.labelUuids ?? [],
+          labelExcludeUuids: fs.labelExcludeUuids ?? [],
+          labelMatchMode: fs.labelMatchMode,
+          labelIncludeChildren: fs.labelIncludeChildren,
+          requireBboxes: _viewFilter === 'bboxes',
+          sortBy,
+          sortOrder,
+          filenameSearch: fs.filenameSearch || undefined,
+          dateFrom: fs.dateFrom || undefined,
+          dateTo: fs.dateTo || undefined,
+          verificationCheck: fs.verificationCheck,
+          bboxTagFilter,
+          bboxLabelFilter,
+          action: selectedAction,
+          labelUuid: newLabelUuid ?? null,
+          selectedTagUuids,
+        });
+        statusMsg.classList.remove('review-toolbar__status--loading');
+        statusMsg.textContent = `Applied to ${modifiedCount.toLocaleString()} bboxes` +
+          (failCount > 0 ? ` (${failCount} failed — check console)` : '');
+        // Reload current page so stale cards are cleared.
+        render();
+      } catch (err) {
+        statusMsg.classList.remove('review-toolbar__status--loading');
+        statusMsg.textContent = `Bulk apply failed: ${err.message}`;
+        Logger.error('Bulk apply all failed:', err);
+      }
+    });
+
+    btnRow.append(cancelBtn, okBtn);
+    dialog.append(title, previewSection, radioGroup, labelPickerRow, tagPickerRow, warning, btnRow);
+    overlay.appendChild(dialog);
+    document.body.appendChild(overlay);
+    registerEscHandler(close);
+    overlay.addEventListener('click', e => { if (e.target === overlay) close(); });
+
+    // ── Populate preview asynchronously ─────────────────────────────────
+    // First 3: already in _visibleEntries (free)
+    const first3 = _visibleEntries.filter(e => e.kind === 'bbox').slice(0, 3);
+
+    // Last 3: reverse-sort query (3 images should be enough to get 3 bboxes)
+    const reversedOrder = sortOrder === 'desc' ? 'asc' : 'desc';
+    let last3 = [];
+    try {
+      const { images: lastImgs } = await fetchReviewQueue({
+        tagUuids: fs.showAllBboxes ? [] : (fs.tagUuids ?? []),
+        tagExcludeUuids: fs.tagExcludeUuids ?? [],
+        showAllBboxes: fs.showAllBboxes,
+        tagMatchMode: fs.tagMatchMode,
+        labelUuids: fs.labelUuids ?? [],
+        labelExcludeUuids: fs.labelExcludeUuids ?? [],
+        labelMatchMode: fs.labelMatchMode,
+        labelIncludeChildren: fs.labelIncludeChildren,
+        requireBboxes: true,
+        sortBy,
+        sortOrder: reversedOrder,
+        filenameSearch: fs.filenameSearch || undefined,
+        dateFrom: fs.dateFrom || undefined,
+        dateTo: fs.dateTo || undefined,
+        verificationCheck: fs.verificationCheck,
+        limit: 5,
+      });
+      const rawEntries = [];
+      for (const img of lastImgs) {
+        for (const bbox of img.bboxes ?? []) {
+          if (bboxTagSet && !bbox.tags?.some(t => bboxTagSet.has(t.uuid))) continue;
+          if (bboxLabelSet && !bboxLabelSet.has(bbox.labelUuid)) continue;
+          rawEntries.push({ kind: 'bbox', bbox, img });
+        }
+      }
+      // Reverse to restore natural sort order, take up to 3.
+      last3 = rawEntries.reverse().slice(0, 3);
+    } catch (err) {
+      Logger.error('showBulkAllPagesModal: failed to fetch last-3 preview:', err);
+    }
+
+    // ── Render preview thumbnails ────────────────────────────────────────
+    previewRow.innerHTML = '';
+
+    function makeThumbGroup(entries, label) {
+      const group = document.createElement('div');
+      group.style.cssText = 'display:flex;flex-direction:column;align-items:center;gap:0.3em;';
+      const thumbs = document.createElement('div');
+      thumbs.style.cssText = 'display:flex;gap:4px;';
+      for (const { bbox, img } of entries) {
+        const wrapper = document.createElement('div');
+        wrapper.style.cssText = 'position:relative;';
+        const thumb = document.createElement('img');
+        thumb.style.cssText = 'width:80px;height:80px;object-fit:cover;border-radius:3px;border:1px solid #555;display:block;';
+        thumb.src = getBboxThumbnailUrl(img.filename, bbox.uuid, 80);
+        wrapper.appendChild(thumb);
+        thumbs.appendChild(wrapper);
+      }
+      const lbl = document.createElement('div');
+      lbl.style.cssText = 'font-size:0.75em;color:#888;';
+      lbl.textContent = label;
+      group.append(thumbs, lbl);
+      return group;
+    }
+
+    if (first3.length === 0 && last3.length === 0) {
+      const msg = document.createElement('span');
+      msg.style.cssText = 'color:#888;font-size:0.85em;';
+      msg.textContent = 'No preview available.';
+      previewRow.appendChild(msg);
+    } else {
+      // Deduplicate: if any last3 uuid matches a first3 uuid, we have full overlap.
+      const first3Uuids = new Set(first3.map(e => e.bbox.uuid));
+      const uniqueLast3 = last3.filter(e => !first3Uuids.has(e.bbox.uuid));
+      const showSep = uniqueLast3.length > 0;
+
+      if (first3.length > 0) previewRow.appendChild(makeThumbGroup(first3, 'First'));
+      if (showSep) {
+        const sep = document.createElement('div');
+        sep.style.cssText = 'color:#555;font-size:1.2em;letter-spacing:0.1em;align-self:center;padding:0 0.2em;';
+        sep.textContent = '···';
+        previewRow.appendChild(sep);
+        previewRow.appendChild(makeThumbGroup(uniqueLast3, 'Last'));
+      }
+    }
+  }
 
   return {
     destroy() {
@@ -2419,7 +2774,7 @@ async function showCanvasModal(bbox, img, labels, onSaved, navContext = null) {
 
 // ── Bulk action modal ─────────────────────────────────────────────────
 
-async function showBulkActionModal(entries, labels, onConfirm) {
+async function showBulkActionModal(entries, labels, onConfirm, titleText = null) {
   // Fetch fresh tags and ALL labels (standard + dynamic) for the pickers.
   const [tags, allLabels] = await Promise.all([
     fetchTags().catch(() => new Map()),
@@ -2435,7 +2790,7 @@ async function showBulkActionModal(entries, labels, onConfirm) {
     padding:1.5em;min-width:320px;display:flex;flex-direction:column;gap:0.8em;`;
 
   const title = document.createElement('strong');
-  title.textContent = `Apply to ${entries.length} selected bbox${entries.length === 1 ? '' : 'es'}`;
+  title.textContent = titleText ?? `Apply to ${entries.length} selected bbox${entries.length === 1 ? '' : 'es'}`;
 
   // Action radio buttons
   const actions = [
@@ -2524,264 +2879,7 @@ async function showBulkActionModal(entries, labels, onConfirm) {
   overlay.addEventListener('click', e => { if (e.target === overlay) close(); });
 }
 
-  // ── Bulk Apply All Pages modal ────────────────────────────────────────────
-  // Shows the action picker plus a "first 3 / last 3" preview of the bbox
-  // range that will be affected, so the user can sanity-check the scope.
-  async function showBulkAllPagesModal() {
-    const fs = filterPanel.getState();
-    const sortBy = sortBySelect.value;
-    const sortOrder = sortOrderSelect.value;
-    const totalBboxCount = _totalCount;
-
-    // ── Build bbox-level filter (mirrors the render() subset logic) ──────
-    const showAll = fs.showAllBboxes;
-    const bboxTagFilter = showAll ? [] : (fs.tagUuids ?? []);
-    const bboxLabelFilter = fs.labelUuids?.length > 0
-      ? (fs.labelIncludeChildren
-          ? Array.from(expandWithDescendants(fs.labelUuids, labels))
-          : fs.labelUuids)
-      : [];
-    const bboxTagSet = showAll ? null : new Set(bboxTagFilter);
-    const bboxLabelSet = bboxLabelFilter.length > 0 ? new Set(bboxLabelFilter) : null;
-
-    // ── Fetch tags + labels for pickers ─────────────────────────────────
-    const [tags, allLabels] = await Promise.all([
-      fetchTags().catch(() => new Map()),
-      fetchLabels().catch(() => new Map()),
-    ]);
-
-    // ── Build modal shell ────────────────────────────────────────────────
-    const overlay = document.createElement('div');
-    overlay.style.cssText = `position:fixed;inset:0;background:#0008;display:flex;
-      align-items:center;justify-content:center;z-index:${nextModalZIndex()};`;
-
-    const dialog = document.createElement('div');
-    dialog.style.cssText = `background:#222;border:1px solid #555;border-radius:6px;
-      padding:1.5em;min-width:420px;max-width:600px;display:flex;flex-direction:column;gap:0.9em;`;
-
-    const title = document.createElement('strong');
-    title.textContent = `Apply to All ${totalBboxCount.toLocaleString()} Matching Bboxes`;
-
-    // ── Preview section ──────────────────────────────────────────────────
-    const previewSection = document.createElement('div');
-    previewSection.style.cssText = 'display:flex;flex-direction:column;gap:0.4em;';
-
-    const previewHdr = document.createElement('div');
-    previewHdr.style.cssText = 'font-size:0.82em;color:#aaa;text-transform:uppercase;letter-spacing:0.04em;';
-    previewHdr.textContent = 'Preview range';
-
-    const previewRow = document.createElement('div');
-    previewRow.style.cssText = 'display:flex;align-items:center;gap:0.5em;min-height:88px;';
-
-    const previewStatus = document.createElement('span');
-    previewStatus.style.cssText = 'color:#aaa;font-size:0.85em;';
-    previewStatus.textContent = 'Loading preview…';
-    previewRow.appendChild(previewStatus);
-
-    previewSection.append(previewHdr, previewRow);
-
-    // ── Action picker (same as showBulkActionModal) ─────────────────────
-    const actions = [
-      { value: 'relabel', label: 'Change Label' },
-      { value: 'delete', label: 'Delete Bboxes' },
-      { value: 'addTags', label: 'Add Tags' },
-      { value: 'removeTags', label: 'Remove Tags' },
-    ];
-
-    const radioGroup = document.createElement('div');
-    radioGroup.style.cssText = 'display:flex;flex-direction:column;gap:0.4em;';
-    let selectedAction = 'relabel';
-
-    let _selectedLabelUuid = undefined;
-    const dynPicker = createDynamicLabelPicker(allLabels, {
-      onSelect: (uuid) => { _selectedLabelUuid = uuid; },
-    });
-    const labelPickerRow = document.createElement('div');
-    labelPickerRow.style.cssText = 'display:flex;flex-direction:column;gap:0.3em;';
-    const labelPickerHdr = document.createElement('div');
-    labelPickerHdr.textContent = 'New label:';
-    labelPickerHdr.style.cssText = 'font-size:0.85em;color:#aaa;';
-    labelPickerRow.append(labelPickerHdr, dynPicker.element);
-
-    const tagOptions = Array.from(tags.values())
-      .map(tag => ({ key: tag.uuid, text: (tag.icon ? tag.icon + ' ' : '') + tag.name, color: tag.color || '#cccccc' }));
-    const tagCheckboxField = new CheckboxField({ value: [], options: tagOptions });
-    const tagPickerRow = document.createElement('div');
-    tagPickerRow.style.cssText = 'max-height:180px;overflow-y:auto;display:none;flex-direction:column;gap:0.3em;padding:0.3em 0;';
-    tagPickerRow.appendChild(await tagCheckboxField.renderEdit());
-
-    for (const action of actions) {
-      const lbl = document.createElement('label');
-      lbl.style.cssText = 'display:flex;align-items:center;gap:0.5em;cursor:pointer;';
-      const radio = document.createElement('input');
-      radio.type = 'radio';
-      radio.name = 'bulk-all-action';
-      radio.value = action.value;
-      if (action.value === 'relabel') radio.checked = true;
-      radio.addEventListener('change', () => {
-        selectedAction = action.value;
-        labelPickerRow.style.display = selectedAction === 'relabel' ? '' : 'none';
-        tagPickerRow.style.display = (selectedAction === 'addTags' || selectedAction === 'removeTags') ? 'flex' : 'none';
-      });
-      lbl.append(radio, document.createTextNode(action.label));
-      radioGroup.appendChild(lbl);
-    }
-
-    // ── Warning ──────────────────────────────────────────────────────────
-    const warning = document.createElement('div');
-    warning.style.cssText = 'font-size:0.85em;color:#e8a020;background:#e8a02015;border:1px solid #e8a02044;border-radius:4px;padding:0.5em 0.7em;';
-    warning.textContent = `⚠ This will modify all ${totalBboxCount.toLocaleString()} bboxes matching your current filters, across every page. This cannot be undone.`;
-
-    // ── Buttons ──────────────────────────────────────────────────────────
-    const btnRow = document.createElement('div');
-    btnRow.style.cssText = 'display:flex;gap:0.5em;justify-content:flex-end;';
-
-    function close() { unregisterEscHandler(close); dynPicker.destroy(); overlay.remove(); }
-
-    const cancelBtn = document.createElement('button');
-    cancelBtn.textContent = 'Cancel';
-    cancelBtn.addEventListener('click', close);
-
-    const okBtn = document.createElement('button');
-    okBtn.textContent = `Apply to All ${totalBboxCount.toLocaleString()}`;
-    okBtn.style.cssText = 'background:#ff003322;border:1px solid #ff0033;border-radius:3px;padding:0.2em 0.8em;cursor:pointer;';
-    okBtn.addEventListener('click', async () => {
-      close();
-      const newLabelUuid = selectedAction === 'relabel' ? (_selectedLabelUuid ?? undefined) : undefined;
-      const selectedTagUuids = (selectedAction === 'addTags' || selectedAction === 'removeTags')
-        ? tagCheckboxField.getValue()
-        : [];
-      statusMsg.textContent = `Applying to all ${totalBboxCount.toLocaleString()} bboxes…`;
-      statusMsg.classList.add('review-toolbar__status--loading');
-      try {
-        const { modifiedCount, failCount } = await bulkApplyAll({
-          tagUuids: fs.showAllBboxes ? [] : (fs.tagUuids ?? []),
-          tagExcludeUuids: fs.tagExcludeUuids ?? [],
-          showAllBboxes: fs.showAllBboxes,
-          tagMatchMode: fs.tagMatchMode,
-          labelUuids: fs.labelUuids ?? [],
-          labelExcludeUuids: fs.labelExcludeUuids ?? [],
-          labelMatchMode: fs.labelMatchMode,
-          labelIncludeChildren: fs.labelIncludeChildren,
-          requireBboxes: _viewFilter === 'bboxes',
-          sortBy,
-          sortOrder,
-          filenameSearch: fs.filenameSearch || undefined,
-          dateFrom: fs.dateFrom || undefined,
-          dateTo: fs.dateTo || undefined,
-          verificationCheck: fs.verificationCheck,
-          bboxTagFilter,
-          bboxLabelFilter,
-          action: selectedAction,
-          labelUuid: newLabelUuid ?? null,
-          selectedTagUuids,
-        });
-        statusMsg.classList.remove('review-toolbar__status--loading');
-        statusMsg.textContent = `Applied to ${modifiedCount.toLocaleString()} bboxes` +
-          (failCount > 0 ? ` (${failCount} failed — check console)` : '');
-        // Reload current page so stale cards are cleared.
-        render();
-      } catch (err) {
-        statusMsg.classList.remove('review-toolbar__status--loading');
-        statusMsg.textContent = `Bulk apply failed: ${err.message}`;
-        Logger.error('Bulk apply all failed:', err);
-      }
-    });
-
-    btnRow.append(cancelBtn, okBtn);
-    dialog.append(title, previewSection, radioGroup, labelPickerRow, tagPickerRow, warning, btnRow);
-    overlay.appendChild(dialog);
-    document.body.appendChild(overlay);
-    registerEscHandler(close);
-    overlay.addEventListener('click', e => { if (e.target === overlay) close(); });
-
-    // ── Populate preview asynchronously ─────────────────────────────────
-    // First 3: already in _visibleEntries (free)
-    const first3 = _visibleEntries.filter(e => e.kind === 'bbox').slice(0, 3);
-
-    // Last 3: reverse-sort query (3 images should be enough to get 3 bboxes)
-    const reversedOrder = sortOrder === 'desc' ? 'asc' : 'desc';
-    let last3 = [];
-    try {
-      const { images: lastImgs } = await fetchReviewQueue({
-        tagUuids: fs.showAllBboxes ? [] : (fs.tagUuids ?? []),
-        tagExcludeUuids: fs.tagExcludeUuids ?? [],
-        showAllBboxes: fs.showAllBboxes,
-        tagMatchMode: fs.tagMatchMode,
-        labelUuids: fs.labelUuids ?? [],
-        labelExcludeUuids: fs.labelExcludeUuids ?? [],
-        labelMatchMode: fs.labelMatchMode,
-        labelIncludeChildren: fs.labelIncludeChildren,
-        requireBboxes: true,
-        sortBy,
-        sortOrder: reversedOrder,
-        filenameSearch: fs.filenameSearch || undefined,
-        dateFrom: fs.dateFrom || undefined,
-        dateTo: fs.dateTo || undefined,
-        verificationCheck: fs.verificationCheck,
-        limit: 5,
-      });
-      const rawEntries = [];
-      for (const img of lastImgs) {
-        for (const bbox of img.bboxes ?? []) {
-          if (bboxTagSet && !bbox.tags?.some(t => bboxTagSet.has(t.uuid))) continue;
-          if (bboxLabelSet && !bboxLabelSet.has(bbox.labelUuid)) continue;
-          rawEntries.push({ kind: 'bbox', bbox, img });
-        }
-      }
-      // Reverse to restore natural sort order, take up to 3.
-      last3 = rawEntries.reverse().slice(0, 3);
-    } catch (err) {
-      Logger.error('showBulkAllPagesModal: failed to fetch last-3 preview:', err);
-    }
-
-    // ── Render preview thumbnails ────────────────────────────────────────
-    previewRow.innerHTML = '';
-
-    function makeThumbGroup(entries, label) {
-      const group = document.createElement('div');
-      group.style.cssText = 'display:flex;flex-direction:column;align-items:center;gap:0.3em;';
-      const thumbs = document.createElement('div');
-      thumbs.style.cssText = 'display:flex;gap:4px;';
-      for (const { bbox, img } of entries) {
-        const wrapper = document.createElement('div');
-        wrapper.style.cssText = 'position:relative;';
-        const thumb = document.createElement('img');
-        thumb.style.cssText = 'width:80px;height:80px;object-fit:cover;border-radius:3px;border:1px solid #555;display:block;';
-        thumb.src = getBboxThumbnailUrl(img.filename, bbox.uuid, 80);
-        wrapper.appendChild(thumb);
-        thumbs.appendChild(wrapper);
-      }
-      const lbl = document.createElement('div');
-      lbl.style.cssText = 'font-size:0.75em;color:#888;';
-      lbl.textContent = label;
-      group.append(thumbs, lbl);
-      return group;
-    }
-
-    if (first3.length === 0 && last3.length === 0) {
-      const msg = document.createElement('span');
-      msg.style.cssText = 'color:#888;font-size:0.85em;';
-      msg.textContent = 'No preview available.';
-      previewRow.appendChild(msg);
-    } else {
-      // Deduplicate: if any last3 uuid matches a first3 uuid, we have full overlap.
-      const first3Uuids = new Set(first3.map(e => e.bbox.uuid));
-      const uniqueLast3 = last3.filter(e => !first3Uuids.has(e.bbox.uuid));
-      const showSep = uniqueLast3.length > 0;
-
-      if (first3.length > 0) previewRow.appendChild(makeThumbGroup(first3, 'First'));
-      if (showSep) {
-        const sep = document.createElement('div');
-        sep.style.cssText = 'color:#555;font-size:1.2em;letter-spacing:0.1em;align-self:center;padding:0 0.2em;';
-        sep.textContent = '···';
-        previewRow.appendChild(sep);
-        previewRow.appendChild(makeThumbGroup(uniqueLast3, 'Last'));
-      }
-    }
-  }
-
-async function showImageBulkActionModal(entries, labels, onConfirm) {
+async function showImageBulkActionModal(entries, labels, onConfirm, titleText = null) {
   const overlay = document.createElement('div');
   overlay.style.cssText = `position:fixed;inset:0;background:#0008;display:flex;
     align-items:center;justify-content:center;z-index:${nextModalZIndex()};`;
@@ -2791,7 +2889,7 @@ async function showImageBulkActionModal(entries, labels, onConfirm) {
     padding:1.5em;min-width:300px;display:flex;flex-direction:column;gap:0.8em;`;
 
   const title = document.createElement('strong');
-  title.textContent = `Apply to ${entries.length} selected image${entries.length === 1 ? '' : 's'}`;
+  title.textContent = titleText ?? `Apply to ${entries.length} selected image${entries.length === 1 ? '' : 's'}`;
 
   const actions = [
     { value: 'setAbsent', label: 'Mark label Absent (negative label)' },

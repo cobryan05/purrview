@@ -270,6 +270,37 @@ export async function bulkApplyAll({
 }
 
 /**
+ * Apply an action to an explicit list of bboxes in one server-side pass.
+ * Used by candidate-list-driven modals (similarity/diversity search) that have
+ * no server-side filter equivalent for their already-known result set.
+ */
+export async function bulkApplyBboxesByUuids({ bboxUuids, action, labelUuid = null, tagUuids = [] }) {
+  const res = await apiFetch('/api/images/bbox/bulk-apply-by-uuids', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ bboxUuids, action, labelUuid, tagUuids }),
+  });
+  const data = await res.json();
+  if (!res.ok || data.status !== 'success') throw new Error(data.message || 'Bulk apply failed');
+  return { modifiedCount: data.modifiedCount ?? 0, failCount: data.failCount ?? 0 };
+}
+
+/**
+ * Apply an image-level action to an explicit list of images in one server-side
+ * pass — the image-kind counterpart of bulkApplyBboxesByUuids.
+ */
+export async function bulkApplyImagesByUuids({ imageUuids, action, labelUuid = null }) {
+  const res = await apiFetch('/api/images/bulk-apply-by-uuids', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ imageUuids, action, labelUuid }),
+  });
+  const data = await res.json();
+  if (!res.ok || data.status !== 'success') throw new Error(data.message || 'Bulk apply failed');
+  return { modifiedCount: data.modifiedCount ?? 0, failCount: data.failCount ?? 0 };
+}
+
+/**
  * Invalidate cached thumbnails for a list of bbox UUIDs.
  * @param {string[]} bboxUuids
  */

@@ -30,6 +30,7 @@ from apps.helpers.db.types import (
     FALSE_POS_TAG_UUID,
     UNVERIFIED_TAG_UUID,
     VERIFIED_TAG_UUID,
+    BBox,
     BBoxUpdate,
     DatasetCreate,
     DatasetRead,
@@ -587,8 +588,6 @@ class Manager:
         )
         label_filter_set: Optional[Set[str]] = set(bbox_label_filter) if bbox_label_filter else None
 
-        _VERIFICATION_UUIDS: Set[str] = {UNVERIFIED_TAG_UUID, FALSE_POS_TAG_UUID}
-
         modified_count = 0
         fail_count = 0
         _PAGE_SIZE = 200
@@ -626,29 +625,7 @@ class Manager:
                 any_modified = False
                 for bbox in matching:
                     try:
-                        current_tags = [t.uuid for t in bbox.tags or []]
-                        if action == "delete":
-                            if bbox.label_uuid:
-                                self._hash_index.remove_bbox(bbox.uuid, bbox.label_uuid)
-                            await self._db_client.delete_single_bbox(bbox.uuid)
-                        elif action == "addTags":
-                            # Pass [existing, new] — db_client resolves exclusive-group conflicts
-                            # so new tags win any group conflict.
-                            await self._db_client.update_single_bbox(bbox.uuid, None, [*current_tags, *tag_uuids])
-                        elif action == "removeTags":
-                            remove_set = set(tag_uuids)
-                            new_tags = [u for u in current_tags if u not in remove_set]
-                            await self._db_client.update_single_bbox(bbox.uuid, None, new_tags)
-                        else:  # relabel
-                            assigning = bool(label_uuid)
-                            new_label = label_uuid if assigning else bbox.label_uuid
-                            if assigning:
-                                new_tags = [u for u in current_tags if u not in _VERIFICATION_UUIDS] + [VERIFIED_TAG_UUID]
-                                if bbox.label_uuid and label_uuid != bbox.label_uuid and bbox.phash:
-                                    self._hash_index.move_bbox(bbox.uuid, bbox.label_uuid, label_uuid, bbox.phash)
-                            else:
-                                new_tags = current_tags
-                            await self._db_client.update_single_bbox(bbox.uuid, new_label, new_tags)
+                        await self._apply_bbox_bulk_action(bbox, action, label_uuid, tag_uuids)
                         modified_count += 1
                         any_modified = True
                     except Exception as e:
@@ -673,6 +650,114 @@ class Manager:
                 else None
             )
 
+        return modified_count, fail_count
+
+    async def _apply_bbox_bulk_action(
+        self, bbox: BBox, action: str, label_uuid: Optional[str], tag_uuids: List[str]
+    ) -> None:
+        """Apply one bulk action (relabel/delete/addTags/removeTags) to a single bbox.
+
+        Shared by bulk_apply_bboxes (filter-derived candidates) and
+        bulk_apply_bboxes_by_uuids (explicit-list candidates) so the two entry
+        points can't drift. Raises on failure — caller is responsible for
+        catching and counting it.
+        """
+        _VERIFICATION_UUIDS: Set[str] = {UNVERIFIED_TAG_UUID, FALSE_POS_TAG_UUID}
+        current_tags = [t.uuid for t in bbox.tags or []]
+        if action == "delete":
+            if bbox.label_uuid:
+                self._hash_index.remove_bbox(bbox.uuid, bbox.label_uuid)
+            await self._db_client.delete_single_bbox(bbox.uuid)
+        elif action == "addTags":
+            # Pass [existing, new] — db_client resolves exclusive-group conflicts
+            # so new tags win any group conflict.
+            await self._db_client.update_single_bbox(bbox.uuid, None, [*current_tags, *tag_uuids])
+        elif action == "removeTags":
+            remove_set = set(tag_uuids)
+            new_tags = [u for u in current_tags if u not in remove_set]
+            await self._db_client.update_single_bbox(bbox.uuid, None, new_tags)
+        else:  # relabel
+            assigning = bool(label_uuid)
+            new_label = label_uuid if assigning else bbox.label_uuid
+            if assigning:
+                new_tags = [u for u in current_tags if u not in _VERIFICATION_UUIDS] + [VERIFIED_TAG_UUID]
+                if bbox.label_uuid and label_uuid != bbox.label_uuid and bbox.phash:
+                    self._hash_index.move_bbox(bbox.uuid, bbox.label_uuid, label_uuid, bbox.phash)
+            else:
+                new_tags = current_tags
+            await self._db_client.update_single_bbox(bbox.uuid, new_label, new_tags)
+
+    async def bulk_apply_bboxes_by_uuids(
+        self,
+        bbox_uuids: List[str],
+        action: str,
+        label_uuid: Optional[str],
+        tag_uuids: List[str],
+    ) -> Tuple[int, int]:
+        """Apply action to an explicit list of bboxes in one server-side pass.
+
+        Used by review modals whose candidate set has no server-side filter
+        equivalent (e.g. similarity/diversity search results ranked by phash
+        distance) — the caller already knows the exact UUID list and only needs
+        the action applied without round-tripping one HTTP call per bbox.
+
+        Returns (modified_count, fail_count).
+        """
+        modified_count = 0
+        fail_count = 0
+        synced_images: Dict[str, ImageRecord] = {}
+
+        for bbox_uuid in bbox_uuids:
+            result = await self._db_client.get_bbox_with_image(bbox_uuid)
+            if result is None or result[1] is None:
+                fail_count += 1
+                continue
+            bbox, img = result
+            try:
+                await self._apply_bbox_bulk_action(bbox, action, label_uuid, tag_uuids)
+                modified_count += 1
+                synced_images[img.uuid] = img
+            except Exception as e:
+                logger.error("bulk_apply_bboxes_by_uuids: bbox %s failed: %s", bbox_uuid, e)
+                fail_count += 1
+
+        for img in synced_images.values():
+            try:
+                await self._sync_image_state(img)
+            except Exception as e:
+                logger.error("bulk_apply_bboxes_by_uuids: _sync_image_state failed for %s: %s", img.uuid, e)
+
+        return modified_count, fail_count
+
+    async def bulk_apply_images_by_uuids(
+        self,
+        image_uuids: List[str],
+        action: str,
+        label_uuid: Optional[str] = None,
+    ) -> Tuple[int, int]:
+        """Apply an image-level bulk action (setAbsent/setUncertain/delete) to an
+        explicit list of images in one server-side pass — the image-kind
+        counterpart of bulk_apply_bboxes_by_uuids.
+
+        Returns (modified_count, fail_count).
+        """
+        modified_count = 0
+        fail_count = 0
+        for image_uuid in image_uuids:
+            try:
+                if action == "delete":
+                    rel_path = await self.delete_image_permanently(image_uuid)
+                    if rel_path is None:
+                        fail_count += 1
+                        continue
+                elif action == "setUncertain":
+                    await self._db_client.delete_image_labels(image_uuid, [label_uuid])
+                else:  # setAbsent
+                    await self._db_client.set_image_label(image_uuid, label_uuid, ImageLabelStatus.ABSENT)
+                modified_count += 1
+            except Exception as e:
+                logger.error("bulk_apply_images_by_uuids: image %s failed: %s", image_uuid, e)
+                fail_count += 1
         return modified_count, fail_count
 
     async def _sync_image_state(self, image_record: ImageRecord) -> None:
