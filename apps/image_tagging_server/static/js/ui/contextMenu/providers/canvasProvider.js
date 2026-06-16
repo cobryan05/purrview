@@ -24,7 +24,7 @@ registerContextProvider('canvas', (adapters, ctx) => {
         const defaultThreshold = await getImageDefaultThreshold(hashMax);
         return buildSimilarPanel((threshold) => {
           ctx.close();
-          openSimilarImagesModal({ imageUuid, threshold });
+          openSimilarImagesModal({ imageUuids: [imageUuid], threshold });
         }, defaultThreshold, hashMax);
       }),
     },

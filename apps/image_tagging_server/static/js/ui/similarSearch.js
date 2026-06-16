@@ -8,8 +8,8 @@
  * search again). Each modal gets its own independent canvas runtime.
  *
  * Usage:
- *   openSimilarImagesModal({ imageUuid, threshold? })
- *   openSimilarBboxesModal({ bboxUuid, threshold?, labelUuid? })
+ * *   openSimilarImagesModal({ imageUuids, threshold? })
+ *   openSimilarBboxesModal({ bboxes, threshold?, labelUuid? })
  *
  * Exported helpers (for settings page / context-menu providers):
  *   getImageHashMax()          → Promise<number>  (n² for current hash size n)
@@ -124,19 +124,36 @@ function buildThresholdSlider(initial, { min = 0, max = 64, onChange }) {
  *
  * @param {{ imageUuid: string, threshold: number }} params
  */
-export async function openSimilarImagesModal({ imageUuid, threshold = null }) {
+export async function openSimilarImagesModal({ imageUuids, threshold = null }) {
+  if (!imageUuids?.length) return;
+
   const sliderMax = await getImageHashMax();
   let _threshold = threshold !== null ? threshold : await _readThreshold('dedup_image_threshold', sliderMax);
 
   // Sorted match list — [{imageUuid, distance}] ascending by distance.
   // Null until the first query resolves; reset when threshold changes.
   let _sortedMatches = null;
-  let _queryPromise = findSimilarImagesByUuid(imageUuid, _threshold);
+
+  function _runQuery(t) {
+    return Promise.all(imageUuids.map(uuid => findSimilarImagesByUuid(uuid, t))).then(allResults => {
+      // Union by imageUuid, keeping minimum distance across all anchor queries.
+      const byUuid = new Map();
+      for (const results of allResults) {
+        for (const { imageUuid: mu, distance } of results) {
+          if (!byUuid.has(mu) || byUuid.get(mu) > distance) byUuid.set(mu, distance);
+        }
+      }
+      return [...byUuid.entries()]
+        .map(([iu, distance]) => ({ imageUuid: iu, distance }))
+        .sort((a, b) => a.distance - b.distance);
+    });
+  }
+
+  let _queryPromise = _runQuery(_threshold);
   let _refresh = null;
 
   async function _ensureMatches() {
     if (_sortedMatches !== null) return;
-    // Backend already returns results sorted by distance ascending.
     _sortedMatches = await _queryPromise;
   }
 
@@ -145,7 +162,7 @@ export async function openSimilarImagesModal({ imageUuid, threshold = null }) {
     onChange(newThreshold) {
       _threshold = newThreshold;
       _sortedMatches = null;
-      _queryPromise = findSimilarImagesByUuid(imageUuid, _threshold);
+      _queryPromise = _runQuery(_threshold);
       _refresh?.();
     },
   });
@@ -154,7 +171,7 @@ export async function openSimilarImagesModal({ imageUuid, threshold = null }) {
     title: 'Similar Images',
     toolbarControls: sliderEl,
     initialViewFilter: 'images',
-    referenceImageUuids: new Set([imageUuid]),
+    referenceImageUuids: new Set(imageUuids),
     fetchImages: async ({ afterUuid = null, limit }) => {
       await _ensureMatches();
       if (!_sortedMatches.length) return [];
@@ -177,7 +194,12 @@ export async function openSimilarImagesModal({ imageUuid, threshold = null }) {
  *
  * @param {{ bboxUuid: string, threshold: number, labelUuid?: string|null }} params
  */
-export async function openSimilarBboxesModal({ bboxUuid, bboxCoords, imageUuid, threshold = null, labelUuid = null }) {
+export async function openSimilarBboxesModal({ bboxes, threshold = null, labelUuid = null }) {
+  // bboxes: [{ bboxUuid, bboxCoords, imageUuid }]
+  // bboxCoords present means the bbox is dirty (moved/resized since save); use coords path.
+  // bboxUuid-only uses the saved UUID path, which ensures the source appears at distance 0.
+  if (!bboxes?.length) return;
+
   const [sliderMax, tagsMap, labelsMap] = await Promise.all([
     getBboxHashMax(),
     fetchTags().catch(() => new Map()),
@@ -191,15 +213,28 @@ export async function openSimilarBboxesModal({ bboxUuid, bboxCoords, imageUuid, 
   let _excludeTagUuids = [];
   let _tagMatchMode = 'any';
 
-  // Use coords only when the bbox is dirty (moved/resized since last save, or brand-new).
-  // getBboxCoords() returns null for clean (saved, unmodified) bboxes, which forces the
-  // UUID path and guarantees the source bbox appears at distance 0 in results.
-  // For dirty bboxes the coords path searches by the current crop position, which is correct.
-  const _query = (t) => bboxCoords && imageUuid
-    ? findSimilarBboxesByCoords(imageUuid, bboxCoords.x, bboxCoords.y, bboxCoords.w, bboxCoords.h, t, _labelUuids, _tagUuids, _excludeTagUuids, _tagMatchMode)
-    : findSimilarBboxesByUuid(bboxUuid, t, _labelUuids, _tagUuids, _excludeTagUuids, _tagMatchMode);
+  function _runQuery(t) {
+    return Promise.all(bboxes.map(({ bboxUuid, bboxCoords, imageUuid }) =>
+      bboxCoords && imageUuid
+        ? findSimilarBboxesByCoords(imageUuid, bboxCoords.x, bboxCoords.y, bboxCoords.w, bboxCoords.h, t, _labelUuids, _tagUuids, _excludeTagUuids, _tagMatchMode)
+        : findSimilarBboxesByUuid(bboxUuid, t, _labelUuids, _tagUuids, _excludeTagUuids, _tagMatchMode)
+    )).then(allResults => {
+      // Union by bboxUuid, keeping minimum distance across all anchor queries.
+      const byBboxUuid = new Map(); // bboxUuid → { imageUuid, distance }
+      for (const results of allResults) {
+        for (const { bboxUuid: bu, imageUuid: iu, distance } of results) {
+          if (!byBboxUuid.has(bu) || byBboxUuid.get(bu).distance > distance) {
+            byBboxUuid.set(bu, { imageUuid: iu, distance });
+          }
+        }
+      }
+      return [...byBboxUuid.entries()].map(([bu, { imageUuid: iu, distance }]) => ({
+        bboxUuid: bu, imageUuid: iu, distance,
+      }));
+    });
+  }
 
-  let _queryPromise = _query(_threshold);
+  let _queryPromise = _runQuery(_threshold);
   let _refresh = null;
 
   // Derived from the match list; reset when threshold or tag filter changes.
@@ -211,7 +246,7 @@ export async function openSimilarBboxesModal({ bboxUuid, bboxCoords, imageUuid, 
   function _invalidate() {
     _imageOrder = null;
     _imageBboxes = null;
-    _queryPromise = _query(_threshold);
+    _queryPromise = _runQuery(_threshold);
     _refresh?.();
   }
 
@@ -279,10 +314,12 @@ export async function openSimilarBboxesModal({ bboxUuid, bboxCoords, imageUuid, 
   headerEl.style.cssText = 'display:flex;align-items:center;gap:0.75em;flex-wrap:wrap;';
   headerEl.append(sliderEl, labelsDropdown.element, tagsDropdown.element);
 
+  const referenceBboxUuids = new Set(bboxes.map(b => b.bboxUuid).filter(Boolean));
+
   _refresh = await showReviewModal({
     title: 'Similar Bboxes',
     toolbarControls: headerEl,
-    referenceBboxUuids: new Set([bboxUuid]),
+    referenceBboxUuids,
     fetchImages: async ({ afterUuid = null, limit }) => {
       await _ensureMatches();
       if (!_imageOrder.length) return [];
@@ -308,7 +345,7 @@ export async function openSimilarBboxesModal({ bboxUuid, bboxCoords, imageUuid, 
 // ── Legacy shim ────────────────────────────────────────────────────────────────
 
 /** @deprecated Use openSimilarImagesModal / openSimilarBboxesModal directly. */
-export async function openSimilarSearch({ kind, imageUuid, bboxUuid, threshold }) {
-  if (kind === 'image') return openSimilarImagesModal({ imageUuid, threshold });
-  return openSimilarBboxesModal({ bboxUuid, threshold });
+export async function openSimilarSearch({ kind, imageUuids, bboxes, threshold }) {
+  if (kind === 'image') return openSimilarImagesModal({ imageUuids, threshold });
+  return openSimilarBboxesModal({ bboxes, threshold });
 }

@@ -83,11 +83,10 @@ registerContextProvider('image', async (adapters, ctx) => {
     // ── Similar search ─────────────────────────────────────────────────────
     {
       label: 'Search for similar images…',
-      disabled: count > 1,
       onSelect: () => {
-        const imageUuid = adapters[0].getUuid?.();
+        const imageUuids = adapters.map(a => a.getUuid?.()).filter(Boolean);
         ctx.close();
-        if (imageUuid) openSimilarImagesModal({ imageUuid });
+        if (imageUuids.length) openSimilarImagesModal({ imageUuids });
       },
     },
     {

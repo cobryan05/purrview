@@ -33,7 +33,7 @@ function buildCountControl(initial, { min = 10, max = 500, onChange }) {
 
   const label = document.createElement('span');
   label.style.cssText = 'white-space:nowrap;';
-  label.textContent = 'Top N:';
+  label.textContent = 'Result limit:';
 
   const input = document.createElement('input');
   input.type = 'number';
@@ -41,8 +41,8 @@ function buildCountControl(initial, { min = 10, max = 500, onChange }) {
   input.max = String(max);
   input.step = '10';
   input.value = String(initial);
-  input.style.cssText = 'width:70px;accent-color:#c9a227;';
-  input.title = `Number of most-distinct results to return (${min}–${max})`;
+  input.style.cssText = 'width:5em;accent-color:#c9a227;';
+  input.title = `Maximum number of most-distinct results to return (${min}–${max})`;
 
   function _emit() {
     const v = Math.max(min, Math.min(max, parseInt(input.value, 10) || initial));

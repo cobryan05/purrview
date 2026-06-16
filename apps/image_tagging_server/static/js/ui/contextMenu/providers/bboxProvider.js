@@ -194,24 +194,20 @@ registerContextProvider('bbox', async (adapters, ctx) => {
     // ── Similar search ─────────────────────────────────────────────────────
     {
       label: 'Search for similar bboxes…',
-      disabled: count > 1,
       onSelect: () => {
-        const bboxUuid = adapters[0].getBboxUuid?.() ?? null;
-        const bboxCoords = adapters[0].getBboxCoords?.() ?? null;
-        const imageUuid = adapters[0].getImageUuid?.() ?? null;
+        const bboxes = adapters
+          .map(a => ({ bboxUuid: a.getBboxUuid?.() ?? null, bboxCoords: a.getBboxCoords?.() ?? null, imageUuid: a.getImageUuid?.() ?? null }))
+          .filter(b => b.bboxUuid || (b.bboxCoords && b.imageUuid));
         ctx.close();
-        if (bboxUuid || (bboxCoords && imageUuid)) {
-          openSimilarBboxesModal({ bboxUuid, bboxCoords, imageUuid });
-        }
+        if (bboxes.length) openSimilarBboxesModal({ bboxes });
       },
     },
     {
       label: 'Search for similar images…',
-      disabled: count > 1,
       onSelect: () => {
-        const imageUuid = adapters[0].getImageUuid?.() ?? null;
+        const imageUuids = [...new Set(adapters.map(a => a.getImageUuid?.()).filter(Boolean))];
         ctx.close();
-        if (imageUuid) openSimilarImagesModal({ imageUuid });
+        if (imageUuids.length) openSimilarImagesModal({ imageUuids });
       },
     },
     {
