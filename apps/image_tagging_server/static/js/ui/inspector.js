@@ -4,7 +4,7 @@ import { events, EventTypes } from '/app-static/js/shared/events/index.js';
 import { fetchLabels, fetchLabelByUuid } from '/app-static/js/shared/api/labels.js';
 import { fetchTags, fetchTagByUuid } from '/app-static/js/shared/api/tags.js';
 import { UNVERIFIED_TAG_UUID, VERIFIED_TAG_UUID, VERIFICATION_TAG_UUIDS } from '/app-static/js/shared/api/review.js';
-import { isDynamicLabelsVisible, isTagKindVisible } from '/app-static/js/shared/activeModel.js';
+import { isDynamicLabelsVisible, isTagVisible } from '/app-static/js/shared/activeModel.js';
 import { setTool } from '/app-static/js/app/image-tagging/canvas/tools.js';
 import { applyVerifiedTag } from '/app-static/js/app/image-tagging/canvas/interaction.js';
 
@@ -314,8 +314,7 @@ export function createTagPanel(container, runtime) {
 
     _tagRows.clear();
     for (const tag of _tagsMap.values()) {
-      if (tag.kind === 'system' && !(tag.icon && isTagKindVisible('system'))) continue;
-      if (tag.kind === 'task_generated' && !isTagKindVisible('task_generated')) continue;
+      if (!isTagVisible(tag)) continue;
       const { uuid, name, icon, color } = tag;
 
       const row = document.createElement('div');

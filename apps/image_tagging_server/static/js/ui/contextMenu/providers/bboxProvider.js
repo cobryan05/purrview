@@ -13,7 +13,6 @@
 import { registerContextProvider } from '../registry.js';
 import { asyncPanel } from '../menu.js';
 import { fetchLabels } from '/app-static/js/shared/api/labels.js';
-import { fetchTags, createNewTag } from '/app-static/js/shared/api/tags.js';
 import { createDynamicLabelPicker } from '/app-static/js/ui/utils/dynamicLabelPicker.js';
 import { showConfirmModal } from '/app-static/js/ui/utils/confirmModal.js';
 import { openSimilarImagesModal, openSimilarBboxesModal } from '/app-static/js/ui/similarSearch.js';
@@ -24,137 +23,7 @@ import {
   UNVERIFIED_TAG_UUID,
   VERIFIED_TAG_UUID,
 } from '/app-static/js/shared/api/review.js';
-import { isTagKindVisible } from '/app-static/js/shared/activeModel.js';
-
-
-/** Run an async fn over every adapter in sequence. */
-async function runAll(adapters, fn) {
-  for (const a of adapters) await fn(a);
-}
-
-/**
- * Build a tag-list panel (HTMLElement) for the Tags flyout.
- * Shows a checkbox per tag reflecting current state across all adapters.
- * Indeterminate = mixed selection; first click adds to all; second click removes.
- *
- * @param {CtxBboxAdapter[]} adapters
- * @returns {Promise<HTMLElement>}
- */
-async function _buildTagPanel(adapters) {
-  const tagsMap = await fetchTags();
-  // Respect global tag-kind visibility; also always exclude icon-less system tags.
-  const visibleTags = [...tagsMap.values()].filter(t => {
-    if (t.kind === 'system') return t.icon && isTagKindVisible('system');
-    if (t.kind === 'task_generated') return isTagKindVisible('task_generated');
-    return true;
-  });
-
-  const wrap = document.createElement('div');
-  wrap.style.cssText = 'min-width:220px;max-height:300px;overflow-y:auto;padding:4px 0;';
-
-  const filterInput = document.createElement('input');
-  filterInput.type = 'text';
-  filterInput.placeholder = '🔍 Filter tags…';
-  filterInput.style.cssText = 'width:calc(100% - 16px);margin:4px 8px;box-sizing:border-box;font-size:0.85em;';
-  wrap.appendChild(filterInput);
-
-  const listEl = document.createElement('div');
-  wrap.appendChild(listEl);
-
-  /** Returns 'checked' | 'unchecked' | 'indeterminate' for a tag across all adapters. */
-  function _tagState(uuid) {
-    const count = adapters.filter(a => a.getTagUuids().includes(uuid)).length;
-    if (count === 0) return 'unchecked';
-    if (count === adapters.length) return 'checked';
-    return 'indeterminate';
-  }
-
-  /** Build one row; cb element is returned so callers can update it after a toggle. */
-  function _makeTagRow(tag) {
-    const row = document.createElement('div');
-    row.style.cssText = 'display:flex;align-items:center;gap:6px;padding:5px 10px;cursor:pointer;font-size:0.875em;';
-    row.addEventListener('mouseenter', () => (row.style.background = 'var(--pico-primary-background,rgba(255,255,255,.08))'));
-    row.addEventListener('mouseleave', () => (row.style.background = ''));
-
-    const cb = document.createElement('input');
-    cb.type = 'checkbox';
-    cb.style.cssText = 'flex-shrink:0;cursor:pointer;pointer-events:none;';
-    const state = _tagState(tag.uuid);
-    cb.checked = state === 'checked';
-    cb.indeterminate = state === 'indeterminate';
-    row.appendChild(cb);
-
-    if (tag.icon) {
-      const ic = document.createElement('span');
-      ic.textContent = tag.icon;
-      row.appendChild(ic);
-    }
-
-    const nm = document.createElement('span');
-    nm.textContent = tag.name ?? '';
-    nm.style.flex = '1';
-    row.appendChild(nm);
-
-    row.addEventListener('mousedown', async e => {
-      e.preventDefault();
-      const current = _tagState(tag.uuid);
-      if (current === 'checked') {
-        // Remove from all adapters that have it
-        await runAll(adapters, async a => {
-          if (a.getTagUuids().includes(tag.uuid)) await a.toggleTag(tag.uuid);
-        });
-      } else {
-        // Add to all adapters that don't have it (indeterminate → sync to all; unchecked → add to all)
-        await runAll(adapters, async a => {
-          if (!a.getTagUuids().includes(tag.uuid)) await a.toggleTag(tag.uuid);
-        });
-      }
-      const next = _tagState(tag.uuid);
-      cb.checked = next === 'checked';
-      cb.indeterminate = next === 'indeterminate';
-    });
-
-    return row;
-  }
-
-  function renderList(filter) {
-    listEl.innerHTML = '';
-    const lower = (filter ?? '').toLowerCase();
-    for (const tag of visibleTags) {
-      if (lower && !(tag.name ?? '').toLowerCase().includes(lower)) continue;
-      listEl.appendChild(_makeTagRow(tag));
-    }
-
-    // + Create tag
-    const createRow = document.createElement('div');
-    createRow.style.cssText = [
-      'padding:5px 10px', 'cursor:pointer', 'font-size:0.875em',
-      'color:var(--pico-primary,#6bc)',
-      'border-top:1px solid var(--pico-muted-border-color,#444)',
-      'margin-top:4px',
-    ].join(';');
-    createRow.textContent = '+ Create tag…';
-    createRow.addEventListener('mouseenter', () => (createRow.style.background = 'var(--pico-primary-background,rgba(255,255,255,.08))'));
-    createRow.addEventListener('mouseleave', () => (createRow.style.background = ''));
-    createRow.addEventListener('mousedown', async e => {
-      e.preventDefault();
-      const name = prompt('New tag name:');
-      if (!name?.trim()) return;
-      try {
-        const tag = await createNewTag(name.trim(), '#888888');
-        await runAll(adapters, a => a.toggleTag(tag.uuid));
-        renderList(filterInput.value);
-      } catch (err) {
-        console.error('[bboxProvider] createNewTag failed:', err);
-      }
-    });
-    listEl.appendChild(createRow);
-  }
-
-  renderList('');
-  filterInput.addEventListener('input', () => renderList(filterInput.value));
-  return wrap;
-}
+import { runAll, buildTagPanel } from '../tagPanelBuilder.js';
 
 /**
  * Build a label picker flyout panel.
@@ -190,7 +59,7 @@ registerContextProvider('bbox', async (adapters, ctx) => {
     // ── Tags (toggle on/off, checkbox + indeterminate for multi-select) ────
     {
       label: `Tags${labelSuffix}`,
-      submenu: () => asyncPanel('220px', () => _buildTagPanel(adapters)),
+      submenu: () => asyncPanel('220px', () => buildTagPanel(adapters)),
     },
 
     // ── Verification ───────────────────────────────────────────────────────

@@ -49,6 +49,7 @@ from apps.helpers.db.types import (
     ModelConfigUpdate,
     Source,
     Tag,
+    TagRead,
     TagUpdate,
     TaskConfig,
     TaskConfigRead,
@@ -734,15 +735,17 @@ class Manager:
         image_uuids: List[str],
         action: str,
         label_uuid: Optional[str] = None,
+        tag_uuids: Optional[List[str]] = None,
     ) -> Tuple[int, int]:
-        """Apply an image-level bulk action (setAbsent/setUncertain/delete) to an
-        explicit list of images in one server-side pass — the image-kind
-        counterpart of bulk_apply_bboxes_by_uuids.
+        """Apply an image-level bulk action (setAbsent/setUncertain/delete/addTags/
+        removeTags) to an explicit list of images in one server-side pass — the
+        image-kind counterpart of bulk_apply_bboxes_by_uuids.
 
         Returns (modified_count, fail_count).
         """
         modified_count = 0
         fail_count = 0
+        tag_uuids = tag_uuids or []
         for image_uuid in image_uuids:
             try:
                 if action == "delete":
@@ -752,6 +755,10 @@ class Manager:
                         continue
                 elif action == "setUncertain":
                     await self._db_client.delete_image_labels(image_uuid, [label_uuid])
+                elif action == "addTags":
+                    await self._db_client.add_image_tags(image_uuid, tag_uuids)
+                elif action == "removeTags":
+                    await self._db_client.remove_image_tags(image_uuid, tag_uuids)
                 else:  # setAbsent
                     await self._db_client.set_image_label(image_uuid, label_uuid, ImageLabelStatus.ABSENT)
                 modified_count += 1
@@ -848,6 +855,27 @@ class Manager:
             return None
         rows = await self._db_client.get_image_labels(image_uuid)
         return [ImageLabelRead.model_validate(r) for r in rows]
+
+    async def set_image_tag(self, image_path: str, tag_uuid: str, action: str) -> bool:
+        """Add or remove a whole-image tag. action is 'add' or 'remove'."""
+        image_uuid = await self._resolve_image_uuid(image_path)
+        if image_uuid is None:
+            return False
+        if action == "remove":
+            await self._db_client.remove_image_tag(image_uuid, tag_uuid)
+        else:
+            await self._db_client.add_image_tag(image_uuid, tag_uuid)
+        return True
+
+    async def get_image_tags(self, image_path: str) -> Optional[List[TagRead]]:
+        """Return all tags linked to an image."""
+        image_uuid = await self._resolve_image_uuid(image_path)
+        if image_uuid is None:
+            return None
+        image = await self._db_client.get_image_by_uuid(image_uuid)
+        if image is None:
+            return None
+        return [TagRead.model_validate(t) for t in image.tags]
 
     def _image_rel_path(self, image_filename: str) -> str:
         """Convert an absolute stored filename back to a FILES_ROOT-relative path."""

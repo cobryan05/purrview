@@ -157,15 +157,11 @@ export function mountActiveModelBar(containerId = 'active-model-bar') {
   render();
 
   const unsubModel = events.subscribe(EventTypes.ACTIVE_MODEL_CHANGED, () => { render(); });
-  const unsubDyn = events.subscribe(EventTypes.DYNAMIC_LABELS_VISIBILITY_CHANGED, () => {});
-  const unsubTag = events.subscribe(EventTypes.TAG_KIND_VISIBILITY_CHANGED, () => {});
 
   return {
     destroy() {
       _closeVisPopup();
       unsubModel();
-      unsubDyn();
-      unsubTag();
     },
   };
 }

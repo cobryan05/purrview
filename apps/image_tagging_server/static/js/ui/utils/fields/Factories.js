@@ -12,7 +12,7 @@ import { CheckboxField } from './CheckboxField.js';
 import { DropDownField } from './DropDownField.js';
 import { fetchTags, createNewTag } from '/app-static/js/shared/api/tags.js';
 import { fetchLabels } from '/app-static/js/shared/api/labels.js';
-import { isDynamicLabelsVisible, isTagKindVisible } from '/app-static/js/shared/activeModel.js';
+import { isDynamicLabelsVisible, isTagVisible } from '/app-static/js/shared/activeModel.js';
 import { GroupField } from './GroupField.js';
 // Factory map
 export const fieldFactories = {
@@ -204,11 +204,7 @@ export const fieldFactories = {
     const tags = await fetchTags();
 
     const tagOptions = Array.from(tags.values())
-      .filter(tag => {
-        if (tag.kind === 'system') return tag.icon && isTagKindVisible('system');
-        if (tag.kind === 'task_generated') return isTagKindVisible('task_generated');
-        return true;
-      })
+      .filter(isTagVisible)
       .map(tag => ({
         key: tag.uuid,
         text: (tag.icon ? tag.icon + ' ' : '') + tag.name,

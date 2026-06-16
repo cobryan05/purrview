@@ -97,8 +97,9 @@ class BulkApplyBboxesByUuidsPayload(ApiPayload):
 
 class BulkApplyImagesByUuidsPayload(ApiPayload):
     image_uuids: List[str]
-    action: str  # setAbsent | setUncertain | delete
+    action: str  # setAbsent | setUncertain | delete | addTags | removeTags
     label_uuid: Optional[str] = None
+    tag_uuids: List[str] = Field(default_factory=list)
 
 
 logging.basicConfig(stream=sys.stdout)
@@ -347,6 +348,20 @@ class SetImageLabelResponse(StatusResponse):
 
 class GetImageLabelsResponse(StatusResponse):
     labels: List[ImageLabelRead] = Field(default_factory=list)
+
+
+class SetImageTagPayload(ApiPayload):
+    image_path: str
+    tag_uuid: str
+    action: str  # add | remove
+
+
+class SetImageTagResponse(StatusResponse):
+    pass
+
+
+class GetImageTagsResponse(StatusResponse):
+    tags: List[TagRead] = Field(default_factory=list)
 
 
 class ReviewQueueResponse(StatusResponse):
@@ -1220,6 +1235,30 @@ class WebApp:
             return GetImageLabelsResponse(labels=labels)
 
         @self._app.post(
+            "/api/images/tags/set",
+            response_model=SetImageTagResponse,
+            tags=[ApiTags.IMAGES],
+            operation_id="set_image_tag",
+        )
+        async def set_image_tag(payload: SetImageTagPayload) -> SetImageTagResponse:
+            ok = await self._manager.set_image_tag(payload.image_path, payload.tag_uuid, payload.action)
+            if not ok:
+                return SetImageTagResponse(status=JsonValues.FAILURE, message="Image not found")
+            return SetImageTagResponse()
+
+        @self._app.get(
+            "/api/images/{image_path:path}/tags",
+            response_model=GetImageTagsResponse,
+            tags=[ApiTags.IMAGES],
+            operation_id="get_image_tags",
+        )
+        async def get_image_tags(image_path: str) -> GetImageTagsResponse:
+            tags = await self._manager.get_image_tags(image_path)
+            if tags is None:
+                return GetImageTagsResponse(status=JsonValues.FAILURE, message="Image not found")
+            return GetImageTagsResponse(tags=tags)
+
+        @self._app.post(
             "/api/images/review",
             response_model=ReviewQueueResponse,
             tags=[ApiTags.IMAGES],
@@ -1316,6 +1355,7 @@ class WebApp:
                     image_uuids=payload.image_uuids,
                     action=payload.action,
                     label_uuid=payload.label_uuid,
+                    tag_uuids=payload.tag_uuids,
                 )
                 return BulkApplyAllResponse(modified_count=modified_count, fail_count=fail_count)
             except Exception as e:

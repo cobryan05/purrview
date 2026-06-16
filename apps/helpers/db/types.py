@@ -172,6 +172,16 @@ class LabelUpdate(BaseModel):
     parent_uuid: Optional[str] = None
     label_type: Optional[LabelType] = None
 
+class ImageTagLink(SQLModel, table=True):
+    """
+    The database representation of the many-to-many relationship between whole images and tags.
+    """
+
+    __tablename__ = "image_tags"
+    image_uuid: str = Field(foreign_key="images.uuid", primary_key=True, ondelete="CASCADE")
+    tag_uuid: str = Field(foreign_key="tags.uuid", primary_key=True, ondelete="CASCADE", index=True)
+
+
 class ImageRecordBase(SQLModel):
     """
     Base schema for an image and its metadata
@@ -192,12 +202,14 @@ class ImageRecord(ImageRecordBase, TimestampModel, table=True):
     bboxes: List["BBox"] = Relationship(
         back_populates="image", sa_relationship_kwargs={"cascade": "all, delete-orphan"}
     )
+    tags: List["Tag"] = Relationship(back_populates="images", link_model=ImageTagLink)
 
 
 class ImageRecordRead(OrmModel):
     uuid: str
     filename: str
     bboxes: List["BBoxRead"]
+    tags: List["TagRead"] = []
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 
@@ -209,6 +221,13 @@ class ImageLabelFilter(ApiModel):
     status: ImageLabelStatus
     exclude: bool = False
     require_verified: bool = False  # if True: EXISTS (status IN PRESENT, ABSENT); status/exclude ignored
+
+
+class ImageTagFilter(ApiModel):
+    """A single condition on the image_tags table used when searching images (whole-image tags)."""
+
+    tag_uuid: str
+    exclude: bool = False  # False = require this whole-image tag; True = require its absence
 
 
 class TagPresenceFilter(ApiModel):
@@ -223,6 +242,7 @@ class ImageSearchParams(ApiModel):
     tag_uuids: List[str] = Field(default_factory=list)
     label_uuid: Optional[str] = None
     image_label_filters: List["ImageLabelFilter"] = Field(default_factory=list)
+    image_tag_filters: List["ImageTagFilter"] = Field(default_factory=list)
     limit: int = 50
     sort_by: Literal["uuid", "created_at", "updated_at", "filename"] = "created_at"
     sort_order: Literal["asc", "desc"] = "desc"
@@ -368,6 +388,7 @@ class Tag(TagBase, TimestampModel, table=True):
     __tablename__ = "tags"
     uuid: str = Field(default_factory=lambda: str(uuid4()), primary_key=True)
     bboxes: List[BBox] = Relationship(back_populates="tags", link_model=BBoxTagLink)
+    images: List[ImageRecord] = Relationship(back_populates="tags", link_model=ImageTagLink)
 
 
 class TagRead(OrmModel):

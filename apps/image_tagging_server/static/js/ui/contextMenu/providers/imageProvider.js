@@ -5,6 +5,8 @@
  *   getPath()                           → string
  *   openOnCanvas()                      → void
  *   setLabelPresence(uuid, status)      → Promise<void>  status = 'absent'|'uncertain'
+ *   getTagUuids()                       → string[]        whole-image tags
+ *   toggleTag(uuid)                     → Promise<void>
  */
 
 import { registerContextProvider } from '../registry.js';
@@ -12,6 +14,7 @@ import { asyncPanel } from '../menu.js';
 import { fetchLabels } from '/app-static/js/shared/api/labels.js';
 import { openSimilarImagesModal } from '/app-static/js/ui/similarSearch.js';
 import { openDissimilarImagesModal } from '/app-static/js/ui/dissimilarSearch.js';
+import { buildTagPanel } from '../tagPanelBuilder.js';
 
 /**
  * Build a label-list panel for the Mark-label flyouts.
@@ -78,6 +81,12 @@ registerContextProvider('image', async (adapters, ctx) => {
         for (const a of adapters) await a.setLabelPresence(uuid, 'uncertain');
         ctx.close();
       })),
+    },
+
+    // ── Tags (toggle on/off, checkbox + indeterminate for multi-select) ────
+    {
+      label: 'Tags',
+      submenu: () => asyncPanel('220px', () => buildTagPanel(adapters)),
     },
 
     // ── Similar search ─────────────────────────────────────────────────────

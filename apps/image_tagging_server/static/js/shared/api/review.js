@@ -28,6 +28,8 @@ export const VERIFICATION_TAG_UUIDS = new Set([UNVERIFIED_TAG_UUID, FALSE_POS_TA
  *   afterUuid?: string|null,       // keyset cursor: UUID of last image on previous page
  *   afterSortValue?: string|null,  // ISO datetime of last image's sort field (when sortBy != 'uuid')
  *   imageLabelFilters?: Array<{labelUuid: string, status: string, exclude: boolean}>,
+ *   imageTagUuids?: string[],      // whole-image tags that must be present (AND)
+ *   imageTagExcludeUuids?: string[], // whole-image tags that must be absent
  *   limit?: number,
  * }} opts
  */
@@ -49,6 +51,8 @@ export async function fetchReviewQueue({
   afterUuid = null,
   afterSortValue = null,
   imageLabelFilters = [],
+  imageTagUuids = [],
+  imageTagExcludeUuids = [],
   verificationCheck = null,
   requireBboxes = false,
   limit = 50,
@@ -87,6 +91,11 @@ export async function fetchReviewQueue({
     }));
   }
   if (verificationCheck) body.labelVerificationCheck = verificationCheck;
+  const imageTagFilters = [
+    ...imageTagUuids.map(uuid => ({ tagUuid: uuid, exclude: false })),
+    ...imageTagExcludeUuids.map(uuid => ({ tagUuid: uuid, exclude: true })),
+  ];
+  if (imageTagFilters.length > 0) body.imageTagFilters = imageTagFilters;
 
   const res = await apiFetch('/api/images/review', {
     method: 'POST',
@@ -288,11 +297,11 @@ export async function bulkApplyBboxesByUuids({ bboxUuids, action, labelUuid = nu
  * Apply an image-level action to an explicit list of images in one server-side
  * pass — the image-kind counterpart of bulkApplyBboxesByUuids.
  */
-export async function bulkApplyImagesByUuids({ imageUuids, action, labelUuid = null }) {
+export async function bulkApplyImagesByUuids({ imageUuids, action, labelUuid = null, tagUuids = [] }) {
   const res = await apiFetch('/api/images/bulk-apply-by-uuids', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ imageUuids, action, labelUuid }),
+    body: JSON.stringify({ imageUuids, action, labelUuid, tagUuids }),
   });
   const data = await res.json();
   if (!res.ok || data.status !== 'success') throw new Error(data.message || 'Bulk apply failed');

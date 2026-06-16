@@ -123,6 +123,18 @@ export function isTagKindVisible(kind) {
 }
 
 /**
+ * Returns whether a tag should appear in UI pickers/filters, applying both the
+ * global tag-kind visibility toggle and the icon-less-system-tag exclusion.
+ * @param {{kind?: string, icon?: string}} tag
+ * @returns {boolean}
+ */
+export function isTagVisible(tag) {
+  if (tag.kind === 'system') return !!tag.icon && isTagKindVisible('system');
+  if (tag.kind === 'task_generated') return isTagKindVisible('task_generated');
+  return true;
+}
+
+/**
  * Set visibility for a tag kind and notify subscribers.
  * @param {string} kind
  * @param {boolean} visible

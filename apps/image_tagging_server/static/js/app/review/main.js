@@ -1,7 +1,7 @@
 import { fetchLabels } from '/app-static/js/shared/api/labels.js';
 import { createDynamicLabelPicker } from '/app-static/js/ui/utils/dynamicLabelPicker.js';
 import { fetchTags } from '/app-static/js/shared/api/tags.js';
-import { isTagKindVisible } from '/app-static/js/shared/activeModel.js';
+import { isTagVisible } from '/app-static/js/shared/activeModel.js';
 import { createFilterPanel } from '/app-static/js/app/review/filters.js';
 import { expandWithDescendants, createLabelList } from '/app-static/js/ui/labelList.js';
 import {
@@ -23,6 +23,7 @@ import {
   swapVerificationTag,
 } from '/app-static/js/shared/api/review.js';
 import { setImageLabel } from '/app-static/js/shared/api/imageLabels.js';
+import { setImageTag } from '/app-static/js/shared/api/imageTags.js';
 import { attachContext } from '/app-static/js/ui/contextMenu/index.js';
 import { getPrimaryRuntimeId } from '/app-static/js/app/image-tagging/runtime.js';
 import { Logger, toast } from '/app-static/js/ui/utils/logging.js';
@@ -598,6 +599,15 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
       async setLabelPresence(uuid, status) {
         await setImageLabel(img.filename, uuid, status);
       },
+
+      getTagUuids() { return (img.tags ?? []).map(t => t.uuid); },
+
+      async toggleTag(uuid) {
+        const tags = img.tags ?? [];
+        const has = tags.some(t => t.uuid === uuid);
+        await setImageTag(img.filename, uuid, has ? 'remove' : 'add');
+        img.tags = has ? tags.filter(t => t.uuid !== uuid) : [...tags, { uuid, icon: null }];
+      },
     };
   }
 
@@ -930,6 +940,8 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
             labelExcludeUuids: fs.labelExcludeUuids ?? [],
             labelMatchMode: fs.labelMatchMode,
             labelIncludeChildren: fs.labelIncludeChildren,
+            imageTagUuids: fs.imageTagUuids ?? [],
+            imageTagExcludeUuids: fs.imageTagExcludeUuids ?? [],
             requireBboxes: _viewFilter === 'bboxes',
             sortBy,
             sortOrder,
@@ -1562,7 +1574,7 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
     const selectedEntries = _visibleEntries.filter(e => _selected.has(entryId(e)));
 
     if (_selectionKind === 'image') {
-      await showImageBulkActionModal(selectedEntries, labels, async (action, labelUuid) => {
+      await showImageBulkActionModal(selectedEntries, labels, async (action, labelUuid, tagUuids) => {
         if (action === 'delete') {
           const n = selectedEntries.length;
           const noun = n === 1 ? 'image' : 'images';
@@ -1594,7 +1606,7 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
           return;
         }
 
-        const { failCount, succeededEntries } = await executeBulkImageAction(action, selectedEntries, labelUuid);
+        const { failCount, succeededEntries } = await executeBulkImageAction(action, selectedEntries, labelUuid, tagUuids);
         for (const { img } of succeededEntries) {
           const card = grid.querySelector(`[data-image-uuid="${img.uuid}"][data-kind="image"]`);
           if (card) markCardStale(card, 'tagged');
@@ -1694,7 +1706,7 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
     }
 
     if (kind === 'image') {
-      await showImageBulkActionModal(entries, labels, async (action, labelUuid) => {
+      await showImageBulkActionModal(entries, labels, async (action, labelUuid, tagUuids) => {
         if (action === 'delete') {
           const n = entries.length;
           const noun = n === 1 ? 'image' : 'images';
@@ -1713,6 +1725,7 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
             imageUuids: entries.map(e => e.img.uuid),
             action,
             labelUuid,
+            tagUuids,
           });
           if (action === 'delete') {
             for (const { img } of entries) {
@@ -1929,11 +1942,7 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
     labelPickerRow.append(labelPickerHdr, dynPicker.element);
 
     const tagOptions = Array.from(tags.values())
-      .filter(tag => {
-        if (tag.kind === 'system') return tag.icon && isTagKindVisible('system');
-        if (tag.kind === 'task_generated') return isTagKindVisible('task_generated');
-        return true;
-      })
+      .filter(isTagVisible)
       .map(tag => ({ key: tag.uuid, text: (tag.icon ? tag.icon + ' ' : '') + tag.name, color: tag.color || '#cccccc' }));
     const tagCheckboxField = new CheckboxField({ value: [], options: tagOptions });
     const tagPickerRow = document.createElement('div');
@@ -2843,11 +2852,7 @@ async function showBulkActionModal(entries, labels, onConfirm, titleText = null)
 
   // Tag picker (shown only for addTags / removeTags)
   const tagOptions = Array.from(tags.values())
-    .filter(tag => {
-      if (tag.kind === 'system') return tag.icon && isTagKindVisible('system');
-      if (tag.kind === 'task_generated') return isTagKindVisible('task_generated');
-      return true;
-    })
+    .filter(isTagVisible)
     .map(tag => ({
       key: tag.uuid,
       text: (tag.icon ? tag.icon + ' ' : '') + tag.name,
@@ -2891,6 +2896,8 @@ async function showBulkActionModal(entries, labels, onConfirm, titleText = null)
 }
 
 async function showImageBulkActionModal(entries, labels, onConfirm, titleText = null) {
+  const tags = await fetchTags().catch(() => new Map());
+
   const overlay = document.createElement('div');
   overlay.style.cssText = `position:fixed;inset:0;background:#0008;display:flex;
     align-items:center;justify-content:center;z-index:${nextModalZIndex()};`;
@@ -2905,6 +2912,8 @@ async function showImageBulkActionModal(entries, labels, onConfirm, titleText = 
   const actions = [
     { value: 'setAbsent', label: 'Mark label Absent (negative label)' },
     { value: 'setUncertain', label: 'Clear Absent → Uncertain' },
+    { value: 'addTags', label: 'Add Tags' },
+    { value: 'removeTags', label: 'Remove Tags' },
     { value: 'delete', label: 'Delete Images' },
   ];
 
@@ -2922,7 +2931,8 @@ async function showImageBulkActionModal(entries, labels, onConfirm, titleText = 
     if (action.value === 'setAbsent') radio.checked = true;
     radio.addEventListener('change', () => {
       selectedAction = action.value;
-      labelPickerRow.style.display = selectedAction === 'delete' ? 'none' : '';
+      labelPickerRow.style.display = (selectedAction === 'setAbsent' || selectedAction === 'setUncertain') ? '' : 'none';
+      tagPickerRow.style.display = (selectedAction === 'addTags' || selectedAction === 'removeTags') ? 'flex' : 'none';
     });
     lbl.appendChild(radio);
     lbl.appendChild(document.createTextNode(action.label));
@@ -2940,6 +2950,19 @@ async function showImageBulkActionModal(entries, labels, onConfirm, titleText = 
   labelPickerRow.appendChild(document.createTextNode('Label: '));
   labelPickerRow.appendChild(labelPicker);
 
+  // Tag picker (shown only for addTags / removeTags) — same picker as the bbox bulk modal.
+  const tagOptions = Array.from(tags.values())
+    .filter(isTagVisible)
+    .map(tag => ({
+      key: tag.uuid,
+      text: (tag.icon ? tag.icon + ' ' : '') + tag.name,
+      color: tag.color || '#cccccc',
+    }));
+  const tagCheckboxField = new CheckboxField({ value: [], options: tagOptions });
+  const tagPickerRow = document.createElement('div');
+  tagPickerRow.style.cssText = 'max-height:180px;overflow-y:auto;display:none;flex-direction:column;gap:0.3em;padding:0.3em 0;';
+  tagPickerRow.appendChild(await tagCheckboxField.renderEdit());
+
   const btnRow = document.createElement('div');
   btnRow.style.cssText = 'display:flex;gap:0.5em;justify-content:flex-end;';
 
@@ -2954,12 +2977,15 @@ async function showImageBulkActionModal(entries, labels, onConfirm, titleText = 
   okBtn.style.cssText = 'background:#ff003322;border:1px solid #ff0033;border-radius:3px;padding:0.2em 0.8em;cursor:pointer;';
   okBtn.addEventListener('click', async () => {
     closeImageBulk();
-    await onConfirm(selectedAction, labelPicker.value);
+    const selectedTagUuids = (selectedAction === 'addTags' || selectedAction === 'removeTags')
+      ? tagCheckboxField.getValue()
+      : [];
+    await onConfirm(selectedAction, labelPicker.value, selectedTagUuids);
   });
 
   btnRow.appendChild(cancelBtn);
   btnRow.appendChild(okBtn);
-  dialog.append(title, radioGroup, labelPickerRow, btnRow);
+  dialog.append(title, radioGroup, labelPickerRow, tagPickerRow, btnRow);
   overlay.appendChild(dialog);
   document.body.appendChild(overlay);
   registerEscHandler(closeImageBulk);
@@ -2967,15 +2993,25 @@ async function showImageBulkActionModal(entries, labels, onConfirm, titleText = 
   overlay.addEventListener('click', e => { if (e.target === overlay) closeImageBulk(); });
 }
 
-async function executeBulkImageAction(action, entries, labelUuid) {
-  const status = action === 'setAbsent' ? 'absent' : 'uncertain';
+async function executeBulkImageAction(action, entries, labelUuid, tagUuids = []) {
   let failCount = 0;
   const succeededEntries = [];
 
   for (const entry of entries) {
     const { img } = entry;
     try {
-      await setImageLabel(img.filename, labelUuid, status);
+      if (action === 'addTags' || action === 'removeTags') {
+        for (const tagUuid of tagUuids) {
+          await setImageTag(img.filename, tagUuid, action === 'addTags' ? 'add' : 'remove');
+        }
+        const currentTags = img.tags ?? [];
+        img.tags = action === 'addTags'
+          ? [...currentTags.filter(t => !tagUuids.includes(t.uuid)), ...tagUuids.map(uuid => ({ uuid, icon: null }))]
+          : currentTags.filter(t => !tagUuids.includes(t.uuid));
+      } else {
+        const status = action === 'setAbsent' ? 'absent' : 'uncertain';
+        await setImageLabel(img.filename, labelUuid, status);
+      }
       succeededEntries.push(entry);
     } catch (err) {
       Logger.error(`Image label action failed for ${img.uuid}: ${err.message}`);

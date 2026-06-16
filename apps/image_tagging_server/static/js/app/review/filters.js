@@ -20,7 +20,7 @@
 import { UNVERIFIED_TAG_UUID } from '/app-static/js/shared/api/review.js';
 import { createMultiSelectDropdown, makeLabelFilterNotice } from '/app-static/js/ui/utils/index.js';
 import { flattenHierarchy } from '/app-static/js/ui/labelList.js';
-import { activeModel, isTagKindVisible, isDynamicLabelsVisible } from '/app-static/js/shared/activeModel.js';
+import { activeModel, isTagVisible, isDynamicLabelsVisible } from '/app-static/js/shared/activeModel.js';
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
 
 // System tags appear first in the tags dropdown, in this order.
@@ -34,6 +34,11 @@ const DEFAULT_STATE = () => ({
   labelExcludeUuids: [],
   labelMatchMode: 'any',
   labelIncludeChildren: false,
+  // Whole-image tags (image_tags table) — distinct from tagUuids above, which
+  // filters by bbox-level tags. Selected = image must carry the tag; excluded =
+  // image must not carry it. No any/all toggle: all selected tags are required.
+  imageTagUuids: [],
+  imageTagExcludeUuids: [],
   filenameSearch: '',
   dateFrom: null,
   dateTo: null,
@@ -54,11 +59,7 @@ export function createFilterPanel(labels, tags, onFilterChange, { inlineControls
   // Tags whose kind is globally hidden don't appear in the picker.
   // Icon-less system tags are always excluded (they're used only via presets).
   function _visibleTags() {
-    return [...tags.values()].filter(t => {
-      if (t.kind === 'system') return t.icon && isTagKindVisible('system');
-      if (t.kind === 'task_generated') return isTagKindVisible('task_generated');
-      return true; // generic tags always visible
-    });
+    return [...tags.values()].filter(isTagVisible);
   }
 
   function _buildTagsDropdown() {
@@ -101,6 +102,37 @@ export function createFilterPanel(labels, tags, onFilterChange, { inlineControls
   if (inlineControls) tagsContainer.style.width = '100%';
   let tagsDropdown = _buildTagsDropdown();
   tagsContainer.appendChild(tagsDropdown.element);
+
+  // ── Toolbar: Image Tags multi-select dropdown ────────────────────────────
+  // Whole-image tags (image_tags table) — a different axis than the bbox-level
+  // Tags dropdown above. No any/all mode: every selected tag is required (AND).
+  function _buildImageTagsDropdown() {
+    const visible = _visibleTags();
+    const items = [...visible]
+      .sort((a, b) => a.name.localeCompare(b.name))
+      .map(t => ({ uuid: t.uuid, name: t.name, color: t.color || null }));
+
+    return createMultiSelectDropdown({
+      label: 'Image Tags',
+      items,
+      defaultSelected: [],
+      showModeToggle: false,
+      filterKey: 'image-tags',
+      inline: inlineControls,
+      defaultWidth: '220px',
+      defaultHeight: '300px',
+      onChange: (selected, excluded) => {
+        _state.imageTagUuids = selected;
+        _state.imageTagExcludeUuids = excluded;
+        emit();
+      },
+    });
+  }
+
+  const imageTagsContainer = document.createElement('div');
+  if (inlineControls) imageTagsContainer.style.width = '100%';
+  let imageTagsDropdown = _buildImageTagsDropdown();
+  imageTagsContainer.appendChild(imageTagsDropdown.element);
   // ── Toolbar: Labels multi-select dropdown (tree-ordered, with depth indentation) ──
   // Wrapped in a container div so it can be rebuilt when the active-model filter changes.
   const labelsDropdownContainer = document.createElement('div');
@@ -176,6 +208,14 @@ export function createFilterPanel(labels, tags, onFilterChange, { inlineControls
     // Reset tag state to empty (show all) when visibility changes.
     _state.tagUuids = [];
     _state.tagExcludeUuids = [];
+
+    imageTagsDropdown.destroy();
+    imageTagsContainer.innerHTML = '';
+    imageTagsDropdown = _buildImageTagsDropdown();
+    imageTagsContainer.appendChild(imageTagsDropdown.element);
+    _state.imageTagUuids = [];
+    _state.imageTagExcludeUuids = [];
+
     emit();
   });
 
@@ -273,6 +313,8 @@ export function createFilterPanel(labels, tags, onFilterChange, { inlineControls
       + s.tagExcludeUuids.length
       + s.labelUuids.length
       + s.labelExcludeUuids.length
+      + s.imageTagUuids.length
+      + s.imageTagExcludeUuids.length
       + (s.filenameSearch ? 1 : 0)
       + (s.dateFrom ? 1 : 0)
       + (s.dateTo ? 1 : 0)
@@ -288,6 +330,8 @@ export function createFilterPanel(labels, tags, onFilterChange, { inlineControls
       && s.labelUuids.length === 0
       && s.labelExcludeUuids.length === 0
       && s.labelMatchMode === 'any'
+      && s.imageTagUuids.length === 0
+      && s.imageTagExcludeUuids.length === 0
       && !s.filenameSearch
       && !s.dateFrom
       && !s.dateTo
@@ -310,6 +354,9 @@ export function createFilterPanel(labels, tags, onFilterChange, { inlineControls
     if (partial.labelUuids !== undefined && !('labelExcludeUuids' in partial)) {
       partial = { ...partial, labelExcludeUuids: [] };
     }
+    if (partial.imageTagUuids !== undefined && !('imageTagExcludeUuids' in partial)) {
+      partial = { ...partial, imageTagExcludeUuids: [] };
+    }
     _state = { ..._state, ...partial };
 
     if (partial.tagUuids !== undefined || partial.tagMatchMode !== undefined || partial.tagExcludeUuids !== undefined) {
@@ -317,6 +364,9 @@ export function createFilterPanel(labels, tags, onFilterChange, { inlineControls
     }
     if (partial.labelUuids !== undefined || partial.labelMatchMode !== undefined || partial.labelIncludeChildren !== undefined || partial.labelExcludeUuids !== undefined) {
       _labelsDropdown?.setState(_state.labelUuids, _state.labelMatchMode, _state.labelIncludeChildren, _state.labelExcludeUuids);
+    }
+    if (partial.imageTagUuids !== undefined || partial.imageTagExcludeUuids !== undefined) {
+      imageTagsDropdown.setState(_state.imageTagUuids, undefined, undefined, _state.imageTagExcludeUuids);
     }
     if (partial.dateFrom !== undefined) {
       dateFromInput.value = _state.dateFrom
@@ -340,6 +390,7 @@ export function createFilterPanel(labels, tags, onFilterChange, { inlineControls
 
   function destroy() {
     tagsDropdown.destroy();
+    imageTagsDropdown.destroy();
     _labelsDropdown?.destroy();
     _unsubActiveFilter();
     _unsubDynLabels();
@@ -348,8 +399,8 @@ export function createFilterPanel(labels, tags, onFilterChange, { inlineControls
 
   return {
     element: panel,
-    /** Dropdown elements to place in the sticky toolbar (Tags + Labels). */
-    toolbarControls: [tagsContainer, labelsDropdownContainer],
+    /** Dropdown elements to place in the sticky toolbar (Tags + Image Tags + Labels). */
+    toolbarControls: [tagsContainer, labelsDropdownContainer, imageTagsContainer],
     getState: () => ({
       ..._state,
       // showAllBboxes: true skips the server-side tag filter entirely.

@@ -46,6 +46,8 @@ from .types import (
     ImageRecordRead,
     ImageRecordUpdate,
     ImageSearchParams,
+    ImageTagFilter,
+    ImageTagLink,
     Label,
     LabelType,
     ModelConfig,
@@ -258,6 +260,18 @@ def _apply_image_search_filters(stmt: Select, params: ImageSearchParams) -> Sele
                 .exists()
             )
             stmt = stmt.where(~subq if f.exclude else subq)
+
+    # ── Whole-image tag filters (EXISTS / NOT EXISTS subqueries) ──────────────
+    # These filter on the image_tags table (not bboxes), which is small and
+    # accessed by PK — correlated EXISTS is fine here.
+    for tf in params.image_tag_filters:
+        subq = (
+            select(ImageTagLink).where(
+                ImageTagLink.image_uuid == ImageRecord.uuid,
+                ImageTagLink.tag_uuid == tf.tag_uuid,
+            )
+        ).exists()
+        stmt = stmt.where(~subq if tf.exclude else subq)
 
     # ── Dataset / review label filter ─────────────────────────────────────────
     if params.label_uuids:
@@ -734,7 +748,8 @@ class DbClient:
                     selectinload(ImageRecord.bboxes).options(
                         selectinload(BBox.label),
                         selectinload(BBox.tags),
-                    )
+                    ),
+                    selectinload(ImageRecord.tags),
                 )
             )
             result = await session.exec(stmt)
@@ -757,7 +772,8 @@ class DbClient:
                     selectinload(ImageRecord.bboxes).options(
                         selectinload(BBox.label),
                         selectinload(BBox.tags),
-                    )
+                    ),
+                    selectinload(ImageRecord.tags),
                 )
             )
             result = await session.exec(statement)
@@ -832,7 +848,8 @@ class DbClient:
                 selectinload(ImageRecord.bboxes).options(
                     selectinload(BBox.label),
                     selectinload(BBox.tags),
-                )
+                ),
+                selectinload(ImageRecord.tags),
             )
 
             stmt = _apply_image_search_filters(stmt, params)
@@ -1002,7 +1019,8 @@ class DbClient:
                     selectinload(ImageRecord.bboxes).options(
                         selectinload(BBox.label),
                         selectinload(BBox.tags),
-                    )
+                    ),
+                    selectinload(ImageRecord.tags),
                 )
             )
             result = await session.exec(stmt)
@@ -1883,6 +1901,63 @@ class DbClient:
                 )
             )
             await session.commit()
+
+    async def add_image_tag(self, image_uuid: str, tag_uuid: str) -> None:
+        """Link a tag to a whole image. No-op if the link already exists."""
+        await self.add_image_tags(image_uuid, [tag_uuid])
+
+    async def add_image_tags(self, image_uuid: str, tag_uuids: List[str]) -> None:
+        """Link multiple tags to a whole image in one transaction. No-op for tags already linked."""
+        if not tag_uuids:
+            return
+        async with self._async_session_maker() as session:
+            result = await session.exec(
+                select(ImageTagLink.tag_uuid).where(
+                    ImageTagLink.image_uuid == image_uuid,
+                    ImageTagLink.tag_uuid.in_(tag_uuids),
+                )
+            )
+            existing = set(result.all())
+            for tag_uuid in tag_uuids:
+                if tag_uuid not in existing:
+                    session.add(ImageTagLink(image_uuid=image_uuid, tag_uuid=tag_uuid))
+            try:
+                await session.commit()
+            except IntegrityError:
+                await session.rollback()
+
+    async def remove_image_tag(self, image_uuid: str, tag_uuid: str) -> None:
+        """Unlink a tag from a whole image. No-op if the link doesn't exist."""
+        await self.remove_image_tags(image_uuid, [tag_uuid])
+
+    async def remove_image_tags(self, image_uuid: str, tag_uuids: List[str]) -> None:
+        """Unlink multiple tags from a whole image in one transaction. No-op for tags not linked."""
+        if not tag_uuids:
+            return
+        async with self._async_session_maker() as session:
+            await session.exec(
+                delete(ImageTagLink).where(
+                    ImageTagLink.image_uuid == image_uuid,
+                    ImageTagLink.tag_uuid.in_(tag_uuids),
+                )
+            )
+            await session.commit()
+
+    async def get_image_tag_uuids(self, image_uuid: str) -> List[str]:
+        """Return all tag UUIDs linked to a whole image."""
+        async with self._async_session_maker() as session:
+            result = await session.exec(
+                select(ImageTagLink.tag_uuid).where(ImageTagLink.image_uuid == image_uuid)
+            )
+            return list(result.all())
+
+    async def get_image_uuids_by_tag(self, tag_uuid: str) -> Set[str]:
+        """Return all image UUIDs carrying the given whole-image tag."""
+        async with self._async_session_maker() as session:
+            result = await session.exec(
+                select(ImageTagLink.image_uuid).where(ImageTagLink.tag_uuid == tag_uuid)
+            )
+            return set(result.all())
 
     ################################################################################
     # Task Configs

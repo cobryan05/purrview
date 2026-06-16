@@ -1,6 +1,6 @@
 import { fetchLabels } from '/app-static/js/shared/api/labels.js';
 import { fetchTags } from '/app-static/js/shared/api/tags.js';
-import { isTagKindVisible } from '/app-static/js/shared/activeModel.js';
+import { isTagVisible } from '/app-static/js/shared/activeModel.js';
 import {
   FIXED_ACTIONS,
   initHotkeyBindings,
@@ -90,11 +90,7 @@ export async function renderHotkeyPanel(container) {
     if (labelRows.length) container.appendChild(section('Label tools', labelRows));
 
     const tagRows = [...tags.values()]
-      .filter(t => {
-        if (t.kind === 'system') return t.icon && isTagKindVisible('system');
-        if (t.kind === 'task_generated') return isTagKindVisible('task_generated');
-        return true;
-      })
+      .filter(isTagVisible)
       .map(t => renderRow({ id: `tag:${t.uuid}`, label: t.name ?? t.uuid, icon: t.icon ?? '', color: t.color }));
     if (tagRows.length) container.appendChild(section('Tag tools', tagRows));
   }
