@@ -71,18 +71,25 @@ function buildCountControl(initial, { min = 10, max = 500, onChange }) {
 async function _openRankedImagesModal({ title, makeFetchFn, referenceImageUuids = null, extraControls = null }) {
   let _count = 100;
   let _sortedMatches = null;
+  let _queryGen = 0;
   let _queryPromise = makeFetchFn(_count);
   let _refresh = null;
 
+  // Loops rather than awaiting once so a query superseded mid-flight by a
+  // count change doesn't clobber fresher state with stale results.
   async function _ensureMatches() {
-    if (_sortedMatches !== null) return;
-    _sortedMatches = await _queryPromise;  // already ordered by rank ascending
+    while (_sortedMatches === null) {
+      const gen = _queryGen;
+      const result = await _queryPromise;  // already ordered by rank ascending
+      if (gen === _queryGen) _sortedMatches = result;
+    }
   }
 
   const { element: countEl } = buildCountControl(_count, {
     onChange(newCount) {
       _count = newCount;
       _sortedMatches = null;
+      _queryGen++;
       _queryPromise = makeFetchFn(_count);
       _refresh?.();
     },
@@ -104,10 +111,13 @@ async function _openRankedImagesModal({ title, makeFetchFn, referenceImageUuids 
     ...(referenceImageUuids ? { referenceImageUuids } : {}),
     fetchImages: async ({ afterUuid = null, limit }) => {
       await _ensureMatches();
-      if (!_sortedMatches.length) return [];
+      // Snapshot locally: a second await below yields control back to the
+      // event loop, where onChange could reset _sortedMatches out from under us.
+      const matches = _sortedMatches;
+      if (!matches.length) return [];
 
-      const startIdx = pageStartIdx(_sortedMatches, afterUuid);
-      const page = _sortedMatches.slice(startIdx, startIdx + limit);
+      const startIdx = pageStartIdx(matches, afterUuid);
+      const page = matches.slice(startIdx, startIdx + limit);
       if (!page.length) return [];
 
       const images = await fetchImagesByUuids(page.map(m => m.imageUuid));
@@ -146,37 +156,44 @@ export async function openDissimilarBboxesModal({ bboxUuid, labelUuid = null }) 
   // _imageBboxes: Map<imageUuid, Set<bboxUuid>>
   let _imageOrder = null;
   let _imageBboxes = null;
+  let _queryGen = 0;
   let _queryPromise = findDissimilarBboxesByUuid(bboxUuid, _count, _labelUuids);
 
   function _invalidate() {
     _imageOrder = null;
     _imageBboxes = null;
+    _queryGen++;
     _queryPromise = findDissimilarBboxesByUuid(bboxUuid, _count, _labelUuids);
     _refresh?.();
   }
 
+  // Loops rather than awaiting once so a query superseded mid-flight by
+  // _invalidate() doesn't clobber fresher state with stale results.
   async function _ensureMatches() {
-    if (_imageOrder !== null) return;
-    const matches = await _queryPromise;
+    while (_imageOrder === null) {
+      const gen = _queryGen;
+      const matches = await _queryPromise;
+      if (gen !== _queryGen) continue;
 
-    const imageMinRank = new Map();   // imageUuid → minimum rank across its matching bboxes
-    const imageBboxes = new Map();    // imageUuid → Set<bboxUuid>
+      const imageMinRank = new Map();   // imageUuid → minimum rank across its matching bboxes
+      const imageBboxes = new Map();    // imageUuid → Set<bboxUuid>
 
-    for (const { bboxUuid: bu, imageUuid: iu, rank } of matches) {
-      if (!iu) continue;
-      if (!imageBboxes.has(iu)) {
-        imageBboxes.set(iu, new Set());
-        imageMinRank.set(iu, rank);
-      } else {
-        imageMinRank.set(iu, Math.min(imageMinRank.get(iu), rank));
+      for (const { bboxUuid: bu, imageUuid: iu, rank } of matches) {
+        if (!iu) continue;
+        if (!imageBboxes.has(iu)) {
+          imageBboxes.set(iu, new Set());
+          imageMinRank.set(iu, rank);
+        } else {
+          imageMinRank.set(iu, Math.min(imageMinRank.get(iu), rank));
+        }
+        imageBboxes.get(iu).add(bu);
       }
-      imageBboxes.get(iu).add(bu);
-    }
 
-    _imageBboxes = imageBboxes;
-    _imageOrder = [...imageMinRank.entries()]
-      .sort((a, b) => a[1] - b[1])
-      .map(([iu, minRank]) => ({ imageUuid: iu, minRank }));
+      _imageBboxes = imageBboxes;
+      _imageOrder = [...imageMinRank.entries()]
+        .sort((a, b) => a[1] - b[1])
+        .map(([iu, minRank]) => ({ imageUuid: iu, minRank }));
+    }
   }
 
   // ── Count control ──────────────────────────────────────────────────────────
@@ -210,10 +227,14 @@ export async function openDissimilarBboxesModal({ bboxUuid, labelUuid = null }) 
     referenceBboxUuids: new Set([bboxUuid]),
     fetchImages: async ({ afterUuid = null, limit }) => {
       await _ensureMatches();
-      if (!_imageOrder.length) return [];
+      // Snapshot locally: the await below can yield to an _invalidate() call
+      // that resets the outer _imageOrder/_imageBboxes to null mid-flight.
+      const order = _imageOrder;
+      const bboxesByImage = _imageBboxes;
+      if (!order.length) return [];
 
-      const startIdx = pageStartIdx(_imageOrder, afterUuid);
-      const page = _imageOrder.slice(startIdx, startIdx + limit);
+      const startIdx = pageStartIdx(order, afterUuid);
+      const page = order.slice(startIdx, startIdx + limit);
       if (!page.length) return [];
 
       const images = await fetchImagesByUuids(page.map(e => e.imageUuid));
@@ -224,7 +245,7 @@ export async function openDissimilarBboxesModal({ bboxUuid, labelUuid = null }) 
         .sort((a, b) => (orderMap.get(a.uuid) ?? 9999) - (orderMap.get(b.uuid) ?? 9999))
         .map(img => ({
           ...img,
-          bboxes: (img.bboxes || []).filter(b => _imageBboxes.get(img.uuid)?.has(b.uuid)),
+          bboxes: (img.bboxes || []).filter(b => bboxesByImage.get(img.uuid)?.has(b.uuid)),
         }));
     },
   });

@@ -6,6 +6,7 @@ import hashlib
 import io
 import logging
 import os
+import random
 import sys
 import time
 from collections import defaultdict
@@ -1338,6 +1339,12 @@ class Manager:
         Falls back to all images if no unverified images exist.
         """
         candidate_uuids = await self._db_client.get_image_uuids_by_bbox_tag(UNVERIFIED_TAG_UUID)
+        if len(candidate_uuids) > HashIndex.MAX_DIVERSITY_CANDIDATES:
+            # The unverified-tag query has no LIMIT (truncating it would bias which
+            # images are even eligible, e.g. always favoring lower-rowid images).
+            # Random-sampling down to the index's documented capacity keeps the
+            # candidate pool representative instead of order-biased.
+            candidate_uuids = set(random.sample(sorted(candidate_uuids), HashIndex.MAX_DIVERSITY_CANDIDATES))
         return await self.rank_images_by_diversity(
             seed_uuid,
             candidate_uuids if candidate_uuids else None,

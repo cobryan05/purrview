@@ -73,6 +73,7 @@ class HashIndex:
 
     REBUILD_THRESHOLD = 0.15  # rebuild when dead entries exceed 15% of tree size
     CHUNK_SIZE = 500  # rows per page when loading phashes from the DB
+    MAX_DIVERSITY_CANDIDATES = 100_000  # _greedy_diversity_order is documented fast up to this size
 
     def __init__(
         self,
@@ -316,6 +317,50 @@ class HashIndex:
         results.sort(key=lambda x: x[1])
         return results
 
+    @staticmethod
+    def _greedy_diversity_order(phash_hexes: List[str], seed_phash: str, count: int) -> List[int]:
+        """Return indices into *phash_hexes*, ordered most-diverse-first.
+
+        Greedy farthest-point sampling: the first pick is the entry most unlike
+        *seed_phash*, and each subsequent pick is the entry most unlike *all
+        already-selected* entries. This avoids returning a cluster of
+        near-duplicates at the far end of a single distance sort.
+
+        Hashes are XORed as raw bytes and popcounted via a byte-level lookup
+        table, so this works for any hash width — image hashes and bbox
+        hashes share this one implementation rather than diverging because one
+        happens to fit in a uint64 and the other doesn't.
+        Complexity: O(N × count) vectorised XOR + popcount; fast for N ≤ ~100k.
+        """
+        if not phash_hexes:
+            return []
+
+        byte_len = len(seed_phash) // 2
+        phash_bytes = np.frombuffer(
+            b"".join(bytes.fromhex(ph) for ph in phash_hexes),
+            dtype=np.uint8,
+        ).reshape(len(phash_hexes), byte_len)
+        seed_bytes = np.frombuffer(bytes.fromhex(seed_phash), dtype=np.uint8)
+
+        # min_dist[i] = Hamming distance from candidate i to the nearest already-selected point.
+        # Initialised to distance from the seed so the first argmax picks the farthest from it.
+        min_dist: np.ndarray = _LUT8[phash_bytes ^ seed_bytes].sum(axis=1).astype(np.int32)
+
+        selected: List[int] = []
+        limit = min(count, len(phash_hexes))
+        for _ in range(limit):
+            j = int(np.argmax(min_dist))
+            if min_dist[j] < 0:
+                break  # all candidates already selected
+            selected.append(j)
+            min_dist[j] = -1  # mark as selected so it can't be re-picked
+            # Update min_dist: each remaining candidate's distance shrinks if the
+            # new pivot is closer than any previously selected point.
+            d = _LUT8[phash_bytes ^ phash_bytes[j]].sum(axis=1).astype(np.int32)
+            min_dist = np.where(min_dist >= 0, np.minimum(min_dist, d), min_dist)
+
+        return selected
+
     def rank_images_by_diversity(
         self,
         seed_phash: str,
@@ -324,14 +369,8 @@ class HashIndex:
     ) -> List[str]:
         """Return up to *count* image UUIDs ordered most-diverse first.
 
-        Uses greedy farthest-point sampling: the first pick is the image most
-        unlike *seed_phash*, and each subsequent pick is the image most unlike
-        *all already-selected* images.  This avoids returning a cluster of
-        near-duplicates at the far end of a single distance sort.
-
+        See `_greedy_diversity_order` for the ranking algorithm.
         If *candidate_uuids* is given, only those images participate.
-        Complexity: O(N × count) vectorised XOR + popcount; fast for N ≤ ~100k.
-        Works for any image hash size (byte-level LUT, not uint64-limited).
         Raises ValueError if *seed_phash* doesn't match the current image hash size.
         """
         self._validate_image_phash(seed_phash)
@@ -350,35 +389,8 @@ class HashIndex:
             uuids.append(uuid)
             phash_hexes.append(phash_hex)
 
-        if not uuids:
-            return []
-
-        # Represent each phash as a row of uint8 bytes — works for any hash size.
-        byte_len = len(seed_phash) // 2
-        phash_bytes = np.frombuffer(
-            b"".join(bytes.fromhex(ph) for ph in phash_hexes),
-            dtype=np.uint8,
-        ).reshape(len(phash_hexes), byte_len)
-        seed_bytes = np.frombuffer(bytes.fromhex(seed_phash), dtype=np.uint8)
-
-        # min_dist[i] = Hamming distance from candidate i to the nearest already-selected point.
-        # Initialised to distance from the seed so the first argmax picks the farthest from it.
-        min_dist: np.ndarray = _LUT8[phash_bytes ^ seed_bytes].sum(axis=1).astype(np.int32)
-
-        selected: List[str] = []
-        limit = min(count, len(uuids))
-        for _ in range(limit):
-            j = int(np.argmax(min_dist))
-            if min_dist[j] < 0:
-                break  # all candidates already selected
-            selected.append(uuids[j])
-            min_dist[j] = -1  # mark as selected so it can't be re-picked
-            # Update min_dist: each remaining candidate's distance shrinks if the
-            # new pivot is closer than any previously selected point.
-            d = _LUT8[phash_bytes ^ phash_bytes[j]].sum(axis=1).astype(np.int32)
-            min_dist = np.where(min_dist >= 0, np.minimum(min_dist, d), min_dist)
-
-        return selected
+        order = self._greedy_diversity_order(phash_hexes, seed_phash, count)
+        return [uuids[i] for i in order]
 
     def rank_bboxes_by_diversity(
         self,
@@ -388,17 +400,17 @@ class HashIndex:
     ) -> List[Tuple[str, str]]:
         """Return up to *count* (bbox_uuid, label_uuid) tuples ordered most-diverse first.
 
-        Uses greedy farthest-point sampling seeded with *seed_phash*.
-        Bbox phashes are 256-bit (hash_size 16) and do not fit in uint64, so
-        Python-int XOR + bit_count is used instead of the numpy uint64 path.
+        See `_greedy_diversity_order` for the ranking algorithm — shared with
+        `rank_images_by_diversity` since the byte-level LUT approach works for
+        any hash width, including 256-bit (hash_size 16) bbox phashes.
 
         If *label_uuids* is None or empty, all per-label trees are searched.
         Raises ValueError if *seed_phash* doesn't match the current bbox hash size.
         """
         self._validate_bbox_phash(seed_phash)
 
-        # Materialise (bbox_uuid, label_uuid, phash_int) across relevant trees.
-        items: List[Tuple[str, str, int]] = []
+        # Materialise (bbox_uuid, label_uuid, phash_hex) across relevant trees.
+        items: List[Tuple[str, str, str]] = []
         target_labels = label_uuids if label_uuids else list(self._bbox_trees.keys())
         for lbl in target_labels:
             tree = self._bbox_trees.get(lbl)
@@ -407,30 +419,10 @@ class HashIndex:
             valid = self._valid_bboxes.get(lbl, set())
             for phash_hex, bbox_uuid in tree:
                 if bbox_uuid in valid:
-                    items.append((bbox_uuid, lbl, int(phash_hex, 16)))
+                    items.append((bbox_uuid, lbl, phash_hex))
 
-        if not items:
-            return []
-
-        seed_int = int(seed_phash, 16)
-        min_dist = [(p ^ seed_int).bit_count() for _, _, p in items]
-
-        selected: List[Tuple[str, str]] = []
-        limit = min(count, len(items))
-        for _ in range(limit):
-            j = max(range(len(items)), key=lambda i: min_dist[i])
-            if min_dist[j] < 0:
-                break
-            selected.append((items[j][0], items[j][1]))
-            pivot_p = items[j][2]
-            min_dist[j] = -1
-            for i in range(len(items)):
-                if min_dist[i] >= 0:
-                    d = (items[i][2] ^ pivot_p).bit_count()
-                    if d < min_dist[i]:
-                        min_dist[i] = d
-
-        return selected
+        order = self._greedy_diversity_order([p for _, _, p in items], seed_phash, count)
+        return [(items[i][0], items[i][1]) for i in order]
 
     def check_dedup_bulk(
         self,
