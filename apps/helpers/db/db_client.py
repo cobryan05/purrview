@@ -203,11 +203,7 @@ def _apply_image_search_filters(stmt: Select, params: ImageSearchParams) -> Sele
     # Kept for API callers that still send label_uuid.  New callers should use
     # label_uuids instead.
     if params.label_uuid and params.label_uuid not in params.label_uuids:
-        image_uuids = (
-            select(BBox.image_uuid)
-            .where(BBox.label_uuid == params.label_uuid)
-            .distinct()
-        )
+        image_uuids = select(BBox.image_uuid).where(BBox.label_uuid == params.label_uuid).distinct()
         stmt = stmt.where(ImageRecord.uuid.in_(image_uuids))
         _bbox_implied = True
 
@@ -284,11 +280,7 @@ def _apply_image_search_filters(stmt: Select, params: ImageSearchParams) -> Sele
                     condition = BBox.label_uuid.in_(label_set)
                 else:
                     condition = BBox.label_uuid == label_uuid
-                image_uuids = (
-                    select(BBox.image_uuid)
-                    .where(condition)
-                    .distinct()
-                )
+                image_uuids = select(BBox.image_uuid).where(condition).distinct()
                 stmt = stmt.where(ImageRecord.uuid.in_(image_uuids))
         else:
             # "any of" — image has a bbox with ANY of the selected labels (or
@@ -297,11 +289,7 @@ def _apply_image_search_filters(stmt: Select, params: ImageSearchParams) -> Sele
                 label_condition = BBox.label_uuid.in_(_label_uuids_with_descendants(params.label_uuids))
             else:
                 label_condition = BBox.label_uuid.in_(params.label_uuids)
-            image_uuids = (
-                select(BBox.image_uuid)
-                .where(label_condition)
-                .distinct()
-            )
+            image_uuids = select(BBox.image_uuid).where(label_condition).distinct()
             stmt = stmt.where(ImageRecord.uuid.in_(image_uuids))
         _bbox_implied = True
 
@@ -343,11 +331,7 @@ def _apply_image_search_filters(stmt: Select, params: ImageSearchParams) -> Sele
 
     # ── Label exclusions (NOT IN per label UUID) ───────────────────────────────
     for label_uuid in params.label_exclusions:
-        image_uuids = (
-            select(BBox.image_uuid)
-            .where(BBox.label_uuid == label_uuid)
-            .distinct()
-        )
+        image_uuids = select(BBox.image_uuid).where(BBox.label_uuid == label_uuid).distinct()
         stmt = stmt.where(ImageRecord.uuid.not_in(image_uuids))
 
     return stmt
@@ -854,13 +838,10 @@ class DbClient:
         pagination for both UUID and datetime sort orders.
         """
         async with self._async_session_maker() as session:
-            stmt = (
-                select(ImageRecord)
-                .options(
-                    selectinload(ImageRecord.bboxes).options(
-                        selectinload(BBox.label),
-                        selectinload(BBox.tags),
-                    )
+            stmt = select(ImageRecord).options(
+                selectinload(ImageRecord.bboxes).options(
+                    selectinload(BBox.label),
+                    selectinload(BBox.tags),
                 )
             )
 
@@ -944,6 +925,18 @@ class DbClient:
             result = await session.exec(stmt)
             return {b_uuid: img_uuid for b_uuid, img_uuid in result.all()}
 
+    async def get_image_uuids_by_bbox_tag(self, tag_uuid: str) -> Set[str]:
+        """Return all image UUIDs that have at least one bbox carrying the given tag."""
+        async with self._async_session_maker() as session:
+            stmt = (
+                select(BBox.image_uuid)
+                .join(BBoxTagLink, BBoxTagLink.bbox_uuid == BBox.uuid)
+                .where(BBoxTagLink.tag_uuid == tag_uuid)
+                .distinct()
+            )
+            result = await session.exec(stmt)
+            return set(result.all())
+
     async def filter_bboxes_by_tags(
         self,
         bbox_uuids: List[str],
@@ -972,12 +965,9 @@ class DbClient:
                 if tag_match_mode == "all":
                     # Bbox must carry EACH required tag; intersect per-tag.
                     for tag_uuid in require_tag_uuids:
-                        stmt = (
-                            select(BBoxTagLink.bbox_uuid)
-                            .where(
-                                BBoxTagLink.bbox_uuid.in_(valid),
-                                BBoxTagLink.tag_uuid == tag_uuid,
-                            )
+                        stmt = select(BBoxTagLink.bbox_uuid).where(
+                            BBoxTagLink.bbox_uuid.in_(valid),
+                            BBoxTagLink.tag_uuid == tag_uuid,
                         )
                         result = await session.exec(stmt)
                         valid &= set(result.all())
@@ -1141,9 +1131,7 @@ class DbClient:
             result = await session.exec(select(ImageRecord.uuid, ImageRecord.filename))
             return [{"uuid": uuid, "filename": filename} for uuid, filename in result.all()]
 
-    async def get_image_hash_data_by_prefixes(
-        self, prefixes: List[str]
-    ) -> tuple:
+    async def get_image_hash_data_by_prefixes(self, prefixes: List[str]) -> tuple:
         """Return hash data for all images whose filename falls under any of the given prefixes.
 
         *prefixes* must be absolute paths (already resolved).  A filename matches when it equals
@@ -1283,7 +1271,11 @@ class DbClient:
             await session.commit()
 
     def write_image_metadata_to_json(
-        self, json_path: Path, image_uuid: str, filename: str, update: ImageRecordUpdate,
+        self,
+        json_path: Path,
+        image_uuid: str,
+        filename: str,
+        update: ImageRecordUpdate,
         image_phash: Optional[str] = None,
     ) -> None:
         """Write image metadata to the JSON sidecar file."""
@@ -1527,7 +1519,9 @@ class DbClient:
         label_type: LabelType = LabelType.STANDARD,
     ) -> Label:
         """Insert a label and return the created object."""
-        new_label = Label(uuid=uuid or str(uuid4()), name=name, color=color, parent_uuid=parent_uuid, label_type=label_type)
+        new_label = Label(
+            uuid=uuid or str(uuid4()), name=name, color=color, parent_uuid=parent_uuid, label_type=label_type
+        )
 
         async with self._async_session_maker() as session:
             session.add(new_label)

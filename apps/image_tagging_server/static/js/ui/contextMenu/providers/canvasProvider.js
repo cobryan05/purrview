@@ -8,6 +8,7 @@
 import { registerContextProvider } from '../registry.js';
 import { asyncPanel } from '../menu.js';
 import { openSimilarImagesModal, getImageHashMax, getImageDefaultThreshold } from '/app-static/js/ui/similarSearch.js';
+import { openDissimilarImagesModal } from '/app-static/js/ui/dissimilarSearch.js';
 import { buildSimilarPanel } from '../similarPanelBuilder.js';
 
 
@@ -26,6 +27,13 @@ registerContextProvider('canvas', (adapters, ctx) => {
           openSimilarImagesModal({ imageUuid, threshold });
         }, defaultThreshold, hashMax);
       }),
+    },
+    {
+      label: 'Search for dissimilar images…',
+      onSelect: () => {
+        ctx.close();
+        openDissimilarImagesModal({ imageUuid });
+      },
     },
   ];
 

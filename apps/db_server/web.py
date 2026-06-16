@@ -510,6 +510,43 @@ class FindSimilarBboxesByCoordsPayload(ApiPayload):
     tag_match_mode: Literal["any", "all"] = "any"
 
 
+class FindDissimilarImagesByUuidPayload(ApiPayload):
+    image_uuid: str
+    count: int = 100
+    candidate_uuids: Optional[List[str]] = None
+
+
+class DissimilarImageMatch(ApiModel):
+    image_uuid: str
+    rank: int
+
+
+class FindDissimilarImagesResponse(StatusResponse):
+    matches: List[DissimilarImageMatch] = Field(default_factory=list)
+
+
+class FindDissimilarBboxesByUuidPayload(ApiPayload):
+    bbox_uuid: str
+    count: int = 100
+    label_uuids: List[str] = []
+
+
+class DissimilarBboxMatch(ApiModel):
+    bbox_uuid: str
+    image_uuid: Optional[str] = None
+    label_uuid: str
+    rank: int
+
+
+class FindDissimilarBboxesResponse(StatusResponse):
+    matches: List[DissimilarBboxMatch] = Field(default_factory=list)
+
+
+class FindDissimilarGlobalPayload(ApiPayload):
+    count: int = 100
+    seed_image_uuid: Optional[str] = None
+
+
 class RebuildHashIndexResponse(StatusResponse):
     image_count: int = 0
     bbox_count: int = 0
@@ -583,7 +620,7 @@ class WebApp:
     @staticmethod
     def _unique_constraint_msg(e: IntegrityError, entity: str) -> str:
         """Return a friendly message for unique-constraint violations, raw error otherwise."""
-        return f'A {entity} with that name already exists.' if 'unique' in str(e).lower() else str(e)
+        return f"A {entity} with that name already exists." if "unique" in str(e).lower() else str(e)
 
     def _register_exception(self):
         @self._app.exception_handler(RequestValidationError)
@@ -783,7 +820,7 @@ class WebApp:
                 return UpdateSourceResponse(status=JsonValues.SUCCESS, source=source)
             except IntegrityError as e:
                 logger.error(e, exc_info=True)
-                return UpdateSourceResponse(status=JsonValues.FAILURE, message=self._unique_constraint_msg(e, 'source'))
+                return UpdateSourceResponse(status=JsonValues.FAILURE, message=self._unique_constraint_msg(e, "source"))
             except Exception as e:
                 logger.error(e, exc_info=True)
                 return UpdateSourceResponse(status=JsonValues.FAILURE, message=str(e))
@@ -813,7 +850,7 @@ class WebApp:
                 return CreateSourceResponse(status=JsonValues.SUCCESS, source=source)
             except IntegrityError as e:
                 logger.error(e, exc_info=True)
-                return CreateSourceResponse(status=JsonValues.FAILURE, message=self._unique_constraint_msg(e, 'source'))
+                return CreateSourceResponse(status=JsonValues.FAILURE, message=self._unique_constraint_msg(e, "source"))
             except Exception as e:
                 logger.error(e, exc_info=True)
                 return CreateSourceResponse(status=JsonValues.FAILURE, message=str(e))
@@ -879,7 +916,7 @@ class WebApp:
                 return AddTagResponse(status=JsonValues.SUCCESS, tag=tag)
             except IntegrityError as e:
                 logger.error(e, exc_info=True)
-                return AddTagResponse(status=JsonValues.FAILURE, message=self._unique_constraint_msg(e, 'tag'))
+                return AddTagResponse(status=JsonValues.FAILURE, message=self._unique_constraint_msg(e, "tag"))
             except Exception as e:
                 logger.error(e, exc_info=True)
                 return AddTagResponse(status=JsonValues.FAILURE, message=str(e))
@@ -927,7 +964,7 @@ class WebApp:
                 return UpdateTagResponse(status=JsonValues.SUCCESS)
             except IntegrityError as e:
                 logger.error(e, exc_info=True)
-                return UpdateTagResponse(status=JsonValues.FAILURE, message=self._unique_constraint_msg(e, 'tag'))
+                return UpdateTagResponse(status=JsonValues.FAILURE, message=self._unique_constraint_msg(e, "tag"))
             except Exception as e:
                 logger.error(e, exc_info=True)
                 return UpdateTagResponse(status=JsonValues.FAILURE, message=str(e))
@@ -1048,8 +1085,12 @@ class WebApp:
             """
             try:
                 file_list, has_more = await self._manager.list_files(
-                    rel_path=path, patterns=[pattern], recursive=recursive,
-                    include_db_status=include_db_status, offset=offset, limit=limit,
+                    rel_path=path,
+                    patterns=[pattern],
+                    recursive=recursive,
+                    include_db_status=include_db_status,
+                    offset=offset,
+                    limit=limit,
                 )
                 return ListFilesResponse(status=JsonValues.SUCCESS, files=file_list, has_more=has_more)
             except Exception as e:
@@ -1280,7 +1321,6 @@ class WebApp:
                 logger.error(e, exc_info=True)
                 return ListImageStubsResponse(status=JsonValues.FAILURE, message=str(e))
 
-
         @self._app.post(
             "/api/images/stubs/needing-phash",
             response_model=ListImageStubsResponse,
@@ -1417,8 +1457,12 @@ class WebApp:
         async def find_similar_bboxes(payload: FindSimilarBboxesPayload) -> FindSimilarBboxesResponse:
             try:
                 matches = await self._manager.find_similar_bboxes_enriched(
-                    payload.phash, payload.label_uuids, payload.threshold,
-                    payload.tag_uuids, payload.exclude_tag_uuids, payload.tag_match_mode,
+                    payload.phash,
+                    payload.label_uuids,
+                    payload.threshold,
+                    payload.tag_uuids,
+                    payload.exclude_tag_uuids,
+                    payload.tag_match_mode,
                 )
                 return FindSimilarBboxesResponse(
                     status=JsonValues.SUCCESS,
@@ -1457,8 +1501,12 @@ class WebApp:
         async def find_similar_bboxes_by_uuid(payload: FindSimilarBboxesByUuidPayload) -> FindSimilarBboxesResponse:
             try:
                 matches = await self._manager.find_similar_bboxes_by_uuid(
-                    payload.bbox_uuid, payload.label_uuids, payload.threshold,
-                    payload.tag_uuids, payload.exclude_tag_uuids, payload.tag_match_mode,
+                    payload.bbox_uuid,
+                    payload.label_uuids,
+                    payload.threshold,
+                    payload.tag_uuids,
+                    payload.exclude_tag_uuids,
+                    payload.tag_match_mode,
                 )
                 return FindSimilarBboxesResponse(
                     status=JsonValues.SUCCESS,
@@ -1505,6 +1553,69 @@ class WebApp:
                 return FindSimilarBboxesResponse(status=JsonValues.FAILURE, message=str(e))
 
         @self._app.post(
+            "/api/images/find-dissimilar-by-image-uuid",
+            response_model=FindDissimilarImagesResponse,
+            tags=[ApiTags.IMAGES],
+            operation_id="find_dissimilar_images_by_uuid",
+        )
+        async def find_dissimilar_images_by_uuid(
+            payload: FindDissimilarImagesByUuidPayload,
+        ) -> FindDissimilarImagesResponse:
+            try:
+                candidate_set = set(payload.candidate_uuids) if payload.candidate_uuids else None
+                ranked = await self._manager.rank_images_by_diversity(payload.image_uuid, candidate_set, payload.count)
+                return FindDissimilarImagesResponse(
+                    status=JsonValues.SUCCESS,
+                    matches=[DissimilarImageMatch(image_uuid=uuid, rank=i) for i, uuid in enumerate(ranked)],
+                )
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return FindDissimilarImagesResponse(status=JsonValues.FAILURE, message=str(e))
+
+        @self._app.post(
+            "/api/images/bbox/find-dissimilar-by-bbox-uuid",
+            response_model=FindDissimilarBboxesResponse,
+            tags=[ApiTags.IMAGES],
+            operation_id="find_dissimilar_bboxes_by_uuid",
+        )
+        async def find_dissimilar_bboxes_by_uuid(
+            payload: FindDissimilarBboxesByUuidPayload,
+        ) -> FindDissimilarBboxesResponse:
+            try:
+                ranked = await self._manager.rank_bboxes_by_diversity(
+                    payload.bbox_uuid, payload.label_uuids or None, payload.count
+                )
+                return FindDissimilarBboxesResponse(
+                    status=JsonValues.SUCCESS,
+                    matches=[
+                        DissimilarBboxMatch(bbox_uuid=b_uuid, image_uuid=img_uuid, label_uuid=lbl, rank=i)
+                        for i, (b_uuid, img_uuid, lbl) in enumerate(ranked)
+                    ],
+                )
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return FindDissimilarBboxesResponse(status=JsonValues.FAILURE, message=str(e))
+
+        @self._app.post(
+            "/api/images/find-dissimilar-global",
+            response_model=FindDissimilarImagesResponse,
+            tags=[ApiTags.IMAGES],
+            operation_id="find_dissimilar_images_global",
+        )
+        async def find_dissimilar_images_global(
+            payload: FindDissimilarGlobalPayload,
+        ) -> FindDissimilarImagesResponse:
+            try:
+                ranked = await self._manager.get_most_unique_images(payload.count, payload.seed_image_uuid)
+                return FindDissimilarImagesResponse(
+                    status=JsonValues.SUCCESS,
+                    matches=[DissimilarImageMatch(image_uuid=uuid, rank=i) for i, uuid in enumerate(ranked)],
+                )
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return FindDissimilarImagesResponse(status=JsonValues.FAILURE, message=str(e))
+
+        @self._app.post(
             "/api/images/batch-by-uuids",
             response_model=BatchImagesResponse,
             tags=[ApiTags.IMAGES],
@@ -1532,10 +1643,7 @@ class WebApp:
                 result = self._manager.check_dedup_bulk(
                     payload.image_phash,
                     payload.image_threshold,
-                    [
-                        {"phash": b.phash, "label_uuid": b.label_uuid, "threshold": b.threshold}
-                        for b in payload.bboxes
-                    ],
+                    [{"phash": b.phash, "label_uuid": b.label_uuid, "threshold": b.threshold} for b in payload.bboxes],
                 )
                 return CheckDedupBulkResponse(
                     status=JsonValues.SUCCESS,
@@ -1867,7 +1975,7 @@ class WebApp:
                 return DatasetResponse(status=JsonValues.SUCCESS, dataset=dataset)
             except IntegrityError as e:
                 logger.error(e, exc_info=True)
-                return DatasetResponse(status=JsonValues.FAILURE, message=self._unique_constraint_msg(e, 'dataset'))
+                return DatasetResponse(status=JsonValues.FAILURE, message=self._unique_constraint_msg(e, "dataset"))
             except Exception as e:
                 logger.error(e, exc_info=True)
                 return DatasetResponse(status=JsonValues.FAILURE, message=str(e))
@@ -1886,7 +1994,7 @@ class WebApp:
                 return DatasetResponse(status=JsonValues.SUCCESS, dataset=dataset)
             except IntegrityError as e:
                 logger.error(e, exc_info=True)
-                return DatasetResponse(status=JsonValues.FAILURE, message=self._unique_constraint_msg(e, 'dataset'))
+                return DatasetResponse(status=JsonValues.FAILURE, message=self._unique_constraint_msg(e, "dataset"))
             except Exception as e:
                 logger.error(e, exc_info=True)
                 return DatasetResponse(status=JsonValues.FAILURE, message=str(e))
@@ -2028,7 +2136,9 @@ class WebApp:
                 return ModelConfigResponse(status=JsonValues.SUCCESS, config=config)
             except IntegrityError as e:
                 logger.error(e, exc_info=True)
-                return ModelConfigResponse(status=JsonValues.FAILURE, message=self._unique_constraint_msg(e, 'model configuration'))
+                return ModelConfigResponse(
+                    status=JsonValues.FAILURE, message=self._unique_constraint_msg(e, "model configuration")
+                )
             except Exception as e:
                 logger.error(e, exc_info=True)
                 return ModelConfigResponse(status=JsonValues.FAILURE, message=str(e))
@@ -2063,7 +2173,9 @@ class WebApp:
                 return ModelConfigResponse(status=JsonValues.SUCCESS, config=config)
             except IntegrityError as e:
                 logger.error(e, exc_info=True)
-                return ModelConfigResponse(status=JsonValues.FAILURE, message=self._unique_constraint_msg(e, 'model configuration'))
+                return ModelConfigResponse(
+                    status=JsonValues.FAILURE, message=self._unique_constraint_msg(e, "model configuration")
+                )
             except Exception as e:
                 logger.error(e, exc_info=True)
                 return ModelConfigResponse(status=JsonValues.FAILURE, message=str(e))

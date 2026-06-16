@@ -37,6 +37,7 @@ import { parseToolUuid } from '/app-static/js/app/image-tagging/canvas/tools.js'
 import { createHoverPreview } from '/app-static/js/ui/thumbnailHoverPreview.js';
 import { createEntryView } from '/app-static/js/ui/entryView.js';
 import { reviewStateToDatasetForm, datasetFormToReviewState } from '/app-static/js/shared/filterUtils.js';
+import { openDissimilarGlobalModal } from '/app-static/js/ui/dissimilarSearch.js';
 
 
 const DEFAULT_PAGE_SIZE = 50;
@@ -400,6 +401,14 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
     });
 
     toolbar.append(makeToolbarSep(), makeToolbarGroup(presetsSelect, savePresetBtn, exportToDatasetBtn));
+
+    // ── "Label most unique first" — diversity-ranked unverified queue ────────
+    const uniqueFirstBtn = document.createElement('button');
+    uniqueFirstBtn.className = 'review-toolbar__btn';
+    uniqueFirstBtn.textContent = '★ Most Unique First';
+    uniqueFirstBtn.title = 'Open the most visually distinct unverified images in a review panel (farthest-point sampling)';
+    uniqueFirstBtn.addEventListener('click', () => openDissimilarGlobalModal());
+    toolbar.append(makeToolbarSep(), makeToolbarGroup(uniqueFirstBtn));
     } // end if (datasetActions)
   }
 
@@ -424,6 +433,7 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
   let _lastCursor = null;
   let _lastClickedIndex = -1;     // index in _visibleEntries of the last checkbox click
   let _rendering = false;
+  let _renderGeneration = 0;
   let _hasMore = false;
   let _totalCount = 0;
 
@@ -828,18 +838,28 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
 
   // ── Render (fetch + display) ──────────────────────────────────────
   async function render() {
-    if (_rendering) return;
+    const _gen = ++_renderGeneration;
     _rendering = true;
 
     const MAX_AUTO_SKIP = 10;
     let autoSkipped = 0;
+    let _slowTimer = null;
 
     fetchLoop: while (true) {
-      refreshBtn.disabled = true;
+      // Bail out if a newer render has started (user clicked Refresh mid-load).
+      if (_renderGeneration !== _gen) { clearTimeout(_slowTimer); return; }
+      refreshBtn.disabled = false;
       prevBtn.disabled = true;
       nextBtn.disabled = true;
       statusMsg.textContent = 'Loading…';
       statusMsg.classList.add('review-toolbar__status--loading');
+      clearTimeout(_slowTimer);
+      _slowTimer = setTimeout(() => {
+        if (_renderGeneration === _gen) {
+          statusMsg.textContent = 'Still loading… click Refresh to cancel';
+          statusMsg.classList.add('review-toolbar__status--loading');
+        }
+      }, 5000);
       _thumbLoader.reset();
       // Use setEntries([]) so entryView._entries and the DOM stay in sync — a
       // direct grid.innerHTML = '' would leave _entries stale, causing a
@@ -902,6 +922,8 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
           }));
         }
       } catch (err) {
+        clearTimeout(_slowTimer);
+        if (_renderGeneration !== _gen) return;
         statusMsg.classList.remove('review-toolbar__status--loading');
         statusMsg.textContent = `Error: ${err.message}`;
         refreshBtn.disabled = false;
@@ -910,6 +932,8 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
         _rendering = false;
         return;
       }
+
+      if (_renderGeneration !== _gen) { clearTimeout(_slowTimer); return; }
 
       _hasMore = hasMore;
       // totalCount is -1 on non-first pages (server skips the expensive count
@@ -975,6 +999,7 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
     prevBtn.disabled = _pageCursors.length <= 1;
     nextBtn.disabled = !_hasMore;
 
+    clearTimeout(_slowTimer);
     renderFromEntries();
 
     refreshBtn.disabled = false;

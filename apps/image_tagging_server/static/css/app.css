@@ -569,21 +569,23 @@ button.filter-active {
   position: static;
   box-shadow: none;
   resize: vertical;
-  min-height: 120px;
-  height: 340px;
+  overflow: auto;
+  min-height: 200px;
+  height: 480px;
   width: 100% !important;
 }
 
 /* Two-column layout for inline Tags + Labels on the dataset form */
 .ds-inline-controls {
   display: flex;
-  gap: 10px;
+  gap: 12px;
   margin-bottom: 8px;
   flex-wrap: wrap;
 }
 
 .ds-inline-control {
-  flex: 0 0 180px;
+  flex: 1 1 220px;   /* grow to fill, wrap below 220px */
+  min-width: 180px;
   display: flex;
   flex-direction: column;
 }
@@ -598,8 +600,8 @@ button.filter-active {
 }
 
 .ds-inline-control .ms-dropdown--inline {
-  flex: 1;
-  min-height: 0;
+  display: flex;
+  flex-direction: column;
 }
 
 .ms-dropdown__trigger {
@@ -1866,6 +1868,15 @@ button.filter-active {
 .ds-editor {
   flex: 1;
   min-width: 0;
+  /* Bound height so the body scrolls and the sticky footer stays in view */
+  max-height: 82vh;
+}
+
+/* Make the body fill remaining panel height and scroll */
+.ds-editor .panel-box__body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
 }
 /* Editor bar title is the active dataset name, not a section label */
 .ds-editor .panel-box__title {

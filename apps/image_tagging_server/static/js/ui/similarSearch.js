@@ -29,6 +29,7 @@ import { getSetting } from '/app-static/js/shared/api/settings.js';
 import { fetchTags } from '/app-static/js/shared/api/tags.js';
 import { fetchLabels } from '/app-static/js/shared/api/labels.js';
 import { createMultiSelectDropdown } from '/app-static/js/ui/utils/index.js';
+import { pageStartIdx } from '/app-static/js/ui/searchUtils.js';
 
 /** @returns {Promise<number>} */
 export async function getImageHashMax() {
@@ -115,18 +116,6 @@ function buildThresholdSlider(initial, { min = 0, max = 64, onChange }) {
   return { element: el, getValue: () => parseInt(slider.value, 10) };
 }
 
-// ── Shared pagination helper ───────────────────────────────────────────────────
-
-/**
- * Return the start index for a keyset-paginated slice of an ordered array.
- * Each element must have an `imageUuid` property.
- * @param {Array<{imageUuid: string}>} order
- * @param {string|null} afterUuid
- */
-function _startIdx(order, afterUuid) {
-  return afterUuid !== null ? order.findIndex(e => e.imageUuid === afterUuid) + 1 : 0;
-}
-
 // ── Public API ─────────────────────────────────────────────────────────────────
 
 /**
@@ -170,7 +159,7 @@ export async function openSimilarImagesModal({ imageUuid, threshold = null }) {
       await _ensureMatches();
       if (!_sortedMatches.length) return [];
 
-      const startIdx = _startIdx(_sortedMatches, afterUuid);
+      const startIdx = pageStartIdx(_sortedMatches, afterUuid);
       const page = _sortedMatches.slice(startIdx, startIdx + limit);
       if (!page.length) return [];
 
@@ -298,7 +287,7 @@ export async function openSimilarBboxesModal({ bboxUuid, bboxCoords, imageUuid, 
       await _ensureMatches();
       if (!_imageOrder.length) return [];
 
-      const startIdx = _startIdx(_imageOrder, afterUuid);
+      const startIdx = pageStartIdx(_imageOrder, afterUuid);
       const page = _imageOrder.slice(startIdx, startIdx + limit);
       if (!page.length) return [];
 

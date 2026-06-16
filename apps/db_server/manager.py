@@ -208,7 +208,9 @@ class Manager:
             label_type (Optional[LabelType]): New label type.
         """
         await self._db_client.update_label(
-            label_uuid=label_uuid, name=name, color=color,
+            label_uuid=label_uuid,
+            name=name,
+            color=color,
             **({} if label_type is None else {"label_type": label_type}),
         )
         # TODO CJO: await self._db_client.export_labels_from_db_to_json(str(self._labels_json))
@@ -459,16 +461,18 @@ class Manager:
                 image_bgr = await asyncio.to_thread(__import__("cv2").imread, str(safe_path))
                 if image_bgr is not None:
                     if image_phash is None:
-                        image_phash = await asyncio.to_thread(
-                            phash_from_numpy, image_bgr, self._image_hash_size
-                        )
+                        image_phash = await asyncio.to_thread(phash_from_numpy, image_bgr, self._image_hash_size)
                     # Always (re-)compute per-bbox phashes.
                     bbox_phash_list = []
                     for b in update.bboxes:
                         try:
                             bp = await asyncio.to_thread(
                                 phash_from_numpy_crop,
-                                image_bgr, b.x, b.y, b.width, b.height,
+                                image_bgr,
+                                b.x,
+                                b.y,
+                                b.width,
+                                b.height,
                                 self._bbox_hash_size,
                             )
                             bbox_phash_list.append({"uuid": b.uuid, "phash": bp})
@@ -660,9 +664,7 @@ class Manager:
         datasets.
         """
         t0 = time.monotonic()
-        inner: asyncio.Task[int] = asyncio.ensure_future(
-            self._db_client.count_images_search(params)
-        )
+        inner: asyncio.Task[int] = asyncio.ensure_future(self._db_client.count_images_search(params))
         try:
             result = await asyncio.wait_for(asyncio.shield(inner), timeout=self._COUNT_QUERY_TIMEOUT)
             logger.info("[review] count query completed in %.3fs → %d", time.monotonic() - t0, result)
@@ -726,7 +728,9 @@ class Manager:
         else:
             t1 = time.monotonic()
             batch = await self._db_client.list_images_search(fetch_params)
-            logger.info("[review] list query (paginated) completed in %.3fs → %d rows", time.monotonic() - t1, len(batch))
+            logger.info(
+                "[review] list query (paginated) completed in %.3fs → %d rows", time.monotonic() - t1, len(batch)
+            )
             total_count = -1
 
         has_more = len(batch) > params.limit
@@ -738,7 +742,9 @@ class Manager:
             record.filename = self._image_rel_path(img.filename)
             results.append(record)
 
-        logger.info("[review] total handler time %.3fs → %d images, has_more=%s", time.monotonic() - t0, len(results), has_more)
+        logger.info(
+            "[review] total handler time %.3fs → %d images, has_more=%s", time.monotonic() - t0, len(results), has_more
+        )
         return results, has_more, total_count
 
     async def list_files(
@@ -793,7 +799,9 @@ class Manager:
         page = filtered[offset : offset + limit]
 
         # Stat calls (is_dir) and FileEntryRead construction only for the page slice.
-        entries = [FileEntryRead(name=p.name, is_dir=p.is_dir(), path=str(p.relative_to(self._files_root))) for p in page]
+        entries = [
+            FileEntryRead(name=p.name, is_dir=p.is_dir(), path=str(p.relative_to(self._files_root))) for p in page
+        ]
 
         if include_db_status and entries:
             abs_paths = [str(self._files_root / e.path) for e in entries if not e.is_dir]
@@ -966,11 +974,7 @@ class Manager:
             return 0
         # Resolve to absolute paths — the DB stores filenames as absolute paths
         # (e.g. /app/image_datasets/timelapse_out2/frame001.jpg).
-        norm_dirs = [
-            str(p).rstrip("/")
-            for d in directories
-            if (p := get_safe_path(self._files_root, d))
-        ]
+        norm_dirs = [str(p).rstrip("/") for d in directories if (p := get_safe_path(self._files_root, d))]
         if not norm_dirs:
             return 0
 
@@ -1165,6 +1169,65 @@ class Manager:
             bbox.phash, label_uuids, threshold, tag_uuids, exclude_tag_uuids, tag_match_mode
         )
 
+    async def rank_images_by_diversity(
+        self,
+        seed_uuid: Optional[str],
+        candidate_uuids: Optional[Set[str]],
+        count: int,
+    ) -> List[str]:
+        """Return up to *count* image UUIDs ordered most-diverse first (farthest-point sampling).
+
+        If *seed_uuid* is None, a seed phash is chosen automatically from the candidate
+        set (v1 approximation: first available candidate — the diversity walk is largely
+        insensitive to the exact seed choice).
+        If *candidate_uuids* is None, all valid images participate.
+        """
+        if seed_uuid is not None:
+            image = await self._db_client.get_image_by_uuid(seed_uuid)
+            if image is None or image.phash is None:
+                return []
+            seed_phash = image.phash
+        else:
+            seed_phash = self._hash_index.pick_any_image_phash(candidate_uuids)
+            if seed_phash is None:
+                return []
+
+        return await asyncio.to_thread(self._hash_index.rank_images_by_diversity, seed_phash, candidate_uuids, count)
+
+    async def rank_bboxes_by_diversity(
+        self,
+        seed_bbox_uuid: str,
+        label_uuids: Optional[List[str]],
+        count: int,
+    ) -> List[Tuple[str, Optional[str], str]]:
+        """Return up to *count* (bbox_uuid, image_uuid, label_uuid) ordered most-diverse first."""
+        result = await self._db_client.get_bbox_with_image(seed_bbox_uuid)
+        if result is None:
+            return []
+        bbox, _ = result
+        if bbox.phash is None:
+            return []
+
+        ranked = await asyncio.to_thread(self._hash_index.rank_bboxes_by_diversity, bbox.phash, label_uuids or None, count)
+        if not ranked:
+            return []
+
+        image_uuid_map = await self._db_client.get_image_uuids_for_bboxes([b for b, _ in ranked])
+        return [(b_uuid, image_uuid_map.get(b_uuid), lbl) for b_uuid, lbl in ranked]
+
+    async def get_most_unique_images(self, count: int, seed_uuid: Optional[str] = None) -> List[str]:
+        """Return up to *count* unverified image UUIDs ranked by visual diversity.
+
+        Scope: images that have at least one bbox tagged UNVERIFIED_TAG_UUID.
+        Falls back to all images if no unverified images exist.
+        """
+        candidate_uuids = await self._db_client.get_image_uuids_by_bbox_tag(UNVERIFIED_TAG_UUID)
+        return await self.rank_images_by_diversity(
+            seed_uuid,
+            candidate_uuids if candidate_uuids else None,
+            count,
+        )
+
     async def find_similar_bboxes_by_coords(
         self,
         image_uuid: str,
@@ -1208,13 +1271,21 @@ class Manager:
                 "loading": " (loading hashes from DB…)",
                 "constructing": " (constructing search trees…)",
             }.get(self._build_phase, "…")
-            notices.append({
-                "key": "hash_build",
-                "level": "info",
-                "message": f"Building similarity index{phase_detail} — similar search unavailable until complete",
-            })
+            notices.append(
+                {
+                    "key": "hash_build",
+                    "level": "info",
+                    "message": f"Building similarity index{phase_detail} - similarity searches unavailable until complete",
+                }
+            )
         elif self._rebuild_in_progress:
-            notices.append({"key": "hash_rebuild", "level": "warning", "message": "Hash index rebuilding — similar search may return stale results"})
+            notices.append(
+                {
+                    "key": "hash_rebuild",
+                    "level": "warning",
+                    "message": "Hash index rebuilding — similar search may return stale results",
+                }
+            )
         return {
             "service": "db_server",
             "status": "ok",
@@ -1283,11 +1354,16 @@ class Manager:
         image_phash = await asyncio.to_thread(phash_from_numpy, image_bgr, img_hs)
 
         bbox_phash_list = []
-        for bbox in (image_record.bboxes or []):
+        for bbox in image_record.bboxes or []:
             try:
                 bp = await asyncio.to_thread(
                     phash_from_numpy_crop,
-                    image_bgr, bbox.x, bbox.y, bbox.width, bbox.height, bbox_hs,
+                    image_bgr,
+                    bbox.x,
+                    bbox.y,
+                    bbox.width,
+                    bbox.height,
+                    bbox_hs,
                 )
                 bbox_phash_list.append({"uuid": bbox.uuid, "phash": bp})
             except Exception:
@@ -1298,7 +1374,7 @@ class Manager:
         # Remove old hash index entries, then re-add updated ones.
         if image_record.phash:
             self._hash_index.remove_image(image_uuid)
-        for bbox in (image_record.bboxes or []):
+        for bbox in image_record.bboxes or []:
             if bbox.phash and bbox.label_uuid:
                 self._hash_index.remove_bbox(bbox.uuid, bbox.label_uuid)
 

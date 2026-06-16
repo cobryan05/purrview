@@ -167,6 +167,44 @@ export async function findSimilarBboxesByUuid(bboxUuid, threshold = 8, labelUuid
   }));
 }
 
+export async function findDissimilarImagesByUuid(imageUuid, count = 100, candidateUuids = null) {
+  const res = await apiFetch('/api/images/find-dissimilar-by-image-uuid', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ imageUuid, count, candidateUuids }),
+  });
+  const data = await res.json();
+  if (!res.ok || data.status !== 'success') throw new Error(data.message || 'Failed to find dissimilar images');
+  return (data.matches ?? []).map(m => ({ imageUuid: m.imageUuid, rank: m.rank }));
+}
+
+export async function findDissimilarBboxesByUuid(bboxUuid, count = 100, labelUuids = []) {
+  const res = await apiFetch('/api/images/bbox/find-dissimilar-by-bbox-uuid', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ bboxUuid, count, labelUuids }),
+  });
+  const data = await res.json();
+  if (!res.ok || data.status !== 'success') throw new Error(data.message || 'Failed to find dissimilar bboxes');
+  return (data.matches ?? []).map(m => ({
+    bboxUuid: m.bboxUuid,
+    imageUuid: m.imageUuid ?? null,
+    labelUuid: m.labelUuid,
+    rank: m.rank,
+  }));
+}
+
+export async function findDissimilarGlobal(count = 100, seedImageUuid = null) {
+  const res = await apiFetch('/api/images/find-dissimilar-global', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ count, seedImageUuid }),
+  });
+  const data = await res.json();
+  if (!res.ok || data.status !== 'success') throw new Error(data.message || 'Failed to find most unique images');
+  return (data.matches ?? []).map(m => ({ imageUuid: m.imageUuid, rank: m.rank }));
+}
+
 export async function findSimilarBboxesByCoords(imageUuid, x, y, w, h, threshold = 8, labelUuids = [], tagUuids = [], excludeTagUuids = [], tagMatchMode = 'any') {
   const res = await apiFetch('/api/images/bbox/find-similar-by-coords', {
     method: 'POST',

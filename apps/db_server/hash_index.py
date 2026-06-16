@@ -24,10 +24,27 @@ import time
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Set, Tuple
 
+import numpy as np
 import pybktree
 
 from apps.helpers.db.db_client import DbClient
 from apps.helpers.hashUtils import hamming
+
+# ── Byte-level popcount LUT (always available) ────────────────────────────────
+# Used directly for arbitrary-width hash arrays in rank_images_by_diversity,
+# and as the fallback inside _popcount for older numpy.
+_LUT8 = np.array([bin(i).count("1") for i in range(256)], dtype=np.uint8)
+
+# ── Vectorised popcount for uint64 numpy arrays ────────────────────────────────
+# np.bitwise_count was added in numpy 2.0; fall back to the byte-LUT for older
+# versions so we don't require a pinned numpy version.
+try:
+    _popcount = np.bitwise_count  # type: ignore[attr-defined]  # numpy >= 2.0
+except AttributeError:
+    def _popcount(arr_u64: np.ndarray) -> np.ndarray:  # type: ignore[misc]
+        """Return per-element popcount for a uint64 array using a byte look-up table."""
+        return _LUT8[arr_u64.view(np.uint8)].reshape(arr_u64.shape + (8,)).sum(axis=-1).astype(np.int32)
+
 
 logger = logging.getLogger(__name__)
 
@@ -74,7 +91,7 @@ class HashIndex:
 
         # Per-label bbox trees: label_uuid → BKTree of (phash_hex, bbox_uuid) items.
         self._bbox_trees: Dict[str, pybktree.BKTree] = {}
-        self._valid_bboxes: Dict[str, Set[str]] = {}   # label_uuid → set of bbox uuids
+        self._valid_bboxes: Dict[str, Set[str]] = {}  # label_uuid → set of bbox uuids
         self._bbox_tombstones: Dict[str, int] = {}
 
         # Set to True when tombstone ratio crosses the threshold.  Callers should
@@ -232,6 +249,18 @@ class HashIndex:
         self.remove_bbox(uuid, old_label_uuid)
         self.add_bbox(uuid, new_label_uuid, phash)
 
+    def pick_any_image_phash(self, candidate_uuids: Optional[Set[str]] = None) -> Optional[str]:
+        """Return the phash of any valid (candidate-filtered) image entry, or None if empty."""
+        if self._image_tree is None:
+            return None
+        for phash_hex, uuid in self._image_tree:
+            if uuid not in self._valid_images:
+                continue
+            if candidate_uuids is not None and uuid not in candidate_uuids:
+                continue
+            return phash_hex
+        return None
+
     # ─────────────────────────────────────────────────────────────────────────
     # Queries
     # ─────────────────────────────────────────────────────────────────────────
@@ -251,11 +280,7 @@ class HashIndex:
         except Exception:
             logger.exception("HashIndex.find_similar_images error")
             return []
-        results = [
-            (item[1], dist)
-            for dist, item in raw
-            if item[1] in self._valid_images
-        ]
+        results = [(item[1], dist) for dist, item in raw if item[1] in self._valid_images]
         results.sort(key=lambda x: x[1])
         return results
 
@@ -291,6 +316,122 @@ class HashIndex:
         results.sort(key=lambda x: x[1])
         return results
 
+    def rank_images_by_diversity(
+        self,
+        seed_phash: str,
+        candidate_uuids: Optional[Set[str]],
+        count: int,
+    ) -> List[str]:
+        """Return up to *count* image UUIDs ordered most-diverse first.
+
+        Uses greedy farthest-point sampling: the first pick is the image most
+        unlike *seed_phash*, and each subsequent pick is the image most unlike
+        *all already-selected* images.  This avoids returning a cluster of
+        near-duplicates at the far end of a single distance sort.
+
+        If *candidate_uuids* is given, only those images participate.
+        Complexity: O(N × count) vectorised XOR + popcount; fast for N ≤ ~100k.
+        Works for any image hash size (byte-level LUT, not uint64-limited).
+        Raises ValueError if *seed_phash* doesn't match the current image hash size.
+        """
+        self._validate_image_phash(seed_phash)
+        if self._image_tree is None:
+            return []
+
+        # Materialise phash hex strings from the tree, honouring tombstones
+        # and the optional candidate filter.
+        uuids: List[str] = []
+        phash_hexes: List[str] = []
+        for phash_hex, uuid in self._image_tree:
+            if uuid not in self._valid_images:
+                continue
+            if candidate_uuids is not None and uuid not in candidate_uuids:
+                continue
+            uuids.append(uuid)
+            phash_hexes.append(phash_hex)
+
+        if not uuids:
+            return []
+
+        # Represent each phash as a row of uint8 bytes — works for any hash size.
+        byte_len = len(seed_phash) // 2
+        phash_bytes = np.frombuffer(
+            b"".join(bytes.fromhex(ph) for ph in phash_hexes),
+            dtype=np.uint8,
+        ).reshape(len(phash_hexes), byte_len)
+        seed_bytes = np.frombuffer(bytes.fromhex(seed_phash), dtype=np.uint8)
+
+        # min_dist[i] = Hamming distance from candidate i to the nearest already-selected point.
+        # Initialised to distance from the seed so the first argmax picks the farthest from it.
+        min_dist: np.ndarray = _LUT8[phash_bytes ^ seed_bytes].sum(axis=1).astype(np.int32)
+
+        selected: List[str] = []
+        limit = min(count, len(uuids))
+        for _ in range(limit):
+            j = int(np.argmax(min_dist))
+            if min_dist[j] < 0:
+                break  # all candidates already selected
+            selected.append(uuids[j])
+            min_dist[j] = -1  # mark as selected so it can't be re-picked
+            # Update min_dist: each remaining candidate's distance shrinks if the
+            # new pivot is closer than any previously selected point.
+            d = _LUT8[phash_bytes ^ phash_bytes[j]].sum(axis=1).astype(np.int32)
+            min_dist = np.where(min_dist >= 0, np.minimum(min_dist, d), min_dist)
+
+        return selected
+
+    def rank_bboxes_by_diversity(
+        self,
+        seed_phash: str,
+        label_uuids: Optional[List[str]],
+        count: int,
+    ) -> List[Tuple[str, str]]:
+        """Return up to *count* (bbox_uuid, label_uuid) tuples ordered most-diverse first.
+
+        Uses greedy farthest-point sampling seeded with *seed_phash*.
+        Bbox phashes are 256-bit (hash_size 16) and do not fit in uint64, so
+        Python-int XOR + bit_count is used instead of the numpy uint64 path.
+
+        If *label_uuids* is None or empty, all per-label trees are searched.
+        Raises ValueError if *seed_phash* doesn't match the current bbox hash size.
+        """
+        self._validate_bbox_phash(seed_phash)
+
+        # Materialise (bbox_uuid, label_uuid, phash_int) across relevant trees.
+        items: List[Tuple[str, str, int]] = []
+        target_labels = label_uuids if label_uuids else list(self._bbox_trees.keys())
+        for lbl in target_labels:
+            tree = self._bbox_trees.get(lbl)
+            if tree is None:
+                continue
+            valid = self._valid_bboxes.get(lbl, set())
+            for phash_hex, bbox_uuid in tree:
+                if bbox_uuid in valid:
+                    items.append((bbox_uuid, lbl, int(phash_hex, 16)))
+
+        if not items:
+            return []
+
+        seed_int = int(seed_phash, 16)
+        min_dist = [(p ^ seed_int).bit_count() for _, _, p in items]
+
+        selected: List[Tuple[str, str]] = []
+        limit = min(count, len(items))
+        for _ in range(limit):
+            j = max(range(len(items)), key=lambda i: min_dist[i])
+            if min_dist[j] < 0:
+                break
+            selected.append((items[j][0], items[j][1]))
+            pivot_p = items[j][2]
+            min_dist[j] = -1
+            for i in range(len(items)):
+                if min_dist[i] >= 0:
+                    d = (items[i][2] ^ pivot_p).bit_count()
+                    if d < min_dist[i]:
+                        min_dist[i] = d
+
+        return selected
+
     def check_dedup_bulk(
         self,
         image_phash: str,
@@ -310,10 +451,7 @@ class HashIndex:
             (e.g. "tag only when both image and bbox are dups") should AND with image_is_dup themselves.
         """
         image_is_dup = bool(self.find_similar_images(image_phash, image_threshold))
-        bbox_flags = [
-            bool(self.find_similar_bboxes(b["phash"], [b["label_uuid"]], b["threshold"]))
-            for b in bboxes
-        ]
+        bbox_flags = [bool(self.find_similar_bboxes(b["phash"], [b["label_uuid"]], b["threshold"])) for b in bboxes]
         return {"image_is_dup": image_is_dup, "bbox_flags": bbox_flags}
 
     # ─────────────────────────────────────────────────────────────────────────
@@ -324,8 +462,7 @@ class HashIndex:
         """Return diagnostic stats for the rebuild endpoint response."""
         image_tree_size = len(self._valid_images) + self._image_tombstones
         bbox_sizes = {
-            lbl: len(self._valid_bboxes.get(lbl, set())) + self._bbox_tombstones.get(lbl, 0)
-            for lbl in self._bbox_trees
+            lbl: len(self._valid_bboxes.get(lbl, set())) + self._bbox_tombstones.get(lbl, 0) for lbl in self._bbox_trees
         }
         return {
             "image_tree_size": image_tree_size,
@@ -336,7 +473,6 @@ class HashIndex:
             "needs_rebuild": self._needs_rebuild,
         }
 
-
     # ─────────────────────────────────────────────────────────────────────────
     # Hash-size validation
     # ─────────────────────────────────────────────────────────────────────────
@@ -344,12 +480,12 @@ class HashIndex:
     @property
     def _expected_image_hex_len(self) -> int:
         """Expected hex-string length for image phashes: hash_size² bits → hash_size²/4 hex chars."""
-        return (self._image_hash_size ** 2) // 4
+        return (self._image_hash_size**2) // 4
 
     @property
     def _expected_bbox_hex_len(self) -> int:
         """Expected hex-string length for bbox phashes: hash_size² bits → hash_size²/4 hex chars."""
-        return (self._bbox_hash_size ** 2) // 4
+        return (self._bbox_hash_size**2) // 4
 
     def _validate_image_phash(self, phash: str, context: str = "") -> None:
         """Raise ValueError if *phash* length doesn't match the current image hash size."""

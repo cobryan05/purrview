@@ -46,7 +46,10 @@ function buildDatasetForm(container, { name = '', description = '', labelUuids =
   // inlineControls: Labels and Tags render as always-expanded scrollable boxes
   const filterPanel = createFilterPanel(labelsMap, tagsMap, () => onAnyChange?.(), { inlineControls: true });
 
-  // Side-by-side expanded boxes for Tags and Labels
+  // Date + Verification row first — they're compact and span the full width well
+  container.appendChild(filterPanel.element);
+
+  // Tags and Labels as side-by-side expanded boxes below the date/verification row
   const inlineRow = document.createElement('div');
   inlineRow.className = 'ds-inline-controls';
   const [tagsEl, labelsEl] = filterPanel.toolbarControls;
@@ -61,9 +64,6 @@ function buildDatasetForm(container, { name = '', description = '', labelUuids =
     inlineRow.appendChild(box);
   }
   container.appendChild(inlineRow);
-
-  // Filter panel element (Date + Filename + Verification)
-  container.appendChild(filterPanel.element);
 
   // Populate from saved state
   filterPanel.setState(datasetFormToReviewState(filterJson, labelUuids));
@@ -149,6 +149,11 @@ export async function renderDatasetManager({ target = 'dataset-management-box' }
     editorBody.className = 'panel-box__body';
     editorPanel.appendChild(editorBody);
 
+    // Sticky footer: always-visible action buttons regardless of scroll position
+    const editorFooter = document.createElement('div');
+    editorFooter.className = 'panel-box__footer';
+    editorPanel.appendChild(editorFooter);
+
     // ── Shared state ──────────────────────────────────────────────────────
     let _selectedUuid = null;
     let _barHandle = null; // set by _showForm; tracks dirty state via getDirty()/setDirty()
@@ -185,6 +190,7 @@ export async function renderDatasetManager({ target = 'dataset-management-box' }
         // Re-fetch so pickers always reflect current data
         const [labelsMap, tagsMap] = await Promise.all([fetchLabels(), fetchTags()]);
         editorBody.innerHTML = '';
+        editorFooter.innerHTML = '';
 
         _barHandle = buildPanelEditorBar({
           container: editorBar,
@@ -222,15 +228,8 @@ export async function renderDatasetManager({ target = 'dataset-management-box' }
         // Reset to clean so the Save/Create button starts disabled.
         setDirty(false);
 
-        // Preview Images — always available, reflects current (possibly unsaved) form state
-        const hr = document.createElement('hr');
-        hr.style.cssText = 'margin: 0.8em 0 0.5em; opacity: 0.4;';
-        editorBody.appendChild(hr);
-
-        const viewRow = document.createElement('div');
-        viewRow.style.cssText = 'display: flex; gap: 8px; flex-wrap: wrap;';
-        editorBody.appendChild(viewRow);
-
+        // Preview Images — lives in the sticky footer so it's always visible
+        // regardless of how far the user has scrolled the form.
         const previewBtn = document.createElement('button');
         previewBtn.type = 'button';
         previewBtn.textContent = 'Preview Images';
@@ -266,7 +265,7 @@ export async function renderDatasetManager({ target = 'dataset-management-box' }
             previewBtn.textContent = 'Preview Images';
           }
         });
-        viewRow.appendChild(previewBtn);
+        editorFooter.appendChild(previewBtn);
 
         // Shared save logic used by both the Save button (navigateAfterCreate=true)
         // and the nav-guard (_currentDoSave, navigateAfterCreate=false).
