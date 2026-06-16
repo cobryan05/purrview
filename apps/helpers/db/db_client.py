@@ -98,7 +98,7 @@ _SYSTEM_TAGS = [
         kind=TagKind.SYSTEM,
         exclusive_group=None,
         protected=True,
-        icon="⊗",
+        icon=None,
     ),
 ]
 

@@ -51,9 +51,11 @@ export function createFilterPanel(labels, tags, onFilterChange, { inlineControls
   function emit() { onFilterChange({ ..._state }); }
 
   // ── Toolbar: Tags multi-select dropdown ──────────────────────────────────
+  // System tags without an icon are hidden from UI pickers (used only via presets).
+  const visibleTags = [...tags.values()].filter(t => t.kind !== 'system' || t.icon);
   const sortedTags = [
     ...SYSTEM_TAG_ORDER.map(u => tags.get(u)).filter(Boolean),
-    ...[...tags.values()]
+    ...visibleTags
       .filter(t => !SYSTEM_TAG_ORDER.includes(t.uuid))
       .sort((a, b) => a.name.localeCompare(b.name)),
   ];

@@ -203,11 +203,13 @@ export const fieldFactories = {
 
     const tags = await fetchTags();
 
-    const tagOptions = Array.from(tags.values()).map(tag => ({
-      key: tag.uuid,
-      text: (tag.icon ? tag.icon + ' ' : '') + tag.name,
-      color: tag.color || '#cccccc',
-    }));
+    const tagOptions = Array.from(tags.values())
+      .filter(tag => tag.kind !== 'system' || tag.icon)
+      .map(tag => ({
+        key: tag.uuid,
+        text: (tag.icon ? tag.icon + ' ' : '') + tag.name,
+        color: tag.color || '#cccccc',
+      }));
 
     const checkboxField = new CheckboxField({
       value: values[fieldName],
