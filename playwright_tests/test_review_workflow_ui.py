@@ -207,14 +207,14 @@ class TestReviewQueueRendering:
         # Switch to 'all' to see both image-level and bbox-level cards.
         _switch_view(page, "all")
 
-        # Default filter shows only bboxes carrying the UNVERIFIED tag: bbox-1, bbox-3.
+        # Default: no tag filter → all bboxes visible (bbox-1, bbox-2, bbox-3).
         cards = page.locator("#review-root .review-card")
-        expect(cards).to_have_count(4)  # 2 image cards + 2 unverified-bbox cards
+        expect(cards).to_have_count(5)  # 2 image cards + 3 bbox cards
         expect(page.locator("#review-root [data-image-uuid='img-1'][data-kind='image']")).to_be_visible()
         expect(page.locator("#review-root [data-image-uuid='img-2'][data-kind='image']")).to_be_visible()
         expect(page.locator("#review-root [data-bbox-uuid='bbox-1']")).to_be_visible()
+        expect(page.locator("#review-root [data-bbox-uuid='bbox-2']")).to_be_visible()
         expect(page.locator("#review-root [data-bbox-uuid='bbox-3']")).to_be_visible()
-        expect(page.locator("#review-root [data-bbox-uuid='bbox-2']")).to_have_count(0)
 
 
 # ---------------------------------------------------------------------------
@@ -469,18 +469,18 @@ class TestFilterToggleButton:
         _navigate_to_review(page, base_url)
         toggle_btn = page.locator("#review-root .review-toolbar button", has_text="Filters")
 
-        # Default state: only the Unverified tag checked → count of 1.
-        expect(toggle_btn).to_have_text("☰ Filters (1)")
+        # Default state: no filters active.
+        expect(toggle_btn).to_have_text("☰ Filters")
 
         # The Labels dropdown is in the toolbar — open it and check 'Cat'.
-        labels_trigger = page.locator("#review-root .ms-dropdown[data-filter-key='labels'] .ms-dropdown__trigger")
+        labels_trigger = page.locator("#review-root .ms-dropdown[data-filter-key='labels-v2'] .ms-dropdown__trigger")
         labels_trigger.wait_for(state="visible", timeout=5000)
         labels_trigger.click()
-        page.locator("#review-root .ms-dropdown[data-filter-key='labels'] input[value='lbl-cat']").check()
+        page.locator("#review-root .ms-dropdown[data-filter-key='labels-v2'] input[value='lbl-cat']").check()
         page.mouse.click(0, 0)  # close dropdown
         page.wait_for_timeout(300)
 
-        expect(toggle_btn).to_have_text("☰ Filters (2)")
+        expect(toggle_btn).to_have_text("☰ Filters (1)")
         expect(toggle_btn).to_have_class(re.compile(r"\bfilter-active\b"))
 
 
@@ -597,25 +597,25 @@ class TestListView:
 
         _navigate_to_review(page, base_url)
 
-        # Default view is 'bboxes': 2 unverified-bbox cards (no image-level cards).
-        expect(page.locator("#review-root .review-card")).to_have_count(2)
+        # Default view is 'bboxes', no tag filter → all 3 bbox cards visible.
+        expect(page.locator("#review-root .review-card")).to_have_count(3)
         expect(page.locator("#review-root .review-row")).to_have_count(0)
 
         page.locator("#review-root .fb-view-toggle button[title='List view']").click()
         page.wait_for_timeout(200)
 
-        expect(page.locator("#review-root .review-row")).to_have_count(2)
+        expect(page.locator("#review-root .review-row")).to_have_count(3)
         expect(page.locator("#review-root .review-list")).to_have_count(1)
         expect(page.locator("#review-root .review-grid")).to_have_count(0)
         assert page.evaluate("() => localStorage.getItem('review-view')") == "list"
 
-        # Reload — list view should be remembered (viewFilter resets to 'bboxes' default → 2 rows).
+        # Reload — list view should be remembered (viewFilter resets to 'bboxes' default → 3 rows).
         page.reload()
         page.wait_for_load_state("networkidle")
         page.locator(".main-tab-button[data-tab='tab-review']").click()
         page.wait_for_load_state("networkidle")
         page.wait_for_selector("#review-root .review-list", timeout=4000)
-        expect(page.locator("#review-root .review-row")).to_have_count(2)
+        expect(page.locator("#review-root .review-row")).to_have_count(3)
 
 
     def test_list_view_selection_and_canvas_modal(self, page: Page, base_url: str):
@@ -654,8 +654,8 @@ class TestListView:
         page.wait_for_timeout(200)
 
         rows = page.locator("#review-root .review-row")
-        # Default view is 'bboxes': 2 unverified-bbox rows visible.
-        expect(rows).to_have_count(2)
+        # Default view is 'bboxes', no tag filter → all 3 bbox rows visible.
+        expect(rows).to_have_count(3)
 
         bulk_btn = page.locator("#review-root .review-action-bar button", has_text="Bulk Apply")
         expect(bulk_btn).to_have_text("Bulk Apply (0)")

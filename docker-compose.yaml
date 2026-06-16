@@ -87,7 +87,10 @@ services:
     environment:
       THUMB_CACHE_MAX_MB: 100
       TRAINING_SERVER_HOST: whiskerwatcher_training_dev
+      TZ: America/Chicago
     volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
       - ./data/:/data
       - ./conf:/conf
       - ./logs:/logs

@@ -1,6 +1,7 @@
 import { fetchLabels } from '/app-static/js/shared/api/labels.js';
 import { createDynamicLabelPicker } from '/app-static/js/ui/utils/dynamicLabelPicker.js';
 import { fetchTags } from '/app-static/js/shared/api/tags.js';
+import { isTagKindVisible } from '/app-static/js/shared/activeModel.js';
 import { createFilterPanel } from '/app-static/js/app/review/filters.js';
 import { expandWithDescendants, createLabelList } from '/app-static/js/ui/labelList.js';
 import {
@@ -1928,6 +1929,11 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
     labelPickerRow.append(labelPickerHdr, dynPicker.element);
 
     const tagOptions = Array.from(tags.values())
+      .filter(tag => {
+        if (tag.kind === 'system') return tag.icon && isTagKindVisible('system');
+        if (tag.kind === 'task_generated') return isTagKindVisible('task_generated');
+        return true;
+      })
       .map(tag => ({ key: tag.uuid, text: (tag.icon ? tag.icon + ' ' : '') + tag.name, color: tag.color || '#cccccc' }));
     const tagCheckboxField = new CheckboxField({ value: [], options: tagOptions });
     const tagPickerRow = document.createElement('div');
@@ -2837,6 +2843,11 @@ async function showBulkActionModal(entries, labels, onConfirm, titleText = null)
 
   // Tag picker (shown only for addTags / removeTags)
   const tagOptions = Array.from(tags.values())
+    .filter(tag => {
+      if (tag.kind === 'system') return tag.icon && isTagKindVisible('system');
+      if (tag.kind === 'task_generated') return isTagKindVisible('task_generated');
+      return true;
+    })
     .map(tag => ({
       key: tag.uuid,
       text: (tag.icon ? tag.icon + ' ' : '') + tag.name,

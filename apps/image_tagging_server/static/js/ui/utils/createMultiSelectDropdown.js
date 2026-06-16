@@ -55,6 +55,8 @@ export function createMultiSelectDropdown({
   onChange,
   filterKey,
   inline = false,
+  defaultWidth = null,
+  defaultHeight = null,
 }) {
   let _selected = [...defaultSelected];
   let _excluded = new Set();
@@ -86,7 +88,9 @@ export function createMultiSelectDropdown({
   if (!inline) panelEl.style.display = 'none';
   wrapper.appendChild(panelEl);
 
-  // Restore saved size (dropdown mode only)
+  // Apply default size, then let localStorage override if the user has resized before.
+  if (defaultWidth)  panelEl.style.width  = defaultWidth;
+  if (defaultHeight) panelEl.style.height = defaultHeight;
   if (_sizeKey) {
     try {
       const saved = JSON.parse(localStorage.getItem(_sizeKey) || 'null');
@@ -201,6 +205,7 @@ export function createMultiSelectDropdown({
   // shade descendant checkboxes when the hierarchy toggle is on.
   const _childrenOf = new Map(); // parentUuid → uuid[]
   for (const item of items) {
+    if (item.isSeparator) continue;
     if (item.parentUuid) {
       if (!_childrenOf.has(item.parentUuid)) _childrenOf.set(item.parentUuid, []);
       _childrenOf.get(item.parentUuid).push(item.uuid);
@@ -221,6 +226,15 @@ export function createMultiSelectDropdown({
   const itemElMap = new Map();
 
   for (const item of items) {
+    if (item.isSeparator) {
+      const sep = document.createElement('div');
+      sep.className = 'ms-item-separator';
+      sep.style.cssText = 'font-size:0.72em;font-weight:bold;text-transform:uppercase;letter-spacing:.06em;color:#666;padding:5px 8px 2px;user-select:none;pointer-events:none;';
+      sep.textContent = item.label ?? '';
+      itemsDiv.appendChild(sep);
+      continue;
+    }
+
     const lbl = document.createElement('label');
     lbl.className = 'ms-item';
     // Indent child items using the depth field from flattenHierarchy

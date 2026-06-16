@@ -20,14 +20,14 @@
 import { UNVERIFIED_TAG_UUID } from '/app-static/js/shared/api/review.js';
 import { createMultiSelectDropdown, makeLabelFilterNotice } from '/app-static/js/ui/utils/index.js';
 import { flattenHierarchy } from '/app-static/js/ui/labelList.js';
-import { activeModel, isTagKindVisible } from '/app-static/js/shared/activeModel.js';
+import { activeModel, isTagKindVisible, isDynamicLabelsVisible } from '/app-static/js/shared/activeModel.js';
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
 
 // System tags appear first in the tags dropdown, in this order.
 const SYSTEM_TAG_ORDER = [UNVERIFIED_TAG_UUID];
 
 const DEFAULT_STATE = () => ({
-  tagUuids: [UNVERIFIED_TAG_UUID],
+  tagUuids: [],
   tagExcludeUuids: [],
   tagMatchMode: 'any',
   labelUuids: [],
@@ -62,26 +62,31 @@ export function createFilterPanel(labels, tags, onFilterChange, { inlineControls
   }
 
   function _buildTagsDropdown() {
-    // Unverified always shows first — it's the primary workflow filter and default selection.
-    // Other system tags (Verified, False Positive) respect the global visibility toggle.
-    const unverifiedTag = tags.get(UNVERIFIED_TAG_UUID);
-    const sorted = [
-      ...(unverifiedTag ? [unverifiedTag] : []),
-      ...SYSTEM_TAG_ORDER
-        .filter(u => u !== UNVERIFIED_TAG_UUID)
-        .map(u => tags.get(u))
-        .filter(t => t && isTagKindVisible('system') && t.icon),
-      ..._visibleTags()
-        .filter(t => !SYSTEM_TAG_ORDER.includes(t.uuid))
-        .sort((a, b) => a.name.localeCompare(b.name)),
-    ];
+    const visible = _visibleTags();
+    const byKind = [
+      { label: 'System',         tags: visible.filter(t => t.kind === 'system') },
+      { label: 'Task-generated', tags: visible.filter(t => t.kind === 'task_generated') },
+      { label: 'Generic',        tags: visible.filter(t => !t.kind || t.kind === 'generic') },
+    ].filter(g => g.tags.length > 0);
+
+    byKind.forEach(g => g.tags.sort((a, b) => a.name.localeCompare(b.name)));
+
+    const useHeaders = byKind.length > 1;
+    const items = [];
+    for (const g of byKind) {
+      if (useHeaders) items.push({ isSeparator: true, label: g.label });
+      items.push(...g.tags.map(t => ({ uuid: t.uuid, name: t.name, color: t.color || null })));
+    }
+
     return createMultiSelectDropdown({
       label: 'Tags',
-      items: sorted.map(t => ({ uuid: t.uuid, name: t.name, color: t.color || null })),
-      defaultSelected: unverifiedTag ? [UNVERIFIED_TAG_UUID] : [],
+      items,
+      defaultSelected: [],
       defaultMode: 'any',
       filterKey: 'tags',
       inline: inlineControls,
+      defaultWidth: '220px',
+      defaultHeight: '300px',
       onChange: (selected, excluded, mode) => {
         _state.tagUuids = selected;
         _state.tagExcludeUuids = excluded;
@@ -104,17 +109,31 @@ export function createFilterPanel(labels, tags, onFilterChange, { inlineControls
 
   function buildLabelsControls() {
     const filteredLabels = activeModel.applyLabelFilter(labels);
-    const flatLabels = flattenHierarchy(filteredLabels, l => l.labelType !== 'dynamic');
+    const regularMap = new Map([...filteredLabels].filter(([, l]) => l.labelType !== 'dynamic'));
+    const dynamicMap = isDynamicLabelsVisible()
+      ? new Map([...filteredLabels].filter(([, l]) => l.labelType === 'dynamic'))
+      : new Map();
+
+    const flatRegular = flattenHierarchy(regularMap);
+    const flatDynamic = flattenHierarchy(dynamicMap);
+
+    const toItem = l => ({ uuid: l.uuid, name: l.name, color: l.color || null, depth: l.depth, parentUuid: l.parentUuid ?? null });
+    const labelItems = [
+      ...flatRegular.map(toItem),
+      ...(flatDynamic.length > 0 ? [{ isSeparator: true, label: 'Dynamic' }, ...flatDynamic.map(toItem)] : []),
+    ];
 
     // Destroy previous dropdown instance
     _labelsDropdown?.destroy();
 
     _labelsDropdown = createMultiSelectDropdown({
       label: 'Labels',
-      items: flatLabels.map(l => ({ uuid: l.uuid, name: l.name, color: l.color || null, depth: l.depth, parentUuid: l.parentUuid ?? null })),
+      items: labelItems,
+      defaultWidth: '280px',
+      defaultHeight: '400px',
       defaultSelected: [],
       defaultMode: 'any',
-      filterKey: 'labels',
+      filterKey: 'labels-v2',
       inline: inlineControls,
       hierarchyToggle: {
         label: 'Include child labels',
@@ -154,8 +173,8 @@ export function createFilterPanel(labels, tags, onFilterChange, { inlineControls
     tagsContainer.innerHTML = '';
     tagsDropdown = _buildTagsDropdown();
     tagsContainer.appendChild(tagsDropdown.element);
-    // Reset tag state: Unverified is always the default selection.
-    _state.tagUuids = tags.get(UNVERIFIED_TAG_UUID) ? [UNVERIFIED_TAG_UUID] : [];
+    // Reset tag state to empty (show all) when visibility changes.
+    _state.tagUuids = [];
     _state.tagExcludeUuids = [];
     emit();
   });
@@ -263,7 +282,7 @@ export function createFilterPanel(labels, tags, onFilterChange, { inlineControls
   function isDefault() {
     const s = _state;
     return (
-      s.tagUuids.length === 1 && s.tagUuids[0] === UNVERIFIED_TAG_UUID
+      s.tagUuids.length === 0
       && s.tagExcludeUuids.length === 0
       && s.tagMatchMode === 'any'
       && s.labelUuids.length === 0

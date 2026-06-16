@@ -27,6 +27,7 @@ import {
 } from '/app-static/js/shared/api/images.js';
 import { getSetting } from '/app-static/js/shared/api/settings.js';
 import { fetchTags } from '/app-static/js/shared/api/tags.js';
+import { isTagKindVisible } from '/app-static/js/shared/activeModel.js';
 import { fetchLabels } from '/app-static/js/shared/api/labels.js';
 import { createMultiSelectDropdown } from '/app-static/js/ui/utils/index.js';
 import { pageStartIdx } from '/app-static/js/ui/searchUtils.js';
@@ -314,7 +315,13 @@ export async function openSimilarBboxesModal({ bboxes, threshold = null, labelUu
   });
 
   // ── Tag filter dropdown ────────────────────────────────────────────────────
-  const tagItems = [...tagsMap.values()].map(t => ({ uuid: t.uuid, name: t.name, color: t.color ?? null }));
+  const tagItems = [...tagsMap.values()]
+    .filter(t => {
+      if (t.kind === 'system') return t.icon && isTagKindVisible('system');
+      if (t.kind === 'task_generated') return isTagKindVisible('task_generated');
+      return true;
+    })
+    .map(t => ({ uuid: t.uuid, name: t.name, color: t.color ?? null }));
   const tagsDropdown = createMultiSelectDropdown({
     label: 'Tags',
     items: tagItems,

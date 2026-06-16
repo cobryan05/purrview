@@ -92,14 +92,14 @@ def _uncheck_item(page, filter_key, uuid):
 # ── Default state ────────────────────────────────────────────────────────────
 
 class TestFilterPanelDefaults:
-    def test_default_tag_uuids_contains_unverified(self, shared_page: Page):
+    def test_default_tag_uuids_empty(self, shared_page: Page):
         result = shared_page.evaluate(f"""async () => {{
             {_SETUP}
             const s = panel.getState();
             {_TEARDOWN}
             return s.tagUuids;
         }}""")
-        assert UNVERIFIED_UUID in result
+        assert result == []
 
     def test_default_label_uuids_empty(self, shared_page: Page):
         result = shared_page.evaluate(f"""async () => {{
@@ -119,14 +119,14 @@ class TestFilterPanelDefaults:
         }}""")
         assert result is True
 
-    def test_active_filter_count_is_one_initially(self, shared_page: Page):
+    def test_active_filter_count_is_zero_initially(self, shared_page: Page):
         result = shared_page.evaluate(f"""async () => {{
             {_SETUP}
             const c = panel.getActiveFilterCount();
             {_TEARDOWN}
             return c;
         }}""")
-        assert result == 1
+        assert result == 0
 
     def test_filename_search_empty_initially(self, shared_page: Page):
         result = shared_page.evaluate(f"""async () => {{
@@ -151,29 +151,28 @@ class TestFilterPanelDefaults:
 # ── Tags dropdown ────────────────────────────────────────────────────────────
 
 class TestFilterPanelTagsDropdown:
-    def test_unverified_checkbox_is_checked_by_default(self, shared_page: Page):
+    def test_unverified_checkbox_is_unchecked_by_default(self, shared_page: Page):
         page = shared_page
         page.evaluate(f"async () => {{ {_SETUP} }}")
 
         _open_dropdown(page, "tags")
         cb = page.locator(f".ms-dropdown[data-filter-key='tags'] input[value='{UNVERIFIED_UUID}']")
-        assert cb.is_checked()
+        assert not cb.is_checked()
 
         page.evaluate(f"() => {{ {_TEARDOWN_EXT} }}")
 
-    def test_unchecking_unverified_removes_from_state(self, shared_page: Page):
+    def test_checking_unverified_adds_to_state(self, shared_page: Page):
         result = shared_page.evaluate(f"""async () => {{
             {_SETUP}
-            // Simulate unchecking by driving the checkbox directly.
             const cb = panel.toolbarControls[0].querySelector('input[value="{UNVERIFIED_UUID}"]');
-            cb.checked = false;
+            cb.checked = true;
             cb.dispatchEvent(new Event('change'));
             const s = panel.getState();
             {_TEARDOWN}
             return {{ tagUuids: s.tagUuids, showAllBboxes: s.showAllBboxes }};
         }}""")
-        assert UNVERIFIED_UUID not in result["tagUuids"]
-        assert result["showAllBboxes"] is True
+        assert UNVERIFIED_UUID in result["tagUuids"]
+        assert result["showAllBboxes"] is False
 
     def test_no_tags_checked_sets_show_all(self, shared_page: Page):
         result = shared_page.evaluate(f"""async () => {{
@@ -188,7 +187,7 @@ class TestFilterPanelTagsDropdown:
         }}""")
         assert result is True
 
-    def test_checking_second_tag_adds_to_state(self, shared_page: Page):
+    def test_checking_tag_adds_to_state(self, shared_page: Page):
         result = shared_page.evaluate(f"""async () => {{
             {_SETUP}
             const cb = panel.toolbarControls[0].querySelector('input[value="tag-reviewed"]');
@@ -199,28 +198,27 @@ class TestFilterPanelTagsDropdown:
             return s.tagUuids;
         }}""")
         assert "tag-reviewed" in result
-        assert UNVERIFIED_UUID in result
+        assert UNVERIFIED_UUID not in result
 
-    def test_unchecking_makes_not_default(self, shared_page: Page):
+    def test_checking_tag_makes_not_default(self, shared_page: Page):
         result = shared_page.evaluate(f"""async () => {{
             {_SETUP}
-            const cb = panel.toolbarControls[0].querySelector('input[value="{UNVERIFIED_UUID}"]');
-            cb.checked = false;
+            const cb = panel.toolbarControls[0].querySelector('input[value="tag-reviewed"]');
+            cb.checked = true;
             cb.dispatchEvent(new Event('change'));
             {_TEARDOWN}
             return panel.isDefault();
         }}""")
         assert result is False
 
-    def test_trigger_shows_selection_summary(self, shared_page: Page):
-        """Trigger button text summarises the current selection."""
+    def test_trigger_shows_all_by_default(self, shared_page: Page):
+        """Trigger button text reflects no selection (show all) by default."""
         page = shared_page
         page.evaluate(f"async () => {{ {_SETUP} }}")
 
         trigger = page.locator(".ms-dropdown[data-filter-key='tags'] .ms-dropdown__trigger")
         text = trigger.text_content()
-        # Default: one item selected → shows the tag name
-        assert "Unverified" in text
+        assert "Unverified" not in text
 
         page.evaluate(f"() => {{ {_TEARDOWN_EXT} }}")
 
@@ -270,7 +268,7 @@ class TestFilterPanelLabelsDropdown:
             {_TEARDOWN}
             return panel.getActiveFilterCount();
         }}""")
-        assert result == 2  # UNVERIFIED tag + one label
+        assert result == 1  # one label
 
     def test_deselecting_label_decrements_count(self, shared_page: Page):
         result = shared_page.evaluate(f"""async () => {{
@@ -283,7 +281,7 @@ class TestFilterPanelLabelsDropdown:
             {_TEARDOWN}
             return panel.getActiveFilterCount();
         }}""")
-        assert result == 1  # back to just the tag
+        assert result == 0  # back to no filters
 
     def test_all_of_mode_updates_label_match_mode(self, shared_page: Page):
         result = shared_page.evaluate(f"""async () => {{
