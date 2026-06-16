@@ -27,7 +27,6 @@ from inference_client.models.inference_payload import InferencePayload
 from inference_client.models.pin_model_payload import PinModelPayload
 
 from apps.helpers.db.db_client import UNVERIFIED_TAG_UUID
-from apps.helpers.db.types import DUPLICATE_TAG_UUID
 from apps.helpers.hashUtils import PHASH_JPEG_QUALITY, compute_phashes_with_jpeg_roundtrip
 from apps.helpers.imageProviders.imageProvider import (
     ImageProvider,
@@ -140,10 +139,9 @@ class CollectTrainingImagesTask(Task):
         self._enable_dedup: bool = bool(params.get("enable_dedup", False))
         self._image_dup_threshold: int = int(params.get("image_dup_threshold", 5))
         self._bbox_dup_threshold: int = int(params.get("bbox_dup_threshold", 8))
-        self._duplicate_action: str = params.get("duplicate_action", "tag")
+        self._duplicate_action: str = params.get("duplicate_action", "discard")
         # Dedup outcome stats — persisted across pause/resume so totals are cumulative.
         self._dup_frames_discarded: int = resume_data.get("dup_frames_discarded", 0) if resume_data else 0
-        self._dup_detections_tagged: int = resume_data.get("dup_detections_tagged", 0) if resume_data else 0
         # Finer-grained dedup counters: frames checked, and raw hit counts from the index
         # (independent of what action was taken — useful for diagnosing threshold issues).
         self._dedup_frames_checked: int = resume_data.get("dedup_frames_checked", 0) if resume_data else 0
@@ -260,8 +258,6 @@ class CollectTrainingImagesTask(Task):
             ]
             if self._dup_frames_discarded:
                 parts.append(f"{self._dup_frames_discarded} discarded")
-            if self._dup_detections_tagged:
-                parts.append(f"{self._dup_detections_tagged} tagged")
             queue_depth = self._dedup_queue.qsize()
             if queue_depth > 0:
                 parts.append(f"{queue_depth} queued")
@@ -444,7 +440,7 @@ class CollectTrainingImagesTask(Task):
                             await self._dedup_queue.put((provided, matching))
                         else:
                             save_task = asyncio.create_task(
-                                self._save_image(images_api, provided, matching, [False] * len(matching), files_root)
+                                self._save_image(images_api, provided, matching, files_root)
                             )
                             self._pending_saves.append((save_task, unique_id))
 
@@ -510,7 +506,6 @@ class CollectTrainingImagesTask(Task):
                 f", {self._dedup_image_hits} img hits"
                 f", {self._dedup_bbox_hits} bbox hits"
                 f", {self._dup_frames_discarded} discarded"
-                f", {self._dup_detections_tagged} tagged"
                 if self._enable_dedup else ""
             )
         )
@@ -520,7 +515,6 @@ class CollectTrainingImagesTask(Task):
             result["dedup_image_hits"] = self._dedup_image_hits
             result["dedup_bbox_hits"] = self._dedup_bbox_hits
             result["dup_frames_discarded"] = self._dup_frames_discarded
-            result["dup_detections_tagged"] = self._dup_detections_tagged
         if self._task_tag_uuid:
             result["actions"] = [
                 {
@@ -538,7 +532,6 @@ class CollectTrainingImagesTask(Task):
             "fixed_frames_processed": self._fixed_frames_processed,
             "processed_ids": list(self._processed_ids),
             "dup_frames_discarded": self._dup_frames_discarded,
-            "dup_detections_tagged": self._dup_detections_tagged,
             "dedup_frames_checked": self._dedup_frames_checked,
             "dedup_image_hits": self._dedup_image_hits,
             "dedup_bbox_hits": self._dedup_bbox_hits,
@@ -641,7 +634,6 @@ class CollectTrainingImagesTask(Task):
         images_api: ImagesApi,
         provided: ImageWithProviderMetadata,
         matching: list,
-        dup_flags: list[bool],
         files_root: Path,
     ) -> Optional[str]:
         """Writes image to disk and persists bounding-box metadata. Returns filename on success, None on failure."""
@@ -664,15 +656,9 @@ class CollectTrainingImagesTask(Task):
             return None
         logger.debug("Image write: %.1fms → %s", 1000 * (time.perf_counter() - t_write), abs_path)  # PERF
 
-        dup_tagged_count = sum(1 for f in dup_flags if f)
-        if dup_tagged_count:
-            self._dup_detections_tagged += dup_tagged_count
-
         boxes = []
-        for i, det in enumerate(matching):
+        for det in matching:
             extra_tags = list(self._extra_tag_uuids)
-            if dup_flags[i]:
-                extra_tags.append(str(DUPLICATE_TAG_UUID))
             boxes.append(
                 BoundingBoxMetadataModel(
                     bbox_uuid=str(uuid4()),
@@ -732,7 +718,7 @@ class CollectTrainingImagesTask(Task):
                     if provided.metadata.source is not None and provided.metadata.frame_idx is not None:
                         unique_id = f"{provided.metadata.source}:{provided.metadata.frame_idx}"
                     save_task = asyncio.create_task(
-                        self._save_image(images_api, provided, matching, [False] * len(matching), files_root)
+                        self._save_image(images_api, provided, matching, files_root)
                     )
                     self._pending_saves.append((save_task, unique_id))
                     continue
@@ -818,13 +804,8 @@ class CollectTrainingImagesTask(Task):
                         self.log(f"Dedup: {self._dup_frames_discarded} duplicate frames discarded so far")
                     continue
 
-                # For "tag" action: gate the dup marker on image similarity too, so we don't
-                # mark a bbox as a duplicate just because it visually resembles one in a
-                # completely different scene.
-                dup_flags: list[bool] = [resp.image_is_dup and f for f in bbox_flags]
-
                 save_task = asyncio.create_task(
-                    self._save_image(images_api, provided, matching, dup_flags, files_root)
+                    self._save_image(images_api, provided, matching, files_root)
                 )
                 unique_id: Optional[str] = None
                 if provided.metadata.source is not None and provided.metadata.frame_idx is not None:
@@ -954,7 +935,6 @@ class CollectTrainingImagesTask(Task):
                         "options": [
                             {"value": "discard", "label": "Keep if any unique — discard the frame only when all detections are duplicates"},
                             {"value": "discard_image", "label": "Discard if image matches — skip the frame when the whole scene is a perceptual duplicate"},
-                            {"value": "tag", "label": "Tag — save the image and mark duplicate detections"},
                             {"value": "ignore", "label": "Ignore — save normally without any duplicate marking"},
                         ],
                         "default": "discard",

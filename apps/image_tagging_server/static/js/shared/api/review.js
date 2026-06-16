@@ -1,7 +1,6 @@
 import { apiFetch } from './apiUtils.js';
 // System tag UUIDs (must match constants in apps/helpers/db/types.py)
 export const UNVERIFIED_TAG_UUID = '00000000-0000-0000-0000-000000000001';
-export const DUPLICATE_TAG_UUID = '00000000-0000-0000-0000-000000000002';
 // Keep in sync with apps/helpers/db/types.py
 export const FALSE_POS_TAG_UUID = '00000000-0000-0000-0000-000000000003';
 export const REJECTION_TAG_UUID = '00000000-0000-0000-0000-000000000004';

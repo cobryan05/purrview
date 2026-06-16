@@ -27,7 +27,6 @@ from apps.helpers.consts import TaskStatus
 
 from .types import (
     AVAILABLE_MODEL_TYPENAMES,
-    DUPLICATE_TAG_UUID,
     FALSE_POS_TAG_UUID,
     REJECTION_TAG_UUID,
     UNVERIFIED_TAG_UUID,
@@ -73,15 +72,6 @@ _SYSTEM_TAGS = [
         exclusive_group="verification",
         protected=True,
         icon="?",
-    ),
-    Tag(
-        uuid=DUPLICATE_TAG_UUID,
-        name="Duplicate",
-        color="#e05c5c",
-        kind=TagKind.SYSTEM,
-        exclusive_group=None,
-        protected=True,
-        icon="⊘",
     ),
     Tag(
         uuid=FALSE_POS_TAG_UUID,
