@@ -7,6 +7,7 @@
  *   setLabelPresence(uuid, status)      → Promise<void>  status = 'absent'|'uncertain'
  *   getTagUuids()                       → string[]        whole-image tags
  *   toggleTag(uuid)                     → Promise<void>
+ *   setTagStatus(uuid, status)          → Promise<void>  status = 'present'|'absent'|'uncertain'
  */
 
 import { registerContextProvider } from '../registry.js';
@@ -14,7 +15,7 @@ import { asyncPanel } from '../menu.js';
 import { fetchLabels } from '/app-static/js/shared/api/labels.js';
 import { openSimilarImagesModal } from '/app-static/js/ui/similarSearch.js';
 import { openDissimilarImagesModal } from '/app-static/js/ui/dissimilarSearch.js';
-import { buildTagPanel } from '../tagPanelBuilder.js';
+import { buildTagPanel, buildPickTagPanel } from '../tagPanelBuilder.js';
 
 /**
  * Build a label-list panel for the Mark-label flyouts.
@@ -87,6 +88,24 @@ registerContextProvider('image', async (adapters, ctx) => {
     {
       label: 'Tags',
       submenu: () => asyncPanel('220px', () => buildTagPanel(adapters)),
+    },
+
+    // ── Mark tag absent (verified) ───────────────────────────────────────
+    {
+      label: 'Mark tag absent (verified)',
+      submenu: () => asyncPanel('220px', () => buildPickTagPanel(async uuid => {
+        for (const a of adapters) await a.setTagStatus(uuid, 'absent');
+        ctx.close();
+      })),
+    },
+
+    // ── Clear tag verification → Uncertain ──────────────────────────────
+    {
+      label: 'Clear tag verification → Uncertain',
+      submenu: () => asyncPanel('220px', () => buildPickTagPanel(async uuid => {
+        for (const a of adapters) await a.setTagStatus(uuid, 'uncertain');
+        ctx.close();
+      })),
     },
 
     // ── Similar search ─────────────────────────────────────────────────────

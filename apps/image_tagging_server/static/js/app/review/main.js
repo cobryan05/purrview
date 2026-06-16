@@ -23,7 +23,7 @@ import {
   swapVerificationTag,
 } from '/app-static/js/shared/api/review.js';
 import { setImageLabel } from '/app-static/js/shared/api/imageLabels.js';
-import { setImageTag } from '/app-static/js/shared/api/imageTags.js';
+import { setImageTag, setImageTagStatus } from '/app-static/js/shared/api/imageTags.js';
 import { attachContext } from '/app-static/js/ui/contextMenu/index.js';
 import { getPrimaryRuntimeId } from '/app-static/js/app/image-tagging/runtime.js';
 import { Logger, toast } from '/app-static/js/ui/utils/logging.js';
@@ -608,6 +608,15 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
         await setImageTag(img.filename, uuid, has ? 'remove' : 'add');
         img.tags = has ? tags.filter(t => t.uuid !== uuid) : [...tags, { uuid, icon: null }];
       },
+
+      async setTagStatus(uuid, status) {
+        await setImageTagStatus(img.filename, uuid, status);
+        // img.tags only ever lists PRESENT tags — absent/uncertain both mean "not in the list".
+        const tags = img.tags ?? [];
+        img.tags = status === 'present'
+          ? (tags.some(t => t.uuid === uuid) ? tags : [...tags, { uuid, icon: null }])
+          : tags.filter(t => t.uuid !== uuid);
+      },
     };
   }
 
@@ -942,6 +951,7 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
             labelIncludeChildren: fs.labelIncludeChildren,
             imageTagUuids: fs.imageTagUuids ?? [],
             imageTagExcludeUuids: fs.imageTagExcludeUuids ?? [],
+            imageTagVerifiedAbsentUuids: fs.imageTagVerifiedAbsentUuids ?? [],
             requireBboxes: _viewFilter === 'bboxes',
             sortBy,
             sortOrder,
@@ -2893,6 +2903,8 @@ async function showBulkActionModal(entries, labels, onConfirm, titleText = null)
   overlay.addEventListener('click', e => { if (e.target === overlay) close(); });
 }
 
+const TAG_ACTIONS = ['addTags', 'removeTags', 'setTagAbsent', 'setTagUncertain'];
+
 async function showImageBulkActionModal(entries, labels, onConfirm, titleText = null) {
   const tags = await fetchTags().catch(() => new Map());
 
@@ -2912,6 +2924,8 @@ async function showImageBulkActionModal(entries, labels, onConfirm, titleText = 
     { value: 'setUncertain', label: 'Clear Absent → Uncertain' },
     { value: 'addTags', label: 'Add Tags' },
     { value: 'removeTags', label: 'Remove Tags' },
+    { value: 'setTagAbsent', label: 'Mark Tag Verified Absent' },
+    { value: 'setTagUncertain', label: 'Clear Tag Verification → Uncertain' },
     { value: 'delete', label: 'Delete Images' },
   ];
 
@@ -2930,7 +2944,7 @@ async function showImageBulkActionModal(entries, labels, onConfirm, titleText = 
     radio.addEventListener('change', () => {
       selectedAction = action.value;
       labelPickerRow.style.display = (selectedAction === 'setAbsent' || selectedAction === 'setUncertain') ? '' : 'none';
-      tagPickerRow.style.display = (selectedAction === 'addTags' || selectedAction === 'removeTags') ? 'flex' : 'none';
+      tagPickerRow.style.display = TAG_ACTIONS.includes(selectedAction) ? 'flex' : 'none';
     });
     lbl.appendChild(radio);
     lbl.appendChild(document.createTextNode(action.label));
@@ -2973,7 +2987,7 @@ async function showImageBulkActionModal(entries, labels, onConfirm, titleText = 
   okBtn.textContent = 'Apply';
   okBtn.style.cssText = 'background:#ff003322;border:1px solid #ff0033;border-radius:3px;padding:0.2em 0.8em;cursor:pointer;';
   okBtn.addEventListener('click', async () => {
-    const isTagAction = selectedAction === 'addTags' || selectedAction === 'removeTags';
+    const isTagAction = TAG_ACTIONS.includes(selectedAction);
     const selectedTagUuids = isTagAction ? tagCheckboxField.getValue() : [];
     if (isTagAction && selectedTagUuids.length === 0) {
       toast('Select at least one tag', 'error');
@@ -2997,7 +3011,7 @@ async function executeBulkImageAction(action, entries, labelUuid, tagUuids = [])
   let failCount = 0;
   const succeededEntries = [];
 
-  if (action === 'addTags' || action === 'removeTags') {
+  if (TAG_ACTIONS.includes(action)) {
     // Batch all images into a single server-side pass instead of one HTTP
     // round-trip per (image, tag) pair.
     try {
@@ -3010,6 +3024,9 @@ async function executeBulkImageAction(action, entries, labelUuid, tagUuids = [])
       for (const entry of entries) {
         const { img } = entry;
         const currentTags = img.tags ?? [];
+        // img.tags only ever lists PRESENT tags — addTags is the only action
+        // that adds to it; everything else (remove / verified-absent / clear
+        // verification) means "not in the list".
         img.tags = action === 'addTags'
           ? [...currentTags.filter(t => !tagUuids.includes(t.uuid)), ...tagUuids.map(uuid => ({ uuid, icon: null }))]
           : currentTags.filter(t => !tagUuids.includes(t.uuid));

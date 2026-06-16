@@ -39,9 +39,9 @@ from .types import (
     DatasetLabelLink,
     DatasetRead,
     DatasetUpdate,
+    ImageItemStatus,
     ImageLabel,
     ImageLabelFilter,
-    ImageLabelStatus,
     ImageRecord,
     ImageRecordRead,
     ImageRecordUpdate,
@@ -244,7 +244,7 @@ def _apply_image_search_filters(stmt: Select, params: ImageSearchParams) -> Sele
                 .where(
                     ImageLabel.image_uuid == ImageRecord.uuid,
                     ImageLabel.label_uuid == f.label_uuid,
-                    ImageLabel.status.in_([ImageLabelStatus.PRESENT, ImageLabelStatus.ABSENT]),
+                    ImageLabel.status.in_([ImageItemStatus.PRESENT, ImageItemStatus.ABSENT]),
                 )
                 .exists()
             )
@@ -265,13 +265,29 @@ def _apply_image_search_filters(stmt: Select, params: ImageSearchParams) -> Sele
     # These filter on the image_tags table (not bboxes), which is small and
     # accessed by PK — correlated EXISTS is fine here.
     for tf in params.image_tag_filters:
-        subq = (
-            select(ImageTagLink).where(
-                ImageTagLink.image_uuid == ImageRecord.uuid,
-                ImageTagLink.tag_uuid == tf.tag_uuid,
+        if tf.require_verified:
+            # require EXISTS row with PRESENT or ABSENT (not uncertain)
+            subq = (
+                select(ImageTagLink)
+                .where(
+                    ImageTagLink.image_uuid == ImageRecord.uuid,
+                    ImageTagLink.tag_uuid == tf.tag_uuid,
+                    ImageTagLink.status.in_([ImageItemStatus.PRESENT, ImageItemStatus.ABSENT]),
+                )
+                .exists()
             )
-        ).exists()
-        stmt = stmt.where(~subq if tf.exclude else subq)
+            stmt = stmt.where(subq)
+        else:
+            subq = (
+                select(ImageTagLink)
+                .where(
+                    ImageTagLink.image_uuid == ImageRecord.uuid,
+                    ImageTagLink.tag_uuid == tf.tag_uuid,
+                    ImageTagLink.status == tf.status,
+                )
+                .exists()
+            )
+            stmt = stmt.where(~subq if tf.exclude else subq)
 
     # ── Dataset / review label filter ─────────────────────────────────────────
     if params.label_uuids:
@@ -306,7 +322,7 @@ def _apply_image_search_filters(stmt: Select, params: ImageSearchParams) -> Sele
                     .where(
                         ImageLabel.image_uuid == ImageRecord.uuid,
                         ImageLabel.label_uuid == lu,
-                        ImageLabel.status.in_([ImageLabelStatus.PRESENT, ImageLabelStatus.ABSENT]),
+                        ImageLabel.status.in_([ImageItemStatus.PRESENT, ImageItemStatus.ABSENT]),
                     )
                     .exists()
                 )
@@ -319,7 +335,7 @@ def _apply_image_search_filters(stmt: Select, params: ImageSearchParams) -> Sele
                     .where(
                         ImageLabel.image_uuid == ImageRecord.uuid,
                         ImageLabel.label_uuid == lu,
-                        ImageLabel.status.in_([ImageLabelStatus.PRESENT, ImageLabelStatus.ABSENT]),
+                        ImageLabel.status.in_([ImageItemStatus.PRESENT, ImageItemStatus.ABSENT]),
                     )
                     .exists()
                 )
@@ -1872,7 +1888,7 @@ class DbClient:
     # Image Labels
     ################################################################################
 
-    async def set_image_label(self, image_uuid: str, label_uuid: str, status: ImageLabelStatus) -> None:
+    async def set_image_label_status(self, image_uuid: str, label_uuid: str, status: ImageItemStatus) -> None:
         """Upsert an image_label record, overwriting any existing status."""
         async with self._async_session_maker() as session:
             existing = await session.get(ImageLabel, (image_uuid, label_uuid))
@@ -1907,28 +1923,48 @@ class DbClient:
         await self.add_image_tags(image_uuid, [tag_uuid])
 
     async def add_image_tags(self, image_uuid: str, tag_uuids: List[str]) -> None:
-        """Link multiple tags to a whole image in one transaction. No-op for tags already linked."""
+        """Set multiple whole-image tags to PRESENT in one transaction.
+
+        Inserts a new PRESENT row for tags with no row, and flips any existing
+        ABSENT row to PRESENT. No-op for tags already PRESENT.
+
+        Two-pass design: existing-row flips are committed first so that an
+        IntegrityError on the insert pass cannot roll them back.
+        """
         if not tag_uuids:
             return
+
+        # Pass 1: flip any existing non-PRESENT rows to PRESENT, committed
+        # independently so a concurrent-insert failure in pass 2 cannot undo these.
+        existing_tag_uuids: set = set()
         async with self._async_session_maker() as session:
             result = await session.exec(
-                select(ImageTagLink.tag_uuid).where(
+                select(ImageTagLink).where(
                     ImageTagLink.image_uuid == image_uuid,
                     ImageTagLink.tag_uuid.in_(tag_uuids),
                 )
             )
-            existing = set(result.all())
-            to_add = [tag_uuid for tag_uuid in tag_uuids if tag_uuid not in existing]
+            for row in result.all():
+                existing_tag_uuids.add(row.tag_uuid)
+                if row.status != ImageItemStatus.PRESENT:
+                    row.status = ImageItemStatus.PRESENT
+                    row.updated_at = datetime.now(timezone.utc)
+            await session.commit()
+
+        # Pass 2: insert rows that had no entry at all.
+        to_add = [t for t in tag_uuids if t not in existing_tag_uuids]
+        if not to_add:
+            return
+        async with self._async_session_maker() as session:
             for tag_uuid in to_add:
-                session.add(ImageTagLink(image_uuid=image_uuid, tag_uuid=tag_uuid))
+                session.add(ImageTagLink(image_uuid=image_uuid, tag_uuid=tag_uuid, status=ImageItemStatus.PRESENT))
             try:
                 await session.commit()
             except IntegrityError:
-                # A concurrent caller linking the same tag between our SELECT and INSERT is
-                # harmless (it already has the link we wanted). Anything else — e.g. an
-                # invalid tag_uuid/image_uuid violating the FK constraint — must surface
-                # rather than be silently swallowed, so re-check and re-raise if any of the
-                # tags we tried to add are still not linked.
+                # A concurrent caller inserted one of these rows between our SELECT and
+                # INSERT.  Any status satisfies the PK constraint — only re-raise if the
+                # row is still completely absent (which indicates an FK violation on
+                # tag_uuid or image_uuid, not a harmless race).
                 await session.rollback()
                 result = await session.exec(
                     select(ImageTagLink.tag_uuid).where(
@@ -1945,7 +1981,7 @@ class DbClient:
         await self.remove_image_tags(image_uuid, [tag_uuid])
 
     async def remove_image_tags(self, image_uuid: str, tag_uuids: List[str]) -> None:
-        """Unlink multiple tags from a whole image in one transaction. No-op for tags not linked."""
+        """Delete the image_tags rows for the given tags (UNCERTAIN = no row). No-op for tags not linked."""
         if not tag_uuids:
             return
         async with self._async_session_maker() as session:
@@ -1958,20 +1994,50 @@ class DbClient:
             await session.commit()
 
     async def get_image_tag_uuids(self, image_uuid: str) -> List[str]:
-        """Return all tag UUIDs linked to a whole image."""
+        """Return all PRESENT tag UUIDs linked to a whole image."""
         async with self._async_session_maker() as session:
             result = await session.exec(
-                select(ImageTagLink.tag_uuid).where(ImageTagLink.image_uuid == image_uuid)
+                select(ImageTagLink.tag_uuid).where(
+                    ImageTagLink.image_uuid == image_uuid,
+                    ImageTagLink.status == ImageItemStatus.PRESENT,
+                )
             )
             return list(result.all())
 
     async def get_image_uuids_by_tag(self, tag_uuid: str) -> Set[str]:
-        """Return all image UUIDs carrying the given whole-image tag."""
+        """Return all image UUIDs carrying the given whole-image tag as PRESENT."""
         async with self._async_session_maker() as session:
             result = await session.exec(
-                select(ImageTagLink.image_uuid).where(ImageTagLink.tag_uuid == tag_uuid)
+                select(ImageTagLink.image_uuid).where(
+                    ImageTagLink.tag_uuid == tag_uuid,
+                    ImageTagLink.status == ImageItemStatus.PRESENT,
+                )
             )
             return set(result.all())
+
+    async def set_image_tag_status(self, image_uuid: str, tag_uuid: str, status: ImageItemStatus) -> None:
+        """Explicitly set PRESENT, ABSENT, or UNCERTAIN for a whole-image tag.
+
+        Unlike image labels, all three states are user-settable here — whole-image
+        tags have no derived-PRESENT concept to protect.
+        """
+        async with self._async_session_maker() as session:
+            existing = await session.get(ImageTagLink, (image_uuid, tag_uuid))
+            if status == ImageItemStatus.UNCERTAIN:
+                if existing:
+                    await session.delete(existing)
+            elif existing:
+                existing.status = status
+                existing.updated_at = datetime.now(timezone.utc)
+            else:
+                session.add(ImageTagLink(image_uuid=image_uuid, tag_uuid=tag_uuid, status=status))
+            await session.commit()
+
+    async def get_image_tag_statuses(self, image_uuid: str) -> List[ImageTagLink]:
+        """Return all image_tags rows (PRESENT and ABSENT) for a given image."""
+        async with self._async_session_maker() as session:
+            result = await session.exec(select(ImageTagLink).where(ImageTagLink.image_uuid == image_uuid))
+            return result.all()
 
     ################################################################################
     # Task Configs

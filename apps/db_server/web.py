@@ -24,11 +24,12 @@ from apps.helpers.db.types import (
     DatasetFilterCriteria,
     DatasetRead,
     DatasetUpdate,
+    ImageItemStatus,
     ImageLabelRead,
-    ImageLabelStatus,
     ImageRecordRead,
     ImageRecordUpdate,
     ImageSearchParams,
+    ImageTagStatusRead,
     Label,
     LabelRead,
     LabelType,
@@ -97,7 +98,7 @@ class BulkApplyBboxesByUuidsPayload(ApiPayload):
 
 class BulkApplyImagesByUuidsPayload(ApiPayload):
     image_uuids: List[str]
-    action: str  # setAbsent | setUncertain | delete | addTags | removeTags
+    action: str  # setAbsent | setUncertain | delete | addTags | removeTags | setTagAbsent | setTagUncertain
     label_uuid: Optional[str] = None
     tag_uuids: List[str] = Field(default_factory=list)
 
@@ -339,7 +340,7 @@ class GetFileResponse(StatusResponse):
 class SetImageLabelPayload(ApiPayload):
     image_path: str
     label_uuid: str
-    status: ImageLabelStatus
+    status: ImageItemStatus
 
 
 class SetImageLabelResponse(StatusResponse):
@@ -362,6 +363,20 @@ class SetImageTagResponse(StatusResponse):
 
 class GetImageTagsResponse(StatusResponse):
     tags: List[TagRead] = Field(default_factory=list)
+
+
+class SetImageTagStatusPayload(ApiPayload):
+    image_path: str
+    tag_uuid: str
+    status: ImageItemStatus  # present | absent | uncertain
+
+
+class SetImageTagStatusResponse(StatusResponse):
+    pass
+
+
+class GetImageTagStatusesResponse(StatusResponse):
+    tag_statuses: List[ImageTagStatusRead] = Field(default_factory=list)
 
 
 class ReviewQueueResponse(StatusResponse):
@@ -1209,15 +1224,15 @@ class WebApp:
             "/api/images/labels/set",
             response_model=SetImageLabelResponse,
             tags=[ApiTags.IMAGES],
-            operation_id="set_image_label",
+            operation_id="set_image_label_status",
         )
-        async def set_image_label(payload: SetImageLabelPayload) -> SetImageLabelResponse:
-            if payload.status == ImageLabelStatus.PRESENT:
+        async def set_image_label_status(payload: SetImageLabelPayload) -> SetImageLabelResponse:
+            if payload.status == ImageItemStatus.PRESENT:
                 return SetImageLabelResponse(
                     status=JsonValues.FAILURE,
                     message="PRESENT status cannot be set directly; it is derived from verified bboxes",
                 )
-            ok = await self._manager.set_image_label(payload.image_path, payload.label_uuid, payload.status)
+            ok = await self._manager.set_image_label_status(payload.image_path, payload.label_uuid, payload.status)
             if not ok:
                 return SetImageLabelResponse(status=JsonValues.FAILURE, message="Image not found")
             return SetImageLabelResponse()
@@ -1257,6 +1272,30 @@ class WebApp:
             if tags is None:
                 return GetImageTagsResponse(status=JsonValues.FAILURE, message="Image not found")
             return GetImageTagsResponse(tags=tags)
+
+        @self._app.post(
+            "/api/images/tags/set-status",
+            response_model=SetImageTagStatusResponse,
+            tags=[ApiTags.IMAGES],
+            operation_id="set_image_tag_status",
+        )
+        async def set_image_tag_status(payload: SetImageTagStatusPayload) -> SetImageTagStatusResponse:
+            ok = await self._manager.set_image_tag_status(payload.image_path, payload.tag_uuid, payload.status)
+            if not ok:
+                return SetImageTagStatusResponse(status=JsonValues.FAILURE, message="Image not found")
+            return SetImageTagStatusResponse()
+
+        @self._app.get(
+            "/api/images/{image_path:path}/tags/statuses",
+            response_model=GetImageTagStatusesResponse,
+            tags=[ApiTags.IMAGES],
+            operation_id="get_image_tag_statuses",
+        )
+        async def get_image_tag_statuses(image_path: str) -> GetImageTagStatusesResponse:
+            statuses = await self._manager.get_image_tag_statuses(image_path)
+            if statuses is None:
+                return GetImageTagStatusesResponse(status=JsonValues.FAILURE, message="Image not found")
+            return GetImageTagStatusesResponse(tag_statuses=statuses)
 
         @self._app.post(
             "/api/images/review",

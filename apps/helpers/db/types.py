@@ -8,7 +8,9 @@ TaskResumeData: TypeAlias = Dict[str, Any]
 TaskResultData: TypeAlias = Dict[str, Any]
 
 
-class ImageLabelStatus(str, Enum):
+class ImageItemStatus(str, Enum):
+    """Tri-state verification status shared by per-image labels and whole-image tags."""
+
     UNCERTAIN = "uncertain"
     PRESENT = "present"
     ABSENT = "absent"
@@ -175,11 +177,21 @@ class LabelUpdate(BaseModel):
 class ImageTagLink(SQLModel, table=True):
     """
     The database representation of the many-to-many relationship between whole images and tags.
+
+    Tri-state, mirroring ImageLabel: a row only exists for PRESENT or ABSENT status;
+    UNCERTAIN (never tagged, never verified absent) means no row. Unlike labels, PRESENT
+    here is not derived from anything — it's just "the user applied this tag" — so all
+    three statuses are directly user-settable.
     """
 
     __tablename__ = "image_tags"
     image_uuid: str = Field(foreign_key="images.uuid", primary_key=True, ondelete="CASCADE")
     tag_uuid: str = Field(foreign_key="tags.uuid", primary_key=True, ondelete="CASCADE", index=True)
+    status: ImageItemStatus = Field(default=ImageItemStatus.PRESENT)
+    updated_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        sa_type=DateTime(timezone=True),
+    )
 
 
 class ImageRecordBase(SQLModel):
@@ -202,7 +214,15 @@ class ImageRecord(ImageRecordBase, TimestampModel, table=True):
     bboxes: List["BBox"] = Relationship(
         back_populates="image", sa_relationship_kwargs={"cascade": "all, delete-orphan"}
     )
-    tags: List["Tag"] = Relationship(back_populates="images", link_model=ImageTagLink)
+    tags: List["Tag"] = Relationship(
+        back_populates="images",
+        link_model=ImageTagLink,
+        sa_relationship_kwargs={
+            "primaryjoin": "ImageRecord.uuid==ImageTagLink.image_uuid",
+            "secondaryjoin": f"(ImageTagLink.tag_uuid==Tag.uuid) & (ImageTagLink.status=='{ImageItemStatus.PRESENT.value}')",
+            "viewonly": True,
+        },
+    )
 
 
 class ImageRecordRead(OrmModel):
@@ -218,7 +238,7 @@ class ImageLabelFilter(ApiModel):
     """A single condition on the image_labels table used when searching images."""
 
     label_uuid: str
-    status: ImageLabelStatus
+    status: ImageItemStatus
     exclude: bool = False
     require_verified: bool = False  # if True: EXISTS (status IN PRESENT, ABSENT); status/exclude ignored
 
@@ -227,7 +247,9 @@ class ImageTagFilter(ApiModel):
     """A single condition on the image_tags table used when searching images (whole-image tags)."""
 
     tag_uuid: str
-    exclude: bool = False  # False = require this whole-image tag; True = require its absence
+    status: ImageItemStatus = ImageItemStatus.PRESENT
+    exclude: bool = False  # False = require this status; True = require its absence
+    require_verified: bool = False  # if True: EXISTS (status IN PRESENT, ABSENT); status/exclude ignored
 
 
 class TagPresenceFilter(ApiModel):
@@ -388,7 +410,15 @@ class Tag(TagBase, TimestampModel, table=True):
     __tablename__ = "tags"
     uuid: str = Field(default_factory=lambda: str(uuid4()), primary_key=True)
     bboxes: List[BBox] = Relationship(back_populates="tags", link_model=BBoxTagLink)
-    images: List[ImageRecord] = Relationship(back_populates="tags", link_model=ImageTagLink)
+    images: List[ImageRecord] = Relationship(
+        back_populates="tags",
+        link_model=ImageTagLink,
+        sa_relationship_kwargs={
+            "primaryjoin": "Tag.uuid==ImageTagLink.tag_uuid",
+            "secondaryjoin": f"(ImageTagLink.image_uuid==ImageRecord.uuid) & (ImageTagLink.status=='{ImageItemStatus.PRESENT.value}')",
+            "viewonly": True,
+        },
+    )
 
 
 class TagRead(OrmModel):
@@ -487,7 +517,7 @@ class ImageLabel(SQLModel, table=True):
     __tablename__ = "image_labels"
     image_uuid: str = Field(foreign_key="images.uuid", primary_key=True, ondelete="CASCADE")
     label_uuid: str = Field(foreign_key="labels.uuid", primary_key=True, ondelete="CASCADE")
-    status: ImageLabelStatus = Field(default=ImageLabelStatus.UNCERTAIN)
+    status: ImageItemStatus = Field(default=ImageItemStatus.UNCERTAIN)
     updated_at: datetime = Field(
         default_factory=lambda: datetime.now(timezone.utc),
         sa_type=DateTime(timezone=True),
@@ -497,7 +527,13 @@ class ImageLabel(SQLModel, table=True):
 class ImageLabelRead(OrmModel):
     image_uuid: str
     label_uuid: str
-    status: ImageLabelStatus
+    status: ImageItemStatus
+
+
+class ImageTagStatusRead(OrmModel):
+    image_uuid: str
+    tag_uuid: str
+    status: ImageItemStatus
 
 
 # ─────────────────────────────────────────────────────────────────────────────

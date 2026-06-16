@@ -30,6 +30,7 @@ export const VERIFICATION_TAG_UUIDS = new Set([UNVERIFIED_TAG_UUID, FALSE_POS_TA
  *   imageLabelFilters?: Array<{labelUuid: string, status: string, exclude: boolean}>,
  *   imageTagUuids?: string[],      // whole-image tags that must be present (AND)
  *   imageTagExcludeUuids?: string[], // whole-image tags that must be absent
+ *   imageTagVerifiedAbsentUuids?: string[], // whole-image tags explicitly verified absent (AND)
  *   limit?: number,
  * }} opts
  */
@@ -53,6 +54,7 @@ export async function fetchReviewQueue({
   imageLabelFilters = [],
   imageTagUuids = [],
   imageTagExcludeUuids = [],
+  imageTagVerifiedAbsentUuids = [],
   verificationCheck = null,
   requireBboxes = false,
   limit = 50,
@@ -92,8 +94,9 @@ export async function fetchReviewQueue({
   }
   if (verificationCheck) body.labelVerificationCheck = verificationCheck;
   const imageTagFilters = [
-    ...imageTagUuids.map(uuid => ({ tagUuid: uuid, exclude: false })),
-    ...imageTagExcludeUuids.map(uuid => ({ tagUuid: uuid, exclude: true })),
+    ...imageTagUuids.map(uuid => ({ tagUuid: uuid, status: 'present', exclude: false })),
+    ...imageTagExcludeUuids.map(uuid => ({ tagUuid: uuid, status: 'present', exclude: true })),
+    ...imageTagVerifiedAbsentUuids.map(uuid => ({ tagUuid: uuid, status: 'absent', exclude: false })),
   ];
   if (imageTagFilters.length > 0) body.imageTagFilters = imageTagFilters;
 

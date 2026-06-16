@@ -58,6 +58,24 @@ async def _set_tag(http_client, image_path, tag_uuid, action):
     assert r.json()["status"] == "success"
 
 
+async def _set_tag_status(http_client, image_path, tag_uuid, status):
+    r = await http_client.post(
+        "/api/images/tags/set-status",
+        json={"imagePath": image_path, "tagUuid": tag_uuid, "status": status},
+    )
+    assert r.status_code == 200
+    assert r.json()["status"] == "success"
+
+
+async def _get_image_tag_statuses(http_client, image_path: str) -> dict:
+    """Return {tag_uuid: status} for explicit (PRESENT/ABSENT) rows on the given image."""
+    r = await http_client.get(f"/api/images/{image_path}/tags/statuses")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["status"] == "success"
+    return {row["tagUuid"]: row["status"] for row in body.get("tagStatuses", [])}
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # db_client level
 # ──────────────────────────────────────────────────────────────────────────────
@@ -226,3 +244,134 @@ async def test_review_queue_excludes_by_image_tag(http_client, files_root, tag_u
     body = r.json()
     filenames = {img["filename"] for img in body["images"]}
     assert filenames == {untagged_path}
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Tri-state verification (PRESENT / ABSENT / UNCERTAIN)
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+async def test_set_tag_status_absent_and_get_statuses(http_client, image_file, tag_uuid):
+    await _register_image(http_client, "image_tags_test.png")
+    await _set_tag_status(http_client, "image_tags_test.png", tag_uuid, "absent")
+
+    statuses = await _get_image_tag_statuses(http_client, "image_tags_test.png")
+    assert statuses[tag_uuid] == "absent"
+    # ABSENT must not appear in the PRESENT-only tags list.
+    assert await _get_image_tags(http_client, "image_tags_test.png") == []
+
+
+async def test_set_tag_status_present_via_status_endpoint(http_client, image_file, tag_uuid):
+    await _register_image(http_client, "image_tags_test.png")
+    await _set_tag_status(http_client, "image_tags_test.png", tag_uuid, "present")
+
+    assert await _get_image_tags(http_client, "image_tags_test.png") == [tag_uuid]
+
+
+async def test_set_tag_status_uncertain_clears_absent(http_client, image_file, tag_uuid):
+    await _register_image(http_client, "image_tags_test.png")
+    await _set_tag_status(http_client, "image_tags_test.png", tag_uuid, "absent")
+    await _set_tag_status(http_client, "image_tags_test.png", tag_uuid, "uncertain")
+
+    statuses = await _get_image_tag_statuses(http_client, "image_tags_test.png")
+    assert tag_uuid not in statuses
+
+
+async def test_set_tag_present_clears_existing_absent_mark(http_client, image_file, tag_uuid):
+    """Applying a tag (add) after it was verified absent flips it back to PRESENT."""
+    await _register_image(http_client, "image_tags_test.png")
+    await _set_tag_status(http_client, "image_tags_test.png", tag_uuid, "absent")
+    await _set_tag(http_client, "image_tags_test.png", tag_uuid, "add")
+
+    assert await _get_image_tags(http_client, "image_tags_test.png") == [tag_uuid]
+    statuses = await _get_image_tag_statuses(http_client, "image_tags_test.png")
+    assert statuses[tag_uuid] == "present"
+
+
+async def test_set_tag_status_image_not_found(http_client, tag_uuid):
+    r = await http_client.post(
+        "/api/images/tags/set-status",
+        json={"imagePath": "ghost.png", "tagUuid": tag_uuid, "status": "absent"},
+    )
+    assert r.status_code == 200
+    assert r.json()["status"] == "failure"
+
+
+async def test_get_tag_statuses_image_not_found(http_client):
+    r = await http_client.get("/api/images/ghost.png/tags/statuses")
+    assert r.status_code == 200
+    assert r.json()["status"] == "failure"
+
+
+async def test_bulk_apply_set_tag_absent(http_client, files_root, tag_uuid):
+    p = "bulk_tag_absent.png"
+    (files_root / p).write_bytes(make_png())
+    r = await _register_image(http_client, p)
+    image_uuid = r["image"]["uuid"]
+
+    r = await http_client.post(
+        "/api/images/bulk-apply-by-uuids",
+        json={"imageUuids": [image_uuid], "action": "setTagAbsent", "tagUuids": [tag_uuid]},
+    )
+    assert r.status_code == 200
+    assert r.json()["modifiedCount"] == 1
+
+    statuses = await _get_image_tag_statuses(http_client, p)
+    assert statuses[tag_uuid] == "absent"
+
+
+async def test_bulk_apply_set_tag_uncertain(http_client, files_root, tag_uuid):
+    p = "bulk_tag_uncertain.png"
+    (files_root / p).write_bytes(make_png())
+    r = await _register_image(http_client, p)
+    image_uuid = r["image"]["uuid"]
+    await _set_tag_status(http_client, p, tag_uuid, "absent")
+
+    r = await http_client.post(
+        "/api/images/bulk-apply-by-uuids",
+        json={"imageUuids": [image_uuid], "action": "setTagUncertain", "tagUuids": [tag_uuid]},
+    )
+    assert r.status_code == 200
+    assert r.json()["modifiedCount"] == 1
+
+    statuses = await _get_image_tag_statuses(http_client, p)
+    assert tag_uuid not in statuses
+
+
+async def test_review_queue_filters_by_verified_absent_tag(http_client, files_root, tag_uuid):
+    absent_path = "absent.png"
+    untouched_path = "untouched.png"
+    for p in (absent_path, untouched_path):
+        (files_root / p).write_bytes(make_png())
+        await _register_image(http_client, p)
+    await _set_tag_status(http_client, absent_path, tag_uuid, "absent")
+
+    r = await http_client.post(
+        "/api/images/review",
+        json={"showAllBboxes": True, "imageTagFilters": [{"tagUuid": tag_uuid, "status": "absent", "exclude": False}]},
+    )
+    assert r.status_code == 200
+    filenames = {img["filename"] for img in r.json()["images"]}
+    assert filenames == {absent_path}
+
+
+async def test_review_queue_require_verified_image_tag(http_client, files_root, tag_uuid):
+    present_path = "verified_present.png"
+    absent_path = "verified_absent.png"
+    unchecked_path = "unchecked.png"
+    for p in (present_path, absent_path, unchecked_path):
+        (files_root / p).write_bytes(make_png())
+        await _register_image(http_client, p)
+    await _set_tag(http_client, present_path, tag_uuid, "add")
+    await _set_tag_status(http_client, absent_path, tag_uuid, "absent")
+
+    r = await http_client.post(
+        "/api/images/review",
+        json={
+            "showAllBboxes": True,
+            "imageTagFilters": [{"tagUuid": tag_uuid, "status": "present", "exclude": False, "requireVerified": True}],
+        },
+    )
+    assert r.status_code == 200
+    filenames = {img["filename"] for img in r.json()["images"]}
+    assert filenames == {present_path, absent_path}

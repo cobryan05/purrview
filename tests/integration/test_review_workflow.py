@@ -22,7 +22,7 @@ from apps.helpers.db.db_client import DbClient
 from apps.helpers.db.types import (
     UNVERIFIED_TAG_UUID,
     VERIFIED_TAG_UUID,
-    ImageLabelStatus,
+    ImageItemStatus,
 )
 from tests.conftest import make_png
 
@@ -140,7 +140,7 @@ async def test_full_verify_workflow(client, files_root):
 
     # Image label now PRESENT
     labels = await _image_labels(client, "review.png")
-    assert labels[label] == ImageLabelStatus.PRESENT
+    assert labels[label] == ImageItemStatus.PRESENT
 
 
 async def test_confirm_workflow_creates_present_label(client, files_root):
@@ -163,7 +163,7 @@ async def test_confirm_workflow_creates_present_label(client, files_root):
     assert not any("confirm.png" in img["filename"] for img in images)
 
     labels = await _image_labels(client, "confirm.png")
-    assert labels[label] == ImageLabelStatus.PRESENT
+    assert labels[label] == ImageItemStatus.PRESENT
 
 
 async def test_delete_bbox_removes_from_queue(client, files_root):

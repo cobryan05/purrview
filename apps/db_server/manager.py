@@ -35,12 +35,13 @@ from apps.helpers.db.types import (
     DatasetCreate,
     DatasetRead,
     DatasetUpdate,
+    ImageItemStatus,
     ImageLabelRead,
-    ImageLabelStatus,
     ImageRecord,
     ImageRecordRead,
     ImageRecordUpdate,
     ImageSearchParams,
+    ImageTagStatusRead,
     Label,
     LabelType,
     ModelConfigCreate,
@@ -738,13 +739,13 @@ class Manager:
         tag_uuids: Optional[List[str]] = None,
     ) -> Tuple[int, int]:
         """Apply an image-level bulk action (setAbsent/setUncertain/delete/addTags/
-        removeTags) to an explicit list of images in one server-side pass — the
-        image-kind counterpart of bulk_apply_bboxes_by_uuids.
+        removeTags/setTagAbsent/setTagUncertain) to an explicit list of images in one
+        server-side pass — the image-kind counterpart of bulk_apply_bboxes_by_uuids.
 
         Returns (modified_count, fail_count).
         """
         tag_uuids = tag_uuids or []
-        if action in ("addTags", "removeTags") and not tag_uuids:
+        if action in ("addTags", "removeTags", "setTagAbsent", "setTagUncertain") and not tag_uuids:
             # Nothing to do — don't report images as "modified" for a no-op.
             return 0, 0
         modified_count = 0
@@ -762,8 +763,14 @@ class Manager:
                     await self._db_client.add_image_tags(image_uuid, tag_uuids)
                 elif action == "removeTags":
                     await self._db_client.remove_image_tags(image_uuid, tag_uuids)
+                elif action == "setTagAbsent":
+                    for tag_uuid in tag_uuids:
+                        await self._db_client.set_image_tag_status(image_uuid, tag_uuid, ImageItemStatus.ABSENT)
+                elif action == "setTagUncertain":
+                    for tag_uuid in tag_uuids:
+                        await self._db_client.set_image_tag_status(image_uuid, tag_uuid, ImageItemStatus.UNCERTAIN)
                 else:  # setAbsent
-                    await self._db_client.set_image_label(image_uuid, label_uuid, ImageLabelStatus.ABSENT)
+                    await self._db_client.set_image_label_status(image_uuid, label_uuid, ImageItemStatus.ABSENT)
                 modified_count += 1
             except Exception as e:
                 logger.error("bulk_apply_images_by_uuids: image %s failed: %s", image_uuid, e)
@@ -807,7 +814,7 @@ class Manager:
         """Sync PRESENT rows in image_labels from reviewed bboxes.
 
         Only PRESENT rows are written/deleted here.  ABSENT rows are always
-        set explicitly by the user via set_image_label and are never touched.
+        set explicitly by the user via set_image_label_status and are never touched.
 
         Bboxes tagged UNVERIFIED or FALSE_POSITIVE are excluded from PRESENT tracking,
         as they have not been confirmed as true positive annotations.
@@ -816,13 +823,13 @@ class Manager:
             b.label_uuid for b in update.bboxes if b.label_uuid and _BBOX_VERIFIED_TAG in b.tag_uuids
         }
         for label_uuid in present_label_uuids:
-            await self._db_client.set_image_label(image_uuid, label_uuid, ImageLabelStatus.PRESENT)
+            await self._db_client.set_image_label_status(image_uuid, label_uuid, ImageItemStatus.PRESENT)
 
         existing = await self._db_client.get_image_labels(image_uuid)
         stale_present = [
             r.label_uuid
             for r in existing
-            if r.status == ImageLabelStatus.PRESENT and r.label_uuid not in present_label_uuids
+            if r.status == ImageItemStatus.PRESENT and r.label_uuid not in present_label_uuids
         ]
         await self._db_client.delete_image_labels(image_uuid, stale_present)
 
@@ -833,7 +840,7 @@ class Manager:
             return None
         return await self._db_client.get_image_uuid_by_filename(safe_path)
 
-    async def set_image_label(self, image_path: str, label_uuid: str, status: ImageLabelStatus) -> bool:
+    async def set_image_label_status(self, image_path: str, label_uuid: str, status: ImageItemStatus) -> bool:
         """Explicitly set a label state for an image.
 
         ABSENT creates/updates the row.  UNCERTAIN clears an existing explicit
@@ -843,12 +850,12 @@ class Manager:
         image_uuid = await self._resolve_image_uuid(image_path)
         if image_uuid is None:
             return False
-        if status == ImageLabelStatus.PRESENT:
+        if status == ImageItemStatus.PRESENT:
             return False  # PRESENT is always derived from verified bboxes, never set directly
-        if status == ImageLabelStatus.UNCERTAIN:
+        if status == ImageItemStatus.UNCERTAIN:
             await self._db_client.delete_image_labels(image_uuid, [label_uuid])
         else:
-            await self._db_client.set_image_label(image_uuid, label_uuid, status)
+            await self._db_client.set_image_label_status(image_uuid, label_uuid, status)
         return True
 
     async def get_image_labels(self, image_path: str) -> Optional[List[ImageLabelRead]]:
@@ -869,6 +876,26 @@ class Manager:
         else:
             await self._db_client.add_image_tag(image_uuid, tag_uuid)
         return True
+
+    async def set_image_tag_status(self, image_path: str, tag_uuid: str, status: ImageItemStatus) -> bool:
+        """Explicitly set PRESENT, ABSENT, or UNCERTAIN for a whole-image tag.
+
+        Unlike labels, all three states are user-settable here — tags have no
+        derived-PRESENT concept to protect.
+        """
+        image_uuid = await self._resolve_image_uuid(image_path)
+        if image_uuid is None:
+            return False
+        await self._db_client.set_image_tag_status(image_uuid, tag_uuid, status)
+        return True
+
+    async def get_image_tag_statuses(self, image_path: str) -> Optional[List[ImageTagStatusRead]]:
+        """Return all tag statuses (PRESENT and ABSENT) for an image."""
+        image_uuid = await self._resolve_image_uuid(image_path)
+        if image_uuid is None:
+            return None
+        rows = await self._db_client.get_image_tag_statuses(image_uuid)
+        return [ImageTagStatusRead.model_validate(r) for r in rows]
 
     async def get_image_tags(self, image_path: str) -> Optional[List[TagRead]]:
         """Return all tags linked to an image."""

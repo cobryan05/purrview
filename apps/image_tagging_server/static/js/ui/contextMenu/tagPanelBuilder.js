@@ -136,3 +136,42 @@ export async function buildTagPanel(adapters) {
   filterInput.addEventListener('input', () => renderList(filterInput.value));
   return wrap;
 }
+
+/**
+ * Build a simple pick-one tag-list panel for flyouts that need a single
+ * selection (no checkboxes, no filter input, no "+ Create tag" row).
+ * Clicking a tag calls onSelect(uuid); the caller is responsible for
+ * closing the menu afterward.
+ *
+ * @param {(uuid: string) => Promise<void>} onSelect
+ * @returns {Promise<HTMLElement>}
+ */
+export async function buildPickTagPanel(onSelect) {
+  const tagsMap = await fetchTags();
+  const visibleTags = filterVisibleTags(tagsMap.values());
+
+  const wrap = document.createElement('div');
+  wrap.style.cssText = 'min-width:220px;max-height:260px;overflow-y:auto;padding:4px 0;';
+
+  for (const tag of visibleTags) {
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex;align-items:center;gap:6px;padding:5px 10px;cursor:pointer;font-size:0.875em;';
+    row.addEventListener('mouseenter', () => (row.style.background = 'var(--pico-primary-background,rgba(255,255,255,.08))'));
+    row.addEventListener('mouseleave', () => (row.style.background = ''));
+
+    if (tag.icon) {
+      const ic = document.createElement('span');
+      ic.textContent = tag.icon;
+      row.appendChild(ic);
+    }
+    const nm = document.createElement('span');
+    nm.textContent = tag.name ?? '';
+    nm.style.flex = '1';
+    row.appendChild(nm);
+
+    row.addEventListener('mousedown', e => { e.preventDefault(); onSelect(tag.uuid); });
+    wrap.appendChild(row);
+  }
+
+  return wrap;
+}

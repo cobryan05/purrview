@@ -39,6 +39,9 @@ const DEFAULT_STATE = () => ({
   // image must not carry it. No any/all toggle: all selected tags are required.
   imageTagUuids: [],
   imageTagExcludeUuids: [],
+  // Whole-image tags explicitly verified ABSENT (distinct axis from the PRESENT
+  // toggle above — "checked, doesn't apply" rather than "never checked").
+  imageTagVerifiedAbsentUuids: [],
   filenameSearch: '',
   dateFrom: null,
   dateTo: null,
@@ -97,25 +100,43 @@ export function createFilterPanel(labels, tags, onFilterChange, { inlineControls
   let tagsDropdown = _buildTagsDropdown();
   tagsContainer.appendChild(tagsDropdown.element);
 
-  // ── Toolbar: Image Tags multi-select dropdown ────────────────────────────
-  // Whole-image tags (image_tags table) — a different axis than the bbox-level
-  // Tags dropdown above. No any/all mode: every selected tag is required (AND).
-  function _buildImageTagsDropdown() {
+  // ── Toolbar: Image Tags + Verified-Absent Tags dropdowns ────────────────
+  // Both operate on the image_tags table (whole-image axis, not bbox-level).
+  // A tag may appear in at most ONE of these dropdowns at a time — selecting
+  // the same tag in both would generate contradictory AND-clauses that always
+  // produce zero results. The onChange handlers enforce mutual exclusion.
+
+  /** Shared factory for both image-tag filter dropdowns. */
+  function _buildTagFilterDropdown({ label, filterKey, onChange }) {
     const visible = _visibleTags();
     const items = [...visible]
       .sort((a, b) => a.name.localeCompare(b.name))
       .map(t => ({ uuid: t.uuid, name: t.name, color: t.color || null }));
 
     return createMultiSelectDropdown({
-      label: 'Image Tags',
+      label,
       items,
       defaultSelected: [],
       showModeToggle: false,
-      filterKey: 'image-tags',
+      filterKey,
       inline: inlineControls,
       defaultWidth: '220px',
       defaultHeight: '300px',
+      onChange,
+    });
+  }
+
+  function _buildImageTagsDropdown() {
+    return _buildTagFilterDropdown({
+      label: 'Image Tags',
+      filterKey: 'image-tags',
       onChange: (selected, excluded) => {
+        // Remove any newly-selected tags from the verified-absent list.
+        const conflict = selected.filter(uuid => _state.imageTagVerifiedAbsentUuids.includes(uuid));
+        if (conflict.length) {
+          _state.imageTagVerifiedAbsentUuids = _state.imageTagVerifiedAbsentUuids.filter(u => !conflict.includes(u));
+          imageTagsAbsentDropdown.setState(_state.imageTagVerifiedAbsentUuids, undefined, undefined, []);
+        }
         _state.imageTagUuids = selected;
         _state.imageTagExcludeUuids = excluded;
         emit();
@@ -127,6 +148,29 @@ export function createFilterPanel(labels, tags, onFilterChange, { inlineControls
   if (inlineControls) imageTagsContainer.style.width = '100%';
   let imageTagsDropdown = _buildImageTagsDropdown();
   imageTagsContainer.appendChild(imageTagsDropdown.element);
+
+  function _buildImageTagsAbsentDropdown() {
+    return _buildTagFilterDropdown({
+      label: 'Verified Absent Tags',
+      filterKey: 'image-tags-absent',
+      onChange: (selected) => {
+        // Remove any newly-selected tags from the PRESENT filter.
+        const conflict = selected.filter(uuid => _state.imageTagUuids.includes(uuid));
+        if (conflict.length) {
+          _state.imageTagUuids = _state.imageTagUuids.filter(u => !conflict.includes(u));
+          _state.imageTagExcludeUuids = _state.imageTagExcludeUuids.filter(u => !conflict.includes(u));
+          imageTagsDropdown.setState(_state.imageTagUuids, undefined, undefined, _state.imageTagExcludeUuids);
+        }
+        _state.imageTagVerifiedAbsentUuids = selected;
+        emit();
+      },
+    });
+  }
+
+  const imageTagsAbsentContainer = document.createElement('div');
+  if (inlineControls) imageTagsAbsentContainer.style.width = '100%';
+  let imageTagsAbsentDropdown = _buildImageTagsAbsentDropdown();
+  imageTagsAbsentContainer.appendChild(imageTagsAbsentDropdown.element);
   // ── Toolbar: Labels multi-select dropdown (tree-ordered, with depth indentation) ──
   // Wrapped in a container div so it can be rebuilt when the active-model filter changes.
   const labelsDropdownContainer = document.createElement('div');
@@ -212,6 +256,9 @@ export function createFilterPanel(labels, tags, onFilterChange, { inlineControls
     imageTagsDropdown = _rebuildDropdown(imageTagsDropdown, imageTagsContainer, _buildImageTagsDropdown);
     _state.imageTagUuids = [];
     _state.imageTagExcludeUuids = [];
+
+    imageTagsAbsentDropdown = _rebuildDropdown(imageTagsAbsentDropdown, imageTagsAbsentContainer, _buildImageTagsAbsentDropdown);
+    _state.imageTagVerifiedAbsentUuids = [];
 
     emit();
   });
@@ -312,6 +359,7 @@ export function createFilterPanel(labels, tags, onFilterChange, { inlineControls
       + s.labelExcludeUuids.length
       + s.imageTagUuids.length
       + s.imageTagExcludeUuids.length
+      + s.imageTagVerifiedAbsentUuids.length
       + (s.filenameSearch ? 1 : 0)
       + (s.dateFrom ? 1 : 0)
       + (s.dateTo ? 1 : 0)
@@ -329,6 +377,7 @@ export function createFilterPanel(labels, tags, onFilterChange, { inlineControls
       && s.labelMatchMode === 'any'
       && s.imageTagUuids.length === 0
       && s.imageTagExcludeUuids.length === 0
+      && s.imageTagVerifiedAbsentUuids.length === 0
       && !s.filenameSearch
       && !s.dateFrom
       && !s.dateTo
@@ -365,6 +414,9 @@ export function createFilterPanel(labels, tags, onFilterChange, { inlineControls
     if (partial.imageTagUuids !== undefined || partial.imageTagExcludeUuids !== undefined) {
       imageTagsDropdown.setState(_state.imageTagUuids, undefined, undefined, _state.imageTagExcludeUuids);
     }
+    if (partial.imageTagVerifiedAbsentUuids !== undefined) {
+      imageTagsAbsentDropdown.setState(_state.imageTagVerifiedAbsentUuids, undefined, undefined, []);
+    }
     if (partial.dateFrom !== undefined) {
       dateFromInput.value = _state.dateFrom
         ? new Date(_state.dateFrom).toISOString().slice(0, 16)
@@ -388,6 +440,7 @@ export function createFilterPanel(labels, tags, onFilterChange, { inlineControls
   function destroy() {
     tagsDropdown.destroy();
     imageTagsDropdown.destroy();
+    imageTagsAbsentDropdown.destroy();
     _labelsDropdown?.destroy();
     _unsubActiveFilter();
     _unsubDynLabels();
@@ -396,8 +449,8 @@ export function createFilterPanel(labels, tags, onFilterChange, { inlineControls
 
   return {
     element: panel,
-    /** Dropdown elements to place in the sticky toolbar (Tags + Image Tags + Labels). */
-    toolbarControls: [tagsContainer, labelsDropdownContainer, imageTagsContainer],
+    /** Dropdown elements to place in the sticky toolbar (Tags + Image Tags + Verified Absent Tags + Labels). */
+    toolbarControls: [tagsContainer, labelsDropdownContainer, imageTagsContainer, imageTagsAbsentContainer],
     getState: () => ({
       ..._state,
       // showAllBboxes: true skips the server-side tag filter entirely.
