@@ -72,6 +72,22 @@ class BboxPatchPayload(ApiPayload):
     tag_uuids: List[str] = Field(default_factory=list)
 
 
+class BulkApplyAllPayload(ApiPayload):
+    filter: ImageSearchParams
+    action: str  # relabel | delete | addTags | removeTags
+    label_uuid: Optional[str] = None
+    tag_uuids: List[str] = Field(default_factory=list)
+    # Bbox-level subset filters (mirror the client-side render logic).
+    bbox_tag_filter: List[str] = Field(default_factory=list)
+    bbox_label_filter: List[str] = Field(default_factory=list)
+    show_all_bboxes: bool = False
+
+
+class BulkApplyAllResponse(StatusResponse):
+    modified_count: int = 0
+    fail_count: int = 0
+
+
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger(__file__)
 logger.setLevel(logging.DEBUG)
@@ -1228,6 +1244,29 @@ class WebApp:
         async def invalidate_bbox_thumbnails(payload: InvalidateThumbnailsPayload) -> StatusResponse:
             await self._manager.invalidate_bbox_thumbnails(payload.bbox_uuids)
             return StatusResponse()
+
+        @self._app.post(
+            "/api/images/bbox/bulk-apply",
+            response_model=BulkApplyAllResponse,
+            tags=[ApiTags.IMAGES],
+            operation_id="bulk_apply_bboxes",
+        )
+        async def bulk_apply_bboxes_endpoint(payload: BulkApplyAllPayload) -> BulkApplyAllResponse:
+            """Apply an action to all bboxes matching the given filter across all pages."""
+            try:
+                modified_count, fail_count = await self._manager.bulk_apply_bboxes(
+                    search_params=payload.filter,
+                    action=payload.action,
+                    label_uuid=payload.label_uuid,
+                    tag_uuids=payload.tag_uuids,
+                    bbox_tag_filter=payload.bbox_tag_filter,
+                    bbox_label_filter=payload.bbox_label_filter,
+                    show_all_bboxes=payload.show_all_bboxes,
+                )
+                return BulkApplyAllResponse(modified_count=modified_count, fail_count=fail_count)
+            except Exception as e:
+                logger.exception("bulk_apply_bboxes failed")
+                return BulkApplyAllResponse(status=JsonValues.FAILURE, message=str(e))
 
         @self._app.delete(
             "/api/images/bbox/{bbox_uuid}",

@@ -558,6 +558,122 @@ class Manager:
         await self._sync_image_state(image_record)
         return True
 
+    async def bulk_apply_bboxes(
+        self,
+        search_params: ImageSearchParams,
+        action: str,
+        label_uuid: Optional[str],
+        tag_uuids: List[str],
+        bbox_tag_filter: List[str],
+        bbox_label_filter: List[str],
+        show_all_bboxes: bool = False,
+    ) -> Tuple[int, int]:
+        """Apply action to every bbox matching the filter, across all pages.
+
+        Pages through list_images_search in batches of 200, applies the requested
+        action to each matching bbox, and calls _sync_image_state once per image.
+
+        bbox_tag_filter / bbox_label_filter mirror the client-side bbox subset logic:
+          - bbox_tag_filter: bbox must carry at least one of these tag UUIDs
+            (ignored when show_all_bboxes is True or the list is empty)
+          - bbox_label_filter: bbox label_uuid must be in this set
+            (ignored when the list is empty)
+
+        Returns (modified_count, fail_count).
+        """
+        tag_filter_set: Optional[Set[str]] = (
+            None if show_all_bboxes else (set(bbox_tag_filter) if bbox_tag_filter else None)
+        )
+        label_filter_set: Optional[Set[str]] = set(bbox_label_filter) if bbox_label_filter else None
+
+        _VERIFICATION_UUIDS: Set[str] = {UNVERIFIED_TAG_UUID, FALSE_POS_TAG_UUID}
+
+        modified_count = 0
+        fail_count = 0
+        _PAGE_SIZE = 200
+        cursor_uuid: Optional[str] = None
+        cursor_sort_value = None
+
+        while True:
+            page_params = search_params.model_copy(
+                update={
+                    "limit": _PAGE_SIZE + 1,
+                    "after_uuid": cursor_uuid,
+                    "after_sort_value": cursor_sort_value,
+                }
+            )
+            batch = await self._db_client.list_images_search(page_params)
+            has_more = len(batch) > _PAGE_SIZE
+            batch = batch[:_PAGE_SIZE]
+
+            if not batch:
+                break
+
+            for img in batch:
+                # Replicate the client-side bbox subset filter.
+                matching = []
+                for bbox in img.bboxes or []:
+                    if tag_filter_set is not None and not any(t.uuid in tag_filter_set for t in bbox.tags or []):
+                        continue
+                    if label_filter_set is not None and bbox.label_uuid not in label_filter_set:
+                        continue
+                    matching.append(bbox)
+
+                if not matching:
+                    continue
+
+                any_modified = False
+                for bbox in matching:
+                    try:
+                        current_tags = [t.uuid for t in bbox.tags or []]
+                        if action == "delete":
+                            if bbox.label_uuid:
+                                self._hash_index.remove_bbox(bbox.uuid, bbox.label_uuid)
+                            await self._db_client.delete_single_bbox(bbox.uuid)
+                        elif action == "addTags":
+                            # Pass [existing, new] — db_client resolves exclusive-group conflicts
+                            # so new tags win any group conflict.
+                            await self._db_client.update_single_bbox(bbox.uuid, None, [*current_tags, *tag_uuids])
+                        elif action == "removeTags":
+                            remove_set = set(tag_uuids)
+                            new_tags = [u for u in current_tags if u not in remove_set]
+                            await self._db_client.update_single_bbox(bbox.uuid, None, new_tags)
+                        else:  # relabel
+                            assigning = bool(label_uuid)
+                            new_label = label_uuid if assigning else bbox.label_uuid
+                            if assigning:
+                                new_tags = [u for u in current_tags if u not in _VERIFICATION_UUIDS] + [VERIFIED_TAG_UUID]
+                                if bbox.label_uuid and label_uuid != bbox.label_uuid and bbox.phash:
+                                    self._hash_index.move_bbox(bbox.uuid, bbox.label_uuid, label_uuid, bbox.phash)
+                            else:
+                                new_tags = current_tags
+                            await self._db_client.update_single_bbox(bbox.uuid, new_label, new_tags)
+                        modified_count += 1
+                        any_modified = True
+                    except Exception as e:
+                        logger.error("bulk_apply_bboxes: bbox %s failed: %s", bbox.uuid, e)
+                        fail_count += 1
+
+                if any_modified:
+                    try:
+                        await self._sync_image_state(img)
+                    except Exception as e:
+                        logger.error("bulk_apply_bboxes: _sync_image_state failed for %s: %s", img.uuid, e)
+
+            if not has_more:
+                break
+
+            last = batch[-1]
+            sort_by = search_params.sort_by
+            cursor_uuid = last.uuid
+            cursor_sort_value = (
+                (last.updated_at if sort_by == "updated_at" else last.created_at)
+                if sort_by not in ("uuid", "filename")
+                else None
+            )
+
+        return modified_count, fail_count
+
     async def _sync_image_state(self, image_record: ImageRecord) -> None:
         """Rebuild JSON sidecar and image_labels after a single-bbox mutation."""
         safe_path = get_safe_path(self._files_root, image_record.filename)

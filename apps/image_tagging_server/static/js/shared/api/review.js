@@ -191,6 +191,85 @@ export async function deleteBbox(bboxUuid) {
 }
 
 /**
+ * Apply an action to all bboxes matching the current filter, across all pages.
+ * The filter params mirror fetchReviewQueue; bboxTagFilter / bboxLabelFilter
+ * are the client-computed bbox-level subset filters.
+ */
+export async function bulkApplyAll({
+  // Filter params (same shape as fetchReviewQueue, no pagination)
+  tagUuids = [UNVERIFIED_TAG_UUID],
+  tagExcludeUuids = [],
+  showAllBboxes = false,
+  tagMatchMode = 'any',
+  labelUuids = [],
+  labelExcludeUuids = [],
+  labelMatchMode = 'any',
+  labelIncludeChildren = false,
+  sortBy = 'created_at',
+  sortOrder = 'desc',
+  filenameSearch,
+  dateFrom = null,
+  dateTo = null,
+  imageLabelFilters = [],
+  verificationCheck = null,
+  requireBboxes = false,
+  // Bbox-level subset filters (client-computed)
+  bboxTagFilter = [],
+  bboxLabelFilter = [],
+  // Action params
+  action,
+  labelUuid = null,
+  selectedTagUuids = [],
+} = {}) {
+  const filterBody = {
+    tagUuids: showAllBboxes ? [] : tagUuids,
+    showAllBboxes,
+    tagMatchMode,
+    sortBy,
+    sortOrder,
+    limit: 200,
+  };
+  if (requireBboxes) filterBody.requireBboxes = true;
+  if (labelUuids.length > 0) {
+    filterBody.labelUuids = labelUuids;
+    filterBody.labelMatchMode = labelMatchMode;
+    if (labelIncludeChildren) filterBody.labelIncludeChildren = true;
+  }
+  if (tagExcludeUuids.length > 0) {
+    filterBody.tagPresenceFilters = tagExcludeUuids.map(uuid => ({ tagUuid: uuid, exclude: true }));
+  }
+  if (labelExcludeUuids.length > 0) filterBody.labelExclusions = labelExcludeUuids;
+  if (filenameSearch) filterBody.filenameSearch = filenameSearch;
+  if (dateFrom) filterBody.dateFrom = dateFrom;
+  if (dateTo) filterBody.dateTo = dateTo;
+  if (imageLabelFilters.length > 0) {
+    filterBody.imageLabelFilters = imageLabelFilters.map(f => ({
+      labelUuid: f.labelUuid,
+      status: f.status,
+      exclude: f.exclude,
+    }));
+  }
+  if (verificationCheck) filterBody.labelVerificationCheck = verificationCheck;
+
+  const res = await apiFetch('/api/images/bbox/bulk-apply', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      filter: filterBody,
+      action,
+      labelUuid: labelUuid ?? null,
+      tagUuids: selectedTagUuids,
+      bboxTagFilter,
+      bboxLabelFilter,
+      showAllBboxes,
+    }),
+  });
+  const data = await res.json();
+  if (!res.ok || data.status !== 'success') throw new Error(data.message || 'Bulk apply failed');
+  return { modifiedCount: data.modifiedCount ?? 0, failCount: data.failCount ?? 0 };
+}
+
+/**
  * Invalidate cached thumbnails for a list of bbox UUIDs.
  * @param {string[]} bboxUuids
  */
