@@ -28,9 +28,10 @@ export async function fetchImageLabels(imagePath) {
 /**
  * @param {string} imagePath
  * @param {string} labelUuid
- * @param {'absent'|'uncertain'} status
- *   'absent'    - explicitly mark label as not present in this image
- *   'uncertain' - clear an existing explicit ABSENT (reverts to default)
+ * @param {'present'|'absent'|'uncertain'} status
+ *   'present'   - include as a positive training example for this label
+ *   'absent'    - confirmed not present; clean negative training example
+ *   'uncertain' - unreviewed (clears any existing present/absent row)
  */
 export async function setImageLabel(imagePath, labelUuid, status) {
   const res = await apiFetch('/api/images/labels/set', {

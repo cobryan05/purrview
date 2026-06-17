@@ -23,11 +23,13 @@ import { createGenericRow, toast, makeLabelFilterNotice } from '/app-static/js/u
 const DEFAULT_COLOR = '#cccccc';
 
 const STATUS_CFG = Object.freeze({
-  present:   { text: '✓', color: '#4c4', locked: true  },
-  absent:    { text: '✗', color: '#e55', locked: false },
-  uncertain: { text: '?', color: '#888', locked: false },
+  present:   { text: '✓', color: '#4c4' },
+  absent:    { text: '✗', color: '#e55' },
+  uncertain: { text: '?', color: '#888' },
 });
-const STATUS_CYCLE = Object.freeze({ uncertain: 'absent', absent: 'uncertain' });
+// Three-way cycle: uncertain → present → absent → uncertain
+// PRESENT derived from verified bboxes is locked regardless of this cycle.
+const STATUS_CYCLE = Object.freeze({ uncertain: 'present', present: 'absent', absent: 'uncertain' });
 
 // ─── Shared hierarchy builder ────────────────────────────────────────────────
 
@@ -343,7 +345,7 @@ async function mountSelectMode(container, { runtime, filter }) {
   let currentImagePath = null;
   let _loadSeq = 0;
   let _lastSelectedUuid = null;
-  /** @type {Map<string, 'absent'>} — explicit absence marks from the server */
+  /** @type {Map<string, 'present'|'absent'>} — explicit presence/absence marks from the server */
   let serverStates = new Map();
   /**
    * Pending label-presence changes not yet flushed to the server.
@@ -366,7 +368,7 @@ async function mountSelectMode(container, { runtime, filter }) {
     if (status === 'uncertain') {
       serverStates.delete(uuid);
     } else {
-      serverStates.set(uuid, /** @type {'absent'} */ (status));
+      serverStates.set(uuid, /** @type {'present'|'absent'} */ (status));
     }
     pendingFlush.set(uuid, status);
   }
@@ -393,10 +395,17 @@ async function mountSelectMode(container, { runtime, filter }) {
 
       function applyStatus(status) {
         const cfg = STATUS_CFG[status] ?? STATUS_CFG.uncertain;
+        // Lock the button only when PRESENT is derived from verified bboxes, not when manually set.
+        const locked = derivedPresent.has(label.uuid);
         btn.textContent = cfg.text;
         btn.style.color = cfg.color;
-        btn.style.cursor = cfg.locked ? 'default' : 'pointer';
-        btn.style.opacity = cfg.locked ? '0.7' : '1';
+        btn.style.cursor = locked ? 'default' : 'pointer';
+        btn.style.opacity = locked ? '0.7' : '1';
+        btn.title = locked
+          ? 'Present (locked — derived from verified bboxes)'
+          : status === 'present'   ? 'Present — positive training example (click to cycle)'
+          : status === 'absent'    ? 'Confirmed not present — negative training example (click to cycle)'
+          : 'Unreviewed (click to cycle)';
       }
 
       applyStatus(effectiveStatus(label.uuid));
@@ -405,8 +414,8 @@ async function mountSelectMode(container, { runtime, filter }) {
       btn.addEventListener('click', (e) => {
         e.stopPropagation();
         if (!currentImagePath) return;
+        if (derivedPresent.has(label.uuid)) return; // locked when derived from verified bboxes
         const current = effectiveStatus(label.uuid);
-        if (STATUS_CFG[current]?.locked) return;
         const next = STATUS_CYCLE[current] ?? 'uncertain';
         // Update local state immediately for UI feedback; defer API call to save.
         setLocalPresence(label.uuid, next);
@@ -499,8 +508,9 @@ async function mountSelectMode(container, { runtime, filter }) {
         states = new Map();
       }
       if (seq !== _loadSeq) return; // superseded by a newer load
-      // Only retain explicit ABSENT marks; PRESENT is derived client-side from bboxes
-      serverStates = new Map([...states].filter(([, v]) => v === 'absent'));
+      // Retain explicit PRESENT and ABSENT marks from the server.
+      // Derived PRESENT (from verified bboxes) is computed separately via computeDerivedPresent.
+      serverStates = new Map([...states].filter(([, v]) => v !== 'uncertain'));
       derivedPresent = computeDerivedPresent(runtime?.state?.image?.bboxes);
       refreshStatusButtons();
     }
@@ -589,7 +599,7 @@ async function mountSelectMode(container, { runtime, filter }) {
     try {
       const states = await fetchImageLabels(alreadyLoadedPath);
       if (seq === _loadSeq) {
-        serverStates = new Map([...states].filter(([, v]) => v === 'absent'));
+        serverStates = new Map([...states].filter(([, v]) => v !== 'uncertain'));
         derivedPresent = computeDerivedPresent(runtime?.state?.image?.bboxes);
         refreshStatusButtons();
       }

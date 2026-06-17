@@ -37,6 +37,7 @@ from apps.helpers.db.types import (
     DatasetUpdate,
     ImageItemStatus,
     ImageLabelRead,
+    ImageLabelWithFilename,
     ImageRecord,
     ImageRecordRead,
     ImageRecordUpdate,
@@ -843,15 +844,19 @@ class Manager:
     async def set_image_label_status(self, image_path: str, label_uuid: str, status: ImageItemStatus) -> bool:
         """Explicitly set a label state for an image.
 
-        ABSENT creates/updates the row.  UNCERTAIN clears an existing explicit
-        ABSENT row (deletes it so the label reverts to the implicit default).
-        PRESENT cannot be set this way — it is always derived from verified bboxes.
+        PRESENT and ABSENT create/update the row.  UNCERTAIN clears an existing
+        row (deletes it so the label reverts to the implicit default).
+
+        ABSENT is blocked when the image already has a verified bbox with the
+        same label — that would be contradictory evidence.  Returns False on
+        conflict or when the image is not found.
         """
         image_uuid = await self._resolve_image_uuid(image_path)
         if image_uuid is None:
             return False
-        if status == ImageItemStatus.PRESENT:
-            return False  # PRESENT is always derived from verified bboxes, never set directly
+        if status == ImageItemStatus.ABSENT:
+            if await self._db_client.image_has_verified_bbox_for_label(image_uuid, label_uuid):
+                return False
         if status == ImageItemStatus.UNCERTAIN:
             await self._db_client.delete_image_labels(image_uuid, [label_uuid])
         else:
@@ -865,6 +870,14 @@ class Manager:
             return None
         rows = await self._db_client.get_image_labels(image_uuid)
         return [ImageLabelRead.model_validate(r) for r in rows]
+
+    async def list_images_for_label(
+        self,
+        label_uuid: str,
+        statuses: List[ImageItemStatus],
+    ) -> List["ImageLabelWithFilename"]:
+        """Return image-label rows (with filename) for the given label + status filter."""
+        return await self._db_client.list_images_for_label(label_uuid, statuses)
 
     async def set_image_tag(self, image_path: str, tag_uuid: str, action: str) -> bool:
         """Add or remove a whole-image tag. action is 'add' or 'remove'."""
@@ -2117,3 +2130,23 @@ class Manager:
 
     async def delete_model_config(self, uuid: str) -> bool:
         return await self._db_client.delete_model_config(uuid)
+
+    # ── Training configs ──────────────────────────────────────────────────────
+
+    async def create_training_config(self, data) -> "TrainingConfigRead":
+        return await self._db_client.create_training_config(data)
+
+    async def list_training_configs(self) -> "list[TrainingConfigRead]":
+        return await self._db_client.list_training_configs()
+
+    async def get_training_config(self, uuid: str) -> "Optional[TrainingConfigRead]":
+        return await self._db_client.get_training_config(uuid)
+
+    async def update_training_config(self, uuid: str, data) -> "Optional[TrainingConfigRead]":
+        return await self._db_client.update_training_config(uuid, data)
+
+    async def delete_training_config(self, uuid: str) -> bool:
+        return await self._db_client.delete_training_config(uuid)
+
+    async def get_training_config_readiness(self, uuid: str) -> "Optional[dict]":
+        return await self._db_client.get_training_config_readiness(uuid)

@@ -1,12 +1,11 @@
+import asyncio
+import json
 import logging
 import os
 import sys
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
-import asyncio
-import json
-
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -42,6 +41,9 @@ DATASETS_PROXY = ReverseProxy(
 )
 MODEL_CONFIGS_PROXY = ReverseProxy(
     host=APPS_CONFIG[APPS.DB_SERVER].host, port=APPS_CONFIG[APPS.DB_SERVER].port, path="/api/model-configs"
+)
+TRAINING_CONFIGS_PROXY = ReverseProxy(
+    host=APPS_CONFIG[APPS.DB_SERVER].host, port=APPS_CONFIG[APPS.DB_SERVER].port, path="/api/training-configs"
 )
 SETTINGS_PROXY = ReverseProxy(
     host=APPS_CONFIG[APPS.DB_SERVER].host, port=APPS_CONFIG[APPS.DB_SERVER].port, path="/api/settings"
@@ -180,6 +182,10 @@ class WebApp:
         @self._app.api_route("/api/model-configs/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
         async def proxy_model_configs(request: Request, path: str):
             return await MODEL_CONFIGS_PROXY.handle_request(path, request)
+
+        @self._app.api_route("/api/training-configs/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
+        async def proxy_training_configs(request: Request, path: str):
+            return await TRAINING_CONFIGS_PROXY.handle_request(path, request)
 
         @self._app.api_route("/api/settings/{path:path}", methods=["GET", "PUT"])
         async def proxy_settings(request: Request, path: str):

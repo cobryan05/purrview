@@ -2918,8 +2918,9 @@ async function showImageBulkActionModal(entries, labels, onConfirm, titleText = 
   title.textContent = titleText ?? `Apply to ${entries.length} selected image${entries.length === 1 ? '' : 's'}`;
 
   const actions = [
-    { value: 'setAbsent', label: 'Mark label Absent (negative label)' },
-    { value: 'setUncertain', label: 'Clear Absent → Uncertain' },
+    { value: 'setPresent', label: 'Mark label Present (positive training example)' },
+    { value: 'setAbsent', label: 'Mark label Absent (confirmed not present)' },
+    { value: 'setUncertain', label: 'Clear label status → Unreviewed' },
     { value: 'addTags', label: 'Add Tags' },
     { value: 'removeTags', label: 'Remove Tags' },
     { value: 'setTagAbsent', label: 'Mark Tag Verified Absent' },
@@ -2929,7 +2930,7 @@ async function showImageBulkActionModal(entries, labels, onConfirm, titleText = 
 
   const radioGroup = document.createElement('div');
   radioGroup.style.cssText = 'display:flex;flex-direction:column;gap:0.4em;';
-  let selectedAction = 'setAbsent';
+  let selectedAction = 'setPresent';
 
   for (const action of actions) {
     const lbl = document.createElement('label');
@@ -2938,10 +2939,10 @@ async function showImageBulkActionModal(entries, labels, onConfirm, titleText = 
     radio.type = 'radio';
     radio.name = 'image-bulk-action';
     radio.value = action.value;
-    if (action.value === 'setAbsent') radio.checked = true;
+    if (action.value === 'setPresent') radio.checked = true;
     radio.addEventListener('change', () => {
       selectedAction = action.value;
-      labelPickerRow.style.display = (selectedAction === 'setAbsent' || selectedAction === 'setUncertain') ? '' : 'none';
+      labelPickerRow.style.display = (selectedAction === 'setPresent' || selectedAction === 'setAbsent' || selectedAction === 'setUncertain') ? '' : 'none';
       tagPickerRow.style.display = TAG_ACTIONS.includes(selectedAction) ? 'flex' : 'none';
     });
     lbl.appendChild(radio);
@@ -3040,7 +3041,7 @@ async function executeBulkImageAction(action, entries, labelUuid, tagUuids = [])
   for (const entry of entries) {
     const { img } = entry;
     try {
-      const status = action === 'setAbsent' ? 'absent' : 'uncertain';
+      const status = action === 'setPresent' ? 'present' : action === 'setAbsent' ? 'absent' : 'uncertain';
       await setImageLabel(img.filename, labelUuid, status);
       succeededEntries.push(entry);
     } catch (err) {

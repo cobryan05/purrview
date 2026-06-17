@@ -544,6 +544,15 @@ class ImageLabelRead(OrmModel):
     status: ImageItemStatus
 
 
+class ImageLabelWithFilename(OrmModel):
+    """ImageLabel row joined with the image filename — used by the dataset loader."""
+
+    image_uuid: str
+    label_uuid: str
+    status: ImageItemStatus
+    filename: str  # relative path (same as ImageRecord.filename)
+
+
 class ImageTagStatusRead(OrmModel):
     image_uuid: str
     tag_uuid: str
@@ -691,3 +700,65 @@ class ModelConfigUpdate(ApiModel):
     name: Optional[str] = None
     description: Optional[str] = None
     nodes: Optional[List[ModelConfigNodeWrite]] = None  # None=no change; []=remove all
+
+
+AVAILABLE_TRAINER_TYPENAMES: List[str] = ["yolo_v8", "image_classifier"]
+
+
+class TrainingConfigLabelLink(SQLModel, table=True):
+    __tablename__ = "training_config_label_links"
+    training_config_uuid: str = Field(
+        foreign_key="training_configs.uuid", primary_key=True, ondelete="CASCADE"
+    )
+    label_uuid: str = Field(
+        foreign_key="labels.uuid", primary_key=True, ondelete="CASCADE"
+    )
+
+
+class TrainingConfig(TimestampModel, table=True):
+    __tablename__ = "training_configs"
+    uuid: str = Field(default_factory=lambda: str(uuid4()), primary_key=True)
+    name: str = Field(unique=True, index=True)
+    description: Optional[str] = None
+    trainer_type: str
+    model_config_uuid: Optional[str] = Field(
+        default=None, foreign_key="model_configs.uuid", ondelete="SET NULL"
+    )
+    dataset_uuid: str = Field(foreign_key="datasets.uuid", ondelete="RESTRICT")
+    hyperparams_json: Dict[str, Any] = Field(default_factory=dict, sa_column=sa.Column(sa.JSON))
+    label_links: List[TrainingConfigLabelLink] = Relationship(
+        sa_relationship_kwargs={"cascade": "all, delete-orphan"},
+    )
+
+
+class TrainingConfigRead(OrmModel):
+    uuid: str
+    name: str
+    description: Optional[str]
+    trainer_type: str
+    model_config_uuid: Optional[str]
+    dataset_uuid: str
+    hyperparams_json: Dict[str, Any]
+    label_uuids: List[str]
+    created_at: datetime
+    updated_at: datetime
+
+
+class TrainingConfigCreate(ApiModel):
+    name: str
+    description: Optional[str] = None
+    trainer_type: str
+    model_config_uuid: Optional[str] = None
+    dataset_uuid: str
+    hyperparams_json: Dict[str, Any] = Field(default_factory=dict)
+    label_uuids: List[str] = Field(default_factory=list)
+
+
+class TrainingConfigUpdate(ApiModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    trainer_type: Optional[str] = None
+    model_config_uuid: Optional[str] = None
+    dataset_uuid: Optional[str] = None
+    hyperparams_json: Optional[Dict[str, Any]] = None
+    label_uuids: Optional[List[str]] = None  # None = no change; [] = remove all

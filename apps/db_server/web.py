@@ -26,6 +26,7 @@ from apps.helpers.db.types import (
     DatasetUpdate,
     ImageItemStatus,
     ImageLabelRead,
+    ImageLabelWithFilename,
     ImageRecordRead,
     ImageRecordUpdate,
     ImageSearchParams,
@@ -37,6 +38,9 @@ from apps.helpers.db.types import (
     ModelConfigCreate,
     ModelConfigRead,
     ModelConfigUpdate,
+    TrainingConfigCreate,
+    TrainingConfigRead,
+    TrainingConfigUpdate,
     Source,
     SourceRead,
     Tag,
@@ -351,6 +355,10 @@ class GetImageLabelsResponse(StatusResponse):
     labels: List[ImageLabelRead] = Field(default_factory=list)
 
 
+class ListImagesForLabelResponse(StatusResponse):
+    images: List[ImageLabelWithFilename] = Field(default_factory=list)
+
+
 class SetImageTagPayload(ApiPayload):
     image_path: str
     tag_uuid: str
@@ -485,6 +493,21 @@ class DatasetPreviewPayload(ApiModel):
     """Request body for the unsaved-preview endpoint."""
 
     filter_json: DatasetFilterCriteria = Field(default_factory=DatasetFilterCriteria)
+    label_uuids: List[str] = Field(default_factory=list)
+
+
+class ListTrainingConfigsResponse(StatusResponse):
+    configs: List[TrainingConfigRead] = Field(default_factory=list)
+
+
+class TrainingConfigResponse(StatusResponse):
+    config: Optional[TrainingConfigRead] = None
+
+
+class TrainingConfigReadinessResponse(StatusResponse):
+    ready_count: int = 0
+    needs_review_count: int = 0
+    dataset_uuid: Optional[str] = None
     label_uuids: List[str] = Field(default_factory=list)
 
 
@@ -1227,13 +1250,13 @@ class WebApp:
             operation_id="set_image_label_status",
         )
         async def set_image_label_status(payload: SetImageLabelPayload) -> SetImageLabelResponse:
-            if payload.status == ImageItemStatus.PRESENT:
-                return SetImageLabelResponse(
-                    status=JsonValues.FAILURE,
-                    message="PRESENT status cannot be set directly; it is derived from verified bboxes",
-                )
             ok = await self._manager.set_image_label_status(payload.image_path, payload.label_uuid, payload.status)
             if not ok:
+                if payload.status == ImageItemStatus.ABSENT:
+                    return SetImageLabelResponse(
+                        status=JsonValues.FAILURE,
+                        message="Cannot mark label absent: the image has a verified bbox with this label",
+                    )
                 return SetImageLabelResponse(status=JsonValues.FAILURE, message="Image not found")
             return SetImageLabelResponse()
 
@@ -1248,6 +1271,24 @@ class WebApp:
             if labels is None:
                 return GetImageLabelsResponse(status=JsonValues.FAILURE, message="Image not found")
             return GetImageLabelsResponse(labels=labels)
+
+        @self._app.get(
+            "/api/image-labels",
+            response_model=ListImagesForLabelResponse,
+            tags=[ApiTags.IMAGES],
+            operation_id="list_images_for_label",
+        )
+        async def list_images_for_label(
+            label_uuid: str,
+            status: Optional[List[ImageItemStatus]] = Query(default=None),
+        ) -> ListImagesForLabelResponse:
+            """List all images labelled with a given label, filtered by status(es).
+
+            Used by the training dataset loader to enumerate present/absent examples.
+            """
+            statuses = status if status is not None else list(ImageItemStatus)
+            rows = await self._manager.list_images_for_label(label_uuid, statuses)
+            return ListImagesForLabelResponse(images=rows)
 
         @self._app.post(
             "/api/images/tags/set",
@@ -2367,3 +2408,103 @@ class WebApp:
             except Exception as e:
                 logger.error(e, exc_info=True)
                 return StatusResponse(status=JsonValues.FAILURE, message=str(e))
+
+        # ── Training configs ──────────────────────────────────────────────────
+
+        @self._app.get(
+            "/api/training-configs",
+            response_model=ListTrainingConfigsResponse,
+            tags=[ApiTags.TRAINING_CONFIGS],
+            operation_id="list_training_configs",
+        )
+        async def list_training_configs() -> ListTrainingConfigsResponse:
+            try:
+                configs = await self._manager.list_training_configs()
+                return ListTrainingConfigsResponse(status=JsonValues.SUCCESS, configs=configs)
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return ListTrainingConfigsResponse(status=JsonValues.FAILURE, message=str(e))
+
+        @self._app.post(
+            "/api/training-configs",
+            response_model=TrainingConfigResponse,
+            tags=[ApiTags.TRAINING_CONFIGS],
+            operation_id="create_training_config",
+        )
+        async def create_training_config(payload: TrainingConfigCreate) -> TrainingConfigResponse:
+            try:
+                config = await self._manager.create_training_config(payload)
+                return TrainingConfigResponse(status=JsonValues.SUCCESS, config=config)
+            except IntegrityError as e:
+                logger.error(e, exc_info=True)
+                return TrainingConfigResponse(status=JsonValues.FAILURE, message=self._unique_constraint_msg(e, "training config"))
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return TrainingConfigResponse(status=JsonValues.FAILURE, message=str(e))
+
+        @self._app.get(
+            "/api/training-configs/{uuid}",
+            response_model=TrainingConfigResponse,
+            tags=[ApiTags.TRAINING_CONFIGS],
+            operation_id="get_training_config",
+        )
+        async def get_training_config(uuid: str) -> TrainingConfigResponse:
+            try:
+                config = await self._manager.get_training_config(uuid)
+                if config is None:
+                    return TrainingConfigResponse(status=JsonValues.FAILURE, message="Training config not found")
+                return TrainingConfigResponse(status=JsonValues.SUCCESS, config=config)
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return TrainingConfigResponse(status=JsonValues.FAILURE, message=str(e))
+
+        @self._app.put(
+            "/api/training-configs/{uuid}",
+            response_model=TrainingConfigResponse,
+            tags=[ApiTags.TRAINING_CONFIGS],
+            operation_id="update_training_config",
+        )
+        async def update_training_config(uuid: str, payload: TrainingConfigUpdate) -> TrainingConfigResponse:
+            try:
+                config = await self._manager.update_training_config(uuid, payload)
+                if config is None:
+                    return TrainingConfigResponse(status=JsonValues.FAILURE, message="Training config not found")
+                return TrainingConfigResponse(status=JsonValues.SUCCESS, config=config)
+            except IntegrityError as e:
+                logger.error(e, exc_info=True)
+                return TrainingConfigResponse(status=JsonValues.FAILURE, message=self._unique_constraint_msg(e, "training config"))
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return TrainingConfigResponse(status=JsonValues.FAILURE, message=str(e))
+
+        @self._app.delete(
+            "/api/training-configs/{uuid}",
+            response_model=StatusResponse,
+            tags=[ApiTags.TRAINING_CONFIGS],
+            operation_id="delete_training_config",
+        )
+        async def delete_training_config(uuid: str) -> StatusResponse:
+            try:
+                ok = await self._manager.delete_training_config(uuid)
+                if not ok:
+                    return StatusResponse(status=JsonValues.FAILURE, message="Training config not found")
+                return StatusResponse(status=JsonValues.SUCCESS)
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return StatusResponse(status=JsonValues.FAILURE, message=str(e))
+
+        @self._app.get(
+            "/api/training-configs/{uuid}/readiness",
+            response_model=TrainingConfigReadinessResponse,
+            tags=[ApiTags.TRAINING_CONFIGS],
+            operation_id="get_training_config_readiness",
+        )
+        async def get_training_config_readiness(uuid: str) -> TrainingConfigReadinessResponse:
+            try:
+                result = await self._manager.get_training_config_readiness(uuid)
+                if result is None:
+                    return TrainingConfigReadinessResponse(status=JsonValues.FAILURE, message="Training config not found")
+                return TrainingConfigReadinessResponse(status=JsonValues.SUCCESS, **result)
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return TrainingConfigReadinessResponse(status=JsonValues.FAILURE, message=str(e))

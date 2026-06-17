@@ -9,7 +9,11 @@ import uuid
 
 import pytest
 
-from apps.helpers.db.types import FALSE_POS_TAG_UUID, UNVERIFIED_TAG_UUID, VERIFIED_TAG_UUID
+from apps.helpers.db.types import (
+    FALSE_POS_TAG_UUID,
+    UNVERIFIED_TAG_UUID,
+    VERIFIED_TAG_UUID,
+)
 from tests.conftest import make_png
 
 
@@ -340,6 +344,97 @@ async def test_confirmed_bbox_overrides_absent(http_client, image_file, label_uu
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# Manual PRESENT (new: can now be set directly)
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+async def test_set_present_manually(http_client, image_file, label_uuid):
+    """PRESENT can now be set directly without a verified bbox (for image classifiers)."""
+    await _update_bboxes(http_client, "labels_test.png", [])  # register image
+    await _set_label(http_client, "labels_test.png", label_uuid, "present")
+    labels = await _get_image_labels(http_client, "labels_test.png")
+    assert labels[label_uuid] == "present"
+
+
+async def test_set_uncertain_clears_manual_present(http_client, image_file, label_uuid):
+    """Setting UNCERTAIN on a manually-set PRESENT deletes the row."""
+    await _update_bboxes(http_client, "labels_test.png", [])
+    await _set_label(http_client, "labels_test.png", label_uuid, "present")
+    await _set_label(http_client, "labels_test.png", label_uuid, "uncertain")
+    labels = await _get_image_labels(http_client, "labels_test.png")
+    assert label_uuid not in labels
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# ABSENT contradiction check (blocked when verified bbox exists)
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+async def test_absent_blocked_by_verified_bbox(http_client, image_file, label_uuid):
+    """ABSENT is rejected when the image already has a verified bbox for that label."""
+    await _update_bboxes(
+        http_client,
+        "labels_test.png",
+        [
+            {
+                "uuid": str(uuid.uuid4()),
+                "labelUuid": label_uuid,
+                "x": 0.1, "y": 0.1, "width": 0.2, "height": 0.2,
+                "tagUuids": [VERIFIED_TAG_UUID],
+            }
+        ],
+    )
+    # Setting ABSENT should fail (contradicts verified bbox)
+    r = await http_client.post(
+        "/api/images/labels/set",
+        json={"imagePath": "labels_test.png", "labelUuid": label_uuid, "status": "absent"},
+    )
+    assert r.status_code == 200
+    assert r.json()["status"] == "failure"
+    # Label should still be PRESENT (from the verified bbox)
+    labels = await _get_image_labels(http_client, "labels_test.png")
+    assert labels[label_uuid] == "present"
+
+
+async def test_absent_allowed_without_verified_bbox(http_client, image_file, label_uuid):
+    """ABSENT is accepted when there is no verified bbox for the label."""
+    # Register image with no bboxes
+    await _update_bboxes(http_client, "labels_test.png", [])
+    r = await http_client.post(
+        "/api/images/labels/set",
+        json={"imagePath": "labels_test.png", "labelUuid": label_uuid, "status": "absent"},
+    )
+    assert r.status_code == 200
+    assert r.json()["status"] == "success"
+    labels = await _get_image_labels(http_client, "labels_test.png")
+    assert labels[label_uuid] == "absent"
+
+
+async def test_absent_allowed_when_only_unverified_bbox_exists(http_client, image_file, label_uuid):
+    """ABSENT is allowed when the only bbox for that label is unverified."""
+    await _update_bboxes(
+        http_client,
+        "labels_test.png",
+        [
+            {
+                "uuid": str(uuid.uuid4()),
+                "labelUuid": label_uuid,
+                "x": 0.1, "y": 0.1, "width": 0.2, "height": 0.2,
+                "tagUuids": [UNVERIFIED_TAG_UUID],
+            }
+        ],
+    )
+    r = await http_client.post(
+        "/api/images/labels/set",
+        json={"imagePath": "labels_test.png", "labelUuid": label_uuid, "status": "absent"},
+    )
+    assert r.status_code == 200
+    assert r.json()["status"] == "success"
+    labels = await _get_image_labels(http_client, "labels_test.png")
+    assert labels[label_uuid] == "absent"
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Error handling
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -351,3 +446,85 @@ async def test_set_image_label_image_not_found(http_client, label_uuid):
     )
     assert r.status_code == 200
     assert r.json()["status"] == "failure"
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# GET /api/image-labels  (bulk query used by the training dataset loader)
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+async def test_list_images_for_label_empty(http_client, label_uuid):
+    r = await http_client.get("/api/image-labels", params={"label_uuid": label_uuid, "status": ["present", "absent"]})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["status"] == "success"
+    assert body["images"] == []
+
+
+async def test_list_images_for_label_returns_present_rows(http_client, image_file, label_uuid):
+    """Images with verified bboxes appear as 'present' in the bulk query."""
+    import uuid as _uuid
+
+    from apps.helpers.db.types import VERIFIED_TAG_UUID
+
+    await http_client.post(
+        "/api/images/metadata/update",
+        json={
+            "imagePath": "labels_test.png",
+            "boxes": [
+                {
+                    "uuid": str(_uuid.uuid4()),
+                    "labelUuid": label_uuid,
+                    "x": 0.1, "y": 0.1, "width": 0.2, "height": 0.2,
+                    "tagUuids": [VERIFIED_TAG_UUID],
+                }
+            ],
+        },
+    )
+    r = await http_client.get("/api/image-labels", params={"label_uuid": label_uuid, "status": ["present"]})
+    assert r.status_code == 200
+    body = r.json()
+    assert len(body["images"]) == 1
+    assert body["images"][0]["status"] == "present"
+    assert body["images"][0]["filename"].endswith("labels_test.png")
+
+
+async def test_list_images_for_label_returns_absent_rows(http_client, image_file, label_uuid):
+    """Explicitly-set absent labels appear in the bulk query."""
+    # Register the image in the DB first (empty bbox update), then set the label.
+    await http_client.post(
+        "/api/images/metadata/update",
+        json={"imagePath": "labels_test.png", "boxes": []},
+    )
+    r_set = await http_client.post(
+        "/api/images/labels/set",
+        json={"imagePath": "labels_test.png", "labelUuid": label_uuid, "status": "absent"},
+    )
+    assert r_set.json()["status"] == "success"
+
+    r = await http_client.get("/api/image-labels", params={"label_uuid": label_uuid, "status": ["absent"]})
+    assert r.status_code == 200
+    body = r.json()
+    assert len(body["images"]) == 1
+    assert body["images"][0]["status"] == "absent"
+    assert "imageUuid" in body["images"][0]
+    assert body["images"][0]["filename"].endswith("labels_test.png")
+
+
+async def test_list_images_for_label_filters_by_status(http_client, image_file, label_uuid, label2_uuid):
+    """Status filter is applied correctly — present query doesn't return absent rows."""
+    # Register the image then set it to absent for label.
+    await http_client.post(
+        "/api/images/metadata/update",
+        json={"imagePath": "labels_test.png", "boxes": []},
+    )
+    await http_client.post(
+        "/api/images/labels/set",
+        json={"imagePath": "labels_test.png", "labelUuid": label_uuid, "status": "absent"},
+    )
+
+    r_present = await http_client.get("/api/image-labels", params={"label_uuid": label_uuid, "status": ["present"]})
+    assert r_present.json()["images"] == []
+
+    r_absent = await http_client.get("/api/image-labels", params={"label_uuid": label_uuid, "status": ["absent"]})
+    assert len(r_absent.json()["images"]) == 1

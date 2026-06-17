@@ -42,6 +42,7 @@ from .types import (
     ImageItemStatus,
     ImageLabel,
     ImageLabelFilter,
+    ImageLabelWithFilename,
     ImageRecord,
     ImageRecordRead,
     ImageRecordUpdate,
@@ -55,6 +56,11 @@ from .types import (
     ModelConfigNode,
     ModelConfigRead,
     ModelConfigUpdate,
+    TrainingConfig,
+    TrainingConfigCreate,
+    TrainingConfigLabelLink,
+    TrainingConfigRead,
+    TrainingConfigUpdate,
     Source,
     SourceRead,
     Tag,
@@ -1929,6 +1935,67 @@ class DbClient:
             )
             await session.commit()
 
+    async def image_has_verified_bbox_for_label(self, image_uuid: str, label_uuid: str) -> bool:
+        """Return True if the image has at least one bbox with the given label that carries the VERIFIED tag."""
+        async with self._async_session_maker() as session:
+            stmt = (
+                select(BBox.uuid)
+                .join(BBoxTagLink, BBoxTagLink.bbox_uuid == BBox.uuid)
+                .where(
+                    BBox.image_uuid == image_uuid,
+                    BBox.label_uuid == label_uuid,
+                    BBoxTagLink.tag_uuid == VERIFIED_TAG_UUID,
+                )
+                .limit(1)
+            )
+            result = await session.exec(stmt)
+            return result.first() is not None
+
+    async def list_images_for_label(
+        self,
+        label_uuid: str,
+        statuses: List[ImageItemStatus],
+    ) -> List[ImageLabelWithFilename]:
+        """Return all (image_uuid, filename, label_uuid, status) rows for a label+statuses filter.
+
+        Two-step: query image_labels with the full filter, then batch-fetch filenames
+        from images.  Avoids a cross-table column-projection JOIN that silently drops
+        WHERE clauses in some SQLModel versions.
+        Used by the training dataset loader to enumerate training/validation images.
+        """
+        if not statuses:
+            return []
+        async with self._async_session_maker() as session:
+            label_rows: List[ImageLabel] = (
+                await session.exec(
+                    select(ImageLabel).where(
+                        ImageLabel.label_uuid == label_uuid,
+                        ImageLabel.status.in_(statuses),
+                    )
+                )
+            ).all()
+
+            if not label_rows:
+                return []
+
+            image_uuids = [r.image_uuid for r in label_rows]
+            img_records: List[ImageRecord] = (
+                await session.exec(
+                    select(ImageRecord).where(ImageRecord.uuid.in_(image_uuids))
+                )
+            ).all()
+            uuid_to_filename = {img.uuid: img.filename for img in img_records}
+
+        return [
+            ImageLabelWithFilename(
+                image_uuid=r.image_uuid,
+                filename=uuid_to_filename.get(r.image_uuid, ""),
+                label_uuid=r.label_uuid,
+                status=r.status,
+            )
+            for r in label_rows
+        ]
+
     async def add_image_tag(self, image_uuid: str, tag_uuid: str) -> None:
         """Link a tag to a whole image. No-op if the link already exists."""
         await self.add_image_tags(image_uuid, [tag_uuid])
@@ -2657,6 +2724,195 @@ class DbClient:
             after_uuid=after_uuid,
             after_sort_value=after_sort_value,
         )
+
+    # ── Training configs ──────────────────────────────────────────────────────
+
+    @staticmethod
+    def _training_config_to_read(tc: TrainingConfig) -> TrainingConfigRead:
+        return TrainingConfigRead(
+            uuid=tc.uuid,
+            name=tc.name,
+            description=tc.description,
+            trainer_type=tc.trainer_type,
+            model_config_uuid=tc.model_config_uuid,
+            dataset_uuid=tc.dataset_uuid,
+            hyperparams_json=tc.hyperparams_json or {},
+            label_uuids=[link.label_uuid for link in (tc.label_links or [])],
+            created_at=tc.created_at,
+            updated_at=tc.updated_at,
+        )
+
+    async def create_training_config(self, data: TrainingConfigCreate) -> TrainingConfigRead:
+        async with self._async_session_maker() as session:
+            tc = TrainingConfig(
+                name=data.name,
+                description=data.description,
+                trainer_type=data.trainer_type,
+                model_config_uuid=data.model_config_uuid,
+                dataset_uuid=data.dataset_uuid,
+                hyperparams_json=data.hyperparams_json or {},
+            )
+            session.add(tc)
+            await session.flush()  # assign uuid before adding links
+            for label_uuid in (data.label_uuids or []):
+                session.add(TrainingConfigLabelLink(
+                    training_config_uuid=tc.uuid, label_uuid=label_uuid
+                ))
+            await session.commit()
+            await session.refresh(tc, ["label_links"])
+            return self._training_config_to_read(tc)
+
+    async def list_training_configs(self) -> list[TrainingConfigRead]:
+        async with self._async_session_maker() as session:
+            stmt = select(TrainingConfig).options(selectinload(TrainingConfig.label_links))
+            result = await session.exec(stmt)
+            return [self._training_config_to_read(tc) for tc in result.all()]
+
+    async def get_training_config(self, uuid: str) -> Optional[TrainingConfigRead]:
+        async with self._async_session_maker() as session:
+            stmt = (
+                select(TrainingConfig)
+                .where(TrainingConfig.uuid == uuid)
+                .options(selectinload(TrainingConfig.label_links))
+            )
+            result = await session.exec(stmt)
+            tc = result.first()
+            return self._training_config_to_read(tc) if tc else None
+
+    async def update_training_config(self, uuid: str, data: TrainingConfigUpdate) -> Optional[TrainingConfigRead]:
+        async with self._async_session_maker() as session:
+            stmt = (
+                select(TrainingConfig)
+                .where(TrainingConfig.uuid == uuid)
+                .options(selectinload(TrainingConfig.label_links))
+            )
+            result = await session.exec(stmt)
+            tc = result.first()
+            if tc is None:
+                return None
+            if data.name is not None:
+                tc.name = data.name
+            if data.description is not None:
+                tc.description = data.description
+            if data.trainer_type is not None:
+                tc.trainer_type = data.trainer_type
+            if data.model_config_uuid is not None:
+                tc.model_config_uuid = data.model_config_uuid
+            if data.dataset_uuid is not None:
+                tc.dataset_uuid = data.dataset_uuid
+            if data.hyperparams_json is not None:
+                tc.hyperparams_json = data.hyperparams_json
+            if data.label_uuids is not None:
+                for link in list(tc.label_links or []):
+                    await session.delete(link)
+                await session.flush()
+                for label_uuid in data.label_uuids:
+                    session.add(TrainingConfigLabelLink(
+                        training_config_uuid=tc.uuid, label_uuid=label_uuid
+                    ))
+            tc.updated_at = datetime.now(timezone.utc)
+            await session.commit()
+            await session.refresh(tc, ["label_links"])
+            return self._training_config_to_read(tc)
+
+    async def delete_training_config(self, uuid: str) -> bool:
+        async with self._async_session_maker() as session:
+            tc = await session.get(TrainingConfig, uuid)
+            if tc is None:
+                return False
+            await session.delete(tc)
+            await session.commit()
+        return True
+
+    async def get_training_config_readiness(self, uuid: str) -> Optional[dict]:
+        """Return ready/needs-review counts for a training config's dataset.
+
+        An image is 'ready' when every target label has an explicit PRESENT or ABSENT
+        row in image_labels; 'needs_review' otherwise.
+        Returns None if the training config doesn't exist.
+        """
+        tc = await self.get_training_config(uuid)
+        if tc is None:
+            return None
+        label_uuids = tc.label_uuids
+        if not label_uuids:
+            return {
+                "ready_count": 0,
+                "needs_review_count": 0,
+                "dataset_uuid": tc.dataset_uuid,
+                "label_uuids": [],
+            }
+
+        # Resolve dataset → image UUIDs (no pagination — fetch all for readiness).
+        dataset = await self.get_dataset(tc.dataset_uuid)
+        if dataset is None:
+            return {
+                "ready_count": 0,
+                "needs_review_count": 0,
+                "dataset_uuid": tc.dataset_uuid,
+                "label_uuids": label_uuids,
+            }
+
+        # Use a large limit to fetch all images; page if needed.
+        all_images: list[ImageRecord] = []
+        after_uuid: Optional[str] = None
+        after_sort_value: Optional[datetime] = None
+        PAGE = 1000
+        while True:
+            page, has_more = await self._list_images_for_dataset(
+                dataset,
+                limit=PAGE,
+                sort_by="uuid",
+                sort_order="asc",
+                after_uuid=after_uuid,
+                after_sort_value=after_sort_value,
+            )
+            all_images.extend(page)
+            if not has_more or not page:
+                break
+            last = page[-1]
+            after_uuid = last.uuid
+            after_sort_value = last.uuid  # keyset uses uuid when sort_by="uuid"
+
+        if not all_images:
+            return {
+                "ready_count": 0,
+                "needs_review_count": 0,
+                "dataset_uuid": tc.dataset_uuid,
+                "label_uuids": label_uuids,
+            }
+
+        image_uuids = [img.uuid for img in all_images]
+        n_labels = len(label_uuids)
+
+        async with self._async_session_maker() as session:
+            verified_count_col = func.count(ImageLabel.label_uuid).label("verified_count")
+            result = await session.exec(
+                select(ImageLabel.image_uuid, verified_count_col)
+                .where(
+                    ImageLabel.image_uuid.in_(image_uuids),
+                    ImageLabel.label_uuid.in_(label_uuids),
+                    ImageLabel.status.in_([ImageItemStatus.PRESENT, ImageItemStatus.ABSENT]),
+                )
+                .group_by(ImageLabel.image_uuid)
+            )
+            rows = result.all()
+            verified_by_image = {row[0]: row[1] for row in rows}
+
+            ready_count = 0
+            needs_review_count = 0
+            for img_uuid in image_uuids:
+                if verified_by_image.get(img_uuid, 0) >= n_labels:
+                    ready_count += 1
+                else:
+                    needs_review_count += 1
+
+        return {
+            "ready_count": ready_count,
+            "needs_review_count": needs_review_count,
+            "dataset_uuid": tc.dataset_uuid,
+            "label_uuids": label_uuids,
+        }
 
     async def preview_dataset_images(
         self,

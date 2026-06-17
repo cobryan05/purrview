@@ -6,6 +6,7 @@ import { renderSourceManager } from '/app-static/js/ui/sources.js';
 import { renderTagList } from '/app-static/js/ui/tags.js';
 import { renderActiveTasks, renderTaskConfigs } from '/app-static/js/ui/tasks.js';
 import { renderDatasetManager } from '/app-static/js/ui/datasets.js';
+import { renderTrainingConfigManager } from '/app-static/js/ui/trainingConfigs.js';
 
 export async function init() {
   let taskEventSource = null;
@@ -47,6 +48,8 @@ export async function init() {
       await renderDatasetManager({ target: 'dataset-management-box' });
     } else if (tabName === 'tab-model-management') {
       await renderModelConfigManager({ target: 'model-config-box' });
+    } else if (tabName === 'tab-training-management') {
+      await renderTrainingConfigManager({ target: 'training-config-box' });
     }
   });
 

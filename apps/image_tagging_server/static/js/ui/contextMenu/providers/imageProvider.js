@@ -4,7 +4,7 @@
  * Adapter interface (CtxImageAdapter):
  *   getPath()                           → string
  *   openOnCanvas()                      → void
- *   setLabelPresence(uuid, status)      → Promise<void>  status = 'absent'|'uncertain'
+ *   setLabelPresence(uuid, status)      → Promise<void>  status = 'present'|'absent'|'uncertain'
  *   getTagUuids()                       → string[]        whole-image tags
  *   toggleTag(uuid)                     → Promise<void>
  *   setTagStatus(uuid, status)          → Promise<void>  status = 'present'|'absent'|'uncertain'
@@ -66,7 +66,16 @@ registerContextProvider('image', async (adapters, ctx) => {
       onSelect: () => { adapters[0].openOnCanvas(); },
     },
 
-    // ── Mark label absent ──────────────────────────────────────────────────
+    // ── Mark label present ────────────────────────────────────────────────
+    {
+      label: 'Mark label present',
+      submenu: () => asyncPanel('200px', () => _buildLabelListPanel(async uuid => {
+        for (const a of adapters) await a.setLabelPresence(uuid, 'present');
+        ctx.close();
+      })),
+    },
+
+    // ── Mark label absent ─────────────────────────────────────────────────
     {
       label: 'Mark label absent',
       submenu: () => asyncPanel('200px', () => _buildLabelListPanel(async uuid => {
@@ -75,9 +84,9 @@ registerContextProvider('image', async (adapters, ctx) => {
       })),
     },
 
-    // ── Mark label present (uncertain) ────────────────────────────────────
+    // ── Clear label status ────────────────────────────────────────────────
     {
-      label: 'Mark label present (uncertain)',
+      label: 'Clear label status (unreviewed)',
       submenu: () => asyncPanel('200px', () => _buildLabelListPanel(async uuid => {
         for (const a of adapters) await a.setLabelPresence(uuid, 'uncertain');
         ctx.close();
