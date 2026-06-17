@@ -1,0 +1,278 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "FastAPI",
+    "version": "0.1.0"
+  },
+  "paths": {
+    "/": {
+      "get": {
+        "summary": "Index",
+        "description": "Render the index page using the dynamic index template",
+        "operationId": "index__get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/server-config": {
+      "get": {
+        "summary": "Server Config",
+        "description": "Get server configuration params\n\nArgs:\n    request (Request): The incoming request.\n\nReturns:\n    JSONResponse: Server configuration parameters.",
+        "operationId": "server_config",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/status": {
+      "get": {
+        "summary": "Relay Buffer Server Status",
+        "operationId": "relay_buffer_server_status",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/streams/create": {
+      "post": {
+        "tags": [
+          "streams"
+        ],
+        "summary": "Create Stream Api",
+        "description": "Create a stream and return success status",
+        "operationId": "createStream",
+        "requestBody": {
+          "content": {
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_createStream"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/streams/destroy": {
+      "post": {
+        "tags": [
+          "streams"
+        ],
+        "summary": "Destroy Stream Api",
+        "description": "Handle the destruction of a stream",
+        "operationId": "destroyStream",
+        "requestBody": {
+          "content": {
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_destroyStream"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/config/list": {
+      "get": {
+        "tags": [
+          "config"
+        ],
+        "summary": "List Configs Api",
+        "description": "List the global configuration",
+        "operationId": "listConfig",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/streams/list": {
+      "get": {
+        "tags": [
+          "streams"
+        ],
+        "summary": "List Streams Api",
+        "description": "List all available streams",
+        "operationId": "listStreams",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "Body_createStream": {
+        "properties": {
+          "source_url": {
+            "type": "string",
+            "title": "Source Url",
+            "description": "RTSP source URL"
+          },
+          "stream_name": {
+            "type": "string",
+            "title": "Stream Name",
+            "description": "Name for relay stream"
+          },
+          "delay": {
+            "type": "number",
+            "title": "Delay",
+            "description": "Delay in seconds",
+            "default": 0.0
+          }
+        },
+        "type": "object",
+        "required": [
+          "source_url",
+          "stream_name"
+        ],
+        "title": "Body_createStream"
+      },
+      "Body_destroyStream": {
+        "properties": {
+          "stream_name": {
+            "type": "string",
+            "title": "Stream Name",
+            "description": "Name of stream to destroy"
+          }
+        },
+        "type": "object",
+        "required": [
+          "stream_name"
+        ],
+        "title": "Body_destroyStream"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "type": "array",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "title": "HTTPValidationError"
+      },
+      "ValidationError": {
+        "properties": {
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "type": "array",
+            "title": "Location"
+          },
+          "msg": {
+            "type": "string",
+            "title": "Message"
+          },
+          "type": {
+            "type": "string",
+            "title": "Error Type"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "ctx": {
+            "type": "object",
+            "title": "Context"
+          }
+        },
+        "type": "object",
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError"
+      }
+    }
+  }
+}

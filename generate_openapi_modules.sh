@@ -47,15 +47,15 @@ _install_or_wheel "$TMP_DIR/relay_buffer_client"
 _install_or_wheel "$TMP_DIR/inference_client"
 _install_or_wheel "$TMP_DIR/db_client"
 
-# Now generate the tasks server (depends on db/inference/relay clients being installed)
-python -m apps.generate_openapi_jsons tasks "$JSON_OUT_DIR"
-openapi-generator-cli generate -i "$JSON_OUT_DIR/tasks_server_openapi.json" -g python -o "$TMP_DIR/tasks_client" --package-name tasks_client
-_install_or_wheel "$TMP_DIR/tasks_client"
-
 # Now generate the training server (depends on db client being installed)
 python -m apps.generate_openapi_jsons training "$JSON_OUT_DIR"
 openapi-generator-cli generate -i "$JSON_OUT_DIR/training_server_openapi.json" -g python -o "$TMP_DIR/training_client" --package-name training_client
 _install_or_wheel "$TMP_DIR/training_client"
+
+# Now generate the tasks server (depends on db/inference/relay/training clients being installed)
+python -m apps.generate_openapi_jsons tasks "$JSON_OUT_DIR"
+openapi-generator-cli generate -i "$JSON_OUT_DIR/tasks_server_openapi.json" -g python -o "$TMP_DIR/tasks_client" --package-name tasks_client
+_install_or_wheel "$TMP_DIR/tasks_client"
 
 # Generate the Javascript API for the web front end as well
 python -m apps.generate_openapi_jsons image_tagging "$JSON_OUT_DIR"

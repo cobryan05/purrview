@@ -1,0 +1,1748 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "FastAPI",
+    "version": "0.1.0"
+  },
+  "paths": {
+    "/": {
+      "get": {
+        "summary": "Index",
+        "description": "Render the home page with navigation buttons.\n\nArgs:\n    request (Request): The incoming request.\n\nReturns:\n    HTMLResponse: Rendered homepage with buttons.",
+        "operationId": "index__get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/server-config": {
+      "get": {
+        "summary": "Server Config",
+        "description": "Get server configuration params\n\nArgs:\n    request (Request): The incoming request.\n\nReturns:\n    JSONResponse: Server configuration parameters.",
+        "operationId": "server_config",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/status": {
+      "get": {
+        "summary": "Tasks Server Status",
+        "operationId": "tasks_server_status",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/tasks/types/list": {
+      "get": {
+        "tags": [
+          "tasks"
+        ],
+        "summary": "List Task Types Api",
+        "description": "API endpoint to return a list of task types.\n\nArgs:\n    request (Request): The FastAPI request object.\n\nReturns:\n    ListTaskTypesResponse: A response containing the list of task types.",
+        "operationId": "list_task_types",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListTaskTypesResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/tasks/types/schema": {
+      "post": {
+        "tags": [
+          "tasks"
+        ],
+        "summary": "Get Task Type Schema Api",
+        "description": "API endpoint for getting the schema of a specific task type.\n\nArgs:\n    payload (TasksSchemaPayload): Request payload containing the task type.\n\nReturns:\n    TasksTypeSchemaResult: Response with task type schema or error.",
+        "operationId": "get_task_type_schema",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TasksTypeSchemaPayload"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TasksTypeSchemaResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/tasks/instances/start": {
+      "post": {
+        "tags": [
+          "tasks"
+        ],
+        "summary": "Start Task Api",
+        "description": "API endpoint for starting a new task.\n\nArgs:\n    req (StartTaskRequest): Request object with task parameters.\n\nReturns:\n    StartTasksResponse: Response with new task ID or error.",
+        "operationId": "start_task",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StartTasksPayload"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StartTasksResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/tasks/instances/get": {
+      "post": {
+        "tags": [
+          "tasks"
+        ],
+        "summary": "Task Tasks Info Api",
+        "description": "API endpoint for getting status of one or more tasks.\n\nArgs:\n    req (TaskStatusRequest): Request object with task IDs.\n\nReturns:\n    TasksInfoResponse: Response with task information or error.",
+        "operationId": "get_tasks_info",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TasksInfoPayload"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TasksInfoResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/tasks/instances/result": {
+      "post": {
+        "tags": [
+          "tasks"
+        ],
+        "summary": "Get Tasks Result Api",
+        "description": "API endpoint for getting result of a specific task.\n\nArgs:\n    req (TaskResultRequest): Request object with task ID.\n\nReturns:\n    TasksResultResponse: A response containing task result.",
+        "operationId": "get_tasks_result",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TasksResultPayload"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TasksResultResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/tasks/instances/pause": {
+      "post": {
+        "tags": [
+          "tasks"
+        ],
+        "summary": "Pause Tasks Api",
+        "description": "API endpoint to pause tasks.\n\nArgs:\n    req (PauseTasksRequest): Request object with task IDs to pause.\n\nReturns:\n    JSONResponse: JSON response with pause result.",
+        "operationId": "pause_tasks",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PauseTasksPayload"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PauseTasksResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/tasks/instances/delete": {
+      "post": {
+        "tags": [
+          "tasks"
+        ],
+        "summary": "Delete Tasks Api",
+        "description": "API endpoint to delete tasks.\n\nArgs:\n    req (DeleteTasksRequest): Request object with task IDs to delete.\n\nReturns:\n    JSONResponse: JSON response with delete result.",
+        "operationId": "delete_tasks",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeleteTasksPayload"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeleteTasksResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/tasks/instances/resume": {
+      "post": {
+        "tags": [
+          "tasks"
+        ],
+        "summary": "Resume Tasks Api",
+        "description": "API endpoint to resume tasks.\n\nArgs:\n    req (ResumeTasksRequest): Request object with task IDs to resume.\n\nReturns:\n    ResumeTasksResponse: A response containing the UUIDs of the resumed tasks.",
+        "operationId": "resume_tasks",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ResumeTasksPayload"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResumeTasksResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/tasks/instances/pause-in-place": {
+      "post": {
+        "tags": [
+          "tasks"
+        ],
+        "summary": "Pause Tasks In Place Api",
+        "description": "Pause tasks cooperatively in-place (task stays running, loop blocks).",
+        "operationId": "pause_tasks_in_place",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PauseInPlacePayload"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PauseInPlaceResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/tasks/instances/resume-in-place": {
+      "post": {
+        "tags": [
+          "tasks"
+        ],
+        "summary": "Resume Tasks In Place Api",
+        "description": "Resume tasks that were paused in-place.",
+        "operationId": "resume_tasks_in_place",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ResumeInPlacePayload"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResumeInPlaceResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/tasks/instances/cancel": {
+      "post": {
+        "tags": [
+          "tasks"
+        ],
+        "summary": "Cancel Tasks Api",
+        "description": "API endpoint to cancel tasks.\n\nArgs:\n    req (ResumeTasksRequest): Request object with task IDs to cancel.\n\nReturns:\n    JSONResponse: JSON response with resume result.",
+        "operationId": "cancel_tasks",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CancelTasksPayload"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CancelTasksResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/tasks/configs/create": {
+      "post": {
+        "tags": [
+          "tasks"
+        ],
+        "summary": "Create Task Config Api",
+        "description": "API endpoint for creating a new task configuration.\n\nArgs:\n    req (CreateTaskRequest): Request object with task type and parameters.\n\nReturns:\n    JSONResponse: Response with new task ID or error.",
+        "operationId": "create_task_config",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateTaskConfigPayload"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreateTaskConfigResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/tasks/configs/delete": {
+      "post": {
+        "tags": [
+          "tasks"
+        ],
+        "summary": "Delete Task Configs Api",
+        "description": "API endpoint to delete tasks configs\n\nArgs:\n    req (DeleteTasksRequest): Request object with task IDs to delete.\n\nReturns:\n    JSONResponse: JSON response with deletion result.",
+        "operationId": "delete_task_configs",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeleteTaskConfigsPayload"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeleteTaskConfigsResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/tasks/configs/get": {
+      "post": {
+        "tags": [
+          "tasks"
+        ],
+        "summary": "Get Task Configs Api",
+        "description": "API endpoint to get tasks configs\n\nArgs:\n    req (GetTaskConfigsPayload): Request object with task IDs to get\n\nReturns:\n    JSONResponse: JSON response with task configs.",
+        "operationId": "get_task_configs",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GetTaskConfigsPayload"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GetTaskConfigResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/tasks/configs/update": {
+      "post": {
+        "tags": [
+          "tasks"
+        ],
+        "summary": "Update Task Config Api",
+        "description": "API endpoint for updating an existing task configuration.\n\nArgs:\n    payload (UpdateTaskConfigPayload): Update data.",
+        "operationId": "update_task_config",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateTaskConfigPayload"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UpdateTaskConfigResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/task_schema": {
+      "post": {
+        "tags": [
+          "tasks"
+        ],
+        "summary": "Get Task Schema",
+        "description": "Endpoint to retrieve and display the schema for a given task type.\n\nArgs:\n    typename (str): The name of the task type to retrieve the schema for.\n\nReturns:\n    HTMLResponse: Rendered HTML content of the JSON schema or error message.",
+        "operationId": "schema",
+        "requestBody": {
+          "content": {
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_schema"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "Body_schema": {
+        "properties": {
+          "typename": {
+            "type": "string",
+            "title": "Typename"
+          }
+        },
+        "type": "object",
+        "required": [
+          "typename"
+        ],
+        "title": "Body_schema"
+      },
+      "CancelTasksPayload": {
+        "properties": {
+          "taskUuids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Taskuuids"
+          }
+        },
+        "type": "object",
+        "required": [
+          "taskUuids"
+        ],
+        "title": "CancelTasksPayload"
+      },
+      "CancelTasksResponse": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "title": "Status",
+            "default": "success"
+          },
+          "message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Message"
+          },
+          "taskUuids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Taskuuids"
+          }
+        },
+        "type": "object",
+        "title": "CancelTasksResponse"
+      },
+      "CreateTaskConfigPayload": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "typename": {
+            "type": "string",
+            "title": "Typename"
+          },
+          "params": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Params"
+          },
+          "persistent": {
+            "type": "boolean",
+            "title": "Persistent",
+            "default": true
+          }
+        },
+        "type": "object",
+        "required": [
+          "name",
+          "typename",
+          "params"
+        ],
+        "title": "CreateTaskConfigPayload",
+        "description": "Request model for creating a new task configuration."
+      },
+      "CreateTaskConfigResponse": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "title": "Status",
+            "default": "success"
+          },
+          "message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Message"
+          },
+          "configUuid": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Configuuid"
+          }
+        },
+        "type": "object",
+        "title": "CreateTaskConfigResponse"
+      },
+      "DeleteTaskConfigsPayload": {
+        "properties": {
+          "configUuids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Configuuids"
+          }
+        },
+        "type": "object",
+        "required": [
+          "configUuids"
+        ],
+        "title": "DeleteTaskConfigsPayload"
+      },
+      "DeleteTaskConfigsResponse": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "title": "Status",
+            "default": "success"
+          },
+          "message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Message"
+          },
+          "configUuids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Configuuids"
+          }
+        },
+        "type": "object",
+        "title": "DeleteTaskConfigsResponse"
+      },
+      "DeleteTasksPayload": {
+        "properties": {
+          "taskUuids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Taskuuids"
+          }
+        },
+        "type": "object",
+        "required": [
+          "taskUuids"
+        ],
+        "title": "DeleteTasksPayload"
+      },
+      "DeleteTasksResponse": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "title": "Status",
+            "default": "success"
+          },
+          "message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Message"
+          },
+          "taskUuids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Taskuuids"
+          }
+        },
+        "type": "object",
+        "title": "DeleteTasksResponse"
+      },
+      "GetTaskConfigResponse": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "title": "Status",
+            "default": "success"
+          },
+          "message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Message"
+          },
+          "configs": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/TaskConfigRead"
+            },
+            "type": "object",
+            "title": "Configs"
+          }
+        },
+        "type": "object",
+        "title": "GetTaskConfigResponse"
+      },
+      "GetTaskConfigsPayload": {
+        "properties": {
+          "configUuids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Configuuids"
+          }
+        },
+        "type": "object",
+        "title": "GetTaskConfigsPayload"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "type": "array",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "title": "HTTPValidationError"
+      },
+      "ListTaskTypesResponse": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "title": "Status",
+            "default": "success"
+          },
+          "message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Message"
+          },
+          "types": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Types"
+          }
+        },
+        "type": "object",
+        "title": "ListTaskTypesResponse"
+      },
+      "PauseInPlacePayload": {
+        "properties": {
+          "taskUuids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Taskuuids"
+          }
+        },
+        "type": "object",
+        "required": [
+          "taskUuids"
+        ],
+        "title": "PauseInPlacePayload"
+      },
+      "PauseInPlaceResponse": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "title": "Status",
+            "default": "success"
+          },
+          "message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Message"
+          },
+          "taskUuids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Taskuuids"
+          }
+        },
+        "type": "object",
+        "title": "PauseInPlaceResponse"
+      },
+      "PauseTasksPayload": {
+        "properties": {
+          "taskUuids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Taskuuids"
+          }
+        },
+        "type": "object",
+        "required": [
+          "taskUuids"
+        ],
+        "title": "PauseTasksPayload"
+      },
+      "PauseTasksResponse": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "title": "Status",
+            "default": "success"
+          },
+          "message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Message"
+          },
+          "taskUuids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Taskuuids"
+          }
+        },
+        "type": "object",
+        "title": "PauseTasksResponse"
+      },
+      "ResumeInPlacePayload": {
+        "properties": {
+          "taskUuids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Taskuuids"
+          }
+        },
+        "type": "object",
+        "required": [
+          "taskUuids"
+        ],
+        "title": "ResumeInPlacePayload"
+      },
+      "ResumeInPlaceResponse": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "title": "Status",
+            "default": "success"
+          },
+          "message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Message"
+          },
+          "taskUuids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Taskuuids"
+          }
+        },
+        "type": "object",
+        "title": "ResumeInPlaceResponse"
+      },
+      "ResumeTasksPayload": {
+        "properties": {
+          "taskUuids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Taskuuids"
+          }
+        },
+        "type": "object",
+        "required": [
+          "taskUuids"
+        ],
+        "title": "ResumeTasksPayload"
+      },
+      "ResumeTasksResponse": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "title": "Status",
+            "default": "success"
+          },
+          "message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Message"
+          },
+          "taskUuids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Taskuuids"
+          }
+        },
+        "type": "object",
+        "title": "ResumeTasksResponse"
+      },
+      "StartTasksPayload": {
+        "properties": {
+          "configUuid": {
+            "type": "string",
+            "title": "Configuuid"
+          }
+        },
+        "type": "object",
+        "required": [
+          "configUuid"
+        ],
+        "title": "StartTasksPayload"
+      },
+      "StartTasksResponse": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "title": "Status",
+            "default": "success"
+          },
+          "message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Message"
+          },
+          "taskUuid": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Taskuuid"
+          }
+        },
+        "type": "object",
+        "title": "StartTasksResponse"
+      },
+      "TaskConfigRead": {
+        "properties": {
+          "uuid": {
+            "type": "string",
+            "title": "Uuid"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "typename": {
+            "type": "string",
+            "title": "Typename"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "params": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Params"
+          },
+          "markedForDelete": {
+            "type": "boolean",
+            "title": "Markedfordelete",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "uuid",
+          "name",
+          "typename",
+          "params"
+        ],
+        "title": "TaskConfigRead"
+      },
+      "TaskInfoRead": {
+        "properties": {
+          "config": {
+            "$ref": "#/components/schemas/TaskConfigRead"
+          },
+          "instance": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TaskInstanceRead"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "progress": {
+            "type": "number",
+            "title": "Progress",
+            "default": 0.0
+          },
+          "statusMessage": {
+            "type": "string",
+            "title": "Statusmessage",
+            "default": ""
+          },
+          "statusActions": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Statusactions"
+          },
+          "logLines": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Loglines"
+          },
+          "isPausedInPlace": {
+            "type": "boolean",
+            "title": "Ispausedinplace",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "config"
+        ],
+        "title": "TaskInfoRead"
+      },
+      "TaskInstanceRead": {
+        "properties": {
+          "uuid": {
+            "type": "string",
+            "title": "Uuid"
+          },
+          "configUuid": {
+            "type": "string",
+            "title": "Configuuid"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "resumeData": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resumedata"
+          },
+          "result": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Result"
+          },
+          "errorMessage": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Errormessage"
+          },
+          "createdAt": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Createdat"
+          },
+          "startedAt": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Startedat"
+          },
+          "endedAt": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Endedat"
+          },
+          "heartbeatAt": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Heartbeatat"
+          },
+          "logLines": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Loglines"
+          }
+        },
+        "type": "object",
+        "required": [
+          "uuid",
+          "configUuid",
+          "status"
+        ],
+        "title": "TaskInstanceRead"
+      },
+      "TaskResult": {
+        "properties": {
+          "data": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Data"
+          }
+        },
+        "type": "object",
+        "title": "TaskResult"
+      },
+      "TasksInfoPayload": {
+        "properties": {
+          "taskUuids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Taskuuids"
+          }
+        },
+        "type": "object",
+        "title": "TasksInfoPayload"
+      },
+      "TasksInfoResponse": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "title": "Status",
+            "default": "success"
+          },
+          "message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Message"
+          },
+          "tasks": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/TaskInfoRead"
+            },
+            "type": "object",
+            "title": "Tasks"
+          }
+        },
+        "type": "object",
+        "title": "TasksInfoResponse"
+      },
+      "TasksResultPayload": {
+        "properties": {
+          "taskUuids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Taskuuids"
+          }
+        },
+        "type": "object",
+        "required": [
+          "taskUuids"
+        ],
+        "title": "TasksResultPayload"
+      },
+      "TasksResultResponse": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "title": "Status",
+            "default": "success"
+          },
+          "message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Message"
+          },
+          "results": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/TaskResult"
+            },
+            "type": "object",
+            "title": "Results"
+          }
+        },
+        "type": "object",
+        "title": "TasksResultResponse"
+      },
+      "TasksTypeSchemaPayload": {
+        "properties": {
+          "taskTypenames": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Tasktypenames"
+          }
+        },
+        "type": "object",
+        "required": [
+          "taskTypenames"
+        ],
+        "title": "TasksTypeSchemaPayload"
+      },
+      "TasksTypeSchemaResponse": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "title": "Status",
+            "default": "success"
+          },
+          "message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Message"
+          },
+          "schemas": {
+            "additionalProperties": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "object",
+            "title": "Schemas"
+          }
+        },
+        "type": "object",
+        "title": "TasksTypeSchemaResponse"
+      },
+      "UpdateTaskConfigPayload": {
+        "properties": {
+          "configUuid": {
+            "type": "string",
+            "title": "Configuuid"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "typename": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Typename"
+          },
+          "params": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Params"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "markedForDelete": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Markedfordelete"
+          }
+        },
+        "type": "object",
+        "required": [
+          "configUuid"
+        ],
+        "title": "UpdateTaskConfigPayload",
+        "description": "Request model for updating a task configuration."
+      },
+      "UpdateTaskConfigResponse": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "title": "Status",
+            "default": "success"
+          },
+          "message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Message"
+          }
+        },
+        "type": "object",
+        "title": "UpdateTaskConfigResponse"
+      },
+      "ValidationError": {
+        "properties": {
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "type": "array",
+            "title": "Location"
+          },
+          "msg": {
+            "type": "string",
+            "title": "Message"
+          },
+          "type": {
+            "type": "string",
+            "title": "Error Type"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "ctx": {
+            "type": "object",
+            "title": "Context"
+          }
+        },
+        "type": "object",
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError"
+      }
+    }
+  }
+}
