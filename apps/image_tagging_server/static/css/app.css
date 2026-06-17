@@ -607,11 +607,29 @@ button.filter-active {
 /* ── Image tag condition list (.itc-*) ───────────────────────────────────── */
 /* Compact per-tag condition rows inside .review-filter-panel */
 
+/* Secondary row: Verification + Image Tag Filters side by side */
+.filter-row-secondary {
+  display: flex;
+  flex-direction: row;
+  gap: 1.5em;
+  align-items: flex-start;
+  flex-wrap: wrap;
+  border-top: 1px solid #2a2a2a;
+  padding-top: 0.35em;
+  margin-top: 0.1em;
+}
+
 .filter-section {
   display: flex;
   flex-direction: column;
   gap: 0.2em;
-  padding-top: 0.15em;
+  flex-shrink: 0;
+}
+
+/* Image Tag Filters section takes any remaining horizontal space */
+.filter-section--grow {
+  flex: 1;
+  min-width: 220px;
 }
 
 .filter-section-label {
@@ -620,6 +638,18 @@ button.filter-active {
   color: var(--pico-muted-color, #777);
   text-transform: uppercase;
   letter-spacing: 0.05em;
+}
+
+/* Verification select: sized to content, not full width */
+.filter-verification-select {
+  width: auto;
+  min-width: 160px;
+  font-size: 0.8em;
+  height: auto;
+  margin-bottom: 0;
+  padding: var(--pico-form-element-spacing-vertical)
+           var(--pico-form-element-spacing-horizontal);
+  border-radius: 3px;
 }
 
 .itc-root {
@@ -642,19 +672,21 @@ button.filter-active {
 }
 
 .itc-swatch {
-  width: 8px;
-  height: 8px;
+  width: 10px;
+  height: 10px;
   border-radius: 50%;
   flex-shrink: 0;
+  box-shadow: 0 0 0 1px rgba(255,255,255,0.15);
 }
 
 .itc-name {
   flex: 1;
-  font-size: 0.8em;
+  font-size: 0.82em;
+  font-weight: 500;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  min-width: 0;
+  min-width: 60px;
 }
 
 .itc-state-select {
@@ -696,6 +728,7 @@ button.filter-active {
   margin-bottom: 0;
   border-radius: 3px;
   width: 100%;
+  max-width: 280px;
 }
 
 .ms-dropdown__trigger {

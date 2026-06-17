@@ -19,6 +19,30 @@ export function setPendingDatasetPrefill({ filterJson, labelUuids, name = '', de
   _pendingPrefill = { filterJson, labelUuids, name, description };
 }
 
+// Returns a human-readable one-line summary of a dataset's active filters for the list card.
+function _datasetMetaSummary(dataset) {
+  const parts = [];
+
+  const labelCount = dataset.labelUuids?.length ?? 0;
+  if (labelCount > 0) parts.push(`${labelCount} label${labelCount !== 1 ? 's' : ''}`);
+
+  const f = dataset.filterJson ?? {};
+
+  const tagCount = (f.tagUuids?.length ?? 0) + (f.tagExcludeUuids?.length ?? 0);
+  if (tagCount > 0) parts.push(`${tagCount} tag filter${tagCount !== 1 ? 's' : ''}`);
+
+  const condCount = f.imageTagConditions?.length ?? 0;
+  if (condCount > 0) parts.push(`${condCount} image condition${condCount !== 1 ? 's' : ''}`);
+
+  const extras = [];
+  if (f.filenameSearch) extras.push('filename');
+  if (f.dateFrom || f.dateTo) extras.push('date range');
+  if (f.verificationCheck) extras.push('verification');
+  if (extras.length > 0) parts.push(extras.join(', '));
+
+  return parts.length > 0 ? parts.join(' · ') : '(no filters)';
+}
+
 // -------------------------------------------------------
 // Dataset form body — fields only (no buttons)
 // Uses createFilterPanel for filter editing (labels + tags + date + filename + verification).
@@ -205,7 +229,7 @@ export async function renderDatasetManager({ target = 'dataset-management-box' }
           onDelete: dataset ? async () => {
             await deleteDataset(dataset.uuid);
             toast('Dataset deleted', 3000);
-            await refreshList();
+            // deleteDataset() fires DATASETS_UPDATED → subscription calls refreshList(); no need to call it again.
             await _showForm(null, { force: true });
           } : undefined,
         });
@@ -354,7 +378,7 @@ export async function renderDatasetManager({ target = 'dataset-management-box' }
 
         const metaLine = document.createElement('div');
         metaLine.className = 'ds-list-item__meta';
-        metaLine.textContent = `${dataset.labelUuids?.length ?? 0} labels`;
+        metaLine.textContent = _datasetMetaSummary(dataset);
         item.appendChild(metaLine);
 
         item.addEventListener('click', () => _showForm(dataset));

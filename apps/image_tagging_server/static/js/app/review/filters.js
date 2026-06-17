@@ -15,7 +15,7 @@
  * Layout:
  *   Toolbar (toolbarControls):  [Tags ▾]  [Labels ▾]
  *   Filter panel (element):     Date: [from]–[to]  |  File: [____]
- *                               Verification: [<select>]
+ *                               Verification: [<select>]  |  Image Tag Filters: [condition list]
  */
 import { UNVERIFIED_TAG_UUID } from '/app-static/js/shared/api/review.js';
 import { createMultiSelectDropdown, makeLabelFilterNotice } from '/app-static/js/ui/utils/index.js';
@@ -297,13 +297,21 @@ export function createFilterPanel(labels, tags, onFilterChange, { inlineControls
   primaryRow.appendChild(filenameInput);
   panel.appendChild(primaryRow);
 
-  // ── Verification row ──────────────────────────────────────────────────────
-  const verificationRow = document.createElement('div');
-  verificationRow.className = 'filter-row-primary';
+  // ── Secondary row: Verification + Image Tag Conditions side by side ───────
+  const secondaryRow = document.createElement('div');
+  secondaryRow.className = 'filter-row-secondary';
 
-  verificationRow.appendChild(makeLabel('Verification:'));
+  // Verification section
+  const verificationSection = document.createElement('div');
+  verificationSection.className = 'filter-section';
+
+  const verificationSectionLabel = document.createElement('div');
+  verificationSectionLabel.className = 'filter-section-label';
+  verificationSectionLabel.textContent = 'Verification';
+  verificationSection.appendChild(verificationSectionLabel);
 
   const verificationSelect = document.createElement('select');
+  verificationSelect.className = 'filter-verification-select';
   for (const [value, text] of [
     ['', 'Any'],
     ['all_verified', 'All labels verified'],
@@ -318,11 +326,9 @@ export function createFilterPanel(labels, tags, onFilterChange, { inlineControls
     _state.verificationCheck = verificationSelect.value || null;
     emit();
   });
+  verificationSection.appendChild(verificationSelect);
 
-  verificationRow.appendChild(verificationSelect);
-  panel.appendChild(verificationRow);
-
-  // ── Image tag conditions ──────────────────────────────────────────────────
+  // Image tag conditions section
   // A compact per-tag condition list (Present / Absent / Unset) replacing the
   // old three-dropdown approach. Lives in the panel body, not the toolbar.
   const imageTagConditionsComp = createImageTagConditions(
@@ -335,14 +341,17 @@ export function createFilterPanel(labels, tags, onFilterChange, { inlineControls
   );
 
   const imageTagSection = document.createElement('div');
-  imageTagSection.className = 'filter-section';
+  imageTagSection.className = 'filter-section filter-section--grow';
 
   const imageTagSectionLabel = document.createElement('div');
   imageTagSectionLabel.className = 'filter-section-label';
   imageTagSectionLabel.textContent = 'Image Tag Filters';
   imageTagSection.appendChild(imageTagSectionLabel);
   imageTagSection.appendChild(imageTagConditionsComp.element);
-  panel.appendChild(imageTagSection);
+
+  secondaryRow.appendChild(verificationSection);
+  secondaryRow.appendChild(imageTagSection);
+  panel.appendChild(secondaryRow);
 
   // ── Public API ────────────────────────────────────────────────────────────
   function getActiveFilterCount() {
