@@ -4,3 +4,11 @@ pydantic
 python-multipart
 requests
 uvicorn
+timm
+onnx
+onnxruntime-gpu
+scikit-learn
+stringzilla>=3.10.4,<4
+albumentations
+Pillow
+sse-starlette

@@ -24,4 +24,5 @@ python-multipart
 requests
 sqlalchemy
 sqlmodel
+sse-starlette
 uvicorn
