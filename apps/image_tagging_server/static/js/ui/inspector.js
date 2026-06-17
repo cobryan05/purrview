@@ -466,17 +466,12 @@ export function createTagPanel(container, runtime) {
     }
   );
 
-  // Re-render the label section when the dynamic labels visibility toggle changes.
-  const _unsubDynamic = events.subscribe(
-    EventTypes.DYNAMIC_LABELS_VISIBILITY_CHANGED,
-    () => _refreshLabelSection()
-  );
-
-  // Rebuild the tag list when system/task-generated tag visibility changes.
-  const _unsubTagKind = events.subscribe(
-    EventTypes.TAG_KIND_VISIBILITY_CHANGED,
-    () => _mount()
-  );
+  const _unsubGlobal = events.subscribeMany([
+    [EventTypes.DYNAMIC_LABELS_VISIBILITY_CHANGED, () => _refreshLabelSection()],
+    [EventTypes.TAG_KIND_VISIBILITY_CHANGED,        () => _mount()],
+    [EventTypes.TAGS_UPDATED,                       () => _mount()],
+    [EventTypes.LABELS_UPDATED,                     () => _mount()],
+  ]);
 
   // Initial render.
   _mount();
@@ -488,8 +483,7 @@ export function createTagPanel(container, runtime) {
       _unsubBboxChanged();
       _unsubToolChanged();
       _unsubImageLoaded();
-      _unsubDynamic();
-      _unsubTagKind();
+      _unsubGlobal();
     },
   };
 }

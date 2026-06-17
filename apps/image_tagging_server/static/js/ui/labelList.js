@@ -790,18 +790,23 @@ export async function createLabelList(container, options = {}) {
 
   await mount();
 
-  // In select mode, re-render whenever the active model filter, dynamic labels toggle, or labels list changes.
-  let _unsubActiveFilter = null;
-  let _unsubDynamicLabels = null;
-  let _unsubLabelsUpdated = null;
+  // Reactive subscriptions vary by mode.
+  let _unsubMode = null;
   if (mode === 'select') {
-    _unsubActiveFilter = events.subscribe(EventTypes.ACTIVE_MODEL_CHANGED, () => mount());
-    _unsubDynamicLabels = events.subscribe(EventTypes.DYNAMIC_LABELS_VISIBILITY_CHANGED, () => mount());
-    _unsubLabelsUpdated = events.subscribe(EventTypes.LABELS_UPDATED, () => mount());
+    _unsubMode = events.subscribeMany([
+      [EventTypes.ACTIVE_MODEL_CHANGED,              () => mount()],
+      [EventTypes.DYNAMIC_LABELS_VISIBILITY_CHANGED, () => mount()],
+      [EventTypes.LABELS_UPDATED,                    () => mount()],
+    ]);
+  } else if (mode === 'model-config') {
+    // Re-render when labels are created, renamed, or deleted while the editor is open.
+    _unsubMode = events.subscribeMany([
+      [EventTypes.LABELS_UPDATED, () => mount()],
+    ]);
   }
 
   return {
-    destroy() { _destroyFn(); _unsubActiveFilter?.(); _unsubDynamicLabels?.(); _unsubLabelsUpdated?.(); },
+    destroy() { _destroyFn(); _unsubMode?.(); },
     refresh() { return mount(); },
     getSelected() { return _handle?.getSelected?.() ?? new Set(); },
     getSubmodels() { return _handle?.getSubmodels?.() ?? new Map(); },

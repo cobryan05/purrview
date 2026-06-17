@@ -52,6 +52,16 @@ class EventBus {
     });
   }
 
+  /**
+   * Subscribe to multiple events at once.
+   * @param {Array<[string, EventHandler]>} pairs - [eventType, handler] pairs
+   * @returns {() => void} single function that unsubscribes all
+   */
+  subscribeMany(pairs) {
+    const unsubs = pairs.map(([event, handler]) => this.subscribe(event, handler));
+    return () => unsubs.forEach(fn => fn());
+  }
+
   clear() {
     this._listeners.clear();
   }

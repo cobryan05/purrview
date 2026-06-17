@@ -22,6 +22,8 @@ import { createMultiSelectDropdown, makeLabelFilterNotice } from '/app-static/js
 import { flattenHierarchy } from '/app-static/js/ui/labelList.js';
 import { activeModel, filterVisibleTags, isDynamicLabelsVisible, groupTagsByKind } from '/app-static/js/shared/activeModel.js';
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
+import { fetchTags } from '/app-static/js/shared/api/tags.js';
+import { fetchLabels } from '/app-static/js/shared/api/labels.js';
 
 // System tags appear first in the tags dropdown, in this order.
 const SYSTEM_TAG_ORDER = [UNVERIFIED_TAG_UUID];
@@ -234,8 +236,6 @@ export function createFilterPanel(labels, tags, onFilterChange, { inlineControls
   }
 
   buildLabelsControls();
-  const _unsubActiveFilter = events.subscribe(EventTypes.ACTIVE_MODEL_CHANGED, buildLabelsControls);
-  const _unsubDynLabels = events.subscribe(EventTypes.DYNAMIC_LABELS_VISIBILITY_CHANGED, buildLabelsControls);
 
   // Destroy `dropdown`, rebuild it via `buildFn` into `container`, and return the new instance.
   function _rebuildDropdown(dropdown, container, buildFn) {
@@ -246,10 +246,9 @@ export function createFilterPanel(labels, tags, onFilterChange, { inlineControls
     return next;
   }
 
-  // Rebuild the tags dropdowns when global tag-kind visibility changes.
-  const _unsubTagVis = events.subscribe(EventTypes.TAG_KIND_VISIBILITY_CHANGED, () => {
+  // Rebuild all tags dropdowns when global tag-kind visibility changes; reset tag state.
+  function _onTagKindVisibilityChanged() {
     tagsDropdown = _rebuildDropdown(tagsDropdown, tagsContainer, _buildTagsDropdown);
-    // Reset tag state to empty (show all) when visibility changes.
     _state.tagUuids = [];
     _state.tagExcludeUuids = [];
 
@@ -261,8 +260,33 @@ export function createFilterPanel(labels, tags, onFilterChange, { inlineControls
     _state.imageTagVerifiedAbsentUuids = [];
 
     emit();
-  });
+  }
 
+  // Rebuild tag dropdowns when a tag is created, renamed, or deleted.
+  // Preserve the current selection so an in-progress filter is not lost.
+  async function _onTagsUpdated() {
+    tags = await fetchTags().catch(() => tags);
+    tagsDropdown = _rebuildDropdown(tagsDropdown, tagsContainer, _buildTagsDropdown);
+    tagsDropdown.setState(_state.tagUuids, _state.tagMatchMode, undefined, _state.tagExcludeUuids);
+    imageTagsDropdown = _rebuildDropdown(imageTagsDropdown, imageTagsContainer, _buildImageTagsDropdown);
+    imageTagsDropdown.setState(_state.imageTagUuids, undefined, undefined, _state.imageTagExcludeUuids);
+    imageTagsAbsentDropdown = _rebuildDropdown(imageTagsAbsentDropdown, imageTagsAbsentContainer, _buildImageTagsAbsentDropdown);
+    imageTagsAbsentDropdown.setState(_state.imageTagVerifiedAbsentUuids, undefined, undefined, []);
+  }
+
+  // Rebuild the labels dropdown when a label is created, renamed, or deleted.
+  async function _onLabelsUpdated() {
+    labels = await fetchLabels().catch(() => labels);
+    buildLabelsControls();
+  }
+
+  const _unsubAll = events.subscribeMany([
+    [EventTypes.ACTIVE_MODEL_CHANGED,              buildLabelsControls],
+    [EventTypes.DYNAMIC_LABELS_VISIBILITY_CHANGED, buildLabelsControls],
+    [EventTypes.TAG_KIND_VISIBILITY_CHANGED,       _onTagKindVisibilityChanged],
+    [EventTypes.TAGS_UPDATED,                      _onTagsUpdated],
+    [EventTypes.LABELS_UPDATED,                    _onLabelsUpdated],
+  ]);
 
   // ── Panel root ─────────────────────────────────────────────────────────────
   const panel = document.createElement('div');
@@ -442,9 +466,7 @@ export function createFilterPanel(labels, tags, onFilterChange, { inlineControls
     imageTagsDropdown.destroy();
     imageTagsAbsentDropdown.destroy();
     _labelsDropdown?.destroy();
-    _unsubActiveFilter();
-    _unsubDynLabels();
-    _unsubTagVis();
+    _unsubAll();
   }
 
   return {
