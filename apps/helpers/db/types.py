@@ -250,6 +250,20 @@ class ImageTagFilter(ApiModel):
     status: ImageItemStatus = ImageItemStatus.PRESENT
     exclude: bool = False  # False = require this status; True = require its absence
     require_verified: bool = False  # if True: EXISTS (status IN PRESENT, ABSENT); status/exclude ignored
+    require_unset: bool = False  # if True: NOT EXISTS any row for this tag (never assessed)
+
+
+class ImageTagConditionItem(ApiModel):
+    """A single image-tag filter condition stored in a dataset's filter_json.
+
+    state:
+      'present' — image must have this tag verified PRESENT
+      'absent'  — image must have this tag verified ABSENT
+      'unset'   — image must have no assessment row for this tag (never checked)
+    """
+
+    tag_uuid: str
+    state: Literal["present", "absent", "unset"]
 
 
 class TagPresenceFilter(ApiModel):
@@ -561,6 +575,8 @@ class DatasetFilterCriteria(ApiModel):
     # "all_verified"   = every dataset label has a verified image_label row (PRESENT or ABSENT)
     # "has_unverified" = at least one dataset label is uncertain or missing
     verification_check: Optional[Literal["all_verified", "has_unverified"]] = None
+    # Whole-image tag conditions (unified replacement for the old three-axis approach)
+    image_tag_conditions: List["ImageTagConditionItem"] = Field(default_factory=list)
 
     model_config = ConfigDict(
         alias_generator=to_camel,

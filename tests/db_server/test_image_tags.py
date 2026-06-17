@@ -375,3 +375,23 @@ async def test_review_queue_require_verified_image_tag(http_client, files_root, 
     assert r.status_code == 200
     filenames = {img["filename"] for img in r.json()["images"]}
     assert filenames == {present_path, absent_path}
+
+
+async def test_review_queue_filters_by_unset_image_tag(http_client, files_root, tag_uuid):
+    """Images with no image_tags row for the tag (never assessed) match requireUnset=True."""
+    unset_path = "unset_tag.png"
+    present_path = "present_unset_test.png"
+    absent_path = "absent_unset_test.png"
+    for p in (unset_path, present_path, absent_path):
+        (files_root / p).write_bytes(make_png())
+        await _register_image(http_client, p)
+    await _set_tag(http_client, present_path, tag_uuid, "add")
+    await _set_tag_status(http_client, absent_path, tag_uuid, "absent")
+
+    r = await http_client.post(
+        "/api/images/review",
+        json={"showAllBboxes": True, "imageTagFilters": [{"tagUuid": tag_uuid, "requireUnset": True}]},
+    )
+    assert r.status_code == 200
+    filenames = {img["filename"] for img in r.json()["images"]}
+    assert filenames == {unset_path}

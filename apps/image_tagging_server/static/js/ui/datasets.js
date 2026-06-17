@@ -42,14 +42,18 @@ function buildDatasetForm(container, { name = '', description = '', labelUuids =
   descInput.addEventListener('input', () => onAnyChange?.());
   container.appendChild(makeFieldRow('Description', descInput));
 
-  // Filter panel (handles Tags + Labels + Date + Filename + Verification)
-  // inlineControls: Labels and Tags render as always-expanded scrollable boxes
-  const filterPanel = createFilterPanel(labelsMap, tagsMap, () => onAnyChange?.(), { inlineControls: true });
+  // Filter panel (handles Tags + Labels + Date + Filename + Verification + Image Tag Conditions)
+  // inlineControls: Labels and Tags render as always-expanded scrollable boxes.
+  // allowImageTagUnset: false — datasets are for curated training data; unset has no meaning there.
+  const filterPanel = createFilterPanel(labelsMap, tagsMap, () => onAnyChange?.(), {
+    inlineControls: true,
+    allowImageTagUnset: false,
+  });
 
-  // Date + Verification row first — they're compact and span the full width well
+  // Date + Verification + Image Tag Conditions rows are in filterPanel.element
   container.appendChild(filterPanel.element);
 
-  // Tags and Labels as side-by-side expanded boxes below the date/verification row
+  // Tags and Labels as side-by-side expanded boxes below
   const inlineRow = document.createElement('div');
   inlineRow.className = 'ds-inline-controls';
   const [tagsEl, labelsEl] = filterPanel.toolbarControls;

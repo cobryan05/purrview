@@ -45,8 +45,8 @@ import { reviewStateToDatasetForm, datasetFormToReviewState } from '/app-static/
 import { openDissimilarGlobalModal } from '/app-static/js/ui/dissimilarSearch.js';
 
 
-const DEFAULT_PAGE_SIZE = 50;
-const MAX_ENTRIES = 500; // hard cap on total cards per page
+const DEFAULT_PAGE_SIZE = 250;
+const MAX_ENTRIES = 1000; // hard cap on total cards per page
 
 /**
  * Loads thumbnail images with a concurrency cap and cancellation support.
@@ -152,7 +152,7 @@ function buildVerifyChip(tagUuids) {
   return chip;
 }
 
-export async function createReviewPanel(container, { fetchImages = null, datasetActions = true, referenceBboxUuids = new Set(), referenceImageUuids = new Set(), initialViewFilter = 'bboxes', toolbarControls = null } = {}) {
+export async function createReviewPanel(container, { fetchImages = null, datasetActions = true, referenceBboxUuids = new Set(), referenceImageUuids = new Set(), initialViewFilter = 'images', toolbarControls = null } = {}) {
   container.innerHTML = '';
 
   const labelsPromise = fetchLabels().catch(() => new Map());
@@ -225,7 +225,7 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
 
   // ── Per-page selector ────────────────────────────────────────────
   const pageSizeSelect = makeSelect('filter-page-size',
-    [['10', '10 imgs/pg'], ['25', '25 imgs/pg'], ['50', '50 imgs/pg'], ['100', '100 imgs/pg'], ['250', '250 imgs/pg'], ['500', '500 imgs/pg']],
+    [['10', '10 imgs/pg'], ['25', '25 imgs/pg'], ['50', '50 imgs/pg'], ['100', '100 imgs/pg'], ['250', '250 imgs/pg'], ['500', '500 imgs/pg'], ['1000', '1000 imgs/pg']],
     String(DEFAULT_PAGE_SIZE));
 
   // Select-all checkbox
@@ -949,9 +949,7 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
             labelExcludeUuids: fs.labelExcludeUuids ?? [],
             labelMatchMode: fs.labelMatchMode,
             labelIncludeChildren: fs.labelIncludeChildren,
-            imageTagUuids: fs.imageTagUuids ?? [],
-            imageTagExcludeUuids: fs.imageTagExcludeUuids ?? [],
-            imageTagVerifiedAbsentUuids: fs.imageTagVerifiedAbsentUuids ?? [],
+            imageTagConditions: fs.imageTagConditions ?? [],
             requireBboxes: _viewFilter === 'bboxes',
             sortBy,
             sortOrder,
@@ -2193,7 +2191,7 @@ export async function init() {
  *                     the dataset's conditions. "Update Dataset" button pushes changes
  *                     back to the caller via onUpdateFilters (caller must still Save).
  */
-export async function showReviewModal({ title = 'Browse Images', fetchImages, editableDataset, toolbarControls, referenceBboxUuids = new Set(), referenceImageUuids = new Set(), initialViewFilter = 'bboxes' } = {}) {
+export async function showReviewModal({ title = 'Browse Images', fetchImages, editableDataset, toolbarControls, referenceBboxUuids = new Set(), referenceImageUuids = new Set(), initialViewFilter = 'images' } = {}) {
   const overlay = document.createElement('div');
   const _modalZ = nextModalZIndex();
   overlay.style.cssText = `position:fixed;inset:0;background:#0009;display:flex;align-items:center;justify-content:center;z-index:${_modalZ};`;

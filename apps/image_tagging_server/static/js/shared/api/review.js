@@ -28,9 +28,7 @@ export const VERIFICATION_TAG_UUIDS = new Set([UNVERIFIED_TAG_UUID, FALSE_POS_TA
  *   afterUuid?: string|null,       // keyset cursor: UUID of last image on previous page
  *   afterSortValue?: string|null,  // ISO datetime of last image's sort field (when sortBy != 'uuid')
  *   imageLabelFilters?: Array<{labelUuid: string, status: string, exclude: boolean}>,
- *   imageTagUuids?: string[],      // whole-image tags that must be present (AND)
- *   imageTagExcludeUuids?: string[], // whole-image tags that must be absent
- *   imageTagVerifiedAbsentUuids?: string[], // whole-image tags explicitly verified absent (AND)
+ *   imageTagConditions?: {tagUuid: string, state: 'present'|'absent'|'unset'}[],
  *   limit?: number,
  * }} opts
  */
@@ -52,9 +50,7 @@ export async function fetchReviewQueue({
   afterUuid = null,
   afterSortValue = null,
   imageLabelFilters = [],
-  imageTagUuids = [],
-  imageTagExcludeUuids = [],
-  imageTagVerifiedAbsentUuids = [],
+  imageTagConditions = [],
   verificationCheck = null,
   requireBboxes = false,
   limit = 50,
@@ -93,11 +89,14 @@ export async function fetchReviewQueue({
     }));
   }
   if (verificationCheck) body.labelVerificationCheck = verificationCheck;
-  const imageTagFilters = [
-    ...imageTagUuids.map(uuid => ({ tagUuid: uuid, status: 'present', exclude: false })),
-    ...imageTagExcludeUuids.map(uuid => ({ tagUuid: uuid, status: 'present', exclude: true })),
-    ...imageTagVerifiedAbsentUuids.map(uuid => ({ tagUuid: uuid, status: 'absent', exclude: false })),
-  ];
+
+  // Map unified conditions to the ImageTagFilter wire format.
+  const imageTagFilters = imageTagConditions.flatMap(c => {
+    if (c.state === 'present') return [{ tagUuid: c.tagUuid, status: 'present', exclude: false }];
+    if (c.state === 'absent')  return [{ tagUuid: c.tagUuid, status: 'absent',  exclude: false }];
+    if (c.state === 'unset')   return [{ tagUuid: c.tagUuid, requireUnset: true }];
+    return [];
+  });
   if (imageTagFilters.length > 0) body.imageTagFilters = imageTagFilters;
 
   const res = await apiFetch('/api/images/review', {

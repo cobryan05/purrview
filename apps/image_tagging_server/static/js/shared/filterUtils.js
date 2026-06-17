@@ -26,6 +26,7 @@ export function reviewStateToDatasetForm(reviewState) {
       dateTo: reviewState.dateTo ?? null,
       filenameSearch: reviewState.filenameSearch ?? '',
       verificationCheck: reviewState.verificationCheck ?? null,
+      imageTagConditions: reviewState.imageTagConditions ?? [],
     },
     labelUuids: reviewState.labelUuids ?? [],
   };
@@ -49,6 +50,7 @@ export function datasetFormToReviewState(filterJson, labelUuids) {
     labelExcludeUuids: f.labelExcludeUuids ?? [],
     labelMatchMode: f.labelMatchMode ?? 'any',
     labelIncludeChildren: f.labelIncludeChildren ?? false,
+    imageTagConditions: f.imageTagConditions ?? [],
     filenameSearch: f.filenameSearch ?? '',
     dateFrom: f.dateFrom ?? null,
     dateTo: f.dateTo ?? null,

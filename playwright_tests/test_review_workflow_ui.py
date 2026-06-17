@@ -234,6 +234,7 @@ class TestVerifyChip:
 
         _navigate_to_review(page, base_url)
         _show_all_bboxes(page)
+        _switch_view(page, "bboxes")
 
         unverified_chip = page.locator("#review-root [data-bbox-uuid='bbox-1'] .verify-chip")
         verified_chip = page.locator("#review-root [data-bbox-uuid='bbox-2'] .verify-chip")
@@ -255,6 +256,7 @@ class TestSingleSelection:
         _mock_tags(page, [{**UNVERIFIED_TAG, "name": "Unverified", "color": "#888", "kind": "system"}])
 
         _navigate_to_review(page, base_url)
+        _switch_view(page, "bboxes")
         bulk_btn = page.locator("#review-root .review-action-bar button", has_text="Bulk Apply")
         expect(bulk_btn).to_have_text("Bulk Apply (0)")
         expect(bulk_btn).to_be_disabled()
@@ -346,8 +348,9 @@ class TestBulkBboxAction:
         page.route("**/api/images/bbox/bbox-3", handle_patch)
 
         _navigate_to_review(page, base_url)
+        _switch_view(page, "bboxes")
 
-        # Default filter shows the two unverified bboxes (bbox-1, bbox-3).
+        # Default tag filter shows the two unverified bboxes (bbox-1, bbox-3).
         page.locator("#review-root [data-bbox-uuid='bbox-1'] input[type=checkbox]").click()
         page.locator("#review-root [data-bbox-uuid='bbox-3'] input[type=checkbox]").click()
 
@@ -528,6 +531,7 @@ class TestCanvasModalRoundTrip:
         )
 
         _navigate_to_review(page, base_url)
+        _switch_view(page, "bboxes")
 
         card = page.locator("#review-root [data-bbox-uuid='bbox-1']")
         card.locator("img.thumb").dblclick()
@@ -596,8 +600,9 @@ class TestListView:
         _mock_tags(page, [{**UNVERIFIED_TAG, "name": "Unverified", "color": "#888", "kind": "system"}])
 
         _navigate_to_review(page, base_url)
+        _switch_view(page, "bboxes")
 
-        # Default view is 'bboxes', no tag filter → all 3 bbox cards visible.
+        # Explicitly in bboxes view, no tag filter → all 3 bbox cards visible.
         expect(page.locator("#review-root .review-card")).to_have_count(3)
         expect(page.locator("#review-root .review-row")).to_have_count(0)
 
@@ -609,13 +614,13 @@ class TestListView:
         expect(page.locator("#review-root .review-grid")).to_have_count(0)
         assert page.evaluate("() => localStorage.getItem('review-view')") == "list"
 
-        # Reload — list view should be remembered (viewFilter resets to 'bboxes' default → 3 rows).
+        # Reload — list view should be remembered; viewFilter resets to 'images' default → 2 rows.
         page.reload()
         page.wait_for_load_state("networkidle")
         page.locator(".main-tab-button[data-tab='tab-review']").click()
         page.wait_for_load_state("networkidle")
         page.wait_for_selector("#review-root .review-list", timeout=4000)
-        expect(page.locator("#review-root .review-row")).to_have_count(3)
+        expect(page.locator("#review-root .review-row")).to_have_count(2)
 
 
     def test_list_view_selection_and_canvas_modal(self, page: Page, base_url: str):
@@ -650,11 +655,12 @@ class TestListView:
         )
 
         _navigate_to_review(page, base_url)
+        _switch_view(page, "bboxes")
         page.locator("#review-root .fb-view-toggle button[title='List view']").click()
         page.wait_for_timeout(200)
 
         rows = page.locator("#review-root .review-row")
-        # Default view is 'bboxes', no tag filter → all 3 bbox rows visible.
+        # Explicitly in bboxes view, no tag filter → all 3 bbox rows visible.
         expect(rows).to_have_count(3)
 
         bulk_btn = page.locator("#review-root .review-action-bar button", has_text="Bulk Apply")

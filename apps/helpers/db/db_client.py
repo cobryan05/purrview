@@ -265,7 +265,18 @@ def _apply_image_search_filters(stmt: Select, params: ImageSearchParams) -> Sele
     # These filter on the image_tags table (not bboxes), which is small and
     # accessed by PK — correlated EXISTS is fine here.
     for tf in params.image_tag_filters:
-        if tf.require_verified:
+        if tf.require_unset:
+            # NOT EXISTS any row for this image+tag (tag was never assessed)
+            subq = (
+                select(ImageTagLink)
+                .where(
+                    ImageTagLink.image_uuid == ImageRecord.uuid,
+                    ImageTagLink.tag_uuid == tf.tag_uuid,
+                )
+                .exists()
+            )
+            stmt = stmt.where(~subq)
+        elif tf.require_verified:
             # require EXISTS row with PRESENT or ABSENT (not uncertain)
             subq = (
                 select(ImageTagLink)
@@ -2564,6 +2575,15 @@ class DbClient:
         # Mirror the review panel: show_all_bboxes=True only when no tag includes.
         show_all_bboxes = len(f.tag_uuids) == 0
 
+        image_tag_filters: List[ImageTagFilter] = []
+        for cond in f.image_tag_conditions:
+            if cond.state == "present":
+                image_tag_filters.append(ImageTagFilter(tag_uuid=cond.tag_uuid, status=ImageItemStatus.PRESENT))
+            elif cond.state == "absent":
+                image_tag_filters.append(ImageTagFilter(tag_uuid=cond.tag_uuid, status=ImageItemStatus.ABSENT))
+            elif cond.state == "unset":
+                image_tag_filters.append(ImageTagFilter(tag_uuid=cond.tag_uuid, require_unset=True))
+
         return ImageSearchParams(
             show_all_bboxes=show_all_bboxes,
             tag_uuids=f.tag_uuids,
@@ -2577,6 +2597,7 @@ class DbClient:
             date_to=f.date_to,
             filename_search=f.filename_search or None,
             label_verification_check=f.verification_check,
+            image_tag_filters=image_tag_filters,
             limit=limit,
             sort_by=sort_by,
             sort_order=sort_order,
