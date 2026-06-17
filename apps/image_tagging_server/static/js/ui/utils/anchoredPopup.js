@@ -18,12 +18,10 @@
  * @returns {{ close: () => void }}
  */
 export function openAnchoredPopup(anchorEl, contentEl) {
-  // Position off-screen as fixed first so getBoundingClientRect reflects the
-  // element's actual rendered size, not its in-flow dimensions (which can be
-  // wrong when the element renders outside the visible viewport).
+  // Hide before appending so getBoundingClientRect reflects the element's
+  // actual rendered size before we know where to position it.
+  contentEl.style.visibility = 'hidden';
   contentEl.style.position = 'fixed';
-  contentEl.style.left = '-9999px';
-  contentEl.style.top = '0';
   document.body.appendChild(contentEl);
 
   const rect = anchorEl.getBoundingClientRect();
@@ -36,6 +34,7 @@ export function openAnchoredPopup(anchorEl, contentEl) {
   );
   contentEl.style.left = leftPos + 'px';
   contentEl.style.top = (rect.top - popupRect.height - 4) + 'px';
+  contentEl.style.visibility = '';
 
   function close() {
     contentEl.remove();

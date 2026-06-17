@@ -264,14 +264,21 @@ export function createFilterPanel(labels, tags, onFilterChange, { inlineControls
 
   // Rebuild tag dropdowns when a tag is created, renamed, or deleted.
   // Preserve the current selection so an in-progress filter is not lost.
+  let _tagsUpdateInFlight = false;
   async function _onTagsUpdated() {
-    tags = await fetchTags().catch(() => tags);
-    tagsDropdown = _rebuildDropdown(tagsDropdown, tagsContainer, _buildTagsDropdown);
-    tagsDropdown.setState(_state.tagUuids, _state.tagMatchMode, undefined, _state.tagExcludeUuids);
-    imageTagsDropdown = _rebuildDropdown(imageTagsDropdown, imageTagsContainer, _buildImageTagsDropdown);
-    imageTagsDropdown.setState(_state.imageTagUuids, undefined, undefined, _state.imageTagExcludeUuids);
-    imageTagsAbsentDropdown = _rebuildDropdown(imageTagsAbsentDropdown, imageTagsAbsentContainer, _buildImageTagsAbsentDropdown);
-    imageTagsAbsentDropdown.setState(_state.imageTagVerifiedAbsentUuids, undefined, undefined, []);
+    if (_tagsUpdateInFlight) return;
+    _tagsUpdateInFlight = true;
+    try {
+      tags = await fetchTags().catch(() => tags);
+      tagsDropdown = _rebuildDropdown(tagsDropdown, tagsContainer, _buildTagsDropdown);
+      tagsDropdown.setState(_state.tagUuids, _state.tagMatchMode, undefined, _state.tagExcludeUuids);
+      imageTagsDropdown = _rebuildDropdown(imageTagsDropdown, imageTagsContainer, _buildImageTagsDropdown);
+      imageTagsDropdown.setState(_state.imageTagUuids, undefined, undefined, _state.imageTagExcludeUuids);
+      imageTagsAbsentDropdown = _rebuildDropdown(imageTagsAbsentDropdown, imageTagsAbsentContainer, _buildImageTagsAbsentDropdown);
+      imageTagsAbsentDropdown.setState(_state.imageTagVerifiedAbsentUuids, undefined, undefined, []);
+    } finally {
+      _tagsUpdateInFlight = false;
+    }
   }
 
   // Rebuild the labels dropdown when a label is created, renamed, or deleted.

@@ -800,9 +800,7 @@ export async function createLabelList(container, options = {}) {
     ]);
   } else if (mode === 'model-config') {
     // Re-render when labels are created, renamed, or deleted while the editor is open.
-    _unsubMode = events.subscribeMany([
-      [EventTypes.LABELS_UPDATED, () => mount()],
-    ]);
+    _unsubMode = events.subscribe(EventTypes.LABELS_UPDATED, () => mount());
   }
 
   return {

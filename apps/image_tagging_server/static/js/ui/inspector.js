@@ -211,6 +211,7 @@ export function createTagPanel(container, runtime) {
   let _serverTagStatuses = new Map();
   /** @type {Map<string, string>} pending flushes not yet persisted to the server */
   let _pendingTagFlush = new Map();
+  let _flushInFlight = false;
   /** @type {Map<string, (status: string) => void>} per-row button updaters */
   const _tagStatusUpdaters = new Map();
 
@@ -238,6 +239,18 @@ export function createTagPanel(container, runtime) {
   function _refreshTagStatusButtons() {
     for (const [uuid, update] of _tagStatusUpdaters) {
       update(_effectiveTagStatus(uuid));
+    }
+  }
+
+  async function _fetchAndApplyTagStatuses(path) {
+    const seq = ++_loadSeq;
+    try {
+      const statuses = await fetchImageTagStatuses(path);
+      if (seq !== _loadSeq) return; // superseded by a newer navigation
+      _serverTagStatuses = statuses;
+      _refreshTagStatusButtons();
+    } catch (err) {
+      console.error('Tags panel: failed to fetch image tag statuses:', err);
     }
   }
 
@@ -393,7 +406,6 @@ export function createTagPanel(container, runtime) {
         statusBtn.style.color = cfg.color;
       }
 
-      applyTagStatus(_effectiveTagStatus(uuid));
       _tagStatusUpdaters.set(uuid, applyTagStatus);
 
       statusBtn.addEventListener('click', (e) => {
@@ -542,18 +554,9 @@ export function createTagPanel(container, runtime) {
       _selectedBbox = null;
       _currentImagePath = path;
       _pendingTagFlush.clear();
-      const seq = ++_loadSeq;
       _refreshLabelSection();
       _refreshCheckboxes();
-      // Fetch whole-image tag statuses for the newly loaded image.
-      try {
-        const statuses = await fetchImageTagStatuses(path);
-        if (seq !== _loadSeq) return; // superseded by a newer navigation
-        _serverTagStatuses = statuses;
-        _refreshTagStatusButtons();
-      } catch (err) {
-        console.error('Tags panel: failed to fetch image tag statuses:', err);
-      }
+      await _fetchAndApplyTagStatuses(path);
     }
   );
 
@@ -561,25 +564,30 @@ export function createTagPanel(container, runtime) {
   const _unsubSaved = events.subscribeToCanvas(
     runtime.id, EventTypes.CANVAS_ANNOTATIONS_SAVED,
     async () => {
-      if (!_currentImagePath || !_pendingTagFlush.size) return;
-      const pathAtSave = _currentImagePath;
-      const entries = [..._pendingTagFlush];
-      _pendingTagFlush.clear();
-      const results = await Promise.allSettled(
-        entries.map(([uuid, status]) => setImageTagStatus(pathAtSave, uuid, status))
-      );
-      const failed = entries.filter((_, i) => results[i].status === 'rejected');
-      if (failed.length) {
-        if (_currentImagePath === pathAtSave) {
-          // Re-queue entries not superseded by newer user interaction.
-          failed.forEach(([uuid, status]) => {
-            if (!_pendingTagFlush.has(uuid)) _pendingTagFlush.set(uuid, status);
+      if (!_currentImagePath || !_pendingTagFlush.size || _flushInFlight) return;
+      _flushInFlight = true;
+      try {
+        const pathAtSave = _currentImagePath;
+        const entries = [..._pendingTagFlush];
+        _pendingTagFlush.clear();
+        const results = await Promise.allSettled(
+          entries.map(([uuid, status]) => setImageTagStatus(pathAtSave, uuid, status))
+        );
+        const failed = entries.filter((_, i) => results[i].status === 'rejected');
+        if (failed.length) {
+          if (_currentImagePath === pathAtSave) {
+            // Re-queue entries not superseded by newer user interaction.
+            failed.forEach(([uuid, status]) => {
+              if (!_pendingTagFlush.has(uuid)) _pendingTagFlush.set(uuid, status);
+            });
+          }
+          results.forEach((r, i) => {
+            if (r.status === 'rejected') console.error('Failed to persist image tag status:', entries[i], r.reason);
           });
+          toast(`${failed.length} image tag state(s) failed to save`, 5000, 'error');
         }
-        results.forEach((r, i) => {
-          if (r.status === 'rejected') console.error('Failed to persist image tag status:', entries[i], r.reason);
-        });
-        toast(`${failed.length} image tag state(s) failed to save`, 5000, 'error');
+      } finally {
+        _flushInFlight = false;
       }
     }
   );
@@ -600,12 +608,7 @@ export function createTagPanel(container, runtime) {
   const _alreadyLoadedPath = runtime?.state?.image?.image_path;
   if (_alreadyLoadedPath) {
     _currentImagePath = _alreadyLoadedPath;
-    const seq = ++_loadSeq;
-    fetchImageTagStatuses(_alreadyLoadedPath).then(statuses => {
-      if (seq !== _loadSeq) return;
-      _serverTagStatuses = statuses;
-      _refreshTagStatusButtons();
-    }).catch(err => console.error('Tags panel: failed to fetch initial image tag statuses:', err));
+    _fetchAndApplyTagStatuses(_alreadyLoadedPath);
   }
 
   return {
