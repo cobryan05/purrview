@@ -1,8 +1,9 @@
 import { BboxInfoField, EditableField } from '/app-static/js/ui/utils/fields/index.js';
-import { createGenericRow, Logger } from '/app-static/js/ui/utils/index.js';
+import { createGenericRow, Logger, toast } from '/app-static/js/ui/utils/index.js';
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
 import { fetchLabels, fetchLabelByUuid } from '/app-static/js/shared/api/labels.js';
 import { fetchTags, fetchTagByUuid } from '/app-static/js/shared/api/tags.js';
+import { fetchImageTagStatuses, setImageTagStatus } from '/app-static/js/shared/api/imageTags.js';
 import { UNVERIFIED_TAG_UUID, VERIFIED_TAG_UUID, VERIFICATION_TAG_UUIDS } from '/app-static/js/shared/api/review.js';
 import { isDynamicLabelsVisible, isTagVisible } from '/app-static/js/shared/activeModel.js';
 import { setTool } from '/app-static/js/app/image-tagging/canvas/tools.js';
@@ -203,6 +204,43 @@ export function createTagPanel(container, runtime) {
   let _labelContent = null;   // mutable child of the label section
   let _tagRows = new Map();   // uuid → { row, checkbox }
 
+  // ── Whole-image tag tri-state state ───────────────────────────────────────
+  let _currentImagePath = null;
+  let _loadSeq = 0;
+  /** @type {Map<string, 'present'|'absent'>} current server + user-interaction state */
+  let _serverTagStatuses = new Map();
+  /** @type {Map<string, string>} pending flushes not yet persisted to the server */
+  let _pendingTagFlush = new Map();
+  /** @type {Map<string, (status: string) => void>} per-row button updaters */
+  const _tagStatusUpdaters = new Map();
+
+  // Full 3-state cycle — image-tag "present" is explicit, not derived from bboxes.
+  const TAG_STATUS_CFG = Object.freeze({
+    present:   { text: '✓', color: '#4c4' },
+    absent:    { text: '✗', color: '#e55' },
+    uncertain: { text: '?', color: '#888' },
+  });
+  const TAG_STATUS_CYCLE = Object.freeze({ uncertain: 'present', present: 'absent', absent: 'uncertain' });
+
+  function _effectiveTagStatus(uuid) {
+    return _serverTagStatuses.get(uuid) ?? 'uncertain';
+  }
+
+  function _setLocalTagStatus(uuid, status) {
+    if (status === 'uncertain') {
+      _serverTagStatuses.delete(uuid);
+    } else {
+      _serverTagStatuses.set(uuid, /** @type {'present'|'absent'} */ (status));
+    }
+    _pendingTagFlush.set(uuid, status);
+  }
+
+  function _refreshTagStatusButtons() {
+    for (const [uuid, update] of _tagStatusUpdaters) {
+      update(_effectiveTagStatus(uuid));
+    }
+  }
+
   // ── Styles ────────────────────────────────────────────────────────────────
   // NOTE: `container` is the shared `.sidebar-tab-pane` element itself (not an
   // inner wrapper) — its visibility is toggled via the `.active` class, which
@@ -313,6 +351,8 @@ export function createTagPanel(container, runtime) {
     }
 
     _tagRows.clear();
+    _tagStatusUpdaters.clear();
+
     for (const tag of _tagsMap.values()) {
       if (!isTagVisible(tag)) continue;
       const { uuid, name, icon, color } = tag;
@@ -330,6 +370,42 @@ export function createTagPanel(container, runtime) {
         userSelect: 'none',
       });
 
+      // ── Whole-image tri-state button ─────────────────────────────────────
+      const statusBtn = document.createElement('button');
+      statusBtn.title = 'Whole-image tag: click to cycle (? uncertain → ✓ present → ✗ absent)';
+      Object.assign(statusBtn.style, {
+        flexShrink: '0',
+        width: '22px',
+        height: '20px',
+        fontSize: '0.8em',
+        border: '1px solid #444',
+        borderRadius: '3px',
+        padding: '0',
+        lineHeight: '1',
+        background: 'transparent',
+        cursor: 'pointer',
+        margin: '0',
+      });
+
+      function applyTagStatus(status) {
+        const cfg = TAG_STATUS_CFG[status] ?? TAG_STATUS_CFG.uncertain;
+        statusBtn.textContent = cfg.text;
+        statusBtn.style.color = cfg.color;
+      }
+
+      applyTagStatus(_effectiveTagStatus(uuid));
+      _tagStatusUpdaters.set(uuid, applyTagStatus);
+
+      statusBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (!_currentImagePath) return;
+        const next = TAG_STATUS_CYCLE[_effectiveTagStatus(uuid)] ?? 'uncertain';
+        _setLocalTagStatus(uuid, next);
+        applyTagStatus(_effectiveTagStatus(uuid));
+        runtime?.markDirty?.();
+      });
+
+      // ── Bbox checkbox ────────────────────────────────────────────────────
       const cb = document.createElement('input');
       cb.type = 'checkbox';
       cb.style.cssText = 'margin:0; flex-shrink:0; cursor:pointer;';
@@ -353,9 +429,10 @@ export function createTagPanel(container, runtime) {
 
       const nameEl = document.createElement('span');
       nameEl.textContent = name;
-      nameEl.style.fontSize = '0.88em';
+      nameEl.style.cssText = 'font-size:0.88em; flex:1;';
 
-      row.append(cb, swatch, iconEl, nameEl);
+      // Layout: [img-tag status] [swatch] [icon] [name…] [bbox checkbox]
+      row.append(statusBtn, swatch, iconEl, nameEl, cb);
 
       row.addEventListener('click', () => {
         setTool(runtime, `tag:${uuid}`);
@@ -426,6 +503,8 @@ export function createTagPanel(container, runtime) {
     _refreshLabelSection();
     _refreshCheckboxes();
     _refreshHighlights();
+    // Apply any already-loaded statuses to the freshly built rows.
+    _refreshTagStatusButtons();
   }
 
   // ── Event subscriptions ───────────────────────────────────────────────────
@@ -459,10 +538,49 @@ export function createTagPanel(container, runtime) {
 
   const _unsubImageLoaded = events.subscribeToCanvas(
     runtime.id, EventTypes.IMAGE_LOADED_ONTO_CANVAS,
-    () => {
+    async ({ path }) => {
       _selectedBbox = null;
+      _currentImagePath = path;
+      _pendingTagFlush.clear();
+      const seq = ++_loadSeq;
       _refreshLabelSection();
       _refreshCheckboxes();
+      // Fetch whole-image tag statuses for the newly loaded image.
+      try {
+        const statuses = await fetchImageTagStatuses(path);
+        if (seq !== _loadSeq) return; // superseded by a newer navigation
+        _serverTagStatuses = statuses;
+        _refreshTagStatusButtons();
+      } catch (err) {
+        console.error('Tags panel: failed to fetch image tag statuses:', err);
+      }
+    }
+  );
+
+  // Flush pending whole-image tag status changes when canvas annotations are saved.
+  const _unsubSaved = events.subscribeToCanvas(
+    runtime.id, EventTypes.CANVAS_ANNOTATIONS_SAVED,
+    async () => {
+      if (!_currentImagePath || !_pendingTagFlush.size) return;
+      const pathAtSave = _currentImagePath;
+      const entries = [..._pendingTagFlush];
+      _pendingTagFlush.clear();
+      const results = await Promise.allSettled(
+        entries.map(([uuid, status]) => setImageTagStatus(pathAtSave, uuid, status))
+      );
+      const failed = entries.filter((_, i) => results[i].status === 'rejected');
+      if (failed.length) {
+        if (_currentImagePath === pathAtSave) {
+          // Re-queue entries not superseded by newer user interaction.
+          failed.forEach(([uuid, status]) => {
+            if (!_pendingTagFlush.has(uuid)) _pendingTagFlush.set(uuid, status);
+          });
+        }
+        results.forEach((r, i) => {
+          if (r.status === 'rejected') console.error('Failed to persist image tag status:', entries[i], r.reason);
+        });
+        toast(`${failed.length} image tag state(s) failed to save`, 5000, 'error');
+      }
     }
   );
 
@@ -476,6 +594,20 @@ export function createTagPanel(container, runtime) {
   // Initial render.
   _mount();
 
+  // If an image was already loaded before this panel mounted (lazy init), we
+  // missed the IMAGE_LOADED_ONTO_CANVAS event — fetch its statuses now so
+  // tri-state buttons show the correct state immediately.
+  const _alreadyLoadedPath = runtime?.state?.image?.image_path;
+  if (_alreadyLoadedPath) {
+    _currentImagePath = _alreadyLoadedPath;
+    const seq = ++_loadSeq;
+    fetchImageTagStatuses(_alreadyLoadedPath).then(statuses => {
+      if (seq !== _loadSeq) return;
+      _serverTagStatuses = statuses;
+      _refreshTagStatusButtons();
+    }).catch(err => console.error('Tags panel: failed to fetch initial image tag statuses:', err));
+  }
+
   return {
     destroy() {
       _unsubClick();
@@ -483,6 +615,7 @@ export function createTagPanel(container, runtime) {
       _unsubBboxChanged();
       _unsubToolChanged();
       _unsubImageLoaded();
+      _unsubSaved();
       _unsubGlobal();
     },
   };

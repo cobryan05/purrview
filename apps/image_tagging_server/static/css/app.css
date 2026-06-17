@@ -2165,6 +2165,21 @@ button.filter-active {
   color: var(--pico-color-red-400, #e57373);
 }
 
+.active-model-bar__vis-btn {
+  background: none;
+  border: none;
+  padding: 0 0.3em;
+  cursor: pointer;
+  color: var(--pico-muted-color, #888);
+  font-size: 0.9em;
+  margin: 0;
+  line-height: 1;
+}
+
+.active-model-bar__vis-btn:hover {
+  color: var(--pico-color, #ddd);
+}
+
 .active-model-bar__none {
   opacity: 0.5;
   font-style: italic;
