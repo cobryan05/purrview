@@ -355,6 +355,9 @@ export function createTagPanel(container, runtime) {
     hdr.style.cssText = 'font-weight:bold; font-size:0.8em; text-transform:uppercase; letter-spacing:0.05em; color:#aaa; padding:4px 6px 6px;';
     wrap.appendChild(hdr);
 
+    _tagRows.clear();
+    _tagStatusUpdaters.clear();
+
     if (_tagsMap.size === 0) {
       const empty = document.createElement('div');
       empty.style.cssText = 'font-size:0.82em; color:#666; font-style:italic; padding:4px 6px;';
@@ -362,9 +365,6 @@ export function createTagPanel(container, runtime) {
       wrap.appendChild(empty);
       return wrap;
     }
-
-    _tagRows.clear();
-    _tagStatusUpdaters.clear();
 
     for (const tag of _tagsMap.values()) {
       if (!isTagVisible(tag)) continue;
@@ -552,8 +552,30 @@ export function createTagPanel(container, runtime) {
     runtime.id, EventTypes.IMAGE_LOADED_ONTO_CANVAS,
     async ({ path }) => {
       _selectedBbox = null;
+      // Best-effort flush for the departing image before we clear its state.
+      // Fire-and-forget — we don't await, and don't re-queue on failure, because
+      // we're already navigating away and the user can't act on a toast for a
+      // different image.
+      if (_currentImagePath && _pendingTagFlush.size) {
+        const departingPath = _currentImagePath;
+        const departingEntries = [..._pendingTagFlush];
+        _pendingTagFlush.clear();
+        Promise.allSettled(
+          departingEntries.map(([uuid, status]) => setImageTagStatus(departingPath, uuid, status))
+        ).then(results => {
+          results.forEach((r, i) => {
+            if (r.status === 'rejected')
+              console.error('Failed to persist image tag status on navigate:', departingEntries[i], r.reason);
+          });
+        });
+      } else {
+        _pendingTagFlush.clear();
+      }
       _currentImagePath = path;
-      _pendingTagFlush.clear();
+      // Reset tri-state buttons immediately so the previous image's statuses
+      // don't show while the fetch for the new image is in flight.
+      _serverTagStatuses = new Map();
+      _refreshTagStatusButtons();
       _refreshLabelSection();
       _refreshCheckboxes();
       await _fetchAndApplyTagStatuses(path);
@@ -561,30 +583,35 @@ export function createTagPanel(container, runtime) {
   );
 
   // Flush pending whole-image tag status changes when canvas annotations are saved.
+  // Uses a while loop so that any entries added to _pendingTagFlush *during* an
+  // await (e.g. the user cycled a button between two rapid saves) are picked up
+  // in the next iteration rather than silently dropped.
   const _unsubSaved = events.subscribeToCanvas(
     runtime.id, EventTypes.CANVAS_ANNOTATIONS_SAVED,
     async () => {
       if (!_currentImagePath || !_pendingTagFlush.size || _flushInFlight) return;
       _flushInFlight = true;
       try {
-        const pathAtSave = _currentImagePath;
-        const entries = [..._pendingTagFlush];
-        _pendingTagFlush.clear();
-        const results = await Promise.allSettled(
-          entries.map(([uuid, status]) => setImageTagStatus(pathAtSave, uuid, status))
-        );
-        const failed = entries.filter((_, i) => results[i].status === 'rejected');
-        if (failed.length) {
-          if (_currentImagePath === pathAtSave) {
+        while (_pendingTagFlush.size && _currentImagePath) {
+          const pathAtSave = _currentImagePath;
+          const entries = [..._pendingTagFlush];
+          _pendingTagFlush.clear();
+          const results = await Promise.allSettled(
+            entries.map(([uuid, status]) => setImageTagStatus(pathAtSave, uuid, status))
+          );
+          if (_currentImagePath !== pathAtSave) break; // navigated away mid-flush
+          results.forEach((r, i) => {
+            if (r.status === 'rejected') console.error('Failed to persist image tag status:', entries[i], r.reason);
+          });
+          const failed = entries.filter((_, i) => results[i].status === 'rejected');
+          if (failed.length) {
             // Re-queue entries not superseded by newer user interaction.
             failed.forEach(([uuid, status]) => {
               if (!_pendingTagFlush.has(uuid)) _pendingTagFlush.set(uuid, status);
             });
+            toast(`${failed.length} image tag state(s) failed to save`, 5000, 'error');
+            break; // stop looping on persistent errors to avoid thrashing
           }
-          results.forEach((r, i) => {
-            if (r.status === 'rejected') console.error('Failed to persist image tag status:', entries[i], r.reason);
-          });
-          toast(`${failed.length} image tag state(s) failed to save`, 5000, 'error');
         }
       } finally {
         _flushInFlight = false;

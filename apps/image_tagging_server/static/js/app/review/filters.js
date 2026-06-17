@@ -265,26 +265,47 @@ export function createFilterPanel(labels, tags, onFilterChange, { inlineControls
   // Rebuild tag dropdowns when a tag is created, renamed, or deleted.
   // Preserve the current selection so an in-progress filter is not lost.
   let _tagsUpdateInFlight = false;
+  let _tagsUpdatePending = false;
   async function _onTagsUpdated() {
-    if (_tagsUpdateInFlight) return;
+    if (_tagsUpdateInFlight) {
+      _tagsUpdatePending = true;
+      return;
+    }
     _tagsUpdateInFlight = true;
     try {
-      tags = await fetchTags().catch(() => tags);
-      tagsDropdown = _rebuildDropdown(tagsDropdown, tagsContainer, _buildTagsDropdown);
-      tagsDropdown.setState(_state.tagUuids, _state.tagMatchMode, undefined, _state.tagExcludeUuids);
-      imageTagsDropdown = _rebuildDropdown(imageTagsDropdown, imageTagsContainer, _buildImageTagsDropdown);
-      imageTagsDropdown.setState(_state.imageTagUuids, undefined, undefined, _state.imageTagExcludeUuids);
-      imageTagsAbsentDropdown = _rebuildDropdown(imageTagsAbsentDropdown, imageTagsAbsentContainer, _buildImageTagsAbsentDropdown);
-      imageTagsAbsentDropdown.setState(_state.imageTagVerifiedAbsentUuids, undefined, undefined, []);
+      do {
+        _tagsUpdatePending = false;
+        tags = await fetchTags().catch(() => tags);
+        tagsDropdown = _rebuildDropdown(tagsDropdown, tagsContainer, _buildTagsDropdown);
+        tagsDropdown.setState(_state.tagUuids, _state.tagMatchMode, undefined, _state.tagExcludeUuids);
+        imageTagsDropdown = _rebuildDropdown(imageTagsDropdown, imageTagsContainer, _buildImageTagsDropdown);
+        imageTagsDropdown.setState(_state.imageTagUuids, undefined, undefined, _state.imageTagExcludeUuids);
+        imageTagsAbsentDropdown = _rebuildDropdown(imageTagsAbsentDropdown, imageTagsAbsentContainer, _buildImageTagsAbsentDropdown);
+        imageTagsAbsentDropdown.setState(_state.imageTagVerifiedAbsentUuids, undefined, undefined, []);
+      } while (_tagsUpdatePending);
     } finally {
       _tagsUpdateInFlight = false;
     }
   }
 
   // Rebuild the labels dropdown when a label is created, renamed, or deleted.
+  let _labelsUpdateInFlight = false;
+  let _labelsUpdatePending = false;
   async function _onLabelsUpdated() {
-    labels = await fetchLabels().catch(() => labels);
-    buildLabelsControls();
+    if (_labelsUpdateInFlight) {
+      _labelsUpdatePending = true;
+      return;
+    }
+    _labelsUpdateInFlight = true;
+    try {
+      do {
+        _labelsUpdatePending = false;
+        labels = await fetchLabels().catch(() => labels);
+        buildLabelsControls();
+      } while (_labelsUpdatePending);
+    } finally {
+      _labelsUpdateInFlight = false;
+    }
   }
 
   const _unsubAll = events.subscribeMany([
