@@ -5,7 +5,6 @@ import pytest
 from apps import APPS
 from apps.training_server.manager import Manager
 
-
 # ---------------------------------------------------------------------------
 # Web endpoints
 # ---------------------------------------------------------------------------
@@ -193,3 +192,106 @@ async def test_get_job_endpoint_returns_job_info(http_client, manager):
     assert data["job_id"] == job_id
     assert data["trainer_type"] == "binary_image_classifier"
     assert data["model_name"] == "detail_test"
+
+
+# ---------------------------------------------------------------------------
+# Job — emit / stream
+# ---------------------------------------------------------------------------
+
+from datetime import datetime, timezone
+
+from apps.training_server.job_queue import Job
+
+
+def _make_job(status: str = "queued") -> Job:
+    return Job(
+        job_id="test-job",
+        status=status,
+        config={},
+        cancel_event=asyncio.Event(),
+        created_at=datetime.now(timezone.utc),
+    )
+
+
+async def test_emit_stores_event_for_replay():
+    """emit() stores events so late subscribers receive them via history replay."""
+    job = _make_job()
+    job.emit("progress", {"epoch": 1})
+    job.emit("progress", {"epoch": 2})
+    assert len(job._events) == 2
+    assert job._events[0] == ("progress", {"epoch": 1})
+    assert job._events[1] == ("progress", {"epoch": 2})
+
+
+async def test_stream_replays_history():
+    """stream() yields all past events before closing on an already-terminal job."""
+    job = _make_job(status="done")
+    job._events = [("progress", {"epoch": 1}), ("progress", {"epoch": 2})]
+
+    events = [(et, d) async for et, d in job.stream()]
+
+    assert events == [("progress", {"epoch": 1}), ("progress", {"epoch": 2})]
+
+
+async def test_stream_terminal_job_exits_immediately():
+    """stream() on a terminal job with no history closes without blocking."""
+    job = _make_job(status="done")
+    events = [(et, d) async for et, d in job.stream()]
+    assert events == []
+
+
+async def test_stream_receives_live_events():
+    """Events emitted after stream() opens are delivered to the subscriber."""
+    job = _make_job(status="running")
+
+    async def emit_then_done():
+        await asyncio.sleep(0)
+        job.emit("progress", {"epoch": 1})
+        job.emit("done", {"status": "done"})
+
+    asyncio.create_task(emit_then_done())
+    events = [(et, d) async for et, d in job.stream()]
+
+    assert ("progress", {"epoch": 1}) in events
+    assert events[-1] == ("done", {"status": "done"})
+
+
+async def test_stream_closes_on_done_event():
+    """A 'done' emit sends the sentinel that closes the stream."""
+    job = _make_job(status="running")
+
+    async def do_emit():
+        await asyncio.sleep(0)
+        job.emit("done", {"status": "done", "model_path": "/models/x.onnx"})
+
+    asyncio.create_task(do_emit())
+    event_types = [et async for et, _ in job.stream()]
+    assert "done" in event_types
+
+
+async def test_stream_closes_on_error_event():
+    """An 'error' emit sends the sentinel that closes the stream."""
+    job = _make_job(status="running")
+
+    async def do_emit():
+        await asyncio.sleep(0)
+        job.emit("error", {"status": "error", "message": "boom"})
+
+    asyncio.create_task(do_emit())
+    event_types = [et async for et, _ in job.stream()]
+    assert "error" in event_types
+
+
+async def test_stream_unsubscribes_on_exit():
+    """Subscriber queue is removed from job._subscribers after stream() finishes."""
+    job = _make_job(status="running")
+
+    async def do_emit():
+        await asyncio.sleep(0)
+        job.emit("done", {"status": "done"})
+
+    asyncio.create_task(do_emit())
+    async for _ in job.stream():
+        pass
+
+    assert len(job._subscribers) == 0
