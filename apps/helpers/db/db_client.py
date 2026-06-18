@@ -376,6 +376,16 @@ def _apply_image_search_filters(stmt: Select, params: ImageSearchParams) -> Sele
     return stmt
 
 
+# Eager-load options shared by all training-config queries.
+_TC_LOAD_OPTS = (
+    selectinload(TrainingConfig.label_links),
+    selectinload(TrainingConfig.dataset_links),
+)
+
+# Page size for image pagination in readiness checks.
+_READINESS_PAGE_SIZE = 1000
+
+
 class DbClient:
     """Helper class for SQLModel interactions for image annotations."""
 
@@ -2779,10 +2789,7 @@ class DbClient:
 
     async def list_training_configs(self) -> list[TrainingConfigRead]:
         async with self._async_session_maker() as session:
-            stmt = select(TrainingConfig).options(
-                selectinload(TrainingConfig.label_links),
-                selectinload(TrainingConfig.dataset_links),
-            )
+            stmt = select(TrainingConfig).options(*_TC_LOAD_OPTS)
             result = await session.exec(stmt)
             return [self._training_config_to_read(tc) for tc in result.all()]
 
@@ -2791,10 +2798,7 @@ class DbClient:
             stmt = (
                 select(TrainingConfig)
                 .where(TrainingConfig.uuid == uuid)
-                .options(
-                    selectinload(TrainingConfig.label_links),
-                    selectinload(TrainingConfig.dataset_links),
-                )
+                .options(*_TC_LOAD_OPTS)
             )
             result = await session.exec(stmt)
             tc = result.first()
@@ -2805,10 +2809,7 @@ class DbClient:
             stmt = (
                 select(TrainingConfig)
                 .where(TrainingConfig.uuid == uuid)
-                .options(
-                    selectinload(TrainingConfig.label_links),
-                    selectinload(TrainingConfig.dataset_links),
-                )
+                .options(*_TC_LOAD_OPTS)
             )
             result = await session.exec(stmt)
             tc = result.first()
@@ -2827,15 +2828,16 @@ class DbClient:
             if data.label_uuids is not None:
                 for link in list(tc.label_links or []):
                     await session.delete(link)
-                await session.flush()
+            if data.dataset_uuids is not None:
+                for link in list(tc.dataset_links or []):
+                    await session.delete(link)
+            await session.flush()
+            if data.label_uuids is not None:
                 for label_uuid in data.label_uuids:
                     session.add(TrainingConfigLabelLink(
                         training_config_uuid=tc.uuid, label_uuid=label_uuid
                     ))
             if data.dataset_uuids is not None:
-                for link in list(tc.dataset_links or []):
-                    await session.delete(link)
-                await session.flush()
                 for dataset_uuid in data.dataset_uuids:
                     session.add(TrainingConfigDatasetLink(
                         training_config_uuid=tc.uuid, dataset_uuid=dataset_uuid
@@ -2883,11 +2885,10 @@ class DbClient:
                 continue
             after_uuid: Optional[str] = None
             after_sort_value: Optional[datetime] = None
-            PAGE = 1000
             while True:
                 page, has_more = await self._list_images_for_dataset(
                     dataset,
-                    limit=PAGE,
+                    limit=_READINESS_PAGE_SIZE,
                     sort_by="uuid",
                     sort_order="asc",
                     after_uuid=after_uuid,

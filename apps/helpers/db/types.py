@@ -738,7 +738,7 @@ class TrainingConfigDatasetLink(SQLModel, table=True):
         foreign_key="training_configs.uuid", primary_key=True, ondelete="CASCADE"
     )
     dataset_uuid: str = Field(
-        foreign_key="datasets.uuid", primary_key=True, ondelete="CASCADE"
+        foreign_key="datasets.uuid", primary_key=True, ondelete="RESTRICT"
     )
 
 

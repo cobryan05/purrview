@@ -218,13 +218,8 @@ class Manager:
             label_type (Optional[LabelType]): New label type.
             scope (Optional[LabelScope]): New label scope.
         """
-        await self._db_client.update_label(
-            label_uuid=label_uuid,
-            **({} if name is None else {"name": name}),
-            **({} if color is None else {"color": color}),
-            **({} if label_type is None else {"label_type": label_type}),
-            **({} if scope is None else {"scope": scope}),
-        )
+        updates = {k: v for k, v in {"name": name, "color": color, "label_type": label_type, "scope": scope}.items() if v is not None}
+        await self._db_client.update_label(label_uuid=label_uuid, **updates)
         # TODO CJO: await self._db_client.export_labels_from_db_to_json(str(self._labels_json))
 
     async def get_label_uuid_map(self) -> Dict[str, Label]:

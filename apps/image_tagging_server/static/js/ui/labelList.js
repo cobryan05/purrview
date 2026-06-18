@@ -151,6 +151,25 @@ export function buildLabelRow(label, indent, { padding = '4px 6px' } = {}) {
 
 // ─── Edit mode ───────────────────────────────────────────────────────────────
 
+/**
+ * Create a scope <select> element.
+ * @param {string} currentValue - 'object' or 'image'
+ * @param {{ short?: boolean, cssText?: string, title?: string }} opts
+ */
+function createScopeSelect(currentValue, { short = false, cssText, title } = {}) {
+  const sel = document.createElement('select');
+  sel.style.cssText = cssText ?? 'font-size:0.75em;padding:1px 2px;background:#222;color:#aaa;border:1px solid #555;border-radius:3px;cursor:pointer;';
+  sel.title = title ?? 'Label scope: Obj = bounding-box label, Img = whole-image classifier label';
+  for (const [val, lbl] of short ? [['object', 'Obj'], ['image', 'Img']] : [['object', 'Object'], ['image', 'Image']]) {
+    const opt = document.createElement('option');
+    opt.value = val;
+    opt.textContent = lbl;
+    if ((currentValue ?? 'object') === val) opt.selected = true;
+    sel.appendChild(opt);
+  }
+  return sel;
+}
+
 function renderEditRows(byParent, container, parentUuid, indentLevel, onRerender) {
   const children = byParent.get(parentUuid ?? null) ?? [];
   for (const label of children) {
@@ -196,16 +215,7 @@ function renderEditRows(byParent, container, parentUuid, indentLevel, onRerender
     };
 
     // Scope badge shown inline; clicking opens a tiny dropdown to toggle scope.
-    const scopeSelect = document.createElement('select');
-    scopeSelect.style.cssText = 'font-size:0.75em;padding:1px 2px;background:#222;color:#aaa;border:1px solid #555;border-radius:3px;cursor:pointer;';
-    for (const [val, lbl] of [['object', 'Obj'], ['image', 'Img']]) {
-      const opt = document.createElement('option');
-      opt.value = val;
-      opt.textContent = lbl;
-      if ((scope ?? 'object') === val) opt.selected = true;
-      scopeSelect.appendChild(opt);
-    }
-    scopeSelect.title = 'Label scope: Obj = bounding-box label, Img = whole-image classifier label';
+    const scopeSelect = createScopeSelect(scope, { short: true });
     scopeSelect.addEventListener('change', async () => {
       try {
         await updateLabel(uuid, name, color, { scope: scopeSelect.value });
@@ -270,15 +280,10 @@ async function mountEditMode(container, { filter, onRerender }) {
   inner.appendChild(divider);
 
   // Scope selector for new root labels
-  const newScopeSelect = document.createElement('select');
-  newScopeSelect.style.cssText = 'font-size:0.8em;padding:2px 4px;margin-right:4px;background:#222;color:#ccc;border:1px solid #555;border-radius:3px;';
-  newScopeSelect.title = 'Scope: Obj = bbox label, Img = whole-image classifier label';
-  for (const [val, lbl] of [['object', 'Object'], ['image', 'Image']]) {
-    const opt = document.createElement('option');
-    opt.value = val;
-    opt.textContent = lbl;
-    newScopeSelect.appendChild(opt);
-  }
+  const newScopeSelect = createScopeSelect('object', {
+    cssText: 'font-size:0.8em;padding:2px 4px;margin-right:4px;background:#222;color:#ccc;border:1px solid #555;border-radius:3px;',
+    title: 'Scope: Obj = bbox label, Img = whole-image classifier label',
+  });
 
   const newRootRow = createGenericRow({
     field: new EditableField({
