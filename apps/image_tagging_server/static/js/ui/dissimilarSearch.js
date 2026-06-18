@@ -4,8 +4,10 @@
  * farthest-point sampling on perceptual hashes.
  *
  * Usage:
- *   openDissimilarImagesModal({ imageUuid })
- *   openDissimilarBboxesModal({ bboxUuid, labelUuid? })
+ *   openDissimilarImagesModal({ imageUuid })              — single anchor (backward-compat)
+ *   openDissimilarImagesModal({ imageUuids: [...] })      — multi-anchor
+ *   openDissimilarBboxesModal({ bboxUuid, labelUuid? })   — single anchor (backward-compat)
+ *   openDissimilarBboxesModal({ bboxes: [...], labelUuids?: [...] }) — multi-anchor
  *   openDissimilarGlobalModal()
  */
 
@@ -18,42 +20,49 @@ import {
 } from '/app-static/js/shared/api/images.js';
 import { fetchLabels } from '/app-static/js/shared/api/labels.js';
 import { createMultiSelectDropdown } from '/app-static/js/ui/utils/index.js';
-import { pageStartIdx } from '/app-static/js/ui/searchUtils.js';
+import { pageStartIdx, buildCountControl, buildSwitchModeButton } from '/app-static/js/ui/searchUtils.js';
 
-// ── Count control ──────────────────────────────────────────────────────────────
+// ── Multi-anchor query helpers ─────────────────────────────────────────────────
 
 /**
- * Build a "Top N" number input control.
- * Returns { element, getValue }.
- * `onChange` is called when the value changes (on blur / Enter).
+ * Fetch dissimilar images for one or more anchor UUIDs.
+ * For multiple anchors: queries each anchor in parallel, then merges by minimum rank
+ * (images that rank near 0 for any anchor are considered most distinct from all anchors).
  */
-function buildCountControl(initial, { min = 10, max = 500, onChange }) {
-  const el = document.createElement('div');
-  el.style.cssText = 'display:flex;align-items:center;gap:0.5em;font-size:0.85em;color:#aaa;margin-left:0.5em;';
+function _fetchDissimilarImages(anchorUuids, count) {
+  if (anchorUuids.length === 1) return findDissimilarImagesByUuid(anchorUuids[0], count);
+  return Promise.all(anchorUuids.map(uuid => findDissimilarImagesByUuid(uuid, count))).then(allResults => {
+    const bestRank = new Map(); // imageUuid → best (min) rank across all queries
+    for (const results of allResults) {
+      for (const { imageUuid: mu, rank } of results) {
+        if (!bestRank.has(mu) || bestRank.get(mu) > rank) bestRank.set(mu, rank);
+      }
+    }
+    return [...bestRank.entries()]
+      .sort((a, b) => a[1] - b[1])
+      .map(([iu], i) => ({ imageUuid: iu, rank: i }));
+  });
+}
 
-  const label = document.createElement('span');
-  label.style.cssText = 'white-space:nowrap;';
-  label.textContent = 'Result limit:';
-
-  const input = document.createElement('input');
-  input.type = 'number';
-  input.min = String(min);
-  input.max = String(max);
-  input.step = '10';
-  input.value = String(initial);
-  input.style.cssText = 'width:5em;accent-color:#c9a227;';
-  input.title = `Maximum number of most-distinct results to return (${min}–${max})`;
-
-  function _emit() {
-    const v = Math.max(min, Math.min(max, parseInt(input.value, 10) || initial));
-    input.value = String(v);
-    onChange(v);
-  }
-  input.addEventListener('change', _emit);
-  input.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); _emit(); } });
-
-  el.append(label, input);
-  return { element: el, getValue: () => parseInt(input.value, 10) || initial };
+/**
+ * Fetch dissimilar bboxes for one or more anchor bbox UUIDs.
+ * Merges results the same way as _fetchDissimilarImages.
+ */
+function _fetchDissimilarBboxes(anchorBboxUuids, count, labelUuids) {
+  if (anchorBboxUuids.length === 1) return findDissimilarBboxesByUuid(anchorBboxUuids[0], count, labelUuids);
+  return Promise.all(anchorBboxUuids.map(uuid => findDissimilarBboxesByUuid(uuid, count, labelUuids))).then(allResults => {
+    const bestEntry = new Map(); // bboxUuid → {rank, imageUuid, labelUuid}
+    for (const results of allResults) {
+      for (const { bboxUuid: bu, imageUuid: iu, rank, labelUuid: lu } of results) {
+        if (!bestEntry.has(bu) || bestEntry.get(bu).rank > rank) {
+          bestEntry.set(bu, { rank, imageUuid: iu, labelUuid: lu });
+        }
+      }
+    }
+    return [...bestEntry.entries()]
+      .sort((a, b) => a[1].rank - b[1].rank)
+      .map(([bu, { imageUuid: iu, labelUuid: lu }], i) => ({ bboxUuid: bu, imageUuid: iu, rank: i, labelUuid: lu }));
+  });
 }
 
 // ── Shared ranked-images modal ─────────────────────────────────────────────────
@@ -131,24 +140,45 @@ async function _openRankedImagesModal({ title, makeFetchFn, referenceImageUuids 
 // ── Public API ─────────────────────────────────────────────────────────────────
 
 /**
- * Open a review modal showing images most visually distinct from the given image.
+ * Open a review modal showing images most visually distinct from the given anchor(s).
+ *
+ * @param {{ imageUuid?: string, imageUuids?: string[] }} params
+ *   Pass `imageUuid` (string) for a single anchor or `imageUuids` (array) for multiple.
  */
-export async function openDissimilarImagesModal({ imageUuid }) {
+export async function openDissimilarImagesModal({ imageUuid = null, imageUuids = null }) {
+  const anchorUuids = imageUuids ?? (imageUuid ? [imageUuid] : []);
+  if (!anchorUuids.length) return;
+
+  const similarBtn = buildSwitchModeButton('← Most Similar', async () => {
+    const { openSimilarImagesModal } = await import('/app-static/js/ui/similarSearch.js');
+    openSimilarImagesModal({ imageUuids: anchorUuids });
+  });
+
   return _openRankedImagesModal({
     title: 'Most Distinct Images',
-    makeFetchFn: count => findDissimilarImagesByUuid(imageUuid, count),
-    referenceImageUuids: new Set([imageUuid]),
+    makeFetchFn: count => _fetchDissimilarImages(anchorUuids, count),
+    referenceImageUuids: new Set(anchorUuids),
+    extraControls: similarBtn,
   });
 }
 
 /**
- * Open a review modal showing bboxes most visually distinct from the given bbox.
+ * Open a review modal showing bboxes most visually distinct from the given anchor(s).
+ *
+ * @param {{ bboxUuid?: string, bboxes?: Array<{bboxUuid: string}>, labelUuid?: string, labelUuids?: string[] }} params
+ *   Pass `bboxUuid` (string) for a single anchor or `bboxes` (array) for multiple.
+ *   `labelUuid` / `labelUuids` seed the label filter (backward-compat: prefer `labelUuids`).
  */
-export async function openDissimilarBboxesModal({ bboxUuid, labelUuid = null }) {
+export async function openDissimilarBboxesModal({ bboxUuid = null, bboxes = null, labelUuid = null, labelUuids = null }) {
+  const anchorBboxUuids = bboxes
+    ? bboxes.map(b => b.bboxUuid).filter(Boolean)
+    : (bboxUuid ? [bboxUuid] : []);
+  if (!anchorBboxUuids.length) return;
+
   const labelsMap = await fetchLabels().catch(() => new Map());
 
   let _count = 100;
-  let _labelUuids = labelUuid ? [labelUuid] : [];
+  let _labelUuids = labelUuids ?? (labelUuid ? [labelUuid] : []);
   let _refresh = null;
 
   // Derived from match list; reset when count or label filter changes.
@@ -157,13 +187,13 @@ export async function openDissimilarBboxesModal({ bboxUuid, labelUuid = null }) 
   let _imageOrder = null;
   let _imageBboxes = null;
   let _queryGen = 0;
-  let _queryPromise = findDissimilarBboxesByUuid(bboxUuid, _count, _labelUuids);
+  let _queryPromise = _fetchDissimilarBboxes(anchorBboxUuids, _count, _labelUuids);
 
   function _invalidate() {
     _imageOrder = null;
     _imageBboxes = null;
     _queryGen++;
-    _queryPromise = findDissimilarBboxesByUuid(bboxUuid, _count, _labelUuids);
+    _queryPromise = _fetchDissimilarBboxes(anchorBboxUuids, _count, _labelUuids);
     _refresh?.();
   }
 
@@ -217,14 +247,23 @@ export async function openDissimilarBboxesModal({ bboxUuid, labelUuid = null }) 
     },
   });
 
+  // ── Switch-to-similar button ───────────────────────────────────────────────
+  const similarBtn = buildSwitchModeButton('← Most Similar', async () => {
+    const { openSimilarBboxesModal } = await import('/app-static/js/ui/similarSearch.js');
+    openSimilarBboxesModal({
+      bboxes: anchorBboxUuids.map(uuid => ({ bboxUuid: uuid })),
+      labelUuids: _labelUuids,
+    });
+  });
+
   const headerEl = document.createElement('div');
   headerEl.style.cssText = 'display:flex;align-items:center;gap:0.75em;flex-wrap:wrap;';
-  headerEl.append(countEl, labelsDropdown.element);
+  headerEl.append(countEl, labelsDropdown.element, similarBtn);
 
   _refresh = await showReviewModal({
     title: 'Most Distinct Bboxes',
     toolbarControls: headerEl,
-    referenceBboxUuids: new Set([bboxUuid]),
+    referenceBboxUuids: new Set(anchorBboxUuids),
     fetchImages: async ({ afterUuid = null, limit }) => {
       await _ensureMatches();
       // Snapshot locally: the await below can yield to an _invalidate() call

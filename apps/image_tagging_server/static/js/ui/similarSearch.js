@@ -30,7 +30,8 @@ import { fetchTags } from '/app-static/js/shared/api/tags.js';
 import { filterVisibleTags } from '/app-static/js/shared/activeModel.js';
 import { fetchLabels } from '/app-static/js/shared/api/labels.js';
 import { createMultiSelectDropdown } from '/app-static/js/ui/utils/index.js';
-import { pageStartIdx } from '/app-static/js/ui/searchUtils.js';
+import { pageStartIdx, buildSwitchModeButton } from '/app-static/js/ui/searchUtils.js';
+import { openDissimilarImagesModal, openDissimilarBboxesModal } from '/app-static/js/ui/dissimilarSearch.js';
 
 /** @returns {Promise<number>} */
 export async function getImageHashMax() {
@@ -176,9 +177,17 @@ export async function openSimilarImagesModal({ imageUuids, threshold = null }) {
     },
   });
 
+  const dissimilarBtn = buildSwitchModeButton('Most Distinct →', () => {
+    openDissimilarImagesModal({ imageUuids });
+  });
+
+  const imgHeaderEl = document.createElement('div');
+  imgHeaderEl.style.cssText = 'display:flex;align-items:center;gap:0.75em;flex-wrap:wrap;';
+  imgHeaderEl.append(sliderEl, dissimilarBtn);
+
   _refresh = await showReviewModal({
     title: 'Similar Images',
-    toolbarControls: sliderEl,
+    toolbarControls: imgHeaderEl,
     initialViewFilter: 'images',
     referenceImageUuids: new Set(imageUuids),
     fetchImages: async ({ afterUuid = null, limit }) => {
@@ -206,10 +215,11 @@ export async function openSimilarImagesModal({ imageUuids, threshold = null }) {
  *
  * @param {{ bboxUuid: string, threshold: number, labelUuid?: string|null }} params
  */
-export async function openSimilarBboxesModal({ bboxes, threshold = null, labelUuid = null }) {
+export async function openSimilarBboxesModal({ bboxes, threshold = null, labelUuid = null, labelUuids = null }) {
   // bboxes: [{ bboxUuid, bboxCoords, imageUuid }]
   // bboxCoords present means the bbox is dirty (moved/resized since save); use coords path.
   // bboxUuid-only uses the saved UUID path, which ensures the source appears at distance 0.
+  // labelUuids (array) takes precedence over labelUuid (single, backward-compat).
   if (!bboxes?.length) return;
 
   const [sliderMax, tagsMap, labelsMap] = await Promise.all([
@@ -220,7 +230,7 @@ export async function openSimilarBboxesModal({ bboxes, threshold = null, labelUu
   let _threshold = threshold !== null ? threshold : await _readThreshold('dedup_bbox_threshold', sliderMax);
 
   // Label + tag filter state
-  let _labelUuids = labelUuid ? [labelUuid] : [];
+  let _labelUuids = labelUuids ?? (labelUuid ? [labelUuid] : []);
   let _tagUuids = [];
   let _excludeTagUuids = [];
   let _tagMatchMode = 'any';
@@ -329,10 +339,18 @@ export async function openSimilarBboxesModal({ bboxes, threshold = null, labelUu
     },
   });
 
-  // Wrap slider + label + tag dropdowns side-by-side
+  // ── Switch-to-dissimilar button ────────────────────────────────────────────
+  const bboxAnchorUuids = bboxes.map(b => b.bboxUuid).filter(Boolean);
+  const dissimilarBboxBtn = buildSwitchModeButton('Most Distinct →', () => {
+    openDissimilarBboxesModal({ bboxes, labelUuids: _labelUuids });
+  });
+  // Only show the button when there is at least one saved bbox UUID to anchor from
+  if (!bboxAnchorUuids.length) dissimilarBboxBtn.disabled = true;
+
+  // Wrap slider + label + tag dropdowns + switch button side-by-side
   const headerEl = document.createElement('div');
   headerEl.style.cssText = 'display:flex;align-items:center;gap:0.75em;flex-wrap:wrap;';
-  headerEl.append(sliderEl, labelsDropdown.element, tagsDropdown.element);
+  headerEl.append(sliderEl, labelsDropdown.element, tagsDropdown.element, dissimilarBboxBtn);
 
   const referenceBboxUuids = new Set(bboxes.map(b => b.bboxUuid).filter(Boolean));
 
