@@ -130,4 +130,10 @@ export const EventTypes = Object.freeze({
    * Payload: { imageUuid: string, imagePath: string }
    */
   IMAGE_DELETED: "image:deleted",
+  /**
+   * Fired after a whole-image label is set (present/absent/uncertain) via the
+   * context menu or any other non-canvas path.
+   * Payload: { imageUuid: string, imagePath: string }
+   */
+  IMAGE_LABELS_CHANGED: "image:labels:changed",
 });

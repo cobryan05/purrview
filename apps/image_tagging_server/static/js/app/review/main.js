@@ -22,7 +22,7 @@ import {
   VERIFICATION_TAG_UUIDS,
   swapVerificationTag,
 } from '/app-static/js/shared/api/review.js';
-import { setImageLabel } from '/app-static/js/shared/api/imageLabels.js';
+import { fetchImageLabels, setImageLabel } from '/app-static/js/shared/api/imageLabels.js';
 import { setImageTag, setImageTagStatus } from '/app-static/js/shared/api/imageTags.js';
 import { attachContext } from '/app-static/js/ui/contextMenu/index.js';
 import { getPrimaryRuntimeId } from '/app-static/js/app/image-tagging/runtime.js';
@@ -598,6 +598,7 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
 
       async setLabelPresence(uuid, status) {
         await setImageLabel(img.filename, uuid, status);
+        events.publish(EventTypes.IMAGE_LABELS_CHANGED, { imageUuid: img.uuid, imagePath: img.filename });
       },
 
       getTagUuids() { return (img.tags ?? []).map(t => t.uuid); },
@@ -1325,11 +1326,49 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
       info.appendChild(refBadge);
     }
 
-    // Deduplicated label chips
+    // Deduplicated label chips (bbox-level)
     const bboxes = img.bboxes ?? [];
     const chipsRow = document.createElement('div');
     chipsRow.style.cssText = 'display:flex;flex-wrap:wrap;gap:2px;margin-bottom:0.2em;';
     appendLabelChips(chipsRow, bboxes, labels);
+
+    // Whole-image label chips — fetched async, distinct from bbox chips
+    const imageLabelChipsRow = document.createElement('div');
+    imageLabelChipsRow.style.cssText = 'display:flex;flex-wrap:wrap;gap:2px;margin-bottom:0.2em;';
+
+    async function _renderImageLabelChips() {
+      imageLabelChipsRow.innerHTML = '';
+      let labelMap;
+      try { labelMap = await fetchImageLabels(img.filename); } catch { return; }
+      for (const [luuid, status] of labelMap) {
+        if (status !== 'present') continue;
+        const lbl = labels.get(luuid);
+        if (!lbl) continue;
+        const chip = document.createElement('span');
+        chip.className = 'image-label-chip';
+        chip.textContent = lbl.name;
+        chip.style.cssText = `background:${lbl.color}22;border:1px dashed ${lbl.color};color:${lbl.color};`;
+        imageLabelChipsRow.appendChild(chip);
+      }
+    }
+
+    _renderImageLabelChips();
+
+    // Keep chips up to date when labels change from context menu or canvas save.
+    // Subscriptions are self-cleaning once the card leaves the DOM.
+    let _unsubImgLabels, _unsubAnnSaved;
+    function _onImageLabelsChanged({ imageUuid: u } = {}) {
+      if (u !== img.uuid) return;
+      if (!card.isConnected) { _unsubImgLabels?.(); _unsubAnnSaved?.(); return; }
+      _renderImageLabelChips();
+    }
+    function _onAnnotationsSaved({ imageUuid: u } = {}) {
+      if (u !== img.uuid) return;
+      if (!card.isConnected) { _unsubImgLabels?.(); _unsubAnnSaved?.(); return; }
+      _renderImageLabelChips();
+    }
+    _unsubImgLabels = events.subscribe(EventTypes.IMAGE_LABELS_CHANGED, _onImageLabelsChanged);
+    _unsubAnnSaved = events.subscribe(EventTypes.IMAGE_ANNOTATIONS_SAVED, _onAnnotationsSaved);
 
     // Verification status line (verified / unverified counts).
     const statusRow = document.createElement('div');
@@ -1353,6 +1392,7 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
     meta.textContent = img.filename.split('/').slice(-2).join('/');
 
     info.appendChild(chipsRow);
+    info.appendChild(imageLabelChipsRow);
     if (bboxes.length > 0) info.appendChild(statusRow);
     info.appendChild(meta);
     card.appendChild(cb);

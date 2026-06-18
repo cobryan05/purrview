@@ -15,7 +15,7 @@ import { asyncPanel } from '../menu.js';
 import { fetchLabels } from '/app-static/js/shared/api/labels.js';
 import { openSimilarImagesModal } from '/app-static/js/ui/similarSearch.js';
 import { openDissimilarImagesModal } from '/app-static/js/ui/dissimilarSearch.js';
-import { buildTagPanel, buildPickTagPanel } from '../tagPanelBuilder.js';
+import { buildTagPanel } from '../tagPanelBuilder.js';
 
 /**
  * Build a label-list panel for the Mark-label flyouts.
@@ -101,24 +101,6 @@ registerContextProvider('image', async (adapters, ctx) => {
       submenu: () => asyncPanel('220px', () => buildTagPanel(adapters)),
     },
 
-    // ── Mark tag absent (verified) ───────────────────────────────────────
-    {
-      label: 'Mark tag absent (verified)',
-      submenu: () => asyncPanel('220px', () => buildPickTagPanel(async uuid => {
-        for (const a of adapters) await a.setTagStatus(uuid, 'absent');
-        ctx.close();
-      })),
-    },
-
-    // ── Clear tag verification → Uncertain ──────────────────────────────
-    {
-      label: 'Clear tag verification → Uncertain',
-      submenu: () => asyncPanel('220px', () => buildPickTagPanel(async uuid => {
-        for (const a of adapters) await a.setTagStatus(uuid, 'uncertain');
-        ctx.close();
-      })),
-    },
-
     // ── Similar search ─────────────────────────────────────────────────────
     {
       label: 'Search for similar images…',
@@ -130,11 +112,10 @@ registerContextProvider('image', async (adapters, ctx) => {
     },
     {
       label: 'Search for dissimilar images…',
-      disabled: count > 1,
       onSelect: () => {
-        const imageUuid = adapters[0].getUuid?.();
+        const imageUuids = adapters.map(a => a.getUuid?.()).filter(Boolean);
         ctx.close();
-        if (imageUuid) openDissimilarImagesModal({ imageUuid });
+        if (imageUuids.length) openDissimilarImagesModal({ imageUuids });
       },
     },
   ];
