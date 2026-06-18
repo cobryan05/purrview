@@ -8391,9 +8391,12 @@
             ],
             "title": "Modelconfiguuid"
           },
-          "datasetUuid": {
-            "type": "string",
-            "title": "Datasetuuid"
+          "datasetUuids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Datasetuuids"
           },
           "hyperparamsJson": {
             "additionalProperties": true,
@@ -8411,8 +8414,7 @@
         "type": "object",
         "required": [
           "name",
-          "trainerType",
-          "datasetUuid"
+          "trainerType"
         ],
         "title": "TrainingConfigCreate"
       },
@@ -8452,9 +8454,12 @@
             ],
             "title": "Modelconfiguuid"
           },
-          "datasetUuid": {
-            "type": "string",
-            "title": "Datasetuuid"
+          "datasetUuids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Datasetuuids"
           },
           "hyperparamsJson": {
             "additionalProperties": true,
@@ -8486,7 +8491,7 @@
           "description",
           "trainerType",
           "modelConfigUuid",
-          "datasetUuid",
+          "datasetUuids",
           "hyperparamsJson",
           "labelUuids",
           "createdAt",
@@ -8522,16 +8527,12 @@
             "title": "Needsreviewcount",
             "default": 0
           },
-          "datasetUuid": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Datasetuuid"
+          "datasetUuids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Datasetuuids"
           },
           "labelUuids": {
             "items": {
@@ -8622,16 +8623,19 @@
             ],
             "title": "Modelconfiguuid"
           },
-          "datasetUuid": {
+          "datasetUuids": {
             "anyOf": [
               {
-                "type": "string"
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
               },
               {
                 "type": "null"
               }
             ],
-            "title": "Datasetuuid"
+            "title": "Datasetuuids"
           },
           "hyperparamsJson": {
             "anyOf": [

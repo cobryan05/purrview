@@ -37,7 +37,7 @@ EXISTING_TC = {
     "name": "Corrupt Detector",
     "description": "Finds corrupt images",
     "trainerType": "image_classifier",
-    "datasetUuid": "ds-alpha",
+    "datasetUuids": ["ds-alpha"],
     "modelConfigUuid": None,
     "hyperparamsJson": {},
     "labelUuids": ["lbl-corrupt", "lbl-blurry"],
@@ -127,7 +127,7 @@ def _mock_readiness(page: Page, config_uuid: str, ready: int = 3, needs_review: 
                 "status": "success",
                 "readyCount": ready,
                 "needsReviewCount": needs_review,
-                "datasetUuid": "ds-alpha",
+                "datasetUuids": ["ds-alpha"],
                 "labelUuids": label_uuids or ["lbl-corrupt", "lbl-blurry"],
             }),
         ),
@@ -283,21 +283,9 @@ class TestCreateTrainingConfig:
         name_input = _editor_body(page).locator("input[placeholder='Required']").first
         name_input.fill("My Classifier")
 
-        # Select dataset via evaluate (the select has dataset UUID as option value)
-        page.evaluate(
-            """([boxSel, dsUuid]) => {
-                const box = document.querySelector(boxSel);
-                for (const s of box.querySelectorAll('select')) {
-                    const opt = Array.from(s.options).find(o => o.value === dsUuid);
-                    if (opt) {
-                        s.value = dsUuid;
-                        s.dispatchEvent(new Event('change', { bubbles: true }));
-                        break;
-                    }
-                }
-            }""",
-            ["#training-config-box", "ds-alpha"],
-        )
+        # Check the dataset checkbox (datasets now use checkboxes, not a select)
+        dataset_cb = _box(page).locator(f"input[type='checkbox'][value='ds-alpha']")
+        dataset_cb.check()
 
         # Check the Corrupt label checkbox
         _label_checkbox(page, "lbl-corrupt").check()
@@ -313,7 +301,8 @@ class TestCreateTrainingConfig:
         payload = captured[0]
         assert payload.get("name") == "My Classifier"
         assert "lbl-corrupt" in payload.get("labelUuids", [])
-        assert payload.get("datasetUuid") == "ds-alpha"
+        assert "ds-alpha" in payload.get("datasetUuids", []), \
+            f"Expected ds-alpha in datasetUuids; got: {payload.get('datasetUuids')}"
 
     def test_existing_config_labels_pre_checked(self, page: Page, base_url: str):
         """Opening an existing config pre-checks its labelUuids in the tree."""

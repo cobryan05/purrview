@@ -66,6 +66,7 @@ from .types import (
     TaskInstance,
     TrainingConfig,
     TrainingConfigCreate,
+    TrainingConfigDatasetLink,
     TrainingConfigLabelLink,
     TrainingConfigRead,
     TrainingConfigUpdate,
@@ -2619,6 +2620,14 @@ class DbClient:
             dataset = await session.get(Dataset, uuid)
             if dataset is None:
                 return False
+            # Reject if any training config references this dataset (preserve old RESTRICT behavior).
+            link_result = await session.exec(
+                select(TrainingConfigDatasetLink).where(
+                    TrainingConfigDatasetLink.dataset_uuid == uuid
+                )
+            )
+            if link_result.first() is not None:
+                raise ValueError(f"Dataset {uuid} is referenced by one or more training configs")
             await session.delete(dataset)
             await session.commit()
         await self._sync_datasets_to_json()
@@ -2738,7 +2747,7 @@ class DbClient:
             description=tc.description,
             trainer_type=tc.trainer_type,
             model_config_uuid=tc.model_config_uuid,
-            dataset_uuid=tc.dataset_uuid,
+            dataset_uuids=[link.dataset_uuid for link in (tc.dataset_links or [])],
             hyperparams_json=tc.hyperparams_json or {},
             label_uuids=[link.label_uuid for link in (tc.label_links or [])],
             created_at=tc.created_at,
@@ -2752,7 +2761,6 @@ class DbClient:
                 description=data.description,
                 trainer_type=data.trainer_type,
                 model_config_uuid=data.model_config_uuid,
-                dataset_uuid=data.dataset_uuid,
                 hyperparams_json=data.hyperparams_json or {},
             )
             session.add(tc)
@@ -2761,13 +2769,20 @@ class DbClient:
                 session.add(TrainingConfigLabelLink(
                     training_config_uuid=tc.uuid, label_uuid=label_uuid
                 ))
+            for dataset_uuid in (data.dataset_uuids or []):
+                session.add(TrainingConfigDatasetLink(
+                    training_config_uuid=tc.uuid, dataset_uuid=dataset_uuid
+                ))
             await session.commit()
-            await session.refresh(tc, ["label_links"])
+            await session.refresh(tc, ["label_links", "dataset_links"])
             return self._training_config_to_read(tc)
 
     async def list_training_configs(self) -> list[TrainingConfigRead]:
         async with self._async_session_maker() as session:
-            stmt = select(TrainingConfig).options(selectinload(TrainingConfig.label_links))
+            stmt = select(TrainingConfig).options(
+                selectinload(TrainingConfig.label_links),
+                selectinload(TrainingConfig.dataset_links),
+            )
             result = await session.exec(stmt)
             return [self._training_config_to_read(tc) for tc in result.all()]
 
@@ -2776,7 +2791,10 @@ class DbClient:
             stmt = (
                 select(TrainingConfig)
                 .where(TrainingConfig.uuid == uuid)
-                .options(selectinload(TrainingConfig.label_links))
+                .options(
+                    selectinload(TrainingConfig.label_links),
+                    selectinload(TrainingConfig.dataset_links),
+                )
             )
             result = await session.exec(stmt)
             tc = result.first()
@@ -2787,7 +2805,10 @@ class DbClient:
             stmt = (
                 select(TrainingConfig)
                 .where(TrainingConfig.uuid == uuid)
-                .options(selectinload(TrainingConfig.label_links))
+                .options(
+                    selectinload(TrainingConfig.label_links),
+                    selectinload(TrainingConfig.dataset_links),
+                )
             )
             result = await session.exec(stmt)
             tc = result.first()
@@ -2801,8 +2822,6 @@ class DbClient:
                 tc.trainer_type = data.trainer_type
             if data.model_config_uuid is not None:
                 tc.model_config_uuid = data.model_config_uuid
-            if data.dataset_uuid is not None:
-                tc.dataset_uuid = data.dataset_uuid
             if data.hyperparams_json is not None:
                 tc.hyperparams_json = data.hyperparams_json
             if data.label_uuids is not None:
@@ -2813,9 +2832,17 @@ class DbClient:
                     session.add(TrainingConfigLabelLink(
                         training_config_uuid=tc.uuid, label_uuid=label_uuid
                     ))
+            if data.dataset_uuids is not None:
+                for link in list(tc.dataset_links or []):
+                    await session.delete(link)
+                await session.flush()
+                for dataset_uuid in data.dataset_uuids:
+                    session.add(TrainingConfigDatasetLink(
+                        training_config_uuid=tc.uuid, dataset_uuid=dataset_uuid
+                    ))
             tc.updated_at = datetime.now(timezone.utc)
             await session.commit()
-            await session.refresh(tc, ["label_links"])
+            await session.refresh(tc, ["label_links", "dataset_links"])
             return self._training_config_to_read(tc)
 
     async def delete_training_config(self, uuid: str) -> bool:
@@ -2828,7 +2855,7 @@ class DbClient:
         return True
 
     async def get_training_config_readiness(self, uuid: str) -> Optional[dict]:
-        """Return ready/needs-review counts for a training config's dataset.
+        """Return ready/needs-review counts for a training config's datasets (union).
 
         An image is 'ready' when every target label has an explicit PRESENT or ABSENT
         row in image_labels; 'needs_review' otherwise.
@@ -2838,50 +2865,49 @@ class DbClient:
         if tc is None:
             return None
         label_uuids = tc.label_uuids
+        dataset_uuids = tc.dataset_uuids
         if not label_uuids:
             return {
                 "ready_count": 0,
                 "needs_review_count": 0,
-                "dataset_uuid": tc.dataset_uuid,
+                "dataset_uuids": dataset_uuids,
                 "label_uuids": [],
             }
 
-        # Resolve dataset → image UUIDs (no pagination — fetch all for readiness).
-        dataset = await self.get_dataset(tc.dataset_uuid)
-        if dataset is None:
-            return {
-                "ready_count": 0,
-                "needs_review_count": 0,
-                "dataset_uuid": tc.dataset_uuid,
-                "label_uuids": label_uuids,
-            }
-
-        # Use a large limit to fetch all images; page if needed.
+        # Collect all images across all linked datasets (union, de-duped by uuid).
+        seen_uuids: set[str] = set()
         all_images: list[ImageRecord] = []
-        after_uuid: Optional[str] = None
-        after_sort_value: Optional[datetime] = None
-        PAGE = 1000
-        while True:
-            page, has_more = await self._list_images_for_dataset(
-                dataset,
-                limit=PAGE,
-                sort_by="uuid",
-                sort_order="asc",
-                after_uuid=after_uuid,
-                after_sort_value=after_sort_value,
-            )
-            all_images.extend(page)
-            if not has_more or not page:
-                break
-            last = page[-1]
-            after_uuid = last.uuid
-            after_sort_value = last.uuid  # keyset uses uuid when sort_by="uuid"
+        for ds_uuid in dataset_uuids:
+            dataset = await self.get_dataset(ds_uuid)
+            if dataset is None:
+                continue
+            after_uuid: Optional[str] = None
+            after_sort_value: Optional[datetime] = None
+            PAGE = 1000
+            while True:
+                page, has_more = await self._list_images_for_dataset(
+                    dataset,
+                    limit=PAGE,
+                    sort_by="uuid",
+                    sort_order="asc",
+                    after_uuid=after_uuid,
+                    after_sort_value=after_sort_value,
+                )
+                for img in page:
+                    if img.uuid not in seen_uuids:
+                        seen_uuids.add(img.uuid)
+                        all_images.append(img)
+                if not has_more or not page:
+                    break
+                last = page[-1]
+                after_uuid = last.uuid
+                after_sort_value = last.uuid  # keyset uses uuid when sort_by="uuid"
 
         if not all_images:
             return {
                 "ready_count": 0,
                 "needs_review_count": 0,
-                "dataset_uuid": tc.dataset_uuid,
+                "dataset_uuids": dataset_uuids,
                 "label_uuids": label_uuids,
             }
 
@@ -2913,7 +2939,7 @@ class DbClient:
         return {
             "ready_count": ready_count,
             "needs_review_count": needs_review_count,
-            "dataset_uuid": tc.dataset_uuid,
+            "dataset_uuids": dataset_uuids,
             "label_uuids": label_uuids,
         }
 

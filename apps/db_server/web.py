@@ -509,7 +509,7 @@ class TrainingConfigResponse(StatusResponse):
 class TrainingConfigReadinessResponse(StatusResponse):
     ready_count: int = 0
     needs_review_count: int = 0
-    dataset_uuid: Optional[str] = None
+    dataset_uuids: List[str] = Field(default_factory=list)
     label_uuids: List[str] = Field(default_factory=list)
 
 
@@ -2228,6 +2228,8 @@ class WebApp:
                 if not ok:
                     return StatusResponse(status=JsonValues.FAILURE, message="Dataset not found")
                 return StatusResponse(status=JsonValues.SUCCESS)
+            except ValueError as e:
+                raise HTTPException(status_code=409, detail=str(e))
             except Exception as e:
                 logger.error(e, exc_info=True)
                 return StatusResponse(status=JsonValues.FAILURE, message=str(e))

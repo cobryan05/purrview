@@ -71,22 +71,34 @@ function renderTrainingConfigForm({ config, labelsMap, datasetsMap, modelConfigs
   trainerSel.addEventListener('change', _markDirty);
   el.appendChild(makeFieldRow('Trainer type', trainerSel));
 
-  // Dataset (required)
-  const datasetSel = document.createElement('select');
-  datasetSel.style.cssText = 'margin-bottom: 0; width: auto;';
-  const blankDataset = document.createElement('option');
-  blankDataset.value = '';
-  blankDataset.textContent = '— select dataset —';
-  datasetSel.appendChild(blankDataset);
-  for (const [uuid, ds] of datasetsMap) {
-    const o = document.createElement('option');
-    o.value = uuid;
-    o.textContent = ds.name;
-    if (uuid === config?.datasetUuid) o.selected = true;
-    datasetSel.appendChild(o);
+  // Datasets (multi-select, required — at least one)
+  const currentDatasetUuids = new Set(config?.datasetUuids ?? []);
+  const datasetCheckboxes = new Map(); // uuid → checkbox el
+  const datasetBox = document.createElement('div');
+  datasetBox.style.cssText = 'max-height: 120px; overflow-y: auto; border: 1px solid var(--pico-border-color, #444); border-radius: 4px; padding: 4px;';
+  if (datasetsMap.size === 0) {
+    const none = document.createElement('p');
+    none.style.cssText = 'font-size: 0.85em; color: var(--pico-muted-color, #888); margin: 0; padding: 2px 4px;';
+    none.textContent = 'No datasets defined yet.';
+    datasetBox.appendChild(none);
   }
-  datasetSel.addEventListener('change', _markDirty);
-  el.appendChild(makeFieldRow('Dataset', datasetSel));
+  for (const [uuid, ds] of datasetsMap) {
+    const row = document.createElement('label');
+    row.style.cssText = 'display: flex; align-items: center; gap: 0.4em; padding: 2px 4px; cursor: pointer; font-size: 0.88em; user-select: none;';
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.value = uuid;
+    cb.checked = currentDatasetUuids.has(uuid);
+    cb.style.cssText = 'margin: 0; flex-shrink: 0;';
+    cb.addEventListener('change', _markDirty);
+    datasetCheckboxes.set(uuid, cb);
+    row.appendChild(cb);
+    const nameSpan = document.createElement('span');
+    nameSpan.textContent = ds.name;
+    row.appendChild(nameSpan);
+    datasetBox.appendChild(row);
+  }
+  el.appendChild(makeFieldRow('Datasets (select ≥1)', datasetBox));
 
   // Model config (optional)
   const modelSel = document.createElement('select');
@@ -178,14 +190,16 @@ function renderTrainingConfigForm({ config, labelsMap, datasetsMap, modelConfigs
       const name = nameInput.value.trim();
       const description = descInput.value.trim();
       const trainerType = trainerSel.value;
-      const datasetUuid = datasetSel.value;
+      const datasetUuids = [...datasetCheckboxes.entries()]
+        .filter(([, cb]) => cb.checked)
+        .map(([uuid]) => uuid);
       const modelConfigUuid = modelSel.value || null;
       const labelUuids = [...checkboxes.entries()]
         .filter(([, cb]) => cb.checked)
         .map(([uuid]) => uuid);
       let hyperparamsJson = {};
       try { hyperparamsJson = JSON.parse(hyperText.value || '{}'); } catch {}
-      return { name, description, trainerType, datasetUuid, modelConfigUuid, labelUuids, hyperparamsJson };
+      return { name, description, trainerType, datasetUuids, modelConfigUuid, labelUuids, hyperparamsJson };
     },
     destroy() {},
   };
@@ -343,7 +357,7 @@ export async function renderTrainingConfigManager({ target = 'training-config-bo
           onSave: async () => {
             const data = _currentFormHandle.getSaveData();
             if (!data.name) { toast('Name is required', 3000, 'error'); return; }
-            if (!data.datasetUuid) { toast('Dataset is required', 3000, 'error'); return; }
+            if (!data.datasetUuids?.length) { toast('At least one dataset is required', 3000, 'error'); return; }
             setSaving(true);
             try {
               if (config) {
@@ -384,15 +398,15 @@ export async function renderTrainingConfigManager({ target = 'training-config-bo
         _currentFormHandle = formHandle;
         editorBody.appendChild(formHandle.el);
 
-        // Readiness panel (only for existing configs with a dataset and labels)
-        if (config?.uuid && config.datasetUuid && (config.labelUuids?.length ?? 0) > 0) {
+        // Readiness panel (only for existing configs with datasets and labels)
+        if (config?.uuid && (config.datasetUuids?.length ?? 0) > 0 && (config.labelUuids?.length ?? 0) > 0) {
           editorBody.appendChild(renderReadinessPanel(config));
         }
 
         _currentDoSave = async () => {
           const data = formHandle.getSaveData();
           if (!data.name) { toast('Name is required', 3000, 'error'); return false; }
-          if (!data.datasetUuid) { toast('Dataset is required', 3000, 'error'); return false; }
+          if (!data.datasetUuids?.length) { toast('At least one dataset is required', 3000, 'error'); return false; }
           setSaving(true);
           try {
             if (config) {
@@ -447,9 +461,9 @@ export async function renderTrainingConfigManager({ target = 'training-config-bo
 
         const metaLine = document.createElement('div');
         metaLine.className = 'mc-list-item__meta';
-        const dsName = datasetsMap.get(config.datasetUuid)?.name ?? config.datasetUuid;
+        const dsNames = (config.datasetUuids ?? []).map(u => datasetsMap.get(u)?.name ?? u).join(', ') || '—';
         const nLabels = config.labelUuids?.length ?? 0;
-        metaLine.textContent = `${config.trainerType} · ${dsName} · ${nLabels} label${nLabels === 1 ? '' : 's'}`;
+        metaLine.textContent = `${config.trainerType} · ${dsNames} · ${nLabels} label${nLabels === 1 ? '' : 's'}`;
         item.appendChild(metaLine);
 
         item.addEventListener('click', () => _showForm(config));

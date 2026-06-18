@@ -732,6 +732,16 @@ class TrainingConfigLabelLink(SQLModel, table=True):
     )
 
 
+class TrainingConfigDatasetLink(SQLModel, table=True):
+    __tablename__ = "training_config_dataset_links"
+    training_config_uuid: str = Field(
+        foreign_key="training_configs.uuid", primary_key=True, ondelete="CASCADE"
+    )
+    dataset_uuid: str = Field(
+        foreign_key="datasets.uuid", primary_key=True, ondelete="CASCADE"
+    )
+
+
 class TrainingConfig(TimestampModel, table=True):
     __tablename__ = "training_configs"
     uuid: str = Field(default_factory=lambda: str(uuid4()), primary_key=True)
@@ -741,9 +751,11 @@ class TrainingConfig(TimestampModel, table=True):
     model_config_uuid: Optional[str] = Field(
         default=None, foreign_key="model_configs.uuid", ondelete="SET NULL"
     )
-    dataset_uuid: str = Field(foreign_key="datasets.uuid", ondelete="RESTRICT")
     hyperparams_json: Dict[str, Any] = Field(default_factory=dict, sa_column=sa.Column(sa.JSON))
     label_links: List[TrainingConfigLabelLink] = Relationship(
+        sa_relationship_kwargs={"cascade": "all, delete-orphan"},
+    )
+    dataset_links: List[TrainingConfigDatasetLink] = Relationship(
         sa_relationship_kwargs={"cascade": "all, delete-orphan"},
     )
 
@@ -754,7 +766,7 @@ class TrainingConfigRead(OrmModel):
     description: Optional[str]
     trainer_type: str
     model_config_uuid: Optional[str]
-    dataset_uuid: str
+    dataset_uuids: List[str]
     hyperparams_json: Dict[str, Any]
     label_uuids: List[str]
     created_at: datetime
@@ -766,7 +778,7 @@ class TrainingConfigCreate(ApiModel):
     description: Optional[str] = None
     trainer_type: str
     model_config_uuid: Optional[str] = None
-    dataset_uuid: str
+    dataset_uuids: List[str] = Field(default_factory=list)
     hyperparams_json: Dict[str, Any] = Field(default_factory=dict)
     label_uuids: List[str] = Field(default_factory=list)
 
@@ -776,6 +788,6 @@ class TrainingConfigUpdate(ApiModel):
     description: Optional[str] = None
     trainer_type: Optional[str] = None
     model_config_uuid: Optional[str] = None
-    dataset_uuid: Optional[str] = None
+    dataset_uuids: Optional[List[str]] = None
     hyperparams_json: Optional[Dict[str, Any]] = None
     label_uuids: Optional[List[str]] = None  # None = no change; [] = remove all

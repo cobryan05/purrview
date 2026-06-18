@@ -31,11 +31,11 @@ export async function fetchTrainingConfigs() {
  * CRUD
  * -----------------------------
  */
-export async function createTrainingConfig({ name, description = '', trainerType, modelConfigUuid = null, datasetUuid, hyperparamsJson = {}, labelUuids = [] }) {
+export async function createTrainingConfig({ name, description = '', trainerType, modelConfigUuid = null, datasetUuids = [], hyperparamsJson = {}, labelUuids = [] }) {
   const res = await apiFetch('/api/training-configs', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name, description, trainerType, modelConfigUuid, datasetUuid, hyperparamsJson, labelUuids }),
+    body: JSON.stringify({ name, description, trainerType, modelConfigUuid, datasetUuids, hyperparamsJson, labelUuids }),
   });
   const data = await res.json();
   if (!res.ok || data.status !== 'success') {
@@ -74,5 +74,5 @@ export async function fetchTrainingConfigReadiness(uuid) {
   if (!res.ok || data.status !== 'success') {
     throw new Error(data.message || 'Failed to fetch training config readiness');
   }
-  return { readyCount: data.readyCount, needsReviewCount: data.needsReviewCount, datasetUuid: data.datasetUuid, labelUuids: data.labelUuids };
+  return { readyCount: data.readyCount, needsReviewCount: data.needsReviewCount, datasetUuids: data.datasetUuids ?? [], labelUuids: data.labelUuids ?? [] };
 }
