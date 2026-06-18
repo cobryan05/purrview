@@ -44,6 +44,7 @@ from apps.helpers.db.types import (
     ImageSearchParams,
     ImageTagStatusRead,
     Label,
+    LabelScope,
     LabelType,
     ModelConfigCreate,
     ModelConfigNodeWrite,
@@ -172,7 +173,8 @@ class Manager:
     ################################################################################
 
     async def create_new_label(
-        self, name: str, color: str, parent_uuid: Optional[str] = None, label_type: LabelType = LabelType.STANDARD
+        self, name: str, color: str, parent_uuid: Optional[str] = None,
+        label_type: LabelType = LabelType.STANDARD, scope: LabelScope = LabelScope.OBJECT,
     ) -> Label:
         """
         Adds a new label to the database
@@ -180,7 +182,9 @@ class Manager:
         Returns:
             Label: Label added to database
         """
-        ret = await self._db_client.add_label(name, color, parent_uuid=parent_uuid, label_type=label_type)
+        ret = await self._db_client.add_label(
+            name, color, parent_uuid=parent_uuid, label_type=label_type, scope=scope
+        )
         # TODO CJO: await self._db_client.export_labels_from_db_to_json(str(self._labels_json))
         return ret
 
@@ -202,21 +206,24 @@ class Manager:
         name: Optional[str] = None,
         color: Optional[str] = None,
         label_type: Optional[LabelType] = None,
+        scope: Optional[LabelScope] = None,
     ) -> None:
         """
-        Update a label's name, color, and/or label_type.
+        Update a label's name, color, label_type, and/or scope.
 
         Args:
             label_uuid (str): uuid of the label to update.
             name (Optional[str]): New name for the label.
             color (Optional[str]): New color for the label.
             label_type (Optional[LabelType]): New label type.
+            scope (Optional[LabelScope]): New label scope.
         """
         await self._db_client.update_label(
             label_uuid=label_uuid,
-            name=name,
-            color=color,
+            **({} if name is None else {"name": name}),
+            **({} if color is None else {"color": color}),
             **({} if label_type is None else {"label_type": label_type}),
+            **({} if scope is None else {"scope": scope}),
         )
         # TODO CJO: await self._db_client.export_labels_from_db_to_json(str(self._labels_json))
 

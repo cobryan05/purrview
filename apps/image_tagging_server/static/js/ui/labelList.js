@@ -154,7 +154,7 @@ export function buildLabelRow(label, indent, { padding = '4px 6px' } = {}) {
 function renderEditRows(byParent, container, parentUuid, indentLevel, onRerender) {
   const children = byParent.get(parentUuid ?? null) ?? [];
   for (const label of children) {
-    const { name, color, uuid } = label;
+    const { name, color, uuid, scope } = label;
 
     const addChildButton = {
       text: 'Add Child',
@@ -195,6 +195,27 @@ function renderEditRows(byParent, container, parentUuid, indentLevel, onRerender
       },
     };
 
+    // Scope badge shown inline; clicking opens a tiny dropdown to toggle scope.
+    const scopeSelect = document.createElement('select');
+    scopeSelect.style.cssText = 'font-size:0.75em;padding:1px 2px;background:#222;color:#aaa;border:1px solid #555;border-radius:3px;cursor:pointer;';
+    for (const [val, lbl] of [['object', 'Obj'], ['image', 'Img']]) {
+      const opt = document.createElement('option');
+      opt.value = val;
+      opt.textContent = lbl;
+      if ((scope ?? 'object') === val) opt.selected = true;
+      scopeSelect.appendChild(opt);
+    }
+    scopeSelect.title = 'Label scope: Obj = bounding-box label, Img = whole-image classifier label';
+    scopeSelect.addEventListener('change', async () => {
+      try {
+        await updateLabel(uuid, name, color, { scope: scopeSelect.value });
+        onRerender();
+      } catch (err) {
+        toast(err.message, 5000, 'error');
+        scopeSelect.value = scope ?? 'object'; // revert on failure
+      }
+    });
+
     const labelRow = createGenericRow({
       field: new EditableField({
         buttonsLast: true,
@@ -215,6 +236,8 @@ function renderEditRows(byParent, container, parentUuid, indentLevel, onRerender
       rightButtons: [],
     });
 
+    // Append scope selector after the field row's last child
+    labelRow.appendChild(scopeSelect);
     labelRow.dataset.uuid = uuid;
     container.appendChild(labelRow);
 
@@ -246,6 +269,17 @@ async function mountEditMode(container, { filter, onRerender }) {
   divider.style.margin = '10px 0';
   inner.appendChild(divider);
 
+  // Scope selector for new root labels
+  const newScopeSelect = document.createElement('select');
+  newScopeSelect.style.cssText = 'font-size:0.8em;padding:2px 4px;margin-right:4px;background:#222;color:#ccc;border:1px solid #555;border-radius:3px;';
+  newScopeSelect.title = 'Scope: Obj = bbox label, Img = whole-image classifier label';
+  for (const [val, lbl] of [['object', 'Object'], ['image', 'Image']]) {
+    const opt = document.createElement('option');
+    opt.value = val;
+    opt.textContent = lbl;
+    newScopeSelect.appendChild(opt);
+  }
+
   const newRootRow = createGenericRow({
     field: new EditableField({
       buttonsLast: true,
@@ -263,7 +297,7 @@ async function mountEditMode(container, { filter, onRerender }) {
           const color = val.color || DEFAULT_COLOR;
           if (!name) { toast('Error: Name required', 5000, 'error'); return; }
           try {
-            await createNewLabel(name, color);
+            await createNewLabel(name, color, null, 'standard', newScopeSelect.value);
             onRerender();
           } catch (err) {
             toast(err.message, 5000, 'error');
@@ -279,6 +313,8 @@ async function mountEditMode(container, { filter, onRerender }) {
       },
     ],
   });
+  // Insert scope selector before the row's first child so it appears near the input
+  newRootRow.insertBefore(newScopeSelect, newRootRow.firstChild);
   inner.appendChild(newRootRow);
 
   return { destroy() {} };
@@ -333,13 +369,16 @@ async function mountSelectMode(container, { runtime, filter }) {
   const rawLabelsMap = await fetchLabels();
   const modelFilteredMap = activeModel.applyLabelFilter(rawLabelsMap);
   const showDynamic = isDynamicLabelsVisible();
-  const regularMap = new Map([...modelFilteredMap].filter(([, l]) => l.labelType !== 'dynamic'));
+  // Split by (scope, labelType): object-scope object labels / image-scope labels / dynamic labels
+  const regularMap = new Map([...modelFilteredMap].filter(([, l]) => l.labelType !== 'dynamic' && l.scope !== 'image'));
+  const imageClassMap = new Map([...modelFilteredMap].filter(([, l]) => l.labelType !== 'dynamic' && l.scope === 'image'));
   const dynamicMap = showDynamic
     ? new Map([...modelFilteredMap].filter(([, l]) => l.labelType === 'dynamic'))
     : new Map();
-  const filterNotice = makeLabelFilterNotice(rawLabelsMap.size - regularMap.size - dynamicMap.size);
+  const filterNotice = makeLabelFilterNotice(rawLabelsMap.size - regularMap.size - imageClassMap.size - dynamicMap.size);
   if (filterNotice) container.appendChild(filterNotice);
   const byParent = buildHierarchy(regularMap, filter);
+  const byParentImageClass = buildHierarchy(imageClassMap, filter);
   const byParentDynamic = buildHierarchy(dynamicMap, filter);
 
   let currentImagePath = null;
@@ -426,6 +465,8 @@ async function mountSelectMode(container, { runtime, filter }) {
       row.prepend(btn);
 
       row.addEventListener('click', () => {
+        // Image-scope labels have no bboxes — don't arm the bbox draw tool.
+        if (label.scope === 'image') return;
         _lastSelectedUuid = label.uuid;
         setTool(runtime, `bbox:${label.uuid}`);
       });
@@ -455,6 +496,26 @@ async function mountSelectMode(container, { runtime, filter }) {
   ));
 
   renderSelectRows(null, 0);
+
+  if (imageClassMap.size > 0) {
+    const hr = document.createElement('hr');
+    Object.assign(hr.style, { margin: '6px 4px', borderColor: '#444' });
+    container.appendChild(hr);
+
+    const imgHeader = document.createElement('div');
+    imgHeader.textContent = 'Image Classification';
+    Object.assign(imgHeader.style, {
+      fontWeight: 'bold',
+      fontSize: '0.8em',
+      textTransform: 'uppercase',
+      letterSpacing: '0.05em',
+      padding: '2px 6px 6px',
+      color: '#88aaff',
+    });
+    container.appendChild(imgHeader);
+
+    renderSelectRows(null, 0, byParentImageClass);
+  }
 
   if (dynamicMap.size > 0) {
     const hr = document.createElement('hr');

@@ -50,17 +50,13 @@ from .types import (
     ImageTagFilter,
     ImageTagLink,
     Label,
+    LabelScope,
     LabelType,
     ModelConfig,
     ModelConfigCreate,
     ModelConfigNode,
     ModelConfigRead,
     ModelConfigUpdate,
-    TrainingConfig,
-    TrainingConfigCreate,
-    TrainingConfigLabelLink,
-    TrainingConfigRead,
-    TrainingConfigUpdate,
     Source,
     SourceRead,
     Tag,
@@ -68,6 +64,11 @@ from .types import (
     TagPresenceFilter,
     TaskConfig,
     TaskInstance,
+    TrainingConfig,
+    TrainingConfigCreate,
+    TrainingConfigLabelLink,
+    TrainingConfigRead,
+    TrainingConfigUpdate,
     UserSetting,
 )
 
@@ -1558,10 +1559,12 @@ class DbClient:
         uuid: Optional[str] = None,
         parent_uuid: Optional[str] = None,
         label_type: LabelType = LabelType.STANDARD,
+        scope: LabelScope = LabelScope.OBJECT,
     ) -> Label:
         """Insert a label and return the created object."""
         new_label = Label(
-            uuid=uuid or str(uuid4()), name=name, color=color, parent_uuid=parent_uuid, label_type=label_type
+            uuid=uuid or str(uuid4()), name=name, color=color,
+            parent_uuid=parent_uuid, label_type=label_type, scope=scope,
         )
 
         async with self._async_session_maker() as session:

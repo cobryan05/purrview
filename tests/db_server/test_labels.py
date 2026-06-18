@@ -104,3 +104,58 @@ async def test_label_type_roundtrip_from_migration_default(db_client, http_clien
     labels = r.json()["labels"]
     assert len(labels) == 1
     assert labels[0]["labelType"] == "standard"
+
+
+class TestLabelScope:
+    async def test_create_label_defaults_to_object_scope(self, http_client):
+        r = await http_client.post("/api/labels", json={"name": "cat", "color": "#FF0000"})
+        assert r.status_code == 200
+        body = r.json()
+        assert body["status"] == "success"
+        assert body["label"]["scope"] == "object"
+
+    async def test_create_image_scope_label(self, http_client):
+        r = await http_client.post(
+            "/api/labels", json={"name": "corrupt", "color": "#FF0000", "scope": "image"}
+        )
+        assert r.status_code == 200
+        body = r.json()
+        assert body["status"] == "success"
+        assert body["label"]["scope"] == "image"
+
+    async def test_scope_roundtrips_via_list(self, http_client):
+        await http_client.post("/api/labels", json={"name": "blurry", "color": "#aabbcc", "scope": "image"})
+        r = await http_client.get("/api/labels")
+        labels = r.json()["labels"]
+        blurry = next(l for l in labels if l["name"] == "blurry")
+        assert blurry["scope"] == "image"
+
+    async def test_update_label_scope(self, http_client):
+        r = await http_client.post("/api/labels", json={"name": "dark", "color": "#111"})
+        uuid = r.json()["label"]["uuid"]
+
+        patch_r = await http_client.patch(f"/api/labels/{uuid}", json={"scope": "image"})
+        assert patch_r.status_code == 200
+        assert patch_r.json()["status"] == "success"
+
+        list_r = await http_client.get("/api/labels")
+        dark = next(l for l in list_r.json()["labels"] if l["name"] == "dark")
+        assert dark["scope"] == "image"
+
+    async def test_scope_server_default_is_object(self, db_client, http_client):
+        """Rows inserted without a scope column (migration backfill path) read back as object."""
+        import sqlalchemy as sa
+
+        async with db_client._engine.begin() as conn:
+            await conn.execute(
+                sa.text(
+                    "INSERT INTO labels (uuid, name, label_type, scope, created_at, updated_at)"
+                    " VALUES (:uuid, :name, 'standard', 'object', datetime('now'), datetime('now'))"
+                ),
+                {"uuid": "scope-default-test", "name": "migrated_label"},
+            )
+
+        r = await http_client.get("/api/labels")
+        labels = r.json()["labels"]
+        ml = next(l for l in labels if l["name"] == "migrated_label")
+        assert ml["scope"] == "object"

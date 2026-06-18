@@ -93,6 +93,11 @@ class LabelType(str, Enum):
     DYNAMIC = "dynamic"
 
 
+class LabelScope(str, Enum):
+    OBJECT = "object"
+    IMAGE = "image"
+
+
 class TimestampModel(SQLModel):
     """
     An abstract mixin for tracking record lifecycle using timezone-aware UTC timestamps.
@@ -123,12 +128,14 @@ class LabelBase(SQLModel):
         color: A hex or CSS color string used for UI visualization.
         parent_uuid: Reference to a parent label uuid. Deletion is restricted if children exist.
         label_type: Whether this is a standard dataset label or a dynamic user-created label.
+        scope: Whether this label applies to whole images (image) or individual objects (object).
     """
 
     name: str
     color: Optional[str] = None
     parent_uuid: Optional[str] = Field(default=None, foreign_key="labels.uuid", ondelete="RESTRICT")
     label_type: LabelType = Field(default=LabelType.STANDARD)
+    scope: LabelScope = Field(default=LabelScope.OBJECT)
 
 
 class Label(LabelBase, TimestampModel, table=True):
@@ -149,6 +156,14 @@ class Label(LabelBase, TimestampModel, table=True):
             server_default="standard",
         ),
     )
+    scope: LabelScope = Field(
+        default=LabelScope.OBJECT,
+        sa_column=Column(
+            sa.Enum(LabelScope, values_callable=lambda x: [e.value for e in x]),
+            nullable=False,
+            server_default="object",
+        ),
+    )
     parent: Optional["Label"] = Relationship(
         back_populates="children", sa_relationship_kwargs={"remote_side": "Label.uuid"}
     )
@@ -166,6 +181,7 @@ class LabelRead(OrmModel):
     color: Optional[str] = None
     parent_uuid: Optional[str] = None
     label_type: LabelType = LabelType.STANDARD
+    scope: LabelScope = LabelScope.OBJECT
 
 
 class LabelUpdate(BaseModel):
@@ -173,6 +189,7 @@ class LabelUpdate(BaseModel):
     color: Optional[str] = None
     parent_uuid: Optional[str] = None
     label_type: Optional[LabelType] = None
+    scope: Optional[LabelScope] = None
 
 class ImageTagLink(SQLModel, table=True):
     """

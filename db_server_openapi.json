@@ -4022,6 +4022,10 @@
           "labelType": {
             "$ref": "#/components/schemas/LabelType",
             "default": "standard"
+          },
+          "scope": {
+            "$ref": "#/components/schemas/LabelScope",
+            "default": "object"
           }
         },
         "type": "object",
@@ -6732,6 +6736,10 @@
           "labelType": {
             "$ref": "#/components/schemas/LabelType",
             "default": "standard"
+          },
+          "scope": {
+            "$ref": "#/components/schemas/LabelScope",
+            "default": "object"
           }
         },
         "type": "object",
@@ -6741,6 +6749,14 @@
         ],
         "title": "LabelRead",
         "description": "The public read-only representation of an annotation label."
+      },
+      "LabelScope": {
+        "type": "string",
+        "enum": [
+          "object",
+          "image"
+        ],
+        "title": "LabelScope"
       },
       "LabelType": {
         "type": "string",
@@ -6789,6 +6805,16 @@
             "anyOf": [
               {
                 "$ref": "#/components/schemas/LabelType"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "scope": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LabelScope"
               },
               {
                 "type": "null"

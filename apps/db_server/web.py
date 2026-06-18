@@ -33,14 +33,12 @@ from apps.helpers.db.types import (
     ImageTagStatusRead,
     Label,
     LabelRead,
+    LabelScope,
     LabelType,
     LabelUpdate,
     ModelConfigCreate,
     ModelConfigRead,
     ModelConfigUpdate,
-    TrainingConfigCreate,
-    TrainingConfigRead,
-    TrainingConfigUpdate,
     Source,
     SourceRead,
     Tag,
@@ -52,6 +50,9 @@ from apps.helpers.db.types import (
     TaskParams,
     TaskResultData,
     TaskResumeData,
+    TrainingConfigCreate,
+    TrainingConfigRead,
+    TrainingConfigUpdate,
 )
 from apps.helpers.types import (
     Base64Image,
@@ -120,6 +121,7 @@ class AddLabelPayload(ApiPayload):
     color: str
     parent_uuid: Optional[str] = None
     label_type: LabelType = LabelType.STANDARD
+    scope: LabelScope = LabelScope.OBJECT
 
 
 class AddLabelResponse(StatusResponse):
@@ -772,7 +774,8 @@ class WebApp:
             """
             try:
                 label = await self._manager.create_new_label(
-                    request.name, request.color, parent_uuid=request.parent_uuid, label_type=request.label_type
+                    request.name, request.color, parent_uuid=request.parent_uuid,
+                    label_type=request.label_type, scope=request.scope,
                 )
 
                 return AddLabelResponse(status=JsonValues.SUCCESS, label=label)
@@ -830,6 +833,7 @@ class WebApp:
                     name=request.name,
                     color=request.color,
                     label_type=request.label_type,
+                    scope=request.scope,
                 )
                 return UpdateLabelResponse(status=JsonValues.SUCCESS)
             except Exception as e:
