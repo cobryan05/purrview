@@ -59,11 +59,14 @@ export async function init(appState) {
     activateWorkspaceTab('#tab-image-tagging', 'tab-canvas');
   });
 
-  events.subscribe(EventTypes.OPEN_REVIEW_WITH_FILTERS, ({ tagUuids }) => {
+  events.subscribe(EventTypes.OPEN_REVIEW_WITH_FILTERS, ({ tagUuids, labelUuids, verificationCheck }) => {
     activateMainTab(container, 'tab-review');
     // applyFilterWhenReady applies immediately if the panel is already up, or
     // queues the state so init() applies it once createReviewPanel resolves.
-    applyFilterWhenReady({ tagUuids: tagUuids ?? [] });
+    const state = { tagUuids: tagUuids ?? [] };
+    if (labelUuids !== undefined) state.labelUuids = labelUuids;
+    if (verificationCheck !== undefined) state.verificationCheck = verificationCheck;
+    applyFilterWhenReady(state);
   });
 
   events.subscribe(EventTypes.EXPORT_FILTERS_TO_DATASET, ({ filterJson, labelUuids }) => {

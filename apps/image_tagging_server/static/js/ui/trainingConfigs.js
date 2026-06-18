@@ -27,6 +27,7 @@ import {
 } from '/app-static/js/shared/api/trainingConfigs.js';
 import { flattenHierarchy } from '/app-static/js/ui/labelList.js';
 import { makeFieldRow, buildPanelEditorBar, toast } from '/app-static/js/ui/utils/index.js';
+import { events, EventTypes } from '/app-static/js/shared/events/index.js';
 import { showUnsavedConfigChangesModal } from '/app-static/js/ui/utils/confirmModal.js';
 
 const TRAINER_TYPENAMES = ['yolo_v8', 'image_classifier'];
@@ -212,8 +213,11 @@ function renderReadinessPanel(config) {
   reviewBtn.style.cssText = 'margin-top: 0.4em; font-size: 0.8em;';
   reviewBtn.style.display = 'none';
   reviewBtn.addEventListener('click', () => {
-    // Switch to review tab; user can apply the dataset filter there.
-    document.querySelector('[data-tab="tab-review"]')?.click();
+    events.publish(EventTypes.OPEN_REVIEW_WITH_FILTERS, {
+      tagUuids: [],
+      labelUuids: config.labelUuids ?? [],
+      verificationCheck: 'has_unverified',
+    });
   });
   wrap.appendChild(reviewBtn);
 

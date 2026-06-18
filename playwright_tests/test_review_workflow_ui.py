@@ -411,7 +411,8 @@ class TestBulkImageAction:
         modal_title = page.locator("strong", has_text="Apply to 2 selected images")
         expect(modal_title).to_be_visible()
 
-        # 'Mark label Absent' is selected by default — choose Cat.
+        # Explicitly select 'Mark label Absent' and choose Cat.
+        page.locator("input[type=radio][value=setAbsent]").click()
         page.locator("div:has(> strong:text-is('Apply to 2 selected images')) select").select_option("lbl-cat")
         page.locator("div:has(> strong:text-is('Apply to 2 selected images')) button", has_text="Apply").click()
         page.wait_for_timeout(600)
