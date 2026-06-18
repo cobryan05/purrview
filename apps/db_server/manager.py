@@ -103,6 +103,8 @@ class Manager:
         self._rebuild_in_progress: bool = False
         self._hash_index_ready: bool = False  # False until initial build completes on startup
         self._build_phase: str | None = None  # "loading" or "constructing" during initial index build
+        self._build_img_loaded: int = 0  # running count during loading phase
+        self._build_bbox_loaded: int = 0
         # Short-lived cache for expensive count queries.  Key is an MD5 of the
         # filter predicates (sort/page fields excluded); value is (count, ts).
         # TTL is intentionally short so writes that happen while browsing are
@@ -148,8 +150,21 @@ class Manager:
         # Propagate the resolved sizes to the HashIndex before building.
         self._hash_index._image_hash_size = self._image_hash_size
         self._hash_index._bbox_hash_size = self._bbox_hash_size
-        await self._hash_index.build(on_phase=lambda p: setattr(self, "_build_phase", p))
+
+        def _on_phase(p: str) -> None:
+            self._build_phase = p
+            if p == "constructing":
+                self._build_img_loaded = 0
+                self._build_bbox_loaded = 0
+
+        def _on_progress(img: int, bbox: int) -> None:
+            self._build_img_loaded = img
+            self._build_bbox_loaded = bbox
+
+        await self._hash_index.build(on_phase=_on_phase, on_progress=_on_progress)
         self._build_phase = None
+        self._build_img_loaded = 0
+        self._build_bbox_loaded = 0
         self._hash_index_ready = True
 
     async def _worker_task(self):
@@ -1548,15 +1563,22 @@ class Manager:
         """Return service health and diagnostic info."""
         notices: list[dict] = []
         if not self._hash_index_ready:
-            phase_detail = {
-                "loading": " (loading hashes from DB…)",
-                "constructing": " (constructing search trees…)",
-            }.get(self._build_phase, "…")
+            if self._build_phase == "loading":
+                img, bbox = self._build_img_loaded, self._build_bbox_loaded
+                if img or bbox:
+                    count_str = f" — {img:,} images, {bbox:,} bboxes loaded"
+                else:
+                    count_str = ""
+                phase_detail = f" (loading hashes from DB…{count_str})"
+            else:
+                phase_detail = {
+                    "constructing": " (constructing search trees…)",
+                }.get(self._build_phase, "…")
             notices.append(
                 {
                     "key": "hash_build",
                     "level": "info",
-                    "message": f"Building similarity index{phase_detail} - similarity searches unavailable until complete",
+                    "message": f"Building similarity index{phase_detail} — similarity searches unavailable until complete",
                 }
             )
         elif self._rebuild_in_progress:

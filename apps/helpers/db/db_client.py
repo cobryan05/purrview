@@ -1400,6 +1400,22 @@ class DbClient:
             )
             return [{"uuid": row[0], "label_uuid": row[1], "phash": row[2]} for row in result.all()]
 
+    async def count_image_phashes(self) -> int:
+        """Return count of images that have a non-null phash."""
+        async with self._async_session_maker() as session:
+            result = await session.exec(
+                select(func.count()).select_from(ImageRecord).where(ImageRecord.phash.is_not(None))  # type: ignore[arg-type]
+            )
+            return result.one() or 0
+
+    async def count_bbox_phashes(self) -> int:
+        """Return count of bboxes that have a non-null phash."""
+        async with self._async_session_maker() as session:
+            result = await session.exec(
+                select(func.count()).select_from(BBox).where(BBox.phash.is_not(None))  # type: ignore[arg-type]
+            )
+            return result.one() or 0
+
     async def clear_all_phashes(self) -> None:
         """NULL out every image and bbox phash in a single transaction.
 

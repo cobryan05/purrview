@@ -104,34 +104,62 @@ class HashIndex:
     # Build / rebuild
     # ─────────────────────────────────────────────────────────────────────────
 
-    async def _paginate(self, fetch_fn) -> List[Dict[str, str]]:
+    async def _paginate(self, fetch_fn, on_chunk=None) -> List[Dict[str, str]]:
         """Page through a db fetch function, yielding to the event loop between full pages."""
         rows: List[Dict[str, str]] = []
         offset = 0
         while True:
             chunk = await fetch_fn(offset, self.CHUNK_SIZE)
             rows.extend(chunk)
+            if on_chunk:
+                on_chunk(len(rows))
             if len(chunk) < self.CHUNK_SIZE:
                 break
             offset += self.CHUNK_SIZE
             await asyncio.sleep(0)
         return rows
 
-    async def _load_phashes(self) -> Tuple[List[Dict[str, str]], List[Dict[str, str]]]:
+    async def _load_phashes(self, on_img_chunk=None, on_bbox_chunk=None) -> Tuple[List[Dict[str, str]], List[Dict[str, str]]]:
         """Fetch all image and bbox phash rows in pages, yielding to the event loop
         between chunks so other requests are not starved during startup or rebuild."""
         image_rows, bbox_rows = await asyncio.gather(
-            self._paginate(self._db_client.get_image_phashes_page),
-            self._paginate(self._db_client.get_bbox_phashes_page),
+            self._paginate(self._db_client.get_image_phashes_page, on_chunk=on_img_chunk),
+            self._paginate(self._db_client.get_bbox_phashes_page, on_chunk=on_bbox_chunk),
         )
         return image_rows, bbox_rows
 
-    async def build(self, on_phase=None) -> BuildStats:
-        """Load all non-null phash rows from the DB and build BK-trees."""
+    async def build(self, on_phase=None, on_progress=None) -> BuildStats:
+        """Load all non-null phash rows from the DB and build BK-trees.
+
+        on_progress, if provided, is called as on_progress(images_loaded, bboxes_loaded)
+        after each chunk arrives so callers can report live counts.
+        """
         t0 = time.perf_counter()
+
         if on_phase:
             on_phase("loading")
-        image_rows, bbox_rows = await self._load_phashes()
+
+        loaded_images = loaded_bboxes = 0
+
+        def _img_chunk(n: int) -> None:
+            nonlocal loaded_images
+            loaded_images = n
+            if on_progress:
+                on_progress(loaded_images, loaded_bboxes)
+
+        def _bbox_chunk(n: int) -> None:
+            nonlocal loaded_bboxes
+            loaded_bboxes = n
+            if on_progress:
+                on_progress(loaded_images, loaded_bboxes)
+
+        if on_progress:
+            image_rows, bbox_rows = await self._load_phashes(
+                on_img_chunk=_img_chunk,
+                on_bbox_chunk=_bbox_chunk,
+            )
+        else:
+            image_rows, bbox_rows = await self._load_phashes()
         if on_phase:
             on_phase("constructing")
         stats = await asyncio.to_thread(self._construct_trees, image_rows, bbox_rows)
