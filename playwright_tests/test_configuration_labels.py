@@ -340,3 +340,306 @@ class TestDeleteLabel:
         page.wait_for_timeout(500)
 
         assert not calls, "API must NOT be called when delete is cancelled"
+
+
+# ---------------------------------------------------------------------------
+# Label scope — edit-mode UI
+# ---------------------------------------------------------------------------
+
+IMAGE_SCOPE_LABEL = {
+    "uuid": "cccccccc-0000-0000-0000-000000000010",
+    "name": "Corrupt",
+    "color": "#888888",
+    "parentUuid": None,
+    "scope": "image",
+}
+
+OBJECT_SCOPE_LABEL = {
+    "uuid": "cccccccc-0000-0000-0000-000000000011",
+    "name": "Cat",
+    "color": "#ff0000",
+    "parentUuid": None,
+    "scope": "object",
+}
+
+
+class TestLabelScopeEditMode:
+    def test_scope_selector_visible_in_new_label_row(self, page: Page, base_url: str):
+        """The 'add new root label' row contains an Object/Image scope select."""
+        _mock_labels(page, [])
+        _navigate_to_labels(page, base_url)
+        page.wait_for_selector("#labels-list input[placeholder='New Root Label Name']", timeout=4000)
+
+        scope_sel = page.locator("#labels-list select[title*='Scope']")
+        expect(scope_sel).to_be_visible()
+        options = scope_sel.locator("option").all_text_contents()
+        assert "Object" in options, f"Expected 'Object' option; got: {options}"
+        assert "Image" in options, f"Expected 'Image' option; got: {options}"
+
+    def test_create_image_scope_label_sends_scope_in_payload(self, page: Page, base_url: str):
+        """Creating a new label with 'Image' scope selected sends scope='image' in POST."""
+        calls: list[dict] = []
+
+        def handle(route: Route):
+            if route.request.method == "POST":
+                calls.append(json.loads(route.request.post_data))
+                route.fulfill(
+                    status=200,
+                    content_type="application/json",
+                    body=json.dumps({"status": "success", "label": IMAGE_SCOPE_LABEL}),
+                )
+            else:
+                route.fulfill(
+                    status=200,
+                    content_type="application/json",
+                    body=json.dumps({"status": "success", "labels": []}),
+                )
+
+        _mock_labels(page, [])
+        page.route(lambda url: url.split("?")[0].endswith("/api/labels"), handle)
+        _navigate_to_labels(page, base_url)
+        page.wait_for_selector("#labels-list input[placeholder='New Root Label Name']", timeout=4000)
+
+        # Switch scope to Image
+        page.locator("#labels-list select[title*='Scope']").select_option("image")
+        page.locator("#labels-list input[placeholder='New Root Label Name']").fill("Corrupt")
+        page.locator("#labels-list button[title='Add label']").click()
+        page.wait_for_timeout(600)
+
+        assert calls, "Expected POST to /api/labels"
+        assert calls[0].get("scope") == "image", \
+            f"Expected scope='image' in POST payload; got: {calls[0]}"
+
+    def test_create_object_scope_label_sends_scope_in_payload(self, page: Page, base_url: str):
+        """Default scope (Object) is sent as scope='object' in POST."""
+        calls: list[dict] = []
+
+        def handle(route: Route):
+            if route.request.method == "POST":
+                calls.append(json.loads(route.request.post_data))
+                route.fulfill(
+                    status=200,
+                    content_type="application/json",
+                    body=json.dumps({"status": "success", "label": OBJECT_SCOPE_LABEL}),
+                )
+            else:
+                route.fulfill(
+                    status=200,
+                    content_type="application/json",
+                    body=json.dumps({"status": "success", "labels": []}),
+                )
+
+        _mock_labels(page, [])
+        page.route(lambda url: url.split("?")[0].endswith("/api/labels"), handle)
+        _navigate_to_labels(page, base_url)
+        page.wait_for_selector("#labels-list input[placeholder='New Root Label Name']", timeout=4000)
+
+        page.locator("#labels-list input[placeholder='New Root Label Name']").fill("Cat")
+        page.locator("#labels-list button[title='Add label']").click()
+        page.wait_for_timeout(600)
+
+        assert calls, "Expected POST to /api/labels"
+        assert calls[0].get("scope") == "object", \
+            f"Expected scope='object' in POST payload; got: {calls[0]}"
+
+    def test_existing_image_scope_label_shows_img_selected(self, page: Page, base_url: str):
+        """An existing label with scope='image' shows 'Img' selected in its scope dropdown."""
+        _mock_labels(page, [IMAGE_SCOPE_LABEL])
+        _navigate_to_labels(page, base_url)
+
+        row = page.locator(f"#labels-list [data-uuid='{IMAGE_SCOPE_LABEL['uuid']}']")
+        expect(row).to_be_visible()
+        scope_sel = row.locator("select[title*='scope']")
+        expect(scope_sel).to_have_value("image", timeout=3000)
+
+    def test_changing_scope_to_image_calls_update_api(self, page: Page, base_url: str):
+        """Switching the scope dropdown on an existing label sends scope in the PATCH payload."""
+        calls: list[dict] = []
+
+        def handle(route: Route):
+            if route.request.method == "PATCH":
+                calls.append(json.loads(route.request.post_data))
+                route.fulfill(
+                    status=200,
+                    content_type="application/json",
+                    body=json.dumps({"status": "success", "label": {**OBJECT_SCOPE_LABEL, "scope": "image"}}),
+                )
+            else:
+                route.fulfill(
+                    status=200,
+                    content_type="application/json",
+                    body=json.dumps({"status": "success", "labels": [OBJECT_SCOPE_LABEL]}),
+                )
+
+        _mock_labels(page, [OBJECT_SCOPE_LABEL])
+        page.route("**/api/labels/**", handle)
+        _navigate_to_labels(page, base_url)
+
+        row = page.locator(f"#labels-list [data-uuid='{OBJECT_SCOPE_LABEL['uuid']}']")
+        expect(row).to_be_visible()
+        row.locator("select[title*='scope']").select_option("image")
+        page.wait_for_timeout(600)
+
+        assert calls, "Expected PATCH to /api/labels/{uuid}"
+        assert calls[0].get("scope") == "image", \
+            f"Expected scope='image' in PATCH payload; got: {calls[0]}"
+
+
+# ---------------------------------------------------------------------------
+# Label scope — select-mode behavior (canvas panel)
+# ---------------------------------------------------------------------------
+
+
+class TestLabelScopeSelectMode:
+    """
+    Test scope-gating in select mode via page.evaluate using createLabelList
+    (the public export from labelList.js; mountSelectMode is not exported).
+    setTool() in tools.js accesses runtime.canvas.stage.container() for cursor
+    style, so the fake runtime must include that stub.
+    """
+
+    def _fake_runtime_js(self, runtime_id: str) -> str:
+        """Return JS that creates a minimal runtime compatible with setTool."""
+        return f"""{{
+            id: '{runtime_id}',
+            tool: 'select',
+            state: {{ image: null }},
+            canvas: {{
+                layer: null,
+                stage: {{ container: () => ({{ style: {{}} }}) }},
+            }},
+            setTool(t) {{ this._toolCalls.push(t); this.tool = t; }},
+            markDirty() {{}},
+            _toolCalls: [],
+        }}"""
+
+    def test_image_scope_label_click_does_not_set_tool(self, shared_page: Page):
+        """Clicking a label with scope='image' must NOT call setTool (no bbox draw)."""
+        result = shared_page.evaluate(f"""async () => {{
+            const {{ labelsFetcher }} = await import('/app-static/js/shared/api/labels.js');
+            const {{ createLabelList }} = await import('/app-static/js/ui/labelList.js');
+
+            labelsFetcher.set('labelsMap', new Map([
+                ['img-lbl-1', {{
+                    uuid: 'img-lbl-1', name: 'Corrupt', color: '#888',
+                    parentUuid: null, labelType: 'standard', scope: 'image',
+                }}],
+            ]));
+
+            const runtime = {self._fake_runtime_js('rt-scope-img')};
+            const container = document.createElement('div');
+            document.body.appendChild(container);
+            const handle = await createLabelList(container, {{ mode: 'select', runtime, filter: null }});
+
+            const row = container.querySelector('[data-uuid="img-lbl-1"]');
+            if (!row) {{ handle.destroy(); container.remove(); return {{ error: 'row not found', html: container.innerHTML }}; }}
+            row.click();
+
+            handle.destroy();
+            container.remove();
+            return {{ toolCalls: runtime._toolCalls }};
+        }}""")
+        assert result.get("toolCalls") == [], \
+            f"Expected no setTool calls for image-scope label; got: {result}"
+
+    def test_object_scope_label_click_sets_bbox_tool(self, shared_page: Page):
+        """Clicking a label with scope='object' arms the bbox draw tool."""
+        result = shared_page.evaluate(f"""async () => {{
+            const {{ labelsFetcher }} = await import('/app-static/js/shared/api/labels.js');
+            const {{ createLabelList }} = await import('/app-static/js/ui/labelList.js');
+
+            labelsFetcher.set('labelsMap', new Map([
+                ['obj-lbl-1', {{
+                    uuid: 'obj-lbl-1', name: 'Cat', color: '#f00',
+                    parentUuid: null, labelType: 'standard', scope: 'object',
+                }}],
+            ]));
+
+            const runtime = {self._fake_runtime_js('rt-scope-obj')};
+            const container = document.createElement('div');
+            document.body.appendChild(container);
+            const handle = await createLabelList(container, {{ mode: 'select', runtime, filter: null }});
+
+            const row = container.querySelector('[data-uuid="obj-lbl-1"]');
+            if (!row) {{ handle.destroy(); container.remove(); return {{ error: 'row not found' }}; }}
+            row.click();
+
+            handle.destroy();
+            container.remove();
+            return {{ toolCalls: runtime._toolCalls }};
+        }}""")
+        assert "bbox:obj-lbl-1" in result.get("toolCalls", []), \
+            f"Expected setTool('bbox:obj-lbl-1'); got: {result}"
+
+    def test_image_scope_labels_appear_under_image_classification_section(self, shared_page: Page):
+        """Image-scope labels render under an 'Image Classification' section header."""
+        result = shared_page.evaluate(f"""async () => {{
+            const {{ labelsFetcher }} = await import('/app-static/js/shared/api/labels.js');
+            const {{ createLabelList }} = await import('/app-static/js/ui/labelList.js');
+
+            labelsFetcher.set('labelsMap', new Map([
+                ['obj-lbl-2', {{
+                    uuid: 'obj-lbl-2', name: 'Cat', color: '#f00',
+                    parentUuid: null, labelType: 'standard', scope: 'object',
+                }}],
+                ['img-lbl-2', {{
+                    uuid: 'img-lbl-2', name: 'Corrupt', color: '#888',
+                    parentUuid: null, labelType: 'standard', scope: 'image',
+                }}],
+            ]));
+
+            const runtime = {self._fake_runtime_js('rt-scope-sect')};
+            const container = document.createElement('div');
+            document.body.appendChild(container);
+            const handle = await createLabelList(container, {{ mode: 'select', runtime, filter: null }});
+
+            // Find the "Image Classification" section header by its text content.
+            // (Object.assign on element.style normalizes hex colors to rgb(), so
+            //  a style-attribute selector like [style*="88aaff"] won't match.)
+            const header = Array.from(container.querySelectorAll('div'))
+                .find(d => d.textContent.trim() === 'Image Classification') ?? null;
+            const imgRow = container.querySelector('[data-uuid="img-lbl-2"]');
+            const objRow = container.querySelector('[data-uuid="obj-lbl-2"]');
+
+            handle.destroy();
+            container.remove();
+            return {{
+                hasSectionHeader: !!header,
+                sectionText: header?.textContent ?? null,
+                hasImgRow: !!imgRow,
+                hasObjRow: !!objRow,
+            }};
+        }}""")
+        assert result.get("hasSectionHeader"), \
+            f"Expected 'Image Classification' section header; got: {result}"
+        assert "Image" in (result.get("sectionText") or ""), \
+            f"Section header text should contain 'Image'; got: {result}"
+        assert result.get("hasImgRow"), "Image-scope label row should be rendered"
+        assert result.get("hasObjRow"), "Object-scope label row should be rendered"
+
+    def test_object_scope_labels_not_in_image_classification_section(self, shared_page: Page):
+        """With only object-scope labels, no 'Image Classification' header is shown."""
+        result = shared_page.evaluate(f"""async () => {{
+            const {{ labelsFetcher }} = await import('/app-static/js/shared/api/labels.js');
+            const {{ createLabelList }} = await import('/app-static/js/ui/labelList.js');
+
+            labelsFetcher.set('labelsMap', new Map([
+                ['obj-only', {{
+                    uuid: 'obj-only', name: 'Dog', color: '#0f0',
+                    parentUuid: null, labelType: 'standard', scope: 'object',
+                }}],
+            ]));
+
+            const runtime = {self._fake_runtime_js('rt-scope-noimg')};
+            const container = document.createElement('div');
+            document.body.appendChild(container);
+            const handle = await createLabelList(container, {{ mode: 'select', runtime, filter: null }});
+
+            const header = Array.from(container.querySelectorAll('div'))
+                .find(d => d.textContent.trim() === 'Image Classification') ?? null;
+            handle.destroy();
+            container.remove();
+            return {{ hasSectionHeader: !!header }};
+        }}""")
+        assert not result.get("hasSectionHeader"), \
+            "Should NOT show 'Image Classification' header when no image-scope labels exist"
