@@ -949,7 +949,7 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
             labelExcludeUuids: fs.labelExcludeUuids ?? [],
             labelMatchMode: fs.labelMatchMode,
             labelIncludeChildren: fs.labelIncludeChildren,
-            imageTagConditions: fs.imageTagConditions ?? [],
+            imageLabelConditions: fs.imageLabelConditions ?? [],
             requireBboxes: _viewFilter === 'bboxes',
             sortBy,
             sortOrder,

@@ -31,7 +31,7 @@ function _datasetMetaSummary(dataset) {
   const tagCount = (f.tagUuids?.length ?? 0) + (f.tagExcludeUuids?.length ?? 0);
   if (tagCount > 0) parts.push(`${tagCount} tag filter${tagCount !== 1 ? 's' : ''}`);
 
-  const condCount = f.imageTagConditions?.length ?? 0;
+  const condCount = f.imageLabelConditions?.length ?? 0;
   if (condCount > 0) parts.push(`${condCount} image condition${condCount !== 1 ? 's' : ''}`);
 
   const extras = [];
@@ -66,15 +66,13 @@ function buildDatasetForm(container, { name = '', description = '', labelUuids =
   descInput.addEventListener('input', () => onAnyChange?.());
   container.appendChild(makeFieldRow('Description', descInput));
 
-  // Filter panel (handles Tags + Labels + Date + Filename + Verification + Image Tag Conditions)
+  // Filter panel (handles Tags + Labels + Date + Filename + Verification + Image Label Conditions)
   // inlineControls: Labels and Tags render as always-expanded scrollable boxes.
-  // allowImageTagUnset: false — datasets are for curated training data; unset has no meaning there.
   const filterPanel = createFilterPanel(labelsMap, tagsMap, () => onAnyChange?.(), {
     inlineControls: true,
-    allowImageTagUnset: false,
   });
 
-  // Date + Verification + Image Tag Conditions rows are in filterPanel.element
+  // Date + Verification + Image Label Conditions rows are in filterPanel.element
   container.appendChild(filterPanel.element);
 
   // Tags and Labels as side-by-side expanded boxes below

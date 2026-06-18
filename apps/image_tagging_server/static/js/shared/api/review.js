@@ -28,7 +28,7 @@ export const VERIFICATION_TAG_UUIDS = new Set([UNVERIFIED_TAG_UUID, FALSE_POS_TA
  *   afterUuid?: string|null,       // keyset cursor: UUID of last image on previous page
  *   afterSortValue?: string|null,  // ISO datetime of last image's sort field (when sortBy != 'uuid')
  *   imageLabelFilters?: Array<{labelUuid: string, status: string, exclude: boolean}>,
- *   imageTagConditions?: {tagUuid: string, state: 'present'|'absent'|'unset'}[],
+ *   imageLabelConditions?: {labelUuid: string, state: 'present'|'absent'|'uncertain'}[],
  *   limit?: number,
  * }} opts
  */
@@ -50,7 +50,7 @@ export async function fetchReviewQueue({
   afterUuid = null,
   afterSortValue = null,
   imageLabelFilters = [],
-  imageTagConditions = [],
+  imageLabelConditions = [],
   verificationCheck = null,
   requireBboxes = false,
   limit = 50,
@@ -81,23 +81,15 @@ export async function fetchReviewQueue({
   if (dateTo) body.dateTo = dateTo;
   if (afterUuid) body.afterUuid = afterUuid;
   if (afterSortValue) body.afterSortValue = afterSortValue;
-  if (imageLabelFilters.length > 0) {
-    body.imageLabelFilters = imageLabelFilters.map(f => ({
-      labelUuid: f.labelUuid,
-      status: f.status,
-      exclude: f.exclude,
-    }));
-  }
   if (verificationCheck) body.labelVerificationCheck = verificationCheck;
 
-  // Map unified conditions to the ImageTagFilter wire format.
-  const imageTagFilters = imageTagConditions.flatMap(c => {
-    if (c.state === 'present') return [{ tagUuid: c.tagUuid, status: 'present', exclude: false }];
-    if (c.state === 'absent')  return [{ tagUuid: c.tagUuid, status: 'absent',  exclude: false }];
-    if (c.state === 'unset')   return [{ tagUuid: c.tagUuid, requireUnset: true }];
-    return [];
-  });
-  if (imageTagFilters.length > 0) body.imageTagFilters = imageTagFilters;
+  // Explicit imageLabelFilters (direct format) take precedence over conditions.
+  // imageLabelConditions (from the filter panel) are mapped to the same wire format.
+  const allLabelFilters = [
+    ...imageLabelFilters.map(f => ({ labelUuid: f.labelUuid, status: f.status, exclude: f.exclude ?? false })),
+    ...imageLabelConditions.map(c => ({ labelUuid: c.labelUuid, status: c.state, exclude: false })),
+  ];
+  if (allLabelFilters.length > 0) body.imageLabelFilters = allLabelFilters;
 
   const res = await apiFetch('/api/images/review', {
     method: 'POST',
@@ -108,7 +100,7 @@ export async function fetchReviewQueue({
   if (!res.ok || data.status !== 'success') throw new Error(data.message || 'Failed to fetch review queue');
   return {
     images: data.images ?? [],
-    hasMore: data.hasMore ?? false,      // StatusResponse uses to_camel alias_generator
+    hasMore: data.hasMore ?? false,
     totalCount: data.totalCount ?? 0,
   };
 }

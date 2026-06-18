@@ -33,11 +33,12 @@ import { runAll, buildTagPanel } from '../tagPanelBuilder.js';
  */
 async function _buildLabelPanel(onSelect) {
   const labels = await fetchLabels();
-  const picker = createDynamicLabelPicker(labels, { onSelect });
+  // Only object-scoped labels can be assigned to bounding boxes.
+  const objectLabels = new Map([...labels].filter(([, l]) => l.scope !== 'image'));
+  const picker = createDynamicLabelPicker(objectLabels, { onSelect });
   const wrap = document.createElement('div');
   wrap.style.cssText = 'min-width:240px;';
   wrap.appendChild(picker.element);
-  // Auto-focus after mount
   setTimeout(() => picker.element.querySelector('input')?.focus(), 30);
   return wrap;
 }

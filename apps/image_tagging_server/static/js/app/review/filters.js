@@ -19,7 +19,7 @@
  */
 import { UNVERIFIED_TAG_UUID } from '/app-static/js/shared/api/review.js';
 import { createMultiSelectDropdown, makeLabelFilterNotice } from '/app-static/js/ui/utils/index.js';
-import { createImageTagConditions } from '/app-static/js/ui/imageTagConditions.js';
+import { createImageLabelConditions } from '/app-static/js/ui/imageTagConditions.js';
 import { flattenHierarchy } from '/app-static/js/ui/labelList.js';
 import { activeModel, filterVisibleTags, isDynamicLabelsVisible, groupTagsByKind } from '/app-static/js/shared/activeModel.js';
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
@@ -37,9 +37,9 @@ const DEFAULT_STATE = () => ({
   labelExcludeUuids: [],
   labelMatchMode: 'any',
   labelIncludeChildren: false,
-  // Whole-image tag conditions: [{ tagUuid, state: 'present'|'absent'|'unset' }]
-  // Each entry is an AND condition applied against the image_tags table.
-  imageTagConditions: [],
+  // Per-image-label conditions: [{ labelUuid, state: 'present'|'absent'|'uncertain' }]
+  // Each entry is an AND condition applied against the image_labels table.
+  imageLabelConditions: [],
   filenameSearch: '',
   dateFrom: null,
   dateTo: null,
@@ -51,7 +51,7 @@ const DEFAULT_STATE = () => ({
  * @param {Map<string, object>} tags     - tag uuid → tag record
  * @param {(state: object) => void} onFilterChange
  */
-export function createFilterPanel(labels, tags, onFilterChange, { inlineControls = false, allowImageTagUnset = true } = {}) {
+export function createFilterPanel(labels, tags, onFilterChange, { inlineControls = false } = {}) {
   let _state = DEFAULT_STATE();
 
   function emit() { onFilterChange({ ..._state }); }
@@ -98,17 +98,21 @@ export function createFilterPanel(labels, tags, onFilterChange, { inlineControls
   let tagsDropdown = _buildTagsDropdown();
   tagsContainer.appendChild(tagsDropdown.element);
 
-  // ── Toolbar: Labels multi-select dropdown (tree-ordered, with depth indentation) ──
-  // Wrapped in a container div so it can be rebuilt when the active-model filter changes.
+  // ── Toolbar: Object Labels multi-select dropdown ──────────────────────────
+  // Shows only object-scoped labels — these are the labels that appear on bboxes.
+  // Image-scoped labels are handled separately in the Image Label Filters section.
   const labelsDropdownContainer = document.createElement('div');
   if (inlineControls) labelsDropdownContainer.style.width = '100%';
   let _labelsDropdown = null;
 
   function buildLabelsControls() {
     const filteredLabels = activeModel.applyLabelFilter(labels);
-    const regularMap = new Map([...filteredLabels].filter(([, l]) => l.labelType !== 'dynamic'));
+    // Only object-scoped labels belong in the bbox-label filter dropdown.
+    const regularMap = new Map(
+      [...filteredLabels].filter(([, l]) => l.labelType !== 'dynamic' && l.scope !== 'image')
+    );
     const dynamicMap = isDynamicLabelsVisible()
-      ? new Map([...filteredLabels].filter(([, l]) => l.labelType === 'dynamic'))
+      ? new Map([...filteredLabels].filter(([, l]) => l.labelType === 'dynamic' && l.scope !== 'image'))
       : new Map();
 
     const flatRegular = flattenHierarchy(regularMap);
@@ -120,7 +124,6 @@ export function createFilterPanel(labels, tags, onFilterChange, { inlineControls
       ...(flatDynamic.length > 0 ? [{ isSeparator: true, label: 'Dynamic' }, ...flatDynamic.map(toItem)] : []),
     ];
 
-    // Destroy previous dropdown instance
     _labelsDropdown?.destroy();
 
     _labelsDropdown = createMultiSelectDropdown({
@@ -153,7 +156,6 @@ export function createFilterPanel(labels, tags, onFilterChange, { inlineControls
     const notice = makeLabelFilterNotice(labels.size - filteredLabels.size);
     if (notice) labelsDropdownContainer.appendChild(notice);
 
-    // Reset label state on rebuild (filtered items may differ)
     _state.labelUuids = [];
     _state.labelExcludeUuids = [];
     _state.labelMatchMode = 'any';
@@ -161,6 +163,21 @@ export function createFilterPanel(labels, tags, onFilterChange, { inlineControls
   }
 
   buildLabelsControls();
+
+  // ── Image label conditions component ──────────────────────────────────────
+  // Returns the array of image-scoped labels visible to the current active model.
+  function _imageScopedLabels() {
+    const filtered = activeModel.applyLabelFilter(labels);
+    return [...filtered.values()].filter(l => l.scope === 'image' && l.labelType !== 'dynamic');
+  }
+
+  const imageLabelConditionsComp = createImageLabelConditions(
+    _imageScopedLabels(),
+    (conditions) => {
+      _state.imageLabelConditions = conditions;
+      emit();
+    },
+  );
 
   // Destroy `dropdown`, rebuild it via `buildFn` into `container`, and return the new instance.
   function _rebuildDropdown(dropdown, container, buildFn) {
@@ -176,10 +193,6 @@ export function createFilterPanel(labels, tags, onFilterChange, { inlineControls
     tagsDropdown = _rebuildDropdown(tagsDropdown, tagsContainer, _buildTagsDropdown);
     _state.tagUuids = [];
     _state.tagExcludeUuids = [];
-
-    imageTagConditionsComp.setAvailableTags(_visibleTags());
-    _state.imageTagConditions = [];
-
     emit();
   }
 
@@ -199,16 +212,13 @@ export function createFilterPanel(labels, tags, onFilterChange, { inlineControls
         tags = await fetchTags().catch(() => tags);
         tagsDropdown = _rebuildDropdown(tagsDropdown, tagsContainer, _buildTagsDropdown);
         tagsDropdown.setState(_state.tagUuids, _state.tagMatchMode, undefined, _state.tagExcludeUuids);
-
-        imageTagConditionsComp.setAvailableTags(_visibleTags());
-        // Conditions are preserved as-is; the component re-renders with updated tag names/colors.
       } while (_tagsUpdatePending);
     } finally {
       _tagsUpdateInFlight = false;
     }
   }
 
-  // Rebuild the labels dropdown when a label is created, renamed, or deleted.
+  // Rebuild the labels dropdown and image label conditions when a label is created, renamed, or deleted.
   let _labelsUpdateInFlight = false;
   let _labelsUpdatePending = false;
   async function _onLabelsUpdated() {
@@ -222,6 +232,7 @@ export function createFilterPanel(labels, tags, onFilterChange, { inlineControls
         _labelsUpdatePending = false;
         labels = await fetchLabels().catch(() => labels);
         buildLabelsControls();
+        imageLabelConditionsComp.setAvailableLabels(_imageScopedLabels());
       } while (_labelsUpdatePending);
     } finally {
       _labelsUpdateInFlight = false;
@@ -229,7 +240,7 @@ export function createFilterPanel(labels, tags, onFilterChange, { inlineControls
   }
 
   const _unsubAll = events.subscribeMany([
-    [EventTypes.ACTIVE_MODEL_CHANGED,              buildLabelsControls],
+    [EventTypes.ACTIVE_MODEL_CHANGED,              () => { buildLabelsControls(); imageLabelConditionsComp.setAvailableLabels(_imageScopedLabels()); }],
     [EventTypes.DYNAMIC_LABELS_VISIBILITY_CHANGED, buildLabelsControls],
     [EventTypes.TAG_KIND_VISIBILITY_CHANGED,       _onTagKindVisibilityChanged],
     [EventTypes.TAGS_UPDATED,                      _onTagsUpdated],
@@ -297,7 +308,7 @@ export function createFilterPanel(labels, tags, onFilterChange, { inlineControls
   primaryRow.appendChild(filenameInput);
   panel.appendChild(primaryRow);
 
-  // ── Secondary row: Verification + Image Tag Conditions side by side ───────
+  // ── Secondary row: Verification + Image Label Filters side by side ────────
   const secondaryRow = document.createElement('div');
   secondaryRow.className = 'filter-row-secondary';
 
@@ -328,29 +339,19 @@ export function createFilterPanel(labels, tags, onFilterChange, { inlineControls
   });
   verificationSection.appendChild(verificationSelect);
 
-  // Image tag conditions section
-  // A compact per-tag condition list (Present / Absent / Unset) replacing the
-  // old three-dropdown approach. Lives in the panel body, not the toolbar.
-  const imageTagConditionsComp = createImageTagConditions(
-    _visibleTags(),
-    (conditions) => {
-      _state.imageTagConditions = conditions;
-      emit();
-    },
-    { allowUnset: allowImageTagUnset },
-  );
+  // Image label conditions section — filter by whole-image label status
+  // (present / absent / uncertain) against the image_labels table.
+  const imageLabelSection = document.createElement('div');
+  imageLabelSection.className = 'filter-section filter-section--grow';
 
-  const imageTagSection = document.createElement('div');
-  imageTagSection.className = 'filter-section filter-section--grow';
-
-  const imageTagSectionLabel = document.createElement('div');
-  imageTagSectionLabel.className = 'filter-section-label';
-  imageTagSectionLabel.textContent = 'Image Tag Filters';
-  imageTagSection.appendChild(imageTagSectionLabel);
-  imageTagSection.appendChild(imageTagConditionsComp.element);
+  const imageLabelSectionLabel = document.createElement('div');
+  imageLabelSectionLabel.className = 'filter-section-label';
+  imageLabelSectionLabel.textContent = 'Image Label Filters';
+  imageLabelSection.appendChild(imageLabelSectionLabel);
+  imageLabelSection.appendChild(imageLabelConditionsComp.element);
 
   secondaryRow.appendChild(verificationSection);
-  secondaryRow.appendChild(imageTagSection);
+  secondaryRow.appendChild(imageLabelSection);
   panel.appendChild(secondaryRow);
 
   // ── Public API ────────────────────────────────────────────────────────────
@@ -360,7 +361,7 @@ export function createFilterPanel(labels, tags, onFilterChange, { inlineControls
       + s.tagExcludeUuids.length
       + s.labelUuids.length
       + s.labelExcludeUuids.length
-      + s.imageTagConditions.length
+      + s.imageLabelConditions.length
       + (s.filenameSearch ? 1 : 0)
       + (s.dateFrom ? 1 : 0)
       + (s.dateTo ? 1 : 0)
@@ -376,7 +377,7 @@ export function createFilterPanel(labels, tags, onFilterChange, { inlineControls
       && s.labelUuids.length === 0
       && s.labelExcludeUuids.length === 0
       && s.labelMatchMode === 'any'
-      && s.imageTagConditions.length === 0
+      && s.imageLabelConditions.length === 0
       && !s.filenameSearch
       && !s.dateFrom
       && !s.dateTo
@@ -390,9 +391,6 @@ export function createFilterPanel(labels, tags, onFilterChange, { inlineControls
    * @param {Partial<ReturnType<typeof DEFAULT_STATE>>} partial
    */
   function setState(partial) {
-    // Normalize: if tagUuids is being replaced but tagExcludeUuids is absent
-    // (e.g. a preset saved before exclusions existed), default the exclude list
-    // to [] so stale exclusions aren't silently preserved.
     if (partial.tagUuids !== undefined && !('tagExcludeUuids' in partial)) {
       partial = { ...partial, tagExcludeUuids: [] };
     }
@@ -407,8 +405,8 @@ export function createFilterPanel(labels, tags, onFilterChange, { inlineControls
     if (partial.labelUuids !== undefined || partial.labelMatchMode !== undefined || partial.labelIncludeChildren !== undefined || partial.labelExcludeUuids !== undefined) {
       _labelsDropdown?.setState(_state.labelUuids, _state.labelMatchMode, _state.labelIncludeChildren, _state.labelExcludeUuids);
     }
-    if (partial.imageTagConditions !== undefined) {
-      imageTagConditionsComp.setState(_state.imageTagConditions);
+    if (partial.imageLabelConditions !== undefined) {
+      imageLabelConditionsComp.setState(_state.imageLabelConditions);
     }
     if (partial.dateFrom !== undefined) {
       dateFromInput.value = _state.dateFrom
@@ -433,19 +431,16 @@ export function createFilterPanel(labels, tags, onFilterChange, { inlineControls
   function destroy() {
     tagsDropdown.destroy();
     _labelsDropdown?.destroy();
-    imageTagConditionsComp.destroy();
+    imageLabelConditionsComp.destroy();
     _unsubAll();
   }
 
   return {
     element: panel,
-    /** Dropdown elements to place in the sticky toolbar (Tags + Labels). */
+    /** Dropdown elements to place in the sticky toolbar (Tags + Object Labels). */
     toolbarControls: [tagsContainer, labelsDropdownContainer],
     getState: () => ({
       ..._state,
-      // showAllBboxes: true skips the server-side tag filter entirely.
-      // "no tags included" → show everything rather than nothing (exclusions
-      // are passed separately via tagExcludeUuids and handled server-side).
       showAllBboxes: _state.tagUuids.length === 0,
     }),
     setState,

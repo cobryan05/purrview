@@ -30,6 +30,8 @@ async function _buildLabelListPanel(onSelect) {
   wrap.style.cssText = 'min-width:200px;max-height:260px;overflow-y:auto;padding:4px 0;';
 
   for (const [uuid, label] of labels) {
+    if (label.scope !== 'image') continue;
+
     const row = document.createElement('div');
     row.style.cssText = [
       'display:flex', 'align-items:center', 'gap:6px',

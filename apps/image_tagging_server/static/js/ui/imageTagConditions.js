@@ -12,9 +12,14 @@
  * Returns: { element, setState(conditions), getState() → conditions,
  *            setAvailableTags(tags), destroy() }
  */
-export function createImageTagConditions(tags, onChange, { allowUnset = true } = {}) {
-  let _conditions = [];      // [{ tagUuid, state }]
-  let _tags = [...tags];     // available visible tag objects
+function _createConditionPicker(items, onChange, {
+  idKey,
+  states,
+  placeholder,
+  emptyMsg,
+} = {}) {
+  let _conditions = [];
+  let _items = [...items];
 
   const root = document.createElement('div');
   root.className = 'itc-root';
@@ -27,21 +32,14 @@ export function createImageTagConditions(tags, onChange, { allowUnset = true } =
   addRow.className = 'itc-add-row';
   root.appendChild(addRow);
 
-  // ── Helpers ──────────────────────────────────────────────────────────────
-
-  function _getTag(uuid) {
-    return _tags.find(t => t.uuid === uuid) ?? null;
+  function _getItem(uuid) {
+    return _items.find(t => t.uuid === uuid) ?? null;
   }
 
   function _makeStateSelect(currentState) {
     const sel = document.createElement('select');
     sel.className = 'itc-state-select';
-    const opts = [
-      ['present', 'Present'],
-      ['absent',  'Absent'],
-      ...(allowUnset ? [['unset', 'Unset']] : []),
-    ];
-    for (const [value, label] of opts) {
+    for (const [value, label] of states) {
       const opt = document.createElement('option');
       opt.value = value;
       opt.textContent = label;
@@ -51,28 +49,23 @@ export function createImageTagConditions(tags, onChange, { allowUnset = true } =
     return sel;
   }
 
-  // ── Render ────────────────────────────────────────────────────────────────
-
   function _renderRow(cond, idx) {
     const row = document.createElement('div');
     row.className = 'itc-row';
 
-    const tag = _getTag(cond.tagUuid);
+    const item = _getItem(cond[idKey]);
 
-    // Color swatch
     const swatch = document.createElement('span');
     swatch.className = 'itc-swatch';
-    swatch.style.background = tag?.color || '#555';
+    swatch.style.background = item?.color || '#555';
     row.appendChild(swatch);
 
-    // Tag name
     const nameEl = document.createElement('span');
     nameEl.className = 'itc-name';
-    nameEl.textContent = tag?.name ?? cond.tagUuid;
-    nameEl.title = tag?.name ?? cond.tagUuid;
+    nameEl.textContent = item?.name ?? cond[idKey];
+    nameEl.title = item?.name ?? cond[idKey];
     row.appendChild(nameEl);
 
-    // State selector
     const stateSelect = _makeStateSelect(cond.state);
     stateSelect.addEventListener('change', () => {
       _conditions[idx] = { ..._conditions[idx], state: stateSelect.value };
@@ -80,7 +73,6 @@ export function createImageTagConditions(tags, onChange, { allowUnset = true } =
     });
     row.appendChild(stateSelect);
 
-    // Remove button
     const removeBtn = document.createElement('button');
     removeBtn.type = 'button';
     removeBtn.className = 'itc-remove';
@@ -98,8 +90,8 @@ export function createImageTagConditions(tags, onChange, { allowUnset = true } =
 
   function _renderPicker() {
     addRow.innerHTML = '';
-    const usedUuids = new Set(_conditions.map(c => c.tagUuid));
-    const available = _tags
+    const usedUuids = new Set(_conditions.map(c => c[idKey]));
+    const available = _items
       .filter(t => !usedUuids.has(t.uuid))
       .sort((a, b) => a.name.localeCompare(b.name));
 
@@ -110,21 +102,21 @@ export function createImageTagConditions(tags, onChange, { allowUnset = true } =
     const ph = document.createElement('option');
     ph.value = '';
     ph.textContent = available.length > 0
-      ? 'Add image tag filter…'
-      : (_tags.length === 0 ? 'No tags defined' : 'All tags added');
+      ? placeholder
+      : (_items.length === 0 ? emptyMsg : 'All added');
     picker.appendChild(ph);
 
-    for (const tag of available) {
+    for (const item of available) {
       const opt = document.createElement('option');
-      opt.value = tag.uuid;
-      opt.textContent = tag.name;
+      opt.value = item.uuid;
+      opt.textContent = item.name;
       picker.appendChild(opt);
     }
 
     picker.addEventListener('change', () => {
       const uuid = picker.value;
       if (!uuid) return;
-      _conditions.push({ tagUuid: uuid, state: 'present' });
+      _conditions.push({ [idKey]: uuid, state: states[0][0] });
       _renderAll();
       onChange([..._conditions]);
     });
@@ -138,10 +130,8 @@ export function createImageTagConditions(tags, onChange, { allowUnset = true } =
     _renderPicker();
   }
 
-  // ── Public API ────────────────────────────────────────────────────────────
-
   function setState(conditions) {
-    _conditions = (conditions ?? []).map(c => ({ tagUuid: c.tagUuid, state: c.state ?? 'present' }));
+    _conditions = (conditions ?? []).map(c => ({ [idKey]: c[idKey], state: c.state ?? states[0][0] }));
     _renderAll();
   }
 
@@ -149,17 +139,49 @@ export function createImageTagConditions(tags, onChange, { allowUnset = true } =
     return [..._conditions];
   }
 
-  /** Called when the visible tag list changes (tag created/renamed/deleted or kind visibility changed). */
-  function setAvailableTags(newTags) {
-    _tags = [...newTags];
+  function setAvailableItems(newItems) {
+    _items = [...newItems];
     _renderAll();
-  }
-
-  function destroy() {
-    // No external subscriptions — nothing to clean up.
   }
 
   _renderAll();
 
-  return { element: root, setState, getState, setAvailableTags, destroy };
+  return { element: root, setState, getState, setAvailableItems, destroy() {} };
+}
+
+export function createImageTagConditions(tags, onChange, { allowUnset = true } = {}) {
+  const stateOpts = [
+    ['present', 'Present'],
+    ['absent',  'Absent'],
+    ...(allowUnset ? [['unset', 'Unset']] : []),
+  ];
+  const inner = _createConditionPicker(tags, onChange, {
+    idKey: 'tagUuid',
+    states: stateOpts,
+    placeholder: 'Add image tag filter…',
+    emptyMsg: 'No tags defined',
+  });
+  return {
+    element: inner.element,
+    setState: inner.setState,
+    getState: inner.getState,
+    setAvailableTags: inner.setAvailableItems,
+    destroy: inner.destroy,
+  };
+}
+
+export function createImageLabelConditions(labels, onChange) {
+  const inner = _createConditionPicker(labels, onChange, {
+    idKey: 'labelUuid',
+    states: [['present', 'Present'], ['absent', 'Absent'], ['uncertain', 'Uncertain']],
+    placeholder: 'Add image label filter…',
+    emptyMsg: 'No image labels defined',
+  });
+  return {
+    element: inner.element,
+    setState: inner.setState,
+    getState: inner.getState,
+    setAvailableLabels: inner.setAvailableItems,
+    destroy: inner.destroy,
+  };
 }

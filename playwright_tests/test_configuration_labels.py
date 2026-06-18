@@ -3,15 +3,16 @@ Tests for the Labels configuration UI.
 
 Exercises the renderLabelList() → createLabelList() component rendered inside
 Configuration > Labels & Tags > #labels-list:
-  - DOM structure (list container present)
-  - Label list loading (hierarchical labels appear)
+  - DOM structure (two scoped sections present)
+  - Label list loading (hierarchical labels appear in the correct section)
   - Create root label flow (API called with correct payload)
   - Add child label flow
   - Edit label flow
   - Delete flow (confirm dialog; API called or suppressed)
+  - Scope pill (move label between sections)
 
 Run with:
-    pytest tests/playwright/test_configuration_labels.py -p no:xdist -v
+    pytest playwright_tests/test_configuration_labels.py -p no:xdist -v
 """
 import json
 
@@ -27,6 +28,7 @@ ROOT_LABEL = {
     "name": "Cat",
     "color": "#ff0000",
     "parentUuid": None,
+    "scope": "object",
 }
 
 CHILD_LABEL = {
@@ -34,6 +36,7 @@ CHILD_LABEL = {
     "name": "Kitten",
     "color": "#00ff00",
     "parentUuid": "cccccccc-0000-0000-0000-000000000001",
+    "scope": "object",
 }
 
 # ---------------------------------------------------------------------------
@@ -62,6 +65,16 @@ def _mock_labels(page: Page, labels: list):
     )
 
 
+def _obj_add_row(page: Page):
+    """Return the add-row locator for the Object Labels section."""
+    return page.locator(".label-row:has(input[placeholder='New Object Label'])")
+
+
+def _img_add_row(page: Page):
+    """Return the add-row locator for the Image Labels section."""
+    return page.locator(".label-row:has(input[placeholder='New Image Label'])")
+
+
 # ---------------------------------------------------------------------------
 # DOM structure
 # ---------------------------------------------------------------------------
@@ -69,12 +82,23 @@ def _mock_labels(page: Page, labels: list):
 
 class TestLabelPaneStructure:
     def test_pane_structure(self, page: Page, base_url: str):
-        """The labels pane renders its container and add-label control in one navigation."""
+        """The labels pane renders its container and both scoped add-label controls."""
         _mock_labels(page, [])
         _navigate_to_labels(page, base_url)
         expect(page.locator("#labels-list")).to_be_visible()
+        # Each section has its own Add label button → expect exactly 2.
         page.wait_for_selector("#labels-list button[title='Add label']", timeout=4000)
-        expect(page.locator("#labels-list button[title='Add label']")).to_be_visible()
+        expect(page.locator("#labels-list button[title='Add label']")).to_have_count(2)
+
+    def test_two_section_headers_visible(self, page: Page, base_url: str):
+        """Object Labels and Image Labels section headers are both rendered."""
+        _mock_labels(page, [])
+        _navigate_to_labels(page, base_url)
+        page.wait_for_selector("#labels-list button[title='Add label']", timeout=4000)
+        # Section headers are plain divs with all-caps text rendered from JS.
+        labels_list = page.locator("#labels-list")
+        expect(labels_list).to_contain_text("Object Labels")
+        expect(labels_list).to_contain_text("Image Labels")
 
     def test_no_js_errors_on_labels_tab(self, page: Page, base_url: str):
         """No console errors during Labels pane load."""
@@ -103,7 +127,6 @@ class TestLabelListLoading:
         """Child labels appear nested under their parent."""
         _mock_labels(page, [ROOT_LABEL, CHILD_LABEL])
         _navigate_to_labels(page, base_url)
-        # Both parent and child should be rendered
         expect(page.locator(f"#labels-list [data-uuid='{ROOT_LABEL['uuid']}']")).to_be_visible()
         expect(page.locator(f"#labels-list [data-uuid='{CHILD_LABEL['uuid']}']")).to_be_visible()
 
@@ -146,7 +169,7 @@ class TestLabelListLoading:
 
 class TestCreateRootLabel:
     def test_create_root_label_calls_api(self, page: Page, base_url: str):
-        """Filling a name and clicking the Save button POSTs to /api/labels."""
+        """Filling a name in the Object section and clicking Add label POSTs to /api/labels."""
         calls: list[dict] = []
 
         def handle_create(route: Route):
@@ -171,13 +194,11 @@ class TestCreateRootLabel:
         )
 
         _navigate_to_labels(page, base_url)
-        page.wait_for_selector("#labels-list input[placeholder='New Root Label Name']", timeout=4000)
+        page.wait_for_selector("#labels-list input[placeholder='New Object Label']", timeout=4000)
 
-        # Fill in the label name (the root-label create form is always visible)
-        page.locator("#labels-list input[placeholder='New Root Label Name']").fill("Dog")
-
-        # Click the 'Add label' button to submit (or the Save button inside the field)
-        page.locator("#labels-list button[title='Add label']").click()
+        add_row = _obj_add_row(page)
+        add_row.locator("input[placeholder='New Object Label']").fill("Dog")
+        add_row.locator("button[title='Add label']").click()
         page.wait_for_timeout(600)
 
         assert calls, "Expected POST to /api/labels"
@@ -185,7 +206,7 @@ class TestCreateRootLabel:
         assert calls[0].get("parentUuid") is None
 
     def test_create_root_label_empty_name_blocked(self, page: Page, base_url: str):
-        """Clicking Save with an empty name does not call the API."""
+        """Clicking Add label with an empty name does not call the API."""
         calls: list[bool] = []
 
         def handle_create(route: Route):
@@ -201,11 +222,10 @@ class TestCreateRootLabel:
         page.route(lambda url: url.split("?")[0].endswith("/api/labels"), handle_create)
 
         _navigate_to_labels(page, base_url)
-        # The create form is always visible; leave the name field empty
-        page.wait_for_selector("#labels-list input[placeholder='New Root Label Name']", timeout=4000)
+        page.wait_for_selector("#labels-list input[placeholder='New Object Label']", timeout=4000)
 
         # Click Add label without filling in a name
-        page.locator("#labels-list button[title='Add label']").click()
+        _obj_add_row(page).locator("button[title='Add label']").click()
         page.wait_for_timeout(500)
 
         assert not calls, "API must NOT be called when name is empty"
@@ -227,7 +247,6 @@ class TestAddChildLabel:
         row.locator("button[title='Add Child']").click()
         page.wait_for_timeout(400)
 
-        # An inline input should appear somewhere after the parent row
         page.wait_for_selector("#labels-list input[placeholder='New Label Name']", timeout=3000)
         expect(page.locator("#labels-list input[placeholder='New Label Name']")).to_be_visible()
 
@@ -346,6 +365,7 @@ class TestDeleteLabel:
 # Label scope — edit-mode UI
 # ---------------------------------------------------------------------------
 
+
 IMAGE_SCOPE_LABEL = {
     "uuid": "cccccccc-0000-0000-0000-000000000010",
     "name": "Corrupt",
@@ -364,54 +384,18 @@ OBJECT_SCOPE_LABEL = {
 
 
 class TestLabelScopeEditMode:
-    def test_scope_selector_visible_in_new_label_row(self, page: Page, base_url: str):
-        """The 'add new root label' row contains an Object/Image scope select."""
+    def test_two_sections_present_in_edit_mode(self, page: Page, base_url: str):
+        """Both 'Object Labels' and 'Image Labels' sections are rendered."""
         _mock_labels(page, [])
         _navigate_to_labels(page, base_url)
-        page.wait_for_selector("#labels-list input[placeholder='New Root Label Name']", timeout=4000)
-
-        scope_sel = page.locator("#labels-list select[title*='Scope']")
-        expect(scope_sel).to_be_visible()
-        options = scope_sel.locator("option").all_text_contents()
-        assert "Object" in options, f"Expected 'Object' option; got: {options}"
-        assert "Image" in options, f"Expected 'Image' option; got: {options}"
-
-    def test_create_image_scope_label_sends_scope_in_payload(self, page: Page, base_url: str):
-        """Creating a new label with 'Image' scope selected sends scope='image' in POST."""
-        calls: list[dict] = []
-
-        def handle(route: Route):
-            if route.request.method == "POST":
-                calls.append(json.loads(route.request.post_data))
-                route.fulfill(
-                    status=200,
-                    content_type="application/json",
-                    body=json.dumps({"status": "success", "label": IMAGE_SCOPE_LABEL}),
-                )
-            else:
-                route.fulfill(
-                    status=200,
-                    content_type="application/json",
-                    body=json.dumps({"status": "success", "labels": []}),
-                )
-
-        _mock_labels(page, [])
-        page.route(lambda url: url.split("?")[0].endswith("/api/labels"), handle)
-        _navigate_to_labels(page, base_url)
-        page.wait_for_selector("#labels-list input[placeholder='New Root Label Name']", timeout=4000)
-
-        # Switch scope to Image
-        page.locator("#labels-list select[title*='Scope']").select_option("image")
-        page.locator("#labels-list input[placeholder='New Root Label Name']").fill("Corrupt")
-        page.locator("#labels-list button[title='Add label']").click()
-        page.wait_for_timeout(600)
-
-        assert calls, "Expected POST to /api/labels"
-        assert calls[0].get("scope") == "image", \
-            f"Expected scope='image' in POST payload; got: {calls[0]}"
+        page.wait_for_selector("#labels-list button[title='Add label']", timeout=4000)
+        expect(page.locator("#labels-list")).to_contain_text("Object Labels")
+        expect(page.locator("#labels-list")).to_contain_text("Image Labels")
+        # One Add label button per section
+        expect(page.locator("#labels-list button[title='Add label']")).to_have_count(2)
 
     def test_create_object_scope_label_sends_scope_in_payload(self, page: Page, base_url: str):
-        """Default scope (Object) is sent as scope='object' in POST."""
+        """Adding a label via the Object Labels section sends scope='object' in POST."""
         calls: list[dict] = []
 
         def handle(route: Route):
@@ -432,57 +416,50 @@ class TestLabelScopeEditMode:
         _mock_labels(page, [])
         page.route(lambda url: url.split("?")[0].endswith("/api/labels"), handle)
         _navigate_to_labels(page, base_url)
-        page.wait_for_selector("#labels-list input[placeholder='New Root Label Name']", timeout=4000)
+        page.wait_for_selector("#labels-list input[placeholder='New Object Label']", timeout=4000)
 
-        page.locator("#labels-list input[placeholder='New Root Label Name']").fill("Cat")
-        page.locator("#labels-list button[title='Add label']").click()
+        add_row = _obj_add_row(page)
+        add_row.locator("input[placeholder='New Object Label']").fill("Cat")
+        add_row.locator("button[title='Add label']").click()
         page.wait_for_timeout(600)
 
         assert calls, "Expected POST to /api/labels"
         assert calls[0].get("scope") == "object", \
             f"Expected scope='object' in POST payload; got: {calls[0]}"
 
-    def test_existing_image_scope_label_shows_img_selected(self, page: Page, base_url: str):
-        """An existing label with scope='image' shows 'Img' selected in its scope dropdown."""
-        _mock_labels(page, [IMAGE_SCOPE_LABEL])
-        _navigate_to_labels(page, base_url)
-
-        row = page.locator(f"#labels-list [data-uuid='{IMAGE_SCOPE_LABEL['uuid']}']")
-        expect(row).to_be_visible()
-        scope_sel = row.locator("select[title*='scope']")
-        expect(scope_sel).to_have_value("image", timeout=3000)
-
-    def test_changing_scope_to_image_calls_update_api(self, page: Page, base_url: str):
-        """Switching the scope dropdown on an existing label sends scope in the PATCH payload."""
+    def test_create_image_scope_label_sends_scope_in_payload(self, page: Page, base_url: str):
+        """Adding a label via the Image Labels section sends scope='image' in POST."""
         calls: list[dict] = []
 
         def handle(route: Route):
-            if route.request.method == "PATCH":
+            if route.request.method == "POST":
                 calls.append(json.loads(route.request.post_data))
                 route.fulfill(
                     status=200,
                     content_type="application/json",
-                    body=json.dumps({"status": "success", "label": {**OBJECT_SCOPE_LABEL, "scope": "image"}}),
+                    body=json.dumps({"status": "success", "label": IMAGE_SCOPE_LABEL}),
                 )
             else:
                 route.fulfill(
                     status=200,
                     content_type="application/json",
-                    body=json.dumps({"status": "success", "labels": [OBJECT_SCOPE_LABEL]}),
+                    body=json.dumps({"status": "success", "labels": []}),
                 )
 
-        _mock_labels(page, [OBJECT_SCOPE_LABEL])
-        page.route("**/api/labels/**", handle)
+        _mock_labels(page, [])
+        page.route(lambda url: url.split("?")[0].endswith("/api/labels"), handle)
         _navigate_to_labels(page, base_url)
+        page.wait_for_selector("#labels-list input[placeholder='New Image Label']", timeout=4000)
 
-        row = page.locator(f"#labels-list [data-uuid='{OBJECT_SCOPE_LABEL['uuid']}']")
-        expect(row).to_be_visible()
-        row.locator("select[title*='scope']").select_option("image")
+        add_row = _img_add_row(page)
+        add_row.locator("input[placeholder='New Image Label']").fill("Corrupt")
+        add_row.locator("button[title='Add label']").click()
         page.wait_for_timeout(600)
 
-        assert calls, "Expected PATCH to /api/labels/{uuid}"
+        assert calls, "Expected POST to /api/labels"
         assert calls[0].get("scope") == "image", \
-            f"Expected scope='image' in PATCH payload; got: {calls[0]}"
+            f"Expected scope='image' in POST payload; got: {calls[0]}"
+
 
 
 # ---------------------------------------------------------------------------
