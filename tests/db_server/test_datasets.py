@@ -11,7 +11,12 @@ from datetime import datetime, timedelta, timezone
 import pytest
 from sqlmodel import select
 
-from apps.helpers.db.types import UNVERIFIED_TAG_UUID, VERIFIED_TAG_UUID, BBox, ImageRecord
+from apps.helpers.db.types import (
+    UNVERIFIED_TAG_UUID,
+    VERIFIED_TAG_UUID,
+    BBox,
+    ImageRecord,
+)
 from tests.conftest import make_png
 
 # ─────────────────────────────────────────────────────────────────────────────

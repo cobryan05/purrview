@@ -27,7 +27,10 @@ from inference_client.models.inference_payload import InferencePayload
 from inference_client.models.pin_model_payload import PinModelPayload
 
 from apps.helpers.db.db_client import UNVERIFIED_TAG_UUID
-from apps.helpers.hashUtils import PHASH_JPEG_QUALITY, compute_phashes_with_jpeg_roundtrip
+from apps.helpers.hashUtils import (
+    PHASH_JPEG_QUALITY,
+    compute_phashes_with_jpeg_roundtrip,
+)
 from apps.helpers.imageProviders.imageProvider import (
     ImageProvider,
     ImageProviderType,
