@@ -9,6 +9,8 @@ import { deleteImage, deleteImageDbOnly } from '/app-static/js/shared/api/images
 let _initialized = false;
 let browser = null;
 let _lastBoundaryToast = 0;
+/** Image path that was last synced into the file browser (used to detect canvas changes). */
+let _lastSyncedImagePath = null;
 
 /**
  * Navigate the browser to the directory containing the currently loaded image,
@@ -21,15 +23,34 @@ async function revealCurrentFile(runtime) {
     browser.rerender();
     return;
   }
+
   const parts = imagePath.split('/');
   const filename = parts.pop();
   const dir = parts.join('/') || '/';
 
-  if (browser.currentPath !== dir) {
+  const imageChanged = imagePath !== _lastSyncedImagePath;
+  _lastSyncedImagePath = imagePath;
+
+  if (!imageChanged) {
+    // Canvas image unchanged — preserve the user's browsed position.
+    browser.rerender();
+    return;
+  }
+
+  // Canvas image changed — attempt to navigate to its directory.
+  if (browser.currentPath !== dir || browser.getEntries().length === 0) {
     // load() resets FileNavigation via setDirectory; re-select afterwards.
     await browser.load(dir);
     runtime.fileNavigation.select(filename);
+    if (browser.getEntries().length === 0) {
+      toast('Cannot browse to this image — its path is outside the file browser root.', 5000, 'warning');
+      return;
+    }
+  } else {
+    // Already in the right directory — just update the selection.
+    runtime.fileNavigation.select(filename);
   }
+
   browser.rerender();
   browser.scrollToActive();
 }
@@ -69,7 +90,14 @@ export async function init(runtime) {
     }
   });
 
-  await browser.init();
+  // If an image is already loaded on the canvas, navigate directly to its
+  // directory (avoids a redundant load of '/' that would immediately be
+  // replaced). If no image is loaded, fall back to loading root.
+  if (runtime.state?.image?.image_path) {
+    await revealCurrentFile(runtime);
+  } else {
+    await browser.init();
+  }
 }
 
 
