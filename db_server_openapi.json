@@ -3994,6 +3994,48 @@
           }
         }
       }
+    },
+    "/api/training-configs/{uuid}/label-stats": {
+      "get": {
+        "tags": [
+          "training_configs"
+        ],
+        "summary": "Get Training Config Label Stats",
+        "operationId": "get_training_config_label_stats",
+        "parameters": [
+          {
+            "name": "uuid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TrainingConfigLabelStatsResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -6758,6 +6800,54 @@
         ],
         "title": "LabelScope"
       },
+      "LabelStatEntry": {
+        "properties": {
+          "label_uuid": {
+            "type": "string",
+            "title": "Label Uuid"
+          },
+          "label_scope": {
+            "type": "string",
+            "title": "Label Scope"
+          },
+          "verified_image_count": {
+            "type": "integer",
+            "title": "Verified Image Count",
+            "default": 0
+          },
+          "unverified_image_count": {
+            "type": "integer",
+            "title": "Unverified Image Count",
+            "default": 0
+          },
+          "verified_bbox_count": {
+            "type": "integer",
+            "title": "Verified Bbox Count",
+            "default": 0
+          },
+          "unverified_bbox_count": {
+            "type": "integer",
+            "title": "Unverified Bbox Count",
+            "default": 0
+          },
+          "fully_verified_image_count": {
+            "type": "integer",
+            "title": "Fully Verified Image Count",
+            "default": 0
+          },
+          "images_missing_verification_count": {
+            "type": "integer",
+            "title": "Images Missing Verification Count",
+            "default": 0
+          }
+        },
+        "type": "object",
+        "required": [
+          "label_uuid",
+          "label_scope"
+        ],
+        "title": "LabelStatEntry"
+      },
       "LabelType": {
         "type": "string",
         "enum": [
@@ -8417,6 +8507,40 @@
           "trainerType"
         ],
         "title": "TrainingConfigCreate"
+      },
+      "TrainingConfigLabelStatsResponse": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "title": "Status",
+            "default": "success"
+          },
+          "message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Message"
+          },
+          "labelStats": {
+            "items": {
+              "$ref": "#/components/schemas/LabelStatEntry"
+            },
+            "type": "array",
+            "title": "Labelstats"
+          },
+          "totalImages": {
+            "type": "integer",
+            "title": "Totalimages",
+            "default": 0
+          }
+        },
+        "type": "object",
+        "title": "TrainingConfigLabelStatsResponse"
       },
       "TrainingConfigRead": {
         "properties": {

@@ -76,3 +76,12 @@ export async function fetchTrainingConfigReadiness(uuid) {
   }
   return { readyCount: data.readyCount, needsReviewCount: data.needsReviewCount, datasetUuids: data.datasetUuids ?? [], labelUuids: data.labelUuids ?? [] };
 }
+
+export async function fetchTrainingConfigLabelStats(uuid) {
+  const res = await apiFetch(`/api/training-configs/${uuid}/label-stats`);
+  const data = await res.json();
+  if (!res.ok || data.status !== 'success') {
+    throw new Error(data.message || 'Failed to fetch training config label stats');
+  }
+  return { labelStats: data.labelStats ?? [], totalImages: data.totalImages ?? 0 };
+}

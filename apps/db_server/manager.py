@@ -2174,3 +2174,6 @@ class Manager:
 
     async def get_training_config_readiness(self, uuid: str) -> "Optional[dict]":
         return await self._db_client.get_training_config_readiness(uuid)
+
+    async def get_training_config_label_stats(self, uuid: str) -> "Optional[dict]":
+        return await self._db_client.get_training_config_label_stats(uuid)

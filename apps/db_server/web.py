@@ -513,6 +513,22 @@ class TrainingConfigReadinessResponse(StatusResponse):
     label_uuids: List[str] = Field(default_factory=list)
 
 
+class LabelStatEntry(BaseModel):
+    label_uuid: str
+    label_scope: str  # "image" or "object"
+    verified_image_count: int = 0
+    unverified_image_count: int = 0
+    verified_bbox_count: int = 0
+    unverified_bbox_count: int = 0
+    fully_verified_image_count: int = 0
+    images_missing_verification_count: int = 0
+
+
+class TrainingConfigLabelStatsResponse(StatusResponse):
+    label_stats: List[LabelStatEntry] = Field(default_factory=list)
+    total_images: int = 0
+
+
 class ListModelTypenamesResponse(StatusResponse):
     typenames: List[str] = Field(default_factory=list)
 
@@ -2514,3 +2530,19 @@ class WebApp:
             except Exception as e:
                 logger.error(e, exc_info=True)
                 return TrainingConfigReadinessResponse(status=JsonValues.FAILURE, message=str(e))
+
+        @self._app.get(
+            "/api/training-configs/{uuid}/label-stats",
+            response_model=TrainingConfigLabelStatsResponse,
+            tags=[ApiTags.TRAINING_CONFIGS],
+            operation_id="get_training_config_label_stats",
+        )
+        async def get_training_config_label_stats(uuid: str) -> TrainingConfigLabelStatsResponse:
+            try:
+                result = await self._manager.get_training_config_label_stats(uuid)
+                if result is None:
+                    return TrainingConfigLabelStatsResponse(status=JsonValues.FAILURE, message="Training config not found")
+                return TrainingConfigLabelStatsResponse(status=JsonValues.SUCCESS, **result)
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return TrainingConfigLabelStatsResponse(status=JsonValues.FAILURE, message=str(e))

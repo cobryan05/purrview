@@ -2960,6 +2960,198 @@ class DbClient:
             "label_uuids": label_uuids,
         }
 
+    async def get_training_config_label_stats(self, uuid: str) -> Optional[dict]:
+        """Return per-label dataset stats for a training config.
+
+        Relevant labels are those referenced by the model config's nodes that also
+        appear in at least one of the training config's datasets. If no model config
+        is assigned, all dataset labels are used.
+
+        Returns None if the training config doesn't exist.
+        """
+        tc = await self.get_training_config(uuid)
+        if tc is None:
+            return None
+
+        dataset_uuids = tc.dataset_uuids
+
+        # Union of all label UUIDs across selected datasets.
+        dataset_label_uuids: set[str] = set()
+        for ds_uuid in dataset_uuids:
+            dataset = await self.get_dataset(ds_uuid)
+            if dataset is not None:
+                dataset_label_uuids.update(dataset.label_uuids)
+
+        # Intersect with model config node labels when a model config is set.
+        if tc.model_config_uuid:
+            mc = await self.get_model_config(tc.model_config_uuid)
+            if mc is not None:
+                mc_label_uuids = {node.label_uuid for node in mc.nodes if node.label_uuid}
+                relevant_label_uuids = list(dataset_label_uuids & mc_label_uuids)
+            else:
+                relevant_label_uuids = list(dataset_label_uuids)
+        else:
+            relevant_label_uuids = list(dataset_label_uuids)
+
+        if not relevant_label_uuids:
+            return {"label_stats": [], "total_images": 0}
+
+        labels_map = await self.get_labels_by_uuids(relevant_label_uuids)
+
+        # Collect all image UUIDs from the datasets (union, de-duped).
+        seen_uuids: set[str] = set()
+        all_image_uuids: list[str] = []
+        for ds_uuid in dataset_uuids:
+            dataset = await self.get_dataset(ds_uuid)
+            if dataset is None:
+                continue
+            after_uuid: Optional[str] = None
+            after_sort_value: Optional[datetime] = None
+            while True:
+                page, has_more = await self._list_images_for_dataset(
+                    dataset,
+                    limit=_READINESS_PAGE_SIZE,
+                    sort_by="uuid",
+                    sort_order="asc",
+                    after_uuid=after_uuid,
+                    after_sort_value=after_sort_value,
+                )
+                for img in page:
+                    if img.uuid not in seen_uuids:
+                        seen_uuids.add(img.uuid)
+                        all_image_uuids.append(img.uuid)
+                if not has_more or not page:
+                    break
+                last = page[-1]
+                after_uuid = last.uuid
+                after_sort_value = last.uuid
+
+        total_images = len(all_image_uuids)
+
+        image_label_uuids = [u for u in relevant_label_uuids if u in labels_map and labels_map[u].scope == LabelScope.IMAGE]
+        object_label_uuids = [u for u in relevant_label_uuids if u in labels_map and labels_map[u].scope == LabelScope.OBJECT]
+
+        # Seed result dict.
+        label_stats: dict[str, dict] = {}
+        for lbl_uuid in relevant_label_uuids:
+            label = labels_map.get(lbl_uuid)
+            if label is None:
+                continue
+            label_stats[lbl_uuid] = {
+                "label_uuid": lbl_uuid,
+                "label_scope": label.scope.value,
+                "verified_image_count": 0,
+                "unverified_image_count": total_images,
+                "verified_bbox_count": 0,
+                "unverified_bbox_count": 0,
+                "fully_verified_image_count": 0,
+                "images_missing_verification_count": 0,
+            }
+
+        if not all_image_uuids:
+            return {"label_stats": list(label_stats.values()), "total_images": 0}
+
+        async with self._async_session_maker() as session:
+            # ── Image-scope labels ──────────────────────────────────────────
+            if image_label_uuids:
+                # Count verified (PRESENT/ABSENT) rows per label.
+                result = await session.exec(
+                    select(ImageLabel.label_uuid, func.count().label("cnt"))
+                    .where(
+                        ImageLabel.image_uuid.in_(all_image_uuids),
+                        ImageLabel.label_uuid.in_(image_label_uuids),
+                        ImageLabel.status.in_([ImageItemStatus.PRESENT, ImageItemStatus.ABSENT]),
+                    )
+                    .group_by(ImageLabel.label_uuid)
+                )
+                for lbl_uuid, cnt in result.all():
+                    if lbl_uuid in label_stats:
+                        label_stats[lbl_uuid]["verified_image_count"] = cnt
+                        label_stats[lbl_uuid]["unverified_image_count"] = total_images - cnt
+
+            # ── Object-scope labels ─────────────────────────────────────────
+            if object_label_uuids:
+                # Total verified bboxes per label.
+                verified_inner = (
+                    select(BBox.label_uuid, BBox.uuid.label("bbox_uuid"))
+                    .join(BBoxTagLink, BBox.uuid == BBoxTagLink.bbox_uuid)
+                    .where(
+                        BBox.image_uuid.in_(all_image_uuids),
+                        BBox.label_uuid.in_(object_label_uuids),
+                        BBoxTagLink.tag_uuid == VERIFIED_TAG_UUID,
+                    )
+                    .subquery()
+                )
+                result = await session.exec(
+                    select(verified_inner.c.label_uuid, func.count().label("cnt"))
+                    .group_by(verified_inner.c.label_uuid)
+                )
+                for lbl_uuid, cnt in result.all():
+                    if lbl_uuid in label_stats:
+                        label_stats[lbl_uuid]["verified_bbox_count"] = cnt
+
+                # Total unverified bboxes per label.
+                unverified_inner = (
+                    select(BBox.label_uuid, BBox.uuid.label("bbox_uuid"))
+                    .join(BBoxTagLink, BBox.uuid == BBoxTagLink.bbox_uuid)
+                    .where(
+                        BBox.image_uuid.in_(all_image_uuids),
+                        BBox.label_uuid.in_(object_label_uuids),
+                        BBoxTagLink.tag_uuid == UNVERIFIED_TAG_UUID,
+                    )
+                    .subquery()
+                )
+                result = await session.exec(
+                    select(unverified_inner.c.label_uuid, func.count().label("cnt"))
+                    .group_by(unverified_inner.c.label_uuid)
+                )
+                for lbl_uuid, cnt in result.all():
+                    if lbl_uuid in label_stats:
+                        label_stats[lbl_uuid]["unverified_bbox_count"] = cnt
+
+                # Images with at least one unverified bbox per label (distinct images).
+                imgs_missing_inner = (
+                    select(BBox.label_uuid, BBox.image_uuid)
+                    .join(BBoxTagLink, BBox.uuid == BBoxTagLink.bbox_uuid)
+                    .where(
+                        BBox.image_uuid.in_(all_image_uuids),
+                        BBox.label_uuid.in_(object_label_uuids),
+                        BBoxTagLink.tag_uuid == UNVERIFIED_TAG_UUID,
+                    )
+                    .distinct()
+                    .subquery()
+                )
+                result = await session.exec(
+                    select(imgs_missing_inner.c.label_uuid, func.count().label("cnt"))
+                    .group_by(imgs_missing_inner.c.label_uuid)
+                )
+                imgs_missing_by_label: dict[str, int] = {}
+                for lbl_uuid, cnt in result.all():
+                    imgs_missing_by_label[lbl_uuid] = cnt
+                    if lbl_uuid in label_stats:
+                        label_stats[lbl_uuid]["images_missing_verification_count"] = cnt
+
+                # Images with any bbox for this label (to derive fully_verified count).
+                imgs_with_bbox_inner = (
+                    select(BBox.label_uuid, BBox.image_uuid)
+                    .where(
+                        BBox.image_uuid.in_(all_image_uuids),
+                        BBox.label_uuid.in_(object_label_uuids),
+                    )
+                    .distinct()
+                    .subquery()
+                )
+                result = await session.exec(
+                    select(imgs_with_bbox_inner.c.label_uuid, func.count().label("cnt"))
+                    .group_by(imgs_with_bbox_inner.c.label_uuid)
+                )
+                for lbl_uuid, cnt in result.all():
+                    if lbl_uuid in label_stats:
+                        missing = imgs_missing_by_label.get(lbl_uuid, 0)
+                        label_stats[lbl_uuid]["fully_verified_image_count"] = cnt - missing
+
+        return {"label_stats": list(label_stats.values()), "total_images": total_images}
+
     async def preview_dataset_images(
         self,
         filter_json: Dict[str, Any],

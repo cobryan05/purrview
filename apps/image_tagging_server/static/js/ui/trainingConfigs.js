@@ -23,6 +23,7 @@ import {
   updateTrainingConfig,
   deleteTrainingConfig,
   fetchTrainingConfigReadiness,
+  fetchTrainingConfigLabelStats,
   clearTrainingConfigsCache,
 } from '/app-static/js/shared/api/trainingConfigs.js';
 import { flattenHierarchy } from '/app-static/js/ui/labelList.js';
@@ -60,7 +61,7 @@ function renderTrainingConfigForm({ config, labelsMap, datasetsMap, modelConfigs
 
   // Trainer type
   const trainerSel = document.createElement('select');
-  trainerSel.style.cssText = 'margin-bottom: 0; width: auto;';
+  trainerSel.style.cssText = 'margin-bottom: 0; width: auto; flex: none;';
   TRAINER_TYPENAMES.forEach(tn => {
     const o = document.createElement('option');
     o.value = tn;
@@ -75,7 +76,7 @@ function renderTrainingConfigForm({ config, labelsMap, datasetsMap, modelConfigs
   const currentDatasetUuids = new Set(config?.datasetUuids ?? []);
   const datasetCheckboxes = new Map(); // uuid → checkbox el
   const datasetBox = document.createElement('div');
-  datasetBox.style.cssText = 'max-height: 120px; overflow-y: auto; border: 1px solid var(--pico-border-color, #444); border-radius: 4px; padding: 4px;';
+  datasetBox.className = 'panel-tree-box';
   if (datasetsMap.size === 0) {
     const none = document.createElement('p');
     none.style.cssText = 'font-size: 0.85em; color: var(--pico-muted-color, #888); margin: 0; padding: 2px 4px;';
@@ -98,11 +99,13 @@ function renderTrainingConfigForm({ config, labelsMap, datasetsMap, modelConfigs
     row.appendChild(nameSpan);
     datasetBox.appendChild(row);
   }
-  el.appendChild(makeFieldRow('Datasets (select ≥1)', datasetBox));
+  const datasetRow = makeFieldRow('Datasets (select ≥1)', datasetBox);
+  datasetRow.style.alignItems = 'flex-start';
+  el.appendChild(datasetRow);
 
   // Model config (optional)
   const modelSel = document.createElement('select');
-  modelSel.style.cssText = 'margin-bottom: 0; width: auto;';
+  modelSel.style.cssText = 'margin-bottom: 0; width: auto; flex: none;';
   const blankModel = document.createElement('option');
   blankModel.value = '';
   blankModel.textContent = '— none —';
@@ -245,6 +248,122 @@ function renderReadinessPanel(config) {
     }
   }).catch(err => {
     status.textContent = `Could not load readiness: ${err.message}`;
+  });
+
+  return wrap;
+}
+
+function renderLabelStatsPanel(config, labelsMap) {
+  const wrap = document.createElement('div');
+  wrap.style.cssText = 'margin-top: 0.75em; padding: 0.6em 0.75em; border: 1px solid var(--pico-border-color, #444); border-radius: 4px; font-size: 0.85em;';
+
+  const title = document.createElement('div');
+  title.style.cssText = 'font-weight: bold; margin-bottom: 0.5em;';
+  title.textContent = 'Dataset coverage by label';
+  wrap.appendChild(title);
+
+  const status = document.createElement('div');
+  status.textContent = 'Loading…';
+  wrap.appendChild(status);
+
+  fetchTrainingConfigLabelStats(config.uuid).then(({ labelStats, totalImages }) => {
+    status.remove();
+
+    if (labelStats.length === 0) {
+      const none = document.createElement('div');
+      none.style.cssText = 'color: var(--pico-muted-color, #888); font-style: italic;';
+      none.textContent = 'No relevant labels found for this model config / dataset combination.';
+      wrap.appendChild(none);
+      return;
+    }
+
+    const imageLabels = labelStats.filter(s => s.labelScope === 'image');
+    const objectLabels = labelStats.filter(s => s.labelScope === 'object');
+
+    function _labelName(uuid) {
+      return labelsMap?.get(uuid)?.name ?? uuid;
+    }
+
+    function _makeTable(stats, columns) {
+      const table = document.createElement('table');
+      table.style.cssText = 'width: 100%; border-collapse: collapse; font-size: 0.9em;';
+
+      const thead = document.createElement('thead');
+      const headerRow = document.createElement('tr');
+      const labelTh = document.createElement('th');
+      labelTh.textContent = 'Label';
+      labelTh.style.cssText = 'text-align: left; padding: 2px 6px; border-bottom: 1px solid var(--pico-border-color, #444);';
+      headerRow.appendChild(labelTh);
+      for (const col of columns) {
+        const th = document.createElement('th');
+        th.textContent = col.header;
+        th.title = col.title ?? '';
+        th.style.cssText = 'text-align: right; padding: 2px 6px; border-bottom: 1px solid var(--pico-border-color, #444); white-space: nowrap;';
+        headerRow.appendChild(th);
+      }
+      thead.appendChild(headerRow);
+      table.appendChild(thead);
+
+      const tbody = document.createElement('tbody');
+      for (const stat of stats) {
+        const tr = document.createElement('tr');
+
+        const nameTd = document.createElement('td');
+        nameTd.style.cssText = 'padding: 2px 6px;';
+        const dot = labelsMap?.get(stat.labelUuid)?.color;
+        if (dot) {
+          const dotEl = document.createElement('span');
+          dotEl.style.cssText = `display:inline-block;width:7px;height:7px;border-radius:50%;background:${dot};margin-right:4px;vertical-align:middle;`;
+          nameTd.appendChild(dotEl);
+        }
+        nameTd.appendChild(document.createTextNode(_labelName(stat.labelUuid)));
+        tr.appendChild(nameTd);
+
+        for (const col of columns) {
+          const td = document.createElement('td');
+          td.style.cssText = 'text-align: right; padding: 2px 6px;';
+          const val = stat[col.key] ?? 0;
+          td.textContent = val.toLocaleString();
+          if (col.warnIf?.(stat)) td.style.color = '#f90';
+          if (col.goodIf?.(stat)) td.style.color = '#4c4';
+          tr.appendChild(td);
+        }
+        tbody.appendChild(tr);
+      }
+      table.appendChild(tbody);
+      return table;
+    }
+
+    const totalNote = document.createElement('div');
+    totalNote.style.cssText = 'color: var(--pico-muted-color, #888); margin-bottom: 0.5em; font-size: 0.9em;';
+    totalNote.textContent = `${totalImages.toLocaleString()} image${totalImages === 1 ? '' : 's'} across selected dataset${(config.datasetUuids?.length ?? 0) === 1 ? '' : 's'}`;
+    wrap.appendChild(totalNote);
+
+    if (imageLabels.length > 0) {
+      const sectionHead = document.createElement('div');
+      sectionHead.style.cssText = 'font-weight: 600; margin: 0.5em 0 0.25em; font-size: 0.9em;';
+      sectionHead.textContent = 'Image labels';
+      wrap.appendChild(sectionHead);
+      wrap.appendChild(_makeTable(imageLabels, [
+        { header: 'Verified imgs', key: 'verifiedImageCount', title: 'Images with this label explicitly set to Present or Absent', goodIf: s => s.unverifiedImageCount === 0 },
+        { header: 'Missing verif.', key: 'unverifiedImageCount', title: 'Images missing verification for this label', warnIf: s => s.unverifiedImageCount > 0 },
+      ]));
+    }
+
+    if (objectLabels.length > 0) {
+      const sectionHead = document.createElement('div');
+      sectionHead.style.cssText = 'font-weight: 600; margin: 0.6em 0 0.25em; font-size: 0.9em;';
+      sectionHead.textContent = 'Object labels';
+      wrap.appendChild(sectionHead);
+      wrap.appendChild(_makeTable(objectLabels, [
+        { header: 'Verified boxes', key: 'verifiedBboxCount', title: 'Bounding boxes marked Verified', goodIf: s => s.unverifiedBboxCount === 0 && s.verifiedBboxCount > 0 },
+        { header: 'Unverified boxes', key: 'unverifiedBboxCount', title: 'Bounding boxes still marked Unverified', warnIf: s => s.unverifiedBboxCount > 0 },
+        { header: 'Imgs all clear', key: 'fullyVerifiedImageCount', title: 'Images where every box for this label is verified', goodIf: s => s.imagesMissingVerificationCount === 0 && s.fullyVerifiedImageCount > 0 },
+        { header: 'Imgs need work', key: 'imagesMissingVerificationCount', title: 'Images with at least one unverified box for this label', warnIf: s => s.imagesMissingVerificationCount > 0 },
+      ]));
+    }
+  }).catch(err => {
+    status.textContent = `Could not load label stats: ${err.message}`;
   });
 
   return wrap;
@@ -401,6 +520,11 @@ export async function renderTrainingConfigManager({ target = 'training-config-bo
         // Readiness panel (only for existing configs with datasets and labels)
         if (config?.uuid && (config.datasetUuids?.length ?? 0) > 0 && (config.labelUuids?.length ?? 0) > 0) {
           editorBody.appendChild(renderReadinessPanel(config));
+        }
+
+        // Label stats panel (only for existing configs with datasets selected)
+        if (config?.uuid && (config.datasetUuids?.length ?? 0) > 0) {
+          editorBody.appendChild(renderLabelStatsPanel(config, labelsMap));
         }
 
         _currentDoSave = async () => {
