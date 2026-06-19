@@ -31,6 +31,7 @@ from .types import (
     REJECTION_TAG_UUID,
     UNVERIFIED_TAG_UUID,
     VERIFIED_TAG_UUID,
+    WHOLE_DATABASE_DATASET_UUID,
     BBox,
     BBoxTagLink,
     Dataset,
@@ -482,6 +483,7 @@ class DbClient:
             tag_count = result.one() or 0
 
         await self._seed_system_tags()
+        await self._seed_system_datasets()
 
         if label_count == 0:
             await self.sync_labels_from_json()
@@ -505,7 +507,11 @@ class DbClient:
             await self.sync_sources_from_json()
 
         async with self._async_session_maker() as session:
-            count_statement = select(func.count()).select_from(Dataset)
+            # Exclude system datasets from the count so seeding "Whole Database"
+            # doesn't prevent sync_datasets_from_json from running on a fresh DB.
+            count_statement = (
+                select(func.count()).select_from(Dataset).where(Dataset.uuid != WHOLE_DATABASE_DATASET_UUID)
+            )
             result = await session.exec(count_statement)
             dataset_count = result.one() or 0
 
@@ -544,6 +550,50 @@ class DbClient:
                         )
                     )
             await session.commit()
+
+    async def _seed_system_datasets(self) -> None:
+        """Ensure system datasets always exist (idempotent)."""
+        async with self._async_session_maker() as session:
+            existing = await session.get(Dataset, WHOLE_DATABASE_DATASET_UUID)
+            if existing is None:
+                session.add(
+                    Dataset(
+                        uuid=WHOLE_DATABASE_DATASET_UUID,
+                        name="Whole Database",
+                        description="All images in the database (no filters applied).",
+                        filter_json=DatasetFilterCriteria().model_dump(mode="json"),
+                    )
+                )
+                await session.commit()
+
+    async def get_dataset_image_uuids(self, dataset_uuids: list[str]) -> list[str]:
+        """Return deduplicated image UUIDs from the union of the given datasets."""
+        seen: set[str] = set()
+        result: list[str] = []
+        for ds_uuid in dataset_uuids:
+            dataset = await self.get_dataset(ds_uuid)
+            if dataset is None:
+                continue
+            after_uuid: Optional[str] = None
+            after_sort_value = None
+            while True:
+                page, has_more = await self._list_images_for_dataset(
+                    dataset,
+                    limit=_READINESS_PAGE_SIZE,
+                    sort_by="uuid",
+                    sort_order="asc",
+                    after_uuid=after_uuid,
+                    after_sort_value=after_sort_value,
+                )
+                for img in page:
+                    if img.uuid not in seen:
+                        seen.add(img.uuid)
+                        result.append(img.uuid)
+                if not has_more or not page:
+                    break
+                after_uuid = page[-1].uuid
+                after_sort_value = page[-1].uuid
+        return result
 
     async def close(self):
         """Dispose of the engine connection pool."""
@@ -2710,9 +2760,7 @@ class DbClient:
 
         image_label_filters: List[ImageLabelFilter] = []
         for cond in f.image_label_conditions:
-            image_label_filters.append(
-                ImageLabelFilter(label_uuid=cond.label_uuid, status=ImageItemStatus(cond.state))
-            )
+            image_label_filters.append(ImageLabelFilter(label_uuid=cond.label_uuid, status=ImageItemStatus(cond.state)))
 
         return ImageSearchParams(
             show_all_bboxes=show_all_bboxes,
@@ -2962,7 +3010,7 @@ class DbClient:
                     break
                 last = page[-1]
                 after_uuid = last.uuid
-                after_sort_value = last.uuid  # keyset uses uuid when sort_by="uuid"
+                # after_sort_value stays None when sort_by="uuid"; pagination uses after_uuid only
 
         if not all_images:
             return {
@@ -3164,7 +3212,7 @@ class DbClient:
                     break
                 last = page[-1]
                 after_uuid = last.uuid
-                after_sort_value = last.uuid
+                # after_sort_value stays None when sort_by="uuid"; pagination uses after_uuid only
 
         total_images = len(all_image_uuids)
 

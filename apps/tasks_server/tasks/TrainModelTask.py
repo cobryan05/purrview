@@ -29,6 +29,7 @@ class TrainModelTask(Task):
         self._model_name: str = str(params.get("model_name", ""))
         self._max_epochs: int = int(params.get("max_epochs", 50))
         self._image_source: Optional[str] = params.get("image_source")
+        self._dataset_uuids: list[str] = list(params.get("dataset_uuids") or [])
 
         training_cfg = APPS_CONFIG[APPS.TRAINING_SERVER]
         self._training_base_url: str = f"http://{training_cfg.host}:{training_cfg.port}"
@@ -47,6 +48,7 @@ class TrainModelTask(Task):
                 model_name=self._model_name,
                 max_epochs=self._max_epochs,
                 image_source=self._image_source,
+                dataset_uuids=self._dataset_uuids,
             )
             resp = await asyncio.to_thread(
                 TrainingApi(self._api_client).submit_training_job,
@@ -54,6 +56,8 @@ class TrainModelTask(Task):
             )
             self._job_id = resp.job_id
             self.log(f"Submitted training job {self._job_id}")
+            if self._dataset_uuids:
+                self.log(f"Training scoped to {len(self._dataset_uuids)} dataset(s)")
             # Persist job_id immediately so a crash/cancel can still cancel the remote job.
             self._resume_data["job_id"] = self._job_id
             self._data_ready_flag.set()
@@ -188,5 +192,11 @@ class TrainModelTask(Task):
                 "default": "filesystem",
                 "options": ["filesystem", "http"],
                 "help": "How the training server fetches images",
+            },
+            "dataset_uuids": {
+                "type": "list",
+                "required": False,
+                "default": [],
+                "help": "Restrict training to images in these datasets (empty = whole database)",
             },
         }

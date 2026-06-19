@@ -351,6 +351,13 @@
               }
             ],
             "title": "Image Source"
+          },
+          "dataset_uuids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Dataset Uuids"
           }
         },
         "additionalProperties": true,

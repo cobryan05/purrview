@@ -70,9 +70,17 @@ class BinaryImageClassifier(Trainer):
         model_name: str = config.get("model_name", "model")
         max_epochs: int = int(config.get("max_epochs", 50))
         image_source: str = config.get("image_source", "filesystem")
+        dataset_uuids: list[str] = list(config.get("dataset_uuids") or [])
 
         db_base_url = self._db_base_url()
         fs_root = os.environ.get("TRAINING_FS_ROOT", _FS_ROOT_DEFAULT)
+
+        # ── Resolve dataset scope ───────────────────────────────────────────
+        allowed_image_uuids: set[str] | None = None
+        if dataset_uuids:
+            logger.info("Resolving image UUIDs for %d dataset(s)", len(dataset_uuids))
+            allowed_image_uuids = await self._fetch_dataset_image_uuids(dataset_uuids, db_base_url)
+            logger.info("Training scoped to %d images from datasets", len(allowed_image_uuids))
 
         # ── Build datasets ──────────────────────────────────────────────────
         if image_source == "filesystem":
@@ -84,8 +92,12 @@ class BinaryImageClassifier(Trainer):
 
         try:
             logger.info("Building datasets for label_uuid=%s", label_uuid)
-            ds_train = await asyncio.to_thread(_build_dataset, label_uuid, db_base_url, fetcher_train, "train")
-            ds_val = await asyncio.to_thread(_build_dataset, label_uuid, db_base_url, fetcher_val, "val")
+            ds_train = await asyncio.to_thread(
+                _build_dataset, label_uuid, db_base_url, fetcher_train, "train", 0.2, allowed_image_uuids
+            )
+            ds_val = await asyncio.to_thread(
+                _build_dataset, label_uuid, db_base_url, fetcher_val, "val", 0.2, allowed_image_uuids
+            )
         except ValueError as e:
             raise RuntimeError(f"Dataset build failed: {e}") from e
 
@@ -244,3 +256,18 @@ class BinaryImageClassifier(Trainer):
         host = os.environ.get("DB_SERVER_HOST", "localhost")
         port = os.environ.get("DB_SERVER_PORT", "8003")
         return f"http://{host}:{port}"
+
+    @staticmethod
+    async def _fetch_dataset_image_uuids(dataset_uuids: list[str], db_base_url: str) -> set[str]:
+        """Call db_server to resolve dataset UUIDs to a set of image UUIDs."""
+        import httpx
+
+        url = f"{db_base_url.rstrip('/')}/api/datasets/image-uuids"
+        resp = await asyncio.to_thread(
+            httpx.get,
+            url,
+            params={"dataset_uuid": dataset_uuids},
+            timeout=120.0,
+        )
+        resp.raise_for_status()
+        return set(resp.json().get("image_uuids", []))

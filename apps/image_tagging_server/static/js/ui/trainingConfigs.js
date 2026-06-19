@@ -170,33 +170,18 @@ function renderTrainingConfigForm({ config, datasetsMap, modelConfigsMap, labels
   datasetRow.style.alignItems = 'flex-start';
   el.appendChild(datasetRow);
 
-  // ── Hyperparameters ───────────────────────────────────────────────────────
-  const hr3 = document.createElement('hr');
-  hr3.style.cssText = 'margin: 0.6em 0; opacity: 0.4;';
-  el.appendChild(hr3);
-
-  const hyperText = document.createElement('textarea');
-  hyperText.rows = 4;
-  hyperText.style.cssText = 'font-family: monospace; font-size: 0.8em; width: 100%; box-sizing: border-box;';
-  hyperText.placeholder = '{}';
-  hyperText.value = JSON.stringify(config?.hyperparamsJson ?? {}, null, 2);
-  hyperText.addEventListener('input', _markDirty);
-  el.appendChild(makeFieldRow('Hyperparameters (JSON)', hyperText));
-
   return {
     el,
     getSaveData() {
       const datasetUuids = [...datasetCheckboxes.entries()]
         .filter(([, cb]) => cb.checked)
         .map(([uuid]) => uuid);
-      let hyperparamsJson = {};
-      try { hyperparamsJson = JSON.parse(hyperText.value || '{}'); } catch {}
       return {
         name: nameInput.value.trim(),
         description: descInput.value.trim(),
         modelConfigNodeUuid: nodeSel.value || null,
         datasetUuids,
-        hyperparamsJson,
+        hyperparamsJson: {},
       };
     },
     destroy() {},

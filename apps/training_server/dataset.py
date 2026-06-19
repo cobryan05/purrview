@@ -128,15 +128,18 @@ def _build_dataset(
     fetcher: ImageFetcher,
     split: str = "train",
     val_fraction: float = 0.2,
+    allowed_image_uuids: Optional[set[str]] = None,
 ) -> "ImageLabelDataset":
     """Factory that loads image-label rows from db_server and returns an ImageLabelDataset.
 
     Args:
-        label_uuid:   UUID of the label to load present/absent examples for.
-        db_base_url:  Base URL of the db_server.
-        fetcher:      ImageFetcher to use for loading image bytes.
-        split:        "train" or "val".
-        val_fraction: Fraction of images to hold out for validation (0–1).
+        label_uuid:          UUID of the label to load present/absent examples for.
+        db_base_url:         Base URL of the db_server.
+        fetcher:             ImageFetcher to use for loading image bytes.
+        split:               "train" or "val".
+        val_fraction:        Fraction of images to hold out for validation (0–1).
+        allowed_image_uuids: When provided, restrict training to only these image
+                             UUIDs (used to scope training to specific datasets).
     """
     # Fetch all present/absent rows for this label.
     url = f"{db_base_url.rstrip('/')}/api/image-labels"
@@ -150,6 +153,12 @@ def _build_dataset(
     rows = body.get("images", [])
     if not rows:
         raise ValueError(f"No labelled images found for label_uuid={label_uuid!r}")
+
+    # Restrict to the allowed image set when a dataset scope is specified.
+    if allowed_image_uuids is not None:
+        rows = [r for r in rows if r["image_uuid"] in allowed_image_uuids]
+        if not rows:
+            raise ValueError(f"No labelled images found within the specified datasets for label_uuid={label_uuid!r}")
 
     # Deterministic train/val split: sort by UUID (stable hash), then slice.
     rows_sorted = sorted(rows, key=lambda r: r["image_uuid"])

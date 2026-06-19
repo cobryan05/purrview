@@ -46,9 +46,9 @@ async def test_create_writes_sidecar(tmp_path):
     assert sidecar.exists(), "datasets.json must be written after create"
 
     rows = json.loads(sidecar.read_text())
-    assert len(rows) == 1
-    row = rows[0]
-    assert row["uuid"] == uuid
+    # The system 'Whole Database' dataset is also seeded — filter to ours by UUID.
+    row = next((r for r in rows if r["uuid"] == uuid), None)
+    assert row is not None, "created dataset must appear in sidecar"
     assert row["name"] == "test-ds"
     assert row["description"] == "hello"
     assert isinstance(row["filter_json"], dict)
@@ -67,8 +67,9 @@ async def test_update_refreshes_sidecar(tmp_path):
     await client.update_dataset(uuid, DatasetUpdate(name="after"))
 
     rows = await _read_sidecar(tmp_path)
-    assert len(rows) == 1
-    assert rows[0]["name"] == "after"
+    row = next((r for r in rows if r["uuid"] == uuid), None)
+    assert row is not None, "updated dataset must appear in sidecar"
+    assert row["name"] == "after"
 
     await client.close()
 
@@ -100,7 +101,9 @@ async def test_sidecar_includes_label_uuids(tmp_path):
     uuid = await _create(client, "with-labels", label_uuids=[label.uuid])
 
     rows = await _read_sidecar(tmp_path)
-    assert rows[0]["label_uuids"] == [label.uuid]
+    row = next((r for r in rows if r["uuid"] == uuid), None)
+    assert row is not None
+    assert row["label_uuids"] == [label.uuid]
 
     await client.close()
 
@@ -110,14 +113,16 @@ async def test_sidecar_stores_filter_json(tmp_path):
     client = DbClient(db_dir=tmp_path, memory=True)
     await client.init_db()
 
-    await _create(
+    uuid = await _create(
         client,
         "filtered",
         filter_json=DatasetFilterCriteria(filename_search=".jpg"),
     )
 
     rows = await _read_sidecar(tmp_path)
-    assert rows[0]["filter_json"]["filename_search"] == ".jpg"
+    row = next((r for r in rows if r["uuid"] == uuid), None)
+    assert row is not None
+    assert row["filter_json"]["filename_search"] == ".jpg"
 
     await client.close()
 
@@ -296,6 +301,8 @@ async def test_init_db_auto_restores_from_sidecar(tmp_path):
 
 async def test_no_sidecar_is_noop(tmp_path):
     """sync_datasets_from_json is a no-op when datasets.json doesn't exist."""
+    from apps.helpers.db.types import WHOLE_DATABASE_DATASET_UUID
+
     db_dir = tmp_path / "db"
     db_dir.mkdir()
     client = DbClient(db_dir=db_dir, memory=True)
@@ -305,6 +312,8 @@ async def test_no_sidecar_is_noop(tmp_path):
     await client.sync_datasets_from_json()
 
     datasets = await client.list_datasets()
-    assert datasets == []
+    # Only the seeded system dataset should exist; no user datasets.
+    user_datasets = [d for d in datasets if d.uuid != WHOLE_DATABASE_DATASET_UUID]
+    assert user_datasets == []
 
     await client.close()

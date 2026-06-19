@@ -5,11 +5,11 @@ import json
 import logging
 import sys
 from contextlib import asynccontextmanager
-from typing import Any, Optional
+from typing import Any, List, Optional
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 from sse_starlette.sse import EventSourceResponse
 
 from .manager import Manager
@@ -36,6 +36,7 @@ class SubmitJobPayload(BaseModel):
     model_name: str = ""
     max_epochs: int = 50
     image_source: Optional[str] = None
+    dataset_uuids: List[str] = Field(default_factory=list)
 
 
 class JobInfo(BaseModel):

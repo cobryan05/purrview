@@ -490,6 +490,10 @@ class DatasetImagesResponse(StatusResponse):
     has_more: bool = False
 
 
+class DatasetImageUuidsResponse(StatusResponse):
+    image_uuids: List[str] = Field(default_factory=list)
+
+
 class DatasetLabelsResponse(StatusResponse):
     labels: List[LabelRead] = Field(default_factory=list)
 
@@ -2419,6 +2423,22 @@ class WebApp:
             except Exception as e:
                 logger.error(e, exc_info=True)
                 return StatusResponse(status=JsonValues.FAILURE, message=str(e))
+
+        @self._app.get(
+            "/api/datasets/image-uuids",
+            response_model=DatasetImageUuidsResponse,
+            tags=[ApiTags.DATASETS],
+            operation_id="get_dataset_image_uuids",
+        )
+        async def get_dataset_image_uuids(
+            dataset_uuid: List[str] = Query(default=[]),
+        ) -> DatasetImageUuidsResponse:
+            try:
+                uuids = await self._manager.get_dataset_image_uuids(dataset_uuid)
+                return DatasetImageUuidsResponse(status=JsonValues.SUCCESS, image_uuids=uuids)
+            except Exception as e:
+                logger.exception("Failed to fetch dataset image UUIDs")
+                return DatasetImageUuidsResponse(status=JsonValues.FAILURE, message=str(e))
 
         @self._app.post(
             "/api/datasets/preview",

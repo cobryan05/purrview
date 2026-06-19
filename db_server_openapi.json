@@ -3344,6 +3344,52 @@
         }
       }
     },
+    "/api/datasets/image-uuids": {
+      "get": {
+        "tags": [
+          "datasets"
+        ],
+        "summary": "Get Dataset Image Uuids",
+        "operationId": "get_dataset_image_uuids",
+        "parameters": [
+          {
+            "name": "dataset_uuid",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": [],
+              "title": "Dataset Uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DatasetImageUuidsResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/datasets/preview": {
       "post": {
         "tags": [
@@ -5169,11 +5215,47 @@
             },
             "type": "array",
             "title": "Imagetagconditions"
+          },
+          "imageLabelConditions": {
+            "items": {
+              "$ref": "#/components/schemas/ImageLabelConditionItem"
+            },
+            "type": "array",
+            "title": "Imagelabelconditions"
           }
         },
         "type": "object",
         "title": "DatasetFilterCriteria",
         "description": "Stored as JSON in datasets.filter_json. Mirrors the review filter panel state exactly."
+      },
+      "DatasetImageUuidsResponse": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "title": "Status",
+            "default": "success"
+          },
+          "message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Message"
+          },
+          "imageUuids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Imageuuids"
+          }
+        },
+        "type": "object",
+        "title": "DatasetImageUuidsResponse"
       },
       "DatasetImagesResponse": {
         "properties": {
@@ -6481,6 +6563,30 @@
         ],
         "title": "ImageItemStatus",
         "description": "Tri-state verification status shared by per-image labels and whole-image tags."
+      },
+      "ImageLabelConditionItem": {
+        "properties": {
+          "labelUuid": {
+            "type": "string",
+            "title": "Labeluuid"
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "present",
+              "absent",
+              "uncertain"
+            ],
+            "title": "State"
+          }
+        },
+        "type": "object",
+        "required": [
+          "labelUuid",
+          "state"
+        ],
+        "title": "ImageLabelConditionItem",
+        "description": "A single image-label filter condition stored in a dataset's filter_json.\n\nstate:\n  'present'   \u2014 image must have this label verified PRESENT\n  'absent'    \u2014 image must have this label verified ABSENT\n  'uncertain' \u2014 image must have this label in UNCERTAIN state"
       },
       "ImageLabelFilter": {
         "properties": {
