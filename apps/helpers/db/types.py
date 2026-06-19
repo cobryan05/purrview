@@ -286,6 +286,19 @@ class ImageTagConditionItem(ApiModel):
     state: Literal["present", "absent", "unset"]
 
 
+class ImageLabelConditionItem(ApiModel):
+    """A single image-label filter condition stored in a dataset's filter_json.
+
+    state:
+      'present'   — image must have this label verified PRESENT
+      'absent'    — image must have this label verified ABSENT
+      'uncertain' — image must have this label in UNCERTAIN state
+    """
+
+    label_uuid: str
+    state: Literal["present", "absent", "uncertain"]
+
+
 class TagPresenceFilter(ApiModel):
     """Require or exclude images based on bbox-level tag presence."""
 
@@ -612,6 +625,8 @@ class DatasetFilterCriteria(ApiModel):
     verification_check: Optional[Literal["all_verified", "has_unverified"]] = None
     # Whole-image tag conditions (unified replacement for the old three-axis approach)
     image_tag_conditions: List["ImageTagConditionItem"] = Field(default_factory=list)
+    # Whole-image label conditions (filter by image_labels table: present/absent/uncertain)
+    image_label_conditions: List["ImageLabelConditionItem"] = Field(default_factory=list)
 
     model_config = ConfigDict(
         alias_generator=to_camel,

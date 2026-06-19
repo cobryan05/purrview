@@ -98,9 +98,9 @@ export function createFilterPanel(labels, tags, onFilterChange, { inlineControls
   let tagsDropdown = _buildTagsDropdown();
   tagsContainer.appendChild(tagsDropdown.element);
 
-  // ── Toolbar: Object Labels multi-select dropdown ──────────────────────────
-  // Shows only object-scoped labels — these are the labels that appear on bboxes.
-  // Image-scoped labels are handled separately in the Image Label Filters section.
+  // ── Toolbar: Bbox Labels multi-select dropdown ────────────────────────────
+  // Shows only object-scoped labels — filter images by bbox label presence.
+  // Use the Image Label Filters section to filter by whole-image label state.
   const labelsDropdownContainer = document.createElement('div');
   if (inlineControls) labelsDropdownContainer.style.width = '100%';
   let _labelsDropdown = null;
@@ -167,8 +167,10 @@ export function createFilterPanel(labels, tags, onFilterChange, { inlineControls
   // ── Image label conditions component ──────────────────────────────────────
   // Returns the array of image-scoped labels visible to the current active model.
   function _imageScopedLabels() {
+    // Include all non-dynamic labels (both object- and image-scoped) since image_label
+    // rows exist for any label that appears on verified bboxes, not just image-scoped ones.
     const filtered = activeModel.applyLabelFilter(labels);
-    return [...filtered.values()].filter(l => l.scope === 'image' && l.labelType !== 'dynamic');
+    return [...filtered.values()].filter(l => l.labelType !== 'dynamic');
   }
 
   const imageLabelConditionsComp = createImageLabelConditions(

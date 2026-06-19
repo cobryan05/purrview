@@ -2708,6 +2708,12 @@ class DbClient:
             elif cond.state == "unset":
                 image_tag_filters.append(ImageTagFilter(tag_uuid=cond.tag_uuid, require_unset=True))
 
+        image_label_filters: List[ImageLabelFilter] = []
+        for cond in f.image_label_conditions:
+            image_label_filters.append(
+                ImageLabelFilter(label_uuid=cond.label_uuid, status=ImageItemStatus(cond.state))
+            )
+
         return ImageSearchParams(
             show_all_bboxes=show_all_bboxes,
             tag_uuids=f.tag_uuids,
@@ -2722,6 +2728,7 @@ class DbClient:
             filename_search=f.filename_search or None,
             label_verification_check=f.verification_check,
             image_tag_filters=image_tag_filters,
+            image_label_filters=image_label_filters,
             limit=limit,
             sort_by=sort_by,
             sort_order=sort_order,

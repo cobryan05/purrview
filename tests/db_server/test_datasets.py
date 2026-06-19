@@ -788,3 +788,82 @@ async def test_empty_filter_returns_all_images(http_client, files_root):
     assert "img_ec1.png" in names
     assert "img_ec2.png" in names
     assert "img_ec3.png" in names
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# image_label_conditions round-trip and filtering
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+async def _set_image_label(http_client, image_path: str, label_uuid: str, status: str) -> None:
+    r = await http_client.post(
+        "/api/images/labels/set",
+        json={"imagePath": image_path, "labelUuid": label_uuid, "status": status},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["status"] == "success"
+
+
+async def _make_label(http_client, name: str) -> str:
+    r = await http_client.post("/api/labels", json={"name": name, "color": "#AABBCC", "scope": "image"})
+    assert r.status_code == 200, r.text
+    return r.json()["label"]["uuid"]
+
+
+async def test_image_label_conditions_round_trip(http_client, files_root):
+    """image_label_conditions must survive a dataset save/load cycle unchanged."""
+    label_uuid = await _make_label(http_client, "litter_box_rt")
+    filter_json = {"imageLabelConditions": [{"labelUuid": label_uuid, "state": "absent"}]}
+    ds = await _create_dataset(http_client, "rt-test", filter_json=filter_json)
+
+    saved = ds["filterJson"]
+    assert "imageLabelConditions" in saved, "imageLabelConditions dropped from filterJson on save"
+    assert saved["imageLabelConditions"] == [{"labelUuid": label_uuid, "state": "absent"}]
+
+    r = await http_client.get("/api/datasets")
+    assert r.status_code == 200, r.text
+    all_ds = {d["uuid"]: d for d in r.json()["datasets"]}
+    fetched = all_ds[ds["uuid"]]["filterJson"]
+    assert fetched.get("imageLabelConditions") == [{"labelUuid": label_uuid, "state": "absent"}]
+
+
+async def test_image_label_conditions_filter_absent(http_client, files_root):
+    """Dataset with imageLabelConditions[absent] returns only images where label is ABSENT."""
+    label_uuid = await _make_label(http_client, "litter_box_flt")
+
+    for name in ("ilc_absent.png", "ilc_present.png", "ilc_unset.png"):
+        _png(files_root, name)
+        await _register(http_client, name)
+
+    await _set_image_label(http_client, "ilc_absent.png", label_uuid, "absent")
+    await _set_image_label(http_client, "ilc_present.png", label_uuid, "present")
+    # ilc_unset.png has no image_label row
+
+    filter_json = {"imageLabelConditions": [{"labelUuid": label_uuid, "state": "absent"}]}
+    ds = await _create_dataset(http_client, "ilc-absent-ds", filter_json=filter_json)
+    result = await _dataset_images(http_client, ds["uuid"])
+    names = {img["filename"] for img in result["images"]}
+
+    assert "ilc_absent.png" in names
+    assert "ilc_present.png" not in names
+    assert "ilc_unset.png" not in names
+
+
+async def test_image_label_conditions_filter_present(http_client, files_root):
+    """Dataset with imageLabelConditions[present] returns only images where label is PRESENT."""
+    label_uuid = await _make_label(http_client, "litter_box_prs")
+
+    for name in ("ilcp_absent.png", "ilcp_present.png"):
+        _png(files_root, name)
+        await _register(http_client, name)
+
+    await _set_image_label(http_client, "ilcp_absent.png", label_uuid, "absent")
+    await _set_image_label(http_client, "ilcp_present.png", label_uuid, "present")
+
+    filter_json = {"imageLabelConditions": [{"labelUuid": label_uuid, "state": "present"}]}
+    ds = await _create_dataset(http_client, "ilc-present-ds", filter_json=filter_json)
+    result = await _dataset_images(http_client, ds["uuid"])
+    names = {img["filename"] for img in result["images"]}
+
+    assert "ilcp_present.png" in names
+    assert "ilcp_absent.png" not in names
