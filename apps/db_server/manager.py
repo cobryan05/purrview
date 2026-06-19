@@ -99,9 +99,11 @@ class Manager:
         )
         self._rebuild_in_progress: bool = False
         self._hash_index_ready: bool = False  # False until initial build completes on startup
-        self._build_phase: str | None = None  # "loading" or "constructing" during initial index build
+        self._build_phase: str | None = None  # "migrating", "loading", or "constructing" during startup
         self._build_img_loaded: int = 0  # running count during loading phase
         self._build_bbox_loaded: int = 0
+        self._db_ready: bool = False  # True after init_db (alembic) succeeds; gates normal requests
+        self._init_error: str | None = None  # Set if _init() fails; surfaced as an error notice
         # Short-lived cache for expensive count queries.  Key is an MD5 of the
         # filter predicates (sort/page fields excluded); value is (count, ts).
         # TTL is intentionally short so writes that happen while browsing are
@@ -126,7 +128,17 @@ class Manager:
 
     async def _init(self):
         """Initialization that should run on event loop"""
-        await self._db_client.init_db()
+        self._build_phase = "migrating"
+        try:
+            await self._db_client.init_db()
+        except Exception as e:
+            self._init_error = str(e)
+            self._build_phase = None
+            logger.error("Database initialization (alembic) failed: %s", e, exc_info=True)
+            raise  # re-raise so _worker_task stops and doesn't enter the polling loop
+        self._build_phase = None
+        self._db_ready = True
+
         # Hash sizes are stored in DB settings so the review page, tasks, and the
         # db_server all reference the same value.  Read them here (after init_db
         # ensures the settings table exists) and override the env-var defaults set
@@ -177,6 +189,10 @@ class Manager:
                 await self._hash_index.rebuild_if_needed()
         except asyncio.CancelledError:
             print("Periodic task was cancelled.")
+        except Exception as e:
+            # _init() already set _init_error and logged before re-raising.
+            # The worker stops here; the error notice remains visible in /status.
+            logger.error("Worker task terminated after initialization failure: %s", e)
         finally:
             print("Periodic task cleanup.")
 
@@ -1655,7 +1671,24 @@ class Manager:
     async def get_status(self) -> dict:
         """Return service health and diagnostic info."""
         notices: list[dict] = []
-        if not self._hash_index_ready:
+
+        if self._init_error:
+            notices.append(
+                {
+                    "key": "db_init_error",
+                    "level": "error",
+                    "message": f"Database initialization failed: {self._init_error}",
+                }
+            )
+        elif self._build_phase == "migrating":
+            notices.append(
+                {
+                    "key": "db_migrating",
+                    "level": "info",
+                    "message": "Database migrating — other requests paused until complete",
+                }
+            )
+        elif not self._hash_index_ready:
             if self._build_phase == "loading":
                 img, bbox = self._build_img_loaded, self._build_bbox_loaded
                 if img or bbox:

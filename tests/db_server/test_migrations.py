@@ -113,6 +113,179 @@ def pre_redesign_copy(_pre_redesign_engine):
 # ──────────────────────────────────────────────────────────────────────────────
 
 
+class TestPartialMigrationRecovery:
+    """f93545d9a50b must be idempotent w.r.t. partial prior application.
+
+    The original migration had drop_constraint(None) which raised ValueError
+    inside the training_configs batch block.  SQLite's non-transactional DDL
+    meant the first steps (CREATE model_bundles, DROP training_config_label_links,
+    ALTER model_config_nodes) were committed before the failure, leaving the DB
+    stamped at e1a2b3c4d5e6 but physically partially migrated.  On the next
+    startup the fixed migration reruns and must not fail on already-done steps.
+    """
+
+    def _partial_state(self, engine) -> None:
+        """Simulate a partial application of f93545d9a50b: model_bundles exists,
+        training_config_label_links is gone, model_config_nodes already altered,
+        but training_configs is still in the old shape."""
+        with engine.begin() as conn:
+            conn.exec_driver_sql("""
+                CREATE TABLE model_bundles (
+                    created_at DATETIME NOT NULL,
+                    updated_at DATETIME NOT NULL,
+                    uuid VARCHAR NOT NULL,
+                    name VARCHAR NOT NULL,
+                    description VARCHAR,
+                    model_config_uuid VARCHAR NOT NULL,
+                    bundle_path VARCHAR NOT NULL,
+                    manifest_json JSON,
+                    training_config_uuids JSON,
+                    PRIMARY KEY (uuid),
+                    FOREIGN KEY(model_config_uuid) REFERENCES model_configs (uuid) ON DELETE RESTRICT
+                )
+            """)
+            conn.exec_driver_sql(
+                "CREATE UNIQUE INDEX ix_model_bundles_name ON model_bundles (name)"
+            )
+            conn.exec_driver_sql("DROP TABLE training_config_label_links")
+            # Simulate the model_config_nodes batch: add model_type/architecture, drop model_typename
+            conn.exec_driver_sql("""
+                CREATE TABLE model_config_nodes_new (
+                    uuid VARCHAR NOT NULL PRIMARY KEY,
+                    model_config_uuid VARCHAR NOT NULL,
+                    label_uuid VARCHAR,
+                    model_type VARCHAR NOT NULL DEFAULT 'object_detection',
+                    architecture VARCHAR NOT NULL DEFAULT 'yolo_v8_n',
+                    FOREIGN KEY(model_config_uuid) REFERENCES model_configs (uuid) ON DELETE CASCADE,
+                    FOREIGN KEY(label_uuid) REFERENCES labels (uuid) ON DELETE CASCADE
+                )
+            """)
+            conn.exec_driver_sql(
+                "INSERT INTO model_config_nodes_new SELECT uuid, model_config_uuid, label_uuid, "
+                "'object_detection', 'yolo_v8_n' FROM model_config_nodes"
+            )
+            conn.exec_driver_sql("DROP TABLE model_config_nodes")
+            conn.exec_driver_sql("ALTER TABLE model_config_nodes_new RENAME TO model_config_nodes")
+
+    def test_upgrade_from_partial_application_does_not_raise(self, pre_redesign_copy):
+        """Running to head from a partially-applied f93545d9a50b must not raise."""
+        engine = pre_redesign_copy
+        _run_migrations(engine, "e1a2b3c4d5e6")
+        self._partial_state(engine)
+        # Must not raise OperationalError: table model_bundles already exists
+        _run_migrations(engine, "head")
+
+    def test_upgrade_from_partial_completes_training_configs(self, pre_redesign_copy):
+        """After recovery the training_configs schema must be fully migrated."""
+        engine = pre_redesign_copy
+        _run_migrations(engine, "e1a2b3c4d5e6")
+        self._partial_state(engine)
+        _run_migrations(engine, "head")
+        tc_cols = _columns(engine, "training_configs")
+        assert "model_config_node_uuid" in tc_cols
+        assert "trainer_type" not in tc_cols
+        assert "model_config_uuid" not in tc_cols
+
+    def test_upgrade_from_partial_preserves_model_bundles(self, pre_redesign_copy):
+        """model_bundles must exist and be intact after recovery."""
+        engine = pre_redesign_copy
+        _run_migrations(engine, "e1a2b3c4d5e6")
+        self._partial_state(engine)
+        _run_migrations(engine, "head")
+        assert "model_bundles" in _tables(engine)
+
+    def test_upgrade_from_minimal_partial_only_model_bundles(self, pre_redesign_copy):
+        """Even if only model_bundles was pre-created the migration must succeed."""
+        engine = pre_redesign_copy
+        _run_migrations(engine, "e1a2b3c4d5e6")
+        with engine.begin() as conn:
+            conn.exec_driver_sql("""
+                CREATE TABLE model_bundles (
+                    uuid VARCHAR NOT NULL PRIMARY KEY,
+                    name VARCHAR NOT NULL,
+                    created_at DATETIME NOT NULL,
+                    updated_at DATETIME NOT NULL,
+                    model_config_uuid VARCHAR NOT NULL,
+                    bundle_path VARCHAR NOT NULL
+                )
+            """)
+        _run_migrations(engine, "head")
+        assert "model_bundles" in _tables(engine)
+
+    def test_upgrade_with_tmp_model_config_nodes_and_original_present(self, pre_redesign_copy):
+        """_alembic_tmp_model_config_nodes left behind alongside the original.
+
+        Interrupted between CREATE _alembic_tmp and DROP original.  The migration
+        must drop the stale temp and redo the batch alter cleanly.
+        """
+        engine = pre_redesign_copy
+        _run_migrations(engine, "e1a2b3c4d5e6")
+        with engine.begin() as conn:
+            # Simulate alembic batch leaving a temp table while original still exists
+            conn.exec_driver_sql("""
+                CREATE TABLE _alembic_tmp_model_config_nodes (
+                    uuid VARCHAR NOT NULL PRIMARY KEY,
+                    model_config_uuid VARCHAR NOT NULL,
+                    label_uuid VARCHAR,
+                    model_type VARCHAR NOT NULL DEFAULT 'object_detection',
+                    architecture VARCHAR NOT NULL DEFAULT 'yolo_v8_n'
+                )
+            """)
+        _run_migrations(engine, "head")
+        new_cols = _columns(engine, "model_config_nodes")
+        assert "model_type" in new_cols
+        assert "model_typename" not in new_cols
+        assert "_alembic_tmp_model_config_nodes" not in _tables(engine)
+
+    def test_upgrade_with_tmp_model_config_nodes_original_gone(self, pre_redesign_copy):
+        """_alembic_tmp_model_config_nodes exists but original was already dropped.
+
+        Interrupted between DROP original and RENAME temp.  Migration must complete
+        the rename instead of re-running the batch alter.
+        """
+        engine = pre_redesign_copy
+        _run_migrations(engine, "e1a2b3c4d5e6")
+        with engine.begin() as conn:
+            # Simulate batch got past DROP original but crashed before RENAME
+            conn.exec_driver_sql("""
+                CREATE TABLE _alembic_tmp_model_config_nodes (
+                    uuid VARCHAR NOT NULL PRIMARY KEY,
+                    model_config_uuid VARCHAR NOT NULL,
+                    label_uuid VARCHAR,
+                    model_type VARCHAR NOT NULL DEFAULT 'object_detection',
+                    architecture VARCHAR NOT NULL DEFAULT 'yolo_v8_n',
+                    FOREIGN KEY(model_config_uuid) REFERENCES model_configs (uuid) ON DELETE CASCADE
+                )
+            """)
+            conn.exec_driver_sql("DROP TABLE model_config_nodes")
+        _run_migrations(engine, "head")
+        assert "model_config_nodes" in _tables(engine)
+        assert "_alembic_tmp_model_config_nodes" not in _tables(engine)
+
+    def test_upgrade_with_tmp_training_configs_and_original_present(self, pre_redesign_copy):
+        """_alembic_tmp_training_configs left behind alongside the original.
+
+        Mirrors the model_config_nodes scenario for the training_configs batch step.
+        """
+        engine = pre_redesign_copy
+        _run_migrations(engine, "e1a2b3c4d5e6")
+        with engine.begin() as conn:
+            conn.exec_driver_sql("""
+                CREATE TABLE _alembic_tmp_training_configs (
+                    uuid VARCHAR NOT NULL PRIMARY KEY,
+                    name VARCHAR NOT NULL,
+                    created_at DATETIME NOT NULL,
+                    updated_at DATETIME NOT NULL,
+                    model_config_node_uuid VARCHAR
+                )
+            """)
+        _run_migrations(engine, "head")
+        tc_cols = _columns(engine, "training_configs")
+        assert "model_config_node_uuid" in tc_cols
+        assert "trainer_type" not in tc_cols
+        assert "_alembic_tmp_training_configs" not in _tables(engine)
+
+
 class TestMigrationPath:
     def test_upgrade_from_pre_redesign_adds_new_columns(self, pre_redesign_copy):
         """Running migrations from 307a345162a9 → head must:

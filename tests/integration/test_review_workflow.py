@@ -51,6 +51,7 @@ def files_root(tmp_path):
 @pytest.fixture
 async def client(db_client, files_root):
     manager = Manager(db_client=db_client, files_root=files_root)
+    manager._db_ready = True  # db_client.init_db() was already called directly above
     web_app = WebApp(app_name="integration-test", manager=manager)
     transport = ASGITransport(app=web_app.app())
     async with AsyncClient(transport=transport, base_url="http://test") as ac:

@@ -1,16 +1,33 @@
 """Tests for Manager.get_status() notices, specifically the _build_phase
 message variants introduced alongside the on_phase build callback.
+
+Also covers the startup-gate middleware: while _db_ready is False, all
+non-/status routes must return 503 so that DB requests cannot arrive while
+alembic migration is still running.
 """
 
 import pytest
+from httpx import ASGITransport, AsyncClient
 
 from apps.db_server.manager import Manager
+from apps.db_server.web import WebApp
 
 
 @pytest.fixture
 async def manager(db_client, files_root):
     """Uninitialised Manager — _hash_index_ready stays False."""
     return Manager(db_client=db_client, files_root=files_root)
+
+
+@pytest.fixture
+async def unready_client(db_client, files_root):
+    """HTTP client backed by a WebApp whose manager has _db_ready=False (migration in progress)."""
+    manager = Manager(db_client=db_client, files_root=files_root)
+    # Deliberately do NOT set manager._db_ready = True
+    web_app = WebApp(app_name="test", manager=manager)
+    transport = ASGITransport(app=web_app.app())
+    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        yield ac
 
 
 class TestGetStatusBuildPhase:
@@ -56,3 +73,68 @@ class TestGetStatusBuildPhase:
         assert "hash_rebuild" in keys
         notice = next(n for n in status["notices"] if n["key"] == "hash_rebuild")
         assert notice["level"] == "warning"
+
+
+class TestGetStatusMigrationPhase:
+    """Notices during alembic migration and on initialization failure."""
+
+    async def test_migrating_phase_shows_db_migrating_notice(self, manager):
+        manager._build_phase = "migrating"
+        status = await manager.get_status()
+        keys = [n["key"] for n in status["notices"]]
+        assert "db_migrating" in keys
+        assert "hash_build" not in keys, "hash_build must not appear while migrating"
+
+    async def test_migrating_phase_notice_is_info_level(self, manager):
+        manager._build_phase = "migrating"
+        status = await manager.get_status()
+        notice = next(n for n in status["notices"] if n["key"] == "db_migrating")
+        assert notice["level"] == "info"
+
+    async def test_init_error_shows_error_notice(self, manager):
+        manager._init_error = "alembic upgrade failed: table already exists"
+        status = await manager.get_status()
+        keys = [n["key"] for n in status["notices"]]
+        assert "db_init_error" in keys
+        assert "hash_build" not in keys
+
+    async def test_init_error_notice_is_error_level(self, manager):
+        manager._init_error = "alembic upgrade failed: table already exists"
+        status = await manager.get_status()
+        notice = next(n for n in status["notices"] if n["key"] == "db_init_error")
+        assert notice["level"] == "error"
+
+    async def test_init_error_message_contains_reason(self, manager):
+        reason = "alembic upgrade failed: table already exists"
+        manager._init_error = reason
+        status = await manager.get_status()
+        notice = next(n for n in status["notices"] if n["key"] == "db_init_error")
+        assert reason in notice["message"]
+
+    async def test_init_error_takes_priority_over_migrating_phase(self, manager):
+        """If both _init_error and _build_phase are set (shouldn't happen normally),
+        the error notice must win so the user sees the failure."""
+        manager._init_error = "boom"
+        manager._build_phase = "migrating"
+        status = await manager.get_status()
+        keys = [n["key"] for n in status["notices"]]
+        assert "db_init_error" in keys
+        assert "db_migrating" not in keys
+
+
+class TestStartupGateMiddleware:
+    """While _db_ready is False the server must reject non-/status requests with 503."""
+
+    async def test_status_returns_ok_while_not_ready(self, unready_client):
+        r = await unready_client.get("/status")
+        assert r.status_code == 200
+
+    async def test_api_request_returns_503_while_not_ready(self, unready_client):
+        r = await unready_client.get("/api/labels")
+        assert r.status_code == 503
+
+    async def test_503_body_is_json_with_detail(self, unready_client):
+        r = await unready_client.post("/api/labels", json={"name": "cat", "color": "#f00"})
+        assert r.status_code == 503
+        body = r.json()
+        assert "detail" in body

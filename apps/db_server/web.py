@@ -725,6 +725,20 @@ class WebApp:
         self._app: FastAPI = FastAPI(lifespan=self._lifespan)
         self._dflt_args: dict[str, str] = {"app_name": self._app_name}  # Default arguments for templates
 
+        # Block all non-status requests while the DB is still initializing (alembic
+        # migration may be in progress).  /status is always allowed so the notices
+        # SSE stream can surface the migration phase to the frontend.
+        _mgr = manager
+
+        @self._app.middleware("http")
+        async def _db_ready_gate(request: Request, call_next):
+            if not _mgr._db_ready and request.url.path != "/status":
+                return JSONResponse(
+                    status_code=503,
+                    content={"detail": "Database is initializing, please retry shortly"},
+                )
+            return await call_next(request)
+
         # Mount static files
         self._app.mount("/static", StaticFiles(directory="/app/static"), name="static")
 
