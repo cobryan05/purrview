@@ -451,6 +451,7 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
 
   // _visibleEntries is the filtered subset rendered to DOM (updated by renderFromEntries)
   let _visibleEntries = [];
+  let _cardUnsubs = [];  // per-card EventBus unsubs; drained before each page render
 
   const entryId = e => e.kind === 'image' ? e.img.uuid : e.bbox.uuid;
 
@@ -866,12 +867,14 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
       entryView.setEmptyText(_hasMore
         ? 'No matching annotations on this page.'
         : 'No matching annotations found.');
+      _cardUnsubs.splice(0).forEach(fn => fn());
       entryView.setEntries([]);
       updateStatusMsg();
       return;
     }
 
     entryView.setEmptyText('');
+    _cardUnsubs.splice(0).forEach(fn => fn());
     entryView.setEntries(_visibleEntries);
 
     updateStatusMsg();
@@ -905,6 +908,7 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
       // Use setEntries([]) so entryView._entries and the DOM stay in sync — a
       // direct grid.innerHTML = '' would leave _entries stale, causing a
       // view-toggle click during the async fetch to re-render the old page.
+      _cardUnsubs.splice(0).forEach(fn => fn());
       entryView.setEntries([]);
       _selected.clear();
       _staleUuids = new Set();
@@ -1357,18 +1361,14 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
     // Keep chips up to date when labels change from context menu or canvas save.
     // Subscriptions are self-cleaning once the card leaves the DOM.
     let _unsubImgLabels, _unsubAnnSaved;
-    function _onImageLabelsChanged({ imageUuid: u } = {}) {
+    async function _onRelevantChange({ imageUuid: u } = {}) {
       if (u !== img.uuid) return;
       if (!card.isConnected) { _unsubImgLabels?.(); _unsubAnnSaved?.(); return; }
-      _renderImageLabelChips();
+      await _renderImageLabelChips();
     }
-    function _onAnnotationsSaved({ imageUuid: u } = {}) {
-      if (u !== img.uuid) return;
-      if (!card.isConnected) { _unsubImgLabels?.(); _unsubAnnSaved?.(); return; }
-      _renderImageLabelChips();
-    }
-    _unsubImgLabels = events.subscribe(EventTypes.IMAGE_LABELS_CHANGED, _onImageLabelsChanged);
-    _unsubAnnSaved = events.subscribe(EventTypes.IMAGE_ANNOTATIONS_SAVED, _onAnnotationsSaved);
+    _unsubImgLabels = events.subscribe(EventTypes.IMAGE_LABELS_CHANGED, _onRelevantChange);
+    _unsubAnnSaved = events.subscribe(EventTypes.IMAGE_ANNOTATIONS_SAVED, _onRelevantChange);
+    _cardUnsubs.push(_unsubImgLabels, _unsubAnnSaved);
 
     // Verification status line (verified / unverified counts).
     const statusRow = document.createElement('div');
@@ -2169,6 +2169,7 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
 
   return {
     destroy() {
+      _cardUnsubs.splice(0).forEach(fn => fn());
       _unsubImageSaved();
       _unsubImageDeleted();
       _unsubBboxChanged();
