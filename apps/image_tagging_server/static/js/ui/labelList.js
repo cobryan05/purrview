@@ -695,21 +695,39 @@ async function mountModelConfigMode(container, {
   initialSubmodels = new Map(),
   defaultSpec = null,
   onSubmodelsChanged = () => {},
+  scopeFilter = null,  // 'object' | 'image' | null (null = show all)
 } = {}) {
-  const labelsMap = preloaded ?? await fetchLabels();
-  const byParent = buildHierarchy(labelsMap, null);
+  const rawMap = preloaded ?? await fetchLabels();
+
+  // Filter to the relevant scope, then remap orphaned parents to root so every
+  // filtered label is reachable in the hierarchy tree.
+  // Labels without an explicit scope (e.g. legacy data) default to 'object'.
+  const labelsMap = scopeFilter
+    ? new Map([...rawMap].filter(([, l]) => (l.scope ?? 'object') === scopeFilter))
+    : rawMap;
+  const displayMap = scopeFilter
+    ? new Map([...labelsMap].map(([uuid, l]) => [
+        uuid,
+        (!l.parentUuid || labelsMap.has(l.parentUuid)) ? l : { ...l, parentUuid: null },
+      ]))
+    : labelsMap;
+
+  const byParent = buildHierarchy(displayMap, null);
 
   const childCountMap = new Map();
-  for (const label of labelsMap.values()) {
+  for (const label of displayMap.values()) {
     if (label.parentUuid) childCountMap.set(label.parentUuid, (childCountMap.get(label.parentUuid) ?? 0) + 1);
   }
   const selected = new Set(initialSelected);
   const submodels = new Map(initialSubmodels);
 
+  // Image classifiers operate on whole images — sub-model overrides don't apply.
+  const allowSubmodels = scopeFilter !== 'image';
+
   function appendRows(parentUuid, indent) {
     for (const label of (byParent.get(parentUuid ?? null) ?? [])) {
       const isParent = childCountMap.has(label.uuid);
-      const showSubmodel = isParent;
+      const showSubmodel = isParent && allowSubmodels;
 
       const { row, nameEl } = buildLabelRow(label, indent, { padding: '3px 6px' });
 
@@ -828,6 +846,7 @@ export async function createLabelList(container, options = {}) {
     initialSubmodels = new Map(),
     defaultSpec = null,
     onSubmodelsChanged = () => {},
+    scopeFilter = null,
   } = options;
 
   let _destroyFn = () => {};
@@ -843,7 +862,7 @@ export async function createLabelList(container, options = {}) {
       handle = await mountEditMode(container, { filter, onRerender: mount });
     } else if (mode === 'model-config') {
       handle = await mountModelConfigMode(container, {
-        labelsMap, initialSelected, initialSubmodels, defaultSpec, onSubmodelsChanged,
+        labelsMap, initialSelected, initialSubmodels, defaultSpec, onSubmodelsChanged, scopeFilter,
       });
     } else {
       handle = await mountSelectMode(container, { runtime, filter });

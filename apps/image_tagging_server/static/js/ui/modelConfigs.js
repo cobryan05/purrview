@@ -27,6 +27,16 @@ let _navGuardController = null; // AbortController for the tab-navigation guard
 // Model type / architecture catalogue (authoritative source for the UI)
 // -------------------------------------------------------
 
+/**
+ * Returns the label scope that a given model type operates on.
+ * image_classifier works on whole-image labels; everything else uses object/bbox labels.
+ * @param {string} modelType
+ * @returns {'image' | 'object'}
+ */
+function scopeForModelType(modelType) {
+  return modelType === 'image_classifier' ? 'image' : 'object';
+}
+
 const MODEL_SPEC = {
   object_detection: {
     label: 'Object Detection',
@@ -258,7 +268,59 @@ function renderConfigForm({ config, labelsMap, onDirtyChange }) {
   const { rootSpec: initRootSpec, selected: initSelected, submodels: initSubmodels } =
     parseNodes(config?.nodes, labelsMap);
 
-  const rootSpecHandle = makeModelSpecSelectors(initRootSpec, () => _markDirty());
+  let currentScope = scopeForModelType(initRootSpec.modelType);
+  let currentSubmodels = new Map(initSubmodels);
+  let treeHandle = null;
+
+  // Default spec seeded when the user first enables a sub-model toggle on a label.
+  // Crop classifier is the most common sub-model type (refining a detected parent).
+  const defaultSubSpec = { modelType: 'crop_classifier', architecture: 'efficientnet_b0' };
+
+  // Submodel panels (populated dynamically by tree callbacks)
+  const submodelsContainer = document.createElement('div');
+
+  function refreshPanels(submodels) {
+    currentSubmodels = submodels;
+    // Sub-model overrides only make sense for object/crop models (not image classifiers).
+    if (currentScope === 'image') {
+      submodelsContainer.innerHTML = '';
+    } else {
+      renderSubmodelPanels(submodelsContainer, submodels, labelsMap,
+        (uuid, newSpec) => { currentSubmodels.set(uuid, newSpec); _markDirty(); });
+    }
+  }
+
+  const treeBox = document.createElement('div');
+  treeBox.className = 'panel-tree-box';
+  treeBox.addEventListener('change', _markDirty);
+
+  async function buildLabelTree(scope, initialSelected, initialSubmodels) {
+    treeHandle?.destroy();
+    treeHandle = null;
+    treeBox.innerHTML = '';
+    const handle = await createLabelList(treeBox, {
+      mode: 'model-config',
+      labelsMap,
+      initialSelected,
+      initialSubmodels,
+      defaultSpec: defaultSubSpec,
+      scopeFilter: scope,
+      onSubmodelsChanged: (submodels) => { refreshPanels(submodels); _markDirty(); },
+    });
+    treeHandle = handle;
+    refreshPanels(new Map(initialSubmodels));
+  }
+
+  const rootSpecHandle = makeModelSpecSelectors(initRootSpec, (newSpec) => {
+    _markDirty();
+    const newScope = scopeForModelType(newSpec.modelType);
+    if (newScope !== currentScope) {
+      currentScope = newScope;
+      // Scope changed — old label selections are for a different annotation type,
+      // so clear them and rebuild the tree with the correct label scope.
+      buildLabelTree(newScope, new Set(), new Map());
+    }
+  });
   el.appendChild(makeFieldRow('Root model', rootSpecHandle.el));
 
   // Divider
@@ -273,39 +335,11 @@ function renderConfigForm({ config, labelsMap, onDirtyChange }) {
   treeLabel.textContent = 'Label assignments';
   el.appendChild(treeLabel);
 
-  const treeBox = document.createElement('div');
-  treeBox.className = 'panel-tree-box';
-  treeBox.addEventListener('change', _markDirty);
   el.appendChild(treeBox);
-
-  // Submodel panels (populated dynamically by tree callbacks)
-  const submodelsContainer = document.createElement('div');
   el.appendChild(submodelsContainer);
 
-  let currentSubmodels = new Map(initSubmodels);
-  let treeHandle = null;
-
-  // Default spec used when the user first enables a sub-model toggle on a label.
-  // Crop classifier is the most common sub-model type (refining a detected parent).
-  const defaultSubSpec = { modelType: 'crop_classifier', architecture: 'efficientnet_b0' };
-
-  function refreshPanels(submodels) {
-    currentSubmodels = submodels;
-    renderSubmodelPanels(submodelsContainer, submodels, labelsMap,
-      (uuid, newSpec) => { currentSubmodels.set(uuid, newSpec); _markDirty(); });
-  }
-
-  createLabelList(treeBox, {
-    mode: 'model-config',
-    labelsMap,
-    initialSelected: initSelected,
-    initialSubmodels: initSubmodels,
-    defaultSpec: defaultSubSpec,
-    onSubmodelsChanged: (submodels) => { refreshPanels(submodels); _markDirty(); },
-  }).then(handle => {
-    treeHandle = handle;
-    refreshPanels(initSubmodels);
-  });
+  // Kick off the initial tree build (async, but non-blocking for the rest of the form).
+  buildLabelTree(currentScope, initSelected, initSubmodels);
 
   return {
     el,

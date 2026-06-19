@@ -26,9 +26,9 @@ from playwright.sync_api import Page, Route, expect
 # Fake data
 # ---------------------------------------------------------------------------
 
-LABEL_CAT = {"uuid": "lbl-cat", "name": "Cat", "color": "#ff0000", "parentUuid": None}
-LABEL_KITTEN = {"uuid": "lbl-kitten", "name": "Kitten", "color": "#ff8888", "parentUuid": "lbl-cat"}
-LABEL_DOG = {"uuid": "lbl-dog", "name": "Dog", "color": "#00ff00", "parentUuid": None}
+LABEL_CAT = {"uuid": "lbl-cat", "name": "Cat", "color": "#ff0000", "parentUuid": None, "scope": "object"}
+LABEL_KITTEN = {"uuid": "lbl-kitten", "name": "Kitten", "color": "#ff8888", "parentUuid": "lbl-cat", "scope": "object"}
+LABEL_DOG = {"uuid": "lbl-dog", "name": "Dog", "color": "#00ff00", "parentUuid": None, "scope": "object"}
 
 EXISTING_CONFIG = {
     "uuid": "cfg-1",
