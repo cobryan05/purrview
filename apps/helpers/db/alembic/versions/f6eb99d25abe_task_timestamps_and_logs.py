@@ -57,7 +57,8 @@ def downgrade() -> None:
 
     with op.batch_alter_table("model_config_nodes", schema=None) as batch_op:
         batch_op.create_unique_constraint(
-            batch_op.f("uq_model_config_nodes_config_label"), ["model_config_uuid", "label_uuid"]
+            batch_op.f("uq_model_config_nodes_config_label"),
+            ["model_config_uuid", "label_uuid"],
         )
 
     # ### end Alembic commands ###

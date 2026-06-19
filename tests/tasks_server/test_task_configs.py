@@ -34,7 +34,12 @@ async def test_get_task_type_schema_unknown_raises_failure(http_client):
 async def test_create_task_config(http_client):
     resp = await http_client.post(
         "/api/tasks/configs/create",
-        json={"name": "my-config", "typename": "TestTask", "params": {}, "persistent": True},
+        json={
+            "name": "my-config",
+            "typename": "TestTask",
+            "params": {},
+            "persistent": True,
+        },
     )
     assert resp.status_code == 200
     data = resp.json()
@@ -45,7 +50,12 @@ async def test_create_task_config(http_client):
 async def test_create_task_config_unknown_type_returns_failure(http_client):
     resp = await http_client.post(
         "/api/tasks/configs/create",
-        json={"name": "bad", "typename": "UnknownTask", "params": {}, "persistent": True},
+        json={
+            "name": "bad",
+            "typename": "UnknownTask",
+            "params": {},
+            "persistent": True,
+        },
     )
     assert resp.status_code == 200
     assert resp.json()["status"] == "failure"

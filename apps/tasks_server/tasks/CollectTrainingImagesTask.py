@@ -80,7 +80,7 @@ class TargetLabel:
 class CollectTrainingImagesTask(Task):
     # Per-call retry limits and timeouts for I/O operations that can hang indefinitely.
     _MAX_RETRIES: int = 3
-    _FETCH_TIMEOUT_S: float = 30.0    # seconds to wait for a single getNextImage() call
+    _FETCH_TIMEOUT_S: float = 30.0  # seconds to wait for a single getNextImage() call
     _INFERENCE_TIMEOUT_S: float = 60.0  # seconds per inference call (allows for model load)
     # Dedup pipeline buffer: allows this many matched frames to queue for dedup before
     # inference blocks.  A small buffer absorbs per-frame jitter without wasting memory
@@ -178,7 +178,11 @@ class CollectTrainingImagesTask(Task):
                 try:
                     await asyncio.to_thread(
                         tags_api.add_tag,
-                        AddTagPayload(name=tag_name, kind=ApiTagKind.TASK_GENERATED, uuid=task_tag_uuid),
+                        AddTagPayload(
+                            name=tag_name,
+                            kind=ApiTagKind.TASK_GENERATED,
+                            uuid=task_tag_uuid,
+                        ),
                     )
                     self.log(f"Created task tag: {tag_name} ({task_tag_uuid})")
                     self._extra_tag_uuids.append(task_tag_uuid)
@@ -321,6 +325,7 @@ class CollectTrainingImagesTask(Task):
         def _ms_stats(lst) -> str:
             n = len(lst)
             return f"min={min(lst):.0f} avg={sum(lst)/n:.0f} max={max(lst):.0f}" if n else "n/a"
+
         # PERF END
         self._meta_write_lock = asyncio.Lock()
 
@@ -361,21 +366,20 @@ class CollectTrainingImagesTask(Task):
                     provided = None
                     for _attempt in range(self._MAX_RETRIES):
                         try:
-                            provided = await asyncio.wait_for(
-                                provider.getNextImage(), timeout=self._FETCH_TIMEOUT_S
-                            )
+                            provided = await asyncio.wait_for(provider.getNextImage(), timeout=self._FETCH_TIMEOUT_S)
                             break
                         except asyncio.TimeoutError:
                             if _attempt < self._MAX_RETRIES - 1:
                                 logger.warning(
-                                    "Fetch timeout on attempt %d/%d, retrying", _attempt + 1, self._MAX_RETRIES
+                                    "Fetch timeout on attempt %d/%d, retrying",
+                                    _attempt + 1,
+                                    self._MAX_RETRIES,
                                 )
                             else:
-                                self.log(
-                                    f"Provider timed out {self._MAX_RETRIES} times — removing from active sources"
-                                )
+                                self.log(f"Provider timed out {self._MAX_RETRIES} times — removing from active sources")
                                 logger.warning(
-                                    "Removing provider after %d consecutive fetch timeouts", self._MAX_RETRIES
+                                    "Removing provider after %d consecutive fetch timeouts",
+                                    self._MAX_RETRIES,
                                 )
                     t_fetch = time.perf_counter()
                     if provided is None:
@@ -423,15 +427,24 @@ class CollectTrainingImagesTask(Task):
                     logger.debug(
                         "Frame timing (%s): fetch=%.1fms encode=%.1fms(%s) infer=%.1fms%s",
                         "matched" if matching else "no match",
-                        _fetch_ms, _encode_ms, _enc_label, _infer_ms,
-                        " (dedup queued)" if (matching and self._enable_dedup) else
-                        " (save dispatched)" if matching else "",
+                        _fetch_ms,
+                        _encode_ms,
+                        _enc_label,
+                        _infer_ms,
+                        (
+                            " (dedup queued)"
+                            if (matching and self._enable_dedup)
+                            else " (save dispatched)" if matching else ""
+                        ),
                     )
                     if _perf_frame_count % _PERF_SUMMARY_INTERVAL == 0:
                         logger.info(
                             "[pipeline summary] frames=%d fetch=%sms encode=%sms(%s) infer=%sms",
-                            _perf_frame_count, _ms_stats(_perf_fetch_ms), _ms_stats(_perf_encode_ms),
-                            _enc_label, _ms_stats(_perf_infer_ms),
+                            _perf_frame_count,
+                            _ms_stats(_perf_fetch_ms),
+                            _ms_stats(_perf_encode_ms),
+                            _enc_label,
+                            _ms_stats(_perf_infer_ms),
                         )
                     # PERF END
 
@@ -499,7 +512,10 @@ class CollectTrainingImagesTask(Task):
         if _perf_frame_count:
             logger.info(
                 "[pipeline final] frames=%d fetch=%sms encode=%sms infer=%sms",
-                _perf_frame_count, _ms_stats(_perf_fetch_ms), _ms_stats(_perf_encode_ms), _ms_stats(_perf_infer_ms),
+                _perf_frame_count,
+                _ms_stats(_perf_fetch_ms),
+                _ms_stats(_perf_encode_ms),
+                _ms_stats(_perf_infer_ms),
             )
         # PERF END
         self.log(
@@ -509,7 +525,8 @@ class CollectTrainingImagesTask(Task):
                 f", {self._dedup_image_hits} img hits"
                 f", {self._dedup_bbox_hits} bbox hits"
                 f", {self._dup_frames_discarded} discarded"
-                if self._enable_dedup else ""
+                if self._enable_dedup
+                else ""
             )
         )
         result: dict[str, Any] = {"images_saved": self._images_saved}
@@ -585,12 +602,15 @@ class CollectTrainingImagesTask(Task):
                     if _attempt < self._MAX_RETRIES - 1:
                         logger.warning(
                             "Inference timeout on model '%s' (attempt %d/%d), retrying",
-                            name, _attempt + 1, self._MAX_RETRIES,
+                            name,
+                            _attempt + 1,
+                            self._MAX_RETRIES,
                         )
                     else:
                         logger.warning(
                             "Inference timed out %d times for model '%s', skipping frame",
-                            self._MAX_RETRIES, name,
+                            self._MAX_RETRIES,
+                            name,
                         )
                         self.log(f"Inference timeout on '{name}' after {self._MAX_RETRIES} retries — skipping frame")
                 except Exception:
@@ -652,7 +672,10 @@ class CollectTrainingImagesTask(Task):
         # Save as JPEG (faster write, smaller files; lossless PNG not needed for training data).
         t_write = time.perf_counter()  # PERF
         if not await asyncio.to_thread(
-            cv2.imwrite, str(abs_path), provided.image, [cv2.IMWRITE_JPEG_QUALITY, PHASH_JPEG_QUALITY]
+            cv2.imwrite,
+            str(abs_path),
+            provided.image,
+            [cv2.IMWRITE_JPEG_QUALITY, PHASH_JPEG_QUALITY],
         ):
             logger.warning(f"Failed to write image to {abs_path}")
             self.log(f"Failed to write image: {filename}")
@@ -684,13 +707,21 @@ class CollectTrainingImagesTask(Task):
                     images_api.update_image_metadata,
                     UpdateMetadataPayload(image_path=rel_path, boxes=boxes),
                 )
-            logger.debug("Metadata save: %.1fms for %s", 1000 * (time.perf_counter() - t_meta), filename)  # PERF
+            logger.debug(
+                "Metadata save: %.1fms for %s",
+                1000 * (time.perf_counter() - t_meta),
+                filename,
+            )  # PERF
         except Exception:
             logger.exception(f"Failed to save metadata for {rel_path}")
             self.log(f"Failed to save metadata: {filename}")
             return None
 
-        logger.debug("_save_image total: %.1fms for %s", 1000 * (time.perf_counter() - t_save_start), filename)  # PERF
+        logger.debug(
+            "_save_image total: %.1fms for %s",
+            1000 * (time.perf_counter() - t_save_start),
+            filename,
+        )  # PERF
         return filename
 
     async def _dedup_worker(
@@ -720,9 +751,7 @@ class CollectTrainingImagesTask(Task):
                     unique_id = None
                     if provided.metadata.source is not None and provided.metadata.frame_idx is not None:
                         unique_id = f"{provided.metadata.source}:{provided.metadata.frame_idx}"
-                    save_task = asyncio.create_task(
-                        self._save_image(images_api, provided, matching, files_root)
-                    )
+                    save_task = asyncio.create_task(self._save_image(images_api, provided, matching, files_root))
                     self._pending_saves.append((save_task, unique_id))
                     continue
 
@@ -736,7 +765,10 @@ class CollectTrainingImagesTask(Task):
                 bboxes_xywh = [(d.bbox.x, d.bbox.y, d.bbox.width, d.bbox.height) for d in matching]
                 image_phash, bbox_phashes = await asyncio.to_thread(
                     compute_phashes_with_jpeg_roundtrip,
-                    provided.image, bboxes_xywh, self._image_hash_size, self._bbox_hash_size,
+                    provided.image,
+                    bboxes_xywh,
+                    self._image_hash_size,
+                    self._bbox_hash_size,
                 )
 
                 # Single bulk HTTP call — replaces N+1 separate calls.
@@ -782,7 +814,10 @@ class CollectTrainingImagesTask(Task):
                 self._dedup_bbox_hits += sum(1 for f in bbox_flags if f)
                 logger.debug(
                     "dedup result: image_is_dup=%s bbox_flags=%s (img_thresh=%d bbox_thresh=%d)",
-                    resp.image_is_dup, bbox_flags, self._image_dup_threshold, self._bbox_dup_threshold,
+                    resp.image_is_dup,
+                    bbox_flags,
+                    self._image_dup_threshold,
+                    self._bbox_dup_threshold,
                 )
 
                 # Image-level discard: skip the frame when the whole scene is a perceptual duplicate.
@@ -807,9 +842,7 @@ class CollectTrainingImagesTask(Task):
                         self.log(f"Dedup: {self._dup_frames_discarded} duplicate frames discarded so far")
                     continue
 
-                save_task = asyncio.create_task(
-                    self._save_image(images_api, provided, matching, files_root)
-                )
+                save_task = asyncio.create_task(self._save_image(images_api, provided, matching, files_root))
                 unique_id: Optional[str] = None
                 if provided.metadata.source is not None and provided.metadata.frame_idx is not None:
                     unique_id = f"{provided.metadata.source}:{provided.metadata.frame_idx}"
@@ -936,9 +969,18 @@ class CollectTrainingImagesTask(Task):
                         "label": "Action on Duplicate",
                         "description": "What to do when a detection matches an existing entry in the perceptual hash index.",
                         "options": [
-                            {"value": "discard", "label": "Keep if any unique — discard the frame only when all detections are duplicates"},
-                            {"value": "discard_image", "label": "Discard if image matches — skip the frame when the whole scene is a perceptual duplicate"},
-                            {"value": "ignore", "label": "Ignore — save normally without any duplicate marking"},
+                            {
+                                "value": "discard",
+                                "label": "Keep if any unique — discard the frame only when all detections are duplicates",
+                            },
+                            {
+                                "value": "discard_image",
+                                "label": "Discard if image matches — skip the frame when the whole scene is a perceptual duplicate",
+                            },
+                            {
+                                "value": "ignore",
+                                "label": "Ignore — save normally without any duplicate marking",
+                            },
                         ],
                         "default": "discard",
                     },

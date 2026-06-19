@@ -16,11 +16,7 @@ import pytest
 from apps.db_server.manager import Manager
 from apps.db_server.web import WebApp
 from apps.helpers.db.db_client import DbClient
-from apps.helpers.db.types import (
-    UNVERIFIED_TAG_UUID,
-    BBoxUpdate,
-    ImageRecordUpdate,
-)
+from apps.helpers.db.types import UNVERIFIED_TAG_UUID, BBoxUpdate, ImageRecordUpdate
 from tests.conftest import make_png
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -583,8 +579,24 @@ async def test_rebuild_overwrites_bboxes_when_requested(tmp_path):
         image.uuid,
         ImageRecordUpdate(
             bboxes=[
-                BBoxUpdate(uuid=stale_bid1, label_uuid=label.uuid, x=0.0, y=0.0, width=0.1, height=0.1, tag_uuids=[]),
-                BBoxUpdate(uuid=stale_bid2, label_uuid=label.uuid, x=0.5, y=0.5, width=0.1, height=0.1, tag_uuids=[]),
+                BBoxUpdate(
+                    uuid=stale_bid1,
+                    label_uuid=label.uuid,
+                    x=0.0,
+                    y=0.0,
+                    width=0.1,
+                    height=0.1,
+                    tag_uuids=[],
+                ),
+                BBoxUpdate(
+                    uuid=stale_bid2,
+                    label_uuid=label.uuid,
+                    x=0.5,
+                    y=0.5,
+                    width=0.1,
+                    height=0.1,
+                    tag_uuids=[],
+                ),
             ]
         ),
     )

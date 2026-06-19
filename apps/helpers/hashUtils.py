@@ -128,8 +128,5 @@ def compute_phashes_with_jpeg_roundtrip(
     _, buf = cv2.imencode(".jpg", image_bgr, [cv2.IMWRITE_JPEG_QUALITY, PHASH_JPEG_QUALITY])
     jpeg_frame = cv2.imdecode(buf, cv2.IMREAD_COLOR)
     img_phash = phash_from_numpy(jpeg_frame, image_hash_size)
-    bbox_phashes = [
-        phash_from_numpy_crop(jpeg_frame, x, y, w, h, bbox_hash_size)
-        for x, y, w, h in bboxes_xywh
-    ]
+    bbox_phashes = [phash_from_numpy_crop(jpeg_frame, x, y, w, h, bbox_hash_size) for x, y, w, h in bboxes_xywh]
     return img_phash, bbox_phashes

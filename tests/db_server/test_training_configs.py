@@ -110,18 +110,24 @@ class TestTrainingConfigCrud:
         mc = await _create_model_config(
             http_client,
             "tc-node-mc",
-            nodes=[{"label_uuid": label_uuid, "model_type": "image_classifier", "architecture": "resnet_18"}],
+            nodes=[
+                {
+                    "label_uuid": label_uuid,
+                    "model_type": "image_classifier",
+                    "architecture": "resnet_18",
+                }
+            ],
         )
         node_uuid = mc["nodes"][0]["uuid"]
-        cfg = await _create_training_config(
-            http_client, "tc-with-node", [], model_config_node_uuid=node_uuid
-        )
+        cfg = await _create_training_config(http_client, "tc-with-node", [], model_config_node_uuid=node_uuid)
         assert cfg["modelConfigNodeUuid"] == node_uuid
 
     async def test_create_with_hyperparams(self, http_client):
         ds = await _create_dataset(http_client, "ds-hyper")
         cfg = await _create_training_config(
-            http_client, "tc-hyper", [ds["uuid"]],
+            http_client,
+            "tc-hyper",
+            [ds["uuid"]],
             hyperparams_json={"epochs": 50, "lr": 0.001},
         )
         assert cfg["hyperparamsJson"]["epochs"] == 50
@@ -186,16 +192,22 @@ class TestTrainingConfigCrud:
             http_client,
             "mc-upd-node",
             nodes=[
-                {"label_uuid": label_a, "model_type": "image_classifier", "architecture": "resnet_18"},
-                {"label_uuid": label_b, "model_type": "image_classifier", "architecture": "resnet_50"},
+                {
+                    "label_uuid": label_a,
+                    "model_type": "image_classifier",
+                    "architecture": "resnet_18",
+                },
+                {
+                    "label_uuid": label_b,
+                    "model_type": "image_classifier",
+                    "architecture": "resnet_50",
+                },
             ],
         )
         node_a = next(n for n in mc["nodes"] if n["labelUuid"] == label_a)
         node_b = next(n for n in mc["nodes"] if n["labelUuid"] == label_b)
 
-        cfg = await _create_training_config(
-            http_client, "tc-upd-node", [], model_config_node_uuid=node_a["uuid"]
-        )
+        cfg = await _create_training_config(http_client, "tc-upd-node", [], model_config_node_uuid=node_a["uuid"])
         assert cfg["modelConfigNodeUuid"] == node_a["uuid"]
 
         r = await http_client.put(
@@ -262,12 +274,16 @@ class TestTrainingConfigReadiness:
         mc = await _create_model_config(
             http_client,
             f"mc-{tc_name}",
-            nodes=[{"label_uuid": label_uuid, "model_type": "image_classifier", "architecture": "resnet_18"}],
+            nodes=[
+                {
+                    "label_uuid": label_uuid,
+                    "model_type": "image_classifier",
+                    "architecture": "resnet_18",
+                }
+            ],
         )
         node_uuid = mc["nodes"][0]["uuid"]
-        cfg = await _create_training_config(
-            http_client, tc_name, [ds_uuid], model_config_node_uuid=node_uuid
-        )
+        cfg = await _create_training_config(http_client, tc_name, [ds_uuid], model_config_node_uuid=node_uuid)
         return cfg, node_uuid
 
     async def test_empty_dataset_returns_zero_counts(self, http_client):
@@ -308,7 +324,11 @@ class TestTrainingConfigReadiness:
 
         r = await http_client.post(
             "/api/images/labels/set",
-            json={"imagePath": "ready_present.png", "labelUuid": label_uuid, "status": "present"},
+            json={
+                "imagePath": "ready_present.png",
+                "labelUuid": label_uuid,
+                "status": "present",
+            },
         )
         assert r.json()["status"] == "success"
 
@@ -325,7 +345,11 @@ class TestTrainingConfigReadiness:
 
         r = await http_client.post(
             "/api/images/labels/set",
-            json={"imagePath": "ready_absent.png", "labelUuid": label_uuid, "status": "absent"},
+            json={
+                "imagePath": "ready_absent.png",
+                "labelUuid": label_uuid,
+                "status": "absent",
+            },
         )
         assert r.json()["status"] == "success"
 
@@ -345,7 +369,11 @@ class TestTrainingConfigReadiness:
         # Verify label on image A only; image B stays unreviewed
         await http_client.post(
             "/api/images/labels/set",
-            json={"imagePath": "ready_mixed_a.png", "labelUuid": label_uuid, "status": "absent"},
+            json={
+                "imagePath": "ready_mixed_a.png",
+                "labelUuid": label_uuid,
+                "status": "absent",
+            },
         )
 
         cfg, _ = await self._make_tc_with_node(http_client, "tc-ready-mixed", ds["uuid"], label_uuid)
@@ -380,17 +408,30 @@ class TestTrainingConfigReadiness:
         # Verify label on img_a only
         await http_client.post(
             "/api/images/labels/set",
-            json={"imagePath": "union_img_a.png", "labelUuid": label_uuid, "status": "present"},
+            json={
+                "imagePath": "union_img_a.png",
+                "labelUuid": label_uuid,
+                "status": "present",
+            },
         )
 
         mc = await _create_model_config(
             http_client,
             "mc-union",
-            nodes=[{"label_uuid": label_uuid, "model_type": "image_classifier", "architecture": "resnet_18"}],
+            nodes=[
+                {
+                    "label_uuid": label_uuid,
+                    "model_type": "image_classifier",
+                    "architecture": "resnet_18",
+                }
+            ],
         )
         node_uuid = mc["nodes"][0]["uuid"]
         cfg = await _create_training_config(
-            http_client, "tc-union", [ds_a["uuid"], ds_b["uuid"]], model_config_node_uuid=node_uuid
+            http_client,
+            "tc-union",
+            [ds_a["uuid"], ds_b["uuid"]],
+            model_config_node_uuid=node_uuid,
         )
         r = await http_client.get(f"/api/training-configs/{cfg['uuid']}/readiness")
         body = r.json()
@@ -409,20 +450,26 @@ class TestTrainingConfigReadiness:
         # Mark parent label verified; child unverified → not fully ready (2 labels needed)
         await http_client.post(
             "/api/images/labels/set",
-            json={"imagePath": "hier_img.png", "labelUuid": parent_label, "status": "present"},
+            json={
+                "imagePath": "hier_img.png",
+                "labelUuid": parent_label,
+                "status": "present",
+            },
         )
 
         mc = await _create_model_config(
             http_client,
             "mc-hier",
             nodes=[
-                {"label_uuid": parent_label, "model_type": "image_classifier", "architecture": "resnet_18"},
+                {
+                    "label_uuid": parent_label,
+                    "model_type": "image_classifier",
+                    "architecture": "resnet_18",
+                },
             ],
         )
         node_uuid = mc["nodes"][0]["uuid"]
-        cfg = await _create_training_config(
-            http_client, "tc-hier", [ds["uuid"]], model_config_node_uuid=node_uuid
-        )
+        cfg = await _create_training_config(http_client, "tc-hier", [ds["uuid"]], model_config_node_uuid=node_uuid)
         r = await http_client.get(f"/api/training-configs/{cfg['uuid']}/readiness")
         body = r.json()
         # Both parent and child label required; only parent verified → needs_review
@@ -441,21 +488,40 @@ class TestTrainingConfigReadiness:
         # Mark only label_a; label_b remains unreviewed → image not fully ready
         await http_client.post(
             "/api/images/labels/set",
-            json={"imagePath": "root_node_img.png", "labelUuid": label_a, "status": "present"},
+            json={
+                "imagePath": "root_node_img.png",
+                "labelUuid": label_a,
+                "status": "present",
+            },
         )
 
         mc = await _create_model_config(
             http_client,
             "mc-root-node",
             nodes=[
-                {"label_uuid": None, "model_type": "object_detection", "architecture": "yolo_v8_n"},
-                {"label_uuid": label_a, "model_type": "image_classifier", "architecture": "resnet_18"},
-                {"label_uuid": label_b, "model_type": "image_classifier", "architecture": "resnet_18"},
+                {
+                    "label_uuid": None,
+                    "model_type": "object_detection",
+                    "architecture": "yolo_v8_n",
+                },
+                {
+                    "label_uuid": label_a,
+                    "model_type": "image_classifier",
+                    "architecture": "resnet_18",
+                },
+                {
+                    "label_uuid": label_b,
+                    "model_type": "image_classifier",
+                    "architecture": "resnet_18",
+                },
             ],
         )
         root_node = next(n for n in mc["nodes"] if n["labelUuid"] is None)
         cfg = await _create_training_config(
-            http_client, "tc-root-node", [ds["uuid"]], model_config_node_uuid=root_node["uuid"]
+            http_client,
+            "tc-root-node",
+            [ds["uuid"]],
+            model_config_node_uuid=root_node["uuid"],
         )
         r = await http_client.get(f"/api/training-configs/{cfg['uuid']}/readiness")
         body = r.json()
@@ -509,13 +575,20 @@ class TestTrainingConfigLabelStats:
 
     async def test_object_scope_bbox_counts(self, http_client, files_root):
         """Object-scope label: verified/unverified bbox counts and per-image rollups."""
-        label_uuid = (await http_client.post(
-            "/api/labels", json={"name": "ls-obj-lbl", "color": "#00ff00"}
-        )).json()["label"]["uuid"]
+        label_uuid = (await http_client.post("/api/labels", json={"name": "ls-obj-lbl", "color": "#00ff00"})).json()[
+            "label"
+        ]["uuid"]
 
-        ds = (await http_client.post(
-            "/api/datasets", json={"name": "ls-obj-scope", "filter_json": {}, "label_uuids": [label_uuid]}
-        )).json()["dataset"]
+        ds = (
+            await http_client.post(
+                "/api/datasets",
+                json={
+                    "name": "ls-obj-scope",
+                    "filter_json": {},
+                    "label_uuids": [label_uuid],
+                },
+            )
+        ).json()["dataset"]
 
         img_a = await _register_image(http_client, files_root, "ls_obj_a.png")
         r = await http_client.post(
@@ -523,10 +596,24 @@ class TestTrainingConfigLabelStats:
             json={
                 "imagePath": img_a,
                 "boxes": [
-                    {"uuid": str(uuid.uuid4()), "labelUuid": label_uuid,
-                     "x": 0.1, "y": 0.1, "width": 0.2, "height": 0.2, "tagUuids": [VERIFIED_TAG_UUID]},
-                    {"uuid": str(uuid.uuid4()), "labelUuid": label_uuid,
-                     "x": 0.5, "y": 0.5, "width": 0.2, "height": 0.2, "tagUuids": [UNVERIFIED_TAG_UUID]},
+                    {
+                        "uuid": str(uuid.uuid4()),
+                        "labelUuid": label_uuid,
+                        "x": 0.1,
+                        "y": 0.1,
+                        "width": 0.2,
+                        "height": 0.2,
+                        "tagUuids": [VERIFIED_TAG_UUID],
+                    },
+                    {
+                        "uuid": str(uuid.uuid4()),
+                        "labelUuid": label_uuid,
+                        "x": 0.5,
+                        "y": 0.5,
+                        "width": 0.2,
+                        "height": 0.2,
+                        "tagUuids": [UNVERIFIED_TAG_UUID],
+                    },
                 ],
             },
         )
@@ -536,15 +623,24 @@ class TestTrainingConfigLabelStats:
         await _create_bbox(http_client, img_b, label_uuid, [VERIFIED_TAG_UUID])
 
         # Create model config with a node for this label, link via model_config_node_uuid.
-        mc = (await http_client.post(
-            "/api/model-configs",
-            json={"name": "mc-ls-obj", "nodes": [{"label_uuid": label_uuid, "model_type": "object_detection", "architecture": "yolo_v8_n"}]},
-        )).json()["config"]
+        mc = (
+            await http_client.post(
+                "/api/model-configs",
+                json={
+                    "name": "mc-ls-obj",
+                    "nodes": [
+                        {
+                            "label_uuid": label_uuid,
+                            "model_type": "object_detection",
+                            "architecture": "yolo_v8_n",
+                        }
+                    ],
+                },
+            )
+        ).json()["config"]
         node_uuid = mc["nodes"][0]["uuid"]
 
-        cfg = await _create_training_config(
-            http_client, "ls-obj-cfg", [ds["uuid"]], model_config_node_uuid=node_uuid
-        )
+        cfg = await _create_training_config(http_client, "ls-obj-cfg", [ds["uuid"]], model_config_node_uuid=node_uuid)
         r = await http_client.get(self.ENDPOINT.format(uuid=cfg["uuid"]))
         body = r.json()
         assert body["status"] == "success"
@@ -559,31 +655,51 @@ class TestTrainingConfigLabelStats:
 
     async def test_root_node_derives_labels_from_config(self, http_client, files_root):
         """Label stats with a root-node uses all non-root nodes' labels in the config."""
-        label_uuid = (await http_client.post(
-            "/api/labels", json={"name": "ls-root-lbl", "color": "#ff00ff"}
-        )).json()["label"]["uuid"]
+        label_uuid = (await http_client.post("/api/labels", json={"name": "ls-root-lbl", "color": "#ff00ff"})).json()[
+            "label"
+        ]["uuid"]
 
-        ds = (await http_client.post(
-            "/api/datasets", json={"name": "ls-root-ds", "filter_json": {}, "label_uuids": [label_uuid]}
-        )).json()["dataset"]
+        ds = (
+            await http_client.post(
+                "/api/datasets",
+                json={
+                    "name": "ls-root-ds",
+                    "filter_json": {},
+                    "label_uuids": [label_uuid],
+                },
+            )
+        ).json()["dataset"]
 
         img = await _register_image(http_client, files_root, "ls_root_img.png")
         await _create_bbox(http_client, img, label_uuid, [VERIFIED_TAG_UUID])
 
-        mc = (await http_client.post(
-            "/api/model-configs",
-            json={
-                "name": "mc-ls-root",
-                "nodes": [
-                    {"label_uuid": None, "model_type": "object_detection", "architecture": "yolo_v8_n"},
-                    {"label_uuid": label_uuid, "model_type": "object_detection", "architecture": "yolo_v8_n"},
-                ],
-            },
-        )).json()["config"]
+        mc = (
+            await http_client.post(
+                "/api/model-configs",
+                json={
+                    "name": "mc-ls-root",
+                    "nodes": [
+                        {
+                            "label_uuid": None,
+                            "model_type": "object_detection",
+                            "architecture": "yolo_v8_n",
+                        },
+                        {
+                            "label_uuid": label_uuid,
+                            "model_type": "object_detection",
+                            "architecture": "yolo_v8_n",
+                        },
+                    ],
+                },
+            )
+        ).json()["config"]
         root_node = next(n for n in mc["nodes"] if n["labelUuid"] is None)
 
         cfg = await _create_training_config(
-            http_client, "ls-root-cfg", [ds["uuid"]], model_config_node_uuid=root_node["uuid"]
+            http_client,
+            "ls-root-cfg",
+            [ds["uuid"]],
+            model_config_node_uuid=root_node["uuid"],
         )
         r = await http_client.get(self.ENDPOINT.format(uuid=cfg["uuid"]))
         body = r.json()
@@ -594,28 +710,56 @@ class TestTrainingConfigLabelStats:
 
     async def test_union_of_two_datasets_deduped(self, http_client, files_root):
         """Images shared between two datasets are counted only once in totalImages."""
-        label_uuid = (await http_client.post(
-            "/api/labels", json={"name": "ls-union-lbl", "color": "#0000ff"}
-        )).json()["label"]["uuid"]
+        label_uuid = (await http_client.post("/api/labels", json={"name": "ls-union-lbl", "color": "#0000ff"})).json()[
+            "label"
+        ]["uuid"]
 
         img = await _register_image(http_client, files_root, "ls_union_img.png")
         await _create_bbox(http_client, img, label_uuid, [VERIFIED_TAG_UUID])
 
-        ds_a = (await http_client.post(
-            "/api/datasets", json={"name": "ls-union-a", "filter_json": {}, "label_uuids": [label_uuid]}
-        )).json()["dataset"]
-        ds_b = (await http_client.post(
-            "/api/datasets", json={"name": "ls-union-b", "filter_json": {}, "label_uuids": [label_uuid]}
-        )).json()["dataset"]
+        ds_a = (
+            await http_client.post(
+                "/api/datasets",
+                json={
+                    "name": "ls-union-a",
+                    "filter_json": {},
+                    "label_uuids": [label_uuid],
+                },
+            )
+        ).json()["dataset"]
+        ds_b = (
+            await http_client.post(
+                "/api/datasets",
+                json={
+                    "name": "ls-union-b",
+                    "filter_json": {},
+                    "label_uuids": [label_uuid],
+                },
+            )
+        ).json()["dataset"]
 
-        mc = (await http_client.post(
-            "/api/model-configs",
-            json={"name": "mc-ls-union", "nodes": [{"label_uuid": label_uuid, "model_type": "object_detection", "architecture": "yolo_v8_n"}]},
-        )).json()["config"]
+        mc = (
+            await http_client.post(
+                "/api/model-configs",
+                json={
+                    "name": "mc-ls-union",
+                    "nodes": [
+                        {
+                            "label_uuid": label_uuid,
+                            "model_type": "object_detection",
+                            "architecture": "yolo_v8_n",
+                        }
+                    ],
+                },
+            )
+        ).json()["config"]
         node_uuid = mc["nodes"][0]["uuid"]
 
         cfg = await _create_training_config(
-            http_client, "ls-union-cfg", [ds_a["uuid"], ds_b["uuid"]], model_config_node_uuid=node_uuid
+            http_client,
+            "ls-union-cfg",
+            [ds_a["uuid"], ds_b["uuid"]],
+            model_config_node_uuid=node_uuid,
         )
         r = await http_client.get(self.ENDPOINT.format(uuid=cfg["uuid"]))
         body = r.json()

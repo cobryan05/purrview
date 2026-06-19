@@ -475,7 +475,13 @@ async def test_require_verified_filter(http_client, files_root):
         json={
             "show_all_bboxes": True,
             "tag_uuids": [],
-            "image_label_filters": [{"label_uuid": label_uuid, "status": "present", "require_verified": True}],
+            "image_label_filters": [
+                {
+                    "label_uuid": label_uuid,
+                    "status": "present",
+                    "require_verified": True,
+                }
+            ],
         },
     )
     assert r.status_code == 200

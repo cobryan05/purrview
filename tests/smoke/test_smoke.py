@@ -125,7 +125,11 @@ async def test_started_task_reports_running_status(tasks):
         assert (
             instance_status != "new"
         ), f"Task status must not be the stale DB initial value 'new'; got {instance_status!r}"
-        assert instance_status in ("running", "completed", "error"), f"Unexpected task status: {instance_status!r}"
+        assert instance_status in (
+            "running",
+            "completed",
+            "error",
+        ), f"Unexpected task status: {instance_status!r}"
 
     finally:
         # Best-effort cleanup — cancel if still running, then delete.

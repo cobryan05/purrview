@@ -28,10 +28,10 @@ class TaskInfoRead(ApiModel):
     def from_task_info(cls, task_info: TaskInfo) -> "TaskInfoRead":
         return cls(
             config=TaskConfigRead.model_validate(task_info.config),
-            instance=TaskInstanceRead.model_validate(task_info.instance) if task_info.instance else None,
+            instance=(TaskInstanceRead.model_validate(task_info.instance) if task_info.instance else None),
             progress=task_info.task.get_progress() if task_info.task else 0.0,
-            status_message=task_info.task.get_status_message() if task_info.task else "",
-            status_actions=task_info.task.get_status_actions() if task_info.task else [],
+            status_message=(task_info.task.get_status_message() if task_info.task else ""),
+            status_actions=(task_info.task.get_status_actions() if task_info.task else []),
             log_lines=task_info.task.get_log_lines() if task_info.task else [],
-            is_paused_in_place=task_info.task.is_paused_in_place() if task_info.task else False,
+            is_paused_in_place=(task_info.task.is_paused_in_place() if task_info.task else False),
         )

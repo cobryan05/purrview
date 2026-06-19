@@ -34,7 +34,11 @@ class FfmpegImageProvider(ImageProvider):
         return ImageProviderType.LIVE_STREAM
 
     def __init__(self, video_path: str, loop: bool = True, rtsp_relay: bool = True):
-        output_args = {"format": "rawvideo", "pix_fmt": "rgb24", "codec": "rawvideo"}  # decode raw frames
+        output_args = {
+            "format": "rawvideo",
+            "pix_fmt": "rgb24",
+            "codec": "rawvideo",
+        }  # decode raw frames
         self._video_path: str = video_path.strip()
         self._loop: bool = loop
         self._frame_size: Optional[Tuple[int, int]] = None
@@ -62,7 +66,10 @@ class FfmpegImageProvider(ImageProvider):
             await asyncio.to_thread(api.create_stream, self._video_path, self._relayed_name)
 
             async def wait_for_stream(
-                api, stream_name: str, timeout: float = STREAM_START_TIMEOUT, poll_interval: float = 0.5
+                api,
+                stream_name: str,
+                timeout: float = STREAM_START_TIMEOUT,
+                poll_interval: float = 0.5,
             ) -> bool:
                 deadline = time.monotonic() + timeout
                 while time.monotonic() < deadline:
@@ -150,5 +157,10 @@ class FfmpegImageProvider(ImageProvider):
                 "default": True,
                 "description": "Proxy RTSP streams through MediaMTX",
             },
-            "loop": {"type": "boolean", "required": False, "default": True, "description": "Whether to loop the video"},
+            "loop": {
+                "type": "boolean",
+                "required": False,
+                "default": True,
+                "description": "Whether to loop the video",
+            },
         }

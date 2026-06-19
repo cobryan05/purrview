@@ -13,10 +13,10 @@ if str(_project_root) not in sys.path:
 from sqlmodel import SQLModel
 
 # Import all models so Alembic autogenerate can detect the full schema
-from apps.helpers.db.types import (  # noqa: F401
+from apps.helpers.db.types import Dataset  # noqa: F401
+from apps.helpers.db.types import (
     BBox,
     BBoxTagLink,
-    Dataset,
     DatasetLabelLink,
     ImageLabel,
     ImageRecord,

@@ -41,6 +41,7 @@ _LUT8 = np.array([bin(i).count("1") for i in range(256)], dtype=np.uint8)
 try:
     _popcount = np.bitwise_count  # type: ignore[attr-defined]  # numpy >= 2.0
 except AttributeError:
+
     def _popcount(arr_u64: np.ndarray) -> np.ndarray:  # type: ignore[misc]
         """Return per-element popcount for a uint64 array using a byte look-up table."""
         return _LUT8[arr_u64.view(np.uint8)].reshape(arr_u64.shape + (8,)).sum(axis=-1).astype(np.int32)
@@ -119,7 +120,9 @@ class HashIndex:
             await asyncio.sleep(0)
         return rows
 
-    async def _load_phashes(self, on_img_chunk=None, on_bbox_chunk=None) -> Tuple[List[Dict[str, str]], List[Dict[str, str]]]:
+    async def _load_phashes(
+        self, on_img_chunk=None, on_bbox_chunk=None
+    ) -> Tuple[List[Dict[str, str]], List[Dict[str, str]]]:
         """Fetch all image and bbox phash rows in pages, yielding to the event loop
         between chunks so other requests are not starved during startup or rebuild."""
         image_rows, bbox_rows = await asyncio.gather(

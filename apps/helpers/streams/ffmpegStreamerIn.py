@@ -22,7 +22,11 @@ class FFmpegStreamerIn:
 
         self._extra_args: Dict[str, Any] = {}
         if source.startswith("http://") or source.startswith("rtsp://") or source.startswith("https://"):
-            self._extra_args = {"rtsp_transport": "tcp", "format": "rtsp", "use_wallclock_as_timestamps": 1}
+            self._extra_args = {
+                "rtsp_transport": "tcp",
+                "format": "rtsp",
+                "use_wallclock_as_timestamps": 1,
+            }
 
         self._source: str = source
         self._input_args: Dict[str, str] = input_args or {}

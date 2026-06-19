@@ -54,12 +54,15 @@ class Manager:
             **self._config,
             "shared_fs_available": self._shared_fs_available,
             "fs_root": self._fs_root,
-            "default_image_source": "filesystem" if self._shared_fs_available else "http",
+            "default_image_source": ("filesystem" if self._shared_fs_available else "http"),
         }
 
     async def submit_job(self, config: Dict[str, Any]) -> Job:
         if "image_source" not in config:
-            config = {**config, "image_source": "filesystem" if self._shared_fs_available else "http"}
+            config = {
+                **config,
+                "image_source": "filesystem" if self._shared_fs_available else "http",
+            }
         # Derive trainer_type from model_type if not explicitly set.
         if "trainer_type" not in config and "model_type" in config:
             config = {**config, "trainer_type": config["model_type"]}

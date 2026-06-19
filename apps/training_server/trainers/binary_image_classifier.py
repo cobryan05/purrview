@@ -92,7 +92,13 @@ class BinaryImageClassifier(Trainer):
         logger.info("Dataset sizes: train=%d val=%d", len(ds_train), len(ds_val))
 
         batch_size = int(config.get("batch_size", 32))
-        loader_train = DataLoader(ds_train, batch_size=batch_size, shuffle=True, num_workers=2, pin_memory=True)
+        loader_train = DataLoader(
+            ds_train,
+            batch_size=batch_size,
+            shuffle=True,
+            num_workers=2,
+            pin_memory=True,
+        )
         loader_val = DataLoader(ds_val, batch_size=batch_size, shuffle=False, num_workers=2, pin_memory=True)
 
         # ── Model ────────────────────────────────────────────────────────────
@@ -158,15 +164,17 @@ class BinaryImageClassifier(Trainer):
                 f"train_loss={train_loss:.4f}  val_loss={val_loss:.4f}  val_acc={val_acc:.4f}"
             )
             logger.info(log_msg)
-            progress_cb({
-                "progress": epoch / max_epochs,
-                "epoch": epoch,
-                "total_epochs": max_epochs,
-                "val_accuracy": round(val_acc, 4),
-                "train_loss": round(train_loss, 4),
-                "val_loss": round(val_loss, 4),
-                "log": log_msg,
-            })
+            progress_cb(
+                {
+                    "progress": epoch / max_epochs,
+                    "epoch": epoch,
+                    "total_epochs": max_epochs,
+                    "val_accuracy": round(val_acc, 4),
+                    "train_loss": round(train_loss, 4),
+                    "val_loss": round(val_loss, 4),
+                    "log": log_msg,
+                }
+            )
 
             if val_loss < best_val_loss:
                 best_val_loss = val_loss
@@ -201,6 +209,7 @@ class BinaryImageClassifier(Trainer):
 
         # Validate ONNX output matches PyTorch output.
         import onnxruntime as ort
+
         ort_session = ort.InferenceSession(str(onnx_path))
         with torch.no_grad():
             pt_out = model(dummy).numpy()

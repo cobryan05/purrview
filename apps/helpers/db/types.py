@@ -25,13 +25,7 @@ VERIFIED_TAG_UUID = "00000000-0000-0000-0000-000000000005"
 import jstyleson
 import numpy as np
 import sqlalchemy as sa
-from pydantic import (
-    BaseModel,
-    BeforeValidator,
-    ConfigDict,
-    Field,
-    field_validator,
-)
+from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, field_validator
 from pydantic.alias_generators import to_camel
 from sqlmodel import JSON, Column, DateTime, Field, Relationship, SQLModel
 from typing_extensions import Annotated
@@ -105,7 +99,10 @@ class TimestampModel(SQLModel):
     An abstract mixin for tracking record lifecycle using timezone-aware UTC timestamps.
     """
 
-    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc), sa_type=DateTime(timezone=True))
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        sa_type=DateTime(timezone=True),
+    )
 
     updated_at: datetime = Field(
         default_factory=lambda: datetime.now(timezone.utc),

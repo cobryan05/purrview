@@ -196,7 +196,10 @@ async def test_multiple_images_independent_verification(client, files_root):
     assert sum(1 for f in filenames if "a.png" in f or "b.png" in f or "c.png" in f) == 3
 
     for bid in [bid_a, bid_b]:
-        await client.patch(f"/api/images/bbox/{bid}", json={"labelUuid": label, "tagUuids": [VERIFIED_TAG_UUID]})
+        await client.patch(
+            f"/api/images/bbox/{bid}",
+            json={"labelUuid": label, "tagUuids": [VERIFIED_TAG_UUID]},
+        )
 
     images = await _review(client, tag_uuids=[UNVERIFIED_TAG_UUID])
     filenames = [img["filename"] for img in images]

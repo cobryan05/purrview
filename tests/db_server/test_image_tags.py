@@ -173,7 +173,11 @@ async def test_bulk_apply_add_tags(http_client, files_root, tag_uuid, tag2_uuid)
 
     r = await http_client.post(
         "/api/images/bulk-apply-by-uuids",
-        json={"imageUuids": image_uuids, "action": "addTags", "tagUuids": [tag_uuid, tag2_uuid]},
+        json={
+            "imageUuids": image_uuids,
+            "action": "addTags",
+            "tagUuids": [tag_uuid, tag2_uuid],
+        },
     )
     assert r.status_code == 200
     body = r.json()
@@ -196,7 +200,11 @@ async def test_bulk_apply_remove_tags(http_client, files_root, tag_uuid, tag2_uu
 
     r = await http_client.post(
         "/api/images/bulk-apply-by-uuids",
-        json={"imageUuids": [image_uuid], "action": "removeTags", "tagUuids": [tag_uuid]},
+        json={
+            "imageUuids": [image_uuid],
+            "action": "removeTags",
+            "tagUuids": [tag_uuid],
+        },
     )
     assert r.status_code == 200
     assert r.json()["modifiedCount"] == 1
@@ -220,7 +228,10 @@ async def test_review_queue_filters_by_image_tag(http_client, files_root, tag_uu
 
     r = await http_client.post(
         "/api/images/review",
-        json={"showAllBboxes": True, "imageTagFilters": [{"tagUuid": tag_uuid, "exclude": False}]},
+        json={
+            "showAllBboxes": True,
+            "imageTagFilters": [{"tagUuid": tag_uuid, "exclude": False}],
+        },
     )
     assert r.status_code == 200
     body = r.json()
@@ -238,7 +249,10 @@ async def test_review_queue_excludes_by_image_tag(http_client, files_root, tag_u
 
     r = await http_client.post(
         "/api/images/review",
-        json={"showAllBboxes": True, "imageTagFilters": [{"tagUuid": tag_uuid, "exclude": True}]},
+        json={
+            "showAllBboxes": True,
+            "imageTagFilters": [{"tagUuid": tag_uuid, "exclude": True}],
+        },
     )
     assert r.status_code == 200
     body = r.json()
@@ -311,7 +325,11 @@ async def test_bulk_apply_set_tag_absent(http_client, files_root, tag_uuid):
 
     r = await http_client.post(
         "/api/images/bulk-apply-by-uuids",
-        json={"imageUuids": [image_uuid], "action": "setTagAbsent", "tagUuids": [tag_uuid]},
+        json={
+            "imageUuids": [image_uuid],
+            "action": "setTagAbsent",
+            "tagUuids": [tag_uuid],
+        },
     )
     assert r.status_code == 200
     assert r.json()["modifiedCount"] == 1
@@ -329,7 +347,11 @@ async def test_bulk_apply_set_tag_uncertain(http_client, files_root, tag_uuid):
 
     r = await http_client.post(
         "/api/images/bulk-apply-by-uuids",
-        json={"imageUuids": [image_uuid], "action": "setTagUncertain", "tagUuids": [tag_uuid]},
+        json={
+            "imageUuids": [image_uuid],
+            "action": "setTagUncertain",
+            "tagUuids": [tag_uuid],
+        },
     )
     assert r.status_code == 200
     assert r.json()["modifiedCount"] == 1
@@ -348,7 +370,10 @@ async def test_review_queue_filters_by_verified_absent_tag(http_client, files_ro
 
     r = await http_client.post(
         "/api/images/review",
-        json={"showAllBboxes": True, "imageTagFilters": [{"tagUuid": tag_uuid, "status": "absent", "exclude": False}]},
+        json={
+            "showAllBboxes": True,
+            "imageTagFilters": [{"tagUuid": tag_uuid, "status": "absent", "exclude": False}],
+        },
     )
     assert r.status_code == 200
     filenames = {img["filename"] for img in r.json()["images"]}
@@ -369,7 +394,14 @@ async def test_review_queue_require_verified_image_tag(http_client, files_root, 
         "/api/images/review",
         json={
             "showAllBboxes": True,
-            "imageTagFilters": [{"tagUuid": tag_uuid, "status": "present", "exclude": False, "requireVerified": True}],
+            "imageTagFilters": [
+                {
+                    "tagUuid": tag_uuid,
+                    "status": "present",
+                    "exclude": False,
+                    "requireVerified": True,
+                }
+            ],
         },
     )
     assert r.status_code == 200
@@ -390,7 +422,10 @@ async def test_review_queue_filters_by_unset_image_tag(http_client, files_root, 
 
     r = await http_client.post(
         "/api/images/review",
-        json={"showAllBboxes": True, "imageTagFilters": [{"tagUuid": tag_uuid, "requireUnset": True}]},
+        json={
+            "showAllBboxes": True,
+            "imageTagFilters": [{"tagUuid": tag_uuid, "requireUnset": True}],
+        },
     )
     assert r.status_code == 200
     filenames = {img["filename"] for img in r.json()["images"]}

@@ -29,9 +29,7 @@ class YOLOv8ONNXInferenceProvider(InferenceProvider):
         conf_thresh: float = 0.251,
         iou_thresh: float = 0.45,
     ):
-        self.session = ort.InferenceSession(
-            model_path, providers=["CUDAExecutionProvider", "CPUExecutionProvider"]
-        )
+        self.session = ort.InferenceSession(model_path, providers=["CUDAExecutionProvider", "CPUExecutionProvider"])
         active_providers = self.session.get_providers()
         logger.info(f"ONNX providers active: {active_providers}")
 
@@ -66,13 +64,9 @@ class YOLOv8ONNXInferenceProvider(InferenceProvider):
 
         if self.cuda_executor:
             loop = asyncio.get_running_loop()
-            preds_list = await loop.run_in_executor(
-                self.cuda_executor, self.session.run, None, {self.input_name: img}
-            )
+            preds_list = await loop.run_in_executor(self.cuda_executor, self.session.run, None, {self.input_name: img})
         else:
-            preds_list = await asyncio.to_thread(
-                self.session.run, None, {self.input_name: img}
-            )
+            preds_list = await asyncio.to_thread(self.session.run, None, {self.input_name: img})
 
         preds = preds_list[0]
         # -----------------------------------
@@ -95,8 +89,11 @@ class YOLOv8ONNXInferenceProvider(InferenceProvider):
         # PERF BEGIN
         logger.debug(
             "processImage: preprocess=%.1fms onnx=%.1fms postprocess=%.1fms total=%.1fms (%d raw dets)",
-            1000 * (t_pre - t0), 1000 * (t_onnx - t_pre),
-            1000 * (t_post - t_onnx), 1000 * (t_post - t0), len(detections),
+            1000 * (t_pre - t0),
+            1000 * (t_onnx - t_pre),
+            1000 * (t_post - t_onnx),
+            1000 * (t_post - t0),
+            len(detections),
         )
         # PERF END
 
@@ -107,11 +104,7 @@ class YOLOv8ONNXInferenceProvider(InferenceProvider):
             # TODO: Why is class_id + 1? Is this a data error or a code error?
             class_id = int(det[5])
             _name_idx = class_id + 1
-            class_name = (
-                self.class_names[_name_idx]
-                if self.class_names and _name_idx < len(self.class_names)
-                else None
-            )
+            class_name = self.class_names[_name_idx] if self.class_names and _name_idx < len(self.class_names) else None
 
             # Convert absolute xyxy to relative x1y1wh for BBox
             rel_bbox = BBox.fromX1Y1X2Y2(x_min, y_min, x_max, y_max, imgW, imgH)

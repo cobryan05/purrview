@@ -101,11 +101,15 @@ async def test_delete_image_removes_file_and_record(http_client, image_file, fil
     # Create a sidecar so the image can be reconciled into the DB with a stable UUID.
     import json as _json
     import uuid as _uuid
+
     stable_uuid = str(_uuid.uuid4())
     sidecar = image_file.with_suffix(".json")
     sidecar.write_text(_json.dumps({"uuid": stable_uuid, "boxes": []}))
 
-    r = await http_client.post("/api/images/reconcile", json={"relPath": "test.png", "syncMode": "replace_db_with_json"})
+    r = await http_client.post(
+        "/api/images/reconcile",
+        json={"relPath": "test.png", "syncMode": "replace_db_with_json"},
+    )
     assert r.status_code == 200
 
     # Confirm the record is in the DB.
@@ -152,7 +156,10 @@ async def test_delete_image_db_only_keeps_file(http_client, image_file, files_ro
     sidecar = image_file.with_suffix(".json")
     sidecar.write_text(_json.dumps({"uuid": stable_uuid, "boxes": []}))
 
-    r = await http_client.post("/api/images/reconcile", json={"relPath": "test.png", "syncMode": "replace_db_with_json"})
+    r = await http_client.post(
+        "/api/images/reconcile",
+        json={"relPath": "test.png", "syncMode": "replace_db_with_json"},
+    )
     assert r.status_code == 200
 
     # Confirm the record is in the DB with the expected UUID.

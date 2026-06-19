@@ -120,7 +120,11 @@ class Manager:
                     continue
                 config = configs.get(instance.config_uuid)
                 running_task = self._running_tasks.get(instance.uuid)
-                task_info = TaskInfo(config=config, instance=instance, task=running_task.task if running_task else None)
+                task_info = TaskInfo(
+                    config=config,
+                    instance=instance,
+                    task=running_task.task if running_task else None,
+                )
                 ret_info[instance.uuid] = task_info
 
         return ret_info

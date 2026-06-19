@@ -27,7 +27,11 @@ if "db" in targets:
 if "relay" in targets:
     from .relay_buffer_server.main import app as relay_server_app
 
-    with open(os.path.join(output_dir, "relay_buffer_server_openapi.json"), "w", encoding="utf-8") as f:
+    with open(
+        os.path.join(output_dir, "relay_buffer_server_openapi.json"),
+        "w",
+        encoding="utf-8",
+    ) as f:
         json.dump(relay_server_app.openapi(), f, indent=2)
 
 if "inference" in targets:
@@ -51,5 +55,9 @@ if "training" in targets:
 if "image_tagging" in targets or "frontend" in targets:
     from .image_tagging_server.main import app as image_tagging_server_app
 
-    with open(os.path.join(output_dir, "image_tagging_server_openapi.json"), "w", encoding="utf-8") as f:
+    with open(
+        os.path.join(output_dir, "image_tagging_server_openapi.json"),
+        "w",
+        encoding="utf-8",
+    ) as f:
         json.dump(image_tagging_server_app.openapi(), f, indent=2)

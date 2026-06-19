@@ -1,6 +1,7 @@
 """Tests for Manager.get_status() notices, specifically the _build_phase
 message variants introduced alongside the on_phase build callback.
 """
+
 import pytest
 
 from apps.db_server.manager import Manager

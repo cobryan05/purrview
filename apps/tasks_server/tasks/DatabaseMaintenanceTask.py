@@ -34,7 +34,12 @@ logging.basicConfig()
 logger = logging.getLogger(__file__)
 logger.setLevel(logging.DEBUG)
 
-_VALID_SYNC_MODES = {"merge", "replace_db_with_json", "replace_json_with_db", "keep_newer"}
+_VALID_SYNC_MODES = {
+    "merge",
+    "replace_db_with_json",
+    "replace_json_with_db",
+    "keep_newer",
+}
 
 
 @register_task()
@@ -77,9 +82,7 @@ class DatabaseMaintenanceTask(Task):
         self._recompute_phashes: bool = bool(params.get("recompute_phashes", False))
         self._phash_concurrency: int = max(1, int(params.get("phash_concurrency", 4)))
         self._remove_directories: list[str] = list(params.get("remove_directories") or [])
-        self._remove_directories_delete_sidecars: bool = bool(
-            params.get("remove_directories_delete_sidecars", True)
-        )
+        self._remove_directories_delete_sidecars: bool = bool(params.get("remove_directories_delete_sidecars", True))
 
         if self._sync_mode not in _VALID_SYNC_MODES:
             raise ValueError(f"Invalid sync_mode: {self._sync_mode!r}. Must be one of {_VALID_SYNC_MODES}")
@@ -95,11 +98,16 @@ class DatabaseMaintenanceTask(Task):
 
         # Build a dynamic progress budget: only allocate space to active phases.
         active = []
-        if self._sync_jsons:                      active.append("reconcile")
-        if self._remove_directories:              active.append("remove_dirs")
-        if self._remove_deleted:                  active.append("prune")
-        if self._clear_orphan_tags:               active.append("tags")
-        if _has_hash_work:                        active.extend(["hash", "rebuild"])
+        if self._sync_jsons:
+            active.append("reconcile")
+        if self._remove_directories:
+            active.append("remove_dirs")
+        if self._remove_deleted:
+            active.append("prune")
+        if self._clear_orphan_tags:
+            active.append("tags")
+        if _has_hash_work:
+            active.extend(["hash", "rebuild"])
 
         total_w = sum(self._PHASE_WEIGHTS[p] for p in active) or 1
         ends: dict[str, float] = {}
@@ -127,9 +135,7 @@ class DatabaseMaintenanceTask(Task):
             # If reconcile ran, known_disk_uuids carries sidecar UUIDs so moved
             # files are protected.  If reconcile was skipped, pass [] — the backend
             # checks file existence directly (no second disk walk needed).
-            summary["pruned"] = await self._step_prune(
-                images_api, known_disk_uuids, ends.get("prune", 100.0)
-            )
+            summary["pruned"] = await self._step_prune(images_api, known_disk_uuids, ends.get("prune", 100.0))
 
         # ── 4. Clear orphan tags ──────────────────────────────────────────────
         if self._clear_orphan_tags and not self._cancel_flag.is_set():
@@ -139,7 +145,8 @@ class DatabaseMaintenanceTask(Task):
         if _has_hash_work and not self._cancel_flag.is_set():
             settings_api = SettingsApi(db_api_client)
             h = await self._step_hash(
-                images_api, settings_api,
+                images_api,
+                settings_api,
                 hash_end=ends.get("hash", 95.0),
                 rebuild_end=ends.get("rebuild", 100.0),
             )
@@ -149,14 +156,22 @@ class DatabaseMaintenanceTask(Task):
         self._status_msg = "Done"
 
         log_parts: list[str] = []
-        if "files_found" in summary:      log_parts.append(f"{summary['files_found']} files on disk")
-        if "reconciled" in summary:       log_parts.append(f"{summary['reconciled']} synced")
-        if "moved" in summary:            log_parts.append(f"{summary['moved']} moves detected")
-        if "errors" in summary:           log_parts.append(f"{summary['errors']} errors")
-        if "dirs_removed" in summary:     log_parts.append(f"{summary['dirs_removed']} dir records removed")
-        if "sidecars_deleted" in summary: log_parts.append(f"{summary['sidecars_deleted']} sidecars deleted")
-        if "pruned" in summary:           log_parts.append(f"{summary['pruned']} pruned")
-        if "tags_cleared" in summary:     log_parts.append(f"{summary['tags_cleared']} orphan tags cleared")
+        if "files_found" in summary:
+            log_parts.append(f"{summary['files_found']} files on disk")
+        if "reconciled" in summary:
+            log_parts.append(f"{summary['reconciled']} synced")
+        if "moved" in summary:
+            log_parts.append(f"{summary['moved']} moves detected")
+        if "errors" in summary:
+            log_parts.append(f"{summary['errors']} errors")
+        if "dirs_removed" in summary:
+            log_parts.append(f"{summary['dirs_removed']} dir records removed")
+        if "sidecars_deleted" in summary:
+            log_parts.append(f"{summary['sidecars_deleted']} sidecars deleted")
+        if "pruned" in summary:
+            log_parts.append(f"{summary['pruned']} pruned")
+        if "tags_cleared" in summary:
+            log_parts.append(f"{summary['tags_cleared']} orphan tags cleared")
         if "phash_processed" in summary:
             verb = "recomputed" if self._recompute_phashes else "filled"
             log_parts.append(f"{summary['phash_processed']} hashes {verb}")
@@ -366,9 +381,8 @@ class DatabaseMaintenanceTask(Task):
 
                 done = phash_processed + phash_errors
                 self._update_progress(hash_start + done / max(phash_total, 1) * (hash_work_end - hash_start))
-                self._status_msg = (
-                    f"{mode_label} {done} / {phash_total} — {phash_processed} done"
-                    + (f", {phash_errors} errors" if phash_errors else "")
+                self._status_msg = f"{mode_label} {done} / {phash_total} — {phash_processed} done" + (
+                    f", {phash_errors} errors" if phash_errors else ""
                 )
                 await self.heartbeat()
 
@@ -427,7 +441,12 @@ class DatabaseMaintenanceTask(Task):
     def params_schema(cls) -> dict[str, dict[str, Any]]:
         return {
             "meta": {
-                "order": ["sidecar_sync", "remove_records", "tag_cleanup", "perceptual_hashes"]
+                "order": [
+                    "sidecar_sync",
+                    "remove_records",
+                    "tag_cleanup",
+                    "perceptual_hashes",
+                ]
             },
             "sidecar_sync": {
                 "type": "group",
@@ -445,10 +464,22 @@ class DatabaseMaintenanceTask(Task):
                         "label": "Sync mode",
                         "description": "Direction of data flow when reconciling image sidecars with the DB.",
                         "options": [
-                            {"value": "merge", "label": "Merge (add JSON-only bboxes to DB, keep existing)"},
-                            {"value": "replace_db_with_json", "label": "Replace DB with JSON (JSON wins)"},
-                            {"value": "replace_json_with_db", "label": "Replace JSON with DB (DB wins)"},
-                            {"value": "keep_newer", "label": "Keep newer (compare timestamps)"},
+                            {
+                                "value": "merge",
+                                "label": "Merge (add JSON-only bboxes to DB, keep existing)",
+                            },
+                            {
+                                "value": "replace_db_with_json",
+                                "label": "Replace DB with JSON (JSON wins)",
+                            },
+                            {
+                                "value": "replace_json_with_db",
+                                "label": "Replace JSON with DB (DB wins)",
+                            },
+                            {
+                                "value": "keep_newer",
+                                "label": "Keep newer (compare timestamps)",
+                            },
                         ],
                         "default": "merge",
                     },

@@ -141,7 +141,10 @@ def postprocess(
 
     # Apply Non-Maximum Suppression (NMS)
     indices = cv2.dnn.NMSBoxes(
-        bboxes=boxes.tolist(), scores=confidences.tolist(), score_threshold=conf_thresh, nms_threshold=iou_thresh
+        bboxes=boxes.tolist(),
+        scores=confidences.tolist(),
+        score_threshold=conf_thresh,
+        nms_threshold=iou_thresh,
     )
 
     if len(indices) == 0:

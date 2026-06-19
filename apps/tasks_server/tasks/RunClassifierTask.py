@@ -127,7 +127,11 @@ class RunClassifierTask(Task):
             probs = _softmax(logits, axis=1)
 
             # "present" class is assumed to be index 1 (matches BinaryImageClassifier: absent=0, present=1).
-            present_class_idx = self._model_config.get("class_names", ["absent", "present"]).index("present") if "present" in self._model_config.get("class_names", []) else 1
+            present_class_idx = (
+                self._model_config.get("class_names", ["absent", "present"]).index("present")
+                if "present" in self._model_config.get("class_names", [])
+                else 1
+            )
             present_probs = probs[:, present_class_idx]
 
             # Apply tags.
@@ -211,9 +215,7 @@ class RunClassifierTask(Task):
         self.log(f"Filtered to {len(filtered)} images from {len(path_prefixes)} source(s)")
         return filtered
 
-    async def _load_batch(
-        self, stubs: list, images_api: ImagesApi
-    ) -> tuple[list[np.ndarray], list]:
+    async def _load_batch(self, stubs: list, images_api: ImagesApi) -> tuple[list[np.ndarray], list]:
         """Load and preprocess images for *stubs*.
 
         Returns (tensors, valid_stubs) where invalid images are skipped.
@@ -242,9 +244,7 @@ class RunClassifierTask(Task):
         if self._image_source == "filesystem":
             return await asyncio.to_thread(_read_file, filename)
         else:
-            resp = await asyncio.to_thread(
-                images_api.get_image_file, filename, True  # include_binary=True
-            )
+            resp = await asyncio.to_thread(images_api.get_image_file, filename, True)  # include_binary=True
             if not resp.image_base64:
                 raise ValueError(f"No image data returned for {filename}")
             return base64.b64decode(resp.image_base64)

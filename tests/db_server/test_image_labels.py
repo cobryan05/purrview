@@ -168,8 +168,24 @@ async def test_stale_present_row_removed(http_client, image_file, label_uuid, la
         http_client,
         "labels_test.png",
         [
-            {"uuid": bbox1, "labelUuid": label_uuid, "x": 0.1, "y": 0.1, "width": 0.1, "height": 0.1, "tagUuids": [VERIFIED_TAG_UUID]},
-            {"uuid": bbox2, "labelUuid": label2_uuid, "x": 0.5, "y": 0.5, "width": 0.1, "height": 0.1, "tagUuids": [VERIFIED_TAG_UUID]},
+            {
+                "uuid": bbox1,
+                "labelUuid": label_uuid,
+                "x": 0.1,
+                "y": 0.1,
+                "width": 0.1,
+                "height": 0.1,
+                "tagUuids": [VERIFIED_TAG_UUID],
+            },
+            {
+                "uuid": bbox2,
+                "labelUuid": label2_uuid,
+                "x": 0.5,
+                "y": 0.5,
+                "width": 0.1,
+                "height": 0.1,
+                "tagUuids": [VERIFIED_TAG_UUID],
+            },
         ],
     )
     labels = await _get_image_labels(http_client, "labels_test.png")
@@ -181,7 +197,15 @@ async def test_stale_present_row_removed(http_client, image_file, label_uuid, la
         http_client,
         "labels_test.png",
         [
-            {"uuid": bbox1, "labelUuid": label_uuid, "x": 0.1, "y": 0.1, "width": 0.1, "height": 0.1, "tagUuids": [VERIFIED_TAG_UUID]},
+            {
+                "uuid": bbox1,
+                "labelUuid": label_uuid,
+                "x": 0.1,
+                "y": 0.1,
+                "width": 0.1,
+                "height": 0.1,
+                "tagUuids": [VERIFIED_TAG_UUID],
+            },
         ],
     )
     labels = await _get_image_labels(http_client, "labels_test.png")
@@ -379,7 +403,10 @@ async def test_absent_blocked_by_verified_bbox(http_client, image_file, label_uu
             {
                 "uuid": str(uuid.uuid4()),
                 "labelUuid": label_uuid,
-                "x": 0.1, "y": 0.1, "width": 0.2, "height": 0.2,
+                "x": 0.1,
+                "y": 0.1,
+                "width": 0.2,
+                "height": 0.2,
                 "tagUuids": [VERIFIED_TAG_UUID],
             }
         ],
@@ -387,7 +414,11 @@ async def test_absent_blocked_by_verified_bbox(http_client, image_file, label_uu
     # Setting ABSENT should fail (contradicts verified bbox)
     r = await http_client.post(
         "/api/images/labels/set",
-        json={"imagePath": "labels_test.png", "labelUuid": label_uuid, "status": "absent"},
+        json={
+            "imagePath": "labels_test.png",
+            "labelUuid": label_uuid,
+            "status": "absent",
+        },
     )
     assert r.status_code == 200
     assert r.json()["status"] == "failure"
@@ -402,7 +433,11 @@ async def test_absent_allowed_without_verified_bbox(http_client, image_file, lab
     await _update_bboxes(http_client, "labels_test.png", [])
     r = await http_client.post(
         "/api/images/labels/set",
-        json={"imagePath": "labels_test.png", "labelUuid": label_uuid, "status": "absent"},
+        json={
+            "imagePath": "labels_test.png",
+            "labelUuid": label_uuid,
+            "status": "absent",
+        },
     )
     assert r.status_code == 200
     assert r.json()["status"] == "success"
@@ -419,14 +454,21 @@ async def test_absent_allowed_when_only_unverified_bbox_exists(http_client, imag
             {
                 "uuid": str(uuid.uuid4()),
                 "labelUuid": label_uuid,
-                "x": 0.1, "y": 0.1, "width": 0.2, "height": 0.2,
+                "x": 0.1,
+                "y": 0.1,
+                "width": 0.2,
+                "height": 0.2,
                 "tagUuids": [UNVERIFIED_TAG_UUID],
             }
         ],
     )
     r = await http_client.post(
         "/api/images/labels/set",
-        json={"imagePath": "labels_test.png", "labelUuid": label_uuid, "status": "absent"},
+        json={
+            "imagePath": "labels_test.png",
+            "labelUuid": label_uuid,
+            "status": "absent",
+        },
     )
     assert r.status_code == 200
     assert r.json()["status"] == "success"
@@ -454,7 +496,10 @@ async def test_set_image_label_image_not_found(http_client, label_uuid):
 
 
 async def test_list_images_for_label_empty(http_client, label_uuid):
-    r = await http_client.get("/api/image-labels", params={"label_uuid": label_uuid, "status": ["present", "absent"]})
+    r = await http_client.get(
+        "/api/image-labels",
+        params={"label_uuid": label_uuid, "status": ["present", "absent"]},
+    )
     assert r.status_code == 200
     body = r.json()
     assert body["status"] == "success"
@@ -475,7 +520,10 @@ async def test_list_images_for_label_returns_present_rows(http_client, image_fil
                 {
                     "uuid": str(_uuid.uuid4()),
                     "labelUuid": label_uuid,
-                    "x": 0.1, "y": 0.1, "width": 0.2, "height": 0.2,
+                    "x": 0.1,
+                    "y": 0.1,
+                    "width": 0.2,
+                    "height": 0.2,
                     "tagUuids": [VERIFIED_TAG_UUID],
                 }
             ],
@@ -498,7 +546,11 @@ async def test_list_images_for_label_returns_absent_rows(http_client, image_file
     )
     r_set = await http_client.post(
         "/api/images/labels/set",
-        json={"imagePath": "labels_test.png", "labelUuid": label_uuid, "status": "absent"},
+        json={
+            "imagePath": "labels_test.png",
+            "labelUuid": label_uuid,
+            "status": "absent",
+        },
     )
     assert r_set.json()["status"] == "success"
 
@@ -520,7 +572,11 @@ async def test_list_images_for_label_filters_by_status(http_client, image_file, 
     )
     await http_client.post(
         "/api/images/labels/set",
-        json={"imagePath": "labels_test.png", "labelUuid": label_uuid, "status": "absent"},
+        json={
+            "imagePath": "labels_test.png",
+            "labelUuid": label_uuid,
+            "status": "absent",
+        },
     )
 
     r_present = await http_client.get("/api/image-labels", params={"label_uuid": label_uuid, "status": ["present"]})

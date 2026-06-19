@@ -43,7 +43,11 @@ async def test_create_stream_calls_relay(http_client, manager):
 async def test_create_stream_with_delay_calls_delay_stream(http_client, manager):
     resp = await http_client.post(
         "/api/streams/create",
-        data={"source_url": "rtsp://cam/stream", "stream_name": "delayed1", "delay": "2.5"},
+        data={
+            "source_url": "rtsp://cam/stream",
+            "stream_name": "delayed1",
+            "delay": "2.5",
+        },
     )
     assert resp.status_code == 200
     data = resp.json()

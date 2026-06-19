@@ -5,6 +5,7 @@ FileEntryRead (the model returned by the generated db_client) replaced it with
 `is_dir: bool`.  DatabaseMaintenanceTask must filter on `not e.is_dir`, not on
 `e.type == "file"` which raises AttributeError.
 """
+
 import asyncio
 from unittest.mock import MagicMock, patch
 
@@ -56,8 +57,14 @@ async def test_task_counts_only_file_entries():
     await task._init(task._params, None)
 
     with (
-        patch("apps.tasks_server.tasks.DatabaseMaintenanceTask.ImagesApi", return_value=images_api),
-        patch("apps.tasks_server.tasks.DatabaseMaintenanceTask.TagsApi", return_value=tags_api),
+        patch(
+            "apps.tasks_server.tasks.DatabaseMaintenanceTask.ImagesApi",
+            return_value=images_api,
+        ),
+        patch(
+            "apps.tasks_server.tasks.DatabaseMaintenanceTask.TagsApi",
+            return_value=tags_api,
+        ),
     ):
         result = await task._run()
 
@@ -73,8 +80,14 @@ async def test_task_empty_dir_returns_zero():
     await task._init(task._params, None)
 
     with (
-        patch("apps.tasks_server.tasks.DatabaseMaintenanceTask.ImagesApi", return_value=images_api),
-        patch("apps.tasks_server.tasks.DatabaseMaintenanceTask.TagsApi", return_value=tags_api),
+        patch(
+            "apps.tasks_server.tasks.DatabaseMaintenanceTask.ImagesApi",
+            return_value=images_api,
+        ),
+        patch(
+            "apps.tasks_server.tasks.DatabaseMaintenanceTask.TagsApi",
+            return_value=tags_api,
+        ),
     ):
         result = await task._run()
 
@@ -95,8 +108,14 @@ async def test_task_directory_only_returns_zero():
     await task._init(task._params, None)
 
     with (
-        patch("apps.tasks_server.tasks.DatabaseMaintenanceTask.ImagesApi", return_value=images_api),
-        patch("apps.tasks_server.tasks.DatabaseMaintenanceTask.TagsApi", return_value=tags_api),
+        patch(
+            "apps.tasks_server.tasks.DatabaseMaintenanceTask.ImagesApi",
+            return_value=images_api,
+        ),
+        patch(
+            "apps.tasks_server.tasks.DatabaseMaintenanceTask.TagsApi",
+            return_value=tags_api,
+        ),
     ):
         result = await task._run()
 

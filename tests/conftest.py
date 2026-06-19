@@ -6,8 +6,14 @@ import pytest
 
 nest_asyncio.apply()
 
+
 def pytest_addoption(parser):
-    parser.addoption("--run-smoke", action="store_true", default=False, help="Run smoke tests against live services")
+    parser.addoption(
+        "--run-smoke",
+        action="store_true",
+        default=False,
+        help="Run smoke tests against live services",
+    )
 
 
 def make_png() -> bytes:

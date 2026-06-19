@@ -37,7 +37,11 @@ async def _create_config(
 
 
 # Default valid node fields for use across tests.
-_VALID_NODE = {"label_uuid": None, "model_type": "object_detection", "architecture": "yolo_v8_n"}
+_VALID_NODE = {
+    "label_uuid": None,
+    "model_type": "object_detection",
+    "architecture": "yolo_v8_n",
+}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -71,8 +75,16 @@ async def test_get_single(http_client):
 async def test_create_with_nodes(http_client):
     label_uuid = await _create_label(http_client, "Cat")
     nodes = [
-        {"label_uuid": None, "model_type": "object_detection", "architecture": "yolo_v8_m"},
-        {"label_uuid": label_uuid, "model_type": "image_classifier", "architecture": "efficientnet_b0"},
+        {
+            "label_uuid": None,
+            "model_type": "object_detection",
+            "architecture": "yolo_v8_m",
+        },
+        {
+            "label_uuid": label_uuid,
+            "model_type": "image_classifier",
+            "architecture": "efficientnet_b0",
+        },
     ]
     cfg = await _create_config(http_client, "WithNodes", nodes=nodes)
     assert len(cfg["nodes"]) == 2
@@ -103,13 +115,27 @@ async def test_update_nodes_wholesale(http_client):
     cfg = await _create_config(
         http_client,
         "NodeReplace",
-        nodes=[{"label_uuid": None, "model_type": "object_detection", "architecture": "yolo_v8_n"}],
+        nodes=[
+            {
+                "label_uuid": None,
+                "model_type": "object_detection",
+                "architecture": "yolo_v8_n",
+            }
+        ],
     )
     assert len(cfg["nodes"]) == 1
 
     new_nodes = [
-        {"label_uuid": None, "model_type": "image_classifier", "architecture": "resnet_18"},
-        {"label_uuid": label_uuid, "model_type": "crop_classifier", "architecture": "mobilenet_v3_small"},
+        {
+            "label_uuid": None,
+            "model_type": "image_classifier",
+            "architecture": "resnet_18",
+        },
+        {
+            "label_uuid": label_uuid,
+            "model_type": "crop_classifier",
+            "architecture": "mobilenet_v3_small",
+        },
     ]
     r = await http_client.patch(
         f"/api/model-configs/{cfg['uuid']}",
@@ -127,7 +153,13 @@ async def test_update_nodes_clear(http_client):
     cfg = await _create_config(
         http_client,
         "ClearNodes",
-        nodes=[{"label_uuid": None, "model_type": "object_detection", "architecture": "yolo_v8_n"}],
+        nodes=[
+            {
+                "label_uuid": None,
+                "model_type": "object_detection",
+                "architecture": "yolo_v8_n",
+            }
+        ],
     )
     assert len(cfg["nodes"]) == 1
 
@@ -158,8 +190,16 @@ async def test_nodes_cascade_on_delete(http_client):
         http_client,
         "CascadeTest",
         nodes=[
-            {"label_uuid": None, "model_type": "object_detection", "architecture": "yolo_v8_n"},
-            {"label_uuid": label_uuid, "model_type": "image_classifier", "architecture": "efficientnet_b0"},
+            {
+                "label_uuid": None,
+                "model_type": "object_detection",
+                "architecture": "yolo_v8_n",
+            },
+            {
+                "label_uuid": label_uuid,
+                "model_type": "image_classifier",
+                "architecture": "efficientnet_b0",
+            },
         ],
     )
     assert len(cfg["nodes"]) == 2
@@ -180,8 +220,16 @@ async def test_label_delete_cascades_node(http_client):
         http_client,
         "LabelCascade",
         nodes=[
-            {"label_uuid": None, "model_type": "object_detection", "architecture": "yolo_v8_n"},
-            {"label_uuid": label_uuid, "model_type": "image_classifier", "architecture": "efficientnet_b0"},
+            {
+                "label_uuid": None,
+                "model_type": "object_detection",
+                "architecture": "yolo_v8_n",
+            },
+            {
+                "label_uuid": label_uuid,
+                "model_type": "image_classifier",
+                "architecture": "efficientnet_b0",
+            },
         ],
     )
     assert len(cfg["nodes"]) == 2
@@ -203,7 +251,16 @@ async def test_label_delete_cascades_node(http_client):
 async def test_invalid_model_type_rejected(http_client):
     r = await http_client.post(
         "/api/model-configs",
-        json={"name": "BadType", "nodes": [{"label_uuid": None, "model_type": "nonexistent_type", "architecture": "yolo_v8_n"}]},
+        json={
+            "name": "BadType",
+            "nodes": [
+                {
+                    "label_uuid": None,
+                    "model_type": "nonexistent_type",
+                    "architecture": "yolo_v8_n",
+                }
+            ],
+        },
     )
     assert r.status_code == 200
     body = r.json()
@@ -215,7 +272,16 @@ async def test_invalid_architecture_rejected(http_client):
     """Architecture that doesn't belong to the given model_type is rejected."""
     r = await http_client.post(
         "/api/model-configs",
-        json={"name": "BadArch", "nodes": [{"label_uuid": None, "model_type": "object_detection", "architecture": "efficientnet_b0"}]},
+        json={
+            "name": "BadArch",
+            "nodes": [
+                {
+                    "label_uuid": None,
+                    "model_type": "object_detection",
+                    "architecture": "efficientnet_b0",
+                }
+            ],
+        },
     )
     assert r.status_code == 200
     body = r.json()
@@ -230,8 +296,16 @@ async def test_duplicate_label_uuid_rejected(http_client):
         json={
             "name": "DupLabel",
             "nodes": [
-                {"label_uuid": label_uuid, "model_type": "object_detection", "architecture": "yolo_v8_n"},
-                {"label_uuid": label_uuid, "model_type": "image_classifier", "architecture": "resnet_18"},
+                {
+                    "label_uuid": label_uuid,
+                    "model_type": "object_detection",
+                    "architecture": "yolo_v8_n",
+                },
+                {
+                    "label_uuid": label_uuid,
+                    "model_type": "image_classifier",
+                    "architecture": "resnet_18",
+                },
             ],
         },
     )
@@ -245,7 +319,13 @@ async def test_root_node_label_uuid_none(http_client):
     cfg = await _create_config(
         http_client,
         "RootNull",
-        nodes=[{"label_uuid": None, "model_type": "object_detection", "architecture": "yolo_v8_n"}],
+        nodes=[
+            {
+                "label_uuid": None,
+                "model_type": "object_detection",
+                "architecture": "yolo_v8_n",
+            }
+        ],
     )
     assert len(cfg["nodes"]) == 1
     assert cfg["nodes"][0]["labelUuid"] is None

@@ -110,14 +110,20 @@ class WebApp:
                 response_data = {"status": "failure", "message": str(e)}
             return JSONResponse(content=response_data)
 
-        @self._app.get("/status", operation_id="relay_buffer_server_status", response_class=JSONResponse)
+        @self._app.get(
+            "/status",
+            operation_id="relay_buffer_server_status",
+            response_class=JSONResponse,
+        )
         async def relay_buffer_server_status():
             streams = self._manager.get_streams()
-            return JSONResponse(content={
-                "service": "relay_buffer_server",
-                "status": "ok",
-                "streams": {"active": len(streams)},
-            })
+            return JSONResponse(
+                content={
+                    "service": "relay_buffer_server",
+                    "status": "ok",
+                    "streams": {"active": len(streams)},
+                }
+            )
 
         @self._app.post(
             "/api/streams/create",
@@ -154,14 +160,18 @@ class WebApp:
         ) -> HTMLResponse:
             """Handle stream creation via HTML form"""
             response = await create_stream_api(
-                request=request, source_url=source_url, stream_name=stream_name, delay=delay
+                request=request,
+                source_url=source_url,
+                stream_name=stream_name,
+                delay=delay,
             )
             result = json.loads(response.body.decode("utf-8"))
             if result.get(WebApp.SUCCESS_KEY):
                 return await list_streams_html(request)
             else:
                 return self._error_response(
-                    request, f"Failed to create stream: {result.get(WebApp.ERROR_KEY, 'Unknown error')}"
+                    request,
+                    f"Failed to create stream: {result.get(WebApp.ERROR_KEY, 'Unknown error')}",
                 )
 
         @self._app.get("/create-stream-form", response_class=HTMLResponse, include_in_schema=False)
@@ -190,7 +200,8 @@ class WebApp:
             tags=[WebApp.STREAM_API_TAG_NAME],
         )
         async def destroy_stream_api(
-            request: Request, stream_name: str = Form(..., description="Name of stream to destroy")
+            request: Request,
+            stream_name: str = Form(..., description="Name of stream to destroy"),
         ) -> JSONResponse:
             """Handle the destruction of a stream"""
             try:
@@ -203,7 +214,8 @@ class WebApp:
 
         @self._app.post("/destroy-stream", response_class=HTMLResponse, include_in_schema=False)
         async def destroy_stream_html(
-            request: Request, stream_name: str = Form(..., description="Name of stream to destroy")
+            request: Request,
+            stream_name: str = Form(..., description="Name of stream to destroy"),
         ) -> HTMLResponse:
             """Handle the destruction of a stream"""
             response = await destroy_stream_api(request=request, stream_name=stream_name)
@@ -212,7 +224,8 @@ class WebApp:
                 return await list_streams_html(request)
             else:
                 return self._error_response(
-                    request, f"Failed to destroy stream: {result.get(WebApp.ERROR_KEY, 'Unknown error')}"
+                    request,
+                    f"Failed to destroy stream: {result.get(WebApp.ERROR_KEY, 'Unknown error')}",
                 )
 
         @self._app.get(
@@ -247,7 +260,8 @@ class WebApp:
                 )
             else:
                 return self._error_response(
-                    request, f"Failed to list configuration: {result.get(WebApp.ERROR_KEY, 'Unknown error')}"
+                    request,
+                    f"Failed to list configuration: {result.get(WebApp.ERROR_KEY, 'Unknown error')}",
                 )
 
         @self._app.get(
@@ -297,5 +311,6 @@ class WebApp:
                 )
             else:
                 return self._error_response(
-                    request, f"Failed to list streams: {result.get(WebApp.ERROR_KEY, 'Unknown error')}"
+                    request,
+                    f"Failed to list streams: {result.get(WebApp.ERROR_KEY, 'Unknown error')}",
                 )

@@ -25,9 +25,7 @@ def base64_encode_png(image: np.ndarray) -> str:
 
 def base64_encode_jpg(image: np.ndarray, quality: int = 85) -> str:
     """Encodes an image to JPEG format and packages it into a unified base64 packet."""
-    success, buffer = cv2.imencode(
-        ".jpg", image, [int(cv2.IMWRITE_JPEG_QUALITY), quality]
-    )
+    success, buffer = cv2.imencode(".jpg", image, [int(cv2.IMWRITE_JPEG_QUALITY), quality])
     if not success:
         raise RuntimeError("Failed to encode JPEG image")
 
@@ -49,6 +47,7 @@ def base64_encode_lz4(image: np.ndarray) -> str:
 
     packet = {"format": "lz4", "metadata": metadata, "data": b64_payload}
     return json.dumps(packet)
+
 
 def base64_decode_image(json_packet_str: str) -> np.ndarray:
     """Universal reader that decodes an image packet from png, jpeg, or lz4 format

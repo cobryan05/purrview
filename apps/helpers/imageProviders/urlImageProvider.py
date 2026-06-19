@@ -21,7 +21,12 @@ class UrlImageProvider(ImageProvider):
         return ImageProviderType.LIVE_SNAPSHOT
 
     def __init__(
-        self, url: str, user: str = None, password: str = None, bust_cache: bool = False, ignore_ssl_errors: bool = True
+        self,
+        url: str,
+        user: str = None,
+        password: str = None,
+        bust_cache: bool = False,
+        ignore_ssl_errors: bool = True,
     ):
         self._url: str = url
         self._request = urllib.request.Request(url)
@@ -63,7 +68,12 @@ class UrlImageProvider(ImageProvider):
             - schema: dict (optional, for nested objects)
         """
         return {
-            "url": {"type": "string", "label": "URL", "required": True, "description": "URL of the image"},
+            "url": {
+                "type": "string",
+                "label": "URL",
+                "required": True,
+                "description": "URL of the image",
+            },
             "user": {
                 "type": "string",
                 "label": "Username",

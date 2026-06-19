@@ -14,7 +14,16 @@ def run_cmd(cmd, cwd=None):
 def ensure_yolov5():
     path = os.path.join(TOOLS_DIR, "yolov5")
     if not os.path.exists(path):
-        run_cmd(["git", "clone", "--depth", "1", "https://github.com/ultralytics/yolov5", path])
+        run_cmd(
+            [
+                "git",
+                "clone",
+                "--depth",
+                "1",
+                "https://github.com/ultralytics/yolov5",
+                path,
+            ]
+        )
         run_cmd([sys.executable, "-m", "pip", "install", "-r", "requirements.txt"], cwd=path)
     return path
 
@@ -22,7 +31,16 @@ def ensure_yolov5():
 def ensure_yolov7():
     path = os.path.join(TOOLS_DIR, "yolov7")
     if not os.path.exists(path):
-        run_cmd(["git", "clone", "--depth", "1", "https://github.com/WongKinYiu/yolov7", path])
+        run_cmd(
+            [
+                "git",
+                "clone",
+                "--depth",
+                "1",
+                "https://github.com/WongKinYiu/yolov7",
+                path,
+            ]
+        )
         run_cmd([sys.executable, "-m", "pip", "install", "-r", "requirements.txt"], cwd=path)
     return path
 
@@ -49,7 +67,18 @@ def main():
     if version == "v5":
         yolov5_path = ensure_yolov5()
         run_cmd(
-            [sys.executable, "export.py", "--weights", model_path, "--img", "640", "--batch", "1", "--include", "onnx"],
+            [
+                sys.executable,
+                "export.py",
+                "--weights",
+                model_path,
+                "--img",
+                "640",
+                "--batch",
+                "1",
+                "--include",
+                "onnx",
+            ],
             cwd=yolov5_path,
         )
 

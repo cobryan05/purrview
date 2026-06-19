@@ -165,7 +165,10 @@ class TestRun:
 
         with (
             patch("apps.tasks_server.tasks.RunClassifierTask._MODELS_ROOT", tmp_path),
-            patch("apps.tasks_server.tasks.RunClassifierTask.ImagesApi", return_value=mock_images_api),
+            patch(
+                "apps.tasks_server.tasks.RunClassifierTask.ImagesApi",
+                return_value=mock_images_api,
+            ),
             patch("apps.tasks_server.tasks.RunClassifierTask.SourcesApi"),
             patch("onnxruntime.InferenceSession", return_value=mock_session),
         ):
@@ -215,7 +218,10 @@ class TestRun:
 
         with (
             patch("apps.tasks_server.tasks.RunClassifierTask._MODELS_ROOT", tmp_path),
-            patch("apps.tasks_server.tasks.RunClassifierTask.ImagesApi", return_value=mock_images_api),
+            patch(
+                "apps.tasks_server.tasks.RunClassifierTask.ImagesApi",
+                return_value=mock_images_api,
+            ),
             patch("apps.tasks_server.tasks.RunClassifierTask.SourcesApi"),
             patch("onnxruntime.InferenceSession", return_value=mock_session),
         ):
@@ -271,10 +277,16 @@ class TestRun:
 
         with (
             patch("apps.tasks_server.tasks.RunClassifierTask._MODELS_ROOT", tmp_path),
-            patch("apps.tasks_server.tasks.RunClassifierTask.ImagesApi", return_value=mock_images_api),
+            patch(
+                "apps.tasks_server.tasks.RunClassifierTask.ImagesApi",
+                return_value=mock_images_api,
+            ),
             patch("apps.tasks_server.tasks.RunClassifierTask.SourcesApi"),
             patch("onnxruntime.InferenceSession", return_value=mock_session),
-            patch("apps.tasks_server.tasks.RunClassifierTask.asyncio.sleep", _counting_sleep),
+            patch(
+                "apps.tasks_server.tasks.RunClassifierTask.asyncio.sleep",
+                _counting_sleep,
+            ),
         ):
             await task._init(task._params, None)
             result = await task._run()
@@ -317,7 +329,10 @@ class TestRun:
 
         with (
             patch("apps.tasks_server.tasks.RunClassifierTask._MODELS_ROOT", tmp_path),
-            patch("apps.tasks_server.tasks.RunClassifierTask.ImagesApi", return_value=mock_images_api),
+            patch(
+                "apps.tasks_server.tasks.RunClassifierTask.ImagesApi",
+                return_value=mock_images_api,
+            ),
             patch("apps.tasks_server.tasks.RunClassifierTask.SourcesApi"),
             patch("onnxruntime.InferenceSession", return_value=mock_session),
         ):

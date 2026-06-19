@@ -178,7 +178,10 @@ async def test_label_include_children(http_client, files_root, label_uuid):
 
     # Without include_children: only the parent-label image matches
     images_no_children = await _review(
-        http_client, show_all_bboxes=True, label_uuids=[label_uuid], label_include_children=False,
+        http_client,
+        show_all_bboxes=True,
+        label_uuids=[label_uuid],
+        label_include_children=False,
     )
     names_no = [img["filename"] for img in images_no_children]
     assert any("parent-label.png" in n for n in names_no)
@@ -186,7 +189,10 @@ async def test_label_include_children(http_client, files_root, label_uuid):
 
     # With include_children: both parent and child images match
     images_with_children = await _review(
-        http_client, show_all_bboxes=True, label_uuids=[label_uuid], label_include_children=True,
+        http_client,
+        show_all_bboxes=True,
+        label_uuids=[label_uuid],
+        label_include_children=True,
     )
     names_with = [img["filename"] for img in images_with_children]
     assert any("parent-label.png" in n for n in names_with)
@@ -204,8 +210,24 @@ async def test_label_filter_all_of(http_client, files_root, label_uuid, label2_u
         json={
             "imagePath": "both.png",
             "boxes": [
-                {"uuid": str(uuid.uuid4()), "labelUuid": label_uuid,  "x": 0.1, "y": 0.1, "width": 0.2, "height": 0.2, "tagUuids": [UNVERIFIED_TAG_UUID]},
-                {"uuid": str(uuid.uuid4()), "labelUuid": label2_uuid, "x": 0.3, "y": 0.3, "width": 0.1, "height": 0.1, "tagUuids": [UNVERIFIED_TAG_UUID]},
+                {
+                    "uuid": str(uuid.uuid4()),
+                    "labelUuid": label_uuid,
+                    "x": 0.1,
+                    "y": 0.1,
+                    "width": 0.2,
+                    "height": 0.2,
+                    "tagUuids": [UNVERIFIED_TAG_UUID],
+                },
+                {
+                    "uuid": str(uuid.uuid4()),
+                    "labelUuid": label2_uuid,
+                    "x": 0.3,
+                    "y": 0.3,
+                    "width": 0.1,
+                    "height": 0.1,
+                    "tagUuids": [UNVERIFIED_TAG_UUID],
+                },
             ],
         },
     )
@@ -258,7 +280,12 @@ async def test_default_sort_desc_newest_first(http_client, files_root, label_uui
         _make_image(files_root, name)
         await _add_bbox(http_client, name, label_uuid, [UNVERIFIED_TAG_UUID])
 
-    images = await _review(http_client, tag_uuids=[UNVERIFIED_TAG_UUID], sort_by="created_at", sort_order="desc")
+    images = await _review(
+        http_client,
+        tag_uuids=[UNVERIFIED_TAG_UUID],
+        sort_by="created_at",
+        sort_order="desc",
+    )
     assert len(images) >= 3
     # Most-recently created should be first — just confirm we get a list back
     assert all("filename" in img for img in images)
@@ -269,7 +296,12 @@ async def test_sort_asc_returns_images(http_client, files_root, label_uuid):
         _make_image(files_root, name)
         await _add_bbox(http_client, name, label_uuid, [UNVERIFIED_TAG_UUID])
 
-    images = await _review(http_client, tag_uuids=[UNVERIFIED_TAG_UUID], sort_by="created_at", sort_order="asc")
+    images = await _review(
+        http_client,
+        tag_uuids=[UNVERIFIED_TAG_UUID],
+        sort_by="created_at",
+        sort_order="asc",
+    )
     assert len(images) >= 2
 
 

@@ -4,6 +4,7 @@ SQLite 3.32+ limits bind variables to 32 766 per statement.  A directory
 listing with more files than that limit must not raise OperationalError.
 The implementation must chunk the list and merge results.
 """
+
 import pytest
 
 from apps.helpers.db.db_client import DbClient

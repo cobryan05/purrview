@@ -74,9 +74,7 @@ async def written_image(http_client, image_file, label_uuid):
     )
     assert r.status_code == 200
 
-    meta = await http_client.post(
-        "/api/images/metadata/get", json={"imagePath": "phash_test.png"}
-    )
+    meta = await http_client.post("/api/images/metadata/get", json={"imagePath": "phash_test.png"})
     image_uuid = meta.json()["image"]["uuid"]
     return image_uuid, bid
 
@@ -165,9 +163,7 @@ class TestDbHelpers:
         # Fresh DB — no images at all → empty list
         assert rows == []
 
-    async def test_get_all_image_phashes_returns_correct_fields(
-        self, db_client, written_image
-    ):
+    async def test_get_all_image_phashes_returns_correct_fields(self, db_client, written_image):
         image_uuid, _ = written_image
         rows = await db_client.get_all_image_phashes()
         assert len(rows) >= 1
@@ -175,9 +171,7 @@ class TestDbHelpers:
         assert "uuid" in row
         assert "phash" in row
 
-    async def test_get_all_bbox_phashes_returns_correct_fields(
-        self, db_client, written_image
-    ):
+    async def test_get_all_bbox_phashes_returns_correct_fields(self, db_client, written_image):
         _, bbox_uuid = written_image
         rows = await db_client.get_all_bbox_phashes()
         assert len(rows) >= 1
@@ -186,9 +180,7 @@ class TestDbHelpers:
         assert "label_uuid" in row
         assert "phash" in row
 
-    async def test_update_phashes_writes_image_and_bbox(
-        self, db_client, written_image
-    ):
+    async def test_update_phashes_writes_image_and_bbox(self, db_client, written_image):
         """update_phashes should update both image and bbox phash fields."""
         image_uuid, bbox_uuid = written_image
         new_image_phash = "a" * 16
@@ -222,9 +214,7 @@ class TestPhashPage:
         rows = await db_client.get_image_phashes_page(0, 10)
         assert rows == []
 
-    async def test_image_page_returns_row_with_correct_fields(
-        self, db_client, written_image
-    ):
+    async def test_image_page_returns_row_with_correct_fields(self, db_client, written_image):
         image_uuid, _ = written_image
         rows = await db_client.get_image_phashes_page(0, 10)
         assert len(rows) >= 1
@@ -235,6 +225,7 @@ class TestPhashPage:
     async def test_image_page_excludes_null_phash(self, db_client):
         # Image inserted without going through the write pipeline has no phash
         from pathlib import Path as _Path
+
         await db_client.add_image(_Path("no_phash.jpg"))
         rows = await db_client.get_image_phashes_page(0, 10)
         assert rows == []
@@ -247,6 +238,7 @@ class TestPhashPage:
     async def test_image_page_limit_caps_result(self, db_client, written_image):
         # Seed a second image with a phash via update_phashes
         from pathlib import Path as _Path
+
         second = await db_client.add_image(_Path("second.jpg"))
         await db_client.update_phashes(second.uuid, "b" * 16, [])
         all_rows = await db_client.get_image_phashes_page(0, 100)
@@ -258,9 +250,7 @@ class TestPhashPage:
         rows = await db_client.get_bbox_phashes_page(0, 10)
         assert rows == []
 
-    async def test_bbox_page_returns_row_with_correct_fields(
-        self, db_client, written_image
-    ):
+    async def test_bbox_page_returns_row_with_correct_fields(self, db_client, written_image):
         _, bbox_uuid = written_image
         rows = await db_client.get_bbox_phashes_page(0, 10)
         assert len(rows) >= 1
@@ -279,9 +269,7 @@ class TestPhashPage:
 
 
 class TestFindSimilarImages:
-    async def test_find_similar_images_returns_self_at_threshold_zero(
-        self, http_client, db_client, written_image
-    ):
+    async def test_find_similar_images_returns_self_at_threshold_zero(self, http_client, db_client, written_image):
         image_uuid, _ = written_image
         rows = await db_client.get_all_image_phashes()
         phash = next(r["phash"] for r in rows if r["uuid"] == image_uuid)
@@ -296,9 +284,7 @@ class TestFindSimilarImages:
         uuids = [m["imageUuid"] for m in body["matches"]]
         assert image_uuid in uuids
 
-    async def test_find_similar_images_no_match_with_wrong_phash(
-        self, http_client, written_image
-    ):
+    async def test_find_similar_images_no_match_with_wrong_phash(self, http_client, written_image):
         # Use a phash of all-zeros; unlikely to match any real image
         r = await http_client.post(
             "/api/images/find-similar",
@@ -311,9 +297,7 @@ class TestFindSimilarImages:
         # our solid-colour phash).  Just check the response shape.
         assert "matches" in body
 
-    async def test_find_similar_images_returns_distance(
-        self, http_client, db_client, written_image
-    ):
+    async def test_find_similar_images_returns_distance(self, http_client, db_client, written_image):
         image_uuid, _ = written_image
         rows = await db_client.get_all_image_phashes()
         phash = next(r["phash"] for r in rows if r["uuid"] == image_uuid)
@@ -358,9 +342,7 @@ class TestFindSimilarBboxes:
         uuids = [m["bboxUuid"] for m in body["matches"]]
         assert bbox_uuid in uuids
 
-    async def test_find_similar_bboxes_no_label_searches_all(
-        self, http_client, db_client, written_image
-    ):
+    async def test_find_similar_bboxes_no_label_searches_all(self, http_client, db_client, written_image):
         _, bbox_uuid = written_image
         rows = await db_client.get_all_bbox_phashes()
         phash = next(r["phash"] for r in rows if r["uuid"] == bbox_uuid)
@@ -447,18 +429,14 @@ class TestClearAndRebuildIndex:
         assert r.status_code == 200
         assert r.json()["status"] == "success"
 
-    async def test_returns_zero_counts_because_hashes_were_cleared(
-        self, http_client, written_image
-    ):
+    async def test_returns_zero_counts_because_hashes_were_cleared(self, http_client, written_image):
         # An image with a phash exists; after clear-and-rebuild the tree is empty.
         r = await http_client.post("/api/images/phash/clear-and-rebuild")
         body = r.json()
         assert body["imageCount"] == 0
         assert body["bboxCount"] == 0
 
-    async def test_nulls_stored_phashes_in_db(
-        self, http_client, db_client, written_image
-    ):
+    async def test_nulls_stored_phashes_in_db(self, http_client, db_client, written_image):
         rows_before = await db_client.get_all_image_phashes()
         assert len(rows_before) >= 1
 
@@ -467,18 +445,14 @@ class TestClearAndRebuildIndex:
         rows_after = await db_client.get_all_image_phashes()
         assert rows_after == []
 
-    async def test_similarity_search_returns_empty_after_clear(
-        self, http_client, db_client, written_image
-    ):
+    async def test_similarity_search_returns_empty_after_clear(self, http_client, db_client, written_image):
         image_uuid, _ = written_image
         rows = await db_client.get_all_image_phashes()
         phash = next(r["phash"] for r in rows if r["uuid"] == image_uuid)
 
         await http_client.post("/api/images/phash/clear-and-rebuild")
 
-        r = await http_client.post(
-            "/api/images/find-similar", json={"phash": phash, "threshold": 64}
-        )
+        r = await http_client.post("/api/images/find-similar", json={"phash": phash, "threshold": 64})
         assert r.json()["matches"] == []
 
     async def test_returns_duration_ms(self, http_client):
@@ -492,9 +466,7 @@ class TestClearAndRebuildIndex:
 
 
 class TestRecomputePhash:
-    async def test_recompute_returns_success_for_known_image(
-        self, http_client, written_image
-    ):
+    async def test_recompute_returns_success_for_known_image(self, http_client, written_image):
         image_uuid, _ = written_image
         r = await http_client.post(
             f"/api/images/{image_uuid}/phash/recompute",
@@ -504,9 +476,7 @@ class TestRecomputePhash:
         body = r.json()
         assert body["status"] == "success"
 
-    async def test_recompute_returns_phash_string(
-        self, http_client, written_image
-    ):
+    async def test_recompute_returns_phash_string(self, http_client, written_image):
         image_uuid, _ = written_image
         r = await http_client.post(
             f"/api/images/{image_uuid}/phash/recompute",
@@ -516,9 +486,7 @@ class TestRecomputePhash:
         assert isinstance(phash, str)
         assert len(phash) == 16  # default hash_size=8
 
-    async def test_recompute_returns_bbox_count(
-        self, http_client, written_image
-    ):
+    async def test_recompute_returns_bbox_count(self, http_client, written_image):
         image_uuid, _ = written_image
         r = await http_client.post(
             f"/api/images/{image_uuid}/phash/recompute",
@@ -526,9 +494,7 @@ class TestRecomputePhash:
         )
         assert r.json()["bboxCount"] == 1
 
-    async def test_recompute_phash_matches_original(
-        self, http_client, db_client, written_image
-    ):
+    async def test_recompute_phash_matches_original(self, http_client, db_client, written_image):
         """Recomputing the same image should produce the same phash."""
         image_uuid, _ = written_image
 
@@ -550,9 +516,7 @@ class TestRecomputePhash:
         assert r.status_code == 200
         assert r.json()["status"] == "failure"
 
-    async def test_recompute_updates_sidecar(
-        self, http_client, image_file, written_image
-    ):
+    async def test_recompute_updates_sidecar(self, http_client, image_file, written_image):
         image_uuid, _ = written_image
         await http_client.post(
             f"/api/images/{image_uuid}/phash/recompute",

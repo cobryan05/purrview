@@ -339,5 +339,8 @@ class Manager:
         return {
             "service": "inference_server",
             "status": "ok",
-            "models": {"loaded": len(self._pinned_models), "available": len(self._avail_models)},
+            "models": {
+                "loaded": len(self._pinned_models),
+                "available": len(self._avail_models),
+            },
         }

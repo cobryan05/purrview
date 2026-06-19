@@ -59,7 +59,10 @@ async def test_delete_label_with_children_fails(http_client):
     parent_r = await http_client.post("/api/labels", json={"name": "animal", "color": "#111111"})
     parent_uuid = parent_r.json()["label"]["uuid"]
 
-    await http_client.post("/api/labels", json={"name": "dog", "color": "#222222", "parent_uuid": parent_uuid})
+    await http_client.post(
+        "/api/labels",
+        json={"name": "dog", "color": "#222222", "parent_uuid": parent_uuid},
+    )
 
     r = await http_client.delete(f"/api/labels/{parent_uuid}")
     assert r.status_code == 200
@@ -71,7 +74,8 @@ async def test_create_child_label(http_client):
     parent_uuid = parent_r.json()["label"]["uuid"]
 
     child_r = await http_client.post(
-        "/api/labels", json={"name": "car", "color": "#444444", "parent_uuid": parent_uuid}
+        "/api/labels",
+        json={"name": "car", "color": "#444444", "parent_uuid": parent_uuid},
     )
     assert child_r.status_code == 200
     body = child_r.json()
@@ -116,7 +120,8 @@ class TestLabelScope:
 
     async def test_create_image_scope_label(self, http_client):
         r = await http_client.post(
-            "/api/labels", json={"name": "corrupt", "color": "#FF0000", "scope": "image"}
+            "/api/labels",
+            json={"name": "corrupt", "color": "#FF0000", "scope": "image"},
         )
         assert r.status_code == 200
         body = r.json()

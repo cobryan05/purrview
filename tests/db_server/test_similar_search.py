@@ -73,9 +73,7 @@ async def written_image(http_client, image_file, label_uuid):
         },
     )
     assert r.status_code == 200
-    meta = await http_client.post(
-        "/api/images/metadata/get", json={"imagePath": "similar_test.png"}
-    )
+    meta = await http_client.post("/api/images/metadata/get", json={"imagePath": "similar_test.png"})
     image_uuid = meta.json()["image"]["uuid"]
     return image_uuid, bid
 
@@ -94,9 +92,7 @@ async def index_built(http_client, written_image):
 
 
 class TestDbClientBatchHelpers:
-    async def test_get_image_uuids_for_bboxes_returns_mapping(
-        self, db_client, written_image
-    ):
+    async def test_get_image_uuids_for_bboxes_returns_mapping(self, db_client, written_image):
         image_uuid, bbox_uuid = written_image
         result = await db_client.get_image_uuids_for_bboxes([bbox_uuid])
         assert isinstance(result, dict)
@@ -266,9 +262,7 @@ class TestImageMetaByUuid:
         body = r.json()
         assert body["uuid"] == image_uuid
         # Filename must be relative, not starting with '/'
-        assert not body["filename"].startswith("/"), (
-            f"Expected relative path, got absolute: {body['filename']!r}"
-        )
+        assert not body["filename"].startswith("/"), f"Expected relative path, got absolute: {body['filename']!r}"
 
     async def test_unknown_uuid_returns_404(self, http_client):
         r = await http_client.get(f"/api/images/by-uuid/{uuid_mod.uuid4()}/meta")
@@ -339,13 +333,19 @@ class TestFilterBboxesByTags:
                     {
                         "uuid": bid1,
                         "labelUuid": label_uuid,
-                        "x": 0.1, "y": 0.1, "width": 0.3, "height": 0.3,
+                        "x": 0.1,
+                        "y": 0.1,
+                        "width": 0.3,
+                        "height": 0.3,
                         "tagUuids": [tag_a],
                     },
                     {
                         "uuid": bid2,
                         "labelUuid": label_uuid,
-                        "x": 0.5, "y": 0.5, "width": 0.3, "height": 0.3,
+                        "x": 0.5,
+                        "y": 0.5,
+                        "width": 0.3,
+                        "height": 0.3,
                         "tagUuids": [tag_a, tag_b],
                     },
                 ],
@@ -402,9 +402,7 @@ class TestFilterBboxesByTags:
     async def test_require_missing_tag_returns_empty(self, db_client, two_bboxes):
         """Requiring a tag that no bbox has returns empty set."""
         bid1, bid2, _, _ = two_bboxes
-        result = await db_client.filter_bboxes_by_tags(
-            [bid1, bid2], [str(uuid_mod.uuid4())], [], "any"
-        )
+        result = await db_client.filter_bboxes_by_tags([bid1, bid2], [str(uuid_mod.uuid4())], [], "any")
         assert result == set()
 
     async def test_exclude_all_returns_empty(self, db_client, two_bboxes):
@@ -429,9 +427,7 @@ class TestSimilarBboxesFiltering:
         Hash index is rebuilt so similarity search works.
         Returns (bbox_tagged_uuid, bbox_untagged_uuid, tag_uuid).
         """
-        tag_r = await http_client.post(
-            "/api/tags/add", json={"name": "verified", "color": "#ABCDEF"}
-        )
+        tag_r = await http_client.post("/api/tags/add", json={"name": "verified", "color": "#ABCDEF"})
         tag_uuid = tag_r.json()["tag"]["uuid"]
         bid_tagged, bid_bare = str(uuid_mod.uuid4()), str(uuid_mod.uuid4())
         r = await http_client.post(
@@ -442,13 +438,19 @@ class TestSimilarBboxesFiltering:
                     {
                         "uuid": bid_tagged,
                         "labelUuid": label_uuid,
-                        "x": 0.1, "y": 0.1, "width": 0.5, "height": 0.5,
+                        "x": 0.1,
+                        "y": 0.1,
+                        "width": 0.5,
+                        "height": 0.5,
                         "tagUuids": [tag_uuid],
                     },
                     {
                         "uuid": bid_bare,
                         "labelUuid": label_uuid,
-                        "x": 0.15, "y": 0.15, "width": 0.5, "height": 0.5,
+                        "x": 0.15,
+                        "y": 0.15,
+                        "width": 0.5,
+                        "height": 0.5,
                         "tagUuids": [],
                     },
                 ],
@@ -506,8 +508,24 @@ class TestSimilarBboxesFiltering:
             json={
                 "imagePath": "similar_test.png",
                 "boxes": [
-                    {"uuid": bid_a, "labelUuid": la, "x": 0.1, "y": 0.1, "width": 0.5, "height": 0.5, "tagUuids": []},
-                    {"uuid": bid_b, "labelUuid": lb, "x": 0.1, "y": 0.1, "width": 0.5, "height": 0.5, "tagUuids": []},
+                    {
+                        "uuid": bid_a,
+                        "labelUuid": la,
+                        "x": 0.1,
+                        "y": 0.1,
+                        "width": 0.5,
+                        "height": 0.5,
+                        "tagUuids": [],
+                    },
+                    {
+                        "uuid": bid_b,
+                        "labelUuid": lb,
+                        "x": 0.1,
+                        "y": 0.1,
+                        "width": 0.5,
+                        "height": 0.5,
+                        "tagUuids": [],
+                    },
                 ],
             },
         )

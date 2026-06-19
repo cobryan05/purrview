@@ -142,7 +142,14 @@ async def test_restore_uuid_match(db_client):
     config = await db_client.add_task_config("orig-name", "T", {"k": 1})
 
     # Manually write a JSON with the same UUID but a different name.
-    json_data = [{"uuid": config.uuid, "name": "json-name", "typename": "T", "params_json": {"k": 99}}]
+    json_data = [
+        {
+            "uuid": config.uuid,
+            "name": "json-name",
+            "typename": "T",
+            "params_json": {"k": 99},
+        }
+    ]
     db_client._task_configs_json_path.write_text(json.dumps(json_data))
 
     await db_client.sync_task_configs_from_json()
@@ -173,7 +180,14 @@ async def test_restore_name_fallback(db_client):
 async def test_restore_new_insert(db_client):
     """No match: inserts a new record with the JSON UUID."""
     new_uuid = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
-    json_data = [{"uuid": new_uuid, "name": "brand-new", "typename": "NewType", "params_json": {}}]
+    json_data = [
+        {
+            "uuid": new_uuid,
+            "name": "brand-new",
+            "typename": "NewType",
+            "params_json": {},
+        }
+    ]
     db_client._task_configs_json_path.write_text(json.dumps(json_data))
 
     await db_client.sync_task_configs_from_json()
@@ -212,7 +226,14 @@ async def test_marked_for_delete_excluded_from_json(db_client):
 async def test_startup_seeds_from_json(tmp_path):
     """init_db populates from task_configs.json when the table is empty."""
     seed_uuid = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
-    json_data = [{"uuid": seed_uuid, "name": "seeded-task", "typename": "T", "params_json": {"x": 42}}]
+    json_data = [
+        {
+            "uuid": seed_uuid,
+            "name": "seeded-task",
+            "typename": "T",
+            "params_json": {"x": 42},
+        }
+    ]
     (tmp_path / TASK_CONFIGS_JSON).write_text(json.dumps(json_data))
 
     client = DbClient(db_dir=tmp_path, memory=True)

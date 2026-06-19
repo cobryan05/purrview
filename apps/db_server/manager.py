@@ -21,10 +21,7 @@ from sqlalchemy.orm import make_transient
 from apps import CACHE_DIR, THUMB_CACHE_MAX_MB
 from apps.db_server.hash_index import HashIndex
 from apps.helpers.consts import TaskStatus
-from apps.helpers.db.db_client import (
-    DbClient,
-    TagKind,
-)
+from apps.helpers.db.db_client import DbClient, TagKind
 from apps.helpers.db.types import (
     FALSE_POS_TAG_UUID,
     MODEL_TYPE_ARCHITECTURES,
@@ -72,9 +69,7 @@ from apps.helpers.hashUtils import (
     phash_from_numpy_crop,
 )
 from apps.helpers.imageProviders.Registry import image_provider_registry
-from apps.helpers.types import (
-    FileEntryRead,
-)
+from apps.helpers.types import FileEntryRead
 
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger(__file__)
@@ -239,7 +234,12 @@ class Manager:
         """
         updates = {
             k: v
-            for k, v in {"name": name, "color": color, "label_type": label_type, "scope": scope}.items()
+            for k, v in {
+                "name": name,
+                "color": color,
+                "label_type": label_type,
+                "scope": scope,
+            }.items()
             if v is not None
         }
         await self._db_client.update_label(label_uuid=label_uuid, **updates)
@@ -308,7 +308,11 @@ class Manager:
         await self._db_client.delete_sources(uuid_list)
 
     async def update_source(
-        self, source_uuid: str, image_provider: str, provider_params: Dict[str, Any], source_name: str
+        self,
+        source_uuid: str,
+        image_provider: str,
+        provider_params: Dict[str, Any],
+        source_name: str,
     ) -> Source:
         """
         Updates sources by their UUIDs.
@@ -664,7 +668,11 @@ class Manager:
                     try:
                         await self._sync_image_state(img)
                     except Exception as e:
-                        logger.error("bulk_apply_bboxes: _sync_image_state failed for %s: %s", img.uuid, e)
+                        logger.error(
+                            "bulk_apply_bboxes: _sync_image_state failed for %s: %s",
+                            img.uuid,
+                            e,
+                        )
 
             if not has_more:
                 break
@@ -753,7 +761,11 @@ class Manager:
             try:
                 await self._sync_image_state(img)
             except Exception as e:
-                logger.error("bulk_apply_bboxes_by_uuids: _sync_image_state failed for %s: %s", img.uuid, e)
+                logger.error(
+                    "bulk_apply_bboxes_by_uuids: _sync_image_state failed for %s: %s",
+                    img.uuid,
+                    e,
+                )
 
         return modified_count, fail_count
 
@@ -965,7 +977,11 @@ class Manager:
         inner: asyncio.Task[int] = asyncio.ensure_future(self._db_client.count_images_search(params))
         try:
             result = await asyncio.wait_for(asyncio.shield(inner), timeout=self._COUNT_QUERY_TIMEOUT)
-            logger.info("[review] count query completed in %.3fs → %d", time.monotonic() - t0, result)
+            logger.info(
+                "[review] count query completed in %.3fs → %d",
+                time.monotonic() - t0,
+                result,
+            )
             return result
         except asyncio.TimeoutError:
             elapsed = time.monotonic() - t0
@@ -995,7 +1011,13 @@ class Manager:
         if params.after_uuid is None:
             cache_key = hashlib.md5(
                 params.model_dump_json(
-                    exclude={"sort_by", "sort_order", "limit", "after_uuid", "after_sort_value"}
+                    exclude={
+                        "sort_by",
+                        "sort_order",
+                        "limit",
+                        "after_uuid",
+                        "after_sort_value",
+                    }
                 ).encode(),
                 usedforsecurity=False,
             ).hexdigest()
@@ -1003,13 +1025,24 @@ class Manager:
             cached = self._count_cache.get(cache_key)
 
             if cached is not None and (now - cached[1]) < self._COUNT_CACHE_TTL:
-                logger.info("[review] count cache hit (key=%s, age=%.1fs)", cache_key[:8], now - cached[1])
+                logger.info(
+                    "[review] count cache hit (key=%s, age=%.1fs)",
+                    cache_key[:8],
+                    now - cached[1],
+                )
                 t1 = time.monotonic()
                 batch = await self._db_client.list_images_search(fetch_params)
-                logger.info("[review] list query completed in %.3fs → %d rows", time.monotonic() - t1, len(batch))
+                logger.info(
+                    "[review] list query completed in %.3fs → %d rows",
+                    time.monotonic() - t1,
+                    len(batch),
+                )
                 total_count = cached[0]
             else:
-                logger.info("[review] count cache miss (key=%s) — running list+count in parallel", cache_key[:8])
+                logger.info(
+                    "[review] count cache miss (key=%s) — running list+count in parallel",
+                    cache_key[:8],
+                )
                 t1 = time.monotonic()
                 batch, total_count = await asyncio.gather(
                     self._db_client.list_images_search(fetch_params),
@@ -1027,7 +1060,9 @@ class Manager:
             t1 = time.monotonic()
             batch = await self._db_client.list_images_search(fetch_params)
             logger.info(
-                "[review] list query (paginated) completed in %.3fs → %d rows", time.monotonic() - t1, len(batch)
+                "[review] list query (paginated) completed in %.3fs → %d rows",
+                time.monotonic() - t1,
+                len(batch),
             )
             total_count = -1
 
@@ -1041,7 +1076,10 @@ class Manager:
             results.append(record)
 
         logger.info(
-            "[review] total handler time %.3fs → %d images, has_more=%s", time.monotonic() - t0, len(results), has_more
+            "[review] total handler time %.3fs → %d images, has_more=%s",
+            time.monotonic() - t0,
+            len(results),
+            has_more,
         )
         return results, has_more, total_count
 
@@ -1081,7 +1119,10 @@ class Manager:
         search_pattern = "**/*" if recursive else None
 
         # Collect and sort all matching paths by name (string sort — no stat calls yet).
-        raw = sorted(safe_path.glob(search_pattern) if recursive else safe_path.iterdir(), key=lambda p: p.name)
+        raw = sorted(
+            safe_path.glob(search_pattern) if recursive else safe_path.iterdir(),
+            key=lambda p: p.name,
+        )
 
         filtered = []
         for p in raw:
@@ -1098,7 +1139,12 @@ class Manager:
 
         # Stat calls (is_dir) and FileEntryRead construction only for the page slice.
         entries = [
-            FileEntryRead(name=p.name, is_dir=p.is_dir(), path=str(p.relative_to(self._files_root))) for p in page
+            FileEntryRead(
+                name=p.name,
+                is_dir=p.is_dir(),
+                path=str(p.relative_to(self._files_root)),
+            )
+            for p in page
         ]
 
         if include_db_status and entries:
@@ -1157,7 +1203,11 @@ class Manager:
         """
         image_path = get_safe_path(self._files_root, rel_path)
         if image_path is None:
-            return {"action": "skipped", "reason": "path outside files_root", "rel_path": rel_path}
+            return {
+                "action": "skipped",
+                "reason": "path outside files_root",
+                "rel_path": rel_path,
+            }
 
         # Sidecars replace the image extension: image.jpg → image.json (matches _get_json_sidefile)
         sidecar_path = self._get_json_sidefile(image_path)
@@ -1174,7 +1224,11 @@ class Manager:
 
         sidecar_uuid = sidecar_data.get("uuid")
         if not sidecar_uuid:
-            return {"action": "skipped", "reason": "sidecar has no uuid", "rel_path": rel_path}
+            return {
+                "action": "skipped",
+                "reason": "sidecar has no uuid",
+                "rel_path": rel_path,
+            }
 
         # Move detection: UUID exists but under a different absolute filename.
         # The DB stores absolute paths (e.g. /files_root/subdir/img.png).
@@ -1188,7 +1242,11 @@ class Manager:
             )
             if old_abs is None or not old_abs.exists():
                 # The old file is gone — this is a move.
-                logger.info("reconcile_image: move detected %s → %s", existing.filename, image_path)
+                logger.info(
+                    "reconcile_image: move detected %s → %s",
+                    existing.filename,
+                    image_path,
+                )
                 await self._db_client.update_image_filename(sidecar_uuid, str(image_path))
                 action = "moved"
 
@@ -1226,7 +1284,11 @@ class Manager:
                 record = await self._db_client.sync_image_from_json(image_path, overwrite=True)
                 await self._sync_image_state(record)
         else:
-            return {"action": "error", "reason": f"unknown sync_mode: {sync_mode}", "rel_path": rel_path}
+            return {
+                "action": "error",
+                "reason": f"unknown sync_mode: {sync_mode}",
+                "rel_path": rel_path,
+            }
 
         return {"action": action, "rel_path": rel_path}
 
@@ -1337,7 +1399,11 @@ class Manager:
             try:
                 image_path.unlink()
             except Exception as e:
-                logger.warning("delete_image_permanently: failed to delete file %s: %s", image_path, e)
+                logger.warning(
+                    "delete_image_permanently: failed to delete file %s: %s",
+                    image_path,
+                    e,
+                )
 
         # Delete JSON sidecar.
         if image_path:
@@ -1346,7 +1412,11 @@ class Manager:
                 try:
                     sidecar_path.unlink()
                 except Exception as e:
-                    logger.warning("delete_image_permanently: failed to delete sidecar %s: %s", sidecar_path, e)
+                    logger.warning(
+                        "delete_image_permanently: failed to delete sidecar %s: %s",
+                        sidecar_path,
+                        e,
+                    )
 
         rel_path = self._image_rel_path(filename)
         logger.info("delete_image_permanently: deleted %s (%s)", filename, image_uuid)
@@ -1464,7 +1534,12 @@ class Manager:
         if bbox.phash is None:
             return []
         return await self.find_similar_bboxes_enriched(
-            bbox.phash, label_uuids, threshold, tag_uuids, exclude_tag_uuids, tag_match_mode
+            bbox.phash,
+            label_uuids,
+            threshold,
+            tag_uuids,
+            exclude_tag_uuids,
+            tag_match_mode,
         )
 
     async def rank_images_by_diversity(
@@ -1490,7 +1565,12 @@ class Manager:
             if seed_phash is None:
                 return []
 
-        return await asyncio.to_thread(self._hash_index.rank_images_by_diversity, seed_phash, candidate_uuids, count)
+        return await asyncio.to_thread(
+            self._hash_index.rank_images_by_diversity,
+            seed_phash,
+            candidate_uuids,
+            count,
+        )
 
     async def rank_bboxes_by_diversity(
         self,
@@ -1507,7 +1587,10 @@ class Manager:
             return []
 
         ranked = await asyncio.to_thread(
-            self._hash_index.rank_bboxes_by_diversity, bbox.phash, label_uuids or None, count
+            self._hash_index.rank_bboxes_by_diversity,
+            bbox.phash,
+            label_uuids or None,
+            count,
         )
         if not ranked:
             return []
@@ -1693,7 +1776,10 @@ class Manager:
 
         self._hash_index.add_image(image_uuid, image_phash)
         for bp_entry in bbox_phash_list:
-            bbox_obj = next((b for b in (image_record.bboxes or []) if b.uuid == bp_entry["uuid"]), None)
+            bbox_obj = next(
+                (b for b in (image_record.bboxes or []) if b.uuid == bp_entry["uuid"]),
+                None,
+            )
             if bbox_obj and bbox_obj.label_uuid:
                 self._hash_index.add_bbox(bp_entry["uuid"], bbox_obj.label_uuid, bp_entry["phash"])
 
@@ -1936,7 +2022,12 @@ class Manager:
                     cropped = img.crop((left, top, right, bottom))
                     draw = ImageDraw.Draw(cropped)
                     draw.rectangle(
-                        [bx * img_w - left, by * img_h - top, (bx + bw) * img_w - left, (by + bh) * img_h - top],
+                        [
+                            bx * img_w - left,
+                            by * img_h - top,
+                            (bx + bw) * img_w - left,
+                            (by + bh) * img_h - top,
+                        ],
                         outline=label_color,
                         width=3,
                     )

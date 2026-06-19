@@ -9,6 +9,7 @@ This test verifies that:
   1. The animationend listener pattern is used (not a hardcoded setTimeout).
   2. There is no bare `setTimeout(..., <N>)` removal of the class left over.
 """
+
 import re
 from pathlib import Path
 

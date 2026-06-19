@@ -223,7 +223,11 @@ class WebApp:
 
         def _dump_asyncio_tasks(sig, frame):
             tasks = asyncio.all_tasks(_loop)
-            print(f"\n=== asyncio task dump: {len(tasks)} task(s) ===", file=sys.stderr, flush=True)
+            print(
+                f"\n=== asyncio task dump: {len(tasks)} task(s) ===",
+                file=sys.stderr,
+                flush=True,
+            )
             for t in tasks:
                 print(f"\n--- {t.get_name()}  done={t.done()} ---", file=sys.stderr)
                 t.print_stack(file=sys.stderr)
@@ -347,7 +351,9 @@ class WebApp:
             operation_id="get_task_type_schema",
             response_model=TasksTypeSchemaResponse,
         )
-        async def get_task_type_schema_api(payload: TasksTypeSchemaPayload) -> TasksTypeSchemaResponse:
+        async def get_task_type_schema_api(
+            payload: TasksTypeSchemaPayload,
+        ) -> TasksTypeSchemaResponse:
             """
             API endpoint for getting the schema of a specific task type.
 
@@ -417,7 +423,9 @@ class WebApp:
             operation_id="get_tasks_result",
             response_model=TasksResultResponse,
         )
-        async def get_tasks_result_api(payload: TasksResultPayload) -> TasksResultResponse:
+        async def get_tasks_result_api(
+            payload: TasksResultPayload,
+        ) -> TasksResultResponse:
             """
             API endpoint for getting result of a specific task.
 
@@ -509,7 +517,9 @@ class WebApp:
             operation_id="pause_tasks_in_place",
             response_model=PauseInPlaceResponse,
         )
-        async def pause_tasks_in_place_api(payload: PauseInPlacePayload) -> PauseInPlaceResponse:
+        async def pause_tasks_in_place_api(
+            payload: PauseInPlacePayload,
+        ) -> PauseInPlaceResponse:
             """Pause tasks cooperatively in-place (task stays running, loop blocks)."""
             try:
                 paused = await self._manager.pause_tasks_in_place(payload.task_uuids)
@@ -524,7 +534,9 @@ class WebApp:
             operation_id="resume_tasks_in_place",
             response_model=ResumeInPlaceResponse,
         )
-        async def resume_tasks_in_place_api(payload: ResumeInPlacePayload) -> ResumeInPlaceResponse:
+        async def resume_tasks_in_place_api(
+            payload: ResumeInPlacePayload,
+        ) -> ResumeInPlaceResponse:
             """Resume tasks that were paused in-place."""
             try:
                 resumed = await self._manager.resume_tasks_in_place(payload.task_uuids)
@@ -562,7 +574,9 @@ class WebApp:
             operation_id="create_task_config",
             response_model=CreateTaskConfigResponse,
         )
-        async def create_task_config_api(payload: CreateTaskConfigPayload) -> CreateTaskConfigResponse:
+        async def create_task_config_api(
+            payload: CreateTaskConfigPayload,
+        ) -> CreateTaskConfigResponse:
             """
             API endpoint for creating a new task configuration.
 
@@ -574,7 +588,10 @@ class WebApp:
             """
             try:
                 task_config = await self._manager.create_new_task_config(
-                    name=payload.name, typename=payload.typename, params=payload.params, persistent=payload.persistent
+                    name=payload.name,
+                    typename=payload.typename,
+                    params=payload.params,
+                    persistent=payload.persistent,
                 )
                 return CreateTaskConfigResponse(status=WebApp.SUCCESS_KEY, config_uuid=task_config.uuid)
             except Exception as e:
@@ -586,7 +603,9 @@ class WebApp:
             operation_id="delete_task_configs",
             response_model=DeleteTaskConfigsResponse,
         )
-        async def delete_task_configs_api(payload: DeleteTaskConfigsPayload) -> DeleteTaskConfigsResponse:
+        async def delete_task_configs_api(
+            payload: DeleteTaskConfigsPayload,
+        ) -> DeleteTaskConfigsResponse:
             """
             API endpoint to delete tasks configs
 
@@ -609,7 +628,9 @@ class WebApp:
             operation_id="get_task_configs",
             response_model=GetTaskConfigResponse,
         )
-        async def get_task_configs_api(payload: GetTaskConfigsPayload) -> GetTaskConfigResponse:
+        async def get_task_configs_api(
+            payload: GetTaskConfigsPayload,
+        ) -> GetTaskConfigResponse:
             """
             API endpoint to get tasks configs
 
@@ -633,7 +654,9 @@ class WebApp:
             operation_id="update_task_config",
             response_model=UpdateTaskConfigResponse,
         )
-        async def update_task_config_api(payload: UpdateTaskConfigPayload) -> UpdateTaskConfigResponse:
+        async def update_task_config_api(
+            payload: UpdateTaskConfigPayload,
+        ) -> UpdateTaskConfigResponse:
             """
             API endpoint for updating an existing task configuration.
 

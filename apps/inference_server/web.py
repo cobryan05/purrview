@@ -191,12 +191,22 @@ class WebApp:
             """
             try:
                 server_config = await self._manager.get_server_config()
-                response_data = {JsonKeys.STATUS: JsonValues.SUCCESS, JsonKeys.CONFIG: server_config}
+                response_data = {
+                    JsonKeys.STATUS: JsonValues.SUCCESS,
+                    JsonKeys.CONFIG: server_config,
+                }
             except Exception as e:
-                response_data = {JsonKeys.STATUS: JsonValues.FAILURE, JsonKeys.MESSAGE: str(e)}
+                response_data = {
+                    JsonKeys.STATUS: JsonValues.FAILURE,
+                    JsonKeys.MESSAGE: str(e),
+                }
             return JSONResponse(content=response_data)
 
-        @self._app.get("/status", operation_id="inference_server_status", response_class=JSONResponse)
+        @self._app.get(
+            "/status",
+            operation_id="inference_server_status",
+            response_class=JSONResponse,
+        )
         async def inference_server_status():
             return JSONResponse(content=self._manager.get_status())
 
@@ -212,13 +222,18 @@ class WebApp:
             except Exception as e:
                 return ModelListResponse(status=JsonValues.FAILURE, message=str(e))
 
-        @self._app.post("/api/models/classes/bulk", response_model=ModelBulkClassesResponse, tags=[ApiTags.MODELS])
+        @self._app.post(
+            "/api/models/classes/bulk",
+            response_model=ModelBulkClassesResponse,
+            tags=[ApiTags.MODELS],
+        )
         async def get_bulk_model_classes_api(payload: ModelBulkClassesPayload):
             try:
                 # The manager already supports a list of names
                 model_class_maps = await self._manager.get_models_classes(payload.model_names)
                 return ModelBulkClassesResponse(
-                    status=JsonValues.SUCCESS, models=model_class_maps  # Dict[str, Dict[str, Optional[str]]]
+                    status=JsonValues.SUCCESS,
+                    models=model_class_maps,  # Dict[str, Dict[str, Optional[str]]]
                 )
             except Exception as e:
                 return ModelBulkClassesResponse(status=JsonValues.FAILURE, message=str(e))
@@ -244,7 +259,9 @@ class WebApp:
         async def associate_label_api(model_name: str, class_name: str, payload: AssociateLabelPayload):
             try:
                 ret = await self._manager.set_model_class_label_uuid(
-                    model_name=model_name, model_class=class_name, label_uuid=payload.label_uuid
+                    model_name=model_name,
+                    model_class=class_name,
+                    label_uuid=payload.label_uuid,
                 )
                 return AssociateLabelResponse(status=JsonValues.SUCCESS, label_set=ret)
             except Exception as e:

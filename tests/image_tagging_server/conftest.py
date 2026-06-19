@@ -33,7 +33,13 @@ async def http_client(manager, monkeypatch):
 
     import apps.image_tagging_server.web as web_module
 
-    for proxy_attr in ("IMAGE_PROXY", "LABEL_PROXY", "SOURCES_PROXY", "TAG_PROXY", "TASKS_PROXY"):
+    for proxy_attr in (
+        "IMAGE_PROXY",
+        "LABEL_PROXY",
+        "SOURCES_PROXY",
+        "TAG_PROXY",
+        "TASKS_PROXY",
+    ):
         monkeypatch.setattr(getattr(web_module, proxy_attr), "handle_request", proxy_mock)
 
     # Patch the manager's dynamic proxies (inference + training)

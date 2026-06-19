@@ -104,7 +104,13 @@ class TestNeedsReviewImages:
         mc = await _create_model_config(
             http_client,
             f"mc-{name}",
-            nodes=[{"label_uuid": label_uuid, "model_type": "image_classifier", "architecture": "resnet_18"}],
+            nodes=[
+                {
+                    "label_uuid": label_uuid,
+                    "model_type": "image_classifier",
+                    "architecture": "resnet_18",
+                }
+            ],
         )
         node_uuid = mc["nodes"][0]["uuid"]
         cfg = await _create_training_config(http_client, name, ds_uuids, model_config_node_uuid=node_uuid)
@@ -149,7 +155,13 @@ class TestNeedsReviewImages:
         mc = await _create_model_config(
             http_client,
             "mc-nr-nods",
-            nodes=[{"label_uuid": label_uuid, "model_type": "image_classifier", "architecture": "resnet_18"}],
+            nodes=[
+                {
+                    "label_uuid": label_uuid,
+                    "model_type": "image_classifier",
+                    "architecture": "resnet_18",
+                }
+            ],
         )
         node_uuid = mc["nodes"][0]["uuid"]
         cfg = await _create_training_config(http_client, "nr-tc-nods", [], model_config_node_uuid=node_uuid)
@@ -186,7 +198,8 @@ class TestNeedsReviewImages:
     async def test_nonexistent_config_returns_empty(self, http_client):
         """Unknown config UUID → success with empty images (not a 404 in this convention)."""
         r = await http_client.post(
-            "/api/training-configs/00000000-0000-0000-0000-000000000000/needs-review-images", json={}
+            "/api/training-configs/00000000-0000-0000-0000-000000000000/needs-review-images",
+            json={},
         )
         body = r.json()
         assert body["status"] == "success"

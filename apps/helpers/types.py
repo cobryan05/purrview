@@ -11,13 +11,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 import numpy as np
-from pydantic import (
-    AliasChoices,
-    BaseModel,
-    BeforeValidator,
-    ConfigDict,
-    Field,
-)
+from pydantic import AliasChoices, BaseModel, BeforeValidator, ConfigDict, Field
 from pydantic.alias_generators import to_camel
 from typing_extensions import Annotated
 
@@ -98,7 +92,9 @@ class BoundingBoxMetadataModel(BaseModel):
     class_str: Optional[str] = None
     tag_uuids: List[str] = Field(default_factory=list)
     extra: RawJsonDict = Field(
-        default_factory=dict, validation_alias=AliasChoices("bbox_meta", "extra"), serialization_alias="extra"
+        default_factory=dict,
+        validation_alias=AliasChoices("bbox_meta", "extra"),
+        serialization_alias="extra",
     )
 
 
@@ -158,7 +154,7 @@ class FileEntryRead(FileEntryBase):
         populate_by_name=True,
     )
 
-    uuid: Optional[str] = None       # DB image UUID if this path is registered; None if not in DB
+    uuid: Optional[str] = None  # DB image UUID if this path is registered; None if not in DB
     bbox_count: Optional[int] = None  # number of bounding boxes on this image; None if not in DB
     size: int = 0
     modified_at: Optional[datetime] = None

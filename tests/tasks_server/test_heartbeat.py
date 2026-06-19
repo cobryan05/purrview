@@ -36,6 +36,7 @@ from tests.tasks_server.conftest import CONFIG_UUID, TASK_UUID
 # This is the integration point: _check_pause() → heartbeat().
 # ---------------------------------------------------------------------------
 
+
 @register_task("LoopingHeartbeatTask")
 class LoopingHeartbeatTask(Task):
     async def _init(self, params: dict, resume_data: Optional[dict]) -> None:
@@ -67,6 +68,7 @@ def _looping_config(duration: float = 0.2) -> db_models.TaskConfigRead:
 # Helpers for _check_stale_tasks tests
 # ---------------------------------------------------------------------------
 
+
 def _make_instance(
     uuid: str,
     status: str,
@@ -95,14 +97,13 @@ def _stale_hb(interval: int = 30) -> datetime:
 # heartbeat() integration via _check_pause()
 # ---------------------------------------------------------------------------
 
+
 async def test_heartbeat_fires_via_check_pause(manager, tasks_api_mock):
     """heartbeat() must be called (and reach the DB) when _check_pause() is invoked."""
     tasks_api_mock.set_task_instance_heartbeat.return_value = MagicMock()
 
     with patch("apps.tasks_server.tasks.Task.Task.HEARTBEAT_INTERVAL", 0.05):
-        tasks_api_mock.list_task_configs.return_value = MagicMock(
-            configs={CONFIG_UUID: _looping_config(duration=0.3)}
-        )
+        tasks_api_mock.list_task_configs.return_value = MagicMock(configs={CONFIG_UUID: _looping_config(duration=0.3)})
         await manager.start_new_task(CONFIG_UUID)
         await asyncio.sleep(0.2)
 
@@ -117,9 +118,7 @@ async def test_heartbeat_is_rate_limited(manager, tasks_api_mock):
 
     # Long interval — heartbeat should fire at most once however many iterations run.
     with patch("apps.tasks_server.tasks.Task.Task.HEARTBEAT_INTERVAL", 60):
-        tasks_api_mock.list_task_configs.return_value = MagicMock(
-            configs={CONFIG_UUID: _looping_config(duration=0.2)}
-        )
+        tasks_api_mock.list_task_configs.return_value = MagicMock(configs={CONFIG_UUID: _looping_config(duration=0.2)})
         await manager.start_new_task(CONFIG_UUID)
         await asyncio.sleep(0.25)
 
@@ -130,9 +129,7 @@ async def test_heartbeat_force_bypasses_rate_limit(manager, tasks_api_mock):
     """heartbeat(force=True) must write to the DB even if the interval hasn't elapsed."""
     tasks_api_mock.set_task_instance_heartbeat.return_value = MagicMock()
 
-    tasks_api_mock.list_task_configs.return_value = MagicMock(
-        configs={CONFIG_UUID: _looping_config(duration=0.05)}
-    )
+    tasks_api_mock.list_task_configs.return_value = MagicMock(configs={CONFIG_UUID: _looping_config(duration=0.05)})
     task_info = await manager.start_new_task(CONFIG_UUID)
     await asyncio.sleep(0.1)  # let it finish
 
@@ -148,9 +145,7 @@ async def test_heartbeat_noop_without_instance_uuid(manager, tasks_api_mock):
     """heartbeat() must be a no-op if set_instance_uuid() was never called."""
     tasks_api_mock.set_task_instance_heartbeat.return_value = MagicMock()
 
-    tasks_api_mock.list_task_configs.return_value = MagicMock(
-        configs={CONFIG_UUID: _looping_config(duration=0.05)}
-    )
+    tasks_api_mock.list_task_configs.return_value = MagicMock(configs={CONFIG_UUID: _looping_config(duration=0.05)})
     task_info = await manager.start_new_task(CONFIG_UUID)
     await asyncio.sleep(0.1)
 
@@ -165,6 +160,7 @@ async def test_heartbeat_noop_without_instance_uuid(manager, tasks_api_mock):
 # ---------------------------------------------------------------------------
 # set_instance_uuid wired up in _start_task
 # ---------------------------------------------------------------------------
+
 
 async def test_start_task_sets_instance_uuid(manager, tasks_api_mock):
     """_start_task must call task.set_instance_uuid() before task.start()."""
@@ -190,6 +186,7 @@ async def test_start_task_sets_instance_uuid(manager, tasks_api_mock):
 # ---------------------------------------------------------------------------
 # _check_stale_tasks
 # ---------------------------------------------------------------------------
+
 
 async def test_check_stale_tasks_marks_orphan_with_stale_hb_as_error(manager, tasks_api_mock):
     inst = _make_instance("orphan-uuid", TaskStatus.RUNNING, heartbeat_at=_stale_hb())

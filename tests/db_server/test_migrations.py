@@ -78,9 +78,7 @@ def _columns(engine, table: str) -> set[str]:
 
 def _tables(engine) -> set[str]:
     with engine.connect() as conn:
-        rows = conn.exec_driver_sql(
-            "SELECT name FROM sqlite_master WHERE type='table'"
-        ).fetchall()
+        rows = conn.exec_driver_sql("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
     return {r[0] for r in rows}
 
 
@@ -156,4 +154,6 @@ class TestMigrationPath:
         assert "model_config_uuid" not in new_tc_cols, "Deprecated model_config_uuid still present"
 
         assert "model_bundles" in _tables(engine), "model_bundles table was not created"
-        assert "training_config_label_links" not in _tables(engine), "training_config_label_links should have been dropped"
+        assert "training_config_label_links" not in _tables(
+            engine
+        ), "training_config_label_links should have been dropped"

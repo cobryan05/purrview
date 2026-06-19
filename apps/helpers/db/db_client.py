@@ -866,7 +866,11 @@ class DbClient:
 
             # Create new record; catch the race where two concurrent callers
             # both pass the check above before either INSERT commits.
-            new_image = ImageRecord(uuid=str(uuid4()), filename=str(filename), metadata_json=metadata_json or {})
+            new_image = ImageRecord(
+                uuid=str(uuid4()),
+                filename=str(filename),
+                metadata_json=metadata_json or {},
+            )
             session.add(new_image)
             try:
                 await session.commit()
@@ -1464,7 +1468,13 @@ class DbClient:
         json_str = adapter.dump_json(
             labels,
             exclude={
-                "__all__": {"bboxes": True, "children": True, "parent": True, "created_at": True, "updated_at": True}
+                "__all__": {
+                    "bboxes": True,
+                    "children": True,
+                    "parent": True,
+                    "created_at": True,
+                    "updated_at": True,
+                }
             },
             indent=2,
         )
@@ -2070,7 +2080,13 @@ class DbClient:
             return
         async with self._async_session_maker() as session:
             for tag_uuid in to_add:
-                session.add(ImageTagLink(image_uuid=image_uuid, tag_uuid=tag_uuid, status=ImageItemStatus.PRESENT))
+                session.add(
+                    ImageTagLink(
+                        image_uuid=image_uuid,
+                        tag_uuid=tag_uuid,
+                        status=ImageItemStatus.PRESENT,
+                    )
+                )
             try:
                 await session.commit()
             except IntegrityError:

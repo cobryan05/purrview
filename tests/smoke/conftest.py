@@ -59,7 +59,14 @@ def smoke_services(tmp_path_factory, request):
     for app_key in _SERVICES:
         module = app_key.value
         proc = subprocess.Popen(
-            ["uvicorn", f"apps.{module}.main:app", "--host", "0.0.0.0", "--port", str(ports[app_key])],
+            [
+                "uvicorn",
+                f"apps.{module}.main:app",
+                "--host",
+                "0.0.0.0",
+                "--port",
+                str(ports[app_key]),
+            ],
             env=env,
             cwd="/app",
             stdout=subprocess.DEVNULL,

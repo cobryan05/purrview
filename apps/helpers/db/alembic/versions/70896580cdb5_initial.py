@@ -103,7 +103,11 @@ def upgrade() -> None:
         "image_labels",
         sa.Column("image_uuid", sqlmodel.sql.sqltypes.AutoString(), nullable=False),
         sa.Column("label_uuid", sqlmodel.sql.sqltypes.AutoString(), nullable=False),
-        sa.Column("status", sa.Enum("UNCERTAIN", "PRESENT", "ABSENT", name="imagelabelstatus"), nullable=False),
+        sa.Column(
+            "status",
+            sa.Enum("UNCERTAIN", "PRESENT", "ABSENT", name="imagelabelstatus"),
+            nullable=False,
+        ),
         sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
         sa.ForeignKeyConstraint(["image_uuid"], ["images.uuid"], ondelete="CASCADE"),
         sa.ForeignKeyConstraint(["label_uuid"], ["labels.uuid"], ondelete="CASCADE"),

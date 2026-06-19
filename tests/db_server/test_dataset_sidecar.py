@@ -165,7 +165,13 @@ async def test_sync_from_json_name_fallback(tmp_path):
     new_uuid = str(uuid_mod.uuid4())
     assert new_uuid != existing_uuid
     sidecar_data = [
-        {"uuid": new_uuid, "name": "shared-name", "description": "from-json", "filter_json": {}, "label_uuids": []}
+        {
+            "uuid": new_uuid,
+            "name": "shared-name",
+            "description": "from-json",
+            "filter_json": {},
+            "label_uuids": [],
+        }
     ]
     (db_dir / DATASETS_JSON).write_text(json.dumps(sidecar_data))
 
@@ -190,7 +196,13 @@ async def test_sync_from_json_inserts_new(tmp_path):
 
     brand_new_uuid = str(uuid_mod.uuid4())
     sidecar_data = [
-        {"uuid": brand_new_uuid, "name": "brand-new", "description": None, "filter_json": {}, "label_uuids": []}
+        {
+            "uuid": brand_new_uuid,
+            "name": "brand-new",
+            "description": None,
+            "filter_json": {},
+            "label_uuids": [],
+        }
     ]
     (db_dir / DATASETS_JSON).write_text(json.dumps(sidecar_data))
 
@@ -239,7 +251,13 @@ async def test_sync_from_json_skips_missing_label_uuids(tmp_path):
     ghost_uuid = str(uuid_mod.uuid4())
     ds_uuid = str(uuid_mod.uuid4())
     sidecar_data = [
-        {"uuid": ds_uuid, "name": "ghost-labels", "description": None, "filter_json": {}, "label_uuids": [ghost_uuid]}
+        {
+            "uuid": ds_uuid,
+            "name": "ghost-labels",
+            "description": None,
+            "filter_json": {},
+            "label_uuids": [ghost_uuid],
+        }
     ]
     (db_dir / DATASETS_JSON).write_text(json.dumps(sidecar_data))
 

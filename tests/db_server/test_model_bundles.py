@@ -136,7 +136,11 @@ class TestModelBundleCrud:
         await _create_bundle(http_client, "bundle-dup", mc["uuid"])
         r = await http_client.post(
             "/api/model-bundles",
-            json={"name": "bundle-dup", "modelConfigUuid": mc["uuid"], "bundlePath": "/models/x.zip"},
+            json={
+                "name": "bundle-dup",
+                "modelConfigUuid": mc["uuid"],
+                "bundlePath": "/models/x.zip",
+            },
         )
         assert r.json()["status"] == "failure"
 

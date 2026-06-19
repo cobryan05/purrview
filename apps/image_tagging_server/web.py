@@ -24,29 +24,49 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
 
 IMAGE_PROXY = ReverseProxy(
-    host=APPS_CONFIG[APPS.DB_SERVER].host, port=APPS_CONFIG[APPS.DB_SERVER].port, path="/api/images"
+    host=APPS_CONFIG[APPS.DB_SERVER].host,
+    port=APPS_CONFIG[APPS.DB_SERVER].port,
+    path="/api/images",
 )
 LABEL_PROXY = ReverseProxy(
-    host=APPS_CONFIG[APPS.DB_SERVER].host, port=APPS_CONFIG[APPS.DB_SERVER].port, path="/api/labels"
+    host=APPS_CONFIG[APPS.DB_SERVER].host,
+    port=APPS_CONFIG[APPS.DB_SERVER].port,
+    path="/api/labels",
 )
 SOURCES_PROXY = ReverseProxy(
-    host=APPS_CONFIG[APPS.DB_SERVER].host, port=APPS_CONFIG[APPS.DB_SERVER].port, path="/api/sources"
+    host=APPS_CONFIG[APPS.DB_SERVER].host,
+    port=APPS_CONFIG[APPS.DB_SERVER].port,
+    path="/api/sources",
 )
-TAG_PROXY = ReverseProxy(host=APPS_CONFIG[APPS.DB_SERVER].host, port=APPS_CONFIG[APPS.DB_SERVER].port, path="/api/tags")
+TAG_PROXY = ReverseProxy(
+    host=APPS_CONFIG[APPS.DB_SERVER].host,
+    port=APPS_CONFIG[APPS.DB_SERVER].port,
+    path="/api/tags",
+)
 TASKS_PROXY = ReverseProxy(
-    host=APPS_CONFIG[APPS.TASKS_SERVER].host, port=APPS_CONFIG[APPS.TASKS_SERVER].port, path="/api/tasks"
+    host=APPS_CONFIG[APPS.TASKS_SERVER].host,
+    port=APPS_CONFIG[APPS.TASKS_SERVER].port,
+    path="/api/tasks",
 )
 DATASETS_PROXY = ReverseProxy(
-    host=APPS_CONFIG[APPS.DB_SERVER].host, port=APPS_CONFIG[APPS.DB_SERVER].port, path="/api/datasets"
+    host=APPS_CONFIG[APPS.DB_SERVER].host,
+    port=APPS_CONFIG[APPS.DB_SERVER].port,
+    path="/api/datasets",
 )
 MODEL_CONFIGS_PROXY = ReverseProxy(
-    host=APPS_CONFIG[APPS.DB_SERVER].host, port=APPS_CONFIG[APPS.DB_SERVER].port, path="/api/model-configs"
+    host=APPS_CONFIG[APPS.DB_SERVER].host,
+    port=APPS_CONFIG[APPS.DB_SERVER].port,
+    path="/api/model-configs",
 )
 TRAINING_CONFIGS_PROXY = ReverseProxy(
-    host=APPS_CONFIG[APPS.DB_SERVER].host, port=APPS_CONFIG[APPS.DB_SERVER].port, path="/api/training-configs"
+    host=APPS_CONFIG[APPS.DB_SERVER].host,
+    port=APPS_CONFIG[APPS.DB_SERVER].port,
+    path="/api/training-configs",
 )
 SETTINGS_PROXY = ReverseProxy(
-    host=APPS_CONFIG[APPS.DB_SERVER].host, port=APPS_CONFIG[APPS.DB_SERVER].port, path="/api/settings"
+    host=APPS_CONFIG[APPS.DB_SERVER].host,
+    port=APPS_CONFIG[APPS.DB_SERVER].port,
+    path="/api/settings",
 )
 
 
@@ -68,7 +88,11 @@ class WebApp:
 
         # Mount static files
         self._app.mount("/static", StaticFiles(directory="/app/static"), name="static")
-        self._app.mount("/app-static", StaticFiles(directory=os.path.join(SCRIPT_DIR, "static")), name="app-static")
+        self._app.mount(
+            "/app-static",
+            StaticFiles(directory=os.path.join(SCRIPT_DIR, "static")),
+            name="app-static",
+        )
 
         # Register routes
         self._register_routes()
@@ -135,7 +159,10 @@ class WebApp:
         async def proxy_models(request: Request, path: str):
             return await self._manager.inference_proxy.handle_request(path, request)
 
-        @self._app.api_route("/api/sources/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
+        @self._app.api_route(
+            "/api/sources/{path:path}",
+            methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
+        )
         async def proxy_sources(request: Request, path: str):
             return await SOURCES_PROXY.handle_request(path, request)
 
@@ -148,6 +175,7 @@ class WebApp:
         @self._app.get("/api/tasks/stream")
         async def tasks_stream(request: Request) -> StreamingResponse:
             """SSE stream — pushes a data frame whenever task state changes."""
+
             async def _gen():
                 last_json: str | None = None
                 last_hb = asyncio.get_running_loop().time()
@@ -169,21 +197,31 @@ class WebApp:
                         await asyncio.sleep(0.5)
                 except asyncio.CancelledError:
                     pass
+
             return StreamingResponse(_gen(), media_type="text/event-stream", headers=_SSE_HEADERS)
 
         @self._app.api_route("/api/tasks/{path:path}", methods=["GET", "POST", "PATCH", "DELETE"])
         async def proxy_tasks(request: Request, path: str):
             return await TASKS_PROXY.handle_request(path, request)
 
-        @self._app.api_route("/api/datasets/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
+        @self._app.api_route(
+            "/api/datasets/{path:path}",
+            methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
+        )
         async def proxy_datasets(request: Request, path: str):
             return await DATASETS_PROXY.handle_request(path, request)
 
-        @self._app.api_route("/api/model-configs/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
+        @self._app.api_route(
+            "/api/model-configs/{path:path}",
+            methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
+        )
         async def proxy_model_configs(request: Request, path: str):
             return await MODEL_CONFIGS_PROXY.handle_request(path, request)
 
-        @self._app.api_route("/api/training-configs/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
+        @self._app.api_route(
+            "/api/training-configs/{path:path}",
+            methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
+        )
         async def proxy_training_configs(request: Request, path: str):
             return await TRAINING_CONFIGS_PROXY.handle_request(path, request)
 
@@ -191,7 +229,10 @@ class WebApp:
         async def proxy_settings(request: Request, path: str):
             return await SETTINGS_PROXY.handle_request(path, request)
 
-        @self._app.api_route("/api/training/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
+        @self._app.api_route(
+            "/api/training/{path:path}",
+            methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
+        )
         async def proxy_training(request: Request, path: str):
             return await self._manager.training_proxy.handle_request(path, request)
 
@@ -218,6 +259,7 @@ class WebApp:
         @self._app.get("/api/notices/stream")
         async def notices_stream(request: Request) -> StreamingResponse:
             """SSE stream — pushes a data frame whenever the aggregated notice list changes."""
+
             async def _gen():
                 last_json: str | None = None
                 last_hb = asyncio.get_running_loop().time()
@@ -239,6 +281,7 @@ class WebApp:
                         await asyncio.sleep(2)
                 except asyncio.CancelledError:
                     pass
+
             return StreamingResponse(_gen(), media_type="text/event-stream", headers=_SSE_HEADERS)
 
         @self._app.post("/api/test-server", response_class=JSONResponse)

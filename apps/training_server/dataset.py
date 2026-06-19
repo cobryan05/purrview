@@ -61,7 +61,7 @@ class FilesystemImageFetcher(ImageFetcher):
     def _resolve(self, filename: str) -> Path:
         for src, dst in self._prefix_map.items():
             if filename.startswith(src):
-                filename = dst + filename[len(src):]
+                filename = dst + filename[len(src) :]
                 break
         return self._fs_root / filename
 
@@ -106,6 +106,7 @@ class HttpImageFetcher(ImageFetcher):
             raise ValueError(f"Failed to fetch image {filename!r}: {body.get('message')}")
 
         import base64 as _b64
+
         data = _b64.b64decode(body["image_base64"])
         cached.write_bytes(data)
         return data
@@ -191,20 +192,24 @@ class ImageLabelDataset:
 
         h, w = self.INPUT_SIZE
         if split == "train":
-            self._transform = A.Compose([
-                A.RandomResizedCrop(height=h, width=w, scale=(0.8, 1.0)),
-                A.HorizontalFlip(p=0.5),
-                A.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.05, p=0.5),
-                A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
-                ToTensorV2(),
-            ])
+            self._transform = A.Compose(
+                [
+                    A.RandomResizedCrop(height=h, width=w, scale=(0.8, 1.0)),
+                    A.HorizontalFlip(p=0.5),
+                    A.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.05, p=0.5),
+                    A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
+                    ToTensorV2(),
+                ]
+            )
         else:
-            self._transform = A.Compose([
-                A.Resize(height=int(h * 1.14), width=int(w * 1.14)),
-                A.CenterCrop(height=h, width=w),
-                A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
-                ToTensorV2(),
-            ])
+            self._transform = A.Compose(
+                [
+                    A.Resize(height=int(h * 1.14), width=int(w * 1.14)),
+                    A.CenterCrop(height=h, width=w),
+                    A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
+                    ToTensorV2(),
+                ]
+            )
 
     def __len__(self) -> int:
         return len(self._rows)

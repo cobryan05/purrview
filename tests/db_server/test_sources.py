@@ -103,7 +103,11 @@ async def test_create_source_unknown_provider(http_client):
 async def test_list_sources_after_create(http_client, provider_name, provider_params):
     await http_client.post(
         "/api/sources/create",
-        json={"sourceName": "cam-a", "imageProvider": provider_name, "providerParams": provider_params},
+        json={
+            "sourceName": "cam-a",
+            "imageProvider": provider_name,
+            "providerParams": provider_params,
+        },
     )
     r = await http_client.get("/api/sources/get")
     assert r.status_code == 200
@@ -115,7 +119,11 @@ async def test_list_sources_after_create(http_client, provider_name, provider_pa
 async def test_delete_source(http_client, provider_name, provider_params):
     create_r = await http_client.post(
         "/api/sources/create",
-        json={"sourceName": "cam-delete", "imageProvider": provider_name, "providerParams": provider_params},
+        json={
+            "sourceName": "cam-delete",
+            "imageProvider": provider_name,
+            "providerParams": provider_params,
+        },
     )
     source_uuid = create_r.json()["source"]["uuid"]
 
@@ -135,7 +143,11 @@ async def test_delete_source(http_client, provider_name, provider_params):
 async def test_update_source(http_client, provider_name, provider_params):
     create_r = await http_client.post(
         "/api/sources/create",
-        json={"sourceName": "cam-orig", "imageProvider": provider_name, "providerParams": provider_params},
+        json={
+            "sourceName": "cam-orig",
+            "imageProvider": provider_name,
+            "providerParams": provider_params,
+        },
     )
     source_uuid = create_r.json()["source"]["uuid"]
 
@@ -156,7 +168,11 @@ async def test_update_source(http_client, provider_name, provider_params):
 
 
 async def test_create_duplicate_source_name_fails(http_client, provider_name, provider_params):
-    payload = {"sourceName": "dup-cam", "imageProvider": provider_name, "providerParams": provider_params}
+    payload = {
+        "sourceName": "dup-cam",
+        "imageProvider": provider_name,
+        "providerParams": provider_params,
+    }
     await http_client.post("/api/sources/create", json=payload)
     r = await http_client.post("/api/sources/create", json=payload)
     assert r.json()["status"] == "failure"

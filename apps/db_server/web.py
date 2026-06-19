@@ -779,9 +779,15 @@ class WebApp:
         async def server_config(request: Request):
             try:
                 server_config = await self._manager.get_server_config()
-                response_data = {JsonKeys.STATUS: JsonValues.SUCCESS, JsonKeys.CONFIG: server_config}
+                response_data = {
+                    JsonKeys.STATUS: JsonValues.SUCCESS,
+                    JsonKeys.CONFIG: server_config,
+                }
             except Exception as e:
-                response_data = {JsonKeys.STATUS: JsonValues.FAILURE, JsonKeys.MESSAGE: str(e)}
+                response_data = {
+                    JsonKeys.STATUS: JsonValues.FAILURE,
+                    JsonKeys.MESSAGE: str(e),
+                }
             return JSONResponse(content=response_data)
 
         @self._app.get("/status", operation_id="db_server_status", response_class=JSONResponse)
@@ -790,7 +796,13 @@ class WebApp:
                 status = await self._manager.get_status()
                 return JSONResponse(content=status)
             except Exception as e:
-                return JSONResponse(content={"service": "db_server", "status": "error", "message": str(e)})
+                return JSONResponse(
+                    content={
+                        "service": "db_server",
+                        "status": "error",
+                        "message": str(e),
+                    }
+                )
 
         ################################################################################
         # Labels API
@@ -928,7 +940,9 @@ class WebApp:
             operation_id="update_source",
             response_model=UpdateSourceResponse,
         )
-        async def update_source_api(payload: UpdateSourcePayload) -> UpdateSourceResponse:
+        async def update_source_api(
+            payload: UpdateSourcePayload,
+        ) -> UpdateSourceResponse:
             """
             API endpoint for updating an existing source.
             """
@@ -942,7 +956,10 @@ class WebApp:
                 return UpdateSourceResponse(status=JsonValues.SUCCESS, source=source)
             except IntegrityError as e:
                 logger.error(e, exc_info=True)
-                return UpdateSourceResponse(status=JsonValues.FAILURE, message=self._unique_constraint_msg(e, "source"))
+                return UpdateSourceResponse(
+                    status=JsonValues.FAILURE,
+                    message=self._unique_constraint_msg(e, "source"),
+                )
             except Exception as e:
                 logger.error(e, exc_info=True)
                 return UpdateSourceResponse(status=JsonValues.FAILURE, message=str(e))
@@ -953,7 +970,9 @@ class WebApp:
             operation_id="create_source",
             response_model=CreateSourceResponse,
         )
-        async def create_source_api(payload: CreateSourcePayload) -> CreateSourceResponse:
+        async def create_source_api(
+            payload: CreateSourcePayload,
+        ) -> CreateSourceResponse:
             """
             API endpoint for creating a new source.
 
@@ -972,7 +991,10 @@ class WebApp:
                 return CreateSourceResponse(status=JsonValues.SUCCESS, source=source)
             except IntegrityError as e:
                 logger.error(e, exc_info=True)
-                return CreateSourceResponse(status=JsonValues.FAILURE, message=self._unique_constraint_msg(e, "source"))
+                return CreateSourceResponse(
+                    status=JsonValues.FAILURE,
+                    message=self._unique_constraint_msg(e, "source"),
+                )
             except Exception as e:
                 logger.error(e, exc_info=True)
                 return CreateSourceResponse(status=JsonValues.FAILURE, message=str(e))
@@ -983,7 +1005,9 @@ class WebApp:
             operation_id="delete_sources",
             response_model=DeleteSourceResponse,
         )
-        async def delete_sources_api(payload: DeleteSourcePayload) -> DeleteSourceResponse:
+        async def delete_sources_api(
+            payload: DeleteSourcePayload,
+        ) -> DeleteSourceResponse:
             """
             API endpoint to delete sources.
             """
@@ -1021,7 +1045,12 @@ class WebApp:
         # Tags API
         ################################################################################
 
-        @self._app.post("/api/tags/add", response_model=AddTagResponse, tags=[ApiTags.TAGS], operation_id="add_tag")
+        @self._app.post(
+            "/api/tags/add",
+            response_model=AddTagResponse,
+            tags=[ApiTags.TAGS],
+            operation_id="add_tag",
+        )
         async def add_tag_api(request: AddTagPayload) -> AddTagResponse:
             """
             API endpoint to add a new tag.
@@ -1038,13 +1067,19 @@ class WebApp:
                 return AddTagResponse(status=JsonValues.SUCCESS, tag=tag)
             except IntegrityError as e:
                 logger.error(e, exc_info=True)
-                return AddTagResponse(status=JsonValues.FAILURE, message=self._unique_constraint_msg(e, "tag"))
+                return AddTagResponse(
+                    status=JsonValues.FAILURE,
+                    message=self._unique_constraint_msg(e, "tag"),
+                )
             except Exception as e:
                 logger.error(e, exc_info=True)
                 return AddTagResponse(status=JsonValues.FAILURE, message=str(e))
 
         @self._app.post(
-            "/api/tags/delete", response_model=DeleteTagResponse, tags=[ApiTags.TAGS], operation_id="delete_tag"
+            "/api/tags/delete",
+            response_model=DeleteTagResponse,
+            tags=[ApiTags.TAGS],
+            operation_id="delete_tag",
         )
         async def delete_tag_api(request: DeleteTagPayload) -> DeleteTagResponse:
             """
@@ -1057,7 +1092,12 @@ class WebApp:
                 logger.error(e, exc_info=True)
                 return DeleteTagResponse(status=JsonValues.FAILURE, message=str(e))
 
-        @self._app.get("/api/tags/list", response_model=ListTagsResponse, tags=[ApiTags.TAGS], operation_id="list_tags")
+        @self._app.get(
+            "/api/tags/list",
+            response_model=ListTagsResponse,
+            tags=[ApiTags.TAGS],
+            operation_id="list_tags",
+        )
         async def list_tags_api() -> ListTagsResponse:
             """
             API endpoint to return a list of tags with metadata.
@@ -1075,7 +1115,10 @@ class WebApp:
                 return ListTagsResponse(status=JsonValues.FAILURE, message=str(e))
 
         @self._app.post(
-            "/api/tags/update", response_model=UpdateTagResponse, tags=[ApiTags.TAGS], operation_id="update_tag"
+            "/api/tags/update",
+            response_model=UpdateTagResponse,
+            tags=[ApiTags.TAGS],
+            operation_id="update_tag",
         )
         async def update_tag_api(request: UpdateTagPayload) -> UpdateTagResponse:
             """
@@ -1086,7 +1129,10 @@ class WebApp:
                 return UpdateTagResponse(status=JsonValues.SUCCESS)
             except IntegrityError as e:
                 logger.error(e, exc_info=True)
-                return UpdateTagResponse(status=JsonValues.FAILURE, message=self._unique_constraint_msg(e, "tag"))
+                return UpdateTagResponse(
+                    status=JsonValues.FAILURE,
+                    message=self._unique_constraint_msg(e, "tag"),
+                )
             except Exception as e:
                 logger.error(e, exc_info=True)
                 return UpdateTagResponse(status=JsonValues.FAILURE, message=str(e))
@@ -1111,7 +1157,10 @@ class WebApp:
         ################################################################################
 
         @self._app.get(
-            "/api/settings/{key}", response_model=SettingResponse, tags=[ApiTags.SETTINGS], operation_id="get_setting"
+            "/api/settings/{key}",
+            response_model=SettingResponse,
+            tags=[ApiTags.SETTINGS],
+            operation_id="get_setting",
         )
         async def get_setting_api(key: str) -> SettingResponse:
             """Return the stored value for a user-settings key."""
@@ -1127,7 +1176,10 @@ class WebApp:
                 return SettingResponse(status=JsonValues.FAILURE, key=key, message=str(e))
 
         @self._app.put(
-            "/api/settings/{key}", response_model=SettingResponse, tags=[ApiTags.SETTINGS], operation_id="set_setting"
+            "/api/settings/{key}",
+            response_model=SettingResponse,
+            tags=[ApiTags.SETTINGS],
+            operation_id="set_setting",
         )
         async def set_setting_api(key: str, request: SetSettingPayload) -> SettingResponse:
             """Upsert a user-settings key-value pair."""
@@ -1148,7 +1200,9 @@ class WebApp:
             tags=[ApiTags.IMAGES],
             operation_id="get_image_metadata",
         )
-        async def get_image_metadata(payload: GetImageMetadataPayload) -> GetImageMetadataResponse:
+        async def get_image_metadata(
+            payload: GetImageMetadataPayload,
+        ) -> GetImageMetadataResponse:
             metadata = await self._manager.get_image_metadata(payload.image_path)
             if metadata is None:
                 return GetImageMetadataResponse(status=JsonValues.FAILURE, message="Image not found")
@@ -1161,7 +1215,9 @@ class WebApp:
             tags=[ApiTags.IMAGES],
             operation_id="update_image_metadata",
         )
-        async def update_image_metadata(payload: UpdateMetadataPayload) -> UpdateMetadataResponse:
+        async def update_image_metadata(
+            payload: UpdateMetadataPayload,
+        ) -> UpdateMetadataResponse:
             image_path = payload.image_path
             existing = await self._manager.get_image_metadata(image_path)
             if existing is None:
@@ -1251,7 +1307,9 @@ class WebApp:
                 result = await self._manager.open_file(image_path)
                 if not result:
                     return GetFileResponse(
-                        status=JsonValues.FAILURE, message=f"File {image_path} not found", filename=image_path
+                        status=JsonValues.FAILURE,
+                        message=f"File {image_path} not found",
+                        filename=image_path,
                     )
 
                 file_obj, filename = result
@@ -1289,7 +1347,9 @@ class WebApp:
             tags=[ApiTags.IMAGES],
             operation_id="set_image_label_status",
         )
-        async def set_image_label_status(payload: SetImageLabelPayload) -> SetImageLabelResponse:
+        async def set_image_label_status(
+            payload: SetImageLabelPayload,
+        ) -> SetImageLabelResponse:
             ok = await self._manager.set_image_label_status(payload.image_path, payload.label_uuid, payload.status)
             if not ok:
                 if payload.status == ImageItemStatus.ABSENT:
@@ -1360,7 +1420,9 @@ class WebApp:
             tags=[ApiTags.IMAGES],
             operation_id="set_image_tag_status",
         )
-        async def set_image_tag_status(payload: SetImageTagStatusPayload) -> SetImageTagStatusResponse:
+        async def set_image_tag_status(
+            payload: SetImageTagStatusPayload,
+        ) -> SetImageTagStatusResponse:
             ok = await self._manager.set_image_tag_status(payload.image_path, payload.tag_uuid, payload.status)
             if not ok:
                 return SetImageTagStatusResponse(status=JsonValues.FAILURE, message="Image not found")
@@ -1372,7 +1434,9 @@ class WebApp:
             tags=[ApiTags.IMAGES],
             operation_id="get_image_tag_statuses",
         )
-        async def get_image_tag_statuses(image_path: str) -> GetImageTagStatusesResponse:
+        async def get_image_tag_statuses(
+            image_path: str,
+        ) -> GetImageTagStatusesResponse:
             statuses = await self._manager.get_image_tag_statuses(image_path)
             if statuses is None:
                 return GetImageTagStatusesResponse(status=JsonValues.FAILURE, message="Image not found")
@@ -1413,7 +1477,9 @@ class WebApp:
             tags=[ApiTags.IMAGES],
             operation_id="invalidate_bbox_thumbnails",
         )
-        async def invalidate_bbox_thumbnails(payload: InvalidateThumbnailsPayload) -> StatusResponse:
+        async def invalidate_bbox_thumbnails(
+            payload: InvalidateThumbnailsPayload,
+        ) -> StatusResponse:
             await self._manager.invalidate_bbox_thumbnails(payload.bbox_uuids)
             return StatusResponse()
 
@@ -1423,7 +1489,9 @@ class WebApp:
             tags=[ApiTags.IMAGES],
             operation_id="bulk_apply_bboxes",
         )
-        async def bulk_apply_bboxes_endpoint(payload: BulkApplyAllPayload) -> BulkApplyAllResponse:
+        async def bulk_apply_bboxes_endpoint(
+            payload: BulkApplyAllPayload,
+        ) -> BulkApplyAllResponse:
             """Apply an action to all bboxes matching the given filter across all pages."""
             try:
                 modified_count, fail_count = await self._manager.bulk_apply_bboxes(
@@ -1446,7 +1514,9 @@ class WebApp:
             tags=[ApiTags.IMAGES],
             operation_id="bulk_apply_bboxes_by_uuids",
         )
-        async def bulk_apply_bboxes_by_uuids_endpoint(payload: BulkApplyBboxesByUuidsPayload) -> BulkApplyAllResponse:
+        async def bulk_apply_bboxes_by_uuids_endpoint(
+            payload: BulkApplyBboxesByUuidsPayload,
+        ) -> BulkApplyAllResponse:
             """Apply an action to an explicit list of bboxes (no filter equivalent,
             e.g. similarity/diversity search results)."""
             try:
@@ -1467,7 +1537,9 @@ class WebApp:
             tags=[ApiTags.IMAGES],
             operation_id="bulk_apply_images_by_uuids",
         )
-        async def bulk_apply_images_by_uuids_endpoint(payload: BulkApplyImagesByUuidsPayload) -> BulkApplyAllResponse:
+        async def bulk_apply_images_by_uuids_endpoint(
+            payload: BulkApplyImagesByUuidsPayload,
+        ) -> BulkApplyAllResponse:
             """Apply an image-level action to an explicit list of images (no filter
             equivalent, e.g. similarity/diversity search results)."""
             try:
@@ -1580,7 +1652,9 @@ class WebApp:
             tags=[ApiTags.IMAGES],
             operation_id="list_image_stubs_needing_phash",
         )
-        async def list_image_stubs_needing_phash(payload: ImageStubsNeedingPhashPayload) -> ListImageStubsResponse:
+        async def list_image_stubs_needing_phash(
+            payload: ImageStubsNeedingPhashPayload,
+        ) -> ListImageStubsResponse:
             """Return uuid+filename for images whose phash is absent or computed at a different size."""
             try:
                 raw = await self._manager.list_image_stubs_needing_phash(payload.image_hex_len, payload.bbox_hex_len)
@@ -1596,7 +1670,9 @@ class WebApp:
             tags=[ApiTags.IMAGES],
             operation_id="reconcile_image",
         )
-        async def reconcile_image(payload: ReconcileImagePayload) -> ReconcileImageResponse:
+        async def reconcile_image(
+            payload: ReconcileImagePayload,
+        ) -> ReconcileImageResponse:
             """Move-aware reconcile of a single image file against the DB."""
             try:
                 result = await self._manager.reconcile_image(payload.rel_path, payload.sync_mode)
@@ -1620,7 +1696,9 @@ class WebApp:
             tags=[ApiTags.IMAGES],
             operation_id="prune_missing_images",
         )
-        async def prune_missing_images(payload: PruneImagesPayload) -> PruneImagesResponse:
+        async def prune_missing_images(
+            payload: PruneImagesPayload,
+        ) -> PruneImagesResponse:
             """Delete DB records for images whose file is missing and not accounted for by known_disk_uuids."""
             try:
                 count = await self._manager.prune_missing_images(payload.known_disk_uuids)
@@ -1690,7 +1768,9 @@ class WebApp:
             tags=[ApiTags.IMAGES],
             operation_id="find_similar_images",
         )
-        async def find_similar_images(payload: FindSimilarImagesPayload) -> FindSimilarImagesResponse:
+        async def find_similar_images(
+            payload: FindSimilarImagesPayload,
+        ) -> FindSimilarImagesResponse:
             try:
                 matches = self._manager.find_similar_images(payload.phash, payload.threshold)
                 return FindSimilarImagesResponse(
@@ -1707,7 +1787,9 @@ class WebApp:
             tags=[ApiTags.IMAGES],
             operation_id="find_similar_bboxes",
         )
-        async def find_similar_bboxes(payload: FindSimilarBboxesPayload) -> FindSimilarBboxesResponse:
+        async def find_similar_bboxes(
+            payload: FindSimilarBboxesPayload,
+        ) -> FindSimilarBboxesResponse:
             try:
                 matches = await self._manager.find_similar_bboxes_enriched(
                     payload.phash,
@@ -1720,7 +1802,12 @@ class WebApp:
                 return FindSimilarBboxesResponse(
                     status=JsonValues.SUCCESS,
                     matches=[
-                        SimilarBboxMatch(bbox_uuid=bbox_uuid, image_uuid=image_uuid, label_uuid=lbl, distance=dist)
+                        SimilarBboxMatch(
+                            bbox_uuid=bbox_uuid,
+                            image_uuid=image_uuid,
+                            label_uuid=lbl,
+                            distance=dist,
+                        )
                         for bbox_uuid, image_uuid, dist, lbl in matches
                     ],
                 )
@@ -1734,7 +1821,9 @@ class WebApp:
             tags=[ApiTags.IMAGES],
             operation_id="find_similar_images_by_uuid",
         )
-        async def find_similar_images_by_uuid(payload: FindSimilarImagesByUuidPayload) -> FindSimilarImagesResponse:
+        async def find_similar_images_by_uuid(
+            payload: FindSimilarImagesByUuidPayload,
+        ) -> FindSimilarImagesResponse:
             try:
                 matches = await self._manager.find_similar_images_by_uuid(payload.image_uuid, payload.threshold)
                 return FindSimilarImagesResponse(
@@ -1751,7 +1840,9 @@ class WebApp:
             tags=[ApiTags.IMAGES],
             operation_id="find_similar_bboxes_by_uuid",
         )
-        async def find_similar_bboxes_by_uuid(payload: FindSimilarBboxesByUuidPayload) -> FindSimilarBboxesResponse:
+        async def find_similar_bboxes_by_uuid(
+            payload: FindSimilarBboxesByUuidPayload,
+        ) -> FindSimilarBboxesResponse:
             try:
                 matches = await self._manager.find_similar_bboxes_by_uuid(
                     payload.bbox_uuid,
@@ -1764,7 +1855,12 @@ class WebApp:
                 return FindSimilarBboxesResponse(
                     status=JsonValues.SUCCESS,
                     matches=[
-                        SimilarBboxMatch(bbox_uuid=bbox_uuid, image_uuid=image_uuid, label_uuid=lbl, distance=dist)
+                        SimilarBboxMatch(
+                            bbox_uuid=bbox_uuid,
+                            image_uuid=image_uuid,
+                            label_uuid=lbl,
+                            distance=dist,
+                        )
                         for bbox_uuid, image_uuid, dist, lbl in matches
                     ],
                 )
@@ -1797,7 +1893,12 @@ class WebApp:
                 return FindSimilarBboxesResponse(
                     status=JsonValues.SUCCESS,
                     matches=[
-                        SimilarBboxMatch(bbox_uuid=bbox_uuid, image_uuid=image_uuid, label_uuid=lbl, distance=dist)
+                        SimilarBboxMatch(
+                            bbox_uuid=bbox_uuid,
+                            image_uuid=image_uuid,
+                            label_uuid=lbl,
+                            distance=dist,
+                        )
                         for bbox_uuid, image_uuid, dist, lbl in matches
                     ],
                 )
@@ -1841,7 +1942,12 @@ class WebApp:
                 return FindDissimilarBboxesResponse(
                     status=JsonValues.SUCCESS,
                     matches=[
-                        DissimilarBboxMatch(bbox_uuid=b_uuid, image_uuid=img_uuid, label_uuid=lbl, rank=i)
+                        DissimilarBboxMatch(
+                            bbox_uuid=b_uuid,
+                            image_uuid=img_uuid,
+                            label_uuid=lbl,
+                            rank=i,
+                        )
                         for i, (b_uuid, img_uuid, lbl) in enumerate(ranked)
                     ],
                 )
@@ -1874,7 +1980,9 @@ class WebApp:
             tags=[ApiTags.IMAGES],
             operation_id="batch_images_by_uuids",
         )
-        async def batch_images_by_uuids(payload: BatchByUuidsPayload) -> BatchImagesResponse:
+        async def batch_images_by_uuids(
+            payload: BatchByUuidsPayload,
+        ) -> BatchImagesResponse:
             try:
                 images = await self._manager.get_images_by_uuids(payload.image_uuids)
                 return BatchImagesResponse(
@@ -1891,12 +1999,21 @@ class WebApp:
             tags=[ApiTags.IMAGES],
             operation_id="check_dedup_bulk",
         )
-        async def check_dedup_bulk(payload: CheckDedupBulkPayload) -> CheckDedupBulkResponse:
+        async def check_dedup_bulk(
+            payload: CheckDedupBulkPayload,
+        ) -> CheckDedupBulkResponse:
             try:
                 result = self._manager.check_dedup_bulk(
                     payload.image_phash,
                     payload.image_threshold,
-                    [{"phash": b.phash, "label_uuid": b.label_uuid, "threshold": b.threshold} for b in payload.bboxes],
+                    [
+                        {
+                            "phash": b.phash,
+                            "label_uuid": b.label_uuid,
+                            "threshold": b.threshold,
+                        }
+                        for b in payload.bboxes
+                    ],
                 )
                 return CheckDedupBulkResponse(
                     status=JsonValues.SUCCESS,
@@ -1982,7 +2099,9 @@ class WebApp:
             tags=[ApiTags.TASKS],
             operation_id="create_task_config",
         )
-        async def create_task_config(payload: CreateTaskConfigPayload) -> TaskConfigReadResponse:
+        async def create_task_config(
+            payload: CreateTaskConfigPayload,
+        ) -> TaskConfigReadResponse:
             try:
                 config = await self._manager.create_task_config(
                     name=payload.name,
@@ -1990,7 +2109,10 @@ class WebApp:
                     params=payload.params,
                     description=payload.description,
                 )
-                return TaskConfigReadResponse(status=JsonValues.SUCCESS, config=TaskConfigRead.model_validate(config))
+                return TaskConfigReadResponse(
+                    status=JsonValues.SUCCESS,
+                    config=TaskConfigRead.model_validate(config),
+                )
             except Exception as e:
                 logger.error(e, exc_info=True)
                 return TaskConfigReadResponse(status=JsonValues.FAILURE, message=str(e))
@@ -2041,7 +2163,9 @@ class WebApp:
             tags=[ApiTags.TASKS],
             operation_id="delete_task_configs",
         )
-        async def delete_task_configs(payload: DeleteTaskConfigsPayload) -> StatusResponse:
+        async def delete_task_configs(
+            payload: DeleteTaskConfigsPayload,
+        ) -> StatusResponse:
             try:
                 await self._manager.delete_task_configs(payload.config_uuids)
                 return StatusResponse(status=JsonValues.SUCCESS)
@@ -2059,7 +2183,9 @@ class WebApp:
             tags=[ApiTags.TASKS],
             operation_id="create_task_instance",
         )
-        async def create_task_instance(payload: CreateTaskInstancePayload) -> TaskInstanceReadResponse:
+        async def create_task_instance(
+            payload: CreateTaskInstancePayload,
+        ) -> TaskInstanceReadResponse:
             try:
                 instance = await self._manager.create_task_instance(payload.config_uuid)
                 return TaskInstanceReadResponse(
@@ -2099,7 +2225,9 @@ class WebApp:
             tags=[ApiTags.TASKS],
             operation_id="delete_task_instances",
         )
-        async def delete_task_instances(payload: DeleteTaskInstancesPayload) -> StatusResponse:
+        async def delete_task_instances(
+            payload: DeleteTaskInstancesPayload,
+        ) -> StatusResponse:
             try:
                 await self._manager.delete_task_instances(payload.task_uuids)
                 return StatusResponse(status=JsonValues.SUCCESS)
@@ -2190,7 +2318,9 @@ class WebApp:
             tags=[ApiTags.TASKS],
             operation_id="get_task_results",
         )
-        async def get_task_results(payload: GetTaskResultsPayload) -> GetTaskResultsResponse:
+        async def get_task_results(
+            payload: GetTaskResultsPayload,
+        ) -> GetTaskResultsResponse:
             try:
                 results = await self._manager.get_task_results(payload.task_uuids)
                 return GetTaskResultsResponse(status=JsonValues.SUCCESS, results=results)
@@ -2228,7 +2358,10 @@ class WebApp:
                 return DatasetResponse(status=JsonValues.SUCCESS, dataset=dataset)
             except IntegrityError as e:
                 logger.error(e, exc_info=True)
-                return DatasetResponse(status=JsonValues.FAILURE, message=self._unique_constraint_msg(e, "dataset"))
+                return DatasetResponse(
+                    status=JsonValues.FAILURE,
+                    message=self._unique_constraint_msg(e, "dataset"),
+                )
             except Exception as e:
                 logger.error(e, exc_info=True)
                 return DatasetResponse(status=JsonValues.FAILURE, message=str(e))
@@ -2247,7 +2380,10 @@ class WebApp:
                 return DatasetResponse(status=JsonValues.SUCCESS, dataset=dataset)
             except IntegrityError as e:
                 logger.error(e, exc_info=True)
-                return DatasetResponse(status=JsonValues.FAILURE, message=self._unique_constraint_msg(e, "dataset"))
+                return DatasetResponse(
+                    status=JsonValues.FAILURE,
+                    message=self._unique_constraint_msg(e, "dataset"),
+                )
             except Exception as e:
                 logger.error(e, exc_info=True)
                 return DatasetResponse(status=JsonValues.FAILURE, message=str(e))
@@ -2371,14 +2507,17 @@ class WebApp:
             tags=[ApiTags.MODEL_CONFIGS],
             operation_id="create_model_config",
         )
-        async def create_model_config(payload: ModelConfigCreate) -> ModelConfigResponse:
+        async def create_model_config(
+            payload: ModelConfigCreate,
+        ) -> ModelConfigResponse:
             try:
                 config = await self._manager.create_model_config(payload)
                 return ModelConfigResponse(status=JsonValues.SUCCESS, config=config)
             except IntegrityError as e:
                 logger.error(e, exc_info=True)
                 return ModelConfigResponse(
-                    status=JsonValues.FAILURE, message=self._unique_constraint_msg(e, "model configuration")
+                    status=JsonValues.FAILURE,
+                    message=self._unique_constraint_msg(e, "model configuration"),
                 )
             except Exception as e:
                 logger.error(e, exc_info=True)
@@ -2415,7 +2554,8 @@ class WebApp:
             except IntegrityError as e:
                 logger.error(e, exc_info=True)
                 return ModelConfigResponse(
-                    status=JsonValues.FAILURE, message=self._unique_constraint_msg(e, "model configuration")
+                    status=JsonValues.FAILURE,
+                    message=self._unique_constraint_msg(e, "model configuration"),
                 )
             except Exception as e:
                 logger.error(e, exc_info=True)
@@ -2459,14 +2599,17 @@ class WebApp:
             tags=[ApiTags.TRAINING_CONFIGS],
             operation_id="create_training_config",
         )
-        async def create_training_config(payload: TrainingConfigCreate) -> TrainingConfigResponse:
+        async def create_training_config(
+            payload: TrainingConfigCreate,
+        ) -> TrainingConfigResponse:
             try:
                 config = await self._manager.create_training_config(payload)
                 return TrainingConfigResponse(status=JsonValues.SUCCESS, config=config)
             except IntegrityError as e:
                 logger.error(e, exc_info=True)
                 return TrainingConfigResponse(
-                    status=JsonValues.FAILURE, message=self._unique_constraint_msg(e, "training config")
+                    status=JsonValues.FAILURE,
+                    message=self._unique_constraint_msg(e, "training config"),
                 )
             except Exception as e:
                 logger.error(e, exc_info=True)
@@ -2503,7 +2646,8 @@ class WebApp:
             except IntegrityError as e:
                 logger.error(e, exc_info=True)
                 return TrainingConfigResponse(
-                    status=JsonValues.FAILURE, message=self._unique_constraint_msg(e, "training config")
+                    status=JsonValues.FAILURE,
+                    message=self._unique_constraint_msg(e, "training config"),
                 )
             except Exception as e:
                 logger.error(e, exc_info=True)
@@ -2531,7 +2675,9 @@ class WebApp:
             tags=[ApiTags.TRAINING_CONFIGS],
             operation_id="get_training_config_readiness",
         )
-        async def get_training_config_readiness(uuid: str) -> TrainingConfigReadinessResponse:
+        async def get_training_config_readiness(
+            uuid: str,
+        ) -> TrainingConfigReadinessResponse:
             try:
                 result = await self._manager.get_training_config_readiness(uuid)
                 if result is None:
@@ -2549,7 +2695,9 @@ class WebApp:
             tags=[ApiTags.TRAINING_CONFIGS],
             operation_id="get_training_config_label_stats",
         )
-        async def get_training_config_label_stats(uuid: str) -> TrainingConfigLabelStatsResponse:
+        async def get_training_config_label_stats(
+            uuid: str,
+        ) -> TrainingConfigLabelStatsResponse:
             try:
                 result = await self._manager.get_training_config_label_stats(uuid)
                 if result is None:
@@ -2603,7 +2751,9 @@ class WebApp:
             tags=[ApiTags.MODEL_CONFIGS],
             operation_id="create_model_bundle",
         )
-        async def create_model_bundle(payload: ModelBundleCreate) -> ModelBundleResponse:
+        async def create_model_bundle(
+            payload: ModelBundleCreate,
+        ) -> ModelBundleResponse:
             try:
                 bundle = await self._manager.create_bundle(payload)
                 from apps.helpers.db.types import ModelBundleRead
@@ -2613,7 +2763,8 @@ class WebApp:
             except IntegrityError as e:
                 logger.error(e, exc_info=True)
                 return ModelBundleResponse(
-                    status=JsonValues.FAILURE, message=self._unique_constraint_msg(e, "model bundle")
+                    status=JsonValues.FAILURE,
+                    message=self._unique_constraint_msg(e, "model bundle"),
                 )
             except Exception as e:
                 logger.error(e, exc_info=True)
@@ -2650,7 +2801,8 @@ class WebApp:
             except IntegrityError as e:
                 logger.error(e, exc_info=True)
                 return ModelBundleResponse(
-                    status=JsonValues.FAILURE, message=self._unique_constraint_msg(e, "model bundle")
+                    status=JsonValues.FAILURE,
+                    message=self._unique_constraint_msg(e, "model bundle"),
                 )
             except Exception as e:
                 logger.error(e, exc_info=True)

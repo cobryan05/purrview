@@ -26,7 +26,7 @@ IMG_BLACK = _solid(0, 0, 0)
 IMG_WHITE = _solid(255, 255, 255)
 IMG_GREY = _solid(128, 128, 128)
 
-BBOX_RED = _solid(0, 0, 255, hash_size=16)   # BGR: red
+BBOX_RED = _solid(0, 0, 255, hash_size=16)  # BGR: red
 
 
 def _checkerboard_phash(hash_size: int = 16) -> str:
@@ -72,7 +72,7 @@ class TestImageOperations:
 
     def test_result_contains_uuid_and_distance(self, idx):
         idx.add_image("img-1", IMG_BLACK)
-        (uuid, dist), = idx.find_similar_images(IMG_BLACK, threshold=0)
+        ((uuid, dist),) = idx.find_similar_images(IMG_BLACK, threshold=0)
         assert uuid == "img-1"
         assert dist == 0
 
@@ -119,9 +119,7 @@ class TestBboxOperations:
 
     def test_result_contains_uuid_distance_label(self, idx):
         idx.add_bbox("bbox-1", "lbl-1", BBOX_RED)
-        (bbox_uuid, dist, label_uuid), = idx.find_similar_bboxes(
-            BBOX_RED, label_uuids=["lbl-1"], threshold=0
-        )
+        ((bbox_uuid, dist, label_uuid),) = idx.find_similar_bboxes(BBOX_RED, label_uuids=["lbl-1"], threshold=0)
         assert bbox_uuid == "bbox-1"
         assert dist == 0
         assert label_uuid == "lbl-1"
@@ -369,9 +367,7 @@ class TestOnPhaseCallback:
         with patch.object(idx, "_load_phashes", _spy_load):
             await idx.build(on_phase=phases.append)
 
-        assert captured[0] == ["loading"], (
-            "on_phase('loading') must fire before _load_phashes"
-        )
+        assert captured[0] == ["loading"], "on_phase('loading') must fire before _load_phashes"
 
     async def test_constructing_fires_before_tree_build(self, idx):
         """'constructing' must be reported before _construct_trees runs."""
@@ -388,9 +384,10 @@ class TestOnPhaseCallback:
         with patch.object(idx, "_construct_trees", _spy_construct):
             await idx.build(on_phase=phases.append)
 
-        assert captured[0] == ["loading", "constructing"], (
-            "on_phase('constructing') must fire before _construct_trees"
-        )
+        assert captured[0] == [
+            "loading",
+            "constructing",
+        ], "on_phase('constructing') must fire before _construct_trees"
 
     async def test_build_without_on_phase_does_not_raise(self, idx):
         """on_phase is optional; omitting it must not raise."""

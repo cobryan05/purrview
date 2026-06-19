@@ -47,12 +47,14 @@ class TestParamsSchema:
 class TestInit:
     async def test_init_sets_required_attrs(self):
         task = _make_task(
-            {"trainer_type": "binary_image_classifier", "label_uuid": "lbl-1", "model_name": "m1"}
+            {
+                "trainer_type": "binary_image_classifier",
+                "label_uuid": "lbl-1",
+                "model_name": "m1",
+            }
         )
         with patch("apps.tasks_server.tasks.TrainModelTask.APPS_CONFIG") as mock_cfg:
-            mock_cfg.__getitem__ = MagicMock(
-                return_value=MagicMock(host="training_host", port=8005)
-            )
+            mock_cfg.__getitem__ = MagicMock(return_value=MagicMock(host="training_host", port=8005))
             with patch("apps.tasks_server.tasks.TrainModelTask.training_client"):
                 await task._init(task._params, None)
 
@@ -71,9 +73,7 @@ class TestInit:
             }
         )
         with patch("apps.tasks_server.tasks.TrainModelTask.APPS_CONFIG") as mock_cfg:
-            mock_cfg.__getitem__ = MagicMock(
-                return_value=MagicMock(host="training_host", port=8005)
-            )
+            mock_cfg.__getitem__ = MagicMock(return_value=MagicMock(host="training_host", port=8005))
             with patch("apps.tasks_server.tasks.TrainModelTask.training_client"):
                 await task._init(task._params, None)
 
@@ -81,13 +81,15 @@ class TestInit:
 
     async def test_init_resumes_job_id(self):
         task = _make_task(
-            {"trainer_type": "binary_image_classifier", "label_uuid": "lbl-1", "model_name": "m1"}
+            {
+                "trainer_type": "binary_image_classifier",
+                "label_uuid": "lbl-1",
+                "model_name": "m1",
+            }
         )
         resume = {"job_id": "existing-job-id"}
         with patch("apps.tasks_server.tasks.TrainModelTask.APPS_CONFIG") as mock_cfg:
-            mock_cfg.__getitem__ = MagicMock(
-                return_value=MagicMock(host="training_host", port=8005)
-            )
+            mock_cfg.__getitem__ = MagicMock(return_value=MagicMock(host="training_host", port=8005))
             with patch("apps.tasks_server.tasks.TrainModelTask.training_client"):
                 await task._init(task._params, resume)
 
@@ -95,12 +97,14 @@ class TestInit:
 
     async def test_init_no_resume_data_job_id_is_none(self):
         task = _make_task(
-            {"trainer_type": "binary_image_classifier", "label_uuid": "lbl-1", "model_name": "m1"}
+            {
+                "trainer_type": "binary_image_classifier",
+                "label_uuid": "lbl-1",
+                "model_name": "m1",
+            }
         )
         with patch("apps.tasks_server.tasks.TrainModelTask.APPS_CONFIG") as mock_cfg:
-            mock_cfg.__getitem__ = MagicMock(
-                return_value=MagicMock(host="training_host", port=8005)
-            )
+            mock_cfg.__getitem__ = MagicMock(return_value=MagicMock(host="training_host", port=8005))
             with patch("apps.tasks_server.tasks.TrainModelTask.training_client"):
                 await task._init(task._params, None)
 
@@ -119,9 +123,7 @@ class TestRun:
             lines.append("")  # blank line = event boundary
         return lines
 
-    async def _run_task_with_sse(
-        self, task: TrainModelTask, sse_lines: list[str], job_id: str = "job-123"
-    ) -> dict:
+    async def _run_task_with_sse(self, task: TrainModelTask, sse_lines: list[str], job_id: str = "job-123") -> dict:
         """
         Helper: patch training_client submit + httpx stream, run _run(), return result.
         """
@@ -159,8 +161,14 @@ class TestRun:
         with (
             patch("apps.tasks_server.tasks.TrainModelTask.APPS_CONFIG") as mock_cfg,
             patch("apps.tasks_server.tasks.TrainModelTask.training_client", mock_tc),
-            patch("apps.tasks_server.tasks.TrainModelTask.TrainingApi", return_value=mock_training_api),
-            patch("apps.tasks_server.tasks.TrainModelTask.httpx.AsyncClient", return_value=mock_client_ctx),
+            patch(
+                "apps.tasks_server.tasks.TrainModelTask.TrainingApi",
+                return_value=mock_training_api,
+            ),
+            patch(
+                "apps.tasks_server.tasks.TrainModelTask.httpx.AsyncClient",
+                return_value=mock_client_ctx,
+            ),
         ):
             mock_cfg.__getitem__ = MagicMock(return_value=MagicMock(host="h", port=8005))
             await task._init(task._params, None)
@@ -170,7 +178,11 @@ class TestRun:
 
     async def test_run_submits_job_on_first_call(self):
         task = _make_task(
-            {"trainer_type": "binary_image_classifier", "label_uuid": "lbl-1", "model_name": "m1"}
+            {
+                "trainer_type": "binary_image_classifier",
+                "label_uuid": "lbl-1",
+                "model_name": "m1",
+            }
         )
         done_event = [("done", {"model_path": "/models/m1.onnx", "val_accuracy": 0.9})]
         result = await self._run_task_with_sse(task, self._make_sse_stream(done_event))
@@ -179,7 +191,11 @@ class TestRun:
 
     async def test_run_forwards_progress_events(self):
         task = _make_task(
-            {"trainer_type": "binary_image_classifier", "label_uuid": "lbl-1", "model_name": "m1"}
+            {
+                "trainer_type": "binary_image_classifier",
+                "label_uuid": "lbl-1",
+                "model_name": "m1",
+            }
         )
         events = [
             ("progress", {"progress": 0.1, "log": "Epoch 1"}),
@@ -193,7 +209,11 @@ class TestRun:
 
     async def test_run_logs_progress_messages(self):
         task = _make_task(
-            {"trainer_type": "binary_image_classifier", "label_uuid": "lbl-1", "model_name": "m1"}
+            {
+                "trainer_type": "binary_image_classifier",
+                "label_uuid": "lbl-1",
+                "model_name": "m1",
+            }
         )
         events = [
             ("progress", {"progress": 0.2, "log": "Epoch 2 val_loss=0.31"}),
@@ -205,7 +225,11 @@ class TestRun:
 
     async def test_run_raises_on_error_event(self):
         task = _make_task(
-            {"trainer_type": "binary_image_classifier", "label_uuid": "lbl-1", "model_name": "m1"}
+            {
+                "trainer_type": "binary_image_classifier",
+                "label_uuid": "lbl-1",
+                "model_name": "m1",
+            }
         )
         events = [("error", {"message": "CUDA OOM"})]
         with pytest.raises(RuntimeError, match="CUDA OOM"):
@@ -213,7 +237,11 @@ class TestRun:
 
     async def test_run_cancel_flag_stops_stream(self):
         task = _make_task(
-            {"trainer_type": "binary_image_classifier", "label_uuid": "lbl-1", "model_name": "m1"}
+            {
+                "trainer_type": "binary_image_classifier",
+                "label_uuid": "lbl-1",
+                "model_name": "m1",
+            }
         )
 
         cancel_after = 1  # cancel after this many progress events
@@ -245,16 +273,20 @@ class TestRun:
         mock_stream_ctx.__aexit__ = AsyncMock(return_value=False)
 
         mock_client_ctx = AsyncMock()
-        mock_client_ctx.__aenter__ = AsyncMock(
-            return_value=MagicMock(stream=MagicMock(return_value=mock_stream_ctx))
-        )
+        mock_client_ctx.__aenter__ = AsyncMock(return_value=MagicMock(stream=MagicMock(return_value=mock_stream_ctx)))
         mock_client_ctx.__aexit__ = AsyncMock(return_value=False)
 
         with (
             patch("apps.tasks_server.tasks.TrainModelTask.APPS_CONFIG") as mock_cfg,
             patch("apps.tasks_server.tasks.TrainModelTask.training_client", mock_tc),
-            patch("apps.tasks_server.tasks.TrainModelTask.TrainingApi", return_value=mock_training_api),
-            patch("apps.tasks_server.tasks.TrainModelTask.httpx.AsyncClient", return_value=mock_client_ctx),
+            patch(
+                "apps.tasks_server.tasks.TrainModelTask.TrainingApi",
+                return_value=mock_training_api,
+            ),
+            patch(
+                "apps.tasks_server.tasks.TrainModelTask.httpx.AsyncClient",
+                return_value=mock_client_ctx,
+            ),
         ):
             mock_cfg.__getitem__ = MagicMock(return_value=MagicMock(host="h", port=8005))
             await task._init(task._params, None)
@@ -266,7 +298,11 @@ class TestRun:
 
     async def test_run_with_resume_skips_submit(self):
         task = _make_task(
-            {"trainer_type": "binary_image_classifier", "label_uuid": "lbl-1", "model_name": "m1"}
+            {
+                "trainer_type": "binary_image_classifier",
+                "label_uuid": "lbl-1",
+                "model_name": "m1",
+            }
         )
         done_event = [("done", {"model_path": "/models/m1.onnx", "val_accuracy": 0.88})]
 
@@ -286,16 +322,20 @@ class TestRun:
         mock_stream_ctx.__aenter__ = AsyncMock(return_value=mock_response)
         mock_stream_ctx.__aexit__ = AsyncMock(return_value=False)
         mock_client_ctx = AsyncMock()
-        mock_client_ctx.__aenter__ = AsyncMock(
-            return_value=MagicMock(stream=MagicMock(return_value=mock_stream_ctx))
-        )
+        mock_client_ctx.__aenter__ = AsyncMock(return_value=MagicMock(stream=MagicMock(return_value=mock_stream_ctx)))
         mock_client_ctx.__aexit__ = AsyncMock(return_value=False)
 
         with (
             patch("apps.tasks_server.tasks.TrainModelTask.APPS_CONFIG") as mock_cfg,
             patch("apps.tasks_server.tasks.TrainModelTask.training_client", mock_tc),
-            patch("apps.tasks_server.tasks.TrainModelTask.TrainingApi", return_value=mock_training_api),
-            patch("apps.tasks_server.tasks.TrainModelTask.httpx.AsyncClient", return_value=mock_client_ctx),
+            patch(
+                "apps.tasks_server.tasks.TrainModelTask.TrainingApi",
+                return_value=mock_training_api,
+            ),
+            patch(
+                "apps.tasks_server.tasks.TrainModelTask.httpx.AsyncClient",
+                return_value=mock_client_ctx,
+            ),
         ):
             mock_cfg.__getitem__ = MagicMock(return_value=MagicMock(host="h", port=8005))
             # Pass resume_data with an existing job_id

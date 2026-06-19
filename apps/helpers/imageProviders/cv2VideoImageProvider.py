@@ -29,7 +29,20 @@ class Cv2VideoImageProvider(ImageProvider):
 
     IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tiff", ".tif"}
     # Non-media extensions to skip during discovery (e.g. JSON sidecars, annotation files).
-    SKIP_EXTENSIONS = frozenset({".json", ".txt", ".xml", ".csv", ".yaml", ".yml", ".md", ".db", ".sqlite", ".log"})
+    SKIP_EXTENSIONS = frozenset(
+        {
+            ".json",
+            ".txt",
+            ".xml",
+            ".csv",
+            ".yaml",
+            ".yml",
+            ".md",
+            ".db",
+            ".sqlite",
+            ".log",
+        }
+    )
 
     def provider_type(self) -> ImageProviderType:
         return ImageProviderType.LIVE_STREAM if self._loop else ImageProviderType.FIXED
@@ -250,12 +263,7 @@ class Cv2VideoImageProvider(ImageProvider):
     def _session_active(self) -> bool:
         """Determines if the provider still has active files to process."""
         has_more_paths = self._index < len(self._paths)
-        return (
-            self._is_static_image
-            or (self._vid is not None)
-            or has_more_paths
-            or not self._discovery_complete
-        )
+        return self._is_static_image or (self._vid is not None) or has_more_paths or not self._discovery_complete
 
     async def start(self) -> None:
         self._discovery_task = asyncio.create_task(self._background_discovery_worker())
@@ -400,9 +408,7 @@ class Cv2VideoImageProvider(ImageProvider):
                     else:
                         # Video file: drain in-flight image reads first, then read frames sequentially.
                         if in_flight:
-                            all_done, in_flight = await asyncio.wait(
-                                in_flight, return_when=asyncio.ALL_COMPLETED
-                            )
+                            all_done, in_flight = await asyncio.wait(in_flight, return_when=asyncio.ALL_COMPLETED)
                             await _enqueue_done(all_done)
                         await self._read_video_sequential(path)
 

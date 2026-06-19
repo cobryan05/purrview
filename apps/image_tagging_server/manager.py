@@ -111,14 +111,20 @@ class Manager:
         try:
             res = await self._test_client.get(f"{url}/server-config")
         except httpx.ConnectError:
-            return {"success": False, "message": "Connection refused — is the server running?"}
+            return {
+                "success": False,
+                "message": "Connection refused — is the server running?",
+            }
         except httpx.TimeoutException:
             return {"success": False, "message": "Connection timed out"}
         except Exception as e:
             return {"success": False, "message": str(e)}
 
         if res.status_code != 200:
-            return {"success": False, "message": f"Server returned HTTP {res.status_code}"}
+            return {
+                "success": False,
+                "message": f"Server returned HTTP {res.status_code}",
+            }
 
         try:
             data = res.json()
@@ -140,7 +146,11 @@ class Manager:
         info_parts = [actual_service]
         if "models_path" in config:
             info_parts.append(f"models path: {config['models_path']}")
-        return {"success": True, "message": f"Connected — {' · '.join(info_parts)}", "config": config}
+        return {
+            "success": True,
+            "message": f"Connected — {' · '.join(info_parts)}",
+            "config": config,
+        }
 
     async def get_server_config(self) -> Dict[str, Any]:
         return {
@@ -170,7 +180,11 @@ class Manager:
                     data = resp.json()
                     data.setdefault("service", name)
                     return data
-                return {"service": name, "status": "error", "message": f"HTTP {resp.status_code}"}
+                return {
+                    "service": name,
+                    "status": "error",
+                    "message": f"HTTP {resp.status_code}",
+                }
             except Exception as e:
                 return {"service": name, "status": "unreachable", "message": str(e)}
 
