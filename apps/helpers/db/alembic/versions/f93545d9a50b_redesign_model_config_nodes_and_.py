@@ -44,8 +44,13 @@ def upgrade() -> None:
 
     with op.batch_alter_table('training_configs', schema=None) as batch_op:
         batch_op.add_column(sa.Column('model_config_node_uuid', sqlmodel.sql.sqltypes.AutoString(), nullable=True))
-        batch_op.drop_constraint(None, type_='foreignkey')
-        batch_op.create_foreign_key(None, 'model_config_nodes', ['model_config_node_uuid'], ['uuid'], ondelete='SET NULL')
+        batch_op.create_foreign_key(
+            'fk_training_configs_model_config_node_uuid',
+            'model_config_nodes',
+            ['model_config_node_uuid'],
+            ['uuid'],
+            ondelete='SET NULL',
+        )
         batch_op.drop_column('trainer_type')
         batch_op.drop_column('model_config_uuid')
 
@@ -57,8 +62,13 @@ def downgrade() -> None:
     with op.batch_alter_table('training_configs', schema=None) as batch_op:
         batch_op.add_column(sa.Column('model_config_uuid', sa.VARCHAR(), nullable=True))
         batch_op.add_column(sa.Column('trainer_type', sa.VARCHAR(), nullable=False))
-        batch_op.drop_constraint(None, type_='foreignkey')
-        batch_op.create_foreign_key(None, 'model_configs', ['model_config_uuid'], ['uuid'], ondelete='SET NULL')
+        batch_op.create_foreign_key(
+            'fk_training_configs_model_config_uuid',
+            'model_configs',
+            ['model_config_uuid'],
+            ['uuid'],
+            ondelete='SET NULL',
+        )
         batch_op.drop_column('model_config_node_uuid')
 
     with op.batch_alter_table('model_config_nodes', schema=None) as batch_op:
