@@ -335,10 +335,13 @@ def _apply_image_search_filters(stmt: Select, params: ImageSearchParams) -> Sele
             stmt = stmt.where(ImageRecord.uuid.in_(image_uuids))
         _bbox_implied = True
 
-    # ── Verification check (pairs with label_uuids) ───────────────────────────
-    if params.label_verification_check and params.label_uuids:
+    # ── Verification check ────────────────────────────────────────────────────
+    # Uses verification_label_uuids when set, falling back to label_uuids.
+    # This lets callers decouple the pool filter from the verification target.
+    _verification_targets = params.verification_label_uuids or params.label_uuids
+    if params.label_verification_check and _verification_targets:
         if params.label_verification_check == "all_verified":
-            for lu in params.label_uuids:
+            for lu in _verification_targets:
                 subq = (
                     select(ImageLabel)
                     .where(
@@ -361,7 +364,7 @@ def _apply_image_search_filters(stmt: Select, params: ImageSearchParams) -> Sele
                     )
                     .exists()
                 )
-                for lu in params.label_uuids
+                for lu in _verification_targets
             ]
             stmt = stmt.where(or_(*not_verified))
 
@@ -1590,8 +1593,12 @@ class DbClient:
     ) -> Label:
         """Insert a label and return the created object."""
         new_label = Label(
-            uuid=uuid or str(uuid4()), name=name, color=color,
-            parent_uuid=parent_uuid, label_type=label_type, scope=scope,
+            uuid=uuid or str(uuid4()),
+            name=name,
+            color=color,
+            parent_uuid=parent_uuid,
+            label_type=label_type,
+            scope=scope,
         )
 
         async with self._async_session_maker() as session:
@@ -2010,9 +2017,7 @@ class DbClient:
 
             image_uuids = [r.image_uuid for r in label_rows]
             img_records: List[ImageRecord] = (
-                await session.exec(
-                    select(ImageRecord).where(ImageRecord.uuid.in_(image_uuids))
-                )
+                await session.exec(select(ImageRecord).where(ImageRecord.uuid.in_(image_uuids)))
             ).all()
             uuid_to_filename = {img.uuid: img.filename for img in img_records}
 
@@ -2648,9 +2653,7 @@ class DbClient:
                 return False
             # Reject if any training config references this dataset (preserve old RESTRICT behavior).
             link_result = await session.exec(
-                select(TrainingConfigDatasetLink).where(
-                    TrainingConfigDatasetLink.dataset_uuid == uuid
-                )
+                select(TrainingConfigDatasetLink).where(TrainingConfigDatasetLink.dataset_uuid == uuid)
             )
             if link_result.first() is not None:
                 raise ValueError(f"Dataset {uuid} is referenced by one or more training configs")
@@ -2788,10 +2791,8 @@ class DbClient:
             )
             session.add(tc)
             await session.flush()  # assign uuid before adding links
-            for dataset_uuid in (data.dataset_uuids or []):
-                session.add(TrainingConfigDatasetLink(
-                    training_config_uuid=tc.uuid, dataset_uuid=dataset_uuid
-                ))
+            for dataset_uuid in data.dataset_uuids or []:
+                session.add(TrainingConfigDatasetLink(training_config_uuid=tc.uuid, dataset_uuid=dataset_uuid))
             await session.commit()
             await session.refresh(tc, ["dataset_links"])
             return self._training_config_to_read(tc)
@@ -2804,22 +2805,14 @@ class DbClient:
 
     async def get_training_config(self, uuid: str) -> Optional[TrainingConfigRead]:
         async with self._async_session_maker() as session:
-            stmt = (
-                select(TrainingConfig)
-                .where(TrainingConfig.uuid == uuid)
-                .options(*_TC_LOAD_OPTS)
-            )
+            stmt = select(TrainingConfig).where(TrainingConfig.uuid == uuid).options(*_TC_LOAD_OPTS)
             result = await session.exec(stmt)
             tc = result.first()
             return self._training_config_to_read(tc) if tc else None
 
     async def update_training_config(self, uuid: str, data: TrainingConfigUpdate) -> Optional[TrainingConfigRead]:
         async with self._async_session_maker() as session:
-            stmt = (
-                select(TrainingConfig)
-                .where(TrainingConfig.uuid == uuid)
-                .options(*_TC_LOAD_OPTS)
-            )
+            stmt = select(TrainingConfig).where(TrainingConfig.uuid == uuid).options(*_TC_LOAD_OPTS)
             result = await session.exec(stmt)
             tc = result.first()
             if tc is None:
@@ -2838,9 +2831,7 @@ class DbClient:
             await session.flush()
             if data.dataset_uuids is not None:
                 for dataset_uuid in data.dataset_uuids:
-                    session.add(TrainingConfigDatasetLink(
-                        training_config_uuid=tc.uuid, dataset_uuid=dataset_uuid
-                    ))
+                    session.add(TrainingConfigDatasetLink(training_config_uuid=tc.uuid, dataset_uuid=dataset_uuid))
             tc.updated_at = datetime.now(timezone.utc)
             await session.commit()
             await session.refresh(tc, ["dataset_links"])
@@ -2875,8 +2866,7 @@ class DbClient:
             if node.label_uuid is None:
                 # Root node: use all non-root node labels from this config.
                 result = await session.exec(
-                    select(ModelConfigNode.label_uuid)
-                    .where(
+                    select(ModelConfigNode.label_uuid).where(
                         ModelConfigNode.model_config_uuid == node.model_config_uuid,
                         ModelConfigNode.label_uuid.isnot(None),
                     )
@@ -2991,6 +2981,104 @@ class DbClient:
             "label_uuids": label_uuids,
         }
 
+    async def get_training_config_needs_review_images(
+        self,
+        uuid: str,
+        *,
+        limit: int = 50,
+        after_uuid: Optional[str] = None,
+        after_sort_value: Optional[datetime] = None,
+        sort_by: str = "created_at",
+        sort_order: str = "desc",
+        extra_label_uuids: Optional[List[str]] = None,
+    ) -> tuple[list["ImageRecord"], bool]:
+        """Return (images, has_more) for images that need verification in a training config.
+
+        Images are those within the config's linked dataset union that have at least one
+        target label (derived from the model config node) without a verified image_label row.
+
+        extra_label_uuids — when provided, additionally narrows the pool to images that
+        also have bboxes with these labels (applied on top of each dataset's own filters).
+
+        v1: in-memory merge across datasets. Push to SQL union if datasets grow large.
+        """
+        tc = await self.get_training_config(uuid)
+        if tc is None:
+            return [], False
+
+        label_uuids = await self._derive_labels_for_node(tc.model_config_node_uuid)
+        if not label_uuids:
+            return [], False
+
+        # Collect all needs-review images from each linked dataset (union, de-duped by UUID).
+        # Each dataset is iterated in pages (sort_by="uuid" for stable pagination).
+        seen_uuids: set[str] = set()
+        all_images: list[ImageRecord] = []
+
+        for ds_uuid in tc.dataset_uuids:
+            dataset = await self.get_dataset(ds_uuid)
+            if dataset is None:
+                continue
+
+            ds_after_uuid: Optional[str] = None
+            while True:
+                params = self.build_dataset_search_params(
+                    dataset,
+                    limit=_READINESS_PAGE_SIZE,
+                    sort_by="uuid",
+                    sort_order="asc",
+                    after_uuid=ds_after_uuid,
+                    after_sort_value=None,
+                )
+                # Decouple verification targets from the pool label filter.
+                params.verification_label_uuids = label_uuids
+                params.label_verification_check = "has_unverified"
+                if extra_label_uuids:
+                    # Narrow pool: image must also have bboxes with the extra labels.
+                    params.label_uuids = list(set(params.label_uuids) | set(extra_label_uuids))
+
+                page = await self.list_images_search(params)
+                for img in page:
+                    if img.uuid not in seen_uuids:
+                        seen_uuids.add(img.uuid)
+                        all_images.append(img)
+
+                if len(page) < _READINESS_PAGE_SIZE:
+                    break
+                ds_after_uuid = page[-1].uuid
+
+        if not all_images:
+            return [], False
+
+        # Sort the merged list by (sort_by, uuid) for deterministic ordering.
+        def _sort_key(img: "ImageRecord"):
+            return (getattr(img, sort_by), img.uuid)
+
+        all_images.sort(key=_sort_key, reverse=(sort_order == "desc"))
+
+        # Apply keyset cursor to resume from the previous page.
+        start_idx = 0
+        if after_uuid is not None:
+            for i, img in enumerate(all_images):
+                attr = getattr(img, sort_by)
+                if sort_by == "uuid" or after_sort_value is None:
+                    past = img.uuid > after_uuid if sort_order == "asc" else img.uuid < after_uuid
+                else:
+                    sv = after_sort_value
+                    if sort_order == "asc":
+                        past = attr > sv or (attr == sv and img.uuid > after_uuid)
+                    else:
+                        past = attr < sv or (attr == sv and img.uuid < after_uuid)
+                if past:
+                    start_idx = i
+                    break
+            else:
+                return [], False
+            all_images = all_images[start_idx:]
+
+        has_more = len(all_images) > limit
+        return all_images[:limit], has_more
+
     async def get_training_config_label_stats(self, uuid: str) -> Optional[dict]:
         """Return per-label dataset stats for a training config.
 
@@ -3057,8 +3145,12 @@ class DbClient:
 
         total_images = len(all_image_uuids)
 
-        image_label_uuids = [u for u in relevant_label_uuids if u in labels_map and labels_map[u].scope == LabelScope.IMAGE]
-        object_label_uuids = [u for u in relevant_label_uuids if u in labels_map and labels_map[u].scope == LabelScope.OBJECT]
+        image_label_uuids = [
+            u for u in relevant_label_uuids if u in labels_map and labels_map[u].scope == LabelScope.IMAGE
+        ]
+        object_label_uuids = [
+            u for u in relevant_label_uuids if u in labels_map and labels_map[u].scope == LabelScope.OBJECT
+        ]
 
         # Seed result dict.
         label_stats: dict[str, dict] = {}
@@ -3112,8 +3204,7 @@ class DbClient:
                     .subquery()
                 )
                 result = await session.exec(
-                    select(verified_inner.c.label_uuid, func.count().label("cnt"))
-                    .group_by(verified_inner.c.label_uuid)
+                    select(verified_inner.c.label_uuid, func.count().label("cnt")).group_by(verified_inner.c.label_uuid)
                 )
                 for lbl_uuid, cnt in result.all():
                     if lbl_uuid in label_stats:
@@ -3131,8 +3222,9 @@ class DbClient:
                     .subquery()
                 )
                 result = await session.exec(
-                    select(unverified_inner.c.label_uuid, func.count().label("cnt"))
-                    .group_by(unverified_inner.c.label_uuid)
+                    select(unverified_inner.c.label_uuid, func.count().label("cnt")).group_by(
+                        unverified_inner.c.label_uuid
+                    )
                 )
                 for lbl_uuid, cnt in result.all():
                     if lbl_uuid in label_stats:
@@ -3151,8 +3243,9 @@ class DbClient:
                     .subquery()
                 )
                 result = await session.exec(
-                    select(imgs_missing_inner.c.label_uuid, func.count().label("cnt"))
-                    .group_by(imgs_missing_inner.c.label_uuid)
+                    select(imgs_missing_inner.c.label_uuid, func.count().label("cnt")).group_by(
+                        imgs_missing_inner.c.label_uuid
+                    )
                 )
                 imgs_missing_by_label: dict[str, int] = {}
                 for lbl_uuid, cnt in result.all():
@@ -3171,8 +3264,9 @@ class DbClient:
                     .subquery()
                 )
                 result = await session.exec(
-                    select(imgs_with_bbox_inner.c.label_uuid, func.count().label("cnt"))
-                    .group_by(imgs_with_bbox_inner.c.label_uuid)
+                    select(imgs_with_bbox_inner.c.label_uuid, func.count().label("cnt")).group_by(
+                        imgs_with_bbox_inner.c.label_uuid
+                    )
                 )
                 for lbl_uuid, cnt in result.all():
                     if lbl_uuid in label_stats:

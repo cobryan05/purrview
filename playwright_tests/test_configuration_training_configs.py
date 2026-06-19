@@ -9,8 +9,8 @@ Configuration > Training > #training-config-box
   - Create flow: fill form → POST /api/training-configs with correct payload
     (modelConfigNodeUuid, datasetUuids, hyperparamsJson — no trainerType/labelUuids)
   - Readiness panel: shows ready/needs-review counts when a config with a node is selected
-  - "Review unverified images" button: fires OPEN_REVIEW_WITH_FILTERS event and
-    activates the Review tab
+  - "Review unverified images" button: opens a showReviewModal overlay backed by
+    POST /api/training-configs/{uuid}/needs-review-images
 
 Run with:
     pytest playwright_tests/test_configuration_training_configs.py -p no:xdist -p no:asyncio -n 0 -v
@@ -370,9 +370,10 @@ class TestReadinessPanel:
         btn = _box(page).locator("button", has_text="Review unverified images")
         expect(btn).to_be_visible(timeout=3000)
 
-    def test_review_button_switches_to_review_tab(self, page: Page, base_url: str):
-        """Clicking 'Review unverified images' activates the Review tab and the
-        subsequent review-queue POST includes labelVerificationCheck=has_unverified."""
+    def test_review_button_opens_modal(self, page: Page, base_url: str):
+        """Clicking 'Review unverified images' opens a review modal and issues a POST
+        to /api/training-configs/{uuid}/needs-review-images (not the global review queue).
+        """
         _mock_datasets(page, [DATASET_ALPHA])
         _mock_model_configs(page, [MODEL_CFG])
         _mock_training_configs_list(page, [EXISTING_TC])
@@ -380,19 +381,14 @@ class TestReadinessPanel:
         _mock_readiness(page, "tc-1", ready=1, needs_review=3)
         _mock_label_stats(page, "tc-1")
 
-        _navigate_to_training_configs(page, base_url)
-        _list_item(page, "tc-1").click()
+        # Mock the needs-review-images endpoint so the modal can load
+        captured_needs_review_requests = []
 
-        btn = _box(page).locator("button", has_text="Review unverified images")
-        expect(btn).to_be_visible(timeout=3000)
-
-        captured_queue_requests = []
-
-        def handle_queue(route: Route):
+        def handle_needs_review(route: Route):
             try:
-                captured_queue_requests.append(json.loads(route.request.post_data))
+                captured_needs_review_requests.append(json.loads(route.request.post_data))
             except Exception:
-                captured_queue_requests.append({})
+                captured_needs_review_requests.append({})
             route.fulfill(
                 status=200,
                 content_type="application/json",
@@ -401,21 +397,23 @@ class TestReadinessPanel:
                 }),
             )
 
-        page.route("**/api/images/review", handle_queue)
+        page.route("**/api/training-configs/tc-1/needs-review-images", handle_needs_review)
+
+        _navigate_to_training_configs(page, base_url)
+        _list_item(page, "tc-1").click()
+
+        btn = _box(page).locator("button", has_text="Review unverified images")
+        expect(btn).to_be_visible(timeout=3000)
 
         with page.expect_request(
-            lambda r: "/api/images/review" in r.url and r.method == "POST",
+            lambda r: "needs-review-images" in r.url and r.method == "POST",
             timeout=8000,
         ):
             btn.click()
 
-        import re as _re
-        expect(page.locator("#tab-review")).to_have_class(_re.compile(r"\bactive\b"), timeout=4000)
+        # Modal is now visible — detect it by its title strong element
+        modal_title = page.locator("strong", has_text="Needs Review")
+        expect(modal_title).to_be_visible(timeout=4000)
 
-        page.wait_for_timeout(600)
-        last = captured_queue_requests[-1]
-        assert last.get("labelVerificationCheck") == "has_unverified", \
-            f"Expected labelVerificationCheck='has_unverified'; got: {last}"
-        # labelUuids is now empty (derived from model tree at runtime, not stored)
-        assert last.get("labelUuids", []) == [], \
-            f"Expected empty labelUuids; got: {last.get('labelUuids')}"
+        page.wait_for_timeout(400)
+        assert len(captured_needs_review_requests) >= 1, "needs-review-images endpoint was not called"

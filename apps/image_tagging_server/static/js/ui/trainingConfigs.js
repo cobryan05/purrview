@@ -23,6 +23,7 @@ import {
   deleteTrainingConfig,
   fetchTrainingConfigReadiness,
   fetchTrainingConfigLabelStats,
+  fetchTrainingConfigNeedsReview,
   clearTrainingConfigsCache,
 } from '/app-static/js/shared/api/trainingConfigs.js';
 import { makeFieldRow, buildPanelEditorBar, toast } from '/app-static/js/ui/utils/index.js';
@@ -223,11 +224,13 @@ function renderReadinessPanel(config) {
   reviewBtn.className = 'panel-btn';
   reviewBtn.style.cssText = 'margin-top: 0.4em; font-size: 0.8em;';
   reviewBtn.style.display = 'none';
-  reviewBtn.addEventListener('click', () => {
-    events.publish(EventTypes.OPEN_REVIEW_WITH_FILTERS, {
-      tagUuids: [],
-      labelUuids: [],
-      verificationCheck: 'has_unverified',
+  reviewBtn.addEventListener('click', async () => {
+    const { showReviewModal } = await import('/app-static/js/app/review/main.js');
+    await showReviewModal({
+      title: `Needs Review — ${config.name}`,
+      fetchImages: async ({ afterUuid = null, afterSortValue = null, limit }) => {
+        return fetchTrainingConfigNeedsReview({ uuid: config.uuid, afterUuid, afterSortValue, limit });
+      },
     });
   });
   wrap.appendChild(reviewBtn);

@@ -74,11 +74,13 @@ Base64Image = Annotated[Optional[str], BeforeValidator(validate_base64_img)]
 
 class ApiModel(BaseModel):
     """Base for camelCase API models (create / update / filter payloads)."""
+
     model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)
 
 
 class OrmModel(BaseModel):
     """Base for ORM-backed read models. Adds from_attributes=True to ApiModel config."""
+
     model_config = ConfigDict(from_attributes=True, alias_generator=to_camel, populate_by_name=True)
 
 
@@ -116,9 +118,12 @@ class TimestampModel(SQLModel):
 
 class UserSetting(SQLModel, table=True):
     """Simple key-value store for per-user (per-browser) persistent settings."""
+
     __tablename__ = "user_settings"
     key: str = Field(primary_key=True)
     value: str = Field(default="", sa_column=Column(sa.Text))
+
+
 class LabelBase(SQLModel):
     """
     Base schema for object classification labels.
@@ -190,6 +195,7 @@ class LabelUpdate(BaseModel):
     parent_uuid: Optional[str] = None
     label_type: Optional[LabelType] = None
     scope: Optional[LabelScope] = None
+
 
 class ImageTagLink(SQLModel, table=True):
     """
@@ -326,10 +332,16 @@ class ImageSearchParams(ApiModel):
     # When True, only images that have at least one bbox are returned.
     # Useful for bbox-view pagination so empty-bbox images don't dilute pages.
     require_bboxes: bool = False
-    # Verification check — operates on label_uuids.
-    # "all_verified"   = every label in label_uuids has a verified image_label row (PRESENT or ABSENT)
-    # "has_unverified" = at least one label in label_uuids is uncertain or missing a row
+    # Verification check — operates on label_uuids by default, or on
+    # verification_label_uuids when that field is non-empty.
+    # "all_verified"   = every target label has a verified image_label row (PRESENT or ABSENT)
+    # "has_unverified" = at least one target label is uncertain or missing a row
     label_verification_check: Optional[Literal["all_verified", "has_unverified"]] = None
+    # Override the label set used for verification checks. When non-empty, the
+    # verification predicate runs against these UUIDs instead of label_uuids,
+    # allowing the pool filter and the verification target to differ (e.g. when
+    # checking a training config's target labels across a dataset's pool filter).
+    verification_label_uuids: Optional[List[str]] = None
     # Keyset pagination cursor.
     after_uuid: Optional[str] = None
     after_sort_value: Optional[datetime] = None  # populated when sort_by != "uuid"
@@ -666,19 +678,34 @@ class DatasetUpdate(ApiModel):
 
 MODEL_TYPE_ARCHITECTURES: Dict[str, List[str]] = {
     "object_detection": [
-        "yolo_v8_n", "yolo_v8_s", "yolo_v8_m", "yolo_v8_l", "yolo_v8_x",
-        "yolo_v9_c", "yolo_v9_e",
-        "yolo_v10_n", "yolo_v10_s", "yolo_v10_m",
+        "yolo_v8_n",
+        "yolo_v8_s",
+        "yolo_v8_m",
+        "yolo_v8_l",
+        "yolo_v8_x",
+        "yolo_v9_c",
+        "yolo_v9_e",
+        "yolo_v10_n",
+        "yolo_v10_s",
+        "yolo_v10_m",
     ],
     "crop_classifier": [
-        "efficientnet_b0", "efficientnet_b2", "efficientnet_b4",
-        "mobilenet_v3_small", "mobilenet_v3_large",
-        "resnet_18", "resnet_50",
+        "efficientnet_b0",
+        "efficientnet_b2",
+        "efficientnet_b4",
+        "mobilenet_v3_small",
+        "mobilenet_v3_large",
+        "resnet_18",
+        "resnet_50",
     ],
     "image_classifier": [
-        "efficientnet_b0", "efficientnet_b2", "efficientnet_b4",
-        "mobilenet_v3_small", "mobilenet_v3_large",
-        "resnet_18", "resnet_50",
+        "efficientnet_b0",
+        "efficientnet_b2",
+        "efficientnet_b4",
+        "mobilenet_v3_small",
+        "mobilenet_v3_large",
+        "resnet_18",
+        "resnet_50",
     ],
 }
 
@@ -738,17 +765,10 @@ class ModelConfigUpdate(ApiModel):
     nodes: Optional[List[ModelConfigNodeWrite]] = None  # None=no change; []=remove all
 
 
-
-
-
 class TrainingConfigDatasetLink(SQLModel, table=True):
     __tablename__ = "training_config_dataset_links"
-    training_config_uuid: str = Field(
-        foreign_key="training_configs.uuid", primary_key=True, ondelete="CASCADE"
-    )
-    dataset_uuid: str = Field(
-        foreign_key="datasets.uuid", primary_key=True, ondelete="RESTRICT"
-    )
+    training_config_uuid: str = Field(foreign_key="training_configs.uuid", primary_key=True, ondelete="CASCADE")
+    dataset_uuid: str = Field(foreign_key="datasets.uuid", primary_key=True, ondelete="RESTRICT")
 
 
 class TrainingConfig(TimestampModel, table=True):
@@ -803,9 +823,7 @@ class ModelBundle(TimestampModel, table=True):
     model_config_uuid: str = Field(foreign_key="model_configs.uuid", ondelete="RESTRICT")
     bundle_path: str
     manifest_json: Dict[str, Any] = Field(default_factory=dict, sa_column=sa.Column(sa.JSON))
-    training_config_uuids: List[str] = Field(
-        default_factory=list, sa_column=sa.Column(sa.JSON)
-    )
+    training_config_uuids: List[str] = Field(default_factory=list, sa_column=sa.Column(sa.JSON))
 
 
 class ModelBundleRead(OrmModel):

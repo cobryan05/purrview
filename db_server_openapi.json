@@ -4016,6 +4016,59 @@
         }
       }
     },
+    "/api/training-configs/{uuid}/needs-review-images": {
+      "post": {
+        "tags": [
+          "training_configs"
+        ],
+        "summary": "Get Training Config Needs Review Images",
+        "description": "Return images in this training config's dataset union that have \u22651 unverified target label.\n\nUses the same response shape as the review queue so the existing review\ngrid can render the results unchanged.",
+        "operationId": "get_training_config_needs_review_images",
+        "parameters": [
+          {
+            "name": "uuid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NeedsReviewImagesPayload"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewQueueResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/model-bundles": {
       "get": {
         "tags": [
@@ -6759,6 +6812,20 @@
             ],
             "title": "Labelverificationcheck"
           },
+          "verificationLabelUuids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Verificationlabeluuids"
+          },
           "afterUuid": {
             "anyOf": [
               {
@@ -7848,6 +7915,67 @@
         },
         "type": "object",
         "title": "ModelConfigUpdate"
+      },
+      "NeedsReviewImagesPayload": {
+        "properties": {
+          "labelUuids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Labeluuids"
+          },
+          "afterUuid": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Afteruuid"
+          },
+          "afterSortValue": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Aftersortvalue"
+          },
+          "sortBy": {
+            "type": "string",
+            "enum": [
+              "uuid",
+              "created_at",
+              "updated_at",
+              "filename"
+            ],
+            "title": "Sortby",
+            "default": "created_at"
+          },
+          "sortOrder": {
+            "type": "string",
+            "enum": [
+              "asc",
+              "desc"
+            ],
+            "title": "Sortorder",
+            "default": "desc"
+          },
+          "limit": {
+            "type": "integer",
+            "title": "Limit",
+            "default": 50
+          }
+        },
+        "type": "object",
+        "title": "NeedsReviewImagesPayload"
       },
       "PruneImagesPayload": {
         "properties": {

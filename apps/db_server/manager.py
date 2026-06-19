@@ -190,8 +190,12 @@ class Manager:
     ################################################################################
 
     async def create_new_label(
-        self, name: str, color: str, parent_uuid: Optional[str] = None,
-        label_type: LabelType = LabelType.STANDARD, scope: LabelScope = LabelScope.OBJECT,
+        self,
+        name: str,
+        color: str,
+        parent_uuid: Optional[str] = None,
+        label_type: LabelType = LabelType.STANDARD,
+        scope: LabelScope = LabelScope.OBJECT,
     ) -> Label:
         """
         Adds a new label to the database
@@ -199,9 +203,7 @@ class Manager:
         Returns:
             Label: Label added to database
         """
-        ret = await self._db_client.add_label(
-            name, color, parent_uuid=parent_uuid, label_type=label_type, scope=scope
-        )
+        ret = await self._db_client.add_label(name, color, parent_uuid=parent_uuid, label_type=label_type, scope=scope)
         # TODO CJO: await self._db_client.export_labels_from_db_to_json(str(self._labels_json))
         return ret
 
@@ -235,7 +237,11 @@ class Manager:
             label_type (Optional[LabelType]): New label type.
             scope (Optional[LabelScope]): New label scope.
         """
-        updates = {k: v for k, v in {"name": name, "color": color, "label_type": label_type, "scope": scope}.items() if v is not None}
+        updates = {
+            k: v
+            for k, v in {"name": name, "color": color, "label_type": label_type, "scope": scope}.items()
+            if v is not None
+        }
         await self._db_client.update_label(label_uuid=label_uuid, **updates)
         # TODO CJO: await self._db_client.export_labels_from_db_to_json(str(self._labels_json))
 
@@ -1500,7 +1506,9 @@ class Manager:
         if bbox.phash is None:
             return []
 
-        ranked = await asyncio.to_thread(self._hash_index.rank_bboxes_by_diversity, bbox.phash, label_uuids or None, count)
+        ranked = await asyncio.to_thread(
+            self._hash_index.rank_bboxes_by_diversity, bbox.phash, label_uuids or None, count
+        )
         if not ranked:
             return []
 
@@ -2185,6 +2193,25 @@ class Manager:
 
     async def get_training_config_label_stats(self, uuid: str) -> "Optional[dict]":
         return await self._db_client.get_training_config_label_stats(uuid)
+
+    async def get_training_config_needs_review_images(
+        self, uuid: str, payload: "NeedsReviewImagesPayload"
+    ) -> "tuple[list[ImageRecordRead], bool]":
+        images, has_more = await self._db_client.get_training_config_needs_review_images(
+            uuid,
+            limit=payload.limit,
+            after_uuid=payload.after_uuid,
+            after_sort_value=payload.after_sort_value,
+            sort_by=payload.sort_by,
+            sort_order=payload.sort_order,
+            extra_label_uuids=payload.label_uuids or None,
+        )
+        results = []
+        for img in images:
+            record = ImageRecordRead.model_validate(img)
+            record.filename = self._image_rel_path(img.filename)
+            results.append(record)
+        return results, has_more
 
     # ── Model Bundles ─────────────────────────────────────────────────────────
 

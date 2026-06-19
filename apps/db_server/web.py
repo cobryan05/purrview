@@ -532,6 +532,14 @@ class TrainingConfigLabelStatsResponse(StatusResponse):
     total_images: int = 0
 
 
+class NeedsReviewImagesPayload(Payload):
+    label_uuids: List[str] = Field(default_factory=list)
+    after_uuid: Optional[str] = None
+    after_sort_value: Optional[datetime] = None
+    sort_by: Literal["uuid", "created_at", "updated_at", "filename"] = "created_at"
+    sort_order: Literal["asc", "desc"] = "desc"
+    limit: int = 50
+
 
 class ListModelBundlesResponse(StatusResponse):
     bundles: List[ModelBundleRead] = Field(default_factory=list)
@@ -799,8 +807,11 @@ class WebApp:
             """
             try:
                 label = await self._manager.create_new_label(
-                    request.name, request.color, parent_uuid=request.parent_uuid,
-                    label_type=request.label_type, scope=request.scope,
+                    request.name,
+                    request.color,
+                    parent_uuid=request.parent_uuid,
+                    label_type=request.label_type,
+                    scope=request.scope,
                 )
 
                 return AddLabelResponse(status=JsonValues.SUCCESS, label=label)
@@ -2454,7 +2465,9 @@ class WebApp:
                 return TrainingConfigResponse(status=JsonValues.SUCCESS, config=config)
             except IntegrityError as e:
                 logger.error(e, exc_info=True)
-                return TrainingConfigResponse(status=JsonValues.FAILURE, message=self._unique_constraint_msg(e, "training config"))
+                return TrainingConfigResponse(
+                    status=JsonValues.FAILURE, message=self._unique_constraint_msg(e, "training config")
+                )
             except Exception as e:
                 logger.error(e, exc_info=True)
                 return TrainingConfigResponse(status=JsonValues.FAILURE, message=str(e))
@@ -2489,7 +2502,9 @@ class WebApp:
                 return TrainingConfigResponse(status=JsonValues.SUCCESS, config=config)
             except IntegrityError as e:
                 logger.error(e, exc_info=True)
-                return TrainingConfigResponse(status=JsonValues.FAILURE, message=self._unique_constraint_msg(e, "training config"))
+                return TrainingConfigResponse(
+                    status=JsonValues.FAILURE, message=self._unique_constraint_msg(e, "training config")
+                )
             except Exception as e:
                 logger.error(e, exc_info=True)
                 return TrainingConfigResponse(status=JsonValues.FAILURE, message=str(e))
@@ -2520,7 +2535,9 @@ class WebApp:
             try:
                 result = await self._manager.get_training_config_readiness(uuid)
                 if result is None:
-                    return TrainingConfigReadinessResponse(status=JsonValues.FAILURE, message="Training config not found")
+                    return TrainingConfigReadinessResponse(
+                        status=JsonValues.FAILURE, message="Training config not found"
+                    )
                 return TrainingConfigReadinessResponse(status=JsonValues.SUCCESS, **result)
             except Exception as e:
                 logger.error(e, exc_info=True)
@@ -2536,11 +2553,34 @@ class WebApp:
             try:
                 result = await self._manager.get_training_config_label_stats(uuid)
                 if result is None:
-                    return TrainingConfigLabelStatsResponse(status=JsonValues.FAILURE, message="Training config not found")
+                    return TrainingConfigLabelStatsResponse(
+                        status=JsonValues.FAILURE, message="Training config not found"
+                    )
                 return TrainingConfigLabelStatsResponse(status=JsonValues.SUCCESS, **result)
             except Exception as e:
                 logger.error(e, exc_info=True)
                 return TrainingConfigLabelStatsResponse(status=JsonValues.FAILURE, message=str(e))
+
+        @self._app.post(
+            "/api/training-configs/{uuid}/needs-review-images",
+            response_model=ReviewQueueResponse,
+            tags=[ApiTags.TRAINING_CONFIGS],
+            operation_id="get_training_config_needs_review_images",
+        )
+        async def get_training_config_needs_review_images(
+            uuid: str, payload: NeedsReviewImagesPayload
+        ) -> ReviewQueueResponse:
+            """Return images in this training config's dataset union that have ≥1 unverified target label.
+
+            Uses the same response shape as the review queue so the existing review
+            grid can render the results unchanged.
+            """
+            try:
+                images, has_more = await self._manager.get_training_config_needs_review_images(uuid, payload)
+                return ReviewQueueResponse(images=images, has_more=has_more, total_count=len(images))
+            except Exception as e:
+                logger.exception("Failed to fetch needs-review images for training config %s", uuid)
+                return ReviewQueueResponse(status=JsonValues.FAILURE, message=str(e))
 
     def _register_bundle_routes(self) -> None:
         @self._app.get(
@@ -2567,6 +2607,7 @@ class WebApp:
             try:
                 bundle = await self._manager.create_bundle(payload)
                 from apps.helpers.db.types import ModelBundleRead
+
                 read = ModelBundleRead.model_validate(bundle)
                 return ModelBundleResponse(status=JsonValues.SUCCESS, bundle=read)
             except IntegrityError as e:
