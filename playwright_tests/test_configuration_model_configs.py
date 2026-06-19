@@ -4,15 +4,15 @@ Tests for the Model Configurations UI (Configuration > Models).
 Exercises renderModelConfigManager() rendered inside
 Configuration > Models > #model-config-box (apps/.../ui/modelConfigs.js):
   - DOM structure (config list + create form, hierarchical label tree)
-  - Create flow: select labels + root model type → POST /api/model-configs
+  - Create flow: select labels + root model type/architecture → POST /api/model-configs
   - Edit flow: opening an existing config pre-fills the form and a submodel panel
   - Save flow: editing & saving PATCHes /api/model-configs/{uuid} with new nodes
   - Clearing an assignment removes it from the saved payload
   - Delete flow (modal confirm; API called or suppressed)
 
-Mirrors the structure/style of test_configuration_datasets.py. Follows the
-route-interception pattern from test_configuration_labels.py / _sources.py —
-the model-configs/labels proxies default to empty in conftest.
+Model nodes now carry `modelType` + `architecture` instead of the old flat
+`modelTypename`.  The root-model row renders two linked <select> elements
+(type → architecture); each sub-model card renders the same pair.
 
 Run with:
     pytest playwright_tests/test_configuration_model_configs.py -p no:xdist -p no:asyncio -v
@@ -30,15 +30,13 @@ LABEL_CAT = {"uuid": "lbl-cat", "name": "Cat", "color": "#ff0000", "parentUuid":
 LABEL_KITTEN = {"uuid": "lbl-kitten", "name": "Kitten", "color": "#ff8888", "parentUuid": "lbl-cat"}
 LABEL_DOG = {"uuid": "lbl-dog", "name": "Dog", "color": "#00ff00", "parentUuid": None}
 
-TYPENAMES = ["yolov8n", "yolov8s", "yolov5m"]
-
 EXISTING_CONFIG = {
     "uuid": "cfg-1",
     "name": "Animal Detector",
     "description": "Cats & dogs",
     "nodes": [
-        {"labelUuid": None, "modelTypename": "yolov8n"},
-        {"labelUuid": "lbl-cat", "modelTypename": "yolov8s"},
+        {"uuid": "node-root", "labelUuid": None,      "modelType": "object_detection", "architecture": "yolo_v8_n"},
+        {"uuid": "node-cat",  "labelUuid": "lbl-cat", "modelType": "crop_classifier",  "architecture": "efficientnet_b0"},
     ],
 }
 
@@ -55,7 +53,6 @@ def _navigate_to_model_configs(page: Page, base_url: str):
     page.wait_for_load_state("networkidle")
     page.locator("#tab-configuration .workspace-tab-button[data-tab='tab-model-management']").click()
     page.wait_for_load_state("networkidle")
-    # New DOM: panel-box structure instead of config-panel
     page.wait_for_selector("#model-config-box .mc-list-panel", timeout=4000)
 
 
@@ -71,17 +68,6 @@ def _mock_model_configs(page: Page, configs: list | None = None):
         )
         if route.request.method == "GET"
         else route.fallback(),
-    )
-
-
-def _mock_typenames(page: Page, typenames: list | None = None):
-    page.route(
-        "**/api/model-configs/typenames",
-        lambda route: route.fulfill(
-            status=200,
-            content_type="application/json",
-            body=json.dumps({"status": "success", "typenames": typenames or TYPENAMES}),
-        ),
     )
 
 
@@ -125,7 +111,6 @@ class TestModelConfigPaneStructure:
         """The pane shows the config list (with assignment counts) and defaults to the
         create-new-config form with a hierarchical, fully-expanded label tree."""
         _mock_model_configs(page, [EXISTING_CONFIG])
-        _mock_typenames(page)
         _mock_labels(page, [LABEL_CAT, LABEL_KITTEN, LABEL_DOG])
 
         _navigate_to_model_configs(page, base_url)
@@ -152,6 +137,30 @@ class TestModelConfigPaneStructure:
         expect(_label_row(page, "lbl-dog").locator("label", has_text="sub model")).to_have_count(0)
         expect(_label_row(page, "lbl-kitten").locator("label", has_text="sub model")).to_have_count(0)
 
+    def test_root_model_shows_type_and_architecture_selects(self, page: Page, base_url: str):
+        """The 'Root model' row has two linked selects: model type and architecture."""
+        _mock_model_configs(page, [])
+        _mock_labels(page, [])
+
+        _navigate_to_model_configs(page, base_url)
+
+        # Wait for the editor to render
+        _editor_body(page).wait_for(timeout=4000)
+
+        # There should be exactly two selects in the empty create form (type + arch)
+        selects = page.locator("#model-config-box select")
+        expect(selects).to_have_count(2)
+
+        # First select: model type — must include known types
+        type_options = selects.first.locator("option").all_text_contents()
+        assert any("Object Detection" in o or "Crop Classifier" in o or "Image Classifier" in o
+                   for o in type_options), f"Expected model type options; got: {type_options}"
+
+        # Second select: architecture — must include YOLO variants for the default OD type
+        arch_options = selects.nth(1).locator("option").all_text_contents()
+        assert any("YOLO" in o or "yolo" in o.lower() for o in arch_options), \
+            f"Expected architecture options; got: {arch_options}"
+
 
 # ---------------------------------------------------------------------------
 # 2. Create flow
@@ -159,12 +168,10 @@ class TestModelConfigPaneStructure:
 
 
 class TestCreateModelConfig:
-    def test_create_sends_selected_labels_and_root_typename(self, page: Page, base_url: str):
-        """Naming the config, picking a root model type, and checking two labels
-        sends a create payload whose nodes are the root + the two selected labels,
-        all inheriting the chosen root typename (no submodels enabled)."""
+    def test_create_sends_selected_labels_and_root_spec(self, page: Page, base_url: str):
+        """Naming the config, picking a root model type+architecture, and checking two
+        labels sends a create payload whose nodes carry modelType + architecture."""
         _mock_model_configs(page, [])
-        _mock_typenames(page)
         _mock_labels(page, [LABEL_CAT, LABEL_KITTEN, LABEL_DOG])
 
         calls = []
@@ -187,16 +194,15 @@ class TestCreateModelConfig:
 
         _navigate_to_model_configs(page, base_url)
 
-        # Fill form fields in the editor body
+        # Fill name
         _editor_body(page).locator("input[type=text]").first.fill("My Config")
 
-        root_select = page.locator("#model-config-box select").first
-        root_select.select_option("yolov5m")
+        # Pick architecture: second select (index 1) — choose yolo_v8_m
+        page.locator("#model-config-box select").nth(1).select_option("yolo_v8_m")
 
         _label_row(page, "lbl-cat").locator("input[type=checkbox]").first.click()
         _label_row(page, "lbl-dog").locator("input[type=checkbox]").first.click()
 
-        # Create button lives in the sticky editor header bar
         _editor_bar(page).locator("button", has_text="Create").click()
         page.wait_for_timeout(700)
 
@@ -204,10 +210,15 @@ class TestCreateModelConfig:
         payload = calls[0]
         assert payload["name"] == "My Config"
 
-        nodes_by_label = {n["labelUuid"]: n["modelTypename"] for n in payload["nodes"]}
-        assert nodes_by_label[None] == "yolov5m"
-        assert nodes_by_label["lbl-cat"] == "yolov5m"
-        assert nodes_by_label["lbl-dog"] == "yolov5m"
+        nodes_by_label = {n["labelUuid"]: n for n in payload["nodes"]}
+        root = nodes_by_label[None]
+        assert root["modelType"] == "object_detection"
+        assert root["architecture"] == "yolo_v8_m"
+        assert "lbl-cat" in nodes_by_label
+        assert "lbl-dog" in nodes_by_label
+        # Cat & Dog inherit the root spec (no sub-model set for them)
+        assert nodes_by_label["lbl-cat"]["modelType"] == "object_detection"
+        assert nodes_by_label["lbl-cat"]["architecture"] == "yolo_v8_m"
         assert "lbl-kitten" not in nodes_by_label
 
 
@@ -219,42 +230,45 @@ class TestCreateModelConfig:
 class TestEditModelConfig:
     def test_selecting_config_prefills_form_and_submodel_panel(self, page: Page, base_url: str):
         """Clicking a config in the list opens its edit form, pre-filled with its
-        name/description/root-typename, the tree reflects its node selections, and
-        a submodel configuration card appears for the label with a non-inherited typename."""
+        name/description, the root type+arch selectors, and a submodel card for the
+        label that has a different spec from the root."""
         _mock_model_configs(page, [EXISTING_CONFIG])
-        _mock_typenames(page)
         _mock_labels(page, [LABEL_CAT, LABEL_KITTEN, LABEL_DOG])
 
         _navigate_to_model_configs(page, base_url)
         page.locator("#model-config-box [data-config-uuid='cfg-1']").click()
         page.wait_for_timeout(500)
 
-        # Title is now in the panel bar span (not an h4)
+        # Title in the panel bar
         expect(_editor_bar(page)).to_contain_text("Animal Detector")
 
-        # Form fields in the editor body
+        # Text inputs: name and description
         expect(_editor_body(page).locator("input[type=text]").first).to_have_value("Animal Detector")
         expect(_editor_body(page).locator("input[type=text]").nth(1)).to_have_value("Cats & dogs")
-        expect(page.locator("#model-config-box select").first).to_have_value("yolov8n")
 
+        # Root model selects: type (idx 0) and architecture (idx 1)
+        expect(page.locator("#model-config-box select").first).to_have_value("object_detection")
+        expect(page.locator("#model-config-box select").nth(1)).to_have_value("yolo_v8_n")
+
+        # Cat is selected and has its sub-model toggle checked
         cat_row = _label_row(page, "lbl-cat")
         expect(cat_row.locator("input[type=checkbox]").first).to_be_checked()
         sub_toggle = cat_row.locator("label", has_text="sub model").locator("input[type=checkbox]")
         expect(sub_toggle).to_be_checked()
 
-        # Submodel panel: "Sub-model overrides" section label (was "Sub Model Configurations" h4)
+        # Sub-model panel appears with overrides section
         expect(page.locator("#model-config-box .panel-section-label", has_text="Sub-model overrides")).to_be_visible()
-        submodel_select = page.locator("#model-config-box select").nth(1)
-        expect(submodel_select).to_have_value("yolov8s")
 
-        # Delete button is in the sticky editor header bar (no emoji)
+        # Sub-model card selects: cat type (idx 2) = crop_classifier, arch (idx 3) = efficientnet_b0
+        expect(page.locator("#model-config-box select").nth(2)).to_have_value("crop_classifier")
+        expect(page.locator("#model-config-box select").nth(3)).to_have_value("efficientnet_b0")
+
         expect(_editor_bar(page).locator("button", has_text="Delete")).to_be_visible()
 
     def test_save_sends_updated_name_and_nodes(self, page: Page, base_url: str):
-        """Editing the name and changing the submodel's typename PATCHes the config
-        with the new name and a node reflecting the new submodel typename."""
+        """Editing the name and changing the submodel architecture PATCHes the config
+        with the new name and updated modelType/architecture in the node."""
         _mock_model_configs(page, [EXISTING_CONFIG])
-        _mock_typenames(page)
         _mock_labels(page, [LABEL_CAT, LABEL_KITTEN, LABEL_DOG])
 
         calls = []
@@ -262,9 +276,11 @@ class TestEditModelConfig:
         def handle_patch(route: Route):
             calls.append(json.loads(route.request.post_data))
             updated = {**EXISTING_CONFIG, "name": "Animal Detector v2"}
-            route.fulfill(status=200, content_type="application/json", body=json.dumps({"status": "success", "config": updated}))
+            route.fulfill(status=200, content_type="application/json",
+                          body=json.dumps({"status": "success", "config": updated}))
 
-        page.route("**/api/model-configs/cfg-1", lambda route: handle_patch(route) if route.request.method == "PATCH" else route.fallback())
+        page.route("**/api/model-configs/cfg-1",
+                   lambda route: handle_patch(route) if route.request.method == "PATCH" else route.fallback())
 
         _navigate_to_model_configs(page, base_url)
         page.locator("#model-config-box [data-config-uuid='cfg-1']").click()
@@ -273,18 +289,20 @@ class TestEditModelConfig:
         name_input = _editor_body(page).locator("input[type=text]").first
         name_input.fill("Animal Detector v2")
 
-        submodel_select = page.locator("#model-config-box select").nth(1)
-        submodel_select.select_option("yolov5m")
+        # Wait for sub-model panel, then change arch of cat sub-model to resnet_50
+        expect(page.locator("#model-config-box .panel-section-label", has_text="Sub-model overrides")).to_be_visible()
+        page.locator("#model-config-box select").nth(3).select_option("resnet_50")
 
-        # Save button is in the sticky editor header bar
         _editor_bar(page).locator("button", has_text="Save").click()
         page.wait_for_timeout(700)
 
         assert calls, "Expected PATCH to /api/model-configs/cfg-1"
         payload = calls[0]
         assert payload["name"] == "Animal Detector v2"
-        nodes_by_label = {n["labelUuid"]: n["modelTypename"] for n in payload["nodes"]}
-        assert nodes_by_label["lbl-cat"] == "yolov5m"
+        nodes_by_label = {n["labelUuid"]: n for n in payload["nodes"]}
+        cat_node = nodes_by_label["lbl-cat"]
+        assert cat_node["modelType"] == "crop_classifier"
+        assert cat_node["architecture"] == "resnet_50"
 
 
 # ---------------------------------------------------------------------------
@@ -297,16 +315,17 @@ class TestClearAssignment:
         """Unchecking a previously-assigned label clears both its selection and any
         submodel override, and the saved payload no longer includes a node for it."""
         _mock_model_configs(page, [EXISTING_CONFIG])
-        _mock_typenames(page)
         _mock_labels(page, [LABEL_CAT, LABEL_KITTEN, LABEL_DOG])
 
         calls = []
 
         def handle_patch(route: Route):
             calls.append(json.loads(route.request.post_data))
-            route.fulfill(status=200, content_type="application/json", body=json.dumps({"status": "success", "config": EXISTING_CONFIG}))
+            route.fulfill(status=200, content_type="application/json",
+                          body=json.dumps({"status": "success", "config": EXISTING_CONFIG}))
 
-        page.route("**/api/model-configs/cfg-1", lambda route: handle_patch(route) if route.request.method == "PATCH" else route.fallback())
+        page.route("**/api/model-configs/cfg-1",
+                   lambda route: handle_patch(route) if route.request.method == "PATCH" else route.fallback())
 
         _navigate_to_model_configs(page, base_url)
         page.locator("#model-config-box [data-config-uuid='cfg-1']").click()
@@ -317,9 +336,9 @@ class TestClearAssignment:
         cat_row.locator("input[type=checkbox]").first.click()  # uncheck
 
         # Unchecking clears the submodel too — its section label disappears
-        expect(page.locator("#model-config-box .panel-section-label", has_text="Sub-model overrides")).to_have_count(0)
+        expect(page.locator("#model-config-box .panel-section-label",
+                            has_text="Sub-model overrides")).to_have_count(0)
 
-        # Save button is in the sticky editor header bar
         _editor_bar(page).locator("button", has_text="Save").click()
         page.wait_for_timeout(700)
 
@@ -339,18 +358,15 @@ class TestDeleteModelConfig:
     def test_delete_shows_confirm_dialog(self, page: Page, base_url: str):
         """Clicking Delete opens a modal dialog naming the config."""
         _mock_model_configs(page, [EXISTING_CONFIG])
-        _mock_typenames(page)
         _mock_labels(page, [LABEL_CAT, LABEL_KITTEN, LABEL_DOG])
 
         _navigate_to_model_configs(page, base_url)
         page.locator("#model-config-box [data-config-uuid='cfg-1']").click()
         page.wait_for_timeout(500)
 
-        # Delete button is in the sticky editor header bar (no emoji)
         _editor_bar(page).locator("button", has_text="Delete").click()
         page.wait_for_timeout(300)
 
-        # Custom modal (not window.confirm) — verify it appears with the config name
         modal = page.locator(".app-modal-dialog")
         expect(modal).to_be_visible()
         expect(modal).to_contain_text("Animal Detector")
@@ -358,14 +374,14 @@ class TestDeleteModelConfig:
     def test_delete_accepted_calls_api(self, page: Page, base_url: str):
         """Confirming the delete modal sends a DELETE to /api/model-configs/{uuid}."""
         _mock_model_configs(page, [EXISTING_CONFIG])
-        _mock_typenames(page)
         _mock_labels(page, [LABEL_CAT, LABEL_KITTEN, LABEL_DOG])
 
         calls = []
 
         def handle_delete(route: Route):
             calls.append(route.request.url)
-            route.fulfill(status=200, content_type="application/json", body=json.dumps({"status": "success"}))
+            route.fulfill(status=200, content_type="application/json",
+                          body=json.dumps({"status": "success"}))
 
         page.route(
             "**/api/model-configs/cfg-1",
@@ -379,7 +395,6 @@ class TestDeleteModelConfig:
         _editor_bar(page).locator("button", has_text="Delete").click()
         page.wait_for_timeout(300)
 
-        # Confirm by clicking "Delete" inside the modal
         page.locator(".app-modal-dialog button", has_text="Delete").click()
         page.wait_for_timeout(600)
 
@@ -389,13 +404,14 @@ class TestDeleteModelConfig:
     def test_delete_dismissed_does_not_call_api(self, page: Page, base_url: str):
         """Cancelling the delete modal must NOT send a delete request."""
         _mock_model_configs(page, [EXISTING_CONFIG])
-        _mock_typenames(page)
         _mock_labels(page, [LABEL_CAT, LABEL_KITTEN, LABEL_DOG])
 
         calls = []
         page.route(
             "**/api/model-configs/cfg-1",
-            lambda route: (calls.append(True), route.fulfill(status=200, content_type="application/json", body=json.dumps({"status": "success"})))
+            lambda route: (calls.append(True),
+                           route.fulfill(status=200, content_type="application/json",
+                                         body=json.dumps({"status": "success"})))
             if route.request.method == "DELETE"
             else route.fallback(),
         )
@@ -407,7 +423,6 @@ class TestDeleteModelConfig:
         _editor_bar(page).locator("button", has_text="Delete").click()
         page.wait_for_timeout(300)
 
-        # Cancel the modal — no API call should happen
         page.locator(".app-modal-dialog button", has_text="Cancel").click()
         page.wait_for_timeout(500)
 

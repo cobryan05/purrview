@@ -685,7 +685,7 @@ async function mountSelectMode(container, { runtime, filter }) {
  *   labelsMap?: Map<string,object>,   pre-fetched labels (skips internal fetch)
  *   initialSelected?: Set<string>,    UUIDs whose checkboxes start checked
  *   initialSubmodels?: Map<string,string>, UUID → typename for enabled submodels
- *   typenames?: string[],
+ *   defaultSpec?: {modelType:string,architecture:string}|null,
  *   onSubmodelsChanged?: (submodels: Map<string,string>) => void,
  * }} opts
  */
@@ -693,7 +693,7 @@ async function mountModelConfigMode(container, {
   labelsMap: preloaded = null,
   initialSelected = new Set(),
   initialSubmodels = new Map(),
-  typenames = [],
+  defaultSpec = null,
   onSubmodelsChanged = () => {},
 } = {}) {
   const labelsMap = preloaded ?? await fetchLabels();
@@ -727,7 +727,7 @@ async function mountModelConfigMode(container, {
 
       row.prepend(cb);
 
-      // "sub model" badge — only for labels with 2+ children
+      // "sub model" badge — only for labels with children
       let subToggle = null;
       if (showSubmodel) {
         const badge = document.createElement('label');
@@ -769,10 +769,10 @@ async function mountModelConfigMode(container, {
       if (subToggle) {
         subToggle.addEventListener('change', () => {
           if (subToggle.checked) {
-            // Enabling submodel auto-selects the label.
+            // Enabling submodel auto-selects the label and seeds the default spec.
             cb.checked = true;
             selected.add(label.uuid);
-            submodels.set(label.uuid, typenames[0] ?? '');
+            submodels.set(label.uuid, defaultSpec ?? { modelType: 'crop_classifier', architecture: 'efficientnet_b0' });
           } else {
             submodels.delete(label.uuid);
           }
@@ -808,7 +808,7 @@ async function mountModelConfigMode(container, {
  *   labelsMap?: Map<string,object>,        pre-fetched labels (model-config mode)
  *   initialSelected?: Set<string>,         model-config mode
  *   initialSubmodels?: Map<string,string>, model-config mode
- *   typenames?: string[],                  model-config mode
+ *   defaultSpec?: {modelType:string,architecture:string}|null,                  model-config mode
  *   onSubmodelsChanged?: function,         model-config mode
  * }} options
  * @returns {Promise<{
@@ -826,7 +826,7 @@ export async function createLabelList(container, options = {}) {
     labelsMap = null,
     initialSelected = new Set(),
     initialSubmodels = new Map(),
-    typenames = [],
+    defaultSpec = null,
     onSubmodelsChanged = () => {},
   } = options;
 
@@ -843,7 +843,7 @@ export async function createLabelList(container, options = {}) {
       handle = await mountEditMode(container, { filter, onRerender: mount });
     } else if (mode === 'model-config') {
       handle = await mountModelConfigMode(container, {
-        labelsMap, initialSelected, initialSubmodels, typenames, onSubmodelsChanged,
+        labelsMap, initialSelected, initialSubmodels, defaultSpec, onSubmodelsChanged,
       });
     } else {
       handle = await mountSelectMode(container, { runtime, filter });

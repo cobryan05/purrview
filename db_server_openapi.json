@@ -3548,27 +3548,6 @@
         }
       }
     },
-    "/api/model-configs/typenames": {
-      "get": {
-        "tags": [
-          "model_configs"
-        ],
-        "summary": "List Model Typenames",
-        "operationId": "list_model_typenames",
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ListModelTypenamesResponse"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
     "/api/model-configs": {
       "get": {
         "tags": [
@@ -4020,6 +3999,198 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/TrainingConfigLabelStatsResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/model-bundles": {
+      "get": {
+        "tags": [
+          "model_configs"
+        ],
+        "summary": "List Model Bundles",
+        "operationId": "list_model_bundles",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListModelBundlesResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "model_configs"
+        ],
+        "summary": "Create Model Bundle",
+        "operationId": "create_model_bundle",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ModelBundleCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ModelBundleResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/model-bundles/{uuid}": {
+      "get": {
+        "tags": [
+          "model_configs"
+        ],
+        "summary": "Get Model Bundle",
+        "operationId": "get_model_bundle",
+        "parameters": [
+          {
+            "name": "uuid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ModelBundleResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "model_configs"
+        ],
+        "summary": "Update Model Bundle",
+        "operationId": "update_model_bundle",
+        "parameters": [
+          {
+            "name": "uuid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ModelBundleUpdate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ModelBundleResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "model_configs"
+        ],
+        "summary": "Delete Model Bundle",
+        "operationId": "delete_model_bundle",
+        "parameters": [
+          {
+            "name": "uuid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StatusResponse"
                 }
               }
             }
@@ -7095,6 +7266,35 @@
         "type": "object",
         "title": "ListLabelsResponse"
       },
+      "ListModelBundlesResponse": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "title": "Status",
+            "default": "success"
+          },
+          "message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Message"
+          },
+          "bundles": {
+            "items": {
+              "$ref": "#/components/schemas/ModelBundleRead"
+            },
+            "type": "array",
+            "title": "Bundles"
+          }
+        },
+        "type": "object",
+        "title": "ListModelBundlesResponse"
+      },
       "ListModelConfigsResponse": {
         "properties": {
           "status": {
@@ -7123,35 +7323,6 @@
         },
         "type": "object",
         "title": "ListModelConfigsResponse"
-      },
-      "ListModelTypenamesResponse": {
-        "properties": {
-          "status": {
-            "type": "string",
-            "title": "Status",
-            "default": "success"
-          },
-          "message": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Message"
-          },
-          "typenames": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "title": "Typenames"
-          }
-        },
-        "type": "object",
-        "title": "ListModelTypenamesResponse"
       },
       "ListTagsResponse": {
         "properties": {
@@ -7269,6 +7440,187 @@
         "type": "object",
         "title": "ListTrainingConfigsResponse"
       },
+      "ModelBundleCreate": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "modelConfigUuid": {
+            "type": "string",
+            "title": "Modelconfiguuid"
+          },
+          "bundlePath": {
+            "type": "string",
+            "title": "Bundlepath"
+          },
+          "manifestJson": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Manifestjson"
+          },
+          "trainingConfigUuids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Trainingconfiguuids"
+          }
+        },
+        "type": "object",
+        "required": [
+          "name",
+          "modelConfigUuid",
+          "bundlePath"
+        ],
+        "title": "ModelBundleCreate"
+      },
+      "ModelBundleRead": {
+        "properties": {
+          "uuid": {
+            "type": "string",
+            "title": "Uuid"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "modelConfigUuid": {
+            "type": "string",
+            "title": "Modelconfiguuid"
+          },
+          "bundlePath": {
+            "type": "string",
+            "title": "Bundlepath"
+          },
+          "manifestJson": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Manifestjson"
+          },
+          "trainingConfigUuids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Trainingconfiguuids"
+          },
+          "createdAt": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Createdat"
+          },
+          "updatedAt": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updatedat"
+          }
+        },
+        "type": "object",
+        "required": [
+          "uuid",
+          "name",
+          "modelConfigUuid",
+          "bundlePath"
+        ],
+        "title": "ModelBundleRead"
+      },
+      "ModelBundleResponse": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "title": "Status",
+            "default": "success"
+          },
+          "message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Message"
+          },
+          "bundle": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ModelBundleRead"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "type": "object",
+        "title": "ModelBundleResponse"
+      },
+      "ModelBundleUpdate": {
+        "properties": {
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          }
+        },
+        "type": "object",
+        "title": "ModelBundleUpdate"
+      },
       "ModelConfigCreate": {
         "properties": {
           "name": {
@@ -7317,15 +7669,20 @@
             ],
             "title": "Labeluuid"
           },
-          "modelTypename": {
+          "modelType": {
             "type": "string",
-            "title": "Modeltypename"
+            "title": "Modeltype"
+          },
+          "architecture": {
+            "type": "string",
+            "title": "Architecture"
           }
         },
         "type": "object",
         "required": [
           "uuid",
-          "modelTypename"
+          "modelType",
+          "architecture"
         ],
         "title": "ModelConfigNodeRead"
       },
@@ -7342,14 +7699,19 @@
             ],
             "title": "Labeluuid"
           },
-          "modelTypename": {
+          "modelType": {
             "type": "string",
-            "title": "Modeltypename"
+            "title": "Modeltype"
+          },
+          "architecture": {
+            "type": "string",
+            "title": "Architecture"
           }
         },
         "type": "object",
         "required": [
-          "modelTypename"
+          "modelType",
+          "architecture"
         ],
         "title": "ModelConfigNodeWrite"
       },
@@ -8466,11 +8828,7 @@
             ],
             "title": "Description"
           },
-          "trainerType": {
-            "type": "string",
-            "title": "Trainertype"
-          },
-          "modelConfigUuid": {
+          "modelConfigNodeUuid": {
             "anyOf": [
               {
                 "type": "string"
@@ -8479,7 +8837,7 @@
                 "type": "null"
               }
             ],
-            "title": "Modelconfiguuid"
+            "title": "Modelconfignodeuuid"
           },
           "datasetUuids": {
             "items": {
@@ -8492,19 +8850,11 @@
             "additionalProperties": true,
             "type": "object",
             "title": "Hyperparamsjson"
-          },
-          "labelUuids": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "title": "Labeluuids"
           }
         },
         "type": "object",
         "required": [
-          "name",
-          "trainerType"
+          "name"
         ],
         "title": "TrainingConfigCreate"
       },
@@ -8563,11 +8913,7 @@
             ],
             "title": "Description"
           },
-          "trainerType": {
-            "type": "string",
-            "title": "Trainertype"
-          },
-          "modelConfigUuid": {
+          "modelConfigNodeUuid": {
             "anyOf": [
               {
                 "type": "string"
@@ -8576,7 +8922,7 @@
                 "type": "null"
               }
             ],
-            "title": "Modelconfiguuid"
+            "title": "Modelconfignodeuuid"
           },
           "datasetUuids": {
             "items": {
@@ -8589,13 +8935,6 @@
             "additionalProperties": true,
             "type": "object",
             "title": "Hyperparamsjson"
-          },
-          "labelUuids": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "title": "Labeluuids"
           },
           "createdAt": {
             "type": "string",
@@ -8613,11 +8952,9 @@
           "uuid",
           "name",
           "description",
-          "trainerType",
-          "modelConfigUuid",
+          "modelConfigNodeUuid",
           "datasetUuids",
           "hyperparamsJson",
-          "labelUuids",
           "createdAt",
           "updatedAt"
         ],
@@ -8725,7 +9062,7 @@
             ],
             "title": "Description"
           },
-          "trainerType": {
+          "modelConfigNodeUuid": {
             "anyOf": [
               {
                 "type": "string"
@@ -8734,18 +9071,7 @@
                 "type": "null"
               }
             ],
-            "title": "Trainertype"
-          },
-          "modelConfigUuid": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Modelconfiguuid"
+            "title": "Modelconfignodeuuid"
           },
           "datasetUuids": {
             "anyOf": [
@@ -8772,20 +9098,6 @@
               }
             ],
             "title": "Hyperparamsjson"
-          },
-          "labelUuids": {
-            "anyOf": [
-              {
-                "items": {
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Labeluuids"
           }
         },
         "type": "object",

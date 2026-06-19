@@ -36,8 +36,11 @@ class Manager:
                 self._fs_root,
             )
 
-        # Register all known trainers from the module-level registry.
-        from .trainers import TRAINER_REGISTRY
+        # Import trainer modules to trigger @register_trainer decorators.
+        from .trainers import TRAINER_REGISTRY  # noqa: F401
+        from .trainers import binary_image_classifier  # noqa: F401
+        from .trainers import crop_classifier_trainer  # noqa: F401
+        from .trainers import object_detection_trainer  # noqa: F401
 
         for name, trainer in TRAINER_REGISTRY.items():
             self._queue.register_trainer(name, trainer)
@@ -57,6 +60,9 @@ class Manager:
     async def submit_job(self, config: Dict[str, Any]) -> Job:
         if "image_source" not in config:
             config = {**config, "image_source": "filesystem" if self._shared_fs_available else "http"}
+        # Derive trainer_type from model_type if not explicitly set.
+        if "trainer_type" not in config and "model_type" in config:
+            config = {**config, "trainer_type": config["model_type"]}
         return await self._queue.submit(config)
 
     def cancel_job(self, job_id: str) -> bool:

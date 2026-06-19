@@ -15,15 +15,6 @@ const modelConfigsFetcher = createCachedFetcher(async (keys) => {
   return ignoreKeyReturn(keys, map);
 });
 
-const typenamesFetcher = createCachedFetcher(async (keys) => {
-  const res = await apiFetch('/api/model-configs/typenames');
-  const data = await res.json();
-  if (!res.ok || data.status !== 'success') {
-    throw new Error(data.message || 'Failed to fetch model typenames');
-  }
-  return ignoreKeyReturn(keys, data.typenames);
-});
-
 export function clearModelConfigsCache() {
   modelConfigsFetcher.clear();
 }
@@ -34,10 +25,6 @@ export function clearModelConfigsCache() {
  */
 export async function fetchModelConfigs() {
   return modelConfigsFetcher.fetch('configsMap');
-}
-
-export async function fetchModelTypenames() {
-  return typenamesFetcher.fetch('typenames');
 }
 
 /** -----------------------------

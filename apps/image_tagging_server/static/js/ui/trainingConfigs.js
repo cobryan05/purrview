@@ -14,7 +14,6 @@
  * explicitly verified (ready to train) vs. still unreviewed.
  */
 
-import { fetchLabels } from '/app-static/js/shared/api/labels.js';
 import { fetchDatasets } from '/app-static/js/shared/api/datasets.js';
 import { fetchModelConfigs } from '/app-static/js/shared/api/modelConfigs.js';
 import {
@@ -26,19 +25,16 @@ import {
   fetchTrainingConfigLabelStats,
   clearTrainingConfigsCache,
 } from '/app-static/js/shared/api/trainingConfigs.js';
-import { flattenHierarchy } from '/app-static/js/ui/labelList.js';
 import { makeFieldRow, buildPanelEditorBar, toast } from '/app-static/js/ui/utils/index.js';
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
 import { showUnsavedConfigChangesModal } from '/app-static/js/ui/utils/confirmModal.js';
-
-const TRAINER_TYPENAMES = ['yolo_v8', 'image_classifier'];
 
 let _rendering = false;
 let _navGuardController = null;
 
 // ── Form ─────────────────────────────────────────────────────────────────────
 
-function renderTrainingConfigForm({ config, labelsMap, datasetsMap, modelConfigsMap, onDirtyChange }) {
+function renderTrainingConfigForm({ config, datasetsMap, modelConfigsMap, onDirtyChange }) {
   const el = document.createElement('div');
 
   function _markDirty() { onDirtyChange?.(true); }
@@ -59,22 +55,92 @@ function renderTrainingConfigForm({ config, labelsMap, datasetsMap, modelConfigs
   descInput.addEventListener('input', _markDirty);
   el.appendChild(makeFieldRow('Description', descInput));
 
-  // Trainer type
-  const trainerSel = document.createElement('select');
-  trainerSel.style.cssText = 'margin-bottom: 0; width: auto; flex: none;';
-  TRAINER_TYPENAMES.forEach(tn => {
-    const o = document.createElement('option');
-    o.value = tn;
-    o.textContent = tn;
-    if (tn === (config?.trainerType ?? TRAINER_TYPENAMES[0])) o.selected = true;
-    trainerSel.appendChild(o);
-  });
-  trainerSel.addEventListener('change', _markDirty);
-  el.appendChild(makeFieldRow('Trainer type', trainerSel));
+  // ── Model config → node selector (2-step) ────────────────────────────────
+  const hr1 = document.createElement('hr');
+  hr1.style.cssText = 'margin: 0.6em 0; opacity: 0.4;';
+  el.appendChild(hr1);
 
-  // Datasets (multi-select, required — at least one)
+  const nodeHdr = document.createElement('p');
+  nodeHdr.className = 'panel-section-label';
+  nodeHdr.style.marginTop = '0';
+  nodeHdr.textContent = 'Target model node';
+  el.appendChild(nodeHdr);
+
+  // Derive which model config owns the stored node (if any).
+  const initNodeUuid = config?.modelConfigNodeUuid ?? '';
+  let initConfigUuid = '';
+  if (initNodeUuid) {
+    for (const [uuid, mc] of modelConfigsMap) {
+      if (mc.nodes?.some(n => n.uuid === initNodeUuid)) { initConfigUuid = uuid; break; }
+    }
+  }
+
+  // Step 1: pick the model config
+  const configSel = document.createElement('select');
+  configSel.style.cssText = 'margin-bottom: 0; width: auto; flex: none;';
+  const blankConfigOpt = document.createElement('option');
+  blankConfigOpt.value = '';
+  blankConfigOpt.textContent = '— select a config —';
+  configSel.appendChild(blankConfigOpt);
+  for (const [uuid, mc] of modelConfigsMap) {
+    const o = document.createElement('option');
+    o.value = uuid;
+    o.textContent = mc.name;
+    if (uuid === initConfigUuid) o.selected = true;
+    configSel.appendChild(o);
+  }
+  configSel.addEventListener('change', () => { refreshNodeSel(); _markDirty(); });
+  el.appendChild(makeFieldRow('Model config', configSel));
+
+  // Step 2: pick the node within that config
+  const nodeSel = document.createElement('select');
+  nodeSel.style.cssText = 'margin-bottom: 0; width: auto; flex: none;';
+
+  function nodeOptionLabel(node, modelConfigsMap) {
+    const mc = modelConfigsMap.get(configSel.value);
+    if (!node.labelUuid) {
+      return `Root — ${node.modelType ?? node.modelTypename ?? '?'} / ${node.architecture ?? ''}`.trim().replace(/ \/$/, '');
+    }
+    // We don't have labelsMap here, so use labelUuid as fallback (will improve post-backend update)
+    const labelHint = node.labelName ?? node.labelUuid;
+    return `${labelHint} — ${node.modelType ?? node.modelTypename ?? '?'} / ${node.architecture ?? ''}`.trim().replace(/ \/$/, '');
+  }
+
+  function refreshNodeSel() {
+    nodeSel.innerHTML = '';
+    const blankOpt = document.createElement('option');
+    blankOpt.value = '';
+    blankOpt.textContent = '— select a node —';
+    nodeSel.appendChild(blankOpt);
+
+    const mc = modelConfigsMap.get(configSel.value);
+    for (const node of (mc?.nodes ?? [])) {
+      const o = document.createElement('option');
+      o.value = node.uuid;
+      o.textContent = nodeOptionLabel(node, modelConfigsMap);
+      if (node.uuid === config?.modelConfigNodeUuid) o.selected = true;
+      nodeSel.appendChild(o);
+    }
+    nodeSel.disabled = (mc?.nodes?.length ?? 0) === 0;
+  }
+
+  refreshNodeSel();
+  nodeSel.addEventListener('change', _markDirty);
+  el.appendChild(makeFieldRow('Model node', nodeSel));
+
+  // ── Datasets ──────────────────────────────────────────────────────────────
+  const hr2 = document.createElement('hr');
+  hr2.style.cssText = 'margin: 0.6em 0; opacity: 0.4;';
+  el.appendChild(hr2);
+
+  const dsHdr = document.createElement('p');
+  dsHdr.className = 'panel-section-label';
+  dsHdr.style.marginTop = '0';
+  dsHdr.textContent = 'Datasets';
+  el.appendChild(dsHdr);
+
   const currentDatasetUuids = new Set(config?.datasetUuids ?? []);
-  const datasetCheckboxes = new Map(); // uuid → checkbox el
+  const datasetCheckboxes = new Map();
   const datasetBox = document.createElement('div');
   datasetBox.className = 'panel-tree-box';
   if (datasetsMap.size === 0) {
@@ -99,28 +165,15 @@ function renderTrainingConfigForm({ config, labelsMap, datasetsMap, modelConfigs
     row.appendChild(nameSpan);
     datasetBox.appendChild(row);
   }
-  const datasetRow = makeFieldRow('Datasets (select ≥1)', datasetBox);
+  const datasetRow = makeFieldRow('Select ≥1', datasetBox);
   datasetRow.style.alignItems = 'flex-start';
   el.appendChild(datasetRow);
 
-  // Model config (optional)
-  const modelSel = document.createElement('select');
-  modelSel.style.cssText = 'margin-bottom: 0; width: auto; flex: none;';
-  const blankModel = document.createElement('option');
-  blankModel.value = '';
-  blankModel.textContent = '— none —';
-  modelSel.appendChild(blankModel);
-  for (const [uuid, mc] of modelConfigsMap) {
-    const o = document.createElement('option');
-    o.value = uuid;
-    o.textContent = mc.name;
-    if (uuid === config?.modelConfigUuid) o.selected = true;
-    modelSel.appendChild(o);
-  }
-  modelSel.addEventListener('change', _markDirty);
-  el.appendChild(makeFieldRow('Model config (optional)', modelSel));
+  // ── Hyperparameters ───────────────────────────────────────────────────────
+  const hr3 = document.createElement('hr');
+  hr3.style.cssText = 'margin: 0.6em 0; opacity: 0.4;';
+  el.appendChild(hr3);
 
-  // Hyperparameters (raw JSON textarea)
   const hyperText = document.createElement('textarea');
   hyperText.rows = 4;
   hyperText.style.cssText = 'font-family: monospace; font-size: 0.8em; width: 100%; box-sizing: border-box;';
@@ -129,80 +182,21 @@ function renderTrainingConfigForm({ config, labelsMap, datasetsMap, modelConfigs
   hyperText.addEventListener('input', _markDirty);
   el.appendChild(makeFieldRow('Hyperparameters (JSON)', hyperText));
 
-  // ── Label multi-select ────────────────────────────────────────────────────
-  const hr = document.createElement('hr');
-  hr.style.cssText = 'margin: 0.6em 0; opacity: 0.4;';
-  el.appendChild(hr);
-
-  const lblHeader = document.createElement('p');
-  lblHeader.className = 'panel-section-label';
-  lblHeader.style.marginTop = '0';
-  lblHeader.textContent = 'Target labels (readiness tracking)';
-  el.appendChild(lblHeader);
-
-  const lblNote = document.createElement('p');
-  lblNote.style.cssText = 'font-size: 0.8em; color: var(--pico-muted-color, #888); margin: 0 0 0.5em;';
-  lblNote.textContent = 'Images in the dataset are "ready" when all selected labels have been explicitly verified (Present or Confirmed Not Present).';
-  el.appendChild(lblNote);
-
-  const checkboxes = new Map(); // uuid → checkbox el
-  const flatLabels = flattenHierarchy(labelsMap);
-  const currentLabelUuids = new Set(config?.labelUuids ?? []);
-
-  const treeBox = document.createElement('div');
-  treeBox.className = 'panel-tree-box';
-  treeBox.style.cssText = 'max-height: 200px; overflow-y: auto; border: 1px solid var(--pico-border-color, #444); border-radius: 4px; padding: 4px;';
-
-  for (const label of flatLabels) {
-    const row = document.createElement('label');
-    row.style.cssText = [
-      'display: flex', 'align-items: center', 'gap: 0.4em',
-      `padding-left: ${6 + label.depth * 14}px`,
-      'cursor: pointer', 'user-select: none', 'font-size: 0.88em',
-      'padding-top: 2px', 'padding-bottom: 2px',
-    ].join('; ');
-
-    const cb = document.createElement('input');
-    cb.type = 'checkbox';
-    cb.value = label.uuid;
-    cb.checked = currentLabelUuids.has(label.uuid);
-    cb.style.cssText = 'margin: 0; flex-shrink: 0;';
-    cb.addEventListener('change', _markDirty);
-
-    if (label.color) {
-      const dot = document.createElement('span');
-      dot.style.cssText = `display:inline-block;width:8px;height:8px;border-radius:50%;background:${label.color};flex-shrink:0;`;
-      row.appendChild(cb);
-      row.appendChild(dot);
-    } else {
-      row.appendChild(cb);
-    }
-
-    const nameSpan = document.createElement('span');
-    nameSpan.textContent = label.name;
-    row.appendChild(nameSpan);
-
-    checkboxes.set(label.uuid, cb);
-    treeBox.appendChild(row);
-  }
-  el.appendChild(treeBox);
-
   return {
     el,
     getSaveData() {
-      const name = nameInput.value.trim();
-      const description = descInput.value.trim();
-      const trainerType = trainerSel.value;
       const datasetUuids = [...datasetCheckboxes.entries()]
-        .filter(([, cb]) => cb.checked)
-        .map(([uuid]) => uuid);
-      const modelConfigUuid = modelSel.value || null;
-      const labelUuids = [...checkboxes.entries()]
         .filter(([, cb]) => cb.checked)
         .map(([uuid]) => uuid);
       let hyperparamsJson = {};
       try { hyperparamsJson = JSON.parse(hyperText.value || '{}'); } catch {}
-      return { name, description, trainerType, datasetUuids, modelConfigUuid, labelUuids, hyperparamsJson };
+      return {
+        name: nameInput.value.trim(),
+        description: descInput.value.trim(),
+        modelConfigNodeUuid: nodeSel.value || null,
+        datasetUuids,
+        hyperparamsJson,
+      };
     },
     destroy() {},
   };
@@ -232,7 +226,7 @@ function renderReadinessPanel(config) {
   reviewBtn.addEventListener('click', () => {
     events.publish(EventTypes.OPEN_REVIEW_WITH_FILTERS, {
       tagUuids: [],
-      labelUuids: config.labelUuids ?? [],
+      labelUuids: [],
       verificationCheck: 'has_unverified',
     });
   });
@@ -461,8 +455,7 @@ export async function renderTrainingConfigManager({ target = 'training-config-bo
         _barHandle = null;
         _selectedUuid = config?.uuid ?? null;
 
-        const [labelsMap, datasetsMap, modelConfigsMap] = await Promise.all([
-          fetchLabels(),
+        const [datasetsMap, modelConfigsMap] = await Promise.all([
           fetchDatasets(),
           fetchModelConfigs(),
         ]);
@@ -476,6 +469,7 @@ export async function renderTrainingConfigManager({ target = 'training-config-bo
           onSave: async () => {
             const data = _currentFormHandle.getSaveData();
             if (!data.name) { toast('Name is required', 3000, 'error'); return; }
+            if (!data.modelConfigNodeUuid) { toast('A model config node is required', 3000, 'error'); return; }
             if (!data.datasetUuids?.length) { toast('At least one dataset is required', 3000, 'error'); return; }
             setSaving(true);
             try {
@@ -509,7 +503,6 @@ export async function renderTrainingConfigManager({ target = 'training-config-bo
 
         const formHandle = renderTrainingConfigForm({
           config,
-          labelsMap,
           datasetsMap,
           modelConfigsMap,
           onDirtyChange: setDirty,
@@ -517,19 +510,20 @@ export async function renderTrainingConfigManager({ target = 'training-config-bo
         _currentFormHandle = formHandle;
         editorBody.appendChild(formHandle.el);
 
-        // Readiness panel (only for existing configs with datasets and labels)
-        if (config?.uuid && (config.datasetUuids?.length ?? 0) > 0 && (config.labelUuids?.length ?? 0) > 0) {
+        // Readiness panel (only for existing configs with datasets and a node)
+        if (config?.uuid && (config.datasetUuids?.length ?? 0) > 0 && config.modelConfigNodeUuid) {
           editorBody.appendChild(renderReadinessPanel(config));
         }
 
         // Label stats panel (only for existing configs with datasets selected)
         if (config?.uuid && (config.datasetUuids?.length ?? 0) > 0) {
-          editorBody.appendChild(renderLabelStatsPanel(config, labelsMap));
+          editorBody.appendChild(renderLabelStatsPanel(config, new Map()));
         }
 
         _currentDoSave = async () => {
           const data = formHandle.getSaveData();
           if (!data.name) { toast('Name is required', 3000, 'error'); return false; }
+          if (!data.modelConfigNodeUuid) { toast('A model config node is required', 3000, 'error'); return false; }
           if (!data.datasetUuids?.length) { toast('At least one dataset is required', 3000, 'error'); return false; }
           setSaving(true);
           try {
@@ -586,8 +580,7 @@ export async function renderTrainingConfigManager({ target = 'training-config-bo
         const metaLine = document.createElement('div');
         metaLine.className = 'mc-list-item__meta';
         const dsNames = (config.datasetUuids ?? []).map(u => datasetsMap.get(u)?.name ?? u).join(', ') || '—';
-        const nLabels = config.labelUuids?.length ?? 0;
-        metaLine.textContent = `${config.trainerType} · ${dsNames} · ${nLabels} label${nLabels === 1 ? '' : 's'}`;
+        metaLine.textContent = dsNames;
         item.appendChild(metaLine);
 
         item.addEventListener('click', () => _showForm(config));

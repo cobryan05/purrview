@@ -31,11 +31,11 @@ export async function fetchTrainingConfigs() {
  * CRUD
  * -----------------------------
  */
-export async function createTrainingConfig({ name, description = '', trainerType, modelConfigUuid = null, datasetUuids = [], hyperparamsJson = {}, labelUuids = [] }) {
+export async function createTrainingConfig({ name, description = '', modelConfigNodeUuid = null, datasetUuids = [], hyperparamsJson = {} }) {
   const res = await apiFetch('/api/training-configs', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name, description, trainerType, modelConfigUuid, datasetUuids, hyperparamsJson, labelUuids }),
+    body: JSON.stringify({ name, description, modelConfigNodeUuid, datasetUuids, hyperparamsJson }),
   });
   const data = await res.json();
   if (!res.ok || data.status !== 'success') {

@@ -664,7 +664,23 @@ class DatasetUpdate(ApiModel):
 
 # ─── Model Configurations ────────────────────────────────────────────────────
 
-AVAILABLE_MODEL_TYPENAMES = ["YoloV8", "TestModel"]
+MODEL_TYPE_ARCHITECTURES: Dict[str, List[str]] = {
+    "object_detection": [
+        "yolo_v8_n", "yolo_v8_s", "yolo_v8_m", "yolo_v8_l", "yolo_v8_x",
+        "yolo_v9_c", "yolo_v9_e",
+        "yolo_v10_n", "yolo_v10_s", "yolo_v10_m",
+    ],
+    "crop_classifier": [
+        "efficientnet_b0", "efficientnet_b2", "efficientnet_b4",
+        "mobilenet_v3_small", "mobilenet_v3_large",
+        "resnet_18", "resnet_50",
+    ],
+    "image_classifier": [
+        "efficientnet_b0", "efficientnet_b2", "efficientnet_b4",
+        "mobilenet_v3_small", "mobilenet_v3_large",
+        "resnet_18", "resnet_50",
+    ],
+}
 
 
 class ModelConfigNode(SQLModel, table=True):
@@ -672,7 +688,8 @@ class ModelConfigNode(SQLModel, table=True):
     uuid: str = Field(default_factory=lambda: str(uuid4()), primary_key=True)
     model_config_uuid: str = Field(foreign_key="model_configs.uuid", index=True, ondelete="CASCADE")
     label_uuid: Optional[str] = Field(default=None, foreign_key="labels.uuid", ondelete="CASCADE")
-    model_typename: str
+    model_type: str
+    architecture: str
     config: "ModelConfig" = Relationship(back_populates="nodes")
 
 
@@ -690,7 +707,8 @@ class ModelConfig(TimestampModel, table=True):
 class ModelConfigNodeRead(OrmModel):
     uuid: str
     label_uuid: Optional[str] = None
-    model_typename: str
+    model_type: str
+    architecture: str
 
 
 class ModelConfigRead(OrmModel):
@@ -704,7 +722,8 @@ class ModelConfigRead(OrmModel):
 
 class ModelConfigNodeWrite(ApiModel):
     label_uuid: Optional[str] = None  # None = root node
-    model_typename: str
+    model_type: str
+    architecture: str
 
 
 class ModelConfigCreate(ApiModel):
@@ -719,17 +738,7 @@ class ModelConfigUpdate(ApiModel):
     nodes: Optional[List[ModelConfigNodeWrite]] = None  # None=no change; []=remove all
 
 
-AVAILABLE_TRAINER_TYPENAMES: List[str] = ["yolo_v8", "image_classifier"]
 
-
-class TrainingConfigLabelLink(SQLModel, table=True):
-    __tablename__ = "training_config_label_links"
-    training_config_uuid: str = Field(
-        foreign_key="training_configs.uuid", primary_key=True, ondelete="CASCADE"
-    )
-    label_uuid: str = Field(
-        foreign_key="labels.uuid", primary_key=True, ondelete="CASCADE"
-    )
 
 
 class TrainingConfigDatasetLink(SQLModel, table=True):
@@ -747,14 +756,10 @@ class TrainingConfig(TimestampModel, table=True):
     uuid: str = Field(default_factory=lambda: str(uuid4()), primary_key=True)
     name: str = Field(unique=True, index=True)
     description: Optional[str] = None
-    trainer_type: str
-    model_config_uuid: Optional[str] = Field(
-        default=None, foreign_key="model_configs.uuid", ondelete="SET NULL"
+    model_config_node_uuid: Optional[str] = Field(
+        default=None, foreign_key="model_config_nodes.uuid", ondelete="SET NULL"
     )
     hyperparams_json: Dict[str, Any] = Field(default_factory=dict, sa_column=sa.Column(sa.JSON))
-    label_links: List[TrainingConfigLabelLink] = Relationship(
-        sa_relationship_kwargs={"cascade": "all, delete-orphan"},
-    )
     dataset_links: List[TrainingConfigDatasetLink] = Relationship(
         sa_relationship_kwargs={"cascade": "all, delete-orphan"},
     )
@@ -764,11 +769,9 @@ class TrainingConfigRead(OrmModel):
     uuid: str
     name: str
     description: Optional[str]
-    trainer_type: str
-    model_config_uuid: Optional[str]
+    model_config_node_uuid: Optional[str]
     dataset_uuids: List[str]
     hyperparams_json: Dict[str, Any]
-    label_uuids: List[str]
     created_at: datetime
     updated_at: datetime
 
@@ -776,18 +779,56 @@ class TrainingConfigRead(OrmModel):
 class TrainingConfigCreate(ApiModel):
     name: str
     description: Optional[str] = None
-    trainer_type: str
-    model_config_uuid: Optional[str] = None
+    model_config_node_uuid: Optional[str] = None
     dataset_uuids: List[str] = Field(default_factory=list)
     hyperparams_json: Dict[str, Any] = Field(default_factory=dict)
-    label_uuids: List[str] = Field(default_factory=list)
 
 
 class TrainingConfigUpdate(ApiModel):
     name: Optional[str] = None
     description: Optional[str] = None
-    trainer_type: Optional[str] = None
-    model_config_uuid: Optional[str] = None
+    model_config_node_uuid: Optional[str] = None
     dataset_uuids: Optional[List[str]] = None
-    hyperparams_json: Optional[Dict[str, Any]] = None
-    label_uuids: Optional[List[str]] = None  # None = no change; [] = remove all
+    hyperparams_json: Optional[Dict[str, Any]] = None  # None = no change; [] = remove all
+
+
+# ─── Model Bundles ────────────────────────────────────────────────────────────
+
+
+class ModelBundle(TimestampModel, table=True):
+    __tablename__ = "model_bundles"
+    uuid: str = Field(default_factory=lambda: str(uuid4()), primary_key=True)
+    name: str = Field(unique=True, index=True)
+    description: Optional[str] = None
+    model_config_uuid: str = Field(foreign_key="model_configs.uuid", ondelete="RESTRICT")
+    bundle_path: str
+    manifest_json: Dict[str, Any] = Field(default_factory=dict, sa_column=sa.Column(sa.JSON))
+    training_config_uuids: List[str] = Field(
+        default_factory=list, sa_column=sa.Column(sa.JSON)
+    )
+
+
+class ModelBundleRead(OrmModel):
+    uuid: str
+    name: str
+    description: Optional[str] = None
+    model_config_uuid: str
+    bundle_path: str
+    manifest_json: Dict[str, Any] = Field(default_factory=dict)
+    training_config_uuids: List[str] = Field(default_factory=list)
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
+
+class ModelBundleCreate(ApiModel):
+    name: str
+    description: Optional[str] = None
+    model_config_uuid: str
+    bundle_path: str
+    manifest_json: Dict[str, Any] = Field(default_factory=dict)
+    training_config_uuids: List[str] = Field(default_factory=list)
+
+
+class ModelBundleUpdate(ApiModel):
+    name: Optional[str] = None
+    description: Optional[str] = None

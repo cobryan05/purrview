@@ -4,7 +4,6 @@ import {
   createModelConfig,
   deleteModelConfig,
   fetchModelConfigs,
-  fetchModelTypenames,
   updateModelConfig,
 } from '/app-static/js/shared/api/modelConfigs.js';
 import { showUnsavedConfigChangesModal } from '/app-static/js/ui/utils/confirmModal.js';
@@ -23,13 +22,114 @@ let _navGuardController = null; // AbortController for the tab-navigation guard
  * Walk up the label tree to find the nearest ancestor with a submodel.
  * Falls back to rootTypename.
  */
-function inheritedTypename(uuid, labelsMap, submodels, rootTypename) {
+
+// -------------------------------------------------------
+// Model type / architecture catalogue (authoritative source for the UI)
+// -------------------------------------------------------
+
+const MODEL_SPEC = {
+  object_detection: {
+    label: 'Object Detection',
+    architectures: {
+      yolo_v8_n: 'YOLOv8-n',
+      yolo_v8_s: 'YOLOv8-s',
+      yolo_v8_m: 'YOLOv8-m',
+      yolo_v8_l: 'YOLOv8-l',
+      yolo_v8_x: 'YOLOv8-x',
+      yolo_v9_c: 'YOLOv9-c',
+      yolo_v9_e: 'YOLOv9-e',
+      yolo_v10_n: 'YOLOv10-n',
+      yolo_v10_s: 'YOLOv10-s',
+      yolo_v10_m: 'YOLOv10-m',
+    },
+  },
+  crop_classifier: {
+    label: 'Crop Classifier',
+    architectures: {
+      efficientnet_b0: 'EfficientNet-B0',
+      efficientnet_b2: 'EfficientNet-B2',
+      efficientnet_b4: 'EfficientNet-B4',
+      mobilenet_v3_small: 'MobileNetV3-small',
+      mobilenet_v3_large: 'MobileNetV3-large',
+      resnet_18: 'ResNet-18',
+      resnet_50: 'ResNet-50',
+    },
+  },
+  image_classifier: {
+    label: 'Image Classifier',
+    architectures: {
+      efficientnet_b0: 'EfficientNet-B0',
+      efficientnet_b2: 'EfficientNet-B2',
+      efficientnet_b4: 'EfficientNet-B4',
+      mobilenet_v3_small: 'MobileNetV3-small',
+      mobilenet_v3_large: 'MobileNetV3-large',
+      resnet_18: 'ResNet-18',
+      resnet_50: 'ResNet-50',
+    },
+  },
+};
+
+/** Returns a pair of linked <select> elements for choosing model type + architecture.
+ *  When the type changes the architecture list repopulates automatically.
+ *  @param {?{modelType:string,architecture:string}} initialSpec
+ *  @param {(spec:{modelType:string,architecture:string})=>void} onChange
+ *  @returns {{ el: HTMLElement, getSpec: ()=>{modelType:string,architecture:string} }}
+ */
+function makeModelSpecSelectors(initialSpec, onChange) {
+  const wrap = document.createElement('div');
+  wrap.style.cssText = 'display: flex; gap: 0.5em; align-items: center;';
+
+  const typeSel = document.createElement('select');
+  typeSel.style.cssText = 'margin-bottom: 0; width: auto;';
+
+  const archSel = document.createElement('select');
+  archSel.style.cssText = 'margin-bottom: 0; width: auto;';
+
+  function populateArchs(modelType, selectArch) {
+    archSel.innerHTML = '';
+    const archs = MODEL_SPEC[modelType]?.architectures ?? {};
+    for (const [key, label] of Object.entries(archs)) {
+      const o = document.createElement('option');
+      o.value = key;
+      o.textContent = label;
+      if (key === selectArch) o.selected = true;
+      archSel.appendChild(o);
+    }
+  }
+
+  for (const [key, { label }] of Object.entries(MODEL_SPEC)) {
+    const o = document.createElement('option');
+    o.value = key;
+    o.textContent = label;
+    if (key === initialSpec?.modelType) o.selected = true;
+    typeSel.appendChild(o);
+  }
+
+  const initType = initialSpec?.modelType ?? Object.keys(MODEL_SPEC)[0];
+  populateArchs(initType, initialSpec?.architecture);
+
+  typeSel.addEventListener('change', () => {
+    populateArchs(typeSel.value, null);
+    onChange({ modelType: typeSel.value, architecture: archSel.value });
+  });
+  archSel.addEventListener('change', () => {
+    onChange({ modelType: typeSel.value, architecture: archSel.value });
+  });
+
+  wrap.append(typeSel, archSel);
+  return {
+    el: wrap,
+    getSpec: () => ({ modelType: typeSel.value, architecture: archSel.value }),
+  };
+}
+
+function inheritedModelSpec(uuid, labelsMap, submodels, rootSpec) {
   let p = labelsMap.get(uuid)?.parentUuid ?? null;
   while (p !== null) {
     if (submodels.has(p)) return submodels.get(p);
     p = labelsMap.get(p)?.parentUuid ?? null;
   }
-  return rootTypename;
+  return rootSpec;
 }
 
 /**
@@ -39,15 +139,22 @@ function inheritedTypename(uuid, labelsMap, submodels, rootTypename) {
  * @returns {{ rootTypename: string, selected: Set<string>, submodels: Map<string,string> }}
  */
 function parseNodes(nodes, labelsMap) {
-  let rootTypename = '';
+  const defaultType = Object.keys(MODEL_SPEC)[0];
+  const defaultArch = Object.keys(MODEL_SPEC[defaultType].architectures)[0];
+  const defaultSpec = { modelType: defaultType, architecture: defaultArch };
+
+  let rootSpec = null;
   const nonRoot = [];
 
   for (const n of (nodes ?? [])) {
-    if (n.labelUuid === null) rootTypename = n.modelTypename;
-    else nonRoot.push(n);
+    if (n.labelUuid === null) {
+      rootSpec = { modelType: n.modelType, architecture: n.architecture };
+    } else {
+      nonRoot.push(n);
+    }
   }
+  rootSpec = rootSpec ?? defaultSpec;
 
-  // Sort by depth so ancestor submodels are registered before descendants.
   const depthOf = (uuid) => {
     let d = 0, p = labelsMap.get(uuid)?.parentUuid ?? null;
     while (p) { d++; p = labelsMap.get(p)?.parentUuid ?? null; }
@@ -58,29 +165,29 @@ function parseNodes(nodes, labelsMap) {
   const submodels = new Map();
   const selected = new Set();
 
-  for (const { labelUuid, modelTypename } of nonRoot) {
+  for (const { labelUuid, modelType, architecture } of nonRoot) {
     selected.add(labelUuid);
-    const inh = inheritedTypename(labelUuid, labelsMap, submodels, rootTypename);
-    if (modelTypename !== inh) {
-      submodels.set(labelUuid, modelTypename);
+    const inh = inheritedModelSpec(labelUuid, labelsMap, submodels, rootSpec);
+    if (modelType !== inh.modelType || architecture !== inh.architecture) {
+      submodels.set(labelUuid, { modelType, architecture });
     }
   }
 
-  return { rootTypename, selected, submodels };
+  return { rootSpec, selected, submodels };
 }
 
 /**
  * Build the nodes array to send to the API.
  * Union of selected labels and submodel-boundary labels.
  */
-function computeNodes(selected, submodels, rootTypename, labelsMap) {
-  const nodes = [{ labelUuid: null, modelTypename: rootTypename }];
+function computeNodes(selected, submodels, rootSpec, labelsMap) {
+  const nodes = [{ labelUuid: null, ...rootSpec }];
   const allUuids = new Set([...selected, ...submodels.keys()]);
   for (const uuid of allUuids) {
-    const typename = submodels.has(uuid)
+    const spec = submodels.has(uuid)
       ? submodels.get(uuid)
-      : inheritedTypename(uuid, labelsMap, submodels, rootTypename);
-    nodes.push({ labelUuid: uuid, modelTypename: typename });
+      : inheritedModelSpec(uuid, labelsMap, submodels, rootSpec);
+    nodes.push({ labelUuid: uuid, ...spec });
   }
   return nodes;
 }
@@ -89,7 +196,7 @@ function computeNodes(selected, submodels, rootTypename, labelsMap) {
 // Submodel panels
 // -------------------------------------------------------
 
-function renderSubmodelPanels(container, submodels, labelsMap, typenames, onTypenameChange) {
+function renderSubmodelPanels(container, submodels, labelsMap, onSpecChange) {
   container.innerHTML = '';
   if (submodels.size === 0) return;
 
@@ -98,7 +205,7 @@ function renderSubmodelPanels(container, submodels, labelsMap, typenames, onType
   hdr.textContent = 'Sub-model overrides';
   container.appendChild(hdr);
 
-  for (const [uuid, typename] of submodels) {
+  for (const [uuid, spec] of submodels) {
     const labelName = labelsMap.get(uuid)?.name ?? uuid;
     const labelColor = labelsMap.get(uuid)?.color ?? '#888';
 
@@ -113,22 +220,9 @@ function renderSubmodelPanels(container, submodels, labelsMap, typenames, onType
     nameSpan.className = 'mc-submodel-name';
     nameSpan.textContent = labelName;
 
-    const typeLabel = document.createElement('label');
-    typeLabel.className = 'mc-submodel-type-label';
-    typeLabel.textContent = 'Model:';
+    const { el: specEl } = makeModelSpecSelectors(spec, (newSpec) => onSpecChange(uuid, newSpec));
 
-    const sel = document.createElement('select');
-    // 'width: auto' overrides Pico's 'width: 100%' which would collapse the name span to zero
-    sel.style.cssText = 'margin-bottom: 0; width: auto; flex-shrink: 0;';
-    typenames.forEach(tn => {
-      const o = document.createElement('option');
-      o.value = tn; o.textContent = tn;
-      if (tn === typename) o.selected = true;
-      sel.appendChild(o);
-    });
-    sel.addEventListener('change', () => onTypenameChange(uuid, sel.value));
-
-    card.append(swatch, nameSpan, typeLabel, sel);
+    card.append(swatch, nameSpan, specEl);
     container.appendChild(card);
   }
 }
@@ -139,7 +233,7 @@ function renderSubmodelPanels(container, submodels, labelsMap, typenames, onType
 // Action buttons live in the panel header bar; not included here.
 // -------------------------------------------------------
 
-function renderConfigForm({ config, typenames, labelsMap, onDirtyChange }) {
+function renderConfigForm({ config, labelsMap, onDirtyChange }) {
   const el = document.createElement('div');
 
   function _markDirty() { onDirtyChange?.(true); }
@@ -160,20 +254,12 @@ function renderConfigForm({ config, typenames, labelsMap, onDirtyChange }) {
   descInput.addEventListener('input', _markDirty);
   el.appendChild(makeFieldRow('Description', descInput));
 
-  // Root model type
-  const { rootTypename: initRoot, selected: initSelected, submodels: initSubmodels } =
+  // Root model type + architecture
+  const { rootSpec: initRootSpec, selected: initSelected, submodels: initSubmodels } =
     parseNodes(config?.nodes, labelsMap);
-  let rootTypename = initRoot || typenames[0] || '';
 
-  const rootSel = document.createElement('select');
-  typenames.forEach(tn => {
-    const o = document.createElement('option');
-    o.value = tn; o.textContent = tn;
-    if (tn === rootTypename) o.selected = true;
-    rootSel.appendChild(o);
-  });
-  rootSel.addEventListener('change', () => { rootTypename = rootSel.value; _markDirty(); });
-  el.appendChild(makeFieldRow('Root model', rootSel));
+  const rootSpecHandle = makeModelSpecSelectors(initRootSpec, () => _markDirty());
+  el.appendChild(makeFieldRow('Root model', rootSpecHandle.el));
 
   // Divider
   const hr = document.createElement('hr');
@@ -199,10 +285,14 @@ function renderConfigForm({ config, typenames, labelsMap, onDirtyChange }) {
   let currentSubmodels = new Map(initSubmodels);
   let treeHandle = null;
 
+  // Default spec used when the user first enables a sub-model toggle on a label.
+  // Crop classifier is the most common sub-model type (refining a detected parent).
+  const defaultSubSpec = { modelType: 'crop_classifier', architecture: 'efficientnet_b0' };
+
   function refreshPanels(submodels) {
     currentSubmodels = submodels;
-    renderSubmodelPanels(submodelsContainer, submodels, labelsMap, typenames,
-      (uuid, newTypename) => { currentSubmodels.set(uuid, newTypename); _markDirty(); });
+    renderSubmodelPanels(submodelsContainer, submodels, labelsMap,
+      (uuid, newSpec) => { currentSubmodels.set(uuid, newSpec); _markDirty(); });
   }
 
   createLabelList(treeBox, {
@@ -210,7 +300,7 @@ function renderConfigForm({ config, typenames, labelsMap, onDirtyChange }) {
     labelsMap,
     initialSelected: initSelected,
     initialSubmodels: initSubmodels,
-    typenames,
+    defaultSpec: defaultSubSpec,
     onSubmodelsChanged: (submodels) => { refreshPanels(submodels); _markDirty(); },
   }).then(handle => {
     treeHandle = handle;
@@ -220,10 +310,11 @@ function renderConfigForm({ config, typenames, labelsMap, onDirtyChange }) {
   return {
     el,
     getSaveData() {
+      const rootSpec = rootSpecHandle.getSpec();
       return {
         name: nameInput.value.trim(),
         description: descInput.value.trim(),
-        nodes: computeNodes(treeHandle?.getSelected() ?? new Set(), currentSubmodels, rootTypename, labelsMap),
+        nodes: computeNodes(treeHandle?.getSelected() ?? new Set(), currentSubmodels, rootSpec, labelsMap),
       };
     },
     destroy() { treeHandle?.destroy(); },
@@ -334,7 +425,7 @@ export async function renderModelConfigManager({ target = 'model-config-box' } =
         _barHandle = null; // mark clean while async fetches are in flight
         _selectedUuid = config?.uuid ?? null;
 
-        const [labelsMap, typenames] = await Promise.all([fetchLabels(), fetchModelTypenames()]);
+        const labelsMap = await fetchLabels();
         editorBody.innerHTML = '';
 
         _barHandle = buildPanelEditorBar({
@@ -345,7 +436,7 @@ export async function renderModelConfigManager({ target = 'model-config-box' } =
           onSave: async () => {
             const { name, description, nodes } = _currentFormHandle.getSaveData();
             if (!name) { toast('Name is required', 3000, 'error'); return; }
-            if (!nodes[0]?.modelTypename) { toast('Root model type is required', 3000, 'error'); return; }
+            if (!nodes[0]?.modelType) { toast('Root model type is required', 3000, 'error'); return; }
             setSaving(true);
             try {
               if (config) {
@@ -418,7 +509,7 @@ export async function renderModelConfigManager({ target = 'model-config-box' } =
         }
 
         const formHandle = renderConfigForm({
-          config, typenames, labelsMap,
+          config, labelsMap,
           onDirtyChange: setDirty,
         });
         _currentFormHandle = formHandle;
@@ -428,7 +519,7 @@ export async function renderModelConfigManager({ target = 'model-config-box' } =
         _currentDoSave = async () => {
           const { name, description, nodes } = formHandle.getSaveData();
           if (!name) { toast('Name is required', 3000, 'error'); return false; }
-          if (!nodes[0]?.modelTypename) { toast('Root model type is required', 3000, 'error'); return false; }
+          if (!nodes[0]?.modelType) { toast('Root model type is required', 3000, 'error'); return false; }
           setSaving(true);
           try {
             if (config) {

@@ -26,8 +26,8 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 from apps.helpers.consts import TaskStatus
 
 from .types import (
-    AVAILABLE_MODEL_TYPENAMES,
     FALSE_POS_TAG_UUID,
+    MODEL_TYPE_ARCHITECTURES,
     REJECTION_TAG_UUID,
     UNVERIFIED_TAG_UUID,
     VERIFIED_TAG_UUID,
@@ -52,6 +52,10 @@ from .types import (
     Label,
     LabelScope,
     LabelType,
+    ModelBundle,
+    ModelBundleCreate,
+    ModelBundleRead,
+    ModelBundleUpdate,
     ModelConfig,
     ModelConfigCreate,
     ModelConfigNode,
@@ -67,7 +71,6 @@ from .types import (
     TrainingConfig,
     TrainingConfigCreate,
     TrainingConfigDatasetLink,
-    TrainingConfigLabelLink,
     TrainingConfigRead,
     TrainingConfigUpdate,
     UserSetting,
@@ -377,10 +380,7 @@ def _apply_image_search_filters(stmt: Select, params: ImageSearchParams) -> Sele
 
 
 # Eager-load options shared by all training-config queries.
-_TC_LOAD_OPTS = (
-    selectinload(TrainingConfig.label_links),
-    selectinload(TrainingConfig.dataset_links),
-)
+_TC_LOAD_OPTS = (selectinload(TrainingConfig.dataset_links),)
 
 # Page size for image pagination in readiness checks.
 _READINESS_PAGE_SIZE = 1000
@@ -2771,11 +2771,9 @@ class DbClient:
             uuid=tc.uuid,
             name=tc.name,
             description=tc.description,
-            trainer_type=tc.trainer_type,
-            model_config_uuid=tc.model_config_uuid,
+            model_config_node_uuid=tc.model_config_node_uuid,
             dataset_uuids=[link.dataset_uuid for link in (tc.dataset_links or [])],
             hyperparams_json=tc.hyperparams_json or {},
-            label_uuids=[link.label_uuid for link in (tc.label_links or [])],
             created_at=tc.created_at,
             updated_at=tc.updated_at,
         )
@@ -2785,22 +2783,17 @@ class DbClient:
             tc = TrainingConfig(
                 name=data.name,
                 description=data.description,
-                trainer_type=data.trainer_type,
-                model_config_uuid=data.model_config_uuid,
+                model_config_node_uuid=data.model_config_node_uuid,
                 hyperparams_json=data.hyperparams_json or {},
             )
             session.add(tc)
             await session.flush()  # assign uuid before adding links
-            for label_uuid in (data.label_uuids or []):
-                session.add(TrainingConfigLabelLink(
-                    training_config_uuid=tc.uuid, label_uuid=label_uuid
-                ))
             for dataset_uuid in (data.dataset_uuids or []):
                 session.add(TrainingConfigDatasetLink(
                     training_config_uuid=tc.uuid, dataset_uuid=dataset_uuid
                 ))
             await session.commit()
-            await session.refresh(tc, ["label_links", "dataset_links"])
+            await session.refresh(tc, ["dataset_links"])
             return self._training_config_to_read(tc)
 
     async def list_training_configs(self) -> list[TrainingConfigRead]:
@@ -2835,24 +2828,14 @@ class DbClient:
                 tc.name = data.name
             if data.description is not None:
                 tc.description = data.description
-            if data.trainer_type is not None:
-                tc.trainer_type = data.trainer_type
-            if data.model_config_uuid is not None:
-                tc.model_config_uuid = data.model_config_uuid
+            if data.model_config_node_uuid is not None:
+                tc.model_config_node_uuid = data.model_config_node_uuid
             if data.hyperparams_json is not None:
                 tc.hyperparams_json = data.hyperparams_json
-            if data.label_uuids is not None:
-                for link in list(tc.label_links or []):
-                    await session.delete(link)
             if data.dataset_uuids is not None:
                 for link in list(tc.dataset_links or []):
                     await session.delete(link)
             await session.flush()
-            if data.label_uuids is not None:
-                for label_uuid in data.label_uuids:
-                    session.add(TrainingConfigLabelLink(
-                        training_config_uuid=tc.uuid, label_uuid=label_uuid
-                    ))
             if data.dataset_uuids is not None:
                 for dataset_uuid in data.dataset_uuids:
                     session.add(TrainingConfigDatasetLink(
@@ -2860,7 +2843,7 @@ class DbClient:
                     ))
             tc.updated_at = datetime.now(timezone.utc)
             await session.commit()
-            await session.refresh(tc, ["label_links", "dataset_links"])
+            await session.refresh(tc, ["dataset_links"])
             return self._training_config_to_read(tc)
 
     async def delete_training_config(self, uuid: str) -> bool:
@@ -2872,18 +2855,66 @@ class DbClient:
             await session.commit()
         return True
 
+    async def _derive_labels_for_node(self, model_config_node_uuid: Optional[str]) -> list[str]:
+        """Return the list of label UUIDs relevant to the given model config node.
+
+        - If node_uuid is None: returns [].
+        - If node has label_uuid=None (root node): returns all label_uuids assigned
+          to any non-root node in the same model config.
+        - If node has a specific label_uuid: returns that label UUID plus all
+          descendant labels in the label hierarchy.
+        """
+        if model_config_node_uuid is None:
+            return []
+
+        async with self._async_session_maker() as session:
+            node = await session.get(ModelConfigNode, model_config_node_uuid)
+            if node is None:
+                return []
+
+            if node.label_uuid is None:
+                # Root node: use all non-root node labels from this config.
+                result = await session.exec(
+                    select(ModelConfigNode.label_uuid)
+                    .where(
+                        ModelConfigNode.model_config_uuid == node.model_config_uuid,
+                        ModelConfigNode.label_uuid.isnot(None),
+                    )
+                )
+                return list(result.all())
+
+            # Walk label hierarchy to collect this label and all descendants.
+            all_labels_result = await session.exec(select(Label))
+            all_labels = {lbl.uuid: lbl for lbl in all_labels_result.all()}
+
+        def _collect_descendants(label_uuid: str) -> list[str]:
+            result_uuids = [label_uuid]
+            for lbl in all_labels.values():
+                if lbl.parent_uuid == label_uuid:
+                    result_uuids.extend(_collect_descendants(lbl.uuid))
+            return result_uuids
+
+        return _collect_descendants(node.label_uuid)
+
     async def get_training_config_readiness(self, uuid: str) -> Optional[dict]:
         """Return ready/needs-review counts for a training config's datasets (union).
 
         An image is 'ready' when every target label has an explicit PRESENT or ABSENT
         row in image_labels; 'needs_review' otherwise.
         Returns None if the training config doesn't exist.
+
+        Labels are derived from the model config node referenced by model_config_node_uuid:
+        - If node has a label_uuid: collect all descendant labels that map to this node.
+        - If node is the root (label_uuid=None): all labels assigned to ANY node in the config.
+        - If no node is assigned: returns zero counts with empty label list.
         """
         tc = await self.get_training_config(uuid)
         if tc is None:
             return None
-        label_uuids = tc.label_uuids
         dataset_uuids = tc.dataset_uuids
+
+        label_uuids = await self._derive_labels_for_node(tc.model_config_node_uuid)
+
         if not label_uuids:
             return {
                 "ready_count": 0,
@@ -2963,9 +2994,9 @@ class DbClient:
     async def get_training_config_label_stats(self, uuid: str) -> Optional[dict]:
         """Return per-label dataset stats for a training config.
 
-        Relevant labels are those referenced by the model config's nodes that also
-        appear in at least one of the training config's datasets. If no model config
-        is assigned, all dataset labels are used.
+        Relevant labels are derived from the model config node referenced by
+        model_config_node_uuid. If no node is assigned, falls back to using
+        all labels across all linked datasets.
 
         Returns None if the training config doesn't exist.
         """
@@ -2982,20 +3013,16 @@ class DbClient:
             if dataset is not None:
                 datasets_by_uuid[ds_uuid] = dataset
 
-        # Union of all label UUIDs across selected datasets.
-        dataset_label_uuids: set[str] = set()
-        for dataset in datasets_by_uuid.values():
-            dataset_label_uuids.update(dataset.label_uuids)
+        # Derive relevant label UUIDs from the node hierarchy.
+        node_label_uuids = await self._derive_labels_for_node(tc.model_config_node_uuid)
 
-        # Intersect with model config node labels when a model config is set.
-        if tc.model_config_uuid:
-            mc = await self.get_model_config(tc.model_config_uuid)
-            if mc is not None:
-                mc_label_uuids = {node.label_uuid for node in mc.nodes if node.label_uuid}
-                relevant_label_uuids = list(dataset_label_uuids & mc_label_uuids)
-            else:
-                relevant_label_uuids = list(dataset_label_uuids)
+        if node_label_uuids:
+            relevant_label_uuids = node_label_uuids
         else:
+            # Fallback: union of all label UUIDs across selected datasets.
+            dataset_label_uuids: set[str] = set()
+            for dataset in datasets_by_uuid.values():
+                dataset_label_uuids.update(dataset.label_uuids)
             relevant_label_uuids = list(dataset_label_uuids)
 
         if not relevant_label_uuids:
@@ -3154,6 +3181,58 @@ class DbClient:
 
         return {"label_stats": list(label_stats.values()), "total_images": total_images}
 
+    # ── Model Bundles ─────────────────────────────────────────────────────────
+
+    async def create_bundle(self, data: ModelBundleCreate) -> ModelBundle:
+        async with self._async_session_maker() as session:
+            bundle = ModelBundle(
+                name=data.name,
+                description=data.description,
+                model_config_uuid=data.model_config_uuid,
+                bundle_path=data.bundle_path,
+                manifest_json=data.manifest_json or {},
+                training_config_uuids=data.training_config_uuids or [],
+            )
+            session.add(bundle)
+            await session.commit()
+            await session.refresh(bundle)
+            return bundle
+
+    async def list_bundles(self) -> list[ModelBundleRead]:
+        async with self._async_session_maker() as session:
+            result = await session.exec(select(ModelBundle))
+            return [ModelBundleRead.model_validate(b) for b in result.all()]
+
+    async def get_bundle(self, uuid: str) -> Optional[ModelBundleRead]:
+        async with self._async_session_maker() as session:
+            bundle = await session.get(ModelBundle, uuid)
+            if bundle is None:
+                return None
+            return ModelBundleRead.model_validate(bundle)
+
+    async def update_bundle(self, uuid: str, data: ModelBundleUpdate) -> Optional[ModelBundleRead]:
+        async with self._async_session_maker() as session:
+            bundle = await session.get(ModelBundle, uuid)
+            if bundle is None:
+                return None
+            if data.name is not None:
+                bundle.name = data.name
+            if data.description is not None:
+                bundle.description = data.description
+            bundle.updated_at = datetime.now(timezone.utc)
+            await session.commit()
+            await session.refresh(bundle)
+            return ModelBundleRead.model_validate(bundle)
+
+    async def delete_bundle(self, uuid: str) -> bool:
+        async with self._async_session_maker() as session:
+            bundle = await session.get(ModelBundle, uuid)
+            if bundle is None:
+                return False
+            await session.delete(bundle)
+            await session.commit()
+        return True
+
     async def preview_dataset_images(
         self,
         filter_json: Dict[str, Any],
@@ -3209,7 +3288,8 @@ class DbClient:
                     ModelConfigNode(
                         model_config_uuid=mc.uuid,
                         label_uuid=node.label_uuid,
-                        model_typename=node.model_typename,
+                        model_type=node.model_type,
+                        architecture=node.architecture,
                     )
                 )
             await session.commit()
@@ -3244,7 +3324,8 @@ class DbClient:
                             ModelConfigNode(
                                 model_config_uuid=uuid,
                                 label_uuid=node.get("label_uuid"),
-                                model_typename=node["model_typename"],
+                                model_type=node["model_type"],
+                                architecture=node["architecture"],
                             )
                         )
 

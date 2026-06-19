@@ -36,6 +36,9 @@ from apps.helpers.db.types import (
     LabelScope,
     LabelType,
     LabelUpdate,
+    ModelBundleCreate,
+    ModelBundleRead,
+    ModelBundleUpdate,
     ModelConfigCreate,
     ModelConfigRead,
     ModelConfigUpdate,
@@ -529,8 +532,13 @@ class TrainingConfigLabelStatsResponse(StatusResponse):
     total_images: int = 0
 
 
-class ListModelTypenamesResponse(StatusResponse):
-    typenames: List[str] = Field(default_factory=list)
+
+class ListModelBundlesResponse(StatusResponse):
+    bundles: List[ModelBundleRead] = Field(default_factory=list)
+
+
+class ModelBundleResponse(StatusResponse):
+    bundle: Optional[ModelBundleRead] = None
 
 
 class ListModelConfigsResponse(StatusResponse):
@@ -715,6 +723,7 @@ class WebApp:
         # Register routes
         self._register_routes()
         self._register_model_config_routes()
+        self._register_bundle_routes()
         self._register_exception()
 
     @staticmethod
@@ -2332,20 +2341,6 @@ class WebApp:
 
     def _register_model_config_routes(self) -> None:
         @self._app.get(
-            "/api/model-configs/typenames",
-            response_model=ListModelTypenamesResponse,
-            tags=[ApiTags.MODEL_CONFIGS],
-            operation_id="list_model_typenames",
-        )
-        async def list_model_typenames() -> ListModelTypenamesResponse:
-            try:
-                typenames = self._manager.get_available_model_typenames()
-                return ListModelTypenamesResponse(status=JsonValues.SUCCESS, typenames=typenames)
-            except Exception as e:
-                logger.error(e, exc_info=True)
-                return ListModelTypenamesResponse(status=JsonValues.FAILURE, message=str(e))
-
-        @self._app.get(
             "/api/model-configs",
             response_model=ListModelConfigsResponse,
             tags=[ApiTags.MODEL_CONFIGS],
@@ -2546,3 +2541,98 @@ class WebApp:
             except Exception as e:
                 logger.error(e, exc_info=True)
                 return TrainingConfigLabelStatsResponse(status=JsonValues.FAILURE, message=str(e))
+
+    def _register_bundle_routes(self) -> None:
+        @self._app.get(
+            "/api/model-bundles",
+            response_model=ListModelBundlesResponse,
+            tags=[ApiTags.MODEL_CONFIGS],
+            operation_id="list_model_bundles",
+        )
+        async def list_model_bundles() -> ListModelBundlesResponse:
+            try:
+                bundles = await self._manager.list_bundles()
+                return ListModelBundlesResponse(status=JsonValues.SUCCESS, bundles=bundles)
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return ListModelBundlesResponse(status=JsonValues.FAILURE, message=str(e))
+
+        @self._app.post(
+            "/api/model-bundles",
+            response_model=ModelBundleResponse,
+            tags=[ApiTags.MODEL_CONFIGS],
+            operation_id="create_model_bundle",
+        )
+        async def create_model_bundle(payload: ModelBundleCreate) -> ModelBundleResponse:
+            try:
+                bundle = await self._manager.create_bundle(payload)
+                from apps.helpers.db.types import ModelBundleRead
+                read = ModelBundleRead.model_validate(bundle)
+                return ModelBundleResponse(status=JsonValues.SUCCESS, bundle=read)
+            except IntegrityError as e:
+                logger.error(e, exc_info=True)
+                return ModelBundleResponse(
+                    status=JsonValues.FAILURE, message=self._unique_constraint_msg(e, "model bundle")
+                )
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return ModelBundleResponse(status=JsonValues.FAILURE, message=str(e))
+
+        @self._app.get(
+            "/api/model-bundles/{uuid}",
+            response_model=ModelBundleResponse,
+            tags=[ApiTags.MODEL_CONFIGS],
+            operation_id="get_model_bundle",
+        )
+        async def get_model_bundle(uuid: str) -> ModelBundleResponse:
+            try:
+                bundle = await self._manager.get_bundle(uuid)
+                if bundle is None:
+                    return ModelBundleResponse(status=JsonValues.FAILURE, message="Bundle not found")
+                return ModelBundleResponse(status=JsonValues.SUCCESS, bundle=bundle)
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return ModelBundleResponse(status=JsonValues.FAILURE, message=str(e))
+
+        @self._app.patch(
+            "/api/model-bundles/{uuid}",
+            response_model=ModelBundleResponse,
+            tags=[ApiTags.MODEL_CONFIGS],
+            operation_id="update_model_bundle",
+        )
+        async def update_model_bundle(uuid: str, payload: ModelBundleUpdate) -> ModelBundleResponse:
+            try:
+                bundle = await self._manager.update_bundle(uuid, payload)
+                if bundle is None:
+                    return ModelBundleResponse(status=JsonValues.FAILURE, message="Bundle not found")
+                return ModelBundleResponse(status=JsonValues.SUCCESS, bundle=bundle)
+            except IntegrityError as e:
+                logger.error(e, exc_info=True)
+                return ModelBundleResponse(
+                    status=JsonValues.FAILURE, message=self._unique_constraint_msg(e, "model bundle")
+                )
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return ModelBundleResponse(status=JsonValues.FAILURE, message=str(e))
+
+        @self._app.delete(
+            "/api/model-bundles/{uuid}",
+            response_model=StatusResponse,
+            tags=[ApiTags.MODEL_CONFIGS],
+            operation_id="delete_model_bundle",
+        )
+        async def delete_model_bundle(uuid: str) -> StatusResponse:
+            try:
+                ok = await self._manager.delete_bundle(uuid)
+                if not ok:
+                    return StatusResponse(status=JsonValues.FAILURE, message="Bundle not found")
+                return StatusResponse(status=JsonValues.SUCCESS)
+            except IntegrityError as e:
+                logger.error(e, exc_info=True)
+                return StatusResponse(
+                    status=JsonValues.FAILURE,
+                    message="Cannot delete: a model bundle references this resource",
+                )
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return StatusResponse(status=JsonValues.FAILURE, message=str(e))

@@ -26,8 +26,8 @@ from apps.helpers.db.db_client import (
     TagKind,
 )
 from apps.helpers.db.types import (
-    AVAILABLE_MODEL_TYPENAMES,
     FALSE_POS_TAG_UUID,
+    MODEL_TYPE_ARCHITECTURES,
     UNVERIFIED_TAG_UUID,
     VERIFIED_TAG_UUID,
     BBox,
@@ -46,6 +46,8 @@ from apps.helpers.db.types import (
     Label,
     LabelScope,
     LabelType,
+    ModelBundleCreate,
+    ModelBundleUpdate,
     ModelConfigCreate,
     ModelConfigNodeWrite,
     ModelConfigRead,
@@ -2122,15 +2124,21 @@ class Manager:
 
     # ─── Model Configurations ─────────────────────────────────────────────────
 
-    def get_available_model_typenames(self) -> List[str]:
-        return list(AVAILABLE_MODEL_TYPENAMES)
+    def get_model_type_architectures(self) -> dict:
+        return dict(MODEL_TYPE_ARCHITECTURES)
 
     async def _validate_model_config_nodes(self, nodes: List[ModelConfigNodeWrite]) -> None:
-        """Validate typename and label_uuid for every node write object."""
+        """Validate model_type, architecture, and label_uuid for every node write object."""
         for node in nodes:
-            if node.model_typename not in AVAILABLE_MODEL_TYPENAMES:
+            if node.model_type not in MODEL_TYPE_ARCHITECTURES:
                 raise ValueError(
-                    f"Unknown model typename: {node.model_typename!r}. " f"Valid choices: {AVAILABLE_MODEL_TYPENAMES}"
+                    f"Unknown model_type: {node.model_type!r}. "
+                    f"Valid choices: {list(MODEL_TYPE_ARCHITECTURES.keys())}"
+                )
+            if node.architecture not in MODEL_TYPE_ARCHITECTURES[node.model_type]:
+                raise ValueError(
+                    f"Architecture {node.architecture!r} is not valid for model_type "
+                    f"{node.model_type!r}. Valid choices: {MODEL_TYPE_ARCHITECTURES[node.model_type]}"
                 )
             if node.label_uuid is not None:
                 label = await self._db_client.get_label_by_uuid(node.label_uuid)
@@ -2177,3 +2185,20 @@ class Manager:
 
     async def get_training_config_label_stats(self, uuid: str) -> "Optional[dict]":
         return await self._db_client.get_training_config_label_stats(uuid)
+
+    # ── Model Bundles ─────────────────────────────────────────────────────────
+
+    async def create_bundle(self, data: ModelBundleCreate):
+        return await self._db_client.create_bundle(data)
+
+    async def list_bundles(self):
+        return await self._db_client.list_bundles()
+
+    async def get_bundle(self, uuid: str):
+        return await self._db_client.get_bundle(uuid)
+
+    async def update_bundle(self, uuid: str, data: ModelBundleUpdate):
+        return await self._db_client.update_bundle(uuid, data)
+
+    async def delete_bundle(self, uuid: str) -> bool:
+        return await self._db_client.delete_bundle(uuid)

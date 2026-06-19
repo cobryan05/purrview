@@ -7,10 +7,10 @@ Configuration > Training > #training-config-box
 
   - DOM structure: list panel + create form
   - Create flow: fill form → POST /api/training-configs with correct payload
-  - Readiness panel: shows ready/needs-review counts when a config is selected
-  - "Review unverified images" button: fires OPEN_REVIEW_WITH_FILTERS event,
-    activates the Review tab, and causes the review queue fetch to include
-    labelUuids + labelVerificationCheck=has_unverified
+    (modelConfigNodeUuid, datasetUuids, hyperparamsJson — no trainerType/labelUuids)
+  - Readiness panel: shows ready/needs-review counts when a config with a node is selected
+  - "Review unverified images" button: fires OPEN_REVIEW_WITH_FILTERS event and
+    activates the Review tab
 
 Run with:
     pytest playwright_tests/test_configuration_training_configs.py -p no:xdist -p no:asyncio -n 0 -v
@@ -25,22 +25,23 @@ from playwright.sync_api import Page, Route, expect
 # Fake data
 # ---------------------------------------------------------------------------
 
-LABEL_CORRUPT = {"uuid": "lbl-corrupt", "name": "Corrupt", "color": "#ff0000", "parentUuid": None}
-LABEL_BLURRY = {"uuid": "lbl-blurry", "name": "Blurry", "color": "#0000ff", "parentUuid": None}
-
 DATASET_ALPHA = {"uuid": "ds-alpha", "name": "Alpha Dataset", "description": "", "filterJson": {}, "labelUuids": []}
 
-MODEL_CFG = {"uuid": "mc-1", "name": "My Model", "description": "", "nodes": []}
+MODEL_CFG_NODE = {
+    "uuid": "node-root",
+    "labelUuid": None,
+    "modelType": "object_detection",
+    "architecture": "yolo_v8_n",
+}
+MODEL_CFG = {"uuid": "mc-1", "name": "My Model", "description": "", "nodes": [MODEL_CFG_NODE]}
 
 EXISTING_TC = {
     "uuid": "tc-1",
     "name": "Corrupt Detector",
     "description": "Finds corrupt images",
-    "trainerType": "image_classifier",
     "datasetUuids": ["ds-alpha"],
-    "modelConfigUuid": None,
+    "modelConfigNodeUuid": "node-root",
     "hyperparamsJson": {},
-    "labelUuids": ["lbl-corrupt", "lbl-blurry"],
     "createdAt": "2026-01-01T00:00:00",
     "updatedAt": "2026-01-01T00:00:00",
 }
@@ -49,17 +50,6 @@ EXISTING_TC = {
 # ---------------------------------------------------------------------------
 # Route-interception helpers
 # ---------------------------------------------------------------------------
-
-
-def _mock_labels(page: Page, labels: list | None = None):
-    page.route(
-        lambda url: url.split("?")[0].endswith("/api/labels") and "/api/labels/" not in url,
-        lambda route: route.fulfill(
-            status=200,
-            content_type="application/json",
-            body=json.dumps({"status": "success", "labels": labels or []}),
-        ),
-    )
 
 
 def _mock_datasets(page: Page, datasets: list | None = None):
@@ -116,8 +106,7 @@ def _mock_training_config_get(page: Page, config: dict):
     )
 
 
-def _mock_readiness(page: Page, config_uuid: str, ready: int = 3, needs_review: int = 2,
-                    label_uuids: list | None = None):
+def _mock_readiness(page: Page, config_uuid: str, ready: int = 3, needs_review: int = 2):
     page.route(
         f"**/api/training-configs/{config_uuid}/readiness",
         lambda route: route.fulfill(
@@ -128,25 +117,20 @@ def _mock_readiness(page: Page, config_uuid: str, ready: int = 3, needs_review: 
                 "readyCount": ready,
                 "needsReviewCount": needs_review,
                 "datasetUuids": ["ds-alpha"],
-                "labelUuids": label_uuids or ["lbl-corrupt", "lbl-blurry"],
+                "labelUuids": [],
             }),
         ),
     )
 
 
-def _mock_review_queue(page: Page):
-    """Intercept review-queue POST with an empty result."""
+def _mock_label_stats(page: Page, config_uuid: str):
+    """Return empty label stats to suppress the panel's loading state."""
     page.route(
-        "**/api/images/review",
+        f"**/api/training-configs/{config_uuid}/label-stats",
         lambda route: route.fulfill(
             status=200,
             content_type="application/json",
-            body=json.dumps({
-                "status": "success",
-                "images": [],
-                "hasMore": False,
-                "totalCount": 0,
-            }),
+            body=json.dumps({"status": "success", "labelStats": [], "totalImages": 0}),
         ),
     )
 
@@ -183,11 +167,6 @@ def _editor_body(page: Page):
     return _box(page).locator(".mc-editor .panel-box__body")
 
 
-def _label_checkbox(page: Page, label_uuid: str):
-    """The checkbox for a label in the target-labels tree."""
-    return _box(page).locator(f".panel-tree-box input[value='{label_uuid}']")
-
-
 # ---------------------------------------------------------------------------
 # 1. Structure
 # ---------------------------------------------------------------------------
@@ -195,56 +174,62 @@ def _label_checkbox(page: Page, label_uuid: str):
 
 class TestTrainingConfigPaneStructure:
     def test_pane_renders_list_and_create_form(self, page: Page, base_url: str):
-        """The pane shows an existing config in the list and defaults to a create form."""
-        _mock_labels(page, [LABEL_CORRUPT, LABEL_BLURRY])
+        """The pane shows an existing config in the list (with dataset name) and
+        defaults to a create form with a model-config selector."""
         _mock_datasets(page, [DATASET_ALPHA])
         _mock_model_configs(page, [MODEL_CFG])
         _mock_training_configs_list(page, [EXISTING_TC])
 
         _navigate_to_training_configs(page, base_url)
 
-        # Left panel: existing config name and meta visible in list
+        # Left panel: existing config name and dataset meta visible in list
         item = _list_item(page, "tc-1")
         expect(item).to_be_visible()
         expect(item).to_contain_text("Corrupt Detector")
-        expect(item).to_contain_text("image_classifier")
+        expect(item).to_contain_text("Alpha Dataset")
 
         # Footer new-config button
         expect(_box(page).locator("button", has_text="+ New")).to_be_visible()
 
-        # Right panel defaults to create form (bar says "New Training Config")
+        # Right panel defaults to create form
         expect(_editor_bar(page)).to_contain_text("New Training Config")
 
-    def test_trainer_type_select_is_present(self, page: Page, base_url: str):
-        """The create form includes a trainer type select with known options."""
-        _mock_labels(page, [])
+    def test_model_config_selector_is_present(self, page: Page, base_url: str):
+        """The create form has a model config selector that lists available configs."""
         _mock_datasets(page, [])
-        _mock_model_configs(page, [])
+        _mock_model_configs(page, [MODEL_CFG])
         _mock_training_configs_list(page, [])
 
         _navigate_to_training_configs(page, base_url)
 
-        # Wait for the editor form to render (it's async — _showForm is awaited)
-        trainer_select = _editor_body(page).locator("select").first
-        expect(trainer_select).to_be_visible(timeout=4000)
-        options = trainer_select.locator("option").all_text_contents()
-        assert any("yolo" in o.lower() or "classifier" in o.lower() for o in options), \
-            f"Expected trainer-type options, got: {options}"
+        # Wait for editor to render
+        _editor_body(page).wait_for(timeout=4000)
 
-    def test_target_labels_appear_as_checkboxes(self, page: Page, base_url: str):
-        """Labels from the API appear as checkboxes in the target-label tree."""
-        _mock_labels(page, [LABEL_CORRUPT, LABEL_BLURRY])
-        _mock_datasets(page, [DATASET_ALPHA])
-        _mock_model_configs(page, [])
+        # The model config select should list our config
+        config_sel = _editor_body(page).locator("select").first
+        expect(config_sel).to_be_visible(timeout=4000)
+        options = config_sel.locator("option").all_text_contents()
+        assert any("My Model" in o for o in options), \
+            f"Expected 'My Model' in config selector options; got: {options}"
+
+    def test_node_selector_updates_when_config_chosen(self, page: Page, base_url: str):
+        """Choosing a model config from the first selector populates the node selector."""
+        _mock_datasets(page, [])
+        _mock_model_configs(page, [MODEL_CFG])
         _mock_training_configs_list(page, [])
 
         _navigate_to_training_configs(page, base_url)
 
-        expect(_label_checkbox(page, "lbl-corrupt")).to_be_visible()
-        expect(_label_checkbox(page, "lbl-blurry")).to_be_visible()
-        # Both unchecked on the create form
-        expect(_label_checkbox(page, "lbl-corrupt")).not_to_be_checked()
-        expect(_label_checkbox(page, "lbl-blurry")).not_to_be_checked()
+        # Select the model config
+        config_sel = _editor_body(page).locator("select").first
+        config_sel.select_option("mc-1")
+        page.wait_for_timeout(300)
+
+        # Node selector (second select) should now have "Root" option
+        node_sel = _editor_body(page).locator("select").nth(1)
+        node_options = node_sel.locator("option").all_text_contents()
+        assert any("Root" in o for o in node_options), \
+            f"Expected a Root node option; got: {node_options}"
 
 
 # ---------------------------------------------------------------------------
@@ -254,23 +239,21 @@ class TestTrainingConfigPaneStructure:
 
 class TestCreateTrainingConfig:
     def test_create_sends_correct_payload(self, page: Page, base_url: str):
-        """Filling the form and saving POSTs the right payload."""
-        _mock_labels(page, [LABEL_CORRUPT, LABEL_BLURRY])
+        """Filling the form and saving POSTs modelConfigNodeUuid + datasetUuids;
+        no trainerType or labelUuids in the payload."""
         _mock_datasets(page, [DATASET_ALPHA])
-        _mock_model_configs(page, [])
+        _mock_model_configs(page, [MODEL_CFG])
         _mock_training_configs_list(page, [])
 
         captured = []
 
         def handle_create(route: Route):
             captured.append(json.loads(route.request.post_data))
-            # Return the "created" config so the UI can refresh
             route.fulfill(
                 status=200,
                 content_type="application/json",
                 body=json.dumps({"status": "success", "config": {
-                    **EXISTING_TC, "uuid": "tc-new", "name": "My Classifier",
-                    "labelUuids": ["lbl-corrupt"],
+                    **EXISTING_TC, "uuid": "tc-new", "name": "My Run",
                 }}),
             )
 
@@ -279,48 +262,55 @@ class TestCreateTrainingConfig:
 
         _navigate_to_training_configs(page, base_url)
 
-        # Fill in name
+        # Fill name
         name_input = _editor_body(page).locator("input[placeholder='Required']").first
-        name_input.fill("My Classifier")
+        name_input.fill("My Run")
 
-        # Check the dataset checkbox (datasets now use checkboxes, not a select)
-        dataset_cb = _box(page).locator(f"input[type='checkbox'][value='ds-alpha']")
+        # Select model config, then node
+        config_sel = _editor_body(page).locator("select").first
+        config_sel.select_option("mc-1")
+        page.wait_for_timeout(200)
+        node_sel = _editor_body(page).locator("select").nth(1)
+        node_sel.select_option("node-root")
+
+        # Check the dataset checkbox
+        dataset_cb = _box(page).locator("input[type='checkbox'][value='ds-alpha']")
         dataset_cb.check()
 
-        # Check the Corrupt label checkbox
-        _label_checkbox(page, "lbl-corrupt").check()
-
-        # Click the create/save button in the bar
         _editor_bar(page).locator("button", has_text="Create").or_(
             _editor_bar(page).locator("button", has_text="Save")
         ).click()
-
         page.wait_for_timeout(800)
 
         assert len(captured) == 1, f"Expected 1 POST, got {len(captured)}"
         payload = captured[0]
-        assert payload.get("name") == "My Classifier"
-        assert "lbl-corrupt" in payload.get("labelUuids", [])
-        assert "ds-alpha" in payload.get("datasetUuids", []), \
-            f"Expected ds-alpha in datasetUuids; got: {payload.get('datasetUuids')}"
+        assert payload.get("name") == "My Run"
+        assert payload.get("modelConfigNodeUuid") == "node-root"
+        assert "ds-alpha" in payload.get("datasetUuids", [])
+        # Old fields must NOT be present
+        assert "trainerType" not in payload, "trainerType should not be in payload"
+        assert "labelUuids" not in payload, "labelUuids should not be in payload"
 
-    def test_existing_config_labels_pre_checked(self, page: Page, base_url: str):
-        """Opening an existing config pre-checks its labelUuids in the tree."""
-        _mock_labels(page, [LABEL_CORRUPT, LABEL_BLURRY])
+    def test_existing_config_node_is_preselected(self, page: Page, base_url: str):
+        """Opening an existing training config pre-selects its modelConfigNodeUuid."""
         _mock_datasets(page, [DATASET_ALPHA])
-        _mock_model_configs(page, [])
+        _mock_model_configs(page, [MODEL_CFG])
         _mock_training_configs_list(page, [EXISTING_TC])
         _mock_training_config_get(page, EXISTING_TC)
         _mock_readiness(page, "tc-1")
+        _mock_label_stats(page, "tc-1")
 
         _navigate_to_training_configs(page, base_url)
-
         _list_item(page, "tc-1").click()
         page.wait_for_timeout(400)
 
-        # Both labels should be checked since EXISTING_TC has both
-        expect(_label_checkbox(page, "lbl-corrupt")).to_be_checked(timeout=3000)
-        expect(_label_checkbox(page, "lbl-blurry")).to_be_checked(timeout=3000)
+        # Config selector should show mc-1
+        config_sel = _editor_body(page).locator("select").first
+        expect(config_sel).to_have_value("mc-1", timeout=3000)
+
+        # Node selector should show node-root
+        node_sel = _editor_body(page).locator("select").nth(1)
+        expect(node_sel).to_have_value("node-root", timeout=3000)
 
 
 # ---------------------------------------------------------------------------
@@ -330,52 +320,49 @@ class TestCreateTrainingConfig:
 
 class TestReadinessPanel:
     def test_readiness_counts_are_displayed(self, page: Page, base_url: str):
-        """Selecting an existing config shows the readiness panel with counts."""
-        _mock_labels(page, [LABEL_CORRUPT, LABEL_BLURRY])
+        """Selecting an existing config (with a node) shows the readiness panel."""
         _mock_datasets(page, [DATASET_ALPHA])
         _mock_model_configs(page, [MODEL_CFG])
         _mock_training_configs_list(page, [EXISTING_TC])
         _mock_training_config_get(page, EXISTING_TC)
         _mock_readiness(page, "tc-1", ready=3, needs_review=2)
+        _mock_label_stats(page, "tc-1")
 
         _navigate_to_training_configs(page, base_url)
         _list_item(page, "tc-1").click()
 
         readiness_panel = _editor_body(page).locator("div", has_text="Training readiness").first
         expect(readiness_panel).to_be_visible(timeout=3000)
-        # Both counts appear somewhere in the panel
         expect(readiness_panel).to_contain_text("3")
         expect(readiness_panel).to_contain_text("2")
 
     def test_review_button_hidden_when_no_needs_review(self, page: Page, base_url: str):
         """'Review unverified images' button is hidden when needsReviewCount is 0."""
-        _mock_labels(page, [LABEL_CORRUPT])
         _mock_datasets(page, [DATASET_ALPHA])
-        _mock_model_configs(page, [])
+        _mock_model_configs(page, [MODEL_CFG])
         _mock_training_configs_list(page, [EXISTING_TC])
         _mock_training_config_get(page, EXISTING_TC)
         _mock_readiness(page, "tc-1", ready=5, needs_review=0)
+        _mock_label_stats(page, "tc-1")
 
         _navigate_to_training_configs(page, base_url)
         _list_item(page, "tc-1").click()
 
-        # Wait for readiness panel to finish loading
         page.wait_for_selector(
             "#training-config-box div:has-text('Training readiness')", timeout=3000
         )
-        # Button must exist but stay hidden (display:none)
         btn = _box(page).locator("button", has_text="Review unverified images")
         expect(btn).to_have_count(1)
         expect(btn).to_be_hidden()
 
     def test_review_button_visible_when_needs_review(self, page: Page, base_url: str):
         """'Review unverified images' button appears when needsReviewCount > 0."""
-        _mock_labels(page, [LABEL_CORRUPT])
         _mock_datasets(page, [DATASET_ALPHA])
-        _mock_model_configs(page, [])
+        _mock_model_configs(page, [MODEL_CFG])
         _mock_training_configs_list(page, [EXISTING_TC])
         _mock_training_config_get(page, EXISTING_TC)
         _mock_readiness(page, "tc-1", ready=3, needs_review=2)
+        _mock_label_stats(page, "tc-1")
 
         _navigate_to_training_configs(page, base_url)
         _list_item(page, "tc-1").click()
@@ -383,15 +370,15 @@ class TestReadinessPanel:
         btn = _box(page).locator("button", has_text="Review unverified images")
         expect(btn).to_be_visible(timeout=3000)
 
-    def test_review_button_switches_to_review_tab_with_filters(self, page: Page, base_url: str):
+    def test_review_button_switches_to_review_tab(self, page: Page, base_url: str):
         """Clicking 'Review unverified images' activates the Review tab and the
-        subsequent review-queue POST includes labelUuids + labelVerificationCheck."""
-        _mock_labels(page, [LABEL_CORRUPT, LABEL_BLURRY])
+        subsequent review-queue POST includes labelVerificationCheck=has_unverified."""
         _mock_datasets(page, [DATASET_ALPHA])
-        _mock_model_configs(page, [])
+        _mock_model_configs(page, [MODEL_CFG])
         _mock_training_configs_list(page, [EXISTING_TC])
         _mock_training_config_get(page, EXISTING_TC)
         _mock_readiness(page, "tc-1", ready=1, needs_review=3)
+        _mock_label_stats(page, "tc-1")
 
         _navigate_to_training_configs(page, base_url)
         _list_item(page, "tc-1").click()
@@ -399,7 +386,6 @@ class TestReadinessPanel:
         btn = _box(page).locator("button", has_text="Review unverified images")
         expect(btn).to_be_visible(timeout=3000)
 
-        # Capture all review-queue POSTs; use wait_for_request to block until one arrives.
         captured_queue_requests = []
 
         def handle_queue(route: Route):
@@ -417,23 +403,19 @@ class TestReadinessPanel:
 
         page.route("**/api/images/review", handle_queue)
 
-        # Use expect_request to block until the first queue POST arrives (up to 8 s).
         with page.expect_request(
             lambda r: "/api/images/review" in r.url and r.method == "POST",
             timeout=8000,
         ):
             btn.click()
 
-        # Review tab pane must be active
         import re as _re
         expect(page.locator("#tab-review")).to_have_class(_re.compile(r"\bactive\b"), timeout=4000)
 
-        # The last captured request must carry the correct filter fields.
-        # (There may be an initial render with default state and then a re-render
-        # with the applied state; we check the final request.)
-        page.wait_for_timeout(600)  # allow any second render pass to complete
+        page.wait_for_timeout(600)
         last = captured_queue_requests[-1]
         assert last.get("labelVerificationCheck") == "has_unverified", \
             f"Expected labelVerificationCheck='has_unverified'; got: {last}"
-        assert set(last.get("labelUuids", [])) == {"lbl-corrupt", "lbl-blurry"}, \
-            f"Expected labelUuids to match config labels; got: {last.get('labelUuids')}"
+        # labelUuids is now empty (derived from model tree at runtime, not stored)
+        assert last.get("labelUuids", []) == [], \
+            f"Expected empty labelUuids; got: {last.get('labelUuids')}"
