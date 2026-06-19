@@ -7146,49 +7146,59 @@
       },
       "LabelStatEntry": {
         "properties": {
-          "label_uuid": {
+          "labelUuid": {
             "type": "string",
-            "title": "Label Uuid"
+            "title": "Labeluuid"
           },
-          "label_scope": {
+          "labelScope": {
             "type": "string",
-            "title": "Label Scope"
+            "title": "Labelscope"
           },
-          "verified_image_count": {
+          "verifiedImageCount": {
             "type": "integer",
-            "title": "Verified Image Count",
+            "title": "Verifiedimagecount",
             "default": 0
           },
-          "unverified_image_count": {
+          "unverifiedImageCount": {
             "type": "integer",
-            "title": "Unverified Image Count",
+            "title": "Unverifiedimagecount",
             "default": 0
           },
-          "verified_bbox_count": {
+          "presentImageCount": {
             "type": "integer",
-            "title": "Verified Bbox Count",
+            "title": "Presentimagecount",
             "default": 0
           },
-          "unverified_bbox_count": {
+          "absentImageCount": {
             "type": "integer",
-            "title": "Unverified Bbox Count",
+            "title": "Absentimagecount",
             "default": 0
           },
-          "fully_verified_image_count": {
+          "verifiedBboxCount": {
             "type": "integer",
-            "title": "Fully Verified Image Count",
+            "title": "Verifiedbboxcount",
             "default": 0
           },
-          "images_missing_verification_count": {
+          "unverifiedBboxCount": {
             "type": "integer",
-            "title": "Images Missing Verification Count",
+            "title": "Unverifiedbboxcount",
+            "default": 0
+          },
+          "fullyVerifiedImageCount": {
+            "type": "integer",
+            "title": "Fullyverifiedimagecount",
+            "default": 0
+          },
+          "imagesMissingVerificationCount": {
+            "type": "integer",
+            "title": "Imagesmissingverificationcount",
             "default": 0
           }
         },
         "type": "object",
         "required": [
-          "label_uuid",
-          "label_scope"
+          "labelUuid",
+          "labelScope"
         ],
         "title": "LabelStatEntry"
       },

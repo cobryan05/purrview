@@ -74,6 +74,14 @@ async def _register_image(http_client, files_root, name: str) -> str:
     return name
 
 
+async def _set_image_label(http_client, image_path: str, label_uuid: str, status: str) -> None:
+    r = await http_client.post(
+        "/api/images/labels/set",
+        json={"imagePath": image_path, "labelUuid": label_uuid, "status": status},
+    )
+    assert r.status_code == 200, r.text
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # CRUD
 # ─────────────────────────────────────────────────────────────────────────────
@@ -646,12 +654,12 @@ class TestTrainingConfigLabelStats:
         assert body["status"] == "success"
         assert body["totalImages"] == 2
 
-        stat = next(s for s in body["labelStats"] if s["label_uuid"] == label_uuid)
-        assert stat["label_scope"] == "object"
-        assert stat["verified_bbox_count"] == 2
-        assert stat["unverified_bbox_count"] == 1
-        assert stat["images_missing_verification_count"] == 1
-        assert stat["fully_verified_image_count"] == 1
+        stat = next(s for s in body["labelStats"] if s["labelUuid"] == label_uuid)
+        assert stat["labelScope"] == "object"
+        assert stat["verifiedBboxCount"] == 2
+        assert stat["unverifiedBboxCount"] == 1
+        assert stat["imagesMissingVerificationCount"] == 1
+        assert stat["fullyVerifiedImageCount"] == 1
 
     async def test_root_node_derives_labels_from_config(self, http_client, files_root):
         """Label stats with a root-node uses all non-root nodes' labels in the config."""
@@ -706,7 +714,7 @@ class TestTrainingConfigLabelStats:
         assert body["status"] == "success"
         assert body["totalImages"] == 1
         # Root node should produce stats for label_uuid (the only non-root node label)
-        assert any(s["label_uuid"] == label_uuid for s in body["labelStats"])
+        assert any(s["labelUuid"] == label_uuid for s in body["labelStats"])
 
     async def test_union_of_two_datasets_deduped(self, http_client, files_root):
         """Images shared between two datasets are counted only once in totalImages."""
@@ -765,3 +773,59 @@ class TestTrainingConfigLabelStats:
         body = r.json()
         assert body["status"] == "success"
         assert body["totalImages"] == 1
+
+    async def test_image_scope_present_absent_counts(self, http_client, files_root):
+        """Image-scope label: present/absent/unverified counts are correct."""
+        label_uuid = (
+            await http_client.post("/api/labels", json={"name": "ls-img-lbl", "color": "#ff0000", "scope": "image"})
+        ).json()["label"]["uuid"]
+
+        # No label_uuids filter — image-scope labels have no bboxes, so filtering by
+        # label_uuids (which scopes to bbox labels) would return 0 images.
+        # The relevant labels are derived from the model config node below.
+        ds = (
+            await http_client.post(
+                "/api/datasets",
+                json={"name": "ls-img-scope", "filter_json": {}},
+            )
+        ).json()["dataset"]
+
+        img_present_1 = await _register_image(http_client, files_root, "ls_img_present1.png")
+        img_present_2 = await _register_image(http_client, files_root, "ls_img_present2.png")
+        img_absent = await _register_image(http_client, files_root, "ls_img_absent.png")
+        _unverified = await _register_image(http_client, files_root, "ls_img_unverified.png")
+
+        await _set_image_label(http_client, img_present_1, label_uuid, "present")
+        await _set_image_label(http_client, img_present_2, label_uuid, "present")
+        await _set_image_label(http_client, img_absent, label_uuid, "absent")
+        # ls_img_unverified.png has no label status set
+
+        mc = (
+            await http_client.post(
+                "/api/model-configs",
+                json={
+                    "name": "mc-ls-img",
+                    "nodes": [
+                        {
+                            "label_uuid": label_uuid,
+                            "model_type": "image_classifier",
+                            "architecture": "resnet_18",
+                        }
+                    ],
+                },
+            )
+        ).json()["config"]
+        node_uuid = mc["nodes"][0]["uuid"]
+
+        cfg = await _create_training_config(http_client, "ls-img-cfg", [ds["uuid"]], model_config_node_uuid=node_uuid)
+        r = await http_client.get(self.ENDPOINT.format(uuid=cfg["uuid"]))
+        body = r.json()
+        assert body["status"] == "success"
+        assert body["totalImages"] == 4
+
+        stat = next(s for s in body["labelStats"] if s["labelUuid"] == label_uuid)
+        assert stat["labelScope"] == "image"
+        assert stat["presentImageCount"] == 2
+        assert stat["absentImageCount"] == 1
+        assert stat["verifiedImageCount"] == 3
+        assert stat["unverifiedImageCount"] == 1

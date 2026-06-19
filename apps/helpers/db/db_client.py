@@ -3234,6 +3234,8 @@ class DbClient:
                 "label_scope": label.scope.value,
                 "verified_image_count": 0,
                 "unverified_image_count": total_images,
+                "present_image_count": 0,
+                "absent_image_count": 0,
                 "verified_bbox_count": 0,
                 "unverified_bbox_count": 0,
                 "fully_verified_image_count": 0,
@@ -3260,6 +3262,34 @@ class DbClient:
                     if lbl_uuid in label_stats:
                         label_stats[lbl_uuid]["verified_image_count"] = cnt
                         label_stats[lbl_uuid]["unverified_image_count"] = total_images - cnt
+
+                # Count PRESENT rows per label.
+                result = await session.exec(
+                    select(ImageLabel.label_uuid, func.count().label("cnt"))
+                    .where(
+                        ImageLabel.image_uuid.in_(all_image_uuids),
+                        ImageLabel.label_uuid.in_(image_label_uuids),
+                        ImageLabel.status == ImageItemStatus.PRESENT,
+                    )
+                    .group_by(ImageLabel.label_uuid)
+                )
+                for lbl_uuid, cnt in result.all():
+                    if lbl_uuid in label_stats:
+                        label_stats[lbl_uuid]["present_image_count"] = cnt
+
+                # Count ABSENT rows per label.
+                result = await session.exec(
+                    select(ImageLabel.label_uuid, func.count().label("cnt"))
+                    .where(
+                        ImageLabel.image_uuid.in_(all_image_uuids),
+                        ImageLabel.label_uuid.in_(image_label_uuids),
+                        ImageLabel.status == ImageItemStatus.ABSENT,
+                    )
+                    .group_by(ImageLabel.label_uuid)
+                )
+                for lbl_uuid, cnt in result.all():
+                    if lbl_uuid in label_stats:
+                        label_stats[lbl_uuid]["absent_image_count"] = cnt
 
             # ── Object-scope labels ─────────────────────────────────────────
             if object_label_uuids:

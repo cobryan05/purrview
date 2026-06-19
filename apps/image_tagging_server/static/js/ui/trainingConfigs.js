@@ -327,8 +327,9 @@ function renderLabelStatsPanel(config, labelsMap) {
       sectionHead.textContent = 'Image labels';
       wrap.appendChild(sectionHead);
       wrap.appendChild(_makeTable(imageLabels, [
-        { header: 'Verified imgs', key: 'verifiedImageCount', title: 'Images with this label explicitly set to Present or Absent', goodIf: s => s.unverifiedImageCount === 0 },
-        { header: 'Missing verif.', key: 'unverifiedImageCount', title: 'Images missing verification for this label', warnIf: s => s.unverifiedImageCount > 0 },
+        { header: 'Positive', key: 'presentImageCount', title: 'Images explicitly marked Present for this label', goodIf: s => s.presentImageCount > 0 },
+        { header: 'Negative', key: 'absentImageCount', title: 'Images explicitly marked Absent for this label', goodIf: s => s.absentImageCount > 0 },
+        { header: 'Unverified', key: 'unverifiedImageCount', title: 'Images with no status set for this label', warnIf: s => s.unverifiedImageCount > 0 },
       ]));
     }
 

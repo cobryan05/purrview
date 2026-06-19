@@ -521,10 +521,14 @@ class TrainingConfigReadinessResponse(StatusResponse):
 
 
 class LabelStatEntry(BaseModel):
+    model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)
+
     label_uuid: str
     label_scope: str  # "image" or "object"
     verified_image_count: int = 0
     unverified_image_count: int = 0
+    present_image_count: int = 0
+    absent_image_count: int = 0
     verified_bbox_count: int = 0
     unverified_bbox_count: int = 0
     fully_verified_image_count: int = 0
