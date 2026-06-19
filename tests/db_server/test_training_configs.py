@@ -1,7 +1,8 @@
-"""Tests for the training configurations feature — CRUD, readiness endpoint."""
+"""Tests for the training configurations feature — CRUD, readiness endpoint, label stats."""
 
 import uuid
 
+from apps.helpers.db.types import UNVERIFIED_TAG_UUID, VERIFIED_TAG_UUID
 from tests.conftest import make_png
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -391,3 +392,120 @@ class TestTrainingConfigReadiness:
         assert body["readyCount"] == 1
         assert body["needsReviewCount"] == 1
         assert set(body["datasetUuids"]) == {ds_a["uuid"], ds_b["uuid"]}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Label stats endpoint
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+async def _create_bbox(http_client, image_path: str, label_uuid: str, tag_uuids: list[str]) -> str:
+    bid = str(uuid.uuid4())
+    r = await http_client.post(
+        "/api/images/metadata/update",
+        json={
+            "imagePath": image_path,
+            "boxes": [
+                {
+                    "uuid": bid,
+                    "labelUuid": label_uuid,
+                    "x": 0.1,
+                    "y": 0.1,
+                    "width": 0.3,
+                    "height": 0.3,
+                    "tagUuids": tag_uuids,
+                }
+            ],
+        },
+    )
+    assert r.status_code == 200, r.text
+    return bid
+
+
+class TestTrainingConfigLabelStats:
+    ENDPOINT = "/api/training-configs/{uuid}/label-stats"
+
+    async def test_nonexistent_config_returns_failure(self, http_client):
+        r = await http_client.get(self.ENDPOINT.format(uuid=uuid.uuid4()))
+        assert r.json()["status"] == "failure"
+
+    async def test_no_datasets_returns_empty(self, http_client):
+        cfg = await _create_training_config(http_client, "ls-no-ds", [])
+        r = await http_client.get(self.ENDPOINT.format(uuid=cfg["uuid"]))
+        body = r.json()
+        assert body["status"] == "success"
+        assert body["labelStats"] == []
+        assert body["totalImages"] == 0
+
+    async def test_object_scope_bbox_counts(self, http_client, files_root):
+        """Object-scope label: verified/unverified bbox counts and per-image rollups.
+
+        Dataset uses label_uuids to filter images that have bboxes for that label.
+        """
+        label_uuid = (await http_client.post(
+            "/api/labels", json={"name": "ls-obj-lbl", "color": "#00ff00"}
+        )).json()["label"]["uuid"]
+
+        # Dataset carries label_uuids so the stats function knows which labels to measure
+        # and so _list_images_for_dataset finds the annotated images via the bbox filter.
+        ds = (await http_client.post(
+            "/api/datasets", json={"name": "ls-obj-scope", "filter_json": {}, "label_uuids": [label_uuid]}
+        )).json()["dataset"]
+
+        # img_a: one verified bbox + one unverified bbox — sent in a single update to avoid overwrite
+        img_a = await _register_image(http_client, files_root, "ls_obj_a.png")
+        r = await http_client.post(
+            "/api/images/metadata/update",
+            json={
+                "imagePath": img_a,
+                "boxes": [
+                    {"uuid": str(uuid.uuid4()), "labelUuid": label_uuid,
+                     "x": 0.1, "y": 0.1, "width": 0.2, "height": 0.2, "tagUuids": [VERIFIED_TAG_UUID]},
+                    {"uuid": str(uuid.uuid4()), "labelUuid": label_uuid,
+                     "x": 0.5, "y": 0.5, "width": 0.2, "height": 0.2, "tagUuids": [UNVERIFIED_TAG_UUID]},
+                ],
+            },
+        )
+        assert r.status_code == 200, r.text
+
+        # img_b: one verified bbox (fully clear)
+        img_b = await _register_image(http_client, files_root, "ls_obj_b.png")
+        await _create_bbox(http_client, img_b, label_uuid, [VERIFIED_TAG_UUID])
+
+        cfg = await _create_training_config(http_client, "ls-obj-cfg", [ds["uuid"]])
+        r = await http_client.get(self.ENDPOINT.format(uuid=cfg["uuid"]))
+        body = r.json()
+        assert body["status"] == "success"
+        assert body["totalImages"] == 2
+
+        stat = next(s for s in body["labelStats"] if s["label_uuid"] == label_uuid)
+        assert stat["label_scope"] == "object"
+        assert stat["verified_bbox_count"] == 2    # one on img_a, one on img_b
+        assert stat["unverified_bbox_count"] == 1  # one on img_a
+        assert stat["images_missing_verification_count"] == 1  # img_a has unverified
+        assert stat["fully_verified_image_count"] == 1         # img_b is all-clear
+
+    async def test_union_of_two_datasets_deduped(self, http_client, files_root):
+        """Images shared between two datasets are counted only once in totalImages."""
+        label_uuid = (await http_client.post(
+            "/api/labels", json={"name": "ls-union-lbl", "color": "#0000ff"}
+        )).json()["label"]["uuid"]
+
+        # img with a bbox so the dataset bbox-filter finds it in both datasets
+        img = await _register_image(http_client, files_root, "ls_union_img.png")
+        await _create_bbox(http_client, img, label_uuid, [VERIFIED_TAG_UUID])
+
+        # Two datasets both carrying the same label — both will match the same image
+        ds_a = (await http_client.post(
+            "/api/datasets", json={"name": "ls-union-a", "filter_json": {}, "label_uuids": [label_uuid]}
+        )).json()["dataset"]
+        ds_b = (await http_client.post(
+            "/api/datasets", json={"name": "ls-union-b", "filter_json": {}, "label_uuids": [label_uuid]}
+        )).json()["dataset"]
+
+        cfg = await _create_training_config(http_client, "ls-union-cfg", [ds_a["uuid"], ds_b["uuid"]])
+        r = await http_client.get(self.ENDPOINT.format(uuid=cfg["uuid"]))
+        body = r.json()
+        assert body["status"] == "success"
+        # Image appears in both datasets but must be counted only once
+        assert body["totalImages"] == 1

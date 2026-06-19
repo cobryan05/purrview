@@ -2975,12 +2975,17 @@ class DbClient:
 
         dataset_uuids = tc.dataset_uuids
 
-        # Union of all label UUIDs across selected datasets.
-        dataset_label_uuids: set[str] = set()
+        # Fetch all datasets once and cache — both loops below need them.
+        datasets_by_uuid: dict[str, Any] = {}
         for ds_uuid in dataset_uuids:
             dataset = await self.get_dataset(ds_uuid)
             if dataset is not None:
-                dataset_label_uuids.update(dataset.label_uuids)
+                datasets_by_uuid[ds_uuid] = dataset
+
+        # Union of all label UUIDs across selected datasets.
+        dataset_label_uuids: set[str] = set()
+        for dataset in datasets_by_uuid.values():
+            dataset_label_uuids.update(dataset.label_uuids)
 
         # Intersect with model config node labels when a model config is set.
         if tc.model_config_uuid:
@@ -3001,10 +3006,7 @@ class DbClient:
         # Collect all image UUIDs from the datasets (union, de-duped).
         seen_uuids: set[str] = set()
         all_image_uuids: list[str] = []
-        for ds_uuid in dataset_uuids:
-            dataset = await self.get_dataset(ds_uuid)
-            if dataset is None:
-                continue
+        for dataset in datasets_by_uuid.values():
             after_uuid: Optional[str] = None
             after_sort_value: Optional[datetime] = None
             while True:
