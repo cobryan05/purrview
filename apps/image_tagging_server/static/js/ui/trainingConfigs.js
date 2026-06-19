@@ -16,6 +16,7 @@
 
 import { fetchDatasets } from '/app-static/js/shared/api/datasets.js';
 import { fetchModelConfigs } from '/app-static/js/shared/api/modelConfigs.js';
+import { fetchLabels } from '/app-static/js/shared/api/labels.js';
 import {
   fetchTrainingConfigs,
   createTrainingConfig,
@@ -35,7 +36,7 @@ let _navGuardController = null;
 
 // ── Form ─────────────────────────────────────────────────────────────────────
 
-function renderTrainingConfigForm({ config, datasetsMap, modelConfigsMap, onDirtyChange }) {
+function renderTrainingConfigForm({ config, datasetsMap, modelConfigsMap, labelsMap, onDirtyChange }) {
   const el = document.createElement('div');
 
   function _markDirty() { onDirtyChange?.(true); }
@@ -97,14 +98,13 @@ function renderTrainingConfigForm({ config, datasetsMap, modelConfigsMap, onDirt
   const nodeSel = document.createElement('select');
   nodeSel.style.cssText = 'margin-bottom: 0; width: auto; flex: none;';
 
-  function nodeOptionLabel(node, modelConfigsMap) {
-    const mc = modelConfigsMap.get(configSel.value);
+  function nodeOptionLabel(node) {
+    const arch = [node.modelType ?? node.modelTypename ?? '?', node.architecture].filter(Boolean).join(' / ');
     if (!node.labelUuid) {
-      return `Root — ${node.modelType ?? node.modelTypename ?? '?'} / ${node.architecture ?? ''}`.trim().replace(/ \/$/, '');
+      return `All labels (root) — ${arch}`;
     }
-    // We don't have labelsMap here, so use labelUuid as fallback (will improve post-backend update)
-    const labelHint = node.labelName ?? node.labelUuid;
-    return `${labelHint} — ${node.modelType ?? node.modelTypename ?? '?'} / ${node.architecture ?? ''}`.trim().replace(/ \/$/, '');
+    const labelName = labelsMap?.get(node.labelUuid)?.name ?? node.labelUuid;
+    return `${labelName} — ${arch}`;
   }
 
   function refreshNodeSel() {
@@ -118,7 +118,7 @@ function renderTrainingConfigForm({ config, datasetsMap, modelConfigsMap, onDirt
     for (const node of (mc?.nodes ?? [])) {
       const o = document.createElement('option');
       o.value = node.uuid;
-      o.textContent = nodeOptionLabel(node, modelConfigsMap);
+      o.textContent = nodeOptionLabel(node);
       if (node.uuid === config?.modelConfigNodeUuid) o.selected = true;
       nodeSel.appendChild(o);
     }
@@ -458,9 +458,10 @@ export async function renderTrainingConfigManager({ target = 'training-config-bo
         _barHandle = null;
         _selectedUuid = config?.uuid ?? null;
 
-        const [datasetsMap, modelConfigsMap] = await Promise.all([
+        const [datasetsMap, modelConfigsMap, labelsMap] = await Promise.all([
           fetchDatasets(),
           fetchModelConfigs(),
+          fetchLabels().catch(() => new Map()),
         ]);
         editorBody.innerHTML = '';
 
@@ -508,6 +509,7 @@ export async function renderTrainingConfigManager({ target = 'training-config-bo
           config,
           datasetsMap,
           modelConfigsMap,
+          labelsMap,
           onDirtyChange: setDirty,
         });
         _currentFormHandle = formHandle;
@@ -520,7 +522,7 @@ export async function renderTrainingConfigManager({ target = 'training-config-bo
 
         // Label stats panel (only for existing configs with datasets selected)
         if (config?.uuid && (config.datasetUuids?.length ?? 0) > 0) {
-          editorBody.appendChild(renderLabelStatsPanel(config, new Map()));
+          editorBody.appendChild(renderLabelStatsPanel(config, labelsMap));
         }
 
         _currentDoSave = async () => {
