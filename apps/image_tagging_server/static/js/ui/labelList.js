@@ -702,15 +702,15 @@ async function mountModelConfigMode(container, {
   // Filter to the relevant scope, then remap orphaned parents to root so every
   // filtered label is reachable in the hierarchy tree.
   // Labels without an explicit scope (e.g. legacy data) default to 'object'.
-  const labelsMap = scopeFilter
-    ? new Map([...rawMap].filter(([, l]) => (l.scope ?? 'object') === scopeFilter))
-    : rawMap;
-  const displayMap = scopeFilter
-    ? new Map([...labelsMap].map(([uuid, l]) => [
-        uuid,
-        (!l.parentUuid || labelsMap.has(l.parentUuid)) ? l : { ...l, parentUuid: null },
-      ]))
-    : labelsMap;
+  let displayMap = rawMap;
+  if (scopeFilter) {
+    const filteredEntries = [...rawMap].filter(([, l]) => (l.scope ?? 'object') === scopeFilter);
+    const filteredUuids = new Set(filteredEntries.map(([uuid]) => uuid));
+    displayMap = new Map(filteredEntries.map(([uuid, l]) => [
+      uuid,
+      (!l.parentUuid || filteredUuids.has(l.parentUuid)) ? l : { ...l, parentUuid: null },
+    ]));
+  }
 
   const byParent = buildHierarchy(displayMap, null);
 

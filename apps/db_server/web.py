@@ -549,6 +549,16 @@ class NeedsReviewImagesPayload(Payload):
     limit: int = 50
 
 
+class ImagesByLabelStatusPayload(Payload):
+    label_uuid: str
+    status: Optional[Literal["present", "absent", "uncertain", "all"]] = None
+    after_uuid: Optional[str] = None
+    after_sort_value: Optional[datetime] = None
+    sort_by: Literal["uuid", "created_at", "updated_at", "filename"] = "created_at"
+    sort_order: Literal["asc", "desc"] = "desc"
+    limit: int = 50
+
+
 class ListModelBundlesResponse(StatusResponse):
     bundles: List[ModelBundleRead] = Field(default_factory=list)
 
@@ -2766,6 +2776,23 @@ class WebApp:
                 return ReviewQueueResponse(images=images, has_more=has_more, total_count=len(images))
             except Exception as e:
                 logger.exception("Failed to fetch needs-review images for training config %s", uuid)
+                return ReviewQueueResponse(status=JsonValues.FAILURE, message=str(e))
+
+        @self._app.post(
+            "/api/training-configs/{uuid}/images-by-label-status",
+            response_model=ReviewQueueResponse,
+            tags=[ApiTags.TRAINING_CONFIGS],
+            operation_id="get_training_config_images_by_label_status",
+        )
+        async def get_training_config_images_by_label_status(
+            uuid: str, payload: ImagesByLabelStatusPayload
+        ) -> ReviewQueueResponse:
+            """Return images from a training config's datasets filtered by image-label status for a given label."""
+            try:
+                images, has_more = await self._manager.get_training_config_images_by_label_status(uuid, payload)
+                return ReviewQueueResponse(images=images, has_more=has_more, total_count=len(images))
+            except Exception as e:
+                logger.exception("Failed to fetch images by label status for training config %s", uuid)
                 return ReviewQueueResponse(status=JsonValues.FAILURE, message=str(e))
 
     def _register_bundle_routes(self) -> None:

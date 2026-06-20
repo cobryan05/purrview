@@ -2340,6 +2340,26 @@ class Manager:
             results.append(record)
         return results, has_more
 
+    async def get_training_config_images_by_label_status(
+        self, uuid: str, payload: "ImagesByLabelStatusPayload"
+    ) -> "tuple[list[ImageRecordRead], bool]":
+        images, has_more = await self._db_client.get_training_config_images_by_label_status(
+            uuid,
+            payload.label_uuid,
+            payload.status,
+            limit=payload.limit,
+            after_uuid=payload.after_uuid,
+            after_sort_value=payload.after_sort_value,
+            sort_by=payload.sort_by,
+            sort_order=payload.sort_order,
+        )
+        results = []
+        for img in images:
+            record = ImageRecordRead.model_validate(img)
+            record.filename = self._image_rel_path(img.filename)
+            results.append(record)
+        return results, has_more
+
     # ── Model Bundles ─────────────────────────────────────────────────────────
 
     async def create_bundle(self, data: ModelBundleCreate):

@@ -3052,6 +3052,115 @@ class DbClient:
             "label_uuids": label_uuids,
         }
 
+    async def get_training_config_images_by_label_status(
+        self,
+        uuid: str,
+        label_uuid: str,
+        status: Optional[str],
+        *,
+        limit: int = 50,
+        after_uuid: Optional[str] = None,
+        after_sort_value: Optional[datetime] = None,
+        sort_by: str = "created_at",
+        sort_order: str = "desc",
+    ) -> tuple[list["ImageRecord"], bool]:
+        """Return paginated images from a training config's datasets filtered by image-label status.
+
+        status: 'present', 'absent', 'uncertain' (no image_label row), or None/'all' for all images.
+        """
+        tc = await self.get_training_config(uuid)
+        if tc is None:
+            return [], False
+
+        # Collect all images from the training config's datasets (union, de-duped).
+        seen_uuids: set[str] = set()
+        all_images: list[ImageRecord] = []
+
+        for ds_uuid in tc.dataset_uuids:
+            dataset = await self.get_dataset(ds_uuid)
+            if dataset is None:
+                continue
+            ds_after_uuid: Optional[str] = None
+            while True:
+                page, has_more = await self._list_images_for_dataset(
+                    dataset,
+                    limit=_READINESS_PAGE_SIZE,
+                    sort_by="uuid",
+                    sort_order="asc",
+                    after_uuid=ds_after_uuid,
+                )
+                for img in page:
+                    if img.uuid not in seen_uuids:
+                        seen_uuids.add(img.uuid)
+                        all_images.append(img)
+                if not has_more or not page:
+                    break
+                ds_after_uuid = page[-1].uuid
+
+        if not all_images:
+            return [], False
+
+        all_image_uuids = [img.uuid for img in all_images]
+
+        # Filter by status.
+        if status and status != "all":
+            async with self._async_session_maker() as session:
+                if status == "uncertain":
+                    # Images with no PRESENT/ABSENT row for this label.
+                    result = await session.exec(
+                        select(ImageLabel.image_uuid)
+                        .where(
+                            ImageLabel.image_uuid.in_(all_image_uuids),
+                            ImageLabel.label_uuid == label_uuid,
+                            ImageLabel.status.in_([ImageItemStatus.PRESENT, ImageItemStatus.ABSENT]),
+                        )
+                    )
+                    verified = set(result.all())
+                    matching = set(all_image_uuids) - verified
+                else:
+                    target = ImageItemStatus.PRESENT if status == "present" else ImageItemStatus.ABSENT
+                    result = await session.exec(
+                        select(ImageLabel.image_uuid)
+                        .where(
+                            ImageLabel.image_uuid.in_(all_image_uuids),
+                            ImageLabel.label_uuid == label_uuid,
+                            ImageLabel.status == target,
+                        )
+                    )
+                    matching = set(result.all())
+            all_images = [img for img in all_images if img.uuid in matching]
+
+        if not all_images:
+            return [], False
+
+        def _sort_key(img: "ImageRecord"):
+            return (getattr(img, sort_by), img.uuid)
+
+        all_images.sort(key=_sort_key, reverse=(sort_order == "desc"))
+
+        # Apply keyset cursor.
+        if after_uuid is not None:
+            start_idx = None
+            for i, img in enumerate(all_images):
+                attr = getattr(img, sort_by)
+                if sort_by == "uuid" or after_sort_value is None:
+                    past = img.uuid > after_uuid if sort_order == "asc" else img.uuid < after_uuid
+                else:
+                    sv = after_sort_value
+                    if sort_order == "asc":
+                        past = attr > sv or (attr == sv and img.uuid > after_uuid)
+                    else:
+                        past = attr < sv or (attr == sv and img.uuid < after_uuid)
+                if past:
+                    start_idx = i
+                    break
+            if start_idx is None:
+                return [], False
+            all_images = all_images[start_idx:]
+
+        has_more = len(all_images) > limit
+        return all_images[:limit], has_more
+
     async def get_training_config_needs_review_images(
         self,
         uuid: str,
@@ -3263,33 +3372,20 @@ class DbClient:
                         label_stats[lbl_uuid]["verified_image_count"] = cnt
                         label_stats[lbl_uuid]["unverified_image_count"] = total_images - cnt
 
-                # Count PRESENT rows per label.
+                # Count PRESENT and ABSENT rows per label in a single query.
                 result = await session.exec(
-                    select(ImageLabel.label_uuid, func.count().label("cnt"))
+                    select(ImageLabel.label_uuid, ImageLabel.status, func.count().label("cnt"))
                     .where(
                         ImageLabel.image_uuid.in_(all_image_uuids),
                         ImageLabel.label_uuid.in_(image_label_uuids),
-                        ImageLabel.status == ImageItemStatus.PRESENT,
+                        ImageLabel.status.in_([ImageItemStatus.PRESENT, ImageItemStatus.ABSENT]),
                     )
-                    .group_by(ImageLabel.label_uuid)
+                    .group_by(ImageLabel.label_uuid, ImageLabel.status)
                 )
-                for lbl_uuid, cnt in result.all():
+                for lbl_uuid, status, cnt in result.all():
                     if lbl_uuid in label_stats:
-                        label_stats[lbl_uuid]["present_image_count"] = cnt
-
-                # Count ABSENT rows per label.
-                result = await session.exec(
-                    select(ImageLabel.label_uuid, func.count().label("cnt"))
-                    .where(
-                        ImageLabel.image_uuid.in_(all_image_uuids),
-                        ImageLabel.label_uuid.in_(image_label_uuids),
-                        ImageLabel.status == ImageItemStatus.ABSENT,
-                    )
-                    .group_by(ImageLabel.label_uuid)
-                )
-                for lbl_uuid, cnt in result.all():
-                    if lbl_uuid in label_stats:
-                        label_stats[lbl_uuid]["absent_image_count"] = cnt
+                        key = "present_image_count" if status == ImageItemStatus.PRESENT else "absent_image_count"
+                        label_stats[lbl_uuid][key] = cnt
 
             # ── Object-scope labels ─────────────────────────────────────────
             if object_label_uuids:

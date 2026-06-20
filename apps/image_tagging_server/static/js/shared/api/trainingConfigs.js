@@ -98,6 +98,27 @@ export async function fetchTrainingConfigNeedsReview({
   return data.images ?? [];
 }
 
+export async function fetchTrainingConfigImagesByLabelStatus(uuid, {
+  labelUuid,
+  status = null,
+  afterUuid = null,
+  afterSortValue = null,
+  sortBy = 'created_at',
+  sortOrder = 'desc',
+  limit = 50,
+} = {}) {
+  const res = await apiFetch(`/api/training-configs/${uuid}/images-by-label-status`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ labelUuid, status, afterUuid, afterSortValue, sortBy, sortOrder, limit }),
+  });
+  const data = await res.json();
+  if (!res.ok || data.status !== 'success') {
+    throw new Error(data.message || 'Failed to fetch images by label status');
+  }
+  return data.images ?? [];
+}
+
 export async function fetchTrainingConfigLabelStats(uuid) {
   const res = await apiFetch(`/api/training-configs/${uuid}/label-stats`);
   const data = await res.json();

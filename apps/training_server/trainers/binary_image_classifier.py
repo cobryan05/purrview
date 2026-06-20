@@ -22,6 +22,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
+import httpx
 import numpy as np
 
 from . import register_trainer
@@ -93,10 +94,12 @@ class BinaryImageClassifier(Trainer):
         try:
             logger.info("Building datasets for label_uuid=%s", label_uuid)
             ds_train = await asyncio.to_thread(
-                _build_dataset, label_uuid, db_base_url, fetcher_train, "train", 0.2, allowed_image_uuids
+                _build_dataset, label_uuid, db_base_url, fetcher_train, "train",
+                allowed_image_uuids=allowed_image_uuids,
             )
             ds_val = await asyncio.to_thread(
-                _build_dataset, label_uuid, db_base_url, fetcher_val, "val", 0.2, allowed_image_uuids
+                _build_dataset, label_uuid, db_base_url, fetcher_val, "val",
+                allowed_image_uuids=allowed_image_uuids,
             )
         except ValueError as e:
             raise RuntimeError(f"Dataset build failed: {e}") from e
@@ -260,8 +263,6 @@ class BinaryImageClassifier(Trainer):
     @staticmethod
     async def _fetch_dataset_image_uuids(dataset_uuids: list[str], db_base_url: str) -> set[str]:
         """Call db_server to resolve dataset UUIDs to a set of image UUIDs."""
-        import httpx
-
         url = f"{db_base_url.rstrip('/')}/api/datasets/image-uuids"
         resp = await asyncio.to_thread(
             httpx.get,

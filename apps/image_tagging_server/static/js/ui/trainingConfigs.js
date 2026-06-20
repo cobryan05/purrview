@@ -25,6 +25,7 @@ import {
   fetchTrainingConfigReadiness,
   fetchTrainingConfigLabelStats,
   fetchTrainingConfigNeedsReview,
+  fetchTrainingConfigImagesByLabelStatus,
   clearTrainingConfigsCache,
 } from '/app-static/js/shared/api/trainingConfigs.js';
 import { makeFieldRow, buildPanelEditorBar, toast } from '/app-static/js/ui/utils/index.js';
@@ -33,6 +34,7 @@ import { showUnsavedConfigChangesModal } from '/app-static/js/ui/utils/confirmMo
 
 let _rendering = false;
 let _navGuardController = null;
+let _lastSelectedUuid = null;
 
 // ── Form ─────────────────────────────────────────────────────────────────────
 
@@ -248,6 +250,22 @@ function renderLabelStatsPanel(config, labelsMap) {
   status.textContent = 'Loading…';
   wrap.appendChild(status);
 
+  async function _openLabelModal(labelUuid, labelStatus, modalTitle) {
+    const { showReviewModal } = await import('/app-static/js/app/review/main.js');
+    await showReviewModal({
+      title: modalTitle,
+      fetchImages: async ({ afterUuid = null, afterSortValue = null, limit }) => {
+        return fetchTrainingConfigImagesByLabelStatus(config.uuid, {
+          labelUuid,
+          status: labelStatus,
+          afterUuid,
+          afterSortValue,
+          limit,
+        });
+      },
+    });
+  }
+
   fetchTrainingConfigLabelStats(config.uuid).then(({ labelStats, totalImages }) => {
     status.remove();
 
@@ -265,6 +283,9 @@ function renderLabelStatsPanel(config, labelsMap) {
     function _labelName(uuid) {
       return labelsMap?.get(uuid)?.name ?? uuid;
     }
+
+    const _clickableCellCss = 'text-align: right; padding: 2px 6px; cursor: pointer; text-decoration: underline dotted; text-underline-offset: 2px;';
+    const _clickableLabelCss = 'padding: 2px 6px; cursor: pointer; text-decoration: underline dotted; text-underline-offset: 2px;';
 
     function _makeTable(stats, columns) {
       const table = document.createElement('table');
@@ -291,7 +312,6 @@ function renderLabelStatsPanel(config, labelsMap) {
         const tr = document.createElement('tr');
 
         const nameTd = document.createElement('td');
-        nameTd.style.cssText = 'padding: 2px 6px;';
         const dot = labelsMap?.get(stat.labelUuid)?.color;
         if (dot) {
           const dotEl = document.createElement('span');
@@ -299,15 +319,39 @@ function renderLabelStatsPanel(config, labelsMap) {
           nameTd.appendChild(dotEl);
         }
         nameTd.appendChild(document.createTextNode(_labelName(stat.labelUuid)));
+
+        if (stat.labelScope === 'image') {
+          nameTd.style.cssText = _clickableLabelCss;
+          nameTd.title = 'Browse all images in this training config for this label';
+          nameTd.addEventListener('click', () => _openLabelModal(
+            stat.labelUuid, 'all',
+            `${_labelName(stat.labelUuid)} — all images (${config.name})`
+          ));
+        } else {
+          nameTd.style.cssText = 'padding: 2px 6px;';
+        }
         tr.appendChild(nameTd);
 
         for (const col of columns) {
           const td = document.createElement('td');
-          td.style.cssText = 'text-align: right; padding: 2px 6px;';
           const val = stat[col.key] ?? 0;
           td.textContent = val.toLocaleString();
-          if (col.warnIf?.(stat)) td.style.color = '#f90';
-          if (col.goodIf?.(stat)) td.style.color = '#4c4';
+
+          if (col.browseStatus && val > 0) {
+            td.style.cssText = _clickableCellCss;
+            if (col.warnIf?.(stat)) td.style.color = '#f90';
+            if (col.goodIf?.(stat)) td.style.color = '#4c4';
+            td.title = `Browse ${val.toLocaleString()} image${val === 1 ? '' : 's'} — click to open`;
+            td.addEventListener('click', () => _openLabelModal(
+              stat.labelUuid, col.browseStatus,
+              `${_labelName(stat.labelUuid)} — ${col.header.toLowerCase()} (${config.name})`
+            ));
+          } else {
+            td.style.cssText = 'text-align: right; padding: 2px 6px;';
+            if (col.warnIf?.(stat)) td.style.color = '#f90';
+            if (col.goodIf?.(stat)) td.style.color = '#4c4';
+          }
+
           tr.appendChild(td);
         }
         tbody.appendChild(tr);
@@ -327,9 +371,9 @@ function renderLabelStatsPanel(config, labelsMap) {
       sectionHead.textContent = 'Image labels';
       wrap.appendChild(sectionHead);
       wrap.appendChild(_makeTable(imageLabels, [
-        { header: 'Positive', key: 'presentImageCount', title: 'Images explicitly marked Present for this label', goodIf: s => s.presentImageCount > 0 },
-        { header: 'Negative', key: 'absentImageCount', title: 'Images explicitly marked Absent for this label', goodIf: s => s.absentImageCount > 0 },
-        { header: 'Unverified', key: 'unverifiedImageCount', title: 'Images with no status set for this label', warnIf: s => s.unverifiedImageCount > 0 },
+        { header: 'Positive', key: 'presentImageCount', title: 'Images explicitly marked Present for this label', goodIf: s => s.presentImageCount > 0, browseStatus: 'present' },
+        { header: 'Negative', key: 'absentImageCount', title: 'Images explicitly marked Absent for this label', goodIf: s => s.absentImageCount > 0, browseStatus: 'absent' },
+        { header: 'Unverified', key: 'unverifiedImageCount', title: 'Images with no status set for this label — click to review', warnIf: s => s.unverifiedImageCount > 0, browseStatus: 'uncertain' },
       ]));
     }
 
@@ -443,6 +487,7 @@ export async function renderTrainingConfigManager({ target = 'training-config-bo
         _currentDoSave = null;
         _barHandle = null;
         _selectedUuid = config?.uuid ?? null;
+        _lastSelectedUuid = _selectedUuid;
 
         const [datasetsMap, modelConfigsMap, labelsMap] = await Promise.all([
           fetchDatasets(),
@@ -579,6 +624,7 @@ export async function renderTrainingConfigManager({ target = 'training-config-bo
       }
 
       _updateListSelection(_selectedUuid);
+      return configsMap;
     }
 
     // ── Navigation guard ──────────────────────────────────────────────────
@@ -602,8 +648,9 @@ export async function renderTrainingConfigManager({ target = 'training-config-bo
       btn.click();
     }, { capture: true, signal: guardSignal });
 
-    await refreshList();
-    await _showForm(null, { force: true });
+    const configsMap = await refreshList();
+    const autoConfig = _lastSelectedUuid ? configsMap.get(_lastSelectedUuid) ?? null : null;
+    await _showForm(autoConfig, { force: true });
   } catch (err) {
     const errMsg = document.createElement('p');
     errMsg.style.color = 'red';

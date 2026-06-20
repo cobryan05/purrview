@@ -4115,6 +4115,59 @@
         }
       }
     },
+    "/api/training-configs/{uuid}/images-by-label-status": {
+      "post": {
+        "tags": [
+          "training_configs"
+        ],
+        "summary": "Get Training Config Images By Label Status",
+        "description": "Return images from a training config's datasets filtered by image-label status for a given label.",
+        "operationId": "get_training_config_images_by_label_status",
+        "parameters": [
+          {
+            "name": "uuid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ImagesByLabelStatusPayload"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewQueueResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/model-bundles": {
       "get": {
         "tags": [
@@ -7073,6 +7126,84 @@
           "status"
         ],
         "title": "ImageTagStatusRead"
+      },
+      "ImagesByLabelStatusPayload": {
+        "properties": {
+          "labelUuid": {
+            "type": "string",
+            "title": "Labeluuid"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "present",
+                  "absent",
+                  "uncertain",
+                  "all"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Status"
+          },
+          "afterUuid": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Afteruuid"
+          },
+          "afterSortValue": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Aftersortvalue"
+          },
+          "sortBy": {
+            "type": "string",
+            "enum": [
+              "uuid",
+              "created_at",
+              "updated_at",
+              "filename"
+            ],
+            "title": "Sortby",
+            "default": "created_at"
+          },
+          "sortOrder": {
+            "type": "string",
+            "enum": [
+              "asc",
+              "desc"
+            ],
+            "title": "Sortorder",
+            "default": "desc"
+          },
+          "limit": {
+            "type": "integer",
+            "title": "Limit",
+            "default": 50
+          }
+        },
+        "type": "object",
+        "required": [
+          "labelUuid"
+        ],
+        "title": "ImagesByLabelStatusPayload"
       },
       "InvalidateThumbnailsPayload": {
         "properties": {
