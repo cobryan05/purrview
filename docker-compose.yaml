@@ -144,3 +144,51 @@ services:
       - "9002:9001"
     restart: "no"
     profiles: ["dev"]
+
+  # =========================================================
+  #  Combined Dev Workspace (inference + training, one container)
+  #  Temporary convenience target — use ./rebuild.sh dev-combined
+  #  Remove this service and the combined-dev Dockerfile stage when done.
+  # =========================================================
+  whiskerwatcher-combined-dev:
+    container_name: whiskerwatcher_combined_dev
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: combined-dev
+      args:
+        - APPUSER_UID=${APPUSER_UID:-1001}
+        - APPUSER_GID=${APPUSER_GID:-1001}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: [ '0' ]
+              capabilities: [ gpu ]
+    environment:
+      THUMB_CACHE_MAX_MB: 100
+      TRAINING_SERVER_HOST: localhost
+      DB_SERVER_HOST: localhost
+      TZ: America/Chicago
+    command: ["/usr/bin/supervisord", "-c", "/conf/supervisord-monolith.conf"]
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
+      - ./data/:/data
+      - ./conf:/conf
+      - ./logs:/logs
+      - ./models:/app/models
+      - ./image_datasets:/app/image_datasets
+      - ./apps:/app/apps
+      - ./templates:/app/templates
+      - ./static/images:/app/static/images
+      - .:/project
+      - ./.vscode:/app/.vscode
+    ports:
+      - "7999:7999"
+      - "8005:8005"
+      - "8553:8554"
+      - "9001:9001"
+    restart: "no"
+    profiles: ["dev-combined"]

@@ -8,6 +8,9 @@ export APPUSER_GID=$(id -g)
 if [ "$1" = "dev" ]; then
   echo "⚠️  Targeting: Development Workspaces"
   ACTIVE_PROFILE="dev"
+elif [ "$1" = "dev-combined" ]; then
+  echo "⚠️  Targeting: Combined Development Workspace (inference + training, one container)"
+  ACTIVE_PROFILE="dev-combined"
 else
   echo "🚀 Targeting: Production Core Server"
   ACTIVE_PROFILE="prod"
@@ -15,7 +18,7 @@ fi
 
 echo "Stopping ALL running profiles to clear host ports..."
 # This tears down everything under both profiles to prevent port collisions
-docker compose --profile prod --profile dev down --volumes --remove-orphans
+docker compose --profile prod --profile dev --profile dev-combined down --volumes --remove-orphans
 
 echo "Rebuilding target layer contexts for profile: [$ACTIVE_PROFILE]..."
 docker compose --profile $ACTIVE_PROFILE build \

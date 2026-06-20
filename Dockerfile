@@ -190,6 +190,23 @@ RUN playwright install chromium \
 
 
 # =========================================================
+#  Combined Dev Layer (inference + training in one container)
+#  Temporary: merges both dev containers for easier local dev.
+#  Revert by removing this stage and the dev-combined compose service.
+# =========================================================
+FROM dev AS combined-dev
+
+USER root
+
+COPY requirements-training.txt .
+RUN pip install --no-cache-dir -r requirements-training.txt
+
+USER appuser
+
+EXPOSE 8005
+
+
+# =========================================================
 #  Training Dev Layer (ML Engineering Workspaces)
 # =========================================================
 FROM training-app AS training-dev
