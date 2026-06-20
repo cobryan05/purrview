@@ -693,8 +693,10 @@ async function mountModelConfigMode(container, {
   labelsMap: preloaded = null,
   initialSelected = new Set(),
   initialSubmodels = new Map(),
+  initialRollUpUnchecked = new Set(),
   defaultSpec = null,
   onSubmodelsChanged = () => {},
+  onRollUpUncheckedChanged = () => {},
   scopeFilter = null,  // 'object' | 'image' | null (null = show all)
 } = {}) {
   const rawMap = preloaded ?? await fetchLabels();
@@ -720,6 +722,7 @@ async function mountModelConfigMode(container, {
   }
   const selected = new Set(initialSelected);
   const submodels = new Map(initialSubmodels);
+  const rollUpUnchecked = new Set(initialRollUpUnchecked);
 
   // Image classifiers operate on whole images — sub-model overrides don't apply.
   const allowSubmodels = scopeFilter !== 'image';
@@ -745,6 +748,30 @@ async function mountModelConfigMode(container, {
 
       row.prepend(cb);
 
+      // "roll-up" badge — only for labels with children
+      let rollUpToggle = null;
+      if (showSubmodel) {
+        const rollUpBadge = document.createElement('label');
+        rollUpBadge.style.cssText = [
+          'display: inline-flex', 'align-items: center', 'gap: 3px',
+          'font-size: 0.72em', 'cursor: pointer', 'margin: 0',
+          'padding: 1px 5px', 'border-radius: 3px',
+          'border: 1px solid var(--pico-border-color)',
+          'color: var(--pico-muted-color)',
+          'white-space: nowrap', 'flex-shrink: 0',
+        ].join('; ');
+        rollUpBadge.title = 'During training, attribute images from unchecked child labels to this label';
+
+        rollUpToggle = document.createElement('input');
+        rollUpToggle.type = 'checkbox';
+        rollUpToggle.checked = rollUpUnchecked.has(label.uuid);
+        rollUpToggle.style.cssText = 'margin: 0;';
+
+        rollUpBadge.appendChild(rollUpToggle);
+        rollUpBadge.appendChild(document.createTextNode('roll-up'));
+        row.appendChild(rollUpBadge);
+      }
+
       // "sub model" badge — only for labels with children
       let subToggle = null;
       if (showSubmodel) {
@@ -757,6 +784,7 @@ async function mountModelConfigMode(container, {
           'color: var(--pico-muted-color)',
           'white-space: nowrap', 'flex-shrink: 0',
         ].join('; ');
+        badge.title = 'Use a separate sub-model for this label and its children';
 
         subToggle = document.createElement('input');
         subToggle.type = 'checkbox';
@@ -773,15 +801,35 @@ async function mountModelConfigMode(container, {
         if (cb.checked) {
           selected.add(label.uuid);
         } else {
-          // Unchecking removes any active submodel for this label too.
+          // Unchecking removes any active submodel and roll-up for this label.
           if (submodels.has(label.uuid)) {
             submodels.delete(label.uuid);
             if (subToggle) subToggle.checked = false;
             onSubmodelsChanged(new Map(submodels));
           }
+          if (rollUpUnchecked.has(label.uuid)) {
+            rollUpUnchecked.delete(label.uuid);
+            if (rollUpToggle) rollUpToggle.checked = false;
+            onRollUpUncheckedChanged(new Set(rollUpUnchecked));
+          }
           selected.delete(label.uuid);
         }
       });
+
+      // ---- Roll-up toggle event -------------------------------------------
+      if (rollUpToggle) {
+        rollUpToggle.addEventListener('change', () => {
+          if (rollUpToggle.checked) {
+            // Enabling roll-up auto-selects the label.
+            cb.checked = true;
+            selected.add(label.uuid);
+            rollUpUnchecked.add(label.uuid);
+          } else {
+            rollUpUnchecked.delete(label.uuid);
+          }
+          onRollUpUncheckedChanged(new Set(rollUpUnchecked));
+        });
+      }
 
       // ---- Sub-model toggle event -----------------------------------------
       if (subToggle) {
@@ -809,6 +857,7 @@ async function mountModelConfigMode(container, {
   return {
     getSelected: () => new Set(selected),
     getSubmodels: () => new Map(submodels),
+    getRollUpUnchecked: () => new Set(rollUpUnchecked),
     destroy() {},
   };
 }
@@ -844,8 +893,10 @@ export async function createLabelList(container, options = {}) {
     labelsMap = null,
     initialSelected = new Set(),
     initialSubmodels = new Map(),
+    initialRollUpUnchecked = new Set(),
     defaultSpec = null,
     onSubmodelsChanged = () => {},
+    onRollUpUncheckedChanged = () => {},
     scopeFilter = null,
   } = options;
 
@@ -862,7 +913,8 @@ export async function createLabelList(container, options = {}) {
       handle = await mountEditMode(container, { filter, onRerender: mount });
     } else if (mode === 'model-config') {
       handle = await mountModelConfigMode(container, {
-        labelsMap, initialSelected, initialSubmodels, defaultSpec, onSubmodelsChanged, scopeFilter,
+        labelsMap, initialSelected, initialSubmodels, initialRollUpUnchecked,
+        defaultSpec, onSubmodelsChanged, onRollUpUncheckedChanged, scopeFilter,
       });
     } else {
       handle = await mountSelectMode(container, { runtime, filter });
@@ -892,5 +944,6 @@ export async function createLabelList(container, options = {}) {
     refresh() { return mount(); },
     getSelected() { return _handle?.getSelected?.() ?? new Set(); },
     getSubmodels() { return _handle?.getSubmodels?.() ?? new Map(); },
+    getRollUpUnchecked() { return _handle?.getRollUpUnchecked?.() ?? new Set(); },
   };
 }

@@ -732,6 +732,7 @@ class ModelConfigNode(SQLModel, table=True):
     label_uuid: Optional[str] = Field(default=None, foreign_key="labels.uuid", ondelete="CASCADE")
     model_type: str
     architecture: str
+    roll_up_unchecked: bool = Field(default=False)
     config: "ModelConfig" = Relationship(back_populates="nodes")
 
 
@@ -751,6 +752,7 @@ class ModelConfigNodeRead(OrmModel):
     label_uuid: Optional[str] = None
     model_type: str
     architecture: str
+    roll_up_unchecked: bool = False
 
 
 class ModelConfigRead(OrmModel):
@@ -766,6 +768,7 @@ class ModelConfigNodeWrite(ApiModel):
     label_uuid: Optional[str] = None  # None = root node
     model_type: str
     architecture: str
+    roll_up_unchecked: bool = False
 
 
 class ModelConfigCreate(ApiModel):

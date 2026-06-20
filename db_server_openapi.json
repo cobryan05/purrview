@@ -7990,6 +7990,11 @@
           "architecture": {
             "type": "string",
             "title": "Architecture"
+          },
+          "rollUpUnchecked": {
+            "type": "boolean",
+            "title": "Rollupunchecked",
+            "default": false
           }
         },
         "type": "object",
@@ -8020,6 +8025,11 @@
           "architecture": {
             "type": "string",
             "title": "Architecture"
+          },
+          "rollUpUnchecked": {
+            "type": "boolean",
+            "title": "Rollupunchecked",
+            "default": false
           }
         },
         "type": "object",

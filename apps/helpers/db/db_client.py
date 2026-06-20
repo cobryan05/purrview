@@ -3581,6 +3581,7 @@ class DbClient:
                         label_uuid=node.label_uuid,
                         model_type=node.model_type,
                         architecture=node.architecture,
+                        roll_up_unchecked=node.roll_up_unchecked,
                     )
                 )
             await session.commit()
@@ -3612,13 +3613,14 @@ class DbClient:
                             raise ValueError(f"Duplicate label_uuid in nodes: {key_lbl!r}")
                         seen.add(key_lbl)
                         session.add(
-                            ModelConfigNode(
-                                model_config_uuid=uuid,
-                                label_uuid=node.get("label_uuid"),
-                                model_type=node["model_type"],
-                                architecture=node["architecture"],
-                            )
+                        ModelConfigNode(
+                            model_config_uuid=uuid,
+                            label_uuid=node.get("label_uuid"),
+                            model_type=node["model_type"],
+                            architecture=node["architecture"],
+                            roll_up_unchecked=node.get("roll_up_unchecked", False),
                         )
+                    )
 
             mc.updated_at = datetime.now(timezone.utc)
             session.add(mc)

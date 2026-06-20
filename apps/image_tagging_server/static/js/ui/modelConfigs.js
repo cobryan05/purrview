@@ -174,30 +174,32 @@ function parseNodes(nodes, labelsMap) {
 
   const submodels = new Map();
   const selected = new Set();
+  const rollUpUnchecked = new Set();
 
-  for (const { labelUuid, modelType, architecture } of nonRoot) {
+  for (const { labelUuid, modelType, architecture, rollUpUnchecked: rup } of nonRoot) {
     selected.add(labelUuid);
+    if (rup) rollUpUnchecked.add(labelUuid);
     const inh = inheritedModelSpec(labelUuid, labelsMap, submodels, rootSpec);
     if (modelType !== inh.modelType || architecture !== inh.architecture) {
       submodels.set(labelUuid, { modelType, architecture });
     }
   }
 
-  return { rootSpec, selected, submodels };
+  return { rootSpec, selected, submodels, rollUpUnchecked };
 }
 
 /**
  * Build the nodes array to send to the API.
  * Union of selected labels and submodel-boundary labels.
  */
-function computeNodes(selected, submodels, rootSpec, labelsMap) {
+function computeNodes(selected, submodels, rollUpUnchecked, rootSpec, labelsMap) {
   const nodes = [{ labelUuid: null, ...rootSpec }];
   const allUuids = new Set([...selected, ...submodels.keys()]);
   for (const uuid of allUuids) {
     const spec = submodels.has(uuid)
       ? submodels.get(uuid)
       : inheritedModelSpec(uuid, labelsMap, submodels, rootSpec);
-    nodes.push({ labelUuid: uuid, ...spec });
+    nodes.push({ labelUuid: uuid, ...spec, rollUpUnchecked: rollUpUnchecked.has(uuid) });
   }
   return nodes;
 }
@@ -265,11 +267,12 @@ function renderConfigForm({ config, labelsMap, onDirtyChange }) {
   el.appendChild(makeFieldRow('Description', descInput));
 
   // Root model type + architecture
-  const { rootSpec: initRootSpec, selected: initSelected, submodels: initSubmodels } =
+  const { rootSpec: initRootSpec, selected: initSelected, submodels: initSubmodels, rollUpUnchecked: initRollUpUnchecked } =
     parseNodes(config?.nodes, labelsMap);
 
   let currentScope = scopeForModelType(initRootSpec.modelType);
   let currentSubmodels = new Map(initSubmodels);
+  let currentRollUpUnchecked = new Set(initRollUpUnchecked);
   let treeHandle = null;
 
   // Default spec seeded when the user first enables a sub-model toggle on a label.
@@ -294,7 +297,7 @@ function renderConfigForm({ config, labelsMap, onDirtyChange }) {
   treeBox.className = 'panel-tree-box';
   treeBox.addEventListener('change', _markDirty);
 
-  async function buildLabelTree(scope, initialSelected, initialSubmodels) {
+  async function buildLabelTree(scope, initialSelected, initialSubmodels, initialRollUpUnchecked) {
     treeHandle?.destroy();
     treeHandle = null;
     treeBox.innerHTML = '';
@@ -303,9 +306,11 @@ function renderConfigForm({ config, labelsMap, onDirtyChange }) {
       labelsMap,
       initialSelected,
       initialSubmodels,
+      initialRollUpUnchecked,
       defaultSpec: defaultSubSpec,
       scopeFilter: scope,
       onSubmodelsChanged: (submodels) => { refreshPanels(submodels); _markDirty(); },
+      onRollUpUncheckedChanged: (set) => { currentRollUpUnchecked = set; _markDirty(); },
     });
     treeHandle = handle;
     refreshPanels(new Map(initialSubmodels));
@@ -318,7 +323,7 @@ function renderConfigForm({ config, labelsMap, onDirtyChange }) {
       currentScope = newScope;
       // Scope changed — old label selections are for a different annotation type,
       // so clear them and rebuild the tree with the correct label scope.
-      buildLabelTree(newScope, new Set(), new Map());
+      buildLabelTree(newScope, new Set(), new Map(), new Set());
     }
   });
   el.appendChild(makeFieldRow('Root model', rootSpecHandle.el));
@@ -339,7 +344,7 @@ function renderConfigForm({ config, labelsMap, onDirtyChange }) {
   el.appendChild(submodelsContainer);
 
   // Kick off the initial tree build (async, but non-blocking for the rest of the form).
-  buildLabelTree(currentScope, initSelected, initSubmodels);
+  buildLabelTree(currentScope, initSelected, initSubmodels, initRollUpUnchecked);
 
   return {
     el,
@@ -348,7 +353,13 @@ function renderConfigForm({ config, labelsMap, onDirtyChange }) {
       return {
         name: nameInput.value.trim(),
         description: descInput.value.trim(),
-        nodes: computeNodes(treeHandle?.getSelected() ?? new Set(), currentSubmodels, rootSpec, labelsMap),
+        nodes: computeNodes(
+          treeHandle?.getSelected() ?? new Set(),
+          currentSubmodels,
+          currentRollUpUnchecked,
+          rootSpec,
+          labelsMap,
+        ),
       };
     },
     destroy() { treeHandle?.destroy(); },
