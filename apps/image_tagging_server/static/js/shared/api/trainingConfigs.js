@@ -106,6 +106,7 @@ export async function fetchTrainingConfigNeedsReview({
 
 export async function fetchTrainingConfigImagesByLabelStatus(uuid, {
   labelUuid,
+  rollupLabelUuids = undefined,
   status = null,
   afterUuid = null,
   afterSortValue = null,
@@ -116,7 +117,7 @@ export async function fetchTrainingConfigImagesByLabelStatus(uuid, {
   const res = await apiFetch(`/api/training-configs/${uuid}/images-by-label-status`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ labelUuid, status, afterUuid, afterSortValue, sortBy, sortOrder, limit }),
+    body: JSON.stringify({ labelUuid, rollupLabelUuids, status, afterUuid, afterSortValue, sortBy, sortOrder, limit }),
   });
   const data = await res.json();
   if (!res.ok || data.status !== 'success') {

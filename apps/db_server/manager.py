@@ -2347,6 +2347,7 @@ class Manager:
             uuid,
             payload.label_uuid,
             payload.status,
+            rollup_label_uuids=payload.rollup_label_uuids,
             limit=payload.limit,
             after_uuid=payload.after_uuid,
             after_sort_value=payload.after_sort_value,

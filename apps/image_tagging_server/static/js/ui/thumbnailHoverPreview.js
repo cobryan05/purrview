@@ -210,6 +210,7 @@ export function createHoverPreview({ imageCache, thumbWidth = DEFAULT_THUMB_WIDT
     ]);
 
     if (token !== _token || imgOk === false || !img.naturalWidth) return;
+    if (!el.isConnected) return;  // element removed from DOM (e.g. modal closed during load)
 
     canvas.width = img.naturalWidth;
     canvas.height = img.naturalHeight;

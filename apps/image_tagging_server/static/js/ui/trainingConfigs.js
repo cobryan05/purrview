@@ -306,13 +306,14 @@ function renderLabelStatsPanel(config, labelsMap) {
   const content = document.createElement('div');
   wrap.appendChild(content);
 
-  async function _openLabelModal(labelUuid, labelStatus, modalTitle) {
+  async function _openLabelModal(labelUuid, labelStatus, modalTitle, rollupChildUuids = []) {
     const { showReviewModal } = await import('/app-static/js/app/review/main.js');
     await showReviewModal({
       title: modalTitle,
       fetchImages: async ({ afterUuid = null, afterSortValue = null, limit }) => {
         return fetchTrainingConfigImagesByLabelStatus(config.uuid, {
           labelUuid,
+          rollupLabelUuids: rollupChildUuids.length > 0 ? rollupChildUuids : undefined,
           status: labelStatus,
           afterUuid,
           afterSortValue,
@@ -322,14 +323,14 @@ function renderLabelStatsPanel(config, labelsMap) {
     });
   }
 
-  async function _openBboxNeedsReviewModal(labelUuid, modalTitle) {
+  async function _openBboxNeedsReviewModal(labelUuid, modalTitle, rollupChildUuids = []) {
     const { showReviewModal } = await import('/app-static/js/app/review/main.js');
     await showReviewModal({
       title: modalTitle,
       fetchImages: async ({ afterUuid = null, afterSortValue = null, limit }) => {
         return fetchTrainingConfigNeedsReview({
           uuid: config.uuid,
-          labelUuids: [labelUuid],
+          labelUuids: [labelUuid, ...rollupChildUuids],
           afterUuid,
           afterSortValue,
           limit,
@@ -374,6 +375,13 @@ function renderLabelStatsPanel(config, labelsMap) {
           if (depth > 20) break;
         }
         return depth;
+      }
+
+      // Returns the child label UUIDs that roll up into parentLabelUuid.
+      function _rollupChildUuids(parentLabelUuid) {
+        return labelStats
+          .filter(s => s.rollUpParentUuid === parentLabelUuid)
+          .map(s => s.labelUuid);
       }
 
       // Build a tooltip for roll-up parent labels listing which children roll up.
@@ -453,7 +461,8 @@ function renderLabelStatsPanel(config, labelsMap) {
             nameTd.title = 'Browse all images in this training config for this label';
             nameTd.addEventListener('click', () => _openLabelModal(
               stat.labelUuid, 'all',
-              `${_labelName(stat.labelUuid)} — all images (${config.name})`
+              `${_labelName(stat.labelUuid)} — all images (${config.name})`,
+              stat.hasRollup ? _rollupChildUuids(stat.labelUuid) : []
             ));
           } else {
             nameTd.style.cssText = _clickableLabelCss;
@@ -461,7 +470,8 @@ function renderLabelStatsPanel(config, labelsMap) {
             nameTd.title = 'Browse images with unverified boxes for this label';
             nameTd.addEventListener('click', () => _openBboxNeedsReviewModal(
               stat.labelUuid,
-              `${_labelName(stat.labelUuid)} — needs review (${config.name})`
+              `${_labelName(stat.labelUuid)} — needs review (${config.name})`,
+              stat.hasRollup ? _rollupChildUuids(stat.labelUuid) : []
             ));
           }
           tr.appendChild(nameTd);
@@ -483,7 +493,8 @@ function renderLabelStatsPanel(config, labelsMap) {
                 } else {
                   _openLabelModal(
                     stat.labelUuid, col.browseStatus,
-                    `${_labelName(stat.labelUuid)} — ${col.header.toLowerCase()} (${config.name})`
+                    `${_labelName(stat.labelUuid)} — ${col.header.toLowerCase()} (${config.name})`,
+                    stat.hasRollup ? _rollupChildUuids(stat.labelUuid) : []
                   );
                 }
               });
@@ -526,10 +537,10 @@ function renderLabelStatsPanel(config, labelsMap) {
         content.appendChild(_makeTable(objectLabels, [
           { header: 'Verified boxes', key: 'verifiedBboxCount', title: 'Bounding boxes marked Verified', goodIf: s => s.unverifiedBboxCount === 0 && s.verifiedBboxCount > 0 },
           { header: 'Unverified boxes', key: 'unverifiedBboxCount', title: 'Bounding boxes still marked Unverified — click to review images', warnIf: s => s.unverifiedBboxCount > 0,
-            browseFn: (stat, col) => _openBboxNeedsReviewModal(stat.labelUuid, `${_labelName(stat.labelUuid)} — unverified boxes (${config.name})`) },
+            browseFn: (stat, col) => _openBboxNeedsReviewModal(stat.labelUuid, `${_labelName(stat.labelUuid)} — unverified boxes (${config.name})`, stat.hasRollup ? _rollupChildUuids(stat.labelUuid) : []) },
           { header: 'Imgs all clear', key: 'fullyVerifiedImageCount', title: 'Images where every box for this label is verified', goodIf: s => s.imagesMissingVerificationCount === 0 && s.fullyVerifiedImageCount > 0 },
           { header: 'Imgs need work', key: 'imagesMissingVerificationCount', title: 'Images with at least one unverified box for this label — click to review', warnIf: s => s.imagesMissingVerificationCount > 0,
-            browseFn: (stat, col) => _openBboxNeedsReviewModal(stat.labelUuid, `${_labelName(stat.labelUuid)} — needs review (${config.name})`) },
+            browseFn: (stat, col) => _openBboxNeedsReviewModal(stat.labelUuid, `${_labelName(stat.labelUuid)} — needs review (${config.name})`, stat.hasRollup ? _rollupChildUuids(stat.labelUuid) : []) },
         ]));
       }
     } catch (err) {

@@ -554,6 +554,7 @@ class NeedsReviewImagesPayload(Payload):
 
 class ImagesByLabelStatusPayload(Payload):
     label_uuid: str
+    rollup_label_uuids: Optional[List[str]] = None
     status: Optional[Literal["present", "absent", "uncertain", "all"]] = None
     after_uuid: Optional[str] = None
     after_sort_value: Optional[datetime] = None

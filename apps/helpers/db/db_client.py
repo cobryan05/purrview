@@ -3153,6 +3153,7 @@ class DbClient:
         label_uuid: str,
         status: Optional[str],
         *,
+        rollup_label_uuids: Optional[List[str]] = None,
         limit: int = 50,
         after_uuid: Optional[str] = None,
         after_sort_value: Optional[datetime] = None,
@@ -3162,6 +3163,9 @@ class DbClient:
         """Return paginated images from a training config's datasets filtered by image-label status.
 
         status: 'present', 'absent', 'uncertain' (no image_label row), or None/'all' for all images.
+        rollup_label_uuids: when the label is a rollup parent, pass its children's UUIDs here so the
+            query spans the full rollup group (parent + children), matching the aggregated counts shown
+            in the stats panel.
         """
         tc = await self.get_training_config(uuid)
         if tc is None:
@@ -3197,16 +3201,20 @@ class DbClient:
 
         all_image_uuids = [img.uuid for img in all_images]
 
+        # Effective label UUIDs: when rollup children are provided, query across
+        # the parent + all children so the results match the rolled-up stat counts.
+        effective_label_uuids = [label_uuid] + (rollup_label_uuids or [])
+
         # Filter by status.
         if status and status != "all":
             async with self._async_session_maker() as session:
                 if status == "uncertain":
-                    # Images with no PRESENT/ABSENT row for this label.
+                    # Images with no PRESENT/ABSENT row for any of the effective labels.
                     result = await session.exec(
                         select(ImageLabel.image_uuid)
                         .where(
                             ImageLabel.image_uuid.in_(all_image_uuids),
-                            ImageLabel.label_uuid == label_uuid,
+                            ImageLabel.label_uuid.in_(effective_label_uuids),
                             ImageLabel.status.in_([ImageItemStatus.PRESENT, ImageItemStatus.ABSENT]),
                         )
                     )
@@ -3218,7 +3226,7 @@ class DbClient:
                         select(ImageLabel.image_uuid)
                         .where(
                             ImageLabel.image_uuid.in_(all_image_uuids),
-                            ImageLabel.label_uuid == label_uuid,
+                            ImageLabel.label_uuid.in_(effective_label_uuids),
                             ImageLabel.status == target,
                         )
                     )

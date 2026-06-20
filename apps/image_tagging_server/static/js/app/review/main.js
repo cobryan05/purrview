@@ -2278,7 +2278,9 @@ export async function showReviewModal({ title = 'Browse Images', fetchImages, ed
   overlay.appendChild(dialog);
   document.body.appendChild(overlay);
 
-  function close() { unregisterEscHandler(close); overlay.remove(); }
+  // Use a ref so close() can call panel.destroy() even though panel is assigned below.
+  const panelRef = { current: null };
+  function close() { unregisterEscHandler(close); panelRef.current?.destroy(); overlay.remove(); }
   registerEscHandler(close);
   closeBtn.addEventListener('click', close);
   overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
@@ -2295,6 +2297,7 @@ export async function showReviewModal({ title = 'Browse Images', fetchImages, ed
       datasetActions: false,
       toolbarControls,
     });
+    panelRef.current = panel;
 
     // Wire "Update Dataset" button now that panel is ready
     if (header._updateBtn && panel.filterPanel) {
@@ -2312,6 +2315,7 @@ export async function showReviewModal({ title = 'Browse Images', fetchImages, ed
     return panel.refresh;
   } else {
     const panel = await createReviewPanel(content, { fetchImages, referenceBboxUuids, referenceImageUuids, initialViewFilter, toolbarControls });
+    panelRef.current = panel;
     return panel.refresh;
   }
 }
