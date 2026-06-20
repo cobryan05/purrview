@@ -59,11 +59,24 @@ class ThumbnailLoader {
     this._queue = [];
     this._active = 0;
     this._controllers = new Set();
+    this._pending = new Map(); // imgEl → url, for items not yet started
+    this._observer = new IntersectionObserver(entries => {
+      let any = false;
+      for (const entry of entries) {
+        if (entry.isIntersecting) {
+          this._observer.unobserve(entry.target);
+          if (this._prioritize(entry.target)) any = true;
+        }
+      }
+      if (any) this._pump();
+    }, { rootMargin: '200px', threshold: 0 });
   }
 
   /** Abort all in-flight requests and drop all queued work. Safe to call multiple times. */
   reset() {
     this._queue = [];
+    this._pending.clear();
+    this._observer.disconnect();
     for (const ctrl of this._controllers) ctrl.abort();
     this._controllers.clear();
     this._active = 0;
@@ -71,13 +84,26 @@ class ThumbnailLoader {
 
   /** Enqueue a thumbnail load. Sets imgEl.src (as a blob URL) when a slot is available. */
   load(imgEl, url) {
+    this._pending.set(imgEl, url);
     this._queue.push({ imgEl, url });
+    this._observer.observe(imgEl);
     this._pump();
+  }
+
+  /** Move imgEl to the front of the queue if it is still pending. Returns true if moved. */
+  _prioritize(imgEl) {
+    const idx = this._queue.findIndex(item => item.imgEl === imgEl);
+    if (idx <= 0) return false; // not found or already at front
+    const [item] = this._queue.splice(idx, 1);
+    this._queue.unshift(item);
+    return true;
   }
 
   _pump() {
     while (this._active < this._concurrency && this._queue.length > 0) {
       const { imgEl, url } = this._queue.shift();
+      this._pending.delete(imgEl);
+      this._observer.unobserve(imgEl);
       this._active++;
       const ctrl = new AbortController();
       this._controllers.add(ctrl);
@@ -1810,7 +1836,7 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
           Logger.error('applyToAllCandidates (bboxes) failed:', err);
         }
         await render();
-      }, `Apply to all ${entries.length.toLocaleString()} matched bbox${entries.length === 1 ? '' : 'es'}`);
+      }, `Apply to all ${entries.length.toLocaleString()} matched bbox${entries.length === 1 ? '' : 'es'}`, { showPreview: true });
     }
   }
 
@@ -2124,47 +2150,7 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
     // ── Render preview thumbnails ────────────────────────────────────────
     previewRow.innerHTML = '';
 
-    function makeThumbGroup(entries, label) {
-      const group = document.createElement('div');
-      group.style.cssText = 'display:flex;flex-direction:column;align-items:center;gap:0.3em;';
-      const thumbs = document.createElement('div');
-      thumbs.style.cssText = 'display:flex;gap:4px;';
-      for (const { bbox, img } of entries) {
-        const wrapper = document.createElement('div');
-        wrapper.style.cssText = 'position:relative;';
-        const thumb = document.createElement('img');
-        thumb.style.cssText = 'width:80px;height:80px;object-fit:cover;border-radius:3px;border:1px solid #555;display:block;';
-        thumb.src = getBboxThumbnailUrl(img.filename, bbox.uuid, 80);
-        wrapper.appendChild(thumb);
-        thumbs.appendChild(wrapper);
-      }
-      const lbl = document.createElement('div');
-      lbl.style.cssText = 'font-size:0.75em;color:#888;';
-      lbl.textContent = label;
-      group.append(thumbs, lbl);
-      return group;
-    }
-
-    if (first3.length === 0 && last3.length === 0) {
-      const msg = document.createElement('span');
-      msg.style.cssText = 'color:#888;font-size:0.85em;';
-      msg.textContent = 'No preview available.';
-      previewRow.appendChild(msg);
-    } else {
-      // Deduplicate: if any last3 uuid matches a first3 uuid, we have full overlap.
-      const first3Uuids = new Set(first3.map(e => e.bbox.uuid));
-      const uniqueLast3 = last3.filter(e => !first3Uuids.has(e.bbox.uuid));
-      const showSep = uniqueLast3.length > 0;
-
-      if (first3.length > 0) previewRow.appendChild(makeThumbGroup(first3, 'First'));
-      if (showSep) {
-        const sep = document.createElement('div');
-        sep.style.cssText = 'color:#555;font-size:1.2em;letter-spacing:0.1em;align-self:center;padding:0 0.2em;';
-        sep.textContent = '···';
-        previewRow.appendChild(sep);
-        previewRow.appendChild(makeThumbGroup(uniqueLast3, 'Last'));
-      }
-    }
+    _populateBboxPreviewRow(previewRow, first3, last3);
   }
 
   return {
@@ -2839,9 +2825,53 @@ async function showCanvasModal(bbox, img, labels, onSaved, navContext = null) {
   });
 }
 
+// ── Shared preview helpers ────────────────────────────────────────────
+
+function _makeBboxThumbGroup(entries, label) {
+  const group = document.createElement('div');
+  group.style.cssText = 'display:flex;flex-direction:column;align-items:center;gap:0.3em;';
+  const thumbs = document.createElement('div');
+  thumbs.style.cssText = 'display:flex;gap:4px;';
+  for (const { bbox, img } of entries) {
+    const wrapper = document.createElement('div');
+    wrapper.style.cssText = 'position:relative;';
+    const thumb = document.createElement('img');
+    thumb.style.cssText = 'width:80px;height:80px;object-fit:cover;border-radius:3px;border:1px solid #555;display:block;';
+    thumb.src = getBboxThumbnailUrl(img.filename, bbox.uuid, 80);
+    wrapper.appendChild(thumb);
+    thumbs.appendChild(wrapper);
+  }
+  const lbl = document.createElement('div');
+  lbl.style.cssText = 'font-size:0.75em;color:#888;';
+  lbl.textContent = label;
+  group.append(thumbs, lbl);
+  return group;
+}
+
+/** Populate a preview row with first-N / last-N bbox thumbnails. */
+function _populateBboxPreviewRow(row, first3, last3) {
+  if (first3.length === 0 && last3.length === 0) {
+    const msg = document.createElement('span');
+    msg.style.cssText = 'color:#888;font-size:0.85em;';
+    msg.textContent = 'No preview available.';
+    row.appendChild(msg);
+    return;
+  }
+  const first3Uuids = new Set(first3.map(e => e.bbox.uuid));
+  const uniqueLast3 = last3.filter(e => !first3Uuids.has(e.bbox.uuid));
+  if (first3.length > 0) row.appendChild(_makeBboxThumbGroup(first3, 'First'));
+  if (uniqueLast3.length > 0) {
+    const sep = document.createElement('div');
+    sep.style.cssText = 'color:#555;font-size:1.2em;letter-spacing:0.1em;align-self:center;padding:0 0.2em;';
+    sep.textContent = '···';
+    row.appendChild(sep);
+    row.appendChild(_makeBboxThumbGroup(uniqueLast3, 'Last'));
+  }
+}
+
 // ── Bulk action modal ─────────────────────────────────────────────────
 
-async function showBulkActionModal(entries, labels, onConfirm, titleText = null) {
+async function showBulkActionModal(entries, labels, onConfirm, titleText = null, opts = {}) {
   // Fetch fresh tags and ALL labels (standard + dynamic) for the pickers.
   const [tags, allLabels] = await Promise.all([
     fetchTags().catch(() => new Map()),
@@ -2858,6 +2888,28 @@ async function showBulkActionModal(entries, labels, onConfirm, titleText = null)
 
   const title = document.createElement('strong');
   title.textContent = titleText ?? `Apply to ${entries.length} selected bbox${entries.length === 1 ? '' : 'es'}`;
+
+  // ── Preview section (opt-in) ─────────────────────────────────────────
+  if (opts.showPreview) {
+    const bboxEntries = entries.filter(e => e.kind === 'bbox');
+    const previewSection = document.createElement('div');
+    previewSection.style.cssText = 'display:flex;flex-direction:column;gap:0.4em;';
+
+    const previewHdr = document.createElement('div');
+    previewHdr.style.cssText = 'font-size:0.82em;color:#aaa;text-transform:uppercase;letter-spacing:0.04em;';
+    previewHdr.textContent = 'Preview range';
+
+    const previewRow = document.createElement('div');
+    previewRow.style.cssText = 'display:flex;align-items:center;gap:0.5em;min-height:88px;';
+
+    _populateBboxPreviewRow(previewRow, bboxEntries.slice(0, 3), bboxEntries.slice(-3));
+
+    previewSection.append(previewHdr, previewRow);
+    dialog.appendChild(title);
+    dialog.appendChild(previewSection);
+  } else {
+    dialog.appendChild(title);
+  }
 
   // Action radio buttons
   const actions = [
@@ -2938,7 +2990,7 @@ async function showBulkActionModal(entries, labels, onConfirm, titleText = null)
 
   btnRow.appendChild(cancelBtn);
   btnRow.appendChild(okBtn);
-  dialog.append(title, radioGroup, labelPickerRow, tagPickerRow, btnRow);
+  dialog.append(radioGroup, labelPickerRow, tagPickerRow, btnRow);
   overlay.appendChild(dialog);
   document.body.appendChild(overlay);
   registerEscHandler(close);

@@ -1015,9 +1015,13 @@ class DbClient:
             return result.one()
 
     async def get_bbox_with_image(self, bbox_uuid: str) -> Optional[tuple[BBox, ImageRecord]]:
-        """Return a bbox and its parent image record, or None if not found."""
+        """Return a bbox (with tags and label eagerly loaded) and its parent image, or None."""
         async with self._async_session_maker() as session:
-            stmt = select(BBox).where(BBox.uuid == bbox_uuid)
+            stmt = (
+                select(BBox)
+                .where(BBox.uuid == bbox_uuid)
+                .options(selectinload(BBox.tags), selectinload(BBox.label))
+            )
             result = await session.exec(stmt)
             bbox = result.first()
             if bbox is None:

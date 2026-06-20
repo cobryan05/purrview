@@ -214,3 +214,93 @@ async def test_invalidate_thumbnails(http_client, setup_image_with_bbox, monkeyp
 
     cache_files = list((tmp_path / "thumb_cache").glob(f"{bid}_*.png"))
     assert len(cache_files) == 0
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Bulk apply bbox — relabel
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+async def test_bulk_apply_bboxes_relabel(http_client, image_file, label_uuid):
+    """POST /api/images/bbox/bulk-apply with action=relabel changes the label."""
+    bid = str(uuid.uuid4())
+    # Create a second label to relabel to
+    r2 = await http_client.post("/api/labels", json={"name": "other_bulk", "color": "#123456"})
+    other_uuid = r2.json()["label"]["uuid"]
+
+    await http_client.post(
+        "/api/images/metadata/update",
+        json={
+            "imagePath": "bbox_test.png",
+            "boxes": [
+                {
+                    "uuid": bid,
+                    "labelUuid": label_uuid,
+                    "x": 0.1, "y": 0.1, "width": 0.2, "height": 0.2,
+                    "tagUuids": [UNVERIFIED_TAG_UUID],
+                }
+            ],
+        },
+    )
+
+    r = await http_client.post(
+        "/api/images/bbox/bulk-apply",
+        json={
+            "filter": {"showAllBboxes": True, "limit": 50},
+            "action": "relabel",
+            "labelUuid": other_uuid,
+            "tagUuids": [],
+            "bboxTagFilter": [],
+            "bboxLabelFilter": [],
+            "showAllBboxes": True,
+        },
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["status"] == "success", body
+    assert body["modifiedCount"] == 1
+    assert body["failCount"] == 0
+
+    meta_r = await http_client.post("/api/images/metadata/get", json={"imagePath": "bbox_test.png"})
+    bboxes = meta_r.json()["image"]["bboxes"]
+    assert len(bboxes) == 1
+    assert bboxes[0]["labelUuid"] == other_uuid, f"Expected {other_uuid}, got {bboxes[0]['labelUuid']}"
+    # Should have VERIFIED tag (relabeling strips UNVERIFIED)
+    tag_uuids = [t["uuid"] for t in bboxes[0]["tags"]]
+    assert VERIFIED_TAG_UUID in tag_uuids
+    assert UNVERIFIED_TAG_UUID not in tag_uuids
+
+
+async def test_bulk_apply_bboxes_by_uuids_relabel(http_client, image_file, label_uuid):
+    """POST /api/images/bbox/bulk-apply-by-uuids with action=relabel changes the label."""
+    bid = str(uuid.uuid4())
+    r2 = await http_client.post("/api/labels", json={"name": "other_bulk2", "color": "#654321"})
+    other_uuid = r2.json()["label"]["uuid"]
+
+    await http_client.post(
+        "/api/images/metadata/update",
+        json={
+            "imagePath": "bbox_test.png",
+            "boxes": [
+                {
+                    "uuid": bid,
+                    "labelUuid": label_uuid,
+                    "x": 0.1, "y": 0.1, "width": 0.2, "height": 0.2,
+                    "tagUuids": [UNVERIFIED_TAG_UUID],
+                }
+            ],
+        },
+    )
+
+    r = await http_client.post(
+        "/api/images/bbox/bulk-apply-by-uuids",
+        json={"bboxUuids": [bid], "action": "relabel", "labelUuid": other_uuid, "tagUuids": []},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["status"] == "success", body
+    assert body["modifiedCount"] == 1
+
+    meta_r = await http_client.post("/api/images/metadata/get", json={"imagePath": "bbox_test.png"})
+    bboxes = meta_r.json()["image"]["bboxes"]
+    assert bboxes[0]["labelUuid"] == other_uuid
