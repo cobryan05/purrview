@@ -518,6 +518,7 @@ class TrainingConfigReadinessResponse(StatusResponse):
     needs_review_count: int = 0
     dataset_uuids: List[str] = Field(default_factory=list)
     label_uuids: List[str] = Field(default_factory=list)
+    roll_up_active: bool = False
 
 
 class LabelStatEntry(BaseModel):
@@ -533,6 +534,8 @@ class LabelStatEntry(BaseModel):
     unverified_bbox_count: int = 0
     fully_verified_image_count: int = 0
     images_missing_verification_count: int = 0
+    has_rollup: bool = False
+    roll_up_parent_uuid: Optional[str] = None
 
 
 class TrainingConfigLabelStatsResponse(StatusResponse):

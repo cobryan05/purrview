@@ -103,7 +103,7 @@ function renderTrainingConfigForm({ config, datasetsMap, modelConfigsMap, labels
   function nodeOptionLabel(node) {
     const arch = [node.modelType ?? node.modelTypename ?? '?', node.architecture].filter(Boolean).join(' / ');
     if (!node.labelUuid) {
-      return `All labels (root) — ${arch}`;
+      return `All labels (Root) — ${arch}`;
     }
     const labelName = labelsMap?.get(node.labelUuid)?.name ?? node.labelUuid;
     return `${labelName} — ${arch}`;
@@ -196,43 +196,85 @@ function renderReadinessPanel(config) {
   const wrap = document.createElement('div');
   wrap.style.cssText = 'margin-top: 0.75em; padding: 0.6em 0.75em; border: 1px solid var(--pico-border-color, #444); border-radius: 4px; font-size: 0.85em;';
 
+  // ── Title row ──────────────────────────────────────────────────
+  const titleRow = document.createElement('div');
+  titleRow.style.cssText = 'display: flex; align-items: center; gap: 0.5em; margin-bottom: 0.4em;';
+
   const title = document.createElement('div');
-  title.style.cssText = 'font-weight: bold; margin-bottom: 0.4em;';
+  title.style.cssText = 'font-weight: bold;';
   title.textContent = 'Training readiness';
-  wrap.appendChild(title);
+  titleRow.appendChild(title);
 
-  const status = document.createElement('div');
-  status.textContent = 'Loading…';
-  wrap.appendChild(status);
+  const refreshBtn = document.createElement('button');
+  refreshBtn.type = 'button';
+  refreshBtn.textContent = '↻';
+  refreshBtn.title = 'Refresh';
+  refreshBtn.className = 'panel-btn';
+  refreshBtn.style.cssText = 'font-size: 0.9em; padding: 0 5px; margin: 0; line-height: 1.4;';
+  titleRow.appendChild(refreshBtn);
 
-  const reviewBtn = document.createElement('button');
-  reviewBtn.type = 'button';
-  reviewBtn.textContent = 'Review unverified images';
-  reviewBtn.className = 'panel-btn';
-  reviewBtn.style.cssText = 'margin-top: 0.4em; font-size: 0.8em;';
-  reviewBtn.style.display = 'none';
-  reviewBtn.addEventListener('click', async () => {
-    const { showReviewModal } = await import('/app-static/js/app/review/main.js');
-    await showReviewModal({
-      title: `Needs Review — ${config.name}`,
-      fetchImages: async ({ afterUuid = null, afterSortValue = null, limit }) => {
-        return fetchTrainingConfigNeedsReview({ uuid: config.uuid, afterUuid, afterSortValue, limit });
-      },
-    });
-  });
-  wrap.appendChild(reviewBtn);
+  wrap.appendChild(titleRow);
 
-  fetchTrainingConfigReadiness(config.uuid).then(({ readyCount, needsReviewCount }) => {
-    const total = readyCount + needsReviewCount;
-    if (total === 0) {
-      status.textContent = 'No images in dataset.';
-    } else {
-      status.innerHTML = `<span style="color:#4c4">✓ ${readyCount} ready</span> &nbsp;·&nbsp; <span style="color:#f90">⚠ ${needsReviewCount} need review</span> &nbsp;(${total} total)`;
-      if (needsReviewCount > 0) reviewBtn.style.display = '';
+  // ── Content area (replaced on each refresh) ───────────────────
+  const content = document.createElement('div');
+  wrap.appendChild(content);
+
+  async function _doLoad() {
+    content.innerHTML = '';
+    refreshBtn.disabled = true;
+
+    const loading = document.createElement('div');
+    loading.textContent = 'Loading…';
+    content.appendChild(loading);
+
+    try {
+      const { readyCount, needsReviewCount, rollUpActive } = await fetchTrainingConfigReadiness(config.uuid);
+      content.innerHTML = '';
+
+      // Rollup badge
+      if (rollUpActive) {
+        const badge = document.createElement('div');
+        badge.style.cssText = 'display: inline-block; font-size: 0.8em; background: #2a4a6a; color: #8cf; border-radius: 3px; padding: 1px 5px; margin-bottom: 0.3em; cursor: default;';
+        badge.title = 'Roll-up active: an image counts as ready as soon as any one of the child labels is verified';
+        badge.textContent = '⟳ roll-up';
+        content.appendChild(badge);
+        content.appendChild(document.createElement('br'));
+      }
+
+      const total = readyCount + needsReviewCount;
+      const status = document.createElement('div');
+      if (total === 0) {
+        status.textContent = 'No images in dataset.';
+      } else {
+        status.innerHTML = `<span style="color:#4c4">✓ ${readyCount} ready</span> &nbsp;·&nbsp; <span style="color:#f90">⚠ ${needsReviewCount} need review</span> &nbsp;(${total} total)`;
+      }
+      content.appendChild(status);
+
+      const reviewBtn = document.createElement('button');
+      reviewBtn.type = 'button';
+      reviewBtn.textContent = 'Review unverified images';
+      reviewBtn.className = 'panel-btn';
+      reviewBtn.style.cssText = 'margin-top: 0.4em; font-size: 0.8em;';
+      if (needsReviewCount === 0) reviewBtn.style.display = 'none';
+      reviewBtn.addEventListener('click', async () => {
+        const { showReviewModal } = await import('/app-static/js/app/review/main.js');
+        await showReviewModal({
+          title: `Needs Review — ${config.name}`,
+          fetchImages: async ({ afterUuid = null, afterSortValue = null, limit }) => {
+            return fetchTrainingConfigNeedsReview({ uuid: config.uuid, afterUuid, afterSortValue, limit });
+          },
+        });
+      });
+      content.appendChild(reviewBtn);
+    } catch (err) {
+      content.textContent = `Could not load readiness: ${err.message}`;
+    } finally {
+      refreshBtn.disabled = false;
     }
-  }).catch(err => {
-    status.textContent = `Could not load readiness: ${err.message}`;
-  });
+  }
+
+  refreshBtn.addEventListener('click', _doLoad);
+  _doLoad();
 
   return wrap;
 }
@@ -241,14 +283,28 @@ function renderLabelStatsPanel(config, labelsMap) {
   const wrap = document.createElement('div');
   wrap.style.cssText = 'margin-top: 0.75em; padding: 0.6em 0.75em; border: 1px solid var(--pico-border-color, #444); border-radius: 4px; font-size: 0.85em;';
 
-  const title = document.createElement('div');
-  title.style.cssText = 'font-weight: bold; margin-bottom: 0.5em;';
-  title.textContent = 'Dataset coverage by label';
-  wrap.appendChild(title);
+  // ── Title row ──────────────────────────────────────────────────
+  const titleRow = document.createElement('div');
+  titleRow.style.cssText = 'display: flex; align-items: center; gap: 0.5em; margin-bottom: 0.5em;';
 
-  const status = document.createElement('div');
-  status.textContent = 'Loading…';
-  wrap.appendChild(status);
+  const title = document.createElement('div');
+  title.style.cssText = 'font-weight: bold;';
+  title.textContent = 'Dataset coverage by label';
+  titleRow.appendChild(title);
+
+  const refreshBtn = document.createElement('button');
+  refreshBtn.type = 'button';
+  refreshBtn.textContent = '↻';
+  refreshBtn.title = 'Refresh';
+  refreshBtn.className = 'panel-btn';
+  refreshBtn.style.cssText = 'font-size: 0.9em; padding: 0 5px; margin: 0; line-height: 1.4;';
+  titleRow.appendChild(refreshBtn);
+
+  wrap.appendChild(titleRow);
+
+  // ── Content area (replaced on each refresh) ───────────────────
+  const content = document.createElement('div');
+  wrap.appendChild(content);
 
   async function _openLabelModal(labelUuid, labelStatus, modalTitle) {
     const { showReviewModal } = await import('/app-static/js/app/review/main.js');
@@ -266,132 +322,228 @@ function renderLabelStatsPanel(config, labelsMap) {
     });
   }
 
-  fetchTrainingConfigLabelStats(config.uuid).then(({ labelStats, totalImages }) => {
-    status.remove();
+  async function _openBboxNeedsReviewModal(labelUuid, modalTitle) {
+    const { showReviewModal } = await import('/app-static/js/app/review/main.js');
+    await showReviewModal({
+      title: modalTitle,
+      fetchImages: async ({ afterUuid = null, afterSortValue = null, limit }) => {
+        return fetchTrainingConfigNeedsReview({
+          uuid: config.uuid,
+          labelUuids: [labelUuid],
+          afterUuid,
+          afterSortValue,
+          limit,
+        });
+      },
+    });
+  }
 
-    if (labelStats.length === 0) {
-      const none = document.createElement('div');
-      none.style.cssText = 'color: var(--pico-muted-color, #888); font-style: italic;';
-      none.textContent = 'No relevant labels found for this model config / dataset combination.';
-      wrap.appendChild(none);
-      return;
-    }
+  async function _doLoad() {
+    content.innerHTML = '';
+    refreshBtn.disabled = true;
 
-    const imageLabels = labelStats.filter(s => s.labelScope === 'image');
-    const objectLabels = labelStats.filter(s => s.labelScope === 'object');
+    const loading = document.createElement('div');
+    loading.textContent = 'Loading…';
+    content.appendChild(loading);
 
-    function _labelName(uuid) {
-      return labelsMap?.get(uuid)?.name ?? uuid;
-    }
+    try {
+      const { labelStats, totalImages } = await fetchTrainingConfigLabelStats(config.uuid);
+      content.innerHTML = '';
 
-    const _clickableCellCss = 'text-align: right; padding: 2px 6px; cursor: pointer; text-decoration: underline dotted; text-underline-offset: 2px;';
-    const _clickableLabelCss = 'padding: 2px 6px; cursor: pointer; text-decoration: underline dotted; text-underline-offset: 2px;';
-
-    function _makeTable(stats, columns) {
-      const table = document.createElement('table');
-      table.style.cssText = 'width: 100%; border-collapse: collapse; font-size: 0.9em;';
-
-      const thead = document.createElement('thead');
-      const headerRow = document.createElement('tr');
-      const labelTh = document.createElement('th');
-      labelTh.textContent = 'Label';
-      labelTh.style.cssText = 'text-align: left; padding: 2px 6px; border-bottom: 1px solid var(--pico-border-color, #444);';
-      headerRow.appendChild(labelTh);
-      for (const col of columns) {
-        const th = document.createElement('th');
-        th.textContent = col.header;
-        th.title = col.title ?? '';
-        th.style.cssText = 'text-align: right; padding: 2px 6px; border-bottom: 1px solid var(--pico-border-color, #444); white-space: nowrap;';
-        headerRow.appendChild(th);
+      if (labelStats.length === 0) {
+        const none = document.createElement('div');
+        none.style.cssText = 'color: var(--pico-muted-color, #888); font-style: italic;';
+        none.textContent = 'No relevant labels found for this model config / dataset combination.';
+        content.appendChild(none);
+        return;
       }
-      thead.appendChild(headerRow);
-      table.appendChild(thead);
 
-      const tbody = document.createElement('tbody');
-      for (const stat of stats) {
-        const tr = document.createElement('tr');
+      const imageLabels = labelStats.filter(s => s.labelScope === 'image');
+      const objectLabels = labelStats.filter(s => s.labelScope === 'object');
 
-        const nameTd = document.createElement('td');
-        const dot = labelsMap?.get(stat.labelUuid)?.color;
-        if (dot) {
-          const dotEl = document.createElement('span');
-          dotEl.style.cssText = `display:inline-block;width:7px;height:7px;border-radius:50%;background:${dot};margin-right:4px;vertical-align:middle;`;
-          nameTd.appendChild(dotEl);
+      function _labelName(uuid) {
+        return labelsMap?.get(uuid)?.name ?? uuid;
+      }
+
+      function _labelDepth(uuid) {
+        let depth = 0;
+        let current = labelsMap?.get(uuid);
+        while (current?.parentUuid) {
+          depth++;
+          current = labelsMap?.get(current.parentUuid);
+          if (depth > 20) break;
         }
-        nameTd.appendChild(document.createTextNode(_labelName(stat.labelUuid)));
+        return depth;
+      }
 
-        if (stat.labelScope === 'image') {
-          nameTd.style.cssText = _clickableLabelCss;
-          nameTd.title = 'Browse all images in this training config for this label';
-          nameTd.addEventListener('click', () => _openLabelModal(
-            stat.labelUuid, 'all',
-            `${_labelName(stat.labelUuid)} — all images (${config.name})`
-          ));
-        } else {
-          nameTd.style.cssText = 'padding: 2px 6px;';
-        }
-        tr.appendChild(nameTd);
+      // Build a tooltip for roll-up parent labels listing which children roll up.
+      function _rollupTooltip(parentUuid, allStats) {
+        const children = allStats
+          .filter(s => s.rollUpParentUuid === parentUuid)
+          .map(s => _labelName(s.labelUuid));
+        if (children.length === 0) return 'Roll-up active: counts aggregate all child labels';
+        return `Roll-up active — counts aggregate:\n${children.map(n => `  • ${n}`).join('\n')}`;
+      }
 
+      function _makeRollupBadge(tooltip) {
+        const badge = document.createElement('span');
+        badge.style.cssText = 'display:inline-block; font-size:0.75em; background:#2a4a6a; color:#8cf; border-radius:3px; padding:0 4px; margin-left:5px; cursor:default; vertical-align:middle; white-space:nowrap;';
+        badge.title = tooltip;
+        badge.textContent = '⟳ roll-up';
+        return badge;
+      }
+
+      function _makeChildBadge(parentName) {
+        const badge = document.createElement('span');
+        badge.style.cssText = 'display:inline-block; font-size:0.75em; color:var(--pico-muted-color,#888); margin-left:5px; cursor:default; vertical-align:middle; white-space:nowrap;';
+        badge.title = `Rolled up into: ${parentName}`;
+        badge.textContent = '↑';
+        return badge;
+      }
+
+      const _clickableCellCss = 'text-align: right; padding: 2px 6px; cursor: pointer; text-decoration: underline dotted; text-underline-offset: 2px;';
+      const _clickableLabelCss = 'padding: 2px 6px; cursor: pointer; text-decoration: underline dotted; text-underline-offset: 2px;';
+
+      function _makeTable(stats, columns) {
+        const table = document.createElement('table');
+        table.style.cssText = 'width: 100%; border-collapse: collapse; font-size: 0.9em;';
+
+        const thead = document.createElement('thead');
+        const headerRow = document.createElement('tr');
+        const labelTh = document.createElement('th');
+        labelTh.textContent = 'Label';
+        labelTh.style.cssText = 'text-align: left; padding: 2px 6px; border-bottom: 1px solid var(--pico-border-color, #444);';
+        headerRow.appendChild(labelTh);
         for (const col of columns) {
-          const td = document.createElement('td');
-          const val = stat[col.key] ?? 0;
-          td.textContent = val.toLocaleString();
+          const th = document.createElement('th');
+          th.textContent = col.header;
+          th.title = col.title ?? '';
+          th.style.cssText = 'text-align: right; padding: 2px 6px; border-bottom: 1px solid var(--pico-border-color, #444); white-space: nowrap;';
+          headerRow.appendChild(th);
+        }
+        thead.appendChild(headerRow);
+        table.appendChild(thead);
 
-          if (col.browseStatus && val > 0) {
-            td.style.cssText = _clickableCellCss;
-            if (col.warnIf?.(stat)) td.style.color = '#f90';
-            if (col.goodIf?.(stat)) td.style.color = '#4c4';
-            td.title = `Browse ${val.toLocaleString()} image${val === 1 ? '' : 's'} — click to open`;
-            td.addEventListener('click', () => _openLabelModal(
-              stat.labelUuid, col.browseStatus,
-              `${_labelName(stat.labelUuid)} — ${col.header.toLowerCase()} (${config.name})`
-            ));
-          } else {
-            td.style.cssText = 'text-align: right; padding: 2px 6px;';
-            if (col.warnIf?.(stat)) td.style.color = '#f90';
-            if (col.goodIf?.(stat)) td.style.color = '#4c4';
+        const tbody = document.createElement('tbody');
+        for (const stat of stats) {
+          const tr = document.createElement('tr');
+
+          const nameTd = document.createElement('td');
+          const dot = labelsMap?.get(stat.labelUuid)?.color;
+          if (dot) {
+            const dotEl = document.createElement('span');
+            dotEl.style.cssText = `display:inline-block;width:7px;height:7px;border-radius:50%;background:${dot};margin-right:4px;vertical-align:middle;`;
+            nameTd.appendChild(dotEl);
+          }
+          nameTd.appendChild(document.createTextNode(_labelName(stat.labelUuid)));
+
+          // Rollup badges
+          if (stat.hasRollup) {
+            nameTd.appendChild(_makeRollupBadge(_rollupTooltip(stat.labelUuid, stats)));
+          } else if (stat.rollUpParentUuid) {
+            nameTd.appendChild(_makeChildBadge(_labelName(stat.rollUpParentUuid)));
           }
 
-          tr.appendChild(td);
+          const depth = _labelDepth(stat.labelUuid);
+          const indentPx = 6 + depth * 14;
+
+          if (stat.labelScope === 'image') {
+            nameTd.style.cssText = _clickableLabelCss;
+            nameTd.style.paddingLeft = `${indentPx}px`;
+            nameTd.title = 'Browse all images in this training config for this label';
+            nameTd.addEventListener('click', () => _openLabelModal(
+              stat.labelUuid, 'all',
+              `${_labelName(stat.labelUuid)} — all images (${config.name})`
+            ));
+          } else {
+            nameTd.style.cssText = _clickableLabelCss;
+            nameTd.style.paddingLeft = `${indentPx}px`;
+            nameTd.title = 'Browse images with unverified boxes for this label';
+            nameTd.addEventListener('click', () => _openBboxNeedsReviewModal(
+              stat.labelUuid,
+              `${_labelName(stat.labelUuid)} — needs review (${config.name})`
+            ));
+          }
+          tr.appendChild(nameTd);
+
+          for (const col of columns) {
+            const td = document.createElement('td');
+            const val = stat[col.key] ?? 0;
+            td.textContent = val.toLocaleString();
+
+            const isClickable = (col.browseStatus || col.browseFn) && val > 0;
+            if (isClickable) {
+              td.style.cssText = _clickableCellCss;
+              if (col.warnIf?.(stat)) td.style.color = '#f90';
+              if (col.goodIf?.(stat)) td.style.color = '#4c4';
+              td.title = `Browse ${val.toLocaleString()} image${val === 1 ? '' : 's'} — click to open`;
+              td.addEventListener('click', () => {
+                if (col.browseFn) {
+                  col.browseFn(stat, col);
+                } else {
+                  _openLabelModal(
+                    stat.labelUuid, col.browseStatus,
+                    `${_labelName(stat.labelUuid)} — ${col.header.toLowerCase()} (${config.name})`
+                  );
+                }
+              });
+            } else {
+              td.style.cssText = 'text-align: right; padding: 2px 6px;';
+              if (col.warnIf?.(stat)) td.style.color = '#f90';
+              if (col.goodIf?.(stat)) td.style.color = '#4c4';
+            }
+
+            tr.appendChild(td);
+          }
+          tbody.appendChild(tr);
         }
-        tbody.appendChild(tr);
+        table.appendChild(tbody);
+        return table;
       }
-      table.appendChild(tbody);
-      return table;
-    }
 
-    const totalNote = document.createElement('div');
-    totalNote.style.cssText = 'color: var(--pico-muted-color, #888); margin-bottom: 0.5em; font-size: 0.9em;';
-    totalNote.textContent = `${totalImages.toLocaleString()} image${totalImages === 1 ? '' : 's'} across selected dataset${(config.datasetUuids?.length ?? 0) === 1 ? '' : 's'}`;
-    wrap.appendChild(totalNote);
+      const totalNote = document.createElement('div');
+      totalNote.style.cssText = 'color: var(--pico-muted-color, #888); margin-bottom: 0.5em; font-size: 0.9em;';
+      totalNote.textContent = `${totalImages.toLocaleString()} image${totalImages === 1 ? '' : 's'} across selected dataset${(config.datasetUuids?.length ?? 0) === 1 ? '' : 's'}`;
+      content.appendChild(totalNote);
 
-    if (imageLabels.length > 0) {
-      const sectionHead = document.createElement('div');
-      sectionHead.style.cssText = 'font-weight: 600; margin: 0.5em 0 0.25em; font-size: 0.9em;';
-      sectionHead.textContent = 'Image labels';
-      wrap.appendChild(sectionHead);
-      wrap.appendChild(_makeTable(imageLabels, [
-        { header: 'Positive', key: 'presentImageCount', title: 'Images explicitly marked Present for this label', goodIf: s => s.presentImageCount > 0, browseStatus: 'present' },
-        { header: 'Negative', key: 'absentImageCount', title: 'Images explicitly marked Absent for this label', goodIf: s => s.absentImageCount > 0, browseStatus: 'absent' },
-        { header: 'Unverified', key: 'unverifiedImageCount', title: 'Images with no status set for this label — click to review', warnIf: s => s.unverifiedImageCount > 0, browseStatus: 'uncertain' },
-      ]));
-    }
+      if (imageLabels.length > 0) {
+        const sectionHead = document.createElement('div');
+        sectionHead.style.cssText = 'font-weight: 600; margin: 0.5em 0 0.25em; font-size: 0.9em;';
+        sectionHead.textContent = 'Image labels';
+        content.appendChild(sectionHead);
+        content.appendChild(_makeTable(imageLabels, [
+          { header: 'Positive', key: 'presentImageCount', title: 'Images explicitly marked Present for this label', goodIf: s => s.presentImageCount > 0, browseStatus: 'present' },
+          { header: 'Negative', key: 'absentImageCount', title: 'Images explicitly marked Absent for this label', goodIf: s => s.absentImageCount > 0, browseStatus: 'absent' },
+          { header: 'Unverified', key: 'unverifiedImageCount', title: 'Images with no status set for this label — click to review', warnIf: s => s.unverifiedImageCount > 0, browseStatus: 'uncertain' },
+        ]));
+      }
 
-    if (objectLabels.length > 0) {
-      const sectionHead = document.createElement('div');
-      sectionHead.style.cssText = 'font-weight: 600; margin: 0.6em 0 0.25em; font-size: 0.9em;';
-      sectionHead.textContent = 'Object labels';
-      wrap.appendChild(sectionHead);
-      wrap.appendChild(_makeTable(objectLabels, [
-        { header: 'Verified boxes', key: 'verifiedBboxCount', title: 'Bounding boxes marked Verified', goodIf: s => s.unverifiedBboxCount === 0 && s.verifiedBboxCount > 0 },
-        { header: 'Unverified boxes', key: 'unverifiedBboxCount', title: 'Bounding boxes still marked Unverified', warnIf: s => s.unverifiedBboxCount > 0 },
-        { header: 'Imgs all clear', key: 'fullyVerifiedImageCount', title: 'Images where every box for this label is verified', goodIf: s => s.imagesMissingVerificationCount === 0 && s.fullyVerifiedImageCount > 0 },
-        { header: 'Imgs need work', key: 'imagesMissingVerificationCount', title: 'Images with at least one unverified box for this label', warnIf: s => s.imagesMissingVerificationCount > 0 },
-      ]));
+      if (objectLabels.length > 0) {
+        const sectionHead = document.createElement('div');
+        sectionHead.style.cssText = 'font-weight: 600; margin: 0.6em 0 0.25em; font-size: 0.9em;';
+        sectionHead.textContent = 'Object labels';
+        content.appendChild(sectionHead);
+        content.appendChild(_makeTable(objectLabels, [
+          { header: 'Verified boxes', key: 'verifiedBboxCount', title: 'Bounding boxes marked Verified', goodIf: s => s.unverifiedBboxCount === 0 && s.verifiedBboxCount > 0 },
+          { header: 'Unverified boxes', key: 'unverifiedBboxCount', title: 'Bounding boxes still marked Unverified — click to review images', warnIf: s => s.unverifiedBboxCount > 0,
+            browseFn: (stat, col) => _openBboxNeedsReviewModal(stat.labelUuid, `${_labelName(stat.labelUuid)} — unverified boxes (${config.name})`) },
+          { header: 'Imgs all clear', key: 'fullyVerifiedImageCount', title: 'Images where every box for this label is verified', goodIf: s => s.imagesMissingVerificationCount === 0 && s.fullyVerifiedImageCount > 0 },
+          { header: 'Imgs need work', key: 'imagesMissingVerificationCount', title: 'Images with at least one unverified box for this label — click to review', warnIf: s => s.imagesMissingVerificationCount > 0,
+            browseFn: (stat, col) => _openBboxNeedsReviewModal(stat.labelUuid, `${_labelName(stat.labelUuid)} — needs review (${config.name})`) },
+        ]));
+      }
+    } catch (err) {
+      content.innerHTML = '';
+      const errDiv = document.createElement('div');
+      errDiv.textContent = `Could not load label stats: ${err.message}`;
+      content.appendChild(errDiv);
+    } finally {
+      refreshBtn.disabled = false;
     }
-  }).catch(err => {
-    status.textContent = `Could not load label stats: ${err.message}`;
-  });
+  }
+
+  refreshBtn.addEventListener('click', _doLoad);
+  _doLoad();
 
   return wrap;
 }

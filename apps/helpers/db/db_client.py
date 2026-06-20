@@ -2917,64 +2917,154 @@ class DbClient:
             await session.commit()
         return True
 
-    async def _derive_labels_for_node(self, model_config_node_uuid: Optional[str]) -> list[str]:
-        """Return the list of label UUIDs relevant to the given model config node.
+    @staticmethod
+    def _sort_labels_hierarchically(uuids: list[str], labels_map: dict) -> list[str]:
+        """Return label UUIDs sorted depth-first: parents before children, siblings by name.
 
-        - If node_uuid is None: returns [].
-        - If node has label_uuid=None (root node): returns all label_uuids assigned
-          to any non-root node in the same model config.
-        - If node has a specific label_uuid: returns that label UUID plus all
-          descendant labels in the label hierarchy.
+        Used to give consistent hierarchical display when the order is otherwise arbitrary
+        (e.g. the fallback path that unions label UUIDs from datasets).
+        """
+        uuid_set = set(uuids)
+        children_of: dict[Optional[str], list[str]] = {}
+        for uuid in uuids:
+            label = labels_map.get(uuid)
+            parent = label.parent_uuid if label else None
+            # If the parent is not in our set, treat as a top-level entry.
+            effective_parent = parent if (parent in uuid_set) else None
+            children_of.setdefault(effective_parent, []).append(uuid)
+
+        # Sort siblings alphabetically by name for deterministic output.
+        for sibling_list in children_of.values():
+            sibling_list.sort(key=lambda u: (labels_map[u].name.lower() if u in labels_map else u))
+
+        result: list[str] = []
+
+        def _visit(uuid: str) -> None:
+            result.append(uuid)
+            for child in children_of.get(uuid, []):
+                _visit(child)
+
+        for root_uuid in children_of.get(None, []):
+            _visit(root_uuid)
+
+        return result
+
+    async def _derive_labels_for_node(
+        self, model_config_node_uuid: Optional[str]
+    ) -> tuple[list[str], dict[str, list[str]]]:
+        """Return (label_uuids, rollup_map).
+
+        label_uuids: all relevant labels in depth-first hierarchical order
+            (parents appear before their rollup children).
+        rollup_map: maps each rollup-parent label UUID to the list of child label
+            UUIDs that aggregate into it.  Empty dict = no rollup active.
+
+        - model_config_node_uuid is None  → ([], {})
+        - Root node (label_uuid=None): returns all non-root node label UUIDs.
+          For nodes with roll_up_unchecked=True, appends that label's hierarchy
+          descendants (those without their own model config node) right after the
+          parent and records them in rollup_map.
+        - Specific node: returns that label + all descendants in DFS order.
+          If roll_up_unchecked=True, records all descendants in rollup_map under
+          that label.
         """
         if model_config_node_uuid is None:
-            return []
+            return [], {}
 
         async with self._async_session_maker() as session:
             node = await session.get(ModelConfigNode, model_config_node_uuid)
             if node is None:
-                return []
+                return [], {}
 
             if node.label_uuid is None:
-                # Root node: use all non-root node labels from this config.
+                # ── Root node ────────────────────────────────────────────────
                 result = await session.exec(
-                    select(ModelConfigNode.label_uuid).where(
+                    select(ModelConfigNode).where(
                         ModelConfigNode.model_config_uuid == node.model_config_uuid,
                         ModelConfigNode.label_uuid.isnot(None),
                     )
                 )
-                return list(result.all())
+                non_root_nodes = list(result.all())
+                base_label_uuids = [n.label_uuid for n in non_root_nodes]
+                rollup_nodes = [n for n in non_root_nodes if n.roll_up_unchecked]
 
-            # Walk label hierarchy to collect this label and all descendants.
-            all_labels_result = await session.exec(select(Label))
-            all_labels = {lbl.uuid: lbl for lbl in all_labels_result.all()}
+                if not rollup_nodes:
+                    return base_label_uuids, {}
 
-        def _collect_descendants(label_uuid: str) -> list[str]:
-            result_uuids = [label_uuid]
+                # Load full label hierarchy to find rollup children.
+                all_labels_result = await session.exec(select(Label))
+                all_labels = {lbl.uuid: lbl for lbl in all_labels_result.all()}
+
+            else:
+                # ── Specific node ─────────────────────────────────────────────
+                is_rollup = node.roll_up_unchecked
+                all_labels_result = await session.exec(select(Label))
+                all_labels = {lbl.uuid: lbl for lbl in all_labels_result.all()}
+
+        # ── Outside the session ───────────────────────────────────────────────
+
+        def _collect_label_descendants(parent_uuid: str, exclude_set: set) -> list[str]:
+            """Recursively collect label-hierarchy descendants, skipping those in exclude_set."""
+            result: list[str] = []
             for lbl in all_labels.values():
-                if lbl.parent_uuid == label_uuid:
-                    result_uuids.extend(_collect_descendants(lbl.uuid))
-            return result_uuids
+                if lbl.parent_uuid == parent_uuid:
+                    if lbl.uuid not in exclude_set:
+                        result.append(lbl.uuid)
+                    # Always recurse so we pick up grandchildren of excluded nodes too.
+                    result.extend(_collect_label_descendants(lbl.uuid, exclude_set))
+            return result
 
-        return _collect_descendants(node.label_uuid)
+        if node.label_uuid is None:
+            # Root case: build expanded list; rollup children appear right after parent.
+            base_label_set = set(base_label_uuids)
+            rollup_label_set = {n.label_uuid for n in rollup_nodes}
+            rollup_map: dict[str, list[str]] = {}
+            expanded: list[str] = []
+
+            for lbl_uuid in base_label_uuids:
+                expanded.append(lbl_uuid)
+                if lbl_uuid in rollup_label_set:
+                    children = _collect_label_descendants(lbl_uuid, base_label_set)
+                    if children:
+                        rollup_map[lbl_uuid] = children
+                        expanded.extend(children)
+
+            return expanded, rollup_map
+
+        else:
+            # Specific-node case.
+            def _collect_all(label_uuid: str) -> list[str]:
+                result = [label_uuid]
+                for lbl in all_labels.values():
+                    if lbl.parent_uuid == label_uuid:
+                        result.extend(_collect_all(lbl.uuid))
+                return result
+
+            all_uuids = _collect_all(node.label_uuid)
+            if not is_rollup:
+                return all_uuids, {}
+            rollup_map = {node.label_uuid: [u for u in all_uuids if u != node.label_uuid]}
+            return all_uuids, rollup_map
 
     async def get_training_config_readiness(self, uuid: str) -> Optional[dict]:
         """Return ready/needs-review counts for a training config's datasets (union).
 
         An image is 'ready' when every target label has an explicit PRESENT or ABSENT
         row in image_labels; 'needs_review' otherwise.
-        Returns None if the training config doesn't exist.
 
-        Labels are derived from the model config node referenced by model_config_node_uuid:
-        - If node has a label_uuid: collect all descendant labels that map to this node.
-        - If node is the root (label_uuid=None): all labels assigned to ANY node in the config.
-        - If no node is assigned: returns zero counts with empty label list.
+        When rollup is active (any node has roll_up_unchecked=True) an image is
+        considered ready as soon as ANY ONE of the in-scope labels is verified,
+        because child annotations all roll up to their parent label.
+
+        Returns None if the training config doesn't exist.
         """
         tc = await self.get_training_config(uuid)
         if tc is None:
             return None
         dataset_uuids = tc.dataset_uuids
 
-        label_uuids = await self._derive_labels_for_node(tc.model_config_node_uuid)
+        label_uuids, rollup_map = await self._derive_labels_for_node(tc.model_config_node_uuid)
+        is_rollup = bool(rollup_map)
 
         if not label_uuids:
             return {
@@ -2982,6 +3072,7 @@ class DbClient:
                 "needs_review_count": 0,
                 "dataset_uuids": dataset_uuids,
                 "label_uuids": [],
+                "roll_up_active": False,
             }
 
         # Collect all images across all linked datasets (union, de-duped by uuid).
@@ -3018,10 +3109,13 @@ class DbClient:
                 "needs_review_count": 0,
                 "dataset_uuids": dataset_uuids,
                 "label_uuids": label_uuids,
+                "roll_up_active": is_rollup,
             }
 
         image_uuids = [img.uuid for img in all_images]
         n_labels = len(label_uuids)
+        # With rollup, any one verified label means the image is ready.
+        readiness_threshold = 1 if is_rollup else n_labels
 
         async with self._async_session_maker() as session:
             verified_count_col = func.count(ImageLabel.label_uuid).label("verified_count")
@@ -3040,7 +3134,7 @@ class DbClient:
             ready_count = 0
             needs_review_count = 0
             for img_uuid in image_uuids:
-                if verified_by_image.get(img_uuid, 0) >= n_labels:
+                if verified_by_image.get(img_uuid, 0) >= readiness_threshold:
                     ready_count += 1
                 else:
                     needs_review_count += 1
@@ -3050,6 +3144,7 @@ class DbClient:
             "needs_review_count": needs_review_count,
             "dataset_uuids": dataset_uuids,
             "label_uuids": label_uuids,
+            "roll_up_active": is_rollup,
         }
 
     async def get_training_config_images_by_label_status(
@@ -3186,7 +3281,7 @@ class DbClient:
         if tc is None:
             return [], False
 
-        label_uuids = await self._derive_labels_for_node(tc.model_config_node_uuid)
+        label_uuids, _ = await self._derive_labels_for_node(tc.model_config_node_uuid)
         if not label_uuids:
             return [], False
 
@@ -3281,8 +3376,8 @@ class DbClient:
             if dataset is not None:
                 datasets_by_uuid[ds_uuid] = dataset
 
-        # Derive relevant label UUIDs from the node hierarchy.
-        node_label_uuids = await self._derive_labels_for_node(tc.model_config_node_uuid)
+        # Derive relevant label UUIDs from the node hierarchy (includes rollup children).
+        node_label_uuids, rollup_map = await self._derive_labels_for_node(tc.model_config_node_uuid)
 
         if node_label_uuids:
             relevant_label_uuids = node_label_uuids
@@ -3297,6 +3392,11 @@ class DbClient:
             return {"label_stats": [], "total_images": 0}
 
         labels_map = await self.get_labels_by_uuids(relevant_label_uuids)
+
+        # For the fallback path (no model config node), sort in hierarchical order now
+        # that we have the label metadata.  The node-derived path is already DFS-ordered.
+        if not node_label_uuids:
+            relevant_label_uuids = DbClient._sort_labels_hierarchically(relevant_label_uuids, labels_map)
 
         # Collect all image UUIDs from the datasets (union, de-duped).
         seen_uuids: set[str] = set()
@@ -3469,6 +3569,91 @@ class DbClient:
                     if lbl_uuid in label_stats:
                         missing = imgs_missing_by_label.get(lbl_uuid, 0)
                         label_stats[lbl_uuid]["fully_verified_image_count"] = cnt - missing
+
+        # ── Rollup aggregation ──────────────────────────────────────────────────
+        # For each rollup parent, aggregate its children's stats into the parent row
+        # and mark every entry with rollup metadata.
+        if rollup_map:
+            async with self._async_session_maker() as session:
+                for rollup_parent_uuid, child_uuids in rollup_map.items():
+                    if rollup_parent_uuid not in label_stats:
+                        continue
+                    parent_stat = label_stats[rollup_parent_uuid]
+                    all_rollup_uuids = [rollup_parent_uuid] + [
+                        u for u in child_uuids if u in label_stats
+                    ]
+                    parent_scope = parent_stat["label_scope"]
+
+                    if parent_scope == LabelScope.IMAGE.value:
+                        # DISTINCT counts so a multi-labeled image isn't double-counted.
+                        for status_val, key in [
+                            (ImageItemStatus.PRESENT, "present_image_count"),
+                            (ImageItemStatus.ABSENT, "absent_image_count"),
+                        ]:
+                            distinct_sub = (
+                                select(ImageLabel.image_uuid)
+                                .where(
+                                    ImageLabel.image_uuid.in_(all_image_uuids),
+                                    ImageLabel.label_uuid.in_(all_rollup_uuids),
+                                    ImageLabel.status == status_val,
+                                )
+                                .distinct()
+                                .subquery()
+                            )
+                            r = await session.exec(select(func.count()).select_from(distinct_sub))
+                            parent_stat[key] = r.one() or 0
+
+                        parent_stat["verified_image_count"] = (
+                            parent_stat["present_image_count"] + parent_stat["absent_image_count"]
+                        )
+                        parent_stat["unverified_image_count"] = max(
+                            total_images - parent_stat["verified_image_count"], 0
+                        )
+
+                    elif parent_scope == LabelScope.OBJECT.value:
+                        # Bbox counts: each box has exactly one label → simple sum, no double-count.
+                        parent_stat["verified_bbox_count"] = sum(
+                            label_stats.get(u, {}).get("verified_bbox_count", 0)
+                            for u in all_rollup_uuids
+                        )
+                        parent_stat["unverified_bbox_count"] = sum(
+                            label_stats.get(u, {}).get("unverified_bbox_count", 0)
+                            for u in all_rollup_uuids
+                        )
+
+                        # Image-level counts require distinct queries across all child labels.
+                        imgs_missing_sub = (
+                            select(BBox.image_uuid)
+                            .join(BBoxTagLink, BBox.uuid == BBoxTagLink.bbox_uuid)
+                            .where(
+                                BBox.image_uuid.in_(all_image_uuids),
+                                BBox.label_uuid.in_(all_rollup_uuids),
+                                BBoxTagLink.tag_uuid == UNVERIFIED_TAG_UUID,
+                            )
+                            .distinct()
+                            .subquery()
+                        )
+                        r = await session.exec(select(func.count()).select_from(imgs_missing_sub))
+                        imgs_missing = r.one() or 0
+                        parent_stat["images_missing_verification_count"] = imgs_missing
+
+                        imgs_with_bbox_sub = (
+                            select(BBox.image_uuid)
+                            .where(
+                                BBox.image_uuid.in_(all_image_uuids),
+                                BBox.label_uuid.in_(all_rollup_uuids),
+                            )
+                            .distinct()
+                            .subquery()
+                        )
+                        r = await session.exec(select(func.count()).select_from(imgs_with_bbox_sub))
+                        imgs_with_bbox = r.one() or 0
+                        parent_stat["fully_verified_image_count"] = max(imgs_with_bbox - imgs_missing, 0)
+
+                    parent_stat["has_rollup"] = True
+                    for child_uuid in child_uuids:
+                        if child_uuid in label_stats:
+                            label_stats[child_uuid]["roll_up_parent_uuid"] = rollup_parent_uuid
 
         return {"label_stats": list(label_stats.values()), "total_images": total_images}
 

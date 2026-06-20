@@ -74,7 +74,13 @@ export async function fetchTrainingConfigReadiness(uuid) {
   if (!res.ok || data.status !== 'success') {
     throw new Error(data.message || 'Failed to fetch training config readiness');
   }
-  return { readyCount: data.readyCount, needsReviewCount: data.needsReviewCount, datasetUuids: data.datasetUuids ?? [], labelUuids: data.labelUuids ?? [] };
+  return {
+    readyCount: data.readyCount,
+    needsReviewCount: data.needsReviewCount,
+    datasetUuids: data.datasetUuids ?? [],
+    labelUuids: data.labelUuids ?? [],
+    rollUpActive: data.rollUpActive ?? false,
+  };
 }
 
 export async function fetchTrainingConfigNeedsReview({

@@ -7324,6 +7324,22 @@
             "type": "integer",
             "title": "Imagesmissingverificationcount",
             "default": 0
+          },
+          "hasRollup": {
+            "type": "boolean",
+            "title": "Hasrollup",
+            "default": false
+          },
+          "rollUpParentUuid": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rollupparentuuid"
           }
         },
         "type": "object",
@@ -9386,6 +9402,11 @@
             },
             "type": "array",
             "title": "Labeluuids"
+          },
+          "rollUpActive": {
+            "type": "boolean",
+            "title": "Rollupactive",
+            "default": false
           }
         },
         "type": "object",
