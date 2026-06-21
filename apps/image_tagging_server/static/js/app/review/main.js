@@ -59,7 +59,6 @@ class ThumbnailLoader {
     this._queue = [];
     this._active = 0;
     this._controllers = new Set();
-    this._pending = new Map(); // imgEl → url, for items not yet started
     this._observer = new IntersectionObserver(entries => {
       let any = false;
       for (const entry of entries) {
@@ -75,7 +74,6 @@ class ThumbnailLoader {
   /** Abort all in-flight requests and drop all queued work. Safe to call multiple times. */
   reset() {
     this._queue = [];
-    this._pending.clear();
     this._observer.disconnect();
     for (const ctrl of this._controllers) ctrl.abort();
     this._controllers.clear();
@@ -84,7 +82,6 @@ class ThumbnailLoader {
 
   /** Enqueue a thumbnail load. Sets imgEl.src (as a blob URL) when a slot is available. */
   load(imgEl, url) {
-    this._pending.set(imgEl, url);
     this._queue.push({ imgEl, url });
     this._observer.observe(imgEl);
     this._pump();
@@ -102,7 +99,6 @@ class ThumbnailLoader {
   _pump() {
     while (this._active < this._concurrency && this._queue.length > 0) {
       const { imgEl, url } = this._queue.shift();
-      this._pending.delete(imgEl);
       this._observer.unobserve(imgEl);
       this._active++;
       const ctrl = new AbortController();

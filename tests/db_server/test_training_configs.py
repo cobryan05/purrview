@@ -538,6 +538,54 @@ class TestTrainingConfigReadiness:
         assert body["readyCount"] == 0
 
 
+class TestRollupLabelDerivation:
+    async def test_nested_rollup_parents_claim_nearest_ancestor(self, http_client, db_client):
+        """A descendant shared by nested rollup parents rolls up into the NEAREST one.
+
+        With A→B→C where A and B both have roll_up_unchecked nodes and C has no node,
+        C must be claimed by B (its nearest rollup ancestor) and counted exactly once,
+        regardless of the order the model_config_nodes are returned by the DB.
+        """
+        label_a = await _create_label(http_client, "rollup-a")
+        label_b = await _create_label(http_client, "rollup-b", parent_uuid=label_a)
+        label_c = await _create_label(http_client, "rollup-c", parent_uuid=label_b)
+
+        mc = await _create_model_config(
+            http_client,
+            "mc-nested-rollup",
+            nodes=[
+                {"label_uuid": None, "model_type": "object_detection", "architecture": "yolo_v8_n"},
+                {
+                    "label_uuid": label_a,
+                    "model_type": "image_classifier",
+                    "architecture": "resnet_18",
+                    "roll_up_unchecked": True,
+                },
+                {
+                    "label_uuid": label_b,
+                    "model_type": "image_classifier",
+                    "architecture": "resnet_18",
+                    "roll_up_unchecked": True,
+                },
+            ],
+        )
+        root_node = next(n for n in mc["nodes"] if n["labelUuid"] is None)
+
+        label_uuids, rollup_map = await db_client._derive_labels_for_node(root_node["uuid"])
+
+        # C is claimed by its nearest rollup ancestor (B), not the farther one (A).
+        assert label_c in rollup_map.get(label_b, [])
+        assert label_c not in rollup_map.get(label_a, [])
+
+        # No label is double-counted across rollup parents.
+        all_claimed = [u for children in rollup_map.values() for u in children]
+        assert len(all_claimed) == len(set(all_claimed))
+
+        # All three labels are in scope; parents precede their rollup children.
+        assert {label_a, label_b, label_c} <= set(label_uuids)
+        assert label_uuids.index(label_b) < label_uuids.index(label_c)
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Label stats endpoint
 # ─────────────────────────────────────────────────────────────────────────────

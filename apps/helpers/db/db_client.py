@@ -1017,11 +1017,7 @@ class DbClient:
     async def get_bbox_with_image(self, bbox_uuid: str) -> Optional[tuple[BBox, ImageRecord]]:
         """Return a bbox (with tags and label eagerly loaded) and its parent image, or None."""
         async with self._async_session_maker() as session:
-            stmt = (
-                select(BBox)
-                .where(BBox.uuid == bbox_uuid)
-                .options(selectinload(BBox.tags), selectinload(BBox.label))
-            )
+            stmt = select(BBox).where(BBox.uuid == bbox_uuid).options(selectinload(BBox.tags), selectinload(BBox.label))
             result = await session.exec(stmt)
             bbox = result.first()
             if bbox is None:
@@ -3007,38 +3003,55 @@ class DbClient:
 
         # ── Outside the session ───────────────────────────────────────────────
 
+        # Index children by parent once so descendant collection is O(descendants)
+        # instead of re-scanning every label at each recursion level.
+        children_by_parent: dict[Optional[str], list[Label]] = {}
+        for lbl in all_labels.values():
+            children_by_parent.setdefault(lbl.parent_uuid, []).append(lbl)
+
         def _collect_label_descendants(parent_uuid: str, exclude_set: set) -> list[str]:
             """Recursively collect label-hierarchy descendants, skipping those in exclude_set."""
             result: list[str] = []
-            for lbl in all_labels.values():
-                if lbl.parent_uuid == parent_uuid:
-                    if lbl.uuid not in exclude_set:
-                        result.append(lbl.uuid)
-                    # Always recurse so we pick up grandchildren of excluded nodes too.
-                    result.extend(_collect_label_descendants(lbl.uuid, exclude_set))
+            for lbl in children_by_parent.get(parent_uuid, []):
+                if lbl.uuid not in exclude_set:
+                    result.append(lbl.uuid)
+                # Always recurse so we pick up grandchildren of excluded nodes too.
+                result.extend(_collect_label_descendants(lbl.uuid, exclude_set))
             return result
 
         if node.label_uuid is None:
             # Root case: build expanded list; rollup children appear right after parent.
             base_label_set = set(base_label_uuids)
             rollup_label_set = {n.label_uuid for n in rollup_nodes}
-            rollup_map: dict[str, list[str]] = {}
-            expanded: list[str] = []
-            # Track children already claimed by a previous rollup parent so that a
-            # label shared between two rollup ancestors (e.g. A→B→C where both A and
-            # B have roll_up_unchecked=True) is only assigned to the nearest ancestor.
-            # base_label_uuids is DFS-ordered so ancestors are processed before descendants.
-            claimed_as_rollup: set[str] = set()
 
-            for lbl_uuid in base_label_uuids:
+            def _label_depth(uuid: str) -> int:
+                depth = 0
+                current = all_labels.get(uuid)
+                while current is not None and current.parent_uuid is not None:
+                    depth += 1
+                    current = all_labels.get(current.parent_uuid)
+                return depth
+
+            # Assign each rollup descendant to its NEAREST rollup ancestor by processing
+            # rollup parents deepest-first: a label shared between nested rollup parents
+            # (e.g. A→B→C with both A and B roll_up_unchecked) is claimed by the closest
+            # one (B) and never double-counted. The source query order is unspecified, so
+            # depth — not row order — drives the assignment.
+            rollup_map: dict[str, list[str]] = {}
+            claimed_as_rollup: set[str] = set()
+            for parent_uuid in sorted(rollup_label_set, key=_label_depth, reverse=True):
+                children = _collect_label_descendants(parent_uuid, base_label_set)
+                fresh_children = [u for u in children if u not in claimed_as_rollup]
+                if fresh_children:
+                    rollup_map[parent_uuid] = fresh_children
+                    claimed_as_rollup.update(fresh_children)
+
+            # Display order: base labels depth-first, each rollup parent's claimed
+            # children inserted right after it.
+            expanded: list[str] = []
+            for lbl_uuid in DbClient._sort_labels_hierarchically(base_label_uuids, all_labels):
                 expanded.append(lbl_uuid)
-                if lbl_uuid in rollup_label_set:
-                    children = _collect_label_descendants(lbl_uuid, base_label_set)
-                    fresh_children = [u for u in children if u not in claimed_as_rollup]
-                    if fresh_children:
-                        rollup_map[lbl_uuid] = fresh_children
-                        expanded.extend(fresh_children)
-                        claimed_as_rollup.update(fresh_children)
+                expanded.extend(rollup_map.get(lbl_uuid, []))
 
             return expanded, rollup_map
 
@@ -3215,8 +3228,7 @@ class DbClient:
                 if status == "uncertain":
                     # Images with no PRESENT/ABSENT row for any of the effective labels.
                     result = await session.exec(
-                        select(ImageLabel.image_uuid)
-                        .where(
+                        select(ImageLabel.image_uuid).where(
                             ImageLabel.image_uuid.in_(all_image_uuids),
                             ImageLabel.label_uuid.in_(effective_label_uuids),
                             ImageLabel.status.in_([ImageItemStatus.PRESENT, ImageItemStatus.ABSENT]),
@@ -3227,8 +3239,7 @@ class DbClient:
                 else:
                     target = ImageItemStatus.PRESENT if status == "present" else ImageItemStatus.ABSENT
                     result = await session.exec(
-                        select(ImageLabel.image_uuid)
-                        .where(
+                        select(ImageLabel.image_uuid).where(
                             ImageLabel.image_uuid.in_(all_image_uuids),
                             ImageLabel.label_uuid.in_(effective_label_uuids),
                             ImageLabel.status == target,
@@ -3591,9 +3602,7 @@ class DbClient:
                     if rollup_parent_uuid not in label_stats:
                         continue
                     parent_stat = label_stats[rollup_parent_uuid]
-                    all_rollup_uuids = [rollup_parent_uuid] + [
-                        u for u in child_uuids if u in label_stats
-                    ]
+                    all_rollup_uuids = [rollup_parent_uuid] + [u for u in child_uuids if u in label_stats]
                     parent_scope = parent_stat["label_scope"]
 
                     if parent_scope == LabelScope.IMAGE.value:
@@ -3625,12 +3634,10 @@ class DbClient:
                     elif parent_scope == LabelScope.OBJECT.value:
                         # Bbox counts: each box has exactly one label → simple sum, no double-count.
                         parent_stat["verified_bbox_count"] = sum(
-                            label_stats.get(u, {}).get("verified_bbox_count", 0)
-                            for u in all_rollup_uuids
+                            label_stats.get(u, {}).get("verified_bbox_count", 0) for u in all_rollup_uuids
                         )
                         parent_stat["unverified_bbox_count"] = sum(
-                            label_stats.get(u, {}).get("unverified_bbox_count", 0)
-                            for u in all_rollup_uuids
+                            label_stats.get(u, {}).get("unverified_bbox_count", 0) for u in all_rollup_uuids
                         )
 
                         # Image-level counts require distinct queries across all child labels.
@@ -3810,14 +3817,14 @@ class DbClient:
                             raise ValueError(f"Duplicate label_uuid in nodes: {key_lbl!r}")
                         seen.add(key_lbl)
                         session.add(
-                        ModelConfigNode(
-                            model_config_uuid=uuid,
-                            label_uuid=node.get("label_uuid"),
-                            model_type=node["model_type"],
-                            architecture=node["architecture"],
-                            roll_up_unchecked=node.get("roll_up_unchecked", False),
+                            ModelConfigNode(
+                                model_config_uuid=uuid,
+                                label_uuid=node.get("label_uuid"),
+                                model_type=node["model_type"],
+                                architecture=node["architecture"],
+                                roll_up_unchecked=node.get("roll_up_unchecked", False),
+                            )
                         )
-                    )
 
             mc.updated_at = datetime.now(timezone.utc)
             session.add(mc)
