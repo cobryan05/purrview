@@ -390,3 +390,65 @@ class TestRun:
         # submit should NOT have been called — we resumed.
         mock_training_api.submit_training_job.assert_not_called()
         assert result.get("model_name") == "m1"
+
+
+class TestSaveArtifact:
+    """Tests for _save_artifact — verifies correct extraction from artifact tar."""
+
+    def _make_tar(self, files: dict) -> bytes:
+        """Build an in-memory tar containing the given filename→content mapping."""
+        buf = io.BytesIO()
+        with tarfile.open(fileobj=buf, mode="w:") as tf:
+            for name, data in files.items():
+                info = tarfile.TarInfo(name=name)
+                info.size = len(data)
+                tf.addfile(info, io.BytesIO(data))
+        return buf.getvalue()
+
+    async def _run_save_artifact(self, tar_bytes, models_dir):
+        """Call _save_artifact with a fake tar, returns list of filenames written."""
+        task = _make_task({"model_name": "m"})
+        task._model_name = "m"
+        task._training_base_url = "http://training:8005"
+        task._job_id = "job-1"
+
+        mock_get_resp = MagicMock()
+        mock_get_resp.content = tar_bytes
+        mock_get_resp.raise_for_status = MagicMock()
+
+        mock_http_client = MagicMock()
+        mock_http_client.get = AsyncMock(return_value=mock_get_resp)
+        mock_http_ctx = AsyncMock()
+        mock_http_ctx.__aenter__ = AsyncMock(return_value=mock_http_client)
+        mock_http_ctx.__aexit__ = AsyncMock(return_value=False)
+
+        with (
+            patch("apps.tasks_server.tasks.TrainModelTask.httpx.AsyncClient", return_value=mock_http_ctx),
+            patch("apps.tasks_server.tasks.TrainModelTask._MODELS_DIR", models_dir),
+        ):
+            await task._save_artifact("job-1")
+
+        return [p.name for p in models_dir.iterdir()]
+
+    async def test_extracts_onnx_and_json(self, tmp_path):
+        tar = self._make_tar({"mymodel.onnx": b"onnx", "mymodel.json": b"{}"})
+        written = await self._run_save_artifact(tar, tmp_path)
+        assert "mymodel.onnx" in written
+        assert "mymodel.json" in written
+
+    async def test_extracts_onnx_data_sidecar(self, tmp_path):
+        """A .onnx.data file (external ONNX weights) must be extracted alongside .onnx."""
+        tar = self._make_tar({
+            "mymodel.onnx": b"onnx-graph",
+            "mymodel.onnx.data": b"weights",
+            "mymodel.json": b"{}",
+        })
+        written = await self._run_save_artifact(tar, tmp_path)
+        assert "mymodel.onnx.data" in written, (
+            ".onnx.data sidecar was not extracted — ONNX runtime will fail to load the model"
+        )
+
+    async def test_skips_unexpected_extensions(self, tmp_path):
+        tar = self._make_tar({"mymodel.onnx": b"onnx", "checkpoint.pt": b"pt"})
+        written = await self._run_save_artifact(tar, tmp_path)
+        assert "checkpoint.pt" not in written

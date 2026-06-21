@@ -596,7 +596,7 @@ class TrainModelTask(Task):
                 if not member.isfile():
                     continue
                 name = Path(member.name).name
-                if not name.endswith((".onnx", ".json")):
+                if not name.endswith((".onnx", ".onnx.data", ".json")):
                     logger.warning("Unexpected artifact file %s, skipping", name)
                     continue
                 dest = _MODELS_DIR / name
