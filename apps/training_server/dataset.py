@@ -89,7 +89,7 @@ class ImageLabelDataset:
         if split == "train":
             self._transform = A.Compose(
                 [
-                    A.RandomResizedCrop(height=h, width=w, scale=(0.8, 1.0)),
+                    A.RandomResizedCrop(size=(h, w), scale=(0.8, 1.0)),
                     A.HorizontalFlip(p=0.5),
                     A.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.05, p=0.5),
                     A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
@@ -227,7 +227,7 @@ class MultiLabelDataset:
         if split == "train":
             self._transform = A.Compose(
                 [
-                    A.RandomResizedCrop(height=h, width=w, scale=(0.8, 1.0)),
+                    A.RandomResizedCrop(size=(h, w), scale=(0.8, 1.0)),
                     A.HorizontalFlip(p=0.5),
                     A.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.05, p=0.5),
                     A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),

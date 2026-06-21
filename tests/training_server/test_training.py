@@ -524,3 +524,95 @@ async def test_job_stream_does_not_exit_on_awaiting_data():
     # Verify awaiting_data is NOT treated as terminal by stream().
     is_terminal = job.status in ("done", "error", "cancelled")
     assert not is_terminal
+
+
+# ---------------------------------------------------------------------------
+# Dataset transforms — albumentations API compatibility
+# ---------------------------------------------------------------------------
+
+
+class TestDatasetTransformConstruction:
+    """Instantiating either dataset class with split='train' must not raise.
+
+    Regression for albumentations 2.x: RandomResizedCrop replaced the
+    ``height``/``width`` keyword arguments with a single ``size`` tuple.
+    The bug surface: constructing any dataset with split='train' would raise
+    a pydantic ``InitSchema`` validation error (``size: Field required``)
+    from inside albumentations before any image was touched.
+    """
+
+    def test_multilabel_dataset_train_split(self):
+        """MultiLabelDataset(split='train') constructs without error."""
+        from apps.training_server.dataset import MultiLabelDataset
+
+        ds = MultiLabelDataset(
+            image_uuids=[],
+            label_uuids=["label-uuid-1"],
+            label_targets={},
+            cache_dir="/tmp",
+            split="train",
+        )
+        assert len(ds) == 0
+
+    def test_multilabel_dataset_val_split(self):
+        """MultiLabelDataset(split='val') constructs without error."""
+        from apps.training_server.dataset import MultiLabelDataset
+
+        ds = MultiLabelDataset(
+            image_uuids=[],
+            label_uuids=["label-uuid-1"],
+            label_targets={},
+            cache_dir="/tmp",
+            split="val",
+        )
+        assert len(ds) == 0
+
+    def test_image_label_dataset_train_split(self):
+        """ImageLabelDataset(split='train') constructs without error."""
+        from apps.training_server.dataset import ImageLabelDataset
+
+        ds = ImageLabelDataset(split_rows=[], cache_dir="/tmp", split="train")
+        assert len(ds) == 0
+
+    def test_image_label_dataset_val_split(self):
+        """ImageLabelDataset(split='val') constructs without error."""
+        from apps.training_server.dataset import ImageLabelDataset
+
+        ds = ImageLabelDataset(split_rows=[], cache_dir="/tmp", split="val")
+        assert len(ds) == 0
+
+    def test_build_multilabel_single_label_root_node(self, tmp_path):
+        """build_multilabel_dataset_from_manifest with one label must not raise.
+
+        Regression: training with a single-label root node always goes through
+        the multi-label path, which triggered the albumentations 2.x
+        RandomResizedCrop ``InitSchema`` / ``size: Field required`` error on
+        dataset construction.
+        """
+        from apps.training_server.dataset import build_multilabel_dataset_from_manifest
+
+        label_uuid = "32c2a22e-6f86-469f-810f-fef111479828"
+        image_uuid = "img-001"
+        (tmp_path / image_uuid).write_bytes(b"fake")
+
+        manifest = [{"image_uuid": image_uuid, "filename": "a.jpg", "status": "present"}]
+        label_targets = {image_uuid: {label_uuid: 1}}
+
+        # Both splits must construct — 'train' is the split that uses RandomResizedCrop.
+        ds_train = build_multilabel_dataset_from_manifest(
+            manifest=manifest,
+            label_uuids=[label_uuid],
+            label_targets=label_targets,
+            cache_dir=str(tmp_path),
+            split="train",
+        )
+        ds_val = build_multilabel_dataset_from_manifest(
+            manifest=manifest,
+            label_uuids=[label_uuid],
+            label_targets=label_targets,
+            cache_dir=str(tmp_path),
+            split="val",
+        )
+        # With one image, n_train=0 and n_val=1 (max-1 guard on n_val).
+        assert len(ds_train) == 0
+        assert len(ds_val) == 1
