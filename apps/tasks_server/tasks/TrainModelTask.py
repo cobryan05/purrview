@@ -7,7 +7,7 @@ Push-based lifecycle (no shared filesystem required):
   4. POST /jobs/{id}/images            (streamed tar batches, ≤500 images each)
   5. POST /jobs/{id}/start             → queued
   6. GET  /jobs/{id}/stream (SSE)      → relay progress events
-  7. On "done": GET /jobs/{id}/artifact → write ONNX + JSON to /models
+  7. On "done": GET /jobs/{id}/artifact → write ONNX + JSON to $MODELS_ROOT
   8. On cancel: DELETE /jobs/{id}
 
 The training server is network-isolated: it never calls back to db_server.
@@ -20,6 +20,7 @@ import asyncio
 import io
 import json
 import logging
+import os
 import tarfile
 from pathlib import Path
 from typing import Any, Optional
@@ -47,7 +48,7 @@ logging.basicConfig()
 logger = logging.getLogger(__file__)
 logger.setLevel(logging.DEBUG)
 
-_MODELS_DIR = Path("/models")
+_MODELS_DIR = Path(os.environ.get("MODELS_ROOT", "/models"))
 _TAR_BATCH_SIZE = 500  # max images per tar POST
 
 

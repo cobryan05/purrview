@@ -23,6 +23,7 @@ services:
               capabilities: [ gpu ]
     environment:
       THUMB_CACHE_MAX_MB: 100
+      MODELS_ROOT: /app/models
     command: ["/usr/bin/supervisord", "-c", "/conf/supervisord-monolith.conf"]
     volumes:
       - ./data/:/data

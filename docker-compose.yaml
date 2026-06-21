@@ -88,6 +88,7 @@ services:
     environment:
       THUMB_CACHE_MAX_MB: 100
       TRAINING_SERVER_HOST: whiskerwatcher_training_dev
+      MODELS_ROOT: /app/models
       TZ: America/Chicago
     volumes:
       - /etc/localtime:/etc/localtime:ro
@@ -172,6 +173,7 @@ services:
       DB_SERVER_HOST: localhost
       TRAINING_CACHE_DIR: /training-cache
       TRAINING_CACHE_MAX_MB: 10000
+      MODELS_ROOT: /app/models
       TZ: America/Chicago
     command: ["/usr/bin/supervisord", "-c", "/conf/supervisord-monolith.conf"]
     volumes:
