@@ -341,6 +341,9 @@ class TestRun:
         mock_tc.Configuration = MagicMock(return_value=MagicMock())
         mock_training_api = MagicMock()
         mock_training_api.cancel_training_job = MagicMock(return_value=MagicMock())
+        mock_job_status = MagicMock()
+        mock_job_status.status = "running"
+        mock_training_api.get_training_job.return_value = mock_job_status
 
         async def _aiter_lines():
             for line in self._make_sse_stream(done_event):

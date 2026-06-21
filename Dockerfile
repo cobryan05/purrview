@@ -72,13 +72,38 @@ COPY apps ./apps
 
 
 # =========================================================
-#  OpenAPI Client Builder (Isolated SDK Compiling)
+#  Unified Builder (Isolated SDK & Dependency Compiling)
 # =========================================================
-FROM app-base AS openapi-builder
+# Derived from PyTorch base to enforce Python 3.11/cp311 compatibility across target components
+FROM pytorch/pytorch:${PYTORCH_VERSION}-cuda${PYTORCH_CUDA_VERSION}-cudnn9-runtime AS builder
 
-# Generates python wheels and client JS/TS typings for downstream deployment
+ARG MEDIAMTX_VERSION
+
+WORKDIR /app
+
+# 1. Install build tools and node/openapi system deps needed for internal code generation
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    curl \
+    git \
+    openjdk-17-jre-headless \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install openapi-generator-cli inside the builder environment execution path
+RUN curl -fsSL https://raw.githubusercontent.com/openapitools/openapi-generator/master/bin/utils/openapi-generator-cli.sh -o /usr/local/bin/openapi-generator-cli \
+    && chmod +x /usr/local/bin/openapi-generator-cli
+
+# Copy application layers so parsing logic can read server entrypoints
+COPY apps ./apps
 COPY generate_openapi_modules.sh generate_alembic_revision.sh ./
+
+# 2. Run reorganized OpenAPI generator script to build internal dependency wheelhouse
 RUN ./generate_openapi_modules.sh ./openapi_jsons --wheels-out ./openapi_wheels/
+
+# 3. Cache production training wheels using Python 3.11 engine targeting host constraints
+COPY requirements-training.txt .
+RUN pip wheel --no-cache-dir --wheel-dir=/app/training_wheels --prefer-binary -r requirements-training.txt
 
 
 # =========================================================
@@ -90,11 +115,11 @@ ARG APPUSER_UID
 ARG APPUSER_GID
 
 # Install all internal API client wheels from the builder stage
-COPY --from=openapi-builder /app/openapi_wheels/ /tmp/openapi_wheels/
+COPY --from=builder /app/openapi_wheels/ /tmp/openapi_wheels/
 RUN pip install --no-cache-dir /tmp/openapi_wheels/*.whl && rm -rf /tmp/openapi_wheels
 
 # Copy the generated internal API type sheets for the UI layer
-COPY --from=openapi-builder /app/static/js/api-types/ /app/static/js/api-types/
+COPY --from=builder /app/static/js/api-types/ /app/static/js/api-types/
 
 # Create non-root user
 RUN groupadd -g $APPUSER_GID appuser && \
@@ -126,11 +151,14 @@ RUN apt-get update \
 
 WORKDIR /app
 
-COPY requirements-training.txt .
-RUN pip install --no-cache-dir -r requirements-training.txt
+# Install training dependencies from the builder's compiled wheelhouse
+# (Guaranteed cp311 wheels, keeping this stage 100% clean of compilers)
+COPY --from=builder /app/training_wheels /tmp/training_wheels
+RUN pip install --no-cache-dir --no-index --find-links=/tmp/training_wheels /tmp/training_wheels/*.whl \
+  && rm -rf /tmp/training_wheels
 
 # Install only the db_client wheel needed for database tracking during training runs
-COPY --from=openapi-builder /app/openapi_wheels/db_client*.whl /tmp/wheels/
+COPY --from=builder /app/openapi_wheels/db_client*.whl /tmp/wheels/
 RUN pip install --no-cache-dir /tmp/wheels/*.whl && rm -rf /tmp/wheels
 
 # Copy application runtime structure
@@ -214,7 +242,7 @@ FROM training-app AS training-dev
 USER root
 
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends bash curl git \
+  && apt-get install -y --no-install-recommends bash curl git build-essential \
   && rm -rf /var/lib/apt/lists/*
 
 COPY requirements-dev.txt .
