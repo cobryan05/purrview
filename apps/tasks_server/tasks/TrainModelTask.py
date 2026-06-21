@@ -279,27 +279,27 @@ class TrainModelTask(Task):
 
         self.log(f"Pushing {len(missing_uuids)} images to training server")
 
-        # Process in batches of _TAR_BATCH_SIZE.
+        # Process in batches of _TAR_BATCH_SIZE, reusing one HTTP client.
         pushed = 0
-        for batch_start in range(0, len(missing_uuids), _TAR_BATCH_SIZE):
-            if self._cancel_flag.is_set():
-                return
-            batch = missing_uuids[batch_start : batch_start + _TAR_BATCH_SIZE]
-            tar_bytes = await asyncio.to_thread(self._build_tar, batch, uuid_to_filename)
-            if not tar_bytes:
-                continue
-            # Use httpx directly — the generated client can't send raw binary body.
-            async with httpx.AsyncClient(timeout=300.0) as client:
+        async with httpx.AsyncClient(timeout=300.0) as client:
+            for batch_start in range(0, len(missing_uuids), _TAR_BATCH_SIZE):
+                if self._cancel_flag.is_set():
+                    return
+                batch = missing_uuids[batch_start : batch_start + _TAR_BATCH_SIZE]
+                tar_bytes = await asyncio.to_thread(self._build_tar, batch, uuid_to_filename)
+                if not tar_bytes:
+                    continue
+                # Use httpx directly — the generated client can't send raw binary body.
                 r = await client.post(
                     f"{self._training_base_url}/api/training/jobs/{job_id}/images",
                     content=tar_bytes,
                     headers={"Content-Type": "application/x-tar"},
                 )
                 r.raise_for_status()
-            pushed += len(batch)
-            self._update_progress(min(pushed / len(missing_uuids) * 50.0, 50.0))
-            await self.heartbeat()
-            self.log(f"Pushed {pushed}/{len(missing_uuids)} images")
+                pushed += len(batch)
+                self._update_progress(min(pushed / len(missing_uuids) * 50.0, 50.0))
+                await self.heartbeat()
+                self.log(f"Pushed {pushed}/{len(missing_uuids)} images")
 
     def _build_tar(self, uuids: list[str], uuid_to_filename: dict[str, str]) -> bytes:
         """Build a tar in memory for the given UUIDs, reading bytes from FILES_ROOT."""
@@ -315,9 +315,9 @@ class TrainModelTask(Task):
                     logger.warning("Image file not found: %s, skipping", img_path)
                     continue
                 info = tarfile.TarInfo(name=uuid)
-                data = img_path.read_bytes()
-                info.size = len(data)
-                tf.addfile(info, io.BytesIO(data))
+                info.size = img_path.stat().st_size
+                with open(img_path, "rb") as fh:
+                    tf.addfile(info, fh)
         return buf.getvalue()
 
     async def _consume_sse(self, job_id: str) -> dict[str, Any]:

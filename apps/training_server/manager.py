@@ -79,8 +79,6 @@ class Manager:
         if required_uuids:
             self._cache.pin(required_uuids)
 
-        # Create a dedicated artifact directory for this job.
-        job_id_placeholder = "pending"  # will be replaced after job creation
         job = await self._queue.submit(config, manifest=m)
 
         # Now that we have the real job_id, set the artifact dir and update config.
@@ -89,11 +87,10 @@ class Manager:
         job.artifact_dir = artifact_dir
 
         # Inject cache_dir and artifact_dir into config so the trainer can use them.
-        # Ensure the cache dir exists (harmless to call multiple times).
         self._cache.ensure_dir()
         job.config = {
             **config,
-            "cache_dir": str(self._cache._dir),
+            "cache_dir": self._cache.cache_dir,
             "artifact_dir": str(artifact_dir),
         }
         return job

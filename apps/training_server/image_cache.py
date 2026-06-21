@@ -50,6 +50,11 @@ class ImageCache:
         """Create the cache directory if it does not exist (called at server start)."""
         self._dir.mkdir(parents=True, exist_ok=True)
 
+    @property
+    def cache_dir(self) -> str:
+        """Return the cache directory path as a string."""
+        return str(self._dir)
+
     # ── Pin/unpin ─────────────────────────────────────────────────────────────
 
     def pin(self, uuids: set[str]) -> None:

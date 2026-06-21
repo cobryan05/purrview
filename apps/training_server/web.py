@@ -12,7 +12,7 @@ from contextlib import asynccontextmanager
 from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, ConfigDict, Field
 from sse_starlette.sse import EventSourceResponse
 
@@ -229,17 +229,13 @@ class WebApp:
                     status_code=404,
                 )
 
-            def generate_tar():
-                buf = io.BytesIO()
-                with tarfile.open(fileobj=buf, mode="w:") as tf:
-                    for p in sorted(artifact_dir.iterdir()):
-                        if p.is_file():
-                            tf.add(str(p), arcname=p.name)
-                buf.seek(0)
-                yield buf.read()
-
-            return StreamingResponse(
-                generate_tar(),
+            buf = io.BytesIO()
+            with tarfile.open(fileobj=buf, mode="w:") as tf:
+                for p in sorted(artifact_dir.iterdir()):
+                    if p.is_file():
+                        tf.add(str(p), arcname=p.name)
+            return Response(
+                content=buf.getvalue(),
                 media_type="application/x-tar",
                 headers={"Content-Disposition": f'attachment; filename="artifacts_{job_id}.tar"'},
             )

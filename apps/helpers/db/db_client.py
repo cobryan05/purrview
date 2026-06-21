@@ -3033,6 +3033,10 @@ class DbClient:
                     current = all_labels.get(current.parent_uuid)
                 return depth
 
+            # Precompute depths for rollup labels once rather than calling the
+            # traversal O(n log n) times during sort.
+            rollup_depths = {uuid: _label_depth(uuid) for uuid in rollup_label_set}
+
             # Assign each rollup descendant to its NEAREST rollup ancestor by processing
             # rollup parents deepest-first: a label shared between nested rollup parents
             # (e.g. A→B→C with both A and B roll_up_unchecked) is claimed by the closest
@@ -3040,7 +3044,7 @@ class DbClient:
             # depth — not row order — drives the assignment.
             rollup_map: dict[str, list[str]] = {}
             claimed_as_rollup: set[str] = set()
-            for parent_uuid in sorted(rollup_label_set, key=_label_depth, reverse=True):
+            for parent_uuid in sorted(rollup_label_set, key=rollup_depths.__getitem__, reverse=True):
                 children = _collect_label_descendants(parent_uuid, base_label_set)
                 fresh_children = [u for u in children if u not in claimed_as_rollup]
                 if fresh_children:
