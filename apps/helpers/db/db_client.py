@@ -3024,27 +3024,27 @@ class DbClient:
             rollup_label_set = {n.label_uuid for n in rollup_nodes}
             rollup_map: dict[str, list[str]] = {}
             expanded: list[str] = []
+            # Track children already claimed by a previous rollup parent so that a
+            # label shared between two rollup ancestors (e.g. A→B→C where both A and
+            # B have roll_up_unchecked=True) is only assigned to the nearest ancestor.
+            # base_label_uuids is DFS-ordered so ancestors are processed before descendants.
+            claimed_as_rollup: set[str] = set()
 
             for lbl_uuid in base_label_uuids:
                 expanded.append(lbl_uuid)
                 if lbl_uuid in rollup_label_set:
                     children = _collect_label_descendants(lbl_uuid, base_label_set)
-                    if children:
-                        rollup_map[lbl_uuid] = children
-                        expanded.extend(children)
+                    fresh_children = [u for u in children if u not in claimed_as_rollup]
+                    if fresh_children:
+                        rollup_map[lbl_uuid] = fresh_children
+                        expanded.extend(fresh_children)
+                        claimed_as_rollup.update(fresh_children)
 
             return expanded, rollup_map
 
         else:
-            # Specific-node case.
-            def _collect_all(label_uuid: str) -> list[str]:
-                result = [label_uuid]
-                for lbl in all_labels.values():
-                    if lbl.parent_uuid == label_uuid:
-                        result.extend(_collect_all(lbl.uuid))
-                return result
-
-            all_uuids = _collect_all(node.label_uuid)
+            # Specific-node case: this label + all descendants (reuse helper, no exclusions).
+            all_uuids = [node.label_uuid] + _collect_label_descendants(node.label_uuid, set())
             if not is_rollup:
                 return all_uuids, {}
             rollup_map = {node.label_uuid: [u for u in all_uuids if u != node.label_uuid]}

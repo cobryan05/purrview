@@ -2064,10 +2064,9 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
       close();
       const newLabelUuid = selectedAction === 'relabel' ? (_selectedLabelUuid ?? undefined) : undefined;
       // Verification shortcuts are sent as addTags with the appropriate system tag UUID.
-      const _VERIF_TAG = { markVerified: VERIFIED_TAG_UUID, markUnverified: UNVERIFIED_TAG_UUID, markFalsePos: FALSE_POS_TAG_UUID };
-      const resolvedAction = _VERIF_TAG[selectedAction] ? 'addTags' : selectedAction;
-      const selectedTagUuids = _VERIF_TAG[selectedAction]
-        ? [_VERIF_TAG[selectedAction]]
+      const resolvedAction = _VERIF_TAG_MAP[selectedAction] ? 'addTags' : selectedAction;
+      const selectedTagUuids = _VERIF_TAG_MAP[selectedAction]
+        ? [_VERIF_TAG_MAP[selectedAction]]
         : (selectedAction === 'addTags' || selectedAction === 'removeTags') ? tagCheckboxField.getValue() : [];
       statusMsg.textContent = `Applying to all ${totalBboxCount.toLocaleString()} bboxes…`;
       statusMsg.classList.add('review-toolbar__status--loading');
@@ -2290,6 +2289,8 @@ export async function showReviewModal({ title = 'Browse Images', fetchImages, ed
       toolbarControls,
     });
     panelRef.current = panel;
+    // Guard: if close() fired during the await, destroy the now-orphaned panel.
+    if (!document.body.contains(overlay)) { panel.destroy(); return panel.refresh; }
 
     // Wire "Update Dataset" button now that panel is ready
     if (header._updateBtn && panel.filterPanel) {
@@ -2308,11 +2309,20 @@ export async function showReviewModal({ title = 'Browse Images', fetchImages, ed
   } else {
     const panel = await createReviewPanel(content, { fetchImages, referenceBboxUuids, referenceImageUuids, initialViewFilter, toolbarControls });
     panelRef.current = panel;
+    // Guard: if close() fired during the await, destroy the now-orphaned panel.
+    if (!document.body.contains(overlay)) { panel.destroy(); return panel.refresh; }
     return panel.refresh;
   }
 }
 
 // ── Bulk action execution ─────────────────────────────────────────────
+
+// Verification shortcut actions → tag UUID they resolve to when sent as 'addTags'.
+const _VERIF_TAG_MAP = {
+  markVerified: VERIFIED_TAG_UUID,
+  markUnverified: UNVERIFIED_TAG_UUID,
+  markFalsePos: FALSE_POS_TAG_UUID,
+};
 
 async function executeBulkAction(action, entries, newLabelUuid, selectedTagUuids = [], tagsMap = new Map()) {
   const toInvalidate = [];
@@ -2992,10 +3002,9 @@ async function showBulkActionModal(entries, labels, onConfirm, titleText = null,
     // _selectedLabelUuid: undefined = picker not used (no change), null = clear label, string = set label
     const newLabelUuid = selectedAction === 'relabel' ? (_selectedLabelUuid ?? undefined) : undefined;
     // Verification shortcuts are sent as addTags with the appropriate system tag UUID.
-    const _VERIF_TAG = { markVerified: VERIFIED_TAG_UUID, markUnverified: UNVERIFIED_TAG_UUID, markFalsePos: FALSE_POS_TAG_UUID };
-    const resolvedAction = _VERIF_TAG[selectedAction] ? 'addTags' : selectedAction;
-    const selectedTagUuids = _VERIF_TAG[selectedAction]
-      ? [_VERIF_TAG[selectedAction]]
+    const resolvedAction = _VERIF_TAG_MAP[selectedAction] ? 'addTags' : selectedAction;
+    const selectedTagUuids = _VERIF_TAG_MAP[selectedAction]
+      ? [_VERIF_TAG_MAP[selectedAction]]
       : (selectedAction === 'addTags' || selectedAction === 'removeTags') ? tagCheckboxField.getValue() : [];
     await onConfirm(resolvedAction, newLabelUuid, selectedTagUuids, tags);
   });
