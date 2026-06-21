@@ -49,8 +49,13 @@ export function createDynamicLabelPicker(allLabels, { onSelect } = {}) {
       row.appendChild(content);
     }
     row.addEventListener('mousedown', (e) => {
-      // mousedown fires before blur, preventing the dropdown from closing early
+      // Prevent the input from losing focus (which would close the dropdown
+      // before the click event fires). Do NOT call onClick here — hiding the
+      // results in mousedown causes the subsequent click to re-target the
+      // overlay and triggers its outside-click close handler.
       e.preventDefault();
+    });
+    row.addEventListener('click', () => {
       onClick();
     });
     return row;

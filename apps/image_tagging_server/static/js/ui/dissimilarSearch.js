@@ -263,6 +263,7 @@ export async function openDissimilarBboxesModal({ bboxUuid = null, bboxes = null
   _refresh = await showReviewModal({
     title: 'Most Distinct Bboxes',
     toolbarControls: headerEl,
+    initialViewFilter: 'bboxes',
     referenceBboxUuids: new Set(anchorBboxUuids),
     fetchImages: async ({ afterUuid = null, limit }) => {
       await _ensureMatches();

@@ -357,6 +357,7 @@ export async function openSimilarBboxesModal({ bboxes, threshold = null, labelUu
   _refresh = await showReviewModal({
     title: 'Similar Bboxes',
     toolbarControls: headerEl,
+    initialViewFilter: 'bboxes',
     referenceBboxUuids,
     fetchImages: async ({ afterUuid = null, limit }) => {
       await _ensureMatches();

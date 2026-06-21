@@ -1995,9 +1995,12 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
     // ── Action picker (same as showBulkActionModal) ─────────────────────
     const actions = [
       { value: 'relabel', label: 'Change Label' },
-      { value: 'delete', label: 'Delete Bboxes' },
+      { value: 'markVerified', label: '✓ Mark Verified' },
+      { value: 'markUnverified', label: '? Mark Unverified' },
+      { value: 'markFalsePos', label: '✗ Mark False Positive' },
       { value: 'addTags', label: 'Add Tags' },
       { value: 'removeTags', label: 'Remove Tags' },
+      { value: 'delete', label: 'Delete Bboxes' },
     ];
 
     const radioGroup = document.createElement('div');
@@ -2060,9 +2063,12 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
     okBtn.addEventListener('click', async () => {
       close();
       const newLabelUuid = selectedAction === 'relabel' ? (_selectedLabelUuid ?? undefined) : undefined;
-      const selectedTagUuids = (selectedAction === 'addTags' || selectedAction === 'removeTags')
-        ? tagCheckboxField.getValue()
-        : [];
+      // Verification shortcuts are sent as addTags with the appropriate system tag UUID.
+      const _VERIF_TAG = { markVerified: VERIFIED_TAG_UUID, markUnverified: UNVERIFIED_TAG_UUID, markFalsePos: FALSE_POS_TAG_UUID };
+      const resolvedAction = _VERIF_TAG[selectedAction] ? 'addTags' : selectedAction;
+      const selectedTagUuids = _VERIF_TAG[selectedAction]
+        ? [_VERIF_TAG[selectedAction]]
+        : (selectedAction === 'addTags' || selectedAction === 'removeTags') ? tagCheckboxField.getValue() : [];
       statusMsg.textContent = `Applying to all ${totalBboxCount.toLocaleString()} bboxes…`;
       statusMsg.classList.add('review-toolbar__status--loading');
       try {
@@ -2084,7 +2090,7 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
           verificationCheck: fs.verificationCheck,
           bboxTagFilter,
           bboxLabelFilter,
-          action: selectedAction,
+          action: resolvedAction,
           labelUuid: newLabelUuid ?? null,
           selectedTagUuids,
         });
@@ -2914,9 +2920,12 @@ async function showBulkActionModal(entries, labels, onConfirm, titleText = null,
   // Action radio buttons
   const actions = [
     { value: 'relabel', label: 'Change Label' },
-    { value: 'delete', label: 'Delete Bboxes' },
+    { value: 'markVerified', label: '✓ Mark Verified' },
+    { value: 'markUnverified', label: '? Mark Unverified' },
+    { value: 'markFalsePos', label: '✗ Mark False Positive' },
     { value: 'addTags', label: 'Add Tags' },
     { value: 'removeTags', label: 'Remove Tags' },
+    { value: 'delete', label: 'Delete Bboxes' },
   ];
 
   const radioGroup = document.createElement('div');
@@ -2982,10 +2991,13 @@ async function showBulkActionModal(entries, labels, onConfirm, titleText = null,
     close();
     // _selectedLabelUuid: undefined = picker not used (no change), null = clear label, string = set label
     const newLabelUuid = selectedAction === 'relabel' ? (_selectedLabelUuid ?? undefined) : undefined;
-    const selectedTagUuids = (selectedAction === 'addTags' || selectedAction === 'removeTags')
-      ? tagCheckboxField.getValue()
-      : [];
-    await onConfirm(selectedAction, newLabelUuid, selectedTagUuids, tags);
+    // Verification shortcuts are sent as addTags with the appropriate system tag UUID.
+    const _VERIF_TAG = { markVerified: VERIFIED_TAG_UUID, markUnverified: UNVERIFIED_TAG_UUID, markFalsePos: FALSE_POS_TAG_UUID };
+    const resolvedAction = _VERIF_TAG[selectedAction] ? 'addTags' : selectedAction;
+    const selectedTagUuids = _VERIF_TAG[selectedAction]
+      ? [_VERIF_TAG[selectedAction]]
+      : (selectedAction === 'addTags' || selectedAction === 'removeTags') ? tagCheckboxField.getValue() : [];
+    await onConfirm(resolvedAction, newLabelUuid, selectedTagUuids, tags);
   });
 
   btnRow.appendChild(cancelBtn);
