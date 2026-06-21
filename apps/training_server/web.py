@@ -93,6 +93,11 @@ class StartJobResponse(BaseModel):
     missing: List[str] = Field(default_factory=list)
 
 
+class RestartJobResponse(BaseModel):
+    job_id: str
+    status: str
+
+
 def _job_to_info(job) -> JobInfo:
     d = job.to_dict()
     return JobInfo(**d)
@@ -111,7 +116,10 @@ class WebApp:
     @asynccontextmanager
     async def _lifespan(self, app: FastAPI):
         self._manager.start()
-        yield
+        try:
+            yield
+        finally:
+            await self._manager.shutdown()
 
     def _register_routes(self) -> None:
         @self._app.post(
@@ -239,6 +247,25 @@ class WebApp:
                 media_type="application/x-tar",
                 headers={"Content-Disposition": f'attachment; filename="artifacts_{job_id}.tar"'},
             )
+
+        @self._app.post(
+            "/api/training/jobs/{job_id}/restart",
+            operation_id="restart_training_job",
+            response_model=RestartJobResponse,
+            tags=["training"],
+        )
+        async def restart_job(job_id: str):
+            """Re-queue an interrupted job. Only valid for jobs in 'interrupted' status."""
+            job = self._manager.get_job(job_id)
+            if not job:
+                return JSONResponse({"detail": "Job not found"}, status_code=404)
+            ok = self._manager.restart_job(job_id)
+            if not ok:
+                return JSONResponse(
+                    {"detail": f"Cannot restart job in status: {job.status}"},
+                    status_code=409,
+                )
+            return RestartJobResponse(job_id=job_id, status="queued")
 
         @self._app.delete(
             "/api/training/jobs/{job_id}",

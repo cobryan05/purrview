@@ -153,8 +153,29 @@ class BinaryImageClassifier(Trainer):
         artifact_dir.mkdir(parents=True, exist_ok=True)
         onnx_path = artifact_dir / f"{model_name}.onnx"
         json_path = artifact_dir / f"{model_name}.json"
+        checkpoint_path = artifact_dir / "checkpoint.pt"
 
-        for epoch in range(1, max_epochs + 1):
+        # Resume from checkpoint if one exists (e.g. after server restart).
+        start_epoch = 1
+        if checkpoint_path.exists():
+            try:
+                ckpt = await asyncio.to_thread(
+                    torch.load, str(checkpoint_path), map_location=device
+                )
+                model.load_state_dict(ckpt["model_state_dict"])
+                optimizer.load_state_dict(ckpt["optimizer_state_dict"])
+                scheduler.load_state_dict(ckpt["scheduler_state_dict"])
+                best_val_loss = ckpt["best_val_loss"]
+                best_val_acc = ckpt["best_val_acc"]
+                patience_counter = ckpt["patience_counter"]
+                if ckpt.get("best_state"):
+                    best_state = {k: v.cpu().clone() for k, v in ckpt["best_state"].items()}
+                start_epoch = ckpt["epoch"] + 1
+                logger.info("Resuming from checkpoint at epoch %d/%d", ckpt["epoch"], max_epochs)
+            except Exception:
+                logger.exception("Failed to load checkpoint; starting training from scratch")
+
+        for epoch in range(start_epoch, max_epochs + 1):
             if cancel_event.is_set():
                 break
 
@@ -214,6 +235,22 @@ class BinaryImageClassifier(Trainer):
                     logger.info("Early stopping at epoch %d (patience=%d)", epoch, patience)
                     break
 
+            # Save checkpoint so training can resume after a server restart.
+            await asyncio.to_thread(
+                torch.save,
+                {
+                    "epoch": epoch,
+                    "model_state_dict": {k: v.cpu().clone() for k, v in model.state_dict().items()},
+                    "optimizer_state_dict": optimizer.state_dict(),
+                    "scheduler_state_dict": scheduler.state_dict(),
+                    "best_val_loss": best_val_loss,
+                    "best_val_acc": best_val_acc,
+                    "patience_counter": patience_counter,
+                    "best_state": best_state,
+                },
+                str(checkpoint_path),
+            )
+
             # Yield to the event loop so cancel_event can be checked.
             await asyncio.sleep(0)
 
@@ -244,6 +281,8 @@ class BinaryImageClassifier(Trainer):
         if not np.allclose(pt_out, ort_out, atol=1e-4):
             raise RuntimeError("ONNX validation failed: PyTorch and OnnxRuntime outputs differ")
         logger.info("ONNX validation passed, model saved to %s", onnx_path)
+        if checkpoint_path.exists():
+            checkpoint_path.unlink(missing_ok=True)
 
         # Write companion JSON config.
         model_config = {

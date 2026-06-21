@@ -200,10 +200,40 @@ class TrainModelTask(Task):
 
     async def _run(self) -> dict[str, Any]:
         if self._job_id:
-            # Resuming — the job was already submitted and data was pushed.
-            self.log(f"Resuming monitoring of training job {self._job_id}")
+            status = await self._check_remote_job_status(self._job_id)
+            self.log(f"Resuming training job {self._job_id} (remote status: {status})")
             await self.heartbeat(force=True)
-            return await self._consume_sse(self._job_id)
+
+            if status == "done":
+                await self._save_artifact(self._job_id)
+                return {"job_id": self._job_id, "model_name": self._model_name}
+
+            if status == "interrupted":
+                # Server restarted mid-job. Restart the job and consume SSE.
+                # Training will resume from the last epoch checkpoint.
+                self.log(f"Job {self._job_id} was interrupted; restarting on training server")
+                async with httpx.AsyncClient(timeout=30.0) as client:
+                    r = await client.post(
+                        f"{self._training_base_url}/api/training/jobs/{self._job_id}/restart"
+                    )
+                    r.raise_for_status()
+                return await self._consume_sse(self._job_id)
+
+            if status in ("running", "queued", "awaiting_data"):
+                # Already in progress — just reconnect to the stream.
+                return await self._consume_sse(self._job_id)
+
+            if status in ("error", "cancelled"):
+                raise RuntimeError(
+                    f"Training job {self._job_id} is in terminal state: {status}"
+                )
+
+            # Status is "not_found" (404) or unknown — server restarted without
+            # persisted state. Re-submit the full job; images are likely still cached.
+            self.log(
+                f"Job {self._job_id} not found on training server; resubmitting from scratch"
+            )
+            self._job_id = None
 
         # ── Step 1: Submit job ───────────────────────────────────────────────
         payload = SubmitJobPayload(
@@ -260,6 +290,17 @@ class TrainModelTask(Task):
         # ── Step 4: Relay SSE ────────────────────────────────────────────────
         await self.heartbeat(force=True)
         return await self._consume_sse(self._job_id)
+
+    async def _check_remote_job_status(self, job_id: str) -> str:
+        """Return the current status of a remote training job, or 'not_found' on any error."""
+        try:
+            resp = await asyncio.to_thread(
+                TrainingApi(self._api_client).get_training_job,
+                job_id,
+            )
+            return resp.status
+        except Exception:
+            return "not_found"
 
     async def _push_images(self, job_id: str, manifest: list[dict]) -> None:
         """Determine missing images, read them from FILES_ROOT, POST tar batches."""

@@ -8,6 +8,7 @@ const STATUS_COLOR = {
   done:          'var(--pico-muted-color,#888)',
   error:         'var(--pico-del-color,#e55)',
   cancelled:     'var(--pico-muted-color,#888)',
+  interrupted:   '#e80',
 };
 
 const STATUS_ICON = {
@@ -17,6 +18,7 @@ const STATUS_ICON = {
   done:          '✓',
   error:         '✕',
   cancelled:     '–',
+  interrupted:   '⚡',
 };
 
 function _fmtDate(iso) {
@@ -30,7 +32,9 @@ function _fmtDate(iso) {
   }
 }
 
-function _renderJob(job) {
+const CANCELLABLE_STATUSES = new Set(['running', 'queued', 'awaiting_data', 'interrupted']);
+
+function _renderJob(job, onCancel) {
   const row = document.createElement('div');
   row.style.cssText = `
     display: grid;
@@ -65,17 +69,33 @@ function _renderJob(job) {
 
   body.append(nameRow, metaRow);
 
+  const rightCol = document.createElement('div');
+  rightCol.style.cssText = 'display: flex; align-items: center; gap: 6px; padding-top: 2px;';
+
   const statusBadge = document.createElement('span');
-  statusBadge.style.cssText = `
-    font-size: 0.72em; color: ${color};
-    font-weight: 600; white-space: nowrap; padding-top: 2px;
-  `;
+  statusBadge.style.cssText = `font-size: 0.72em; color: ${color}; font-weight: 600; white-space: nowrap;`;
   const statusText = job.status === 'queued'
     ? `#${job.queue_position} queued`
     : job.status.replace(/_/g, ' ');
   statusBadge.textContent = statusText;
+  rightCol.appendChild(statusBadge);
 
-  row.append(iconEl, body, statusBadge);
+  if (CANCELLABLE_STATUSES.has(job.status) && onCancel) {
+    const cancelBtn = document.createElement('button');
+    cancelBtn.textContent = '✕';
+    cancelBtn.className = 'secondary';
+    cancelBtn.style.cssText = 'font-size: 0.68em; padding: 0.1em 0.35em; line-height: 1.4; min-width: 0;';
+    cancelBtn.title = 'Cancel job';
+    cancelBtn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      cancelBtn.disabled = true;
+      cancelBtn.textContent = '…';
+      await onCancel(job.job_id);
+    });
+    rightCol.appendChild(cancelBtn);
+  }
+
+  row.append(iconEl, body, rightCol);
   return row;
 }
 
@@ -130,7 +150,7 @@ export function showTrainingServerModal() {
         body.appendChild(empty);
       } else {
         // Show active jobs first (running, queued, awaiting_data), then terminal ones
-        const order = { running: 0, queued: 1, awaiting_data: 2, done: 3, error: 4, cancelled: 5 };
+        const order = { running: 0, queued: 1, awaiting_data: 2, interrupted: 3, done: 4, error: 5, cancelled: 6 };
         const sorted = [...jobs].sort((a, b) => {
           const od = (order[a.status] ?? 9) - (order[b.status] ?? 9);
           if (od !== 0) return od;
@@ -139,7 +159,12 @@ export function showTrainingServerModal() {
           return a.created_at < b.created_at ? -1 : 1;
         });
         for (const job of sorted) {
-          body.appendChild(_renderJob(job));
+          body.appendChild(_renderJob(job, async (jobId) => {
+            try {
+              await apiFetch(`/api/training/jobs/${jobId}`, { method: 'DELETE' });
+            } catch (_) { /* best-effort */ }
+            await refresh();
+          }));
         }
       }
 

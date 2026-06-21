@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -13,13 +14,14 @@ from uuid import uuid4
 logger = logging.getLogger(__name__)
 
 # Statuses from which no further transitions are possible.
-TERMINAL_STATUSES = frozenset({"done", "error", "cancelled"})
+# "interrupted" means the server restarted mid-job; it can be restarted via restart_job().
+TERMINAL_STATUSES = frozenset({"done", "error", "cancelled", "interrupted"})
 
 
 @dataclass
 class Job:
     job_id: str
-    status: str  # awaiting_data | queued | running | done | error | cancelled
+    status: str  # awaiting_data | queued | running | done | error | cancelled | interrupted
     config: dict[str, Any]
     cancel_event: asyncio.Event
     created_at: datetime
@@ -35,6 +37,29 @@ class Job:
     _events: list = field(default_factory=list)
     # One asyncio.Queue per active SSE subscriber.
     _subscribers: list = field(default_factory=list)
+    # Path to the job state JSON file on disk (set by Manager after artifact_dir is known).
+    state_path: Optional[Path] = None
+
+    def _persist(self) -> None:
+        """Atomically write job state to disk for crash recovery."""
+        if self.state_path is None:
+            return
+        try:
+            data = {
+                "job_id": self.job_id,
+                "status": self.status,
+                "config": self.config,
+                "created_at": self.created_at.isoformat(),
+                "manifest": self.manifest,
+                "required_uuids": list(self.required_uuids),
+                "artifact_dir": str(self.artifact_dir) if self.artifact_dir else None,
+                "result": self.result,
+            }
+            tmp = self.state_path.with_suffix(".tmp")
+            tmp.write_text(json.dumps(data))
+            tmp.replace(self.state_path)
+        except Exception:
+            logger.exception("Failed to persist job state for %s", self.job_id)
 
     def emit(self, event_type: str, data: dict) -> None:
         """Broadcast an SSE event to all subscribers and store it for replay."""
@@ -43,12 +68,15 @@ class Job:
         for q in list(self._subscribers):
             q.put_nowait(entry)
         # Notify subscribers the stream is ending on any terminal event.
-        is_terminal = event_type in ("done", "error") or (
+        is_terminal = event_type in ("done", "error", "interrupted") or (
             event_type == "status" and data.get("status") in TERMINAL_STATUSES
         )
         if is_terminal:
             for q in list(self._subscribers):
                 q.put_nowait(None)  # sentinel → close
+        # Persist state after status transitions and terminal events.
+        if event_type in ("status", "done", "error", "interrupted"):
+            self._persist()
 
     def to_dict(self) -> dict[str, Any]:
         config = self.config or {}
@@ -163,15 +191,11 @@ class JobQueue:
         return True, []
 
     def cancel(self, job_id: str) -> bool:
-        """Cancel a job regardless of whether it is awaiting_data, queued, or running."""
+        """Cancel a job regardless of whether it is awaiting_data, queued, running, or interrupted."""
         job = self._jobs.get(job_id)
         if not job:
             return False
-        if job.status == "awaiting_data":
-            job.status = "cancelled"
-            job.emit("status", {"status": "cancelled"})
-            return True
-        if job.status == "queued":
+        if job.status in ("awaiting_data", "queued", "interrupted"):
             job.status = "cancelled"
             job.emit("status", {"status": "cancelled"})
             return True
@@ -180,18 +204,38 @@ class JobQueue:
             return True
         return False
 
+    def restart_job(self, job_id: str) -> bool:
+        """Re-queue a job that was interrupted by a server restart."""
+        job = self._jobs.get(job_id)
+        if not job or job.status != "interrupted":
+            return False
+        position = self._queue.qsize()
+        job.status = "queued"
+        job.queue_position = position
+        job.cancel_event.clear()
+        job.emit("status", {"status": "queued"})
+        self._queue.put_nowait(job_id)
+        return True
+
     def list_jobs(self) -> list[Job]:
         return sorted(self._jobs.values(), key=lambda j: j.created_at, reverse=True)
 
     def get_job(self, job_id: str) -> Optional[Job]:
         return self._jobs.get(job_id)
 
+    async def shutdown(self) -> None:
+        """Cancel all worker tasks and wait for them to persist their state."""
+        for worker in self._workers:
+            worker.cancel()
+        if self._workers:
+            await asyncio.gather(*self._workers, return_exceptions=True)
+
     async def _worker(self) -> None:
         while True:
             job_id = await self._queue.get()
             try:
                 job = self._jobs.get(job_id)
-                if job and job.status not in ("cancelled", "awaiting_data"):
+                if job and job.status == "queued":
                     await self._run_job(job)
             except asyncio.CancelledError:
                 raise
@@ -228,8 +272,13 @@ class JobQueue:
                 job.result = result
                 job.emit("done", {"status": "done", **result})
         except asyncio.CancelledError:
-            job.status = "cancelled"
-            job.emit("status", {"status": "cancelled"})
+            # Distinguish user-initiated cancel (cancel_event set) from SIGTERM/shutdown.
+            if job.cancel_event.is_set():
+                job.status = "cancelled"
+                job.emit("status", {"status": "cancelled"})
+            else:
+                job.status = "interrupted"
+                job.emit("status", {"status": "interrupted"})
             raise
         except Exception as e:
             logger.exception("Trainer error for job %s", job.job_id)

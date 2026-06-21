@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
 import os
 import sys
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -39,6 +42,9 @@ class Manager:
         self._cache.ensure_dir()
         self._artifacts_dir.mkdir(parents=True, exist_ok=True)
 
+        # Reload persisted job state from the last run before starting workers.
+        self._restore_jobs()
+
         # Import trainer modules to trigger @register_trainer decorators.
         from .trainers import TRAINER_REGISTRY  # noqa: F401
         from .trainers import binary_image_classifier  # noqa: F401
@@ -51,6 +57,50 @@ class Manager:
 
         self._queue.start()
         logger.info("Training server started (worker_count=%d)", self._queue._worker_count)
+
+    def _restore_jobs(self) -> None:
+        """Reload job state from disk after a restart."""
+        for state_file in sorted(self._artifacts_dir.glob("*/job_state.json")):
+            try:
+                data = json.loads(state_file.read_text())
+                job_id = data["job_id"]
+                status = data["status"]
+
+                # Jobs that were active when the server crashed are interrupted.
+                if status in ("running", "queued"):
+                    status = "interrupted"
+
+                artifact_dir = Path(data["artifact_dir"]) if data.get("artifact_dir") else None
+
+                job = Job(
+                    job_id=job_id,
+                    status=status,
+                    config=data.get("config", {}),
+                    cancel_event=asyncio.Event(),
+                    created_at=datetime.fromisoformat(data["created_at"]),
+                    manifest=data.get("manifest", []),
+                    required_uuids=set(data.get("required_uuids", [])),
+                    artifact_dir=artifact_dir,
+                    queue_position=0,
+                    result=data.get("result"),
+                    state_path=state_file,
+                )
+                # Seed the event history so SSE replay shows the current status.
+                job._events = [("status", {"status": status})]
+
+                self._queue._jobs[job_id] = job
+
+                # Re-pin images for jobs that still need them.
+                if status == "awaiting_data" and job.required_uuids:
+                    self._cache.pin(job.required_uuids)
+
+                logger.info("Restored job %s (status=%s)", job_id, status)
+            except Exception:
+                logger.exception("Failed to restore job from %s", state_file)
+
+    async def shutdown(self) -> None:
+        """Cancel workers and let them persist interrupted state before exit."""
+        await self._queue.shutdown()
 
     async def get_server_config(self) -> Dict[str, Any]:
         return dict(self._config)
@@ -85,6 +135,7 @@ class Manager:
         artifact_dir = self._artifacts_dir / job.job_id
         artifact_dir.mkdir(parents=True, exist_ok=True)
         job.artifact_dir = artifact_dir
+        job.state_path = artifact_dir / "job_state.json"
 
         # Inject cache_dir and artifact_dir into config so the trainer can use them.
         self._cache.ensure_dir()
@@ -93,6 +144,8 @@ class Manager:
             "cache_dir": self._cache.cache_dir,
             "artifact_dir": str(artifact_dir),
         }
+        # Persist initial state now that all fields are set.
+        job._persist()
         return job
 
     def get_missing_images(self, job_id: str) -> Optional[List[str]]:
@@ -135,6 +188,10 @@ class Manager:
             # Release cache pins when a job is cancelled.
             self._cache.unpin(job.required_uuids)
         return self._queue.cancel(job_id)
+
+    def restart_job(self, job_id: str) -> bool:
+        """Re-queue an interrupted job. Images remain cached; training resumes from checkpoint."""
+        return self._queue.restart_job(job_id)
 
     def list_jobs(self) -> list[Job]:
         return self._queue.list_jobs()
