@@ -13,6 +13,7 @@ import cv2
 import db_client
 import inference_client
 from db_client.api.images_api import ImagesApi
+from db_client.api.labels_api import LabelsApi
 from db_client.api.settings_api import SettingsApi
 from db_client.api.tags_api import TagsApi
 from db_client.models.add_tag_payload import AddTagPayload
@@ -41,6 +42,7 @@ from apps.helpers.imageUtils import base64_encode_jpg
 from .Registry import register_task
 from .Task import Task
 from .utils.imageHelper import ImageHelper
+from .utils.labelHelper import build_label_ancestry_map
 from .utils.sourceHelper import SourceHelper
 
 logging.basicConfig()
@@ -109,6 +111,7 @@ class CollectTrainingImagesTask(Task):
                 if conf_f > 0:
                     label_conf[label_uuid] = min(label_conf.get(label_uuid, 1.0), conf_f)
         self._model_names: list[str] = ordered_model_names
+        self._overlap_iou_threshold: float = float(params.get("overlap_iou_threshold", SAME_BBOX_IOU_THRESHOLD))
 
         self._target_labels: list[TargetLabel] = [
             TargetLabel(label_uuid=u, min_confidence=c) for u, c in label_conf.items()
@@ -153,9 +156,11 @@ class CollectTrainingImagesTask(Task):
         # Hash sizes are global settings (must match the index; changing them requires
         # recomputing all stored hashes). Read from DB settings, fall back to defaults.
         _settings_api = SettingsApi(self._manager.get_db_api_client())
-        self._image_hash_size, self._bbox_hash_size = await asyncio.gather(
+        _labels_api = LabelsApi(self._manager.get_db_api_client())
+        self._image_hash_size, self._bbox_hash_size, self._label_ancestry = await asyncio.gather(
             self._read_int_setting(_settings_api, "dedup_image_hash_size", 8),
             self._read_int_setting(_settings_api, "dedup_bbox_hash_size", 16),
+            build_label_ancestry_map(_labels_api),
         )
 
     async def _run(self) -> dict[str, Any]:
@@ -636,20 +641,38 @@ class CollectTrainingImagesTask(Task):
                 raise r
             results_per_model.append(r if isinstance(r, list) else [])
 
-        # Flatten in priority order then apply cross-model IoU dedup.
+        # Flatten in priority order then apply cross-model hierarchy-aware IoU dedup.
         matching = [det for dets in results_per_model for det in dets]
 
-        # Priority dedup: drop any detection overlapping an already-kept higher-priority
-        # box at/above the IoU threshold.
+        # For each detection in model-priority order, compare against already-kept boxes:
+        #   same label_uuid       → drop the lower-priority (later) detection
+        #   det label is ancestor of kept label → kept is more specific → drop det
+        #   kept label is ancestor of det label → det is more specific → replace kept
+        #   unrelated labels      → keep both (different objects)
         deduped: list = []
         for det in matching:
-            if any(
-                det.bbox.label_uuid == kept.bbox.label_uuid
-                and _bbox_iou(det.bbox, kept.bbox) >= SAME_BBOX_IOU_THRESHOLD
-                for kept in deduped
-            ):
-                continue
-            deduped.append(det)
+            det_label = det.bbox.label_uuid
+            dominated = False
+            to_supersede: list[int] = []
+            for i, kept in enumerate(deduped):
+                if _bbox_iou(det.bbox, kept.bbox) < self._overlap_iou_threshold:
+                    continue
+                kept_label = kept.bbox.label_uuid
+                if det_label == kept_label:
+                    dominated = True
+                    break
+                elif det_label and det_label in self._label_ancestry.get(kept_label, ()):
+                    # det's label is an ancestor of kept's → kept is more specific → drop det
+                    dominated = True
+                    break
+                elif kept_label and kept_label in self._label_ancestry.get(det_label, ()):
+                    # kept's label is an ancestor of det's → det is more specific → supersede kept
+                    to_supersede.append(i)
+                # else: unrelated labels — keep both
+            if not dominated:
+                for i in reversed(to_supersede):
+                    deduped.pop(i)
+                deduped.append(det)
         return deduped
 
     async def _save_image(
@@ -888,6 +911,7 @@ class CollectTrainingImagesTask(Task):
                     "stream_interval",
                     "source_uuids",
                     "model_label_config",
+                    "overlap_iou_threshold",
                     "apply_tags",
                     "generate_task_tag",
                     "task_tag_name",
@@ -933,6 +957,19 @@ class CollectTrainingImagesTask(Task):
                     "required": True,
                     "description": "Labels to collect",
                 },
+            },
+            "overlap_iou_threshold": {
+                "type": "float",
+                "label": "Multi-Model Overlap IoU Threshold",
+                "description": (
+                    "When multiple models detect the same region, boxes from later-configured models are discarded "
+                    "if they overlap a higher-priority model's box at or above this IoU value (0–1). "
+                    "Lower values discard more aggressively; higher values allow more overlap before deduplication."
+                ),
+                "default": SAME_BBOX_IOU_THRESHOLD,
+                "min": 0.0,
+                "max": 1.0,
+                "step": 0.05,
             },
             "apply_tags": {
                 "type": "tags",
