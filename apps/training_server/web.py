@@ -331,3 +331,11 @@ class WebApp:
         )
         async def training_status(request: Request):
             return JSONResponse({"status": "success", "message": "Training server running."})
+
+        @self._app.get(
+            "/status",
+            operation_id="training_server_status",
+            response_class=JSONResponse,
+        )
+        async def status(request: Request):
+            return JSONResponse({"status": "ok", "service": "training_server"})

@@ -28,8 +28,9 @@ import {
   fetchTrainingConfigImagesByLabelStatus,
   clearTrainingConfigsCache,
 } from '/app-static/js/shared/api/trainingConfigs.js';
-import { createTaskConfig, startTask } from '/app-static/js/shared/api/tasks.js';
+import { TaskStatus, cancelTasks, createTaskConfig, startTask } from '/app-static/js/shared/api/tasks.js';
 import { makeFieldRow, buildPanelEditorBar, toast } from '/app-static/js/ui/utils/index.js';
+import { ActiveTaskField } from '/app-static/js/ui/utils/fields/ActiveTaskField.js';
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
 import { showUnsavedConfigChangesModal } from '/app-static/js/ui/utils/confirmModal.js';
 
@@ -720,34 +721,151 @@ export async function renderTrainingConfigManager({ target = 'training-config-bo
           editorBody.appendChild(renderLabelStatsPanel(config, labelsMap));
         }
 
-        // Train button (only for fully-configured existing configs)
+        // Train button + inline progress card (only for fully-configured existing configs)
         if (config?.uuid && (config.datasetUuids?.length ?? 0) > 0 && config.modelConfigNodeUuid) {
           const trainSection = document.createElement('div');
           trainSection.style.cssText = 'margin-top: 1em; padding-top: 0.75em; border-top: 1px solid var(--pico-muted-border-color, #ccc);';
+
+          const btnRow = document.createElement('div');
+          btnRow.style.cssText = 'display:flex; gap:0.5em; align-items:center; margin-bottom:0.5em;';
+
           const trainBtn = document.createElement('button');
           trainBtn.type = 'button';
           trainBtn.textContent = '▶ Start Training';
           trainBtn.className = 'panel-btn';
           trainBtn.style.cssText = 'margin-bottom: 0;';
+
+          const cancelBtn = document.createElement('button');
+          cancelBtn.type = 'button';
+          cancelBtn.textContent = 'Cancel';
+          cancelBtn.className = 'secondary panel-btn';
+          cancelBtn.style.cssText = 'margin-bottom:0; display:none;';
+
+          btnRow.append(trainBtn, cancelBtn);
+          trainSection.appendChild(btnRow);
+
+          const taskDisplay = document.createElement('div');
+          trainSection.appendChild(taskDisplay);
+
+          let _activeTaskUuid = null;
+          let _abortSSE = null;
+          let _lastFingerprint = null;
+          let _lastTaskInfo = null;
+
+          function _fp(task) {
+            const logs = task.logLines ?? [];
+            return [
+              task.instance?.status,
+              task.isPausedInPlace ?? false,
+              Math.round(task.progress ?? 0),
+              logs.length,
+              logs[logs.length - 1] ?? '',
+            ].join(':');
+          }
+
+          async function _renderTaskStatus(taskInfo) {
+            const fp = _fp(taskInfo);
+            if (fp === _lastFingerprint) return;
+            _lastFingerprint = fp;
+            _lastTaskInfo = taskInfo;
+
+            const details = taskDisplay.querySelector('details');
+            const pre = details?.querySelector('pre');
+            const savedOpen = details?.open ?? true;
+            const savedScroll = pre?.scrollTop ?? 0;
+
+            const field = await ActiveTaskField.create({ value: taskInfo });
+            const el = await field.renderView();
+
+            if (_lastFingerprint !== fp) return;
+
+            const newDetails = el.querySelector('details');
+            if (newDetails && details !== null) {
+              newDetails.open = savedOpen;
+              if (savedOpen && savedScroll) {
+                requestAnimationFrame(() => {
+                  const newPre = newDetails.querySelector('pre');
+                  if (newPre) newPre.scrollTop = savedScroll;
+                });
+              }
+            }
+            taskDisplay.replaceChildren(el);
+          }
+
+          cancelBtn.onclick = async () => {
+            cancelBtn.disabled = true;
+            _abortSSE?.();
+            if (_activeTaskUuid) {
+              try { await cancelTasks({ taskUuids: [_activeTaskUuid] }); } catch { /* best-effort */ }
+            }
+          };
+
           trainBtn.addEventListener('click', async () => {
             trainBtn.disabled = true;
             trainBtn.textContent = 'Starting…';
+            taskDisplay.innerHTML = '';
+            _lastFingerprint = null;
+            _lastTaskInfo = null;
+            _activeTaskUuid = null;
+
             try {
               const configUuid = await createTaskConfig({
                 typename: 'TrainModelTask',
                 name: `Train ${config.name}`,
                 params: { training_config_uuid: config.uuid },
               });
-              await startTask({ configUuid });
-              toast('Training job started', 4000);
+              const taskUuid = await startTask({ configUuid });
+              _activeTaskUuid = taskUuid;
+
+              trainBtn.textContent = 'Training…';
+              cancelBtn.style.display = '';
+
+              await new Promise((resolve, reject) => {
+                const evtSource = new EventSource('/api/tasks/stream');
+                let settled = false;
+
+                const _settle = (fn, ...args) => {
+                  if (settled) return;
+                  settled = true;
+                  evtSource.close();
+                  fn(...args);
+                };
+
+                _abortSSE = () => _settle(resolve);
+
+                evtSource.onmessage = async (e) => {
+                  let data;
+                  try { data = JSON.parse(e.data); } catch { return; }
+
+                  const taskInfo = data.tasks?.[taskUuid];
+                  if (!taskInfo) return;
+
+                  await _renderTaskStatus(taskInfo);
+
+                  const status = taskInfo.instance?.status;
+                  if (status === TaskStatus.COMPLETED || status === TaskStatus.ERROR || status === TaskStatus.CANCELLED) {
+                    _settle(resolve);
+                  }
+                };
+
+                evtSource.onerror = () => {
+                  if (evtSource.readyState === EventSource.CLOSED) {
+                    _settle(reject, new Error('SSE connection closed unexpectedly'));
+                  }
+                };
+              });
+
             } catch (err) {
               toast(err.message || 'Failed to start training', 5000, 'error');
             } finally {
+              _abortSSE = null;
               trainBtn.disabled = false;
               trainBtn.textContent = '▶ Start Training';
+              cancelBtn.style.display = 'none';
+              cancelBtn.disabled = false;
             }
           });
-          trainSection.appendChild(trainBtn);
+
           editorBody.appendChild(trainSection);
         }
 

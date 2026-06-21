@@ -142,12 +142,32 @@ class TrainModelTask(Task):
         label_uuid: str = node_data.label_uuid or ""
         model_type: str = node_data.model_type
         architecture: str = node_data.architecture
-        trainer_type: str = MODEL_TYPE_TO_TRAINER_TYPE.get(model_type, model_type)
+
+        # Get dataset image UUID set once (shared by both paths below).
+        dataset_uuids_set: set[str] = set()
+        if dataset_uuids:
+            dataset_image_uuids_resp = ds_api.get_dataset_image_uuids(dataset_uuid=dataset_uuids)
+            dataset_uuids_set = set(
+                dataset_image_uuids_resp.image_uuids
+                if hasattr(dataset_image_uuids_resp, "image_uuids")
+                else []
+            )
 
         if not label_uuid:
-            raise RuntimeError(
-                f"ModelConfigNode {node_uuid!r} has no label_uuid — cannot build manifest"
+            # Root node → multi-label: train all labeled child nodes as one model.
+            return self._resolve_root_node(
+                node_uuid=node_uuid,
+                mc_api=mc_api,
+                img_api=img_api,
+                dataset_uuids=dataset_uuids,
+                dataset_uuids_set=dataset_uuids_set,
+                model_name=model_name,
+                architecture=architecture,
+                hyperparams=hyperparams,
             )
+
+        # Single labeled node → binary classifier.
+        trainer_type: str = MODEL_TYPE_TO_TRAINER_TYPE.get(model_type, model_type)
 
         # 3. Get all present/absent image-label rows for this label.
         all_rows_resp = img_api.list_images_for_label(
@@ -156,14 +176,7 @@ class TrainModelTask(Task):
         )
         all_rows = all_rows_resp.images if hasattr(all_rows_resp, "images") else []
 
-        # 4. Scope to datasets if specified.
         if dataset_uuids:
-            dataset_image_uuids_resp = ds_api.get_dataset_image_uuids(dataset_uuid=dataset_uuids)
-            dataset_uuids_set = set(
-                dataset_image_uuids_resp.image_uuids
-                if hasattr(dataset_image_uuids_resp, "image_uuids")
-                else []
-            )
             all_rows = [r for r in all_rows if r.image_uuid in dataset_uuids_set]
 
         if not all_rows:
@@ -172,7 +185,6 @@ class TrainModelTask(Task):
                 f"with {len(dataset_uuids)} dataset(s)"
             )
 
-        # 5. Build manifest.
         manifest = [
             {
                 "image_uuid": r.image_uuid,
@@ -194,6 +206,99 @@ class TrainModelTask(Task):
             "model_name": model_name,
             "architecture": architecture,
             "class_names": ["absent", "present"],
+            **hyperparams,
+        }
+        return model_name, manifest, job_config
+
+    def _resolve_root_node(
+        self,
+        node_uuid: str,
+        mc_api,
+        img_api,
+        dataset_uuids: list[str],
+        dataset_uuids_set: set[str],
+        model_name: str,
+        architecture: str,
+        hyperparams: dict,
+    ) -> tuple[str, list[dict], dict]:
+        """Resolve a root node to a multi-label training job.
+
+        Finds the parent model config, collects all labeled child nodes, builds a
+        combined image manifest and per-label status map, and returns a config for
+        the ``multi_label_classifier`` trainer.
+        """
+        # Find the model config that owns this root node.
+        all_configs_resp = mc_api.list_model_configs()
+        all_configs = getattr(all_configs_resp, "configs", None) or []
+
+        parent_config = None
+        for cfg in all_configs:
+            nodes = getattr(cfg, "nodes", None) or []
+            if any(getattr(n, "uuid", None) == node_uuid for n in nodes):
+                parent_config = cfg
+                break
+
+        if parent_config is None:
+            raise RuntimeError(
+                f"Could not find a model config containing node {node_uuid!r}"
+            )
+
+        labeled_nodes = [
+            n for n in (getattr(parent_config, "nodes", None) or [])
+            if getattr(n, "label_uuid", None)
+        ]
+        if not labeled_nodes:
+            raise RuntimeError(
+                f"Root node {node_uuid!r} has no labeled child nodes to train"
+            )
+
+        label_uuids_list = [n.label_uuid for n in labeled_nodes]
+
+        # Collect per-label image data.
+        uuid_to_filename: dict[str, str] = {}
+        label_targets: dict[str, dict[str, int]] = {}
+
+        for node in labeled_nodes:
+            luuid = node.label_uuid
+            rows_resp = img_api.list_images_for_label(
+                label_uuid=luuid,
+                status=["present", "absent"],
+            )
+            rows = rows_resp.images if hasattr(rows_resp, "images") else []
+            if dataset_uuids:
+                rows = [r for r in rows if r.image_uuid in dataset_uuids_set]
+
+            for r in rows:
+                uuid_to_filename[r.image_uuid] = r.filename
+                if r.image_uuid not in label_targets:
+                    label_targets[r.image_uuid] = {}
+                status_val = r.status.value if hasattr(r.status, "value") else str(r.status)
+                label_targets[r.image_uuid][luuid] = 1 if status_val == "present" else 0
+
+        if not uuid_to_filename:
+            raise RuntimeError(
+                f"No labeled images found across {len(labeled_nodes)} label(s) "
+                f"with {len(dataset_uuids)} dataset(s)"
+            )
+
+        # Manifest: unique images (status field unused by multi_label_classifier).
+        manifest = [
+            {"image_uuid": uuid, "filename": fname, "status": "present"}
+            for uuid, fname in uuid_to_filename.items()
+        ]
+
+        self.log(
+            f"Resolved root node: {len(labeled_nodes)} labels "
+            f"({', '.join(label_uuids_list)}), "
+            f"{len(manifest)} unique images, datasets={len(dataset_uuids)}"
+        )
+
+        job_config = {
+            "trainer_type": "multi_label_classifier",
+            "model_name": model_name,
+            "architecture": architecture,
+            "label_uuids": label_uuids_list,
+            "label_targets": label_targets,
             **hyperparams,
         }
         return model_name, manifest, job_config
@@ -485,8 +590,8 @@ class TrainModelTask(Task):
                 "type": "str",
                 "required": False,
                 "default": "binary_image_classifier",
-                "options": ["binary_image_classifier"],
-                "help": "Which training algorithm to use (legacy; use training_config_uuid instead)",
+                "options": ["binary_image_classifier", "multi_label_classifier"],
+                "help": "Which training algorithm to use (legacy; use training_config_uuid instead). Derived automatically from node type when training_config_uuid is set.",
             },
             "label_uuid": {
                 "type": "str",

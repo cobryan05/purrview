@@ -30,6 +30,15 @@ def get_input_shape(session: ort.InferenceSession) -> Tuple[int, int]:
 
 def load_yolo_onnx(model_path: str) -> InferenceProvider:
     metadata = metadataUtils.get_model_metadata(model_path, create_json_if_missing=True)
+
+    model_kind: str = metadata.get("model_kind", "")
+    if model_kind == "multi_label_classifier":
+        from apps.helpers.inferenceProviders.multiLabelClassifierInferenceProvider import (
+            MultiLabelClassifierInferenceProvider,
+        )
+        label_uuids: list[str] = metadata.get("label_uuids") or []
+        return MultiLabelClassifierInferenceProvider(model_path, label_uuids)
+
     classes: list[str] = metadata.get("classes", None)
     yolo_version: int = metadata.get("yolo", 8)
     if yolo_version == 8:

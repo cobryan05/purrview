@@ -48,6 +48,7 @@ class Manager:
         # Import trainer modules to trigger @register_trainer decorators.
         from .trainers import TRAINER_REGISTRY  # noqa: F401
         from .trainers import binary_image_classifier  # noqa: F401
+        from .trainers import multi_label_classifier  # noqa: F401
         from .trainers import crop_classifier_trainer  # noqa: F401
         from .trainers import object_detection_trainer  # noqa: F401
 
