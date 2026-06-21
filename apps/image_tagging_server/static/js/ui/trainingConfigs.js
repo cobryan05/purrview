@@ -734,7 +734,7 @@ export async function renderTrainingConfigManager({ target = 'training-config-bo
             trainBtn.textContent = 'Starting…';
             try {
               const configUuid = await createTaskConfig({
-                taskType: 'TrainModelTask',
+                typename: 'TrainModelTask',
                 name: `Train ${config.name}`,
                 params: { training_config_uuid: config.uuid },
               });
