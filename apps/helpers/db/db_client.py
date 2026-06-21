@@ -593,7 +593,7 @@ class DbClient:
                 if not has_more or not page:
                     break
                 after_uuid = page[-1].uuid
-                after_sort_value = page[-1].uuid
+                # after_sort_value stays None — sort_by="uuid" pagination uses after_uuid only
         return result
 
     async def close(self):

@@ -35,6 +35,7 @@ from db_client.api.datasets_api import DatasetsApi
 from db_client.api.images_api import ImagesApi
 from db_client.api.model_configs_api import ModelConfigsApi
 from db_client.api.training_configs_api import TrainingConfigsApi
+from db_client.models.image_item_status import ImageItemStatus
 
 from apps import APPS, APPS_CONFIG, FILES_ROOT
 from apps.helpers.model_type_map import MODEL_TYPE_TO_TRAINER_TYPE
@@ -172,17 +173,24 @@ class TrainModelTask(Task):
         # 3. Get all present/absent image-label rows for this label.
         all_rows_resp = img_api.list_images_for_label(
             label_uuid=label_uuid,
-            status=["present", "absent"],
+            status=[ImageItemStatus.PRESENT, ImageItemStatus.ABSENT],
         )
         all_rows = all_rows_resp.images if hasattr(all_rows_resp, "images") else []
 
         if dataset_uuids:
+            before = len(all_rows)
             all_rows = [r for r in all_rows if r.image_uuid in dataset_uuids_set]
+            logger.debug(
+                "Dataset filter: %d → %d rows (dataset_set size=%d)",
+                before, len(all_rows), len(dataset_uuids_set),
+            )
 
         if not all_rows:
             raise RuntimeError(
                 f"No labelled images found for label_uuid={label_uuid!r} "
-                f"with {len(dataset_uuids)} dataset(s)"
+                f"with {len(dataset_uuids)} dataset(s). "
+                f"Found {len(all_rows_resp.images if hasattr(all_rows_resp, 'images') else [])} "
+                f"labeled rows before dataset filter (dataset_set size={len(dataset_uuids_set)})."
             )
 
         manifest = [
@@ -262,23 +270,30 @@ class TrainModelTask(Task):
             luuid = node.label_uuid
             rows_resp = img_api.list_images_for_label(
                 label_uuid=luuid,
-                status=["present", "absent"],
+                status=[ImageItemStatus.PRESENT, ImageItemStatus.ABSENT],
             )
             rows = rows_resp.images if hasattr(rows_resp, "images") else []
+            raw_count = len(rows)
             if dataset_uuids:
                 rows = [r for r in rows if r.image_uuid in dataset_uuids_set]
+            logger.debug(
+                "Label %s: %d labeled rows, %d after dataset filter",
+                luuid, raw_count, len(rows),
+            )
 
             for r in rows:
                 uuid_to_filename[r.image_uuid] = r.filename
                 if r.image_uuid not in label_targets:
                     label_targets[r.image_uuid] = {}
                 status_val = r.status.value if hasattr(r.status, "value") else str(r.status)
-                label_targets[r.image_uuid][luuid] = 1 if status_val == "present" else 0
+                label_targets[r.image_uuid][luuid] = 1 if status_val == ImageItemStatus.PRESENT.value else 0
 
         if not uuid_to_filename:
             raise RuntimeError(
                 f"No labeled images found across {len(labeled_nodes)} label(s) "
-                f"with {len(dataset_uuids)} dataset(s)"
+                f"with {len(dataset_uuids)} dataset(s). "
+                f"dataset_set size={len(dataset_uuids_set)}. "
+                f"Check that labeled images are included in the selected dataset(s)."
             )
 
         # Manifest: unique images (status field unused by multi_label_classifier).

@@ -867,3 +867,37 @@ async def test_image_label_conditions_filter_present(http_client, files_root):
 
     assert "ilcp_present.png" in names
     assert "ilcp_absent.png" not in names
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# get_dataset_image_uuids pagination
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+async def test_get_dataset_image_uuids_spans_multiple_pages(http_client, files_root, db_client, monkeypatch):
+    """get_dataset_image_uuids must return all images when the result spans >1 page.
+
+    Regression: the pagination loop incorrectly set after_sort_value to a UUID
+    string (instead of leaving it None), causing pydantic to raise a validation
+    error on the second page. The endpoint caught the error and silently returned
+    an empty list, making the training dataset filter discard all labeled images.
+    """
+    import apps.helpers.db.db_client as db_client_module
+
+    monkeypatch.setattr(db_client_module, "_READINESS_PAGE_SIZE", 2)
+
+    names = [f"pag_{i}.png" for i in range(5)]
+    for name in names:
+        _png(files_root, name)
+        await _register(http_client, name)
+
+    ds = await _create_dataset(http_client, "all-images-paged")
+
+    r = await http_client.get(
+        "/api/datasets/image-uuids",
+        params=[("dataset_uuid", ds["uuid"])],
+    )
+    body = r.json()
+    assert body["status"] == "success", body.get("message")
+    returned_uuids = body["imageUuids"]
+    assert len(returned_uuids) == 5
