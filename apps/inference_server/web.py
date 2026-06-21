@@ -78,6 +78,11 @@ class ModelMetaResponse(StatusResponse):
     label_uuids: Optional[List[str]] = None
 
 
+class ModelTrainingImagesResponse(StatusResponse):
+    train_image_uuids: List[str] = Field(default_factory=list)
+    val_image_uuids: List[str] = Field(default_factory=list)
+
+
 class InferenceResponse(StatusResponse):
     result: Optional[InferenceResultModel] = None
 
@@ -285,6 +290,28 @@ class WebApp:
                 )
             except Exception as e:
                 return ModelMetaResponse(status=JsonValues.FAILURE, message=str(e))
+
+        @self._app.get(
+            "/api/models/{model_name}/training-images",
+            response_model=ModelTrainingImagesResponse,
+            tags=[ApiTags.MODELS],
+            operation_id="get_model_training_images",
+        )
+        async def get_model_training_images_api(model_name: str) -> ModelTrainingImagesResponse:
+            """Return the train/val image UUIDs recorded in the model's companion JSON."""
+            try:
+                config = self._manager.get_model_config(model_name)
+                if config is None:
+                    return ModelTrainingImagesResponse(
+                        status=JsonValues.FAILURE, message=f"Model '{model_name}' not found"
+                    )
+                return ModelTrainingImagesResponse(
+                    status=JsonValues.SUCCESS,
+                    train_image_uuids=config.get("train_image_uuids") or [],
+                    val_image_uuids=config.get("val_image_uuids") or [],
+                )
+            except Exception as e:
+                return ModelTrainingImagesResponse(status=JsonValues.FAILURE, message=str(e))
 
         @self._app.post(
             "/api/models/{model_name}/classify",

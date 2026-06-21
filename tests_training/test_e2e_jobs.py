@@ -29,7 +29,7 @@ def test_server_config(client):
     assert r.status_code == 200
     data = r.json()
     assert data["status"] == "success"
-    assert "shared_fs_available" in data["config"]
+    assert "service" in data["config"]
 
 
 def test_submit_and_list_job(client):
@@ -45,7 +45,7 @@ def test_submit_and_list_job(client):
     assert r.status_code == 200
     data = r.json()
     assert "job_id" in data
-    assert data["status"] in ("queued", "running", "error")
+    assert data["status"] in ("awaiting_data", "queued", "running", "error")
     job_id = data["job_id"]
 
     # List — should contain our job

@@ -6,15 +6,130 @@ Images arrive via the push ingest API and are stored in the uuid-keyed
 
 The split is deterministic: images are sorted by UUID then sliced.
 This is reproducible across runs regardless of submission order.
+
+Image access is abstracted behind a ``fetcher`` interface with two concrete
+implementations:
+  - ``FilesystemImageFetcher`` — reads raw files from a local directory
+  - ``HttpImageFetcher``       — fetches via the db_server HTTP API, caches locally
 """
 
 from __future__ import annotations
 
+import base64
 import logging
+import shutil
+import tempfile
 from pathlib import Path
 from typing import Optional
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Fetcher abstractions
+# ---------------------------------------------------------------------------
+
+class FilesystemImageFetcher:
+    """Read image bytes from a local directory by filename.
+
+    An optional ``path_prefix_map`` remaps filename prefixes before reading,
+    e.g. ``{"/mnt/nas": "/data"}`` rewrites ``/mnt/nas/img.jpg`` →
+    ``/data/img.jpg`` (relative to ``fs_root``).
+    """
+
+    def __init__(self, fs_root: str, path_prefix_map: Optional[dict] = None):
+        self._root = Path(fs_root)
+        self._prefix_map: dict[str, str] = path_prefix_map or {}
+
+    def fetch(self, uuid: str, filename: str) -> bytes:
+        for old, new in self._prefix_map.items():
+            if filename.startswith(old):
+                filename = new + filename[len(old):]
+                break
+        return (self._root / filename.lstrip("/")).read_bytes()
+
+
+class HttpImageFetcher:
+    """Fetch image bytes from the db_server HTTP API, caching by UUID on disk.
+
+    If ``cache_dir`` is not provided a temporary directory is created; call
+    ``cleanup()`` to remove it when training is done.
+    """
+
+    def __init__(self, db_base_url: str, cache_dir: Optional[str] = None):
+        self._base_url = db_base_url.rstrip("/")
+        self._owns_tmp = cache_dir is None
+        self._tmp = cache_dir if cache_dir else tempfile.mkdtemp()
+        self._cache = Path(self._tmp)
+
+    def fetch(self, uuid: str, filename: str) -> bytes:
+        import httpx
+
+        cached = self._cache / uuid
+        if cached.exists():
+            return cached.read_bytes()
+
+        resp = httpx.get(f"{self._base_url}/api/images/{uuid}/raw")
+        resp.raise_for_status()
+        data = resp.json()
+        if data.get("status") != "success":
+            raise ValueError(data.get("message", f"Failed to fetch image {uuid}"))
+        raw = base64.b64decode(data["image_base64"])
+        cached.write_bytes(raw)
+        return raw
+
+    def cleanup(self) -> None:
+        if self._owns_tmp and Path(self._tmp).exists():
+            shutil.rmtree(self._tmp, ignore_errors=True)
+
+
+class _CacheFetcher:
+    """Internal fetcher that reads from a UUID-keyed cache directory."""
+
+    def __init__(self, cache_dir: str):
+        self._dir = Path(cache_dir)
+
+    def fetch(self, uuid: str, filename: str) -> bytes:
+        return (self._dir / uuid).read_bytes()
+
+
+# ---------------------------------------------------------------------------
+# Public dataset builders
+# ---------------------------------------------------------------------------
+
+def _build_dataset(
+    label_uuid: str,
+    db_base_url: str,
+    fetcher: FilesystemImageFetcher,
+    split: str = "train",
+    val_fraction: float = 0.2,
+) -> "ImageLabelDataset":
+    """Fetch labeled images for *label_uuid* from the db_server and build a dataset.
+
+    Args:
+        label_uuid:   UUID of the label to train on.
+        db_base_url:  Base URL of the db_server.
+        fetcher:      Image fetcher instance.
+        split:        ``"train"`` or ``"val"``.
+        val_fraction: Fraction to hold out for validation.
+    """
+    import httpx
+
+    resp = httpx.get(
+        f"{db_base_url.rstrip('/')}/api/images/labeled",
+        params={"label_uuid": label_uuid},
+    )
+    resp.raise_for_status()
+    data = resp.json()
+    rows = data.get("images") or []
+    if not rows:
+        raise ValueError(f"No labeled images found for label_uuid={label_uuid!r}")
+
+    rows_sorted = sorted(rows, key=lambda r: r["image_uuid"])
+    n_val = max(1, int(len(rows_sorted) * val_fraction))
+    n_train = len(rows_sorted) - n_val
+    split_rows = rows_sorted[:n_train] if split == "train" else rows_sorted[n_train:]
+    return ImageLabelDataset(split_rows=split_rows, fetcher=fetcher, split=split)
 
 
 def build_dataset_from_manifest(
@@ -23,7 +138,7 @@ def build_dataset_from_manifest(
     split: str = "train",
     val_fraction: float = 0.2,
 ) -> "ImageLabelDataset":
-    """Build an ``ImageLabelDataset`` from a pushed manifest + local cache.
+    """Build an ``ImageLabelDataset`` from a pushed manifest + local UUID-keyed cache.
 
     Args:
         manifest:     List of ``{image_uuid, filename, status}`` dicts.
@@ -61,6 +176,10 @@ def build_dataset_from_manifest(
     return ImageLabelDataset(split_rows=split_rows, cache_dir=cache_dir, split=split)
 
 
+# ---------------------------------------------------------------------------
+# Dataset classes
+# ---------------------------------------------------------------------------
+
 class ImageLabelDataset:
     """Torch Dataset returning (image_tensor [3,224,224], label_int) pairs.
 
@@ -68,11 +187,25 @@ class ImageLabelDataset:
 
     Augmentation: train split gets random crop + flip + colour jitter;
     val split gets centre crop only.
+
+    Pass either ``fetcher`` (preferred) or ``cache_dir`` (legacy; creates a
+    ``_CacheFetcher`` internally).
     """
 
     INPUT_SIZE = (224, 224)
 
-    def __init__(self, split_rows: list[dict], cache_dir: str, split: str):
+    def __init__(
+        self,
+        split_rows: list[dict],
+        split: str,
+        fetcher=None,
+        cache_dir: Optional[str] = None,
+    ):
+        if fetcher is None and cache_dir is not None:
+            fetcher = _CacheFetcher(cache_dir)
+        elif fetcher is None:
+            raise ValueError("Either fetcher or cache_dir must be provided")
+
         # Defer torch/albumentations imports — only available in training container.
         import albumentations as A
         import numpy as np
@@ -82,7 +215,7 @@ class ImageLabelDataset:
         self._torch = torch
         self._np = np
         self._rows = split_rows
-        self._cache_dir = Path(cache_dir)
+        self._fetcher = fetcher
         self._split = split
 
         h, w = self.INPUT_SIZE
@@ -113,8 +246,7 @@ class ImageLabelDataset:
         import cv2
 
         row = self._rows[idx]
-        image_path = self._cache_dir / row["image_uuid"]
-        image_bytes = image_path.read_bytes()
+        image_bytes = self._fetcher.fetch(row["image_uuid"], row["filename"])
 
         buf = self._np.frombuffer(image_bytes, dtype=self._np.uint8)
         img = cv2.imdecode(buf, cv2.IMREAD_COLOR)

@@ -3,6 +3,7 @@ import { isDynamicLabelsVisible } from '/app-static/js/shared/activeModel.js';
 import { associateLabel, clearModelsCache, fetchModelsLabelMappings, fetchModelsList } from '/app-static/js/shared/api/models.js';
 import { DropDownField, EditableField, LabelDropDownField } from '/app-static/js/ui/utils/fields/index.js';
 import { createGenericRow, Logger, showPaneError, toast } from '/app-static/js/ui/utils/index.js';
+import { openTrainingDataModal } from '/app-static/js/ui/trainingDataModal.js';
 
 export function renderModelLabelAssignments({
   target = "model-labels-box",
@@ -42,7 +43,12 @@ export function renderModelLabelAssignments({
             clearModelsCache();
             renderModelLabelAssignments({ target, editable, preselectedModel: preselectedModel });
           }
-        }
+        },
+        ...(preselectedModel ? [{
+          text: 'Browse training data',
+          emoji: '🖼️',
+          onClick: () => openTrainingDataModal(preselectedModel),
+        }] : []),
       ]
     });
     modelSelectDiv.appendChild(modelDropdownRow);

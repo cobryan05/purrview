@@ -103,6 +103,20 @@ export async function _fetchModelsLabelMappings({ modelNames }) {
 }
 export const fetchModelsLabelMappings = wrapSingleKey(_fetchModelsLabelMappings);
 
+/**
+ * Fetch the training and validation image UUIDs stored in a model's sidecar JSON.
+ * @param {string} modelName
+ * @returns {Promise<{train: string[], val: string[]}>}
+ */
+export async function fetchModelTrainingImages(modelName) {
+  const res = await apiFetch(`/api/models/${encodeURIComponent(modelName)}/training-images`);
+  const data = await res.json();
+  if (!res.ok || data.status === 'failure') {
+    throw new Error(data.message || 'Failed to fetch training images');
+  }
+  return { train: data.train_image_uuids ?? [], val: data.val_image_uuids ?? [] };
+}
+
 /** -----------------------------
  * UPDATE FUNCTION
  * -----------------------------

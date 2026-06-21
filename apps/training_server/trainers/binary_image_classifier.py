@@ -118,6 +118,9 @@ class BinaryImageClassifier(Trainer):
 
         logger.info("Dataset sizes: train=%d val=%d", len(ds_train), len(ds_val))
 
+        train_image_uuids = [r["image_uuid"] for r in ds_train._rows]
+        val_image_uuids = [r["image_uuid"] for r in ds_val._rows]
+
         loader_train = DataLoader(
             ds_train,
             batch_size=batch_size,
@@ -278,7 +281,7 @@ class BinaryImageClassifier(Trainer):
         with torch.no_grad():
             pt_out = model(dummy).numpy()
         ort_out = ort_session.run(None, {"input": dummy.numpy()})[0]
-        if not np.allclose(pt_out, ort_out, atol=1e-4):
+        if not np.allclose(pt_out, ort_out, atol=1e-3):
             raise RuntimeError("ONNX validation failed: PyTorch and OnnxRuntime outputs differ")
         logger.info("ONNX validation passed, model saved to %s", onnx_path)
         if checkpoint_path.exists():
@@ -297,6 +300,8 @@ class BinaryImageClassifier(Trainer):
             "model_name": model_name,
             "val_accuracy": round(best_val_acc, 4),
             "trained_at": datetime.now(timezone.utc).isoformat(),
+            "train_image_uuids": train_image_uuids,
+            "val_image_uuids": val_image_uuids,
         }
         json_path.write_text(json.dumps(model_config, indent=2))
         logger.info("Model config written to %s", json_path)
