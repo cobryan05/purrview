@@ -3,6 +3,7 @@ import { apiFetch } from '/app-static/js/shared/api/apiUtils.js';
 import { getSetting, setSetting } from '/app-static/js/shared/api/settings.js';
 import { showConfirmModal } from '/app-static/js/ui/utils/confirmModal.js';
 import { setConfiguredHoverDelay } from '/app-static/js/ui/thumbnailHoverPreview.js';
+import { showTrainingServerModal } from '/app-static/js/ui/trainingServerModal.js';
 
 // ── Service Status ────────────────────────────────────────────────────────────
 
@@ -20,12 +21,25 @@ function _statusColor(status) {
   return 'var(--pico-del-color,#e55)';
 }
 
+const SERVICE_CLICK_HANDLERS = {
+  training_server: () => showTrainingServerModal(),
+};
+
 function _renderServiceRow(svc) {
   const meta = SERVICE_DISPLAY[svc.service] ?? { label: svc.service, icon: '●' };
+  const onClick = SERVICE_CLICK_HANDLERS[svc.service];
 
   const row = document.createElement('div');
   row.className = 'settings-service-status-row';
-  row.style.cssText = 'display:flex;gap:6px;align-items:center;padding:6px 0;';
+  const baseStyle = 'display:flex;gap:6px;align-items:center;padding:6px 0;';
+  row.style.cssText = onClick
+    ? baseStyle + 'cursor:pointer;border-radius:4px;transition:background 0.1s;'
+    : baseStyle;
+  if (onClick) {
+    row.addEventListener('click', onClick);
+    row.addEventListener('mouseenter', () => { row.style.background = 'var(--pico-card-background-color,rgba(255,255,255,0.05))'; });
+    row.addEventListener('mouseleave', () => { row.style.background = ''; });
+  }
 
   const indicator = document.createElement('span');
   indicator.style.cssText = `color:${_statusColor(svc.status)};font-size:1.1em;flex-shrink:0;`;
@@ -54,7 +68,11 @@ function _renderServiceRow(svc) {
     detail.style.color = _statusColor(svc.status);
   }
 
-  row.append(indicator, name, detail);
+  const chevron = document.createElement('span');
+  chevron.style.cssText = `font-size:0.8em;color:var(--pico-muted-color,#888);flex-shrink:0;visibility:${onClick ? 'visible' : 'hidden'};`;
+  chevron.textContent = '›';
+
+  row.append(indicator, name, detail, chevron);
   return row;
 }
 
