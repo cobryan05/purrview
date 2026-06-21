@@ -13,13 +13,15 @@ import os
 from pathlib import Path
 from typing import Any, Optional
 
-import cv2
 import db_client
 import numpy as np
 from db_client.api.images_api import ImagesApi
 from db_client.api.sources_api import SourcesApi
 from db_client.models.image_item_status import ImageItemStatus
 from db_client.models.set_image_label_payload import SetImageLabelPayload
+
+from apps.helpers.classifier_utils import preprocess_image_bytes as _preprocess_image
+from apps.helpers.classifier_utils import softmax as _softmax
 
 from .Registry import register_task
 from .Task import Task
@@ -28,31 +30,8 @@ logging.basicConfig()
 logger = logging.getLogger(__file__)
 logger.setLevel(logging.DEBUG)
 
-_IMAGENET_MEAN = np.array([0.485, 0.456, 0.406], dtype=np.float32)
-_IMAGENET_STD = np.array([0.229, 0.224, 0.225], dtype=np.float32)
-
 _MODELS_ROOT = Path(os.environ.get("MODELS_ROOT", "/models"))
 
-
-def _softmax(x: np.ndarray, axis: int = -1) -> np.ndarray:
-    e_x = np.exp(x - np.max(x, axis=axis, keepdims=True))
-    return e_x / e_x.sum(axis=axis, keepdims=True)
-
-
-def _preprocess_image(img_bytes: bytes, input_size: tuple[int, int]) -> Optional[np.ndarray]:
-    """Decode *img_bytes*, resize to *input_size*, and return a (3, H, W) float32 tensor.
-
-    Returns None if the image cannot be decoded.
-    """
-    arr = np.frombuffer(img_bytes, dtype=np.uint8)
-    img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
-    if img is None:
-        return None
-    img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-    img = cv2.resize(img, (input_size[1], input_size[0]))  # cv2 takes (W, H)
-    img = img.astype(np.float32) / 255.0
-    img = (img - _IMAGENET_MEAN) / _IMAGENET_STD
-    return img.transpose(2, 0, 1)  # (H, W, C) → (C, H, W)
 
 
 @register_task()

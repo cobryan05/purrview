@@ -1,5 +1,6 @@
 """Web API for Inference Server"""
 
+import asyncio
 import base64
 import logging
 import sys
@@ -50,6 +51,31 @@ class InferencePayload(Payload):
     return_annotated_img: bool = False
     pin_id: Optional[str] = None
     image_base64: str  # base64 encoded image string
+
+
+class ClassifyPayload(Payload):
+    image_base64: str
+
+
+class ClassifyPrediction(Payload):
+    label_uuid: str
+    confidence: float
+    is_present: bool
+
+
+class ClassifyResult(Payload):
+    model_kind: str
+    predictions: List[ClassifyPrediction]
+
+
+class ClassifyResponse(StatusResponse):
+    result: Optional[ClassifyResult] = None
+
+
+class ModelMetaResponse(StatusResponse):
+    model_kind: Optional[str] = None
+    label_uuid: Optional[str] = None
+    label_uuids: Optional[List[str]] = None
 
 
 class InferenceResponse(StatusResponse):
@@ -237,6 +263,99 @@ class WebApp:
                 )
             except Exception as e:
                 return ModelBulkClassesResponse(status=JsonValues.FAILURE, message=str(e))
+
+        @self._app.get(
+            "/api/models/{model_name}/meta",
+            response_model=ModelMetaResponse,
+            tags=[ApiTags.MODELS],
+            operation_id="get_model_meta",
+        )
+        async def get_model_meta_api(model_name: str) -> ModelMetaResponse:
+            """Return the model kind and label UUID(s) from its companion JSON config."""
+            try:
+                config = self._manager.get_model_config(model_name)
+                if config is None:
+                    return ModelMetaResponse(status=JsonValues.FAILURE, message=f"Model '{model_name}' not found")
+                model_kind = config.get("model_kind", "detector")
+                return ModelMetaResponse(
+                    status=JsonValues.SUCCESS,
+                    model_kind=model_kind,
+                    label_uuid=config.get("label_uuid"),
+                    label_uuids=config.get("label_uuids"),
+                )
+            except Exception as e:
+                return ModelMetaResponse(status=JsonValues.FAILURE, message=str(e))
+
+        @self._app.post(
+            "/api/models/{model_name}/classify",
+            response_model=ClassifyResponse,
+            tags=[ApiTags.INFERENCE],
+            operation_id="classify",
+        )
+        async def classify_api(model_name: str, payload: ClassifyPayload) -> ClassifyResponse:
+            """Run an ONNX classifier on the supplied image and return per-label predictions."""
+            import json
+            from pathlib import Path
+
+            import onnxruntime as ort
+
+            from apps.helpers.classifier_utils import preprocess_bgr_array, sigmoid, softmax
+
+            try:
+                config = self._manager.get_model_config(model_name)
+                if config is None:
+                    return ClassifyResponse(status=JsonValues.FAILURE, message=f"Model '{model_name}' not found")
+
+                model_kind = config.get("model_kind")
+                if model_kind not in ("image_classifier", "multi_label_classifier"):
+                    return ClassifyResponse(
+                        status=JsonValues.FAILURE,
+                        message=f"Model '{model_name}' is not a classifier (kind={model_kind!r})",
+                    )
+
+                onnx_path = Path(self._manager.get_models_path()) / f"{model_name}.onnx"
+                if not onnx_path.exists():
+                    return ClassifyResponse(status=JsonValues.FAILURE, message=f"ONNX file missing for '{model_name}'")
+
+                input_size: tuple[int, int] = tuple(config.get("input_size", [224, 224]))  # type: ignore
+                image_bgr: np.ndarray = base64_decode_image(payload.image_base64)
+                tensor = preprocess_bgr_array(image_bgr, input_size)[np.newaxis]  # (1, 3, H, W)
+
+                session = await asyncio.to_thread(
+                    ort.InferenceSession, str(onnx_path), providers=["CPUExecutionProvider"]
+                )
+                input_name: str = session.get_inputs()[0].name
+                raw_output = await asyncio.to_thread(session.run, None, {input_name: tensor})
+                logits: np.ndarray = raw_output[0][0]  # shape: (num_classes,) or (num_labels,)
+
+                predictions: list[ClassifyPrediction] = []
+
+                if model_kind == "image_classifier":
+                    class_names: list[str] = config.get("class_names", ["absent", "present"])
+                    probs = softmax(logits)
+                    present_idx = class_names.index("present") if "present" in class_names else 1
+                    confidence = float(probs[present_idx])
+                    label_uuid: str = config.get("label_uuid", "")
+                    predictions.append(
+                        ClassifyPrediction(label_uuid=label_uuid, confidence=confidence, is_present=confidence >= 0.5)
+                    )
+
+                else:  # multi_label_classifier
+                    label_uuids: list[str] = config.get("label_uuids", [])
+                    probs_ml = sigmoid(logits)
+                    for label_uuid, prob in zip(label_uuids, probs_ml):
+                        confidence = float(prob)
+                        predictions.append(
+                            ClassifyPrediction(label_uuid=label_uuid, confidence=confidence, is_present=confidence >= 0.5)
+                        )
+
+                return ClassifyResponse(
+                    status=JsonValues.SUCCESS,
+                    result=ClassifyResult(model_kind=model_kind, predictions=predictions),
+                )
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return ClassifyResponse(status=JsonValues.FAILURE, message=str(e))
 
         @self._app.get(
             "/api/models/{model_name}/classes",

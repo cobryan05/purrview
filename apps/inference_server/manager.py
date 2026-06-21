@@ -68,6 +68,20 @@ class Manager:
     async def get_server_config(self) -> Dict[str, Any]:
         return self._config.copy()
 
+    def get_models_path(self) -> str:
+        return self._models_path
+
+    def get_model_config(self, model_name: str) -> Optional[Dict[str, Any]]:
+        """Read the companion JSON for *model_name*; returns None if missing."""
+        import json
+        from pathlib import Path
+
+        config_path = Path(self._models_path) / f"{model_name}.json"
+        if not config_path.exists():
+            return None
+        with open(config_path) as f:
+            return json.load(f)
+
     async def list_models(self, pattern: Optional[str] = "*.onnx") -> List[str]:
         """
         List all files in the models directory, optionally filtered by a glob pattern.

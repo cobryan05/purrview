@@ -51,3 +51,25 @@ export async function runDetection(model_name, image) {
 
   return result;
 }
+
+/**
+ * Run an ONNX classifier on an image and return per-label predictions.
+ * @param {string} model_name
+ * @param {HTMLImageElement} image
+ * @returns {Promise<Array<{labelUuid: string, confidence: number, isPresent: boolean}>>}
+ */
+export async function runClassify(model_name, image) {
+  if (!image.src.startsWith('data:')) throw new Error('Image is not a base64 data URI');
+  const base64String = image.src.split(',')[1];
+
+  const res = await apiFetch(`/api/models/${model_name}/classify`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ imageBase64: base64String }),
+  });
+
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || data.status !== 'success') throw new Error(data.message || 'Classify request failed');
+
+  return data.result?.predictions ?? [];
+}

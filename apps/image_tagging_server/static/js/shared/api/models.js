@@ -43,6 +43,37 @@ export const modelLabelsFetcher = createCachedFetcher(async (modelNames) => {
 export function clearModelsCache() {
   modelsFetcher.clear();
   modelLabelsFetcher.clear();
+  _modelKindCache.clear();
+}
+
+/** @type {Map<string, string>} model name → modelKind */
+const _modelKindCache = new Map();
+
+/**
+ * Fetch the model_kind for each name in *modelNames*.
+ * Results are cached for the session (kinds are stable until models dir changes).
+ * @param {string[]} modelNames
+ * @returns {Promise<Map<string, string>>} name → modelKind ("image_classifier" | "multi_label_classifier" | "detector")
+ */
+export async function fetchModelsKinds(modelNames) {
+  const result = new Map();
+  const missing = modelNames.filter(n => !_modelKindCache.has(n));
+
+  await Promise.all(missing.map(async name => {
+    try {
+      const res = await apiFetch(`/api/models/${name}/meta`);
+      const data = await res.json().catch(() => ({}));
+      const kind = (res.ok && data.status === 'success') ? (data.modelKind ?? 'detector') : 'detector';
+      _modelKindCache.set(name, kind);
+    } catch {
+      _modelKindCache.set(name, 'detector');
+    }
+  }));
+
+  for (const name of modelNames) {
+    result.set(name, _modelKindCache.get(name) ?? 'detector');
+  }
+  return result;
 }
 
 /** -----------------------------
