@@ -263,7 +263,11 @@ class JobQueue:
             job.emit("progress", data)
 
         try:
-            result = await trainer.train(job.config, progress_cb, job.cancel_event)
+            result = await trainer.train(
+                {**job.config, "manifest": job.manifest},
+                progress_cb,
+                job.cancel_event,
+            )
             if job.cancel_event.is_set():
                 job.status = "cancelled"
                 job.emit("status", {"status": "cancelled"})

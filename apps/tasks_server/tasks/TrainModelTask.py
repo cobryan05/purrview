@@ -461,6 +461,13 @@ class TrainModelTask(Task):
                     headers={"Content-Type": "application/x-tar"},
                 )
                 r.raise_for_status()
+                ingest_result = r.json()
+                server_received = ingest_result.get("received", 0)
+                if server_received < added:
+                    raise RuntimeError(
+                        f"Training server only cached {server_received}/{added} images in batch. "
+                        f"Check training server logs for write errors (permissions, disk space)."
+                    )
                 pushed += added
                 self._update_progress(min(pushed / len(missing_uuids) * 50.0, 50.0))
                 await self.heartbeat()

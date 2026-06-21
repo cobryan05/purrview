@@ -101,7 +101,7 @@ RUN groupadd -g $APPUSER_GID appuser && \
     useradd -m -u $APPUSER_UID -g appuser -s /bin/bash appuser
 
 # Set runtime folder ownership safely
-RUN mkdir -p /training-artifacts && chown -R appuser:appuser /app /logs /conf /training-artifacts
+RUN mkdir -p /training-artifacts /training-cache && chown -R appuser:appuser /app /logs /conf /training-artifacts /training-cache
 
 USER appuser
 
@@ -142,7 +142,7 @@ COPY apps ./apps
 RUN groupadd -g $APPUSER_GID appuser && \
     useradd -m -u $APPUSER_UID -g appuser -s /bin/bash appuser
 
-RUN mkdir -p /logs /data /training-artifacts && chown -R appuser:appuser /app /logs /conf /data /training-artifacts
+RUN mkdir -p /logs /data /training-artifacts /training-cache && chown -R appuser:appuser /app /logs /conf /data /training-artifacts /training-cache
 
 USER appuser
 
