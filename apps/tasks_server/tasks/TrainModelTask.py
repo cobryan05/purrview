@@ -442,13 +442,17 @@ class TrainModelTask(Task):
 
         # Process in batches of _TAR_BATCH_SIZE, reusing one HTTP client.
         pushed = 0
+        skipped = 0
         async with httpx.AsyncClient(timeout=300.0) as client:
             for batch_start in range(0, len(missing_uuids), _TAR_BATCH_SIZE):
                 if self._cancel_flag.is_set():
                     return
                 batch = missing_uuids[batch_start : batch_start + _TAR_BATCH_SIZE]
-                tar_bytes = await asyncio.to_thread(self._build_tar, batch, uuid_to_filename)
-                if not tar_bytes:
+                tar_bytes, added, batch_skipped = await asyncio.to_thread(
+                    self._build_tar, batch, uuid_to_filename
+                )
+                skipped += batch_skipped
+                if not added:
                     continue
                 # Use httpx directly — the generated client can't send raw binary body.
                 r = await client.post(
@@ -457,29 +461,43 @@ class TrainModelTask(Task):
                     headers={"Content-Type": "application/x-tar"},
                 )
                 r.raise_for_status()
-                pushed += len(batch)
+                pushed += added
                 self._update_progress(min(pushed / len(missing_uuids) * 50.0, 50.0))
                 await self.heartbeat()
                 self.log(f"Pushed {pushed}/{len(missing_uuids)} images")
 
-    def _build_tar(self, uuids: list[str], uuid_to_filename: dict[str, str]) -> bytes:
-        """Build a tar in memory for the given UUIDs, reading bytes from FILES_ROOT."""
+        if skipped:
+            raise RuntimeError(
+                f"{skipped} image file(s) not found on disk and could not be pushed. "
+                f"Check that FILES_ROOT ({FILES_ROOT}) contains the labeled images."
+            )
+
+    def _build_tar(self, uuids: list[str], uuid_to_filename: dict[str, str]) -> tuple[bytes, int, int]:
+        """Build a tar in memory for the given UUIDs, reading bytes from FILES_ROOT.
+
+        Returns (tar_bytes, added_count, skipped_count).
+        """
         buf = io.BytesIO()
+        added = 0
+        skipped = 0
         with tarfile.open(fileobj=buf, mode="w:") as tf:
             for uuid in uuids:
                 filename = uuid_to_filename.get(uuid, "")
                 if not filename:
-                    logger.warning("No filename for UUID %s, skipping", uuid)
+                    self.log(f"WARNING: no filename recorded for image {uuid}, skipping")
+                    skipped += 1
                     continue
                 img_path = FILES_ROOT / filename
                 if not img_path.exists():
-                    logger.warning("Image file not found: %s, skipping", img_path)
+                    self.log(f"WARNING: image file not found: {img_path}, skipping")
+                    skipped += 1
                     continue
                 info = tarfile.TarInfo(name=uuid)
                 info.size = img_path.stat().st_size
                 with open(img_path, "rb") as fh:
                     tf.addfile(info, fh)
-        return buf.getvalue()
+                added += 1
+        return buf.getvalue(), added, skipped
 
     async def _consume_sse(self, job_id: str) -> dict[str, Any]:
         """Open the SSE stream for *job_id* and relay events until done/error/cancel."""

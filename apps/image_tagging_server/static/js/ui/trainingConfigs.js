@@ -131,7 +131,15 @@ function renderTrainingConfigForm({ config, datasetsMap, modelConfigsMap, labels
 
   refreshNodeSel();
   nodeSel.addEventListener('change', _markDirty);
-  el.appendChild(makeFieldRow('Model node', nodeSel));
+  const nodeRow = makeFieldRow('Model node', nodeSel);
+  const nodeHelp = document.createElement('span');
+  nodeHelp.textContent = ' (?)';
+  nodeHelp.title =
+    'Root node ("All labels"): trains a single shared-backbone multi-label model covering every label in the config at once. Use this for normal training.\n\n' +
+    'Labeled node: trains a binary (present/absent) classifier for that one label only, ignoring all other labels. Use this to retrain or experiment with a single label in isolation.';
+  nodeHelp.style.cssText = 'cursor: help; opacity: 0.55; font-size: 0.85em;';
+  nodeRow.querySelector('label').appendChild(nodeHelp);
+  el.appendChild(nodeRow);
 
   // ── Datasets ──────────────────────────────────────────────────────────────
   const hr2 = document.createElement('hr');
