@@ -18,7 +18,8 @@ import db_client
 import numpy as np
 from db_client.api.images_api import ImagesApi
 from db_client.api.sources_api import SourcesApi
-from db_client.models.set_image_tag_payload import SetImageTagPayload
+from db_client.models.image_item_status import ImageItemStatus
+from db_client.models.set_image_label_payload import SetImageLabelPayload
 
 from .Registry import register_task
 from .Task import Task
@@ -59,8 +60,6 @@ class RunClassifierTask(Task):
     async def _init(self, params: dict[str, Any], resume_data: Optional[dict[str, Any]]) -> None:
         self._model_name: str = str(params["model_name"])
         self._source_uuids: list[str] = list(params.get("source_uuids", []))
-        self._present_tag_uuid: Optional[str] = params.get("present_tag_uuid")
-        self._absent_tag_uuid: Optional[str] = params.get("absent_tag_uuid")
         self._confidence_threshold: float = float(params.get("confidence_threshold", 0.7))
         self._batch_size: int = int(params.get("batch_size", 32))
         self._image_source: str = str(params.get("image_source", "filesystem"))
@@ -76,11 +75,21 @@ class RunClassifierTask(Task):
         with open(config_path) as f:
             self._model_config: dict = json.load(f)
 
+        model_kind = self._model_config.get("model_kind", "image_classifier")
+        if model_kind != "image_classifier":
+            raise ValueError(
+                f"Model {self._model_name!r} has kind {model_kind!r}; RunClassifierTask only supports 'image_classifier'"
+            )
+
+        self._label_uuid: Optional[str] = self._model_config.get("label_uuid") or None
+        if not self._label_uuid:
+            raise ValueError(f"Model config for {self._model_name!r} is missing 'label_uuid'")
+
         self._input_size: tuple[int, int] = tuple(self._model_config.get("input_size", [224, 224]))  # type: ignore
         self._model_path: Path = model_path
 
         self._images_processed: int = resume_data.get("images_processed", 0) if resume_data else 0
-        self._images_tagged: int = resume_data.get("images_tagged", 0) if resume_data else 0
+        self._images_labeled: int = resume_data.get("images_labeled", 0) if resume_data else 0
 
     async def _run(self) -> dict[str, Any]:
         import onnxruntime as ort
@@ -134,23 +143,22 @@ class RunClassifierTask(Task):
             )
             present_probs = probs[:, present_class_idx]
 
-            # Apply tags.
-            for i, (stub, confidence) in enumerate(zip(valid_stubs, present_probs)):
+            # Write image_labels (PRESENT / ABSENT) for each classified image.
+            for stub, confidence in zip(valid_stubs, present_probs):
                 is_present = float(confidence) >= self._confidence_threshold
-                tag_uuid = self._present_tag_uuid if is_present else self._absent_tag_uuid
-                if tag_uuid:
-                    try:
-                        await asyncio.to_thread(
-                            images_api.set_image_tag,
-                            SetImageTagPayload(
-                                image_path=stub.filename,
-                                tag_uuid=tag_uuid,
-                                action="add",
-                            ),
-                        )
-                        self._images_tagged += 1
-                    except Exception as exc:
-                        logger.warning("Failed to tag %s: %s", stub.filename, exc)
+                status = ImageItemStatus.PRESENT if is_present else ImageItemStatus.ABSENT
+                try:
+                    await asyncio.to_thread(
+                        images_api.set_image_label_status,
+                        SetImageLabelPayload(
+                            image_path=stub.filename,
+                            label_uuid=self._label_uuid,
+                            status=status,
+                        ),
+                    )
+                    self._images_labeled += 1
+                except Exception as exc:
+                    logger.warning("Failed to set image label for %s: %s", stub.filename, exc)
 
             self._images_processed += len(batch)
 
@@ -159,35 +167,26 @@ class RunClassifierTask(Task):
             progress = min(100.0, done_count / max(total, 1) * 100.0)
             self._update_progress(progress)
             if done_count % (self._batch_size * 5) == 0 or done_count >= total:
-                self.log(f"Processed {done_count}/{total}, tagged {self._images_tagged}")
+                self.log(f"Processed {done_count}/{total}, labeled {self._images_labeled}")
 
             # Persist progress for resume.
             if self._data_req_flag.is_set():
                 self._data_req_flag.clear()
                 self._resume_data = {
                     "images_processed": self._images_processed,
-                    "images_tagged": self._images_tagged,
+                    "images_labeled": self._images_labeled,
                 }
                 self._data_ready_flag.set()
 
             await self.heartbeat()
             await asyncio.sleep(0)
 
-        self.log(f"Complete: {self._images_processed} processed, {self._images_tagged} tagged")
-        result: dict[str, Any] = {
+        self.log(f"Complete: {self._images_processed} processed, {self._images_labeled} labeled")
+        return {
             "images_processed": self._images_processed,
-            "images_tagged": self._images_tagged,
+            "images_labeled": self._images_labeled,
             "model_name": self._model_name,
         }
-        if self._present_tag_uuid:
-            result["actions"] = [
-                {
-                    "type": "open_review",
-                    "label": "See classified images",
-                    "payload": {"tag_uuids": [self._present_tag_uuid]},
-                }
-            ]
-        return result
 
     async def _collect_stubs(self, db_api_client: db_client.ApiClient, images_api: ImagesApi) -> list:
         """Return a sorted list of ImageStub objects to classify."""
@@ -266,17 +265,7 @@ class RunClassifierTask(Task):
                 "default": [],
                 "help": "Restrict to images from these source UUIDs (empty = all images)",
             },
-            "present_tag_uuid": {
-                "type": "str",
-                "required": False,
-                "help": "Tag UUID to apply to images classified as 'present'",
-            },
-            "absent_tag_uuid": {
-                "type": "str",
-                "required": False,
-                "help": "Tag UUID to apply to images classified as 'absent'",
-            },
-            "confidence_threshold": {
+"confidence_threshold": {
                 "type": "float",
                 "required": False,
                 "default": 0.7,

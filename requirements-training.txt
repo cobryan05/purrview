@@ -6,6 +6,7 @@ requests
 uvicorn
 timm
 onnx
+onnxscript
 onnxruntime-gpu
 scikit-learn
 stringzilla>=3.10.4,<4

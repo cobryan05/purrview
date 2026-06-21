@@ -6,7 +6,7 @@ import { init as initSidebar } from './sidebar.js';
 import { init as initToolbar } from './toolbar.js';
 import { initHotkeyBindings } from './hotkeyBindings.js';
 import { setupWorkspaceTabs } from '/app-static/js/app/utils/tabs.js';
-import { runInference } from '/app-static/js/shared/api/inference.js';
+import { runDetection } from '/app-static/js/shared/api/inference.js';
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
 import { Logger } from '/app-static/js/ui/utils/index.js';
 
@@ -36,7 +36,7 @@ export async function init(runtime, tab_pane) {
     try {
       const img = runtime.state?.image?.img;
       if (!img) throw new Error('No image loaded');
-      const result = await runInference(modelName, img);
+      const result = await runDetection(modelName, img);
       await addInferenceResults(runtime, result);
     } catch (err) {
       Logger.error('Failed to run inference:', err);

@@ -293,9 +293,9 @@ class WebApp:
                 return StatusResponse(status=JsonValues.FAILURE, message=str(e))
 
         @self._app.post(
-            "/api/models/{model_name}/infer",
+            "/api/models/{model_name}/detect",
             tags=[ApiTags.INFERENCE],
-            operation_id="inference",
+            operation_id="detect",
             response_model=InferenceResponse,
         )
         async def inference_api(model_name: str, payload: InferencePayload) -> InferenceResponse:

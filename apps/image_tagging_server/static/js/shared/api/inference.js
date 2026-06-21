@@ -9,7 +9,7 @@ import { generateUUID, Logger, toast } from '/app-static/js/ui/utils/index.js';
  * @param {HTMLImageElement} image - base64 image element to run inference on.
  * @returns {Promise<import('@web_api').InferenceResultModel>}
  */
-export async function runInference(model_name, image) {
+export async function runDetection(model_name, image) {
   if (!image.src.startsWith("data:")) {
     throw new Error("Image is not a base64 data URI");
   }
@@ -26,7 +26,7 @@ export async function runInference(model_name, image) {
 
   toast(`Sending recognition request for model ${model_name}...`);
   // Send recognition request
-  const res = await apiFetch(`/api/models/${model_name}/infer`, {
+  const res = await apiFetch(`/api/models/${model_name}/detect`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',

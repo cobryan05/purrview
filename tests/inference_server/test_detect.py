@@ -5,7 +5,7 @@ from tests.inference_server.conftest import make_png_b64
 
 async def test_infer_returns_empty_detections(http_client):
     resp = await http_client.post(
-        "/api/models/yolo_test/infer",
+        "/api/models/yolo_test/detect",
         json={"confThresh": 0.5, "imageBase64": make_png_b64()},
     )
     assert resp.status_code == 200
@@ -16,7 +16,7 @@ async def test_infer_returns_empty_detections(http_client):
 
 async def test_infer_unknown_model_returns_failure(http_client):
     resp = await http_client.post(
-        "/api/models/nonexistent/infer",
+        "/api/models/nonexistent/detect",
         json={"confThresh": 0.5, "imageBase64": make_png_b64()},
     )
     assert resp.status_code == 200
@@ -25,7 +25,7 @@ async def test_infer_unknown_model_returns_failure(http_client):
 
 async def test_infer_returns_inference_time(http_client):
     resp = await http_client.post(
-        "/api/models/yolo_test/infer",
+        "/api/models/yolo_test/detect",
         json={"confThresh": 0.5, "imageBase64": make_png_b64()},
     )
     assert resp.status_code == 200
@@ -35,7 +35,7 @@ async def test_infer_returns_inference_time(http_client):
 
 async def test_infer_source_img_omitted_by_default(http_client):
     resp = await http_client.post(
-        "/api/models/yolo_test/infer",
+        "/api/models/yolo_test/detect",
         json={"confThresh": 0.5, "imageBase64": make_png_b64()},
     )
     assert resp.status_code == 200
@@ -44,7 +44,7 @@ async def test_infer_source_img_omitted_by_default(http_client):
 
 async def test_infer_invalid_base64_returns_failure(http_client):
     resp = await http_client.post(
-        "/api/models/yolo_test/infer",
+        "/api/models/yolo_test/detect",
         json={"confThresh": 0.5, "imageBase64": "not-valid-base64!!!"},
     )
     assert resp.status_code == 200
