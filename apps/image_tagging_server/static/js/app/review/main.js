@@ -30,7 +30,7 @@ import { Logger, toast } from '/app-static/js/ui/utils/logging.js';
 import { showUnsavedChangesModal, showExternalChangesModal, showConfirmModal } from '/app-static/js/ui/utils/confirmModal.js';
 import { deleteImage } from '/app-static/js/shared/api/images.js';
 import { rerenderBboxViews } from '/app-static/js/app/image-tagging/canvas/manager.js';
-import { nextModalZIndex, registerEscHandler, unregisterEscHandler } from '/app-static/js/ui/utils/modalZIndex.js';
+import { nextModalZIndex, applyModalCascade, registerEscHandler, unregisterEscHandler } from '/app-static/js/ui/utils/modalZIndex.js';
 import { CheckboxField } from '/app-static/js/ui/utils/fields/CheckboxField.js';
 import { createCanvasInstance } from '/app-static/js/app/image-tagging/canvas/instance.js';
 import { saveAnnotations } from '/app-static/js/app/image-tagging/canvas/image.js';
@@ -2109,6 +2109,7 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
     dialog.append(title, previewSection, radioGroup, labelPickerRow, tagPickerRow, warning, btnRow);
     overlay.appendChild(dialog);
     document.body.appendChild(overlay);
+    applyModalCascade(dialog);
     registerEscHandler(close);
     overlay.addEventListener('click', e => { if (e.target === overlay) close(); });
 
@@ -2268,6 +2269,7 @@ export async function showReviewModal({ title = 'Browse Images', fetchImages, ed
   dialog.append(header, content);
   overlay.appendChild(dialog);
   document.body.appendChild(overlay);
+  applyModalCascade(dialog);
 
   // Use a ref so close() can call panel.destroy() even though panel is assigned below.
   const panelRef = { current: null };
@@ -2544,6 +2546,7 @@ async function showCanvasModal(bbox, img, labels, onSaved, navContext = null) {
   overlay.appendChild(dialog);
   overlay.style.zIndex = nextModalZIndex();
   document.body.appendChild(overlay);
+  applyModalCascade(dialog);
 
   // ── Create canvas instance ─────────────────────────────────────────
   let instance;
@@ -3014,6 +3017,7 @@ async function showBulkActionModal(entries, labels, onConfirm, titleText = null,
   dialog.append(radioGroup, labelPickerRow, tagPickerRow, btnRow);
   overlay.appendChild(dialog);
   document.body.appendChild(overlay);
+  applyModalCascade(dialog);
   registerEscHandler(close);
 
   overlay.addEventListener('click', e => { if (e.target === overlay) close(); });
@@ -3119,6 +3123,7 @@ async function showImageBulkActionModal(entries, labels, onConfirm, titleText = 
   dialog.append(title, radioGroup, labelPickerRow, tagPickerRow, btnRow);
   overlay.appendChild(dialog);
   document.body.appendChild(overlay);
+  applyModalCascade(dialog);
   registerEscHandler(closeImageBulk);
 
   overlay.addEventListener('click', e => { if (e.target === overlay) closeImageBulk(); });
