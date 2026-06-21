@@ -54,11 +54,12 @@ services:
               device_ids: [ '0' ]
               capabilities: [ gpu ]
     environment:
-      DB_SERVER_HOST: whiskerwatcher
+      TRAINING_CACHE_DIR: /training-cache
+      TRAINING_CACHE_MAX_MB: 10000
     volumes:
-      - ./data/:/data
       - ./conf:/conf
       - ./logs:/logs
+      - training_cache:/training-cache
     ports:
       - "8005:8005"   # Training API server
       - "9002:9001"   # Supervisord dashboard
@@ -130,15 +131,14 @@ services:
               device_ids: [ '0' ]
               capabilities: [ gpu ]
     environment:
-      DB_SERVER_HOST: whiskerwatcher-dev
+      TRAINING_CACHE_DIR: /training-cache
+      TRAINING_CACHE_MAX_MB: 10000
     volumes:
-      - ./data/:/data
       - ./conf:/conf
       - ./logs:/logs
       - ./apps:/app/apps
-      - ./models:/app/models
-      - ./image_datasets:/app/image_datasets
       - .:/project
+      - training_cache:/training-cache
     ports:
       - "8005:8005"
       - "9002:9001"
@@ -170,6 +170,8 @@ services:
       THUMB_CACHE_MAX_MB: 100
       TRAINING_SERVER_HOST: localhost
       DB_SERVER_HOST: localhost
+      TRAINING_CACHE_DIR: /training-cache
+      TRAINING_CACHE_MAX_MB: 10000
       TZ: America/Chicago
     command: ["/usr/bin/supervisord", "-c", "/conf/supervisord-monolith.conf"]
     volumes:
@@ -185,6 +187,7 @@ services:
       - ./static/images:/app/static/images
       - .:/project
       - ./.vscode:/app/.vscode
+      - training_cache:/training-cache
     ports:
       - "7999:7999"
       - "8005:8005"
@@ -192,3 +195,6 @@ services:
       - "9001:9001"
     restart: "no"
     profiles: ["dev-combined"]
+
+volumes:
+  training_cache:

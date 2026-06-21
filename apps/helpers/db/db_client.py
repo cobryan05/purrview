@@ -60,6 +60,7 @@ from .types import (
     ModelConfig,
     ModelConfigCreate,
     ModelConfigNode,
+    ModelConfigNodeRead,
     ModelConfigRead,
     ModelConfigUpdate,
     Source,
@@ -3764,6 +3765,14 @@ class DbClient:
             if mc is None:
                 return None
             return self._mc_to_read(mc)
+
+    async def get_model_config_node(self, node_uuid: str) -> Optional[ModelConfigNodeRead]:
+        """Look up a ModelConfigNode by its UUID and return a read model."""
+        async with self._async_session_maker() as session:
+            node = await session.get(ModelConfigNode, node_uuid)
+            if node is None:
+                return None
+            return ModelConfigNodeRead.model_validate(node)
 
     async def create_model_config(self, data: ModelConfigCreate) -> ModelConfigRead:
         # Validate uniqueness of label_uuid within the node list

@@ -28,6 +28,7 @@ import {
   fetchTrainingConfigImagesByLabelStatus,
   clearTrainingConfigsCache,
 } from '/app-static/js/shared/api/trainingConfigs.js';
+import { createTaskConfig, startTask } from '/app-static/js/shared/api/tasks.js';
 import { makeFieldRow, buildPanelEditorBar, toast } from '/app-static/js/ui/utils/index.js';
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
 import { showUnsavedConfigChangesModal } from '/app-static/js/ui/utils/confirmModal.js';
@@ -717,6 +718,37 @@ export async function renderTrainingConfigManager({ target = 'training-config-bo
         // Label stats panel (only for existing configs with datasets selected)
         if (config?.uuid && (config.datasetUuids?.length ?? 0) > 0) {
           editorBody.appendChild(renderLabelStatsPanel(config, labelsMap));
+        }
+
+        // Train button (only for fully-configured existing configs)
+        if (config?.uuid && (config.datasetUuids?.length ?? 0) > 0 && config.modelConfigNodeUuid) {
+          const trainSection = document.createElement('div');
+          trainSection.style.cssText = 'margin-top: 1em; padding-top: 0.75em; border-top: 1px solid var(--pico-muted-border-color, #ccc);';
+          const trainBtn = document.createElement('button');
+          trainBtn.type = 'button';
+          trainBtn.textContent = '▶ Start Training';
+          trainBtn.className = 'panel-btn';
+          trainBtn.style.cssText = 'margin-bottom: 0;';
+          trainBtn.addEventListener('click', async () => {
+            trainBtn.disabled = true;
+            trainBtn.textContent = 'Starting…';
+            try {
+              const configUuid = await createTaskConfig({
+                taskType: 'TrainModelTask',
+                name: `Train ${config.name}`,
+                params: { training_config_uuid: config.uuid },
+              });
+              await startTask({ configUuid });
+              toast('Training job started', 4000);
+            } catch (err) {
+              toast(err.message || 'Failed to start training', 5000, 'error');
+            } finally {
+              trainBtn.disabled = false;
+              trainBtn.textContent = '▶ Start Training';
+            }
+          });
+          trainSection.appendChild(trainBtn);
+          editorBody.appendChild(trainSection);
         }
 
         _currentDoSave = async () => {

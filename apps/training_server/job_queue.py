@@ -1,24 +1,34 @@
 """Job queue and job state for the training server."""
 
+from __future__ import annotations
+
 import asyncio
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, AsyncIterator, Optional
 from uuid import uuid4
 
 logger = logging.getLogger(__name__)
 
+# Statuses from which no further transitions are possible.
 TERMINAL_STATUSES = frozenset({"done", "error", "cancelled"})
 
 
 @dataclass
 class Job:
     job_id: str
-    status: str  # queued | running | done | error | cancelled
+    status: str  # awaiting_data | queued | running | done | error | cancelled
     config: dict[str, Any]
     cancel_event: asyncio.Event
     created_at: datetime
+    # Ordered list of {image_uuid, filename, status} dicts from the manifest.
+    manifest: list[dict[str, str]] = field(default_factory=list)
+    # Set of image UUIDs that must be in the cache before the job can start.
+    required_uuids: set[str] = field(default_factory=set)
+    # Directory where the trainer writes its output artifacts.
+    artifact_dir: Optional[Path] = None
     queue_position: int = 0
     result: Optional[dict[str, Any]] = None
     # All events emitted so far (event_type, data); used for replay on reconnect.
@@ -81,7 +91,11 @@ class Job:
 
 
 class JobQueue:
-    """Single-worker (extensible to N via TRAINING_WORKER_COUNT) async job queue."""
+    """Single-worker (extensible to N via TRAINING_WORKER_COUNT) async job queue.
+
+    Jobs start in ``awaiting_data`` state and are not queued for the worker until
+    ``start_job()`` is called.  This allows the caller to push image data first.
+    """
 
     def __init__(self, worker_count: int = 1):
         self._jobs: dict[str, Job] = {}
@@ -98,26 +112,65 @@ class JobQueue:
     def register_trainer(self, name: str, trainer: Any) -> None:
         self._trainers[name] = trainer
 
-    async def submit(self, config: dict[str, Any]) -> Job:
+    async def submit(
+        self,
+        config: dict[str, Any],
+        manifest: Optional[list[dict[str, str]]] = None,
+        artifact_dir: Optional[Path] = None,
+    ) -> Job:
+        """Create a new job in ``awaiting_data`` state.
+
+        The job is NOT queued for the worker until :meth:`start_job` is called.
+        """
         job_id = str(uuid4())
-        position = self._queue.qsize()
+        m = manifest or []
+        required = {entry["image_uuid"] for entry in m}
         job = Job(
             job_id=job_id,
-            status="queued",
+            status="awaiting_data",
             config=config,
             cancel_event=asyncio.Event(),
             created_at=datetime.now(timezone.utc),
-            queue_position=position,
+            manifest=m,
+            required_uuids=required,
+            artifact_dir=artifact_dir,
+            queue_position=0,
         )
         self._jobs[job_id] = job
-        await self._queue.put(job_id)
+        job.emit("status", {"status": "awaiting_data"})
         return job
 
+    def start_job(self, job_id: str, missing_uuids: list[str]) -> tuple[bool, list[str]]:
+        """Transition a job from ``awaiting_data`` to ``queued``.
+
+        Validates that all required image UUIDs are present in the cache.
+        Returns ``(success, missing_uuids)``; ``success`` is False when data is
+        still incomplete and the job is not queued.
+        """
+        job = self._jobs.get(job_id)
+        if not job:
+            return False, []
+        if job.status != "awaiting_data":
+            # Already queued/running/done — idempotent.
+            return job.status not in TERMINAL_STATUSES, []
+        if missing_uuids:
+            return False, missing_uuids
+        position = self._queue.qsize()
+        job.status = "queued"
+        job.queue_position = position
+        job.emit("status", {"status": "queued"})
+        self._queue.put_nowait(job_id)
+        return True, []
+
     def cancel(self, job_id: str) -> bool:
-        """Cancel a queued or running job. Returns True if the cancel was accepted."""
+        """Cancel a job regardless of whether it is awaiting_data, queued, or running."""
         job = self._jobs.get(job_id)
         if not job:
             return False
+        if job.status == "awaiting_data":
+            job.status = "cancelled"
+            job.emit("status", {"status": "cancelled"})
+            return True
         if job.status == "queued":
             job.status = "cancelled"
             job.emit("status", {"status": "cancelled"})
@@ -138,7 +191,7 @@ class JobQueue:
             job_id = await self._queue.get()
             try:
                 job = self._jobs.get(job_id)
-                if job and job.status != "cancelled":
+                if job and job.status not in ("cancelled", "awaiting_data"):
                     await self._run_job(job)
             except asyncio.CancelledError:
                 raise

@@ -1,167 +1,56 @@
-"""Dataset loader and image fetcher abstraction for the training server.
+"""Manifest-driven dataset for the training server.
 
-ImageFetcher handles the physical retrieval of image bytes; ImageLabelDataset
-wraps that into a torch Dataset suitable for DataLoader.
+Images arrive via the push ingest API and are stored in the uuid-keyed
+``ImageCache``.  This module builds a torch Dataset from a pushed manifest
+(list of ``{image_uuid, filename, status}`` dicts) + the local cache.
 
-Two fetcher implementations:
-- FilesystemImageFetcher  — reads files directly from a shared volume (preferred)
-- HttpImageFetcher        — fetches via db_server HTTP API and caches locally
-
-The split is deterministic: images are sorted by UUID, then the first
-(1 - val_fraction) fraction is train and the rest is val.  Reproducible across
-runs regardless of DB insertion order.
+The split is deterministic: images are sorted by UUID then sliced.
+This is reproducible across runs regardless of submission order.
 """
 
 from __future__ import annotations
 
-import hashlib
 import logging
-import os
-import tempfile
-from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Any, Optional
-
-import httpx
+from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-# ─── Image Fetcher abstraction ────────────────────────────────────────────────
 
-
-class ImageFetcher(ABC):
-    """Retrieve raw image bytes given a relative image path and UUID."""
-
-    @abstractmethod
-    def fetch(self, image_uuid: str, filename: str) -> bytes:
-        """Return JPEG/PNG bytes for the image.
-
-        Args:
-            image_uuid: DB UUID of the image.
-            filename:   Relative filename as stored in ImageRecord.filename.
-        """
-        ...
-
-
-class FilesystemImageFetcher(ImageFetcher):
-    """Read images directly from a shared filesystem volume (zero HTTP overhead)."""
-
-    def __init__(self, fs_root: str, path_prefix_map: Optional[dict[str, str]] = None):
-        """
-        Args:
-            fs_root:          Root directory where images live (e.g. /app/image_datasets).
-            path_prefix_map:  Optional {source_prefix: target_prefix} remapping applied
-                              to filename before joining with fs_root.  Handles the case
-                              where the training container mounts the volume at a different
-                              path than the main container.
-        """
-        self._fs_root = Path(fs_root)
-        self._prefix_map = path_prefix_map or {}
-
-    def _resolve(self, filename: str) -> Path:
-        for src, dst in self._prefix_map.items():
-            if filename.startswith(src):
-                filename = dst + filename[len(src) :]
-                break
-        return self._fs_root / filename
-
-    def fetch(self, image_uuid: str, filename: str) -> bytes:
-        path = self._resolve(filename)
-        return path.read_bytes()
-
-
-class HttpImageFetcher(ImageFetcher):
-    """Fetch images from db_server over HTTP and cache to a local temp directory."""
-
-    def __init__(self, db_base_url: str, cache_dir: Optional[str] = None):
-        """
-        Args:
-            db_base_url:  Base URL of the db_server (e.g. http://localhost:8003).
-            cache_dir:    Directory for caching downloaded images.  A temporary
-                          directory is created and owned by this instance if None.
-        """
-        self._db_base_url = db_base_url.rstrip("/")
-        if cache_dir is None:
-            self._tmp = tempfile.mkdtemp(prefix="training_img_cache_")
-            self._cache_dir = Path(self._tmp)
-        else:
-            self._cache_dir = Path(cache_dir)
-            self._cache_dir.mkdir(parents=True, exist_ok=True)
-            self._tmp = None
-
-    def _cache_path(self, image_uuid: str) -> Path:
-        return self._cache_dir / f"{image_uuid}.jpg"
-
-    def fetch(self, image_uuid: str, filename: str) -> bytes:
-        cached = self._cache_path(image_uuid)
-        if cached.exists():
-            return cached.read_bytes()
-
-        # The db_server file endpoint returns JSON with a base64-encoded image_base64 field.
-        url = f"{self._db_base_url}/api/images/{filename}/file"
-        resp = httpx.get(url, params={"include_binary": True}, timeout=30.0)
-        resp.raise_for_status()
-        body = resp.json()
-        if body.get("status") != "success" or not body.get("image_base64"):
-            raise ValueError(f"Failed to fetch image {filename!r}: {body.get('message')}")
-
-        import base64 as _b64
-
-        data = _b64.b64decode(body["image_base64"])
-        cached.write_bytes(data)
-        return data
-
-    def cleanup(self) -> None:
-        """Remove the temporary cache directory (only if we created it)."""
-        if self._tmp:
-            import shutil
-
-            shutil.rmtree(self._tmp, ignore_errors=True)
-
-
-# ─── Dataset ─────────────────────────────────────────────────────────────────
-
-
-def _build_dataset(
-    label_uuid: str,
-    db_base_url: str,
-    fetcher: ImageFetcher,
+def build_dataset_from_manifest(
+    manifest: list[dict],
+    cache_dir: str,
     split: str = "train",
     val_fraction: float = 0.2,
-    allowed_image_uuids: Optional[set[str]] = None,
 ) -> "ImageLabelDataset":
-    """Factory that loads image-label rows from db_server and returns an ImageLabelDataset.
+    """Build an ``ImageLabelDataset`` from a pushed manifest + local cache.
 
     Args:
-        label_uuid:          UUID of the label to load present/absent examples for.
-        db_base_url:         Base URL of the db_server.
-        fetcher:             ImageFetcher to use for loading image bytes.
-        split:               "train" or "val".
-        val_fraction:        Fraction of images to hold out for validation (0–1).
-        allowed_image_uuids: When provided, restrict training to only these image
-                             UUIDs (used to scope training to specific datasets).
+        manifest:     List of ``{image_uuid, filename, status}`` dicts.
+                      ``status`` must be ``"present"`` or ``"absent"``.
+        cache_dir:    Path to the UUID-keyed image cache directory.
+        split:        ``"train"`` or ``"val"``.
+        val_fraction: Fraction of images to hold out for validation.
+
+    Raises:
+        ValueError: When no manifest rows are available or required images are
+                    missing from the cache.
     """
-    # Fetch all present/absent rows for this label.
-    url = f"{db_base_url.rstrip('/')}/api/image-labels"
-    resp = httpx.get(
-        url,
-        params={"label_uuid": label_uuid, "status": ["present", "absent"]},
-        timeout=60.0,
-    )
-    resp.raise_for_status()
-    body = resp.json()
-    rows = body.get("images", [])
-    if not rows:
-        raise ValueError(f"No labelled images found for label_uuid={label_uuid!r}")
+    if not manifest:
+        raise ValueError("Empty manifest — no images to train on")
 
-    # Restrict to the allowed image set when a dataset scope is specified.
-    if allowed_image_uuids is not None:
-        rows = [r for r in rows if r["image_uuid"] in allowed_image_uuids]
-        if not rows:
-            raise ValueError(f"No labelled images found within the specified datasets for label_uuid={label_uuid!r}")
+    cache = Path(cache_dir)
 
-    # Deterministic train/val split: sort by UUID (stable hash), then slice.
-    rows_sorted = sorted(rows, key=lambda r: r["image_uuid"])
+    # Validate cache completeness.
+    missing = [r["image_uuid"] for r in manifest if not (cache / r["image_uuid"]).exists()]
+    if missing:
+        raise ValueError(
+            f"{len(missing)} images required by the manifest are missing from the cache: "
+            f"{missing[:5]}{'...' if len(missing) > 5 else ''}"
+        )
+
+    # Deterministic train/val split: sort by UUID (stable), then slice.
+    rows_sorted = sorted(manifest, key=lambda r: r["image_uuid"])
     n_val = max(1, int(len(rows_sorted) * val_fraction))
     n_train = len(rows_sorted) - n_val
     if split == "train":
@@ -169,7 +58,7 @@ def _build_dataset(
     else:
         split_rows = rows_sorted[n_train:]
 
-    return ImageLabelDataset(split_rows=split_rows, fetcher=fetcher, split=split)
+    return ImageLabelDataset(split_rows=split_rows, cache_dir=cache_dir, split=split)
 
 
 class ImageLabelDataset:
@@ -177,17 +66,14 @@ class ImageLabelDataset:
 
     ``label_int`` mapping: 0 = absent, 1 = present.
 
-    Augmentation is applied on the train split (horizontal flip, colour jitter,
-    random crop) and skipped on the val split (centre crop only).
-
-    Instantiate via ``_build_dataset()`` rather than directly.
+    Augmentation: train split gets random crop + flip + colour jitter;
+    val split gets centre crop only.
     """
 
     INPUT_SIZE = (224, 224)
 
-    def __init__(self, split_rows: list[dict], fetcher: ImageFetcher, split: str):
-        # Defer torch/albumentations imports so the module can be imported in
-        # environments where those packages are absent (e.g. test runner).
+    def __init__(self, split_rows: list[dict], cache_dir: str, split: str):
+        # Defer torch/albumentations imports — only available in training container.
         import albumentations as A
         import numpy as np
         import torch
@@ -196,7 +82,7 @@ class ImageLabelDataset:
         self._torch = torch
         self._np = np
         self._rows = split_rows
-        self._fetcher = fetcher
+        self._cache_dir = Path(cache_dir)
         self._split = split
 
         h, w = self.INPUT_SIZE
@@ -227,9 +113,9 @@ class ImageLabelDataset:
         import cv2
 
         row = self._rows[idx]
-        image_bytes = self._fetcher.fetch(row["image_uuid"], row["filename"])
+        image_path = self._cache_dir / row["image_uuid"]
+        image_bytes = image_path.read_bytes()
 
-        # Decode to numpy RGB array.
         buf = self._np.frombuffer(image_bytes, dtype=self._np.uint8)
         img = cv2.imdecode(buf, cv2.IMREAD_COLOR)
         if img is None:
@@ -243,7 +129,7 @@ class ImageLabelDataset:
         return tensor, label
 
     def class_weights(self):
-        """Return a 2-element tensor [w_absent, w_present] for weighted loss."""
+        """Return a 2-element tensor [w_absent, w_present] for weighted CE loss."""
         import torch
 
         n_present = sum(1 for r in self._rows if r["status"] == "present")

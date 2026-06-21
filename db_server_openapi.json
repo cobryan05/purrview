@@ -3786,6 +3786,48 @@
         }
       }
     },
+    "/api/model-config-nodes/{node_uuid}": {
+      "get": {
+        "tags": [
+          "model_configs"
+        ],
+        "summary": "Get Model Config Node",
+        "operationId": "get_model_config_node",
+        "parameters": [
+          {
+            "name": "node_uuid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Node Uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ModelConfigNodeRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/training-configs": {
       "get": {
         "tags": [
@@ -7132,6 +7174,20 @@
           "labelUuid": {
             "type": "string",
             "title": "Labeluuid"
+          },
+          "rollupLabelUuids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rolluplabeluuids"
           },
           "status": {
             "anyOf": [

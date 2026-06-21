@@ -2283,6 +2283,10 @@ class Manager:
     async def get_model_config(self, uuid: str) -> Optional[ModelConfigRead]:
         return await self._db_client.get_model_config(uuid)
 
+    async def get_model_config_node(self, node_uuid: str) -> Optional["ModelConfigNodeRead"]:
+        return await self._db_client.get_model_config_node(node_uuid)
+
+
     async def create_model_config(self, data: ModelConfigCreate) -> ModelConfigRead:
         await self._validate_model_config_nodes(data.nodes)
         return await self._db_client.create_model_config(data)

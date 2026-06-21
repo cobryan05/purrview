@@ -944,9 +944,44 @@
       }
     },
     "/api/tasks/{path}": {
+      "get": {
+        "summary": "Proxy Tasks",
+        "operationId": "proxy_tasks_api_tasks__path__get",
+        "parameters": [
+          {
+            "name": "path",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Path"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
       "patch": {
         "summary": "Proxy Tasks",
-        "operationId": "proxy_tasks_api_tasks__path__patch",
+        "operationId": "proxy_tasks_api_tasks__path__get",
         "parameters": [
           {
             "name": "path",
@@ -981,7 +1016,7 @@
       },
       "delete": {
         "summary": "Proxy Tasks",
-        "operationId": "proxy_tasks_api_tasks__path__patch",
+        "operationId": "proxy_tasks_api_tasks__path__get",
         "parameters": [
           {
             "name": "path",
@@ -1016,42 +1051,7 @@
       },
       "post": {
         "summary": "Proxy Tasks",
-        "operationId": "proxy_tasks_api_tasks__path__patch",
-        "parameters": [
-          {
-            "name": "path",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Path"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      },
-      "get": {
-        "summary": "Proxy Tasks",
-        "operationId": "proxy_tasks_api_tasks__path__patch",
+        "operationId": "proxy_tasks_api_tasks__path__get",
         "parameters": [
           {
             "name": "path",

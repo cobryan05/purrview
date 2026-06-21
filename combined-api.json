@@ -1932,9 +1932,44 @@
       }
     },
     "/api/tasks/{path}": {
+      "get": {
+        "summary": "Proxy Tasks",
+        "operationId": "proxy_tasks_api_tasks__path__get",
+        "parameters": [
+          {
+            "name": "path",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Path"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
       "patch": {
         "summary": "Proxy Tasks",
-        "operationId": "proxy_tasks_api_tasks__path__patch",
+        "operationId": "proxy_tasks_api_tasks__path__get",
         "parameters": [
           {
             "name": "path",
@@ -1969,7 +2004,7 @@
       },
       "delete": {
         "summary": "Proxy Tasks",
-        "operationId": "proxy_tasks_api_tasks__path__patch",
+        "operationId": "proxy_tasks_api_tasks__path__get",
         "parameters": [
           {
             "name": "path",
@@ -2004,42 +2039,7 @@
       },
       "post": {
         "summary": "Proxy Tasks",
-        "operationId": "proxy_tasks_api_tasks__path__patch",
-        "parameters": [
-          {
-            "name": "path",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Path"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      },
-      "get": {
-        "summary": "Proxy Tasks",
-        "operationId": "proxy_tasks_api_tasks__path__patch",
+        "operationId": "proxy_tasks_api_tasks__path__get",
         "parameters": [
           {
             "name": "path",
@@ -3084,6 +3084,176 @@
                 "schema": {
                   "$ref": "#/components/schemas/CancelJobResponse"
                 }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/training/jobs/{job_id}/missing-images": {
+      "get": {
+        "tags": [
+          "training"
+        ],
+        "summary": "Get Missing Images",
+        "description": "Return image UUIDs from the job's manifest that are not yet cached.",
+        "operationId": "get_missing_images",
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Job Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MissingImagesResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/training/jobs/{job_id}/images": {
+      "post": {
+        "tags": [
+          "training"
+        ],
+        "summary": "Ingest Images",
+        "description": "Accept a tar stream of images and extract them into the cache.",
+        "operationId": "ingest_images",
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Job Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IngestImagesResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/training/jobs/{job_id}/start": {
+      "post": {
+        "tags": [
+          "training"
+        ],
+        "summary": "Start Job",
+        "description": "Validate data completeness and transition job to 'queued'.",
+        "operationId": "start_training_job",
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Job Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StartJobResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/training/jobs/{job_id}/artifact": {
+      "get": {
+        "tags": [
+          "training"
+        ],
+        "summary": "Get Artifact",
+        "description": "Stream a tar of the trained model artifacts (ONNX + JSON).\n\nReturns 404 until the job is in 'done' status.",
+        "operationId": "get_training_artifact",
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Job Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
               }
             }
           },
@@ -6906,6 +7076,48 @@
         }
       }
     },
+    "/api/model-config-nodes/{node_uuid}": {
+      "get": {
+        "tags": [
+          "model_configs"
+        ],
+        "summary": "Get Model Config Node",
+        "operationId": "get_model_config_node",
+        "parameters": [
+          {
+            "name": "node_uuid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Node Uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ModelConfigNodeRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/training-configs": {
       "get": {
         "tags": [
@@ -9127,6 +9339,24 @@
         ],
         "title": "CancelJobResponse"
       },
+      "IngestImagesResponse": {
+        "properties": {
+          "received": {
+            "type": "integer",
+            "title": "Received"
+          },
+          "cached_total": {
+            "type": "integer",
+            "title": "Cached Total"
+          }
+        },
+        "type": "object",
+        "required": [
+          "received",
+          "cached_total"
+        ],
+        "title": "IngestImagesResponse"
+      },
       "JobInfo": {
         "properties": {
           "job_id": {
@@ -9193,6 +9423,65 @@
         ],
         "title": "ListJobsResponse"
       },
+      "ManifestEntry": {
+        "properties": {
+          "image_uuid": {
+            "type": "string",
+            "title": "Image Uuid"
+          },
+          "filename": {
+            "type": "string",
+            "title": "Filename"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          }
+        },
+        "type": "object",
+        "required": [
+          "image_uuid",
+          "filename",
+          "status"
+        ],
+        "title": "ManifestEntry"
+      },
+      "MissingImagesResponse": {
+        "properties": {
+          "uuids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Uuids"
+          }
+        },
+        "type": "object",
+        "required": [
+          "uuids"
+        ],
+        "title": "MissingImagesResponse"
+      },
+      "StartJobResponse": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "missing": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Missing"
+          }
+        },
+        "type": "object",
+        "required": [
+          "status"
+        ],
+        "title": "StartJobResponse"
+      },
       "SubmitJobPayload": {
         "properties": {
           "trainer_type": {
@@ -9209,28 +9498,44 @@
             "title": "Model Name",
             "default": ""
           },
+          "architecture": {
+            "type": "string",
+            "title": "Architecture",
+            "default": ""
+          },
+          "class_names": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Class Names"
+          },
+          "hyperparams": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Hyperparams"
+          },
           "max_epochs": {
             "type": "integer",
             "title": "Max Epochs",
             "default": 50
           },
-          "image_source": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Image Source"
+          "batch_size": {
+            "type": "integer",
+            "title": "Batch Size",
+            "default": 32
           },
-          "dataset_uuids": {
+          "early_stopping_patience": {
+            "type": "integer",
+            "title": "Early Stopping Patience",
+            "default": 10
+          },
+          "manifest": {
             "items": {
-              "type": "string"
+              "$ref": "#/components/schemas/ManifestEntry"
             },
             "type": "array",
-            "title": "Dataset Uuids"
+            "title": "Manifest"
           }
         },
         "additionalProperties": true,
@@ -9239,7 +9544,7 @@
           "trainer_type"
         ],
         "title": "SubmitJobPayload",
-        "description": "Payload for POST /api/training/jobs.\n\n``trainer_type`` is required; all other fields are optional (trainer-specific\nextras are accepted via ``extra=\"allow\"``)."
+        "description": "Payload for POST /api/training/jobs.\n\n``trainer_type`` is required; all other fields are optional.\nExtra fields are forwarded to the trainer config."
       },
       "SubmitJobResponse": {
         "properties": {
@@ -11901,6 +12206,20 @@
           "labelUuid": {
             "type": "string",
             "title": "Labeluuid"
+          },
+          "rollupLabelUuids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rolluplabeluuids"
           },
           "status": {
             "anyOf": [

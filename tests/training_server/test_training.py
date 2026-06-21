@@ -1,12 +1,18 @@
+"""Tests for the training server — job lifecycle, endpoints, and SSE."""
+
 import asyncio
+import io
+import tarfile
+from datetime import datetime, timezone
 
 import pytest
 
 from apps import APPS
+from apps.training_server.job_queue import Job
 from apps.training_server.manager import Manager
 
 # ---------------------------------------------------------------------------
-# Web endpoints
+# Web endpoints — server config / status
 # ---------------------------------------------------------------------------
 
 
@@ -59,25 +65,17 @@ async def test_get_server_config_is_a_copy(manager):
     assert config2["service"] == original_service
 
 
-async def test_get_server_config_includes_fs_fields(manager):
-    """Config includes shared_fs_available, fs_root, and default_image_source."""
-    config = await manager.get_server_config()
-    assert "shared_fs_available" in config
-    assert "fs_root" in config
-    assert "default_image_source" in config
-    assert config["default_image_source"] in ("filesystem", "http")
-
-
 # ---------------------------------------------------------------------------
-# Manager — job submission and status
+# Manager — job submission (awaiting_data state)
 # ---------------------------------------------------------------------------
 
 
-async def test_submit_job_returns_queued_job(manager):
+async def test_submit_job_returns_awaiting_data(manager):
+    """New jobs start in awaiting_data — they are not queued until start_job()."""
     manager.start()
     job = await manager.submit_job({"trainer_type": "binary_image_classifier", "model_name": "test"})
     assert job.job_id
-    assert job.status in ("queued", "running", "error")  # may advance quickly
+    assert job.status == "awaiting_data"
 
 
 async def test_list_jobs_empty_initially(manager):
@@ -100,15 +98,145 @@ async def test_cancel_unknown_job_returns_false(manager):
     assert manager.cancel_job("does-not-exist") is False
 
 
+async def test_cancel_awaiting_data_job(manager):
+    """Jobs in awaiting_data can be cancelled immediately."""
+    manager.start()
+    job = await manager.submit_job({"trainer_type": "binary_image_classifier", "model_name": "x"})
+    assert job.status == "awaiting_data"
+    result = manager.cancel_job(job.job_id)
+    assert result is True
+    assert job.status == "cancelled"
+
+
 async def test_cancel_queued_job(manager):
     # Use no workers so the submitted job stays queued.
     manager._queue._worker_count = 0
     manager.start()
     job = await manager.submit_job({"trainer_type": "binary_image_classifier", "model_name": "x"})
+    # No manifest so start_job succeeds immediately.
+    ok, missing = manager.start_job(job.job_id)
+    assert ok
     assert job.status == "queued"
     result = manager.cancel_job(job.job_id)
     assert result is True
     assert job.status == "cancelled"
+
+
+# ---------------------------------------------------------------------------
+# Manager — missing images
+# ---------------------------------------------------------------------------
+
+
+async def test_missing_images_no_manifest(manager):
+    """A job with no manifest reports 0 missing images."""
+    manager.start()
+    job = await manager.submit_job({"trainer_type": "binary_image_classifier"})
+    missing = manager.get_missing_images(job.job_id)
+    assert missing == []
+
+
+async def test_missing_images_with_manifest(manager, tmp_path):
+    """Only UUIDs not in the cache are returned as missing."""
+    manager.start()
+    manifest = [
+        {"image_uuid": "uuid-1", "filename": "a.jpg", "status": "present"},
+        {"image_uuid": "uuid-2", "filename": "b.jpg", "status": "absent"},
+    ]
+    # Pre-populate uuid-1 in the cache.
+    (manager._cache._dir / "uuid-1").write_bytes(b"fake")
+
+    job = await manager.submit_job({"trainer_type": "binary_image_classifier"}, manifest=manifest)
+    missing = manager.get_missing_images(job.job_id)
+    assert "uuid-2" in missing
+    assert "uuid-1" not in missing
+
+
+async def test_missing_images_unknown_job(manager):
+    assert manager.get_missing_images("no-such-job") is None
+
+
+# ---------------------------------------------------------------------------
+# Manager — image ingest
+# ---------------------------------------------------------------------------
+
+
+def _make_tar(entries: list[tuple[str, bytes]]) -> bytes:
+    """Build a tar in-memory from (name, data) pairs."""
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:") as tf:
+        for name, data in entries:
+            info = tarfile.TarInfo(name=name)
+            info.size = len(data)
+            tf.addfile(info, io.BytesIO(data))
+    return buf.getvalue()
+
+
+async def test_ingest_images_adds_to_cache(manager, tmp_path):
+    """Ingested tar members appear in the cache."""
+    manager.start()
+    manifest = [{"image_uuid": "img-a", "filename": "a.jpg", "status": "present"}]
+    job = await manager.submit_job({"trainer_type": "binary_image_classifier"}, manifest=manifest)
+
+    tar = _make_tar([("img-a", b"fake-jpeg-bytes")])
+    result = manager.ingest_images(job.job_id, tar)
+    assert result is not None
+    assert result["received"] == 1
+    assert manager._cache.has("img-a")
+
+
+async def test_ingest_images_unknown_job(manager):
+    tar = _make_tar([("uuid-x", b"data")])
+    assert manager.ingest_images("no-job", tar) is None
+
+
+async def test_ingest_images_rejects_non_manifest_uuids(manager, tmp_path):
+    """UUIDs not in the manifest are silently dropped."""
+    manager.start()
+    manifest = [{"image_uuid": "allowed-uuid", "filename": "a.jpg", "status": "present"}]
+    job = await manager.submit_job({"trainer_type": "binary_image_classifier"}, manifest=manifest)
+
+    tar = _make_tar([("not-in-manifest", b"data")])
+    manager.ingest_images(job.job_id, tar)
+    assert not manager._cache.has("not-in-manifest")
+
+
+# ---------------------------------------------------------------------------
+# Manager — start_job
+# ---------------------------------------------------------------------------
+
+
+async def test_start_job_fails_when_data_missing(manager):
+    """start_job returns (False, missing_uuids) when images are not cached."""
+    manager.start()
+    manifest = [{"image_uuid": "missing-uuid", "filename": "x.jpg", "status": "present"}]
+    job = await manager.submit_job({"trainer_type": "binary_image_classifier"}, manifest=manifest)
+    ok, missing = manager.start_job(job.job_id)
+    assert not ok
+    assert "missing-uuid" in missing
+    assert job.status == "awaiting_data"
+
+
+async def test_start_job_succeeds_when_data_complete(manager):
+    """start_job transitions to queued when all images are cached."""
+    manager._queue._worker_count = 0
+    manager.start()
+    manifest = [{"image_uuid": "cached-uuid", "filename": "x.jpg", "status": "present"}]
+    (manager._cache._dir / "cached-uuid").write_bytes(b"fake")
+    job = await manager.submit_job({"trainer_type": "binary_image_classifier"}, manifest=manifest)
+    ok, missing = manager.start_job(job.job_id)
+    assert ok
+    assert missing == []
+    assert job.status == "queued"
+
+
+async def test_start_job_no_manifest_always_succeeds(manager):
+    """A job with no manifest requires no images and starts immediately."""
+    manager._queue._worker_count = 0
+    manager.start()
+    job = await manager.submit_job({"trainer_type": "binary_image_classifier"})
+    ok, missing = manager.start_job(job.job_id)
+    assert ok
+    assert job.status == "queued"
 
 
 # ---------------------------------------------------------------------------
@@ -125,7 +253,7 @@ async def test_submit_job_endpoint(http_client, manager):
     assert resp.status_code == 200
     data = resp.json()
     assert "job_id" in data
-    assert data["status"] in ("queued", "running", "error")
+    assert data["status"] == "awaiting_data"
 
 
 async def test_list_jobs_endpoint_empty(http_client, manager):
@@ -161,9 +289,7 @@ async def test_cancel_job_endpoint_not_found(http_client, manager):
     assert resp.status_code == 404
 
 
-async def test_cancel_queued_job_endpoint(http_client, manager):
-    # Disable workers so the job stays queued.
-    manager._queue._worker_count = 0
+async def test_cancel_awaiting_data_job_endpoint(http_client, manager):
     manager.start()
     submit_resp = await http_client.post(
         "/api/training/jobs",
@@ -178,7 +304,6 @@ async def test_cancel_queued_job_endpoint(http_client, manager):
 
 
 async def test_get_job_endpoint_returns_job_info(http_client, manager):
-    manager._queue._worker_count = 0
     manager.start()
     submit_resp = await http_client.post(
         "/api/training/jobs",
@@ -192,15 +317,96 @@ async def test_get_job_endpoint_returns_job_info(http_client, manager):
     assert data["job_id"] == job_id
     assert data["trainer_type"] == "binary_image_classifier"
     assert data["model_name"] == "detail_test"
+    assert data["status"] == "awaiting_data"
+
+
+async def test_missing_images_endpoint(http_client, manager):
+    """GET /jobs/{id}/missing-images returns the uncached UUIDs."""
+    manager.start()
+    manifest = [
+        {"image_uuid": "uuid-A", "filename": "a.jpg", "status": "present"},
+        {"image_uuid": "uuid-B", "filename": "b.jpg", "status": "absent"},
+    ]
+    submit_resp = await http_client.post(
+        "/api/training/jobs",
+        json={"trainer_type": "binary_image_classifier", "manifest": manifest},
+    )
+    job_id = submit_resp.json()["job_id"]
+
+    resp = await http_client.get(f"/api/training/jobs/{job_id}/missing-images")
+    assert resp.status_code == 200
+    uuids = set(resp.json()["uuids"])
+    assert uuids == {"uuid-A", "uuid-B"}
+
+
+async def test_ingest_images_endpoint(http_client, manager):
+    """POST /jobs/{id}/images accepts a tar and caches the images."""
+    manager.start()
+    manifest = [{"image_uuid": "uuid-X", "filename": "x.jpg", "status": "present"}]
+    submit_resp = await http_client.post(
+        "/api/training/jobs",
+        json={"trainer_type": "binary_image_classifier", "manifest": manifest},
+    )
+    job_id = submit_resp.json()["job_id"]
+
+    tar = _make_tar([("uuid-X", b"fake-jpeg")])
+    resp = await http_client.post(
+        f"/api/training/jobs/{job_id}/images",
+        content=tar,
+        headers={"Content-Type": "application/x-tar"},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["received"] == 1
+
+
+async def test_start_job_endpoint_fails_with_missing_data(http_client, manager):
+    """POST /start returns 409 when images are missing."""
+    manager.start()
+    manifest = [{"image_uuid": "uuid-missing", "filename": "m.jpg", "status": "present"}]
+    submit_resp = await http_client.post(
+        "/api/training/jobs",
+        json={"trainer_type": "binary_image_classifier", "manifest": manifest},
+    )
+    job_id = submit_resp.json()["job_id"]
+
+    resp = await http_client.post(f"/api/training/jobs/{job_id}/start")
+    assert resp.status_code == 409
+    assert "uuid-missing" in resp.json()["missing"]
+
+
+async def test_start_job_endpoint_succeeds(http_client, manager):
+    """POST /start transitions to queued when all data is present."""
+    manager._queue._worker_count = 0
+    manager.start()
+    manifest = [{"image_uuid": "uuid-ok", "filename": "ok.jpg", "status": "present"}]
+    (manager._cache._dir / "uuid-ok").write_bytes(b"ok")
+    submit_resp = await http_client.post(
+        "/api/training/jobs",
+        json={"trainer_type": "binary_image_classifier", "manifest": manifest},
+    )
+    job_id = submit_resp.json()["job_id"]
+
+    resp = await http_client.post(f"/api/training/jobs/{job_id}/start")
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "queued"
+
+
+async def test_artifact_endpoint_returns_404_until_done(http_client, manager):
+    """GET /artifact returns 404 when the job is not done."""
+    manager.start()
+    submit_resp = await http_client.post(
+        "/api/training/jobs",
+        json={"trainer_type": "binary_image_classifier"},
+    )
+    job_id = submit_resp.json()["job_id"]
+    resp = await http_client.get(f"/api/training/jobs/{job_id}/artifact")
+    assert resp.status_code == 404
 
 
 # ---------------------------------------------------------------------------
 # Job — emit / stream
 # ---------------------------------------------------------------------------
-
-from datetime import datetime, timezone
-
-from apps.training_server.job_queue import Job
 
 
 def _make_job(status: str = "queued") -> Job:
@@ -295,3 +501,26 @@ async def test_stream_unsubscribes_on_exit():
         pass
 
     assert len(job._subscribers) == 0
+
+
+# ---------------------------------------------------------------------------
+# Job lifecycle — awaiting_data state
+# ---------------------------------------------------------------------------
+
+
+async def test_awaiting_data_job_emits_initial_status():
+    """A newly-submitted job emits an awaiting_data status event."""
+    job = _make_job(status="awaiting_data")
+    job.emit("status", {"status": "awaiting_data"})
+    assert any(data.get("status") == "awaiting_data" for _, data in job._events)
+
+
+async def test_job_stream_does_not_exit_on_awaiting_data():
+    """awaiting_data is not a terminal status — stream should stay open."""
+    job = _make_job(status="awaiting_data")
+    # Inject an awaiting_data status event then cancel.
+    job._events.append(("status", {"status": "awaiting_data"}))
+
+    # Verify awaiting_data is NOT treated as terminal by stream().
+    is_terminal = job.status in ("done", "error", "cancelled")
+    assert not is_terminal

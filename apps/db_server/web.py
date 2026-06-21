@@ -40,6 +40,7 @@ from apps.helpers.db.types import (
     ModelBundleRead,
     ModelBundleUpdate,
     ModelConfigCreate,
+    ModelConfigNodeRead,
     ModelConfigRead,
     ModelConfigUpdate,
     Source,
@@ -2590,6 +2591,22 @@ class WebApp:
             except Exception as e:
                 logger.error(e, exc_info=True)
                 return ModelConfigResponse(status=JsonValues.FAILURE, message=str(e))
+
+        @self._app.get(
+            "/api/model-config-nodes/{node_uuid}",
+            response_model=ModelConfigNodeRead,
+            tags=[ApiTags.MODEL_CONFIGS],
+            operation_id="get_model_config_node",
+        )
+        async def get_model_config_node(node_uuid: str):
+            try:
+                node = await self._manager.get_model_config_node(node_uuid)
+                if node is None:
+                    return JSONResponse({"detail": "Model config node not found"}, status_code=404)
+                return node
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return JSONResponse({"detail": str(e)}, status_code=500)
 
         @self._app.patch(
             "/api/model-configs/{uuid}",

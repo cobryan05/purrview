@@ -1,14 +1,20 @@
 """Binary image-level classifier trainer.
 
-Trains a MobileNetV3-Small (via timm) to predict presence/absence of a label
-in a whole image.  Exports to ONNX opset 17.
+Trains a timm backbone (default: MobileNetV3-Small) to predict presence/absence
+of a label in a whole image.  Exports to ONNX opset 17.
 
-Expected job config keys (from SubmitJobPayload):
-  trainer_type   "binary_image_classifier"
-  label_uuid     UUID of the label to train on
-  model_name     Output filename stem (e.g. "corrupt_detector")
-  max_epochs     Maximum training epochs (default 50)
-  image_source   "filesystem" | "http" (default "filesystem")
+Expected job config keys (all provided by TrainModelTask via the push lifecycle):
+  trainer_type      "binary_image_classifier"
+  label_uuid        UUID of the label trained on (written to companion JSON)
+  model_name        Output filename stem (e.g. "corrupt_detector")
+  architecture      DB arch name → timm model string (see _ARCH_MAP below)
+  class_names       ["absent", "present"]  (default)
+  max_epochs        Maximum training epochs (default 50)
+  batch_size        DataLoader batch size (default 32)
+  early_stopping_patience  Epochs without val improvement before stopping (default 10)
+  manifest          [{image_uuid, filename, status}] — the full dataset description
+  cache_dir         Path to uuid-keyed image cache populated by ingest API
+  artifact_dir      Path where .onnx and .json should be written
 """
 
 from __future__ import annotations
@@ -16,13 +22,10 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
-import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Optional
 
-import httpx
 import numpy as np
 
 from . import register_trainer
@@ -30,23 +33,31 @@ from .base import Trainer
 
 logger = logging.getLogger(__name__)
 
-_MODELS_DIR = Path(os.environ.get("MODELS_DIR", "/models"))
-_DB_BASE_URL_DEFAULT = "http://localhost:8003"
-_FS_ROOT_DEFAULT = "/app/image_datasets"
+# Map DB architecture names (from MODEL_TYPE_ARCHITECTURES) to timm model strings.
+_ARCH_MAP: dict[str, str] = {
+    "efficientnet_b0": "efficientnet_b0",
+    "efficientnet_b2": "efficientnet_b2",
+    "efficientnet_b4": "efficientnet_b4",
+    "mobilenet_v3_small": "mobilenetv3_small_100",
+    "mobilenet_v3_large": "mobilenetv3_large_100",
+    "resnet_18": "resnet18",
+    "resnet_50": "resnet50",
+}
+_DEFAULT_TIMM_MODEL = "mobilenetv3_small_100"
 
 
 @register_trainer("binary_image_classifier")
 class BinaryImageClassifier(Trainer):
-    """MobileNetV3-Small binary image classifier.
+    """Architecture-aware binary image classifier.
 
-    Architecture: pretrained MobileNetV3-Small (timm) with the classifier head
-    replaced by a 2-class linear layer.  Input: 224×224 RGB.
+    Architecture: pretrained timm backbone with the classifier head replaced by
+    a 2-class linear layer.  Input: 224×224 RGB.
 
     Training:
-        - Loss:  weighted CrossEntropyLoss (auto-handles class imbalance)
+        - Loss:  weighted CrossEntropyLoss (handles class imbalance)
         - Optim: AdamW (lr=1e-3, weight_decay=1e-4)
         - LR:    CosineAnnealingLR
-        - Early stopping: patience=10 epochs on val loss
+        - Early stopping: patience on val loss
     """
 
     async def train(
@@ -61,52 +72,52 @@ class BinaryImageClassifier(Trainer):
         import torch.nn as nn
         from torch.utils.data import DataLoader
 
-        from apps.training_server.dataset import (
-            FilesystemImageFetcher,
-            HttpImageFetcher,
-            _build_dataset,
-        )
+        from apps.training_server.dataset import build_dataset_from_manifest
 
-        label_uuid: str = config["label_uuid"]
+        label_uuid: str = config.get("label_uuid", "")
         model_name: str = config.get("model_name", "model")
         max_epochs: int = int(config.get("max_epochs", 50))
-        image_source: str = config.get("image_source", "filesystem")
-        dataset_uuids: list[str] = list(config.get("dataset_uuids") or [])
+        batch_size: int = int(config.get("batch_size", 32))
+        patience: int = int(config.get("early_stopping_patience", 10))
+        class_names: list[str] = config.get("class_names") or ["absent", "present"]
+        manifest: list[dict] = config.get("manifest") or []
+        cache_dir: str = config["cache_dir"]
+        artifact_dir_str: str = config["artifact_dir"]
 
-        db_base_url = self._db_base_url()
-        fs_root = os.environ.get("TRAINING_FS_ROOT", _FS_ROOT_DEFAULT)
+        # Architecture: map DB name → timm model string.
+        arch_name: str = config.get("architecture", "")
+        timm_model = _ARCH_MAP.get(arch_name, _DEFAULT_TIMM_MODEL)
+        if arch_name and arch_name not in _ARCH_MAP:
+            logger.warning(
+                "Unknown architecture %r — falling back to %s", arch_name, _DEFAULT_TIMM_MODEL
+            )
 
-        # ── Resolve dataset scope ───────────────────────────────────────────
-        allowed_image_uuids: set[str] | None = None
-        if dataset_uuids:
-            logger.info("Resolving image UUIDs for %d dataset(s)", len(dataset_uuids))
-            allowed_image_uuids = await self._fetch_dataset_image_uuids(dataset_uuids, db_base_url)
-            logger.info("Training scoped to %d images from datasets", len(allowed_image_uuids))
+        if not manifest:
+            raise RuntimeError(
+                "No manifest provided — image data must be pushed before training"
+            )
+
+        logger.info(
+            "Training %s on %d images (arch=%s → timm=%s)",
+            model_name,
+            len(manifest),
+            arch_name or "(default)",
+            timm_model,
+        )
 
         # ── Build datasets ──────────────────────────────────────────────────
-        if image_source == "filesystem":
-            fetcher_train = FilesystemImageFetcher(fs_root=fs_root)
-            fetcher_val = FilesystemImageFetcher(fs_root=fs_root)
-        else:
-            fetcher_train = HttpImageFetcher(db_base_url=db_base_url)
-            fetcher_val = HttpImageFetcher(db_base_url=db_base_url)
-
         try:
-            logger.info("Building datasets for label_uuid=%s", label_uuid)
             ds_train = await asyncio.to_thread(
-                _build_dataset, label_uuid, db_base_url, fetcher_train, "train",
-                allowed_image_uuids=allowed_image_uuids,
+                build_dataset_from_manifest, manifest, cache_dir, "train"
             )
             ds_val = await asyncio.to_thread(
-                _build_dataset, label_uuid, db_base_url, fetcher_val, "val",
-                allowed_image_uuids=allowed_image_uuids,
+                build_dataset_from_manifest, manifest, cache_dir, "val"
             )
         except ValueError as e:
             raise RuntimeError(f"Dataset build failed: {e}") from e
 
         logger.info("Dataset sizes: train=%d val=%d", len(ds_train), len(ds_val))
 
-        batch_size = int(config.get("batch_size", 32))
         loader_train = DataLoader(
             ds_train,
             batch_size=batch_size,
@@ -114,15 +125,17 @@ class BinaryImageClassifier(Trainer):
             num_workers=2,
             pin_memory=True,
         )
-        loader_val = DataLoader(ds_val, batch_size=batch_size, shuffle=False, num_workers=2, pin_memory=True)
+        loader_val = DataLoader(
+            ds_val, batch_size=batch_size, shuffle=False, num_workers=2, pin_memory=True
+        )
 
         # ── Model ────────────────────────────────────────────────────────────
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        logger.info("Training on device: %s", device)
+        logger.info("Training on device: %s (timm model: %s)", device, timm_model)
 
-        model = timm.create_model("mobilenetv3_small_100", pretrained=True, num_classes=0)
+        model = timm.create_model(timm_model, pretrained=True, num_classes=0)
         in_features = model.num_features
-        model.classifier = nn.Linear(in_features, 2)
+        model.classifier = nn.Linear(in_features, len(class_names))
         model = model.to(device)
 
         class_weights = ds_train.class_weights().to(device)
@@ -133,14 +146,13 @@ class BinaryImageClassifier(Trainer):
         # ── Training loop ────────────────────────────────────────────────────
         best_val_loss = float("inf")
         best_val_acc = 0.0
-        patience = int(config.get("early_stopping_patience", 10))
         patience_counter = 0
-        best_state: dict | None = None
+        best_state: Optional[dict] = None
 
-        _models_dir = _MODELS_DIR
-        _models_dir.mkdir(parents=True, exist_ok=True)
-        onnx_path = _models_dir / f"{model_name}.onnx"
-        json_path = _models_dir / f"{model_name}.json"
+        artifact_dir = Path(artifact_dir_str)
+        artifact_dir.mkdir(parents=True, exist_ok=True)
+        onnx_path = artifact_dir / f"{model_name}.onnx"
+        json_path = artifact_dir / f"{model_name}.json"
 
         for epoch in range(1, max_epochs + 1):
             if cancel_event.is_set():
@@ -202,7 +214,7 @@ class BinaryImageClassifier(Trainer):
                     logger.info("Early stopping at epoch %d (patience=%d)", epoch, patience)
                     break
 
-            # Yield to the event loop between epochs so cancel_event can be polled.
+            # Yield to the event loop so cancel_event can be checked.
             await asyncio.sleep(0)
 
         # ── Export best checkpoint ───────────────────────────────────────────
@@ -222,7 +234,7 @@ class BinaryImageClassifier(Trainer):
             dynamic_axes={"input": {0: "batch_size"}, "output": {0: "batch_size"}},
         )
 
-        # Validate ONNX output matches PyTorch output.
+        # Validate ONNX output matches PyTorch.
         import onnxruntime as ort
 
         ort_session = ort.InferenceSession(str(onnx_path))
@@ -237,9 +249,11 @@ class BinaryImageClassifier(Trainer):
         model_config = {
             "model_kind": "image_classifier",
             "trainer": "binary_image_classifier",
+            "architecture": arch_name or "mobilenet_v3_small",
+            "timm_model": timm_model,
             "input_size": [224, 224],
-            "num_classes": 2,
-            "class_names": ["absent", "present"],
+            "num_classes": len(class_names),
+            "class_names": class_names,
             "label_uuid": label_uuid,
             "model_name": model_name,
             "val_accuracy": round(best_val_acc, 4),
@@ -253,22 +267,3 @@ class BinaryImageClassifier(Trainer):
             "val_accuracy": round(best_val_acc, 4),
             "model_name": model_name,
         }
-
-    @staticmethod
-    def _db_base_url() -> str:
-        host = os.environ.get("DB_SERVER_HOST", "localhost")
-        port = os.environ.get("DB_SERVER_PORT", "8003")
-        return f"http://{host}:{port}"
-
-    @staticmethod
-    async def _fetch_dataset_image_uuids(dataset_uuids: list[str], db_base_url: str) -> set[str]:
-        """Call db_server to resolve dataset UUIDs to a set of image UUIDs."""
-        url = f"{db_base_url.rstrip('/')}/api/datasets/image-uuids"
-        resp = await asyncio.to_thread(
-            httpx.get,
-            url,
-            params={"dataset_uuid": dataset_uuids},
-            timeout=120.0,
-        )
-        resp.raise_for_status()
-        return set(resp.json().get("image_uuids", []))
