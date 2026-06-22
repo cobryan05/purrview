@@ -243,7 +243,7 @@ def _find_redundant_bboxes(
 
             o_label = other.get("label_uuid")
 
-            if b_label == o_label:
+            if b_label is not None and b_label == o_label:
                 # Same label — first encountered wins
                 dominated = True
                 break

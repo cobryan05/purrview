@@ -22,6 +22,7 @@ async def build_label_ancestry_map(labels_api) -> dict[str, set[str]]:
         if p is None:
             ancestry[uuid] = set()
         else:
+            ancestry[uuid] = set()  # cycle guard: if uuid is re-encountered before we finish, return empty
             ancestry[uuid] = {p} | _get_ancestors(p)
         return ancestry[uuid]
 
