@@ -119,6 +119,145 @@
         }
       }
     },
+    "/api/models/{model_name}/meta": {
+      "get": {
+        "tags": [
+          "models"
+        ],
+        "summary": "Get Model Meta Api",
+        "description": "Return the model kind and label UUID(s) from its companion JSON config.",
+        "operationId": "get_model_meta",
+        "parameters": [
+          {
+            "name": "model_name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Model Name"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ModelMetaResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/models/{model_name}/training-images": {
+      "get": {
+        "tags": [
+          "models"
+        ],
+        "summary": "Get Model Training Images Api",
+        "description": "Return the train/val image UUIDs recorded in the model's companion JSON.",
+        "operationId": "get_model_training_images",
+        "parameters": [
+          {
+            "name": "model_name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Model Name"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ModelTrainingImagesResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/models/{model_name}/classify": {
+      "post": {
+        "tags": [
+          "inference"
+        ],
+        "summary": "Classify Api",
+        "description": "Run an ONNX classifier on the supplied image and return per-label predictions.",
+        "operationId": "classify",
+        "parameters": [
+          {
+            "name": "model_name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Model Name"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ClassifyPayload"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClassifyResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/models/{model_name}/classes": {
       "get": {
         "tags": [
@@ -325,13 +464,13 @@
         }
       }
     },
-    "/api/models/{model_name}/infer": {
+    "/api/models/{model_name}/detect": {
       "post": {
         "tags": [
           "inference"
         ],
         "summary": "Inference Api",
-        "operationId": "inference",
+        "operationId": "detect",
         "parameters": [
           {
             "name": "model_name",
@@ -495,6 +634,95 @@
           "height"
         ],
         "title": "BoundingBoxMetadataModel"
+      },
+      "ClassifyPayload": {
+        "properties": {
+          "imageBase64": {
+            "type": "string",
+            "title": "Imagebase64"
+          }
+        },
+        "type": "object",
+        "required": [
+          "imageBase64"
+        ],
+        "title": "ClassifyPayload"
+      },
+      "ClassifyPrediction": {
+        "properties": {
+          "labelUuid": {
+            "type": "string",
+            "title": "Labeluuid"
+          },
+          "confidence": {
+            "type": "number",
+            "title": "Confidence"
+          },
+          "isPresent": {
+            "type": "boolean",
+            "title": "Ispresent"
+          }
+        },
+        "type": "object",
+        "required": [
+          "labelUuid",
+          "confidence",
+          "isPresent"
+        ],
+        "title": "ClassifyPrediction"
+      },
+      "ClassifyResponse": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "title": "Status",
+            "default": "success"
+          },
+          "message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Message"
+          },
+          "result": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ClassifyResult"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "type": "object",
+        "title": "ClassifyResponse"
+      },
+      "ClassifyResult": {
+        "properties": {
+          "modelKind": {
+            "type": "string",
+            "title": "Modelkind"
+          },
+          "predictions": {
+            "items": {
+              "$ref": "#/components/schemas/ClassifyPrediction"
+            },
+            "type": "array",
+            "title": "Predictions"
+          }
+        },
+        "type": "object",
+        "required": [
+          "modelKind",
+          "predictions"
+        ],
+        "title": "ClassifyResult"
       },
       "DetectionResultModel": {
         "properties": {
@@ -778,6 +1006,100 @@
         },
         "type": "object",
         "title": "ModelListResponse"
+      },
+      "ModelMetaResponse": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "title": "Status",
+            "default": "success"
+          },
+          "message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Message"
+          },
+          "modelKind": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Modelkind"
+          },
+          "labelUuid": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Labeluuid"
+          },
+          "labelUuids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Labeluuids"
+          }
+        },
+        "type": "object",
+        "title": "ModelMetaResponse"
+      },
+      "ModelTrainingImagesResponse": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "title": "Status",
+            "default": "success"
+          },
+          "message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Message"
+          },
+          "trainImageUuids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Trainimageuuids"
+          },
+          "valImageUuids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Valimageuuids"
+          }
+        },
+        "type": "object",
+        "title": "ModelTrainingImagesResponse"
       },
       "PinModelPayload": {
         "properties": {

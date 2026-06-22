@@ -130,7 +130,7 @@ class Manager:
         return ret_info
 
     async def create_new_task_config(
-        self, name: str, typename: str, params: Dict[str, Any], persistent: bool
+        self, name: str, typename: str, params: Dict[str, Any], persistent: bool, is_temporary: bool = False
     ) -> db_models.TaskConfigRead:
         if typename not in task_registry:
             raise ValueError(f"Unknown task: {typename}")
@@ -138,7 +138,7 @@ class Manager:
         params[Task.InternalKeys.PERSISTENT] = persistent
         resp = await asyncio.to_thread(
             TasksApi(self._db_api_client).create_task_config,
-            db_models.CreateTaskConfigPayload(name=name, typename=typename, params=params),
+            db_models.CreateTaskConfigPayload(name=name, typename=typename, params=params, is_temporary=is_temporary),
         )
         return resp.config
 
@@ -191,7 +191,7 @@ class Manager:
         )
 
     async def get_task_configs(
-        self, task_config_uuids: Union[List[str], str, None]
+        self, task_config_uuids: Union[List[str], str, None], is_temporary: Optional[bool] = None
     ) -> dict[str, db_models.TaskConfigRead]:
         if isinstance(task_config_uuids, str):
             task_config_uuids = [task_config_uuids]
@@ -199,6 +199,7 @@ class Manager:
         resp = await asyncio.to_thread(
             TasksApi(self._db_api_client).list_task_configs,
             uuids=task_config_uuids,
+            is_temporary=is_temporary,
         )
         return resp.configs or {}
 

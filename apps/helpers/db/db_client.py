@@ -2309,8 +2309,9 @@ class DbClient:
         typename: str,
         params: Dict[str, Any],
         description: Optional[str] = None,
+        is_temporary: bool = False,
     ) -> TaskConfig:
-        config = TaskConfig(name=name, typename=typename, params_json=params, description=description)
+        config = TaskConfig(name=name, typename=typename, params_json=params, description=description, is_temporary=is_temporary)
         async with self._async_session_maker() as session:
             session.add(config)
             await session.commit()
@@ -2372,6 +2373,7 @@ class DbClient:
         config_uuids: Optional[Union[str, List[str]]] = None,
         typename: Optional[Union[str, List[str]]] = None,
         name: Optional[Union[str, List[str]]] = None,
+        is_temporary: Optional[bool] = None,
     ) -> Dict[str, TaskConfig]:
         stmt = select(TaskConfig)
         if config_uuids is not None:
@@ -2383,6 +2385,8 @@ class DbClient:
         if name is not None:
             names = [name] if isinstance(name, str) else name
             stmt = stmt.where(TaskConfig.name.in_(names))
+        if is_temporary is not None:
+            stmt = stmt.where(TaskConfig.is_temporary == is_temporary)
         stmt = stmt.order_by(TaskConfig.created_at.desc())
         async with self._async_session_maker() as session:
             result = await session.exec(stmt)
@@ -2508,7 +2512,7 @@ class DbClient:
 
             await session.exec(delete(TaskInstance).where(TaskInstance.uuid.in_(task_uuids)))
 
-            # Delete any configs that were marked_for_delete and now have no remaining instances
+            # Delete any configs that were marked_for_delete or is_temporary and now have no remaining instances
             if affected_config_uuids:
                 still_referenced = select(TaskInstance.config_uuid).where(
                     TaskInstance.config_uuid.in_(affected_config_uuids)
@@ -2516,7 +2520,7 @@ class DbClient:
                 await session.exec(
                     delete(TaskConfig).where(
                         TaskConfig.uuid.in_(affected_config_uuids),
-                        TaskConfig.marked_for_delete == True,  # type: ignore[arg-type]  # noqa: E712
+                        (TaskConfig.marked_for_delete == True) | (TaskConfig.is_temporary == True),  # type: ignore[arg-type]  # noqa: E712
                         ~TaskConfig.uuid.in_(still_referenced),
                     )
                 )

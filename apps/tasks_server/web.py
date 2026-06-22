@@ -34,6 +34,7 @@ class CreateTaskConfigPayload(Payload):
     typename: str
     params: dict
     persistent: bool = True
+    is_temporary: bool = False
 
 
 class CreateTaskConfigResponse(StatusResponse):
@@ -58,6 +59,7 @@ class DeleteTaskConfigsResponse(StatusResponse):
 
 class GetTaskConfigsPayload(Payload):
     config_uuids: Optional[Union[List[str], str]] = None
+    exclude_temporary: bool = False
 
 
 class GetTaskConfigResponse(StatusResponse):
@@ -592,6 +594,7 @@ class WebApp:
                     typename=payload.typename,
                     params=payload.params,
                     persistent=payload.persistent,
+                    is_temporary=payload.is_temporary,
                 )
                 return CreateTaskConfigResponse(status=WebApp.SUCCESS_KEY, config_uuid=task_config.uuid)
             except Exception as e:
@@ -641,7 +644,10 @@ class WebApp:
                 JSONResponse: JSON response with task configs.
             """
             try:
-                task_configs = await self._manager.get_task_configs(payload.config_uuids)
+                task_configs = await self._manager.get_task_configs(
+                    payload.config_uuids,
+                    is_temporary=False if payload.exclude_temporary else None,
+                )
                 models = {k: TaskConfigRead.model_validate(v) for k, v in task_configs.items()}
                 return GetTaskConfigResponse(configs=models)
             except Exception as e:

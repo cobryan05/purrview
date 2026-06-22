@@ -1,4 +1,4 @@
-import { TaskStatus, cancelTasks, createTaskConfig, deleteTasks, deleteTaskConfigs, fetchTasksResult, startTask } from '/app-static/js/shared/api/tasks.js';
+import { TaskStatus, cancelTasks, createTaskConfig, deleteTasks, fetchTasksResult, startTask } from '/app-static/js/shared/api/tasks.js';
 import { decodeBase64JsonImage, toast } from '/app-static/js/ui/utils/index.js';
 import { ActiveTaskField } from '/app-static/js/ui/utils/fields/ActiveTaskField.js';
 
@@ -108,10 +108,11 @@ export async function runPreviewSourceTest({ provider, providerParams, target = 
       name: "Source Preview: " + provider,
       params: { source_config: { provider, provider_params: providerParams } },
       persistent: false,
+      isTemporary: true,
     });
 
     taskUuid = await startTask({ configUuid });
-    await deleteTaskConfigs({ uuids: [configUuid] });
+    // No manual config delete needed — is_temporary configs auto-delete when their last instance is removed.
 
     await new Promise((resolve, reject) => {
       // Guard: if cancel was pressed during the task-setup awaits above, bail out

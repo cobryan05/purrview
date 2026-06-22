@@ -2640,6 +2640,22 @@
               "default": [],
               "title": "Uuids"
             }
+          },
+          {
+            "name": "is_temporary",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Is Temporary"
+            }
           }
         ],
         "responses": {
@@ -5152,6 +5168,11 @@
               }
             ],
             "title": "Description"
+          },
+          "isTemporary": {
+            "type": "boolean",
+            "title": "Istemporary",
+            "default": false
           }
         },
         "type": "object",
@@ -9060,6 +9081,11 @@
           "markedForDelete": {
             "type": "boolean",
             "title": "Markedfordelete",
+            "default": false
+          },
+          "isTemporary": {
+            "type": "boolean",
+            "title": "Istemporary",
             "default": false
           }
         },

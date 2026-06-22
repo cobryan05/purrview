@@ -789,6 +789,11 @@
             "type": "boolean",
             "title": "Persistent",
             "default": true
+          },
+          "isTemporary": {
+            "type": "boolean",
+            "title": "Istemporary",
+            "default": false
           }
         },
         "type": "object",
@@ -1276,6 +1281,11 @@
           "markedForDelete": {
             "type": "boolean",
             "title": "Markedfordelete",
+            "default": false
+          },
+          "isTemporary": {
+            "type": "boolean",
+            "title": "Istemporary",
             "default": false
           }
         },

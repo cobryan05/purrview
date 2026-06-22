@@ -788,7 +788,7 @@ export async function renderTrainingConfigManager({ target = 'training-config-bo
             if (_lastFingerprint !== fp) return;
 
             const newDetails = el.querySelector('details');
-            if (newDetails && details !== null) {
+            if (newDetails) {
               newDetails.open = savedOpen;
               if (savedOpen && savedScroll) {
                 requestAnimationFrame(() => {
@@ -821,6 +821,7 @@ export async function renderTrainingConfigManager({ target = 'training-config-bo
                 typename: 'TrainModelTask',
                 name: `Train ${config.name}`,
                 params: { training_config_uuid: config.uuid },
+                isTemporary: true,
               });
               const taskUuid = await startTask({ configUuid });
               _activeTaskUuid = taskUuid;

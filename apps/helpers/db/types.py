@@ -514,6 +514,7 @@ class TaskConfigBase(SQLModel):
     typename: str
     description: Optional[str] = None
     params_json: Dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    is_temporary: bool = Field(default=False)
 
 
 class TaskConfig(TaskConfigBase, TimestampModel, table=True):
@@ -549,6 +550,7 @@ class TaskConfigRead(OrmModel):
     description: Optional[str] = None
     params: Dict[str, Any] = Field(validation_alias="params_json")
     marked_for_delete: bool = False
+    is_temporary: bool = False
 
 
 class TaskInstanceRead(OrmModel):

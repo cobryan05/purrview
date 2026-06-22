@@ -317,6 +317,49 @@
         }
       }
     },
+    "/api/training/jobs/{job_id}/restart": {
+      "post": {
+        "tags": [
+          "training"
+        ],
+        "summary": "Restart Job",
+        "description": "Re-queue an interrupted job. Only valid for jobs in 'interrupted' status.",
+        "operationId": "restart_training_job",
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Job Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RestartJobResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/training/jobs/{job_id}/stream": {
       "get": {
         "tags": [
@@ -378,6 +421,22 @@
       "get": {
         "summary": "Training Status",
         "operationId": "training_status",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/status": {
+      "get": {
+        "summary": "Status",
+        "operationId": "training_server_status",
         "responses": {
           "200": {
             "description": "Successful Response",
@@ -546,6 +605,24 @@
           "uuids"
         ],
         "title": "MissingImagesResponse"
+      },
+      "RestartJobResponse": {
+        "properties": {
+          "job_id": {
+            "type": "string",
+            "title": "Job Id"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          }
+        },
+        "type": "object",
+        "required": [
+          "job_id",
+          "status"
+        ],
+        "title": "RestartJobResponse"
       },
       "StartJobResponse": {
         "properties": {

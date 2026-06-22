@@ -85,12 +85,12 @@ export function clearTaskSchemaCache() {
  * @returns {Promise<Map<string, any>>}
  * @throws {Error} If the fetch fails or the API response is invalid.
  */
-export async function fetchTaskConfigs(uuids = null) {
+export async function fetchTaskConfigs(uuids = null, { excludeTemporary = false } = {}) {
   const fetchAll = uuids == null;
   const res = await apiFetch('/api/tasks/configs/get', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ configUuids: fetchAll ? null : uuids }),
+    body: JSON.stringify({ configUuids: fetchAll ? null : uuids, excludeTemporary }),
   });
 
   if (!res.ok) {

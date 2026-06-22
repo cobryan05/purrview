@@ -411,6 +411,7 @@ class CreateTaskConfigPayload(ApiPayload):
     typename: str
     params: TaskParams = Field(default_factory=dict)
     description: Optional[str] = None
+    is_temporary: Optional[bool] = None
 
 
 class TaskConfigReadResponse(StatusResponse):
@@ -2145,6 +2146,7 @@ class WebApp:
                     typename=payload.typename,
                     params=payload.params,
                     description=payload.description,
+                    is_temporary=bool(payload.is_temporary),
                 )
                 return TaskConfigReadResponse(
                     status=JsonValues.SUCCESS,
@@ -2162,9 +2164,10 @@ class WebApp:
         )
         async def list_task_configs(
             uuids: List[str] = Query(default=[]),
+            is_temporary: Optional[bool] = Query(default=None),
         ) -> ListTaskConfigsResponse:
             try:
-                configs = await self._manager.list_task_configs(config_uuids=uuids or None)
+                configs = await self._manager.list_task_configs(config_uuids=uuids or None, is_temporary=is_temporary)
                 return ListTaskConfigsResponse(
                     status=JsonValues.SUCCESS,
                     configs={uuid: TaskConfigRead.model_validate(c) for uuid, c in configs.items()},

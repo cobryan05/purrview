@@ -10,11 +10,33 @@ export function renderTaskConfigs({ target = 'task-config-list', onEdit, onDelet
   if (!container) return;
   container.innerHTML = '';
 
+  // Toggle: hide temporary/system configs by default
+  let showTemporary = false;
+  const toggleRow = document.createElement('div');
+  toggleRow.style.cssText = 'display:flex;align-items:center;gap:0.5em;margin-bottom:0.5em;font-size:0.875em;';
+  const toggleLabel = document.createElement('label');
+  toggleLabel.style.cssText = 'display:flex;align-items:center;gap:0.4em;cursor:pointer;';
+  const toggleChk = document.createElement('input');
+  toggleChk.type = 'checkbox';
+  toggleChk.checked = showTemporary;
+  toggleLabel.append(toggleChk, 'Show system/temporary configs');
+  toggleRow.appendChild(toggleLabel);
+  container.appendChild(toggleRow);
+
   const configListDiv = document.createElement('div');
   container.appendChild(configListDiv);
 
-  fetchTaskConfigs().then(response => {
-    response.forEach(((config, configUuid) => {
+  function loadConfigs() {
+    configListDiv.innerHTML = '';
+    fetchTaskConfigs(null, { excludeTemporary: !showTemporary }).then(response => {
+      if (response.size === 0) {
+        const empty = document.createElement('p');
+        empty.textContent = showTemporary ? 'No task configs.' : 'No user-created task configs.';
+        empty.style.cssText = 'color:#888;font-style:italic;';
+        configListDiv.appendChild(empty);
+        return;
+      }
+      response.forEach(((config, configUuid) => {
       const deleteButton = {
         text: 'Delete',
         emoji: '🗑️',
@@ -62,9 +84,17 @@ export function renderTaskConfigs({ target = 'task-config-list', onEdit, onDelet
         Logger.error('Failed to render task config row:', err);
       });
     }));
-  }).catch(err => {
-    showPaneError(configListDiv, err.message);
+    }).catch(err => {
+      showPaneError(configListDiv, err.message);
+    });
+  }
+
+  toggleChk.addEventListener('change', () => {
+    showTemporary = toggleChk.checked;
+    loadConfigs();
   });
+
+  loadConfigs();
 
   container.appendChild(document.createElement('hr'));
   const createHeader = document.createElement('h3');

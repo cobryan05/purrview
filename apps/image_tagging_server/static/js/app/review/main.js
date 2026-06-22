@@ -2525,7 +2525,7 @@ async function showCanvasModal(bbox, img, labels, onSaved, navContext = null) {
   sidebarEl.append(sidebarTabHeader, paneLabels, paneTags);
   contentArea.append(canvasWrap, sidebarEl);
 
-  // Footer — Save & Close starts dimmed (no unsaved changes yet)
+  // Footer — Save / Cancel / Save & Close; Save buttons start dimmed (no unsaved changes yet)
   const footer = document.createElement('div');
   footer.className = 'canvas-modal-footer';
 
@@ -2533,10 +2533,14 @@ async function showCanvasModal(bbox, img, labels, onSaved, navContext = null) {
   cancelBtn.textContent = 'Cancel';
   cancelBtn.style.cssText = 'border:1px solid #555;border-radius:3px;padding:0.3em 1em;cursor:pointer;color:#aaa;margin-left:auto;';
 
+  const saveOnlyBtn = document.createElement('button');
+  saveOnlyBtn.textContent = 'Save';
+  saveOnlyBtn.style.cssText = 'background:#33333322;border:1px solid #555;border-radius:3px;padding:0.3em 1em;cursor:pointer;color:#888;';
+
   const saveBtn = document.createElement('button');
   saveBtn.textContent = 'Save & Close';
   saveBtn.style.cssText = 'background:#33333322;border:1px solid #555;border-radius:3px;padding:0.3em 1em;cursor:pointer;color:#888;';
-  footer.append(cancelBtn, saveBtn);
+  footer.append(cancelBtn, saveOnlyBtn, saveBtn);
 
   dialog.append(header, toolbarEl, contentArea, footer);
   overlay.appendChild(dialog);
@@ -2603,12 +2607,13 @@ async function showCanvasModal(bbox, img, labels, onSaved, navContext = null) {
   _highlightBbox(bbox.uuid);
 
   // ── Save button state: highlight only when there are unsaved changes ──
+  const _SAVE_BTN_CLEAN = 'background:#33333322;border:1px solid #555;border-radius:3px;padding:0.3em 1em;cursor:pointer;color:#888;';
+  const _SAVE_BTN_DIRTY = 'background:#ff003322;border:1px solid #ff0033;border-radius:3px;padding:0.3em 1em;cursor:pointer;color:#ff6666;';
   function _updateSaveBtn() {
     if (saveBtn.disabled) return; // don't override while saving
     const dirty = instance.runtime.isDirty;
-    saveBtn.style.cssText = dirty
-      ? 'background:#ff003322;border:1px solid #ff0033;border-radius:3px;padding:0.3em 1em;cursor:pointer;color:#ff6666;'
-      : 'background:#33333322;border:1px solid #555;border-radius:3px;padding:0.3em 1em;cursor:pointer;color:#888;';
+    saveBtn.style.cssText = dirty ? _SAVE_BTN_DIRTY : _SAVE_BTN_CLEAN;
+    saveOnlyBtn.style.cssText = dirty ? _SAVE_BTN_DIRTY : _SAVE_BTN_CLEAN;
   }
   const unsubDirty = events.subscribeToCanvas(
     instance.runtime.id, EventTypes.CANVAS_BBOXES_CHANGED, _updateSaveBtn,
@@ -2777,19 +2782,22 @@ async function showCanvasModal(bbox, img, labels, onSaved, navContext = null) {
   }
 
   // ── Close guard: prompt when there are unsaved changes ────────────
+  function _setAllButtonsDisabled(disabled) {
+    saveBtn.disabled = disabled;
+    saveOnlyBtn.disabled = disabled;
+    cancelBtn.disabled = disabled;
+    closeBtn.disabled = disabled;
+  }
+
   async function tryClose() {
     if (instance.runtime.isDirty) {
       const choice = await showUnsavedChangesModal();
       if (choice === 'cancel') return;
       if (choice === 'save') {
-        saveBtn.disabled = true;
-        cancelBtn.disabled = true;
-        closeBtn.disabled = true;
+        _setAllButtonsDisabled(true);
         const saved = await saveAnnotations(instance.runtime);
         if (!saved) {
-          saveBtn.disabled = false;
-          cancelBtn.disabled = false;
-          closeBtn.disabled = false;
+          _setAllButtonsDisabled(false);
           _updateSaveBtn();
           return; // save failed — keep modal open
         }
@@ -2813,12 +2821,39 @@ async function showCanvasModal(bbox, img, labels, onSaved, navContext = null) {
   _canvasEscClose = () => { if (!closeBtn.disabled) tryClose(); };
   registerEscHandler(_canvasEscClose);
 
+  // ── Save (without closing) button ─────────────────────────────────
+  saveOnlyBtn.addEventListener('click', async () => {
+    if (!instance.runtime.isDirty) return; // nothing to save — button is dimmed
+    _setAllButtonsDisabled(true);
+    saveOnlyBtn.textContent = 'Saving…';
+
+    let saved = false;
+    try {
+      saved = await saveAnnotations(instance.runtime);
+    } catch (err) {
+      Logger.error('Canvas modal: save failed', err);
+    }
+
+    _setAllButtonsDisabled(false);
+    saveOnlyBtn.textContent = 'Save';
+    _updateSaveBtn();
+
+    if (saved) {
+      // Broadcast to other panels without closing
+      const currentImg = _currentImg;
+      const currentBboxesMap = new Map(instance.runtime.state.image.bboxes);
+      events.publish(EventTypes.IMAGE_ANNOTATIONS_SAVED, {
+        imageUuid: currentImg?.uuid,
+        imageFilename: currentImg?.filename ?? currentImg?.image_path,
+        bboxes: currentBboxesMap,
+      });
+    }
+  });
+
   // ── Save & Close button ────────────────────────────────────────────
   saveBtn.addEventListener('click', async () => {
     if (!instance.runtime.isDirty) return; // nothing to save — button is dimmed
-    saveBtn.disabled = true;
-    cancelBtn.disabled = true;
-    closeBtn.disabled = true;
+    _setAllButtonsDisabled(true);
     saveBtn.textContent = 'Saving…';
 
     let saved = false;
@@ -2831,9 +2866,7 @@ async function showCanvasModal(bbox, img, labels, onSaved, navContext = null) {
     if (saved) {
       await _doSaveAndClose();
     } else {
-      saveBtn.disabled = false;
-      cancelBtn.disabled = false;
-      closeBtn.disabled = false;
+      _setAllButtonsDisabled(false);
       _updateSaveBtn();
       saveBtn.textContent = 'Save & Close';
     }

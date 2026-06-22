@@ -1864,9 +1864,10 @@ class Manager:
         typename: str,
         params: TaskParams,
         description: Optional[str] = None,
+        is_temporary: Optional[bool] = False,
     ) -> TaskConfig:
         return await self._db_client.add_task_config(
-            name=name, typename=typename, params=params, description=description
+            name=name, typename=typename, params=params, description=description, is_temporary=bool(is_temporary)
         )
 
     async def list_task_configs(
@@ -1874,8 +1875,9 @@ class Manager:
         config_uuids: Optional[List[str]] = None,
         typename: Optional[str] = None,
         name: Optional[str] = None,
+        is_temporary: Optional[bool] = None,
     ) -> Dict[str, TaskConfig]:
-        return await self._db_client.get_task_configs(config_uuids=config_uuids, typename=typename, name=name)
+        return await self._db_client.get_task_configs(config_uuids=config_uuids, typename=typename, name=name, is_temporary=is_temporary)
 
     async def update_task_config(
         self,
