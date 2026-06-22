@@ -1,11 +1,11 @@
 """Tests for the /classify and /meta endpoints added to inference_server."""
 
 import json
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock
 
-import numpy as np
 import pytest
 
+from apps.helpers.types import BoundingBoxMetadata, DetectionResult, InferenceResult
 from tests.inference_server.conftest import make_png_b64
 
 _BINARY_CONFIG = {
@@ -28,9 +28,28 @@ _YOLO_CONFIG = {
 }
 
 
+def _det(label_uuid: str, confidence: float) -> DetectionResult:
+    return DetectionResult(
+        bbox=BoundingBoxMetadata(
+            uuid="u",
+            x=0.0,
+            y=0.0,
+            width=224.0,
+            height=224.0,
+            label_uuid=label_uuid,
+            class_str=label_uuid,
+        ),
+        confidence=confidence,
+    )
+
+
+def _result(*detections: DetectionResult) -> InferenceResult:
+    return InferenceResult(source_width=224, source_height=224, detections=list(detections), inference_time=1.0)
+
+
 @pytest.fixture
 def models_dir_with_classifiers(tmp_path):
-    # YOLO detector (from base conftest)
+    # YOLO detector
     (tmp_path / "yolo_test.onnx").write_bytes(b"fake onnx")
     (tmp_path / "yolo_test.json").write_text(json.dumps(_YOLO_CONFIG))
     # Binary classifier
@@ -88,19 +107,14 @@ class TestModelMeta:
 
 
 class TestClassify:
-    def _make_mock_session(self, logits: list[float]):
-        session = MagicMock()
-        session.get_inputs.return_value = [MagicMock(name="input")]
-        session.run.return_value = [np.array([logits], dtype=np.float32)]
-        return session
-
-    async def test_binary_classifier_high_confidence_is_present(self, clf_client):
-        mock_session = self._make_mock_session([0.1, 5.0])  # high logit for "present"
-        with patch("onnxruntime.InferenceSession", return_value=mock_session):
-            resp = await clf_client.post(
-                "/api/models/binary_clf/classify",
-                json={"imageBase64": make_png_b64()},
-            )
+    async def test_binary_classifier_high_confidence_is_present(self, clf_client, mock_provider):
+        mock_provider.processImage = AsyncMock(
+            return_value=_result(_det("label-cat-uuid", 0.95))
+        )
+        resp = await clf_client.post(
+            "/api/models/binary_clf/classify",
+            json={"imageBase64": make_png_b64()},
+        )
         assert resp.status_code == 200
         data = resp.json()
         assert data["status"] == "success"
@@ -110,25 +124,30 @@ class TestClassify:
         assert preds[0]["isPresent"] is True
         assert preds[0]["confidence"] > 0.5
 
-    async def test_binary_classifier_low_confidence_is_absent(self, clf_client):
-        mock_session = self._make_mock_session([5.0, 0.1])  # high logit for "absent"
-        with patch("onnxruntime.InferenceSession", return_value=mock_session):
-            resp = await clf_client.post(
-                "/api/models/binary_clf/classify",
-                json={"imageBase64": make_png_b64()},
-            )
+    async def test_binary_classifier_low_confidence_is_absent(self, clf_client, mock_provider):
+        mock_provider.processImage = AsyncMock(
+            return_value=_result(_det("label-cat-uuid", 0.2))
+        )
+        resp = await clf_client.post(
+            "/api/models/binary_clf/classify",
+            json={"imageBase64": make_png_b64()},
+        )
         assert resp.status_code == 200
         preds = resp.json()["result"]["predictions"]
         assert preds[0]["isPresent"] is False
         assert preds[0]["confidence"] < 0.5
 
-    async def test_multi_label_classifier_returns_one_prediction_per_label(self, clf_client):
-        mock_session = self._make_mock_session([3.0, -1.0])  # high sigmoid for label-a, low for label-b
-        with patch("onnxruntime.InferenceSession", return_value=mock_session):
-            resp = await clf_client.post(
-                "/api/models/multi_clf/classify",
-                json={"imageBase64": make_png_b64()},
+    async def test_multi_label_classifier_returns_one_prediction_per_label(self, clf_client, mock_provider):
+        mock_provider.processImage = AsyncMock(
+            return_value=_result(
+                _det("label-a", 0.95),
+                _det("label-b", 0.2),
             )
+        )
+        resp = await clf_client.post(
+            "/api/models/multi_clf/classify",
+            json={"imageBase64": make_png_b64()},
+        )
         assert resp.status_code == 200
         data = resp.json()
         assert data["status"] == "success"
@@ -158,11 +177,9 @@ class TestClassify:
         assert resp.json()["status"] == "failure"
 
     async def test_classify_invalid_image_returns_failure(self, clf_client):
-        mock_session = self._make_mock_session([0.1, 5.0])
-        with patch("onnxruntime.InferenceSession", return_value=mock_session):
-            resp = await clf_client.post(
-                "/api/models/binary_clf/classify",
-                json={"imageBase64": "not-valid-base64!!!"},
-            )
+        resp = await clf_client.post(
+            "/api/models/binary_clf/classify",
+            json={"imageBase64": "not-valid-base64!!!"},
+        )
         assert resp.status_code == 200
         assert resp.json()["status"] == "failure"

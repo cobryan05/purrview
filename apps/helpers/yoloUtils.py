@@ -32,6 +32,14 @@ def load_yolo_onnx(model_path: str) -> InferenceProvider:
     metadata = metadataUtils.get_model_metadata(model_path, create_json_if_missing=True)
 
     model_kind: str = metadata.get("model_kind", "")
+    if model_kind == "image_classifier":
+        from apps.helpers.inferenceProviders.imageClassifierInferenceProvider import (
+            ImageClassifierInferenceProvider,
+        )
+        label_uuid: str = metadata.get("label_uuid", "")
+        class_names: list[str] = metadata.get("class_names", ["absent", "present"])
+        return ImageClassifierInferenceProvider(model_path, label_uuid, class_names)
+
     if model_kind == "multi_label_classifier":
         from apps.helpers.inferenceProviders.multiLabelClassifierInferenceProvider import (
             MultiLabelClassifierInferenceProvider,

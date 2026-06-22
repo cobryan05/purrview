@@ -321,13 +321,6 @@ class WebApp:
         )
         async def classify_api(model_name: str, payload: ClassifyPayload) -> ClassifyResponse:
             """Run an ONNX classifier on the supplied image and return per-label predictions."""
-            import json
-            from pathlib import Path
-
-            import onnxruntime as ort
-
-            from apps.helpers.classifier_utils import preprocess_bgr_array, sigmoid, softmax
-
             try:
                 config = self._manager.get_model_config(model_name)
                 if config is None:
@@ -340,41 +333,18 @@ class WebApp:
                         message=f"Model '{model_name}' is not a classifier (kind={model_kind!r})",
                     )
 
-                onnx_path = Path(self._manager.get_models_path()) / f"{model_name}.onnx"
-                if not onnx_path.exists():
-                    return ClassifyResponse(status=JsonValues.FAILURE, message=f"ONNX file missing for '{model_name}'")
-
-                input_size: tuple[int, int] = tuple(config.get("input_size", [224, 224]))  # type: ignore
                 image_bgr: np.ndarray = base64_decode_image(payload.image_base64)
-                tensor = preprocess_bgr_array(image_bgr, input_size)[np.newaxis]  # (1, 3, H, W)
+                # conf_thresh=0.0 → provider returns all labels; is_present is derived here.
+                inference_result = await self._manager.recognize(model_name, image_bgr, conf_thresh=0.0)
 
-                session = await asyncio.to_thread(
-                    ort.InferenceSession, str(onnx_path), providers=["CPUExecutionProvider"]
-                )
-                input_name: str = session.get_inputs()[0].name
-                raw_output = await asyncio.to_thread(session.run, None, {input_name: tensor})
-                logits: np.ndarray = raw_output[0][0]  # shape: (num_classes,) or (num_labels,)
-
-                predictions: list[ClassifyPrediction] = []
-
-                if model_kind == "image_classifier":
-                    class_names: list[str] = config.get("class_names", ["absent", "present"])
-                    probs = softmax(logits)
-                    present_idx = class_names.index("present") if "present" in class_names else 1
-                    confidence = float(probs[present_idx])
-                    label_uuid: str = config.get("label_uuid", "")
-                    predictions.append(
-                        ClassifyPrediction(label_uuid=label_uuid, confidence=confidence, is_present=confidence >= 0.5)
+                predictions = [
+                    ClassifyPrediction(
+                        label_uuid=det.bbox.label_uuid,
+                        confidence=det.confidence,
+                        is_present=det.confidence >= 0.5,
                     )
-
-                else:  # multi_label_classifier
-                    label_uuids: list[str] = config.get("label_uuids", [])
-                    probs_ml = sigmoid(logits)
-                    for label_uuid, prob in zip(label_uuids, probs_ml):
-                        confidence = float(prob)
-                        predictions.append(
-                            ClassifyPrediction(label_uuid=label_uuid, confidence=confidence, is_present=confidence >= 0.5)
-                        )
+                    for det in inference_result.detections
+                ]
 
                 return ClassifyResponse(
                     status=JsonValues.SUCCESS,
