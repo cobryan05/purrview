@@ -479,13 +479,16 @@ async function mountSelectMode(container, { runtime, filter }) {
     if (uuids.length) runtime?.markDirty?.();
   }
 
+  // UUIDs belonging to the Image Classification section — populated after that section renders.
+  let imageClassUuids = new Set();
+
   markAbsentBtn.addEventListener('click', () => bulkOp(
-    [...rowUpdaters.keys()].filter(uuid => effectiveStatus(uuid) !== 'present'),
+    [...rowUpdaters.keys()].filter(uuid => !imageClassUuids.has(uuid) && effectiveStatus(uuid) !== 'present'),
     'absent',
   ));
 
   resetAllBtn.addEventListener('click', () => bulkOp(
-    [...serverStates.keys()],
+    [...serverStates.keys()].filter(uuid => !imageClassUuids.has(uuid)),
     'uncertain',
   ));
 
@@ -508,7 +511,31 @@ async function mountSelectMode(container, { runtime, filter }) {
     });
     container.appendChild(imgHeader);
 
+    const imgBulkRow = document.createElement('div');
+    Object.assign(imgBulkRow.style, { display: 'flex', gap: '4px', padding: '0 6px 4px' });
+    const imgMarkAbsentBtn = document.createElement('button');
+    imgMarkAbsentBtn.textContent = 'Mark all absent';
+    Object.assign(imgMarkAbsentBtn.style, { fontSize: '0.75em', padding: '2px 6px' });
+    const imgResetAllBtn = document.createElement('button');
+    imgResetAllBtn.textContent = 'Reset all';
+    Object.assign(imgResetAllBtn.style, { fontSize: '0.75em', padding: '2px 6px' });
+    imgBulkRow.appendChild(imgMarkAbsentBtn);
+    imgBulkRow.appendChild(imgResetAllBtn);
+    container.appendChild(imgBulkRow);
+
+    // Capture keys before rendering so we can identify which UUIDs belong to this section.
+    const keysBefore = new Set(rowUpdaters.keys());
     renderSelectRows(null, 0, byParentImageClass);
+    imageClassUuids = new Set([...rowUpdaters.keys()].filter(k => !keysBefore.has(k)));
+
+    imgMarkAbsentBtn.addEventListener('click', () => bulkOp(
+      [...imageClassUuids].filter(uuid => effectiveStatus(uuid) !== 'present'),
+      'absent',
+    ));
+    imgResetAllBtn.addEventListener('click', () => bulkOp(
+      [...imageClassUuids].filter(uuid => serverStates.has(uuid)),
+      'uncertain',
+    ));
   }
 
   if (dynamicMap.size > 0) {
