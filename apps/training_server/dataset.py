@@ -422,3 +422,80 @@ class MultiLabelDataset:
                 elif val == 0:
                     n_absent[i] += 1
         return n_absent / (n_present + 1e-8)
+
+
+# ---------------------------------------------------------------------------
+# YOLO detection dataset builder
+# ---------------------------------------------------------------------------
+
+
+def build_yolo_detection_dataset(
+    manifest: list[dict],
+    annotations: dict[str, list],
+    class_names: list[str],
+    cache_dir: str,
+    out_dir: str,
+    val_fraction: float = 0.2,
+) -> dict:
+    """Materialise a YOLO-format dataset directory from the UUID-keyed cache.
+
+    Args:
+        manifest:     List of ``{image_uuid, filename, status}`` dicts (all images).
+        annotations:  ``{image_uuid: [[cls_idx, cx, cy, w, h], ...]}`` — may be empty
+                      list for negative-sample images.
+        class_names:  Ordered list of class name strings.
+        cache_dir:    Path to the UUID-keyed image cache (flat, one file per UUID).
+        out_dir:      Directory to write the YOLO dataset structure into.
+        val_fraction: Fraction of images to use for validation (default 0.2).
+
+    Returns:
+        ``{data_yaml: str, train_uuids: list[str], val_uuids: list[str]}``
+    """
+    import yaml
+
+    cache = Path(cache_dir)
+    out = Path(out_dir)
+
+    # Deterministic split: sort by UUID then slice.
+    sorted_entries = sorted(manifest, key=lambda e: e["image_uuid"])
+    n_val = max(1, int(len(sorted_entries) * val_fraction)) if len(sorted_entries) > 1 else 0
+    n_train = len(sorted_entries) - n_val
+    train_entries = sorted_entries[:n_train]
+    val_entries = sorted_entries[n_train:]
+
+    for split, entries in (("train", train_entries), ("val", val_entries)):
+        img_dir = out / "images" / split
+        lbl_dir = out / "labels" / split
+        img_dir.mkdir(parents=True, exist_ok=True)
+        lbl_dir.mkdir(parents=True, exist_ok=True)
+
+        for entry in entries:
+            uuid = entry["image_uuid"]
+            src = cache / uuid
+            if not src.exists():
+                logger.warning("Cache miss for %s — skipping", uuid)
+                continue
+            # Copy image as <uuid>.jpg (extension is cosmetic; YOLO reads by filename stem)
+            dst_img = img_dir / f"{uuid}.jpg"
+            shutil.copy2(src, dst_img)
+
+            # Write label file (empty = negative sample).
+            ann = annotations.get(uuid, [])
+            dst_lbl = lbl_dir / f"{uuid}.txt"
+            lines = [f"{int(a[0])} {a[1]:.6f} {a[2]:.6f} {a[3]:.6f} {a[4]:.6f}" for a in ann]
+            dst_lbl.write_text("\n".join(lines))
+
+    data_yaml_path = out / "data.yaml"
+    data_yaml_content = {
+        "train": str(out / "images" / "train"),
+        "val": str(out / "images" / "val"),
+        "nc": len(class_names),
+        "names": class_names,
+    }
+    data_yaml_path.write_text(yaml.dump(data_yaml_content, default_flow_style=False))
+
+    return {
+        "data_yaml": str(data_yaml_path),
+        "train_uuids": [e["image_uuid"] for e in train_entries],
+        "val_uuids": [e["image_uuid"] for e in val_entries],
+    }

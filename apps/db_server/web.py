@@ -523,6 +523,19 @@ class TrainingConfigReadinessResponse(StatusResponse):
     roll_up_active: bool = False
 
 
+class DetectionImageEntry(BaseModel):
+    model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)
+
+    image_uuid: str
+    filename: str
+    annotations: List[List[float]] = Field(default_factory=list)
+
+
+class DetectionDatasetResponse(StatusResponse):
+    class_names: List[str] = Field(default_factory=list)
+    images: List[DetectionImageEntry] = Field(default_factory=list)
+
+
 class LabelStatEntry(BaseModel):
     model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)
 
@@ -764,7 +777,7 @@ class WebApp:
             return await call_next(request)
 
         # Mount static files
-        self._app.mount("/static", StaticFiles(directory="/app/static"), name="static")
+        self._app.mount("/static", StaticFiles(directory="/app/static", check_dir=False), name="static")
 
         # Register routes
         self._register_routes()
@@ -2760,6 +2773,37 @@ class WebApp:
             except Exception as e:
                 logger.error(e, exc_info=True)
                 return TrainingConfigReadinessResponse(status=JsonValues.FAILURE, message=str(e))
+
+        @self._app.get(
+            "/api/training-configs/{uuid}/detection-dataset",
+            response_model=DetectionDatasetResponse,
+            tags=[ApiTags.TRAINING_CONFIGS],
+            operation_id="get_training_config_detection_dataset",
+        )
+        async def get_training_config_detection_dataset(
+            uuid: str,
+        ) -> DetectionDatasetResponse:
+            try:
+                result = await self._manager.get_training_config_detection_dataset(uuid)
+                if result is None:
+                    return DetectionDatasetResponse(
+                        status=JsonValues.FAILURE, message="Training config not found"
+                    )
+                return DetectionDatasetResponse(
+                    status=JsonValues.SUCCESS,
+                    class_names=result["class_names"],
+                    images=[
+                        DetectionImageEntry(
+                            image_uuid=img["image_uuid"],
+                            filename=img["filename"],
+                            annotations=img["annotations"],
+                        )
+                        for img in result["images"]
+                    ],
+                )
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return DetectionDatasetResponse(status=JsonValues.FAILURE, message=str(e))
 
         @self._app.get(
             "/api/training-configs/{uuid}/label-stats",

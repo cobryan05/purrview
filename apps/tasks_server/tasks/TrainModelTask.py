@@ -145,6 +145,17 @@ class TrainModelTask(Task):
         model_type: str = node_data.model_type
         architecture: str = node_data.architecture
 
+        # Object-detection nodes use a bbox-based dataset assembly; dispatch before the
+        # image-label classifier paths below.
+        if model_type == "object_detection":
+            return self._resolve_object_detection(
+                training_config_uuid=training_config_uuid,
+                tc_api=tc_api,
+                model_name=model_name,
+                architecture=architecture,
+                hyperparams=hyperparams,
+            )
+
         # Get dataset image UUID set once (shared by both paths below).
         dataset_uuids_set: set[str] = set()
         if dataset_uuids:
@@ -315,6 +326,55 @@ class TrainModelTask(Task):
             "architecture": architecture,
             "label_uuids": label_uuids_list,
             "label_targets": label_targets,
+            **hyperparams,
+        }
+        return model_name, manifest, job_config
+
+    def _resolve_object_detection(
+        self,
+        training_config_uuid: str,
+        tc_api,
+        model_name: str,
+        architecture: str,
+        hyperparams: dict,
+    ) -> tuple[str, list[dict], dict]:
+        """Resolve an object_detection training config to a detection training job.
+
+        Calls the detection-dataset endpoint on db_server to assemble the bbox-based
+        dataset (class list + per-image annotations) and builds a manifest + job config
+        for the object_detection trainer.
+        """
+        result = tc_api.get_training_config_detection_dataset(training_config_uuid)
+        # Result is a DetectionDatasetResponse (generated model).
+        class_names = list(result.class_names or [])
+        images = list(result.images or [])
+
+        if not images:
+            raise RuntimeError(
+                f"No eligible images found for object_detection training config "
+                f"{training_config_uuid!r}. Ensure images have verified bboxes in scope."
+            )
+
+        manifest = [
+            {"image_uuid": img.image_uuid, "filename": img.filename, "status": "present"}
+            for img in images
+        ]
+        annotations = {
+            img.image_uuid: img.annotations
+            for img in images
+        }
+
+        self.log(
+            f"Resolved object_detection config: {len(class_names)} classes "
+            f"({', '.join(class_names)}), {len(manifest)} images, arch={architecture}"
+        )
+
+        job_config = {
+            "trainer_type": "object_detection",
+            "model_name": model_name,
+            "architecture": architecture,
+            "class_names": class_names,
+            "annotations": annotations,
             **hyperparams,
         }
         return model_name, manifest, job_config

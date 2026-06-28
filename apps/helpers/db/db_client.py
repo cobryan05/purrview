@@ -3173,6 +3173,137 @@ class DbClient:
             "roll_up_active": is_rollup,
         }
 
+    async def get_training_config_detection_dataset(self, uuid: str) -> Optional[dict]:
+        """Assemble a YOLO-format detection dataset for an object_detection training config.
+
+        Returns a dict with:
+          - class_names: list[str]  — ordered class names (parents before rollup children)
+          - images: list[dict] each with image_uuid, filename, and
+              annotations: list of [class_idx, cx, cy, w, h] (YOLO-normalized floats)
+
+        Only verified bboxes (carrying VERIFIED_TAG_UUID) whose label is in scope are
+        emitted. Images with no eligible bboxes appear with annotations=[] (negative
+        samples). Returns None if the training config doesn't exist.
+        """
+        tc = await self.get_training_config(uuid)
+        if tc is None:
+            return None
+
+        label_uuids, rollup_map = await self._derive_labels_for_node(tc.model_config_node_uuid)
+        if not label_uuids:
+            return {"class_names": [], "images": []}
+
+        # Build reverse map: every label_uuid → class index.
+        # Rollup children share their parent's index.
+        child_to_parent: dict[str, str] = {}
+        for parent_uuid, children in rollup_map.items():
+            for child_uuid in children:
+                child_to_parent[child_uuid] = parent_uuid
+
+        # class_names are fetched from the DB; we need the label names in order.
+        async with self._async_session_maker() as session:
+            result = await session.exec(select(Label).where(Label.uuid.in_(label_uuids)))
+            labels_by_uuid = {lbl.uuid: lbl for lbl in result.all()}
+
+        # Build class list in label_uuids order (parents before rollup children).
+        # Rollup children are NOT separate classes; they map to their parent's index.
+        class_label_uuids: list[str] = []
+        seen_class: set[str] = set()
+        for lu in label_uuids:
+            effective = child_to_parent.get(lu, lu)
+            if effective not in seen_class:
+                class_label_uuids.append(effective)
+                seen_class.add(effective)
+
+        label_uuid_to_class_idx: dict[str, int] = {lu: i for i, lu in enumerate(class_label_uuids)}
+        # Also map rollup children to their parent's class index.
+        for child_uuid, parent_uuid in child_to_parent.items():
+            label_uuid_to_class_idx[child_uuid] = label_uuid_to_class_idx[parent_uuid]
+
+        class_names = [labels_by_uuid[lu].name if lu in labels_by_uuid else lu for lu in class_label_uuids]
+
+        in_scope_label_uuids: set[str] = set(label_uuids) | set(child_to_parent.keys())
+
+        # Collect eligible images: every in-scope label must have a verified PRESENT/ABSENT row.
+        dataset_uuids = tc.dataset_uuids
+        n_labels = len(class_label_uuids)  # number of distinct classes to verify
+
+        seen_uuids: set[str] = set()
+        all_images: list[ImageRecord] = []
+        for ds_uuid in dataset_uuids:
+            dataset = await self.get_dataset(ds_uuid)
+            if dataset is None:
+                continue
+            after_uuid: Optional[str] = None
+            while True:
+                page, has_more = await self._list_images_for_dataset(
+                    dataset,
+                    limit=_READINESS_PAGE_SIZE,
+                    sort_by="uuid",
+                    sort_order="asc",
+                    after_uuid=after_uuid,
+                    after_sort_value=None,
+                )
+                for img in page:
+                    if img.uuid not in seen_uuids:
+                        seen_uuids.add(img.uuid)
+                        all_images.append(img)
+                if not has_more or not page:
+                    break
+                after_uuid = page[-1].uuid
+
+        if not all_images:
+            return {"class_names": class_names, "images": []}
+
+        image_uuids = [img.uuid for img in all_images]
+
+        # Filter to images that have every class verified (or any one, for full rollup).
+        is_rollup = bool(rollup_map)
+        readiness_threshold = 1 if is_rollup else n_labels
+
+        async with self._async_session_maker() as session:
+            verified_count_col = func.count(ImageLabel.label_uuid).label("verified_count")
+            result = await session.exec(
+                select(ImageLabel.image_uuid, verified_count_col)
+                .where(
+                    ImageLabel.image_uuid.in_(image_uuids),
+                    ImageLabel.label_uuid.in_(list(in_scope_label_uuids)),
+                    ImageLabel.status.in_([ImageItemStatus.PRESENT, ImageItemStatus.ABSENT]),
+                )
+                .group_by(ImageLabel.image_uuid)
+            )
+            rows = result.all()
+            verified_by_image = {row[0]: row[1] for row in rows}
+
+        eligible_images = [
+            img for img in all_images if verified_by_image.get(img.uuid, 0) >= readiness_threshold
+        ]
+
+        # For each eligible image, fetch verified bboxes in scope and convert to YOLO format.
+        image_entries = []
+        for img in eligible_images:
+            bboxes = await self.get_bboxes_for_image(img.uuid)
+            annotations = []
+            for bbox in bboxes:
+                lbl_uuid = bbox.label_uuid
+                if lbl_uuid not in label_uuid_to_class_idx:
+                    continue
+                tag_uuids = {tag.uuid for tag in bbox.tags}
+                if VERIFIED_TAG_UUID not in tag_uuids:
+                    continue
+                cls_idx = label_uuid_to_class_idx[lbl_uuid]
+                # Convert (x1, y1, w, h) relative coords → YOLO (cx, cy, w, h).
+                cx = bbox.x + bbox.width / 2
+                cy = bbox.y + bbox.height / 2
+                annotations.append([cls_idx, cx, cy, bbox.width, bbox.height])
+            image_entries.append({
+                "image_uuid": img.uuid,
+                "filename": img.filename,
+                "annotations": annotations,
+            })
+
+        return {"class_names": class_names, "images": image_entries}
+
     async def get_training_config_images_by_label_status(
         self,
         uuid: str,

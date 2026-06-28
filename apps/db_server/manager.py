@@ -2321,6 +2321,9 @@ class Manager:
     async def get_training_config_readiness(self, uuid: str) -> "Optional[dict]":
         return await self._db_client.get_training_config_readiness(uuid)
 
+    async def get_training_config_detection_dataset(self, uuid: str) -> "Optional[dict]":
+        return await self._db_client.get_training_config_detection_dataset(uuid)
+
     async def get_dataset_image_uuids(self, dataset_uuids: list[str]) -> list[str]:
         return await self._db_client.get_dataset_image_uuids(dataset_uuids)
 

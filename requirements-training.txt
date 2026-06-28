@@ -13,3 +13,4 @@ stringzilla>=3.10.4,<4
 albumentations
 Pillow
 sse-starlette
+libreyolo

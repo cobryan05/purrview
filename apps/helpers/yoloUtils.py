@@ -1,18 +1,24 @@
 """Utility functions for YOLO models"""
 
 import logging
+import os
 import sys
-from typing import Tuple
+from typing import TYPE_CHECKING, Tuple
 
-import cv2
+if TYPE_CHECKING:
+    import onnxruntime as ort
+
 import numpy as np
-import onnxruntime as ort
 
 import apps.helpers.metadataUtils as metadataUtils
 from apps.helpers.inferenceProviders.inferenceProvider import InferenceProvider
-from apps.helpers.inferenceProviders.yolov8OnnxInferenceProvider import (
-    YOLOv8ONNXInferenceProvider,
-)
+
+if os.getenv("GENERATING_OPENAPI_CLIENTS") != "1":
+    import cv2
+    import onnxruntime as ort  # noqa: F811
+    from apps.helpers.inferenceProviders.yolov8OnnxInferenceProvider import (
+        YOLOv8ONNXInferenceProvider,
+    )
 
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger(__file__)
@@ -23,7 +29,7 @@ def sigmoid(x):
     return 1 / (1 + np.exp(-x))
 
 
-def get_input_shape(session: ort.InferenceSession) -> Tuple[int, int]:
+def get_input_shape(session: "ort.InferenceSession") -> Tuple[int, int]:
     input_shape = session.get_inputs()[0].shape  # e.g. [1, 3, 640, 640]
     return int(input_shape[2]), int(input_shape[3])  # height, width
 
@@ -49,9 +55,11 @@ def load_yolo_onnx(model_path: str) -> InferenceProvider:
 
     classes: list[str] = metadata.get("classes", None)
     yolo_version: int = metadata.get("yolo", 8)
-    if yolo_version == 8:
+    if yolo_version in (8, 9):
+        # YOLOv9 (from libreyolo) exports the same ONNX output format as YOLOv8:
+        # (1, 4+nc, num_preds) transposed to (1, num_preds, 4+nc) by the provider.
         return YOLOv8ONNXInferenceProvider(model_path, classes)
-    raise Exception("Unhandled YOLO version")
+    raise Exception(f"Unhandled YOLO version: {yolo_version}")
 
 
 def preprocess_image(image: np.ndarray, input_shape: Tuple[int, int]) -> Tuple[np.ndarray, float, Tuple[int, int]]:
