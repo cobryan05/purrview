@@ -14,6 +14,7 @@
  * explicitly verified (ready to train) vs. still unreviewed.
  */
 
+import { VERIFIED_TAG_UUID } from '/app-static/js/shared/api/review.js';
 import { fetchDatasets } from '/app-static/js/shared/api/datasets.js';
 import { fetchModelConfigs } from '/app-static/js/shared/api/modelConfigs.js';
 import { fetchLabels } from '/app-static/js/shared/api/labels.js';
@@ -30,6 +31,7 @@ import {
 } from '/app-static/js/shared/api/trainingConfigs.js';
 import { TaskStatus, cancelTasks, createTaskConfig, startTask } from '/app-static/js/shared/api/tasks.js';
 import { makeFieldRow, buildPanelEditorBar, toast } from '/app-static/js/ui/utils/index.js';
+import { activeTrainingConfig } from '/app-static/js/shared/activeTrainingConfig.js';
 import { ActiveTaskField } from '/app-static/js/ui/utils/fields/ActiveTaskField.js';
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
 import { showUnsavedConfigChangesModal } from '/app-static/js/ui/utils/confirmModal.js';
@@ -333,10 +335,31 @@ function renderLabelStatsPanel(config, labelsMap) {
     });
   }
 
+  async function _openVerifiedBboxModal(effectiveLabelUuids, modalTitle) {
+    const { showReviewModal } = await import('/app-static/js/app/review/main.js');
+    const uuidSet = effectiveLabelUuids instanceof Set ? effectiveLabelUuids : new Set(effectiveLabelUuids);
+    await showReviewModal({
+      title: modalTitle,
+      initialViewFilter: 'bboxes',
+      bboxFilterFn: (b) => uuidSet.has(b.labelUuid) && (b.tags || []).some(t => t.uuid === VERIFIED_TAG_UUID),
+      fetchImages: async ({ afterUuid = null, afterSortValue = null, limit }) => {
+        return fetchTrainingConfigImagesByLabelStatus(config.uuid, {
+          labelUuid: [...uuidSet][0],
+          rollupLabelUuids: uuidSet.size > 1 ? [...uuidSet].slice(1) : undefined,
+          status: 'has_verified_bbox',
+          afterUuid,
+          afterSortValue,
+          limit,
+        });
+      },
+    });
+  }
+
   async function _openBboxNeedsReviewModal(labelUuid, modalTitle, rollupChildUuids = []) {
     const { showReviewModal } = await import('/app-static/js/app/review/main.js');
     await showReviewModal({
       title: modalTitle,
+      initialViewFilter: 'bboxes',
       fetchImages: async ({ afterUuid = null, afterSortValue = null, limit }) => {
         return fetchTrainingConfigNeedsReview({
           uuid: config.uuid,
@@ -545,10 +568,15 @@ function renderLabelStatsPanel(config, labelsMap) {
         sectionHead.textContent = 'Object labels';
         content.appendChild(sectionHead);
         content.appendChild(_makeTable(objectLabels, [
-          { header: 'Verified boxes', key: 'verifiedBboxCount', title: 'Bounding boxes marked Verified', goodIf: s => s.unverifiedBboxCount === 0 && s.verifiedBboxCount > 0 },
+          { header: 'Verified boxes', key: 'verifiedBboxCount', title: 'Bounding boxes marked Verified — click to browse', goodIf: s => s.unverifiedBboxCount === 0 && s.verifiedBboxCount > 0,
+            browseFn: (stat) => {
+              const effectiveUuids = new Set([stat.labelUuid, ...(stat.hasRollup ? _rollupChildUuids(stat.labelUuid) : [])]);
+              return _openVerifiedBboxModal(effectiveUuids, `${_labelName(stat.labelUuid)} — verified boxes (${config.name})`);
+            }},
           { header: 'Unverified boxes', key: 'unverifiedBboxCount', title: 'Bounding boxes still marked Unverified — click to review images', warnIf: s => s.unverifiedBboxCount > 0,
             browseFn: (stat, col) => _openBboxNeedsReviewModal(stat.labelUuid, `${_labelName(stat.labelUuid)} — unverified boxes (${config.name})`, stat.hasRollup ? _rollupChildUuids(stat.labelUuid) : []) },
-          { header: 'Imgs all clear', key: 'fullyVerifiedImageCount', title: 'Images where every box for this label is verified', goodIf: s => s.imagesMissingVerificationCount === 0 && s.fullyVerifiedImageCount > 0 },
+          { header: 'Imgs all clear', key: 'fullyVerifiedImageCount', title: 'Images where every box for this label is verified — click to browse', goodIf: s => s.imagesMissingVerificationCount === 0 && s.fullyVerifiedImageCount > 0,
+            browseStatus: 'fully_verified_bbox' },
           { header: 'Imgs need work', key: 'imagesMissingVerificationCount', title: 'Images with at least one unverified box for this label — click to review', warnIf: s => s.imagesMissingVerificationCount > 0,
             browseFn: (stat, col) => _openBboxNeedsReviewModal(stat.labelUuid, `${_labelName(stat.labelUuid)} — needs review (${config.name})`, stat.hasRollup ? _rollupChildUuids(stat.labelUuid) : []) },
         ]));
@@ -718,6 +746,45 @@ export async function renderTrainingConfigManager({ target = 'training-config-bo
         });
         _currentFormHandle = formHandle;
         editorBody.appendChild(formHandle.el);
+
+        // ── "Set as active training config" button ────────────────────────
+        if (config?.uuid) {
+          const activeRow = document.createElement('div');
+          activeRow.style.cssText = 'display:flex;align-items:center;gap:0.5em;margin:0.5em 0 0.25em;';
+
+          const activeBtn = document.createElement('button');
+          activeBtn.type = 'button';
+          activeBtn.className = 'panel-btn';
+          activeBtn.style.cssText = 'margin-bottom:0;';
+
+          function _refreshActiveBtn() {
+            const current = activeTrainingConfig.getActive();
+            const isActive = current?.uuid === config.uuid;
+            activeBtn.textContent = isActive ? '✓ Active training config' : 'Set as active training config';
+            activeBtn.style.opacity = isActive ? '0.7' : '1';
+          }
+          _refreshActiveBtn();
+
+          activeBtn.addEventListener('click', async () => {
+            const current = activeTrainingConfig.getActive();
+            if (current?.uuid === config.uuid) {
+              await activeTrainingConfig.setActive(null);
+            } else {
+              await activeTrainingConfig.setActive(config);
+            }
+            _refreshActiveBtn();
+          });
+
+          const unsubActiveBtn = events.subscribe(EventTypes.ACTIVE_TRAINING_CONFIG_CHANGED, ({ statsUpdated }) => {
+            if (!statsUpdated) _refreshActiveBtn();
+          });
+          // Clean up subscription when form is destroyed
+          const origDestroy = formHandle.destroy.bind(formHandle);
+          formHandle.destroy = () => { unsubActiveBtn(); origDestroy(); };
+
+          activeRow.appendChild(activeBtn);
+          editorBody.appendChild(activeRow);
+        }
 
         // Readiness panel (only for existing configs with datasets and a node)
         if (config?.uuid && (config.datasetUuids?.length ?? 0) > 0 && config.modelConfigNodeUuid) {

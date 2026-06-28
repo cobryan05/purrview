@@ -136,4 +136,10 @@ export const EventTypes = Object.freeze({
    * Payload: { imageUuid: string, imagePath: string }
    */
   IMAGE_LABELS_CHANGED: "image:labels:changed",
+  /**
+   * Fired when the active training config changes, the label-filter toggle changes,
+   * or coverage stats are freshly fetched.
+   * Payload: { config: TrainingConfigRead | null, filterEnabled: boolean, statsUpdated: boolean }
+   */
+  ACTIVE_TRAINING_CONFIG_CHANGED: "training-config:active:changed",
 });

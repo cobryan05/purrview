@@ -2370,3 +2370,45 @@ main.container {
   color: var(--pico-primary, #ff6b6b);
   background: rgba(255, 107, 107, 0.08);
 }
+
+/* ===== Active Training Config Bar additions ===== */
+
+.active-model-bar__filter-badge {
+  font-size: 0.78em;
+  background: rgba(100, 160, 255, 0.15);
+  color: #88aaff;
+  border: 1px solid rgba(100, 160, 255, 0.35);
+  border-radius: 3px;
+  padding: 0 5px;
+  line-height: 1.4;
+  cursor: default;
+}
+
+.active-model-bar__set-tc-btn {
+  background: none;
+  border: none;
+  padding: 0.1em 0.4em;
+  cursor: pointer;
+  color: var(--pico-muted-color, #888);
+  font-size: inherit;
+  text-decoration: underline dotted;
+  margin: 0;
+}
+
+.active-model-bar__set-tc-btn:hover {
+  color: var(--pico-color, #ddd);
+}
+
+/* ===== TC coverage stat badge in the label sidebar ===== */
+
+.tc-stat-badge {
+  font-size: 0.75em;
+  white-space: nowrap;
+  flex-shrink: 0;
+  cursor: default;
+  padding: 0 2px;
+  border-radius: 2px;
+  line-height: 1.4;
+}
+
+

@@ -7,6 +7,7 @@ import { events, EventTypes } from '/app-static/js/shared/events/index.js';
 import { createImageTaggingRuntime, setPrimaryRuntimeId } from './image-tagging/runtime.js';
 import { initContextMenus } from '/app-static/js/ui/contextMenu/index.js';
 import { activeModel } from '/app-static/js/shared/activeModel.js';
+import { activeTrainingConfig } from '/app-static/js/shared/activeTrainingConfig.js';
 import { mountActiveModelBar } from '/app-static/js/ui/activeModelBar.js';
 import { mountNoticesBar } from '/app-static/js/ui/noticesBar.js';
 import { setPendingDatasetPrefill } from '/app-static/js/ui/datasets.js';
@@ -28,8 +29,9 @@ setPrimaryRuntimeId(_appState.imgRuntime.id);
  * @param {AppState} appState
  */
 export async function init(appState) {
-  // Initialise session-scoped active model state (reads sessionStorage + fetches config if needed)
+  // Initialise session-scoped active model and training config state
   await activeModel.init();
+  await activeTrainingConfig.init();
   mountActiveModelBar('active-model-bar');
   mountNoticesBar('notices-bar');
 

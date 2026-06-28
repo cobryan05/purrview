@@ -13,6 +13,11 @@
 
 import { fetchLabels, clearLabelsCache, createNewLabel, deleteLabel, updateLabel } from '/app-static/js/shared/api/labels.js';
 import { activeModel, isDynamicLabelsVisible } from '/app-static/js/shared/activeModel.js';
+import { activeTrainingConfig } from '/app-static/js/shared/activeTrainingConfig.js';
+import {
+  fetchTrainingConfigImagesByLabelStatus,
+  fetchTrainingConfigNeedsReview,
+} from '/app-static/js/shared/api/trainingConfigs.js';
 import { fetchImageLabels, setImageLabel } from '/app-static/js/shared/api/imageLabels.js';
 import { VERIFIED_TAG_UUID } from '/app-static/js/shared/api/review.js';
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
@@ -361,19 +366,30 @@ async function mountSelectMode(container, { runtime, filter }) {
   container.appendChild(bulkRow);
 
   const rawLabelsMap = await fetchLabels();
-  const modelFilteredMap = activeModel.applyLabelFilter(rawLabelsMap);
+  // TC filter takes precedence over model-config filter when a TC is active.
+  const filteredMap = activeTrainingConfig.getActive()
+    ? activeTrainingConfig.applyLabelFilter(rawLabelsMap)
+    : activeModel.applyLabelFilter(rawLabelsMap);
   const showDynamic = isDynamicLabelsVisible();
   // Split by (scope, labelType): object-scope object labels / image-scope labels / dynamic labels
-  const regularMap = new Map([...modelFilteredMap].filter(([, l]) => l.labelType !== 'dynamic' && l.scope !== 'image'));
-  const imageClassMap = new Map([...modelFilteredMap].filter(([, l]) => l.labelType !== 'dynamic' && l.scope === 'image'));
+  const regularMap = new Map([...filteredMap].filter(([, l]) => l.labelType !== 'dynamic' && l.scope !== 'image'));
+  const imageClassMap = new Map([...filteredMap].filter(([, l]) => l.labelType !== 'dynamic' && l.scope === 'image'));
   const dynamicMap = showDynamic
-    ? new Map([...modelFilteredMap].filter(([, l]) => l.labelType === 'dynamic'))
+    ? new Map([...filteredMap].filter(([, l]) => l.labelType === 'dynamic'))
     : new Map();
   const filterNotice = makeLabelFilterNotice(rawLabelsMap.size - regularMap.size - imageClassMap.size - dynamicMap.size);
   if (filterNotice) container.appendChild(filterNotice);
   const byParent = buildHierarchy(regularMap, filter);
   const byParentImageClass = buildHierarchy(imageClassMap, filter);
   const byParentDynamic = buildHierarchy(dynamicMap, filter);
+
+  // Cache a stats map keyed by labelUuid for O(1) lookup in row rendering
+  function _buildStatsMap() {
+    const cached = activeTrainingConfig.getCachedStats();
+    if (!cached?.labelStats) return new Map();
+    return new Map(cached.labelStats.map(s => [s.labelUuid, s]));
+  }
+  let _statsMap = _buildStatsMap();
 
   let currentImagePath = null;
   let _loadSeq = 0;
@@ -409,9 +425,138 @@ async function mountSelectMode(container, { runtime, filter }) {
   function renderSelectRows(parentUuid, indent, bp = byParent) {
     const children = bp.get(parentUuid ?? null) ?? [];
     for (const label of children) {
-      const { row } = buildLabelRow(label, indent);
+      const { row, nameEl } = buildLabelRow(label, indent);
       row.className = 'label-panel-row';
       row.style.cursor = 'pointer';
+
+      // Mini coverage badges from active TC stats — [✓ verified] [⚠ unverified]
+      const stat = _statsMap.get(label.uuid);
+      if (stat && activeTrainingConfig.getActive()) {
+        const tc = activeTrainingConfig.getActive();
+        const isImage = stat.labelScope === 'image';
+
+        // Rollup child UUIDs (for calls that need to include them)
+        const rollupChildUuids = stat.hasRollup
+          ? [..._statsMap.values()]
+              .filter(s => s.rollUpParentUuid === label.uuid)
+              .map(s => s.labelUuid)
+          : [];
+
+        // Verified count + optional rollup suffix
+        const ownVerified = isImage ? (stat.presentImageCount ?? 0) : (stat.verifiedBboxCount ?? 0);
+        let rollupVerified = 0;
+        if (stat.hasRollup) {
+          for (const cs of _statsMap.values()) {
+            if (cs.rollUpParentUuid === label.uuid) {
+              rollupVerified += isImage ? (cs.presentImageCount ?? 0) : (cs.verifiedBboxCount ?? 0);
+            }
+          }
+        }
+        const unverifiedCount = isImage
+          ? (stat.unverifiedImageCount ?? 0)
+          : (stat.imagesMissingVerificationCount ?? 0);
+
+        // Badge factory — clickable when count > 0
+        function _mkBadge(text, color, title, onClickFn) {
+          const b = document.createElement('span');
+          b.className = 'tc-stat-badge';
+          b.textContent = text;
+          b.style.color = color;
+          b.title = title;
+          if (onClickFn) {
+            b.style.cursor = 'pointer';
+            b.style.textDecoration = 'underline dotted';
+            b.style.textUnderlineOffset = '2px';
+            b.addEventListener('click', async (e) => { e.stopPropagation(); await onClickFn(); });
+          }
+          return b;
+        }
+
+        async function _browseVerified() {
+          const { showReviewModal } = await import('/app-static/js/app/review/main.js');
+          if (isImage) {
+            await showReviewModal({
+              title: `${label.name} — verified present (${tc.name})`,
+              initialViewFilter: 'images',
+              fetchImages: async ({ afterUuid = null, afterSortValue = null, limit }) =>
+                fetchTrainingConfigImagesByLabelStatus(tc.uuid, {
+                  labelUuid: label.uuid,
+                  rollupLabelUuids: rollupChildUuids.length ? rollupChildUuids : undefined,
+                  status: 'present', afterUuid, afterSortValue, limit,
+                }),
+            });
+          } else {
+            const effectiveUuids = new Set([label.uuid, ...rollupChildUuids]);
+            await showReviewModal({
+              title: `${label.name} — verified boxes (${tc.name})`,
+              initialViewFilter: 'bboxes',
+              bboxFilterFn: (b) => effectiveUuids.has(b.labelUuid) && (b.tags || []).some(t => t.uuid === VERIFIED_TAG_UUID),
+              fetchImages: async ({ afterUuid = null, afterSortValue = null, limit }) =>
+                fetchTrainingConfigImagesByLabelStatus(tc.uuid, {
+                  labelUuid: label.uuid,
+                  rollupLabelUuids: rollupChildUuids.length ? rollupChildUuids : undefined,
+                  status: 'has_verified_bbox', afterUuid, afterSortValue, limit,
+                }),
+            });
+          }
+        }
+
+        async function _browseUnverified() {
+          const { showReviewModal } = await import('/app-static/js/app/review/main.js');
+          if (isImage) {
+            await showReviewModal({
+              title: `${label.name} — unreviewed (${tc.name})`,
+              initialViewFilter: 'images',
+              fetchImages: async ({ afterUuid = null, afterSortValue = null, limit }) =>
+                fetchTrainingConfigImagesByLabelStatus(tc.uuid, {
+                  labelUuid: label.uuid,
+                  rollupLabelUuids: rollupChildUuids.length ? rollupChildUuids : undefined,
+                  status: 'uncertain', afterUuid, afterSortValue, limit,
+                }),
+            });
+          } else {
+            await showReviewModal({
+              title: `${label.name} — needs review (${tc.name})`,
+              initialViewFilter: 'bboxes',
+              fetchImages: async ({ afterUuid = null, afterSortValue = null, limit }) =>
+                fetchTrainingConfigNeedsReview({
+                  uuid: tc.uuid,
+                  labelUuids: [label.uuid, ...rollupChildUuids],
+                  afterUuid, afterSortValue, limit,
+                }),
+            });
+          }
+        }
+
+        // Build badge wrapper (pushed right via margin-left:auto)
+        const badgeWrap = document.createElement('span');
+        badgeWrap.style.cssText = 'margin-left:auto;display:flex;gap:3px;flex-shrink:0;align-items:center;';
+
+        // Verified badge (always shown)
+        let verifiedText = `✓ ${ownVerified.toLocaleString()}`;
+        if (stat.hasRollup && rollupVerified > 0) verifiedText += ` +${rollupVerified}↑`;
+        const verifiedTitle = stat.hasRollup && rollupVerified > 0
+          ? `${ownVerified} ${isImage ? 'verified positives' : 'verified boxes'} (own) + ${rollupVerified} from rollup children — click to browse`
+          : `${ownVerified} ${isImage ? 'verified positives' : 'verified boxes'}${ownVerified > 0 ? ' — click to browse' : ''}`;
+        badgeWrap.appendChild(_mkBadge(
+          verifiedText,
+          ownVerified > 0 || rollupVerified > 0 ? '#4c4' : '#555',
+          verifiedTitle,
+          ownVerified > 0 || rollupVerified > 0 ? _browseVerified : null,
+        ));
+
+        // Unverified badge (only shown if > 0)
+        if (unverifiedCount > 0) {
+          badgeWrap.appendChild(_mkBadge(
+            `⚠ ${unverifiedCount.toLocaleString()}`,
+            '#f90',
+            `${unverifiedCount} ${isImage ? 'unreviewed images' : 'images with unverified boxes'} — click to browse`,
+            _browseUnverified,
+          ));
+        }
+
+        nameEl.after(badgeWrap);
+      }
 
       const btn = document.createElement('button');
       Object.assign(btn.style, {
@@ -958,6 +1103,7 @@ export async function createLabelList(container, options = {}) {
   if (mode === 'select') {
     _unsubMode = events.subscribeMany([
       [EventTypes.ACTIVE_MODEL_CHANGED,              () => mount()],
+      [EventTypes.ACTIVE_TRAINING_CONFIG_CHANGED,    () => mount()],
       [EventTypes.DYNAMIC_LABELS_VISIBILITY_CHANGED, () => mount()],
       [EventTypes.LABELS_UPDATED,                    () => mount()],
     ]);
