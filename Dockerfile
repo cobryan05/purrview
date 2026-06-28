@@ -57,13 +57,6 @@ RUN mkdir -p /logs /app/static/js /app/static/css \
 
 COPY --from=mediamtx /mediamtx /app/mediamtx
 
-# Download MediaMTX OpenAPI spec and generate Python client
-RUN curl -L -o /openapi.yaml \
-  https://raw.githubusercontent.com/bluenviron/mediamtx/v${MEDIAMTX_VERSION}/apidocs/openapi.yaml \
-  && openapi-generator-cli generate -i /openapi.yaml -g python -o /tmp/openapi-client --package-name mediamtx_client \
-  && pip install --no-cache-dir /tmp/openapi-client \
-  && rm -rf /tmp/openapi-client
-
 # Copy required foundational application files
 COPY conf /conf
 COPY templates ./templates
@@ -81,18 +74,26 @@ ARG MEDIAMTX_VERSION
 
 WORKDIR /app
 
-# 1. Install build tools and node/openapi system deps needed for internal code generation
+# 1. Install build tools needed for wheel compilation
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     curl \
     git \
-    openjdk-17-jre-headless \
     && rm -rf /var/lib/apt/lists/*
 
-# Install openapi-generator-cli inside the builder environment execution path
-RUN curl -fsSL https://raw.githubusercontent.com/openapitools/openapi-generator/master/bin/utils/openapi-generator-cli.sh -o /usr/local/bin/openapi-generator-cli \
-    && chmod +x /usr/local/bin/openapi-generator-cli
+# Install runtime deps + openapi-generator-cli (bundles its own JDK — no system Java needed)
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt openapi-generator-cli[jdk4py]
+
+# Generate mediamtx_client wheel — needed by relay_buffer_server at import time and by app-base at runtime
+RUN curl -fsSL https://raw.githubusercontent.com/bluenviron/mediamtx/v${MEDIAMTX_VERSION}/apidocs/openapi.yaml \
+        -o /tmp/mediamtx-openapi.yaml \
+    && openapi-generator-cli generate -i /tmp/mediamtx-openapi.yaml -g python \
+        -o /tmp/mediamtx_client_src --package-name mediamtx_client \
+    && pip wheel --no-deps /tmp/mediamtx_client_src -w ./openapi_wheels/ \
+    && pip install --no-cache-dir /tmp/mediamtx_client_src \
+    && rm -rf /tmp/mediamtx-openapi.yaml /tmp/mediamtx_client_src
 
 # Copy application layers so parsing logic can read server entrypoints
 COPY apps ./apps

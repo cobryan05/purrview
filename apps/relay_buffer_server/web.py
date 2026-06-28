@@ -37,7 +37,7 @@ class WebApp:
         self._api_client: ApiClient = manager._media_mtx_api_client
 
         # Mount static files
-        self._app.mount("/static", StaticFiles(directory="/app/static"), name="static")
+        self._app.mount("/static", StaticFiles(directory="/app/static", check_dir=False), name="static")
 
         # Register routes
         self._register_routes()

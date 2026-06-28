@@ -87,10 +87,10 @@ class WebApp:
         self._manager: Manager = manager
 
         # Mount static files
-        self._app.mount("/static", StaticFiles(directory="/app/static"), name="static")
+        self._app.mount("/static", StaticFiles(directory="/app/static", check_dir=False), name="static")
         self._app.mount(
             "/app-static",
-            StaticFiles(directory=os.path.join(SCRIPT_DIR, "static")),
+            StaticFiles(directory=os.path.join(SCRIPT_DIR, "static"), check_dir=False),
             name="app-static",
         )
 

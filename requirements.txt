@@ -15,8 +15,7 @@ lz4
 numpy
 onnx
 onnxruntime-gpu
-openapi-generator-cli[jdk4py]
-opencv-python
+opencv-python-headless
 paho-mqtt
 pillow
 pydantic
