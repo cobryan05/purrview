@@ -34,6 +34,7 @@ import { nextModalZIndex, applyModalCascade, registerEscHandler, unregisterEscHa
 import { CheckboxField } from '/app-static/js/ui/utils/fields/CheckboxField.js';
 import { createCanvasInstance } from '/app-static/js/app/image-tagging/canvas/instance.js';
 import { saveAnnotations } from '/app-static/js/app/image-tagging/canvas/image.js';
+import { initSplitResize } from '/app-static/js/ui/utils/splitResize.js';
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
 import { init as initToolbar } from '/app-static/js/app/image-tagging/toolbar.js';
 import { createTagPanel } from '/app-static/js/ui/inspector.js';
@@ -174,7 +175,7 @@ function buildVerifyChip(tagUuids) {
   return chip;
 }
 
-export async function createReviewPanel(container, { fetchImages = null, datasetActions = true, referenceBboxUuids = new Set(), referenceImageUuids = new Set(), initialViewFilter = 'images', toolbarControls = null } = {}) {
+export async function createReviewPanel(container, { fetchImages = null, datasetActions = true, referenceBboxUuids = new Set(), referenceImageUuids = new Set(), initialViewFilter = 'images', toolbarControls = null, bboxFilterFn = null } = {}) {
   container.innerHTML = '';
 
   const labelsPromise = fetchLabels().catch(() => new Map());
@@ -1020,7 +1021,7 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
       }
 
       // Build _allEntries: for each image, one ImageEntry then its matching BboxEntries.
-      const showAll = fetchImages || fs?.showAllBboxes;
+      const showAll = (fetchImages && !bboxFilterFn) || fs?.showAllBboxes;
       const tagSet = (fs && !showAll) ? new Set(fs.tagUuids) : null;
       const activeLabelUuids = (fs?.labelUuids?.length > 0)
         ? (fs.labelIncludeChildren
@@ -1030,6 +1031,7 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
 
       for (const img of images) {
         const matching = (img.bboxes || []).filter(b => {
+          if (bboxFilterFn) return bboxFilterFn(b);
           const tagMatch = showAll || (b.tags || []).some(t => tagSet.has(t.uuid));
           const labelMatch = !activeLabelUuids || activeLabelUuids.has(b.labelUuid);
           return tagMatch && labelMatch;
@@ -2220,7 +2222,7 @@ export async function init() {
  *                     the dataset's conditions. "Update Dataset" button pushes changes
  *                     back to the caller via onUpdateFilters (caller must still Save).
  */
-export async function showReviewModal({ title = 'Browse Images', fetchImages, editableDataset, toolbarControls, referenceBboxUuids = new Set(), referenceImageUuids = new Set(), initialViewFilter = 'images' } = {}) {
+export async function showReviewModal({ title = 'Browse Images', fetchImages, editableDataset, toolbarControls, referenceBboxUuids = new Set(), referenceImageUuids = new Set(), initialViewFilter = 'images', bboxFilterFn = null } = {}) {
   const overlay = document.createElement('div');
   const _modalZ = nextModalZIndex();
   overlay.style.cssText = `position:fixed;inset:0;background:#0009;display:flex;align-items:center;justify-content:center;z-index:${_modalZ};`;
@@ -2305,7 +2307,7 @@ export async function showReviewModal({ title = 'Browse Images', fetchImages, ed
     }
     return panel.refresh;
   } else {
-    const panel = await createReviewPanel(content, { fetchImages, referenceBboxUuids, referenceImageUuids, initialViewFilter, toolbarControls });
+    const panel = await createReviewPanel(content, { fetchImages, referenceBboxUuids, referenceImageUuids, initialViewFilter, toolbarControls, bboxFilterFn });
     panelRef.current = panel;
     // Guard: if close() fired during the await, destroy the now-orphaned panel.
     if (!document.body.contains(overlay)) { panel.destroy(); return panel.refresh; }
@@ -2523,7 +2525,10 @@ async function showCanvasModal(bbox, img, labels, onSaved, navContext = null) {
   paneLabels.appendChild(labelListEl);
 
   sidebarEl.append(sidebarTabHeader, paneLabels, paneTags);
-  contentArea.append(canvasWrap, sidebarEl);
+
+  const modalResizeHandleEl = document.createElement('div');
+  modalResizeHandleEl.className = 'split-resize-handle';
+  contentArea.append(canvasWrap, modalResizeHandleEl, sidebarEl);
 
   // Footer — Save / Cancel / Save & Close; Save buttons start dimmed (no unsaved changes yet)
   const footer = document.createElement('div');
@@ -2553,6 +2558,7 @@ async function showCanvasModal(bbox, img, labels, onSaved, navContext = null) {
   let toolbarHandle    = { destroy: () => {} };
   let labelHandle      = { destroy: () => {} };
   let tagPanelHandle   = { destroy: () => {} };
+  let modalResizeHandle = { destroy: () => {} };
   let unsubToolChanged = () => {};
   let unsubDblClick    = () => {};
   let unsubBboxChanged = () => {};
@@ -2575,6 +2581,14 @@ async function showCanvasModal(bbox, img, labels, onSaved, navContext = null) {
 
   // ── Setup sidebar tabs ─────────────────────────────────────────────
   const { activateTab: activateSidebarTab } = setupSidebarTabs(sidebarEl);
+
+  // ── Sidebar drag-resize ────────────────────────────────────────────
+  modalResizeHandle = initSplitResize(modalResizeHandleEl, sidebarEl, {
+    storageKey: 'wtch_modal_sidebar_width',
+    defaultWidth: 220,
+    min: 120,
+    max: 500,
+  });
 
   // ── Wire label list ────────────────────────────────────────────────
   labelHandle = await createLabelList(labelListEl, { mode: 'select', runtime: instance.runtime });
@@ -2749,6 +2763,7 @@ async function showCanvasModal(bbox, img, labels, onSaved, navContext = null) {
     tagPanelHandle.destroy();
     toolbarHandle.destroy();
     labelHandle.destroy();
+    modalResizeHandle.destroy();
     instance.destroy();
     overlay.remove();
     _modalOpen = false;

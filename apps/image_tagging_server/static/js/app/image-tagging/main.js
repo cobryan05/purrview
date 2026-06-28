@@ -9,6 +9,7 @@ import { setupWorkspaceTabs } from '/app-static/js/app/utils/tabs.js';
 import { runDetection } from '/app-static/js/shared/api/inference.js';
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
 import { Logger } from '/app-static/js/ui/utils/index.js';
+import { initSplitResize } from '/app-static/js/ui/utils/splitResize.js';
 
 
 /**
@@ -54,6 +55,18 @@ export async function init(runtime, tab_pane) {
   // Store handle on runtime so destroy() is reachable if a cleanup path is added later.
   runtime._toolbarHandle = initToolbar(runtime, toolbarEl);
   await initSidebar(runtime);
+
+  // Sidebar drag-resize
+  const sidebarEl = document.getElementById('sidebar');
+  const resizeHandleEl = document.getElementById('sidebar-resize-handle');
+  if (sidebarEl && resizeHandleEl) {
+    initSplitResize(resizeHandleEl, sidebarEl, {
+      storageKey: 'wtch_sidebar_width',
+      defaultWidth: 240,
+      min: 120,
+      max: 500,
+    });
+  }
 
   // activate default workspace tab
   const defaultTabBtn = tab_pane?.querySelector('.workspace-tab-button');

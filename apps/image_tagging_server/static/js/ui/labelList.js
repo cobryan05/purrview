@@ -12,7 +12,7 @@
  */
 
 import { fetchLabels, clearLabelsCache, createNewLabel, deleteLabel, updateLabel } from '/app-static/js/shared/api/labels.js';
-import { activeModel, isDynamicLabelsVisible } from '/app-static/js/shared/activeModel.js';
+import { activeModel } from '/app-static/js/shared/activeModel.js';
 import { activeTrainingConfig } from '/app-static/js/shared/activeTrainingConfig.js';
 import {
   fetchTrainingConfigImagesByLabelStatus,
@@ -121,7 +121,7 @@ export function expandWithDescendants(labelUuids, labelsMap) {
  * @param {{ padding?: string }} [opts]
  * @returns {{ row: HTMLDivElement, swatch: HTMLSpanElement, nameEl: HTMLSpanElement }}
  */
-export function buildLabelRow(label, indent, { padding = '4px 6px' } = {}) {
+export function buildLabelRow(label, indent, { padding = '3px 5px' } = {}) {
   const row = document.createElement('div');
   row.dataset.uuid = label.uuid;
   Object.assign(row.style, {
@@ -146,7 +146,7 @@ export function buildLabelRow(label, indent, { padding = '4px 6px' } = {}) {
 
   const nameEl = document.createElement('span');
   nameEl.textContent = label.name;
-  nameEl.style.fontSize = '0.88em';
+  nameEl.style.fontSize = '0.82em';
 
   row.appendChild(swatch);
   row.appendChild(nameEl);
@@ -370,13 +370,11 @@ async function mountSelectMode(container, { runtime, filter }) {
   const filteredMap = activeTrainingConfig.getActive()
     ? activeTrainingConfig.applyLabelFilter(rawLabelsMap)
     : activeModel.applyLabelFilter(rawLabelsMap);
-  const showDynamic = isDynamicLabelsVisible();
-  // Split by (scope, labelType): object-scope object labels / image-scope labels / dynamic labels
+  // Split by (scope, labelType): object-scope object labels / image-scope labels / dynamic labels.
+  // Dynamic labels are always shown (no visibility toggle gate) so the user can mark present/absent.
   const regularMap = new Map([...filteredMap].filter(([, l]) => l.labelType !== 'dynamic' && l.scope !== 'image'));
   const imageClassMap = new Map([...filteredMap].filter(([, l]) => l.labelType !== 'dynamic' && l.scope === 'image'));
-  const dynamicMap = showDynamic
-    ? new Map([...filteredMap].filter(([, l]) => l.labelType === 'dynamic'))
-    : new Map();
+  const dynamicMap = new Map([...filteredMap].filter(([, l]) => l.labelType === 'dynamic'));
   const filterNotice = makeLabelFilterNotice(rawLabelsMap.size - regularMap.size - imageClassMap.size - dynamicMap.size);
   if (filterNotice) container.appendChild(filterNotice);
   const byParent = buildHierarchy(regularMap, filter);
@@ -876,15 +874,22 @@ async function mountModelConfigMode(container, {
   // Filter to the relevant scope, then remap orphaned parents to root so every
   // filtered label is reachable in the hierarchy tree.
   // Labels without an explicit scope (e.g. legacy data) default to 'object'.
-  let displayMap = rawMap;
+  // Always exclude dynamic labels from the main tree — they appear in their own section below.
+  let displayMap = new Map([...rawMap].filter(([, l]) => l.labelType !== 'dynamic'));
   if (scopeFilter) {
-    const filteredEntries = [...rawMap].filter(([, l]) => (l.scope ?? 'object') === scopeFilter);
+    const filteredEntries = [...displayMap].filter(([, l]) => (l.scope ?? 'object') === scopeFilter);
     const filteredUuids = new Set(filteredEntries.map(([uuid]) => uuid));
     displayMap = new Map(filteredEntries.map(([uuid, l]) => [
       uuid,
       (!l.parentUuid || filteredUuids.has(l.parentUuid)) ? l : { ...l, parentUuid: null },
     ]));
   }
+
+  // Dynamic labels are always shown in a separate flat section below the main tree.
+  // They're object-level bbox annotations so they're not relevant for image classifiers.
+  const dynamicMap = scopeFilter !== 'image'
+    ? new Map([...rawMap].filter(([, l]) => l.labelType === 'dynamic'))
+    : new Map();
 
   const byParent = buildHierarchy(displayMap, null);
 
@@ -1025,6 +1030,49 @@ async function mountModelConfigMode(container, {
   }
 
   appendRows(null, 0);
+
+  // ── Dynamic Labels section ────────────────────────────────────────────────
+  // Rendered as a flat list with checkboxes only — no sub-model or roll-up
+  // toggles since dynamic labels don't have a structured parent/child hierarchy.
+  if (dynamicMap.size > 0) {
+    const hr = document.createElement('hr');
+    hr.style.cssText = 'margin: 0.5em 0; opacity: 0.3;';
+    container.appendChild(hr);
+
+    const dynHdr = document.createElement('p');
+    dynHdr.className = 'panel-section-label';
+    dynHdr.style.cssText = 'margin: 0.3em 0 0.2em; font-style: italic; color: var(--pico-muted-color);';
+    dynHdr.textContent = 'Dynamic Labels';
+    container.appendChild(dynHdr);
+
+    for (const label of dynamicMap.values()) {
+      const { row, nameEl } = buildLabelRow(label, 0, { padding: '3px 6px' });
+
+      const cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.checked = selected.has(label.uuid);
+      cb.style.cssText = 'margin: 0; flex-shrink: 0;';
+
+      nameEl.style.cursor = 'pointer';
+      nameEl.style.whiteSpace = 'nowrap';
+      nameEl.addEventListener('click', () => {
+        cb.checked = !cb.checked;
+        cb.dispatchEvent(new Event('change'));
+      });
+
+      row.prepend(cb);
+
+      cb.addEventListener('change', () => {
+        if (cb.checked) {
+          selected.add(label.uuid);
+        } else {
+          selected.delete(label.uuid);
+        }
+      });
+
+      container.appendChild(row);
+    }
+  }
 
   return {
     getSelected: () => new Set(selected),
