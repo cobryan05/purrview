@@ -975,6 +975,11 @@
               }
             ],
             "title": "Configuuids"
+          },
+          "excludeTemporary": {
+            "type": "boolean",
+            "title": "Excludetemporary",
+            "default": false
           }
         },
         "type": "object",

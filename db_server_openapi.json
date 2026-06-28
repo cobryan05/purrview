@@ -4078,6 +4078,48 @@
         }
       }
     },
+    "/api/training-configs/{uuid}/detection-dataset": {
+      "get": {
+        "tags": [
+          "training_configs"
+        ],
+        "summary": "Get Training Config Detection Dataset",
+        "operationId": "get_training_config_detection_dataset",
+        "parameters": [
+          {
+            "name": "uuid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DetectionDatasetResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/training-configs/{uuid}/label-stats": {
       "get": {
         "tags": [
@@ -5170,9 +5212,15 @@
             "title": "Description"
           },
           "isTemporary": {
-            "type": "boolean",
-            "title": "Istemporary",
-            "default": false
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Istemporary"
           }
         },
         "type": "object",
@@ -5810,6 +5858,70 @@
           "taskUuids"
         ],
         "title": "DeleteTaskInstancesPayload"
+      },
+      "DetectionDatasetResponse": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "title": "Status",
+            "default": "success"
+          },
+          "message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Message"
+          },
+          "classNames": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Classnames"
+          },
+          "images": {
+            "items": {
+              "$ref": "#/components/schemas/DetectionImageEntry"
+            },
+            "type": "array",
+            "title": "Images"
+          }
+        },
+        "type": "object",
+        "title": "DetectionDatasetResponse"
+      },
+      "DetectionImageEntry": {
+        "properties": {
+          "imageUuid": {
+            "type": "string",
+            "title": "Imageuuid"
+          },
+          "filename": {
+            "type": "string",
+            "title": "Filename"
+          },
+          "annotations": {
+            "items": {
+              "items": {
+                "type": "number"
+              },
+              "type": "array"
+            },
+            "type": "array",
+            "title": "Annotations"
+          }
+        },
+        "type": "object",
+        "required": [
+          "imageUuid",
+          "filename"
+        ],
+        "title": "DetectionImageEntry"
       },
       "DissimilarBboxMatch": {
         "properties": {
