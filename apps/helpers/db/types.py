@@ -695,16 +695,10 @@ class DatasetUpdate(ApiModel):
 
 MODEL_TYPE_ARCHITECTURES: Dict[str, List[str]] = {
     "object_detection": [
-        "yolo_v8_n",
-        "yolo_v8_s",
-        "yolo_v8_m",
-        "yolo_v8_l",
-        "yolo_v8_x",
+        "yolo_v9_t",
+        "yolo_v9_s",
+        "yolo_v9_m",
         "yolo_v9_c",
-        "yolo_v9_e",
-        "yolo_v10_n",
-        "yolo_v10_s",
-        "yolo_v10_m",
     ],
     "crop_classifier": [
         "efficientnet_b0",

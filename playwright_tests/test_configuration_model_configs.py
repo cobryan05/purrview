@@ -35,7 +35,7 @@ EXISTING_CONFIG = {
     "name": "Animal Detector",
     "description": "Cats & dogs",
     "nodes": [
-        {"uuid": "node-root", "labelUuid": None,      "modelType": "object_detection", "architecture": "yolo_v8_n"},
+        {"uuid": "node-root", "labelUuid": None,      "modelType": "object_detection", "architecture": "yolo_v9_c"},
         {"uuid": "node-cat",  "labelUuid": "lbl-cat", "modelType": "crop_classifier",  "architecture": "efficientnet_b0"},
     ],
 }
@@ -248,7 +248,7 @@ class TestEditModelConfig:
 
         # Root model selects: type (idx 0) and architecture (idx 1)
         expect(page.locator("#model-config-box select").first).to_have_value("object_detection")
-        expect(page.locator("#model-config-box select").nth(1)).to_have_value("yolo_v8_n")
+        expect(page.locator("#model-config-box select").nth(1)).to_have_value("yolo_v9_c")
 
         # Cat is selected and has its sub-model toggle checked
         cat_row = _label_row(page, "lbl-cat")

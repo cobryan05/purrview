@@ -41,16 +41,10 @@ const MODEL_SPEC = {
   object_detection: {
     label: 'Object Detection',
     architectures: {
-      yolo_v8_n: 'YOLOv8-n',
-      yolo_v8_s: 'YOLOv8-s',
-      yolo_v8_m: 'YOLOv8-m',
-      yolo_v8_l: 'YOLOv8-l',
-      yolo_v8_x: 'YOLOv8-x',
-      yolo_v9_c: 'YOLOv9-c',
-      yolo_v9_e: 'YOLOv9-e',
-      yolo_v10_n: 'YOLOv10-n',
-      yolo_v10_s: 'YOLOv10-s',
-      yolo_v10_m: 'YOLOv10-m',
+      yolo_v9_t: 'YOLOv9-t  (~2M params, ~8 MB)',
+      yolo_v9_s: 'YOLOv9-s  (~7M params, ~26 MB)',
+      yolo_v9_m: 'YOLOv9-m  (~20M params, ~76 MB)',
+      yolo_v9_c: 'YOLOv9-c  (~25M params, ~102 MB)',
     },
   },
   crop_classifier: {

@@ -40,7 +40,7 @@ async def _create_config(
 _VALID_NODE = {
     "label_uuid": None,
     "model_type": "object_detection",
-    "architecture": "yolo_v8_n",
+    "architecture": "yolo_v9_c",
 }
 
 
@@ -119,7 +119,7 @@ async def test_update_nodes_wholesale(http_client):
             {
                 "label_uuid": None,
                 "model_type": "object_detection",
-                "architecture": "yolo_v8_n",
+                "architecture": "yolo_v9_c",
             }
         ],
     )
@@ -157,7 +157,7 @@ async def test_update_nodes_clear(http_client):
             {
                 "label_uuid": None,
                 "model_type": "object_detection",
-                "architecture": "yolo_v8_n",
+                "architecture": "yolo_v9_c",
             }
         ],
     )
@@ -193,7 +193,7 @@ async def test_nodes_cascade_on_delete(http_client):
             {
                 "label_uuid": None,
                 "model_type": "object_detection",
-                "architecture": "yolo_v8_n",
+                "architecture": "yolo_v9_c",
             },
             {
                 "label_uuid": label_uuid,
@@ -223,7 +223,7 @@ async def test_label_delete_cascades_node(http_client):
             {
                 "label_uuid": None,
                 "model_type": "object_detection",
-                "architecture": "yolo_v8_n",
+                "architecture": "yolo_v9_c",
             },
             {
                 "label_uuid": label_uuid,
@@ -257,7 +257,7 @@ async def test_invalid_model_type_rejected(http_client):
                 {
                     "label_uuid": None,
                     "model_type": "nonexistent_type",
-                    "architecture": "yolo_v8_n",
+                    "architecture": "yolo_v9_c",
                 }
             ],
         },
@@ -299,7 +299,7 @@ async def test_duplicate_label_uuid_rejected(http_client):
                 {
                     "label_uuid": label_uuid,
                     "model_type": "object_detection",
-                    "architecture": "yolo_v8_n",
+                    "architecture": "yolo_v9_c",
                 },
                 {
                     "label_uuid": label_uuid,
@@ -323,11 +323,11 @@ async def test_root_node_label_uuid_none(http_client):
             {
                 "label_uuid": None,
                 "model_type": "object_detection",
-                "architecture": "yolo_v8_n",
+                "architecture": "yolo_v9_c",
             }
         ],
     )
     assert len(cfg["nodes"]) == 1
     assert cfg["nodes"][0]["labelUuid"] is None
     assert cfg["nodes"][0]["modelType"] == "object_detection"
-    assert cfg["nodes"][0]["architecture"] == "yolo_v8_n"
+    assert cfg["nodes"][0]["architecture"] == "yolo_v9_c"

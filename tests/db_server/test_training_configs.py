@@ -510,7 +510,7 @@ class TestTrainingConfigReadiness:
                 {
                     "label_uuid": None,
                     "model_type": "object_detection",
-                    "architecture": "yolo_v8_n",
+                    "architecture": "yolo_v9_c",
                 },
                 {
                     "label_uuid": label_a,
@@ -554,7 +554,7 @@ class TestRollupLabelDerivation:
             http_client,
             "mc-nested-rollup",
             nodes=[
-                {"label_uuid": None, "model_type": "object_detection", "architecture": "yolo_v8_n"},
+                {"label_uuid": None, "model_type": "object_detection", "architecture": "yolo_v9_c"},
                 {
                     "label_uuid": label_a,
                     "model_type": "image_classifier",
@@ -688,7 +688,7 @@ class TestTrainingConfigLabelStats:
                         {
                             "label_uuid": label_uuid,
                             "model_type": "object_detection",
-                            "architecture": "yolo_v8_n",
+                            "architecture": "yolo_v9_c",
                         }
                     ],
                 },
@@ -740,12 +740,12 @@ class TestTrainingConfigLabelStats:
                         {
                             "label_uuid": None,
                             "model_type": "object_detection",
-                            "architecture": "yolo_v8_n",
+                            "architecture": "yolo_v9_c",
                         },
                         {
                             "label_uuid": label_uuid,
                             "model_type": "object_detection",
-                            "architecture": "yolo_v8_n",
+                            "architecture": "yolo_v9_c",
                         },
                     ],
                 },
@@ -805,7 +805,7 @@ class TestTrainingConfigLabelStats:
                         {
                             "label_uuid": label_uuid,
                             "model_type": "object_detection",
-                            "architecture": "yolo_v8_n",
+                            "architecture": "yolo_v9_c",
                         }
                     ],
                 },
@@ -910,7 +910,7 @@ class TestImagesByLabelStatusBboxFilters:
             "/api/model-configs",
             json={
                 "name": f"mc-{tc_name}",
-                "nodes": [{"label_uuid": label_uuid, "model_type": "object_detection", "architecture": "yolo_v8_n"}],
+                "nodes": [{"label_uuid": label_uuid, "model_type": "object_detection", "architecture": "yolo_v9_c"}],
             },
         )).json()["config"]
         node_uuid = mc["nodes"][0]["uuid"]
@@ -927,9 +927,9 @@ class TestImagesByLabelStatusBboxFilters:
             json={
                 "name": f"mc-{tc_name}",
                 "nodes": [
-                    {"label_uuid": None, "model_type": "object_detection", "architecture": "yolo_v8_n"},
-                    {"label_uuid": label_a, "model_type": "object_detection", "architecture": "yolo_v8_n"},
-                    {"label_uuid": label_b, "model_type": "object_detection", "architecture": "yolo_v8_n"},
+                    {"label_uuid": None, "model_type": "object_detection", "architecture": "yolo_v9_c"},
+                    {"label_uuid": label_a, "model_type": "object_detection", "architecture": "yolo_v9_c"},
+                    {"label_uuid": label_b, "model_type": "object_detection", "architecture": "yolo_v9_c"},
                 ],
             },
         )).json()["config"]

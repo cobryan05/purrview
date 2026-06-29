@@ -32,7 +32,7 @@ MODEL_CFG_NODE = {
     "uuid": "node-root",
     "labelUuid": None,
     "modelType": "object_detection",
-    "architecture": "yolo_v8_n",
+    "architecture": "yolo_v9_c",
 }
 MODEL_CFG = {"uuid": "mc-1", "name": "My Model", "description": "", "nodes": [MODEL_CFG_NODE]}
 
