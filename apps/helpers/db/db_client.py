@@ -3376,6 +3376,103 @@ class DbClient:
                     )
                     verified = set(result.all())
                     matching = set(all_image_uuids) - verified
+                elif status == "has_verified_bbox":
+                    # Images with at least one verified bbox for any of the effective labels.
+                    result = await session.exec(
+                        select(BBox.image_uuid).distinct().where(
+                            BBox.image_uuid.in_(all_image_uuids),
+                            BBox.label_uuid.in_(effective_label_uuids),
+                            BBox.uuid.in_(
+                                select(BBoxTagLink.bbox_uuid).where(
+                                    BBoxTagLink.tag_uuid == VERIFIED_TAG_UUID
+                                )
+                            ),
+                        )
+                    )
+                    matching = set(result.all())
+                elif status in ("co_labels_covered", "co_label_gaps"):
+                    # Derive all labels in the training config to build the co-label picture.
+                    node_label_uuids, co_rollup_map = await self._derive_labels_for_node(
+                        tc.model_config_node_uuid
+                    )
+                    if not node_label_uuids:
+                        matching = set()
+                    else:
+                        co_labels_map = await self.get_labels_by_uuids(node_label_uuids)
+
+                        # Build rollup-aware lookup structures.
+                        child_to_parent_co: dict[str, str] = {}
+                        for _parent, _children in co_rollup_map.items():
+                            for _child in _children:
+                                child_to_parent_co[_child] = _parent
+                        all_rollup_children_co = set(child_to_parent_co.keys())
+                        top_level_uuids_co = [
+                            u for u in node_label_uuids
+                            if u not in all_rollup_children_co and u in co_labels_map
+                        ]
+                        effective_for_tl_co: dict[str, list[str]] = {
+                            tl: [tl] + co_rollup_map.get(tl, [])
+                            for tl in top_level_uuids_co
+                        }
+
+                        # Base: images with ≥1 verified bbox for the focus label (effective set).
+                        focus_eff = effective_for_tl_co.get(label_uuid, effective_label_uuids)
+                        result = await session.exec(
+                            select(BBox.image_uuid).distinct().where(
+                                BBox.image_uuid.in_(all_image_uuids),
+                                BBox.label_uuid.in_(focus_eff),
+                                BBox.uuid.in_(
+                                    select(BBoxTagLink.bbox_uuid).where(
+                                        BBoxTagLink.tag_uuid == VERIFIED_TAG_UUID
+                                    )
+                                ),
+                            )
+                        )
+                        base = set(result.all())
+
+                        # Intersect with accounted_for for each other top-level label.
+                        focus_tl_ancestor = child_to_parent_co.get(label_uuid, label_uuid)
+                        other_tls_co = [tl for tl in top_level_uuids_co if tl != focus_tl_ancestor]
+
+                        co_covered = set(base)
+                        for tl_uuid in other_tls_co:
+                            eff = effective_for_tl_co[tl_uuid]
+                            tl_label = co_labels_map.get(tl_uuid)
+                            if tl_label is None:
+                                continue
+                            if tl_label.scope == LabelScope.OBJECT:
+                                result_v = await session.exec(
+                                    select(BBox.image_uuid).distinct().where(
+                                        BBox.image_uuid.in_(all_image_uuids),
+                                        BBox.label_uuid.in_(eff),
+                                        BBox.uuid.in_(
+                                            select(BBoxTagLink.bbox_uuid).where(
+                                                BBoxTagLink.tag_uuid == VERIFIED_TAG_UUID
+                                            )
+                                        ),
+                                    )
+                                )
+                                result_a = await session.exec(
+                                    select(ImageLabel.image_uuid).where(
+                                        ImageLabel.image_uuid.in_(all_image_uuids),
+                                        ImageLabel.label_uuid.in_(eff),
+                                        ImageLabel.status == ImageItemStatus.ABSENT,
+                                    )
+                                )
+                                co_covered &= set(result_v.all()) | set(result_a.all())
+                            else:
+                                result = await session.exec(
+                                    select(ImageLabel.image_uuid).where(
+                                        ImageLabel.image_uuid.in_(all_image_uuids),
+                                        ImageLabel.label_uuid.in_(eff),
+                                        ImageLabel.status.in_(
+                                            [ImageItemStatus.PRESENT, ImageItemStatus.ABSENT]
+                                        ),
+                                    )
+                                )
+                                co_covered &= set(result.all())
+
+                        matching = co_covered if status == "co_labels_covered" else base - co_covered
                 else:
                     target = ImageItemStatus.PRESENT if status == "present" else ImageItemStatus.ABSENT
                     result = await session.exec(
@@ -3610,8 +3707,8 @@ class DbClient:
                 "absent_image_count": 0,
                 "verified_bbox_count": 0,
                 "unverified_bbox_count": 0,
-                "fully_verified_image_count": 0,
-                "images_missing_verification_count": 0,
+                "co_labels_covered_count": 0,
+                "co_label_gaps_count": 0,
             }
 
         if not all_image_uuids:
@@ -3690,49 +3787,6 @@ class DbClient:
                     if lbl_uuid in label_stats:
                         label_stats[lbl_uuid]["unverified_bbox_count"] = cnt
 
-                # Images with at least one unverified bbox per label (distinct images).
-                imgs_missing_inner = (
-                    select(BBox.label_uuid, BBox.image_uuid)
-                    .join(BBoxTagLink, BBox.uuid == BBoxTagLink.bbox_uuid)
-                    .where(
-                        BBox.image_uuid.in_(all_image_uuids),
-                        BBox.label_uuid.in_(object_label_uuids),
-                        BBoxTagLink.tag_uuid == UNVERIFIED_TAG_UUID,
-                    )
-                    .distinct()
-                    .subquery()
-                )
-                result = await session.exec(
-                    select(imgs_missing_inner.c.label_uuid, func.count().label("cnt")).group_by(
-                        imgs_missing_inner.c.label_uuid
-                    )
-                )
-                imgs_missing_by_label: dict[str, int] = {}
-                for lbl_uuid, cnt in result.all():
-                    imgs_missing_by_label[lbl_uuid] = cnt
-                    if lbl_uuid in label_stats:
-                        label_stats[lbl_uuid]["images_missing_verification_count"] = cnt
-
-                # Images with any bbox for this label (to derive fully_verified count).
-                imgs_with_bbox_inner = (
-                    select(BBox.label_uuid, BBox.image_uuid)
-                    .where(
-                        BBox.image_uuid.in_(all_image_uuids),
-                        BBox.label_uuid.in_(object_label_uuids),
-                    )
-                    .distinct()
-                    .subquery()
-                )
-                result = await session.exec(
-                    select(imgs_with_bbox_inner.c.label_uuid, func.count().label("cnt")).group_by(
-                        imgs_with_bbox_inner.c.label_uuid
-                    )
-                )
-                for lbl_uuid, cnt in result.all():
-                    if lbl_uuid in label_stats:
-                        missing = imgs_missing_by_label.get(lbl_uuid, 0)
-                        label_stats[lbl_uuid]["fully_verified_image_count"] = cnt - missing
-
         # ── Rollup aggregation ──────────────────────────────────────────────────
         # For each rollup parent, aggregate its children's stats into the parent row
         # and mark every entry with rollup metadata.
@@ -3780,39 +3834,98 @@ class DbClient:
                             label_stats.get(u, {}).get("unverified_bbox_count", 0) for u in all_rollup_uuids
                         )
 
-                        # Image-level counts require distinct queries across all child labels.
-                        imgs_missing_sub = (
-                            select(BBox.image_uuid)
-                            .join(BBoxTagLink, BBox.uuid == BBoxTagLink.bbox_uuid)
-                            .where(
-                                BBox.image_uuid.in_(all_image_uuids),
-                                BBox.label_uuid.in_(all_rollup_uuids),
-                                BBoxTagLink.tag_uuid == UNVERIFIED_TAG_UUID,
-                            )
-                            .distinct()
-                            .subquery()
-                        )
-                        r = await session.exec(select(func.count()).select_from(imgs_missing_sub))
-                        imgs_missing = r.one() or 0
-                        parent_stat["images_missing_verification_count"] = imgs_missing
-
-                        imgs_with_bbox_sub = (
-                            select(BBox.image_uuid)
-                            .where(
-                                BBox.image_uuid.in_(all_image_uuids),
-                                BBox.label_uuid.in_(all_rollup_uuids),
-                            )
-                            .distinct()
-                            .subquery()
-                        )
-                        r = await session.exec(select(func.count()).select_from(imgs_with_bbox_sub))
-                        imgs_with_bbox = r.one() or 0
-                        parent_stat["fully_verified_image_count"] = max(imgs_with_bbox - imgs_missing, 0)
-
                     parent_stat["has_rollup"] = True
                     for child_uuid in child_uuids:
                         if child_uuid in label_stats:
                             label_stats[child_uuid]["roll_up_parent_uuid"] = rollup_parent_uuid
+
+        # ── Co-label coverage (object-scope labels) ─────────────────────────────
+        # For each object label L, compute:
+        #   base           = images with ≥1 verified bbox for L
+        #   co_covered     = base ∩ ⋂{ accounted_for[M] : M is another top-level label }
+        #   co_label_gaps  = base − co_covered
+        #
+        # "accounted for" a top-level label M:
+        #   object-scope: has verified bbox OR explicit absent ImageLabel (for M or its rollup children)
+        #   image-scope:  has any explicit PRESENT or ABSENT ImageLabel (for M or its rollup children)
+        if object_label_uuids and all_image_uuids:
+            # Determine rollup hierarchy so we can group children under their parent.
+            child_to_parent: dict[str, str] = {}
+            for _parent, _children in rollup_map.items():
+                for _child in _children:
+                    child_to_parent[_child] = _parent
+            all_rollup_children_set = set(child_to_parent.keys())
+            top_level_uuids = [u for u in relevant_label_uuids if u not in all_rollup_children_set and u in labels_map]
+
+            # Effective UUIDs per top-level label: self + all rollup children (if any).
+            effective_for_tl: dict[str, list[str]] = {
+                tl: [tl] + rollup_map.get(tl, [])
+                for tl in top_level_uuids
+            }
+
+            async with self._async_session_maker() as session:
+                # Verified bbox image sets for every object label.
+                # Rollup parents use their full effective set; children and standalone use just themselves.
+                obj_verified_imgs: dict[str, set[str]] = {}
+                for lbl_uuid in object_label_uuids:
+                    eff = effective_for_tl.get(lbl_uuid, [lbl_uuid])
+                    result = await session.exec(
+                        select(BBox.image_uuid).distinct().where(
+                            BBox.image_uuid.in_(all_image_uuids),
+                            BBox.label_uuid.in_(eff),
+                            BBox.uuid.in_(
+                                select(BBoxTagLink.bbox_uuid).where(
+                                    BBoxTagLink.tag_uuid == VERIFIED_TAG_UUID
+                                )
+                            ),
+                        )
+                    )
+                    obj_verified_imgs[lbl_uuid] = set(result.all())
+
+                # "Accounted for" image sets per top-level label.
+                accounted_for_tl: dict[str, set[str]] = {}
+                for tl_uuid in top_level_uuids:
+                    eff = effective_for_tl[tl_uuid]
+                    tl_label = labels_map.get(tl_uuid)
+                    if tl_label is None:
+                        accounted_for_tl[tl_uuid] = set()
+                        continue
+                    if tl_label.scope == LabelScope.OBJECT:
+                        v_set = obj_verified_imgs.get(tl_uuid, set())
+                        result = await session.exec(
+                            select(ImageLabel.image_uuid).where(
+                                ImageLabel.image_uuid.in_(all_image_uuids),
+                                ImageLabel.label_uuid.in_(eff),
+                                ImageLabel.status == ImageItemStatus.ABSENT,
+                            )
+                        )
+                        accounted_for_tl[tl_uuid] = v_set | set(result.all())
+                    else:
+                        # Image-scope: any explicit PRESENT or ABSENT counts.
+                        result = await session.exec(
+                            select(ImageLabel.image_uuid).where(
+                                ImageLabel.image_uuid.in_(all_image_uuids),
+                                ImageLabel.label_uuid.in_(eff),
+                                ImageLabel.status.in_([ImageItemStatus.PRESENT, ImageItemStatus.ABSENT]),
+                            )
+                        )
+                        accounted_for_tl[tl_uuid] = set(result.all())
+
+                # Compute co-label stats for each object label.
+                for lbl_uuid in object_label_uuids:
+                    if lbl_uuid not in label_stats:
+                        continue
+                    base = obj_verified_imgs.get(lbl_uuid, set())
+                    # Exclude this label's top-level ancestor from the co-label check.
+                    tl_ancestor = child_to_parent.get(lbl_uuid, lbl_uuid)
+                    other_tls = [tl for tl in top_level_uuids if tl != tl_ancestor]
+
+                    co_covered = set(base)
+                    for tl in other_tls:
+                        co_covered &= accounted_for_tl.get(tl, set())
+
+                    label_stats[lbl_uuid]["co_labels_covered_count"] = len(co_covered)
+                    label_stats[lbl_uuid]["co_label_gaps_count"] = len(base) - len(co_covered)
 
         return {"label_stats": list(label_stats.values()), "total_images": total_images}
 

@@ -17,6 +17,7 @@ Run with:
 """
 
 import json
+import re
 
 import pytest
 from playwright.sync_api import Page, Route, expect
@@ -417,3 +418,166 @@ class TestReadinessPanel:
 
         page.wait_for_timeout(400)
         assert len(captured_needs_review_requests) >= 1, "needs-review-images endpoint was not called"
+
+
+# ---------------------------------------------------------------------------
+# 4. Label stats panel — clickable bbox columns
+# ---------------------------------------------------------------------------
+
+OBJECT_LABEL = {"uuid": "lbl-obj", "name": "Cat", "color": "#ff0000", "scope": "object", "parentUuid": None}
+
+LABEL_STATS_WITH_OBJECT = {
+    "labelStats": [
+        {
+            "labelUuid": "lbl-obj",
+            "labelScope": "object",
+            "verifiedBboxCount": 5,
+            "unverifiedBboxCount": 2,
+            "coLabelsCoveredCount": 3,
+            "coLabelGapsCount": 1,
+            "hasRollup": False,
+            "rollUpParentUuid": None,
+        }
+    ],
+    "totalImages": 8,
+}
+
+
+def _mock_labels(page: Page, labels: list | None = None):
+    page.route(
+        "**/api/labels",
+        lambda route: route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps({"status": "success", "labels": labels or []}),
+        ),
+    )
+
+
+def _mock_label_stats_object(page: Page, config_uuid: str, stats: dict | None = None):
+    page.route(
+        f"**/api/training-configs/{config_uuid}/label-stats",
+        lambda route: route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps({"status": "success", **(stats or LABEL_STATS_WITH_OBJECT)}),
+        ),
+    )
+
+
+def _mock_images_by_label_status(page: Page, config_uuid: str, captured: list):
+    def handler(route: Route):
+        try:
+            captured.append(json.loads(route.request.post_data or "{}"))
+        except Exception:
+            captured.append({})
+        route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps({"status": "success", "images": [], "hasMore": False, "totalCount": 0}),
+        )
+    page.route(f"**/api/training-configs/{config_uuid}/images-by-label-status", handler)
+
+
+class TestLabelStatsPanelBboxColumns:
+    """Clicking the Verified boxes and Imgs all clear columns opens the right modal
+    and calls the right endpoint with the correct status value."""
+
+    def _setup(self, page: Page, base_url: str, captured: list):
+        _mock_datasets(page, [DATASET_ALPHA])
+        _mock_model_configs(page, [MODEL_CFG])
+        _mock_training_configs_list(page, [EXISTING_TC])
+        _mock_training_config_get(page, EXISTING_TC)
+        _mock_readiness(page, "tc-1", ready=3, needs_review=0)
+        _mock_label_stats_object(page, "tc-1")
+        _mock_labels(page, [OBJECT_LABEL])
+        _mock_images_by_label_status(page, "tc-1", captured)
+        _navigate_to_training_configs(page, base_url)
+        _list_item(page, "tc-1").click()
+        # Wait for the label stats table to appear
+        page.wait_for_selector("text=Dataset coverage by label", timeout=5000)
+        page.wait_for_selector("text=Verified boxes", timeout=3000)
+
+    def test_verified_boxes_click_calls_has_verified_bbox_status(self, page: Page, base_url: str):
+        """Clicking the Verified boxes count calls images-by-label-status with status=has_verified_bbox."""
+        captured = []
+        self._setup(page, base_url, captured)
+
+        # Find the Verified boxes cell (non-zero count) and click it
+        verified_cell = page.locator("td", has_text="5").first
+        with page.expect_request(
+            lambda r: "images-by-label-status" in r.url and r.method == "POST",
+            timeout=6000,
+        ):
+            verified_cell.click()
+
+        page.wait_for_timeout(400)
+        assert len(captured) >= 1, "images-by-label-status was not called"
+        assert captured[0].get("status") == "has_verified_bbox", \
+            f"Expected status=has_verified_bbox, got: {captured[0].get('status')}"
+        assert captured[0].get("labelUuid") == "lbl-obj"
+
+    def test_verified_boxes_click_opens_bbox_view_modal(self, page: Page, base_url: str):
+        """The modal opened by Verified boxes click starts in Bboxes view (active view-btn)."""
+        captured = []
+        self._setup(page, base_url, captured)
+
+        verified_cell = page.locator("td", has_text="5").first
+        with page.expect_request(
+            lambda r: "images-by-label-status" in r.url and r.method == "POST",
+            timeout=6000,
+        ):
+            verified_cell.click()
+
+        # Modal title should be visible
+        modal_title = page.locator("strong", has_text="verified boxes")
+        expect(modal_title).to_be_visible(timeout=4000)
+
+        # The Bboxes view button should be active
+        bbox_btn = page.locator(".view-btn", has_text="Bboxes")
+        expect(bbox_btn).to_have_class(re.compile(r"\bactive\b"), timeout=3000)
+
+        # Close modal
+        page.locator("button[title='Close']").click()
+
+    def test_imgs_all_clear_click_calls_co_labels_covered_status(self, page: Page, base_url: str):
+        """Clicking the Imgs all clear count calls images-by-label-status with status=co_labels_covered."""
+        captured = []
+        self._setup(page, base_url, captured)
+
+        # Find the Imgs all clear cell (count=3) and click it
+        clear_cell = page.locator("td", has_text="3").first
+        with page.expect_request(
+            lambda r: "images-by-label-status" in r.url and r.method == "POST",
+            timeout=6000,
+        ):
+            clear_cell.click()
+
+        page.wait_for_timeout(400)
+        assert len(captured) >= 1, "images-by-label-status was not called"
+        assert captured[0].get("status") == "co_labels_covered", \
+            f"Expected status=co_labels_covered, got: {captured[0].get('status')}"
+        assert captured[0].get("labelUuid") == "lbl-obj"
+
+    def test_imgs_all_clear_click_opens_image_view_modal(self, page: Page, base_url: str):
+        """The modal opened by Imgs all clear click starts in Images view (default)."""
+        captured = []
+        self._setup(page, base_url, captured)
+
+        clear_cell = page.locator("td", has_text="3").first
+        with page.expect_request(
+            lambda r: "images-by-label-status" in r.url and r.method == "POST",
+            timeout=6000,
+        ):
+            clear_cell.click()
+
+        # Modal title should be visible
+        modal_title = page.locator("strong", has_text="imgs all clear")
+        expect(modal_title).to_be_visible(timeout=4000)
+
+        # The Images view button should be active (default)
+        images_btn = page.locator(".view-btn", has_text="Images")
+        expect(images_btn).to_have_class(re.compile(r"\bactive\b"), timeout=3000)
+
+        # Close modal
+        page.locator("button[title='Close']").click()

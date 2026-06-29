@@ -7330,7 +7330,10 @@
                   "present",
                   "absent",
                   "uncertain",
-                  "all"
+                  "all",
+                  "has_verified_bbox",
+                  "co_labels_covered",
+                  "co_label_gaps"
                 ]
               },
               {
@@ -7504,14 +7507,14 @@
             "title": "Unverifiedbboxcount",
             "default": 0
           },
-          "fullyVerifiedImageCount": {
+          "coLabelsCoveredCount": {
             "type": "integer",
-            "title": "Fullyverifiedimagecount",
+            "title": "Colabelscoveredcount",
             "default": 0
           },
-          "imagesMissingVerificationCount": {
+          "coLabelGapsCount": {
             "type": "integer",
-            "title": "Imagesmissingverificationcount",
+            "title": "Colabelgapscount",
             "default": 0
           },
           "hasRollup": {

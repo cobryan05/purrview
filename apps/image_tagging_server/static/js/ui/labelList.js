@@ -452,7 +452,7 @@ async function mountSelectMode(container, { runtime, filter }) {
         }
         const unverifiedCount = isImage
           ? (stat.unverifiedImageCount ?? 0)
-          : (stat.imagesMissingVerificationCount ?? 0);
+          : (stat.coLabelGapsCount ?? 0);
 
         // Badge factory — clickable when count > 0
         function _mkBadge(text, color, title, onClickFn) {

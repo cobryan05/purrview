@@ -706,8 +706,10 @@ class TestTrainingConfigLabelStats:
         assert stat["labelScope"] == "object"
         assert stat["verifiedBboxCount"] == 2
         assert stat["unverifiedBboxCount"] == 1
-        assert stat["imagesMissingVerificationCount"] == 1
-        assert stat["fullyVerifiedImageCount"] == 1
+        # With only one label in the config there are no co-labels to check, so every
+        # image with ≥1 verified bbox is "all clear" and gaps is 0.
+        assert stat["coLabelsCoveredCount"] == 2
+        assert stat["coLabelGapsCount"] == 0
 
     async def test_root_node_derives_labels_from_config(self, http_client, files_root):
         """Label stats with a root-node uses all non-root nodes' labels in the config."""
@@ -877,3 +879,202 @@ class TestTrainingConfigLabelStats:
         assert stat["absentImageCount"] == 1
         assert stat["verifiedImageCount"] == 3
         assert stat["unverifiedImageCount"] == 1
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# images-by-label-status — bbox status filters
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def _images_by_label_status(http_client, config_uuid: str, label_uuid: str, status: str, **overrides) -> dict:
+    payload = {"labelUuid": label_uuid, "status": status, "limit": 50}
+    payload.update(overrides)
+    r = await http_client.post(
+        f"/api/training-configs/{config_uuid}/images-by-label-status",
+        json=payload,
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["status"] == "success", body
+    return body
+
+
+class TestImagesByLabelStatusBboxFilters:
+    """Tests for has_verified_bbox, co_labels_covered, and co_label_gaps status values
+    on the images-by-label-status endpoint."""
+
+    async def _setup(self, http_client, files_root, tc_name: str, label_name: str):
+        """Create a dataset, label, model config node, and training config. Return (cfg, label_uuid)."""
+        label_uuid = await _create_label(http_client, label_name)
+        ds = (await http_client.post("/api/datasets", json={"name": f"ds-{tc_name}", "filter_json": {}})).json()["dataset"]
+        mc = (await http_client.post(
+            "/api/model-configs",
+            json={
+                "name": f"mc-{tc_name}",
+                "nodes": [{"label_uuid": label_uuid, "model_type": "object_detection", "architecture": "yolo_v8_n"}],
+            },
+        )).json()["config"]
+        node_uuid = mc["nodes"][0]["uuid"]
+        cfg = await _create_training_config(http_client, tc_name, [ds["uuid"]], model_config_node_uuid=node_uuid)
+        return cfg, label_uuid
+
+    async def _setup_two_labels(self, http_client, tc_name: str, label_a_name: str, label_b_name: str):
+        """Create a 2-label model config (root node + 2 leaf nodes) and training config."""
+        label_a = await _create_label(http_client, label_a_name)
+        label_b = await _create_label(http_client, label_b_name)
+        ds = (await http_client.post("/api/datasets", json={"name": f"ds-{tc_name}", "filter_json": {}})).json()["dataset"]
+        mc = (await http_client.post(
+            "/api/model-configs",
+            json={
+                "name": f"mc-{tc_name}",
+                "nodes": [
+                    {"label_uuid": None, "model_type": "object_detection", "architecture": "yolo_v8_n"},
+                    {"label_uuid": label_a, "model_type": "object_detection", "architecture": "yolo_v8_n"},
+                    {"label_uuid": label_b, "model_type": "object_detection", "architecture": "yolo_v8_n"},
+                ],
+            },
+        )).json()["config"]
+        root_node = next(n for n in mc["nodes"] if n["labelUuid"] is None)
+        cfg = await _create_training_config(http_client, tc_name, [ds["uuid"]], model_config_node_uuid=root_node["uuid"])
+        return cfg, label_a, label_b
+
+    async def test_has_verified_bbox_returns_images_with_verified_bbox(self, http_client, files_root):
+        """has_verified_bbox: only images with at least one VERIFIED bbox are returned."""
+        cfg, label_uuid = await self._setup(http_client, files_root, "hvb-basic", "hvb-label")
+
+        img_verified = await _register_image(http_client, files_root, "hvb_verified.png")
+        img_unverified = await _register_image(http_client, files_root, "hvb_unverified.png")
+        img_no_bbox = await _register_image(http_client, files_root, "hvb_no_bbox.png")
+
+        await _create_bbox(http_client, img_verified, label_uuid, [VERIFIED_TAG_UUID])
+        await _create_bbox(http_client, img_unverified, label_uuid, [UNVERIFIED_TAG_UUID])
+        # img_no_bbox has no bboxes at all
+
+        body = await _images_by_label_status(http_client, cfg["uuid"], label_uuid, "has_verified_bbox")
+        filenames = [img["filename"] for img in body["images"]]
+
+        assert any("hvb_verified" in f for f in filenames), f"verified-bbox image missing: {filenames}"
+        assert not any("hvb_unverified" in f for f in filenames), f"unverified-bbox image should not appear: {filenames}"
+        assert not any("hvb_no_bbox" in f for f in filenames), f"no-bbox image should not appear: {filenames}"
+
+    async def test_has_verified_bbox_label_scoped(self, http_client, files_root):
+        """has_verified_bbox is scoped to the requested label — a verified bbox for a different
+        label does not cause the image to appear."""
+        cfg, label_uuid = await self._setup(http_client, files_root, "hvb-scope", "hvb-scope-label")
+        other_label_uuid = await _create_label(http_client, "hvb-other-label")
+
+        img = await _register_image(http_client, files_root, "hvb_scope_img.png")
+        # Verified bbox for the OTHER label only
+        await _create_bbox(http_client, img, other_label_uuid, [VERIFIED_TAG_UUID])
+
+        body = await _images_by_label_status(http_client, cfg["uuid"], label_uuid, "has_verified_bbox")
+        assert body["images"] == [], f"image with wrong-label verified bbox should not appear: {body['images']}"
+
+    async def test_co_labels_covered_requires_all_other_labels_accounted_for(self, http_client, files_root):
+        """co_labels_covered: images where the focus label has a verified bbox and every other
+        model-config label is accounted for (verified bbox or explicit absent image label)."""
+        cfg, label_a, label_b = await self._setup_two_labels(
+            http_client, "clc-basic", "clc-label-a", "clc-label-b"
+        )
+
+        img_both = await _register_image(http_client, files_root, "clc_both.png")
+        img_b_absent = await _register_image(http_client, files_root, "clc_b_absent.png")
+        img_gap = await _register_image(http_client, files_root, "clc_gap.png")
+        img_no_bbox = await _register_image(http_client, files_root, "clc_no_bbox.png")
+
+        # img_both: verified bbox for label_a AND label_b in one call (metadata/update replaces all boxes)
+        r = await http_client.post(
+            "/api/images/metadata/update",
+            json={
+                "imagePath": img_both,
+                "boxes": [
+                    {"uuid": str(uuid.uuid4()), "labelUuid": label_a, "x": 0.1, "y": 0.1, "width": 0.2, "height": 0.2, "tagUuids": [VERIFIED_TAG_UUID]},
+                    {"uuid": str(uuid.uuid4()), "labelUuid": label_b, "x": 0.5, "y": 0.5, "width": 0.2, "height": 0.2, "tagUuids": [VERIFIED_TAG_UUID]},
+                ],
+            },
+        )
+        assert r.status_code == 200, r.text
+
+        # img_b_absent: verified bbox for label_a, label_b explicitly absent → all clear
+        await _create_bbox(http_client, img_b_absent, label_a, [VERIFIED_TAG_UUID])
+        await _set_image_label(http_client, img_b_absent, label_b, "absent")
+
+        # img_gap: verified bbox for label_a, label_b NOT accounted for → co-label gap
+        await _create_bbox(http_client, img_gap, label_a, [VERIFIED_TAG_UUID])
+
+        # img_no_bbox: no verified bbox for label_a at all → not in base
+        await _create_bbox(http_client, img_no_bbox, label_b, [VERIFIED_TAG_UUID])
+
+        body = await _images_by_label_status(http_client, cfg["uuid"], label_a, "co_labels_covered")
+        filenames = [img["filename"] for img in body["images"]]
+
+        assert any("clc_both" in f for f in filenames), f"both-covered image missing: {filenames}"
+        assert any("clc_b_absent" in f for f in filenames), f"b-absent image missing: {filenames}"
+        assert not any("clc_gap" in f for f in filenames), f"gap image should not appear: {filenames}"
+        assert not any("clc_no_bbox" in f for f in filenames), f"no-bbox image should not appear: {filenames}"
+
+    async def test_co_label_gaps_returns_images_with_unresolved_other_labels(self, http_client, files_root):
+        """co_label_gaps: images where the focus label has a verified bbox but at least one
+        other model-config label is not yet accounted for."""
+        cfg, label_a, label_b = await self._setup_two_labels(
+            http_client, "clg-basic", "clg-label-a", "clg-label-b"
+        )
+
+        img_gap = await _register_image(http_client, files_root, "clg_gap.png")
+        img_covered = await _register_image(http_client, files_root, "clg_covered.png")
+        img_no_bbox = await _register_image(http_client, files_root, "clg_no_bbox.png")
+
+        # img_gap: verified bbox for label_a, label_b NOT accounted for → appears in co_label_gaps
+        await _create_bbox(http_client, img_gap, label_a, [VERIFIED_TAG_UUID])
+
+        # img_covered: verified bbox for label_a AND label_b in one call → NOT a gap
+        r = await http_client.post(
+            "/api/images/metadata/update",
+            json={
+                "imagePath": img_covered,
+                "boxes": [
+                    {"uuid": str(uuid.uuid4()), "labelUuid": label_a, "x": 0.1, "y": 0.1, "width": 0.2, "height": 0.2, "tagUuids": [VERIFIED_TAG_UUID]},
+                    {"uuid": str(uuid.uuid4()), "labelUuid": label_b, "x": 0.5, "y": 0.5, "width": 0.2, "height": 0.2, "tagUuids": [VERIFIED_TAG_UUID]},
+                ],
+            },
+        )
+        assert r.status_code == 200, r.text
+
+        # img_no_bbox: no verified label_a bbox → not in base
+        await _create_bbox(http_client, img_no_bbox, label_b, [VERIFIED_TAG_UUID])
+
+        body = await _images_by_label_status(http_client, cfg["uuid"], label_a, "co_label_gaps")
+        filenames = [img["filename"] for img in body["images"]]
+
+        assert any("clg_gap" in f for f in filenames), f"gap image missing: {filenames}"
+        assert not any("clg_covered" in f for f in filenames), f"covered image should not appear: {filenames}"
+        assert not any("clg_no_bbox" in f for f in filenames), f"no-bbox image should not appear: {filenames}"
+
+    async def test_existing_image_statuses_still_work(self, http_client, files_root):
+        """Existing status values (present/absent/uncertain) still function after adding bbox statuses."""
+        label_uuid = await _create_label(http_client, "compat-label")
+        ds = (await http_client.post("/api/datasets", json={"name": "ds-compat", "filter_json": {}})).json()["dataset"]
+        cfg = await _create_training_config(http_client, "tc-compat", [ds["uuid"]])
+
+        img_present = await _register_image(http_client, files_root, "compat_present.png")
+        img_absent = await _register_image(http_client, files_root, "compat_absent.png")
+        img_uncertain = await _register_image(http_client, files_root, "compat_uncertain.png")
+
+        r = await http_client.post("/api/images/labels/set", json={"imagePath": img_present, "labelUuid": label_uuid, "status": "present"})
+        assert r.status_code == 200
+        r = await http_client.post("/api/images/labels/set", json={"imagePath": img_absent, "labelUuid": label_uuid, "status": "absent"})
+        assert r.status_code == 200
+
+        def _filenames(body):
+            return [img["filename"] for img in body["images"]]
+
+        present_body = await _images_by_label_status(http_client, cfg["uuid"], label_uuid, "present")
+        assert any("compat_present" in f for f in _filenames(present_body))
+        assert not any("compat_absent" in f for f in _filenames(present_body))
+
+        absent_body = await _images_by_label_status(http_client, cfg["uuid"], label_uuid, "absent")
+        assert any("compat_absent" in f for f in _filenames(absent_body))
+        assert not any("compat_present" in f for f in _filenames(absent_body))
+
+        uncertain_body = await _images_by_label_status(http_client, cfg["uuid"], label_uuid, "uncertain")
+        assert any("compat_uncertain" in f for f in _filenames(uncertain_body))
+        assert not any("compat_present" in f for f in _filenames(uncertain_body))

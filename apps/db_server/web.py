@@ -547,8 +547,8 @@ class LabelStatEntry(BaseModel):
     absent_image_count: int = 0
     verified_bbox_count: int = 0
     unverified_bbox_count: int = 0
-    fully_verified_image_count: int = 0
-    images_missing_verification_count: int = 0
+    co_labels_covered_count: int = 0
+    co_label_gaps_count: int = 0
     has_rollup: bool = False
     roll_up_parent_uuid: Optional[str] = None
 
@@ -570,7 +570,7 @@ class NeedsReviewImagesPayload(Payload):
 class ImagesByLabelStatusPayload(Payload):
     label_uuid: str
     rollup_label_uuids: Optional[List[str]] = None
-    status: Optional[Literal["present", "absent", "uncertain", "all"]] = None
+    status: Optional[Literal["present", "absent", "uncertain", "all", "has_verified_bbox", "co_labels_covered", "co_label_gaps"]] = None
     after_uuid: Optional[str] = None
     after_sort_value: Optional[datetime] = None
     sort_by: Literal["uuid", "created_at", "updated_at", "filename"] = "created_at"

@@ -575,10 +575,14 @@ function renderLabelStatsPanel(config, labelsMap) {
             }},
           { header: 'Unverified boxes', key: 'unverifiedBboxCount', title: 'Bounding boxes still marked Unverified — click to review images', warnIf: s => s.unverifiedBboxCount > 0,
             browseFn: (stat, col) => _openBboxNeedsReviewModal(stat.labelUuid, `${_labelName(stat.labelUuid)} — unverified boxes (${config.name})`, stat.hasRollup ? _rollupChildUuids(stat.labelUuid) : []) },
-          { header: 'Imgs all clear', key: 'fullyVerifiedImageCount', title: 'Images where every box for this label is verified — click to browse', goodIf: s => s.imagesMissingVerificationCount === 0 && s.fullyVerifiedImageCount > 0,
-            browseStatus: 'fully_verified_bbox' },
-          { header: 'Imgs need work', key: 'imagesMissingVerificationCount', title: 'Images with at least one unverified box for this label — click to review', warnIf: s => s.imagesMissingVerificationCount > 0,
-            browseFn: (stat, col) => _openBboxNeedsReviewModal(stat.labelUuid, `${_labelName(stat.labelUuid)} — needs review (${config.name})`, stat.hasRollup ? _rollupChildUuids(stat.labelUuid) : []) },
+          { header: 'Imgs all clear', key: 'coLabelsCoveredCount',
+            title: 'Images with a verified box for this label where every other label in the model config is accounted for (verified present or marked absent) — click to browse',
+            goodIf: s => s.coLabelGapsCount === 0 && s.coLabelsCoveredCount > 0,
+            browseStatus: 'co_labels_covered' },
+          { header: 'Co-label gaps', key: 'coLabelGapsCount',
+            title: 'Images with a verified box for this label but where one or more other model-config labels are not yet verified or marked absent — click to review',
+            warnIf: s => s.coLabelGapsCount > 0,
+            browseStatus: 'co_label_gaps' },
         ]));
       }
     } catch (err) {

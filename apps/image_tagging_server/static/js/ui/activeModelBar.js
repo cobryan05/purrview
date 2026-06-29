@@ -250,7 +250,7 @@ export function mountActiveModelBar(containerId = 'active-model-bar') {
         _renderSection('Object Labels', objectLabels, [
           { key: 'verifiedBboxCount', title: 'Verified bounding boxes', goodIf: s => s.verifiedBboxCount > 0 && s.unverifiedBboxCount === 0 },
           { key: 'unverifiedBboxCount', title: 'Unverified bounding boxes', warnIf: s => s.unverifiedBboxCount > 0 },
-          { key: 'imagesMissingVerificationCount', title: 'Images with unverified boxes', warnIf: s => s.imagesMissingVerificationCount > 0 },
+          { key: 'coLabelGapsCount', title: 'Images with co-label gaps', warnIf: s => s.coLabelGapsCount > 0 },
         ]);
 
       } catch (err) {
