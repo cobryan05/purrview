@@ -77,9 +77,10 @@ class YOLOv8ONNXInferenceProvider(InferenceProvider):
         if preds.shape[1] < preds.shape[2]:
             preds = np.transpose(preds, (0, 2, 1))
 
+        conf_thresh = float(kwargs.get("conf_thresh", self.conf_thresh))
         detections = YoloUtils.postprocess(
             preds,
-            conf_thresh=self.conf_thresh,
+            conf_thresh=conf_thresh,
             iou_thresh=self.iou_thresh,
             scale=scale,
             pad=pad,

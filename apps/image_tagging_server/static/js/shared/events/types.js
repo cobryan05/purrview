@@ -36,6 +36,7 @@
  *
  * @typedef {Object} CanvasRunInferencePayload
  * @property {string} modelName
+ * @property {number} confThresh
  */
 
 

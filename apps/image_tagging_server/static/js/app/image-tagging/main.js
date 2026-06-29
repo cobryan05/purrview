@@ -33,11 +33,11 @@ export async function init(runtime, tab_pane) {
   await createCanvasInstance(canvasContainer, { runtime });
 
   // App-specific event subscriptions scoped to this canvas's runtime.
-  events.subscribeToCanvas(runtime.id, EventTypes.RUN_INFERENCE_ON_CANVAS, async ({ modelName }) => {
+  events.subscribeToCanvas(runtime.id, EventTypes.RUN_INFERENCE_ON_CANVAS, async ({ modelName, confThresh }) => {
     try {
       const img = runtime.state?.image?.img;
       if (!img) throw new Error('No image loaded');
-      const result = await runDetection(modelName, img);
+      const result = await runDetection(modelName, img, confThresh);
       await addInferenceResults(runtime, result);
     } catch (err) {
       Logger.error('Failed to run inference:', err);

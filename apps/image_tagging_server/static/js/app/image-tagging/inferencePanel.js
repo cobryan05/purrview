@@ -19,6 +19,7 @@ export async function createInferencePanel(runtime, container) {
   /** @type {string[]} */ let _classifiers = [];
   /** @type {string|null} */ let _selected = null;
   /** @type {'detector'|'classifier'|null} */ let _selectedKind = null;
+  /** @type {number} */ let _confThresh = 0.25;
 
   container.innerHTML = '';
   container.classList.add('inference-panel');
@@ -40,7 +41,34 @@ export async function createInferencePanel(runtime, container) {
   clearGreyBtn.title = 'Remove unmatched (grey) detections from the canvas';
   clearGreyBtn.addEventListener('click', () => clearUnmatched(runtime));
 
-  actionsEl.append(runBtn, refreshBtn, clearGreyBtn);
+  // ── Min confidence slider ─────────────────────────────────────────
+  const confRow = document.createElement('div');
+  confRow.className = 'inference-conf-row';
+
+  const confLabel = document.createElement('label');
+  confLabel.className = 'inference-conf-label';
+  confLabel.textContent = 'Min confidence:';
+
+  const confSlider = document.createElement('input');
+  confSlider.type = 'range';
+  confSlider.min = '0';
+  confSlider.max = '1';
+  confSlider.step = '0.05';
+  confSlider.value = String(_confThresh);
+  confSlider.className = 'inference-conf-slider';
+
+  const confValue = document.createElement('span');
+  confValue.className = 'inference-conf-value';
+  confValue.textContent = `${Math.round(_confThresh * 100)}%`;
+
+  confSlider.addEventListener('input', () => {
+    _confThresh = parseFloat(confSlider.value);
+    confValue.textContent = `${Math.round(_confThresh * 100)}%`;
+  });
+
+  confRow.append(confLabel, confSlider, confValue);
+
+  actionsEl.append(runBtn, refreshBtn, clearGreyBtn, confRow);
 
   // ── Model sections ────────────────────────────────────────────────
   const listEl = document.createElement('div');
@@ -167,7 +195,7 @@ export async function createInferencePanel(runtime, container) {
     if (_selectedKind === 'classifier') {
       await handleClassify();
     } else {
-      events.publish(EventTypes.RUN_INFERENCE_ON_CANVAS, { modelName: _selected, runtimeId: runtime.id });
+      events.publish(EventTypes.RUN_INFERENCE_ON_CANVAS, { modelName: _selected, runtimeId: runtime.id, confThresh: _confThresh });
     }
   }
 

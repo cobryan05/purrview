@@ -1711,6 +1711,7 @@ button.filter-active {
 
 .inference-panel-actions {
   display: flex;
+  flex-wrap: wrap;
   gap: 0.4em;
 }
 
@@ -1757,6 +1758,34 @@ button.filter-active {
   font-size: 0.8em;
   padding: 0.5em;
   font-style: italic;
+}
+
+.inference-conf-row {
+  display: flex;
+  align-items: center;
+  gap: 0.4em;
+  padding-top: 0.25em;
+  flex-wrap: nowrap;
+}
+
+.inference-conf-label {
+  font-size: 0.8em;
+  white-space: nowrap;
+  color: #aaa;
+}
+
+.inference-conf-slider {
+  flex: 1;
+  min-width: 0;
+  accent-color: #ff6666;
+  cursor: pointer;
+}
+
+.inference-conf-value {
+  font-size: 0.8em;
+  color: #ccc;
+  min-width: 2.8em;
+  text-align: right;
 }
 
 

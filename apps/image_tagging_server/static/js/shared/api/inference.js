@@ -9,7 +9,7 @@ import { generateUUID, Logger, toast } from '/app-static/js/ui/utils/index.js';
  * @param {HTMLImageElement} image - base64 image element to run inference on.
  * @returns {Promise<import('@web_api').InferenceResultModel>}
  */
-export async function runDetection(model_name, image) {
+export async function runDetection(model_name, image, confThresh = 0.25) {
   if (!image.src.startsWith("data:")) {
     throw new Error("Image is not a base64 data URI");
   }
@@ -18,7 +18,7 @@ export async function runDetection(model_name, image) {
   // Prepare JSON payload
   /** @type {import('@web_api').InferencePayload} */
   const payload = {
-    confThresh: 0.25,
+    confThresh,
     returnAnnotatedImg: false,
     pinId: null,
     imageBase64: base64String,

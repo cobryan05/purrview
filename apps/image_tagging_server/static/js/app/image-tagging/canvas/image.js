@@ -214,12 +214,14 @@ export async function addInferenceResults(runtime, results) {
     const { bbox } = detection;
 
     const labelData = bbox.labelUuid ? labelsMap.get(bbox.labelUuid) : null;
+    const pct = Math.round(detection.confidence * 100);
+    const confSuffix = ` (${pct}%)`;
     const label = labelData
-      ? { uuid: labelData.uuid, text: labelData.name, color: labelData.color }
+      ? { uuid: labelData.uuid, text: labelData.name + confSuffix, color: labelData.color }
       : bbox.labelUuid
-        ? { uuid: bbox.labelUuid, text: bbox.classStr ?? bbox.labelUuid }
+        ? { uuid: bbox.labelUuid, text: (bbox.classStr ?? bbox.labelUuid) + confSuffix }
         : bbox.classStr
-          ? { text: bbox.classStr }
+          ? { text: bbox.classStr + confSuffix }
           : undefined;
 
     // Always include the UNVERIFIED tag on inference results
