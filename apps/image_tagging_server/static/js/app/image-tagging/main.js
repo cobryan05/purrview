@@ -56,11 +56,12 @@ export async function init(runtime, tab_pane) {
   runtime._toolbarHandle = initToolbar(runtime, toolbarEl);
   await initSidebar(runtime);
 
-  // Sidebar drag-resize
+  // Sidebar drag-resize — store handle alongside _toolbarHandle so destroy() is
+  // reachable if a cleanup path is added later (avoids permanently leaking document listeners).
   const sidebarEl = document.getElementById('sidebar');
   const resizeHandleEl = document.getElementById('sidebar-resize-handle');
   if (sidebarEl && resizeHandleEl) {
-    initSplitResize(resizeHandleEl, sidebarEl, {
+    runtime._sidebarResizeHandle = initSplitResize(resizeHandleEl, sidebarEl, {
       storageKey: 'wtch_sidebar_width',
       defaultWidth: 240,
       min: 120,

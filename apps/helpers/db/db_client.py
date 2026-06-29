@@ -3257,9 +3257,10 @@ class DbClient:
 
         image_uuids = [img.uuid for img in all_images]
 
-        # Filter to images that have every class verified (or any one, for full rollup).
-        is_rollup = bool(rollup_map)
-        readiness_threshold = 1 if is_rollup else n_labels
+        # Require each distinct top-level class to be verified for the image to qualify.
+        # Rollup children collapse into their parent's class index, so n_labels already
+        # reflects the number of independent annotation decisions needed.
+        readiness_threshold = n_labels
 
         async with self._async_session_maker() as session:
             verified_count_col = func.count(ImageLabel.label_uuid).label("verified_count")
@@ -3279,23 +3280,43 @@ class DbClient:
             img for img in all_images if verified_by_image.get(img.uuid, 0) >= readiness_threshold
         ]
 
-        # For each eligible image, fetch verified bboxes in scope and convert to YOLO format.
+        # Batch-fetch all verified in-scope bboxes for eligible images in one query.
+        eligible_image_uuids = [img.uuid for img in eligible_images]
+        async with self._async_session_maker() as session:
+            result = await session.exec(
+                select(
+                    BBox.image_uuid,
+                    BBox.label_uuid,
+                    BBox.x,
+                    BBox.y,
+                    BBox.width,
+                    BBox.height,
+                )
+                .where(
+                    BBox.image_uuid.in_(eligible_image_uuids),
+                    BBox.label_uuid.in_(list(in_scope_label_uuids)),
+                    BBox.uuid.in_(
+                        select(BBoxTagLink.bbox_uuid).where(
+                            BBoxTagLink.tag_uuid == VERIFIED_TAG_UUID
+                        )
+                    ),
+                )
+            )
+            raw_bboxes = result.all()
+
+        # Group by image_uuid for O(1) per-image lookup.
+        bboxes_by_image: dict[str, list] = {}
+        for row in raw_bboxes:
+            bboxes_by_image.setdefault(row[0], []).append(row)
+
         image_entries = []
         for img in eligible_images:
-            bboxes = await self.get_bboxes_for_image(img.uuid)
             annotations = []
-            for bbox in bboxes:
-                lbl_uuid = bbox.label_uuid
-                if lbl_uuid not in label_uuid_to_class_idx:
-                    continue
-                tag_uuids = {tag.uuid for tag in bbox.tags}
-                if VERIFIED_TAG_UUID not in tag_uuids:
-                    continue
+            for row in bboxes_by_image.get(img.uuid, []):
+                _, lbl_uuid, x, y, w, h = row
                 cls_idx = label_uuid_to_class_idx[lbl_uuid]
                 # Convert (x1, y1, w, h) relative coords → YOLO (cx, cy, w, h).
-                cx = bbox.x + bbox.width / 2
-                cy = bbox.y + bbox.height / 2
-                annotations.append([cls_idx, cx, cy, bbox.width, bbox.height])
+                annotations.append([cls_idx, x + w / 2, y + h / 2, w, h])
             image_entries.append({
                 "image_uuid": img.uuid,
                 "filename": img.filename,

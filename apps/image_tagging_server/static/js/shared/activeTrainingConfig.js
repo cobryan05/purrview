@@ -63,12 +63,12 @@ async function _doFetchStats() {
   _statsFetching = true;
   try {
     _stats = await fetchTrainingConfigLabelStats(_config.uuid);
+    _publish({ statsUpdated: true });
   } catch (err) {
     console.warn('[activeTrainingConfig] Failed to fetch stats:', err);
   } finally {
     _statsFetching = false;
   }
-  _publish({ statsUpdated: true });
 }
 
 function _publish({ statsUpdated = false } = {}) {

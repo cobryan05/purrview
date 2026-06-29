@@ -1031,10 +1031,13 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
 
       for (const img of images) {
         const matching = (img.bboxes || []).filter(b => {
-          if (bboxFilterFn) return bboxFilterFn(b);
-          const tagMatch = showAll || (b.tags || []).some(t => tagSet.has(t.uuid));
+          // bboxFilterFn replaces the tag/showAll gate but the toolbar label filter
+          // still narrows on top of it, so both constraints compose correctly.
+          const baseMatch = bboxFilterFn
+            ? bboxFilterFn(b)
+            : showAll || (b.tags || []).some(t => tagSet.has(t.uuid));
           const labelMatch = !activeLabelUuids || activeLabelUuids.has(b.labelUuid);
-          return tagMatch && labelMatch;
+          return baseMatch && labelMatch;
         });
         // Always add an image-level entry
         _allEntries.push({ kind: 'image', img });
@@ -1770,7 +1773,10 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
     const kind = _selectionKind ?? (_viewFilter === 'images' ? 'image' : 'bbox');
     const entries = kind === 'image'
       ? images.map(img => ({ kind: 'image', img }))
-      : images.flatMap(img => (img.bboxes || []).map(bbox => ({ kind: 'bbox', bbox, img })));
+      : images.flatMap(img =>
+          (img.bboxes || [])
+            .filter(b => !bboxFilterFn || bboxFilterFn(b))
+            .map(bbox => ({ kind: 'bbox', bbox, img })));
 
     if (entries.length === 0) {
       statusMsg.textContent = 'No candidates to apply to.';

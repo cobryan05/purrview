@@ -78,7 +78,7 @@ async def test_create_with_nodes(http_client):
         {
             "label_uuid": None,
             "model_type": "object_detection",
-            "architecture": "yolo_v8_m",
+            "architecture": "yolo_v9_c",
         },
         {
             "label_uuid": label_uuid,
@@ -92,7 +92,7 @@ async def test_create_with_nodes(http_client):
     assert model_types == {"object_detection", "image_classifier"}
     root_node = next(n for n in cfg["nodes"] if n["labelUuid"] is None)
     assert root_node["modelType"] == "object_detection"
-    assert root_node["architecture"] == "yolo_v8_m"
+    assert root_node["architecture"] == "yolo_v9_c"
 
 
 async def test_update_scalar_fields(http_client):

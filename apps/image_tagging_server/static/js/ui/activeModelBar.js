@@ -283,7 +283,7 @@ export function mountActiveModelBar(containerId = 'active-model-bar') {
     document.addEventListener('mousedown', _outsideListener, true);
 
     _statsPopup = { close: _closePanel };
-    _renderStats();
+    _renderStats().catch(err => console.warn('[activeModelBar] _renderStats failed:', err));
   }
 
   // ── Main render ──────────────────────────────────────────────────────────
@@ -335,19 +335,52 @@ export function mountActiveModelBar(containerId = 'active-model-bar') {
       });
       left.appendChild(deactivateBtn);
     } else {
-      const none = document.createElement('span');
-      none.className = 'active-model-bar__none';
-      none.textContent = 'No active training config';
-      left.appendChild(none);
+      // No TC active — fall back to showing the active model (if any).
+      const model = activeModel.getActiveModel();
+      if (model) {
+        const label = document.createElement('span');
+        label.className = 'active-model-bar__label';
+        label.textContent = 'Active model:';
+        left.appendChild(label);
 
-      // Link to set one
-      const setBtn = document.createElement('button');
-      setBtn.type = 'button';
-      setBtn.className = 'active-model-bar__set-tc-btn';
-      setBtn.textContent = 'Set one →';
-      setBtn.title = 'Go to Training configuration';
-      setBtn.addEventListener('click', () => navigateTabs('tab-configuration', 'tab-training-management'));
-      left.appendChild(setBtn);
+        const nameBtn = document.createElement('button');
+        nameBtn.type = 'button';
+        nameBtn.className = 'active-model-bar__name';
+        nameBtn.textContent = model.name;
+        nameBtn.title = 'Go to model configuration';
+        nameBtn.addEventListener('click', () => navigateTabs('tab-configuration', 'tab-model-management'));
+        left.appendChild(nameBtn);
+
+        if (activeModel.isLabelFilterEnabled()) {
+          const filterBadge = document.createElement('span');
+          filterBadge.className = 'active-model-bar__filter-badge';
+          filterBadge.textContent = 'filtered';
+          filterBadge.title = 'Label list is filtered to this model';
+          left.appendChild(filterBadge);
+        }
+
+        const deactivateBtn = document.createElement('button');
+        deactivateBtn.type = 'button';
+        deactivateBtn.className = 'active-model-bar__deactivate';
+        deactivateBtn.textContent = '✕';
+        deactivateBtn.title = 'Deactivate model';
+        deactivateBtn.addEventListener('click', () => activeModel.setActiveModel(null));
+        left.appendChild(deactivateBtn);
+      } else {
+        const none = document.createElement('span');
+        none.className = 'active-model-bar__none';
+        none.textContent = 'No active training config';
+        left.appendChild(none);
+
+        // Link to set one
+        const setBtn = document.createElement('button');
+        setBtn.type = 'button';
+        setBtn.className = 'active-model-bar__set-tc-btn';
+        setBtn.textContent = 'Set one →';
+        setBtn.title = 'Go to Training configuration';
+        setBtn.addEventListener('click', () => navigateTabs('tab-configuration', 'tab-training-management'));
+        left.appendChild(setBtn);
+      }
     }
 
     bar.appendChild(left);
