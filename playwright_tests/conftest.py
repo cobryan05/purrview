@@ -80,6 +80,12 @@ def _make_settings_mock():
     return handle
 
 
+def _make_training_configs_mock():
+    async def handle(path: str, request):
+        return JSONResponse(content={"status": "success", "configs": []})
+    return handle
+
+
 def _make_images_mock():
     async def handle(path: str, request):
         return JSONResponse(content={"status": "success", "images": [], "total": 0})
@@ -125,6 +131,7 @@ def live_server() -> Generator[str, None, None]:
         ("TASKS_PROXY", _make_tasks_mock()),
         ("DATASETS_PROXY", _make_datasets_mock()),
         ("MODEL_CONFIGS_PROXY", _make_model_configs_mock()),
+        ("TRAINING_CONFIGS_PROXY", _make_training_configs_mock()),
         ("SETTINGS_PROXY", _make_settings_mock()),
     ]
     originals = []

@@ -197,8 +197,8 @@ class TestCreateModelConfig:
         # Fill name
         _editor_body(page).locator("input[type=text]").first.fill("My Config")
 
-        # Pick architecture: second select (index 1) — choose yolo_v8_m
-        page.locator("#model-config-box select").nth(1).select_option("yolo_v8_m")
+        # Pick architecture: second select (index 1) — choose yolo_v9_m
+        page.locator("#model-config-box select").nth(1).select_option("yolo_v9_m")
 
         _label_row(page, "lbl-cat").locator("input[type=checkbox]").first.click()
         _label_row(page, "lbl-dog").locator("input[type=checkbox]").first.click()
@@ -213,12 +213,12 @@ class TestCreateModelConfig:
         nodes_by_label = {n["labelUuid"]: n for n in payload["nodes"]}
         root = nodes_by_label[None]
         assert root["modelType"] == "object_detection"
-        assert root["architecture"] == "yolo_v8_m"
+        assert root["architecture"] == "yolo_v9_m"
         assert "lbl-cat" in nodes_by_label
         assert "lbl-dog" in nodes_by_label
         # Cat & Dog inherit the root spec (no sub-model set for them)
         assert nodes_by_label["lbl-cat"]["modelType"] == "object_detection"
-        assert nodes_by_label["lbl-cat"]["architecture"] == "yolo_v8_m"
+        assert nodes_by_label["lbl-cat"]["architecture"] == "yolo_v9_m"
         assert "lbl-kitten" not in nodes_by_label
 
 

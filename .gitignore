@@ -3,6 +3,12 @@
 .serena/
 docker-compose.override.yml
 
+# Model binary files — too large for git (use DVC or direct copy)
+*.onnx
+*.onnx.data
+*.pt
+models/job_state.json
+
 # Markdown files (notes, plans, etc.) — only README is committed
 *.md
 !README.md
