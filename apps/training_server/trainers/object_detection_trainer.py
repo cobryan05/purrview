@@ -128,11 +128,13 @@ class ObjectDetectionTrainer(Trainer):
                     raise RuntimeError("Training cancelled by user")
 
             # Load model (downloads pretrained weights from HuggingFace on first use).
+            # Omit nb_classes so it defaults to the checkpoint's nc (80 for COCO);
+            # model.train() adapts the head to the dataset's class count automatically.
             model_cls = _get_model_class(model_class_name)
             weight_filename = f"{model_cls.FILENAME_PREFIX}{size}{model_cls.WEIGHT_EXT}"
             logger.info("Loading %s (size=%s) from %s", model_class_name, size, weight_filename)
 
-            model = model_cls(weight_filename, size=size, nb_classes=len(class_names))
+            model = model_cls(weight_filename, size=size)
 
             # Run training in a thread (libreyolo train() is synchronous).
             logger.info(

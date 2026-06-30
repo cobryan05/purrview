@@ -39,6 +39,7 @@ services:
   # =========================================================
   whiskerwatcher_training:
     container_name: whiskerwatcher_training
+    shm_size: '2gb'
     build:
       context: .
       dockerfile: Dockerfile
@@ -117,6 +118,7 @@ services:
   # =========================================================
   whiskerwatcher-training-dev:
     container_name: whiskerwatcher_training_dev
+    shm_size: '2gb'
     build:
       context: .
       dockerfile: Dockerfile
@@ -153,6 +155,7 @@ services:
   # =========================================================
   whiskerwatcher-combined-dev:
     container_name: whiskerwatcher_combined_dev
+    shm_size: '2gb'
     build:
       context: .
       dockerfile: Dockerfile
