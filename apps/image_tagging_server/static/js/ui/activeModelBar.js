@@ -39,7 +39,7 @@ export function mountActiveModelBar(containerId = 'active-model-bar') {
     const popup = document.createElement('div');
     popup.className = 'vis-popup';
     popup.style.cssText = [
-      'z-index:9999',
+      'z-index:10001',
       'background:var(--pico-card-background-color,#1e1e2e)',
       'border:1px solid var(--pico-muted-border-color,#444)',
       'border-radius:6px', 'padding:6px 0', 'min-width:220px',
@@ -106,7 +106,7 @@ export function mountActiveModelBar(containerId = 'active-model-bar') {
       'top:0',
       `bottom:${bottomOffset}px`,
       'width:360px',
-      'z-index:9999',
+      'z-index:10001',
       'background:var(--pico-card-background-color,#1e1e2e)',
       'border-right:1px solid var(--pico-muted-border-color,#444)',
       'box-shadow:4px 0 24px rgba(0,0,0,.55)',
