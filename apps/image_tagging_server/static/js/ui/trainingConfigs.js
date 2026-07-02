@@ -34,6 +34,7 @@ import {
 } from '/app-static/js/shared/api/trainingConfigs.js';
 import { TaskStatus, cancelTasks, createTaskConfig, startTask } from '/app-static/js/shared/api/tasks.js';
 import { makeFieldRow, buildPanelEditorBar, toast } from '/app-static/js/ui/utils/index.js';
+import { navigateTabs } from '/app-static/js/app/utils/tabs.js';
 import { activeTrainingConfig } from '/app-static/js/shared/activeTrainingConfig.js';
 import { ActiveTaskField } from '/app-static/js/ui/utils/fields/ActiveTaskField.js';
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
@@ -42,6 +43,21 @@ import { showUnsavedConfigChangesModal } from '/app-static/js/ui/utils/confirmMo
 let _rendering = false;
 let _navGuardController = null;
 let _lastSelectedUuid = null;
+
+// ── Helpers ──────────────────────────────────────────────────────────────────
+
+/** Muted hint line with a link that navigates to another Configuration workspace tab. */
+function makeNavHint(text, linkText, workspaceTabId) {
+  const hint = document.createElement('p');
+  hint.style.cssText = 'font-size: 0.85em; color: var(--pico-muted-color, #888); margin: 0; padding: 2px 4px;';
+  hint.append(`${text} `);
+  const link = document.createElement('a');
+  link.href = '#';
+  link.textContent = linkText;
+  link.addEventListener('click', (e) => { e.preventDefault(); navigateTabs('tab-configuration', workspaceTabId); });
+  hint.appendChild(link);
+  return hint;
+}
 
 // ── Form ─────────────────────────────────────────────────────────────────────
 
@@ -102,6 +118,11 @@ function renderTrainingConfigForm({ config, datasetsMap, modelConfigsMap, labels
   }
   configSel.addEventListener('change', () => { refreshNodeSel(); _markDirty(); });
   el.appendChild(makeFieldRow('Model config', configSel));
+  if (modelConfigsMap.size === 0) {
+    el.appendChild(makeNavHint(
+      'No model configs exist yet — a training config needs one.',
+      'Create one in the Models tab →', 'tab-model-management'));
+  }
 
   // Step 2: pick the node within that config
   const nodeSel = document.createElement('select');
@@ -140,8 +161,8 @@ function renderTrainingConfigForm({ config, datasetsMap, modelConfigsMap, labels
   const nodeHelp = document.createElement('span');
   nodeHelp.textContent = ' (?)';
   nodeHelp.title =
-    'Root node ("All labels"): trains a single shared-backbone multi-label model covering every label in the config at once. Use this for normal training.\n\n' +
-    'Labeled node: trains a binary (present/absent) classifier for that one label only, ignoring all other labels. Use this to retrain or experiment with a single label in isolation.';
+    'Root node ("All labels"): trains the top-level model over every label in the config. Labels that belong to a sub-model are rolled up into their parent (e.g. cat-A, cat-B count as cat). Use this for normal training.\n\n' +
+    'Labeled node: trains that label’s dedicated sub-model on boxes under its label sub-tree, learning to distinguish the child labels from each other. Use this to (re)train one sub-model in isolation.';
   nodeHelp.style.cssText = 'cursor: help; opacity: 0.55; font-size: 0.85em;';
   nodeRow.querySelector('label').appendChild(nodeHelp);
   el.appendChild(nodeRow);
@@ -162,10 +183,8 @@ function renderTrainingConfigForm({ config, datasetsMap, modelConfigsMap, labels
   const datasetBox = document.createElement('div');
   datasetBox.className = 'panel-tree-box';
   if (datasetsMap.size === 0) {
-    const none = document.createElement('p');
-    none.style.cssText = 'font-size: 0.85em; color: var(--pico-muted-color, #888); margin: 0; padding: 2px 4px;';
-    none.textContent = 'No datasets defined yet.';
-    datasetBox.appendChild(none);
+    datasetBox.appendChild(makeNavHint(
+      'No datasets defined yet.', 'Create one in the Datasets tab →', 'tab-dataset-management'));
   }
   for (const [uuid, ds] of datasetsMap) {
     const row = document.createElement('label');
@@ -1023,7 +1042,7 @@ export async function renderTrainingConfigManager({ target = 'training-config-bo
       if (configsMap.size === 0) {
         const empty = document.createElement('p');
         empty.style.cssText = 'color: var(--pico-muted-color, #888); font-style: italic; font-size: 0.85em; padding: 0.5em 0.75em; margin: 0;';
-        empty.textContent = 'No training configs yet.';
+        empty.textContent = 'No training configs yet — use the form on the right to create your first one.';
         listBody.appendChild(empty);
       }
 

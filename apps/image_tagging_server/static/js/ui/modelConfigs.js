@@ -599,7 +599,7 @@ export async function renderModelConfigManager({ target = 'model-config-box' } =
       if (configsMap.size === 0) {
         const empty = document.createElement('p');
         empty.style.cssText = 'color: var(--pico-muted-color, #888); font-style: italic; font-size: 0.85em; padding: 0.5em 0.75em; margin: 0;';
-        empty.textContent = 'No configurations yet.';
+        empty.textContent = 'No configurations yet — use the form on the right to create your first one.';
         listBody.appendChild(empty);
       }
 
@@ -622,7 +622,8 @@ export async function renderModelConfigManager({ target = 'model-config-box' } =
 
         const metaLine = document.createElement('div');
         metaLine.className = 'mc-list-item__meta';
-        const n = config.nodes?.length ?? 0;
+        // Root node (labelUuid=null) is the base model, not a label assignment.
+        const n = (config.nodes ?? []).filter((node) => node.labelUuid).length;
         metaLine.textContent = `${n} assignment${n === 1 ? '' : 's'}`;
         item.appendChild(metaLine);
 

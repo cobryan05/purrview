@@ -118,7 +118,8 @@ class TestModelConfigPaneStructure:
         # Left panel: list item with name and assignment count
         list_row = page.locator("#model-config-box [data-config-uuid='cfg-1']")
         expect(list_row.locator(".mc-list-item__name")).to_have_text("Animal Detector")
-        expect(list_row).to_contain_text("2 assignments")
+        # Root node is not a label assignment — only nodes with a labelUuid count.
+        expect(list_row).to_contain_text("1 assignment")
 
         # Footer button for creating a new config
         expect(page.locator("#model-config-box .mc-list-panel button", has_text="+ New")).to_be_visible()
