@@ -3073,14 +3073,18 @@ class DbClient:
             return all_uuids, rollup_map
 
     async def get_training_config_readiness(self, uuid: str) -> Optional[dict]:
-        """Return ready/needs-review counts for a training config's datasets (union).
+        """Return ready/needs-review/not-started counts for a training config's datasets (union).
 
         An image is 'ready' when every target label has an explicit PRESENT or ABSENT
-        row in image_labels; 'needs_review' otherwise.
+        row in image_labels (verified_count >= readiness_threshold); 'needs_review' when
+        it has partial coverage (0 < verified_count < readiness_threshold); 'not_started'
+        when it has zero coverage (verified_count == 0).
 
         When rollup is active (any node has roll_up_unchecked=True) an image is
         considered ready as soon as ANY ONE of the in-scope labels is verified,
-        because child annotations all roll up to their parent label.
+        because child annotations all roll up to their parent label. Since the
+        readiness_threshold is then 1, there is no possible partial state, so
+        needs_review_count is always 0 under rollup.
 
         Returns None if the training config doesn't exist.
         """
@@ -3096,6 +3100,7 @@ class DbClient:
             return {
                 "ready_count": 0,
                 "needs_review_count": 0,
+                "not_started_count": 0,
                 "dataset_uuids": dataset_uuids,
                 "label_uuids": [],
                 "roll_up_active": False,
@@ -3133,6 +3138,7 @@ class DbClient:
             return {
                 "ready_count": 0,
                 "needs_review_count": 0,
+                "not_started_count": 0,
                 "dataset_uuids": dataset_uuids,
                 "label_uuids": label_uuids,
                 "roll_up_active": is_rollup,
@@ -3159,15 +3165,20 @@ class DbClient:
 
             ready_count = 0
             needs_review_count = 0
+            not_started_count = 0
             for img_uuid in image_uuids:
-                if verified_by_image.get(img_uuid, 0) >= readiness_threshold:
+                verified_count = verified_by_image.get(img_uuid, 0)
+                if verified_count >= readiness_threshold:
                     ready_count += 1
+                elif verified_count == 0:
+                    not_started_count += 1
                 else:
                     needs_review_count += 1
 
         return {
             "ready_count": ready_count,
             "needs_review_count": needs_review_count,
+            "not_started_count": not_started_count,
             "dataset_uuids": dataset_uuids,
             "label_uuids": label_uuids,
             "roll_up_active": is_rollup,
@@ -3634,6 +3645,204 @@ class DbClient:
 
         has_more = len(all_images) > limit
         return all_images[:limit], has_more
+
+    async def _get_training_config_images_by_readiness_bucket(
+        self,
+        uuid: str,
+        bucket: str,
+        *,
+        limit: int = 50,
+        after_uuid: Optional[str] = None,
+        after_sort_value: Optional[datetime] = None,
+        sort_by: str = "created_at",
+        sort_order: str = "desc",
+    ) -> tuple[list["ImageRecord"], bool]:
+        """Shared implementation backing the readiness-bucket image list methods.
+
+        ``bucket`` selects which readiness bucket to return, matching the counts computed by
+        ``get_training_config_readiness``:
+          - "ready"         — verified_count >= readiness_threshold
+          - "needs_review"  — 0 < verified_count < readiness_threshold (partial coverage)
+          - "not_started"   — verified_count == 0 (untouched)
+
+        v1: in-memory merge across datasets, same approach as
+        ``get_training_config_needs_review_images``. Push to SQL union if datasets grow large.
+        """
+        tc = await self.get_training_config(uuid)
+        if tc is None:
+            return [], False
+
+        label_uuids, rollup_map = await self._derive_labels_for_node(tc.model_config_node_uuid)
+        if not label_uuids:
+            return [], False
+
+        is_rollup = bool(rollup_map)
+        readiness_threshold = 1 if is_rollup else len(label_uuids)
+
+        # Collect all images across all linked datasets (union, de-duped by uuid).
+        seen_uuids: set[str] = set()
+        all_images: list[ImageRecord] = []
+        for ds_uuid in tc.dataset_uuids:
+            dataset = await self.get_dataset(ds_uuid)
+            if dataset is None:
+                continue
+            ds_after_uuid: Optional[str] = None
+            while True:
+                page, has_more = await self._list_images_for_dataset(
+                    dataset,
+                    limit=_READINESS_PAGE_SIZE,
+                    sort_by="uuid",
+                    sort_order="asc",
+                    after_uuid=ds_after_uuid,
+                    after_sort_value=None,
+                )
+                for img in page:
+                    if img.uuid not in seen_uuids:
+                        seen_uuids.add(img.uuid)
+                        all_images.append(img)
+                if not has_more or not page:
+                    break
+                ds_after_uuid = page[-1].uuid
+
+        if not all_images:
+            return [], False
+
+        image_uuids = [img.uuid for img in all_images]
+
+        async with self._async_session_maker() as session:
+            verified_count_col = func.count(ImageLabel.label_uuid).label("verified_count")
+            result = await session.exec(
+                select(ImageLabel.image_uuid, verified_count_col)
+                .where(
+                    ImageLabel.image_uuid.in_(image_uuids),
+                    ImageLabel.label_uuid.in_(label_uuids),
+                    ImageLabel.status.in_([ImageItemStatus.PRESENT, ImageItemStatus.ABSENT]),
+                )
+                .group_by(ImageLabel.image_uuid)
+            )
+            rows = result.all()
+            verified_by_image = {row[0]: row[1] for row in rows}
+
+        def _matches(verified_count: int) -> bool:
+            if bucket == "ready":
+                return verified_count >= readiness_threshold
+            elif bucket == "not_started":
+                return verified_count == 0
+            elif bucket == "needs_review":
+                return 0 < verified_count < readiness_threshold
+            raise ValueError(f"Unknown readiness bucket: {bucket!r}")
+
+        bucket_images = [img for img in all_images if _matches(verified_by_image.get(img.uuid, 0))]
+
+        if not bucket_images:
+            return [], False
+
+        # Sort the merged list by (sort_by, uuid) for deterministic ordering.
+        def _sort_key(img: "ImageRecord"):
+            return (getattr(img, sort_by), img.uuid)
+
+        bucket_images.sort(key=_sort_key, reverse=(sort_order == "desc"))
+
+        # Apply keyset cursor to resume from the previous page.
+        if after_uuid is not None:
+            start_idx = None
+            for i, img in enumerate(bucket_images):
+                attr = getattr(img, sort_by)
+                if sort_by == "uuid" or after_sort_value is None:
+                    past = img.uuid > after_uuid if sort_order == "asc" else img.uuid < after_uuid
+                else:
+                    sv = after_sort_value
+                    if sort_order == "asc":
+                        past = attr > sv or (attr == sv and img.uuid > after_uuid)
+                    else:
+                        past = attr < sv or (attr == sv and img.uuid < after_uuid)
+                if past:
+                    start_idx = i
+                    break
+            if start_idx is None:
+                return [], False
+            bucket_images = bucket_images[start_idx:]
+
+        has_more = len(bucket_images) > limit
+        return bucket_images[:limit], has_more
+
+    async def get_training_config_ready_images(
+        self,
+        uuid: str,
+        *,
+        limit: int = 50,
+        after_uuid: Optional[str] = None,
+        after_sort_value: Optional[datetime] = None,
+        sort_by: str = "created_at",
+        sort_order: str = "desc",
+    ) -> tuple[list["ImageRecord"], bool]:
+        """Return (images, has_more) for images that are ready for training in a training config.
+
+        Mirrors the eligibility gate used by ``get_training_config_readiness`` /
+        ``get_training_config_detection_dataset``: an image is ready when every in-scope
+        target label (derived from the model config node) has an explicit verified
+        PRESENT/ABSENT image_label row. When rollup is active, an image is ready as soon
+        as ANY ONE in-scope label is verified.
+        """
+        return await self._get_training_config_images_by_readiness_bucket(
+            uuid,
+            "ready",
+            limit=limit,
+            after_uuid=after_uuid,
+            after_sort_value=after_sort_value,
+            sort_by=sort_by,
+            sort_order=sort_order,
+        )
+
+    async def get_training_config_partial_review_images(
+        self,
+        uuid: str,
+        *,
+        limit: int = 50,
+        after_uuid: Optional[str] = None,
+        after_sort_value: Optional[datetime] = None,
+        sort_by: str = "created_at",
+        sort_order: str = "desc",
+    ) -> tuple[list["ImageRecord"], bool]:
+        """Return (images, has_more) for images with PARTIAL label coverage (the readiness
+        panel's "needs review" bucket): 0 < verified_count < readiness_threshold.
+
+        Distinct from ``get_training_config_needs_review_images``, which answers a different
+        question (per-label bbox verification status, with pool-narrowing support) used by the
+        label-stats panel's bbox-scoped browsing. Do not conflate the two.
+        """
+        return await self._get_training_config_images_by_readiness_bucket(
+            uuid,
+            "needs_review",
+            limit=limit,
+            after_uuid=after_uuid,
+            after_sort_value=after_sort_value,
+            sort_by=sort_by,
+            sort_order=sort_order,
+        )
+
+    async def get_training_config_not_started_images(
+        self,
+        uuid: str,
+        *,
+        limit: int = 50,
+        after_uuid: Optional[str] = None,
+        after_sort_value: Optional[datetime] = None,
+        sort_by: str = "created_at",
+        sort_order: str = "desc",
+    ) -> tuple[list["ImageRecord"], bool]:
+        """Return (images, has_more) for images with ZERO label coverage (verified_count == 0) —
+        i.e. images that have never been reviewed at all, as opposed to partially reviewed.
+        """
+        return await self._get_training_config_images_by_readiness_bucket(
+            uuid,
+            "not_started",
+            limit=limit,
+            after_uuid=after_uuid,
+            after_sort_value=after_sort_value,
+            sort_by=sort_by,
+            sort_order=sort_order,
+        )
 
     async def get_training_config_label_stats(self, uuid: str) -> Optional[dict]:
         """Return per-label dataset stats for a training config.

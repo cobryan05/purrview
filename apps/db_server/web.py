@@ -518,6 +518,7 @@ class TrainingConfigResponse(StatusResponse):
 class TrainingConfigReadinessResponse(StatusResponse):
     ready_count: int = 0
     needs_review_count: int = 0
+    not_started_count: int = 0
     dataset_uuids: List[str] = Field(default_factory=list)
     label_uuids: List[str] = Field(default_factory=list)
     roll_up_active: bool = False
@@ -560,6 +561,14 @@ class TrainingConfigLabelStatsResponse(StatusResponse):
 
 class NeedsReviewImagesPayload(Payload):
     label_uuids: List[str] = Field(default_factory=list)
+    after_uuid: Optional[str] = None
+    after_sort_value: Optional[datetime] = None
+    sort_by: Literal["uuid", "created_at", "updated_at", "filename"] = "created_at"
+    sort_order: Literal["asc", "desc"] = "desc"
+    limit: int = 50
+
+
+class ReadyImagesPayload(Payload):
     after_uuid: Optional[str] = None
     after_sort_value: Optional[datetime] = None
     sort_by: Literal["uuid", "created_at", "updated_at", "filename"] = "created_at"
@@ -2844,6 +2853,72 @@ class WebApp:
                 return ReviewQueueResponse(images=images, has_more=has_more, total_count=len(images))
             except Exception as e:
                 logger.exception("Failed to fetch needs-review images for training config %s", uuid)
+                return ReviewQueueResponse(status=JsonValues.FAILURE, message=str(e))
+
+        @self._app.post(
+            "/api/training-configs/{uuid}/ready-images",
+            response_model=ReviewQueueResponse,
+            tags=[ApiTags.TRAINING_CONFIGS],
+            operation_id="get_training_config_ready_images",
+        )
+        async def get_training_config_ready_images(
+            uuid: str, payload: ReadyImagesPayload
+        ) -> ReviewQueueResponse:
+            """Return images in this training config's dataset union that are ready for training.
+
+            Uses the same response shape as the review queue so the existing review
+            grid can render the results unchanged.
+            """
+            try:
+                images, has_more = await self._manager.get_training_config_ready_images(uuid, payload)
+                return ReviewQueueResponse(images=images, has_more=has_more, total_count=len(images))
+            except Exception as e:
+                logger.exception("Failed to fetch ready images for training config %s", uuid)
+                return ReviewQueueResponse(status=JsonValues.FAILURE, message=str(e))
+
+        @self._app.post(
+            "/api/training-configs/{uuid}/partial-review-images",
+            response_model=ReviewQueueResponse,
+            tags=[ApiTags.TRAINING_CONFIGS],
+            operation_id="get_training_config_partial_review_images",
+        )
+        async def get_training_config_partial_review_images(
+            uuid: str, payload: ReadyImagesPayload
+        ) -> ReviewQueueResponse:
+            """Return images with PARTIAL label coverage (0 < verified_count < readiness_threshold) —
+            the readiness panel's "needs review" bucket. Distinct from the bbox-scoped
+            needs-review-images endpoint used by the label-stats panel.
+
+            Uses the same response shape as the review queue so the existing review
+            grid can render the results unchanged.
+            """
+            try:
+                images, has_more = await self._manager.get_training_config_partial_review_images(uuid, payload)
+                return ReviewQueueResponse(images=images, has_more=has_more, total_count=len(images))
+            except Exception as e:
+                logger.exception("Failed to fetch partial-review images for training config %s", uuid)
+                return ReviewQueueResponse(status=JsonValues.FAILURE, message=str(e))
+
+        @self._app.post(
+            "/api/training-configs/{uuid}/not-started-images",
+            response_model=ReviewQueueResponse,
+            tags=[ApiTags.TRAINING_CONFIGS],
+            operation_id="get_training_config_not_started_images",
+        )
+        async def get_training_config_not_started_images(
+            uuid: str, payload: ReadyImagesPayload
+        ) -> ReviewQueueResponse:
+            """Return images with ZERO label coverage (verified_count == 0) — images that have
+            never been reviewed at all, as opposed to partially reviewed.
+
+            Uses the same response shape as the review queue so the existing review
+            grid can render the results unchanged.
+            """
+            try:
+                images, has_more = await self._manager.get_training_config_not_started_images(uuid, payload)
+                return ReviewQueueResponse(images=images, has_more=has_more, total_count=len(images))
+            except Exception as e:
+                logger.exception("Failed to fetch not-started images for training config %s", uuid)
                 return ReviewQueueResponse(status=JsonValues.FAILURE, message=str(e))
 
         @self._app.post(

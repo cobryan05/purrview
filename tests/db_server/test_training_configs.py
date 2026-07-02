@@ -315,7 +315,8 @@ class TestTrainingConfigReadiness:
         assert body["readyCount"] == 0
         assert body["needsReviewCount"] == 0
 
-    async def test_unreviewed_image_counted_as_needs_review(self, http_client, files_root):
+    async def test_untouched_image_counted_as_not_started(self, http_client, files_root):
+        """An image with zero verified labels is 'not started', NOT 'needs review'."""
         ds = await _create_dataset(http_client, "ds-ready-unreviewed")
         label_uuid = await _create_label(http_client, "unreviewed-label")
         await _register_image(http_client, files_root, "ready_unreviewed.png")
@@ -323,7 +324,8 @@ class TestTrainingConfigReadiness:
         r = await http_client.get(f"/api/training-configs/{cfg['uuid']}/readiness")
         body = r.json()
         assert body["readyCount"] == 0
-        assert body["needsReviewCount"] == 1
+        assert body["needsReviewCount"] == 0
+        assert body["notStartedCount"] == 1
 
     async def test_present_label_counted_as_ready(self, http_client, files_root):
         ds = await _create_dataset(http_client, "ds-ready-present")
@@ -367,14 +369,19 @@ class TestTrainingConfigReadiness:
         assert body["readyCount"] == 1
         assert body["needsReviewCount"] == 0
 
-    async def test_mixed_ready_and_needs_review(self, http_client, files_root):
-        """Multiple images — some ready, some not."""
+    async def test_mixed_ready_and_not_started(self, http_client, files_root):
+        """Multiple images — some ready, some untouched.
+
+        With a single-label node there is no possible partial state (verified_count is
+        either 0 or 1 against a threshold of 1), so the untouched image lands in
+        not_started, not needs_review.
+        """
         ds = await _create_dataset(http_client, "ds-ready-mixed")
         label_uuid = await _create_label(http_client, "mixed-label")
         await _register_image(http_client, files_root, "ready_mixed_a.png")
         await _register_image(http_client, files_root, "ready_mixed_b.png")
 
-        # Verify label on image A only; image B stays unreviewed
+        # Verify label on image A only; image B stays untouched
         await http_client.post(
             "/api/images/labels/set",
             json={
@@ -388,7 +395,53 @@ class TestTrainingConfigReadiness:
         r = await http_client.get(f"/api/training-configs/{cfg['uuid']}/readiness")
         body = r.json()
         assert body["readyCount"] == 1
+        assert body["needsReviewCount"] == 0
+        assert body["notStartedCount"] == 1
+
+    async def test_mixed_ready_needs_review_and_not_started(self, http_client, files_root):
+        """A 2-label node can produce all three buckets simultaneously."""
+        parent_label = await _create_label(http_client, "three-bucket-parent")
+        child_label = await _create_label(http_client, "three-bucket-child", parent_uuid=parent_label)
+        ds = await _create_dataset(http_client, "ds-three-bucket")
+
+        await _register_image(http_client, files_root, "three_bucket_ready.png")
+        await _register_image(http_client, files_root, "three_bucket_partial.png")
+        await _register_image(http_client, files_root, "three_bucket_untouched.png")
+
+        # Ready: both labels verified.
+        for label in (parent_label, child_label):
+            await http_client.post(
+                "/api/images/labels/set",
+                json={"imagePath": "three_bucket_ready.png", "labelUuid": label, "status": "present"},
+            )
+        # Partial: only parent verified.
+        await http_client.post(
+            "/api/images/labels/set",
+            json={"imagePath": "three_bucket_partial.png", "labelUuid": parent_label, "status": "present"},
+        )
+        # Untouched: three_bucket_untouched.png left as-is.
+
+        mc = await _create_model_config(
+            http_client,
+            "mc-three-bucket",
+            nodes=[
+                {
+                    "label_uuid": parent_label,
+                    "model_type": "image_classifier",
+                    "architecture": "resnet_18",
+                },
+            ],
+        )
+        node_uuid = mc["nodes"][0]["uuid"]
+        cfg = await _create_training_config(
+            http_client, "tc-three-bucket", [ds["uuid"]], model_config_node_uuid=node_uuid
+        )
+        r = await http_client.get(f"/api/training-configs/{cfg['uuid']}/readiness")
+        body = r.json()
+        assert body["readyCount"] == 1
         assert body["needsReviewCount"] == 1
+        assert body["notStartedCount"] == 1
+        assert body["readyCount"] + body["needsReviewCount"] + body["notStartedCount"] == 3
 
     async def test_readiness_nonexistent_config(self, http_client):
         r = await http_client.get(f"/api/training-configs/{uuid.uuid4()}/readiness")
@@ -444,7 +497,8 @@ class TestTrainingConfigReadiness:
         r = await http_client.get(f"/api/training-configs/{cfg['uuid']}/readiness")
         body = r.json()
         assert body["readyCount"] == 1
-        assert body["needsReviewCount"] == 1
+        assert body["needsReviewCount"] == 0
+        assert body["notStartedCount"] == 1
         assert set(body["datasetUuids"]) == {ds_a["uuid"], ds_b["uuid"]}
 
     async def test_node_label_includes_descendants(self, http_client, files_root):
@@ -533,9 +587,50 @@ class TestTrainingConfigReadiness:
         )
         r = await http_client.get(f"/api/training-configs/{cfg['uuid']}/readiness")
         body = r.json()
-        # Needs both label_a and label_b; only label_a is verified → needs_review
+        # Needs both label_a and label_b; only label_a is verified → partial (needs_review)
         assert body["needsReviewCount"] == 1
         assert body["readyCount"] == 0
+        assert body["notStartedCount"] == 0
+
+    async def test_rollup_readiness_never_reports_partial(self, http_client, files_root):
+        """Under rollup, readiness_threshold is 1, so needs_review_count is always 0 —
+        an image is either ready (>=1 verified) or not_started (0 verified)."""
+        parent_label = await _create_label(http_client, "rollup-readiness-parent")
+        child_label = await _create_label(http_client, "rollup-readiness-child", parent_uuid=parent_label)
+
+        ds = await _create_dataset(http_client, "ds-rollup-readiness")
+        await _register_image(http_client, files_root, "rollup_readiness_ready.png")
+        await _register_image(http_client, files_root, "rollup_readiness_untouched.png")
+
+        # Verify only the parent label on one image — under rollup this alone is enough.
+        await http_client.post(
+            "/api/images/labels/set",
+            json={"imagePath": "rollup_readiness_ready.png", "labelUuid": parent_label, "status": "present"},
+        )
+
+        mc = await _create_model_config(
+            http_client,
+            "mc-rollup-readiness",
+            nodes=[
+                {
+                    "label_uuid": parent_label,
+                    "model_type": "image_classifier",
+                    "architecture": "resnet_18",
+                    "roll_up_unchecked": True,
+                },
+            ],
+        )
+        node_uuid = mc["nodes"][0]["uuid"]
+        cfg = await _create_training_config(
+            http_client, "tc-rollup-readiness", [ds["uuid"]], model_config_node_uuid=node_uuid
+        )
+        r = await http_client.get(f"/api/training-configs/{cfg['uuid']}/readiness")
+        body = r.json()
+        assert body["rollUpActive"] is True
+        assert body["readyCount"] == 1
+        assert body["needsReviewCount"] == 0
+        assert body["notStartedCount"] == 1
+        assert body["readyCount"] + body["needsReviewCount"] + body["notStartedCount"] == 2
 
 
 class TestRollupLabelDerivation:

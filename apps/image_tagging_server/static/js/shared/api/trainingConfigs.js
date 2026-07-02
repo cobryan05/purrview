@@ -77,6 +77,7 @@ export async function fetchTrainingConfigReadiness(uuid) {
   return {
     readyCount: data.readyCount,
     needsReviewCount: data.needsReviewCount,
+    notStartedCount: data.notStartedCount ?? 0,
     datasetUuids: data.datasetUuids ?? [],
     labelUuids: data.labelUuids ?? [],
     rollUpActive: data.rollUpActive ?? false,
@@ -100,6 +101,66 @@ export async function fetchTrainingConfigNeedsReview({
   const data = await res.json();
   if (!res.ok || data.status !== 'success') {
     throw new Error(data.message || 'Failed to fetch needs-review images');
+  }
+  return data.images ?? [];
+}
+
+export async function fetchTrainingConfigReadyImages({
+  uuid,
+  afterUuid = null,
+  afterSortValue = null,
+  sortBy = 'created_at',
+  sortOrder = 'desc',
+  limit = 50,
+}) {
+  const res = await apiFetch(`/api/training-configs/${uuid}/ready-images`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ afterUuid, afterSortValue, sortBy, sortOrder, limit }),
+  });
+  const data = await res.json();
+  if (!res.ok || data.status !== 'success') {
+    throw new Error(data.message || 'Failed to fetch ready images');
+  }
+  return data.images ?? [];
+}
+
+export async function fetchTrainingConfigPartialReviewImages({
+  uuid,
+  afterUuid = null,
+  afterSortValue = null,
+  sortBy = 'created_at',
+  sortOrder = 'desc',
+  limit = 50,
+}) {
+  const res = await apiFetch(`/api/training-configs/${uuid}/partial-review-images`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ afterUuid, afterSortValue, sortBy, sortOrder, limit }),
+  });
+  const data = await res.json();
+  if (!res.ok || data.status !== 'success') {
+    throw new Error(data.message || 'Failed to fetch partial-review images');
+  }
+  return data.images ?? [];
+}
+
+export async function fetchTrainingConfigNotStartedImages({
+  uuid,
+  afterUuid = null,
+  afterSortValue = null,
+  sortBy = 'created_at',
+  sortOrder = 'desc',
+  limit = 50,
+}) {
+  const res = await apiFetch(`/api/training-configs/${uuid}/not-started-images`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ afterUuid, afterSortValue, sortBy, sortOrder, limit }),
+  });
+  const data = await res.json();
+  if (!res.ok || data.status !== 'success') {
+    throw new Error(data.message || 'Failed to fetch not-started images');
   }
   return data.images ?? [];
 }

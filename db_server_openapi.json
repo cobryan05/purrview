@@ -4215,6 +4215,165 @@
         }
       }
     },
+    "/api/training-configs/{uuid}/ready-images": {
+      "post": {
+        "tags": [
+          "training_configs"
+        ],
+        "summary": "Get Training Config Ready Images",
+        "description": "Return images in this training config's dataset union that are ready for training.\n\nUses the same response shape as the review queue so the existing review\ngrid can render the results unchanged.",
+        "operationId": "get_training_config_ready_images",
+        "parameters": [
+          {
+            "name": "uuid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReadyImagesPayload"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewQueueResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/training-configs/{uuid}/partial-review-images": {
+      "post": {
+        "tags": [
+          "training_configs"
+        ],
+        "summary": "Get Training Config Partial Review Images",
+        "description": "Return images with PARTIAL label coverage (0 < verified_count < readiness_threshold) \u2014\nthe readiness panel's \"needs review\" bucket. Distinct from the bbox-scoped\nneeds-review-images endpoint used by the label-stats panel.\n\nUses the same response shape as the review queue so the existing review\ngrid can render the results unchanged.",
+        "operationId": "get_training_config_partial_review_images",
+        "parameters": [
+          {
+            "name": "uuid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReadyImagesPayload"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewQueueResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/training-configs/{uuid}/not-started-images": {
+      "post": {
+        "tags": [
+          "training_configs"
+        ],
+        "summary": "Get Training Config Not Started Images",
+        "description": "Return images with ZERO label coverage (verified_count == 0) \u2014 images that have\nnever been reviewed at all, as opposed to partially reviewed.\n\nUses the same response shape as the review queue so the existing review\ngrid can render the results unchanged.",
+        "operationId": "get_training_config_not_started_images",
+        "parameters": [
+          {
+            "name": "uuid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReadyImagesPayload"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewQueueResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/training-configs/{uuid}/images-by-label-status": {
       "post": {
         "tags": [
@@ -8482,6 +8641,60 @@
         "type": "object",
         "title": "PruneImagesResponse"
       },
+      "ReadyImagesPayload": {
+        "properties": {
+          "afterUuid": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Afteruuid"
+          },
+          "afterSortValue": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Aftersortvalue"
+          },
+          "sortBy": {
+            "type": "string",
+            "enum": [
+              "uuid",
+              "created_at",
+              "updated_at",
+              "filename"
+            ],
+            "title": "Sortby",
+            "default": "created_at"
+          },
+          "sortOrder": {
+            "type": "string",
+            "enum": [
+              "asc",
+              "desc"
+            ],
+            "title": "Sortorder",
+            "default": "desc"
+          },
+          "limit": {
+            "type": "integer",
+            "title": "Limit",
+            "default": 50
+          }
+        },
+        "type": "object",
+        "title": "ReadyImagesPayload"
+      },
       "RebuildHashIndexResponse": {
         "properties": {
           "status": {
@@ -9584,6 +9797,11 @@
           "needsReviewCount": {
             "type": "integer",
             "title": "Needsreviewcount",
+            "default": 0
+          },
+          "notStartedCount": {
+            "type": "integer",
+            "title": "Notstartedcount",
             "default": 0
           },
           "datasetUuids": {

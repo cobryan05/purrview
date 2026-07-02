@@ -238,7 +238,12 @@ class TestNeedsReviewImages:
         assert len(body["images"]) == 1  # de-duped, not 2
 
     async def test_readiness_count_matches_list_length(self, http_client, files_root):
-        """readiness.needsReviewCount == len(needs-review-images) for the same config."""
+        """The bbox-scoped needs-review-images list (has_unverified) covers exactly the images
+        that are NOT ready — i.e. the union of the readiness endpoint's needsReviewCount
+        (partial) and notStartedCount (untouched) buckets. needs-review-images itself was not
+        changed by the readiness ready/needs-review/not-started split — it answers a different,
+        bbox-verification-status question.
+        """
         ds = await _create_dataset(http_client, "nr-match-ds")
         label_uuid = await _create_label(http_client, "nr-match-label")
 
@@ -254,7 +259,7 @@ class TestNeedsReviewImages:
         assert readiness["status"] == "success"
 
         needs_review_body = await _needs_review(http_client, cfg["uuid"])
-        assert len(needs_review_body["images"]) == readiness["needsReviewCount"]
+        assert len(needs_review_body["images"]) == readiness["needsReviewCount"] + readiness["notStartedCount"]
 
     async def test_pagination(self, http_client, files_root):
         """Keyset cursor correctly pages through all needs-review images."""

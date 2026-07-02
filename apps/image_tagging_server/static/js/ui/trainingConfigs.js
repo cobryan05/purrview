@@ -26,6 +26,9 @@ import {
   fetchTrainingConfigReadiness,
   fetchTrainingConfigLabelStats,
   fetchTrainingConfigNeedsReview,
+  fetchTrainingConfigReadyImages,
+  fetchTrainingConfigPartialReviewImages,
+  fetchTrainingConfigNotStartedImages,
   fetchTrainingConfigImagesByLabelStatus,
   clearTrainingConfigsCache,
 } from '/app-static/js/shared/api/trainingConfigs.js';
@@ -231,6 +234,18 @@ function renderReadinessPanel(config) {
   const content = document.createElement('div');
   wrap.appendChild(content);
 
+  const _clickableCountCss = 'cursor: pointer; text-decoration: underline dotted; text-underline-offset: 2px;';
+
+  async function _openImageModal(fetchImages, modalTitle) {
+    const { showReviewModal } = await import('/app-static/js/app/review/main.js');
+    await showReviewModal({
+      title: modalTitle,
+      fetchImages: async ({ afterUuid = null, afterSortValue = null, limit }) => {
+        return fetchImages({ uuid: config.uuid, afterUuid, afterSortValue, limit });
+      },
+    });
+  }
+
   async function _doLoad() {
     content.innerHTML = '';
     refreshBtn.disabled = true;
@@ -240,7 +255,7 @@ function renderReadinessPanel(config) {
     content.appendChild(loading);
 
     try {
-      const { readyCount, needsReviewCount, rollUpActive } = await fetchTrainingConfigReadiness(config.uuid);
+      const { readyCount, needsReviewCount, notStartedCount, rollUpActive } = await fetchTrainingConfigReadiness(config.uuid);
       content.innerHTML = '';
 
       // Rollup badge
@@ -253,31 +268,49 @@ function renderReadinessPanel(config) {
         content.appendChild(document.createElement('br'));
       }
 
-      const total = readyCount + needsReviewCount;
+      const total = readyCount + needsReviewCount + notStartedCount;
       const status = document.createElement('div');
       if (total === 0) {
         status.textContent = 'No images in dataset.';
       } else {
-        status.innerHTML = `<span style="color:#4c4">✓ ${readyCount} ready</span> &nbsp;·&nbsp; <span style="color:#f90">⚠ ${needsReviewCount} need review</span> &nbsp;(${total} total)`;
+        const readySpan = document.createElement('span');
+        readySpan.style.cssText = `color:#4c4; ${readyCount > 0 ? _clickableCountCss : ''}`;
+        readySpan.textContent = `✓ ${readyCount} ready`;
+        if (readyCount > 0) {
+          readySpan.title = 'Browse images ready for training';
+          readySpan.addEventListener('click', () => _openImageModal(
+            fetchTrainingConfigReadyImages, `Ready for Training — ${config.name}`
+          ));
+        }
+
+        const needsReviewSpan = document.createElement('span');
+        needsReviewSpan.style.cssText = `color:#f90; ${needsReviewCount > 0 ? _clickableCountCss : ''}`;
+        needsReviewSpan.textContent = `⚠ ${needsReviewCount} need review`;
+        if (needsReviewCount > 0) {
+          needsReviewSpan.title = 'Browse partially-reviewed images';
+          needsReviewSpan.addEventListener('click', () => _openImageModal(
+            fetchTrainingConfigPartialReviewImages, `Needs Review — ${config.name}`
+          ));
+        }
+
+        const notStartedSpan = document.createElement('span');
+        notStartedSpan.style.cssText = `color: var(--pico-muted-color, #888); ${notStartedCount > 0 ? _clickableCountCss : ''}`;
+        notStartedSpan.textContent = `◌ ${notStartedCount} not started`;
+        if (notStartedCount > 0) {
+          notStartedSpan.title = 'Browse images that have not been reviewed at all';
+          notStartedSpan.addEventListener('click', () => _openImageModal(
+            fetchTrainingConfigNotStartedImages, `Not Started — ${config.name}`
+          ));
+        }
+
+        status.appendChild(readySpan);
+        status.appendChild(document.createTextNode(' · '));
+        status.appendChild(needsReviewSpan);
+        status.appendChild(document.createTextNode(' · '));
+        status.appendChild(notStartedSpan);
+        status.appendChild(document.createTextNode(`  (${total} total)`));
       }
       content.appendChild(status);
-
-      const reviewBtn = document.createElement('button');
-      reviewBtn.type = 'button';
-      reviewBtn.textContent = 'Review unverified images';
-      reviewBtn.className = 'panel-btn';
-      reviewBtn.style.cssText = 'margin-top: 0.4em; font-size: 0.8em;';
-      if (needsReviewCount === 0) reviewBtn.style.display = 'none';
-      reviewBtn.addEventListener('click', async () => {
-        const { showReviewModal } = await import('/app-static/js/app/review/main.js');
-        await showReviewModal({
-          title: `Needs Review — ${config.name}`,
-          fetchImages: async ({ afterUuid = null, afterSortValue = null, limit }) => {
-            return fetchTrainingConfigNeedsReview({ uuid: config.uuid, afterUuid, afterSortValue, limit });
-          },
-        });
-      });
-      content.appendChild(reviewBtn);
     } catch (err) {
       content.textContent = `Could not load readiness: ${err.message}`;
     } finally {
