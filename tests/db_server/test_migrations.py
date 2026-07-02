@@ -356,3 +356,25 @@ class TestPerformanceIndexes:
         # Superseded by the composite's leading column; must be dropped.
         assert "ix_bboxes_label_uuid" not in bboxes_idx, "redundant single-column label index still present"
         assert "ix_image_labels_label_uuid" in _indexes(engine, "image_labels"), "image_labels label index missing"
+
+    def test_image_label_composite_present_at_head(self, pre_redesign_copy):
+        """The (image_uuid, label_uuid) composite from b1d4e8f2a093 was silently
+        dropped by the phash batch_alter_table migration; it must be restored and
+        survive to head — the correlated-EXISTS image probes depend on it."""
+        engine = pre_redesign_copy
+        _run_migrations(engine, "head")
+
+        bboxes_idx = _indexes(engine, "bboxes")
+        assert "ix_bboxes_image_uuid_label_uuid" in bboxes_idx, "composite image→label index missing at head"
+        # Superseded by the composite's leading column; must be dropped.
+        assert "ix_bboxes_image_uuid" not in bboxes_idx, "redundant single-column image index still present"
+
+    def test_image_label_composite_present_on_fresh_create_all(self):
+        """Fresh installs use create_all + stamp head (migrations never replay),
+        so the composite must also live on the model, not just in a migration."""
+        engine = _make_engine()
+        SQLModel.metadata.create_all(engine)
+
+        bboxes_idx = _indexes(engine, "bboxes")
+        assert "ix_bboxes_image_uuid_label_uuid" in bboxes_idx, "composite image→label index missing from model"
+        assert "ix_bboxes_image_uuid" not in bboxes_idx, "redundant single-column image index still on model"

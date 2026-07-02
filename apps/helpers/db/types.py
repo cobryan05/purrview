@@ -400,15 +400,25 @@ class BBoxBase(SQLModel):
 
 class BBox(BBoxBase, TimestampModel, table=True):
     __tablename__ = "bboxes"
-    # Composite (label_uuid, image_uuid): serves the reverse label→image_uuid
-    # lookups used by the dataset/label filters as a COVERING index seek and
-    # satisfies their DISTINCT without a temp b-tree. Its leading column also
-    # covers plain label_uuid lookups, so no separate single-column index on
-    # label_uuid is needed. Kept in the model (not migration-only) so fresh
-    # create_all installs get it too, not just migration-upgraded DBs.
-    __table_args__ = (sa.Index("ix_bboxes_label_uuid_image_uuid", "label_uuid", "image_uuid"),)
+    # Two composites, one per lookup direction, each replacing the single-column
+    # index its leading column would otherwise need. Kept on the model (not
+    # migration-only) so fresh create_all installs get them too, not just
+    # migration-upgraded DBs.
+    #
+    # (label_uuid, image_uuid): serves the reverse label→image_uuid lookups used
+    # by the dataset/label filters as a COVERING index seek and satisfies their
+    # DISTINCT without a temp b-tree.
+    #
+    # (image_uuid, label_uuid): serves the correlated-EXISTS per-image probes
+    # (image_uuid = images.uuid AND label_uuid IN (...)) with a single range
+    # seek. Originally added by migration b1d4e8f2a093, silently dropped by the
+    # phash batch_alter_table migration, restored by a6c3f8d1e2b7.
+    __table_args__ = (
+        sa.Index("ix_bboxes_label_uuid_image_uuid", "label_uuid", "image_uuid"),
+        sa.Index("ix_bboxes_image_uuid_label_uuid", "image_uuid", "label_uuid"),
+    )
     uuid: str = Field(default_factory=lambda: str(uuid4()), primary_key=True)
-    image_uuid: str = Field(foreign_key="images.uuid", index=True, ondelete="CASCADE")
+    image_uuid: str = Field(foreign_key="images.uuid", ondelete="CASCADE")
     label_uuid: str = Field(foreign_key="labels.uuid")
 
     image: ImageRecord = Relationship(back_populates="bboxes")
