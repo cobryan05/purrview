@@ -1989,12 +1989,18 @@ class Manager:
         asyncio.create_task(asyncio.to_thread(self._trim_thumb_cache_sync, max_bytes))
 
     def _resolve_image_file_path(self, image_path: str) -> Optional[Path]:
-        """Resolve an image path under _files_root; falls back to treating it as an absolute path."""
+        """Resolve an image path to a file under _files_root, or None.
+
+        Only paths that resolve within _files_root are accepted; there is no
+        raw-path fallback (that would let a user-supplied path escape the root
+        via an absolute path or traversal — arbitrary file read). Trusted
+        callers pass absolute paths already under _files_root, which
+        get_safe_path resolves correctly.
+        """
         safe = get_safe_path(self._files_root, Path(image_path))
         if safe is not None and safe.is_file():
             return safe
-        fallback = Path(image_path)
-        return fallback if fallback.is_file() else None
+        return None
 
     async def get_bbox_thumbnail(self, bbox_uuid: str, width: int = 200) -> Optional[bytes]:
         """
