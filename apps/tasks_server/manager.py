@@ -350,7 +350,11 @@ class Manager:
                     db_models.SetTaskStatusPayload(status=task_info.task.get_status()),
                 )
                 stopped_tasks.append(task_info.instance.uuid)
-            except TimeoutError:
+            except (asyncio.TimeoutError, TimeoutError):
+                # On Python 3.10 asyncio.TimeoutError (what wait_for_task_done
+                # raises) is a distinct class from the builtin TimeoutError; catch
+                # both so one slow task doesn't abort the whole cancel loop and
+                # leave the remaining tasks' statuses unpersisted.
                 logger.warning(f"Task {task_info.instance.uuid} did not stop in time")
 
         return stopped_tasks

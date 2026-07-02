@@ -315,7 +315,9 @@ class Task(ABC):
         """
         try:
             await asyncio.wait_for(self._task_done.wait(), timeout)
-        except TimeoutError:
+        except (asyncio.TimeoutError, TimeoutError):
+            # asyncio.wait_for raises asyncio.TimeoutError, which on Python 3.10
+            # is not the builtin TimeoutError — catch both to be version-safe.
             raise asyncio.TimeoutError("Timed out waiting for task to complete.")
 
     @staticmethod

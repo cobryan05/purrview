@@ -74,6 +74,32 @@ async def test_cancel_running_task(http_client, tasks_api_mock):
     assert TASK_UUID in data["taskUuids"]
 
 
+async def test_cancel_tasks_survives_asyncio_timeout(manager, tasks_api_mock):
+    """cancel_tasks must catch asyncio.TimeoutError from wait_for_task_done.
+
+    On Python 3.10 asyncio.TimeoutError is a distinct class from the builtin
+    TimeoutError, so `except TimeoutError` fails to catch it: the exception
+    escapes the loop, 500s the cancel endpoint, and every task after the slow
+    one never gets its final status persisted.
+    """
+    tasks_api_mock.list_task_configs.return_value.configs[CONFIG_UUID].params = {"duration": 60}
+    await manager.start_new_task(CONFIG_UUID)
+    await asyncio.sleep(0)
+
+    task_info = manager._running_tasks[TASK_UUID]
+
+    async def _raise_asyncio_timeout(timeout=None):
+        raise asyncio.TimeoutError("simulated slow-to-cancel task")
+
+    task_info.task.wait_for_task_done = _raise_asyncio_timeout
+
+    # Must not raise: a task that times out is skipped, not fatal.
+    result = await manager.cancel_tasks([TASK_UUID])
+    assert result == []  # timed-out task is not reported as cleanly stopped
+
+    task_info.task.cancel_task()
+
+
 async def test_cancel_unknown_task_returns_empty_list(http_client):
     resp = await http_client.post(
         "/api/tasks/instances/cancel",
