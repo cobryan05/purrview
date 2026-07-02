@@ -196,7 +196,6 @@ def _apply_image_search_filters(stmt: Select, params: ImageSearchParams) -> Sele
                     select(BBox.image_uuid)
                     .join(BBoxTagLink, BBoxTagLink.bbox_uuid == BBox.uuid)
                     .where(BBoxTagLink.tag_uuid == tag_uuid)
-                    .distinct()
                 )
                 stmt = stmt.where(ImageRecord.uuid.in_(image_uuids))
         else:
@@ -205,7 +204,6 @@ def _apply_image_search_filters(stmt: Select, params: ImageSearchParams) -> Sele
                 select(BBox.image_uuid)
                 .join(BBoxTagLink, BBoxTagLink.bbox_uuid == BBox.uuid)
                 .where(BBoxTagLink.tag_uuid.in_(params.tag_uuids))
-                .distinct()
             )
             stmt = stmt.where(ImageRecord.uuid.in_(image_uuids))
         _bbox_implied = True
@@ -214,7 +212,7 @@ def _apply_image_search_filters(stmt: Select, params: ImageSearchParams) -> Sele
     # Kept for API callers that still send label_uuid.  New callers should use
     # label_uuids instead.
     if params.label_uuid and params.label_uuid not in params.label_uuids:
-        image_uuids = select(BBox.image_uuid).where(BBox.label_uuid == params.label_uuid).distinct()
+        image_uuids = select(BBox.image_uuid).where(BBox.label_uuid == params.label_uuid)
         stmt = stmt.where(ImageRecord.uuid.in_(image_uuids))
         _bbox_implied = True
 
@@ -244,7 +242,6 @@ def _apply_image_search_filters(stmt: Select, params: ImageSearchParams) -> Sele
             select(BBox.image_uuid)
             .join(BBoxTagLink, BBoxTagLink.bbox_uuid == BBox.uuid)
             .where(BBoxTagLink.tag_uuid == tf.tag_uuid)
-            .distinct()
         )
         if tf.exclude:
             stmt = stmt.where(ImageRecord.uuid.not_in(image_uuids))
@@ -330,7 +327,7 @@ def _apply_image_search_filters(stmt: Select, params: ImageSearchParams) -> Sele
                     condition = BBox.label_uuid.in_(label_set)
                 else:
                     condition = BBox.label_uuid == label_uuid
-                image_uuids = select(BBox.image_uuid).where(condition).distinct()
+                image_uuids = select(BBox.image_uuid).where(condition)
                 stmt = stmt.where(ImageRecord.uuid.in_(image_uuids))
         else:
             # "any of" — image has a bbox with ANY of the selected labels (or
@@ -339,7 +336,7 @@ def _apply_image_search_filters(stmt: Select, params: ImageSearchParams) -> Sele
                 label_condition = BBox.label_uuid.in_(_label_uuids_with_descendants(params.label_uuids))
             else:
                 label_condition = BBox.label_uuid.in_(params.label_uuids)
-            image_uuids = select(BBox.image_uuid).where(label_condition).distinct()
+            image_uuids = select(BBox.image_uuid).where(label_condition)
             stmt = stmt.where(ImageRecord.uuid.in_(image_uuids))
         _bbox_implied = True
 
@@ -379,12 +376,12 @@ def _apply_image_search_filters(stmt: Select, params: ImageSearchParams) -> Sele
     # ── Require at least one bbox ─────────────────────────────────────────────
     # Skip when any earlier filter already guarantees bbox existence.
     if params.require_bboxes and not _bbox_implied:
-        image_uuids = select(BBox.image_uuid).distinct()
+        image_uuids = select(BBox.image_uuid)
         stmt = stmt.where(ImageRecord.uuid.in_(image_uuids))
 
     # ── Label exclusions (NOT IN per label UUID) ───────────────────────────────
     for label_uuid in params.label_exclusions:
-        image_uuids = select(BBox.image_uuid).where(BBox.label_uuid == label_uuid).distinct()
+        image_uuids = select(BBox.image_uuid).where(BBox.label_uuid == label_uuid)
         stmt = stmt.where(ImageRecord.uuid.not_in(image_uuids))
 
     return stmt
