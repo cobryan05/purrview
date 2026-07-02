@@ -124,11 +124,16 @@ function buildThresholdSlider(initial, { min = 0, max = 64, onChange }) {
  * Open a nested review modal showing images similar to the given image UUID.
  * The modal appears immediately; results load asynchronously inside the panel.
  *
- * @param {{ imageUuid: string, threshold: number }} params
+ * @param {{ imageUuid: string, threshold: number, candidateUuids?: string[]|null }} params
+ *   `candidateUuids`, when given, restricts results to that UUID set (the similar-search
+ *   backend has no candidate-set param, so this is a client-side post-filter). The
+ *   anchor images are always kept even if absent from the set — see NOTES.md: excluding
+ *   the query image at the search layer breaks the single-item-dataset case.
  */
-export async function openSimilarImagesModal({ imageUuids, threshold = null }) {
+export async function openSimilarImagesModal({ imageUuids, threshold = null, candidateUuids = null }) {
   if (!imageUuids?.length) return;
 
+  const candidateSet = candidateUuids ? new Set(candidateUuids) : null;
   const sliderMax = await getImageHashMax();
   let _threshold = threshold !== null ? threshold : await _readThreshold('dedup_image_threshold', sliderMax);
 
@@ -145,9 +150,11 @@ export async function openSimilarImagesModal({ imageUuids, threshold = null }) {
           if (!byUuid.has(mu) || byUuid.get(mu) > distance) byUuid.set(mu, distance);
         }
       }
-      return [...byUuid.entries()]
-        .map(([iu, distance]) => ({ imageUuid: iu, distance }))
-        .sort((a, b) => a.distance - b.distance);
+      let entries = [...byUuid.entries()].map(([iu, distance]) => ({ imageUuid: iu, distance }));
+      if (candidateSet) {
+        entries = entries.filter(e => candidateSet.has(e.imageUuid) || imageUuids.includes(e.imageUuid));
+      }
+      return entries.sort((a, b) => a.distance - b.distance);
     });
   }
 
@@ -178,7 +185,7 @@ export async function openSimilarImagesModal({ imageUuids, threshold = null }) {
   });
 
   const dissimilarBtn = buildSwitchModeButton('Most Distinct →', () => {
-    openDissimilarImagesModal({ imageUuids });
+    openDissimilarImagesModal({ imageUuids, candidateUuids });
   });
 
   const imgHeaderEl = document.createElement('div');
@@ -186,7 +193,7 @@ export async function openSimilarImagesModal({ imageUuids, threshold = null }) {
   imgHeaderEl.append(sliderEl, dissimilarBtn);
 
   _refresh = await showReviewModal({
-    title: 'Similar Images',
+    title: candidateSet ? 'Similar Images (filtered)' : 'Similar Images',
     toolbarControls: imgHeaderEl,
     initialViewFilter: 'images',
     referenceImageUuids: new Set(imageUuids),

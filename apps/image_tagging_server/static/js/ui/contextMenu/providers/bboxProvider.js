@@ -121,10 +121,23 @@ registerContextProvider('bbox', async (adapters, ctx) => {
     },
     {
       label: 'Search for similar images…',
-      onSelect: () => {
+      submenu: () => {
         const imageUuids = [...new Set(adapters.map(a => a.getImageUuid?.()).filter(Boolean))];
-        ctx.close();
-        if (imageUuids.length) openSimilarImagesModal({ imageUuids });
+        return [
+          {
+            label: 'Search all images',
+            onSelect: () => { ctx.close(); if (imageUuids.length) openSimilarImagesModal({ imageUuids }); },
+          },
+          {
+            label: 'Search with current filters',
+            onSelect: async () => {
+              ctx.close();
+              if (!imageUuids.length) return;
+              const candidateUuids = await adapters[0].getFilteredImageUuids?.();
+              openSimilarImagesModal({ imageUuids, candidateUuids: candidateUuids ?? null });
+            },
+          },
+        ];
       },
     },
     {
@@ -140,10 +153,23 @@ registerContextProvider('bbox', async (adapters, ctx) => {
     {
       label: 'Search for dissimilar images…',
       disabled: count > 1,
-      onSelect: () => {
+      submenu: () => {
         const imageUuid = adapters[0].getImageUuid?.() ?? null;
-        ctx.close();
-        if (imageUuid) openDissimilarImagesModal({ imageUuid });
+        return [
+          {
+            label: 'Search all images',
+            onSelect: () => { ctx.close(); if (imageUuid) openDissimilarImagesModal({ imageUuid }); },
+          },
+          {
+            label: 'Search with current filters',
+            onSelect: async () => {
+              ctx.close();
+              if (!imageUuid) return;
+              const candidateUuids = await adapters[0].getFilteredImageUuids?.();
+              openDissimilarImagesModal({ imageUuid, candidateUuids: candidateUuids ?? null });
+            },
+          },
+        ];
       },
     },
   ];

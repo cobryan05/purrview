@@ -28,10 +28,14 @@ import { pageStartIdx, buildCountControl, buildSwitchModeButton } from '/app-sta
  * Fetch dissimilar images for one or more anchor UUIDs.
  * For multiple anchors: queries each anchor in parallel, then merges by minimum rank
  * (images that rank near 0 for any anchor are considered most distinct from all anchors).
+ *
+ * @param {string[]} anchorUuids
+ * @param {number} count
+ * @param {string[]|null} [candidateUuids] Restrict the diversity walk to this UUID set.
  */
-function _fetchDissimilarImages(anchorUuids, count) {
-  if (anchorUuids.length === 1) return findDissimilarImagesByUuid(anchorUuids[0], count);
-  return Promise.all(anchorUuids.map(uuid => findDissimilarImagesByUuid(uuid, count))).then(allResults => {
+function _fetchDissimilarImages(anchorUuids, count, candidateUuids = null) {
+  if (anchorUuids.length === 1) return findDissimilarImagesByUuid(anchorUuids[0], count, candidateUuids);
+  return Promise.all(anchorUuids.map(uuid => findDissimilarImagesByUuid(uuid, count, candidateUuids))).then(allResults => {
     const bestRank = new Map(); // imageUuid → best (min) rank across all queries
     for (const results of allResults) {
       for (const { imageUuid: mu, rank } of results) {
@@ -142,21 +146,22 @@ async function _openRankedImagesModal({ title, makeFetchFn, referenceImageUuids 
 /**
  * Open a review modal showing images most visually distinct from the given anchor(s).
  *
- * @param {{ imageUuid?: string, imageUuids?: string[] }} params
+ * @param {{ imageUuid?: string, imageUuids?: string[], candidateUuids?: string[]|null }} params
  *   Pass `imageUuid` (string) for a single anchor or `imageUuids` (array) for multiple.
+ *   `candidateUuids`, when given, restricts the diversity walk to that UUID set.
  */
-export async function openDissimilarImagesModal({ imageUuid = null, imageUuids = null }) {
+export async function openDissimilarImagesModal({ imageUuid = null, imageUuids = null, candidateUuids = null }) {
   const anchorUuids = imageUuids ?? (imageUuid ? [imageUuid] : []);
   if (!anchorUuids.length) return;
 
   const similarBtn = buildSwitchModeButton('← Most Similar', async () => {
     const { openSimilarImagesModal } = await import('/app-static/js/ui/similarSearch.js');
-    openSimilarImagesModal({ imageUuids: anchorUuids });
+    openSimilarImagesModal({ imageUuids: anchorUuids, candidateUuids });
   });
 
   return _openRankedImagesModal({
-    title: 'Most Distinct Images',
-    makeFetchFn: count => _fetchDissimilarImages(anchorUuids, count),
+    title: candidateUuids ? 'Most Distinct Images (filtered)' : 'Most Distinct Images',
+    makeFetchFn: count => _fetchDissimilarImages(anchorUuids, count, candidateUuids),
     referenceImageUuids: new Set(anchorUuids),
     extraControls: similarBtn,
   });

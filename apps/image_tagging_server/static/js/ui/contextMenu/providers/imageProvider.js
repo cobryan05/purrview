@@ -18,6 +18,36 @@ import { openDissimilarImagesModal } from '/app-static/js/ui/dissimilarSearch.js
 import { buildTagPanel } from '../tagPanelBuilder.js';
 
 /**
+ * Build the "search all images" / "search with current filters" submenu for a
+ * similar/dissimilar image search action.
+ *
+ * @param {object[]} adapters
+ * @param {object} ctx
+ * @param {(imageUuids: string[], candidateUuids: string[]|null) => void} openFn
+ */
+function _buildScopedSearchSubmenu(adapters, ctx, openFn) {
+  const imageUuids = adapters.map(a => a.getUuid?.()).filter(Boolean);
+  return [
+    {
+      label: 'Search all images',
+      onSelect: () => {
+        ctx.close();
+        if (imageUuids.length) openFn(imageUuids, null);
+      },
+    },
+    {
+      label: 'Search with current filters',
+      onSelect: async () => {
+        ctx.close();
+        if (!imageUuids.length) return;
+        const candidateUuids = await adapters[0].getFilteredImageUuids?.();
+        openFn(imageUuids, candidateUuids ?? null);
+      },
+    },
+  ];
+}
+
+/**
  * Build a label-list panel for the Mark-label flyouts.
  *
  * @param {(uuid: string) => Promise<void>} onSelect
@@ -104,19 +134,13 @@ registerContextProvider('image', async (adapters, ctx) => {
     // ── Similar search ─────────────────────────────────────────────────────
     {
       label: 'Search for similar images…',
-      onSelect: () => {
-        const imageUuids = adapters.map(a => a.getUuid?.()).filter(Boolean);
-        ctx.close();
-        if (imageUuids.length) openSimilarImagesModal({ imageUuids });
-      },
+      submenu: () => _buildScopedSearchSubmenu(adapters, ctx,
+        (imageUuids, candidateUuids) => openSimilarImagesModal({ imageUuids, candidateUuids })),
     },
     {
       label: 'Search for dissimilar images…',
-      onSelect: () => {
-        const imageUuids = adapters.map(a => a.getUuid?.()).filter(Boolean);
-        ctx.close();
-        if (imageUuids.length) openDissimilarImagesModal({ imageUuids });
-      },
+      submenu: () => _buildScopedSearchSubmenu(adapters, ctx,
+        (imageUuids, candidateUuids) => openDissimilarImagesModal({ imageUuids, candidateUuids })),
     },
   ];
 

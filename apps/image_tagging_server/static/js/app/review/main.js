@@ -487,6 +487,39 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
     ...VERIFICATION_TAG_UUIDS,
   ]);
 
+  // Full set of image UUIDs matching this review panel's current scope — the
+  // active filter panel state (top-level tab) or, inside a nested search-results
+  // modal, the modal's own candidate list (fetchImages). Used by image/bbox
+  // context-menu adapters to scope "search with current filters" similar/dissimilar
+  // queries.
+  async function _getFilteredImageUuids() {
+    if (fetchImages) {
+      const images = await fetchImages({ afterUuid: null, limit: Number.MAX_SAFE_INTEGER });
+      return images.map(i => i.uuid);
+    }
+    const fs = filterPanel.getState();
+    const { images } = await fetchReviewQueue({
+      tagUuids: fs.showAllBboxes ? [] : fs.tagUuids,
+      tagExcludeUuids: fs.tagExcludeUuids ?? [],
+      showAllBboxes: fs.showAllBboxes,
+      tagMatchMode: fs.tagMatchMode,
+      labelUuids: fs.labelUuids,
+      labelExcludeUuids: fs.labelExcludeUuids ?? [],
+      labelMatchMode: fs.labelMatchMode,
+      labelIncludeChildren: fs.labelIncludeChildren,
+      imageLabelConditions: fs.imageLabelConditions ?? [],
+      requireBboxes: _viewFilter === 'bboxes',
+      sortBy: sortBySelect.value,
+      sortOrder: sortOrderSelect.value,
+      filenameSearch: fs.filenameSearch || undefined,
+      dateFrom: fs.dateFrom || undefined,
+      dateTo: fs.dateTo || undefined,
+      verificationCheck: fs.verificationCheck,
+      limit: Number.MAX_SAFE_INTEGER,
+    });
+    return images.map(i => i.uuid);
+  }
+
   // ── Review bbox adapter factory ────────────────────────────────────────────
   function makeReviewBboxAdapter(entry, card) {
     const { bbox, img } = entry;
@@ -517,6 +550,7 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
       getImageUuid() { return img.uuid ?? null; },
       getLabelUuid() { return bbox.labelUuid ?? bbox.label?.uuid ?? null; },
       getTagUuids() { return currentTagUuids(); },
+      getFilteredImageUuids: _getFilteredImageUuids,
 
       async applyLabel(uuid) {
         const existingTagUuids = currentTagUuids();
@@ -645,6 +679,8 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
           ? (tags.some(t => t.uuid === uuid) ? tags : [...tags, { uuid, icon: null }])
           : tags.filter(t => t.uuid !== uuid);
       },
+
+      getFilteredImageUuids: _getFilteredImageUuids,
     };
   }
 
