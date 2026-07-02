@@ -189,7 +189,7 @@ class LabelRead(OrmModel):
     scope: LabelScope = LabelScope.OBJECT
 
 
-class LabelUpdate(BaseModel):
+class LabelUpdate(ApiModel):
     name: Optional[str] = None
     color: Optional[str] = None
     parent_uuid: Optional[str] = None

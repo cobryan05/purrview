@@ -42,6 +42,22 @@ async def test_update_label(http_client):
     assert "bird" not in names
 
 
+async def test_update_label_type_via_camel_case(http_client):
+    """The UI sends {labelType: ...} (camelCase). LabelUpdate must map it to
+    label_type; otherwise the key is silently dropped and the type never changes.
+    """
+    create_r = await http_client.post("/api/labels", json={"name": "cat", "color": "#FF0000"})
+    uuid = create_r.json()["label"]["uuid"]
+
+    patch_r = await http_client.patch(f"/api/labels/{uuid}", json={"labelType": "dynamic"})
+    assert patch_r.status_code == 200
+    assert patch_r.json()["status"] == "success"
+
+    list_r = await http_client.get("/api/labels")
+    lbl = next(l for l in list_r.json()["labels"] if l["uuid"] == uuid)
+    assert lbl["labelType"] == "dynamic"
+
+
 async def test_delete_label(http_client):
     create_r = await http_client.post("/api/labels", json={"name": "fish", "color": "#AABBCC"})
     uuid = create_r.json()["label"]["uuid"]
