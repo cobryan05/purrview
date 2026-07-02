@@ -3077,8 +3077,10 @@ class DbClient:
 
         An image is 'ready' when every target label has an explicit PRESENT or ABSENT
         row in image_labels (verified_count >= readiness_threshold); 'needs_review' when
-        it has partial coverage (0 < verified_count < readiness_threshold); 'not_started'
-        when it has zero coverage (verified_count == 0).
+        it has partial coverage (0 < verified_count < readiness_threshold) AND at least
+        one target label is verified PRESENT (i.e. the image actually contains one of
+        the training-set labels); 'not_started' otherwise — including images whose only
+        verifications are ABSENT, since they haven't surfaced any in-scope label yet.
 
         When rollup is active (any node has roll_up_unchecked=True) an image is
         considered ready as soon as ANY ONE of the in-scope labels is verified,
@@ -3163,17 +3165,30 @@ class DbClient:
             rows = result.all()
             verified_by_image = {row[0]: row[1] for row in rows}
 
+            present_count_col = func.count(ImageLabel.label_uuid).label("present_count")
+            result = await session.exec(
+                select(ImageLabel.image_uuid, present_count_col)
+                .where(
+                    ImageLabel.image_uuid.in_(image_uuids),
+                    ImageLabel.label_uuid.in_(label_uuids),
+                    ImageLabel.status == ImageItemStatus.PRESENT,
+                )
+                .group_by(ImageLabel.image_uuid)
+            )
+            present_by_image = {row[0]: row[1] for row in result.all()}
+
             ready_count = 0
             needs_review_count = 0
             not_started_count = 0
             for img_uuid in image_uuids:
                 verified_count = verified_by_image.get(img_uuid, 0)
+                present_count = present_by_image.get(img_uuid, 0)
                 if verified_count >= readiness_threshold:
                     ready_count += 1
-                elif verified_count == 0:
-                    not_started_count += 1
-                else:
+                elif verified_count > 0 and present_count > 0:
                     needs_review_count += 1
+                else:
+                    not_started_count += 1
 
         return {
             "ready_count": ready_count,
@@ -3663,7 +3678,8 @@ class DbClient:
         ``get_training_config_readiness``:
           - "ready"         — verified_count >= readiness_threshold
           - "needs_review"  — 0 < verified_count < readiness_threshold (partial coverage)
-          - "not_started"   — verified_count == 0 (untouched)
+                              AND at least one target label verified PRESENT
+          - "not_started"   — everything else (untouched, or only ABSENT verifications)
 
         v1: in-memory merge across datasets, same approach as
         ``get_training_config_needs_review_images``. Push to SQL union if datasets grow large.
@@ -3723,16 +3739,32 @@ class DbClient:
             rows = result.all()
             verified_by_image = {row[0]: row[1] for row in rows}
 
-        def _matches(verified_count: int) -> bool:
+            present_count_col = func.count(ImageLabel.label_uuid).label("present_count")
+            result = await session.exec(
+                select(ImageLabel.image_uuid, present_count_col)
+                .where(
+                    ImageLabel.image_uuid.in_(image_uuids),
+                    ImageLabel.label_uuid.in_(label_uuids),
+                    ImageLabel.status == ImageItemStatus.PRESENT,
+                )
+                .group_by(ImageLabel.image_uuid)
+            )
+            present_by_image = {row[0]: row[1] for row in result.all()}
+
+        def _matches(verified_count: int, present_count: int) -> bool:
             if bucket == "ready":
                 return verified_count >= readiness_threshold
-            elif bucket == "not_started":
-                return verified_count == 0
             elif bucket == "needs_review":
-                return 0 < verified_count < readiness_threshold
+                return 0 < verified_count < readiness_threshold and present_count > 0
+            elif bucket == "not_started":
+                return verified_count < readiness_threshold and not (verified_count > 0 and present_count > 0)
             raise ValueError(f"Unknown readiness bucket: {bucket!r}")
 
-        bucket_images = [img for img in all_images if _matches(verified_by_image.get(img.uuid, 0))]
+        bucket_images = [
+            img
+            for img in all_images
+            if _matches(verified_by_image.get(img.uuid, 0), present_by_image.get(img.uuid, 0))
+        ]
 
         if not bucket_images:
             return [], False

@@ -326,3 +326,44 @@ class TestReadinessBucketConsistency:
 
         partial_body = await _partial_review_images(http_client, cfg["uuid"])
         assert partial_body["images"] == []
+
+
+class TestNeedsReviewRequiresVerifiedPresence:
+    """'needs review' must be scoped to images that actually contain (verified PRESENT)
+    one or more of the training-set labels — an image whose only partial verification
+    is ABSENT hasn't surfaced any in-scope label and belongs in 'not started' instead."""
+
+    async def test_absent_only_partial_image_falls_into_not_started(self, http_client, files_root):
+        ds = await _create_dataset(http_client, "bk-ds-absent-only")
+        cfg, parent_label, child_label = await _make_two_label_tc(http_client, "bk-tc-absent-only", ds["uuid"])
+
+        await _register_image(http_client, files_root, "bk_absent_only.png")
+        # Only the parent label verified, and as ABSENT — no in-scope label actually present.
+        await _verify_label(http_client, "bk_absent_only.png", parent_label, "absent")
+
+        partial_body = await _partial_review_images(http_client, cfg["uuid"])
+        assert partial_body["images"] == []
+
+        not_started_body = await _not_started_images(http_client, cfg["uuid"])
+        assert len(not_started_body["images"]) == 1
+        assert "bk_absent_only" in not_started_body["images"][0]["filename"]
+
+        readiness = await _readiness(http_client, cfg["uuid"])
+        assert readiness["needsReviewCount"] == 0
+        assert readiness["notStartedCount"] == 1
+        assert readiness["readyCount"] == 0
+
+    async def test_present_partial_image_still_needs_review(self, http_client, files_root):
+        ds = await _create_dataset(http_client, "bk-ds-present-partial")
+        cfg, parent_label, _child_label = await _make_two_label_tc(http_client, "bk-tc-present-partial", ds["uuid"])
+
+        await _register_image(http_client, files_root, "bk_present_partial.png")
+        await _verify_label(http_client, "bk_present_partial.png", parent_label, "present")
+
+        partial_body = await _partial_review_images(http_client, cfg["uuid"])
+        assert len(partial_body["images"]) == 1
+        assert "bk_present_partial" in partial_body["images"][0]["filename"]
+
+        readiness = await _readiness(http_client, cfg["uuid"])
+        assert readiness["needsReviewCount"] == 1
+        assert readiness["notStartedCount"] == 0
