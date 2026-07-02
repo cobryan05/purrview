@@ -5,11 +5,13 @@ DELETE /api/images/bbox/{uuid}
 GET    /api/images/{path}/bbox/{uuid}/thumbnail
 """
 
+import asyncio
 import uuid
 from pathlib import Path
 
 import pytest
 
+from apps.db_server.manager import Manager
 from apps.helpers.db.types import UNVERIFIED_TAG_UUID, VERIFIED_TAG_UUID
 from tests.conftest import make_png
 
@@ -269,6 +271,61 @@ async def test_bulk_apply_bboxes_relabel(http_client, image_file, label_uuid):
     tag_uuids = [t["uuid"] for t in bboxes[0]["tags"]]
     assert VERIFIED_TAG_UUID in tag_uuids
     assert UNVERIFIED_TAG_UUID not in tag_uuids
+
+
+async def test_bulk_apply_bboxes_terminates_when_sorted_by_updated_at_asc(
+    http_client, files_root, label_uuid, monkeypatch
+):
+    """Regression: bulk apply keyset-paginated by updated_at asc used to loop
+    forever, because each action bumps updated_at past the cursor so processed
+    rows re-match on the next page. It must terminate and touch each bbox once.
+    """
+    # Shrink the page size so a handful of images spans multiple pages.
+    monkeypatch.setattr(Manager, "BULK_APPLY_PAGE_SIZE", 2)
+
+    r2 = await http_client.post("/api/labels", json={"name": "relabel_target", "color": "#abcdef"})
+    other_uuid = r2.json()["label"]["uuid"]
+
+    n_images = 5
+    for i in range(n_images):
+        (files_root / f"loop_{i}.png").write_bytes(make_png())
+        await http_client.post(
+            "/api/images/metadata/update",
+            json={
+                "imagePath": f"loop_{i}.png",
+                "boxes": [
+                    {
+                        "uuid": str(uuid.uuid4()),
+                        "labelUuid": label_uuid,
+                        "x": 0.1, "y": 0.1, "width": 0.2, "height": 0.2,
+                        "tagUuids": [UNVERIFIED_TAG_UUID],
+                    }
+                ],
+            },
+        )
+
+    async def _do_bulk():
+        return await http_client.post(
+            "/api/images/bbox/bulk-apply",
+            json={
+                "filter": {"showAllBboxes": True, "limit": 50, "sortBy": "updated_at", "sortOrder": "asc"},
+                "action": "relabel",
+                "labelUuid": other_uuid,
+                "tagUuids": [],
+                "bboxTagFilter": [],
+                "bboxLabelFilter": [],
+                "showAllBboxes": True,
+            },
+        )
+
+    # If the loop never terminates this raises TimeoutError instead of hanging CI.
+    r = await asyncio.wait_for(_do_bulk(), timeout=15)
+    assert r.status_code == 200
+    body = r.json()
+    assert body["status"] == "success", body
+    # Each of the 5 bboxes must be modified exactly once — not re-processed.
+    assert body["modifiedCount"] == n_images, body
+    assert body["failCount"] == 0
 
 
 async def test_bulk_apply_bboxes_by_uuids_relabel(http_client, image_file, label_uuid):

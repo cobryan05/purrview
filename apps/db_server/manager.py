@@ -83,6 +83,7 @@ class Manager:
     """Manages interactions with the database"""
 
     POLLING_INTERVAL: float = 5.0  # Interval in seconds for periodic tasks
+    BULK_APPLY_PAGE_SIZE: int = 200  # Keyset page size for bulk_apply_bboxes (class attr so tests can shrink it)
 
     def __init__(self, db_client: DbClient, files_root: Path):
         """Initialize the Manager with a database client"""
@@ -636,9 +637,16 @@ class Manager:
         )
         label_filter_set: Optional[Set[str]] = set(bbox_label_filter) if bbox_label_filter else None
 
+        # Paginate by uuid regardless of the caller's requested sort. The action
+        # mutates image.updated_at, so keyset-paginating by updated_at (asc) would
+        # bump every processed row past the cursor and re-match it on the next
+        # page — an infinite loop that never terminates. Traversal order is
+        # irrelevant to the action (each matching bbox is touched exactly once).
+        search_params = search_params.model_copy(update={"sort_by": "uuid", "sort_order": "asc"})
+
         modified_count = 0
         fail_count = 0
-        _PAGE_SIZE = 200
+        _PAGE_SIZE = self.BULK_APPLY_PAGE_SIZE
         cursor_uuid: Optional[str] = None
         cursor_sort_value = None
 
