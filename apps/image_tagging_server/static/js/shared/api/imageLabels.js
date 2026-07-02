@@ -1,4 +1,29 @@
 import { apiFetch } from './apiUtils.js';
+
+/**
+ * Batch variant of fetchImageLabels — one POST for a whole page of images.
+ * @param {string[]} imageUuids
+ * @returns {Promise<Map<string, Map<string, 'present'|'absent'>>>}
+ *   imageUuid → (labelUuid → status). Images with no rows are omitted.
+ */
+export async function fetchImageLabelsBatch(imageUuids) {
+  if (!imageUuids.length) return new Map();
+  const res = await apiFetch('/api/images/labels/batch', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ imageUuids }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || data.status !== 'success') {
+    throw new Error(data.message || 'Failed to fetch image labels batch');
+  }
+  const out = new Map();
+  for (const [imageUuid, rows] of Object.entries(data.imageLabels ?? {})) {
+    out.set(imageUuid, new Map(rows.map(r => [r.labelUuid, r.status])));
+  }
+  return out;
+}
+
 /**
  * @param {string} imagePath
  * @returns {Promise<Map<string, 'present'|'absent'>>}

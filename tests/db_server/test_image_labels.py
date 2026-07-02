@@ -584,3 +584,53 @@ async def test_list_images_for_label_filters_by_status(http_client, image_file, 
 
     r_absent = await http_client.get("/api/image-labels", params={"label_uuid": label_uuid, "status": ["absent"]})
     assert len(r_absent.json()["images"]) == 1
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Batch endpoint — POST /api/images/labels/batch
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+async def _image_uuid_for(http_client, image_path: str) -> str:
+    r = await http_client.post("/api/images/review", json={"show_all_bboxes": True, "limit": 100})
+    for img in r.json()["images"]:
+        if img["filename"].endswith(image_path):
+            return img["uuid"]
+    raise AssertionError(f"image {image_path} not found in review queue")
+
+
+class TestBatchImageLabels:
+    async def test_batch_returns_rows_per_image(self, http_client, files_root, label_uuid, label2_uuid):
+        for name in ("batch_a.png", "batch_b.png", "batch_c.png"):
+            (files_root / name).write_bytes(make_png())
+            await _update_bboxes(http_client, name, [])
+        await _set_label(http_client, "batch_a.png", label_uuid, "present")
+        await _set_label(http_client, "batch_a.png", label2_uuid, "absent")
+        await _set_label(http_client, "batch_b.png", label_uuid, "absent")
+        # batch_c gets no rows.
+
+        uuid_a = await _image_uuid_for(http_client, "batch_a.png")
+        uuid_b = await _image_uuid_for(http_client, "batch_b.png")
+        uuid_c = await _image_uuid_for(http_client, "batch_c.png")
+
+        r = await http_client.post(
+            "/api/images/labels/batch",
+            json={"imageUuids": [uuid_a, uuid_b, uuid_c, str(uuid.uuid4())]},
+        )
+        assert r.status_code == 200
+        body = r.json()
+        assert body["status"] == "success"
+        by_image = body["imageLabels"]
+
+        rows_a = {row["labelUuid"]: row["status"] for row in by_image[uuid_a]}
+        assert rows_a == {label_uuid: "present", label2_uuid: "absent"}
+        rows_b = {row["labelUuid"]: row["status"] for row in by_image[uuid_b]}
+        assert rows_b == {label_uuid: "absent"}
+        # No-row and unknown images are omitted entirely.
+        assert uuid_c not in by_image
+        assert len(by_image) == 2
+
+    async def test_batch_empty_payload_returns_empty_map(self, http_client):
+        r = await http_client.post("/api/images/labels/batch", json={"imageUuids": []})
+        assert r.status_code == 200
+        assert r.json()["imageLabels"] == {}

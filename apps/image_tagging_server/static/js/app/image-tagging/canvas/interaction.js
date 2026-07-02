@@ -420,6 +420,11 @@ export function handleClick(e, runtime) {
   transformer.nodes([bboxGroup]);
   transformer.moveToTop();
 
+  // Konva .on() with a namespace appends rather than replaces, so re-selecting
+  // the same bbox would stack a duplicate handler (N undo pushes per resize).
+  // Clear unconditionally before wiring.
+  bboxGroup.off('transformend.transformer');
+
   // Resize handler: Konva fires transformend from the Transformer node (not the
   // BboxView group), so the stage-level bubbling guard won't catch it. Wire it
   // directly on the group so we reliably get pushState + dirty notification.

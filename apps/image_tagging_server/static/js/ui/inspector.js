@@ -500,23 +500,41 @@ export function createTagPanel(container, runtime) {
 
   // ── Full mount ────────────────────────────────────────────────────────────
 
+  // Re-entrancy guard: TAGS_UPDATED / LABELS_UPDATED handlers call _mount()
+  // without awaiting, so two synchronous events would interleave two mounts
+  // and duplicate the panel. Coalesce into one trailing re-mount.
+  let _mounting = false;
+  let _remountQueued = false;
+
   async function _mount() {
-    container.innerHTML = '';
-    try {
-      [_tagsMap, _labelsMap] = await Promise.all([fetchTags(), fetchLabels()]);
-    } catch (err) {
-      console.error('Tags panel: failed to load tags/labels', err);
+    if (_mounting) {
+      _remountQueued = true;
       return;
     }
+    _mounting = true;
+    try {
+      do {
+        _remountQueued = false;
+        container.innerHTML = '';
+        try {
+          [_tagsMap, _labelsMap] = await Promise.all([fetchTags(), fetchLabels()]);
+        } catch (err) {
+          console.error('Tags panel: failed to load tags/labels', err);
+          return;
+        }
 
-    container.appendChild(_buildLabelSection());
-    container.appendChild(_buildTagList());
+        container.appendChild(_buildLabelSection());
+        container.appendChild(_buildTagList());
 
-    _refreshLabelSection();
-    _refreshCheckboxes();
-    _refreshHighlights();
-    // Apply any already-loaded statuses to the freshly built rows.
-    _refreshTagStatusButtons();
+        _refreshLabelSection();
+        _refreshCheckboxes();
+        _refreshHighlights();
+        // Apply any already-loaded statuses to the freshly built rows.
+        _refreshTagStatusButtons();
+      } while (_remountQueued);
+    } finally {
+      _mounting = false;
+    }
   }
 
   // ── Event subscriptions ───────────────────────────────────────────────────

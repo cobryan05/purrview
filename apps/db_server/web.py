@@ -361,6 +361,15 @@ class GetImageLabelsResponse(StatusResponse):
     labels: List[ImageLabelRead] = Field(default_factory=list)
 
 
+class BatchImageLabelsPayload(Payload):
+    image_uuids: List[str] = Field(default_factory=list)
+
+
+class BatchImageLabelsResponse(StatusResponse):
+    # image_uuid → label rows; images with no rows are omitted.
+    image_labels: Dict[str, List[ImageLabelRead]] = Field(default_factory=dict)
+
+
 class ListImagesForLabelResponse(StatusResponse):
     images: List[ImageLabelWithFilename] = Field(default_factory=list)
 
@@ -1431,6 +1440,20 @@ class WebApp:
             if labels is None:
                 return GetImageLabelsResponse(status=JsonValues.FAILURE, message="Image not found")
             return GetImageLabelsResponse(labels=labels)
+
+        @self._app.post(
+            "/api/images/labels/batch",
+            response_model=BatchImageLabelsResponse,
+            tags=[ApiTags.IMAGES],
+            operation_id="get_image_labels_batch",
+        )
+        async def get_image_labels_batch(payload: BatchImageLabelsPayload) -> BatchImageLabelsResponse:
+            """Return image-label rows for a batch of image UUIDs in one query.
+
+            Images with no rows (and unknown UUIDs) are omitted from the map.
+            """
+            image_labels = await self._manager.get_image_labels_bulk(payload.image_uuids)
+            return BatchImageLabelsResponse(image_labels=image_labels)
 
         @self._app.get(
             "/api/image-labels",

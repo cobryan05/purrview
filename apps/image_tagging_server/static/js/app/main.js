@@ -42,6 +42,11 @@ export async function init(appState) {
 
   const { container, activateTab } = setupMainTabs('#main-tabs', async (tabName, button, pane) => {
     if (!initializedFeatures.has(tabName)) {
+      // Mark initialized BEFORE awaiting: a fast A→B→A tab bounce re-enters
+      // this callback while the first init() is still in flight, and a
+      // post-await add() would let it start a second concurrent init
+      // (duplicate Konva stage / review panel, leaked subscriptions).
+      initializedFeatures.add(tabName);
       if (tabName === 'tab-image-tagging') {
         await initImageTagging(appState.imgRuntime, pane);
       } else if (tabName === 'tab-configuration') {
@@ -51,8 +56,10 @@ export async function init(appState) {
       } else if (tabName === 'tab-settings') {
         await initSettings?.();
       }
-      initializedFeatures.add(tabName);
     }
+    // Let features react to main-tab focus changes (e.g. the Configuration
+    // tab closes its task SSE stream when it loses focus).
+    events.publish(EventTypes.MAIN_TAB_CHANGED, { tabName });
   });
 
 

@@ -51,6 +51,11 @@
 export { };
 
 export const EventTypes = Object.freeze({
+  /**
+   * Fired after a main tab is activated (including the initial one).
+   * Payload: { tabName: string }  e.g. { tabName: 'tab-configuration' }
+   */
+  MAIN_TAB_CHANGED: "tabs:main:changed",
   CANVAS_BBOX_DOUBLE_CLICKED: "canvas:bbox:double_clicked",
   CANVAS_BBOX_CLICKED: "canvas:bbox:clicked",
   CANVAS_TOOL_CHANGED: "canvas:tool:changed",

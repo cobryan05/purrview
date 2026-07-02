@@ -1122,26 +1122,43 @@ export async function createLabelList(container, options = {}) {
 
   let _destroyFn = () => {};
   let _handle = null;
+  // Re-entrancy guard: event handlers call mount() without awaiting, so two
+  // synchronous events would interleave two async mounts and append the list
+  // twice. Coalesce: one pending re-mount runs after the in-flight one.
+  let _mounting = false;
+  let _remountQueued = false;
 
   async function mount() {
-    _destroyFn();
-    _destroyFn = () => {};
-    container.innerHTML = '';
-
-    let handle;
-    if (mode === 'edit') {
-      handle = await mountEditMode(container, { filter, onRerender: mount });
-    } else if (mode === 'model-config') {
-      handle = await mountModelConfigMode(container, {
-        labelsMap, initialSelected, initialSubmodels, initialRollUpUnchecked,
-        defaultSpec, onSubmodelsChanged, onRollUpUncheckedChanged, scopeFilter,
-      });
-    } else {
-      handle = await mountSelectMode(container, { runtime, filter });
+    if (_mounting) {
+      _remountQueued = true;
+      return;
     }
+    _mounting = true;
+    try {
+      do {
+        _remountQueued = false;
+        _destroyFn();
+        _destroyFn = () => {};
+        container.innerHTML = '';
 
-    _handle = handle;
-    _destroyFn = handle?.destroy ?? (() => {});
+        let handle;
+        if (mode === 'edit') {
+          handle = await mountEditMode(container, { filter, onRerender: mount });
+        } else if (mode === 'model-config') {
+          handle = await mountModelConfigMode(container, {
+            labelsMap, initialSelected, initialSubmodels, initialRollUpUnchecked,
+            defaultSpec, onSubmodelsChanged, onRollUpUncheckedChanged, scopeFilter,
+          });
+        } else {
+          handle = await mountSelectMode(container, { runtime, filter });
+        }
+
+        _handle = handle;
+        _destroyFn = handle?.destroy ?? (() => {});
+      } while (_remountQueued);
+    } finally {
+      _mounting = false;
+    }
   }
 
   await mount();

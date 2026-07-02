@@ -847,3 +847,49 @@ class TestClearAnnotations:
             return { afterClear, afterUndo };
         }""")
         assert result == {'afterClear': 0, 'afterUndo': 1}
+
+
+# ---------------------------------------------------------------------------
+# Transformend handler stacking on reselect
+# ---------------------------------------------------------------------------
+
+class TestTransformendHandlerNotStacked:
+    def test_reselecting_same_bbox_keeps_single_transformend_handler(self, shared_page: Page):
+        """Clicking an already-selected bbox must not stack another
+        transformend handler — otherwise every resize pushes N undo states
+        and publishes N change events."""
+        page = shared_page
+        result = page.evaluate("""async () => {
+            const { createImageTaggingRuntime } = await import('/app-static/js/app/image-tagging/runtime.js');
+            const { createUIBBbox } = await import('/app-static/js/shared/domain/image/mapper.js');
+            const { rerenderBboxViews } = await import('/app-static/js/app/image-tagging/canvas/manager.js');
+            const { handleMouseUp, handleClick } =
+                await import('/app-static/js/app/image-tagging/canvas/interaction.js');
+            const { events, EventTypes } = await import('/app-static/js/shared/events/index.js');
+
+            """ + _SETUP + """
+
+            const b = createUIBBbox({ uuid: 'b1', x: 0.1, y: 0.1, width: 0.2, height: 0.2 });
+            runtime.state.image.bboxes.set('b1', b);
+            rerenderBboxViews(runtime.canvas, runtime.state.image.bboxes, runtime.canvas.viewport);
+
+            runtime.setTool('select');
+            const cx = 160, cy = 120;
+
+            // Select the bbox, then click it a second time (same spot).
+            setPtr(cx, cy);
+            await handleMouseUp(makeEvt(0, cx, cy), runtime);
+            handleClick(makeEvt(0), runtime);
+            await handleMouseUp(makeEvt(0, cx, cy), runtime);
+            handleClick(makeEvt(0), runtime);
+
+            let publishes = 0;
+            const unsub = events.subscribeToCanvas(runtime.id, EventTypes.CANVAS_BBOXES_CHANGED,
+                () => publishes++);
+            const node = runtime.canvas.transformer.nodes()[0];
+            node.fire('transformend');
+            unsub();
+
+            return publishes;
+        }""")
+        assert result == 1, f"transformend fired {result} handlers — reselect stacked duplicates"

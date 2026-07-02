@@ -1026,6 +1026,48 @@
         }
       }
     },
+    "/api/images/labels/batch": {
+      "post": {
+        "tags": [
+          "images"
+        ],
+        "summary": "Get Image Labels Batch",
+        "description": "Return image-label rows for a batch of image UUIDs in one query.\n\nImages with no rows (and unknown UUIDs) are omitted from the map.",
+        "operationId": "get_image_labels_batch",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BatchImageLabelsPayload"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BatchImageLabelsResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/image-labels": {
       "get": {
         "tags": [
@@ -4872,6 +4914,51 @@
           "imageUuids"
         ],
         "title": "BatchByUuidsPayload"
+      },
+      "BatchImageLabelsPayload": {
+        "properties": {
+          "imageUuids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Imageuuids"
+          }
+        },
+        "type": "object",
+        "title": "BatchImageLabelsPayload"
+      },
+      "BatchImageLabelsResponse": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "title": "Status",
+            "default": "success"
+          },
+          "message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Message"
+          },
+          "imageLabels": {
+            "additionalProperties": {
+              "items": {
+                "$ref": "#/components/schemas/ImageLabelRead"
+              },
+              "type": "array"
+            },
+            "type": "object",
+            "title": "Imagelabels"
+          }
+        },
+        "type": "object",
+        "title": "BatchImageLabelsResponse"
       },
       "BatchImagesResponse": {
         "properties": {

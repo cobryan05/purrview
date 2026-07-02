@@ -22,7 +22,7 @@ import {
   VERIFICATION_TAG_UUIDS,
   swapVerificationTag,
 } from '/app-static/js/shared/api/review.js';
-import { fetchImageLabels, setImageLabel } from '/app-static/js/shared/api/imageLabels.js';
+import { fetchImageLabels, fetchImageLabelsBatch, setImageLabel } from '/app-static/js/shared/api/imageLabels.js';
 import { setImageTag, setImageTagStatus } from '/app-static/js/shared/api/imageTags.js';
 import { attachContext } from '/app-static/js/ui/contextMenu/index.js';
 import { getPrimaryRuntimeId } from '/app-static/js/app/image-tagging/runtime.js';
@@ -306,6 +306,9 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
     renderRow: (entry, i) => entry.kind === 'image'
       ? buildImageRow(entry.img, labels, i)
       : buildBboxRow(entry.bbox, entry.img, labels, i),
+    // Cards subscribe to EventBus on build; drain before every rebuild or a
+    // grid/list toggle doubles the subscriptions each click.
+    onBeforeRender: () => _drainCardUnsubs(),
   });
   // `grid` aliases the live container holding cards/rows — selection, stale-marking,
   // group-highlight, overlay refresh, bulk apply and nav-context queries all go through it.
@@ -462,6 +465,10 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
   let _selectionKind = null;  // 'bbox' | 'image' | null — type of currently selected cards
   let _pageSize = DEFAULT_PAGE_SIZE;
   let _imageCardRefreshers = new Map(); // img.uuid → () => void — redraws bbox overlay
+  // Whole-image label statuses for the current page, fetched in ONE batch call
+  // per render — cards read from here instead of issuing a GET per card.
+  // img.uuid → (labelUuid → 'present'|'absent')
+  let _pageImageLabels = new Map();
 
   let _selected = new Set();      // selected IDs (bbox.uuid or img.uuid depending on kind)
   let _staleUuids = new Set();    // entry IDs modified on this page (for status display)
@@ -1104,6 +1111,17 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
       break fetchLoop;
     }
 
+    // One batch request resolves whole-image label chips for every card on the
+    // page (was: one GET per card — up to page-size parallel requests).
+    try {
+      const imageUuids = [...new Set(_allEntries.map(e => e.img.uuid))];
+      _pageImageLabels = await fetchImageLabelsBatch(imageUuids);
+    } catch (err) {
+      Logger.error('review: batch image-labels fetch failed', err);
+      _pageImageLabels = new Map();
+    }
+    if (_renderGeneration !== _gen) return;
+
     const totalPages = _totalCount > 0 ? Math.ceil(_totalCount / _pageSize) : null;
     const pageLabel = totalPages ? `Page ${_pageCursors.length} of ${totalPages}` : `Page ${_pageCursors.length}`;
     const cardCount = _allEntries.length;
@@ -1406,11 +1424,9 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
     const imageLabelChipsRow = document.createElement('div');
     imageLabelChipsRow.style.cssText = 'display:flex;flex-wrap:wrap;gap:2px;margin-bottom:0.2em;';
 
-    async function _renderImageLabelChips() {
+    function _renderImageLabelChips(labelMap) {
       imageLabelChipsRow.innerHTML = '';
-      let labelMap;
-      try { labelMap = await fetchImageLabels(img.filename); } catch { return; }
-      for (const [luuid, status] of labelMap) {
+      for (const [luuid, status] of (labelMap ?? [])) {
         if (status !== 'present') continue;
         const lbl = labels.get(luuid);
         if (!lbl) continue;
@@ -1422,13 +1438,18 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
       }
     }
 
-    _renderImageLabelChips();
+    // Initial chips come from the page-level batch fetch — no per-card GET.
+    _renderImageLabelChips(_pageImageLabels.get(img.uuid));
 
     // Keep chips up to date when labels change from context menu or canvas save.
+    // Only then is a single-image fetch warranted (rare, user-triggered).
     // Subscriptions are drained by _drainCardUnsubs() before each page render and in destroy().
     async function _onRelevantChange({ imageUuid: u } = {}) {
       if (u !== img.uuid) return;
-      await _renderImageLabelChips();
+      let labelMap;
+      try { labelMap = await fetchImageLabels(img.filename); } catch { return; }
+      _pageImageLabels.set(img.uuid, labelMap);
+      _renderImageLabelChips(labelMap);
     }
     _cardUnsubs.push(
       events.subscribe(EventTypes.IMAGE_LABELS_CHANGED, _onRelevantChange),
@@ -2207,6 +2228,7 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
       _unsubImageSaved();
       _unsubImageDeleted();
       _unsubBboxChanged();
+      filterPanel?.destroy();
       _thumbLoader.reset();
       hoverPreview.destroy();
       entryView.destroy();
@@ -2463,14 +2485,20 @@ function _computeUserChangedBboxUuids(baseline, current) {
  * @param {string[]} deletedBboxUuids
  * @param {Set<string>} userChangedUuids
  */
-function _mergeExternalBboxChanges(runtime, updatedBboxes, deletedBboxUuids, userChangedUuids) {
+export function _mergeExternalBboxChanges(runtime, updatedBboxes, deletedBboxUuids, userChangedUuids) {
   const bboxes = runtime.state.image.bboxes;
   let anyChange = false;
   for (const [uuid, uiBbox] of (updatedBboxes ?? [])) {
     if (userChangedUuids.has(uuid)) continue;
     const existing = bboxes.get(uuid);
     if (!existing) continue; // bbox not present on this canvas — skip
-    if (uiBbox.label !== undefined) existing.label = uiBbox.label;
+    if (uiBbox.label !== undefined) {
+      // Incoming bboxes are review-API shaped (label.name); canvas renderers
+      // read label.text — normalize so merged chips don't render blank.
+      existing.label = uiBbox.label === null
+        ? null
+        : { ...uiBbox.label, text: uiBbox.label.text ?? uiBbox.label.name };
+    }
     if (uiBbox.labelUuid !== undefined) existing.labelUuid = uiBbox.labelUuid;
     if (uiBbox.tags !== undefined) existing.tags = uiBbox.tags;
     anyChange = true;

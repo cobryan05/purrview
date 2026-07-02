@@ -39,6 +39,7 @@ export function createEntryView({
   renderCell,
   renderLeading,
   onToggle,
+  onBeforeRender,
 }) {
   const stored = localStorage.getItem(storageKey);
   let _view = (stored === 'list' || stored === 'grid') ? stored : defaultView;
@@ -132,6 +133,10 @@ export function createEntryView({
   }
 
   function rerender() {
+    // Full rebuild ahead — give the owner a chance to release per-entry
+    // resources (event subscriptions, observers) created by renderCell/
+    // renderRow, or a view toggle duplicates them.
+    onBeforeRender?.();
     layout.innerHTML = '';
     const wrapper = document.createElement(_view === 'grid' ? 'div' : 'ul');
     wrapper.className = _view === 'grid' ? gridClass : listClass;

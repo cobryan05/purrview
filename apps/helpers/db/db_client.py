@@ -2174,6 +2174,17 @@ class DbClient:
             result = await session.exec(select(ImageLabel).where(ImageLabel.image_uuid == image_uuid))
             return result.all()
 
+    async def get_image_labels_bulk(self, image_uuids: List[str]) -> List[ImageLabel]:
+        """Return all image_label rows for a batch of images (chunked IN)."""
+        if not image_uuids:
+            return []
+        rows: List[ImageLabel] = []
+        async with self._async_session_maker() as session:
+            for chunk in _chunked(image_uuids):
+                result = await session.exec(select(ImageLabel).where(ImageLabel.image_uuid.in_(chunk)))
+                rows.extend(result.all())
+        return rows
+
     async def delete_image_labels(self, image_uuid: str, label_uuids: List[str]) -> None:
         """Delete image_label rows for the given image/label pairs."""
         if not label_uuids:

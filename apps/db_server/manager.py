@@ -932,6 +932,19 @@ class Manager:
         rows = await self._db_client.get_image_labels(image_uuid)
         return [ImageLabelRead.model_validate(r) for r in rows]
 
+    async def get_image_labels_bulk(self, image_uuids: List[str]) -> Dict[str, List[ImageLabelRead]]:
+        """Return {image_uuid: [label rows]} for a batch of image UUIDs.
+
+        Images with no rows are omitted; unknown UUIDs are silently ignored.
+        Lets the review grid resolve whole-image label chips for a page of
+        cards in one request instead of one GET per card.
+        """
+        rows = await self._db_client.get_image_labels_bulk(image_uuids)
+        out: Dict[str, List[ImageLabelRead]] = {}
+        for r in rows:
+            out.setdefault(r.image_uuid, []).append(ImageLabelRead.model_validate(r))
+        return out
+
     async def list_images_for_label(
         self,
         label_uuid: str,
