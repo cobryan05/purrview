@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional, Set, TypeVar, Union
@@ -138,6 +139,17 @@ DATASETS_JSON = "datasets.json"
 TASK_CONFIGS_JSON = "task_configs.json"
 DB_FILE = "db.sqlite"
 
+# IN-vs-EXISTS dispatch for the image-search bbox filters (see
+# _apply_image_search_filters / DbClient._should_use_exists_dispatch).
+# Estimated matched-image fraction above which every positive tag/label
+# predicate is emitted as a correlated EXISTS instead of IN (subquery).
+# Measured crossover on a 100k-image DB is ~1-2%; 20% leaves a wide margin for
+# the estimate's overestimation error (link counts vs distinct images).
+_EXISTS_DISPATCH_MIN_FRACTION = 0.20
+# TTL for the cached selectivity probe counts. Staleness only affects which
+# query shape is chosen, never correctness, so this can be generous.
+_SELECTIVITY_CACHE_TTL = 60.0
+
 
 def _escape_like_pattern(pattern: str) -> str:
     """Escape SQL LIKE metacharacters so user input is treated as literal text."""
@@ -167,19 +179,49 @@ def _label_uuids_with_descendants(label_uuids: List[str], cte_name: str = "label
     return select(cte.c.uuid)
 
 
-def _apply_image_search_filters(stmt: Select, params: ImageSearchParams) -> Select:
+def _apply_image_search_filters(stmt: Select, params: ImageSearchParams, *, use_exists: bool = False) -> Select:
     """Apply all ImageSearchParams filter predicates to *stmt* and return it.
 
     Does not add ORDER BY, LIMIT, or keyset cursors — those are caller concerns.
     Works for any Select target (ImageRecord, ImageRecord.uuid, etc.).
 
-    Performance note: bbox-related filters (tag, label, require_bboxes,
-    label_exclusions) are expressed as non-correlated IN / NOT IN subqueries
-    rather than correlated EXISTS.  SQLite materialises the inner SELECT once
-    as a hash table and then the outer scan does O(1) membership probes, which
-    is dramatically faster than re-evaluating a correlated EXISTS for every row
-    in a large images table.
+    Performance note: the bbox tag/label filters have two shapes, selected by
+    *use_exists* (see DbClient._should_use_exists_dispatch):
+
+    - use_exists=False (default): non-correlated ``IN (subquery)``. SQLite
+      materialises the inner SELECT once as a hash table; right choice for
+      rare predicates, and the only safe choice for zero-match ones.
+    - use_exists=True: correlated ``EXISTS`` per image. When every predicate
+      is common AND the caller orders by an indexed (sort_col, uuid) prefix
+      with a LIMIT, SQLite scans the sort index and stops after LIMIT matches
+      instead of materialising + sorting the whole matched set (measured
+      ~916ms → ~0.3ms on a 100k-image DB for the default review view). On a
+      rare predicate this degrades to a full-table scan, so callers must only
+      set it when the *conjunction* of all predicates is common.
     """
+
+    def _tag_predicate(tag_condition):
+        if use_exists:
+            return (
+                select(BBox.uuid)
+                .join(BBoxTagLink, BBoxTagLink.bbox_uuid == BBox.uuid)
+                .where(BBox.image_uuid == ImageRecord.uuid, tag_condition)
+                .exists()
+                .correlate(ImageRecord)
+            )
+        return ImageRecord.uuid.in_(
+            select(BBox.image_uuid).join(BBoxTagLink, BBoxTagLink.bbox_uuid == BBox.uuid).where(tag_condition)
+        )
+
+    def _label_predicate(label_condition):
+        if use_exists:
+            return (
+                select(BBox.uuid)
+                .where(BBox.image_uuid == ImageRecord.uuid, label_condition)
+                .exists()
+                .correlate(ImageRecord)
+            )
+        return ImageRecord.uuid.in_(select(BBox.image_uuid).where(label_condition))
     # Track whether any filter that already guarantees at least one bbox has
     # been applied, so we can skip the redundant require_bboxes subquery.
     _bbox_implied = False
@@ -192,28 +234,17 @@ def _apply_image_search_filters(stmt: Select, params: ImageSearchParams) -> Sele
             # Image must have at least one bbox carrying EACH selected tag
             # (the bboxes can be different).
             for tag_uuid in params.tag_uuids:
-                image_uuids = (
-                    select(BBox.image_uuid)
-                    .join(BBoxTagLink, BBoxTagLink.bbox_uuid == BBox.uuid)
-                    .where(BBoxTagLink.tag_uuid == tag_uuid)
-                )
-                stmt = stmt.where(ImageRecord.uuid.in_(image_uuids))
+                stmt = stmt.where(_tag_predicate(BBoxTagLink.tag_uuid == tag_uuid))
         else:
             # "any of" — image has a bbox tagged with ANY of the selected tags.
-            image_uuids = (
-                select(BBox.image_uuid)
-                .join(BBoxTagLink, BBoxTagLink.bbox_uuid == BBox.uuid)
-                .where(BBoxTagLink.tag_uuid.in_(params.tag_uuids))
-            )
-            stmt = stmt.where(ImageRecord.uuid.in_(image_uuids))
+            stmt = stmt.where(_tag_predicate(BBoxTagLink.tag_uuid.in_(params.tag_uuids)))
         _bbox_implied = True
 
     # ── Single-label backward-compat filter ───────────────────────────────────
     # Kept for API callers that still send label_uuid.  New callers should use
     # label_uuids instead.
     if params.label_uuid and params.label_uuid not in params.label_uuids:
-        image_uuids = select(BBox.image_uuid).where(BBox.label_uuid == params.label_uuid)
-        stmt = stmt.where(ImageRecord.uuid.in_(image_uuids))
+        stmt = stmt.where(_label_predicate(BBox.label_uuid == params.label_uuid))
         _bbox_implied = True
 
     # ── Filename search ────────────────────────────────────────────────────────
@@ -327,8 +358,7 @@ def _apply_image_search_filters(stmt: Select, params: ImageSearchParams) -> Sele
                     condition = BBox.label_uuid.in_(label_set)
                 else:
                     condition = BBox.label_uuid == label_uuid
-                image_uuids = select(BBox.image_uuid).where(condition)
-                stmt = stmt.where(ImageRecord.uuid.in_(image_uuids))
+                stmt = stmt.where(_label_predicate(condition))
         else:
             # "any of" — image has a bbox with ANY of the selected labels (or
             # their descendants when label_include_children is True).
@@ -336,8 +366,7 @@ def _apply_image_search_filters(stmt: Select, params: ImageSearchParams) -> Sele
                 label_condition = BBox.label_uuid.in_(_label_uuids_with_descendants(params.label_uuids))
             else:
                 label_condition = BBox.label_uuid.in_(params.label_uuids)
-            image_uuids = select(BBox.image_uuid).where(label_condition)
-            stmt = stmt.where(ImageRecord.uuid.in_(image_uuids))
+            stmt = stmt.where(_label_predicate(label_condition))
         _bbox_implied = True
 
     # ── Verification check ────────────────────────────────────────────────────
@@ -433,6 +462,9 @@ class DbClient:
             cursor.close()
 
         self._async_session_maker = sessionmaker(self._engine, class_=AsyncSession, expire_on_commit=False)
+        # Cached selectivity probe counts for the IN-vs-EXISTS search dispatch.
+        # Key → (count, monotonic timestamp); see _selectivity_count().
+        self._selectivity_cache: Dict[str, tuple] = {}
 
     async def init_db(self) -> None:
         """Initialize database and run any pending Alembic migrations.
@@ -951,6 +983,104 @@ class DbClient:
             result = await session.exec(statement)
             return result.all()
 
+    async def _selectivity_count(self, key: str, count_stmt: Select) -> int:
+        """Run (or return the cached result of) a cheap indexed COUNT probe."""
+        now = time.monotonic()
+        cached = self._selectivity_cache.get(key)
+        if cached is not None and (now - cached[1]) < _SELECTIVITY_CACHE_TTL:
+            return cached[0]
+        async with self._async_session_maker() as session:
+            value = (await session.exec(count_stmt)).one()
+        self._selectivity_cache[key] = (value, time.monotonic())
+        return value
+
+    async def _should_use_exists_dispatch(self, params: ImageSearchParams) -> bool:
+        """Decide IN vs correlated-EXISTS for the bbox tag/label search filters.
+
+        The EXISTS shape only wins when SQLite can scan the (sort_col, uuid)
+        index and stop after LIMIT rows pass the filter — which requires the
+        CONJUNCTION of every restrictive predicate to be common. A single rare
+        predicate (or an unestimatable one) turns the ordered scan into a
+        full-table scan, so this is deliberately all-or-nothing:
+
+        - Bail out if any filter we cannot cheaply estimate is present.
+        - Probe each positive tag/label predicate with an indexed COUNT
+          (cached, see _selectivity_count) and require every predicate's
+          estimated matched-image fraction to clear the threshold.
+
+        The probes count bbox links rather than distinct images (a COUNT on a
+        covering index, ~1ms, vs an expensive DISTINCT join), which
+        overestimates the fraction — the safe error direction: wrongly picking
+        EXISTS near the threshold costs 10s of ms, while a zero/near-zero
+        count always keeps IN and avoids the catastrophic full-scan case.
+        """
+        if (
+            params.filename_search
+            or params.filename_searches
+            or params.date_from
+            or params.date_to
+            or params.updated_date_from
+            or params.updated_date_to
+            or params.image_label_filters
+            or params.image_tag_filters
+            or params.tag_presence_filters
+            or params.label_exclusions
+            or params.label_verification_check
+        ):
+            return False
+
+        predicate_estimates: List[int] = []
+
+        if not params.show_all_bboxes and params.tag_uuids:
+            counts = [
+                await self._selectivity_count(
+                    f"tag:{tag_uuid}",
+                    select(func.count()).select_from(BBoxTagLink).where(BBoxTagLink.tag_uuid == tag_uuid),
+                )
+                for tag_uuid in params.tag_uuids
+            ]
+            # "any" matches the union of the tags (bounded below by the biggest
+            # one); "all" matches at most the smallest one.
+            predicate_estimates.append(max(counts) if params.tag_match_mode == "any" else min(counts))
+
+        async def _label_count(label_uuids: List[str]) -> int:
+            key = "label:" + ",".join(sorted(label_uuids))
+            if params.label_include_children:
+                key += ":tree"
+                condition = BBox.label_uuid.in_(
+                    _label_uuids_with_descendants(label_uuids, cte_name="label_desc_probe")
+                )
+            elif len(label_uuids) == 1:
+                condition = BBox.label_uuid == label_uuids[0]
+            else:
+                condition = BBox.label_uuid.in_(label_uuids)
+            return await self._selectivity_count(key, select(func.count()).select_from(BBox).where(condition))
+
+        if params.label_uuids:
+            if params.label_match_mode == "all":
+                counts = [await _label_count([label_uuid]) for label_uuid in params.label_uuids]
+                predicate_estimates.append(min(counts))
+            else:
+                predicate_estimates.append(await _label_count(params.label_uuids))
+
+        if params.label_uuid and params.label_uuid not in params.label_uuids:
+            # Backward-compat single-label filter (never expands children).
+            predicate_estimates.append(
+                await self._selectivity_count(
+                    f"label:{params.label_uuid}",
+                    select(func.count()).select_from(BBox).where(BBox.label_uuid == params.label_uuid),
+                )
+            )
+
+        if not predicate_estimates or min(predicate_estimates) == 0:
+            return False
+        total_images = await self._selectivity_count(
+            "images:total", select(func.count()).select_from(ImageRecord)
+        )
+        if total_images == 0:
+            return False
+        return (min(predicate_estimates) / total_images) >= _EXISTS_DISPATCH_MIN_FRACTION
+
     async def list_images_search(self, params: ImageSearchParams) -> List[ImageRecord]:
         """Flexible image search used by the review queue.
 
@@ -958,6 +1088,7 @@ class DbClient:
         substring search, date range, image-label status filters, and stable keyset
         pagination for both UUID and datetime sort orders.
         """
+        use_exists = await self._should_use_exists_dispatch(params)
         async with self._async_session_maker() as session:
             stmt = select(ImageRecord).options(
                 selectinload(ImageRecord.bboxes).options(
@@ -967,7 +1098,7 @@ class DbClient:
                 selectinload(ImageRecord.tags),
             )
 
-            stmt = _apply_image_search_filters(stmt, params)
+            stmt = _apply_image_search_filters(stmt, params, use_exists=use_exists)
 
             # ── Sort column ────────────────────────────────────────────────────
             # NOTE: filename is intentionally NOT a sort option — the keyset
@@ -1022,6 +1153,10 @@ class DbClient:
 
         Applies the same filter predicates as list_images_search but without ORDER BY,
         LIMIT, or keyset cursors so the result reflects the full matched set.
+
+        Always uses the IN (subquery) filter shape: a count visits every
+        matching row, so the EXISTS dispatch's early-termination advantage
+        does not apply and IN's one-time materialisation is cheapest.
         """
         async with self._async_session_maker() as session:
             inner = _apply_image_search_filters(select(ImageRecord.uuid), params)

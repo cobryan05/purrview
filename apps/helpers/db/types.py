@@ -233,6 +233,16 @@ class ImageRecord(ImageRecordBase, TimestampModel, table=True):
     """
 
     __tablename__ = "images"
+    # Sort-order indexes for the image-search keyset pagination. When the
+    # bbox tag/label filters are dispatched to correlated EXISTS (common
+    # predicates), SQLite scans one of these indexes in ORDER BY direction and
+    # stops at LIMIT — without them the EXISTS strategy degrades to a full
+    # scan + temp b-tree sort and is never a win. uuid is included so the
+    # composite fully covers the (sort_col, uuid) keyset ordering.
+    __table_args__ = (
+        sa.Index("ix_images_created_at_uuid", "created_at", "uuid"),
+        sa.Index("ix_images_updated_at_uuid", "updated_at", "uuid"),
+    )
     uuid: str = Field(default_factory=lambda: str(uuid4()), primary_key=True)
     bboxes: List["BBox"] = Relationship(
         back_populates="image", sa_relationship_kwargs={"cascade": "all, delete-orphan"}

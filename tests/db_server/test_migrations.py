@@ -378,3 +378,16 @@ class TestPerformanceIndexes:
         bboxes_idx = _indexes(engine, "bboxes")
         assert "ix_bboxes_image_uuid_label_uuid" in bboxes_idx, "composite image→label index missing from model"
         assert "ix_bboxes_image_uuid" not in bboxes_idx, "redundant single-column image index still on model"
+
+    def test_images_sort_indexes_present_at_head_and_on_create_all(self, pre_redesign_copy):
+        """(created_at, uuid) / (updated_at, uuid) on images let the correlated
+        EXISTS search dispatch stop at LIMIT instead of full-scan + temp-sort."""
+        migrated = pre_redesign_copy
+        _run_migrations(migrated, "head")
+        fresh = _make_engine()
+        SQLModel.metadata.create_all(fresh)
+
+        for engine, origin in ((migrated, "migration head"), (fresh, "fresh create_all")):
+            images_idx = _indexes(engine, "images")
+            assert "ix_images_created_at_uuid" in images_idx, f"created_at sort index missing on {origin}"
+            assert "ix_images_updated_at_uuid" in images_idx, f"updated_at sort index missing on {origin}"
