@@ -2609,7 +2609,12 @@ async function showCanvasModal(bbox, img, labels, onSaved, navContext = null) {
   tagPanelHandle = createTagPanel(paneTags, instance.runtime);
 
   // ── Wire inference panel (model list, Run/Refresh/Clear-Grey, confidence) ──
-  inferencePanelHandle = await createInferencePanel(instance.runtime, paneInference);
+  // Use a child wrapper, not paneInference itself: createInferencePanel adds the
+  // `.inference-panel` class (display:flex, unconditional) to its container, which
+  // would collide with `.sidebar-tab-pane`'s display:none-unless-.active toggling.
+  const inferencePanelContentEl = document.createElement('div');
+  paneInference.appendChild(inferencePanelContentEl);
+  inferencePanelHandle = await createInferencePanel(instance.runtime, inferencePanelContentEl);
   unsubInference = events.subscribeToCanvas(
     instance.runtime.id, EventTypes.RUN_INFERENCE_ON_CANVAS,
     async ({ modelName, confThresh }) => {
