@@ -97,6 +97,32 @@ def _make_images_mock():
 # ---------------------------------------------------------------------------
 
 @pytest.fixture(scope="session")
+def browser_type_launch_args(browser_type_launch_args: dict) -> dict:
+    """
+    Disable GPU/hardware compositing for the headless browser.
+
+    Without this, page.goto() deadlocks indefinitely in some sandboxed/
+    containerized environments: all page resources finish loading (verified
+    via request/response tracing) and the JS main thread throws no errors,
+    but the browser's 'load' event never fires and the renderer stops
+    responding even to trivial CDP calls. The hang goes away when the
+    GPU process is disabled and rendering is forced onto SwiftShader
+    (software) rather than left to negotiate hardware compositing, which
+    points to a stuck handshake with the sandboxed GPU/compositor process
+    rather than anything in this app's JS.
+    """
+    return {
+        **browser_type_launch_args,
+        "args": [
+            *browser_type_launch_args.get("args", []),
+            "--disable-gpu",
+            "--disable-software-rasterizer",
+            "--use-gl=swiftshader",
+        ],
+    }
+
+
+@pytest.fixture(scope="session")
 def live_server() -> Generator[str, None, None]:
     """
     Spin up the image_tagging_server FastAPI app on a real port with all

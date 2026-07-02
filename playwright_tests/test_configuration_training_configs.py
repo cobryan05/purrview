@@ -8,9 +8,10 @@ Configuration > Training > #training-config-box
   - DOM structure: list panel + create form
   - Create flow: fill form → POST /api/training-configs with correct payload
     (modelConfigNodeUuid, datasetUuids, hyperparamsJson — no trainerType/labelUuids)
-  - Readiness panel: shows ready/needs-review counts when a config with a node is selected
-  - "Review unverified images" button: opens a showReviewModal overlay backed by
-    POST /api/training-configs/{uuid}/needs-review-images
+  - Readiness panel: shows ready/needs-review/not-started counts when a config
+    with a node is selected
+  - Clickable readiness counts: clicking "need review" opens a showReviewModal
+    overlay backed by POST /api/training-configs/{uuid}/partial-review-images
 
 Run with:
     pytest playwright_tests/test_configuration_training_configs.py -p no:xdist -p no:asyncio -n 0 -v
@@ -107,7 +108,7 @@ def _mock_training_config_get(page: Page, config: dict):
     )
 
 
-def _mock_readiness(page: Page, config_uuid: str, ready: int = 3, needs_review: int = 2):
+def _mock_readiness(page: Page, config_uuid: str, ready: int = 3, needs_review: int = 2, not_started: int = 0):
     page.route(
         f"**/api/training-configs/{config_uuid}/readiness",
         lambda route: route.fulfill(
@@ -117,6 +118,7 @@ def _mock_readiness(page: Page, config_uuid: str, ready: int = 3, needs_review: 
                 "status": "success",
                 "readyCount": ready,
                 "needsReviewCount": needs_review,
+                "notStartedCount": not_started,
                 "datasetUuids": ["ds-alpha"],
                 "labelUuids": [],
             }),
@@ -337,8 +339,8 @@ class TestReadinessPanel:
         expect(readiness_panel).to_contain_text("3")
         expect(readiness_panel).to_contain_text("2")
 
-    def test_review_button_hidden_when_no_needs_review(self, page: Page, base_url: str):
-        """'Review unverified images' button is hidden when needsReviewCount is 0."""
+    def test_needs_review_count_not_clickable_when_zero(self, page: Page, base_url: str):
+        """The '⚠ N need review' count is not a clickable link when needsReviewCount is 0."""
         _mock_datasets(page, [DATASET_ALPHA])
         _mock_model_configs(page, [MODEL_CFG])
         _mock_training_configs_list(page, [EXISTING_TC])
@@ -352,12 +354,13 @@ class TestReadinessPanel:
         page.wait_for_selector(
             "#training-config-box div:has-text('Training readiness')", timeout=3000
         )
-        btn = _box(page).locator("button", has_text="Review unverified images")
-        expect(btn).to_have_count(1)
-        expect(btn).to_be_hidden()
+        needs_review_span = _box(page).locator("span", has_text="need review")
+        expect(needs_review_span).to_contain_text("0 need review")
+        style = needs_review_span.get_attribute("style") or ""
+        assert "cursor: pointer" not in style, "count should not be clickable when count is 0"
 
-    def test_review_button_visible_when_needs_review(self, page: Page, base_url: str):
-        """'Review unverified images' button appears when needsReviewCount > 0."""
+    def test_needs_review_count_clickable_when_nonzero(self, page: Page, base_url: str):
+        """The '⚠ N need review' count is clickable when needsReviewCount > 0."""
         _mock_datasets(page, [DATASET_ALPHA])
         _mock_model_configs(page, [MODEL_CFG])
         _mock_training_configs_list(page, [EXISTING_TC])
@@ -368,12 +371,14 @@ class TestReadinessPanel:
         _navigate_to_training_configs(page, base_url)
         _list_item(page, "tc-1").click()
 
-        btn = _box(page).locator("button", has_text="Review unverified images")
-        expect(btn).to_be_visible(timeout=3000)
+        needs_review_span = _box(page).locator("span", has_text="need review")
+        expect(needs_review_span).to_be_visible(timeout=3000)
+        style = needs_review_span.get_attribute("style") or ""
+        assert "cursor: pointer" in style, "count should be clickable when count > 0"
 
-    def test_review_button_opens_modal(self, page: Page, base_url: str):
-        """Clicking 'Review unverified images' opens a review modal and issues a POST
-        to /api/training-configs/{uuid}/needs-review-images (not the global review queue).
+    def test_needs_review_count_click_opens_modal(self, page: Page, base_url: str):
+        """Clicking the '⚠ N need review' count opens a review modal and issues a POST
+        to /api/training-configs/{uuid}/partial-review-images (not the global review queue).
         """
         _mock_datasets(page, [DATASET_ALPHA])
         _mock_model_configs(page, [MODEL_CFG])
@@ -382,14 +387,14 @@ class TestReadinessPanel:
         _mock_readiness(page, "tc-1", ready=1, needs_review=3)
         _mock_label_stats(page, "tc-1")
 
-        # Mock the needs-review-images endpoint so the modal can load
-        captured_needs_review_requests = []
+        # Mock the partial-review-images endpoint so the modal can load
+        captured_requests = []
 
-        def handle_needs_review(route: Route):
+        def handle_partial_review(route: Route):
             try:
-                captured_needs_review_requests.append(json.loads(route.request.post_data))
+                captured_requests.append(json.loads(route.request.post_data))
             except Exception:
-                captured_needs_review_requests.append({})
+                captured_requests.append({})
             route.fulfill(
                 status=200,
                 content_type="application/json",
@@ -398,26 +403,26 @@ class TestReadinessPanel:
                 }),
             )
 
-        page.route("**/api/training-configs/tc-1/needs-review-images", handle_needs_review)
+        page.route("**/api/training-configs/tc-1/partial-review-images", handle_partial_review)
 
         _navigate_to_training_configs(page, base_url)
         _list_item(page, "tc-1").click()
 
-        btn = _box(page).locator("button", has_text="Review unverified images")
-        expect(btn).to_be_visible(timeout=3000)
+        needs_review_span = _box(page).locator("span", has_text="need review")
+        expect(needs_review_span).to_be_visible(timeout=3000)
 
         with page.expect_request(
-            lambda r: "needs-review-images" in r.url and r.method == "POST",
+            lambda r: "partial-review-images" in r.url and r.method == "POST",
             timeout=8000,
         ):
-            btn.click()
+            needs_review_span.click()
 
         # Modal is now visible — detect it by its title strong element
         modal_title = page.locator("strong", has_text="Needs Review")
         expect(modal_title).to_be_visible(timeout=4000)
 
         page.wait_for_timeout(400)
-        assert len(captured_needs_review_requests) >= 1, "needs-review-images endpoint was not called"
+        assert len(captured_requests) >= 1, "partial-review-images endpoint was not called"
 
 
 # ---------------------------------------------------------------------------
