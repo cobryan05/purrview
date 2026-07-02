@@ -38,5 +38,11 @@ class SourceHelper:
         if not source_metadata:
             raise ValueError(f"Source {source_uuid} not found")
 
-        image_provider: ImageProvider = image_provider_registry[source_metadata.typename](**source_metadata.params)
+        provider_cls = image_provider_registry.get(source_metadata.typename)
+        if provider_cls is None:
+            raise ValueError(
+                f"Unknown image provider type {source_metadata.typename!r} for source {source_uuid} "
+                f"(registered: {sorted(image_provider_registry)})"
+            )
+        image_provider: ImageProvider = provider_cls(**source_metadata.params)
         return image_provider

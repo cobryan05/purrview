@@ -444,7 +444,15 @@ class Manager:
         # Inject the config display name so tasks can use it for generated artifact names
         # without needing a separate API call.  Use a copy to avoid mutating the config.
         task_params = {**config.params, "_config_name": config.name}
-        task = task_registry[config.typename](task_config_uuid=config.uuid, params=task_params, manager=self)
+        task_cls = task_registry.get(config.typename)
+        if task_cls is None:
+            # A bare task_registry[...] raises KeyError("'OldName'") — useless
+            # when a config was saved under a since-renamed/removed task type.
+            raise ValueError(
+                f"Unknown task type {config.typename!r} for config {config.name!r} "
+                f"(registered: {sorted(task_registry)})"
+            )
+        task = task_cls(task_config_uuid=config.uuid, params=task_params, manager=self)
         if resume_instance:
             instance = resume_instance
             task.set_resume_data(resume_instance.resume_data or {})

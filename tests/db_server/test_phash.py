@@ -526,3 +526,35 @@ class TestRecomputePhash:
         data = json.loads(sidecar.read_text())
         assert "phash" in data
         assert data["phash"] is not None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Hash-index tombstoning when the last bbox is deleted
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestLastBboxDeleteTombstonesIndex:
+    async def test_deleting_last_bbox_removes_it_from_hash_index(
+        self, http_client, db_client, written_image, label_uuid
+    ):
+        """Saving an image with zero bboxes skips phash recomputation (nothing to
+        compute) — but the old bboxes must still be tombstoned from the hash
+        index, or deleted boxes keep matching in similarity searches."""
+        _, bbox_uuid = written_image
+        rows = await db_client.get_all_bbox_phashes()
+        phash = next(r["phash"] for r in rows if r["uuid"] == bbox_uuid)
+
+        # Delete the only bbox via a full-replace save with no boxes.
+        r = await http_client.post(
+            "/api/images/metadata/update",
+            json={"imagePath": "phash_test.png", "boxes": []},
+        )
+        assert r.status_code == 200
+
+        r = await http_client.post(
+            "/api/images/bbox/find-similar",
+            json={"phash": phash, "threshold": 0, "labelUuid": label_uuid},
+        )
+        assert r.status_code == 200
+        uuids = [m["bboxUuid"] for m in r.json()["matches"]]
+        assert bbox_uuid not in uuids, "deleted bbox still present in hash index"

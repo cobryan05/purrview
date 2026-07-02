@@ -30,7 +30,15 @@ class PreviewSourceTask(Task):
         status: str = "success"
         self._status_msg = "Initializing Provider"
         self.log("Initializing provider")
-        provider = image_provider_registry[self._provider](**self._provider_params)
+        provider_cls = image_provider_registry.get(self._provider)
+        if provider_cls is None:
+            # Raise instead of a bare registry KeyError: Task._execute turns
+            # this into an error result with a message that names the type.
+            self.log(f"Error: unknown provider type {self._provider!r}")
+            raise ValueError(
+                f"Unknown image provider type {self._provider!r} (registered: {sorted(image_provider_registry)})"
+            )
+        provider = provider_cls(**self._provider_params)
         if not provider:
             status = "error"
             self.log("Error: provider not found")

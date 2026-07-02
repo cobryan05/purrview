@@ -503,6 +503,16 @@ class Manager:
 
         await self._db_client.write_image_metadata_to_db(image.uuid, update)
 
+        # Tombstone all previous bbox entries from the hash index (covers
+        # deleted, moved, and resized boxes). This must happen outside the
+        # phash-recompute conditional below: deleting the LAST bbox leaves
+        # update.bboxes empty, skipping recompute entirely — but the old
+        # entries still have to go, or deleted boxes keep matching in
+        # similarity searches.
+        for old_bbox in old_bboxes:
+            if old_bbox.phash and old_bbox.label_uuid:
+                self._hash_index.remove_bbox(old_bbox.uuid, old_bbox.label_uuid)
+
         # Image phash is computed once (first write only — the file never changes).
         # Bbox phashes must always be (re-)computed because the user may have moved or
         # resized boxes since the last save, which changes the cropped pixel region.
@@ -530,14 +540,9 @@ class Manager:
                         except Exception:
                             logger.exception("bbox phash error for %s", b.uuid)
                     await self._db_client.update_phashes(image.uuid, image_phash, bbox_phash_list)
-                    # Update hash index.
+                    # Update hash index (old entries were tombstoned above).
                     if image.phash is None and image_phash:
                         self._hash_index.add_image(image.uuid, image_phash)
-                    # Tombstone all previous bbox entries (covers deleted, moved, and
-                    # resized boxes), then insert the freshly-computed replacements.
-                    for old_bbox in old_bboxes:
-                        if old_bbox.phash and old_bbox.label_uuid:
-                            self._hash_index.remove_bbox(old_bbox.uuid, old_bbox.label_uuid)
                     uuid_to_label = {b.uuid: b.label_uuid for b in update.bboxes}
                     for bp_entry in bbox_phash_list:
                         label_uuid = uuid_to_label.get(bp_entry["uuid"])
@@ -1155,34 +1160,40 @@ class Manager:
 
         search_pattern = "**/*" if recursive else None
 
-        # Collect and sort all matching paths by name (string sort — no stat calls yet).
-        raw = sorted(
-            safe_path.glob(search_pattern) if recursive else safe_path.iterdir(),
-            key=lambda p: p.name,
-        )
-
-        filtered = []
-        for p in raw:
-            if p.name.startswith("."):
-                continue
-            rel_str = str(p.relative_to(self._files_root))
-            is_matched = any(fnmatch.fnmatch(rel_str, pat) for pat in patterns)
-            is_excluded = any(fnmatch.fnmatch(rel_str, pat) for pat in exclude_patterns)
-            if is_matched and not is_excluded:
-                filtered.append(p)
-
-        has_more = len(filtered) > offset + limit
-        page = filtered[offset : offset + limit]
-
-        # Stat calls (is_dir) and FileEntryRead construction only for the page slice.
-        entries = [
-            FileEntryRead(
-                name=p.name,
-                is_dir=p.is_dir(),
-                path=str(p.relative_to(self._files_root)),
+        def _scan() -> tuple[List[FileEntryRead], bool]:
+            # Recursive glob walks the whole tree synchronously — run in a
+            # worker thread so a large FILES_ROOT doesn't freeze the event
+            # loop (and every other request) for the duration of the walk.
+            # Collect and sort all matching paths by name (string sort — no stat calls yet).
+            raw = sorted(
+                safe_path.glob(search_pattern) if recursive else safe_path.iterdir(),
+                key=lambda p: p.name,
             )
-            for p in page
-        ]
+
+            filtered = []
+            for p in raw:
+                if p.name.startswith("."):
+                    continue
+                rel_str = str(p.relative_to(self._files_root))
+                is_matched = any(fnmatch.fnmatch(rel_str, pat) for pat in patterns)
+                is_excluded = any(fnmatch.fnmatch(rel_str, pat) for pat in exclude_patterns)
+                if is_matched and not is_excluded:
+                    filtered.append(p)
+
+            more = len(filtered) > offset + limit
+            page = filtered[offset : offset + limit]
+
+            # Stat calls (is_dir) and FileEntryRead construction only for the page slice.
+            return [
+                FileEntryRead(
+                    name=p.name,
+                    is_dir=p.is_dir(),
+                    path=str(p.relative_to(self._files_root)),
+                )
+                for p in page
+            ], more
+
+        entries, has_more = await asyncio.to_thread(_scan)
 
         if include_db_status and entries:
             abs_paths = [str(self._files_root / e.path) for e in entries if not e.is_dir]
