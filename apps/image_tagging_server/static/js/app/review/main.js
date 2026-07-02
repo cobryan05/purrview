@@ -33,7 +33,9 @@ import { rerenderBboxViews } from '/app-static/js/app/image-tagging/canvas/manag
 import { nextModalZIndex, applyModalCascade, registerEscHandler, unregisterEscHandler } from '/app-static/js/ui/utils/modalZIndex.js';
 import { CheckboxField } from '/app-static/js/ui/utils/fields/CheckboxField.js';
 import { createCanvasInstance } from '/app-static/js/app/image-tagging/canvas/instance.js';
-import { saveAnnotations } from '/app-static/js/app/image-tagging/canvas/image.js';
+import { saveAnnotations, addInferenceResults } from '/app-static/js/app/image-tagging/canvas/image.js';
+import { createInferencePanel } from '/app-static/js/app/image-tagging/inferencePanel.js';
+import { runDetection } from '/app-static/js/shared/api/inference.js';
 import { initSplitResize } from '/app-static/js/ui/utils/splitResize.js';
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
 import { init as initToolbar } from '/app-static/js/app/image-tagging/toolbar.js';
@@ -2497,8 +2499,8 @@ async function showCanvasModal(bbox, img, labels, onSaved, navContext = null) {
   const canvasWrap = document.createElement('div');
   canvasWrap.className = 'canvas-modal-canvas';
 
-  // ── Right sidebar: tab header + two panes ────────────────────────
-  const MODAL_TABS = { labels: 'modal-tab-labels', tags: 'modal-tab-tags' };
+  // ── Right sidebar: tab header + panes ────────────────────────
+  const MODAL_TABS = { labels: 'modal-tab-labels', inference: 'modal-tab-inference', tags: 'modal-tab-tags' };
 
   const sidebarEl = document.createElement('div');
   sidebarEl.className = 'canvas-modal-sidebar';
@@ -2515,6 +2517,7 @@ async function showCanvasModal(bbox, img, labels, onSaved, navContext = null) {
   };
   sidebarTabHeader.append(
     _mkTabBtn(MODAL_TABS.labels, 'Labels'),
+    _mkTabBtn(MODAL_TABS.inference, 'Inference'),
     _mkTabBtn(MODAL_TABS.tags,   'Tags'),
   );
 
@@ -2524,13 +2527,14 @@ async function showCanvasModal(bbox, img, labels, onSaved, navContext = null) {
     pane.id = id;
     return pane;
   };
-  const paneLabels = _mkTabPane(MODAL_TABS.labels);
-  const paneTags   = _mkTabPane(MODAL_TABS.tags);
+  const paneLabels    = _mkTabPane(MODAL_TABS.labels);
+  const paneInference = _mkTabPane(MODAL_TABS.inference);
+  const paneTags      = _mkTabPane(MODAL_TABS.tags);
 
   const labelListEl = document.createElement('div');
   paneLabels.appendChild(labelListEl);
 
-  sidebarEl.append(sidebarTabHeader, paneLabels, paneTags);
+  sidebarEl.append(sidebarTabHeader, paneLabels, paneInference, paneTags);
 
   const modalResizeHandleEl = document.createElement('div');
   modalResizeHandleEl.className = 'split-resize-handle';
@@ -2564,10 +2568,12 @@ async function showCanvasModal(bbox, img, labels, onSaved, navContext = null) {
   let toolbarHandle    = { destroy: () => {} };
   let labelHandle      = { destroy: () => {} };
   let tagPanelHandle   = { destroy: () => {} };
+  let inferencePanelHandle = { destroy: () => {} };
   let modalResizeHandle = { destroy: () => {} };
   let unsubToolChanged = () => {};
   let unsubDblClick    = () => {};
   let unsubBboxChanged = () => {};
+  let unsubInference   = () => {};
 
   try {
     instance = await createCanvasInstance(canvasWrap, { tool: 'select' });
@@ -2601,6 +2607,22 @@ async function showCanvasModal(bbox, img, labels, onSaved, navContext = null) {
 
   // ── Wire tag panel (class + tag toggles, responds to bbox clicks) ──
   tagPanelHandle = createTagPanel(paneTags, instance.runtime);
+
+  // ── Wire inference panel (model list, Run/Refresh/Clear-Grey, confidence) ──
+  inferencePanelHandle = await createInferencePanel(instance.runtime, paneInference);
+  unsubInference = events.subscribeToCanvas(
+    instance.runtime.id, EventTypes.RUN_INFERENCE_ON_CANVAS,
+    async ({ modelName, confThresh }) => {
+      try {
+        const image = instance.runtime.state?.image?.img;
+        if (!image) throw new Error('No image loaded');
+        const result = await runDetection(modelName, image, confThresh);
+        await addInferenceResults(instance.runtime, result);
+      } catch (err) {
+        Logger.error('Canvas modal: failed to run inference', err);
+      }
+    },
+  );
 
   // ── Sidebar tab-switching rules ────────────────────────────────────
   // BBox tool → Labels tab; tag tool → Tags tab (mirrors main canvas sidebar).
@@ -2766,7 +2788,9 @@ async function showCanvasModal(bbox, img, labels, onSaved, navContext = null) {
     if (unsubNavLoad) unsubNavLoad();
     unsubToolChanged();
     unsubDblClick();
+    unsubInference();
     tagPanelHandle.destroy();
+    inferencePanelHandle.destroy();
     toolbarHandle.destroy();
     labelHandle.destroy();
     modalResizeHandle.destroy();
