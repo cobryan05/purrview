@@ -422,6 +422,23 @@ _TC_LOAD_OPTS = (selectinload(TrainingConfig.dataset_links),)
 # Page size for image pagination in readiness checks.
 _READINESS_PAGE_SIZE = 1000
 
+# Max uuids per IN (?, ?, ...) list. SQLite hard-errors ("too many SQL
+# variables") past SQLITE_MAX_VARIABLE_NUMBER — 250k on this build, as low as
+# 999 on older ones — so any query filtering by an unbounded uuid list must be
+# chunked. 10k keeps a wide margin on every build at negligible query overhead.
+_UUID_IN_CHUNK = 10_000
+
+
+def _chunked(seq: List, size: Optional[int] = None):
+    """Yield consecutive slices of *seq* of at most *size* elements.
+
+    size defaults to _UUID_IN_CHUNK, read at call time so tests can shrink it.
+    """
+    if size is None:
+        size = _UUID_IN_CHUNK
+    for i in range(0, len(seq), size):
+        yield seq[i : i + size]
+
 
 class DbClient:
     """Helper class for SQLModel interactions for image annotations."""
@@ -604,32 +621,8 @@ class DbClient:
 
     async def get_dataset_image_uuids(self, dataset_uuids: list[str]) -> list[str]:
         """Return deduplicated image UUIDs from the union of the given datasets."""
-        seen: set[str] = set()
-        result: list[str] = []
-        for ds_uuid in dataset_uuids:
-            dataset = await self.get_dataset(ds_uuid)
-            if dataset is None:
-                continue
-            after_uuid: Optional[str] = None
-            after_sort_value = None
-            while True:
-                page, has_more = await self._list_images_for_dataset(
-                    dataset,
-                    limit=_READINESS_PAGE_SIZE,
-                    sort_by="uuid",
-                    sort_order="asc",
-                    after_uuid=after_uuid,
-                    after_sort_value=after_sort_value,
-                )
-                for img in page:
-                    if img.uuid not in seen:
-                        seen.add(img.uuid)
-                        result.append(img.uuid)
-                if not has_more or not page:
-                    break
-                after_uuid = page[-1].uuid
-                # after_sort_value stays None — sort_by="uuid" pagination uses after_uuid only
-        return result
+        stubs = await self._enumerate_dataset_union_stubs(dataset_uuids)
+        return [s.uuid for s in stubs]
 
     async def close(self):
         """Dispose of the engine connection pool."""
@@ -1420,10 +1413,12 @@ class DbClient:
                 return [], []
 
             image_uuids = [r[0] for r in image_rows]
-            bbox_result = await session.exec(
-                select(BBox.uuid, BBox.phash, BBox.label_uuid).where(BBox.image_uuid.in_(image_uuids))
-            )
-            bbox_rows = bbox_result.all()
+            bbox_rows = []
+            for chunk in _chunked(image_uuids):
+                bbox_result = await session.exec(
+                    select(BBox.uuid, BBox.phash, BBox.label_uuid).where(BBox.image_uuid.in_(chunk))
+                )
+                bbox_rows.extend(bbox_result.all())
 
         return image_rows, bbox_rows
 
@@ -2236,10 +2231,10 @@ class DbClient:
                 return []
 
             image_uuids = [r.image_uuid for r in label_rows]
-            img_records: List[ImageRecord] = (
-                await session.exec(select(ImageRecord).where(ImageRecord.uuid.in_(image_uuids)))
-            ).all()
-            uuid_to_filename = {img.uuid: img.filename for img in img_records}
+            uuid_to_filename: Dict[str, str] = {}
+            for chunk in _chunked(image_uuids):
+                img_records = (await session.exec(select(ImageRecord).where(ImageRecord.uuid.in_(chunk)))).all()
+                uuid_to_filename.update({img.uuid: img.filename for img in img_records})
 
         return [
             ImageLabelWithFilename(
@@ -2975,6 +2970,128 @@ class DbClient:
         has_more = len(results) > limit
         return results[:limit], has_more
 
+    async def _enumerate_dataset_union_stubs(
+        self,
+        dataset_uuids: List[str],
+        *,
+        mutate_params=None,
+    ) -> list:
+        """Enumerate the de-duplicated union of images across datasets as
+        lightweight (uuid, filename, created_at, updated_at) rows.
+
+        Selects only the columns the readiness/bucket endpoints actually use —
+        no ORM entities, no selectinload of bboxes/labels/tags — so paging a
+        large union costs plain row fetches instead of full object graphs
+        (~5x per page on a 100k-image union). Callers hydrate just the final
+        page via _get_images_with_relations().
+
+        mutate_params, when given, is applied to each page's ImageSearchParams
+        before execution (e.g. to add verification predicates).
+        """
+        seen: set[str] = set()
+        stubs: list = []
+        for ds_uuid in dataset_uuids:
+            dataset = await self.get_dataset(ds_uuid)
+            if dataset is None:
+                continue
+            after_uuid: Optional[str] = None
+            while True:
+                params = self.build_dataset_search_params(
+                    dataset,
+                    limit=_READINESS_PAGE_SIZE,
+                    sort_by="uuid",
+                    sort_order="asc",
+                    after_uuid=after_uuid,
+                    after_sort_value=None,
+                )
+                if mutate_params is not None:
+                    mutate_params(params)
+                use_exists = await self._should_use_exists_dispatch(params)
+                async with self._async_session_maker() as session:
+                    stmt = select(
+                        ImageRecord.uuid,
+                        ImageRecord.filename,
+                        ImageRecord.created_at,
+                        ImageRecord.updated_at,
+                    )
+                    stmt = _apply_image_search_filters(stmt, params, use_exists=use_exists)
+                    if after_uuid is not None:
+                        stmt = stmt.where(ImageRecord.uuid > after_uuid)
+                    stmt = stmt.order_by(ImageRecord.uuid.asc()).limit(_READINESS_PAGE_SIZE)
+                    page = (await session.exec(stmt)).all()
+                for row in page:
+                    if row.uuid not in seen:
+                        seen.add(row.uuid)
+                        stubs.append(row)
+                if len(page) < _READINESS_PAGE_SIZE:
+                    break
+                after_uuid = page[-1].uuid
+                # Yield between pages so long enumerations don't starve the loop.
+                await asyncio.sleep(0)
+        return stubs
+
+    async def _get_images_with_relations(self, image_uuids: List[str]) -> list[ImageRecord]:
+        """Fetch full ImageRecords (bboxes, labels, tags eagerly loaded) for a
+        page of uuids, preserving the input order.
+
+        Intended for page-sized lists (the final page of a stub enumeration);
+        images deleted since enumeration are silently dropped.
+        """
+        if not image_uuids:
+            return []
+        async with self._async_session_maker() as session:
+            stmt = (
+                select(ImageRecord)
+                .options(
+                    selectinload(ImageRecord.bboxes).options(
+                        selectinload(BBox.label),
+                        selectinload(BBox.tags),
+                    ),
+                    selectinload(ImageRecord.tags),
+                )
+                .where(ImageRecord.uuid.in_(image_uuids))
+            )
+            rows = (await session.exec(stmt)).all()
+        by_uuid = {img.uuid: img for img in rows}
+        return [by_uuid[u] for u in image_uuids if u in by_uuid]
+
+    async def _get_image_label_verification_counts(
+        self, image_uuids: List[str], label_uuids: List[str]
+    ) -> tuple[Dict[str, int], Dict[str, int]]:
+        """Return ({image: verified_count}, {image: present_count}) over the
+        given images and labels.
+
+        verified counts PRESENT+ABSENT image_label rows; present counts
+        PRESENT only. The uuid list is chunked (_UUID_IN_CHUNK) so unbounded
+        dataset unions stay under the SQLite bind-variable cap; chunks are
+        disjoint, so merging the per-chunk GROUP BY results is a plain update.
+        """
+        verified_by_image: Dict[str, int] = {}
+        present_by_image: Dict[str, int] = {}
+        async with self._async_session_maker() as session:
+            for chunk in _chunked(image_uuids):
+                result = await session.exec(
+                    select(ImageLabel.image_uuid, func.count(ImageLabel.label_uuid))
+                    .where(
+                        ImageLabel.image_uuid.in_(chunk),
+                        ImageLabel.label_uuid.in_(label_uuids),
+                        ImageLabel.status.in_([ImageItemStatus.PRESENT, ImageItemStatus.ABSENT]),
+                    )
+                    .group_by(ImageLabel.image_uuid)
+                )
+                verified_by_image.update(dict(result.all()))
+                result = await session.exec(
+                    select(ImageLabel.image_uuid, func.count(ImageLabel.label_uuid))
+                    .where(
+                        ImageLabel.image_uuid.in_(chunk),
+                        ImageLabel.label_uuid.in_(label_uuids),
+                        ImageLabel.status == ImageItemStatus.PRESENT,
+                    )
+                    .group_by(ImageLabel.image_uuid)
+                )
+                present_by_image.update(dict(result.all()))
+        return verified_by_image, present_by_image
+
     async def list_dataset_images(
         self,
         uuid: str,
@@ -3267,33 +3384,8 @@ class DbClient:
                 "roll_up_active": False,
             }
 
-        # Collect all images across all linked datasets (union, de-duped by uuid).
-        seen_uuids: set[str] = set()
-        all_images: list[ImageRecord] = []
-        for ds_uuid in dataset_uuids:
-            dataset = await self.get_dataset(ds_uuid)
-            if dataset is None:
-                continue
-            after_uuid: Optional[str] = None
-            after_sort_value: Optional[datetime] = None
-            while True:
-                page, has_more = await self._list_images_for_dataset(
-                    dataset,
-                    limit=_READINESS_PAGE_SIZE,
-                    sort_by="uuid",
-                    sort_order="asc",
-                    after_uuid=after_uuid,
-                    after_sort_value=after_sort_value,
-                )
-                for img in page:
-                    if img.uuid not in seen_uuids:
-                        seen_uuids.add(img.uuid)
-                        all_images.append(img)
-                if not has_more or not page:
-                    break
-                last = page[-1]
-                after_uuid = last.uuid
-                # after_sort_value stays None when sort_by="uuid"; pagination uses after_uuid only
+        # Collect all image uuids across all linked datasets (union, de-duped).
+        all_images = await self._enumerate_dataset_union_stubs(dataset_uuids)
 
         if not all_images:
             return {
@@ -3310,44 +3402,22 @@ class DbClient:
         # With rollup, any one verified label means the image is ready.
         readiness_threshold = 1 if is_rollup else n_labels
 
-        async with self._async_session_maker() as session:
-            verified_count_col = func.count(ImageLabel.label_uuid).label("verified_count")
-            result = await session.exec(
-                select(ImageLabel.image_uuid, verified_count_col)
-                .where(
-                    ImageLabel.image_uuid.in_(image_uuids),
-                    ImageLabel.label_uuid.in_(label_uuids),
-                    ImageLabel.status.in_([ImageItemStatus.PRESENT, ImageItemStatus.ABSENT]),
-                )
-                .group_by(ImageLabel.image_uuid)
-            )
-            rows = result.all()
-            verified_by_image = {row[0]: row[1] for row in rows}
+        verified_by_image, present_by_image = await self._get_image_label_verification_counts(
+            image_uuids, label_uuids
+        )
 
-            present_count_col = func.count(ImageLabel.label_uuid).label("present_count")
-            result = await session.exec(
-                select(ImageLabel.image_uuid, present_count_col)
-                .where(
-                    ImageLabel.image_uuid.in_(image_uuids),
-                    ImageLabel.label_uuid.in_(label_uuids),
-                    ImageLabel.status == ImageItemStatus.PRESENT,
-                )
-                .group_by(ImageLabel.image_uuid)
-            )
-            present_by_image = {row[0]: row[1] for row in result.all()}
-
-            ready_count = 0
-            needs_review_count = 0
-            not_started_count = 0
-            for img_uuid in image_uuids:
-                verified_count = verified_by_image.get(img_uuid, 0)
-                present_count = present_by_image.get(img_uuid, 0)
-                if verified_count >= readiness_threshold:
-                    ready_count += 1
-                elif verified_count > 0 and present_count > 0:
-                    needs_review_count += 1
-                else:
-                    not_started_count += 1
+        ready_count = 0
+        needs_review_count = 0
+        not_started_count = 0
+        for img_uuid in image_uuids:
+            verified_count = verified_by_image.get(img_uuid, 0)
+            present_count = present_by_image.get(img_uuid, 0)
+            if verified_count >= readiness_threshold:
+                ready_count += 1
+            elif verified_count > 0 and present_count > 0:
+                needs_review_count += 1
+            else:
+                not_started_count += 1
 
         return {
             "ready_count": ready_count,
@@ -3413,29 +3483,7 @@ class DbClient:
         dataset_uuids = tc.dataset_uuids
         n_labels = len(class_label_uuids)  # number of distinct classes to verify
 
-        seen_uuids: set[str] = set()
-        all_images: list[ImageRecord] = []
-        for ds_uuid in dataset_uuids:
-            dataset = await self.get_dataset(ds_uuid)
-            if dataset is None:
-                continue
-            after_uuid: Optional[str] = None
-            while True:
-                page, has_more = await self._list_images_for_dataset(
-                    dataset,
-                    limit=_READINESS_PAGE_SIZE,
-                    sort_by="uuid",
-                    sort_order="asc",
-                    after_uuid=after_uuid,
-                    after_sort_value=None,
-                )
-                for img in page:
-                    if img.uuid not in seen_uuids:
-                        seen_uuids.add(img.uuid)
-                        all_images.append(img)
-                if not has_more or not page:
-                    break
-                after_uuid = page[-1].uuid
+        all_images = await self._enumerate_dataset_union_stubs(dataset_uuids)
 
         if not all_images:
             return {"class_names": class_names, "images": []}
@@ -3447,47 +3495,45 @@ class DbClient:
         # reflects the number of independent annotation decisions needed.
         readiness_threshold = n_labels
 
+        verified_by_image: Dict[str, int] = {}
         async with self._async_session_maker() as session:
-            verified_count_col = func.count(ImageLabel.label_uuid).label("verified_count")
-            result = await session.exec(
-                select(ImageLabel.image_uuid, verified_count_col)
-                .where(
-                    ImageLabel.image_uuid.in_(image_uuids),
-                    ImageLabel.label_uuid.in_(list(in_scope_label_uuids)),
-                    ImageLabel.status.in_([ImageItemStatus.PRESENT, ImageItemStatus.ABSENT]),
+            for chunk in _chunked(image_uuids):
+                result = await session.exec(
+                    select(ImageLabel.image_uuid, func.count(ImageLabel.label_uuid))
+                    .where(
+                        ImageLabel.image_uuid.in_(chunk),
+                        ImageLabel.label_uuid.in_(list(in_scope_label_uuids)),
+                        ImageLabel.status.in_([ImageItemStatus.PRESENT, ImageItemStatus.ABSENT]),
+                    )
+                    .group_by(ImageLabel.image_uuid)
                 )
-                .group_by(ImageLabel.image_uuid)
-            )
-            rows = result.all()
-            verified_by_image = {row[0]: row[1] for row in rows}
+                verified_by_image.update(dict(result.all()))
 
         eligible_images = [
             img for img in all_images if verified_by_image.get(img.uuid, 0) >= readiness_threshold
         ]
 
-        # Batch-fetch all verified in-scope bboxes for eligible images in one query.
+        # Batch-fetch all verified in-scope bboxes for eligible images (chunked
+        # to stay under the SQLite bind-variable cap).
         eligible_image_uuids = [img.uuid for img in eligible_images]
+        raw_bboxes: list = []
         async with self._async_session_maker() as session:
-            result = await session.exec(
-                select(
-                    BBox.image_uuid,
-                    BBox.label_uuid,
-                    BBox.x,
-                    BBox.y,
-                    BBox.width,
-                    BBox.height,
+            for chunk in _chunked(eligible_image_uuids):
+                result = await session.exec(
+                    select(
+                        BBox.image_uuid,
+                        BBox.label_uuid,
+                        BBox.x,
+                        BBox.y,
+                        BBox.width,
+                        BBox.height,
+                    ).where(
+                        BBox.image_uuid.in_(chunk),
+                        BBox.label_uuid.in_(list(in_scope_label_uuids)),
+                        BBox.uuid.in_(select(BBoxTagLink.bbox_uuid).where(BBoxTagLink.tag_uuid == VERIFIED_TAG_UUID)),
+                    )
                 )
-                .where(
-                    BBox.image_uuid.in_(eligible_image_uuids),
-                    BBox.label_uuid.in_(list(in_scope_label_uuids)),
-                    BBox.uuid.in_(
-                        select(BBoxTagLink.bbox_uuid).where(
-                            BBoxTagLink.tag_uuid == VERIFIED_TAG_UUID
-                        )
-                    ),
-                )
-            )
-            raw_bboxes = result.all()
+                raw_bboxes.extend(result.all())
 
         # Group by image_uuid for O(1) per-image lookup.
         bboxes_by_image: dict[str, list] = {}
@@ -3535,29 +3581,7 @@ class DbClient:
             return [], False
 
         # Collect all images from the training config's datasets (union, de-duped).
-        seen_uuids: set[str] = set()
-        all_images: list[ImageRecord] = []
-
-        for ds_uuid in tc.dataset_uuids:
-            dataset = await self.get_dataset(ds_uuid)
-            if dataset is None:
-                continue
-            ds_after_uuid: Optional[str] = None
-            while True:
-                page, has_more = await self._list_images_for_dataset(
-                    dataset,
-                    limit=_READINESS_PAGE_SIZE,
-                    sort_by="uuid",
-                    sort_order="asc",
-                    after_uuid=ds_after_uuid,
-                )
-                for img in page:
-                    if img.uuid not in seen_uuids:
-                        seen_uuids.add(img.uuid)
-                        all_images.append(img)
-                if not has_more or not page:
-                    break
-                ds_after_uuid = page[-1].uuid
+        all_images = await self._enumerate_dataset_union_stubs(tc.dataset_uuids)
 
         if not all_images:
             return [], False
@@ -3571,31 +3595,37 @@ class DbClient:
         # Filter by status.
         if status and status != "all":
             async with self._async_session_maker() as session:
+
+                async def _collect(build_stmt) -> set:
+                    """Union results across uuid chunks (SQLite bind-variable cap)."""
+                    out: set[str] = set()
+                    for chunk in _chunked(all_image_uuids):
+                        out.update((await session.exec(build_stmt(chunk))).all())
+                    return out
+
                 if status == "uncertain":
                     # Images with no PRESENT/ABSENT row for any of the effective labels.
-                    result = await session.exec(
-                        select(ImageLabel.image_uuid).where(
-                            ImageLabel.image_uuid.in_(all_image_uuids),
+                    verified = await _collect(
+                        lambda chunk: select(ImageLabel.image_uuid).where(
+                            ImageLabel.image_uuid.in_(chunk),
                             ImageLabel.label_uuid.in_(effective_label_uuids),
                             ImageLabel.status.in_([ImageItemStatus.PRESENT, ImageItemStatus.ABSENT]),
                         )
                     )
-                    verified = set(result.all())
                     matching = set(all_image_uuids) - verified
                 elif status == "has_verified_bbox":
                     # Images with at least one verified bbox for any of the effective labels.
-                    result = await session.exec(
-                        select(BBox.image_uuid).distinct().where(
-                            BBox.image_uuid.in_(all_image_uuids),
+                    matching = await _collect(
+                        lambda chunk: select(BBox.image_uuid)
+                        .distinct()
+                        .where(
+                            BBox.image_uuid.in_(chunk),
                             BBox.label_uuid.in_(effective_label_uuids),
                             BBox.uuid.in_(
-                                select(BBoxTagLink.bbox_uuid).where(
-                                    BBoxTagLink.tag_uuid == VERIFIED_TAG_UUID
-                                )
+                                select(BBoxTagLink.bbox_uuid).where(BBoxTagLink.tag_uuid == VERIFIED_TAG_UUID)
                             ),
                         )
                     )
-                    matching = set(result.all())
                 elif status in ("co_labels_covered", "co_label_gaps"):
                     # Derive all labels in the training config to build the co-label picture.
                     node_label_uuids, co_rollup_map = await self._derive_labels_for_node(
@@ -3623,18 +3653,17 @@ class DbClient:
 
                         # Base: images with ≥1 verified bbox for the focus label (effective set).
                         focus_eff = effective_for_tl_co.get(label_uuid, effective_label_uuids)
-                        result = await session.exec(
-                            select(BBox.image_uuid).distinct().where(
-                                BBox.image_uuid.in_(all_image_uuids),
+                        base = await _collect(
+                            lambda chunk: select(BBox.image_uuid)
+                            .distinct()
+                            .where(
+                                BBox.image_uuid.in_(chunk),
                                 BBox.label_uuid.in_(focus_eff),
                                 BBox.uuid.in_(
-                                    select(BBoxTagLink.bbox_uuid).where(
-                                        BBoxTagLink.tag_uuid == VERIFIED_TAG_UUID
-                                    )
+                                    select(BBoxTagLink.bbox_uuid).where(BBoxTagLink.tag_uuid == VERIFIED_TAG_UUID)
                                 ),
                             )
                         )
-                        base = set(result.all())
 
                         # Intersect with accounted_for for each other top-level label.
                         focus_tl_ancestor = child_to_parent_co.get(label_uuid, label_uuid)
@@ -3647,9 +3676,11 @@ class DbClient:
                             if tl_label is None:
                                 continue
                             if tl_label.scope == LabelScope.OBJECT:
-                                result_v = await session.exec(
-                                    select(BBox.image_uuid).distinct().where(
-                                        BBox.image_uuid.in_(all_image_uuids),
+                                verified_bboxes = await _collect(
+                                    lambda chunk, eff=eff: select(BBox.image_uuid)
+                                    .distinct()
+                                    .where(
+                                        BBox.image_uuid.in_(chunk),
                                         BBox.label_uuid.in_(eff),
                                         BBox.uuid.in_(
                                             select(BBoxTagLink.bbox_uuid).where(
@@ -3658,37 +3689,33 @@ class DbClient:
                                         ),
                                     )
                                 )
-                                result_a = await session.exec(
-                                    select(ImageLabel.image_uuid).where(
-                                        ImageLabel.image_uuid.in_(all_image_uuids),
+                                verified_absent = await _collect(
+                                    lambda chunk, eff=eff: select(ImageLabel.image_uuid).where(
+                                        ImageLabel.image_uuid.in_(chunk),
                                         ImageLabel.label_uuid.in_(eff),
                                         ImageLabel.status == ImageItemStatus.ABSENT,
                                     )
                                 )
-                                co_covered &= set(result_v.all()) | set(result_a.all())
+                                co_covered &= verified_bboxes | verified_absent
                             else:
-                                result = await session.exec(
-                                    select(ImageLabel.image_uuid).where(
-                                        ImageLabel.image_uuid.in_(all_image_uuids),
+                                co_covered &= await _collect(
+                                    lambda chunk, eff=eff: select(ImageLabel.image_uuid).where(
+                                        ImageLabel.image_uuid.in_(chunk),
                                         ImageLabel.label_uuid.in_(eff),
-                                        ImageLabel.status.in_(
-                                            [ImageItemStatus.PRESENT, ImageItemStatus.ABSENT]
-                                        ),
+                                        ImageLabel.status.in_([ImageItemStatus.PRESENT, ImageItemStatus.ABSENT]),
                                     )
                                 )
-                                co_covered &= set(result.all())
 
                         matching = co_covered if status == "co_labels_covered" else base - co_covered
                 else:
                     target = ImageItemStatus.PRESENT if status == "present" else ImageItemStatus.ABSENT
-                    result = await session.exec(
-                        select(ImageLabel.image_uuid).where(
-                            ImageLabel.image_uuid.in_(all_image_uuids),
+                    matching = await _collect(
+                        lambda chunk: select(ImageLabel.image_uuid).where(
+                            ImageLabel.image_uuid.in_(chunk),
                             ImageLabel.label_uuid.in_(effective_label_uuids),
                             ImageLabel.status == target,
                         )
                     )
-                    matching = set(result.all())
             all_images = [img for img in all_images if img.uuid in matching]
 
         if not all_images:
@@ -3720,7 +3747,8 @@ class DbClient:
             all_images = all_images[start_idx:]
 
         has_more = len(all_images) > limit
-        return all_images[:limit], has_more
+        page = await self._get_images_with_relations([img.uuid for img in all_images[:limit]])
+        return page, has_more
 
     async def get_training_config_needs_review_images(
         self,
@@ -3752,41 +3780,17 @@ class DbClient:
             return [], False
 
         # Collect all needs-review images from each linked dataset (union, de-duped by UUID).
-        # Each dataset is iterated in pages (sort_by="uuid" for stable pagination).
-        seen_uuids: set[str] = set()
-        all_images: list[ImageRecord] = []
+        def _add_verification_predicates(params: ImageSearchParams) -> None:
+            # Decouple verification targets from the pool label filter.
+            params.verification_label_uuids = label_uuids
+            params.label_verification_check = "has_unverified"
+            if extra_label_uuids:
+                # Narrow pool: image must also have bboxes with the extra labels.
+                params.label_uuids = list(set(params.label_uuids) | set(extra_label_uuids))
 
-        for ds_uuid in tc.dataset_uuids:
-            dataset = await self.get_dataset(ds_uuid)
-            if dataset is None:
-                continue
-
-            ds_after_uuid: Optional[str] = None
-            while True:
-                params = self.build_dataset_search_params(
-                    dataset,
-                    limit=_READINESS_PAGE_SIZE,
-                    sort_by="uuid",
-                    sort_order="asc",
-                    after_uuid=ds_after_uuid,
-                    after_sort_value=None,
-                )
-                # Decouple verification targets from the pool label filter.
-                params.verification_label_uuids = label_uuids
-                params.label_verification_check = "has_unverified"
-                if extra_label_uuids:
-                    # Narrow pool: image must also have bboxes with the extra labels.
-                    params.label_uuids = list(set(params.label_uuids) | set(extra_label_uuids))
-
-                page = await self.list_images_search(params)
-                for img in page:
-                    if img.uuid not in seen_uuids:
-                        seen_uuids.add(img.uuid)
-                        all_images.append(img)
-
-                if len(page) < _READINESS_PAGE_SIZE:
-                    break
-                ds_after_uuid = page[-1].uuid
+        all_images = await self._enumerate_dataset_union_stubs(
+            tc.dataset_uuids, mutate_params=_add_verification_predicates
+        )
 
         if not all_images:
             return [], False
@@ -3818,7 +3822,8 @@ class DbClient:
             all_images = all_images[start_idx:]
 
         has_more = len(all_images) > limit
-        return all_images[:limit], has_more
+        page = await self._get_images_with_relations([img.uuid for img in all_images[:limit]])
+        return page, has_more
 
     async def _get_training_config_images_by_readiness_bucket(
         self,
@@ -3855,60 +3860,16 @@ class DbClient:
         readiness_threshold = 1 if is_rollup else len(label_uuids)
 
         # Collect all images across all linked datasets (union, de-duped by uuid).
-        seen_uuids: set[str] = set()
-        all_images: list[ImageRecord] = []
-        for ds_uuid in tc.dataset_uuids:
-            dataset = await self.get_dataset(ds_uuid)
-            if dataset is None:
-                continue
-            ds_after_uuid: Optional[str] = None
-            while True:
-                page, has_more = await self._list_images_for_dataset(
-                    dataset,
-                    limit=_READINESS_PAGE_SIZE,
-                    sort_by="uuid",
-                    sort_order="asc",
-                    after_uuid=ds_after_uuid,
-                    after_sort_value=None,
-                )
-                for img in page:
-                    if img.uuid not in seen_uuids:
-                        seen_uuids.add(img.uuid)
-                        all_images.append(img)
-                if not has_more or not page:
-                    break
-                ds_after_uuid = page[-1].uuid
+        all_images = await self._enumerate_dataset_union_stubs(tc.dataset_uuids)
 
         if not all_images:
             return [], False
 
         image_uuids = [img.uuid for img in all_images]
 
-        async with self._async_session_maker() as session:
-            verified_count_col = func.count(ImageLabel.label_uuid).label("verified_count")
-            result = await session.exec(
-                select(ImageLabel.image_uuid, verified_count_col)
-                .where(
-                    ImageLabel.image_uuid.in_(image_uuids),
-                    ImageLabel.label_uuid.in_(label_uuids),
-                    ImageLabel.status.in_([ImageItemStatus.PRESENT, ImageItemStatus.ABSENT]),
-                )
-                .group_by(ImageLabel.image_uuid)
-            )
-            rows = result.all()
-            verified_by_image = {row[0]: row[1] for row in rows}
-
-            present_count_col = func.count(ImageLabel.label_uuid).label("present_count")
-            result = await session.exec(
-                select(ImageLabel.image_uuid, present_count_col)
-                .where(
-                    ImageLabel.image_uuid.in_(image_uuids),
-                    ImageLabel.label_uuid.in_(label_uuids),
-                    ImageLabel.status == ImageItemStatus.PRESENT,
-                )
-                .group_by(ImageLabel.image_uuid)
-            )
-            present_by_image = {row[0]: row[1] for row in result.all()}
+        verified_by_image, present_by_image = await self._get_image_label_verification_counts(
+            image_uuids, label_uuids
+        )
 
         def _matches(verified_count: int, present_count: int) -> bool:
             if bucket == "ready":
@@ -3955,7 +3916,8 @@ class DbClient:
             bucket_images = bucket_images[start_idx:]
 
         has_more = len(bucket_images) > limit
-        return bucket_images[:limit], has_more
+        page = await self._get_images_with_relations([img.uuid for img in bucket_images[:limit]])
+        return page, has_more
 
     async def get_training_config_ready_images(
         self,
@@ -4080,29 +4042,8 @@ class DbClient:
             relevant_label_uuids = DbClient._sort_labels_hierarchically(relevant_label_uuids, labels_map)
 
         # Collect all image UUIDs from the datasets (union, de-duped).
-        seen_uuids: set[str] = set()
-        all_image_uuids: list[str] = []
-        for dataset in datasets_by_uuid.values():
-            after_uuid: Optional[str] = None
-            after_sort_value: Optional[datetime] = None
-            while True:
-                page, has_more = await self._list_images_for_dataset(
-                    dataset,
-                    limit=_READINESS_PAGE_SIZE,
-                    sort_by="uuid",
-                    sort_order="asc",
-                    after_uuid=after_uuid,
-                    after_sort_value=after_sort_value,
-                )
-                for img in page:
-                    if img.uuid not in seen_uuids:
-                        seen_uuids.add(img.uuid)
-                        all_image_uuids.append(img.uuid)
-                if not has_more or not page:
-                    break
-                last = page[-1]
-                after_uuid = last.uuid
-                # after_sort_value stays None when sort_by="uuid"; pagination uses after_uuid only
+        _union_stubs = await self._enumerate_dataset_union_stubs(list(datasets_by_uuid.keys()))
+        all_image_uuids: list[str] = [s.uuid for s in _union_stubs]
 
         total_images = len(all_image_uuids)
 
@@ -4136,77 +4077,76 @@ class DbClient:
             return {"label_stats": list(label_stats.values()), "total_images": 0}
 
         async with self._async_session_maker() as session:
+            # NOTE: every query below filters on image_uuid IN (chunk) — the
+            # image list is chunked (_UUID_IN_CHUNK) to stay under the SQLite
+            # bind-variable cap. Chunks partition the images, so per-chunk
+            # GROUP BY partial counts are summed into the zero-seeded stats.
+
+            async def _rows_chunked(build_stmt) -> list:
+                rows: list = []
+                for chunk in _chunked(all_image_uuids):
+                    rows.extend((await session.exec(build_stmt(chunk))).all())
+                return rows
+
             # ── Image-scope labels ──────────────────────────────────────────
             if image_label_uuids:
                 # Count verified (PRESENT/ABSENT) rows per label.
-                result = await session.exec(
-                    select(ImageLabel.label_uuid, func.count().label("cnt"))
+                for lbl_uuid, cnt in await _rows_chunked(
+                    lambda chunk: select(ImageLabel.label_uuid, func.count().label("cnt"))
                     .where(
-                        ImageLabel.image_uuid.in_(all_image_uuids),
+                        ImageLabel.image_uuid.in_(chunk),
                         ImageLabel.label_uuid.in_(image_label_uuids),
                         ImageLabel.status.in_([ImageItemStatus.PRESENT, ImageItemStatus.ABSENT]),
                     )
                     .group_by(ImageLabel.label_uuid)
-                )
-                for lbl_uuid, cnt in result.all():
+                ):
                     if lbl_uuid in label_stats:
-                        label_stats[lbl_uuid]["verified_image_count"] = cnt
-                        label_stats[lbl_uuid]["unverified_image_count"] = total_images - cnt
+                        label_stats[lbl_uuid]["verified_image_count"] += cnt
+                for lbl_uuid in image_label_uuids:
+                    if lbl_uuid in label_stats:
+                        label_stats[lbl_uuid]["unverified_image_count"] = (
+                            total_images - label_stats[lbl_uuid]["verified_image_count"]
+                        )
 
                 # Count PRESENT and ABSENT rows per label in a single query.
-                result = await session.exec(
-                    select(ImageLabel.label_uuid, ImageLabel.status, func.count().label("cnt"))
+                for lbl_uuid, status, cnt in await _rows_chunked(
+                    lambda chunk: select(ImageLabel.label_uuid, ImageLabel.status, func.count().label("cnt"))
                     .where(
-                        ImageLabel.image_uuid.in_(all_image_uuids),
+                        ImageLabel.image_uuid.in_(chunk),
                         ImageLabel.label_uuid.in_(image_label_uuids),
                         ImageLabel.status.in_([ImageItemStatus.PRESENT, ImageItemStatus.ABSENT]),
                     )
                     .group_by(ImageLabel.label_uuid, ImageLabel.status)
-                )
-                for lbl_uuid, status, cnt in result.all():
+                ):
                     if lbl_uuid in label_stats:
                         key = "present_image_count" if status == ImageItemStatus.PRESENT else "absent_image_count"
-                        label_stats[lbl_uuid][key] = cnt
+                        label_stats[lbl_uuid][key] += cnt
 
             # ── Object-scope labels ─────────────────────────────────────────
             if object_label_uuids:
-                # Total verified bboxes per label.
-                verified_inner = (
-                    select(BBox.label_uuid, BBox.uuid.label("bbox_uuid"))
-                    .join(BBoxTagLink, BBox.uuid == BBoxTagLink.bbox_uuid)
-                    .where(
-                        BBox.image_uuid.in_(all_image_uuids),
-                        BBox.label_uuid.in_(object_label_uuids),
-                        BBoxTagLink.tag_uuid == VERIFIED_TAG_UUID,
+
+                def _bbox_count_stmt(chunk, tag_uuid):
+                    inner = (
+                        select(BBox.label_uuid, BBox.uuid.label("bbox_uuid"))
+                        .join(BBoxTagLink, BBox.uuid == BBoxTagLink.bbox_uuid)
+                        .where(
+                            BBox.image_uuid.in_(chunk),
+                            BBox.label_uuid.in_(object_label_uuids),
+                            BBoxTagLink.tag_uuid == tag_uuid,
+                        )
+                        .subquery()
                     )
-                    .subquery()
-                )
-                result = await session.exec(
-                    select(verified_inner.c.label_uuid, func.count().label("cnt")).group_by(verified_inner.c.label_uuid)
-                )
-                for lbl_uuid, cnt in result.all():
+                    return select(inner.c.label_uuid, func.count().label("cnt")).group_by(inner.c.label_uuid)
+
+                # Total verified bboxes per label.
+                for lbl_uuid, cnt in await _rows_chunked(lambda chunk: _bbox_count_stmt(chunk, VERIFIED_TAG_UUID)):
                     if lbl_uuid in label_stats:
-                        label_stats[lbl_uuid]["verified_bbox_count"] = cnt
+                        label_stats[lbl_uuid]["verified_bbox_count"] += cnt
 
                 # Total unverified bboxes per label.
-                unverified_inner = (
-                    select(BBox.label_uuid, BBox.uuid.label("bbox_uuid"))
-                    .join(BBoxTagLink, BBox.uuid == BBoxTagLink.bbox_uuid)
-                    .where(
-                        BBox.image_uuid.in_(all_image_uuids),
-                        BBox.label_uuid.in_(object_label_uuids),
-                        BBoxTagLink.tag_uuid == UNVERIFIED_TAG_UUID,
-                    )
-                    .subquery()
-                )
-                result = await session.exec(
-                    select(unverified_inner.c.label_uuid, func.count().label("cnt")).group_by(
-                        unverified_inner.c.label_uuid
-                    )
-                )
-                for lbl_uuid, cnt in result.all():
+                for lbl_uuid, cnt in await _rows_chunked(lambda chunk: _bbox_count_stmt(chunk, UNVERIFIED_TAG_UUID)):
                     if lbl_uuid in label_stats:
-                        label_stats[lbl_uuid]["unverified_bbox_count"] = cnt
+                        label_stats[lbl_uuid]["unverified_bbox_count"] += cnt
 
         # ── Rollup aggregation ──────────────────────────────────────────────────
         # For each rollup parent, aggregate its children's stats into the parent row
@@ -4222,22 +4162,27 @@ class DbClient:
 
                     if parent_scope == LabelScope.IMAGE.value:
                         # DISTINCT counts so a multi-labeled image isn't double-counted.
+                        # Chunks partition the images, so per-chunk DISTINCT
+                        # counts sum without double-counting.
                         for status_val, key in [
                             (ImageItemStatus.PRESENT, "present_image_count"),
                             (ImageItemStatus.ABSENT, "absent_image_count"),
                         ]:
-                            distinct_sub = (
-                                select(ImageLabel.image_uuid)
-                                .where(
-                                    ImageLabel.image_uuid.in_(all_image_uuids),
-                                    ImageLabel.label_uuid.in_(all_rollup_uuids),
-                                    ImageLabel.status == status_val,
+                            total_cnt = 0
+                            for chunk in _chunked(all_image_uuids):
+                                distinct_sub = (
+                                    select(ImageLabel.image_uuid)
+                                    .where(
+                                        ImageLabel.image_uuid.in_(chunk),
+                                        ImageLabel.label_uuid.in_(all_rollup_uuids),
+                                        ImageLabel.status == status_val,
+                                    )
+                                    .distinct()
+                                    .subquery()
                                 )
-                                .distinct()
-                                .subquery()
-                            )
-                            r = await session.exec(select(func.count()).select_from(distinct_sub))
-                            parent_stat[key] = r.one() or 0
+                                r = await session.exec(select(func.count()).select_from(distinct_sub))
+                                total_cnt += r.one() or 0
+                            parent_stat[key] = total_cnt
 
                         parent_stat["verified_image_count"] = (
                             parent_stat["present_image_count"] + parent_stat["absent_image_count"]
@@ -4285,23 +4230,30 @@ class DbClient:
             }
 
             async with self._async_session_maker() as session:
+
+                async def _uuid_set_chunked(build_stmt) -> set:
+                    """Union scalar results across image-uuid chunks (bind-variable cap)."""
+                    out: set[str] = set()
+                    for chunk in _chunked(all_image_uuids):
+                        out.update((await session.exec(build_stmt(chunk))).all())
+                    return out
+
                 # Verified bbox image sets for every object label.
                 # Rollup parents use their full effective set; children and standalone use just themselves.
                 obj_verified_imgs: dict[str, set[str]] = {}
                 for lbl_uuid in object_label_uuids:
                     eff = effective_for_tl.get(lbl_uuid, [lbl_uuid])
-                    result = await session.exec(
-                        select(BBox.image_uuid).distinct().where(
-                            BBox.image_uuid.in_(all_image_uuids),
+                    obj_verified_imgs[lbl_uuid] = await _uuid_set_chunked(
+                        lambda chunk, eff=eff: select(BBox.image_uuid)
+                        .distinct()
+                        .where(
+                            BBox.image_uuid.in_(chunk),
                             BBox.label_uuid.in_(eff),
                             BBox.uuid.in_(
-                                select(BBoxTagLink.bbox_uuid).where(
-                                    BBoxTagLink.tag_uuid == VERIFIED_TAG_UUID
-                                )
+                                select(BBoxTagLink.bbox_uuid).where(BBoxTagLink.tag_uuid == VERIFIED_TAG_UUID)
                             ),
                         )
                     )
-                    obj_verified_imgs[lbl_uuid] = set(result.all())
 
                 # "Accounted for" image sets per top-level label.
                 accounted_for_tl: dict[str, set[str]] = {}
@@ -4313,24 +4265,23 @@ class DbClient:
                         continue
                     if tl_label.scope == LabelScope.OBJECT:
                         v_set = obj_verified_imgs.get(tl_uuid, set())
-                        result = await session.exec(
-                            select(ImageLabel.image_uuid).where(
-                                ImageLabel.image_uuid.in_(all_image_uuids),
+                        absent_set = await _uuid_set_chunked(
+                            lambda chunk, eff=eff: select(ImageLabel.image_uuid).where(
+                                ImageLabel.image_uuid.in_(chunk),
                                 ImageLabel.label_uuid.in_(eff),
                                 ImageLabel.status == ImageItemStatus.ABSENT,
                             )
                         )
-                        accounted_for_tl[tl_uuid] = v_set | set(result.all())
+                        accounted_for_tl[tl_uuid] = v_set | absent_set
                     else:
                         # Image-scope: any explicit PRESENT or ABSENT counts.
-                        result = await session.exec(
-                            select(ImageLabel.image_uuid).where(
-                                ImageLabel.image_uuid.in_(all_image_uuids),
+                        accounted_for_tl[tl_uuid] = await _uuid_set_chunked(
+                            lambda chunk, eff=eff: select(ImageLabel.image_uuid).where(
+                                ImageLabel.image_uuid.in_(chunk),
                                 ImageLabel.label_uuid.in_(eff),
                                 ImageLabel.status.in_([ImageItemStatus.PRESENT, ImageItemStatus.ABSENT]),
                             )
                         )
-                        accounted_for_tl[tl_uuid] = set(result.all())
 
                 # Compute co-label stats for each object label.
                 for lbl_uuid in object_label_uuids:
