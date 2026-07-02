@@ -973,11 +973,13 @@ class DbClient:
             stmt = _apply_image_search_filters(stmt, params)
 
             # ── Sort column ────────────────────────────────────────────────────
+            # NOTE: filename is intentionally NOT a sort option — the keyset
+            # cursor (after_sort_value) is a datetime and cannot carry a filename,
+            # so filename-sorted pagination would silently break past page 1.
             sort_col_map = {
                 "created_at": ImageRecord.created_at,
                 "updated_at": ImageRecord.updated_at,
                 "uuid": ImageRecord.uuid,
-                "filename": ImageRecord.filename,
             }
             sort_col = sort_col_map[params.sort_by]
 

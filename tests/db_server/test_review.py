@@ -82,6 +82,15 @@ async def test_empty_queue(http_client):
     assert images == []
 
 
+async def test_review_queue_rejects_filename_sort(http_client):
+    """filename sort has no valid keyset cursor (after_sort_value is a datetime),
+    so page 2+ silently returns wrong/duplicated results. It must not be an
+    accepted sort option — reject it at validation instead of paginating wrong.
+    """
+    r = await http_client.post("/api/images/review", json={"sortBy": "filename", "limit": 5})
+    assert r.status_code == 422
+
+
 async def test_unverified_image_appears_in_queue(http_client, files_root, label_uuid):
     _make_image(files_root, "unverified.png")
     await _add_bbox(http_client, "unverified.png", label_uuid, [UNVERIFIED_TAG_UUID])

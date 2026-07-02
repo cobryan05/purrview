@@ -7160,8 +7160,7 @@
             "enum": [
               "uuid",
               "created_at",
-              "updated_at",
-              "filename"
+              "updated_at"
             ],
             "title": "Sortby",
             "default": "created_at"
@@ -7529,8 +7528,7 @@
             "enum": [
               "uuid",
               "created_at",
-              "updated_at",
-              "filename"
+              "updated_at"
             ],
             "title": "Sortby",
             "default": "created_at"
@@ -7732,7 +7730,7 @@
             ],
             "title": "Color"
           },
-          "parent_uuid": {
+          "parentUuid": {
             "anyOf": [
               {
                 "type": "string"
@@ -7741,9 +7739,9 @@
                 "type": "null"
               }
             ],
-            "title": "Parent Uuid"
+            "title": "Parentuuid"
           },
-          "label_type": {
+          "labelType": {
             "anyOf": [
               {
                 "$ref": "#/components/schemas/LabelType"
@@ -8577,8 +8575,7 @@
             "enum": [
               "uuid",
               "created_at",
-              "updated_at",
-              "filename"
+              "updated_at"
             ],
             "title": "Sortby",
             "default": "created_at"
@@ -8671,8 +8668,7 @@
             "enum": [
               "uuid",
               "created_at",
-              "updated_at",
-              "filename"
+              "updated_at"
             ],
             "title": "Sortby",
             "default": "created_at"

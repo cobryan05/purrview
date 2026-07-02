@@ -316,7 +316,7 @@ class ImageSearchParams(ApiModel):
     image_label_filters: List["ImageLabelFilter"] = Field(default_factory=list)
     image_tag_filters: List["ImageTagFilter"] = Field(default_factory=list)
     limit: int = 50
-    sort_by: Literal["uuid", "created_at", "updated_at", "filename"] = "created_at"
+    sort_by: Literal["uuid", "created_at", "updated_at"] = "created_at"
     sort_order: Literal["asc", "desc"] = "desc"
     filename_search: Optional[str] = None
     filename_searches: List[str] = Field(default_factory=list)  # AND of all patterns

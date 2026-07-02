@@ -563,7 +563,7 @@ class NeedsReviewImagesPayload(Payload):
     label_uuids: List[str] = Field(default_factory=list)
     after_uuid: Optional[str] = None
     after_sort_value: Optional[datetime] = None
-    sort_by: Literal["uuid", "created_at", "updated_at", "filename"] = "created_at"
+    sort_by: Literal["uuid", "created_at", "updated_at"] = "created_at"
     sort_order: Literal["asc", "desc"] = "desc"
     limit: int = 50
 
@@ -571,7 +571,7 @@ class NeedsReviewImagesPayload(Payload):
 class ReadyImagesPayload(Payload):
     after_uuid: Optional[str] = None
     after_sort_value: Optional[datetime] = None
-    sort_by: Literal["uuid", "created_at", "updated_at", "filename"] = "created_at"
+    sort_by: Literal["uuid", "created_at", "updated_at"] = "created_at"
     sort_order: Literal["asc", "desc"] = "desc"
     limit: int = 50
 
@@ -582,7 +582,7 @@ class ImagesByLabelStatusPayload(Payload):
     status: Optional[Literal["present", "absent", "uncertain", "all", "has_verified_bbox", "co_labels_covered", "co_label_gaps"]] = None
     after_uuid: Optional[str] = None
     after_sort_value: Optional[datetime] = None
-    sort_by: Literal["uuid", "created_at", "updated_at", "filename"] = "created_at"
+    sort_by: Literal["uuid", "created_at", "updated_at"] = "created_at"
     sort_order: Literal["asc", "desc"] = "desc"
     limit: int = 50
 
