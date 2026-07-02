@@ -162,6 +162,24 @@ async def test_init_empty_resume_data_gives_empty_ids():
     assert task._images_saved == 0
 
 
+@pytest.mark.parametrize("bad_dir", ["../../data/db", "/etc", "foo/../../bar", ".."])
+async def test_init_rejects_output_dir_traversal(bad_dir):
+    """output_dir is joined onto files_root when writing collected images; an
+    absolute path or '..' traversal would write outside the dataset root."""
+    params = {**_PARAMS, "output_dir": bad_dir}
+    task = _make_task(params)
+    with pytest.raises(ValueError):
+        await task._init(params, resume_data=None)
+
+
+async def test_init_accepts_nested_relative_output_dir():
+    """A normal nested relative output_dir must still be accepted."""
+    params = {**_PARAMS, "output_dir": "collected/run1"}
+    task = _make_task(params)
+    await task._init(params, resume_data=None)
+    assert task._output_dir == "collected/run1"
+
+
 # ─── Full-run integration tests ───────────────────────────────────────────────
 
 

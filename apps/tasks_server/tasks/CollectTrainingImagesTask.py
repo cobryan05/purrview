@@ -94,6 +94,14 @@ class CollectTrainingImagesTask(Task):
         self.log("Initializing task parameters")
         self._source_uuids: list[str] = params["source_uuids"]
         self._output_dir: str = params["output_dir"]
+        # output_dir is joined onto files_root when writing collected images.
+        # Reject absolute paths and '..' traversal so a task can't write outside
+        # the dataset root (raw params are untrusted — validate here per CLAUDE.md).
+        _out = Path(self._output_dir)
+        if _out.is_absolute() or ".." in _out.parts:
+            raise ValueError(
+                f"Invalid output_dir {self._output_dir!r}: must be a relative path within the dataset root"
+            )
 
         # model_label_config: [{modelName, labelValues: {labelUuid: confidence}}]
         model_label_config: list[dict] = params.get("model_label_config", [])

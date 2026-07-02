@@ -38,6 +38,19 @@ _MODELS_ROOT = Path(os.environ.get("MODELS_ROOT", "/models"))
 class RunClassifierTask(Task):
     async def _init(self, params: dict[str, Any], resume_data: Optional[dict[str, Any]]) -> None:
         self._model_name: str = str(params["model_name"])
+        # model_name is joined onto _MODELS_ROOT to build .onnx/.json paths.
+        # It must be a bare model name (single path component) so it can't be used
+        # to read files outside the models root via separators or '..' traversal.
+        if (
+            not self._model_name
+            or "/" in self._model_name
+            or "\\" in self._model_name
+            or self._model_name in (".", "..")
+            or Path(self._model_name).is_absolute()
+        ):
+            raise ValueError(
+                f"Invalid model_name {self._model_name!r}: must be a bare model name (no path separators or '..')"
+            )
         self._source_uuids: list[str] = list(params.get("source_uuids", []))
         self._confidence_threshold: float = float(params.get("confidence_threshold", 0.7))
         self._batch_size: int = int(params.get("batch_size", 32))

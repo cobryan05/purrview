@@ -116,6 +116,15 @@ class TestInit:
             with pytest.raises(ValueError, match="multi_label_classifier"):
                 await task._init(task._params, None)
 
+    @pytest.mark.parametrize("bad_name", ["../secret", "sub/model", "..", "/abs/model", "a/../../etc/passwd"])
+    async def test_init_rejects_model_name_traversal(self, tmp_path, bad_name):
+        """model_name is joined onto _MODELS_ROOT; a name with path separators or
+        '..' could read arbitrary .onnx/.json files outside the models root."""
+        task = _make_task({"model_name": bad_name})
+        with patch("apps.tasks_server.tasks.RunClassifierTask._MODELS_ROOT", tmp_path):
+            with pytest.raises(ValueError):
+                await task._init(task._params, None)
+
     async def test_init_raises_if_label_uuid_missing(self, tmp_path):
         model_name = "clf"
         (tmp_path / f"{model_name}.onnx").write_bytes(b"fake")
