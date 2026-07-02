@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -120,6 +121,11 @@ _SYSTEM_TAGS = [
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger(__file__)
 logger.setLevel(logging.DEBUG)
+
+
+class SidecarParseError(Exception):
+    """Raised when a present JSON sidecar cannot be parsed and proceeding would
+    destroy DB state (e.g. an overwrite sync from a torn/corrupt sidecar)."""
 
 
 T = TypeVar("T", bound=SQLModel)
@@ -650,7 +656,16 @@ class DbClient:
                         box_label_names[bbox.uuid] = label_name
             except Exception as e:
                 logger.error(f"Failed to parse {json_path}: {e}")
-                # Reset to empty — partial state from a mid-loop failure is worse than no state.
+                # A present-but-unparseable sidecar must never be treated as an
+                # empty set of annotations. In overwrite mode that would replace
+                # the DB's bboxes/metadata with nothing — silent data loss of the
+                # user's annotations (the sidecar is often their last copy). Refuse.
+                if overwrite:
+                    raise SidecarParseError(
+                        f"Refusing to overwrite DB from unparseable sidecar {json_path}: {e}"
+                    ) from e
+                # In merge mode a parse failure is non-destructive (nothing is
+                # added, existing bboxes are kept), so fall through with empty state.
                 json_bboxes = []
                 box_tag_uuids = {}
                 box_tag_names = {}
@@ -1418,7 +1433,17 @@ class DbClient:
         if image_phash:
             new_data["phash"] = image_phash
         existing.update(new_data)
-        json_path.write_text(json.dumps(existing, indent=2))
+        # Atomic write: serialise to a sibling temp file then os.replace so a
+        # crash mid-write can never leave a torn/half-written sidecar (which a
+        # later overwrite-sync would then refuse — or, historically, wipe from).
+        serialized = json.dumps(existing, indent=2)
+        tmp_path = json_path.with_name(json_path.name + ".tmp")
+        try:
+            tmp_path.write_text(serialized)
+            os.replace(tmp_path, json_path)
+        except Exception:
+            tmp_path.unlink(missing_ok=True)
+            raise
 
     async def get_all_image_phashes(self) -> List[Dict[str, str]]:
         """Return [{uuid, phash}] for all images with a non-null phash."""

@@ -632,4 +632,83 @@ async def test_rebuild_overwrites_bboxes_when_requested(tmp_path):
     assert len(bboxes) == 1, "overwrite should leave only the sidecar's bbox"
     assert bboxes[0].uuid == canonical_bid
 
+
+async def test_overwrite_from_corrupt_sidecar_does_not_wipe_bboxes(tmp_path):
+    """A present-but-unparseable sidecar must NOT be treated as "empty" and
+    overwrite the DB's bboxes with nothing. sync_image_from_json(overwrite=True)
+    must refuse (raise SidecarParseError) and leave the DB untouched.
+    """
+    from apps.helpers.db.db_client import SidecarParseError
+
+    files_root = tmp_path / "files"
+    files_root.mkdir()
+    db_dir = tmp_path / "db"
+    db_dir.mkdir()
+    client = DbClient(db_dir=db_dir)
+    await client.init_db()
+
+    label = await client.add_label("cat", "#FF0000")
+    image_path = files_root / "corrupt_test.png"
+    image_path.write_bytes(make_png())
+    image = await client.add_image(image_path)
+    await client.write_image_metadata_to_db(
+        image.uuid,
+        ImageRecordUpdate(
+            bboxes=[
+                BBoxUpdate(
+                    uuid=str(uuid_mod.uuid4()),
+                    label_uuid=label.uuid,
+                    x=0.0,
+                    y=0.0,
+                    width=0.1,
+                    height=0.1,
+                    tag_uuids=[],
+                )
+            ]
+        ),
+    )
+
+    # Corrupt (truncated / invalid JSON) sidecar.
+    sidecar_path = image_path.with_suffix(".json")
+    sidecar_path.write_text('{ "uuid": "%s", "boxes": [ {invalid' % image.uuid)
+
+    with pytest.raises(SidecarParseError):
+        await client.sync_image_from_json(image_path, overwrite=True)
+
+    bboxes = await client.get_bboxes_for_image(image.uuid)
+    assert len(bboxes) == 1, "corrupt sidecar must not wipe existing annotations"
+
     await client.close()
+
+
+def test_sidecar_write_failure_preserves_existing_file(tmp_path, monkeypatch):
+    """write_image_metadata_to_json must be atomic (temp file + os.replace) so a
+    failure mid-write leaves the previous valid sidecar intact rather than a
+    truncated/torn file.
+    """
+    import os
+
+    client = DbClient(db_dir=tmp_path, memory=True)
+
+    json_path = tmp_path / "atomic.json"
+    original = {"uuid": "original-uuid", "boxes": [{"uuid": "keep-me"}]}
+    json_path.write_text(json.dumps(original))
+
+    def boom(*_args, **_kwargs):
+        raise OSError("simulated crash during replace")
+
+    monkeypatch.setattr(os, "replace", boom)
+
+    with pytest.raises(OSError):
+        client.write_image_metadata_to_json(
+            json_path,
+            "new-uuid",
+            str(tmp_path / "img.png"),
+            ImageRecordUpdate(bboxes=[]),
+        )
+
+    # The original sidecar must be unchanged and still valid JSON.
+    data = json.loads(json_path.read_text())
+    assert data["uuid"] == "original-uuid"
+    # No leftover temp file next to the sidecar.
+    assert not list(tmp_path.glob("*.tmp"))
