@@ -82,6 +82,12 @@ def _tables(engine) -> set[str]:
     return {r[0] for r in rows}
 
 
+def _indexes(engine, table: str) -> set[str]:
+    with engine.connect() as conn:
+        rows = conn.exec_driver_sql(f"PRAGMA index_list({table})").fetchall()
+    return {r[1] for r in rows}
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Fixtures
 # ──────────────────────────────────────────────────────────────────────────────
@@ -330,3 +336,23 @@ class TestMigrationPath:
         assert "training_config_label_links" not in _tables(
             engine
         ), "training_config_label_links should have been dropped"
+
+
+class TestPerformanceIndexes:
+    """Guard the label reverse-lookup indexes added by d8e2f1a4b6c9.
+
+    SQLite batch_alter_table recreates the whole table, which silently drops any
+    index the batch op is unaware of — this already happened to the earlier
+    migration-only (image_uuid, label_uuid) composite. These indexes must survive
+    all the way to head so the dataset/label filters keep their covering seek.
+    """
+
+    def test_label_reverse_indexes_present_at_head(self, pre_redesign_copy):
+        engine = pre_redesign_copy
+        _run_migrations(engine, "head")
+
+        bboxes_idx = _indexes(engine, "bboxes")
+        assert "ix_bboxes_label_uuid_image_uuid" in bboxes_idx, "composite label→image index missing at head"
+        # Superseded by the composite's leading column; must be dropped.
+        assert "ix_bboxes_label_uuid" not in bboxes_idx, "redundant single-column label index still present"
+        assert "ix_image_labels_label_uuid" in _indexes(engine, "image_labels"), "image_labels label index missing"

@@ -400,9 +400,16 @@ class BBoxBase(SQLModel):
 
 class BBox(BBoxBase, TimestampModel, table=True):
     __tablename__ = "bboxes"
+    # Composite (label_uuid, image_uuid): serves the reverse label→image_uuid
+    # lookups used by the dataset/label filters as a COVERING index seek and
+    # satisfies their DISTINCT without a temp b-tree. Its leading column also
+    # covers plain label_uuid lookups, so no separate single-column index on
+    # label_uuid is needed. Kept in the model (not migration-only) so fresh
+    # create_all installs get it too, not just migration-upgraded DBs.
+    __table_args__ = (sa.Index("ix_bboxes_label_uuid_image_uuid", "label_uuid", "image_uuid"),)
     uuid: str = Field(default_factory=lambda: str(uuid4()), primary_key=True)
     image_uuid: str = Field(foreign_key="images.uuid", index=True, ondelete="CASCADE")
-    label_uuid: str = Field(foreign_key="labels.uuid", index=True)
+    label_uuid: str = Field(foreign_key="labels.uuid")
 
     image: ImageRecord = Relationship(back_populates="bboxes")
     label: Label = Relationship(back_populates="bboxes")
@@ -573,6 +580,10 @@ class TaskResult(BaseModel):
 
 class ImageLabel(SQLModel, table=True):
     __tablename__ = "image_labels"
+    # The composite PK leads with image_uuid, so reverse lookups by label_uuid
+    # alone (list_images_for_label / dataset assembly) would full-scan without
+    # this index.
+    __table_args__ = (sa.Index("ix_image_labels_label_uuid", "label_uuid"),)
     image_uuid: str = Field(foreign_key="images.uuid", primary_key=True, ondelete="CASCADE")
     label_uuid: str = Field(foreign_key="labels.uuid", primary_key=True, ondelete="CASCADE")
     status: ImageItemStatus = Field(default=ImageItemStatus.UNCERTAIN)
