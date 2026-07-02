@@ -137,7 +137,7 @@ class TestRankImagesByDiversity:
         """The image closest to the seed should be ranked last."""
         idx, uuids, phashes = index_with_known_phashes
         # Seed = A (all zeros); D is distance-1 from A → should appear last
-        ranked = idx.rank_images_by_diversity(phashes["A"], None, 4)
+        ranked = await idx.rank_images_by_diversity(phashes["A"], None, 4)
         assert ranked[-1] == uuids["A"] or ranked[-1] == uuids["D"]
         # First must be B (distance 64 from A — farthest)
         assert ranked[0] == uuids["B"]
@@ -145,7 +145,7 @@ class TestRankImagesByDiversity:
     async def test_farthest_ranked_first(self, index_with_known_phashes):
         """The image farthest from the seed must be ranked first."""
         idx, uuids, phashes = index_with_known_phashes
-        ranked = idx.rank_images_by_diversity(phashes["A"], None, 4)
+        ranked = await idx.rank_images_by_diversity(phashes["A"], None, 4)
         assert ranked[0] == uuids["B"]
 
     async def test_no_near_duplicate_cluster_at_top(self, index_with_known_phashes):
@@ -157,7 +157,7 @@ class TestRankImagesByDiversity:
         (min(32,32)=32 vs D's min(1,63)=1).
         """
         idx, uuids, phashes = index_with_known_phashes
-        ranked = idx.rank_images_by_diversity(phashes["A"], None, 4)
+        ranked = await idx.rank_images_by_diversity(phashes["A"], None, 4)
         # Second pick must be C, not D or A
         assert ranked[1] == uuids["C"]
 
@@ -165,23 +165,23 @@ class TestRankImagesByDiversity:
         """Only UUIDs in candidate_uuids should appear in results."""
         idx, uuids, phashes = index_with_known_phashes
         allowed = {uuids["B"], uuids["C"]}
-        ranked = idx.rank_images_by_diversity(phashes["A"], allowed, 10)
+        ranked = await idx.rank_images_by_diversity(phashes["A"], allowed, 10)
         assert set(ranked) == allowed
 
     async def test_count_respected(self, index_with_known_phashes):
         idx, uuids, _ = index_with_known_phashes
-        ranked = idx.rank_images_by_diversity("0000000000000000", None, 2)
+        ranked = await idx.rank_images_by_diversity("0000000000000000", None, 2)
         assert len(ranked) == 2
 
     async def test_empty_index_returns_empty(self, db_client):
         idx = HashIndex(db_client, image_hash_size=8, bbox_hash_size=16)
         await idx.build()
-        result = idx.rank_images_by_diversity("0000000000000000", None, 10)
+        result = await idx.rank_images_by_diversity("0000000000000000", None, 10)
         assert result == []
 
     async def test_count_larger_than_n_returns_all(self, index_with_known_phashes):
         idx, uuids, _ = index_with_known_phashes
-        ranked = idx.rank_images_by_diversity("0000000000000000", None, 999)
+        ranked = await idx.rank_images_by_diversity("0000000000000000", None, 999)
         assert len(ranked) == len(uuids)
 
 

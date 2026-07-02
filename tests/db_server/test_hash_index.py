@@ -238,6 +238,25 @@ class TestBuildFromDB:
         assert s["image_tombstones"] == 0
         assert s["needs_rebuild"] is False
 
+    def test_build_structures_does_not_mutate_live_index(self, idx):
+        """_build_structures (run in a worker thread) must build into a returned
+        container WITHOUT touching the live trees, so concurrent queries on the
+        event loop keep seeing the old, fully-populated index until _install
+        performs the atomic swap. Otherwise a rebuild exposes half-built state.
+        """
+        idx.add_image("img-1", IMG_BLACK)
+
+        data = idx._build_structures([{"uuid": "img-2", "phash": IMG_WHITE}], [])
+
+        # Live index is untouched: img-1 still findable, img-2 not yet visible.
+        assert any(u == "img-1" for u, _ in idx.find_similar_images(IMG_BLACK, 0))
+        assert idx.find_similar_images(IMG_WHITE, 0) == []
+
+        # The atomic swap makes the new dataset visible in one step.
+        idx._install(data)
+        assert any(u == "img-2" for u, _ in idx.find_similar_images(IMG_WHITE, 0))
+        assert idx.find_similar_images(IMG_BLACK, 0) == []
+
     async def test_build_does_not_block_event_loop(self, idx):
         """_construct_trees must run off the event loop via asyncio.to_thread.
 
@@ -248,17 +267,17 @@ class TestBuildFromDB:
         from unittest.mock import patch
 
         ran_in_thread = False
-        original = idx._construct_trees
+        original = idx._build_structures
 
         def tracked_construct(image_rows, bbox_rows):
             nonlocal ran_in_thread
             ran_in_thread = threading.current_thread() is not threading.main_thread()
             return original(image_rows, bbox_rows)
 
-        with patch.object(idx, "_construct_trees", tracked_construct):
+        with patch.object(idx, "_build_structures", tracked_construct):
             await idx.build()
 
-        assert ran_in_thread, "_construct_trees must run in a worker thread, not on the event loop"
+        assert ran_in_thread, "_build_structures must run in a worker thread, not on the event loop"
 
     async def test_rebuild_does_not_block_event_loop(self, idx):
         """rebuild() has the same non-blocking requirement as build()."""
@@ -266,17 +285,17 @@ class TestBuildFromDB:
         from unittest.mock import patch
 
         ran_in_thread = False
-        original = idx._construct_trees
+        original = idx._build_structures
 
         def tracked_construct(image_rows, bbox_rows):
             nonlocal ran_in_thread
             ran_in_thread = threading.current_thread() is not threading.main_thread()
             return original(image_rows, bbox_rows)
 
-        with patch.object(idx, "_construct_trees", tracked_construct):
+        with patch.object(idx, "_build_structures", tracked_construct):
             await idx.rebuild()
 
-        assert ran_in_thread, "_construct_trees must run in a worker thread, not on the event loop"
+        assert ran_in_thread, "_build_structures must run in a worker thread, not on the event loop"
 
     async def test_load_phashes_returns_all_rows(self, idx, db_client):
         """_load_phashes must accumulate every row regardless of CHUNK_SIZE."""
@@ -374,20 +393,20 @@ class TestOnPhaseCallback:
         from unittest.mock import patch
 
         captured = []
-        original = idx._construct_trees
+        original = idx._build_structures
 
         def _spy_construct(image_rows, bbox_rows):
             captured.append(list(phases))
             return original(image_rows, bbox_rows)
 
         phases = []
-        with patch.object(idx, "_construct_trees", _spy_construct):
+        with patch.object(idx, "_build_structures", _spy_construct):
             await idx.build(on_phase=phases.append)
 
         assert captured[0] == [
             "loading",
             "constructing",
-        ], "on_phase('constructing') must fire before _construct_trees"
+        ], "on_phase('constructing') must fire before _build_structures"
 
     async def test_build_without_on_phase_does_not_raise(self, idx):
         """on_phase is optional; omitting it must not raise."""

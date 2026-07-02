@@ -1589,8 +1589,10 @@ class Manager:
             if seed_phash is None:
                 return []
 
-        return await asyncio.to_thread(
-            self._hash_index.rank_images_by_diversity,
+        # rank_images_by_diversity is async: it materialises the candidate list on
+        # the event loop (safe against concurrent index mutation) and offloads only
+        # the CPU-bound ranking to a worker thread internally.
+        return await self._hash_index.rank_images_by_diversity(
             seed_phash,
             candidate_uuids,
             count,
@@ -1610,8 +1612,7 @@ class Manager:
         if bbox.phash is None:
             return []
 
-        ranked = await asyncio.to_thread(
-            self._hash_index.rank_bboxes_by_diversity,
+        ranked = await self._hash_index.rank_bboxes_by_diversity(
             bbox.phash,
             label_uuids or None,
             count,

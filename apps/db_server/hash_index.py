@@ -69,6 +69,22 @@ class RebuildStats:
     duration_ms: float = 0.0
 
 
+@dataclass
+class _IndexData:
+    """Fully-built index structures, produced off the event loop by
+    _build_structures and swapped into the live HashIndex atomically by
+    _install. Kept separate from the live fields so a worker thread never
+    mutates state that event-loop queries are concurrently reading."""
+
+    image_tree: Optional["pybktree.BKTree"]
+    valid_images: Set[str]
+    bbox_trees: Dict[str, "pybktree.BKTree"]
+    valid_bboxes: Dict[str, Set[str]]
+    bbox_tombstones: Dict[str, int]
+    image_count: int
+    bbox_count: int
+
+
 class HashIndex:
     """BK-tree index for whole-image and per-label bbox perceptual-hash lookup."""
 
@@ -165,7 +181,11 @@ class HashIndex:
             image_rows, bbox_rows = await self._load_phashes()
         if on_phase:
             on_phase("constructing")
-        stats = await asyncio.to_thread(self._construct_trees, image_rows, bbox_rows)
+        # Build off the event loop, then swap in on the loop (no await between
+        # the to_thread result and _install → atomic from every reader's view).
+        data = await asyncio.to_thread(self._build_structures, image_rows, bbox_rows)
+        self._install(data)
+        stats = BuildStats(image_count=data.image_count, bbox_count=data.bbox_count)
         stats.duration_ms = (time.perf_counter() - t0) * 1000
         logger.info(
             "HashIndex built: %d images, %d bboxes in %.1f ms",
@@ -175,52 +195,78 @@ class HashIndex:
         )
         return stats
 
-    def _construct_trees(
+    def _build_structures(
         self,
         image_rows: List[Dict[str, str]],
         bbox_rows: List[Dict[str, str]],
-    ) -> BuildStats:
-        """Build internal trees from raw DB row dicts."""
+    ) -> _IndexData:
+        """Build BK-trees from raw DB row dicts into a fresh _IndexData.
+
+        Pure with respect to ``self`` — it must NOT assign to any live field.
+        Runs in a worker thread (via asyncio.to_thread); the live trees stay
+        readable by event-loop queries until _install swaps in the result.
+        """
         # Image tree
         image_items = [(row["phash"], row["uuid"]) for row in image_rows]
-        if image_items:
-            self._image_tree = pybktree.BKTree(_item_distance, image_items)
-        else:
-            self._image_tree = None
-        self._valid_images = {row["uuid"] for row in image_rows}
-        self._image_tombstones = 0
+        image_tree = pybktree.BKTree(_item_distance, image_items) if image_items else None
+        valid_images = {row["uuid"] for row in image_rows}
 
         # Per-label bbox trees
         by_label: Dict[str, List[Tuple[str, str]]] = {}
         for row in bbox_rows:
             by_label.setdefault(row["label_uuid"], []).append((row["phash"], row["uuid"]))
 
-        self._bbox_trees = {}
-        self._valid_bboxes = {}
-        self._bbox_tombstones = {}
+        bbox_trees: Dict[str, pybktree.BKTree] = {}
+        valid_bboxes: Dict[str, Set[str]] = {}
+        bbox_tombstones: Dict[str, int] = {}
         for label_uuid, items in by_label.items():
-            self._bbox_trees[label_uuid] = pybktree.BKTree(_item_distance, items)
-            self._valid_bboxes[label_uuid] = {item[1] for item in items}
-            self._bbox_tombstones[label_uuid] = 0
+            bbox_trees[label_uuid] = pybktree.BKTree(_item_distance, items)
+            valid_bboxes[label_uuid] = {item[1] for item in items}
+            bbox_tombstones[label_uuid] = 0
 
+        return _IndexData(
+            image_tree=image_tree,
+            valid_images=valid_images,
+            bbox_trees=bbox_trees,
+            valid_bboxes=valid_bboxes,
+            bbox_tombstones=bbox_tombstones,
+            image_count=len(image_rows),
+            bbox_count=len(bbox_rows),
+        )
+
+    def _install(self, data: _IndexData) -> None:
+        """Atomically swap freshly-built structures into the live index.
+
+        Called on the event loop with NO intervening await, so from the point of
+        view of any other coroutine the whole index flips over in one step —
+        readers never observe a partially-rebuilt tree. Resets tombstone
+        counters since the new trees contain only live entries.
+        """
+        self._image_tree = data.image_tree
+        self._valid_images = data.valid_images
+        self._image_tombstones = 0
+        self._bbox_trees = data.bbox_trees
+        self._valid_bboxes = data.valid_bboxes
+        self._bbox_tombstones = data.bbox_tombstones
         self._needs_rebuild = False
-        return BuildStats(image_count=len(image_rows), bbox_count=len(bbox_rows))
 
     async def rebuild(self) -> RebuildStats:
         """Full reload from DB — resets all tombstone counters."""
         t0 = time.perf_counter()
         image_rows, bbox_rows = await self._load_phashes()
-        stats_build = await asyncio.to_thread(self._construct_trees, image_rows, bbox_rows)
+        # Build off the loop, swap in atomically on the loop (see build()).
+        data = await asyncio.to_thread(self._build_structures, image_rows, bbox_rows)
+        self._install(data)
         duration_ms = (time.perf_counter() - t0) * 1000
         logger.info(
             "HashIndex rebuilt: %d images, %d bboxes in %.1f ms",
-            stats_build.image_count,
-            stats_build.bbox_count,
+            data.image_count,
+            data.bbox_count,
             duration_ms,
         )
         return RebuildStats(
-            image_count=stats_build.image_count,
-            bbox_count=stats_build.bbox_count,
+            image_count=data.image_count,
+            bbox_count=data.bbox_count,
             duration_ms=duration_ms,
         )
 
@@ -392,7 +438,7 @@ class HashIndex:
 
         return selected
 
-    def rank_images_by_diversity(
+    async def rank_images_by_diversity(
         self,
         seed_phash: str,
         candidate_uuids: Optional[Set[str]],
@@ -408,8 +454,11 @@ class HashIndex:
         if self._image_tree is None:
             return []
 
-        # Materialise phash hex strings from the tree, honouring tombstones
-        # and the optional candidate filter.
+        # Materialise phash hex strings from the tree ON THE EVENT LOOP (this
+        # method is a coroutine; the loop below has no await, so no concurrent
+        # add_image/add_bbox can mutate the tree mid-iteration). Only the
+        # CPU-bound numpy ranking is offloaded to a worker thread — it operates
+        # on the local snapshot, never on the live tree.
         uuids: List[str] = []
         phash_hexes: List[str] = []
         for phash_hex, uuid in self._image_tree:
@@ -420,10 +469,10 @@ class HashIndex:
             uuids.append(uuid)
             phash_hexes.append(phash_hex)
 
-        order = self._greedy_diversity_order(phash_hexes, seed_phash, count)
+        order = await asyncio.to_thread(self._greedy_diversity_order, phash_hexes, seed_phash, count)
         return [uuids[i] for i in order]
 
-    def rank_bboxes_by_diversity(
+    async def rank_bboxes_by_diversity(
         self,
         seed_phash: str,
         label_uuids: Optional[List[str]],
@@ -440,7 +489,9 @@ class HashIndex:
         """
         self._validate_bbox_phash(seed_phash)
 
-        # Materialise (bbox_uuid, label_uuid, phash_hex) across relevant trees.
+        # Materialise (bbox_uuid, label_uuid, phash_hex) across relevant trees ON
+        # THE EVENT LOOP (no await in the loop below), so the CPU-bound thread
+        # never iterates a live tree while a concurrent add_bbox mutates it.
         items: List[Tuple[str, str, str]] = []
         target_labels = label_uuids if label_uuids else list(self._bbox_trees.keys())
         for lbl in target_labels:
@@ -452,7 +503,9 @@ class HashIndex:
                 if bbox_uuid in valid:
                     items.append((bbox_uuid, lbl, phash_hex))
 
-        order = self._greedy_diversity_order([p for _, _, p in items], seed_phash, count)
+        order = await asyncio.to_thread(
+            self._greedy_diversity_order, [p for _, _, p in items], seed_phash, count
+        )
         return [(items[i][0], items[i][1]) for i in order]
 
     def check_dedup_bulk(
