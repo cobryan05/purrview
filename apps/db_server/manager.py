@@ -1410,6 +1410,16 @@ class Manager:
             return None
 
         filename = image_record.filename
+        image_path = self._resolve_image_path(filename)
+
+        # Delete the JSON sidecar FIRST and let any failure propagate BEFORE the
+        # DB is touched. If the DB record were deleted first and the sidecar
+        # deletion then failed (swallowed), the orphaned sidecar would cause the
+        # next reconcile to silently re-import (resurrect) the deleted image.
+        if image_path:
+            sidecar_path = self._get_json_sidefile(image_path)
+            if sidecar_path.exists():
+                sidecar_path.unlink()  # let exception propagate; caller handles it
 
         # Remove from hash index before DB deletion.
         self._remove_from_hash_index(image_record)
@@ -1417,8 +1427,9 @@ class Manager:
         # Delete DB record (bboxes cascade).
         await self._db_client.delete_image(image_uuid)
 
-        # Delete image file from disk.
-        image_path = self._resolve_image_path(filename)
+        # Delete the image file last. A leftover image file without its sidecar
+        # is harmless (reconcile only re-imports images that have a sidecar), so
+        # this is best-effort and does not gate the delete.
         if image_path and image_path.exists():
             try:
                 image_path.unlink()
@@ -1428,19 +1439,6 @@ class Manager:
                     image_path,
                     e,
                 )
-
-        # Delete JSON sidecar.
-        if image_path:
-            sidecar_path = self._get_json_sidefile(image_path)
-            if sidecar_path.exists():
-                try:
-                    sidecar_path.unlink()
-                except Exception as e:
-                    logger.warning(
-                        "delete_image_permanently: failed to delete sidecar %s: %s",
-                        sidecar_path,
-                        e,
-                    )
 
         rel_path = self._image_rel_path(filename)
         logger.info("delete_image_permanently: deleted %s (%s)", filename, image_uuid)

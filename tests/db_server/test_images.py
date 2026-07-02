@@ -139,6 +139,42 @@ async def test_delete_image_removes_file_and_record(http_client, image_file, fil
     assert r2.json()["status"] == "failure"
 
 
+async def test_delete_image_permanently_aborts_when_sidecar_undeletable(http_client, db_client, image_file, files_root):
+    """If the sidecar cannot be deleted, the DB record must NOT be deleted.
+
+    Otherwise the DB record is gone but the sidecar survives on disk, and the
+    next reconcile silently re-imports (resurrects) the "deleted" image. The
+    sidecar must be removed before (and gate) the DB delete. The DB state is
+    checked directly (metadata/get would auto-resync from the surviving sidecar
+    and mask the bug).
+    """
+    import json as _json
+    import os
+    import uuid as _uuid
+
+    stable_uuid = str(_uuid.uuid4())
+    sidecar = image_file.with_suffix(".json")
+    sidecar.write_text(_json.dumps({"uuid": stable_uuid, "boxes": []}))
+
+    r = await http_client.post(
+        "/api/images/reconcile",
+        json={"relPath": "test.png", "syncMode": "replace_db_with_json"},
+    )
+    assert r.status_code == 200
+    assert await db_client.get_image_by_uuid(stable_uuid) is not None
+
+    # Make the sidecar undeletable by removing write permission on its directory.
+    os.chmod(files_root, 0o500)
+    try:
+        await http_client.delete(f"/api/images/{stable_uuid}")
+    finally:
+        os.chmod(files_root, 0o700)
+
+    assert sidecar.exists(), "sidecar should not have been removed"
+    # Raw DB check (no resync): the record must survive a failed sidecar delete.
+    assert await db_client.get_image_by_uuid(stable_uuid) is not None, "DB record must survive a failed sidecar delete"
+
+
 async def test_delete_image_db_only_not_found(http_client):
     r = await http_client.delete("/api/images/00000000-0000-0000-0000-000000000000/db-only")
     assert r.status_code == 200
