@@ -8531,6 +8531,10 @@
             "type": "string",
             "title": "Uuid"
           },
+          "modelConfigUuid": {
+            "type": "string",
+            "title": "Modelconfiguuid"
+          },
           "labelUuid": {
             "anyOf": [
               {
@@ -8559,6 +8563,7 @@
         "type": "object",
         "required": [
           "uuid",
+          "modelConfigUuid",
           "modelType",
           "architecture"
         ],

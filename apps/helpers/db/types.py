@@ -776,6 +776,7 @@ class ModelConfig(TimestampModel, table=True):
 
 class ModelConfigNodeRead(OrmModel):
     uuid: str
+    model_config_uuid: str
     label_uuid: Optional[str] = None
     model_type: str
     architecture: str

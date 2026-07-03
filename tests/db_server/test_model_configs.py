@@ -95,6 +95,26 @@ async def test_create_with_nodes(http_client):
     assert root_node["architecture"] == "yolo_v9_c"
 
 
+async def test_get_model_config_node_includes_parent_config_uuid(http_client):
+    """GET /api/model-config-nodes/{uuid} must echo model_config_uuid so callers
+
+    (e.g. TrainModelTask) can look up bundle training targets for the node's
+    parent config without a separate list-and-search round trip.
+    """
+    label_uuid = await _create_label(http_client, "Cat")
+    nodes = [
+        {"label_uuid": None, "model_type": "object_detection", "architecture": "yolo_v9_c"},
+        {"label_uuid": label_uuid, "model_type": "image_classifier", "architecture": "efficientnet_b0"},
+    ]
+    cfg = await _create_config(http_client, "NodeParentLookup", nodes=nodes)
+    node_uuid = next(n["uuid"] for n in cfg["nodes"] if n["labelUuid"] == label_uuid)
+
+    r = await http_client.get(f"/api/model-config-nodes/{node_uuid}")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["modelConfigUuid"] == cfg["uuid"]
+
+
 async def test_update_scalar_fields(http_client):
     cfg = await _create_config(http_client, "OldName", description="old")
     r = await http_client.patch(
