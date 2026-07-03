@@ -222,6 +222,7 @@ def _apply_image_search_filters(stmt: Select, params: ImageSearchParams, *, use_
                 .correlate(ImageRecord)
             )
         return ImageRecord.uuid.in_(select(BBox.image_uuid).where(label_condition))
+
     # Track whether any filter that already guarantees at least one bbox has
     # been applied, so we can skip the redundant require_bboxes subquery.
     _bbox_implied = False
@@ -1025,13 +1026,15 @@ class DbClient:
         predicate_estimates: List[int] = []
 
         if not params.show_all_bboxes and params.tag_uuids:
-            counts = [
-                await self._selectivity_count(
-                    f"tag:{tag_uuid}",
-                    select(func.count()).select_from(BBoxTagLink).where(BBoxTagLink.tag_uuid == tag_uuid),
+            counts = await asyncio.gather(
+                *(
+                    self._selectivity_count(
+                        f"tag:{tag_uuid}",
+                        select(func.count()).select_from(BBoxTagLink).where(BBoxTagLink.tag_uuid == tag_uuid),
+                    )
+                    for tag_uuid in params.tag_uuids
                 )
-                for tag_uuid in params.tag_uuids
-            ]
+            )
             # "any" matches the union of the tags (bounded below by the biggest
             # one); "all" matches at most the smallest one.
             predicate_estimates.append(max(counts) if params.tag_match_mode == "any" else min(counts))
@@ -1040,9 +1043,7 @@ class DbClient:
             key = "label:" + ",".join(sorted(label_uuids))
             if params.label_include_children:
                 key += ":tree"
-                condition = BBox.label_uuid.in_(
-                    _label_uuids_with_descendants(label_uuids, cte_name="label_desc_probe")
-                )
+                condition = BBox.label_uuid.in_(_label_uuids_with_descendants(label_uuids, cte_name="label_desc_probe"))
             elif len(label_uuids) == 1:
                 condition = BBox.label_uuid == label_uuids[0]
             else:
@@ -1051,7 +1052,7 @@ class DbClient:
 
         if params.label_uuids:
             if params.label_match_mode == "all":
-                counts = [await _label_count([label_uuid]) for label_uuid in params.label_uuids]
+                counts = await asyncio.gather(*(_label_count([label_uuid]) for label_uuid in params.label_uuids))
                 predicate_estimates.append(min(counts))
             else:
                 predicate_estimates.append(await _label_count(params.label_uuids))
@@ -1067,9 +1068,7 @@ class DbClient:
 
         if not predicate_estimates or min(predicate_estimates) == 0:
             return False
-        total_images = await self._selectivity_count(
-            "images:total", select(func.count()).select_from(ImageRecord)
-        )
+        total_images = await self._selectivity_count("images:total", select(func.count()).select_from(ImageRecord))
         if total_images == 0:
             return False
         return (min(predicate_estimates) / total_images) >= _EXISTS_DISPATCH_MIN_FRACTION
@@ -2476,7 +2475,9 @@ class DbClient:
         description: Optional[str] = None,
         is_temporary: bool = False,
     ) -> TaskConfig:
-        config = TaskConfig(name=name, typename=typename, params_json=params, description=description, is_temporary=is_temporary)
+        config = TaskConfig(
+            name=name, typename=typename, params_json=params, description=description, is_temporary=is_temporary
+        )
         async with self._async_session_maker() as session:
             session.add(config)
             await session.commit()
@@ -3541,9 +3542,7 @@ class DbClient:
         # With rollup, any one verified label means the image is ready.
         readiness_threshold = 1 if is_rollup else n_labels
 
-        verified_by_image, present_by_image = await self._get_image_label_verification_counts(
-            image_uuids, label_uuids
-        )
+        verified_by_image, present_by_image = await self._get_image_label_verification_counts(image_uuids, label_uuids)
 
         ready_count = 0
         needs_review_count = 0
@@ -3627,9 +3626,7 @@ class DbClient:
         if target is None:
             return None
 
-        return await self._assemble_detection_dataset(
-            target["label_uuids"], target["class_remap"], dataset_uuids
-        )
+        return await self._assemble_detection_dataset(target["label_uuids"], target["class_remap"], dataset_uuids)
 
     async def _assemble_detection_dataset(
         self, class_label_uuids: list[str], remap: dict[str, str], dataset_uuids: list[str]
@@ -3681,9 +3678,7 @@ class DbClient:
                 )
                 verified_by_image.update(dict(result.all()))
 
-        eligible_images = [
-            img for img in all_images if verified_by_image.get(img.uuid, 0) >= readiness_threshold
-        ]
+        eligible_images = [img for img in all_images if verified_by_image.get(img.uuid, 0) >= readiness_threshold]
 
         # Batch-fetch all verified in-scope bboxes for eligible images (chunked
         # to stay under the SQLite bind-variable cap).
@@ -3720,11 +3715,13 @@ class DbClient:
                 cls_idx = label_uuid_to_class_idx[lbl_uuid]
                 # Convert (x1, y1, w, h) relative coords → YOLO (cx, cy, w, h).
                 annotations.append([cls_idx, x + w / 2, y + h / 2, w, h])
-            image_entries.append({
-                "image_uuid": img.uuid,
-                "filename": img.filename,
-                "annotations": annotations,
-            })
+            image_entries.append(
+                {
+                    "image_uuid": img.uuid,
+                    "filename": img.filename,
+                    "annotations": annotations,
+                }
+            )
 
         return {"class_names": class_names, "images": image_entries}
 
@@ -3800,9 +3797,7 @@ class DbClient:
                     )
                 elif status in ("co_labels_covered", "co_label_gaps"):
                     # Derive all labels in the training config to build the co-label picture.
-                    node_label_uuids, co_rollup_map = await self._derive_labels_for_node(
-                        tc.model_config_node_uuid
-                    )
+                    node_label_uuids, co_rollup_map = await self._derive_labels_for_node(tc.model_config_node_uuid)
                     if not node_label_uuids:
                         matching = set()
                     else:
@@ -3815,12 +3810,10 @@ class DbClient:
                                 child_to_parent_co[_child] = _parent
                         all_rollup_children_co = set(child_to_parent_co.keys())
                         top_level_uuids_co = [
-                            u for u in node_label_uuids
-                            if u not in all_rollup_children_co and u in co_labels_map
+                            u for u in node_label_uuids if u not in all_rollup_children_co and u in co_labels_map
                         ]
                         effective_for_tl_co: dict[str, list[str]] = {
-                            tl: [tl] + co_rollup_map.get(tl, [])
-                            for tl in top_level_uuids_co
+                            tl: [tl] + co_rollup_map.get(tl, []) for tl in top_level_uuids_co
                         }
 
                         # Base: images with ≥1 verified bbox for the focus label (effective set).
@@ -4039,9 +4032,7 @@ class DbClient:
 
         image_uuids = [img.uuid for img in all_images]
 
-        verified_by_image, present_by_image = await self._get_image_label_verification_counts(
-            image_uuids, label_uuids
-        )
+        verified_by_image, present_by_image = await self._get_image_label_verification_counts(image_uuids, label_uuids)
 
         def _matches(verified_count: int, present_count: int) -> bool:
             if bucket == "ready":
@@ -4053,9 +4044,7 @@ class DbClient:
             raise ValueError(f"Unknown readiness bucket: {bucket!r}")
 
         bucket_images = [
-            img
-            for img in all_images
-            if _matches(verified_by_image.get(img.uuid, 0), present_by_image.get(img.uuid, 0))
+            img for img in all_images if _matches(verified_by_image.get(img.uuid, 0), present_by_image.get(img.uuid, 0))
         ]
 
         if not bucket_images:
@@ -4396,10 +4385,7 @@ class DbClient:
             top_level_uuids = [u for u in relevant_label_uuids if u not in all_rollup_children_set and u in labels_map]
 
             # Effective UUIDs per top-level label: self + all rollup children (if any).
-            effective_for_tl: dict[str, list[str]] = {
-                tl: [tl] + rollup_map.get(tl, [])
-                for tl in top_level_uuids
-            }
+            effective_for_tl: dict[str, list[str]] = {tl: [tl] + rollup_map.get(tl, []) for tl in top_level_uuids}
 
             async with self._async_session_maker() as session:
 

@@ -256,6 +256,39 @@ async def test_submit_job_endpoint(http_client, manager):
     assert data["status"] == "awaiting_data"
 
 
+async def test_submit_job_endpoint_merges_hyperparams_into_trainer_config(http_client, manager):
+    """Contract pin: task runners ship bundle-target identity fields (role,
+    model_config_uuid, model_config_node_uuid, label_uuids) inside
+    ``hyperparams``; the submit endpoint MUST merge them into the trainer
+    config. If this test breaks, sidecar.json loses bundle identity and
+    ModelBundle composition silently stops working — see
+    tasks_server/tasks/_training_job_runner.py's SubmitJobPayload build."""
+    manager.start()
+    resp = await http_client.post(
+        "/api/training/jobs",
+        json={
+            "trainer_type": "object_detection",
+            "model_name": "bundle_top",
+            "hyperparams": {
+                "role": "top",
+                "model_config_uuid": "mc-uuid",
+                "model_config_node_uuid": "node-uuid",
+                "label_uuids": ["l1", "l2"],
+                "max_epochs": 7,
+            },
+        },
+    )
+    assert resp.status_code == 200
+    job = manager.get_job(resp.json()["job_id"])
+    assert job is not None
+    assert job.config["role"] == "top"
+    assert job.config["model_config_uuid"] == "mc-uuid"
+    assert job.config["model_config_node_uuid"] == "node-uuid"
+    assert job.config["label_uuids"] == ["l1", "l2"]
+    # Nested hyperparams take precedence over the top-level default.
+    assert job.config["max_epochs"] == 7
+
+
 async def test_list_jobs_endpoint_empty(http_client, manager):
     manager.start()
     resp = await http_client.get("/api/training/jobs")

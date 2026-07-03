@@ -21,9 +21,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
+from ..dataset import build_yolo_detection_dataset
 from . import register_trainer
 from .base import Trainer
-from ..dataset import build_yolo_detection_dataset
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +32,7 @@ logger = logging.getLogger(__name__)
 # train() so that libreyolo is an optional dependency at import time.
 _ARCH_MAP: dict[str, tuple[str, str]] = {
     "yolo_v9_c": ("LibreYOLO9", "c"),
-    "yolo_v9_e": ("LibreYOLO9", "c"),   # libreyolo has no distinct 'e' size
+    "yolo_v9_e": ("LibreYOLO9", "c"),  # libreyolo has no distinct 'e' size
     "yolo_v9_t": ("LibreYOLO9", "t"),
     "yolo_v9_s": ("LibreYOLO9", "s"),
     "yolo_v9_m": ("LibreYOLO9", "m"),
@@ -41,6 +41,7 @@ _ARCH_MAP: dict[str, tuple[str, str]] = {
 
 def _get_model_class(class_name: str):
     import libreyolo
+
     cls = getattr(libreyolo, class_name, None)
     if cls is None:
         raise ImportError(f"libreyolo has no class {class_name!r}. Install/upgrade libreyolo.")
@@ -107,7 +108,9 @@ class ObjectDetectionTrainer(Trainer):
             val_uuids = dataset_info["val_uuids"]
             logger.info(
                 "Detection dataset: %d train / %d val images, %d classes",
-                len(train_uuids), len(val_uuids), len(class_names),
+                len(train_uuids),
+                len(val_uuids),
+                len(class_names),
             )
 
             # Epoch callback — wired via libreyolo's callback parameter.
@@ -117,18 +120,17 @@ class ObjectDetectionTrainer(Trainer):
                 total: int = event.total_epochs
                 map50: float = float(event.val_metrics.get("mAP50", 0.0))
                 loss: float = float(event.train_loss)
-                progress_cb({
-                    "progress": epoch / max(total, 1),
-                    "epoch": epoch,
-                    "total_epochs": total,
-                    "val_accuracy": round(map50, 4),
-                    "train_loss": round(loss, 4),
-                    "val_loss": 0.0,  # libreyolo doesn't expose val_loss separately
-                    "log": (
-                        f"Epoch {epoch}/{total}  loss={loss:.4f}  "
-                        f"mAP50={map50:.4f}"
-                    ),
-                })
+                progress_cb(
+                    {
+                        "progress": epoch / max(total, 1),
+                        "epoch": epoch,
+                        "total_epochs": total,
+                        "val_accuracy": round(map50, 4),
+                        "train_loss": round(loss, 4),
+                        "val_loss": 0.0,  # libreyolo doesn't expose val_loss separately
+                        "log": (f"Epoch {epoch}/{total}  loss={loss:.4f}  " f"mAP50={map50:.4f}"),
+                    }
+                )
                 if cancel_event.is_set():
                     raise RuntimeError("Training cancelled by user")
 
@@ -144,25 +146,23 @@ class ObjectDetectionTrainer(Trainer):
             # Run training in a thread (libreyolo train() is synchronous).
             logger.info(
                 "Starting training: arch=%s epochs=%d imgsz=%d batch=%d",
-                architecture, max_epochs, imgsz, batch_size,
+                architecture,
+                max_epochs,
+                imgsz,
+                batch_size,
             )
-            try:
-                results: dict = await asyncio.to_thread(
-                    model.train,
-                    data_yaml,
-                    epochs=max_epochs,
-                    imgsz=imgsz,
-                    batch=batch_size,
-                    patience=patience,
-                    project=str(artifact_path / "runs"),
-                    name=model_name,
-                    exist_ok=True,
-                    callbacks=_epoch_cb,
-                )
-            except RuntimeError as exc:
-                if "cancelled" in str(exc).lower():
-                    raise
-                raise
+            results: dict = await asyncio.to_thread(
+                model.train,
+                data_yaml,
+                epochs=max_epochs,
+                imgsz=imgsz,
+                batch=batch_size,
+                patience=patience,
+                project=str(artifact_path / "runs"),
+                name=model_name,
+                exist_ok=True,
+                callbacks=_epoch_cb,
+            )
 
             best_map50: float = float(results.get("best_mAP50", 0.0))
             logger.info("Training complete. best_mAP50=%.4f", best_map50)

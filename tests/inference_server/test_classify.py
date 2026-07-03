@@ -63,9 +63,10 @@ def models_dir_with_classifiers(tmp_path):
 
 @pytest.fixture
 async def clf_client(models_dir_with_classifiers, mock_provider, monkeypatch):
+    from httpx import ASGITransport, AsyncClient
+
     from apps.inference_server.manager import Manager
     from apps.inference_server.web import WebApp
-    from httpx import ASGITransport, AsyncClient
 
     monkeypatch.setattr("apps.inference_server.manager.load_yolo_onnx", lambda path: mock_provider)
     mgr = Manager(models_path=str(models_dir_with_classifiers))

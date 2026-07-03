@@ -1908,7 +1908,9 @@ class Manager:
         name: Optional[str] = None,
         is_temporary: Optional[bool] = None,
     ) -> Dict[str, TaskConfig]:
-        return await self._db_client.get_task_configs(config_uuids=config_uuids, typename=typename, name=name, is_temporary=is_temporary)
+        return await self._db_client.get_task_configs(
+            config_uuids=config_uuids, typename=typename, name=name, is_temporary=is_temporary
+        )
 
     async def update_task_config(
         self,
@@ -2031,6 +2033,12 @@ class Manager:
         safe = get_safe_path(self._files_root, Path(image_path))
         if safe is not None and safe.is_file():
             return safe
+        # Not silent: legacy DB rows may hold absolute paths outside the root
+        # (imported before FILES_ROOT was enforced) — surface why the
+        # thumbnail is missing instead of returning a bare None.
+        logger.warning(
+            f"Image path {image_path!r} does not resolve to a file under {self._files_root}; refusing to serve it"
+        )
         return None
 
     async def get_bbox_thumbnail(self, bbox_uuid: str, width: int = 200) -> Optional[bytes]:

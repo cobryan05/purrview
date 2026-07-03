@@ -54,9 +54,7 @@ class TrainingJobRunnerMixin:
                 # Training will resume from the last epoch checkpoint.
                 self.log(f"Job {self._job_id} was interrupted; restarting on training server")
                 async with httpx.AsyncClient(timeout=30.0) as client:
-                    r = await client.post(
-                        f"{self._training_base_url}/api/training/jobs/{self._job_id}/restart"
-                    )
+                    r = await client.post(f"{self._training_base_url}/api/training/jobs/{self._job_id}/restart")
                     r.raise_for_status()
                 return await self._consume_sse(self._job_id)
 
@@ -65,15 +63,11 @@ class TrainingJobRunnerMixin:
                 return await self._consume_sse(self._job_id)
 
             if status in ("error", "cancelled"):
-                raise RuntimeError(
-                    f"Training job {self._job_id} is in terminal state: {status}"
-                )
+                raise RuntimeError(f"Training job {self._job_id} is in terminal state: {status}")
 
             # Status is "not_found" (404) or unknown — server restarted without
             # persisted state. Re-submit the full job; images are likely still cached.
-            self.log(
-                f"Job {self._job_id} not found on training server; resubmitting from scratch"
-            )
+            self.log(f"Job {self._job_id} not found on training server; resubmitting from scratch")
             self._job_id = None
 
         # ── Step 1: Submit job ───────────────────────────────────────────────
@@ -83,8 +77,16 @@ class TrainingJobRunnerMixin:
             model_name=self._model_name,
             architecture=self._config.get("architecture", ""),
             class_names=self._config.get("class_names") or ["absent", "present"],
+            # Everything not a typed SubmitJobPayload field rides in
+            # hyperparams — including bundle-target identity keys (role,
+            # model_config_uuid, model_config_node_uuid, label_uuids) that the
+            # training server merges back into the trainer config
+            # (web.py: config.update(payload.hyperparams)). That merge is a
+            # load-bearing contract, pinned by
+            # tests/training_server/test_training.py::test_submit_job_endpoint_merges_hyperparams_into_trainer_config.
             hyperparams={
-                k: v for k, v in self._config.items()
+                k: v
+                for k, v in self._config.items()
                 if k not in {"trainer_type", "label_uuid", "model_name", "architecture", "class_names"}
             },
             manifest=[
@@ -169,9 +171,7 @@ class TrainingJobRunnerMixin:
                 if self._cancel_flag.is_set():
                     return
                 batch = missing_uuids[batch_start : batch_start + _TAR_BATCH_SIZE]
-                tar_bytes, added, batch_skipped = await asyncio.to_thread(
-                    self._build_tar, batch, uuid_to_filename
-                )
+                tar_bytes, added, batch_skipped = await asyncio.to_thread(self._build_tar, batch, uuid_to_filename)
                 skipped += batch_skipped
                 if not added:
                     continue
@@ -289,9 +289,7 @@ class TrainingJobRunnerMixin:
             val_accuracy = data.get("val_accuracy")
             if val_accuracy is not None:
                 result["val_accuracy"] = val_accuracy
-            self.log(
-                f"Training complete — model: {self._model_name}, val_accuracy: {val_accuracy}"
-            )
+            self.log(f"Training complete — model: {self._model_name}, val_accuracy: {val_accuracy}")
             return result
 
         elif event_type == "error":
@@ -322,6 +320,11 @@ class TrainingJobRunnerMixin:
                 dest = _MODELS_DIR / name
                 fobj = tf.extractfile(member)
                 if fobj:
+                    if dest.exists():
+                        # Expected on retrain of the same model name; anything
+                        # else (e.g. two bundles sharing a name) is a silent
+                        # clobber — leave a trace either way.
+                        logger.warning("Overwriting existing model artifact %s", dest)
                     dest.write_bytes(fobj.read())
                     self.log(f"Saved model artifact: {dest}")
 

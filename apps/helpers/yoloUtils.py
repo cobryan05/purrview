@@ -16,6 +16,7 @@ from apps.helpers.inferenceProviders.inferenceProvider import InferenceProvider
 if os.getenv("GENERATING_OPENAPI_CLIENTS") != "1":
     import cv2
     import onnxruntime as ort  # noqa: F811
+
     from apps.helpers.inferenceProviders.yolov8OnnxInferenceProvider import (
         YOLOv8ONNXInferenceProvider,
     )

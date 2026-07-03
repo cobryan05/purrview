@@ -36,6 +36,21 @@ class TestResolveImageFilePathTraversal:
         resolved = manager._resolve_image_file_path(traversal)
         assert resolved is None
 
+    def test_rejected_path_logs_a_warning(self, manager, tmp_path, caplog):
+        # Legacy DB rows can hold absolute paths outside FILES_ROOT (imported
+        # before the root was enforced). They must still be rejected, but not
+        # silently — operators need a log line to diagnose broken thumbnails.
+        secret = tmp_path / "legacy_absolute.png"
+        secret.write_bytes(b"real file")
+
+        with caplog.at_level("WARNING"):
+            resolved = manager._resolve_image_file_path(str(secret))
+
+        assert resolved is None
+        assert any(
+            "legacy_absolute.png" in r.message for r in caplog.records
+        ), "rejecting a path must log a warning naming the path"
+
     def test_file_under_root_still_resolves(self, manager, files_root):
         # The trusted caller passes an absolute path under FILES_ROOT (produced
         # by get_safe_path at import time) — that must still resolve.
