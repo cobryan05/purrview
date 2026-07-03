@@ -4498,6 +4498,48 @@
         }
       }
     },
+    "/api/images/labels/batch": {
+      "post": {
+        "tags": [
+          "images"
+        ],
+        "summary": "Get Image Labels Batch",
+        "description": "Return image-label rows for a batch of image UUIDs in one query.\n\nImages with no rows (and unknown UUIDs) are omitted from the map.",
+        "operationId": "get_image_labels_batch",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BatchImageLabelsPayload"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BatchImageLabelsResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/image-labels": {
       "get": {
         "tags": [
@@ -7299,6 +7341,48 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ModelConfigNodeRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/model-configs/{uuid}/training-targets": {
+      "get": {
+        "tags": [
+          "model_configs"
+        ],
+        "summary": "Get Model Config Training Targets",
+        "operationId": "get_model_config_training_targets",
+        "parameters": [
+          {
+            "name": "uuid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TrainingTargetsResponse"
                 }
               }
             }
@@ -10441,6 +10525,51 @@
         ],
         "title": "BatchByUuidsPayload"
       },
+      "BatchImageLabelsPayload": {
+        "properties": {
+          "imageUuids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Imageuuids"
+          }
+        },
+        "type": "object",
+        "title": "BatchImageLabelsPayload"
+      },
+      "BatchImageLabelsResponse": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "title": "Status",
+            "default": "success"
+          },
+          "message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Message"
+          },
+          "imageLabels": {
+            "additionalProperties": {
+              "items": {
+                "$ref": "#/components/schemas/ImageLabelRead"
+              },
+              "type": "array"
+            },
+            "type": "object",
+            "title": "Imagelabels"
+          }
+        },
+        "type": "object",
+        "title": "BatchImageLabelsResponse"
+      },
       "BatchImagesResponse": {
         "properties": {
           "status": {
@@ -10687,6 +10816,71 @@
           "action"
         ],
         "title": "BulkApplyImagesByUuidsPayload"
+      },
+      "BundleTrainingTarget": {
+        "properties": {
+          "nodeUuid": {
+            "type": "string",
+            "title": "Nodeuuid"
+          },
+          "role": {
+            "type": "string",
+            "enum": [
+              "top",
+              "submodel"
+            ],
+            "title": "Role"
+          },
+          "labelUuid": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Labeluuid"
+          },
+          "modelType": {
+            "type": "string",
+            "title": "Modeltype"
+          },
+          "architecture": {
+            "type": "string",
+            "title": "Architecture"
+          },
+          "labelUuids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Labeluuids"
+          },
+          "classNames": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Classnames"
+          },
+          "classRemap": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object",
+            "title": "Classremap"
+          }
+        },
+        "type": "object",
+        "required": [
+          "nodeUuid",
+          "role",
+          "modelType",
+          "architecture"
+        ],
+        "title": "BundleTrainingTarget",
+        "description": "One artifact a full bundle training run must produce (see\nDbClient.derive_bundle_training_targets for the derivation semantics)."
       },
       "CheckDedupBulkPayload": {
         "properties": {
@@ -12585,8 +12779,7 @@
             "enum": [
               "uuid",
               "created_at",
-              "updated_at",
-              "filename"
+              "updated_at"
             ],
             "title": "Sortby",
             "default": "created_at"
@@ -12954,8 +13147,7 @@
             "enum": [
               "uuid",
               "created_at",
-              "updated_at",
-              "filename"
+              "updated_at"
             ],
             "title": "Sortby",
             "default": "created_at"
@@ -13157,7 +13349,7 @@
             ],
             "title": "Color"
           },
-          "parent_uuid": {
+          "parentUuid": {
             "anyOf": [
               {
                 "type": "string"
@@ -13166,9 +13358,9 @@
                 "type": "null"
               }
             ],
-            "title": "Parent Uuid"
+            "title": "Parentuuid"
           },
-          "label_type": {
+          "labelType": {
             "anyOf": [
               {
                 "$ref": "#/components/schemas/LabelType"
@@ -14002,8 +14194,7 @@
             "enum": [
               "uuid",
               "created_at",
-              "updated_at",
-              "filename"
+              "updated_at"
             ],
             "title": "Sortby",
             "default": "created_at"
@@ -14096,8 +14287,7 @@
             "enum": [
               "uuid",
               "created_at",
-              "updated_at",
-              "filename"
+              "updated_at"
             ],
             "title": "Sortby",
             "default": "created_at"
@@ -15156,6 +15346,35 @@
         },
         "type": "object",
         "title": "TrainingConfigUpdate"
+      },
+      "TrainingTargetsResponse": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "title": "Status",
+            "default": "success"
+          },
+          "message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Message"
+          },
+          "targets": {
+            "items": {
+              "$ref": "#/components/schemas/BundleTrainingTarget"
+            },
+            "type": "array",
+            "title": "Targets"
+          }
+        },
+        "type": "object",
+        "title": "TrainingTargetsResponse"
       },
       "UpdateLabelResponse": {
         "properties": {
