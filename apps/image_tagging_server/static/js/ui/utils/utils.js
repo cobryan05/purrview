@@ -67,12 +67,12 @@ export function renderBoxed(node, opts = {}) {
  */
 export function labelFilterNoticeText(hiddenCount) {
   if (hiddenCount <= 0) return '';
-  return `⚠ ${hiddenCount} label${hiddenCount !== 1 ? 's' : ''} hidden by model filter`;
+  return `⚠ ${hiddenCount} label${hiddenCount !== 1 ? 's' : ''} hidden by training config filter`;
 }
 
 /**
  * Creates a <span class="label-filter-notice"> element for use when the active
- * model filter hides some labels. Returns null when hiddenCount is 0.
+ * training config's label filter hides some labels. Returns null when hiddenCount is 0.
  * @param {number} hiddenCount
  * @returns {HTMLElement|null}
  */

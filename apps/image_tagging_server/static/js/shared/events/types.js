@@ -82,11 +82,6 @@ export const EventTypes = Object.freeze({
    */
   CANVAS_ANNOTATIONS_SAVED: "canvas:annotations:saved",
   /**
-   * Fired when the active model config changes or the label-filter toggle changes.
-   * Payload: { config: ModelConfigRead | null, filterEnabled: boolean }
-   */
-  ACTIVE_MODEL_CHANGED: "model:active:changed",
-  /**
    * Fired when the user wants to export review filters to a new dataset.
    * Payload: { conditions: object[], labelUuids: string[] }
    */

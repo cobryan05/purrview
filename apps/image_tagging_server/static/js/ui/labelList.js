@@ -12,7 +12,6 @@
  */
 
 import { fetchLabels, clearLabelsCache, createNewLabel, deleteLabel, updateLabel } from '/app-static/js/shared/api/labels.js';
-import { activeModel } from '/app-static/js/shared/activeModel.js';
 import { activeTrainingConfig } from '/app-static/js/shared/activeTrainingConfig.js';
 import {
   fetchTrainingConfigImagesByLabelStatus,
@@ -366,10 +365,7 @@ async function mountSelectMode(container, { runtime, filter }) {
   container.appendChild(bulkRow);
 
   const rawLabelsMap = await fetchLabels();
-  // TC filter takes precedence over model-config filter when a TC is active.
-  const filteredMap = activeTrainingConfig.getActive()
-    ? activeTrainingConfig.applyLabelFilter(rawLabelsMap)
-    : activeModel.applyLabelFilter(rawLabelsMap);
+  const filteredMap = activeTrainingConfig.applyLabelFilter(rawLabelsMap);
   // Split by (scope, labelType): object-scope object labels / image-scope labels / dynamic labels.
   // Dynamic labels are always shown (no visibility toggle gate) so the user can mark present/absent.
   const regularMap = new Map([...filteredMap].filter(([, l]) => l.labelType !== 'dynamic' && l.scope !== 'image'));
@@ -1167,7 +1163,6 @@ export async function createLabelList(container, options = {}) {
   let _unsubMode = null;
   if (mode === 'select') {
     _unsubMode = events.subscribeMany([
-      [EventTypes.ACTIVE_MODEL_CHANGED,              () => mount()],
       [EventTypes.ACTIVE_TRAINING_CONFIG_CHANGED,    () => mount()],
       [EventTypes.DYNAMIC_LABELS_VISIBILITY_CHANGED, () => mount()],
       [EventTypes.LABELS_UPDATED,                    () => mount()],

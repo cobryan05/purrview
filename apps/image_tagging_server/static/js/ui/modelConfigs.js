@@ -8,7 +8,6 @@ import {
 } from '/app-static/js/shared/api/modelConfigs.js';
 import { showUnsavedConfigChangesModal } from '/app-static/js/ui/utils/confirmModal.js';
 import { toast, makeFieldRow, buildPanelEditorBar } from '/app-static/js/ui/utils/index.js';
-import { activeModel } from '/app-static/js/shared/activeModel.js';
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
 
 let _rendering = false;
@@ -430,7 +429,6 @@ export async function renderModelConfigManager({ target = 'model-config-box' } =
     let _currentFormHandle = null;
     let _currentDoSave = null; // async () => boolean — current form's save-only fn (no re-render)
     let _switching = false; // true while a showEdit/showCreate transition is in progress
-    let _unsubActiveBtn = null; // cleanup for active-model subscription in current form
 
     async function _confirmIfDirty() {
       if (!_barHandle?.getDirty()) return true;
@@ -458,8 +456,6 @@ export async function renderModelConfigManager({ target = 'model-config-box' } =
         if (!force && !await _confirmIfDirty()) return;
         _currentFormHandle?.destroy();
         _currentFormHandle = null;
-        _unsubActiveBtn?.();
-        _unsubActiveBtn = null;
         _currentDoSave = null;
         _barHandle = null; // mark clean while async fetches are in flight
         _selectedUuid = config?.uuid ?? null;
@@ -482,10 +478,6 @@ export async function renderModelConfigManager({ target = 'model-config-box' } =
                 const updated = await updateModelConfig(config.uuid, { name, description, nodes });
                 setDirty(false);
                 toast('Saved', 3000);
-                // Keep active model in sync if this config is the active one
-                if (activeModel.getActiveModel()?.uuid === updated.uuid) {
-                  activeModel.setActiveModel(updated);
-                }
                 const nameEl = listBody.querySelector(`[data-config-uuid="${config.uuid}"] .mc-list-item__name`);
                 if (nameEl) nameEl.textContent = updated.name;
                 await _showForm(updated, { force: true });
@@ -503,49 +495,12 @@ export async function renderModelConfigManager({ target = 'model-config-box' } =
           },
           onDelete: config ? async () => {
             await deleteModelConfig(config.uuid);
-            // Clear active model if this was it
-            if (activeModel.getActiveModel()?.uuid === config.uuid) {
-              activeModel.setActiveModel(null);
-            }
             toast('Deleted', 3000);
             await refreshList();
             await _showForm(null, { force: true });
           } : undefined,
         });
         const { setDirty, setSaving } = _barHandle;
-
-        // ── "Set as Active" / "Active ✓" button ──────────────────────────
-        if (config) {
-          const activeRow = document.createElement('div');
-          activeRow.className = 'mc-active-row';
-
-          const activeBtn = document.createElement('button');
-          activeBtn.type = 'button';
-          activeBtn.className = 'mc-active-btn';
-
-          function updateActiveBtn() {
-            const current = activeModel.getActiveModel();
-            const isActive = current?.uuid === config.uuid;
-            activeBtn.textContent = isActive ? '✓ Active model' : 'Set as active model';
-            activeBtn.classList.toggle('mc-active-btn--on', isActive);
-          }
-          updateActiveBtn();
-
-          activeBtn.addEventListener('click', () => {
-            const current = activeModel.getActiveModel();
-            if (current?.uuid === config.uuid) {
-              activeModel.setActiveModel(null);
-            } else {
-              activeModel.setActiveModel(config);
-            }
-            updateActiveBtn();
-          });
-
-          _unsubActiveBtn = events.subscribe(EventTypes.ACTIVE_MODEL_CHANGED, updateActiveBtn);
-
-          activeRow.appendChild(activeBtn);
-          editorBody.appendChild(activeRow);
-        }
 
         const formHandle = renderConfigForm({
           config, labelsMap,
@@ -565,9 +520,6 @@ export async function renderModelConfigManager({ target = 'model-config-box' } =
               const updated = await updateModelConfig(config.uuid, { name, description, nodes });
               setDirty(false);
               toast('Saved', 3000);
-              if (activeModel.getActiveModel()?.uuid === updated.uuid) {
-                activeModel.setActiveModel(updated);
-              }
               const nameEl = listBody.querySelector(`[data-config-uuid="${config.uuid}"] .mc-list-item__name`);
               if (nameEl) nameEl.textContent = updated.name;
             } else {

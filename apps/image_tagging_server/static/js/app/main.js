@@ -29,8 +29,8 @@ setPrimaryRuntimeId(_appState.imgRuntime.id);
  * @param {AppState} appState
  */
 export async function init(appState) {
-  // Initialise session-scoped active model and training config state
-  await activeModel.init();
+  // Initialise session-scoped visibility prefs and active training config state
+  activeModel.init();
   await activeTrainingConfig.init();
   mountActiveModelBar('active-model-bar');
   mountNoticesBar('notices-bar');

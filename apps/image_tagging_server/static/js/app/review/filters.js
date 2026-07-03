@@ -21,7 +21,8 @@ import { UNVERIFIED_TAG_UUID } from '/app-static/js/shared/api/review.js';
 import { createMultiSelectDropdown, makeLabelFilterNotice } from '/app-static/js/ui/utils/index.js';
 import { createImageLabelConditions } from '/app-static/js/ui/imageTagConditions.js';
 import { flattenHierarchy } from '/app-static/js/ui/labelList.js';
-import { activeModel, filterVisibleTags, isDynamicLabelsVisible, groupTagsByKind } from '/app-static/js/shared/activeModel.js';
+import { filterVisibleTags, isDynamicLabelsVisible, groupTagsByKind } from '/app-static/js/shared/activeModel.js';
+import { activeTrainingConfig } from '/app-static/js/shared/activeTrainingConfig.js';
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
 import { fetchTags } from '/app-static/js/shared/api/tags.js';
 import { fetchLabels } from '/app-static/js/shared/api/labels.js';
@@ -106,7 +107,7 @@ export function createFilterPanel(labels, tags, onFilterChange, { inlineControls
   let _labelsDropdown = null;
 
   function buildLabelsControls() {
-    const filteredLabels = activeModel.applyLabelFilter(labels);
+    const filteredLabels = activeTrainingConfig.applyLabelFilter(labels);
     // Only object-scoped labels belong in the bbox-label filter dropdown.
     const regularMap = new Map(
       [...filteredLabels].filter(([, l]) => l.labelType !== 'dynamic' && l.scope !== 'image')
@@ -169,7 +170,7 @@ export function createFilterPanel(labels, tags, onFilterChange, { inlineControls
   function _imageScopedLabels() {
     // Include all non-dynamic labels (both object- and image-scoped) since image_label
     // rows exist for any label that appears on verified bboxes, not just image-scoped ones.
-    const filtered = activeModel.applyLabelFilter(labels);
+    const filtered = activeTrainingConfig.applyLabelFilter(labels);
     return [...filtered.values()].filter(l => l.labelType !== 'dynamic');
   }
 
@@ -242,7 +243,11 @@ export function createFilterPanel(labels, tags, onFilterChange, { inlineControls
   }
 
   const _unsubAll = events.subscribeMany([
-    [EventTypes.ACTIVE_MODEL_CHANGED,              () => { buildLabelsControls(); imageLabelConditionsComp.setAvailableLabels(_imageScopedLabels()); }],
+    [EventTypes.ACTIVE_TRAINING_CONFIG_CHANGED,    ({ statsUpdated }) => {
+      if (statsUpdated) return; // stats refreshes don't change the label set; don't reset selections
+      buildLabelsControls();
+      imageLabelConditionsComp.setAvailableLabels(_imageScopedLabels());
+    }],
     [EventTypes.DYNAMIC_LABELS_VISIBILITY_CHANGED, buildLabelsControls],
     [EventTypes.TAG_KIND_VISIBILITY_CHANGED,       _onTagKindVisibilityChanged],
     [EventTypes.TAGS_UPDATED,                      _onTagsUpdated],

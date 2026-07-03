@@ -420,7 +420,7 @@ main.container {
 .filter-label-select { max-width: 140px; }
 .filter-presets-select { max-width: 140px; }
 
-/* Shown whenever the active model filter is hiding labels from a picker or list */
+/* Shown whenever the training-config label filter is hiding labels from a picker or list */
 .label-filter-notice {
   font-size: 0.72em;
   color: #b8901a;
@@ -2382,35 +2382,6 @@ button.filter-active {
    active-model bar; content scrolls away from transient notices. */
 main.container {
   padding-bottom: 2.5em;
-}
-
-/* ===== Model Config: "Set as Active" button ===== */
-.mc-active-row {
-  padding: 0.4em 0.75em 0.5em;
-  border-bottom: 1px solid var(--pico-muted-border-color, #333);
-  margin-bottom: 0.5em;
-}
-
-.mc-active-btn {
-  font-size: 0.82em;
-  padding: 0.25em 0.75em;
-  border-radius: 4px;
-  cursor: pointer;
-  border: 1px solid var(--pico-muted-border-color, #555);
-  background: transparent;
-  color: var(--pico-muted-color, #aaa);
-  margin: 0;
-}
-
-.mc-active-btn:hover {
-  border-color: var(--pico-primary, #ff6b6b);
-  color: var(--pico-primary, #ff6b6b);
-}
-
-.mc-active-btn--on {
-  border-color: var(--pico-primary, #ff6b6b);
-  color: var(--pico-primary, #ff6b6b);
-  background: rgba(255, 107, 107, 0.08);
 }
 
 /* ===== Active Training Config Bar additions ===== */
