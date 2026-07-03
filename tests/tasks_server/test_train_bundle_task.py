@@ -88,11 +88,13 @@ class TestInit:
                 await task._init(task._params, None)
 
     async def test_fresh_run_fetches_and_seeds_resume_data(self):
-        task = _make_task({
-            "model_config_uuid": "mc-1",
-            "dataset_uuids": ["ds-1"],
-            "bundle_name": "My Bundle",
-        })
+        task = _make_task(
+            {
+                "model_config_uuid": "mc-1",
+                "dataset_uuids": ["ds-1"],
+                "bundle_name": "My Bundle",
+            }
+        )
         cfg_patch, db_patch, tc_patch = _patch_clients()
         targets = [_target(node_uuid="root-node", role="top")]
         with (
@@ -113,11 +115,13 @@ class TestInit:
         assert task._resume_data["bundle_name"] == "My Bundle"
 
     async def test_fresh_run_raises_when_no_targets(self):
-        task = _make_task({
-            "model_config_uuid": "mc-1",
-            "dataset_uuids": [],
-            "bundle_name": "b1",
-        })
+        task = _make_task(
+            {
+                "model_config_uuid": "mc-1",
+                "dataset_uuids": [],
+                "bundle_name": "b1",
+            }
+        )
         cfg_patch, db_patch, tc_patch = _patch_clients()
         with (
             cfg_patch as mock_cfg,
@@ -200,9 +204,14 @@ class TestResolveTargetJob:
         task._db_api_client = MagicMock()
         task._bundle_name = "b1"
         target = {
-            "node_uuid": "node-1", "role": "submodel", "label_uuid": "lbl-a",
-            "model_type": "image_classifier", "architecture": "mobilenet_v3_small",
-            "label_uuids": ["lbl-a"], "class_names": ["a"], "class_remap": {},
+            "node_uuid": "node-1",
+            "role": "submodel",
+            "label_uuid": "lbl-a",
+            "model_type": "image_classifier",
+            "architecture": "mobilenet_v3_small",
+            "label_uuids": ["lbl-a"],
+            "class_names": ["a"],
+            "class_remap": {},
         }
         with patch.object(task, "_resolve_target_binary", return_value=("m", [], {})) as mock_bin:
             task._resolve_target_job(target)
@@ -213,9 +222,14 @@ class TestResolveTargetJob:
         task._db_api_client = MagicMock()
         task._bundle_name = "b1"
         target = {
-            "node_uuid": "node-1", "role": "top", "label_uuid": None,
-            "model_type": "image_classifier", "architecture": "mobilenet_v3_small",
-            "label_uuids": ["lbl-a", "lbl-b"], "class_names": ["a", "b"], "class_remap": {},
+            "node_uuid": "node-1",
+            "role": "top",
+            "label_uuid": None,
+            "model_type": "image_classifier",
+            "architecture": "mobilenet_v3_small",
+            "label_uuids": ["lbl-a", "lbl-b"],
+            "class_names": ["a", "b"],
+            "class_remap": {},
         }
         with patch.object(task, "_resolve_target_multi_label", return_value=("m", [], {})) as mock_ml:
             task._resolve_target_job(target)
@@ -227,9 +241,14 @@ class TestResolveTargetJob:
         task._db_api_client = MagicMock()
         task._bundle_name = "b1"
         target = {
-            "node_uuid": "node-1", "role": "submodel", "label_uuid": "lbl-a",
-            "model_type": "image_classifier", "architecture": "mobilenet_v3_small",
-            "label_uuids": [], "class_names": [], "class_remap": {},
+            "node_uuid": "node-1",
+            "role": "submodel",
+            "label_uuid": "lbl-a",
+            "model_type": "image_classifier",
+            "architecture": "mobilenet_v3_small",
+            "label_uuids": [],
+            "class_names": [],
+            "class_remap": {},
         }
         with pytest.raises(RuntimeError, match="no in-scope labels"):
             task._resolve_target_job(target)
@@ -257,10 +276,26 @@ class TestRun:
 
     async def test_trains_each_target_sequentially_one_job_at_a_time(self):
         targets = [
-            {"node_uuid": "n1", "role": "top", "label_uuid": None, "model_type": "object_detection",
-             "architecture": "yolo_v9_c", "label_uuids": ["a"], "class_names": ["a"], "class_remap": {}},
-            {"node_uuid": "n2", "role": "submodel", "label_uuid": "b", "model_type": "image_classifier",
-             "architecture": "mobilenet_v3_small", "label_uuids": ["b"], "class_names": ["b"], "class_remap": {}},
+            {
+                "node_uuid": "n1",
+                "role": "top",
+                "label_uuid": None,
+                "model_type": "object_detection",
+                "architecture": "yolo_v9_c",
+                "label_uuids": ["a"],
+                "class_names": ["a"],
+                "class_remap": {},
+            },
+            {
+                "node_uuid": "n2",
+                "role": "submodel",
+                "label_uuid": "b",
+                "model_type": "image_classifier",
+                "architecture": "mobilenet_v3_small",
+                "label_uuids": ["b"],
+                "class_names": ["b"],
+                "class_remap": {},
+            },
         ]
         task = self._base_task(targets)
 
@@ -291,10 +326,26 @@ class TestRun:
 
     async def test_cancellation_stops_loop_without_creating_bundle(self):
         targets = [
-            {"node_uuid": "n1", "role": "top", "label_uuid": None, "model_type": "object_detection",
-             "architecture": "yolo_v9_c", "label_uuids": ["a"], "class_names": ["a"], "class_remap": {}},
-            {"node_uuid": "n2", "role": "submodel", "label_uuid": "b", "model_type": "image_classifier",
-             "architecture": "mobilenet_v3_small", "label_uuids": ["b"], "class_names": ["b"], "class_remap": {}},
+            {
+                "node_uuid": "n1",
+                "role": "top",
+                "label_uuid": None,
+                "model_type": "object_detection",
+                "architecture": "yolo_v9_c",
+                "label_uuids": ["a"],
+                "class_names": ["a"],
+                "class_remap": {},
+            },
+            {
+                "node_uuid": "n2",
+                "role": "submodel",
+                "label_uuid": "b",
+                "model_type": "image_classifier",
+                "architecture": "mobilenet_v3_small",
+                "label_uuids": ["b"],
+                "class_names": ["b"],
+                "class_remap": {},
+            },
         ]
         task = self._base_task(targets)
 
@@ -316,10 +367,26 @@ class TestRun:
         but artifacts already saved for prior targets (via _save_artifact inside
         _run_one_job) are left on disk — nothing here deletes them."""
         targets = [
-            {"node_uuid": "n1", "role": "top", "label_uuid": None, "model_type": "object_detection",
-             "architecture": "yolo_v9_c", "label_uuids": ["a"], "class_names": ["a"], "class_remap": {}},
-            {"node_uuid": "n2", "role": "submodel", "label_uuid": "b", "model_type": "image_classifier",
-             "architecture": "mobilenet_v3_small", "label_uuids": ["b"], "class_names": ["b"], "class_remap": {}},
+            {
+                "node_uuid": "n1",
+                "role": "top",
+                "label_uuid": None,
+                "model_type": "object_detection",
+                "architecture": "yolo_v9_c",
+                "label_uuids": ["a"],
+                "class_names": ["a"],
+                "class_remap": {},
+            },
+            {
+                "node_uuid": "n2",
+                "role": "submodel",
+                "label_uuid": "b",
+                "model_type": "image_classifier",
+                "architecture": "mobilenet_v3_small",
+                "label_uuids": ["b"],
+                "class_names": ["b"],
+                "class_remap": {},
+            },
         ]
         task = self._base_task(targets)
 
@@ -347,8 +414,16 @@ class TestRun:
         """If resume_data restored a job_id, _run must NOT re-resolve the target's
         job_config — _run_one_job's own resume branch reconnects to the existing job."""
         targets = [
-            {"node_uuid": "n1", "role": "top", "label_uuid": None, "model_type": "object_detection",
-             "architecture": "yolo_v9_c", "label_uuids": ["a"], "class_names": ["a"], "class_remap": {}},
+            {
+                "node_uuid": "n1",
+                "role": "top",
+                "label_uuid": None,
+                "model_type": "object_detection",
+                "architecture": "yolo_v9_c",
+                "label_uuids": ["a"],
+                "class_names": ["a"],
+                "class_remap": {},
+            },
         ]
         task = self._base_task(targets)
         task._job_id = "already-submitted-job"

@@ -118,9 +118,7 @@ class TrainModelTask(Task, TrainingJobRunnerMixin):
         model_name: str = hyperparams.pop("model_name", None) or tc_data.name.replace(" ", "_").lower()
 
         if not node_uuid:
-            raise RuntimeError(
-                f"TrainingConfig {training_config_uuid!r} has no model_config_node_uuid"
-            )
+            raise RuntimeError(f"TrainingConfig {training_config_uuid!r} has no model_config_node_uuid")
 
         # 2. Get model config node → label_uuid, model_type, architecture.
         node = mc_api.get_model_config_node(node_uuid)
@@ -138,9 +136,7 @@ class TrainModelTask(Task, TrainingJobRunnerMixin):
         # backend's single authority (derive_bundle_training_targets) so trained
         # artifacts can self-describe their place in the model tree. Threaded into
         # every job_config below and from there into each trainer's sidecar.
-        role, bundle_label_uuids = self._resolve_bundle_target_fields(
-            mc_api, model_config_uuid, node_uuid, label_uuid
-        )
+        role, bundle_label_uuids = self._resolve_bundle_target_fields(mc_api, model_config_uuid, node_uuid, label_uuid)
 
         # Object-detection nodes use a bbox-based dataset assembly; dispatch before the
         # image-label classifier paths below.
@@ -162,9 +158,7 @@ class TrainModelTask(Task, TrainingJobRunnerMixin):
         if dataset_uuids:
             dataset_image_uuids_resp = ds_api.get_dataset_image_uuids(dataset_uuid=dataset_uuids)
             dataset_uuids_set = set(
-                dataset_image_uuids_resp.image_uuids
-                if hasattr(dataset_image_uuids_resp, "image_uuids")
-                else []
+                dataset_image_uuids_resp.image_uuids if hasattr(dataset_image_uuids_resp, "image_uuids") else []
             )
 
         if not label_uuid:
@@ -198,7 +192,9 @@ class TrainModelTask(Task, TrainingJobRunnerMixin):
             all_rows = [r for r in all_rows if r.image_uuid in dataset_uuids_set]
             logger.debug(
                 "Dataset filter: %d → %d rows (dataset_set size=%d)",
-                before, len(all_rows), len(dataset_uuids_set),
+                before,
+                len(all_rows),
+                len(dataset_uuids_set),
             )
 
         if not all_rows:
@@ -299,18 +295,11 @@ class TrainModelTask(Task, TrainingJobRunnerMixin):
                 break
 
         if parent_config is None:
-            raise RuntimeError(
-                f"Could not find a model config containing node {node_uuid!r}"
-            )
+            raise RuntimeError(f"Could not find a model config containing node {node_uuid!r}")
 
-        labeled_nodes = [
-            n for n in (getattr(parent_config, "nodes", None) or [])
-            if getattr(n, "label_uuid", None)
-        ]
+        labeled_nodes = [n for n in (getattr(parent_config, "nodes", None) or []) if getattr(n, "label_uuid", None)]
         if not labeled_nodes:
-            raise RuntimeError(
-                f"Root node {node_uuid!r} has no labeled child nodes to train"
-            )
+            raise RuntimeError(f"Root node {node_uuid!r} has no labeled child nodes to train")
 
         label_uuids_list = [n.label_uuid for n in labeled_nodes]
 
@@ -330,7 +319,9 @@ class TrainModelTask(Task, TrainingJobRunnerMixin):
                 rows = [r for r in rows if r.image_uuid in dataset_uuids_set]
             logger.debug(
                 "Label %s: %d labeled rows, %d after dataset filter",
-                luuid, raw_count, len(rows),
+                luuid,
+                raw_count,
+                len(rows),
             )
 
             for r in rows:
@@ -350,8 +341,7 @@ class TrainModelTask(Task, TrainingJobRunnerMixin):
 
         # Manifest: unique images (status field unused by multi_label_classifier).
         manifest = [
-            {"image_uuid": uuid, "filename": fname, "status": "present"}
-            for uuid, fname in uuid_to_filename.items()
+            {"image_uuid": uuid, "filename": fname, "status": "present"} for uuid, fname in uuid_to_filename.items()
         ]
 
         self.log(
@@ -402,14 +392,8 @@ class TrainModelTask(Task, TrainingJobRunnerMixin):
                 f"{training_config_uuid!r}. Ensure images have verified bboxes in scope."
             )
 
-        manifest = [
-            {"image_uuid": img.image_uuid, "filename": img.filename, "status": "present"}
-            for img in images
-        ]
-        annotations = {
-            img.image_uuid: img.annotations
-            for img in images
-        }
+        manifest = [{"image_uuid": img.image_uuid, "filename": img.filename, "status": "present"} for img in images]
+        annotations = {img.image_uuid: img.annotations for img in images}
 
         self.log(
             f"Resolved object_detection config: {len(class_names)} classes "

@@ -33,9 +33,7 @@ class Manager:
         worker_count = int(os.environ.get("TRAINING_WORKER_COUNT", "1"))
         self._queue = JobQueue(worker_count=worker_count)
         self._cache = ImageCache(cache_dir=cache_dir)
-        self._artifacts_dir = Path(
-            artifacts_dir or os.environ.get("TRAINING_ARTIFACTS_DIR", _DEFAULT_ARTIFACTS_DIR)
-        )
+        self._artifacts_dir = Path(artifacts_dir or os.environ.get("TRAINING_ARTIFACTS_DIR", _DEFAULT_ARTIFACTS_DIR))
         self._config: Dict[str, Any] = {"service": APPS.TRAINING_SERVER}
 
     def start(self) -> None:

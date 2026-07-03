@@ -503,9 +503,7 @@ class HashIndex:
                 if bbox_uuid in valid:
                     items.append((bbox_uuid, lbl, phash_hex))
 
-        order = await asyncio.to_thread(
-            self._greedy_diversity_order, [p for _, _, p in items], seed_phash, count
-        )
+        order = await asyncio.to_thread(self._greedy_diversity_order, [p for _, _, p in items], seed_phash, count)
         return [(items[i][0], items[i][1]) for i in order]
 
     def check_dedup_bulk(

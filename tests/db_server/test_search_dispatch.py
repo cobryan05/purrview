@@ -97,9 +97,7 @@ class TestExistsInEquivalence:
             lambda s: ImageSearchParams(tag_uuids=[UNVERIFIED_TAG_UUID, s["rare_tag"]], tag_match_mode="all"),
             lambda s: ImageSearchParams(label_uuids=[s["common_label"]]),
             lambda s: ImageSearchParams(label_uuids=[s["common_label"], s["rare_label"]]),
-            lambda s: ImageSearchParams(
-                label_uuids=[s["common_label"], s["rare_label"]], label_match_mode="all"
-            ),
+            lambda s: ImageSearchParams(label_uuids=[s["common_label"], s["rare_label"]], label_match_mode="all"),
             lambda s: ImageSearchParams(label_uuids=[s["common_label"]], label_include_children=True),
             lambda s: ImageSearchParams(
                 label_uuids=[s["common_label"], s["rare_label"]],

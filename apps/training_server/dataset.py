@@ -29,6 +29,7 @@ logger = logging.getLogger(__name__)
 # Fetcher abstractions
 # ---------------------------------------------------------------------------
 
+
 class FilesystemImageFetcher:
     """Read image bytes from a local directory by filename.
 
@@ -44,7 +45,7 @@ class FilesystemImageFetcher:
     def fetch(self, uuid: str, filename: str) -> bytes:
         for old, new in self._prefix_map.items():
             if filename.startswith(old):
-                filename = new + filename[len(old):]
+                filename = new + filename[len(old) :]
                 break
         return (self._root / filename.lstrip("/")).read_bytes()
 
@@ -96,6 +97,7 @@ class _CacheFetcher:
 # ---------------------------------------------------------------------------
 # Public dataset builders
 # ---------------------------------------------------------------------------
+
 
 def _build_dataset(
     label_uuid: str,
@@ -179,6 +181,7 @@ def build_dataset_from_manifest(
 # ---------------------------------------------------------------------------
 # Dataset classes
 # ---------------------------------------------------------------------------
+
 
 class ImageLabelDataset:
     """Torch Dataset returning (image_tensor [3,224,224], label_int) pairs.

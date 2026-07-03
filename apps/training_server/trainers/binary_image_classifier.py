@@ -91,14 +91,10 @@ class BinaryImageClassifier(Trainer):
         arch_name: str = config.get("architecture", "")
         timm_model = _ARCH_MAP.get(arch_name, _DEFAULT_TIMM_MODEL)
         if arch_name and arch_name not in _ARCH_MAP:
-            logger.warning(
-                "Unknown architecture %r — falling back to %s", arch_name, _DEFAULT_TIMM_MODEL
-            )
+            logger.warning("Unknown architecture %r — falling back to %s", arch_name, _DEFAULT_TIMM_MODEL)
 
         if not manifest:
-            raise RuntimeError(
-                "No manifest provided — image data must be pushed before training"
-            )
+            raise RuntimeError("No manifest provided — image data must be pushed before training")
 
         logger.info(
             "Training %s on %d images (arch=%s → timm=%s)",
@@ -110,12 +106,8 @@ class BinaryImageClassifier(Trainer):
 
         # ── Build datasets ──────────────────────────────────────────────────
         try:
-            ds_train = await asyncio.to_thread(
-                build_dataset_from_manifest, manifest, cache_dir, "train"
-            )
-            ds_val = await asyncio.to_thread(
-                build_dataset_from_manifest, manifest, cache_dir, "val"
-            )
+            ds_train = await asyncio.to_thread(build_dataset_from_manifest, manifest, cache_dir, "train")
+            ds_val = await asyncio.to_thread(build_dataset_from_manifest, manifest, cache_dir, "val")
         except ValueError as e:
             raise RuntimeError(f"Dataset build failed: {e}") from e
 
@@ -131,9 +123,7 @@ class BinaryImageClassifier(Trainer):
             num_workers=2,
             pin_memory=True,
         )
-        loader_val = DataLoader(
-            ds_val, batch_size=batch_size, shuffle=False, num_workers=2, pin_memory=True
-        )
+        loader_val = DataLoader(ds_val, batch_size=batch_size, shuffle=False, num_workers=2, pin_memory=True)
 
         # ── Model ────────────────────────────────────────────────────────────
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -165,9 +155,7 @@ class BinaryImageClassifier(Trainer):
         start_epoch = 1
         if checkpoint_path.exists():
             try:
-                ckpt = await asyncio.to_thread(
-                    torch.load, str(checkpoint_path), map_location=device
-                )
+                ckpt = await asyncio.to_thread(torch.load, str(checkpoint_path), map_location=device)
                 model.load_state_dict(ckpt["model_state_dict"])
                 optimizer.load_state_dict(ckpt["optimizer_state_dict"])
                 scheduler.load_state_dict(ckpt["scheduler_state_dict"])
@@ -287,7 +275,9 @@ class BinaryImageClassifier(Trainer):
         max_diff = float(np.abs(pt_out - ort_out).max())
         logger.info("ONNX validation: max abs diff = %.6f", max_diff)
         if not np.allclose(pt_out, ort_out, atol=1e-2):
-            raise RuntimeError(f"ONNX validation failed: PyTorch and OnnxRuntime outputs differ (max diff {max_diff:.6f})")
+            raise RuntimeError(
+                f"ONNX validation failed: PyTorch and OnnxRuntime outputs differ (max diff {max_diff:.6f})"
+            )
         logger.info("ONNX validation passed, model saved to %s", onnx_path)
         if checkpoint_path.exists():
             checkpoint_path.unlink(missing_ok=True)

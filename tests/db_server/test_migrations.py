@@ -150,9 +150,7 @@ class TestPartialMigrationRecovery:
                     FOREIGN KEY(model_config_uuid) REFERENCES model_configs (uuid) ON DELETE RESTRICT
                 )
             """)
-            conn.exec_driver_sql(
-                "CREATE UNIQUE INDEX ix_model_bundles_name ON model_bundles (name)"
-            )
+            conn.exec_driver_sql("CREATE UNIQUE INDEX ix_model_bundles_name ON model_bundles (name)")
             conn.exec_driver_sql("DROP TABLE training_config_label_links")
             # Simulate the model_config_nodes batch: add model_type/architecture, drop model_typename
             conn.exec_driver_sql("""

@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_CACHE_DIR = "/training-cache"
 _DEFAULT_MAX_MB = 5000  # 5 GB
-_MAX_IMAGE_MB = 50       # reject members larger than this
+_MAX_IMAGE_MB = 50  # reject members larger than this
 
 
 class ImageCache:
@@ -34,15 +34,8 @@ class ImageCache:
         cache_dir: Optional[str] = None,
         max_mb: Optional[int] = None,
     ):
-        self._dir = Path(
-            cache_dir
-            or os.environ.get("TRAINING_CACHE_DIR", _DEFAULT_CACHE_DIR)
-        )
-        self._max_bytes = (
-            (max_mb or int(os.environ.get("TRAINING_CACHE_MAX_MB", _DEFAULT_MAX_MB)))
-            * 1024
-            * 1024
-        )
+        self._dir = Path(cache_dir or os.environ.get("TRAINING_CACHE_DIR", _DEFAULT_CACHE_DIR))
+        self._max_bytes = (max_mb or int(os.environ.get("TRAINING_CACHE_MAX_MB", _DEFAULT_MAX_MB))) * 1024 * 1024
         # UUIDs that belong to live jobs and must not be evicted.
         self._pinned: set[str] = set()
 
@@ -160,9 +153,11 @@ class ImageCache:
 
         self._maybe_evict()
 
-        cached_total = sum(
-            1 for p in self._dir.iterdir() if p.is_file() and not p.name.startswith(".tmp_")
-        ) if self._dir.exists() else 0
+        cached_total = (
+            sum(1 for p in self._dir.iterdir() if p.is_file() and not p.name.startswith(".tmp_"))
+            if self._dir.exists()
+            else 0
+        )
         return {"received": received, "cached_total": cached_total}
 
     # ── Eviction ──────────────────────────────────────────────────────────────

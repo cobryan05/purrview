@@ -80,9 +80,7 @@ class TrainBundleTask(Task, TrainingJobRunnerMixin):
             self._manifest: list[dict] = list(resume_data.get("manifest") or [])
             self._config: dict = dict(resume_data.get("config") or {})
             self._model_name: str = str(resume_data.get("model_name") or "")
-            self.log(
-                f"Resuming bundle training at target {self._target_index + 1}/{len(self._targets)}"
-            )
+            self.log(f"Resuming bundle training at target {self._target_index + 1}/{len(self._targets)}")
             return
 
         model_config_uuid = str(params.get("model_config_uuid") or "")
@@ -102,9 +100,7 @@ class TrainBundleTask(Task, TrainingJobRunnerMixin):
 
         self._targets = await asyncio.to_thread(self._fetch_targets)
         if not self._targets:
-            raise RuntimeError(
-                f"ModelConfig {model_config_uuid!r} has no training targets (no root node?)"
-            )
+            raise RuntimeError(f"ModelConfig {model_config_uuid!r} has no training targets (no root node?)")
 
         self._dataset_uuids_set = await asyncio.to_thread(self._fetch_dataset_uuids_set)
 
@@ -117,20 +113,22 @@ class TrainBundleTask(Task, TrainingJobRunnerMixin):
 
         # Seed resume_data immediately so an early crash (before the first job
         # submits) doesn't lose the resolved target list on restart.
-        self._resume_data.update({
-            "model_config_uuid": self._model_config_uuid,
-            "dataset_uuids": self._dataset_uuids,
-            "dataset_uuids_set": list(self._dataset_uuids_set),
-            "bundle_name": self._bundle_name,
-            "hyperparams_json": self._hyperparams,
-            "targets": self._targets,
-            "target_index": 0,
-            "completed_artifacts": [],
-            "job_id": None,
-            "manifest": [],
-            "config": {},
-            "model_name": "",
-        })
+        self._resume_data.update(
+            {
+                "model_config_uuid": self._model_config_uuid,
+                "dataset_uuids": self._dataset_uuids,
+                "dataset_uuids_set": list(self._dataset_uuids_set),
+                "bundle_name": self._bundle_name,
+                "hyperparams_json": self._hyperparams,
+                "targets": self._targets,
+                "target_index": 0,
+                "completed_artifacts": [],
+                "job_id": None,
+                "manifest": [],
+                "config": {},
+                "model_name": "",
+            }
+        )
 
         self.log(f"Resolved {len(self._targets)} bundle training target(s) for {model_config_uuid}")
 
@@ -197,9 +195,7 @@ class TrainBundleTask(Task, TrainingJobRunnerMixin):
 
     def _resolve_target_object_detection(self, mc_api, target: dict, model_name: str) -> tuple[str, list[dict], dict]:
         payload = BundleTargetDetectionDatasetPayload(dataset_uuids=self._dataset_uuids)
-        result = mc_api.get_bundle_target_detection_dataset(
-            self._model_config_uuid, target["node_uuid"], payload
-        )
+        result = mc_api.get_bundle_target_detection_dataset(self._model_config_uuid, target["node_uuid"], payload)
         if getattr(result, "status", None) != "success":
             raise RuntimeError(
                 f"Could not assemble detection dataset for bundle target node="
@@ -214,10 +210,7 @@ class TrainBundleTask(Task, TrainingJobRunnerMixin):
                 f"node={target['node_uuid']!r}. Ensure images have verified bboxes in scope."
             )
 
-        manifest = [
-            {"image_uuid": img.image_uuid, "filename": img.filename, "status": "present"}
-            for img in images
-        ]
+        manifest = [{"image_uuid": img.image_uuid, "filename": img.filename, "status": "present"} for img in images]
         annotations = {img.image_uuid: img.annotations for img in images}
 
         self.log(
@@ -311,8 +304,7 @@ class TrainBundleTask(Task, TrainingJobRunnerMixin):
             )
 
         manifest = [
-            {"image_uuid": uuid, "filename": fname, "status": "present"}
-            for uuid, fname in uuid_to_filename.items()
+            {"image_uuid": uuid, "filename": fname, "status": "present"} for uuid, fname in uuid_to_filename.items()
         ]
 
         self.log(
@@ -353,14 +345,16 @@ class TrainBundleTask(Task, TrainingJobRunnerMixin):
             if result.get("cancelled"):
                 return result
 
-            self._completed_artifacts.append({
-                "role": target["role"],
-                "node_uuid": target["node_uuid"],
-                "label_uuid": target["label_uuid"],
-                "label_uuids": target["label_uuids"],
-                "model_name": result.get("model_name"),
-                "val_accuracy": result.get("val_accuracy"),
-            })
+            self._completed_artifacts.append(
+                {
+                    "role": target["role"],
+                    "node_uuid": target["node_uuid"],
+                    "label_uuid": target["label_uuid"],
+                    "label_uuids": target["label_uuids"],
+                    "model_name": result.get("model_name"),
+                    "val_accuracy": result.get("val_accuracy"),
+                }
+            )
 
             # Advance to the next target; clear per-job state so the next
             # iteration resolves a fresh job instead of _run_one_job's own
@@ -371,14 +365,16 @@ class TrainBundleTask(Task, TrainingJobRunnerMixin):
             self._config = {}
             self._model_name = ""
 
-            self._resume_data.update({
-                "target_index": self._target_index,
-                "completed_artifacts": self._completed_artifacts,
-                "job_id": None,
-                "manifest": [],
-                "config": {},
-                "model_name": "",
-            })
+            self._resume_data.update(
+                {
+                    "target_index": self._target_index,
+                    "completed_artifacts": self._completed_artifacts,
+                    "job_id": None,
+                    "manifest": [],
+                    "config": {},
+                    "model_name": "",
+                }
+            )
             self._data_ready_flag.set()
 
         bundle = await asyncio.to_thread(self._create_bundle)

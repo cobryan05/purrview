@@ -33,7 +33,6 @@ logger.setLevel(logging.DEBUG)
 _MODELS_ROOT = Path(os.environ.get("MODELS_ROOT", "/models"))
 
 
-
 @register_task()
 class RunClassifierTask(Task):
     async def _init(self, params: dict[str, Any], resume_data: Optional[dict[str, Any]]) -> None:
@@ -257,7 +256,7 @@ class RunClassifierTask(Task):
                 "default": [],
                 "help": "Restrict to images from these source UUIDs (empty = all images)",
             },
-"confidence_threshold": {
+            "confidence_threshold": {
                 "type": "float",
                 "required": False,
                 "default": 0.7,

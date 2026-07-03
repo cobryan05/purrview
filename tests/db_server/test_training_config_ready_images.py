@@ -347,9 +347,7 @@ class TestReadyImages:
             ],
         )
         node_uuid = mc["nodes"][0]["uuid"]
-        cfg = await _create_training_config(
-            http_client, "ri-tc-rollup", [ds["uuid"]], model_config_node_uuid=node_uuid
-        )
+        cfg = await _create_training_config(http_client, "ri-tc-rollup", [ds["uuid"]], model_config_node_uuid=node_uuid)
 
         body = await _ready_images(http_client, cfg["uuid"])
         assert len(body["images"]) == 1

@@ -203,9 +203,7 @@ class TestGetTrainingConfigDetectionDataset:
             nodes=[{"labelUuid": cat_uuid, "modelType": "object_detection", "architecture": "yolo_v9_c"}],
         )
         node_uuid = mc["nodes"][0]["uuid"]
-        tc = await _create_training_config(
-            http_client, "tc-absent", [_WHOLE_DB_UUID], model_config_node_uuid=node_uuid
-        )
+        tc = await _create_training_config(http_client, "tc-absent", [_WHOLE_DB_UUID], model_config_node_uuid=node_uuid)
         img = await _register_image(http_client, files_root, "absent_img.png")
         await _set_image_label(http_client, img, cat_uuid, "absent")
 
@@ -223,9 +221,7 @@ class TestGetTrainingConfigDetectionDataset:
             nodes=[{"labelUuid": cat_uuid, "modelType": "object_detection", "architecture": "yolo_v9_c"}],
         )
         node_uuid = mc["nodes"][0]["uuid"]
-        tc = await _create_training_config(
-            http_client, "tc-inelig", [_WHOLE_DB_UUID], model_config_node_uuid=node_uuid
-        )
+        tc = await _create_training_config(http_client, "tc-inelig", [_WHOLE_DB_UUID], model_config_node_uuid=node_uuid)
         # Image registered but NOT verified for cat_uuid → not eligible.
         img = await _register_image(http_client, files_root, "inelig_img.png")
         # No image_label row set for cat_uuid.
@@ -263,8 +259,24 @@ class TestGetTrainingConfigDetectionDataset:
             json={
                 "imagePath": img,
                 "boxes": [
-                    {"uuid": str(uuid.uuid4()), "labelUuid": cat_uuid, "x": 0.1, "y": 0.1, "width": 0.2, "height": 0.2, "tagUuids": [VERIFIED_TAG_UUID]},
-                    {"uuid": str(uuid.uuid4()), "labelUuid": dog_uuid, "x": 0.5, "y": 0.5, "width": 0.2, "height": 0.2, "tagUuids": [VERIFIED_TAG_UUID]},
+                    {
+                        "uuid": str(uuid.uuid4()),
+                        "labelUuid": cat_uuid,
+                        "x": 0.1,
+                        "y": 0.1,
+                        "width": 0.2,
+                        "height": 0.2,
+                        "tagUuids": [VERIFIED_TAG_UUID],
+                    },
+                    {
+                        "uuid": str(uuid.uuid4()),
+                        "labelUuid": dog_uuid,
+                        "x": 0.5,
+                        "y": 0.5,
+                        "width": 0.2,
+                        "height": 0.2,
+                        "tagUuids": [VERIFIED_TAG_UUID],
+                    },
                 ],
             },
         )

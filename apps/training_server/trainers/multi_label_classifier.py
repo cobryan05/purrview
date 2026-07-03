@@ -94,24 +94,34 @@ class MultiLabelClassifier(Trainer):
         if not manifest:
             raise RuntimeError("No manifest provided — images must be pushed before training")
         if arch_name and arch_name not in _ARCH_MAP:
-            logger.warning(
-                "Unknown architecture %r — falling back to %s", arch_name, _DEFAULT_TIMM_MODEL
-            )
+            logger.warning("Unknown architecture %r — falling back to %s", arch_name, _DEFAULT_TIMM_MODEL)
 
         logger.info(
             "Training multi-label model %r: %d labels, %d images (arch=%s → timm=%s)",
-            model_name, N, len(manifest), arch_name or "(default)", timm_model,
+            model_name,
+            N,
+            len(manifest),
+            arch_name or "(default)",
+            timm_model,
         )
 
         # ── Build datasets ──────────────────────────────────────────────────
         try:
             ds_train = await asyncio.to_thread(
                 build_multilabel_dataset_from_manifest,
-                manifest, label_uuids, label_targets, cache_dir, "train",
+                manifest,
+                label_uuids,
+                label_targets,
+                cache_dir,
+                "train",
             )
             ds_val = await asyncio.to_thread(
                 build_multilabel_dataset_from_manifest,
-                manifest, label_uuids, label_targets, cache_dir, "val",
+                manifest,
+                label_uuids,
+                label_targets,
+                cache_dir,
+                "val",
             )
         except ValueError as e:
             raise RuntimeError(f"Dataset build failed: {e}") from e
@@ -122,10 +132,18 @@ class MultiLabelClassifier(Trainer):
         val_image_uuids = list(ds_val._image_uuids)
 
         loader_train = DataLoader(
-            ds_train, batch_size=batch_size, shuffle=True, num_workers=2, pin_memory=True,
+            ds_train,
+            batch_size=batch_size,
+            shuffle=True,
+            num_workers=2,
+            pin_memory=True,
         )
         loader_val = DataLoader(
-            ds_val, batch_size=batch_size, shuffle=False, num_workers=2, pin_memory=True,
+            ds_val,
+            batch_size=batch_size,
+            shuffle=False,
+            num_workers=2,
+            pin_memory=True,
         )
 
         # ── Model ────────────────────────────────────────────────────────────
@@ -157,9 +175,7 @@ class MultiLabelClassifier(Trainer):
         start_epoch = 1
         if checkpoint_path.exists():
             try:
-                ckpt = await asyncio.to_thread(
-                    torch.load, str(checkpoint_path), map_location=device
-                )
+                ckpt = await asyncio.to_thread(torch.load, str(checkpoint_path), map_location=device)
                 model.load_state_dict(ckpt["model_state_dict"])
                 optimizer.load_state_dict(ckpt["optimizer_state_dict"])
                 scheduler.load_state_dict(ckpt["scheduler_state_dict"])
@@ -183,8 +199,8 @@ class MultiLabelClassifier(Trainer):
             for xb, yb in loader_train:
                 xb, yb = xb.to(device), yb.to(device)
                 optimizer.zero_grad()
-                logits = model(xb)                      # [B, N]
-                mask = yb >= 0                          # [B, N] — known labels only
+                logits = model(xb)  # [B, N]
+                mask = yb >= 0  # [B, N] — known labels only
                 loss_elem = criterion(logits, yb.clamp(min=0))  # [B, N]
                 loss = (loss_elem * mask).sum() / mask.sum().clamp(min=1)
                 loss.backward()
@@ -282,7 +298,9 @@ class MultiLabelClassifier(Trainer):
         max_diff = float(np.abs(pt_out - ort_out).max())
         logger.info("ONNX validation: max abs diff = %.6f", max_diff)
         if not np.allclose(pt_out, ort_out, atol=1e-2):
-            raise RuntimeError(f"ONNX validation failed: PyTorch and OnnxRuntime outputs differ (max diff {max_diff:.6f})")
+            raise RuntimeError(
+                f"ONNX validation failed: PyTorch and OnnxRuntime outputs differ (max diff {max_diff:.6f})"
+            )
         logger.info("ONNX validation passed, model saved to %s", onnx_path)
         checkpoint_path.unlink(missing_ok=True)
 

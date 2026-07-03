@@ -52,16 +52,20 @@ class TestInit:
     """_init with legacy params (no training_config_uuid)."""
 
     def _patch_clients(self):
-        return patch("apps.tasks_server.tasks.TrainModelTask.APPS_CONFIG"), \
-               patch("apps.tasks_server.tasks.TrainModelTask.db_client"), \
-               patch("apps.tasks_server.tasks.TrainModelTask.training_client")
+        return (
+            patch("apps.tasks_server.tasks.TrainModelTask.APPS_CONFIG"),
+            patch("apps.tasks_server.tasks.TrainModelTask.db_client"),
+            patch("apps.tasks_server.tasks.TrainModelTask.training_client"),
+        )
 
     async def test_init_legacy_sets_model_name(self):
-        task = _make_task({
-            "trainer_type": "binary_image_classifier",
-            "label_uuid": "lbl-1",
-            "model_name": "m1",
-        })
+        task = _make_task(
+            {
+                "trainer_type": "binary_image_classifier",
+                "label_uuid": "lbl-1",
+                "model_name": "m1",
+            }
+        )
         cfg_patch, db_patch, tc_patch = self._patch_clients()
         with cfg_patch as mock_cfg, db_patch, tc_patch:
             mock_cfg.__getitem__ = MagicMock(return_value=MagicMock(host="h", port=1234))
@@ -100,7 +104,11 @@ class TestInit:
             with patch.object(
                 task,
                 "_resolve_training_config",
-                return_value=("my_model", [{"image_uuid": "u1", "filename": "a.jpg", "status": "present"}], {"trainer_type": "binary_image_classifier"}),
+                return_value=(
+                    "my_model",
+                    [{"image_uuid": "u1", "filename": "a.jpg", "status": "present"}],
+                    {"trainer_type": "binary_image_classifier"},
+                ),
             ) as mock_resolve:
                 await task._init(task._params, None)
 
@@ -247,9 +255,7 @@ class TestJobConfigBundleFields:
 
         img = MagicMock(image_uuid="img-1", filename="a.jpg", annotations=[])
         tc_api = MagicMock()
-        tc_api.get_training_config_detection_dataset.return_value = MagicMock(
-            class_names=["cat"], images=[img]
-        )
+        tc_api.get_training_config_detection_dataset.return_value = MagicMock(class_names=["cat"], images=[img])
 
         _, _, job_config = task._resolve_object_detection(
             training_config_uuid="tc-1",
@@ -367,21 +373,25 @@ class TestRun:
         return result
 
     async def test_run_submits_job_on_first_call(self):
-        task = _make_task({
-            "trainer_type": "binary_image_classifier",
-            "label_uuid": "lbl-1",
-            "model_name": "m1",
-        })
+        task = _make_task(
+            {
+                "trainer_type": "binary_image_classifier",
+                "label_uuid": "lbl-1",
+                "model_name": "m1",
+            }
+        )
         done_event = [("done", {"model_path": "/models/m1.onnx", "val_accuracy": 0.9})]
         result = await self._run_task_with_sse(task, self._make_sse_stream(done_event))
         assert result.get("model_name") == "test_model"
 
     async def test_run_forwards_progress_events(self):
-        task = _make_task({
-            "trainer_type": "binary_image_classifier",
-            "label_uuid": "lbl-1",
-            "model_name": "m1",
-        })
+        task = _make_task(
+            {
+                "trainer_type": "binary_image_classifier",
+                "label_uuid": "lbl-1",
+                "model_name": "m1",
+            }
+        )
         events = [
             ("progress", {"progress": 0.1, "log": "Epoch 1"}),
             ("progress", {"progress": 0.5, "log": "Epoch 5"}),
@@ -394,11 +404,13 @@ class TestRun:
         assert task._progress == pytest.approx(75.0)
 
     async def test_run_logs_progress_messages(self):
-        task = _make_task({
-            "trainer_type": "binary_image_classifier",
-            "label_uuid": "lbl-1",
-            "model_name": "m1",
-        })
+        task = _make_task(
+            {
+                "trainer_type": "binary_image_classifier",
+                "label_uuid": "lbl-1",
+                "model_name": "m1",
+            }
+        )
         events = [
             ("progress", {"progress": 0.2, "log": "Epoch 2 val_loss=0.31"}),
             ("done", {"model_path": "/models/m1.onnx"}),
@@ -408,21 +420,25 @@ class TestRun:
         assert "Epoch 2 val_loss=0.31" in log_text
 
     async def test_run_raises_on_error_event(self):
-        task = _make_task({
-            "trainer_type": "binary_image_classifier",
-            "label_uuid": "lbl-1",
-            "model_name": "m1",
-        })
+        task = _make_task(
+            {
+                "trainer_type": "binary_image_classifier",
+                "label_uuid": "lbl-1",
+                "model_name": "m1",
+            }
+        )
         events = [("error", {"message": "CUDA OOM"})]
         with pytest.raises(RuntimeError, match="CUDA OOM"):
             await self._run_task_with_sse(task, self._make_sse_stream(events))
 
     async def test_run_cancel_flag_stops_stream(self):
-        task = _make_task({
-            "trainer_type": "binary_image_classifier",
-            "label_uuid": "lbl-1",
-            "model_name": "m1",
-        })
+        task = _make_task(
+            {
+                "trainer_type": "binary_image_classifier",
+                "label_uuid": "lbl-1",
+                "model_name": "m1",
+            }
+        )
 
         cancel_after = 1
 
@@ -489,11 +505,13 @@ class TestRun:
         mock_training_api.cancel_training_job.assert_called_once()
 
     async def test_run_with_resume_skips_submit(self):
-        task = _make_task({
-            "trainer_type": "binary_image_classifier",
-            "label_uuid": "lbl-1",
-            "model_name": "m1",
-        })
+        task = _make_task(
+            {
+                "trainer_type": "binary_image_classifier",
+                "label_uuid": "lbl-1",
+                "model_name": "m1",
+            }
+        )
         done_event = [("done", {"val_accuracy": 0.88})]
 
         mock_tc = MagicMock()
@@ -598,15 +616,17 @@ class TestSaveArtifact:
 
     async def test_extracts_onnx_data_sidecar(self, tmp_path):
         """A .onnx.data file (external ONNX weights) must be extracted alongside .onnx."""
-        tar = self._make_tar({
-            "mymodel.onnx": b"onnx-graph",
-            "mymodel.onnx.data": b"weights",
-            "mymodel.json": b"{}",
-        })
-        written = await self._run_save_artifact(tar, tmp_path)
-        assert "mymodel.onnx.data" in written, (
-            ".onnx.data sidecar was not extracted — ONNX runtime will fail to load the model"
+        tar = self._make_tar(
+            {
+                "mymodel.onnx": b"onnx-graph",
+                "mymodel.onnx.data": b"weights",
+                "mymodel.json": b"{}",
+            }
         )
+        written = await self._run_save_artifact(tar, tmp_path)
+        assert (
+            "mymodel.onnx.data" in written
+        ), ".onnx.data sidecar was not extracted — ONNX runtime will fail to load the model"
 
     async def test_skips_unexpected_extensions(self, tmp_path):
         tar = self._make_tar({"mymodel.onnx": b"onnx", "checkpoint.pt": b"pt"})

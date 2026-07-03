@@ -80,9 +80,7 @@ class DeduplicateOverlappingBBoxesTask(Task):
 
             batch_uuids = uuid_list[batch_start : batch_start + _BATCH_SIZE]
             batch_end = min(batch_start + _BATCH_SIZE, total)
-            self._status_msg = (
-                f"Processing {batch_end}/{total} images, {self._bboxes_removed} redundant bbox(es) found"
-            )
+            self._status_msg = f"Processing {batch_end}/{total} images, {self._bboxes_removed} redundant bbox(es) found"
 
             try:
                 resp = await asyncio.to_thread(
@@ -113,9 +111,7 @@ class DeduplicateOverlappingBBoxesTask(Task):
                             try:
                                 await asyncio.to_thread(images_api.delete_bbox, bbox_uuid)
                             except Exception:
-                                logger.exception(
-                                    "Failed to delete bbox %s on image %s", bbox_uuid, img_uuid
-                                )
+                                logger.exception("Failed to delete bbox %s on image %s", bbox_uuid, img_uuid)
                     self._bboxes_removed += len(to_delete)
                     self._images_with_changes += 1
                     logger.debug(
@@ -175,9 +171,7 @@ class DeduplicateOverlappingBBoxesTask(Task):
                 "type": "directory",
                 "label": "Directory Filter (optional)",
                 "required": False,
-                "description": (
-                    "Only process images under this directory. Leave blank to scan all images."
-                ),
+                "description": ("Only process images under this directory. Leave blank to scan all images."),
             },
             "iou_threshold": {
                 "type": "float",

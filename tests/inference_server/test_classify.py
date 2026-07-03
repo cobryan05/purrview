@@ -109,9 +109,7 @@ class TestModelMeta:
 
 class TestClassify:
     async def test_binary_classifier_high_confidence_is_present(self, clf_client, mock_provider):
-        mock_provider.processImage = AsyncMock(
-            return_value=_result(_det("label-cat-uuid", 0.95))
-        )
+        mock_provider.processImage = AsyncMock(return_value=_result(_det("label-cat-uuid", 0.95)))
         resp = await clf_client.post(
             "/api/models/binary_clf/classify",
             json={"imageBase64": make_png_b64()},
@@ -126,9 +124,7 @@ class TestClassify:
         assert preds[0]["confidence"] > 0.5
 
     async def test_binary_classifier_low_confidence_is_absent(self, clf_client, mock_provider):
-        mock_provider.processImage = AsyncMock(
-            return_value=_result(_det("label-cat-uuid", 0.2))
-        )
+        mock_provider.processImage = AsyncMock(return_value=_result(_det("label-cat-uuid", 0.2)))
         resp = await clf_client.post(
             "/api/models/binary_clf/classify",
             json={"imageBase64": make_png_b64()},

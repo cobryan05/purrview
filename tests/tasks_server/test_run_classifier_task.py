@@ -184,7 +184,9 @@ class TestRun:
         mock_session.get_inputs.return_value = [MagicMock(name="input")]
         mock_session.run.return_value = [np.array([[0.1, 5.0], [0.1, 5.0]])]
 
-        task = _make_task({"model_name": "clf", "confidence_threshold": 0.7, "batch_size": 10, "image_source": "filesystem"})
+        task = _make_task(
+            {"model_name": "clf", "confidence_threshold": 0.7, "batch_size": 10, "image_source": "filesystem"}
+        )
 
         with (
             patch("apps.tasks_server.tasks.RunClassifierTask._MODELS_ROOT", tmp_path),
@@ -222,7 +224,9 @@ class TestRun:
         mock_session.get_inputs.return_value = [MagicMock(name="input")]
         mock_session.run.return_value = [np.array([[5.0, 0.1]])]
 
-        task = _make_task({"model_name": "clf", "confidence_threshold": 0.7, "batch_size": 10, "image_source": "filesystem"})
+        task = _make_task(
+            {"model_name": "clf", "confidence_threshold": 0.7, "batch_size": 10, "image_source": "filesystem"}
+        )
 
         with (
             patch("apps.tasks_server.tasks.RunClassifierTask._MODELS_ROOT", tmp_path),
@@ -256,7 +260,9 @@ class TestRun:
         mock_session.get_inputs.return_value = [MagicMock(name="input")]
         mock_session.run.return_value = [np.array([[0.1, 5.0]])]
 
-        task = _make_task({"model_name": "clf", "confidence_threshold": 0.5, "batch_size": 1, "image_source": "filesystem"})
+        task = _make_task(
+            {"model_name": "clf", "confidence_threshold": 0.5, "batch_size": 1, "image_source": "filesystem"}
+        )
 
         original_sleep = asyncio.sleep
         call_count = 0
@@ -300,7 +306,9 @@ class TestRun:
         mock_session.get_inputs.return_value = [MagicMock(name="input")]
         mock_session.run.return_value = [np.array([[0.1, 5.0]])]
 
-        task = _make_task({"model_name": "clf", "confidence_threshold": 0.5, "batch_size": 10, "image_source": "filesystem"})
+        task = _make_task(
+            {"model_name": "clf", "confidence_threshold": 0.5, "batch_size": 10, "image_source": "filesystem"}
+        )
 
         with (
             patch("apps.tasks_server.tasks.RunClassifierTask._MODELS_ROOT", tmp_path),

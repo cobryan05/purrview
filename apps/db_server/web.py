@@ -592,7 +592,9 @@ class BundleTargetDetectionDatasetPayload(Payload):
 class ImagesByLabelStatusPayload(Payload):
     label_uuid: str
     rollup_label_uuids: Optional[List[str]] = None
-    status: Optional[Literal["present", "absent", "uncertain", "all", "has_verified_bbox", "co_labels_covered", "co_label_gaps"]] = None
+    status: Optional[
+        Literal["present", "absent", "uncertain", "all", "has_verified_bbox", "co_labels_covered", "co_label_gaps"]
+    ] = None
     after_uuid: Optional[str] = None
     after_sort_value: Optional[datetime] = None
     sort_by: Literal["uuid", "created_at", "updated_at"] = "created_at"
@@ -2709,9 +2711,7 @@ class WebApp:
             payload: BundleTargetDetectionDatasetPayload,
         ) -> DetectionDatasetResponse:
             try:
-                result = await self._manager.get_bundle_target_detection_dataset(
-                    uuid, node_uuid, payload.dataset_uuids
-                )
+                result = await self._manager.get_bundle_target_detection_dataset(uuid, node_uuid, payload.dataset_uuids)
                 if result is None:
                     return DetectionDatasetResponse(
                         status=JsonValues.FAILURE, message="Model config or bundle target not found"
@@ -2894,9 +2894,7 @@ class WebApp:
             try:
                 result = await self._manager.get_training_config_detection_dataset(uuid)
                 if result is None:
-                    return DetectionDatasetResponse(
-                        status=JsonValues.FAILURE, message="Training config not found"
-                    )
+                    return DetectionDatasetResponse(status=JsonValues.FAILURE, message="Training config not found")
                 return DetectionDatasetResponse(
                     status=JsonValues.SUCCESS,
                     class_names=result["class_names"],
@@ -2960,9 +2958,7 @@ class WebApp:
             tags=[ApiTags.TRAINING_CONFIGS],
             operation_id="get_training_config_ready_images",
         )
-        async def get_training_config_ready_images(
-            uuid: str, payload: ReadyImagesPayload
-        ) -> ReviewQueueResponse:
+        async def get_training_config_ready_images(uuid: str, payload: ReadyImagesPayload) -> ReviewQueueResponse:
             """Return images in this training config's dataset union that are ready for training.
 
             Uses the same response shape as the review queue so the existing review
@@ -3004,9 +3000,7 @@ class WebApp:
             tags=[ApiTags.TRAINING_CONFIGS],
             operation_id="get_training_config_not_started_images",
         )
-        async def get_training_config_not_started_images(
-            uuid: str, payload: ReadyImagesPayload
-        ) -> ReviewQueueResponse:
+        async def get_training_config_not_started_images(uuid: str, payload: ReadyImagesPayload) -> ReviewQueueResponse:
             """Return images with ZERO label coverage (verified_count == 0) — images that have
             never been reviewed at all, as opposed to partially reviewed.
 

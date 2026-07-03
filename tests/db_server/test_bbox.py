@@ -238,7 +238,10 @@ async def test_bulk_apply_bboxes_relabel(http_client, image_file, label_uuid):
                 {
                     "uuid": bid,
                     "labelUuid": label_uuid,
-                    "x": 0.1, "y": 0.1, "width": 0.2, "height": 0.2,
+                    "x": 0.1,
+                    "y": 0.1,
+                    "width": 0.2,
+                    "height": 0.2,
                     "tagUuids": [UNVERIFIED_TAG_UUID],
                 }
             ],
@@ -297,7 +300,10 @@ async def test_bulk_apply_bboxes_terminates_when_sorted_by_updated_at_asc(
                     {
                         "uuid": str(uuid.uuid4()),
                         "labelUuid": label_uuid,
-                        "x": 0.1, "y": 0.1, "width": 0.2, "height": 0.2,
+                        "x": 0.1,
+                        "y": 0.1,
+                        "width": 0.2,
+                        "height": 0.2,
                         "tagUuids": [UNVERIFIED_TAG_UUID],
                     }
                 ],
@@ -342,7 +348,10 @@ async def test_bulk_apply_bboxes_by_uuids_relabel(http_client, image_file, label
                 {
                     "uuid": bid,
                     "labelUuid": label_uuid,
-                    "x": 0.1, "y": 0.1, "width": 0.2, "height": 0.2,
+                    "x": 0.1,
+                    "y": 0.1,
+                    "width": 0.2,
+                    "height": 0.2,
                     "tagUuids": [UNVERIFIED_TAG_UUID],
                 }
             ],

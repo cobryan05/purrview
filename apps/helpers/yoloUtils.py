@@ -43,6 +43,7 @@ def load_yolo_onnx(model_path: str) -> InferenceProvider:
         from apps.helpers.inferenceProviders.imageClassifierInferenceProvider import (
             ImageClassifierInferenceProvider,
         )
+
         label_uuid: str = metadata.get("label_uuid", "")
         class_names: list[str] = metadata.get("class_names", ["absent", "present"])
         return ImageClassifierInferenceProvider(model_path, label_uuid, class_names)
@@ -51,6 +52,7 @@ def load_yolo_onnx(model_path: str) -> InferenceProvider:
         from apps.helpers.inferenceProviders.multiLabelClassifierInferenceProvider import (
             MultiLabelClassifierInferenceProvider,
         )
+
         label_uuids: list[str] = metadata.get("label_uuids") or []
         return MultiLabelClassifierInferenceProvider(model_path, label_uuids)
 
