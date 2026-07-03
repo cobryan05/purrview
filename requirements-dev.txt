@@ -1,4 +1,7 @@
+black
 isort
+# Same package/extra the `builder` stage installs (bundled JDK — no system Java needed)
+openapi-generator-cli[jdk4py]
 pytest>=8
 pytest-asyncio>=0.24
 pytest-xdist>=3
