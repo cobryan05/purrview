@@ -144,6 +144,15 @@ class TrainModelTask(Task):
         label_uuid: str = node_data.label_uuid or ""
         model_type: str = node_data.model_type
         architecture: str = node_data.architecture
+        model_config_uuid: str = node_data.model_config_uuid
+
+        # Bundle-target identity (role + in-scope label_uuids), sourced from the
+        # backend's single authority (derive_bundle_training_targets) so trained
+        # artifacts can self-describe their place in the model tree. Threaded into
+        # every job_config below and from there into each trainer's sidecar.
+        role, bundle_label_uuids = self._resolve_bundle_target_fields(
+            mc_api, model_config_uuid, node_uuid, label_uuid
+        )
 
         # Object-detection nodes use a bbox-based dataset assembly; dispatch before the
         # image-label classifier paths below.
@@ -154,6 +163,10 @@ class TrainModelTask(Task):
                 model_name=model_name,
                 architecture=architecture,
                 hyperparams=hyperparams,
+                role=role,
+                model_config_uuid=model_config_uuid,
+                node_uuid=node_uuid,
+                bundle_label_uuids=bundle_label_uuids,
             )
 
         # Get dataset image UUID set once (shared by both paths below).
@@ -177,6 +190,9 @@ class TrainModelTask(Task):
                 model_name=model_name,
                 architecture=architecture,
                 hyperparams=hyperparams,
+                role=role,
+                model_config_uuid=model_config_uuid,
+                model_config_node_uuid=node_uuid,
             )
 
         # Single labeled node → binary classifier.
@@ -226,9 +242,42 @@ class TrainModelTask(Task):
             "model_name": model_name,
             "architecture": architecture,
             "class_names": ["absent", "present"],
+            "role": role,
+            "model_config_uuid": model_config_uuid,
+            "model_config_node_uuid": node_uuid,
             **hyperparams,
         }
         return model_name, manifest, job_config
+
+    def _resolve_bundle_target_fields(
+        self, mc_api, model_config_uuid: str, node_uuid: str, label_uuid: str
+    ) -> tuple[str, list[str]]:
+        """Look up this node's role + in-scope label_uuids from the backend's single
+        source of truth (GET .../training-targets, backed by
+        DbClient.derive_bundle_training_targets).
+
+        Falls back to a locally-derived role/label list if the node isn't a
+        recognised bundle-boundary target (e.g. its spec is identical to its
+        inherited spec, so it's not its own target) — training must never fail on
+        this lookup, it only enriches descriptive metadata.
+        """
+        try:
+            resp = mc_api.get_model_config_training_targets(model_config_uuid)
+            targets = resp.targets if hasattr(resp, "targets") else []
+        except Exception:
+            logger.warning(
+                "Could not fetch bundle training targets for model_config_uuid=%s",
+                model_config_uuid,
+                exc_info=True,
+            )
+            targets = []
+
+        for target in targets:
+            if getattr(target, "node_uuid", None) == node_uuid:
+                return target.role, list(target.label_uuids or [])
+
+        role = "top" if not label_uuid else "submodel"
+        return role, ([label_uuid] if label_uuid else [])
 
     def _resolve_root_node(
         self,
@@ -240,6 +289,9 @@ class TrainModelTask(Task):
         model_name: str,
         architecture: str,
         hyperparams: dict,
+        role: str,
+        model_config_uuid: str,
+        model_config_node_uuid: str,
     ) -> tuple[str, list[dict], dict]:
         """Resolve a root node to a multi-label training job.
 
@@ -326,6 +378,9 @@ class TrainModelTask(Task):
             "architecture": architecture,
             "label_uuids": label_uuids_list,
             "label_targets": label_targets,
+            "role": role,
+            "model_config_uuid": model_config_uuid,
+            "model_config_node_uuid": model_config_node_uuid,
             **hyperparams,
         }
         return model_name, manifest, job_config
@@ -337,6 +392,10 @@ class TrainModelTask(Task):
         model_name: str,
         architecture: str,
         hyperparams: dict,
+        role: str,
+        model_config_uuid: str,
+        node_uuid: str,
+        bundle_label_uuids: list[str],
     ) -> tuple[str, list[dict], dict]:
         """Resolve an object_detection training config to a detection training job.
 
@@ -375,6 +434,10 @@ class TrainModelTask(Task):
             "architecture": architecture,
             "class_names": class_names,
             "annotations": annotations,
+            "role": role,
+            "model_config_uuid": model_config_uuid,
+            "model_config_node_uuid": node_uuid,
+            "label_uuids": bundle_label_uuids,
             **hyperparams,
         }
         return model_name, manifest, job_config

@@ -76,6 +76,9 @@ class BinaryImageClassifier(Trainer):
 
         label_uuid: str = config.get("label_uuid", "")
         model_name: str = config.get("model_name", "model")
+        role: str = config.get("role", "")
+        model_config_uuid: str = config.get("model_config_uuid", "")
+        model_config_node_uuid: str = config.get("model_config_node_uuid", "")
         max_epochs: int = int(config.get("max_epochs", 50))
         batch_size: int = int(config.get("batch_size", 32))
         patience: int = int(config.get("early_stopping_patience", 10))
@@ -304,6 +307,9 @@ class BinaryImageClassifier(Trainer):
             "trained_at": datetime.now(timezone.utc).isoformat(),
             "train_image_uuids": train_image_uuids,
             "val_image_uuids": val_image_uuids,
+            "role": role,
+            "model_config_uuid": model_config_uuid,
+            "model_config_node_uuid": model_config_node_uuid,
         }
         json_path.write_text(json.dumps(model_config, indent=2))
         logger.info("Model config written to %s", json_path)

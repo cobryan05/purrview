@@ -76,6 +76,9 @@ class MultiLabelClassifier(Trainer):
         label_uuids: list[str] = config.get("label_uuids") or []
         label_targets: dict[str, dict[str, int]] = config.get("label_targets") or {}
         model_name: str = config.get("model_name", "model")
+        role: str = config.get("role", "")
+        model_config_uuid: str = config.get("model_config_uuid", "")
+        model_config_node_uuid: str = config.get("model_config_node_uuid", "")
         manifest: list[dict] = config.get("manifest") or []
         cache_dir: str = config["cache_dir"]
         artifact_dir_str: str = config["artifact_dir"]
@@ -296,6 +299,9 @@ class MultiLabelClassifier(Trainer):
             "trained_at": datetime.now(timezone.utc).isoformat(),
             "train_image_uuids": train_image_uuids,
             "val_image_uuids": val_image_uuids,
+            "role": role,
+            "model_config_uuid": model_config_uuid,
+            "model_config_node_uuid": model_config_node_uuid,
         }
         json_path.write_text(json.dumps(model_config, indent=2))
         logger.info("Model config written to %s", json_path)

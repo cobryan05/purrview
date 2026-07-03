@@ -109,6 +109,166 @@ class TestInit:
         assert len(task._manifest) == 1
 
 
+class TestResolveBundleTargetFields:
+    """_resolve_bundle_target_fields — role/label_uuids lookup for sidecar enrichment."""
+
+    def _task(self) -> TrainModelTask:
+        return _make_task({})
+
+    def test_returns_matching_target_role_and_labels(self):
+        task = self._task()
+        target = MagicMock(node_uuid="node-1", role="submodel", label_uuids=["lbl-a", "lbl-b"])
+        other = MagicMock(node_uuid="node-other", role="top", label_uuids=["lbl-z"])
+        mc_api = MagicMock()
+        mc_api.get_model_config_training_targets.return_value = MagicMock(targets=[other, target])
+
+        role, label_uuids = task._resolve_bundle_target_fields(mc_api, "cfg-1", "node-1", "lbl-a")
+
+        mc_api.get_model_config_training_targets.assert_called_once_with("cfg-1")
+        assert role == "submodel"
+        assert label_uuids == ["lbl-a", "lbl-b"]
+
+    def test_falls_back_when_node_not_a_bundle_target(self):
+        """A node whose spec matches its inherited spec isn't its own boundary target —
+        fall back to a locally-derived role/label list instead of failing."""
+        task = self._task()
+        mc_api = MagicMock()
+        mc_api.get_model_config_training_targets.return_value = MagicMock(targets=[])
+
+        role, label_uuids = task._resolve_bundle_target_fields(mc_api, "cfg-1", "node-1", "lbl-a")
+
+        assert role == "submodel"
+        assert label_uuids == ["lbl-a"]
+
+    def test_falls_back_to_top_role_for_root_node(self):
+        task = self._task()
+        mc_api = MagicMock()
+        mc_api.get_model_config_training_targets.return_value = MagicMock(targets=[])
+
+        role, label_uuids = task._resolve_bundle_target_fields(mc_api, "cfg-1", "root-node", "")
+
+        assert role == "top"
+        assert label_uuids == []
+
+    def test_swallows_lookup_errors_and_falls_back(self):
+        task = self._task()
+        mc_api = MagicMock()
+        mc_api.get_model_config_training_targets.side_effect = RuntimeError("db_server unreachable")
+
+        role, label_uuids = task._resolve_bundle_target_fields(mc_api, "cfg-1", "node-1", "lbl-a")
+
+        assert role == "submodel"
+        assert label_uuids == ["lbl-a"]
+
+
+class TestJobConfigBundleFields:
+    """job_config from each _resolve_* builder carries role/model_config_uuid/
+    model_config_node_uuid (and label_uuids for object_detection)."""
+
+    def test_binary_classifier_job_config_carries_bundle_fields(self):
+        """End-to-end through _resolve_training_config: single labeled node → binary
+        classifier path is inlined (not its own method), so exercise it via the
+        public entry point with all four db_client APIs mocked."""
+        task = _make_task({})
+        task.log = MagicMock()
+        task._db_api_client = MagicMock()
+
+        tc_data = MagicMock(
+            status="success",
+            dataset_uuids=[],
+            hyperparams_json={},
+            model_config_node_uuid="node-1",
+            name="My Config",
+        )
+        tc_api = MagicMock()
+        tc_api.get_training_config.return_value = tc_data
+
+        node_data = MagicMock(
+            model_type="image_classifier",
+            architecture="mobilenet_v3_small",
+            label_uuid="lbl-a",
+            model_config_uuid="cfg-uuid",
+        )
+        mc_api = MagicMock()
+        mc_api.get_model_config_node.return_value = node_data
+        target = MagicMock(node_uuid="node-1", role="submodel", label_uuids=["lbl-a"])
+        mc_api.get_model_config_training_targets.return_value = MagicMock(targets=[target])
+
+        row = MagicMock(image_uuid="img-1", filename="a.jpg", status=MagicMock(value="present"))
+        img_api = MagicMock()
+        img_api.list_images_for_label.return_value = MagicMock(images=[row])
+
+        with (
+            patch("apps.tasks_server.tasks.TrainModelTask.TrainingConfigsApi", return_value=tc_api),
+            patch("apps.tasks_server.tasks.TrainModelTask.ModelConfigsApi", return_value=mc_api),
+            patch("apps.tasks_server.tasks.TrainModelTask.ImagesApi", return_value=img_api),
+            patch("apps.tasks_server.tasks.TrainModelTask.DatasetsApi"),
+        ):
+            _, _, job_config = task._resolve_training_config("tc-1")
+
+        assert job_config["role"] == "submodel"
+        assert job_config["model_config_uuid"] == "cfg-uuid"
+        assert job_config["model_config_node_uuid"] == "node-1"
+
+    def test_root_node_job_config_carries_bundle_fields(self):
+        task = _make_task({})
+        task.log = MagicMock()
+
+        node = MagicMock(uuid="node-1", label_uuid="lbl-a")
+        cfg = MagicMock(nodes=[MagicMock(uuid="root-node", label_uuid=None), node])
+        mc_api = MagicMock()
+        mc_api.list_model_configs.return_value = MagicMock(configs=[cfg])
+
+        img_api = MagicMock()
+        row = MagicMock(image_uuid="img-1", filename="a.jpg", status=MagicMock(value="present"))
+        img_api.list_images_for_label.return_value = MagicMock(images=[row])
+
+        _, _, job_config = task._resolve_root_node(
+            node_uuid="root-node",
+            mc_api=mc_api,
+            img_api=img_api,
+            dataset_uuids=[],
+            dataset_uuids_set=set(),
+            model_name="m1",
+            architecture="mobilenet_v3_small",
+            hyperparams={},
+            role="top",
+            model_config_uuid="cfg-uuid",
+            model_config_node_uuid="root-node",
+        )
+
+        assert job_config["role"] == "top"
+        assert job_config["model_config_uuid"] == "cfg-uuid"
+        assert job_config["model_config_node_uuid"] == "root-node"
+
+    def test_object_detection_job_config_carries_bundle_fields(self):
+        task = _make_task({})
+        task.log = MagicMock()
+
+        img = MagicMock(image_uuid="img-1", filename="a.jpg", annotations=[])
+        tc_api = MagicMock()
+        tc_api.get_training_config_detection_dataset.return_value = MagicMock(
+            class_names=["cat"], images=[img]
+        )
+
+        _, _, job_config = task._resolve_object_detection(
+            training_config_uuid="tc-1",
+            tc_api=tc_api,
+            model_name="m1",
+            architecture="yolo_v9_c",
+            hyperparams={},
+            role="submodel",
+            model_config_uuid="cfg-uuid",
+            node_uuid="node-uuid",
+            bundle_label_uuids=["lbl-a", "lbl-b"],
+        )
+
+        assert job_config["role"] == "submodel"
+        assert job_config["model_config_uuid"] == "cfg-uuid"
+        assert job_config["model_config_node_uuid"] == "node-uuid"
+        assert job_config["label_uuids"] == ["lbl-a", "lbl-b"]
+
+
 class TestRun:
     """Tests for _run and _consume_sse using mocked HTTP calls."""
 

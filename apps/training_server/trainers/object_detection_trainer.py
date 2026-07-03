@@ -63,6 +63,11 @@ class ObjectDetectionTrainer(Trainer):
         artifact_dir: str = str(config.get("artifact_dir", ""))
         manifest: list[dict] = list(config.get("manifest") or [])
 
+        role: str = str(config.get("role", ""))
+        model_config_uuid: str = str(config.get("model_config_uuid", ""))
+        model_config_node_uuid: str = str(config.get("model_config_node_uuid", ""))
+        label_uuids: list[str] = list(config.get("label_uuids") or [])
+
         max_epochs: int = int(config.get("max_epochs", 50))
         imgsz: int = int(config.get("imgsz", 640))
         batch_size: int = int(config.get("batch_size", 16))
@@ -185,6 +190,10 @@ class ObjectDetectionTrainer(Trainer):
                 "trained_at": datetime.now(timezone.utc).isoformat(),
                 "train_image_uuids": train_uuids,
                 "val_image_uuids": val_uuids,
+                "role": role,
+                "model_config_uuid": model_config_uuid,
+                "model_config_node_uuid": model_config_node_uuid,
+                "label_uuids": label_uuids,
             }
             sidecar_path = artifact_path / f"{model_name}.json"
             sidecar_path.write_text(json.dumps(sidecar, indent=2))
