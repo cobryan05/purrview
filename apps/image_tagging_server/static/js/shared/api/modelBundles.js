@@ -40,3 +40,36 @@ export async function fetchModelBundlesForConfig(modelConfigUuid) {
     .filter(b => b.modelConfigUuid === modelConfigUuid)
     .sort((a, b) => (b.createdAt ?? '').localeCompare(a.createdAt ?? ''));
 }
+
+/** -----------------------------
+ * CRUD
+ * -----------------------------
+ */
+
+/**
+ * Create a new ModelBundle. Used both by TrainBundleTask (server-side) and by
+ * the "New bundle from artifacts" compose flow, which reuses artifacts already
+ * on disk from earlier bundle/training runs (no new training happens here —
+ * bundle_path stays the flat models root, manifest_json just points at the
+ * chosen artifacts).
+ * @param {{name:string, description?:string, modelConfigUuid:string, bundlePath:string,
+ *   manifestJson?:object, trainingConfigUuids?:string[]}} data
+ * @returns {Promise<object>} the created ModelBundleRead
+ */
+export async function createModelBundle({
+  name, description = '', modelConfigUuid, bundlePath, manifestJson = {}, trainingConfigUuids = [],
+}) {
+  const res = await apiFetch('/api/model-bundles', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      name, description, modelConfigUuid, bundlePath, manifestJson, trainingConfigUuids,
+    }),
+  });
+  const data = await res.json();
+  if (!res.ok || data.status !== 'success') {
+    throw new Error(data.message || 'Failed to create model bundle');
+  }
+  modelBundlesFetcher.clear();
+  return data.bundle;
+}

@@ -4,14 +4,22 @@ import {
   createModelConfig,
   deleteModelConfig,
   fetchModelConfigs,
+  fetchModelConfigTrainingTargets,
   updateModelConfig,
 } from '/app-static/js/shared/api/modelConfigs.js';
+import { fetchDatasets } from '/app-static/js/shared/api/datasets.js';
+import { TaskStatus } from '/app-static/js/shared/api/tasks.js';
 import { showUnsavedConfigChangesModal } from '/app-static/js/ui/utils/confirmModal.js';
 import { toast, makeFieldRow, buildPanelEditorBar } from '/app-static/js/ui/utils/index.js';
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
 import { MODEL_SPEC, scopeForModelType, parseNodes, computeNodes } from '/app-static/js/ui/modelSpec.js';
 import { renderModelTreePanel } from '/app-static/js/ui/modelTreePanel.js';
-import { fetchModelBundlesForConfig } from '/app-static/js/shared/api/modelBundles.js';
+import { createTaskRunnerSection } from '/app-static/js/ui/utils/taskRunnerSection.js';
+import { createHyperparamsFieldset } from '/app-static/js/ui/utils/hyperparamsFieldset.js';
+import {
+  createModelBundle,
+  fetchModelBundlesForConfig,
+} from '/app-static/js/shared/api/modelBundles.js';
 
 let _rendering = false;
 let _navGuardController = null; // AbortController for the tab-navigation guard
@@ -103,6 +111,360 @@ function renderSubmodelPanels(container, submodels, labelsMap, onSpecChange) {
     card.append(swatch, nameSpan, specEl);
     container.appendChild(card);
   }
+}
+
+// -------------------------------------------------------
+// Trained bundles + "Train all → bundle" + compose-from-artifacts
+// -------------------------------------------------------
+
+/** Labels an artifact's scope: "Top model" for the root, or the joined
+ * sub-model label names it discriminates (falling back to raw UUIDs if a
+ * label was since deleted). Artifact dicts come straight from
+ * ModelBundle.manifest_json (a raw JSON blob, not alias-generated — keys are
+ * snake_case as TrainBundleTask wrote them). */
+function _artifactLabelSummary(artifact, labelsMap) {
+  if (artifact.role === 'top') return 'Top model';
+  const uuids = artifact.label_uuids?.length ? artifact.label_uuids : (artifact.label_uuid ? [artifact.label_uuid] : []);
+  if (uuids.length === 0) return 'Sub-model';
+  return uuids.map(u => labelsMap?.get(u)?.name ?? u).join(', ');
+}
+
+function _renderBundleArtifactsList(artifacts, labelsMap) {
+  const list = document.createElement('div');
+  list.className = 'mtp-bundle-artifacts';
+  for (const a of artifacts) {
+    const chip = document.createElement('span');
+    chip.className = 'mtp-chip mtp-bundle-artifact';
+    const roleText = a.role === 'top' ? 'Top' : 'Sub';
+    const acc = typeof a.val_accuracy === 'number' ? ` · ${(a.val_accuracy * 100).toFixed(1)}%` : '';
+    chip.textContent = `${roleText}: ${_artifactLabelSummary(a, labelsMap)}${acc}`;
+    chip.title = a.model_name ?? '';
+    list.appendChild(chip);
+  }
+  return list;
+}
+
+/** Renders the "Trained bundles" list for a saved config, with a header
+ * button that toggles the compose-from-artifacts panel. Returns a refresh()
+ * callers invoke after a new bundle is created (train-all or compose). */
+function renderBundlesSection({ config, labelsMap, onComposeClick }) {
+  const wrap = document.createElement('div');
+
+  const hdrRow = document.createElement('div');
+  hdrRow.style.cssText = 'display:flex; align-items:center; justify-content:space-between; gap:0.5em;';
+  const bundlesHdr = document.createElement('p');
+  bundlesHdr.className = 'panel-section-label';
+  bundlesHdr.style.margin = '0';
+  bundlesHdr.textContent = 'Trained bundles';
+  hdrRow.appendChild(bundlesHdr);
+
+  const composeBtn = document.createElement('button');
+  composeBtn.type = 'button';
+  composeBtn.className = 'panel-btn';
+  composeBtn.style.cssText = 'font-size:0.8em; padding:1px 8px; margin:0;';
+  composeBtn.textContent = '+ New bundle from artifacts';
+  composeBtn.addEventListener('click', () => onComposeClick?.());
+  hdrRow.appendChild(composeBtn);
+  wrap.appendChild(hdrRow);
+
+  const bundlesBox = document.createElement('div');
+  bundlesBox.className = 'mtp-bundles';
+  bundlesBox.textContent = 'Loading…';
+  wrap.appendChild(bundlesBox);
+
+  async function refresh() {
+    bundlesBox.textContent = 'Loading…';
+    try {
+      const bundles = await fetchModelBundlesForConfig(config.uuid);
+      bundlesBox.innerHTML = '';
+      if (bundles.length === 0) {
+        bundlesBox.textContent = 'No bundles trained from this configuration yet.';
+        return;
+      }
+      for (const b of bundles) {
+        const row = document.createElement('div');
+        row.className = 'mtp-bundle-row';
+
+        const topLine = document.createElement('div');
+        topLine.style.cssText = 'display:flex; justify-content:space-between; gap:1em;';
+        const name = document.createElement('span');
+        name.className = 'mtp-bundle-row__name';
+        name.textContent = b.name;
+        name.title = b.description || b.bundlePath || '';
+        topLine.appendChild(name);
+
+        const meta = document.createElement('span');
+        meta.className = 'mtp-bundle-row__meta';
+        const artifacts = Array.isArray(b.manifestJson?.artifacts) ? b.manifestJson.artifacts : [];
+        const parts = [];
+        if (b.createdAt) parts.push(new Date(b.createdAt).toLocaleDateString());
+        parts.push(`${artifacts.length} artifact${artifacts.length === 1 ? '' : 's'}`);
+        meta.textContent = parts.join(' · ');
+        topLine.appendChild(meta);
+        row.appendChild(topLine);
+
+        if (artifacts.length > 0) row.appendChild(_renderBundleArtifactsList(artifacts, labelsMap));
+        bundlesBox.appendChild(row);
+      }
+    } catch (err) {
+      bundlesBox.textContent = `Failed to load bundles: ${err.message}`;
+    }
+  }
+
+  refresh();
+  return { el: wrap, refresh };
+}
+
+/** True when both label-UUID sets are the same regardless of order. */
+function _sameLabelSet(a, b) {
+  if (a.length !== b.length) return false;
+  const sa = [...a].sort();
+  const sb = [...b].sort();
+  return sa.every((v, i) => v === sb[i]);
+}
+
+/** Hidden-until-opened panel: pick one existing artifact per current
+ * training target (top model + each sub-model) from across ALL bundles ever
+ * trained for this config, then assemble them into a new immutable
+ * ModelBundle snapshot. Lets a user retrain just one sub-model (via a
+ * Training Config targeting that node) and compose a new bundle reusing the
+ * other, unchanged artifacts — no retraining of the whole tree required.
+ * Targets come from GET /api/model-configs/{uuid}/training-targets, the same
+ * authority TrainBundleTask itself uses, so "coverage" here means the same
+ * thing it means during a real training run. */
+function renderComposeBundlePanel({ config, labelsMap, onCreated }) {
+  const wrap = document.createElement('div');
+  wrap.className = 'mc-compose-box';
+  wrap.style.display = 'none';
+
+  const hdr = document.createElement('p');
+  hdr.className = 'panel-section-label';
+  hdr.textContent = 'New bundle from artifacts';
+  wrap.appendChild(hdr);
+
+  const body = document.createElement('div');
+  wrap.appendChild(body);
+
+  let _visible = false;
+
+  async function _load() {
+    body.innerHTML = '';
+    const loading = document.createElement('div');
+    loading.textContent = 'Loading…';
+    body.appendChild(loading);
+
+    let targets, bundles;
+    try {
+      [targets, bundles] = await Promise.all([
+        fetchModelConfigTrainingTargets(config.uuid),
+        fetchModelBundlesForConfig(config.uuid),
+      ]);
+    } catch (err) {
+      body.innerHTML = '';
+      body.textContent = `Failed to load artifacts: ${err.message}`;
+      return;
+    }
+    body.innerHTML = '';
+
+    if (targets.length === 0) {
+      body.textContent = 'No training targets for this configuration yet (add a root model first).';
+      return;
+    }
+
+    // Every past artifact across every bundle for this config, keyed by the
+    // model-config node it was trained for.
+    const artifactsByNode = new Map();
+    for (const bundle of bundles) {
+      const artifacts = Array.isArray(bundle.manifestJson?.artifacts) ? bundle.manifestJson.artifacts : [];
+      for (const artifact of artifacts) {
+        const list = artifactsByNode.get(artifact.node_uuid) ?? [];
+        list.push({ artifact, bundle });
+        artifactsByNode.set(artifact.node_uuid, list);
+      }
+    }
+
+    const nameInput = document.createElement('input');
+    nameInput.type = 'text';
+    nameInput.placeholder = `${config.name} bundle`;
+    body.appendChild(makeFieldRow('Bundle name', nameInput));
+
+    const targetPicks = []; // { target, sel, optionMap }
+    for (const target of targets) {
+      const candidates = artifactsByNode.get(target.nodeUuid) ?? [];
+      const rowLabel = target.role === 'top'
+        ? 'Top model'
+        : (labelsMap?.get(target.labelUuid)?.name ?? target.labelUuid ?? target.nodeUuid);
+
+      const sel = document.createElement('select');
+      sel.style.cssText = 'margin-bottom:0; width:auto;';
+      const optionMap = new Map();
+
+      const blank = document.createElement('option');
+      blank.value = '';
+      blank.textContent = candidates.length ? '— none —' : '— no artifacts available —';
+      sel.appendChild(blank);
+
+      candidates.forEach(({ artifact, bundle }, i) => {
+        const value = `${bundle.uuid}:${i}`;
+        const opt = document.createElement('option');
+        opt.value = value;
+        const acc = typeof artifact.val_accuracy === 'number' ? ` (${(artifact.val_accuracy * 100).toFixed(1)}%)` : '';
+        opt.textContent = `${artifact.model_name ?? bundle.name}${acc} — from "${bundle.name}"`;
+        optionMap.set(value, { artifact, bundle });
+        sel.appendChild(opt);
+      });
+
+      const warnLine = document.createElement('div');
+      warnLine.className = 'mc-compose-warn';
+      warnLine.style.display = 'none';
+
+      function _refreshWarn() {
+        const picked = optionMap.get(sel.value);
+        if (!picked) { warnLine.style.display = 'none'; return; }
+        const wantUuids = target.labelUuids ?? [];
+        const gotUuids = picked.artifact.label_uuids?.length ? picked.artifact.label_uuids
+          : (picked.artifact.label_uuid ? [picked.artifact.label_uuid] : []);
+        if (_sameLabelSet(wantUuids, gotUuids)) {
+          warnLine.style.display = 'none';
+        } else {
+          warnLine.style.display = '';
+          warnLine.textContent =
+            `⚠ label coverage differs from this config's current target (artifact covers ${gotUuids.length}, expects ${wantUuids.length})`;
+        }
+      }
+      sel.addEventListener('change', _refreshWarn);
+      _refreshWarn();
+
+      const rowWrap = document.createElement('div');
+      rowWrap.appendChild(makeFieldRow(rowLabel, sel));
+      rowWrap.appendChild(warnLine);
+      body.appendChild(rowWrap);
+
+      targetPicks.push({ target, sel, optionMap });
+    }
+
+    const createBtn = document.createElement('button');
+    createBtn.type = 'button';
+    createBtn.className = 'panel-btn';
+    createBtn.textContent = 'Create bundle';
+    createBtn.style.cssText = 'margin-top:0.5em;';
+    createBtn.addEventListener('click', async () => {
+      const name = nameInput.value.trim() || `${config.name} bundle`;
+
+      const chosenArtifacts = [];
+      let bundlePath = null;
+      for (const { target, sel, optionMap } of targetPicks) {
+        const picked = optionMap.get(sel.value);
+        if (!picked) continue;
+        bundlePath = bundlePath ?? picked.bundle.bundlePath;
+        chosenArtifacts.push({ ...picked.artifact, node_uuid: target.nodeUuid, role: target.role });
+      }
+      if (chosenArtifacts.length === 0) { toast('Select at least one artifact', 3000, 'error'); return; }
+
+      createBtn.disabled = true;
+      try {
+        await createModelBundle({
+          name,
+          modelConfigUuid: config.uuid,
+          bundlePath: bundlePath ?? '',
+          manifestJson: { artifacts: chosenArtifacts },
+        });
+        toast(`Created bundle "${name}"`, 3000);
+        hide();
+        await onCreated?.();
+      } catch (err) {
+        toast(err.message, 5000, 'error');
+      } finally {
+        createBtn.disabled = false;
+      }
+    });
+    body.appendChild(createBtn);
+  }
+
+  function show() { wrap.style.display = ''; _visible = true; _load(); }
+  function hide() { wrap.style.display = 'none'; _visible = false; }
+  function toggle() { if (_visible) hide(); else show(); }
+
+  return { el: wrap, toggle, hide };
+}
+
+/** "Train every target (top + each sub-model) sequentially, then assemble a
+ * ModelBundle" — the TrainBundleTask entry point. Mirrors the Training
+ * Config "Start Training" button (ui/trainingConfigs.js), sharing the same
+ * SSE-driven runner and hyperparams fieldset. */
+function renderTrainAllSection({ config, onBundleCreated }) {
+  const wrap = document.createElement('div');
+  wrap.style.cssText = 'margin-top: 1em; padding-top: 0.75em; border-top: 1px solid var(--pico-muted-border-color, #ccc);';
+
+  const hdr = document.createElement('p');
+  hdr.className = 'panel-section-label';
+  hdr.style.marginTop = '0';
+  hdr.textContent = 'Train all → bundle';
+  wrap.appendChild(hdr);
+
+  const nameInput = document.createElement('input');
+  nameInput.type = 'text';
+  nameInput.placeholder = `${config.name} bundle`;
+  wrap.appendChild(makeFieldRow('Bundle name', nameInput));
+
+  const datasetBox = document.createElement('div');
+  datasetBox.className = 'panel-tree-box';
+  datasetBox.textContent = 'Loading datasets…';
+  const datasetRow = makeFieldRow('Datasets (≥1)', datasetBox);
+  datasetRow.style.alignItems = 'flex-start';
+  wrap.appendChild(datasetRow);
+
+  const datasetCheckboxes = new Map();
+  fetchDatasets().then((datasetsMap) => {
+    datasetBox.innerHTML = '';
+    if (datasetsMap.size === 0) {
+      datasetBox.textContent = 'No datasets defined yet.';
+      return;
+    }
+    for (const [uuid, ds] of datasetsMap) {
+      const row = document.createElement('label');
+      row.style.cssText = 'display: flex; align-items: center; gap: 0.4em; padding: 2px 4px; cursor: pointer; font-size: 0.88em; user-select: none;';
+      const cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.value = uuid;
+      row.appendChild(cb);
+      const nameSpan = document.createElement('span');
+      nameSpan.textContent = ds.name;
+      row.appendChild(nameSpan);
+      datasetBox.appendChild(row);
+      datasetCheckboxes.set(uuid, cb);
+    }
+  }).catch((err) => { datasetBox.textContent = `Failed to load datasets: ${err.message}`; });
+
+  const hyperparamsFieldset = createHyperparamsFieldset({});
+  for (const row of hyperparamsFieldset.rows) wrap.appendChild(row);
+
+  const { el: runnerEl } = createTaskRunnerSection({
+    buttonLabel: '▶ Train All → Bundle',
+    runningLabel: 'Training…',
+    buildStartArgs: () => {
+      const datasetUuids = [...datasetCheckboxes.entries()].filter(([, cb]) => cb.checked).map(([uuid]) => uuid);
+      if (datasetUuids.length === 0) { toast('Select at least one dataset', 3000, 'error'); return null; }
+      const bundleName = nameInput.value.trim() || `${config.name} bundle`;
+
+      return {
+        typename: 'TrainBundleTask',
+        name: `Bundle ${bundleName}`,
+        params: {
+          model_config_uuid: config.uuid,
+          dataset_uuids: datasetUuids,
+          bundle_name: bundleName,
+          hyperparams_json: hyperparamsFieldset.getHyperparamsJson(),
+        },
+      };
+    },
+    onSettled: async (finalTaskInfo) => {
+      if (finalTaskInfo?.instance?.status === TaskStatus.COMPLETED) await onBundleCreated?.();
+    },
+  });
+  wrap.appendChild(runnerEl);
+
+  return { el: wrap };
 }
 
 // -------------------------------------------------------
@@ -237,43 +599,25 @@ function renderConfigForm({ config, labelsMap, onDirtyChange }) {
     });
   }
 
-  // ── Trained bundles (saved configs only) ──────────────────────────────────
+  // ── Trained bundles + train-all + compose-from-artifacts (saved configs only) ──
   if (config) {
-    const bundlesHdr = document.createElement('p');
-    bundlesHdr.className = 'panel-section-label';
-    bundlesHdr.textContent = 'Trained bundles';
-    el.appendChild(bundlesHdr);
-    const bundlesBox = document.createElement('div');
-    bundlesBox.className = 'mtp-bundles';
-    bundlesBox.textContent = 'Loading…';
-    el.appendChild(bundlesBox);
-    fetchModelBundlesForConfig(config.uuid).then((bundles) => {
-      bundlesBox.innerHTML = '';
-      if (bundles.length === 0) {
-        bundlesBox.textContent = 'No bundles trained from this configuration yet.';
-        return;
-      }
-      for (const b of bundles) {
-        const row = document.createElement('div');
-        row.className = 'mtp-bundle-row';
-        const name = document.createElement('span');
-        name.className = 'mtp-bundle-row__name';
-        name.textContent = b.name;
-        name.title = b.description || b.bundlePath || '';
-        row.appendChild(name);
-        const meta = document.createElement('span');
-        meta.className = 'mtp-bundle-row__meta';
-        const parts = [];
-        if (b.createdAt) parts.push(new Date(b.createdAt).toLocaleDateString());
-        const artifacts = b.manifestJson?.artifacts;
-        if (Array.isArray(artifacts)) parts.push(`${artifacts.length} artifact${artifacts.length === 1 ? '' : 's'}`);
-        meta.textContent = parts.join(' · ');
-        row.appendChild(meta);
-        bundlesBox.appendChild(row);
-      }
-    }).catch((err) => {
-      bundlesBox.textContent = `Failed to load bundles: ${err.message}`;
+    const bundlesSection = renderBundlesSection({
+      config, labelsMap,
+      onComposeClick: () => composePanel.toggle(),
     });
+    el.appendChild(bundlesSection.el);
+
+    const composePanel = renderComposeBundlePanel({
+      config, labelsMap,
+      onCreated: () => bundlesSection.refresh(),
+    });
+    el.appendChild(composePanel.el);
+
+    const trainAllSection = renderTrainAllSection({
+      config,
+      onBundleCreated: () => bundlesSection.refresh(),
+    });
+    el.appendChild(trainAllSection.el);
   }
 
   // Kick off the initial tree build (async, but non-blocking for the rest of the form).

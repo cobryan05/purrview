@@ -72,3 +72,21 @@ export async function deleteModelConfig(uuid) {
   }
   modelConfigsFetcher.clear();
 }
+
+/**
+ * The authoritative list of bundle-training targets (top model + each
+ * sub-model) for a model config — same derivation TrainBundleTask uses.
+ * Not cached: callers use this right before a compose/train action where
+ * freshness matters more than avoiding a refetch.
+ * @returns {Promise<Array<{nodeUuid:string, role:'top'|'submodel', labelUuid:?string,
+ *   modelType:string, architecture:string, labelUuids:string[], classNames:string[],
+ *   classRemap:Object}>>}
+ */
+export async function fetchModelConfigTrainingTargets(modelConfigUuid) {
+  const res = await apiFetch(`/api/model-configs/${modelConfigUuid}/training-targets`);
+  const data = await res.json();
+  if (!res.ok || data.status !== 'success') {
+    throw new Error(data.message || 'Failed to fetch training targets');
+  }
+  return data.targets ?? [];
+}
