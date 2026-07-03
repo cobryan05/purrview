@@ -3,7 +3,7 @@ import logging
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
-from typing import List, Optional
+from typing import List, Optional, Tuple
 from uuid import uuid4
 
 import cv2
@@ -15,21 +15,26 @@ from apps.helpers.bboxUtils import BBox
 from apps.helpers.types import BoundingBoxMetadata, DetectionResult, InferenceResult
 
 from .inferenceProvider import InferenceProvider
+from .Registry import register_inference_provider
 
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger(__file__)
 logger.setLevel(logging.DEBUG)
 
 
-class YOLOv8ONNXInferenceProvider(InferenceProvider):
+@register_inference_provider("libreyolo9")
+class LibreYolo9InferenceProvider(InferenceProvider):
+    """LibreYOLO9 exports: boxes already xyxy (canvas-pixel space), scores already
+    sigmoid-activated inside the exported graph. (1, 4+nc, num_preds) transposed
+    to (1, num_preds, 4+nc) by the caller — 4 box channels + nc class-score
+    channels, no separate objectness channel."""
+
     def __init__(
         self,
         model_path: str,
         class_names: Optional[List[str]] = None,
         conf_thresh: float = 0.251,
         iou_thresh: float = 0.45,
-        box_format: str = "cxcywh",
-        scores_are_logits: bool = True,
     ):
         self.session = ort.InferenceSession(model_path, providers=["CUDAExecutionProvider", "CPUExecutionProvider"])
         active_providers = self.session.get_providers()
@@ -54,8 +59,14 @@ class YOLOv8ONNXInferenceProvider(InferenceProvider):
         self.class_names = class_names
         self.conf_thresh = conf_thresh
         self.iou_thresh = iou_thresh
-        self.box_format = box_format
-        self.scores_are_logits = scores_are_logits
+
+    def _extract(self, preds: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+        """Split raw preds (num_preds, 4+nc) into (boxes_xyxy, scores)."""
+        if preds.shape[1] < 5:
+            raise ValueError("Prediction tensor must have at least 5 elements per box (x, y, w, h, class_scores...).")
+        boxes_xyxy = preds[:, :4].copy()
+        scores = preds[:, 4:]  # already sigmoid-activated
+        return boxes_xyxy, scores
 
     async def processImage(self, image: np.ndarray, **kwargs) -> InferenceResult:
         original_shape = image.shape[:2]
@@ -82,15 +93,15 @@ class YOLOv8ONNXInferenceProvider(InferenceProvider):
             preds = np.transpose(preds, (0, 2, 1))
 
         conf_thresh = float(kwargs.get("conf_thresh", self.conf_thresh))
-        detections = YoloUtils.postprocess(
-            preds,
+        boxes_xyxy, scores = self._extract(preds[0])
+        detections = YoloUtils.decode_detections(
+            boxes_xyxy,
+            scores,
             conf_thresh=conf_thresh,
             iou_thresh=self.iou_thresh,
             scale=scale,
             pad=pad,
             original_shape=original_shape,
-            box_format=self.box_format,
-            scores_are_logits=self.scores_are_logits,
         )
         t_post = time.perf_counter()  # PERF
         # PERF BEGIN

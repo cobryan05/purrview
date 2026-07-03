@@ -50,6 +50,25 @@ def get_model_metadata(model_path: str, create_json_if_missing: bool = True) -> 
     return metadata
 
 
+def resolve_legacy_model_family(metadata: Dict[str, Any]) -> str:
+    """Map a sidecar with no `model_family` key to one, using the legacy `yolo` int.
+
+    This is the only place this legacy-mapping heuristic should live.
+    """
+    yolo_version = metadata.get("yolo", 8)
+    if yolo_version == 8:
+        return "ultralytics_yolov8"
+    if yolo_version == 9:
+        return "libreyolo9"
+    if yolo_version in (5, 7):
+        # No provider is registered for this family (see
+        # INFERENCE_PROVIDER_REGISTRY_PLAN.md open question) — preserves
+        # today's behavior of these sidecars being unloadable, just via the
+        # "unhandled family" path instead of a bare version check.
+        return "ultralytics_yolov5"
+    raise Exception(f"Unhandled YOLO version: {yolo_version}")
+
+
 def get_onnx_metadata(model_path: str) -> Dict[str, Any]:
     model = onnx.load(model_path)
     metadata_dict = {prop.key: prop.value for prop in model.metadata_props}

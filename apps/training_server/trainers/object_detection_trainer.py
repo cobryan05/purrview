@@ -186,6 +186,7 @@ class ObjectDetectionTrainer(Trainer):
                 "architecture": architecture,
                 "classes": class_names,
                 "yolo": 9,
+                "model_family": "libreyolo9",
                 "val_accuracy": best_map50,
                 "trained_at": datetime.now(timezone.utc).isoformat(),
                 "train_image_uuids": train_uuids,
