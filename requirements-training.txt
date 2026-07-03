@@ -7,7 +7,7 @@ uvicorn
 timm
 onnx
 onnxscript
-onnxruntime-gpu
+onnxruntime-gpu<1.27
 scikit-learn
 stringzilla>=3.10.4,<4
 albumentations

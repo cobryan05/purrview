@@ -26,3 +26,11 @@
 **/values.dev.yaml
 LICENSE
 README.md
+
+# Large runtime-only data — never needed in the build context, only bind-mounted at runtime
+/image_datasets
+/models
+/data
+/logs
+/training-artifacts
+/training-cache

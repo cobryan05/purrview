@@ -14,7 +14,7 @@ jstyleson
 lz4
 numpy
 onnx
-onnxruntime-gpu
+onnxruntime-gpu<1.27
 opencv-python-headless
 paho-mqtt
 pillow
