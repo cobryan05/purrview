@@ -3928,6 +3928,67 @@
         }
       }
     },
+    "/api/model-configs/{uuid}/training-targets/{node_uuid}/detection-dataset": {
+      "post": {
+        "tags": [
+          "model_configs"
+        ],
+        "summary": "Get Bundle Target Detection Dataset",
+        "operationId": "get_bundle_target_detection_dataset",
+        "parameters": [
+          {
+            "name": "uuid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Uuid"
+            }
+          },
+          {
+            "name": "node_uuid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Node Uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BundleTargetDetectionDatasetPayload"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DetectionDatasetResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/training-configs": {
       "get": {
         "tags": [
@@ -5317,6 +5378,19 @@
           "action"
         ],
         "title": "BulkApplyImagesByUuidsPayload"
+      },
+      "BundleTargetDetectionDatasetPayload": {
+        "properties": {
+          "datasetUuids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Datasetuuids"
+          }
+        },
+        "type": "object",
+        "title": "BundleTargetDetectionDatasetPayload"
       },
       "BundleTrainingTarget": {
         "properties": {

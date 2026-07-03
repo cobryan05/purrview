@@ -585,6 +585,10 @@ class ReadyImagesPayload(Payload):
     limit: int = 50
 
 
+class BundleTargetDetectionDatasetPayload(Payload):
+    dataset_uuids: List[str] = Field(default_factory=list)
+
+
 class ImagesByLabelStatusPayload(Payload):
     label_uuid: str
     rollup_label_uuids: Optional[List[str]] = None
@@ -2692,6 +2696,41 @@ class WebApp:
             except Exception as e:
                 logger.error(e, exc_info=True)
                 return TrainingTargetsResponse(status=JsonValues.FAILURE, message=str(e))
+
+        @self._app.post(
+            "/api/model-configs/{uuid}/training-targets/{node_uuid}/detection-dataset",
+            response_model=DetectionDatasetResponse,
+            tags=[ApiTags.MODEL_CONFIGS],
+            operation_id="get_bundle_target_detection_dataset",
+        )
+        async def get_bundle_target_detection_dataset(
+            uuid: str,
+            node_uuid: str,
+            payload: BundleTargetDetectionDatasetPayload,
+        ) -> DetectionDatasetResponse:
+            try:
+                result = await self._manager.get_bundle_target_detection_dataset(
+                    uuid, node_uuid, payload.dataset_uuids
+                )
+                if result is None:
+                    return DetectionDatasetResponse(
+                        status=JsonValues.FAILURE, message="Model config or bundle target not found"
+                    )
+                return DetectionDatasetResponse(
+                    status=JsonValues.SUCCESS,
+                    class_names=result["class_names"],
+                    images=[
+                        DetectionImageEntry(
+                            image_uuid=img["image_uuid"],
+                            filename=img["filename"],
+                            annotations=img["annotations"],
+                        )
+                        for img in result["images"]
+                    ],
+                )
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return DetectionDatasetResponse(status=JsonValues.FAILURE, message=str(e))
 
         @self._app.patch(
             "/api/model-configs/{uuid}",

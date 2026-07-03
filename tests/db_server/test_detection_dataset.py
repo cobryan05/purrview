@@ -285,3 +285,68 @@ class TestGetTrainingConfigDetectionDataset:
         # Each annotation's class index should correspond to the right label.
         for a in ann:
             assert int(a[0]) in range(len(class_names))
+
+
+class TestGetBundleTargetDetectionDataset:
+    """POST /api/model-configs/{uuid}/training-targets/{node_uuid}/detection-dataset —
+
+    Same assembly core as the TrainingConfig-based endpoint, but scoped via
+    derive_bundle_training_targets (role/label_uuids/class_remap) so a bundle run's
+    object-detection sub-models get the same classes shown in the model tree preview.
+    """
+
+    async def _get_bundle_target_dataset(
+        self, http_client, config_uuid: str, node_uuid: str, dataset_uuids: list[str]
+    ) -> dict:
+        r = await http_client.post(
+            f"/api/model-configs/{config_uuid}/training-targets/{node_uuid}/detection-dataset",
+            json={"datasetUuids": dataset_uuids},
+        )
+        assert r.status_code == 200, r.text
+        return r.json()
+
+    async def test_returns_not_found_for_missing_config(self, http_client):
+        body = await self._get_bundle_target_dataset(http_client, "nonexistent", "nonexistent", [])
+        assert body["status"] == "failure"
+
+    async def test_returns_not_found_when_node_is_not_a_bundle_target(self, http_client):
+        """A config with only a root node has no boundary targets — any node_uuid lookup misses."""
+        mc = await _create_model_config(
+            http_client,
+            "mc-no-bundle-target",
+            nodes=[{"modelType": "object_detection", "architecture": "yolo_v9_c"}],
+        )
+        body = await self._get_bundle_target_dataset(http_client, mc["uuid"], "does-not-exist", [_WHOLE_DB_UUID])
+        assert body["status"] == "failure"
+
+    async def test_submodel_boundary_matches_target_classes_and_verified_bbox(self, http_client, files_root):
+        """A sub-model boundary's target discriminates its CHILDREN, not itself (a childless
+        boundary has an empty class list — see derive_bundle_training_targets' docstring), so
+        this needs a boundary node (animal) with a child label (cat) beneath it."""
+        animal_uuid = await _create_label(http_client, "animal-bundle")
+        cat_uuid = await _create_label(http_client, "cat-bundle", parent_uuid=animal_uuid)
+        mc = await _create_model_config(
+            http_client,
+            "mc-bundle-target",
+            nodes=[
+                # Root: a different spec than the sub-model below, so `animal` is a genuine
+                # sub-model boundary (spec differs from inherited).
+                {"modelType": "image_classifier", "architecture": "mobilenet_v3_small"},
+                {"labelUuid": animal_uuid, "modelType": "object_detection", "architecture": "yolo_v9_c"},
+                # `cat` inherits animal's spec (not its own boundary) — becomes a class
+                # of animal's sub-model target.
+                {"labelUuid": cat_uuid, "modelType": "object_detection", "architecture": "yolo_v9_c"},
+            ],
+        )
+        sub_node = next(n for n in mc["nodes"] if n.get("labelUuid") == animal_uuid)
+
+        img = await _register_image(http_client, files_root, "bundle_cat.png")
+        await _add_bbox(http_client, img, cat_uuid, [VERIFIED_TAG_UUID], x=0.1, y=0.1, width=0.3, height=0.4)
+        await _set_image_label(http_client, img, cat_uuid, "present")
+
+        result = await self._get_bundle_target_dataset(http_client, mc["uuid"], sub_node["uuid"], [_WHOLE_DB_UUID])
+        assert result["status"] == "success"
+        assert result["classNames"] == ["cat-bundle"]
+        images = result["images"]
+        assert len(images) == 1
+        assert len(images[0]["annotations"]) == 1

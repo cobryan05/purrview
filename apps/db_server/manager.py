@@ -2328,6 +2328,10 @@ class Manager:
     async def derive_bundle_training_targets(self, model_config_uuid: str) -> Optional[list]:
         return await self._db_client.derive_bundle_training_targets(model_config_uuid)
 
+    async def get_bundle_target_detection_dataset(
+        self, model_config_uuid: str, node_uuid: str, dataset_uuids: list[str]
+    ) -> Optional[dict]:
+        return await self._db_client.get_bundle_target_detection_dataset(model_config_uuid, node_uuid, dataset_uuids)
 
     async def create_model_config(self, data: ModelConfigCreate) -> ModelConfigRead:
         await self._validate_model_config_nodes(data.nodes)

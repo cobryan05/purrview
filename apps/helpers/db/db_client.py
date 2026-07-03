@@ -3594,13 +3594,8 @@ class DbClient:
             for child_uuid in children:
                 child_to_parent[child_uuid] = parent_uuid
 
-        # class_names are fetched from the DB; we need the label names in order.
-        async with self._async_session_maker() as session:
-            result = await session.exec(select(Label).where(Label.uuid.in_(label_uuids)))
-            labels_by_uuid = {lbl.uuid: lbl for lbl in result.all()}
-
         # Build class list in label_uuids order (parents before rollup children).
-        # Rollup children are NOT separate classes; they map to their parent's index.
+        # Rollup children are NOT separate classes; they map to their parent's class.
         class_label_uuids: list[str] = []
         seen_class: set[str] = set()
         for lu in label_uuids:
@@ -3609,17 +3604,55 @@ class DbClient:
                 class_label_uuids.append(effective)
                 seen_class.add(effective)
 
+        return await self._assemble_detection_dataset(class_label_uuids, child_to_parent, tc.dataset_uuids)
+
+    async def get_bundle_target_detection_dataset(
+        self, model_config_uuid: str, node_uuid: str, dataset_uuids: list[str]
+    ) -> Optional[dict]:
+        """Assemble a YOLO-format detection dataset for one bundle training target.
+
+        Same output shape as ``get_training_config_detection_dataset``, but scoped by
+        ``derive_bundle_training_targets`` (the single authority on sub-model boundaries
+        and class remapping) rather than a TrainingConfig's own node lookup — so a
+        bundle run's object-detection sub-models get exactly the classes/remap shown
+        in the model tree preview, including the outermost-boundary top-model
+        collapsing that per-TrainingConfig detection datasets don't apply.
+
+        Returns None if the config doesn't exist or no target matches node_uuid.
+        """
+        targets = await self.derive_bundle_training_targets(model_config_uuid)
+        if targets is None:
+            return None
+        target = next((t for t in targets if t["node_uuid"] == node_uuid), None)
+        if target is None:
+            return None
+
+        return await self._assemble_detection_dataset(
+            target["label_uuids"], target["class_remap"], dataset_uuids
+        )
+
+    async def _assemble_detection_dataset(
+        self, class_label_uuids: list[str], remap: dict[str, str], dataset_uuids: list[str]
+    ) -> dict:
+        """Shared core: given an ordered class list + {in-scope label -> class label}
+        remap, assemble YOLO-format annotations from verified bboxes across a dataset
+        union. See ``get_training_config_detection_dataset`` for the output shape.
+        """
+        # class_names are fetched from the DB; we need the label names in order.
+        async with self._async_session_maker() as session:
+            result = await session.exec(select(Label).where(Label.uuid.in_(class_label_uuids)))
+            labels_by_uuid = {lbl.uuid: lbl for lbl in result.all()}
+
         label_uuid_to_class_idx: dict[str, int] = {lu: i for i, lu in enumerate(class_label_uuids)}
-        # Also map rollup children to their parent's class index.
-        for child_uuid, parent_uuid in child_to_parent.items():
+        # Also map remapped (e.g. rollup child) labels to their class's index.
+        for child_uuid, parent_uuid in remap.items():
             label_uuid_to_class_idx[child_uuid] = label_uuid_to_class_idx[parent_uuid]
 
         class_names = [labels_by_uuid[lu].name if lu in labels_by_uuid else lu for lu in class_label_uuids]
 
-        in_scope_label_uuids: set[str] = set(label_uuids) | set(child_to_parent.keys())
+        in_scope_label_uuids: set[str] = set(class_label_uuids) | set(remap.keys())
 
         # Collect eligible images: every in-scope label must have a verified PRESENT/ABSENT row.
-        dataset_uuids = tc.dataset_uuids
         n_labels = len(class_label_uuids)  # number of distinct classes to verify
 
         all_images = await self._enumerate_dataset_union_stubs(dataset_uuids)
