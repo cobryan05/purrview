@@ -57,9 +57,19 @@ def load_yolo_onnx(model_path: str) -> InferenceProvider:
     classes: list[str] = metadata.get("classes", None)
     yolo_version: int = metadata.get("yolo", 8)
     if yolo_version in (8, 9):
-        # YOLOv9 (from libreyolo) exports the same ONNX output format as YOLOv8:
-        # (1, 4+nc, num_preds) transposed to (1, num_preds, 4+nc) by the provider.
-        return YOLOv8ONNXInferenceProvider(model_path, classes)
+        # Both export (1, 4+nc, num_preds) transposed to (1, num_preds, 4+nc) by
+        # the provider — 4 box channels + nc class-score channels, no separate
+        # objectness channel. The two families differ in box encoding and
+        # whether scores are raw logits:
+        #   yolo 8 (ultralytics YOLOv8): boxes are cxcywh, scores are raw logits.
+        #   yolo 9 (libreyolo9):         boxes are already xyxy (canvas-pixel
+        #                                 space), scores are already sigmoid
+        #                                 activated inside the exported graph.
+        box_format = "cxcywh" if yolo_version == 8 else "xyxy"
+        scores_are_logits = yolo_version == 8
+        return YOLOv8ONNXInferenceProvider(
+            model_path, classes, box_format=box_format, scores_are_logits=scores_are_logits
+        )
     raise Exception(f"Unhandled YOLO version: {yolo_version}")
 
 
@@ -119,17 +129,25 @@ def postprocess(
     scale: float,
     pad: Tuple[int, int],
     original_shape: Tuple[int, int],
+    box_format: str = "cxcywh",
+    scores_are_logits: bool = True,
 ) -> np.ndarray:
     """
     Postprocess predictions: apply Non-Maximum Suppression (NMS), rescale boxes, and clip to image bounds.
 
     Args:
-        preds (np.ndarray): Model predictions of shape (1, num_preds, num_features).
+        preds (np.ndarray): Model predictions of shape (1, num_preds, num_features), where
+            num_features = 4 (box) + nc (class scores). There is no separate objectness channel —
+            every YOLOv8/v9-family export used here has already folded objectness into the
+            per-class scores (or never had one).
         conf_thresh (float): Confidence threshold for filtering detections.
         iou_thresh (float): IoU threshold for NMS.
         scale (float): Scaling factor used during preprocessing.
         pad (Tuple[int, int]): Padding added during preprocessing (dw, dh).
         original_shape (Tuple[int, int]): Original image dimensions (height, width).
+        box_format (str): "cxcywh" (needs conversion to corners) or "xyxy" (already corners).
+        scores_are_logits (bool): True if class scores are raw logits needing sigmoid();
+            False if the exported graph already applied sigmoid (e.g. libreyolo9).
 
     Returns:
         np.ndarray: Array of detections with shape (num_detections, 6) where each row contains
@@ -137,16 +155,14 @@ def postprocess(
     """
     # Extract predictions for the first batch
     preds = preds[0]  # shape: (num_preds, num_features)
-    if preds.shape[1] < 6:
-        raise ValueError("Prediction tensor must have at least 6 elements per box (x, y, w, h, obj, class_probs).")
+    if preds.shape[1] < 5:
+        raise ValueError("Prediction tensor must have at least 5 elements per box (x, y, w, h, class_scores...).")
 
-    # Split predictions into boxes, objectness scores, and class probabilities
-    boxes = preds[:, :4]  # [x, y, w, h]
-    objectness = sigmoid(preds[:, 4:5])  # Apply sigmoid to objectness scores
-    class_probs = sigmoid(preds[:, 5:])  # Apply sigmoid to class probabilities
+    # Split predictions into boxes and per-class scores (no objectness column).
+    boxes = preds[:, :4].copy()
+    scores = sigmoid(preds[:, 4:]) if scores_are_logits else preds[:, 4:]
 
     # Compute final scores and class IDs
-    scores = objectness * class_probs  # Element-wise multiplication
     class_ids = np.argmax(scores, axis=1)  # Get class with highest score
     confidences = scores[np.arange(len(scores)), class_ids]  # Confidence for the selected class
 
@@ -159,15 +175,23 @@ def postprocess(
     if len(boxes) == 0:
         return np.zeros((0, 6), dtype=np.float32)
 
-    # Convert boxes from [cx, cy, w, h] to [x1, y1, x2, y2]
-    boxes[:, 0] -= boxes[:, 2] / 2  # x1 = cx - w / 2
-    boxes[:, 1] -= boxes[:, 3] / 2  # y1 = cy - h / 2
-    boxes[:, 2] += boxes[:, 0]  # x2 = x1 + w
-    boxes[:, 3] += boxes[:, 1]  # y2 = y1 + h
+    if box_format == "cxcywh":
+        # Convert boxes from [cx, cy, w, h] to [x1, y1, x2, y2]
+        boxes[:, 0] -= boxes[:, 2] / 2  # x1 = cx - w / 2
+        boxes[:, 1] -= boxes[:, 3] / 2  # y1 = cy - h / 2
+        boxes[:, 2] += boxes[:, 0]  # x2 = x1 + w
+        boxes[:, 3] += boxes[:, 1]  # y2 = y1 + h
+    elif box_format != "xyxy":
+        raise ValueError(f"Unknown box_format: {box_format!r}. Expected 'cxcywh' or 'xyxy'.")
 
-    # Apply Non-Maximum Suppression (NMS)
+    # Apply Non-Maximum Suppression (NMS). cv2.dnn.NMSBoxes expects boxes as
+    # (x, y, w, h) rects, not (x1, y1, x2, y2) corners — convert here; `boxes`
+    # itself (used for the returned detections) stays in xyxy.
+    nms_boxes = boxes.copy()
+    nms_boxes[:, 2] -= nms_boxes[:, 0]  # width = x2 - x1
+    nms_boxes[:, 3] -= nms_boxes[:, 1]  # height = y2 - y1
     indices = cv2.dnn.NMSBoxes(
-        bboxes=boxes.tolist(),
+        bboxes=nms_boxes.tolist(),
         scores=confidences.tolist(),
         score_threshold=conf_thresh,
         nms_threshold=iou_thresh,

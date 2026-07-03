@@ -28,6 +28,8 @@ class YOLOv8ONNXInferenceProvider(InferenceProvider):
         class_names: Optional[List[str]] = None,
         conf_thresh: float = 0.251,
         iou_thresh: float = 0.45,
+        box_format: str = "cxcywh",
+        scores_are_logits: bool = True,
     ):
         self.session = ort.InferenceSession(model_path, providers=["CUDAExecutionProvider", "CPUExecutionProvider"])
         active_providers = self.session.get_providers()
@@ -52,6 +54,8 @@ class YOLOv8ONNXInferenceProvider(InferenceProvider):
         self.class_names = class_names
         self.conf_thresh = conf_thresh
         self.iou_thresh = iou_thresh
+        self.box_format = box_format
+        self.scores_are_logits = scores_are_logits
 
     async def processImage(self, image: np.ndarray, **kwargs) -> InferenceResult:
         original_shape = image.shape[:2]
@@ -85,6 +89,8 @@ class YOLOv8ONNXInferenceProvider(InferenceProvider):
             scale=scale,
             pad=pad,
             original_shape=original_shape,
+            box_format=self.box_format,
+            scores_are_logits=self.scores_are_logits,
         )
         t_post = time.perf_counter()  # PERF
         # PERF BEGIN
@@ -102,10 +108,8 @@ class YOLOv8ONNXInferenceProvider(InferenceProvider):
         for det in detections:
             x_min, y_min, x_max, y_max = map(float, det[:4])
             confidence = float(det[4])
-            # TODO: Why is class_id + 1? Is this a data error or a code error?
             class_id = int(det[5])
-            _name_idx = class_id + 1
-            class_name = self.class_names[_name_idx] if self.class_names and _name_idx < len(self.class_names) else None
+            class_name = self.class_names[class_id] if self.class_names and class_id < len(self.class_names) else None
 
             # Convert absolute xyxy to relative x1y1wh for BBox
             rel_bbox = BBox.fromX1Y1X2Y2(x_min, y_min, x_max, y_max, imgW, imgH)
