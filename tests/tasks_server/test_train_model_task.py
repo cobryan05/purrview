@@ -343,15 +343,15 @@ class TestRun:
             patch("apps.tasks_server.tasks.TrainModelTask.training_client", mock_tc),
             patch("apps.tasks_server.tasks.TrainModelTask.db_client"),
             patch(
-                "apps.tasks_server.tasks.TrainModelTask.TrainingApi",
+                "apps.tasks_server.tasks._training_job_runner.TrainingApi",
                 return_value=mock_training_api,
             ),
             patch(
-                "apps.tasks_server.tasks.TrainModelTask.httpx.AsyncClient",
+                "apps.tasks_server.tasks._training_job_runner.httpx.AsyncClient",
                 return_value=mock_http_ctx,
             ),
-            patch("apps.tasks_server.tasks.TrainModelTask.SubmitJobPayload"),
-            patch("apps.tasks_server.tasks.TrainModelTask.ManifestEntry"),
+            patch("apps.tasks_server.tasks._training_job_runner.SubmitJobPayload"),
+            patch("apps.tasks_server.tasks._training_job_runner.ManifestEntry"),
             patch.object(TrainModelTask, "_save_artifact", new=AsyncMock()),
         ):
             mock_cfg.__getitem__ = MagicMock(return_value=MagicMock(host="h", port=8005))
@@ -467,15 +467,15 @@ class TestRun:
             patch("apps.tasks_server.tasks.TrainModelTask.training_client", mock_tc),
             patch("apps.tasks_server.tasks.TrainModelTask.db_client"),
             patch(
-                "apps.tasks_server.tasks.TrainModelTask.TrainingApi",
+                "apps.tasks_server.tasks._training_job_runner.TrainingApi",
                 return_value=mock_training_api,
             ),
             patch(
-                "apps.tasks_server.tasks.TrainModelTask.httpx.AsyncClient",
+                "apps.tasks_server.tasks._training_job_runner.httpx.AsyncClient",
                 return_value=mock_http_ctx,
             ),
-            patch("apps.tasks_server.tasks.TrainModelTask.SubmitJobPayload"),
-            patch("apps.tasks_server.tasks.TrainModelTask.ManifestEntry"),
+            patch("apps.tasks_server.tasks._training_job_runner.SubmitJobPayload"),
+            patch("apps.tasks_server.tasks._training_job_runner.ManifestEntry"),
             patch.object(TrainModelTask, "_save_artifact", new=AsyncMock()),
         ):
             mock_cfg.__getitem__ = MagicMock(return_value=MagicMock(host="h", port=8005))
@@ -530,11 +530,11 @@ class TestRun:
             patch("apps.tasks_server.tasks.TrainModelTask.training_client", mock_tc),
             patch("apps.tasks_server.tasks.TrainModelTask.db_client"),
             patch(
-                "apps.tasks_server.tasks.TrainModelTask.TrainingApi",
+                "apps.tasks_server.tasks._training_job_runner.TrainingApi",
                 return_value=mock_training_api,
             ),
             patch(
-                "apps.tasks_server.tasks.TrainModelTask.httpx.AsyncClient",
+                "apps.tasks_server.tasks._training_job_runner.httpx.AsyncClient",
                 return_value=mock_http_ctx,
             ),
             patch.object(TrainModelTask, "_save_artifact", new=AsyncMock()),
@@ -583,8 +583,8 @@ class TestSaveArtifact:
         mock_http_ctx.__aexit__ = AsyncMock(return_value=False)
 
         with (
-            patch("apps.tasks_server.tasks.TrainModelTask.httpx.AsyncClient", return_value=mock_http_ctx),
-            patch("apps.tasks_server.tasks.TrainModelTask._MODELS_DIR", models_dir),
+            patch("apps.tasks_server.tasks._training_job_runner.httpx.AsyncClient", return_value=mock_http_ctx),
+            patch("apps.tasks_server.tasks._training_job_runner._MODELS_DIR", models_dir),
         ):
             await task._save_artifact("job-1")
 
