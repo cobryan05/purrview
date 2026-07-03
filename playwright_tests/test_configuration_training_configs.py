@@ -317,6 +317,94 @@ class TestCreateTrainingConfig:
 
 
 # ---------------------------------------------------------------------------
+# 2b. Training settings (hyperparams) fieldset
+# ---------------------------------------------------------------------------
+
+
+class TestTrainingSettingsFieldset:
+    def test_fields_prefilled_from_existing_hyperparams(self, page: Page, base_url: str):
+        """Opening an existing config with hyperparamsJson set pre-fills the
+        batch size / image size / max epochs / patience inputs."""
+        tc_with_hyperparams = {
+            **EXISTING_TC,
+            "hyperparamsJson": {"batch_size": 4, "imgsz": 512, "max_epochs": 30, "early_stopping_patience": 15},
+        }
+        _mock_datasets(page, [DATASET_ALPHA])
+        _mock_model_configs(page, [MODEL_CFG])
+        _mock_training_configs_list(page, [tc_with_hyperparams])
+        _mock_training_config_get(page, tc_with_hyperparams)
+        _mock_readiness(page, "tc-1")
+        _mock_label_stats(page, "tc-1")
+
+        _navigate_to_training_configs(page, base_url)
+        _list_item(page, "tc-1").click()
+        page.wait_for_timeout(400)
+
+        body = _editor_body(page)
+        expect(body.locator("input[type='number']").nth(0)).to_have_value("4")
+        expect(body.locator("input[type='number']").nth(1)).to_have_value("512")
+        expect(body.locator("input[type='number']").nth(2)).to_have_value("30")
+        expect(body.locator("input[type='number']").nth(3)).to_have_value("15")
+
+    def test_save_sends_batch_size_and_both_patience_keys(self, page: Page, base_url: str):
+        """Filling in the training-settings fields and saving sends batch_size/
+        imgsz/max_epochs plus BOTH early_stopping_patience and patience (the
+        object-detection trainer reads `patience`, classifiers read
+        `early_stopping_patience`) inside hyperparamsJson."""
+        _mock_datasets(page, [DATASET_ALPHA])
+        _mock_model_configs(page, [MODEL_CFG])
+        _mock_training_configs_list(page, [])
+
+        captured = []
+
+        def handle_create(route: Route):
+            captured.append(json.loads(route.request.post_data))
+            route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps({"status": "success", "config": {
+                    **EXISTING_TC, "uuid": "tc-new", "name": "My Run",
+                }}),
+            )
+
+        page.route("**/api/training-configs",
+                   lambda r: handle_create(r) if r.request.method == "POST" else r.fallback())
+
+        _navigate_to_training_configs(page, base_url)
+
+        name_input = _editor_body(page).locator("input[placeholder='Required']").first
+        name_input.fill("My Run")
+
+        config_sel = _editor_body(page).locator("select").first
+        config_sel.select_option("mc-1")
+        page.wait_for_timeout(200)
+        node_sel = _editor_body(page).locator("select").nth(1)
+        node_sel.select_option("node-root")
+
+        number_inputs = _editor_body(page).locator("input[type='number']")
+        number_inputs.nth(0).fill("4")
+        number_inputs.nth(1).fill("512")
+        number_inputs.nth(2).fill("30")
+        number_inputs.nth(3).fill("15")
+
+        dataset_cb = _box(page).locator("input[type='checkbox'][value='ds-alpha']")
+        dataset_cb.check()
+
+        _editor_bar(page).locator("button", has_text="Create").or_(
+            _editor_bar(page).locator("button", has_text="Save")
+        ).click()
+        page.wait_for_timeout(800)
+
+        assert len(captured) == 1, f"Expected 1 POST, got {len(captured)}"
+        hyperparams = captured[0].get("hyperparamsJson", {})
+        assert hyperparams.get("batch_size") == 4
+        assert hyperparams.get("imgsz") == 512
+        assert hyperparams.get("max_epochs") == 30
+        assert hyperparams.get("early_stopping_patience") == 15
+        assert hyperparams.get("patience") == 15
+
+
+# ---------------------------------------------------------------------------
 # 3. Readiness panel
 # ---------------------------------------------------------------------------
 

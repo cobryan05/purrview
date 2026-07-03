@@ -186,6 +186,55 @@ function renderTrainingConfigForm({ config, datasetsMap, modelConfigsMap, labels
   }
   refreshTreePreview();
 
+  // ── Training settings ────────────────────────────────────────────────────
+  const hrSettings = document.createElement('hr');
+  hrSettings.style.cssText = 'margin: 0.6em 0; opacity: 0.4;';
+  el.appendChild(hrSettings);
+
+  const settingsHdr = document.createElement('p');
+  settingsHdr.className = 'panel-section-label';
+  settingsHdr.style.marginTop = '0';
+  settingsHdr.textContent = 'Training settings';
+  el.appendChild(settingsHdr);
+
+  const existingHyperparams = config?.hyperparamsJson ?? {};
+
+  function _makeSettingInput({ placeholder, initial, min = 1, title }) {
+    const input = document.createElement('input');
+    input.type = 'number';
+    input.min = String(min);
+    input.step = '1';
+    input.placeholder = placeholder;
+    input.value = initial != null ? String(initial) : '';
+    if (title) input.title = title;
+    input.addEventListener('input', _markDirty);
+    return input;
+  }
+
+  const batchSizeInput = _makeSettingInput({
+    placeholder: 'default 16–32', initial: existingHyperparams.batch_size,
+    title: 'Lower this first if you hit a GPU out-of-memory error.',
+  });
+  el.appendChild(makeFieldRow('Batch size', batchSizeInput));
+
+  const imgszInput = _makeSettingInput({
+    placeholder: 'default 640', initial: existingHyperparams.imgsz,
+    title: 'Input image size (object detection only). Lower values use less VRAM.',
+  });
+  el.appendChild(makeFieldRow('Image size', imgszInput));
+
+  const maxEpochsInput = _makeSettingInput({
+    placeholder: 'default 50', initial: existingHyperparams.max_epochs,
+  });
+  el.appendChild(makeFieldRow('Max epochs', maxEpochsInput));
+
+  const patienceInput = _makeSettingInput({
+    placeholder: 'default 10–20',
+    initial: existingHyperparams.early_stopping_patience ?? existingHyperparams.patience,
+    title: 'Stop early after this many epochs without improvement.',
+  });
+  el.appendChild(makeFieldRow('Early stopping patience', patienceInput));
+
   // ── Datasets ──────────────────────────────────────────────────────────────
   const hr2 = document.createElement('hr');
   hr2.style.cssText = 'margin: 0.6em 0; opacity: 0.4;';
@@ -225,6 +274,24 @@ function renderTrainingConfigForm({ config, datasetsMap, modelConfigsMap, labels
   datasetRow.style.alignItems = 'flex-start';
   el.appendChild(datasetRow);
 
+  function _buildHyperparamsJson() {
+    const hyperparamsJson = {};
+    const batchSize = parseInt(batchSizeInput.value, 10);
+    if (!isNaN(batchSize)) hyperparamsJson.batch_size = batchSize;
+    const imgsz = parseInt(imgszInput.value, 10);
+    if (!isNaN(imgsz)) hyperparamsJson.imgsz = imgsz;
+    const maxEpochs = parseInt(maxEpochsInput.value, 10);
+    if (!isNaN(maxEpochs)) hyperparamsJson.max_epochs = maxEpochs;
+    const patience = parseInt(patienceInput.value, 10);
+    if (!isNaN(patience)) {
+      // Classifier trainers read `early_stopping_patience`; the object-detection
+      // trainer reads `patience` — set both so the one dropdown works for either.
+      hyperparamsJson.early_stopping_patience = patience;
+      hyperparamsJson.patience = patience;
+    }
+    return hyperparamsJson;
+  }
+
   return {
     el,
     getSaveData() {
@@ -236,7 +303,7 @@ function renderTrainingConfigForm({ config, datasetsMap, modelConfigsMap, labels
         description: descInput.value.trim(),
         modelConfigNodeUuid: nodeSel.value || null,
         datasetUuids,
-        hyperparamsJson: {},
+        hyperparamsJson: _buildHyperparamsJson(),
       };
     },
     destroy() {},
