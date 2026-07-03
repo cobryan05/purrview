@@ -2384,6 +2384,91 @@ main.container {
   padding-bottom: 2.5em;
 }
 
+/* ===== Model tree summary panel ===== */
+.model-tree-panel {
+  font-size: 0.85em;
+  border: 1px solid var(--pico-muted-border-color, #333);
+  border-radius: 6px;
+  padding: 0.5em 0.65em;
+  display: flex;
+  flex-direction: column;
+  gap: 0.45em;
+}
+
+.model-tree-panel--compact { font-size: 0.8em; }
+
+.mtp-node--sub {
+  margin-left: 1.1em;
+  padding-left: 0.65em;
+  border-left: 2px solid var(--pico-muted-border-color, #444);
+}
+
+.mtp-node--target {
+  border-radius: 4px;
+  outline: 1px solid var(--pico-primary, #ff6b6b);
+  outline-offset: 2px;
+}
+
+.mtp-node__title {
+  display: flex;
+  align-items: center;
+  gap: 0.35em;
+  font-weight: 600;
+}
+
+.mtp-detail {
+  margin-top: 0.15em;
+  color: var(--pico-muted-color, #999);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.3em;
+}
+
+.mtp-detail--warn { color: var(--pico-del-color, #d4a72c); }
+
+.mtp-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3em;
+  border: 1px solid var(--pico-muted-border-color, #444);
+  border-radius: 10px;
+  padding: 0 0.5em;
+  line-height: 1.5;
+  white-space: nowrap;
+}
+
+.mtp-chip__swatch {
+  width: 0.6em;
+  height: 0.6em;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.mtp-empty,
+.mtp-footer {
+  color: var(--pico-muted-color, #888);
+  font-size: 0.92em;
+}
+
+.mtp-footer {
+  border-top: 1px dashed var(--pico-muted-border-color, #333);
+  padding-top: 0.4em;
+}
+
+.mtp-box--preview { margin: 0.4em 0 0.2em; }
+
+.mtp-bundles { font-size: 0.85em; color: var(--pico-muted-color, #999); }
+
+.mtp-bundle-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 1em;
+  padding: 2px 4px;
+}
+
+.mtp-bundle-row__name { color: var(--pico-color, #ddd); }
+
 /* ===== Active Training Config Bar additions ===== */
 
 .active-model-bar__filter-badge {

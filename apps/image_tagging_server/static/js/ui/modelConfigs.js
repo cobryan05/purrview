@@ -9,68 +9,12 @@ import {
 import { showUnsavedConfigChangesModal } from '/app-static/js/ui/utils/confirmModal.js';
 import { toast, makeFieldRow, buildPanelEditorBar } from '/app-static/js/ui/utils/index.js';
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
+import { MODEL_SPEC, scopeForModelType, parseNodes, computeNodes } from '/app-static/js/ui/modelSpec.js';
+import { renderModelTreePanel } from '/app-static/js/ui/modelTreePanel.js';
+import { fetchModelBundlesForConfig } from '/app-static/js/shared/api/modelBundles.js';
 
 let _rendering = false;
 let _navGuardController = null; // AbortController for the tab-navigation guard
-
-// -------------------------------------------------------
-// Node ↔ UI state conversion
-// -------------------------------------------------------
-
-/**
- * Walk up the label tree to find the nearest ancestor with a submodel.
- * Falls back to rootTypename.
- */
-
-// -------------------------------------------------------
-// Model type / architecture catalogue (authoritative source for the UI)
-// -------------------------------------------------------
-
-/**
- * Returns the label scope that a given model type operates on.
- * image_classifier works on whole-image labels; everything else uses object/bbox labels.
- * @param {string} modelType
- * @returns {'image' | 'object'}
- */
-function scopeForModelType(modelType) {
-  return modelType === 'image_classifier' ? 'image' : 'object';
-}
-
-const MODEL_SPEC = {
-  object_detection: {
-    label: 'Object Detection',
-    architectures: {
-      yolo_v9_t: 'YOLOv9-t  (~2M params, ~8 MB)',
-      yolo_v9_s: 'YOLOv9-s  (~7M params, ~26 MB)',
-      yolo_v9_m: 'YOLOv9-m  (~20M params, ~76 MB)',
-      yolo_v9_c: 'YOLOv9-c  (~25M params, ~102 MB)',
-    },
-  },
-  crop_classifier: {
-    label: 'Crop Classifier',
-    architectures: {
-      efficientnet_b0: 'EfficientNet-B0',
-      efficientnet_b2: 'EfficientNet-B2',
-      efficientnet_b4: 'EfficientNet-B4',
-      mobilenet_v3_small: 'MobileNetV3-small',
-      mobilenet_v3_large: 'MobileNetV3-large',
-      resnet_18: 'ResNet-18',
-      resnet_50: 'ResNet-50',
-    },
-  },
-  image_classifier: {
-    label: 'Image Classifier',
-    architectures: {
-      efficientnet_b0: 'EfficientNet-B0',
-      efficientnet_b2: 'EfficientNet-B2',
-      efficientnet_b4: 'EfficientNet-B4',
-      mobilenet_v3_small: 'MobileNetV3-small',
-      mobilenet_v3_large: 'MobileNetV3-large',
-      resnet_18: 'ResNet-18',
-      resnet_50: 'ResNet-50',
-    },
-  },
-};
 
 /** Returns a pair of linked <select> elements for choosing model type + architecture.
  *  When the type changes the architecture list repopulates automatically.
@@ -126,77 +70,6 @@ function makeModelSpecSelectors(initialSpec, onChange) {
   };
 }
 
-function inheritedModelSpec(uuid, labelsMap, submodels, rootSpec) {
-  let p = labelsMap.get(uuid)?.parentUuid ?? null;
-  while (p !== null) {
-    if (submodels.has(p)) return submodels.get(p);
-    p = labelsMap.get(p)?.parentUuid ?? null;
-  }
-  return rootSpec;
-}
-
-/**
- * Parse a flat nodes array from the API into form UI state.
- * Processes ancestors first so inheritance is resolved correctly.
- *
- * @returns {{ rootTypename: string, selected: Set<string>, submodels: Map<string,string> }}
- */
-function parseNodes(nodes, labelsMap) {
-  const defaultType = Object.keys(MODEL_SPEC)[0];
-  const defaultArch = Object.keys(MODEL_SPEC[defaultType].architectures)[0];
-  const defaultSpec = { modelType: defaultType, architecture: defaultArch };
-
-  let rootSpec = null;
-  const nonRoot = [];
-
-  for (const n of (nodes ?? [])) {
-    if (n.labelUuid === null) {
-      rootSpec = { modelType: n.modelType, architecture: n.architecture };
-    } else {
-      nonRoot.push(n);
-    }
-  }
-  rootSpec = rootSpec ?? defaultSpec;
-
-  const depthOf = (uuid) => {
-    let d = 0, p = labelsMap.get(uuid)?.parentUuid ?? null;
-    while (p) { d++; p = labelsMap.get(p)?.parentUuid ?? null; }
-    return d;
-  };
-  nonRoot.sort((a, b) => depthOf(a.labelUuid) - depthOf(b.labelUuid));
-
-  const submodels = new Map();
-  const selected = new Set();
-  const rollUpUnchecked = new Set();
-
-  for (const { labelUuid, modelType, architecture, rollUpUnchecked: rup } of nonRoot) {
-    selected.add(labelUuid);
-    if (rup) rollUpUnchecked.add(labelUuid);
-    const inh = inheritedModelSpec(labelUuid, labelsMap, submodels, rootSpec);
-    if (modelType !== inh.modelType || architecture !== inh.architecture) {
-      submodels.set(labelUuid, { modelType, architecture });
-    }
-  }
-
-  return { rootSpec, selected, submodels, rollUpUnchecked };
-}
-
-/**
- * Build the nodes array to send to the API.
- * Union of selected labels and submodel-boundary labels.
- */
-function computeNodes(selected, submodels, rollUpUnchecked, rootSpec, labelsMap) {
-  const nodes = [{ labelUuid: null, ...rootSpec }];
-  const allUuids = new Set([...selected, ...submodels.keys()]);
-  for (const uuid of allUuids) {
-    const spec = submodels.has(uuid)
-      ? submodels.get(uuid)
-      : inheritedModelSpec(uuid, labelsMap, submodels, rootSpec);
-    nodes.push({ labelUuid: uuid, ...spec, rollUpUnchecked: rollUpUnchecked.has(uuid) });
-  }
-  return nodes;
-}
-
 // -------------------------------------------------------
 // Submodel panels
 // -------------------------------------------------------
@@ -241,7 +114,7 @@ function renderSubmodelPanels(container, submodels, labelsMap, onSpecChange) {
 function renderConfigForm({ config, labelsMap, onDirtyChange }) {
   const el = document.createElement('div');
 
-  function _markDirty() { onDirtyChange?.(true); }
+  function _markDirty() { onDirtyChange?.(true); refreshTreeSummary(); }
 
   // Name
   const nameInput = document.createElement('input');
@@ -307,6 +180,7 @@ function renderConfigForm({ config, labelsMap, onDirtyChange }) {
     });
     treeHandle = handle;
     refreshPanels(new Map(initialSubmodels));
+    refreshTreeSummary();
   }
 
   const rootSpecHandle = makeModelSpecSelectors(initRootSpec, (newSpec) => {
@@ -335,6 +209,72 @@ function renderConfigForm({ config, labelsMap, onDirtyChange }) {
 
   el.appendChild(treeBox);
   el.appendChild(submodelsContainer);
+
+  // ── Live model-tree summary ───────────────────────────────────────────────
+  // Visualises the sub-model hierarchy this form will save (NOTES.md contract).
+  const treeSummaryHdr = document.createElement('p');
+  treeSummaryHdr.className = 'panel-section-label';
+  treeSummaryHdr.textContent = 'Model tree';
+  el.appendChild(treeSummaryHdr);
+  const treeSummaryBox = document.createElement('div');
+  treeSummaryBox.className = 'mtp-box';
+  el.appendChild(treeSummaryBox);
+
+  let _treeRefreshQueued = false;
+  function refreshTreeSummary() {
+    if (_treeRefreshQueued) return; // coalesce bursts (e.g. submodel change → markDirty)
+    _treeRefreshQueued = true;
+    queueMicrotask(() => {
+      _treeRefreshQueued = false;
+      const nodes = computeNodes(
+        treeHandle?.getSelected() ?? new Set(),
+        currentSubmodels,
+        currentRollUpUnchecked,
+        rootSpecHandle.getSpec(),
+        labelsMap,
+      );
+      treeSummaryBox.replaceChildren(renderModelTreePanel({ nodes, labelsMap }));
+    });
+  }
+
+  // ── Trained bundles (saved configs only) ──────────────────────────────────
+  if (config) {
+    const bundlesHdr = document.createElement('p');
+    bundlesHdr.className = 'panel-section-label';
+    bundlesHdr.textContent = 'Trained bundles';
+    el.appendChild(bundlesHdr);
+    const bundlesBox = document.createElement('div');
+    bundlesBox.className = 'mtp-bundles';
+    bundlesBox.textContent = 'Loading…';
+    el.appendChild(bundlesBox);
+    fetchModelBundlesForConfig(config.uuid).then((bundles) => {
+      bundlesBox.innerHTML = '';
+      if (bundles.length === 0) {
+        bundlesBox.textContent = 'No bundles trained from this configuration yet.';
+        return;
+      }
+      for (const b of bundles) {
+        const row = document.createElement('div');
+        row.className = 'mtp-bundle-row';
+        const name = document.createElement('span');
+        name.className = 'mtp-bundle-row__name';
+        name.textContent = b.name;
+        name.title = b.description || b.bundlePath || '';
+        row.appendChild(name);
+        const meta = document.createElement('span');
+        meta.className = 'mtp-bundle-row__meta';
+        const parts = [];
+        if (b.createdAt) parts.push(new Date(b.createdAt).toLocaleDateString());
+        const artifacts = b.manifestJson?.artifacts;
+        if (Array.isArray(artifacts)) parts.push(`${artifacts.length} artifact${artifacts.length === 1 ? '' : 's'}`);
+        meta.textContent = parts.join(' · ');
+        row.appendChild(meta);
+        bundlesBox.appendChild(row);
+      }
+    }).catch((err) => {
+      bundlesBox.textContent = `Failed to load bundles: ${err.message}`;
+    });
+  }
 
   // Kick off the initial tree build (async, but non-blocking for the rest of the form).
   buildLabelTree(currentScope, initSelected, initSubmodels, initRollUpUnchecked);

@@ -586,3 +586,86 @@ class TestLabelStatsPanelBboxColumns:
 
         # Close modal
         page.locator("button[title='Close']").click()
+
+
+# ---------------------------------------------------------------------------
+# 6. Compact model-tree preview under the node selector
+# ---------------------------------------------------------------------------
+
+PREVIEW_CAT = {"uuid": "lbl-cat", "name": "Cat", "color": "#f00", "parentUuid": None, "scope": "object"}
+PREVIEW_KITTEN = {"uuid": "lbl-kitten", "name": "Kitten", "color": "#f88", "parentUuid": "lbl-cat", "scope": "object"}
+
+MODEL_CFG_WITH_SUB = {
+    "uuid": "mc-2",
+    "name": "Hier Model",
+    "description": "",
+    "nodes": [
+        {"uuid": "n-root", "labelUuid": None, "modelType": "object_detection", "architecture": "yolo_v9_s"},
+        {"uuid": "n-cat", "labelUuid": "lbl-cat", "modelType": "crop_classifier", "architecture": "resnet_18"},
+        {"uuid": "n-kitten", "labelUuid": "lbl-kitten", "modelType": "crop_classifier", "architecture": "resnet_18"},
+    ],
+}
+
+
+def _preview(page: Page):
+    return _box(page).locator(".mtp-box--preview .model-tree-panel")
+
+
+class TestModelTreePreview:
+    def test_preview_renders_compact_tree_for_chosen_config(self, page: Page, base_url: str):
+        """Choosing a model config renders a compact tree preview: top model with class
+        count and the cat sub-model with its child-label count."""
+        _mock_datasets(page, [])
+        _mock_model_configs(page, [MODEL_CFG_WITH_SUB])
+        _mock_training_configs_list(page, [])
+        _mock_labels(page, [PREVIEW_CAT, PREVIEW_KITTEN])
+
+        _navigate_to_training_configs(page, base_url)
+
+        config_sel = _editor_body(page).locator("select").first
+        config_sel.select_option("mc-2")
+        page.wait_for_timeout(300)
+
+        preview = _preview(page)
+        expect(preview).to_be_visible()
+        expect(preview.locator(".mtp-node--root")).to_contain_text("Top model")
+        # Compact mode shows counts, not chips: kitten rolls up into cat → 1 class
+        expect(preview.locator(".mtp-node--root")).to_contain_text("detects: 1 class")
+        sub_row = preview.locator(".mtp-node--sub")
+        expect(sub_row).to_have_count(1)
+        expect(sub_row).to_contain_text("Cat")
+        expect(sub_row).to_contain_text("distinguishes: 1 child label")
+
+    def test_preview_marks_selected_node_as_training_target(self, page: Page, base_url: str):
+        """Selecting the cat node in the node selector highlights it in the preview."""
+        _mock_datasets(page, [])
+        _mock_model_configs(page, [MODEL_CFG_WITH_SUB])
+        _mock_training_configs_list(page, [])
+        _mock_labels(page, [PREVIEW_CAT, PREVIEW_KITTEN])
+
+        _navigate_to_training_configs(page, base_url)
+
+        config_sel = _editor_body(page).locator("select").first
+        config_sel.select_option("mc-2")
+        page.wait_for_timeout(300)
+
+        node_sel = _editor_body(page).locator("select").nth(1)
+        node_sel.select_option("n-cat")
+        page.wait_for_timeout(300)
+
+        target = _preview(page).locator(".mtp-node--target")
+        expect(target).to_have_count(1)
+        expect(target).to_contain_text("Cat")
+        expect(target).to_contain_text("training target")
+
+    def test_preview_absent_until_config_chosen(self, page: Page, base_url: str):
+        """With no model config selected the preview box stays empty."""
+        _mock_datasets(page, [])
+        _mock_model_configs(page, [MODEL_CFG_WITH_SUB])
+        _mock_training_configs_list(page, [])
+        _mock_labels(page, [PREVIEW_CAT, PREVIEW_KITTEN])
+
+        _navigate_to_training_configs(page, base_url)
+        _editor_body(page).wait_for(timeout=4000)
+
+        expect(_preview(page)).to_have_count(0)

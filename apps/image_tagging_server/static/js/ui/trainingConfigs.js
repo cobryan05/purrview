@@ -39,6 +39,7 @@ import { activeTrainingConfig } from '/app-static/js/shared/activeTrainingConfig
 import { ActiveTaskField } from '/app-static/js/ui/utils/fields/ActiveTaskField.js';
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
 import { showUnsavedConfigChangesModal } from '/app-static/js/ui/utils/confirmModal.js';
+import { renderModelTreePanel } from '/app-static/js/ui/modelTreePanel.js';
 
 let _rendering = false;
 let _navGuardController = null;
@@ -116,7 +117,7 @@ function renderTrainingConfigForm({ config, datasetsMap, modelConfigsMap, labels
     if (uuid === initConfigUuid) o.selected = true;
     configSel.appendChild(o);
   }
-  configSel.addEventListener('change', () => { refreshNodeSel(); _markDirty(); });
+  configSel.addEventListener('change', () => { refreshNodeSel(); refreshTreePreview(); _markDirty(); });
   el.appendChild(makeFieldRow('Model config', configSel));
   if (modelConfigsMap.size === 0) {
     el.appendChild(makeNavHint(
@@ -156,7 +157,7 @@ function renderTrainingConfigForm({ config, datasetsMap, modelConfigsMap, labels
   }
 
   refreshNodeSel();
-  nodeSel.addEventListener('change', _markDirty);
+  nodeSel.addEventListener('change', () => { _markDirty(); refreshTreePreview(); });
   const nodeRow = makeFieldRow('Model node', nodeSel);
   const nodeHelp = document.createElement('span');
   nodeHelp.textContent = ' (?)';
@@ -166,6 +167,24 @@ function renderTrainingConfigForm({ config, datasetsMap, modelConfigsMap, labels
   nodeHelp.style.cssText = 'cursor: help; opacity: 0.55; font-size: 0.85em;';
   nodeRow.querySelector('label').appendChild(nodeHelp);
   el.appendChild(nodeRow);
+
+  // Compact preview of the chosen config's model tree, marking the target node.
+  const treePreviewBox = document.createElement('div');
+  treePreviewBox.className = 'mtp-box mtp-box--preview';
+  el.appendChild(treePreviewBox);
+
+  function refreshTreePreview() {
+    treePreviewBox.innerHTML = '';
+    const mc = modelConfigsMap.get(configSel.value);
+    if (!mc?.nodes?.length) return;
+    treePreviewBox.appendChild(renderModelTreePanel({
+      nodes: mc.nodes,
+      labelsMap,
+      compact: true,
+      highlightNodeUuid: nodeSel.value || null,
+    }));
+  }
+  refreshTreePreview();
 
   // ── Datasets ──────────────────────────────────────────────────────────────
   const hr2 = document.createElement('hr');

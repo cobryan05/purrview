@@ -428,3 +428,131 @@ class TestDeleteModelConfig:
         page.wait_for_timeout(500)
 
         assert not calls, "API must NOT be called when delete is cancelled"
+
+
+# ---------------------------------------------------------------------------
+# 6. Model tree summary panel + trained bundles
+# ---------------------------------------------------------------------------
+
+BUNDLE_FOR_CFG1 = {
+    "uuid": "b-1",
+    "name": "animals-v1",
+    "description": "first full run",
+    "modelConfigUuid": "cfg-1",
+    "bundlePath": "/models/bundles/animals-v1",
+    "manifestJson": {"artifacts": [{"role": "top"}, {"role": "sub"}, {"role": "sub"}]},
+    "trainingConfigUuids": [],
+    "createdAt": "2026-06-01T12:00:00",
+}
+BUNDLE_FOR_OTHER = {**BUNDLE_FOR_CFG1, "uuid": "b-2", "name": "other-v1", "modelConfigUuid": "cfg-other"}
+
+
+def _mock_model_bundles(page: Page, bundles: list | None = None):
+    page.route(
+        lambda url: url.split("?")[0].endswith("/api/model-bundles"),
+        lambda route: route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps({"status": "success", "bundles": bundles or []}),
+        )
+        if route.request.method == "GET"
+        else route.fallback(),
+    )
+
+
+def _tree_panel(page: Page):
+    return page.locator("#model-config-box .model-tree-panel")
+
+
+class TestModelTreePanel:
+    def test_create_form_shows_empty_state(self, page: Page, base_url: str):
+        """With no labels assigned yet, the tree panel shows its empty-state hint."""
+        _mock_model_configs(page, [])
+        _mock_labels(page, [LABEL_CAT, LABEL_KITTEN, LABEL_DOG])
+
+        _navigate_to_model_configs(page, base_url)
+
+        expect(page.locator("#model-config-box .panel-section-label", has_text="Model tree")).to_be_visible()
+        expect(_tree_panel(page)).to_contain_text("No labels assigned yet")
+        # Bundles section only exists for saved configs
+        expect(page.locator("#model-config-box .panel-section-label", has_text="Trained bundles")).to_have_count(0)
+
+    def test_saved_config_shows_top_model_submodel_and_warning(self, page: Page, base_url: str):
+        """Opening cfg-1 (cat sub-model, kitten NOT assigned) renders the top model row,
+        the cat sub-model row, and a nothing-to-distinguish warning."""
+        _mock_model_configs(page, [EXISTING_CONFIG])
+        _mock_labels(page, [LABEL_CAT, LABEL_KITTEN, LABEL_DOG])
+        _mock_model_bundles(page, [])
+
+        _navigate_to_model_configs(page, base_url)
+        page.locator("#model-config-box [data-config-uuid='cfg-1']").click()
+        page.wait_for_timeout(500)
+
+        panel = _tree_panel(page)
+        expect(panel).to_be_visible()
+        root_row = panel.locator(".mtp-node--root")
+        expect(root_row).to_contain_text("Top model")
+        expect(root_row).to_contain_text("Object Detection")
+        expect(root_row).to_contain_text("YOLOv9-c")
+        expect(root_row).to_contain_text("Cat")  # cat is a top-model class
+
+        sub_row = panel.locator(".mtp-node--sub")
+        expect(sub_row).to_have_count(1)
+        expect(sub_row).to_contain_text("Cat")
+        expect(sub_row).to_contain_text("Crop Classifier")
+        # Kitten isn't assigned, so the sub-model has nothing to distinguish
+        expect(sub_row.locator(".mtp-detail--warn")).to_contain_text("nothing to distinguish")
+
+        # One run = top model + 1 sub-model
+        expect(panel.locator(".mtp-footer")).to_contain_text("2 model artifacts")
+
+    def test_tree_updates_live_when_child_label_checked(self, page: Page, base_url: str):
+        """Checking Kitten in the label tree immediately replaces the sub-model warning
+        with a 'distinguishes: Kitten' row — no save required."""
+        _mock_model_configs(page, [EXISTING_CONFIG])
+        _mock_labels(page, [LABEL_CAT, LABEL_KITTEN, LABEL_DOG])
+        _mock_model_bundles(page, [])
+
+        _navigate_to_model_configs(page, base_url)
+        page.locator("#model-config-box [data-config-uuid='cfg-1']").click()
+        page.wait_for_timeout(500)
+
+        sub_row = _tree_panel(page).locator(".mtp-node--sub")
+        expect(sub_row.locator(".mtp-detail--warn")).to_be_visible()
+
+        _label_row(page, "lbl-kitten").locator("input[type=checkbox]").first.click()
+        page.wait_for_timeout(300)
+
+        sub_row = _tree_panel(page).locator(".mtp-node--sub")
+        expect(sub_row.locator(".mtp-detail--warn")).to_have_count(0)
+        expect(sub_row).to_contain_text("distinguishes:")
+        expect(sub_row).to_contain_text("Kitten")
+
+    def test_bundles_section_lists_only_this_configs_bundles(self, page: Page, base_url: str):
+        """The Trained bundles section shows bundles for the open config (with artifact
+        count from the manifest) and hides bundles from other configs."""
+        _mock_model_configs(page, [EXISTING_CONFIG])
+        _mock_labels(page, [LABEL_CAT, LABEL_KITTEN, LABEL_DOG])
+        _mock_model_bundles(page, [BUNDLE_FOR_CFG1, BUNDLE_FOR_OTHER])
+
+        _navigate_to_model_configs(page, base_url)
+        page.locator("#model-config-box [data-config-uuid='cfg-1']").click()
+        page.wait_for_timeout(500)
+
+        bundles_box = page.locator("#model-config-box .mtp-bundles")
+        expect(bundles_box).to_contain_text("animals-v1")
+        expect(bundles_box).to_contain_text("3 artifacts")
+        expect(bundles_box).not_to_contain_text("other-v1")
+
+    def test_bundles_section_empty_state(self, page: Page, base_url: str):
+        """With no bundles for the config, the section says so."""
+        _mock_model_configs(page, [EXISTING_CONFIG])
+        _mock_labels(page, [LABEL_CAT, LABEL_KITTEN, LABEL_DOG])
+        _mock_model_bundles(page, [BUNDLE_FOR_OTHER])
+
+        _navigate_to_model_configs(page, base_url)
+        page.locator("#model-config-box [data-config-uuid='cfg-1']").click()
+        page.wait_for_timeout(500)
+
+        expect(page.locator("#model-config-box .mtp-bundles")).to_contain_text(
+            "No bundles trained from this configuration yet")
