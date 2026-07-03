@@ -2325,6 +2325,9 @@ class Manager:
     async def get_model_config_node(self, node_uuid: str) -> Optional["ModelConfigNodeRead"]:
         return await self._db_client.get_model_config_node(node_uuid)
 
+    async def derive_bundle_training_targets(self, model_config_uuid: str) -> Optional[list]:
+        return await self._db_client.derive_bundle_training_targets(model_config_uuid)
+
 
     async def create_model_config(self, data: ModelConfigCreate) -> ModelConfigRead:
         await self._validate_model_config_nodes(data.nodes)

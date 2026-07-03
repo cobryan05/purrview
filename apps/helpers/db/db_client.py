@@ -3359,6 +3359,134 @@ class DbClient:
             rollup_map = {node.label_uuid: [u for u in all_uuids if u != node.label_uuid]}
             return all_uuids, rollup_map
 
+    async def derive_bundle_training_targets(self, model_config_uuid: str) -> Optional[list[dict]]:
+        """Derive the ordered list of training targets a full bundle run must produce.
+
+        Single authority on sub-model boundaries and per-target label scope /
+        class remapping (the frontend heuristic in ``ui/modelSpec.js`` mirrors the
+        boundary rule for display only).
+
+        A non-root node is a sub-model *boundary* when its (model_type, architecture)
+        differs from its inherited spec — the nearest boundary ancestor's spec in the
+        label tree, else the root node's spec. Ancestors are classified before
+        descendants so nested boundaries inherit from the boundary above them, not
+        from the root.
+
+        Returns None if the model config doesn't exist. Otherwise a list of targets
+        (top model first, then sub-models in hierarchical label order), each:
+          - node_uuid, role ("top" | "submodel"), label_uuid (None for top)
+          - model_type, architecture (the node's own spec)
+          - label_uuids: ordered class label UUIDs this artifact predicts
+          - class_names: label names aligned with label_uuids
+          - class_remap: {in-scope label uuid -> class label uuid} for labels whose
+            bboxes train as another class. A label in neither label_uuids nor
+            class_remap is out of scope for that target.
+
+        Class-set semantics:
+          - Top model: assigned labels with no boundary ancestor; every other
+            assigned label chases up to its *outermost* boundary (nested boundaries
+            collapse all the way, so one visual concept never trains under two
+            different top classes).
+          - Sub-model at boundary B: assigned labels whose nearest proper boundary
+            ancestor is B (what B's model distinguishes). B itself is not a class of
+            its own sub-model; a childless boundary yields an empty class list.
+          - roll_up_unchecked descendants use the root-scope rollup assignment from
+            _derive_labels_for_node (nearest rollup parent claims them) and remap to
+            wherever their rollup parent resolves in each target.
+
+        A config with no root node yields no targets ([]).
+        """
+        async with self._async_session_maker() as session:
+            config = await session.get(ModelConfig, model_config_uuid)
+            if config is None:
+                return None
+            result = await session.exec(
+                select(ModelConfigNode).where(ModelConfigNode.model_config_uuid == model_config_uuid)
+            )
+            nodes = result.all()
+            labels_result = await session.exec(select(Label))
+            all_labels = {lbl.uuid: lbl for lbl in labels_result.all()}
+
+        root = next((n for n in nodes if n.label_uuid is None), None)
+        if root is None:
+            return []
+        non_root = [n for n in nodes if n.label_uuid is not None]
+
+        def _parent(uuid: str) -> Optional[str]:
+            lbl = all_labels.get(uuid)
+            return lbl.parent_uuid if lbl is not None else None
+
+        def _depth(uuid: str) -> int:
+            depth, p = 0, _parent(uuid)
+            while p is not None:
+                depth += 1
+                p = _parent(p)
+            return depth
+
+        boundary_spec: dict[str, tuple[str, str]] = {}
+
+        def _boundary_ancestor(uuid: str) -> Optional[str]:
+            p = _parent(uuid)
+            while p is not None:
+                if p in boundary_spec:
+                    return p
+                p = _parent(p)
+            return None
+
+        # Ancestors first: a node's inherited spec depends on boundaries above it.
+        non_root.sort(key=lambda n: _depth(n.label_uuid))
+        for n in non_root:
+            ancestor = _boundary_ancestor(n.label_uuid)
+            inherited = boundary_spec[ancestor] if ancestor is not None else (root.model_type, root.architecture)
+            if (n.model_type, n.architecture) != inherited:
+                boundary_spec[n.label_uuid] = (n.model_type, n.architecture)
+
+        assigned = [n.label_uuid for n in non_root]
+        node_by_label = {n.label_uuid: n for n in non_root}
+
+        _, rollup_map = await self._derive_labels_for_node(root.uuid)
+
+        def _resolve(uuid: str, class_set: set) -> Optional[str]:
+            """Nearest ancestor-or-self of `uuid` that is a class of the target."""
+            current: Optional[str] = uuid
+            while current is not None:
+                if current in class_set:
+                    return current
+                current = _parent(current)
+            return None
+
+        def _build_target(node: ModelConfigNode, role: str, class_uuids: list[str]) -> dict:
+            class_set = set(class_uuids)
+            ordered = self._sort_labels_hierarchically(class_uuids, all_labels)
+            class_remap: dict[str, str] = {}
+            for a in assigned:
+                cls = _resolve(a, class_set)
+                if cls is not None and cls != a:
+                    class_remap[a] = cls
+            for parent_uuid, children in rollup_map.items():
+                cls = _resolve(parent_uuid, class_set)
+                if cls is None:
+                    continue
+                for child in children:
+                    class_remap[child] = cls
+            return {
+                "node_uuid": node.uuid,
+                "role": role,
+                "label_uuid": node.label_uuid,
+                "model_type": node.model_type,
+                "architecture": node.architecture,
+                "label_uuids": ordered,
+                "class_names": [all_labels[lu].name if lu in all_labels else lu for lu in ordered],
+                "class_remap": class_remap,
+            }
+
+        top_classes = [a for a in assigned if _boundary_ancestor(a) is None]
+        targets = [_build_target(root, "top", top_classes)]
+        for b_uuid in self._sort_labels_hierarchically(list(boundary_spec), all_labels):
+            sub_classes = [a for a in assigned if a != b_uuid and _boundary_ancestor(a) == b_uuid]
+            targets.append(_build_target(node_by_label[b_uuid], "submodel", sub_classes))
+        return targets
+
     async def get_training_config_readiness(self, uuid: str) -> Optional[dict]:
         """Return ready/needs-review/not-started counts for a training config's datasets (union).
 

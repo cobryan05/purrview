@@ -612,6 +612,24 @@ class ModelConfigResponse(StatusResponse):
     config: Optional[ModelConfigRead] = None
 
 
+class BundleTrainingTarget(ApiModel):
+    """One artifact a full bundle training run must produce (see
+    DbClient.derive_bundle_training_targets for the derivation semantics)."""
+
+    node_uuid: str
+    role: Literal["top", "submodel"]
+    label_uuid: Optional[str] = None
+    model_type: str
+    architecture: str
+    label_uuids: List[str] = Field(default_factory=list)
+    class_names: List[str] = Field(default_factory=list)
+    class_remap: Dict[str, str] = Field(default_factory=dict)
+
+
+class TrainingTargetsResponse(StatusResponse):
+    targets: List[BundleTrainingTarget] = Field(default_factory=list)
+
+
 ########
 # Perceptual Hash
 ########
@@ -2655,6 +2673,25 @@ class WebApp:
             except Exception as e:
                 logger.error(e, exc_info=True)
                 return JSONResponse({"detail": str(e)}, status_code=500)
+
+        @self._app.get(
+            "/api/model-configs/{uuid}/training-targets",
+            response_model=TrainingTargetsResponse,
+            tags=[ApiTags.MODEL_CONFIGS],
+            operation_id="get_model_config_training_targets",
+        )
+        async def get_model_config_training_targets(uuid: str) -> TrainingTargetsResponse:
+            try:
+                targets = await self._manager.derive_bundle_training_targets(uuid)
+                if targets is None:
+                    return TrainingTargetsResponse(status=JsonValues.FAILURE, message="Model config not found")
+                return TrainingTargetsResponse(
+                    status=JsonValues.SUCCESS,
+                    targets=[BundleTrainingTarget(**t) for t in targets],
+                )
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return TrainingTargetsResponse(status=JsonValues.FAILURE, message=str(e))
 
         @self._app.patch(
             "/api/model-configs/{uuid}",

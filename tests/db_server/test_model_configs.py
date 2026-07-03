@@ -331,3 +331,178 @@ async def test_root_node_label_uuid_none(http_client):
     assert cfg["nodes"][0]["labelUuid"] is None
     assert cfg["nodes"][0]["modelType"] == "object_detection"
     assert cfg["nodes"][0]["architecture"] == "yolo_v9_c"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Bundle training targets (GET /api/model-configs/{uuid}/training-targets)
+# ─────────────────────────────────────────────────────────────────────────────
+
+_ROOT_SPEC = {"model_type": "object_detection", "architecture": "yolo_v9_c"}
+_SUB_SPEC = {"model_type": "crop_classifier", "architecture": "resnet_18"}
+_SUB_SPEC_2 = {"model_type": "crop_classifier", "architecture": "efficientnet_b0"}
+
+
+def _node(label_uuid, spec, roll_up_unchecked=False):
+    return {"label_uuid": label_uuid, "roll_up_unchecked": roll_up_unchecked, **spec}
+
+
+async def _fetch_targets(http_client, config_uuid: str) -> list:
+    r = await http_client.get(f"/api/model-configs/{config_uuid}/training-targets")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["status"] == "success", body
+    return body["targets"]
+
+
+async def test_targets_config_not_found(http_client):
+    r = await http_client.get("/api/model-configs/no-such-uuid/training-targets")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["status"] == "failure"
+    assert "not found" in body["message"].lower()
+
+
+async def test_targets_config_without_nodes_yields_no_targets(http_client):
+    cfg = await _create_config(http_client, "TargetsEmpty")
+    assert await _fetch_targets(http_client, cfg["uuid"]) == []
+
+
+async def test_targets_flat_config_single_top_target(http_client):
+    cat = await _create_label(http_client, "Cat")
+    dog = await _create_label(http_client, "Dog")
+    cfg = await _create_config(
+        http_client,
+        "TargetsFlat",
+        nodes=[_node(None, _ROOT_SPEC), _node(cat, _ROOT_SPEC), _node(dog, _ROOT_SPEC)],
+    )
+
+    targets = await _fetch_targets(http_client, cfg["uuid"])
+    assert len(targets) == 1
+    top = targets[0]
+    assert top["role"] == "top"
+    assert top["labelUuid"] is None
+    assert top["modelType"] == "object_detection"
+    assert top["architecture"] == "yolo_v9_c"
+    assert top["classNames"] == ["Cat", "Dog"]
+    assert top["labelUuids"] == [cat, dog]
+    assert top["classRemap"] == {}
+    root_node = next(n for n in cfg["nodes"] if n["labelUuid"] is None)
+    assert top["nodeUuid"] == root_node["uuid"]
+
+
+async def test_targets_boundary_produces_submodel(http_client):
+    """A node whose spec differs from its inherited spec is a sub-model boundary;
+    its assigned descendants roll up into it for the top model."""
+    cat = await _create_label(http_client, "Cat")
+    cat_a = await _create_label(http_client, "CatA", parent_uuid=cat)
+    cat_b = await _create_label(http_client, "CatB", parent_uuid=cat)
+    dog = await _create_label(http_client, "Dog")
+    cfg = await _create_config(
+        http_client,
+        "TargetsBoundary",
+        nodes=[
+            _node(None, _ROOT_SPEC),
+            _node(cat, _SUB_SPEC),  # spec differs from root -> boundary
+            _node(cat_a, _SUB_SPEC),  # equals inherited (Cat's) spec -> NOT a boundary
+            _node(cat_b, _SUB_SPEC),
+            _node(dog, _ROOT_SPEC),
+        ],
+    )
+
+    targets = await _fetch_targets(http_client, cfg["uuid"])
+    assert [t["role"] for t in targets] == ["top", "submodel"]
+
+    top, sub = targets
+    assert top["classNames"] == ["Cat", "Dog"]
+    assert top["classRemap"] == {cat_a: cat, cat_b: cat}
+
+    assert sub["labelUuid"] == cat
+    assert sub["modelType"] == "crop_classifier"
+    assert sub["architecture"] == "resnet_18"
+    assert sub["classNames"] == ["CatA", "CatB"]
+    assert sub["labelUuids"] == [cat_a, cat_b]
+    assert sub["classRemap"] == {}
+    node_by_label = {n["labelUuid"]: n["uuid"] for n in cfg["nodes"]}
+    assert sub["nodeUuid"] == node_by_label[cat]
+
+
+async def test_targets_nested_boundaries_collapse_to_outermost(http_client):
+    """With nested boundaries the top model sees only the outermost class; each
+    boundary's sub-model distinguishes the labels that roll up directly to it."""
+    animal = await _create_label(http_client, "Animal")
+    cat = await _create_label(http_client, "Cat", parent_uuid=animal)
+    cat_a = await _create_label(http_client, "CatA", parent_uuid=cat)
+    cfg = await _create_config(
+        http_client,
+        "TargetsNested",
+        nodes=[
+            _node(None, _ROOT_SPEC),
+            _node(animal, _SUB_SPEC),  # boundary (differs from root)
+            _node(cat, _SUB_SPEC_2),  # boundary (differs from Animal's spec)
+            _node(cat_a, _SUB_SPEC_2),  # equals inherited (Cat's) spec
+        ],
+    )
+
+    targets = await _fetch_targets(http_client, cfg["uuid"])
+    assert [t["role"] for t in targets] == ["top", "submodel", "submodel"]
+
+    top, sub_animal, sub_cat = targets
+    assert top["labelUuids"] == [animal]
+    assert top["classRemap"] == {cat: animal, cat_a: animal}
+
+    assert sub_animal["labelUuid"] == animal
+    assert sub_animal["labelUuids"] == [cat]
+    assert sub_animal["classRemap"] == {cat_a: cat}
+
+    assert sub_cat["labelUuid"] == cat
+    assert sub_cat["labelUuids"] == [cat_a]
+    assert sub_cat["classRemap"] == {}
+
+
+async def test_targets_rollup_unchecked_descendants_remap(http_client):
+    """Unassigned hierarchy descendants of a roll_up_unchecked node remap to
+    wherever their rollup parent resolves in each target."""
+    cat = await _create_label(http_client, "Cat")
+    cat_a = await _create_label(http_client, "CatA", parent_uuid=cat)  # no node
+    cat_b = await _create_label(http_client, "CatB", parent_uuid=cat)  # no node
+    cfg = await _create_config(
+        http_client,
+        "TargetsRollup",
+        nodes=[_node(None, _ROOT_SPEC), _node(cat, _ROOT_SPEC, roll_up_unchecked=True)],
+    )
+
+    targets = await _fetch_targets(http_client, cfg["uuid"])
+    assert len(targets) == 1
+    top = targets[0]
+    assert top["labelUuids"] == [cat]
+    assert top["classRemap"] == {cat_a: cat, cat_b: cat}
+
+
+async def test_targets_childless_boundary_has_empty_classes(http_client):
+    """A boundary with no assigned children yields a sub-model target with an
+    empty class list (nothing to distinguish) — callers decide how to handle it.
+    Its roll_up_unchecked descendants train the TOP model as the boundary class,
+    not the boundary's own sub-model."""
+    cat = await _create_label(http_client, "Cat")
+    cat_a = await _create_label(http_client, "CatA", parent_uuid=cat)  # no node
+    cfg = await _create_config(
+        http_client,
+        "TargetsChildless",
+        nodes=[_node(None, _ROOT_SPEC), _node(cat, _SUB_SPEC, roll_up_unchecked=True)],
+    )
+
+    targets = await _fetch_targets(http_client, cfg["uuid"])
+    assert [t["role"] for t in targets] == ["top", "submodel"]
+
+    top, sub = targets
+    assert top["labelUuids"] == [cat]
+    assert top["classRemap"] == {cat_a: cat}
+
+    assert sub["labelUuid"] == cat
+    assert sub["labelUuids"] == []
+    assert sub["classNames"] == []
+    assert sub["classRemap"] == {}
+
+
+async def test_targets_db_client_returns_none_for_missing_config(db_client):
+    assert await db_client.derive_bundle_training_targets("no-such-uuid") is None

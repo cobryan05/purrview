@@ -3886,6 +3886,48 @@
         }
       }
     },
+    "/api/model-configs/{uuid}/training-targets": {
+      "get": {
+        "tags": [
+          "model_configs"
+        ],
+        "summary": "Get Model Config Training Targets",
+        "operationId": "get_model_config_training_targets",
+        "parameters": [
+          {
+            "name": "uuid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TrainingTargetsResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/training-configs": {
       "get": {
         "tags": [
@@ -5275,6 +5317,71 @@
           "action"
         ],
         "title": "BulkApplyImagesByUuidsPayload"
+      },
+      "BundleTrainingTarget": {
+        "properties": {
+          "nodeUuid": {
+            "type": "string",
+            "title": "Nodeuuid"
+          },
+          "role": {
+            "type": "string",
+            "enum": [
+              "top",
+              "submodel"
+            ],
+            "title": "Role"
+          },
+          "labelUuid": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Labeluuid"
+          },
+          "modelType": {
+            "type": "string",
+            "title": "Modeltype"
+          },
+          "architecture": {
+            "type": "string",
+            "title": "Architecture"
+          },
+          "labelUuids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Labeluuids"
+          },
+          "classNames": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Classnames"
+          },
+          "classRemap": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object",
+            "title": "Classremap"
+          }
+        },
+        "type": "object",
+        "required": [
+          "nodeUuid",
+          "role",
+          "modelType",
+          "architecture"
+        ],
+        "title": "BundleTrainingTarget",
+        "description": "One artifact a full bundle training run must produce (see\nDbClient.derive_bundle_training_targets for the derivation semantics)."
       },
       "CheckDedupBulkPayload": {
         "properties": {
@@ -10006,6 +10113,35 @@
         },
         "type": "object",
         "title": "TrainingConfigUpdate"
+      },
+      "TrainingTargetsResponse": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "title": "Status",
+            "default": "success"
+          },
+          "message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Message"
+          },
+          "targets": {
+            "items": {
+              "$ref": "#/components/schemas/BundleTrainingTarget"
+            },
+            "type": "array",
+            "title": "Targets"
+          }
+        },
+        "type": "object",
+        "title": "TrainingTargetsResponse"
       },
       "UpdateLabelResponse": {
         "properties": {
