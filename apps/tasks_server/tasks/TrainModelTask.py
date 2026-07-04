@@ -183,7 +183,7 @@ class TrainModelTask(Task, TrainingJobRunnerMixin):
         # Single labeled node → binary classifier.
         trainer_type: str = MODEL_TYPE_TO_TRAINER_TYPE.get(model_type, model_type)
 
-        result = build_binary_classifier_job(
+        model_name, manifest, job_config = build_binary_classifier_job(
             img_api,
             label_uuid=label_uuid,
             trainer_type=trainer_type,
@@ -198,10 +198,10 @@ class TrainModelTask(Task, TrainingJobRunnerMixin):
         )
         self.log(
             f"Resolved training config: label={label_uuid} arch={architecture} "
-            f"trainer={trainer_type} manifest={len(result[1])} images "
+            f"trainer={trainer_type} manifest={len(manifest)} images "
             f"datasets={len(dataset_uuids)}"
         )
-        return result
+        return model_name, manifest, job_config
 
     def _resolve_bundle_target_fields(
         self, mc_api, model_config_uuid: str, node_uuid: str, label_uuid: str
@@ -273,7 +273,7 @@ class TrainModelTask(Task, TrainingJobRunnerMixin):
 
         label_uuids_list = [n.label_uuid for n in labeled_nodes]
 
-        result = build_multi_label_classifier_job(
+        model_name, manifest, job_config = build_multi_label_classifier_job(
             img_api,
             label_uuids=label_uuids_list,
             model_name=model_name,
@@ -288,9 +288,9 @@ class TrainModelTask(Task, TrainingJobRunnerMixin):
         self.log(
             f"Resolved root node: {len(labeled_nodes)} labels "
             f"({', '.join(label_uuids_list)}), "
-            f"{len(result[1])} unique images, datasets={len(dataset_uuids)}"
+            f"{len(manifest)} unique images, datasets={len(dataset_uuids)}"
         )
-        return result
+        return model_name, manifest, job_config
 
     def _resolve_object_detection(
         self,

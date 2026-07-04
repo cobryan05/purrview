@@ -245,7 +245,7 @@ class TrainBundleTask(Task, TrainingJobRunnerMixin):
         return model_name, manifest, job_config
 
     def _resolve_target_binary(self, img_api, target: dict, model_name: str) -> tuple[str, list[dict], dict]:
-        result = build_binary_classifier_job(
+        model_name, manifest, job_config = build_binary_classifier_job(
             img_api,
             label_uuid=target["label_uuids"][0],
             trainer_type=MODEL_TYPE_TO_TRAINER_TYPE.get(target["model_type"], target["model_type"]),
@@ -260,12 +260,12 @@ class TrainBundleTask(Task, TrainingJobRunnerMixin):
         )
         self.log(
             f"Resolved binary bundle target {target['role']} (node={target['node_uuid']}, "
-            f"label={target['label_uuids'][0]}): {len(result[1])} images"
+            f"label={target['label_uuids'][0]}): {len(manifest)} images"
         )
-        return result
+        return model_name, manifest, job_config
 
     def _resolve_target_multi_label(self, img_api, target: dict, model_name: str) -> tuple[str, list[dict], dict]:
-        result = build_multi_label_classifier_job(
+        model_name, manifest, job_config = build_multi_label_classifier_job(
             img_api,
             label_uuids=list(target["label_uuids"]),
             model_name=model_name,
@@ -279,9 +279,9 @@ class TrainBundleTask(Task, TrainingJobRunnerMixin):
         )
         self.log(
             f"Resolved multi_label bundle target {target['role']} (node={target['node_uuid']}): "
-            f"{len(target['label_uuids'])} labels, {len(result[1])} images"
+            f"{len(target['label_uuids'])} labels, {len(manifest)} images"
         )
-        return result
+        return model_name, manifest, job_config
 
     async def _run(self) -> dict[str, Any]:
         while self._target_index < len(self._targets):
