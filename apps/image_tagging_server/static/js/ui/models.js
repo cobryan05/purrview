@@ -3,12 +3,14 @@ import { isDynamicLabelsVisible } from '/app-static/js/shared/activeModel.js';
 import {
   associateLabel,
   clearModelsCache,
+  detectModel,
   fetchCuratedModels,
   fetchModelDevice,
   fetchModelsLabelMappings,
   fetchModelsList,
   importModelUpload,
   setModelDevice,
+  stageSourceModel,
 } from '/app-static/js/shared/api/models.js';
 import { DropDownField, EditableField, LabelDropDownField } from '/app-static/js/ui/utils/fields/index.js';
 import { createGenericRow, Logger, showPaneError, toast } from '/app-static/js/ui/utils/index.js';
@@ -244,7 +246,7 @@ function buildUploadForm({ target, editable }) {
 
   const fileInput = document.createElement('input');
   fileInput.type = 'file';
-  fileInput.accept = '.onnx';
+  fileInput.accept = '.onnx,.pt,.pth,.torchscript';
   fileInput.style.display = 'block';
   fileInput.style.marginBottom = '0.5em';
 
@@ -262,43 +264,87 @@ function buildUploadForm({ target, editable }) {
   overwriteLabel.style.display = 'block';
   overwriteLabel.style.marginBottom = '0.5em';
 
-  const submitBtn = document.createElement('button');
-  submitBtn.type = 'button';
-  submitBtn.textContent = 'Upload';
-  submitBtn.className = 'panel-btn';
+  wrap.append(fileInput, nameInput, overwriteLabel);
 
-  submitBtn.onclick = async () => {
-    const file = fileInput.files?.[0];
-    const modelName = nameInput.value.trim();
-    if (!file) {
-      toast('Choose a .onnx file first', 3000, 'warning');
-      return;
-    }
-    if (!modelName) {
-      toast('Enter a model name', 3000, 'warning');
-      return;
-    }
+  // A single "Import" action: detects the file's format and either uploads
+  // it directly (already .onnx) or — if it's a convertible format such as
+  // pytorch — confirms with the user and runs a background ConvertModelTask
+  // on the training server, reusing createTaskRunnerSection's SSE plumbing.
+  const { el: runnerSection } = createTaskRunnerSection({
+    buttonLabel: 'Import',
+    runningLabel: 'Converting…',
+    buildStartArgs: async () => {
+      const file = fileInput.files?.[0];
+      const modelName = nameInput.value.trim();
+      if (!file) {
+        toast('Choose a model file first', 3000, 'warning');
+        return null;
+      }
+      if (!modelName) {
+        toast('Enter a model name', 3000, 'warning');
+        return null;
+      }
 
-    submitBtn.disabled = true;
-    submitBtn.textContent = 'Uploading…';
-    try {
-      const onnxBase64 = await _fileToBase64(file);
-      const result = await importModelUpload({
-        modelName,
-        onnxBase64,
-        overwrite: overwriteCheckbox.checked,
-      });
-      toast(`Imported model '${result.modelName}' (${result.classes.length} classes)`, 4000, 'success');
-      _afterImportSuccess(target, editable, result.modelName);
-    } catch (err) {
-      toast(err.message || 'Failed to upload model', 5000, 'error');
-    } finally {
-      submitBtn.disabled = false;
-      submitBtn.textContent = 'Upload';
-    }
-  };
+      try {
+        const headerBase64 = await _fileToBase64(file.slice(0, 512));
+        const { isOnnx, conversionSupported, format } = await detectModel({
+          filename: file.name,
+          headerBase64,
+        });
 
-  wrap.append(fileInput, nameInput, overwriteLabel, submitBtn);
+        if (isOnnx) {
+          // Already ONNX — do the existing synchronous upload right here;
+          // no background task needed.
+          const onnxBase64 = await _fileToBase64(file);
+          const result = await importModelUpload({
+            modelName,
+            onnxBase64,
+            overwrite: overwriteCheckbox.checked,
+          });
+          toast(`Imported model '${result.modelName}' (${result.classes.length} classes)`, 4000, 'success');
+          _afterImportSuccess(target, editable, result.modelName);
+          return null;
+        }
+
+        if (!conversionSupported) {
+          toast(`Unsupported model format (${format}); cannot import or convert`, 5000, 'error');
+          return null;
+        }
+
+        if (!window.confirm(`Detected a ${format} model. Convert it to ONNX on the training server?`)) {
+          return null;
+        }
+
+        const sourceBase64 = await _fileToBase64(file);
+        const stagingId = await stageSourceModel({ sourceBase64 });
+
+        return {
+          typename: 'ConvertModelTask',
+          name: `Convert model: ${modelName}`,
+          params: {
+            staging_id: stagingId,
+            model_name: modelName,
+            overwrite: overwriteCheckbox.checked,
+          },
+        };
+      } catch (err) {
+        toast(err.message || 'Failed to import model', 5000, 'error');
+        return null;
+      }
+    },
+    onSettled: finalTaskInfo => {
+      const status = finalTaskInfo?.instance?.status;
+      const modelName = nameInput.value.trim();
+      if (status === 'completed') {
+        toast(`Imported model '${modelName}'`, 4000, 'success');
+        _afterImportSuccess(target, editable, modelName);
+      } else if (status === 'error') {
+        toast('Model conversion failed — see task log', 5000, 'error');
+      }
+    },
+  });
+  wrap.appendChild(runnerSection);
+
   return wrap;
 }
 

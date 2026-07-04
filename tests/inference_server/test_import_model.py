@@ -159,6 +159,91 @@ class TestImportModelUploadEndpoint:
         assert resp2.json()["status"] == "failure"
 
 
+class TestDetectAndStage:
+    async def test_detect_onnx_by_extension(self, http_client):
+        resp = await http_client.post(
+            "/api/models/detect",
+            json={"filename": "model.onnx", "headerBase64": base64.b64encode(b"whatever bytes").decode()},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "success"
+        assert data["format"] == "onnx"
+        assert data["isOnnx"] is True
+        assert data["conversionSupported"] is False
+
+    async def test_detect_pytorch_by_zip_magic(self, http_client):
+        resp = await http_client.post(
+            "/api/models/detect",
+            json={
+                "filename": "weights.bin",
+                "headerBase64": base64.b64encode(b"PK\x03\x04rest of zip header").decode(),
+            },
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "success"
+        assert data["format"] == "pytorch"
+        assert data["isOnnx"] is False
+        assert data["conversionSupported"] is True
+
+    async def test_detect_pytorch_by_extension(self, http_client):
+        resp = await http_client.post(
+            "/api/models/detect",
+            json={"filename": "weights.pt", "headerBase64": base64.b64encode(b"junk").decode()},
+        )
+        data = resp.json()
+        assert data["format"] == "pytorch"
+        assert data["conversionSupported"] is True
+
+    async def test_detect_unknown(self, http_client):
+        resp = await http_client.post(
+            "/api/models/detect",
+            json={"filename": "notes.txt", "headerBase64": base64.b64encode(b"just some text").decode()},
+        )
+        data = resp.json()
+        assert data["status"] == "success"
+        assert data["format"] == "unknown"
+        assert data["isOnnx"] is False
+        assert data["conversionSupported"] is False
+
+    async def test_detect_invalid_base64_returns_failure_not_500(self, http_client):
+        resp = await http_client.post(
+            "/api/models/detect",
+            json={"filename": "model.onnx", "headerBase64": "not-valid-base64!!"},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "failure"
+
+    async def test_stage_source_model_writes_bytes_to_disk(self, http_client, manager, monkeypatch, tmp_path):
+        monkeypatch.setattr("apps.inference_server.manager.CACHE_DIR", tmp_path)
+
+        raw_bytes = b"raw pytorch checkpoint content"
+        resp = await http_client.post(
+            "/api/models/import/stage",
+            json={"sourceBase64": base64.b64encode(raw_bytes).decode()},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "success"
+        staging_id = data["stagingId"]
+        assert staging_id
+
+        staged_path = manager.staged_model_path(staging_id)
+        assert staged_path.exists()
+        assert staged_path.read_bytes() == raw_bytes
+        assert staged_path.parent == tmp_path / "model_conversion_uploads"
+
+    async def test_stage_source_model_invalid_base64_returns_failure_not_500(self, http_client, monkeypatch, tmp_path):
+        monkeypatch.setattr("apps.inference_server.manager.CACHE_DIR", tmp_path)
+        resp = await http_client.post(
+            "/api/models/import/stage",
+            json={"sourceBase64": "not-valid-base64!!"},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "failure"
+
+
 class TestCuratedModelsEndpoint:
     async def test_lists_curated_models_without_internal_fields(self, http_client):
         resp = await http_client.get("/api/models/curated")

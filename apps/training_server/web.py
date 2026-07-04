@@ -88,6 +88,10 @@ class IngestImagesResponse(BaseModel):
     cached_total: int
 
 
+class IngestSourceModelResponse(BaseModel):
+    received: int
+
+
 class StartJobResponse(BaseModel):
     status: str
     missing: List[str] = Field(default_factory=list)
@@ -202,6 +206,28 @@ class WebApp:
             if result is None:
                 return JSONResponse({"detail": "Job not found"}, status_code=404)
             return IngestImagesResponse(**result)
+
+        @self._app.post(
+            "/api/training/jobs/{job_id}/source-model",
+            operation_id="ingest_source_model",
+            response_model=IngestSourceModelResponse,
+            tags=["training"],
+        )
+        async def ingest_source_model(job_id: str, request: Request):
+            """Accept the raw bytes of a source .pt checkpoint for a convert_model job."""
+            job = self._manager.get_job(job_id)
+            if not job:
+                return JSONResponse({"detail": "Job not found"}, status_code=404)
+            if job.status not in ("awaiting_data", "queued"):
+                return JSONResponse(
+                    {"detail": f"Cannot ingest source model for job in status: {job.status}"},
+                    status_code=409,
+                )
+            data = await request.body()
+            result = self._manager.ingest_source_model(job_id, data)
+            if result is None:
+                return JSONResponse({"detail": "Job not found"}, status_code=404)
+            return IngestSourceModelResponse(received=result["received"])
 
         @self._app.post(
             "/api/training/jobs/{job_id}/start",

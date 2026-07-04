@@ -8,11 +8,12 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from glob import glob
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import numpy as np
 
-from apps import APPS
+from apps import APPS, CACHE_DIR
 from apps.helpers.imageUtils import annotate_image
 from apps.helpers.inferenceProviders.inferenceProvider import (
     InferenceProvider,
@@ -26,11 +27,26 @@ from apps.helpers.metadataUtils import (
     validate_bare_model_name,
     validate_onnx_bytes,
 )
+from apps.helpers.modelFormat import (
+    ModelFormat,
+    detect_model_format,
+    is_conversion_candidate,
+)
+from apps.helpers.modelStaging import STAGING_SUBDIR
 from apps.helpers.yoloUtils import load_yolo_onnx
 
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger(__file__)
 logger.setLevel(logging.DEBUG)
+
+# Subdirectory (under CACHE_DIR) where raw uploaded model files are staged pending
+# an asynchronous conversion task (e.g. pytorch -> onnx) run by the tasks_server.
+# The subdirectory name + staging-id validation are centralized in
+# apps.helpers.modelStaging (also used directly by ConvertModelTask); this module
+# keeps resolving the directory from its OWN module-level CACHE_DIR (rather than
+# calling into the helper's staging_dir()) so tests that monkeypatch
+# apps.inference_server.manager.CACHE_DIR keep working unmodified.
+_STAGING_SUBDIR = STAGING_SUBDIR
 
 
 @dataclass
@@ -247,6 +263,70 @@ class Manager:
         await self.list_models()
 
         return {"model_name": model_name, "classes": metadata.get("classes", [])}
+
+    def detect_uploaded_model(self, filename: str, header: bytes) -> Dict[str, Any]:
+        """Detect the format of an about-to-be-uploaded model file from its filename and
+        leading bytes (torch-free — see apps/helpers/modelFormat.py). Pure/sync, no I/O.
+
+        Args:
+            filename (str): The original filename of the uploaded file.
+            header (bytes): The first chunk of the file's bytes (used for magic-byte sniffing).
+
+        Returns:
+            Dict[str, Any]: {"format": ..., "is_onnx": ..., "conversion_supported": ...}
+        """
+        fmt = detect_model_format(filename, header)
+        return {
+            "format": fmt,
+            "is_onnx": fmt == ModelFormat.ONNX,
+            "conversion_supported": is_conversion_candidate(fmt),
+        }
+
+    def _staging_dir(self) -> Path:
+        """Path to the shared staging directory (under CACHE_DIR) used to hand raw
+        uploaded model bytes off to a later conversion task run by another service
+        (same container/filesystem). Computed only — no filesystem side effects."""
+        return CACHE_DIR / _STAGING_SUBDIR
+
+    async def stage_source_model(self, data: bytes) -> str:
+        """Write raw uploaded model bytes to the shared staging dir under a fresh id.
+
+        Args:
+            data (bytes): Raw file content to stage.
+
+        Returns:
+            str: The generated staging id (bare hex token, no extension); the caller
+                (a conversion task) can resolve it back to a path via `staged_model_path`.
+        """
+        if not data:
+            raise ValueError("Cannot stage empty model data")
+
+        staging_id = uuid.uuid4().hex
+        staging_dir = self._staging_dir()
+        staging_path = staging_dir / f"{staging_id}.bin"
+
+        await asyncio.to_thread(staging_dir.mkdir, parents=True, exist_ok=True)
+        await asyncio.to_thread(staging_path.write_bytes, data)
+
+        return staging_id
+
+    def staged_model_path(self, staging_id: str) -> Path:
+        """Resolve a staging id (as returned by `stage_source_model`) to its file path.
+
+        Args:
+            staging_id (str): Bare staging id — must not contain path separators or '..'.
+
+        Returns:
+            Path: The path to the staged file (may not exist).
+        """
+        validate_bare_model_name(staging_id)
+        return self._staging_dir() / f"{staging_id}.bin"
+
+    def delete_staged_model(self, staging_id: str) -> None:
+        """Best-effort removal of a staged model file. The conversion task owns cleanup
+        after a successful convert; this is provided for defensive/manual cleanup."""
+        path = self.staged_model_path(staging_id)
+        path.unlink(missing_ok=True)
 
     async def pin_model(self, model_name: str, timeout: float = MODEL_PIN_TIME) -> str:
         """

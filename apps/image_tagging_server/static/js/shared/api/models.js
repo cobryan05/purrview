@@ -183,6 +183,46 @@ export async function importModelUpload({ modelName, onnxBase64, overwrite = fal
   return { modelName: data.modelName, classes: data.classes ?? [] };
 }
 
+/**
+ * Detect the format of a to-be-imported model from a small header slice, and
+ * report whether server-side conversion to ONNX is supported for it.
+ * @param {{filename: string, headerBase64: string}} args
+ * @returns {Promise<{format: string, isOnnx: boolean, conversionSupported: boolean}>}
+ */
+export async function detectModel({ filename, headerBase64 }) {
+  const res = await apiFetch('/api/models/detect', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ filename, headerBase64 }),
+  });
+
+  const data = await res.json();
+  if (!res.ok || data.status === 'failure') {
+    throw new Error(data.message || 'Failed to detect model format');
+  }
+  return { format: data.format, isOnnx: data.isOnnx, conversionSupported: data.conversionSupported };
+}
+
+/**
+ * Stage a non-ONNX source model file (uploaded in full) on the training
+ * server ahead of a background conversion task.
+ * @param {{sourceBase64: string}} args
+ * @returns {Promise<string>} stagingId
+ */
+export async function stageSourceModel({ sourceBase64 }) {
+  const res = await apiFetch('/api/models/import/stage', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ sourceBase64 }),
+  });
+
+  const data = await res.json();
+  if (!res.ok || data.status === 'failure') {
+    throw new Error(data.message || 'Failed to stage model for conversion');
+  }
+  return data.stagingId;
+}
+
 /** -----------------------------
  * UPDATE FUNCTION
  * -----------------------------

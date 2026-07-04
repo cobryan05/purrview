@@ -47,6 +47,7 @@ class Manager:
         from .trainers import TRAINER_REGISTRY  # noqa: F401
         from .trainers import binary_image_classifier  # noqa: F401
         from .trainers import crop_classifier_trainer  # noqa: F401
+        from .trainers import model_converter  # noqa: F401
         from .trainers import multi_label_classifier  # noqa: F401
         from .trainers import object_detection_trainer  # noqa: F401
 
@@ -167,6 +168,26 @@ class Manager:
         if job is None:
             return None
         return self._cache.ingest_tar(tar_bytes, required_uuids=job.required_uuids)
+
+    def ingest_source_model(self, job_id: str, data: bytes) -> Optional[Dict[str, Any]]:
+        """Ingest the raw bytes of a source ``.pt`` checkpoint for a convert_model job.
+
+        Written under an ``_input`` subdirectory of the job's artifact_dir so it is
+        never swept up by ``get_artifact`` (which only tars top-level files in
+        artifact_dir). Returns None if the job doesn't exist.
+        """
+        job = self._queue.get_job(job_id)
+        if job is None:
+            return None
+        input_dir = job.artifact_dir / "_input"
+        input_dir.mkdir(parents=True, exist_ok=True)
+        source_path = input_dir / "source_model.bin"
+        source_path.write_bytes(data)
+
+        job.config["source_model_path"] = str(source_path)
+        job._persist()
+
+        return {"received": len(data), "source_model_path": str(source_path)}
 
     def start_job(self, job_id: str) -> tuple[bool, list[str]]:
         """Transition a job from ``awaiting_data`` → ``queued`` if data is complete."""

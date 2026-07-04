@@ -99,6 +99,25 @@ class ImportModelUploadResponse(StatusResponse):
     classes: Optional[List[str]] = None
 
 
+class ImportModelDetectPayload(Payload):
+    filename: str
+    header_base64: str
+
+
+class ImportModelDetectResponse(StatusResponse):
+    format: Optional[str] = None
+    is_onnx: bool = False
+    conversion_supported: bool = False
+
+
+class StageSourceModelPayload(Payload):
+    source_base64: str
+
+
+class StageSourceModelResponse(StatusResponse):
+    staging_id: Optional[str] = None
+
+
 class CuratedModelInfo(Payload):
     key: str
     display_name: str
@@ -379,6 +398,49 @@ class WebApp:
                 )
             except Exception as e:
                 return ImportModelUploadResponse(status=JsonValues.FAILURE, message=str(e))
+
+        @self._app.post(
+            "/api/models/detect",
+            response_model=ImportModelDetectResponse,
+            tags=[ApiTags.MODELS],
+            operation_id="detect_model_format",
+        )
+        async def detect_model_format_api(payload: ImportModelDetectPayload) -> ImportModelDetectResponse:
+            """Detect a model file's format from its filename + leading bytes (torch-free)."""
+            try:
+                header_bytes = base64.b64decode(payload.header_base64, validate=True)
+            except Exception as e:
+                return ImportModelDetectResponse(status=JsonValues.FAILURE, message=f"Invalid header_base64: {e}")
+
+            try:
+                result = self._manager.detect_uploaded_model(payload.filename, header_bytes)
+                return ImportModelDetectResponse(
+                    status=JsonValues.SUCCESS,
+                    format=result["format"],
+                    is_onnx=result["is_onnx"],
+                    conversion_supported=result["conversion_supported"],
+                )
+            except Exception as e:
+                return ImportModelDetectResponse(status=JsonValues.FAILURE, message=str(e))
+
+        @self._app.post(
+            "/api/models/import/stage",
+            response_model=StageSourceModelResponse,
+            tags=[ApiTags.MODELS],
+            operation_id="stage_source_model",
+        )
+        async def stage_source_model_api(payload: StageSourceModelPayload) -> StageSourceModelResponse:
+            """Stage raw uploaded model bytes to a shared dir for later conversion (e.g. pytorch->onnx)."""
+            try:
+                source_bytes = base64.b64decode(payload.source_base64, validate=True)
+            except Exception as e:
+                return StageSourceModelResponse(status=JsonValues.FAILURE, message=f"Invalid source_base64: {e}")
+
+            try:
+                staging_id = await self._manager.stage_source_model(source_bytes)
+                return StageSourceModelResponse(status=JsonValues.SUCCESS, staging_id=staging_id)
+            except Exception as e:
+                return StageSourceModelResponse(status=JsonValues.FAILURE, message=str(e))
 
         @self._app.get(
             "/api/models/{model_name}/training-images",
