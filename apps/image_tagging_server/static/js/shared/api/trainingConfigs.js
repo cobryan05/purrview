@@ -9,7 +9,7 @@ const trainingConfigsFetcher = createCachedFetcher(async (keys) => {
   const res = await apiFetch('/api/training-configs');
   const data = await res.json();
   if (!res.ok || data.status !== 'success') {
-    throw new Error(data.message || 'Failed to fetch training configs');
+    throw new Error(data.message || 'Failed to fetch training runs');
   }
   const map = new Map(data.configs.map(c => [c.uuid, c]));
   return ignoreKeyReturn(keys, map);
@@ -39,7 +39,7 @@ export async function createTrainingConfig({ name, description = '', modelConfig
   });
   const data = await res.json();
   if (!res.ok || data.status !== 'success') {
-    throw new Error(data.message || 'Failed to create training config');
+    throw new Error(data.message || 'Failed to create training run');
   }
   trainingConfigsFetcher.clear();
   return data.config;
@@ -53,7 +53,7 @@ export async function updateTrainingConfig(uuid, fields) {
   });
   const data = await res.json();
   if (!res.ok || data.status !== 'success') {
-    throw new Error(data.message || 'Failed to update training config');
+    throw new Error(data.message || 'Failed to update training run');
   }
   trainingConfigsFetcher.clear();
   return data.config;
@@ -63,7 +63,7 @@ export async function deleteTrainingConfig(uuid) {
   const res = await apiFetch(`/api/training-configs/${uuid}`, { method: 'DELETE' });
   const data = await res.json();
   if (!res.ok || data.status !== 'success') {
-    throw new Error(data.message || 'Failed to delete training config');
+    throw new Error(data.message || 'Failed to delete training run');
   }
   trainingConfigsFetcher.clear();
 }
@@ -72,7 +72,7 @@ export async function fetchTrainingConfigReadiness(uuid) {
   const res = await apiFetch(`/api/training-configs/${uuid}/readiness`);
   const data = await res.json();
   if (!res.ok || data.status !== 'success') {
-    throw new Error(data.message || 'Failed to fetch training config readiness');
+    throw new Error(data.message || 'Failed to fetch training run readiness');
   }
   return {
     readyCount: data.readyCount,
@@ -191,7 +191,7 @@ export async function fetchTrainingConfigLabelStats(uuid) {
   const res = await apiFetch(`/api/training-configs/${uuid}/label-stats`);
   const data = await res.json();
   if (!res.ok || data.status !== 'success') {
-    throw new Error(data.message || 'Failed to fetch training config label stats');
+    throw new Error(data.message || 'Failed to fetch training run label stats');
   }
   return { labelStats: data.labelStats ?? [], totalImages: data.totalImages ?? 0 };
 }

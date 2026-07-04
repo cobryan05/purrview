@@ -67,7 +67,7 @@ export function renderBoxed(node, opts = {}) {
  */
 export function labelFilterNoticeText(hiddenCount) {
   if (hiddenCount <= 0) return '';
-  return `⚠ ${hiddenCount} label${hiddenCount !== 1 ? 's' : ''} hidden by training config filter`;
+  return `⚠ ${hiddenCount} label${hiddenCount !== 1 ? 's' : ''} hidden by training run filter`;
 }
 
 /**

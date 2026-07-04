@@ -119,11 +119,11 @@ function renderTrainingConfigForm({ config, datasetsMap, modelConfigsMap, labels
     configSel.appendChild(o);
   }
   configSel.addEventListener('change', () => { refreshNodeSel(); refreshTreePreview(); _markDirty(); });
-  el.appendChild(makeFieldRow('Model config', configSel));
+  el.appendChild(makeFieldRow('Model Blueprint', configSel));
   if (modelConfigsMap.size === 0) {
     el.appendChild(makeNavHint(
-      'No model configs exist yet — a training config needs one.',
-      'Create one in the Models tab →', 'tab-model-management'));
+      'No model blueprints exist yet — a training run needs one.',
+      'Create one in the Model Blueprints tab →', 'tab-model-management'));
   }
 
   // Step 2: pick the node within that config
@@ -455,7 +455,7 @@ function renderLabelStatsPanel(config, labelsMap) {
       if (labelStats.length === 0) {
         const none = document.createElement('div');
         none.style.cssText = 'color: var(--pico-muted-color, #888); font-style: italic;';
-        none.textContent = 'No relevant labels found for this model config / dataset combination.';
+        none.textContent = 'No relevant labels found for this model blueprint / dataset combination.';
         content.appendChild(none);
         return;
       }
@@ -559,7 +559,7 @@ function renderLabelStatsPanel(config, labelsMap) {
           if (stat.labelScope === 'image') {
             nameTd.style.cssText = _clickableLabelCss;
             nameTd.style.paddingLeft = `${indentPx}px`;
-            nameTd.title = 'Browse all images in this training config for this label';
+            nameTd.title = 'Browse all images in this training run for this label';
             nameTd.addEventListener('click', () => _openLabelModal(
               stat.labelUuid, 'all',
               `${_labelName(stat.labelUuid)} — all images (${config.name})`,
@@ -644,11 +644,11 @@ function renderLabelStatsPanel(config, labelsMap) {
           { header: 'Unverified boxes', key: 'unverifiedBboxCount', title: 'Bounding boxes still marked Unverified — click to review images', warnIf: s => s.unverifiedBboxCount > 0,
             browseFn: (stat, col) => _openBboxNeedsReviewModal(stat.labelUuid, `${_labelName(stat.labelUuid)} — unverified boxes (${config.name})`, stat.hasRollup ? _rollupChildUuids(stat.labelUuid) : []) },
           { header: 'Imgs all clear', key: 'coLabelsCoveredCount',
-            title: 'Images with a verified box for this label where every other label in the model config is accounted for (verified present or marked absent) — click to browse',
+            title: 'Images with a verified box for this label where every other label in the model blueprint is accounted for (verified present or marked absent) — click to browse',
             goodIf: s => s.coLabelGapsCount === 0 && s.coLabelsCoveredCount > 0,
             browseStatus: 'co_labels_covered' },
           { header: 'Co-label gaps', key: 'coLabelGapsCount',
-            title: 'Images with a verified box for this label but where one or more other model-config labels are not yet verified or marked absent — click to review',
+            title: 'Images with a verified box for this label but where one or more other model-blueprint labels are not yet verified or marked absent — click to review',
             warnIf: s => s.coLabelGapsCount > 0,
             browseStatus: 'co_label_gaps' },
         ]));
@@ -696,7 +696,7 @@ export async function renderTrainingConfigManager({ target = 'training-config-bo
     listBar.className = 'panel-box__bar';
     const listTitle = document.createElement('span');
     listTitle.className = 'panel-box__title';
-    listTitle.textContent = 'Training Configs';
+    listTitle.textContent = 'Training Runs';
     listBar.appendChild(listTitle);
     listPanel.appendChild(listBar);
 
@@ -772,12 +772,12 @@ export async function renderTrainingConfigManager({ target = 'training-config-bo
         _barHandle = buildPanelEditorBar({
           container: editorBar,
           item: config,
-          newTitle: 'New Training Config',
-          deleteTitle: 'Delete training config',
+          newTitle: 'New Training Run',
+          deleteTitle: 'Delete training run',
           onSave: async () => {
             const data = _currentFormHandle.getSaveData();
             if (!data.name) { toast('Name is required', 3000, 'error'); return; }
-            if (!data.modelConfigNodeUuid) { toast('A model config node is required', 3000, 'error'); return; }
+            if (!data.modelConfigNodeUuid) { toast('A model blueprint node is required', 3000, 'error'); return; }
             if (!data.datasetUuids?.length) { toast('At least one dataset is required', 3000, 'error'); return; }
             setSaving(true);
             try {
@@ -832,7 +832,7 @@ export async function renderTrainingConfigManager({ target = 'training-config-bo
           function _refreshActiveBtn() {
             const current = activeTrainingConfig.getActive();
             const isActive = current?.uuid === config.uuid;
-            activeBtn.textContent = isActive ? '✓ Active training config' : 'Set as active training config';
+            activeBtn.textContent = isActive ? '✓ Active training run' : 'Set as active training run';
             activeBtn.style.opacity = isActive ? '0.7' : '1';
           }
           _refreshActiveBtn();
@@ -885,7 +885,7 @@ export async function renderTrainingConfigManager({ target = 'training-config-bo
         _currentDoSave = async () => {
           const data = formHandle.getSaveData();
           if (!data.name) { toast('Name is required', 3000, 'error'); return false; }
-          if (!data.modelConfigNodeUuid) { toast('A model config node is required', 3000, 'error'); return false; }
+          if (!data.modelConfigNodeUuid) { toast('A model blueprint node is required', 3000, 'error'); return false; }
           if (!data.datasetUuids?.length) { toast('At least one dataset is required', 3000, 'error'); return false; }
           setSaving(true);
           try {
@@ -923,7 +923,7 @@ export async function renderTrainingConfigManager({ target = 'training-config-bo
       if (configsMap.size === 0) {
         const empty = document.createElement('p');
         empty.style.cssText = 'color: var(--pico-muted-color, #888); font-style: italic; font-size: 0.85em; padding: 0.5em 0.75em; margin: 0;';
-        empty.textContent = 'No training configs yet — use the form on the right to create your first one.';
+        empty.textContent = 'No training runs yet — use the form on the right to create your first one.';
         listBody.appendChild(empty);
       }
 
@@ -980,7 +980,7 @@ export async function renderTrainingConfigManager({ target = 'training-config-bo
   } catch (err) {
     const errMsg = document.createElement('p');
     errMsg.style.color = 'red';
-    errMsg.textContent = `Error loading training configurations: ${err.message}`;
+    errMsg.textContent = `Error loading training runs: ${err.message}`;
     container.appendChild(errMsg);
   } finally {
     _rendering = false;

@@ -80,7 +80,7 @@ export function mountActiveModelBar(containerId = 'active-model-bar') {
     popup.appendChild(_makeRow('Show dynamic labels', isDynamicLabelsVisible(),
       v => setDynamicLabelsVisible(v)));
     if (tc) {
-      popup.appendChild(_makeRow('Filter labels to training config', activeTrainingConfig.isFilterEnabled(),
+      popup.appendChild(_makeRow('Filter labels to training run', activeTrainingConfig.isFilterEnabled(),
         v => activeTrainingConfig.setFilterEnabled(v)));
     }
 
@@ -133,8 +133,8 @@ export function mountActiveModelBar(containerId = 'active-model-bar') {
 
     const goBtn = document.createElement('button');
     goBtn.type = 'button';
-    goBtn.textContent = '→ Config';
-    goBtn.title = 'Go to training config';
+    goBtn.textContent = '→ Run';
+    goBtn.title = 'Go to training run';
     goBtn.style.cssText = 'background:none;border:1px solid var(--pico-muted-border-color,#555);border-radius:3px;cursor:pointer;padding:1px 6px;font-size:0.85em;color:var(--pico-muted-color,#aaa);margin:0;white-space:nowrap;';
     goBtn.addEventListener('click', () => {
       _closeStatsPopup();
@@ -302,7 +302,7 @@ export function mountActiveModelBar(containerId = 'active-model-bar') {
     if (tc) {
       const label = document.createElement('span');
       label.className = 'active-model-bar__label';
-      label.textContent = 'Training config:';
+      label.textContent = 'Training run:';
       left.appendChild(label);
 
       const nameBtn = document.createElement('button');
@@ -320,7 +320,7 @@ export function mountActiveModelBar(containerId = 'active-model-bar') {
         const filterBadge = document.createElement('span');
         filterBadge.className = 'active-model-bar__filter-badge';
         filterBadge.textContent = 'filtered';
-        filterBadge.title = 'Label list is filtered to this training config';
+        filterBadge.title = 'Label list is filtered to this training run';
         left.appendChild(filterBadge);
       }
 
@@ -328,7 +328,7 @@ export function mountActiveModelBar(containerId = 'active-model-bar') {
       deactivateBtn.type = 'button';
       deactivateBtn.className = 'active-model-bar__deactivate';
       deactivateBtn.textContent = '✕';
-      deactivateBtn.title = 'Deactivate training config';
+      deactivateBtn.title = 'Deactivate training run';
       deactivateBtn.addEventListener('click', () => {
         _closeStatsPopup();
         activeTrainingConfig.setActive(null);
@@ -337,7 +337,7 @@ export function mountActiveModelBar(containerId = 'active-model-bar') {
     } else {
       const none = document.createElement('span');
       none.className = 'active-model-bar__none';
-      none.textContent = 'No active training config';
+      none.textContent = 'No active training run';
       left.appendChild(none);
 
       // Link to set one
@@ -345,7 +345,7 @@ export function mountActiveModelBar(containerId = 'active-model-bar') {
       setBtn.type = 'button';
       setBtn.className = 'active-model-bar__set-tc-btn';
       setBtn.textContent = 'Set one →';
-      setBtn.title = 'Go to Training configuration';
+      setBtn.title = 'Go to Training Runs';
       setBtn.addEventListener('click', () => navigateTabs('tab-configuration', 'tab-training-management'));
       left.appendChild(setBtn);
     }

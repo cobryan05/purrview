@@ -179,7 +179,7 @@ function renderBundlesSection({ config, labelsMap, onComposeClick }) {
       const bundles = await fetchModelBundlesForConfig(config.uuid);
       bundlesBox.innerHTML = '';
       if (bundles.length === 0) {
-        bundlesBox.textContent = 'No bundles trained from this configuration yet.';
+        bundlesBox.textContent = 'No bundles trained from this blueprint yet.';
         return;
       }
       for (const b of bundles) {
@@ -268,7 +268,7 @@ function renderComposeBundlePanel({ config, labelsMap, onCreated }) {
     body.innerHTML = '';
 
     if (targets.length === 0) {
-      body.textContent = 'No training targets for this configuration yet (add a root model first).';
+      body.textContent = 'No training targets for this blueprint yet (add a root model first).';
       return;
     }
 
@@ -658,7 +658,7 @@ export async function renderModelConfigManager({ target = 'model-config-box' } =
     listBar.className = 'panel-box__bar';
     const listTitle = document.createElement('span');
     listTitle.className = 'panel-box__title';
-    listTitle.textContent = 'Configurations';
+    listTitle.textContent = 'Model Blueprints';
     listBar.appendChild(listTitle);
     listPanel.appendChild(listBar);
 
@@ -735,8 +735,8 @@ export async function renderModelConfigManager({ target = 'model-config-box' } =
         _barHandle = buildPanelEditorBar({
           container: editorBar,
           item: config,
-          newTitle: 'New Configuration',
-          deleteTitle: 'Delete configuration',
+          newTitle: 'New Model Blueprint',
+          deleteTitle: 'Delete model blueprint',
           onSave: async () => {
             const { name, description, nodes } = _currentFormHandle.getSaveData();
             if (!name) { toast('Name is required', 3000, 'error'); return; }
@@ -820,7 +820,7 @@ export async function renderModelConfigManager({ target = 'model-config-box' } =
       if (configsMap.size === 0) {
         const empty = document.createElement('p');
         empty.style.cssText = 'color: var(--pico-muted-color, #888); font-style: italic; font-size: 0.85em; padding: 0.5em 0.75em; margin: 0;';
-        empty.textContent = 'No configurations yet — use the form on the right to create your first one.';
+        empty.textContent = 'No model blueprints yet — use the form on the right to create your first one.';
         listBody.appendChild(empty);
       }
 
@@ -886,7 +886,7 @@ export async function renderModelConfigManager({ target = 'model-config-box' } =
   } catch (err) {
     const errMsg = document.createElement('p');
     errMsg.style.color = 'red';
-    errMsg.textContent = `Error loading model configurations: ${err.message}`;
+    errMsg.textContent = `Error loading model blueprints: ${err.message}`;
     container.appendChild(errMsg);
   } finally {
     _rendering = false;

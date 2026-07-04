@@ -195,7 +195,7 @@ class TestTrainingConfigPaneStructure:
         expect(_box(page).locator("button", has_text="+ New")).to_be_visible()
 
         # Right panel defaults to create form
-        expect(_editor_bar(page)).to_contain_text("New Training Config")
+        expect(_editor_bar(page)).to_contain_text("New Training Run")
 
     def test_model_config_selector_is_present(self, page: Page, base_url: str):
         """The create form has a model config selector that lists available configs."""

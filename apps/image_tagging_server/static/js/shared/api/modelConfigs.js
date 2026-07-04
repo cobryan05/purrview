@@ -9,7 +9,7 @@ const modelConfigsFetcher = createCachedFetcher(async (keys) => {
   const res = await apiFetch('/api/model-configs');
   const data = await res.json();
   if (!res.ok || data.status !== 'success') {
-    throw new Error(data.message || 'Failed to fetch model configs');
+    throw new Error(data.message || 'Failed to fetch model blueprints');
   }
   const map = new Map(data.configs.map(c => [c.uuid, c]));
   return ignoreKeyReturn(keys, map);
@@ -39,7 +39,7 @@ export async function createModelConfig({ name, description = '', nodes = [] }) 
   });
   const data = await res.json();
   if (!res.ok || data.status !== 'success') {
-    throw new Error(data.message || 'Failed to create model config');
+    throw new Error(data.message || 'Failed to create model blueprint');
   }
   modelConfigsFetcher.clear();
   return data.config;
@@ -58,7 +58,7 @@ export async function updateModelConfig(uuid, { name, description, nodes }) {
   });
   const data = await res.json();
   if (!res.ok || data.status !== 'success') {
-    throw new Error(data.message || 'Failed to update model config');
+    throw new Error(data.message || 'Failed to update model blueprint');
   }
   modelConfigsFetcher.clear();
   return data.config;
@@ -68,7 +68,7 @@ export async function deleteModelConfig(uuid) {
   const res = await apiFetch(`/api/model-configs/${uuid}`, { method: 'DELETE' });
   const data = await res.json();
   if (!res.ok || data.status !== 'success') {
-    throw new Error(data.message || 'Failed to delete model config');
+    throw new Error(data.message || 'Failed to delete model blueprint');
   }
   modelConfigsFetcher.clear();
 }
