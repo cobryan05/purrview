@@ -103,6 +103,12 @@ class BinaryImageClassifier(Trainer):
             arch_name or "(default)",
             timm_model,
         )
+        logger.info(
+            "Effective hyperparams: epochs=%d batch=%d patience=%d",
+            max_epochs,
+            batch_size,
+            patience,
+        )
 
         # ── Build datasets ──────────────────────────────────────────────────
         try:

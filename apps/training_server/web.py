@@ -48,9 +48,13 @@ class SubmitJobPayload(BaseModel):
     class_names: List[str] = Field(default_factory=lambda: ["absent", "present"])
     hyperparams: Dict[str, Any] = Field(default_factory=dict)
     # Flattened hyperparams also accepted at top level for backward compat.
-    max_epochs: int = 50
-    batch_size: int = 32
-    early_stopping_patience: int = 10
+    # These stay Optional/None-default so an omitted field falls through to
+    # each trainer's own config.get(key, default) — trainers disagree on the
+    # right default (e.g. object_detection batch_size=16 vs classifier=32),
+    # and a fixed Pydantic default here would silently override all of them.
+    max_epochs: Optional[int] = None
+    batch_size: Optional[int] = None
+    early_stopping_patience: Optional[int] = None
     manifest: List[ManifestEntry] = Field(default_factory=list)
 
 
@@ -141,7 +145,7 @@ class WebApp:
             # inside hyperparams — this update() must keep running after
             # model_dump(), or sidecar.json loses bundle identity. Pinned by
             # test_submit_job_endpoint_merges_hyperparams_into_trainer_config.
-            config = payload.model_dump(exclude={"manifest", "hyperparams"})
+            config = payload.model_dump(exclude={"manifest", "hyperparams"}, exclude_none=True)
             config.update(payload.hyperparams)
             job = await self._manager.submit_job(config, manifest=manifest)
             return SubmitJobResponse(
