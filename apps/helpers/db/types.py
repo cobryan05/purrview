@@ -811,6 +811,87 @@ class ModelConfigUpdate(ApiModel):
     nodes: Optional[List[ModelConfigNodeWrite]] = None  # None=no change; []=remove all
 
 
+# ─── Filter Chains ───────────────────────────────────────────────────────────
+
+
+class ActionKind(str, Enum):
+    DISCARD_IMAGE = "discard_image"
+    TAG_IMAGE = "tag_image"
+    STRIP_UNVERIFIED_BBOXES = "strip_unverified_bboxes"
+    RELABEL_BBOX = "relabel_bbox"
+    TAG_BBOX = "tag_bbox"
+
+
+class FilterChainStep(SQLModel, table=True):
+    __tablename__ = "filter_chain_steps"
+    uuid: str = Field(default_factory=lambda: str(uuid4()), primary_key=True)
+    filter_chain_uuid: str = Field(foreign_key="filter_chains.uuid", index=True, ondelete="CASCADE")
+    order: int
+    model_name: str
+    confidence: float = Field(default=0.5)
+    iou_threshold: float = Field(default=0.5)  # detector-overlap steps only
+    action: str  # validated against ActionKind in the write models
+    action_params: Dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    enabled: bool = Field(default=True)
+    chain: "FilterChain" = Relationship(back_populates="steps")
+    # match_mode is derived at run time from the model sidecar's model_kind; not stored.
+    # action_params holds: tag_uuid, target_label_uuid, only_if_label_uuid (all optional per action).
+
+
+class FilterChain(TimestampModel, table=True):
+    __tablename__ = "filter_chains"
+    uuid: str = Field(default_factory=lambda: str(uuid4()), primary_key=True)
+    name: str = Field(unique=True, index=True)
+    description: Optional[str] = None
+    steps: List[FilterChainStep] = Relationship(
+        back_populates="chain",
+        sa_relationship_kwargs={"cascade": "all, delete-orphan", "order_by": "FilterChainStep.order"},
+    )
+
+
+class FilterChainStepRead(OrmModel):
+    uuid: str
+    filter_chain_uuid: str
+    order: int
+    model_name: str
+    confidence: float = 0.5
+    iou_threshold: float = 0.5
+    action: str
+    action_params: Dict[str, Any] = Field(default_factory=dict)
+    enabled: bool = True
+
+
+class FilterChainRead(OrmModel):
+    uuid: str
+    name: str
+    description: Optional[str] = None
+    steps: List[FilterChainStepRead] = Field(default_factory=list)
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
+
+class FilterChainStepWrite(ApiModel):
+    order: int
+    model_name: str
+    confidence: float = 0.5
+    iou_threshold: float = 0.5
+    action: ActionKind
+    action_params: Dict[str, Any] = Field(default_factory=dict)
+    enabled: bool = True
+
+
+class FilterChainCreate(ApiModel):
+    name: str
+    description: Optional[str] = None
+    steps: List[FilterChainStepWrite] = Field(default_factory=list)
+
+
+class FilterChainUpdate(ApiModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    steps: Optional[List[FilterChainStepWrite]] = None  # None=no change; []=remove all
+
+
 class TrainingConfigDatasetLink(SQLModel, table=True):
     __tablename__ = "training_config_dataset_links"
     training_config_uuid: str = Field(foreign_key="training_configs.uuid", primary_key=True, ondelete="CASCADE")

@@ -4572,6 +4572,198 @@
         }
       }
     },
+    "/api/filter-chains": {
+      "get": {
+        "tags": [
+          "filter_chains"
+        ],
+        "summary": "List Filter Chains",
+        "operationId": "list_filter_chains",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListFilterChainsResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "filter_chains"
+        ],
+        "summary": "Create Filter Chain",
+        "operationId": "create_filter_chain",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FilterChainCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FilterChainResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/filter-chains/{uuid}": {
+      "get": {
+        "tags": [
+          "filter_chains"
+        ],
+        "summary": "Get Filter Chain",
+        "operationId": "get_filter_chain",
+        "parameters": [
+          {
+            "name": "uuid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FilterChainResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "filter_chains"
+        ],
+        "summary": "Update Filter Chain",
+        "operationId": "update_filter_chain",
+        "parameters": [
+          {
+            "name": "uuid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FilterChainUpdate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FilterChainResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "filter_chains"
+        ],
+        "summary": "Delete Filter Chain",
+        "operationId": "delete_filter_chain",
+        "parameters": [
+          {
+            "name": "uuid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StatusResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/model-bundles": {
       "get": {
         "tags": [
@@ -4767,6 +4959,17 @@
   },
   "components": {
     "schemas": {
+      "ActionKind": {
+        "type": "string",
+        "enum": [
+          "discard_image",
+          "tag_image",
+          "strip_unverified_bboxes",
+          "relabel_bbox",
+          "tag_bbox"
+        ],
+        "title": "ActionKind"
+      },
       "AddLabelPayload": {
         "properties": {
           "name": {
@@ -6497,6 +6700,266 @@
         "title": "FileEntryRead",
         "description": "File entry as returned by the API, optionally enriched with DB info."
       },
+      "FilterChainCreate": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "steps": {
+            "items": {
+              "$ref": "#/components/schemas/FilterChainStepWrite"
+            },
+            "type": "array",
+            "title": "Steps"
+          }
+        },
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "title": "FilterChainCreate"
+      },
+      "FilterChainRead": {
+        "properties": {
+          "uuid": {
+            "type": "string",
+            "title": "Uuid"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "steps": {
+            "items": {
+              "$ref": "#/components/schemas/FilterChainStepRead"
+            },
+            "type": "array",
+            "title": "Steps"
+          },
+          "createdAt": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Createdat"
+          },
+          "updatedAt": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updatedat"
+          }
+        },
+        "type": "object",
+        "required": [
+          "uuid",
+          "name"
+        ],
+        "title": "FilterChainRead"
+      },
+      "FilterChainResponse": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "title": "Status",
+            "default": "success"
+          },
+          "message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Message"
+          },
+          "chain": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FilterChainRead"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "type": "object",
+        "title": "FilterChainResponse"
+      },
+      "FilterChainStepRead": {
+        "properties": {
+          "uuid": {
+            "type": "string",
+            "title": "Uuid"
+          },
+          "filterChainUuid": {
+            "type": "string",
+            "title": "Filterchainuuid"
+          },
+          "order": {
+            "type": "integer",
+            "title": "Order"
+          },
+          "modelName": {
+            "type": "string",
+            "title": "Modelname"
+          },
+          "confidence": {
+            "type": "number",
+            "title": "Confidence",
+            "default": 0.5
+          },
+          "iouThreshold": {
+            "type": "number",
+            "title": "Iouthreshold",
+            "default": 0.5
+          },
+          "action": {
+            "type": "string",
+            "title": "Action"
+          },
+          "actionParams": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Actionparams"
+          },
+          "enabled": {
+            "type": "boolean",
+            "title": "Enabled",
+            "default": true
+          }
+        },
+        "type": "object",
+        "required": [
+          "uuid",
+          "filterChainUuid",
+          "order",
+          "modelName",
+          "action"
+        ],
+        "title": "FilterChainStepRead"
+      },
+      "FilterChainStepWrite": {
+        "properties": {
+          "order": {
+            "type": "integer",
+            "title": "Order"
+          },
+          "modelName": {
+            "type": "string",
+            "title": "Modelname"
+          },
+          "confidence": {
+            "type": "number",
+            "title": "Confidence",
+            "default": 0.5
+          },
+          "iouThreshold": {
+            "type": "number",
+            "title": "Iouthreshold",
+            "default": 0.5
+          },
+          "action": {
+            "$ref": "#/components/schemas/ActionKind"
+          },
+          "actionParams": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Actionparams"
+          },
+          "enabled": {
+            "type": "boolean",
+            "title": "Enabled",
+            "default": true
+          }
+        },
+        "type": "object",
+        "required": [
+          "order",
+          "modelName",
+          "action"
+        ],
+        "title": "FilterChainStepWrite"
+      },
+      "FilterChainUpdate": {
+        "properties": {
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "steps": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/FilterChainStepWrite"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Steps"
+          }
+        },
+        "type": "object",
+        "title": "FilterChainUpdate"
+      },
       "FindDissimilarBboxesByUuidPayload": {
         "properties": {
           "bboxUuid": {
@@ -8117,6 +8580,35 @@
         },
         "type": "object",
         "title": "ListFilesResponse"
+      },
+      "ListFilterChainsResponse": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "title": "Status",
+            "default": "success"
+          },
+          "message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Message"
+          },
+          "chains": {
+            "items": {
+              "$ref": "#/components/schemas/FilterChainRead"
+            },
+            "type": "array",
+            "title": "Chains"
+          }
+        },
+        "type": "object",
+        "title": "ListFilterChainsResponse"
       },
       "ListImageProvidersResponse": {
         "properties": {

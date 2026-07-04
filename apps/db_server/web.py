@@ -24,6 +24,9 @@ from apps.helpers.db.types import (
     DatasetFilterCriteria,
     DatasetRead,
     DatasetUpdate,
+    FilterChainCreate,
+    FilterChainRead,
+    FilterChainUpdate,
     ImageItemStatus,
     ImageLabelRead,
     ImageLabelWithFilename,
@@ -624,6 +627,14 @@ class ModelConfigResponse(StatusResponse):
     config: Optional[ModelConfigRead] = None
 
 
+class ListFilterChainsResponse(StatusResponse):
+    chains: List[FilterChainRead] = Field(default_factory=list)
+
+
+class FilterChainResponse(StatusResponse):
+    chain: Optional[FilterChainRead] = None
+
+
 class BundleTrainingTarget(ApiModel):
     """One artifact a full bundle training run must produce (see
     DbClient.derive_bundle_training_targets for the derivation semantics)."""
@@ -830,6 +841,7 @@ class WebApp:
         # Register routes
         self._register_routes()
         self._register_model_config_routes()
+        self._register_filter_chain_routes()
         self._register_bundle_routes()
         self._register_exception()
 
@@ -3042,6 +3054,95 @@ class WebApp:
             except Exception as e:
                 logger.exception("Failed to fetch images by label status for training config %s", uuid)
                 return ReviewQueueResponse(status=JsonValues.FAILURE, message=str(e))
+
+    def _register_filter_chain_routes(self) -> None:
+        @self._app.get(
+            "/api/filter-chains",
+            response_model=ListFilterChainsResponse,
+            tags=[ApiTags.FILTER_CHAINS],
+            operation_id="list_filter_chains",
+        )
+        async def list_filter_chains() -> ListFilterChainsResponse:
+            try:
+                chains = await self._manager.list_filter_chains()
+                return ListFilterChainsResponse(status=JsonValues.SUCCESS, chains=chains)
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return ListFilterChainsResponse(status=JsonValues.FAILURE, message=str(e))
+
+        @self._app.post(
+            "/api/filter-chains",
+            response_model=FilterChainResponse,
+            tags=[ApiTags.FILTER_CHAINS],
+            operation_id="create_filter_chain",
+        )
+        async def create_filter_chain(payload: FilterChainCreate) -> FilterChainResponse:
+            try:
+                chain = await self._manager.create_filter_chain(payload)
+                return FilterChainResponse(status=JsonValues.SUCCESS, chain=chain)
+            except IntegrityError as e:
+                logger.error(e, exc_info=True)
+                return FilterChainResponse(
+                    status=JsonValues.FAILURE,
+                    message=self._unique_constraint_msg(e, "filter chain"),
+                )
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return FilterChainResponse(status=JsonValues.FAILURE, message=str(e))
+
+        @self._app.get(
+            "/api/filter-chains/{uuid}",
+            response_model=FilterChainResponse,
+            tags=[ApiTags.FILTER_CHAINS],
+            operation_id="get_filter_chain",
+        )
+        async def get_filter_chain(uuid: str) -> FilterChainResponse:
+            try:
+                chain = await self._manager.get_filter_chain(uuid)
+                if chain is None:
+                    return FilterChainResponse(status=JsonValues.FAILURE, message="Filter chain not found")
+                return FilterChainResponse(status=JsonValues.SUCCESS, chain=chain)
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return FilterChainResponse(status=JsonValues.FAILURE, message=str(e))
+
+        @self._app.patch(
+            "/api/filter-chains/{uuid}",
+            response_model=FilterChainResponse,
+            tags=[ApiTags.FILTER_CHAINS],
+            operation_id="update_filter_chain",
+        )
+        async def update_filter_chain(uuid: str, payload: FilterChainUpdate) -> FilterChainResponse:
+            try:
+                chain = await self._manager.update_filter_chain(uuid, payload)
+                if chain is None:
+                    return FilterChainResponse(status=JsonValues.FAILURE, message="Filter chain not found")
+                return FilterChainResponse(status=JsonValues.SUCCESS, chain=chain)
+            except IntegrityError as e:
+                logger.error(e, exc_info=True)
+                return FilterChainResponse(
+                    status=JsonValues.FAILURE,
+                    message=self._unique_constraint_msg(e, "filter chain"),
+                )
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return FilterChainResponse(status=JsonValues.FAILURE, message=str(e))
+
+        @self._app.delete(
+            "/api/filter-chains/{uuid}",
+            response_model=StatusResponse,
+            tags=[ApiTags.FILTER_CHAINS],
+            operation_id="delete_filter_chain",
+        )
+        async def delete_filter_chain(uuid: str) -> StatusResponse:
+            try:
+                ok = await self._manager.delete_filter_chain(uuid)
+                if not ok:
+                    return StatusResponse(status=JsonValues.FAILURE, message="Filter chain not found")
+                return StatusResponse(status=JsonValues.SUCCESS)
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return StatusResponse(status=JsonValues.FAILURE, message=str(e))
 
     def _register_bundle_routes(self) -> None:
         @self._app.get(

@@ -42,6 +42,11 @@ from .types import (
     DatasetLabelLink,
     DatasetRead,
     DatasetUpdate,
+    FilterChain,
+    FilterChainCreate,
+    FilterChainRead,
+    FilterChainStep,
+    FilterChainUpdate,
     ImageItemStatus,
     ImageLabel,
     ImageLabelFilter,
@@ -4645,5 +4650,97 @@ class DbClient:
             if mc is None:
                 return False
             await session.delete(mc)
+            await session.commit()
+        return True
+
+    # ─── Filter Chains ────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _fc_to_read(fc: FilterChain) -> FilterChainRead:
+        return FilterChainRead.model_validate(fc)
+
+    async def list_filter_chains(self) -> List[FilterChainRead]:
+        async with self._async_session_maker() as session:
+            stmt = select(FilterChain).options(selectinload(FilterChain.steps))
+            result = await session.exec(stmt)
+            return [self._fc_to_read(fc) for fc in result.all()]
+
+    async def get_filter_chain(self, uuid: str) -> Optional[FilterChainRead]:
+        async with self._async_session_maker() as session:
+            stmt = select(FilterChain).where(FilterChain.uuid == uuid).options(selectinload(FilterChain.steps))
+            result = await session.exec(stmt)
+            fc = result.one_or_none()
+            if fc is None:
+                return None
+            return self._fc_to_read(fc)
+
+    async def create_filter_chain(self, data: FilterChainCreate) -> FilterChainRead:
+        async with self._async_session_maker() as session:
+            fc = FilterChain(name=data.name, description=data.description)
+            session.add(fc)
+            await session.flush()
+            for step in data.steps:
+                session.add(
+                    FilterChainStep(
+                        filter_chain_uuid=fc.uuid,
+                        order=step.order,
+                        model_name=step.model_name,
+                        confidence=step.confidence,
+                        iou_threshold=step.iou_threshold,
+                        action=step.action.value,
+                        action_params=step.action_params,
+                        enabled=step.enabled,
+                    )
+                )
+            await session.commit()
+            stmt = select(FilterChain).where(FilterChain.uuid == fc.uuid).options(selectinload(FilterChain.steps))
+            result = await session.exec(stmt)
+            return self._fc_to_read(result.one())
+
+    async def update_filter_chain(self, uuid: str, data: FilterChainUpdate) -> Optional[FilterChainRead]:
+        async with self._async_session_maker() as session:
+            result = await session.exec(select(FilterChain).where(FilterChain.uuid == uuid))
+            fc = result.one_or_none()
+            if fc is None:
+                return None
+
+            changes = data.model_dump(exclude_unset=True, mode="json")
+            steps_data = changes.pop("steps", None)
+
+            for key, value in changes.items():
+                if hasattr(fc, key):
+                    setattr(fc, key, value)
+
+            if isinstance(steps_data, list):
+                await session.exec(delete(FilterChainStep).where(FilterChainStep.filter_chain_uuid == uuid))
+                for step in steps_data:
+                    session.add(
+                        FilterChainStep(
+                            filter_chain_uuid=uuid,
+                            order=step["order"],
+                            model_name=step["model_name"],
+                            confidence=step.get("confidence", 0.5),
+                            iou_threshold=step.get("iou_threshold", 0.5),
+                            action=step["action"],
+                            action_params=step.get("action_params", {}),
+                            enabled=step.get("enabled", True),
+                        )
+                    )
+
+            fc.updated_at = datetime.now(timezone.utc)
+            session.add(fc)
+            await session.commit()
+
+            result2 = await session.exec(
+                select(FilterChain).where(FilterChain.uuid == uuid).options(selectinload(FilterChain.steps))
+            )
+            return self._fc_to_read(result2.one())
+
+    async def delete_filter_chain(self, uuid: str) -> bool:
+        async with self._async_session_maker() as session:
+            fc = await session.get(FilterChain, uuid)
+            if fc is None:
+                return False
+            await session.delete(fc)
             await session.commit()
         return True

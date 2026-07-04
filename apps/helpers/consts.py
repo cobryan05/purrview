@@ -30,6 +30,7 @@ class ApiTags(str, Enum):
     DATASETS = "datasets"
     MODEL_CONFIGS = "model_configs"
     TRAINING_CONFIGS = "training_configs"
+    FILTER_CHAINS = "filter_chains"
     SETTINGS = "settings"
 
 

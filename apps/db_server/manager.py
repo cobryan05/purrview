@@ -32,6 +32,9 @@ from apps.helpers.db.types import (
     DatasetCreate,
     DatasetRead,
     DatasetUpdate,
+    FilterChainCreate,
+    FilterChainRead,
+    FilterChainUpdate,
     ImageItemStatus,
     ImageLabelRead,
     ImageLabelWithFilename,
@@ -2359,6 +2362,23 @@ class Manager:
 
     async def delete_model_config(self, uuid: str) -> bool:
         return await self._db_client.delete_model_config(uuid)
+
+    # ── Filter chains ──────────────────────────────────────────────────────────
+
+    async def list_filter_chains(self) -> List[FilterChainRead]:
+        return await self._db_client.list_filter_chains()
+
+    async def get_filter_chain(self, uuid: str) -> Optional[FilterChainRead]:
+        return await self._db_client.get_filter_chain(uuid)
+
+    async def create_filter_chain(self, data: FilterChainCreate) -> FilterChainRead:
+        return await self._db_client.create_filter_chain(data)
+
+    async def update_filter_chain(self, uuid: str, data: FilterChainUpdate) -> Optional[FilterChainRead]:
+        return await self._db_client.update_filter_chain(uuid, data)
+
+    async def delete_filter_chain(self, uuid: str) -> bool:
+        return await self._db_client.delete_filter_chain(uuid)
 
     # ── Training configs ──────────────────────────────────────────────────────
 

@@ -63,6 +63,11 @@ TRAINING_CONFIGS_PROXY = ReverseProxy(
     port=APPS_CONFIG[APPS.DB_SERVER].port,
     path="/api/training-configs",
 )
+FILTER_CHAINS_PROXY = ReverseProxy(
+    host=APPS_CONFIG[APPS.DB_SERVER].host,
+    port=APPS_CONFIG[APPS.DB_SERVER].port,
+    path="/api/filter-chains",
+)
 SETTINGS_PROXY = ReverseProxy(
     host=APPS_CONFIG[APPS.DB_SERVER].host,
     port=APPS_CONFIG[APPS.DB_SERVER].port,
@@ -224,6 +229,13 @@ class WebApp:
         )
         async def proxy_training_configs(request: Request, path: str):
             return await TRAINING_CONFIGS_PROXY.handle_request(path, request)
+
+        @self._app.api_route(
+            "/api/filter-chains/{path:path}",
+            methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
+        )
+        async def proxy_filter_chains(request: Request, path: str):
+            return await FILTER_CHAINS_PROXY.handle_request(path, request)
 
         @self._app.api_route("/api/settings/{path:path}", methods=["GET", "PUT"])
         async def proxy_settings(request: Request, path: str):
