@@ -106,7 +106,7 @@ class TestRun:
     async def test_downloads_writes_onnx_and_sidecar(self, tmp_path, monkeypatch):
         monkeypatch.setattr("httpx.AsyncClient.get", _fake_get_factory(_ONNX_BYTES))
 
-        task = _make_task({"curated_key": "yolo11n-coco", "model_name": "base_model", "overwrite": False})
+        task = _make_task({"curated_key": "yolo9_t-coco", "model_name": "base_model", "overwrite": False})
         with patch("apps.tasks_server.tasks.ImportModelTask._MODELS_ROOT", tmp_path):
             await task._init(task._params, None)
             result = await task._run()
@@ -119,7 +119,7 @@ class TestRun:
 
         sidecar = json.loads(sidecar_path.read_text())
         assert sidecar["classes"] == ["person", "bicycle"]
-        assert sidecar["model_family"] == "ultralytics_yolov8"
+        assert sidecar["model_family"] == "libreyolo9"
         assert sidecar["device"] == "auto"
         assert sidecar["class_map"] == {}
 
@@ -136,7 +136,7 @@ class TestRun:
 
         monkeypatch.setattr("httpx.AsyncClient.get", _fake_get_factory(_ONNX_BYTES))
 
-        task = _make_task({"curated_key": "yolo11n-coco", "model_name": "base_model", "overwrite": True})
+        task = _make_task({"curated_key": "yolo9_t-coco", "model_name": "base_model", "overwrite": True})
         with patch("apps.tasks_server.tasks.ImportModelTask._MODELS_ROOT", tmp_path):
             await task._init(task._params, None)
             result = await task._run()
@@ -150,7 +150,7 @@ class TestRun:
     async def test_download_http_error_propagates_without_writing_files(self, tmp_path, monkeypatch):
         monkeypatch.setattr("httpx.AsyncClient.get", _fake_get_factory(_ONNX_BYTES, raise_error=True))
 
-        task = _make_task({"curated_key": "yolo11n-coco", "model_name": "failed_dl", "overwrite": False})
+        task = _make_task({"curated_key": "yolo9_t-coco", "model_name": "failed_dl", "overwrite": False})
         with patch("apps.tasks_server.tasks.ImportModelTask._MODELS_ROOT", tmp_path):
             await task._init(task._params, None)
             with pytest.raises(RuntimeError, match="simulated HTTP error"):
@@ -162,7 +162,7 @@ class TestRun:
     async def test_download_garbage_bytes_rejected_without_writing_files(self, tmp_path, monkeypatch):
         monkeypatch.setattr("httpx.AsyncClient.get", _fake_get_factory(b"not an onnx file at all"))
 
-        task = _make_task({"curated_key": "yolo11n-coco", "model_name": "garbage_dl", "overwrite": False})
+        task = _make_task({"curated_key": "yolo9_t-coco", "model_name": "garbage_dl", "overwrite": False})
         with patch("apps.tasks_server.tasks.ImportModelTask._MODELS_ROOT", tmp_path):
             await task._init(task._params, None)
             with pytest.raises(ValueError, match="Not a valid ONNX model"):
@@ -175,7 +175,7 @@ class TestRun:
         get_calls = []
         monkeypatch.setattr("httpx.AsyncClient.get", _wrap_tracking(_fake_get_factory(_ONNX_BYTES), get_calls))
 
-        task = _make_task({"curated_key": "yolo11n-coco", "model_name": "base_model2", "overwrite": False})
+        task = _make_task({"curated_key": "yolo9_t-coco", "model_name": "base_model2", "overwrite": False})
         with patch("apps.tasks_server.tasks.ImportModelTask._MODELS_ROOT", tmp_path):
             await task._init(task._params, None)
             task._cancel_flag.set()
@@ -186,7 +186,7 @@ class TestRun:
         assert not (tmp_path / "base_model2.onnx").exists()
 
     async def test_deinit_is_noop(self, tmp_path):
-        task = _make_task({"curated_key": "yolo11n-coco", "model_name": "m"})
+        task = _make_task({"curated_key": "yolo9_t-coco", "model_name": "m"})
         with patch("apps.tasks_server.tasks.ImportModelTask._MODELS_ROOT", tmp_path):
             await task._init(task._params, None)
         await task._deinit()  # should not raise
