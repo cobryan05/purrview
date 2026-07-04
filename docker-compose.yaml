@@ -21,10 +21,18 @@ services:
     environment:
       THUMB_CACHE_MAX_MB: 100
       TRAINING_SERVER_HOST: whiskerwatcher_training
+      MODELS_ROOT: /app/models
     volumes:
       - ./data/:/data
       - ./conf:/conf
       - ./logs:/logs
+      # tasks_server reads labeled images from FILES_ROOT (/app/image_datasets)
+      # to push them to the training server, and saves the trained/converted
+      # model back to MODELS_ROOT (/app/models) for the inference server to load.
+      # Without these mounts a training run fails with "image file(s) not found
+      # on disk" and finished models never persist. (MODELS_ROOT default is /models.)
+      - ./models:/app/models
+      - ./image_datasets:/app/image_datasets
     ports:
       - "7999:7999"  # Whisker-Watcher main app
       - "8553:8554"  # RTSP relay
