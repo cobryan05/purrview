@@ -207,6 +207,44 @@ class TestRun:
             assert payload.label_uuid == "label-cat"
             assert payload.status.value == "present"
 
+    async def test_run_with_cuda_provider_uses_dedicated_executor(self, tmp_path):
+        """When CUDA ends up active, session.run must be pinned to a dedicated
+        single-threaded executor (not asyncio.to_thread's shared pool) to avoid
+        CUDA context/memory errors from shifting threads."""
+        _write_model_files(tmp_path, "clf", label_uuid="label-cat", extra={"device": "gpu"})
+
+        img_bytes = self._make_tiny_jpeg()
+        img_a = tmp_path / "a.jpg"
+        img_a.write_bytes(img_bytes)
+        stubs = [self._make_stub("uuid-a", str(img_a))]
+
+        mock_images_api = MagicMock()
+        mock_images_api.list_image_stubs.return_value = MagicMock(stubs=stubs)
+        mock_images_api.set_image_label_status.return_value = MagicMock()
+
+        mock_session = MagicMock()
+        mock_session.get_inputs.return_value = [MagicMock(name="input")]
+        mock_session.get_providers.return_value = ["CUDAExecutionProvider", "CPUExecutionProvider"]
+        mock_session.run.return_value = [np.array([[0.1, 5.0]])]
+
+        task = _make_task(
+            {"model_name": "clf", "confidence_threshold": 0.7, "batch_size": 10, "image_source": "filesystem"}
+        )
+
+        with (
+            patch("apps.tasks_server.tasks.RunClassifierTask._MODELS_ROOT", tmp_path),
+            patch("apps.tasks_server.tasks.RunClassifierTask.ImagesApi", return_value=mock_images_api),
+            patch("apps.tasks_server.tasks.RunClassifierTask.SourcesApi"),
+            patch("onnxruntime.InferenceSession", return_value=mock_session),
+        ):
+            await task._init(task._params, None)
+            result = await task._run()
+            assert task._cuda_executor is not None
+            await task._deinit()
+
+        assert result["images_processed"] == 1
+        assert result["images_labeled"] == 1
+
     async def test_run_below_threshold_writes_absent_label(self, tmp_path):
         _write_model_files(tmp_path, "clf", label_uuid="label-cat")
 
