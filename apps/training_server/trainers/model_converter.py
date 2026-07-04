@@ -61,10 +61,51 @@ def _libreyolo_class_names(weights: dict) -> list[str]:
     return []
 
 
-def _find_libreyolo_class(weights: dict):
-    """Return the first concrete libreyolo BaseModel subclass whose can_load()
-    accepts *weights*, or None if none match."""
+def _unwrap_state_dict(checkpoint: dict) -> dict:
+    """Extract the inner per-layer state dict from a trainer checkpoint wrapper.
+
+    Our trainers save a metadata wrapper (keys ``model``, ``model_family``,
+    ``size``, ``task``, ``nc``, ``names``) whose actual weights live under
+    ``model``. Delegates to libreyolo's own unwrapper (which also handles EMA /
+    SuperGradients / generic ``state_dict`` wrappers), falling back to the
+    documented ``model`` key, or the object itself if it is already a bare
+    state dict."""
     import libreyolo.models as lm
+
+    unwrap = getattr(lm, "_unwrap_state_dict", None)
+    if unwrap is not None:
+        try:
+            return unwrap(checkpoint)
+        except Exception:
+            logger.warning("libreyolo._unwrap_state_dict failed; using fallback unwrap.", exc_info=True)
+    if isinstance(checkpoint, dict) and isinstance(checkpoint.get("model"), dict):
+        return checkpoint["model"]
+    return checkpoint
+
+
+def _find_libreyolo_class(state_dict: dict, checkpoint: Optional[dict] = None):
+    """Return the first concrete libreyolo BaseModel subclass whose can_load()
+    accepts *state_dict*, or None if none match.
+
+    ``can_load()`` inspects raw per-layer weight keys (e.g.
+    ``backbone.conv0.conv.weight``), so *state_dict* must be the UNWRAPPED state
+    dict, not the metadata wrapper. If *checkpoint* carries a ``model_family``
+    hint, that family is tried first (mirroring libreyolo's own loader) before
+    falling back to probing every registered family."""
+    import libreyolo.models as lm
+
+    # Fast path: honor the checkpoint's self-declared family, but only if it
+    # still passes can_load() against the actual weights.
+    family = checkpoint.get("model_family") if isinstance(checkpoint, dict) else None
+    finder = getattr(lm, "_find_registered_family", None)
+    if isinstance(family, str) and family and finder is not None:
+        try:
+            cls = finder(family)
+            can_load = getattr(cls, "can_load", None)
+            if cls is not None and can_load is not None and can_load(state_dict):
+                return cls
+        except Exception:
+            logger.warning("model_family hint %r did not resolve; probing all families.", family, exc_info=True)
 
     for name in dir(lm):
         obj = getattr(lm, name)
@@ -74,7 +115,7 @@ def _find_libreyolo_class(weights: dict):
         if can_load is None:
             continue
         try:
-            if can_load(weights):
+            if can_load(state_dict):
                 return obj
         except Exception:
             logger.warning("can_load() raised for candidate class %s; skipping.", name, exc_info=True)
@@ -108,7 +149,7 @@ class ModelConverter(Trainer):
         import libreyolo.models as lm
 
         try:
-            weights = await asyncio.to_thread(lm.load_untrusted_torch_file, source_path)
+            checkpoint = await asyncio.to_thread(lm.load_untrusted_torch_file, source_path)
         except Exception as e:
             raise ValueError(
                 f"Unsupported model checkpoint: could not load {source_path!r} as a PyTorch " f"checkpoint ({e})."
@@ -117,18 +158,24 @@ class ModelConverter(Trainer):
         if cancel_event.is_set():
             return {}
 
+        # Architecture probing (can_load / detect_*) reads raw per-layer weight
+        # keys, which live in the UNWRAPPED state dict — not in the metadata
+        # wrapper our trainers save. Metadata (model_family, names) is read from
+        # the wrapper (`checkpoint`) below.
+        state_dict = _unwrap_state_dict(checkpoint)
+
         onnx_path = artifact_path / f"{model_name}.onnx"
         model_family: str
         class_list: list[str]
 
-        libreyolo_cls = await asyncio.to_thread(_find_libreyolo_class, weights)
+        libreyolo_cls = await asyncio.to_thread(_find_libreyolo_class, state_dict, checkpoint)
 
         if libreyolo_cls is not None:
             progress_cb({"progress": 0.2, "log": f"Detected libreyolo family: {libreyolo_cls.FAMILY}"})
 
-            size = libreyolo_cls.detect_size(weights)
-            nb_classes = libreyolo_cls.detect_nb_classes(weights)
-            task = libreyolo_cls.detect_checkpoint_task(weights)
+            size = libreyolo_cls.detect_size(state_dict)
+            nb_classes = libreyolo_cls.detect_nb_classes(state_dict)
+            task = libreyolo_cls.detect_checkpoint_task(state_dict)
 
             kwargs: dict[str, Any] = {"device": "cpu"}
             if size is not None:
@@ -152,7 +199,7 @@ class ModelConverter(Trainer):
 
             family = str(libreyolo_cls.FAMILY)
             model_family = "libreyolo9" if family == "yolo9" else f"libreyolo_{family}"
-            class_list = _libreyolo_class_names(weights)
+            class_list = _libreyolo_class_names(checkpoint)
             if not class_list and nb_classes:
                 class_list = [str(i) for i in range(nb_classes)]
         else:

@@ -163,10 +163,17 @@ ARG APPUSER_GID
 
 ENV DEBIAN_FRONTEND=noninteractive
 
+# opencv runtime libs: ultralytics/libreyolo pull the GUI `opencv-python`
+# wheel (not the headless build), whose `import cv2` needs libGL / glib / xcb
+# shared objects that the pytorch base image does not ship. Without these,
+# `import cv2` — and therefore `import ultralytics`/`libreyolo` — fails outright
+# in a stock training-app container. (The inference CUDA base happens to carry
+# these already, which is why the combined image masked this gap.)
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
     apt-get update \
-  && apt-get install -y --no-install-recommends supervisor curl
+  && apt-get install -y --no-install-recommends supervisor curl \
+     libgl1 libglib2.0-0 libxcb1 libsm6 libxext6 libxrender1
 
 WORKDIR /app
 
@@ -281,8 +288,10 @@ RUN playwright install chromium
 
 # =========================================================
 #  Combined Dev Layer (inference + training in one container)
-#  Temporary: merges both dev containers for easier local dev.
-#  Revert by removing this stage and the dev-combined compose service.
+#  Dev counterpart of the `combined` stage: layers the training
+#  wheelhouse onto the inference `dev` image so one container runs
+#  every service with full dev tooling. Selected by the `dev-combined`
+#  compose profile.
 # =========================================================
 FROM dev AS combined-dev
 
@@ -298,6 +307,32 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 USER appuser
 
 EXPOSE 8005
+
+
+# =========================================================
+#  Combined App (inference + training in one PRODUCTION container)
+#  Non-dev counterpart of `combined-dev`: layers the training
+#  wheelhouse onto the production inference-app image (no dev
+#  tooling). Runs every service via supervisord-monolith.conf.
+#  This is the image docker-compose.monolith.yaml targets for a
+#  real single-container production deployment.
+# =========================================================
+FROM inference-app AS combined
+
+USER root
+
+# Reuse the training wheelhouse already built in `builder` instead of
+# re-resolving/downloading torch et al. from PyPI a second time.
+COPY --from=builder /app/training_wheels /tmp/training_wheels
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install --no-index --find-links=/tmp/training_wheels /tmp/training_wheels/*.whl \
+  && rm -rf /tmp/training_wheels
+
+USER appuser
+
+EXPOSE 8005
+
+CMD ["/usr/bin/supervisord", "-c", "/conf/supervisord-monolith.conf"]
 
 
 # =========================================================

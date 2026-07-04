@@ -150,8 +150,8 @@ services:
 
   # =========================================================
   #  Combined Dev Workspace (inference + training, one container)
-  #  Temporary convenience target — use ./rebuild.sh dev-combined
-  #  Remove this service and the combined-dev Dockerfile stage when done.
+  #  Dev sibling of the `combined` profile below: everything in one
+  #  container plus dev tooling. Use ./rebuild.sh dev-combined.
   # =========================================================
   whiskerwatcher-combined-dev:
     container_name: whiskerwatcher_combined_dev
@@ -200,6 +200,52 @@ services:
       - "9001:9001"
     restart: "no"
     profiles: ["dev-combined"]
+
+  # =========================================================
+  #  Combined Server (inference + training in one PRODUCTION container)
+  #  Single-container deployment: every service runs under
+  #  supervisord-monolith.conf in the lean `combined` image (no dev
+  #  tooling). All inter-service hosts are localhost. Use ./rebuild.sh combined.
+  # =========================================================
+  whiskerwatcher-combined:
+    container_name: whiskerwatcher_combined
+    shm_size: '2gb'
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: combined
+      args:
+        - APPUSER_UID=${APPUSER_UID:-1001}
+        - APPUSER_GID=${APPUSER_GID:-1001}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: [ '0' ]
+              capabilities: [ gpu ]
+    environment:
+      THUMB_CACHE_MAX_MB: 100
+      TRAINING_SERVER_HOST: localhost
+      DB_SERVER_HOST: localhost
+      TRAINING_CACHE_DIR: /training-cache
+      TRAINING_CACHE_MAX_MB: 10000
+      MODELS_ROOT: /app/models
+    command: ["/usr/bin/supervisord", "-c", "/conf/supervisord-monolith.conf"]
+    volumes:
+      - ./data/:/data
+      - ./conf:/conf
+      - ./logs:/logs
+      - ./models:/app/models
+      - ./image_datasets:/app/image_datasets
+      - training_cache:/training-cache
+    ports:
+      - "7999:7999"  # Whisker-Watcher main app
+      - "8005:8005"  # Training server
+      - "8553:8554"  # RTSP relay
+      - "9001:9001"  # Supervisord
+    restart: unless-stopped
+    profiles: ["combined"]
 
 volumes:
   training_cache:
