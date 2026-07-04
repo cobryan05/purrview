@@ -6,6 +6,8 @@ const SERVICE_BY_PREFIX = [
   ['/api/models', 'Inference'],
   ['/api/inference', 'Inference'],
   ['/api/tasks', 'Tasks'],
+  ['/api/training-configs', 'Training'],
+  ['/api/training', 'Training'],
 ];
 
 function serviceNameForUrl(url) {

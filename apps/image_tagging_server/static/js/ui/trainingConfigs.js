@@ -32,7 +32,7 @@ import {
   fetchTrainingConfigImagesByLabelStatus,
   clearTrainingConfigsCache,
 } from '/app-static/js/shared/api/trainingConfigs.js';
-import { makeFieldRow, buildPanelEditorBar, toast } from '/app-static/js/ui/utils/index.js';
+import { makeFieldRow, buildPanelEditorBar, toast, showPaneError } from '/app-static/js/ui/utils/index.js';
 import { navigateTabs } from '/app-static/js/app/utils/tabs.js';
 import { activeTrainingConfig } from '/app-static/js/shared/activeTrainingConfig.js';
 import { createTaskRunnerSection } from '/app-static/js/ui/utils/taskRunnerSection.js';
@@ -347,7 +347,7 @@ function renderReadinessPanel(config) {
       }
       content.appendChild(status);
     } catch (err) {
-      content.textContent = `Could not load readiness: ${err.message}`;
+      showPaneError(content, `Could not load readiness: ${err.message}`);
     } finally {
       refreshBtn.disabled = false;
     }
@@ -654,10 +654,7 @@ function renderLabelStatsPanel(config, labelsMap) {
         ]));
       }
     } catch (err) {
-      content.innerHTML = '';
-      const errDiv = document.createElement('div');
-      errDiv.textContent = `Could not load label stats: ${err.message}`;
-      content.appendChild(errDiv);
+      showPaneError(content, `Could not load label stats: ${err.message}`);
     } finally {
       refreshBtn.disabled = false;
     }
@@ -978,10 +975,7 @@ export async function renderTrainingConfigManager({ target = 'training-config-bo
     const autoConfig = _lastSelectedUuid ? configsMap.get(_lastSelectedUuid) ?? null : null;
     await _showForm(autoConfig, { force: true });
   } catch (err) {
-    const errMsg = document.createElement('p');
-    errMsg.style.color = 'red';
-    errMsg.textContent = `Error loading training runs: ${err.message}`;
-    container.appendChild(errMsg);
+    showPaneError(container, `Error loading training runs: ${err.message}`);
   } finally {
     _rendering = false;
   }

@@ -1,5 +1,6 @@
 import { createModalShell } from './utils/modalShell.js';
 import { apiFetch } from '/app-static/js/shared/api/apiUtils.js';
+import { showPaneError } from '/app-static/js/ui/utils/index.js';
 
 const STATUS_COLOR = {
   running:       'var(--pico-ins-color,#4b8)',
@@ -171,10 +172,7 @@ export function showTrainingServerModal() {
       const now = new Date().toLocaleTimeString();
       statusLine.textContent = `Updated ${now}`;
     } catch (e) {
-      const errEl = document.createElement('div');
-      errEl.style.cssText = 'color: var(--pico-del-color,#e55); font-size: 0.85em; padding: 8px 0;';
-      errEl.textContent = `Error: ${e.message}`;
-      body.appendChild(errEl);
+      showPaneError(body, `Training server unavailable: ${e.message}`);
       statusLine.textContent = '';
     } finally {
       refreshBtn.disabled = false;

@@ -173,6 +173,13 @@ class Manager:
             ("relay_buffer_server", f"http://{relay_cfg.host}:{relay_cfg.port}"),
         ]
 
+        def _unreachable_notice(name: str, message: str) -> dict:
+            # get_notices()/get_raw_notices() only surface a service's own
+            # "notices" key when it *is* reachable, so a down service would
+            # otherwise vanish from the notices bar instead of being flagged —
+            # synthesize one here so it flows through that same pipeline.
+            return {"key": f"{name}_unreachable", "level": "warning", "message": message}
+
         async def _probe(name: str, base_url: str) -> dict:
             try:
                 resp = await self._test_client.get(f"{base_url}/status", timeout=3.0)
@@ -180,13 +187,20 @@ class Manager:
                     data = resp.json()
                     data.setdefault("service", name)
                     return data
+                message = f"HTTP {resp.status_code}"
                 return {
                     "service": name,
                     "status": "error",
-                    "message": f"HTTP {resp.status_code}",
+                    "message": message,
+                    "notices": [_unreachable_notice(name, f"{name} is not responding ({message})")],
                 }
             except Exception as e:
-                return {"service": name, "status": "unreachable", "message": str(e)}
+                return {
+                    "service": name,
+                    "status": "unreachable",
+                    "message": str(e),
+                    "notices": [_unreachable_notice(name, f"{name} is not responding")],
+                }
 
         return list(await asyncio.gather(*[_probe(name, url) for name, url in services]))
 
