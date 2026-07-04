@@ -87,6 +87,22 @@ class TestInit:
             with pytest.raises(RuntimeError, match="bundle_name"):
                 await task._init(task._params, None)
 
+    async def test_requires_dataset_uuids(self):
+        task = _make_task({"model_config_uuid": "mc-1", "bundle_name": "b1"})
+        cfg_patch, db_patch, tc_patch = _patch_clients()
+        with cfg_patch as mock_cfg, db_patch, tc_patch:
+            mock_cfg.__getitem__ = MagicMock(return_value=MagicMock(host="h", port=1234))
+            with pytest.raises(RuntimeError, match="dataset_uuids"):
+                await task._init(task._params, None)
+
+    async def test_requires_nonempty_dataset_uuids(self):
+        task = _make_task({"model_config_uuid": "mc-1", "bundle_name": "b1", "dataset_uuids": []})
+        cfg_patch, db_patch, tc_patch = _patch_clients()
+        with cfg_patch as mock_cfg, db_patch, tc_patch:
+            mock_cfg.__getitem__ = MagicMock(return_value=MagicMock(host="h", port=1234))
+            with pytest.raises(RuntimeError, match="dataset_uuids"):
+                await task._init(task._params, None)
+
     async def test_fresh_run_fetches_and_seeds_resume_data(self):
         task = _make_task(
             {
@@ -118,7 +134,7 @@ class TestInit:
         task = _make_task(
             {
                 "model_config_uuid": "mc-1",
-                "dataset_uuids": [],
+                "dataset_uuids": ["ds-1"],
                 "bundle_name": "b1",
             }
         )
@@ -138,7 +154,6 @@ class TestInit:
         resume = {
             "model_config_uuid": "mc-1",
             "dataset_uuids": ["ds-1"],
-            "dataset_uuids_set": ["img-1"],
             "bundle_name": "b1",
             "hyperparams_json": {"batch_size": 4},
             "targets": [{"node_uuid": "n1", "role": "top"}],
@@ -150,7 +165,12 @@ class TestInit:
             "model_name": "b1_top",
         }
         cfg_patch, db_patch, tc_patch = _patch_clients()
-        with cfg_patch as mock_cfg, db_patch, tc_patch:
+        with (
+            cfg_patch as mock_cfg,
+            db_patch,
+            tc_patch,
+            patch.object(task, "_fetch_dataset_uuids_set", return_value={"img-1"}),
+        ):
             mock_cfg.__getitem__ = MagicMock(return_value=MagicMock(host="h", port=1234))
             await task._init(task._params, resume)
 
@@ -158,6 +178,30 @@ class TestInit:
         assert task._job_id == "job-in-flight"
         assert task._completed_artifacts == [{"role": "top", "node_uuid": "n1"}]
         assert task._hyperparams == {"batch_size": 4}
+        # Derivable, so refetched on resume rather than persisted.
+        assert task._dataset_uuids_set == {"img-1"}
+
+    async def test_resume_data_does_not_persist_dataset_uuids_set(self):
+        task = _make_task(
+            {
+                "model_config_uuid": "mc-1",
+                "dataset_uuids": ["ds-1"],
+                "bundle_name": "b1",
+            }
+        )
+        cfg_patch, db_patch, tc_patch = _patch_clients()
+        with (
+            cfg_patch as mock_cfg,
+            db_patch,
+            tc_patch,
+            patch.object(task, "_fetch_targets", return_value=[_target()]),
+            patch.object(task, "_fetch_dataset_uuids_set", return_value={"img-1", "img-2"}),
+        ):
+            mock_cfg.__getitem__ = MagicMock(return_value=MagicMock(host="h", port=1234))
+            await task._init(task._params, None)
+
+        assert "dataset_uuids_set" not in task._resume_data
+        assert task._dataset_uuids_set == {"img-1", "img-2"}
 
 
 class TestTargetModelName:

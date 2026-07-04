@@ -18,11 +18,6 @@ if os.getenv("GENERATING_OPENAPI_CLIENTS") != "1":
     import cv2
     import onnxruntime as ort  # noqa: F811
 
-    # Importing these registers them (via @register_inference_provider) into
-    # inference_provider_registry as a side effect.
-    import apps.helpers.inferenceProviders.libreYolo9InferenceProvider  # noqa: F401
-    import apps.helpers.inferenceProviders.ultralyticsYoloV8InferenceProvider  # noqa: F401
-
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger(__file__)
 logger.setLevel(logging.DEBUG)
@@ -38,6 +33,13 @@ def get_input_shape(session: "ort.InferenceSession") -> Tuple[int, int]:
 
 
 def load_yolo_onnx(model_path: str) -> InferenceProvider:
+    # Importing these registers them (via @register_inference_provider) into
+    # inference_provider_registry as a side effect. Deferred to call time: the
+    # provider modules import this module for the shared pipeline helpers, so a
+    # module-level import here would be circular.
+    import apps.helpers.inferenceProviders.libreYolo9InferenceProvider  # noqa: F401
+    import apps.helpers.inferenceProviders.ultralyticsYoloV8InferenceProvider  # noqa: F401
+
     metadata = metadataUtils.get_model_metadata(model_path, create_json_if_missing=True)
 
     model_kind: str = metadata.get("model_kind", "")

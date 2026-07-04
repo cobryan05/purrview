@@ -37,12 +37,15 @@ from db_client.api.model_configs_api import ModelConfigsApi
 from db_client.models.bundle_target_detection_dataset_payload import (
     BundleTargetDetectionDatasetPayload,
 )
-from db_client.models.image_item_status import ImageItemStatus
 from db_client.models.model_bundle_create import ModelBundleCreate
 
 from apps import APPS, APPS_CONFIG
 from apps.helpers.model_type_map import MODEL_TYPE_TO_TRAINER_TYPE
 
+from ._classifier_job_builders import (
+    build_binary_classifier_job,
+    build_multi_label_classifier_job,
+)
 from ._training_job_runner import _MODELS_DIR, TrainingJobRunnerMixin
 from .Registry import register_task
 from .Task import Task
@@ -70,7 +73,9 @@ class TrainBundleTask(Task, TrainingJobRunnerMixin):
         if resume_data and resume_data.get("targets"):
             self._model_config_uuid: str = resume_data["model_config_uuid"]
             self._dataset_uuids: list[str] = list(resume_data["dataset_uuids"])
-            self._dataset_uuids_set: set[str] = set(resume_data.get("dataset_uuids_set") or [])
+            # Derivable from dataset_uuids — refetched rather than persisted, so
+            # resume_data stays small even for datasets with many images.
+            self._dataset_uuids_set: set[str] = await asyncio.to_thread(self._fetch_dataset_uuids_set)
             self._bundle_name: str = resume_data["bundle_name"]
             self._hyperparams: dict = dict(resume_data.get("hyperparams_json") or {})
             self._targets: list[dict] = list(resume_data["targets"])
@@ -92,6 +97,8 @@ class TrainBundleTask(Task, TrainingJobRunnerMixin):
             raise RuntimeError("model_config_uuid is required")
         if not bundle_name:
             raise RuntimeError("bundle_name is required")
+        if not dataset_uuids:
+            raise RuntimeError("dataset_uuids is required — select at least one dataset to train from")
 
         self._model_config_uuid = model_config_uuid
         self._dataset_uuids = dataset_uuids
@@ -117,7 +124,6 @@ class TrainBundleTask(Task, TrainingJobRunnerMixin):
             {
                 "model_config_uuid": self._model_config_uuid,
                 "dataset_uuids": self._dataset_uuids,
-                "dataset_uuids_set": list(self._dataset_uuids_set),
                 "bundle_name": self._bundle_name,
                 "hyperparams_json": self._hyperparams,
                 "targets": self._targets,
@@ -194,7 +200,13 @@ class TrainBundleTask(Task, TrainingJobRunnerMixin):
         return self._resolve_target_multi_label(img_api, target, model_name)
 
     def _resolve_target_object_detection(self, mc_api, target: dict, model_name: str) -> tuple[str, list[dict], dict]:
-        payload = BundleTargetDetectionDatasetPayload(dataset_uuids=self._dataset_uuids)
+        # Pass the scope snapshot resolved at _init so the dataset matches this
+        # run's targets (and the endpoint skips re-deriving all targets).
+        payload = BundleTargetDetectionDatasetPayload(
+            dataset_uuids=self._dataset_uuids,
+            label_uuids=target["label_uuids"],
+            class_remap=target["class_remap"],
+        )
         result = mc_api.get_bundle_target_detection_dataset(self._model_config_uuid, target["node_uuid"], payload)
         if getattr(result, "status", None) != "success":
             raise RuntimeError(
@@ -233,97 +245,43 @@ class TrainBundleTask(Task, TrainingJobRunnerMixin):
         return model_name, manifest, job_config
 
     def _resolve_target_binary(self, img_api, target: dict, model_name: str) -> tuple[str, list[dict], dict]:
-        label_uuid = target["label_uuids"][0]
-        trainer_type = MODEL_TYPE_TO_TRAINER_TYPE.get(target["model_type"], target["model_type"])
-
-        all_rows_resp = img_api.list_images_for_label(
-            label_uuid=label_uuid,
-            status=[ImageItemStatus.PRESENT, ImageItemStatus.ABSENT],
+        result = build_binary_classifier_job(
+            img_api,
+            label_uuid=target["label_uuids"][0],
+            trainer_type=MODEL_TYPE_TO_TRAINER_TYPE.get(target["model_type"], target["model_type"]),
+            model_name=model_name,
+            architecture=target["architecture"],
+            role=target["role"],
+            model_config_uuid=self._model_config_uuid,
+            model_config_node_uuid=target["node_uuid"],
+            hyperparams=self._hyperparams,
+            dataset_uuids=self._dataset_uuids,
+            dataset_uuids_set=self._dataset_uuids_set,
         )
-        all_rows = all_rows_resp.images if hasattr(all_rows_resp, "images") else []
-        if self._dataset_uuids_set:
-            all_rows = [r for r in all_rows if r.image_uuid in self._dataset_uuids_set]
-
-        if not all_rows:
-            raise RuntimeError(
-                f"No labelled images found for bundle target label_uuid={label_uuid!r} "
-                f"(node={target['node_uuid']})."
-            )
-
-        manifest = [
-            {
-                "image_uuid": r.image_uuid,
-                "filename": r.filename,
-                "status": r.status.value if hasattr(r.status, "value") else str(r.status),
-            }
-            for r in all_rows
-        ]
-
         self.log(
             f"Resolved binary bundle target {target['role']} (node={target['node_uuid']}, "
-            f"label={label_uuid}): {len(manifest)} images"
+            f"label={target['label_uuids'][0]}): {len(result[1])} images"
         )
-
-        job_config = {
-            "trainer_type": trainer_type,
-            "label_uuid": label_uuid,
-            "model_name": model_name,
-            "architecture": target["architecture"],
-            "class_names": ["absent", "present"],
-            "role": target["role"],
-            "model_config_uuid": self._model_config_uuid,
-            "model_config_node_uuid": target["node_uuid"],
-            **self._hyperparams,
-        }
-        return model_name, manifest, job_config
+        return result
 
     def _resolve_target_multi_label(self, img_api, target: dict, model_name: str) -> tuple[str, list[dict], dict]:
-        label_uuids = list(target["label_uuids"])
-        uuid_to_filename: dict[str, str] = {}
-        label_targets: dict[str, dict[str, int]] = {}
-
-        for luuid in label_uuids:
-            rows_resp = img_api.list_images_for_label(
-                label_uuid=luuid,
-                status=[ImageItemStatus.PRESENT, ImageItemStatus.ABSENT],
-            )
-            rows = rows_resp.images if hasattr(rows_resp, "images") else []
-            if self._dataset_uuids_set:
-                rows = [r for r in rows if r.image_uuid in self._dataset_uuids_set]
-            for r in rows:
-                uuid_to_filename[r.image_uuid] = r.filename
-                status_val = r.status.value if hasattr(r.status, "value") else str(r.status)
-                label_targets.setdefault(r.image_uuid, {})[luuid] = (
-                    1 if status_val == ImageItemStatus.PRESENT.value else 0
-                )
-
-        if not uuid_to_filename:
-            raise RuntimeError(
-                f"No labeled images found across {len(label_uuids)} label(s) for bundle "
-                f"target (node={target['node_uuid']})."
-            )
-
-        manifest = [
-            {"image_uuid": uuid, "filename": fname, "status": "present"} for uuid, fname in uuid_to_filename.items()
-        ]
-
+        result = build_multi_label_classifier_job(
+            img_api,
+            label_uuids=list(target["label_uuids"]),
+            model_name=model_name,
+            architecture=target["architecture"],
+            role=target["role"],
+            model_config_uuid=self._model_config_uuid,
+            model_config_node_uuid=target["node_uuid"],
+            hyperparams=self._hyperparams,
+            dataset_uuids=self._dataset_uuids,
+            dataset_uuids_set=self._dataset_uuids_set,
+        )
         self.log(
             f"Resolved multi_label bundle target {target['role']} (node={target['node_uuid']}): "
-            f"{len(label_uuids)} labels, {len(manifest)} images"
+            f"{len(target['label_uuids'])} labels, {len(result[1])} images"
         )
-
-        job_config = {
-            "trainer_type": "multi_label_classifier",
-            "model_name": model_name,
-            "architecture": target["architecture"],
-            "label_uuids": label_uuids,
-            "label_targets": label_targets,
-            "role": target["role"],
-            "model_config_uuid": self._model_config_uuid,
-            "model_config_node_uuid": target["node_uuid"],
-            **self._hyperparams,
-        }
-        return model_name, manifest, job_config
+        return result
 
     async def _run(self) -> dict[str, Any]:
         while self._target_index < len(self._targets):

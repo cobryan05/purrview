@@ -37,6 +37,7 @@ import { navigateTabs } from '/app-static/js/app/utils/tabs.js';
 import { activeTrainingConfig } from '/app-static/js/shared/activeTrainingConfig.js';
 import { createTaskRunnerSection } from '/app-static/js/ui/utils/taskRunnerSection.js';
 import { createHyperparamsFieldset } from '/app-static/js/ui/utils/hyperparamsFieldset.js';
+import { createDatasetChecklist } from '/app-static/js/ui/utils/datasetChecklist.js';
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
 import { showUnsavedConfigChangesModal } from '/app-static/js/ui/utils/confirmModal.js';
 import { renderModelTreePanel } from '/app-static/js/ui/modelTreePanel.js';
@@ -214,40 +215,19 @@ function renderTrainingConfigForm({ config, datasetsMap, modelConfigsMap, labels
   dsHdr.textContent = 'Datasets';
   el.appendChild(dsHdr);
 
-  const currentDatasetUuids = new Set(config?.datasetUuids ?? []);
-  const datasetCheckboxes = new Map();
-  const datasetBox = document.createElement('div');
-  datasetBox.className = 'panel-tree-box';
-  if (datasetsMap.size === 0) {
-    datasetBox.appendChild(makeNavHint(
-      'No datasets defined yet.', 'Create one in the Datasets tab →', 'tab-dataset-management'));
-  }
-  for (const [uuid, ds] of datasetsMap) {
-    const row = document.createElement('label');
-    row.style.cssText = 'display: flex; align-items: center; gap: 0.4em; padding: 2px 4px; cursor: pointer; font-size: 0.88em; user-select: none;';
-    const cb = document.createElement('input');
-    cb.type = 'checkbox';
-    cb.value = uuid;
-    cb.checked = currentDatasetUuids.has(uuid);
-    cb.style.cssText = 'margin: 0; flex-shrink: 0;';
-    cb.addEventListener('change', _markDirty);
-    datasetCheckboxes.set(uuid, cb);
-    row.appendChild(cb);
-    const nameSpan = document.createElement('span');
-    nameSpan.textContent = ds.name;
-    row.appendChild(nameSpan);
-    datasetBox.appendChild(row);
-  }
-  const datasetRow = makeFieldRow('Select ≥1', datasetBox);
+  const datasetChecklist = createDatasetChecklist({
+    datasetsMap,
+    selectedUuids: config?.datasetUuids ?? [],
+    onChange: _markDirty,
+  });
+  const datasetRow = makeFieldRow('Select ≥1', datasetChecklist.el);
   datasetRow.style.alignItems = 'flex-start';
   el.appendChild(datasetRow);
 
   return {
     el,
     getSaveData() {
-      const datasetUuids = [...datasetCheckboxes.entries()]
-        .filter(([, cb]) => cb.checked)
-        .map(([uuid]) => uuid);
+      const datasetUuids = datasetChecklist.getSelectedUuids();
       return {
         name: nameInput.value.trim(),
         description: descInput.value.trim(),

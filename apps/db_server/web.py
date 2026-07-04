@@ -587,6 +587,12 @@ class ReadyImagesPayload(Payload):
 
 class BundleTargetDetectionDatasetPayload(Payload):
     dataset_uuids: List[str] = Field(default_factory=list)
+    # Optional pre-resolved target scope — a bundle run snapshots its targets from
+    # /training-targets at _init, so passing that snapshot here keeps every target
+    # of the run consistent with it (a config edit mid-run can't shift the class
+    # set) and skips re-deriving all targets on each per-target request.
+    label_uuids: Optional[List[str]] = None
+    class_remap: Dict[str, str] = Field(default_factory=dict)
 
 
 class ImagesByLabelStatusPayload(Payload):
@@ -2711,7 +2717,13 @@ class WebApp:
             payload: BundleTargetDetectionDatasetPayload,
         ) -> DetectionDatasetResponse:
             try:
-                result = await self._manager.get_bundle_target_detection_dataset(uuid, node_uuid, payload.dataset_uuids)
+                result = await self._manager.get_bundle_target_detection_dataset(
+                    uuid,
+                    node_uuid,
+                    payload.dataset_uuids,
+                    label_uuids=payload.label_uuids,
+                    class_remap=payload.class_remap,
+                )
                 if result is None:
                     return DetectionDatasetResponse(
                         status=JsonValues.FAILURE, message="Model config or bundle target not found"

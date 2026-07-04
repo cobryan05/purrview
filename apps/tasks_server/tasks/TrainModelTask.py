@@ -26,11 +26,14 @@ from db_client.api.datasets_api import DatasetsApi
 from db_client.api.images_api import ImagesApi
 from db_client.api.model_configs_api import ModelConfigsApi
 from db_client.api.training_configs_api import TrainingConfigsApi
-from db_client.models.image_item_status import ImageItemStatus
 
 from apps import APPS, APPS_CONFIG
 from apps.helpers.model_type_map import MODEL_TYPE_TO_TRAINER_TYPE
 
+from ._classifier_job_builders import (
+    build_binary_classifier_job,
+    build_multi_label_classifier_job,
+)
 from ._training_job_runner import TrainingJobRunnerMixin
 from .Registry import register_task
 from .Task import Task
@@ -180,58 +183,25 @@ class TrainModelTask(Task, TrainingJobRunnerMixin):
         # Single labeled node → binary classifier.
         trainer_type: str = MODEL_TYPE_TO_TRAINER_TYPE.get(model_type, model_type)
 
-        # 3. Get all present/absent image-label rows for this label.
-        all_rows_resp = img_api.list_images_for_label(
+        result = build_binary_classifier_job(
+            img_api,
             label_uuid=label_uuid,
-            status=[ImageItemStatus.PRESENT, ImageItemStatus.ABSENT],
+            trainer_type=trainer_type,
+            model_name=model_name,
+            architecture=architecture,
+            role=role,
+            model_config_uuid=model_config_uuid,
+            model_config_node_uuid=node_uuid,
+            hyperparams=hyperparams,
+            dataset_uuids=dataset_uuids,
+            dataset_uuids_set=dataset_uuids_set,
         )
-        all_rows = all_rows_resp.images if hasattr(all_rows_resp, "images") else []
-
-        if dataset_uuids:
-            before = len(all_rows)
-            all_rows = [r for r in all_rows if r.image_uuid in dataset_uuids_set]
-            logger.debug(
-                "Dataset filter: %d → %d rows (dataset_set size=%d)",
-                before,
-                len(all_rows),
-                len(dataset_uuids_set),
-            )
-
-        if not all_rows:
-            raise RuntimeError(
-                f"No labelled images found for label_uuid={label_uuid!r} "
-                f"with {len(dataset_uuids)} dataset(s). "
-                f"Found {len(all_rows_resp.images if hasattr(all_rows_resp, 'images') else [])} "
-                f"labeled rows before dataset filter (dataset_set size={len(dataset_uuids_set)})."
-            )
-
-        manifest = [
-            {
-                "image_uuid": r.image_uuid,
-                "filename": r.filename,
-                "status": r.status.value if hasattr(r.status, "value") else str(r.status),
-            }
-            for r in all_rows
-        ]
-
         self.log(
             f"Resolved training config: label={label_uuid} arch={architecture} "
-            f"trainer={trainer_type} manifest={len(manifest)} images "
+            f"trainer={trainer_type} manifest={len(result[1])} images "
             f"datasets={len(dataset_uuids)}"
         )
-
-        job_config = {
-            "trainer_type": trainer_type,
-            "label_uuid": label_uuid,
-            "model_name": model_name,
-            "architecture": architecture,
-            "class_names": ["absent", "present"],
-            "role": role,
-            "model_config_uuid": model_config_uuid,
-            "model_config_node_uuid": node_uuid,
-            **hyperparams,
-        }
-        return model_name, manifest, job_config
+        return result
 
     def _resolve_bundle_target_fields(
         self, mc_api, model_config_uuid: str, node_uuid: str, label_uuid: str
@@ -303,65 +273,24 @@ class TrainModelTask(Task, TrainingJobRunnerMixin):
 
         label_uuids_list = [n.label_uuid for n in labeled_nodes]
 
-        # Collect per-label image data.
-        uuid_to_filename: dict[str, str] = {}
-        label_targets: dict[str, dict[str, int]] = {}
-
-        for node in labeled_nodes:
-            luuid = node.label_uuid
-            rows_resp = img_api.list_images_for_label(
-                label_uuid=luuid,
-                status=[ImageItemStatus.PRESENT, ImageItemStatus.ABSENT],
-            )
-            rows = rows_resp.images if hasattr(rows_resp, "images") else []
-            raw_count = len(rows)
-            if dataset_uuids:
-                rows = [r for r in rows if r.image_uuid in dataset_uuids_set]
-            logger.debug(
-                "Label %s: %d labeled rows, %d after dataset filter",
-                luuid,
-                raw_count,
-                len(rows),
-            )
-
-            for r in rows:
-                uuid_to_filename[r.image_uuid] = r.filename
-                if r.image_uuid not in label_targets:
-                    label_targets[r.image_uuid] = {}
-                status_val = r.status.value if hasattr(r.status, "value") else str(r.status)
-                label_targets[r.image_uuid][luuid] = 1 if status_val == ImageItemStatus.PRESENT.value else 0
-
-        if not uuid_to_filename:
-            raise RuntimeError(
-                f"No labeled images found across {len(labeled_nodes)} label(s) "
-                f"with {len(dataset_uuids)} dataset(s). "
-                f"dataset_set size={len(dataset_uuids_set)}. "
-                f"Check that labeled images are included in the selected dataset(s)."
-            )
-
-        # Manifest: unique images (status field unused by multi_label_classifier).
-        manifest = [
-            {"image_uuid": uuid, "filename": fname, "status": "present"} for uuid, fname in uuid_to_filename.items()
-        ]
-
+        result = build_multi_label_classifier_job(
+            img_api,
+            label_uuids=label_uuids_list,
+            model_name=model_name,
+            architecture=architecture,
+            role=role,
+            model_config_uuid=model_config_uuid,
+            model_config_node_uuid=model_config_node_uuid,
+            hyperparams=hyperparams,
+            dataset_uuids=dataset_uuids,
+            dataset_uuids_set=dataset_uuids_set,
+        )
         self.log(
             f"Resolved root node: {len(labeled_nodes)} labels "
             f"({', '.join(label_uuids_list)}), "
-            f"{len(manifest)} unique images, datasets={len(dataset_uuids)}"
+            f"{len(result[1])} unique images, datasets={len(dataset_uuids)}"
         )
-
-        job_config = {
-            "trainer_type": "multi_label_classifier",
-            "model_name": model_name,
-            "architecture": architecture,
-            "label_uuids": label_uuids_list,
-            "label_targets": label_targets,
-            "role": role,
-            "model_config_uuid": model_config_uuid,
-            "model_config_node_uuid": model_config_node_uuid,
-            **hyperparams,
-        }
-        return model_name, manifest, job_config
+        return result
 
     def _resolve_object_detection(
         self,

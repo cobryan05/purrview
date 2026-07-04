@@ -5387,6 +5387,27 @@
             },
             "type": "array",
             "title": "Datasetuuids"
+          },
+          "labelUuids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Labeluuids"
+          },
+          "classRemap": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object",
+            "title": "Classremap"
           }
         },
         "type": "object",

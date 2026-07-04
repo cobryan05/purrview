@@ -2337,9 +2337,16 @@ class Manager:
         return await self._db_client.derive_bundle_training_targets(model_config_uuid)
 
     async def get_bundle_target_detection_dataset(
-        self, model_config_uuid: str, node_uuid: str, dataset_uuids: list[str]
+        self,
+        model_config_uuid: str,
+        node_uuid: str,
+        dataset_uuids: list[str],
+        label_uuids: Optional[list[str]] = None,
+        class_remap: Optional[dict[str, str]] = None,
     ) -> Optional[dict]:
-        return await self._db_client.get_bundle_target_detection_dataset(model_config_uuid, node_uuid, dataset_uuids)
+        return await self._db_client.get_bundle_target_detection_dataset(
+            model_config_uuid, node_uuid, dataset_uuids, label_uuids=label_uuids, class_remap=class_remap
+        )
 
     async def create_model_config(self, data: ModelConfigCreate) -> ModelConfigRead:
         await self._validate_model_config_nodes(data.nodes)

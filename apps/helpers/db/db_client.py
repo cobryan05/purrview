@@ -3606,7 +3606,12 @@ class DbClient:
         return await self._assemble_detection_dataset(class_label_uuids, child_to_parent, tc.dataset_uuids)
 
     async def get_bundle_target_detection_dataset(
-        self, model_config_uuid: str, node_uuid: str, dataset_uuids: list[str]
+        self,
+        model_config_uuid: str,
+        node_uuid: str,
+        dataset_uuids: list[str],
+        label_uuids: Optional[list[str]] = None,
+        class_remap: Optional[dict[str, str]] = None,
     ) -> Optional[dict]:
         """Assemble a YOLO-format detection dataset for one bundle training target.
 
@@ -3617,8 +3622,16 @@ class DbClient:
         in the model tree preview, including the outermost-boundary top-model
         collapsing that per-TrainingConfig detection datasets don't apply.
 
+        When ``label_uuids`` is given (a caller-held snapshot of that same authority,
+        e.g. TrainBundleTask's targets resolved at _init), derivation is skipped and
+        the snapshot scope is used directly — every target of a bundle run then trains
+        against one consistent snapshot even if the config is edited mid-run.
+
         Returns None if the config doesn't exist or no target matches node_uuid.
         """
+        if label_uuids is not None:
+            return await self._assemble_detection_dataset(label_uuids, dict(class_remap or {}), dataset_uuids)
+
         targets = await self.derive_bundle_training_targets(model_config_uuid)
         if targets is None:
             return None

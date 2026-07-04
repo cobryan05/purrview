@@ -227,6 +227,10 @@ WORKDIR /home/appuser
 ENV NVM_DIR="/home/appuser/.nvm"
 ENV PATH="/home/appuser/.local/bin:$PATH"
 
+# The node/npm/npx symlinks into ~/.local/bin matter: nvm only puts node on
+# PATH when nvm.sh is sourced by an interactive shell, but serena's language
+# servers (pyright, typescript) are spawned non-interactively via MCP and need
+# `node` resolvable from plain PATH — ~/.local/bin already is in every dev stage.
 RUN curl -fsSL https://claude.ai/install.sh | bash \
   && mkdir -p "$NVM_DIR" \
   && curl -LsSf https://astral.sh/uv/install.sh | sh \
@@ -236,6 +240,8 @@ RUN curl -fsSL https://claude.ai/install.sh | bash \
        && nvm install --lts \
        && nvm use --lts \
        && nvm alias default 'lts/*' \
+       && NODE_BIN=\$(dirname \$(nvm which default)) \
+       && ln -sf \$NODE_BIN/node \$NODE_BIN/npm \$NODE_BIN/npx /home/appuser/.local/bin/ \
      " \
   && uv tool install -p 3.13 serena-agent
 

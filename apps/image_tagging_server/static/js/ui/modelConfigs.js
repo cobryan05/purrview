@@ -16,6 +16,7 @@ import { MODEL_SPEC, scopeForModelType, parseNodes, computeNodes } from '/app-st
 import { renderModelTreePanel } from '/app-static/js/ui/modelTreePanel.js';
 import { createTaskRunnerSection } from '/app-static/js/ui/utils/taskRunnerSection.js';
 import { createHyperparamsFieldset } from '/app-static/js/ui/utils/hyperparamsFieldset.js';
+import { createDatasetChecklist } from '/app-static/js/ui/utils/datasetChecklist.js';
 import {
   createModelBundle,
   fetchModelBundlesForConfig,
@@ -407,34 +408,18 @@ function renderTrainAllSection({ config, onBundleCreated }) {
   nameInput.placeholder = `${config.name} bundle`;
   wrap.appendChild(makeFieldRow('Bundle name', nameInput));
 
-  const datasetBox = document.createElement('div');
-  datasetBox.className = 'panel-tree-box';
-  datasetBox.textContent = 'Loading datasets…';
-  const datasetRow = makeFieldRow('Datasets (≥1)', datasetBox);
+  const datasetHolder = document.createElement('div');
+  datasetHolder.className = 'panel-tree-box';
+  datasetHolder.textContent = 'Loading datasets…';
+  const datasetRow = makeFieldRow('Datasets (≥1)', datasetHolder);
   datasetRow.style.alignItems = 'flex-start';
   wrap.appendChild(datasetRow);
 
-  const datasetCheckboxes = new Map();
+  let datasetChecklist = null;
   fetchDatasets().then((datasetsMap) => {
-    datasetBox.innerHTML = '';
-    if (datasetsMap.size === 0) {
-      datasetBox.textContent = 'No datasets defined yet.';
-      return;
-    }
-    for (const [uuid, ds] of datasetsMap) {
-      const row = document.createElement('label');
-      row.style.cssText = 'display: flex; align-items: center; gap: 0.4em; padding: 2px 4px; cursor: pointer; font-size: 0.88em; user-select: none;';
-      const cb = document.createElement('input');
-      cb.type = 'checkbox';
-      cb.value = uuid;
-      row.appendChild(cb);
-      const nameSpan = document.createElement('span');
-      nameSpan.textContent = ds.name;
-      row.appendChild(nameSpan);
-      datasetBox.appendChild(row);
-      datasetCheckboxes.set(uuid, cb);
-    }
-  }).catch((err) => { datasetBox.textContent = `Failed to load datasets: ${err.message}`; });
+    datasetChecklist = createDatasetChecklist({ datasetsMap });
+    datasetHolder.replaceWith(datasetChecklist.el);
+  }).catch((err) => { datasetHolder.textContent = `Failed to load datasets: ${err.message}`; });
 
   const hyperparamsFieldset = createHyperparamsFieldset({});
   for (const row of hyperparamsFieldset.rows) wrap.appendChild(row);
@@ -443,7 +428,7 @@ function renderTrainAllSection({ config, onBundleCreated }) {
     buttonLabel: '▶ Train All → Bundle',
     runningLabel: 'Training…',
     buildStartArgs: () => {
-      const datasetUuids = [...datasetCheckboxes.entries()].filter(([, cb]) => cb.checked).map(([uuid]) => uuid);
+      const datasetUuids = datasetChecklist?.getSelectedUuids() ?? [];
       if (datasetUuids.length === 0) { toast('Select at least one dataset', 3000, 'error'); return null; }
       const bundleName = nameInput.value.trim() || `${config.name} bundle`;
 

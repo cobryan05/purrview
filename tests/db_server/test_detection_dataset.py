@@ -307,11 +307,22 @@ class TestGetBundleTargetDetectionDataset:
     """
 
     async def _get_bundle_target_dataset(
-        self, http_client, config_uuid: str, node_uuid: str, dataset_uuids: list[str]
+        self,
+        http_client,
+        config_uuid: str,
+        node_uuid: str,
+        dataset_uuids: list[str],
+        label_uuids: list[str] | None = None,
+        class_remap: dict[str, str] | None = None,
     ) -> dict:
+        body: dict = {"datasetUuids": dataset_uuids}
+        if label_uuids is not None:
+            body["labelUuids"] = label_uuids
+        if class_remap is not None:
+            body["classRemap"] = class_remap
         r = await http_client.post(
             f"/api/model-configs/{config_uuid}/training-targets/{node_uuid}/detection-dataset",
-            json={"datasetUuids": dataset_uuids},
+            json=body,
         )
         assert r.status_code == 200, r.text
         return r.json()
@@ -361,3 +372,63 @@ class TestGetBundleTargetDetectionDataset:
         images = result["images"]
         assert len(images) == 1
         assert len(images[0]["annotations"]) == 1
+
+    async def test_explicit_scope_matches_derived_scope(self, http_client, files_root):
+        """Passing the snapshot scope (labelUuids/classRemap from /training-targets)
+        yields the same dataset as letting the endpoint re-derive it."""
+        animal_uuid = await _create_label(http_client, "animal-snap")
+        cat_uuid = await _create_label(http_client, "cat-snap", parent_uuid=animal_uuid)
+        mc = await _create_model_config(
+            http_client,
+            "mc-snap-scope",
+            nodes=[
+                {"modelType": "image_classifier", "architecture": "mobilenet_v3_small"},
+                {"labelUuid": animal_uuid, "modelType": "object_detection", "architecture": "yolo_v9_c"},
+                {"labelUuid": cat_uuid, "modelType": "object_detection", "architecture": "yolo_v9_c"},
+            ],
+        )
+        sub_node = next(n for n in mc["nodes"] if n.get("labelUuid") == animal_uuid)
+
+        img = await _register_image(http_client, files_root, "snap_cat.png")
+        await _add_bbox(http_client, img, cat_uuid, [VERIFIED_TAG_UUID], x=0.1, y=0.1, width=0.3, height=0.4)
+        await _set_image_label(http_client, img, cat_uuid, "present")
+
+        derived = await self._get_bundle_target_dataset(http_client, mc["uuid"], sub_node["uuid"], [_WHOLE_DB_UUID])
+        explicit = await self._get_bundle_target_dataset(
+            http_client,
+            mc["uuid"],
+            sub_node["uuid"],
+            [_WHOLE_DB_UUID],
+            label_uuids=[cat_uuid],
+            class_remap={},
+        )
+        assert explicit["status"] == "success"
+        assert explicit["classNames"] == derived["classNames"] == ["cat-snap"]
+        assert explicit["images"] == derived["images"]
+
+    async def test_explicit_scope_skips_derivation(self, http_client, files_root):
+        """With an explicit scope, the endpoint must not re-derive targets — a
+        node_uuid that is no longer (or never was) a bundle target still succeeds,
+        which is what keeps a mid-run bundle consistent with its _init snapshot."""
+        dog_uuid = await _create_label(http_client, "dog-snap")
+        mc = await _create_model_config(
+            http_client,
+            "mc-snap-only",
+            nodes=[{"modelType": "object_detection", "architecture": "yolo_v9_c"}],
+        )
+
+        img = await _register_image(http_client, files_root, "snap_dog.png")
+        await _add_bbox(http_client, img, dog_uuid, [VERIFIED_TAG_UUID], x=0.2, y=0.2, width=0.3, height=0.3)
+        await _set_image_label(http_client, img, dog_uuid, "present")
+
+        result = await self._get_bundle_target_dataset(
+            http_client,
+            mc["uuid"],
+            "node-gone-from-config",
+            [_WHOLE_DB_UUID],
+            label_uuids=[dog_uuid],
+            class_remap={},
+        )
+        assert result["status"] == "success"
+        assert result["classNames"] == ["dog-snap"]
+        assert len(result["images"]) == 1
