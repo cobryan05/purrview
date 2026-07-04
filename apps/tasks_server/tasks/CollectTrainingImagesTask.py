@@ -1211,7 +1211,7 @@ class CollectTrainingImagesTask(Task):
                 "default": "",
             },
             "filter_chain_uuid": {
-                "type": "str",
+                "type": "filter_chain_uuid",
                 "label": "Filter Chain (optional)",
                 "required": False,
                 "description": (

@@ -515,7 +515,7 @@ class ApplyFilterChainTask(Task):
                 ],
             },
             "filter_chain_uuid": {
-                "type": "str",
+                "type": "filter_chain_uuid",
                 "required": True,
                 "help": "UUID of the FilterChain to apply",
             },
