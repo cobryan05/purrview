@@ -60,6 +60,12 @@ class MultiLabelClassifier(Trainer):
         - Early stopping: patience on val loss
     """
 
+    HYPERPARAM_DEFAULTS: dict[str, int] = {
+        "max_epochs": 50,
+        "batch_size": 32,
+        "early_stopping_patience": 10,
+    }
+
     async def train(
         self,
         config: dict[str, Any],
@@ -73,6 +79,7 @@ class MultiLabelClassifier(Trainer):
 
         from apps.training_server.dataset import build_multilabel_dataset_from_manifest
 
+        d = self.HYPERPARAM_DEFAULTS
         label_uuids: list[str] = config.get("label_uuids") or []
         label_targets: dict[str, dict[str, int]] = config.get("label_targets") or {}
         model_name: str = config.get("model_name", "model")
@@ -82,9 +89,9 @@ class MultiLabelClassifier(Trainer):
         manifest: list[dict] = config.get("manifest") or []
         cache_dir: str = config["cache_dir"]
         artifact_dir_str: str = config["artifact_dir"]
-        max_epochs: int = int(config.get("max_epochs", 50))
-        batch_size: int = int(config.get("batch_size", 32))
-        patience: int = int(config.get("early_stopping_patience", 10))
+        max_epochs: int = int(config.get("max_epochs", d["max_epochs"]))
+        batch_size: int = int(config.get("batch_size", d["batch_size"]))
+        patience: int = int(config.get("early_stopping_patience", d["early_stopping_patience"]))
         arch_name: str = config.get("architecture", "")
         timm_model = _ARCH_MAP.get(arch_name, _DEFAULT_TIMM_MODEL)
 
@@ -104,12 +111,7 @@ class MultiLabelClassifier(Trainer):
             arch_name or "(default)",
             timm_model,
         )
-        logger.info(
-            "Effective hyperparams: epochs=%d batch=%d patience=%d",
-            max_epochs,
-            batch_size,
-            patience,
-        )
+        self.log_effective_hyperparams(logger, epochs=max_epochs, batch=batch_size, patience=patience)
 
         # ── Build datasets ──────────────────────────────────────────────────
         try:

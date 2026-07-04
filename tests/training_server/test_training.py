@@ -289,13 +289,15 @@ async def test_submit_job_endpoint_merges_hyperparams_into_trainer_config(http_c
     assert job.config["max_epochs"] == 7
 
 
-async def test_submit_job_endpoint_omits_unset_hyperparams(http_client, manager):
-    """Regression pin: batch_size/max_epochs/early_stopping_patience must NOT
-    appear in job.config when the caller doesn't set them, so each trainer's
-    own config.get(key, default) fallback applies. A fixed Pydantic default at
+async def test_submit_job_endpoint_omits_unset_hyperparams_object_detection(http_client, manager):
+    """Regression pin: batch_size/max_epochs must NOT appear in job.config
+    when the caller doesn't set them, so object_detection_trainer's own
+    config.get(key, default) fallback applies. A fixed Pydantic default at
     the payload layer previously forced batch_size=32 into every job
-    regardless of trainer_type, silently overriding the object_detection
-    trainer's batch_size=16 default."""
+    regardless of trainer_type, silently overriding this trainer's
+    batch_size=16 default. (early_stopping_patience is not checked here —
+    this trainer reads a different key, "patience"; see the classifier
+    variant of this test below.)"""
     manager.start()
     resp = await http_client.post(
         "/api/training/jobs",
@@ -306,7 +308,38 @@ async def test_submit_job_endpoint_omits_unset_hyperparams(http_client, manager)
     assert job is not None
     assert "batch_size" not in job.config
     assert "max_epochs" not in job.config
+
+
+async def test_submit_job_endpoint_omits_unset_hyperparams_classifier(http_client, manager):
+    """Same regression pin as above, but for binary_image_classifier, which
+    reads early_stopping_patience (not "patience") — covers the field the
+    object_detection variant of this test can't."""
+    manager.start()
+    resp = await http_client.post(
+        "/api/training/jobs",
+        json={"trainer_type": "binary_image_classifier", "model_name": "test"},
+    )
+    assert resp.status_code == 200
+    job = manager.get_job(resp.json()["job_id"])
+    assert job is not None
+    assert "batch_size" not in job.config
+    assert "max_epochs" not in job.config
     assert "early_stopping_patience" not in job.config
+
+
+async def test_get_trainer_hyperparam_defaults(http_client, manager):
+    manager.start()
+    resp = await http_client.get("/api/training/trainers/object_detection/hyperparams")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["trainer_type"] == "object_detection"
+    assert data["defaults"] == {"max_epochs": 50, "imgsz": 640, "batch_size": 16, "patience": 20}
+
+
+async def test_get_trainer_hyperparam_defaults_unknown_trainer(http_client, manager):
+    manager.start()
+    resp = await http_client.get("/api/training/trainers/nonexistent/hyperparams")
+    assert resp.status_code == 404
 
 
 async def test_list_jobs_endpoint_empty(http_client, manager):

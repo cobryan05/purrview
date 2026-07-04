@@ -17,6 +17,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from sse_starlette.sse import EventSourceResponse
 
 from .manager import Manager
+from .trainers import TRAINER_REGISTRY
 
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger(__file__)
@@ -76,6 +77,11 @@ class SubmitJobResponse(BaseModel):
 
 class ListJobsResponse(BaseModel):
     jobs: List[JobInfo]
+
+
+class HyperparamDefaultsResponse(BaseModel):
+    trainer_type: str
+    defaults: Dict[str, int]
 
 
 class CancelJobResponse(BaseModel):
@@ -163,6 +169,18 @@ class WebApp:
         async def list_jobs() -> ListJobsResponse:
             jobs = self._manager.list_jobs()
             return ListJobsResponse(jobs=[_job_to_info(j) for j in jobs])
+
+        @self._app.get(
+            "/api/training/trainers/{trainer_type}/hyperparams",
+            operation_id="get_trainer_hyperparam_defaults",
+            response_model=HyperparamDefaultsResponse,
+            tags=["training"],
+        )
+        async def get_trainer_hyperparam_defaults(trainer_type: str):
+            trainer = TRAINER_REGISTRY.get(trainer_type)
+            if trainer is None:
+                return JSONResponse({"detail": f"Unknown trainer_type {trainer_type!r}"}, status_code=404)
+            return HyperparamDefaultsResponse(trainer_type=trainer_type, defaults=trainer.HYPERPARAM_DEFAULTS)
 
         @self._app.get(
             "/api/training/jobs/{job_id}",

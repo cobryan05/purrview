@@ -1,11 +1,29 @@
 """Abstract base class for all trainers."""
 
 import asyncio
+import logging
 from abc import ABC, abstractmethod
 from typing import Any, Callable
 
 
 class Trainer(ABC):
+    # Single source of truth for this trainer's hyperparam defaults — the
+    # keys it reads out of ``config`` via ``config.get(key, default)`` and
+    # what it falls back to when a caller (API payload, UI) omits them.
+    # Subclasses override this; also used to serve GET
+    # /api/training/trainers/{trainer_type}/hyperparams so the frontend can
+    # show real defaults instead of guessing.
+    HYPERPARAM_DEFAULTS: dict[str, int] = {}
+
+    def log_effective_hyperparams(self, logger: logging.Logger, **resolved: Any) -> None:
+        """Log the concrete hyperparam values this run resolved to.
+
+        Call with whatever keys are relevant to this trainer, e.g.
+        ``self.log_effective_hyperparams(logger, epochs=max_epochs, batch=batch_size)``.
+        """
+        parts = " ".join(f"{k}={v}" for k, v in resolved.items())
+        logger.info("Effective hyperparams: %s", parts)
+
     @abstractmethod
     async def train(
         self,

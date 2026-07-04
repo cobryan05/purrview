@@ -50,12 +50,23 @@ def _get_model_class(class_name: str):
 
 @register_trainer("object_detection")
 class ObjectDetectionTrainer(Trainer):
+    # NOTE: this trainer reads "patience", unlike the classifier trainers
+    # which read "early_stopping_patience" — see NOTES.md. Keep this key
+    # name here as the source of truth for what this trainer accepts.
+    HYPERPARAM_DEFAULTS: dict[str, int] = {
+        "max_epochs": 50,
+        "imgsz": 640,
+        "batch_size": 16,
+        "patience": 20,
+    }
+
     async def train(
         self,
         config: dict[str, Any],
         progress_cb: Callable[[dict], None],
         cancel_event: asyncio.Event,
     ) -> dict[str, Any]:
+        d = self.HYPERPARAM_DEFAULTS
         architecture: str = config.get("architecture", "yolo_v9_c")
         class_names: list[str] = list(config.get("class_names") or [])
         annotations: dict = dict(config.get("annotations") or {})
@@ -69,10 +80,10 @@ class ObjectDetectionTrainer(Trainer):
         model_config_node_uuid: str = str(config.get("model_config_node_uuid", ""))
         label_uuids: list[str] = list(config.get("label_uuids") or [])
 
-        max_epochs: int = int(config.get("max_epochs", 50))
-        imgsz: int = int(config.get("imgsz", 640))
-        batch_size: int = int(config.get("batch_size", 16))
-        patience: int = int(config.get("patience", 20))
+        max_epochs: int = int(config.get("max_epochs", d["max_epochs"]))
+        imgsz: int = int(config.get("imgsz", d["imgsz"]))
+        batch_size: int = int(config.get("batch_size", d["batch_size"]))
+        patience: int = int(config.get("patience", d["patience"]))
 
         if not class_names:
             raise ValueError("object_detection trainer requires at least one class in class_names")
@@ -144,12 +155,9 @@ class ObjectDetectionTrainer(Trainer):
             model = model_cls(weight_filename, size=size)
 
             # Run training in a thread (libreyolo train() is synchronous).
-            logger.info(
-                "Starting training: arch=%s epochs=%d imgsz=%d batch=%d",
-                architecture,
-                max_epochs,
-                imgsz,
-                batch_size,
+            logger.info("Starting training: arch=%s", architecture)
+            self.log_effective_hyperparams(
+                logger, epochs=max_epochs, imgsz=imgsz, batch=batch_size, patience=patience
             )
             results: dict = await asyncio.to_thread(
                 model.train,
