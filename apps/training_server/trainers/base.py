@@ -15,14 +15,26 @@ class Trainer(ABC):
     # show real defaults instead of guessing.
     HYPERPARAM_DEFAULTS: dict[str, int] = {}
 
-    def log_effective_hyperparams(self, logger: logging.Logger, **resolved: Any) -> None:
+    def log_effective_hyperparams(
+        self,
+        logger: logging.Logger,
+        progress_cb: Callable[[dict], None] | None = None,
+        **resolved: Any,
+    ) -> None:
         """Log the concrete hyperparam values this run resolved to.
 
         Call with whatever keys are relevant to this trainer, e.g.
-        ``self.log_effective_hyperparams(logger, epochs=max_epochs, batch=batch_size)``.
+        ``self.log_effective_hyperparams(logger, progress_cb, epochs=max_epochs, batch=batch_size)``.
+
+        Also forwards the message through ``progress_cb`` (if given) so it
+        reaches the frontend task log — plain ``logger.info`` only goes to
+        the training server's own process logs, which the UI never shows.
         """
         parts = " ".join(f"{k}={v}" for k, v in resolved.items())
-        logger.info("Effective hyperparams: %s", parts)
+        msg = f"Effective hyperparams: {parts}"
+        logger.info(msg)
+        if progress_cb is not None:
+            progress_cb({"progress": 0.0, "log": msg})
 
     @abstractmethod
     async def train(

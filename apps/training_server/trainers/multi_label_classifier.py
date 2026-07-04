@@ -111,7 +111,14 @@ class MultiLabelClassifier(Trainer):
             arch_name or "(default)",
             timm_model,
         )
-        self.log_effective_hyperparams(logger, epochs=max_epochs, batch=batch_size, patience=patience)
+        self.log_effective_hyperparams(
+            logger,
+            progress_cb,
+            architecture=arch_name or timm_model,
+            epochs=max_epochs,
+            batch=batch_size,
+            patience=patience,
+        )
 
         # ── Build datasets ──────────────────────────────────────────────────
         try:

@@ -157,7 +157,13 @@ class ObjectDetectionTrainer(Trainer):
             # Run training in a thread (libreyolo train() is synchronous).
             logger.info("Starting training: arch=%s", architecture)
             self.log_effective_hyperparams(
-                logger, epochs=max_epochs, imgsz=imgsz, batch=batch_size, patience=patience
+                logger,
+                progress_cb,
+                architecture=architecture,
+                epochs=max_epochs,
+                imgsz=imgsz,
+                batch=batch_size,
+                patience=patience,
             )
             results: dict = await asyncio.to_thread(
                 model.train,
