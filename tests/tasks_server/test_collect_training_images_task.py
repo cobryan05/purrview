@@ -561,22 +561,31 @@ async def _task_with_chain_runner(steps, backend) -> CollectTrainingImagesTask:
     return task
 
 
+def _fc_provided() -> MagicMock:
+    provided = MagicMock()
+    provided.metadata.source = _SOURCE
+    provided.metadata.frame_idx = 0
+    return provided
+
+
 class TestApplyFilterChainToFrame:
     async def test_no_runner_configured_returns_matching_unchanged(self):
         task = _make_task()
         await task._init(_PARAMS, resume_data=None)
         matching = [_fc_detection()]
-        result, discard = await task._apply_filter_chain_to_frame("aGVsbG8=", matching)
+        result, discard, force_save = await task._apply_filter_chain_to_frame(_fc_provided(), "aGVsbG8=", matching)
         assert result is matching
         assert discard is False
+        assert force_save is False
 
     async def test_empty_matching_short_circuits_without_evaluating(self):
         task = _make_task()
         await task._init(_PARAMS, resume_data=None)
         task._filter_chain_runner = object()  # would blow up if actually invoked
-        result, discard = await task._apply_filter_chain_to_frame("aGVsbG8=", [])
+        result, discard, force_save = await task._apply_filter_chain_to_frame(_fc_provided(), "aGVsbG8=", [])
         assert result == []
         assert discard is False
+        assert force_save is False
 
     async def test_discard_image_match_discards_frame(self):
         backend = _FakeFilterChainBackend(kinds={"corrupt": "image_classifier"}, classify_results={"corrupt": 0.9})
@@ -584,32 +593,43 @@ class TestApplyFilterChainToFrame:
         task = await _task_with_chain_runner([step], backend)
 
         matching = [_fc_detection()]
-        result, discard = await task._apply_filter_chain_to_frame("aGVsbG8=", matching)
+        result, discard, force_save = await task._apply_filter_chain_to_frame(_fc_provided(), "aGVsbG8=", matching)
         assert discard is True
         assert result == []
+        assert force_save is False
         assert task._filtered_discarded == 1
 
-    async def test_strip_unverified_bboxes_drops_all_detections(self):
+    async def test_strip_unverified_bboxes_empties_matching_but_forces_save(self):
+        """Per plan 2.1 (never delete images), stripping all detections must still
+        force the (now bbox-less) image to be saved — it's not equivalent to discard."""
         backend = _FakeFilterChainBackend(kinds={"blurry": "image_classifier"}, classify_results={"blurry": 0.9})
         step = _fc_step(model_name="blurry", action="strip_unverified_bboxes", confidence=0.5)
         task = await _task_with_chain_runner([step], backend)
 
         matching = [_fc_detection(), _fc_detection()]
-        result, discard = await task._apply_filter_chain_to_frame("aGVsbG8=", matching)
+        result, discard, force_save = await task._apply_filter_chain_to_frame(_fc_provided(), "aGVsbG8=", matching)
         assert discard is False
         assert result == []
+        assert force_save is True
         assert task._filtered_stripped == 2
 
-    async def test_tag_image_adds_tag_to_every_detection(self):
+    async def test_tag_image_stashes_image_level_tag_not_per_bbox(self):
+        """tag_image is an image-level tag — it must NOT land on every bbox's
+        tag_uuids (that would make an 'excluded' image tag indistinguishable
+        from a per-object tag, and the Review image-level filter would never
+        match it)."""
         backend = _FakeFilterChainBackend(kinds={"corrupt": "image_classifier"}, classify_results={"corrupt": 0.9})
         step = _fc_step(model_name="corrupt", action="tag_image", confidence=0.5, action_params={"tag_uuid": "tag-x"})
         task = await _task_with_chain_runner([step], backend)
 
+        provided = _fc_provided()
         matching = [_fc_detection(), _fc_detection()]
-        result, discard = await task._apply_filter_chain_to_frame("aGVsbG8=", matching)
+        result, discard, force_save = await task._apply_filter_chain_to_frame(provided, "aGVsbG8=", matching)
         assert discard is False
+        assert force_save is False
         assert result is matching
-        assert all("tag-x" in det.bbox.tag_uuids for det in matching)
+        assert all(det.bbox.tag_uuids == [] for det in matching)
+        assert provided._filter_chain_image_tags == {"tag-x"}
         assert task._filtered_tagged == 1
 
     async def test_relabel_bbox_mutates_only_overlapping_detection(self):
@@ -629,8 +649,9 @@ class TestApplyFilterChainToFrame:
         task = await _task_with_chain_runner([step], backend)
 
         matching = [det_a, det_b]
-        result, discard = await task._apply_filter_chain_to_frame("aGVsbG8=", matching)
+        result, discard, force_save = await task._apply_filter_chain_to_frame(_fc_provided(), "aGVsbG8=", matching)
         assert discard is False
+        assert force_save is False
         assert det_a.bbox.label_uuid == "water_valve"
         assert det_b.bbox.label_uuid == "dog"  # untouched
         assert task._filtered_relabeled == 1
@@ -652,8 +673,9 @@ class TestApplyFilterChainToFrame:
         task = await _task_with_chain_runner([step], backend)
 
         matching = [det_a, det_b]
-        result, discard = await task._apply_filter_chain_to_frame("aGVsbG8=", matching)
+        result, discard, force_save = await task._apply_filter_chain_to_frame(_fc_provided(), "aGVsbG8=", matching)
         assert discard is False
+        assert force_save is False
         assert "tag-y" in det_a.bbox.tag_uuids
         assert "tag-y" not in det_b.bbox.tag_uuids
         assert task._filtered_tagged == 1
@@ -718,3 +740,122 @@ async def test_filter_chain_discard_prevents_save_end_to_end(tmp_path):
     assert task._resume_data["images_saved"] == 0
     assert task._filtered_discarded == 2
     mock_img_cls.return_value.update_image_metadata.assert_not_called()
+
+
+def _make_filter_chain_mock(step_kwargs: dict) -> MagicMock:
+    mock_chain = MagicMock(
+        steps=[
+            MagicMock(
+                order=0,
+                model_name=step_kwargs.get("model_name", "corrupt"),
+                action=step_kwargs["action"],
+                confidence=step_kwargs.get("confidence", 0.5),
+                iou_threshold=step_kwargs.get("iou_threshold", 0.5),
+                action_params=step_kwargs.get("action_params", {}),
+                enabled=True,
+            )
+        ]
+    )
+    mock_chain.name = "TestChain"
+    mock_filter_chains_api = MagicMock()
+    mock_filter_chains_api.get_filter_chain.return_value = MagicMock(chain=mock_chain)
+    return mock_filter_chains_api
+
+
+async def test_filter_chain_strip_unverified_bboxes_still_saves_image_end_to_end(tmp_path):
+    """strip_unverified_bboxes must NOT behave like discard_image: the (now
+    bbox-less) image is still written to disk and its metadata saved with an
+    empty bbox list — never delete images (plan 2.1)."""
+    images = [_tracked_image(0)]
+    params = {**_PARAMS, "filter_chain_uuid": "chain-1"}
+    task = _make_task(params=params)
+    provider = _FiniteProvider(images)
+
+    inf_result = MagicMock()
+    inf_result.result.detections = [_detection()]
+    pin_resp = MagicMock()
+    pin_resp.pin_id = "pin-1"
+    mock_filter_chains_api = _make_filter_chain_mock({"model_name": "blurry", "action": "strip_unverified_bboxes"})
+
+    with (
+        patch("apps.tasks_server.tasks.CollectTrainingImagesTask.SourceHelper") as mock_sh,
+        patch("apps.tasks_server.tasks.CollectTrainingImagesTask.ModelsApi") as mock_models_cls,
+        patch("apps.tasks_server.tasks.CollectTrainingImagesTask.InferenceApi") as mock_inf_cls,
+        patch("apps.tasks_server.tasks.CollectTrainingImagesTask.ImagesApi") as mock_img_cls,
+        patch(
+            "apps.tasks_server.tasks.CollectTrainingImagesTask.FilterChainsApi",
+            return_value=mock_filter_chains_api,
+        ),
+        patch("apps.tasks_server.tasks.ApplyFilterChainTask._read_model_kind", return_value="image_classifier"),
+        patch(
+            "apps.tasks_server.tasks.ApplyFilterChainTask._HttpInferenceBackend.classify_whole_image",
+            new=AsyncMock(return_value=0.9),
+        ),
+        patch.dict(os.environ, {"FILES_ROOT": str(tmp_path)}),
+    ):
+        mock_sh.return_value.get_image_provider.return_value = provider
+        mock_models_cls.return_value.pin_model_api_api_models_model_name_pin_post.return_value = pin_resp
+        mock_inf_cls.return_value.inference.return_value = inf_result
+        mock_img_cls.return_value.update_image_metadata.return_value = MagicMock()
+
+        await task.start()
+        await task.wait_for_task_done(timeout=10.0)
+
+    assert task._filtered_stripped == 1
+    assert task._resume_data["images_saved"] == 1
+    mock_img_cls.return_value.update_image_metadata.assert_called_once()
+    payload = mock_img_cls.return_value.update_image_metadata.call_args.args[0]
+    assert payload.boxes == []
+    jpg_files = list(tmp_path.rglob("*.jpg"))
+    assert len(jpg_files) == 1
+
+
+async def test_filter_chain_tag_image_calls_set_image_tag_end_to_end(tmp_path):
+    """tag_image must reach the DB via set_image_tag (image-level), not by
+    polluting every saved bbox's tag_uuids."""
+    images = [_tracked_image(0)]
+    params = {**_PARAMS, "filter_chain_uuid": "chain-1"}
+    task = _make_task(params=params)
+    provider = _FiniteProvider(images)
+
+    inf_result = MagicMock()
+    inf_result.result.detections = [_detection()]
+    pin_resp = MagicMock()
+    pin_resp.pin_id = "pin-1"
+    mock_filter_chains_api = _make_filter_chain_mock(
+        {"model_name": "corrupt", "action": "tag_image", "action_params": {"tag_uuid": "tag-x"}}
+    )
+
+    with (
+        patch("apps.tasks_server.tasks.CollectTrainingImagesTask.SourceHelper") as mock_sh,
+        patch("apps.tasks_server.tasks.CollectTrainingImagesTask.ModelsApi") as mock_models_cls,
+        patch("apps.tasks_server.tasks.CollectTrainingImagesTask.InferenceApi") as mock_inf_cls,
+        patch("apps.tasks_server.tasks.CollectTrainingImagesTask.ImagesApi") as mock_img_cls,
+        patch(
+            "apps.tasks_server.tasks.CollectTrainingImagesTask.FilterChainsApi",
+            return_value=mock_filter_chains_api,
+        ),
+        patch("apps.tasks_server.tasks.ApplyFilterChainTask._read_model_kind", return_value="image_classifier"),
+        patch(
+            "apps.tasks_server.tasks.ApplyFilterChainTask._HttpInferenceBackend.classify_whole_image",
+            new=AsyncMock(return_value=0.9),
+        ),
+        patch.dict(os.environ, {"FILES_ROOT": str(tmp_path)}),
+    ):
+        mock_sh.return_value.get_image_provider.return_value = provider
+        mock_models_cls.return_value.pin_model_api_api_models_model_name_pin_post.return_value = pin_resp
+        mock_inf_cls.return_value.inference.return_value = inf_result
+        mock_img_cls.return_value.update_image_metadata.return_value = MagicMock()
+        mock_img_cls.return_value.set_image_tag.return_value = MagicMock()
+
+        await task.start()
+        await task.wait_for_task_done(timeout=10.0)
+
+    assert task._resume_data["images_saved"] == 1
+    mock_img_cls.return_value.set_image_tag.assert_called_once()
+    tag_payload = mock_img_cls.return_value.set_image_tag.call_args.args[0]
+    assert tag_payload.tag_uuid == "tag-x"
+    assert tag_payload.action == "add"
+    # The tag must not have leaked into the per-bbox tag_uuids sent for the image.
+    boxes_payload = mock_img_cls.return_value.update_image_metadata.call_args.args[0].boxes
+    assert all("tag-x" not in b.tag_uuids for b in boxes_payload)

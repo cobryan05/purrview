@@ -20,6 +20,7 @@ from db_client.api.settings_api import SettingsApi
 from db_client.api.tags_api import TagsApi
 from db_client.models.add_tag_payload import AddTagPayload
 from db_client.models.bounding_box_metadata_model import BoundingBoxMetadataModel
+from db_client.models.set_image_tag_payload import SetImageTagPayload
 from db_client.models.tag_kind import (  # noqa: F401 (used as ApiTagKind.TASK_GENERATED)
     TagKind as ApiTagKind,
 )
@@ -493,8 +494,11 @@ class CollectTrainingImagesTask(Task):
                         t_encode = time.perf_counter()  # PERF
 
                     matching = await self._run_inference(inference_api, base64_img, pin_ids)
+                    force_save = False
                     if self._filter_chain_runner is not None:
-                        matching, _discarded = await self._apply_filter_chain_to_frame(base64_img, matching)
+                        matching, _discarded, force_save = await self._apply_filter_chain_to_frame(
+                            provided, base64_img, matching
+                        )
                     t_infer = time.perf_counter()  # PERF
 
                     # PERF BEGIN
@@ -541,6 +545,15 @@ class CollectTrainingImagesTask(Task):
                                 self._save_image(images_api, provided, matching, files_root)
                             )
                             self._pending_saves.append((save_task, unique_id))
+                    elif force_save and not self._enable_dedup:
+                        # strip_unverified_bboxes emptied `matching`, but per plan 2.1 the
+                        # image itself must still be saved (never delete images). Skipped
+                        # when dedup is enabled: an empty bbox list makes the dedup worker's
+                        # `all(bbox_flags)` vacuously true, which would wrongly discard the
+                        # frame under duplicate_action="discard" — narrow edge case, not
+                        # worth the complexity of special-casing dedup for an empty bbox set.
+                        save_task = asyncio.create_task(self._save_image(images_api, provided, [], files_root))
+                        self._pending_saves.append((save_task, unique_id))
 
                     if self._data_req_flag.is_set():
                         # Drain the dedup queue first so all matched frames are accounted
@@ -774,21 +787,27 @@ class CollectTrainingImagesTask(Task):
                 deduped.append(det)
         return deduped
 
-    async def _apply_filter_chain_to_frame(self, base64_img: str, matching: list) -> tuple[list, bool]:
+    async def _apply_filter_chain_to_frame(
+        self, provided: ImageWithProviderMetadata, base64_img: str, matching: list
+    ) -> tuple[list, bool, bool]:
         """Run the configured filter chain against this frame's in-memory detections
         before they're saved (WORKFLOW_FILTERCHAIN_PLAN.md Phase 4).
 
-        Returns (possibly-mutated matching list, discard). `discard=True` means the
-        whole frame must not be saved at all — caller skips dispatch entirely.
+        Returns (possibly-mutated matching list, discard, force_save):
+          - discard=True: the whole frame must not be saved at all.
+          - force_save=True: `matching` was stripped to [] but the plan requires the
+            image itself to still be saved (never delete images) — caller must
+            dispatch even though `matching` is empty.
 
         Bbox-level actions (relabel_bbox / tag_bbox) mutate `matching` in place by
         overlap-matching a chain detector step's new detections against `matching`
-        itself (there are no "existing" DB bboxes yet at collect time). Image-level
-        `tag_image` is folded into every detection's own tag_uuids so it reaches
-        _save_image/_dedup_worker without changing their signatures.
+        itself (there are no "existing" DB bboxes yet at collect time). `tag_image`
+        is an image-level tag — stashed on `provided` and applied via set_image_tag
+        once _save_image knows the image's saved path, so it lands on the image
+        record rather than being (incorrectly) folded into every bbox's tags.
         """
         if self._filter_chain_runner is None or not matching:
-            return matching, False
+            return matching, False, False
 
         image_bytes = base64.b64decode(base64_img)
         existing = [
@@ -806,10 +825,11 @@ class CollectTrainingImagesTask(Task):
             step_matches = await self._filter_chain_runner.evaluate_image(image_bytes, existing)
         except Exception:
             logger.exception("Filter chain evaluation failed for this frame; skipping filter")
-            return matching, False
+            return matching, False, False
 
         discard = False
         strip_all = False
+        image_tag_uuids: set = set()
         for match in step_matches:
             step = match.step
             action = step["action"]
@@ -819,12 +839,13 @@ class CollectTrainingImagesTask(Task):
                     discard = True
                 elif action == "tag_image":
                     tag_uuid = action_params.get("tag_uuid")
-                    if tag_uuid:
-                        for det in matching:
-                            det.bbox.tag_uuids = [*(det.bbox.tag_uuids or []), tag_uuid]
+                    if tag_uuid and tag_uuid not in image_tag_uuids:
+                        image_tag_uuids.add(tag_uuid)
                         self._filtered_tagged += 1
                 elif action == "strip_unverified_bboxes":
-                    # At collect time every detection is unverified by definition.
+                    # At collect time every detection is unverified by definition —
+                    # strip them all, but per plan 2.1 the image itself is still saved
+                    # (never delete images, even ones with zero remaining bboxes).
                     strip_all = True
                     self._filtered_stripped += len(matching)
                 else:
@@ -846,12 +867,15 @@ class CollectTrainingImagesTask(Task):
                 else:
                     logger.warning("Action %r is not valid for a bbox-level (detector) step; skipping", action)
 
+        if image_tag_uuids:
+            provided._filter_chain_image_tags = image_tag_uuids
+
         if discard:
             self._filtered_discarded += 1
-            return [], True
+            return [], True, False
         if strip_all:
-            return [], False
-        return matching, False
+            return [], False, True
+        return matching, False, False
 
     async def _save_image(
         self,
@@ -886,8 +910,9 @@ class CollectTrainingImagesTask(Task):
         boxes = []
         for det in matching:
             extra_tags = list(self._extra_tag_uuids)
-            # Filter-chain tag_image/tag_bbox matches (Phase 4) stash extra tags
-            # directly on the detection's own bbox.tag_uuids — fold them in here.
+            # Filter-chain tag_bbox matches (Phase 4) stash extra tags directly on
+            # the matched detection's own bbox.tag_uuids — fold them in here.
+            # (tag_image is image-level — applied via set_image_tag below instead.)
             filter_chain_tags = list(det.bbox.tag_uuids or [])
             boxes.append(
                 BoundingBoxMetadataModel(
@@ -920,6 +945,19 @@ class CollectTrainingImagesTask(Task):
             logger.exception(f"Failed to save metadata for {rel_path}")
             self.log(f"Failed to save metadata: {filename}")
             return None
+
+        # Image-level filter-chain tag_image match, stashed by
+        # _apply_filter_chain_to_frame — apply now that the image is saved.
+        image_tag_uuids = getattr(provided, "_filter_chain_image_tags", None)
+        if image_tag_uuids:
+            for tag_uuid in image_tag_uuids:
+                try:
+                    await asyncio.to_thread(
+                        images_api.set_image_tag,
+                        SetImageTagPayload(image_path=rel_path, tag_uuid=tag_uuid, action="add"),
+                    )
+                except Exception:
+                    logger.exception(f"Failed to apply filter-chain image tag {tag_uuid} to {rel_path}")
 
         logger.debug(
             "_save_image total: %.1fms for %s",
