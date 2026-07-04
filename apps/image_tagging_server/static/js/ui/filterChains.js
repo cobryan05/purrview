@@ -69,6 +69,10 @@ function buildStepRow(step, { modelNames, tagItems, labelItems, onAnyChange, onD
   downBtn.addEventListener('click', () => onMove(1));
   topRow.appendChild(downBtn);
 
+  // Placeholders preserve visual order (↑ ↓ Model Action Enabled Remove) even
+  // though DropDownField.renderEdit() resolves its <select> asynchronously.
+  const modelSlot = document.createElement('span');
+  topRow.appendChild(modelSlot);
   const modelField = new DropDownField({
     value: step.model_name || null,
     editMode: true,
@@ -76,8 +80,10 @@ function buildStepRow(step, { modelNames, tagItems, labelItems, onAnyChange, onD
     placeholder: 'Model…',
     onChange: () => onAnyChange?.(),
   });
-  modelField.renderEdit().then(el => topRow.appendChild(el));
+  modelField.renderEdit().then(el => modelSlot.appendChild(el));
 
+  const actionSlot = document.createElement('span');
+  topRow.appendChild(actionSlot);
   const actionField = new DropDownField({
     value: ACTIONS.find(a => a.key === _action) ? { key: _action } : null,
     editMode: true,
@@ -90,7 +96,7 @@ function buildStepRow(step, { modelNames, tagItems, labelItems, onAnyChange, onD
       onAnyChange?.();
     },
   });
-  actionField.renderEdit().then(el => topRow.appendChild(el));
+  actionField.renderEdit().then(el => actionSlot.appendChild(el));
 
   const enabledLabel = document.createElement('label');
   enabledLabel.style.cssText = 'display: flex; align-items: center; gap: 0.25em; font-size: 0.9em;';
@@ -231,8 +237,9 @@ function buildChainForm(container, { name = '', description = '', steps = [] }, 
   }
 
   function renderSteps() {
-    // Snapshot current in-progress edits before re-rendering rows.
-    _stepData = _rows.map((r, i) => r ? r.getStep() : _stepData[i]);
+    // Callers mutate _stepData (via _rows.map(r => r.getStep())) themselves
+    // before calling renderSteps() — don't re-snapshot here, or the initial
+    // call (with _rows still empty) would clobber the seeded _stepData.
     stepsBox.innerHTML = '';
     _rows = _stepData.map((step, idx) => {
       const rowHandle = buildStepRow(step, {

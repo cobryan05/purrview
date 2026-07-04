@@ -4659,6 +4659,14 @@ class DbClient:
     def _fc_to_read(fc: FilterChain) -> FilterChainRead:
         return FilterChainRead.model_validate(fc)
 
+    @staticmethod
+    def _validate_filter_chain_step_orders(orders) -> None:
+        seen: set = set()
+        for order in orders:
+            if order in seen:
+                raise ValueError(f"Duplicate step order in filter chain: {order!r}")
+            seen.add(order)
+
     async def list_filter_chains(self) -> List[FilterChainRead]:
         async with self._async_session_maker() as session:
             stmt = select(FilterChain).options(selectinload(FilterChain.steps))
@@ -4675,6 +4683,8 @@ class DbClient:
             return self._fc_to_read(fc)
 
     async def create_filter_chain(self, data: FilterChainCreate) -> FilterChainRead:
+        self._validate_filter_chain_step_orders(step.order for step in data.steps)
+
         async with self._async_session_maker() as session:
             fc = FilterChain(name=data.name, description=data.description)
             session.add(fc)
@@ -4698,6 +4708,9 @@ class DbClient:
             return self._fc_to_read(result.one())
 
     async def update_filter_chain(self, uuid: str, data: FilterChainUpdate) -> Optional[FilterChainRead]:
+        if data.steps is not None:
+            self._validate_filter_chain_step_orders(step.order for step in data.steps)
+
         async with self._async_session_maker() as session:
             result = await session.exec(select(FilterChain).where(FilterChain.uuid == uuid))
             fc = result.one_or_none()

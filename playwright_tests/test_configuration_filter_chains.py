@@ -163,6 +163,49 @@ class TestFilterChainListLoading:
         expect(_editor_bar(page)).to_contain_text(FAKE_CHAIN["name"])
         expect(_editor_bar(page).locator("button", has_text="Delete")).to_be_visible()
 
+    def test_editing_existing_chain_preserves_its_steps_on_save(self, page: Page, base_url: str):
+        """Regression test: opening a chain with steps and saving an unrelated
+        scalar-field edit must resend the existing steps, not an empty list —
+        a prior bug clobbered _stepData on the very first render pass."""
+        _mock_filter_chains(page, [FAKE_CHAIN])
+        _mock_models(page, ["corrupt_classifier"])
+        _mock_labels(page, [])
+        _mock_tags_empty(page)
+        _navigate_to_filter_chains(page, base_url)
+        page.wait_for_timeout(800)
+        page.get_by_text(FAKE_CHAIN["name"], exact=True).first.click()
+        page.wait_for_timeout(600)
+
+        # Exactly one step row rendered from the fetched chain.
+        expect(page.locator("#filter-chain-management-box .fc-step-row")).to_have_count(1)
+
+        patched_payloads = []
+
+        def _handle_patch(route: Route):
+            if route.request.method == "PATCH":
+                patched_payloads.append(json.loads(route.request.post_data or "{}"))
+                route.fulfill(
+                    status=200,
+                    content_type="application/json",
+                    body=json.dumps({"status": "success", "chain": FAKE_CHAIN}),
+                )
+            else:
+                route.continue_()
+
+        page.route(
+            lambda url: url.split("?")[0].endswith(f"/api/filter-chains/{FAKE_CHAIN['uuid']}"),
+            _handle_patch,
+        )
+
+        desc_input = _editor_body(page).locator("input").nth(1)
+        desc_input.fill("updated description")
+        _editor_bar(page).locator("button", has_text="Save").click()
+        page.wait_for_timeout(800)
+
+        assert len(patched_payloads) == 1
+        assert len(patched_payloads[0]["steps"]) == 1
+        assert patched_payloads[0]["steps"][0]["model_name"] == "corrupt_classifier"
+
 
 class TestFilterChainCreateFlow:
     def test_create_chain_posts_to_api(self, page: Page, base_url: str):

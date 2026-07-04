@@ -28,7 +28,14 @@ WHOLE_DATABASE_DATASET_UUID = "00000000-0000-0000-0000-000000000002"
 import jstyleson
 import numpy as np
 import sqlalchemy as sa
-from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, field_validator
+from pydantic import (
+    BaseModel,
+    BeforeValidator,
+    ConfigDict,
+    Field,
+    field_validator,
+    model_validator,
+)
 from pydantic.alias_generators import to_camel
 from sqlmodel import JSON, Column, DateTime, Field, Relationship, SQLModel
 from typing_extensions import Annotated
@@ -878,6 +885,16 @@ class FilterChainStepWrite(ApiModel):
     action: ActionKind
     action_params: Dict[str, Any] = Field(default_factory=dict)
     enabled: bool = True
+
+    @model_validator(mode="after")
+    def _validate_action_params(self) -> "FilterChainStepWrite":
+        if self.action in (ActionKind.TAG_IMAGE, ActionKind.TAG_BBOX):
+            if not self.action_params.get("tag_uuid"):
+                raise ValueError(f"action {self.action.value!r} requires action_params.tag_uuid")
+        elif self.action == ActionKind.RELABEL_BBOX:
+            if not self.action_params.get("target_label_uuid"):
+                raise ValueError("action 'relabel_bbox' requires action_params.target_label_uuid")
+        return self
 
 
 class FilterChainCreate(ApiModel):

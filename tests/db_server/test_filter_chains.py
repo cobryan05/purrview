@@ -95,6 +95,33 @@ class TestFilterChains:
         )
         assert r.status_code == 422
 
+    async def test_tag_image_without_tag_uuid_rejected(self, http_client):
+        bad_step = {**_STEP_A, "action": "tag_image", "action_params": {}}
+        r = await http_client.post(
+            "/api/filter-chains",
+            json={"name": "BadTagImage", "steps": [bad_step]},
+        )
+        assert r.status_code == 422
+
+    async def test_relabel_bbox_without_target_label_rejected(self, http_client):
+        bad_step = {**_STEP_B, "action_params": {}}
+        r = await http_client.post(
+            "/api/filter-chains",
+            json={"name": "BadRelabel", "steps": [bad_step]},
+        )
+        assert r.status_code == 422
+
+    async def test_duplicate_step_order_rejected(self, http_client):
+        dup_a = {**_STEP_A, "order": 0}
+        dup_b = {**_STEP_B, "order": 0}
+        r = await http_client.post(
+            "/api/filter-chains",
+            json={"name": "DupOrder", "steps": [dup_a, dup_b]},
+        )
+        assert r.status_code == 200
+        body = r.json()
+        assert body["status"] == "failure"
+
     async def test_update_scalar_fields(self, http_client):
         chain = await _create_chain(http_client, "OldName", description="old")
         r = await http_client.patch(
@@ -221,7 +248,9 @@ class TestFilterChainsDbClient:
             created.uuid,
             FilterChainUpdate(
                 steps=[
-                    FilterChainStepWrite(order=0, model_name="m2", action=ActionKind.TAG_BBOX),
+                    FilterChainStepWrite(
+                        order=0, model_name="m2", action=ActionKind.TAG_BBOX, action_params={"tag_uuid": "tag-2"}
+                    ),
                 ]
             ),
         )
