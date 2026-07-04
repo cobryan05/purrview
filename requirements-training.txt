@@ -1,3 +1,12 @@
+# Pin torch/torchvision to the versions the pytorch base image ships
+# (PYTORCH_VERSION=2.7.1 / cu128 in the Dockerfile). torch is otherwise
+# unpinned, so `pip wheel` here re-resolves and upgrades it to whatever is
+# newest (e.g. 2.12.1+cu130) because ultralytics/libreyolo allow newer torch.
+# That silently drifts the CUDA runtime on every wheelhouse rebuild and, in
+# practice, inflates VRAM use enough to OOM training runs that previously fit
+# in ~10GB. Keep it aligned with the base image for a reproducible footprint.
+torch==2.7.1
+torchvision==0.22.1
 fastapi
 httpx
 pydantic
