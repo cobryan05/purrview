@@ -2132,9 +2132,12 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
       const selectedTagUuids = _VERIF_TAG_MAP[selectedAction]
         ? [_VERIF_TAG_MAP[selectedAction]]
         : (selectedAction === 'addTags' || selectedAction === 'removeTags') ? tagCheckboxField.getValue()
-        // revertRelabel: strip whichever tag(s) the current filter is scoped to
-        // (the auto-relabel review tag) once the prior label is restored.
-        : (selectedAction === 'revertRelabel') ? (fs.tagUuids ?? [])
+        // revertRelabel: strip only the task-generated review tag(s) among the
+        // current filter — never a system tag like UNVERIFIED that may also be
+        // part of the active filter (e.g. filtering by review-tag + UNVERIFIED
+        // together must not strip UNVERIFIED from every reverted bbox).
+        : (selectedAction === 'revertRelabel')
+          ? (fs.tagUuids ?? []).filter(uuid => tags.get(uuid)?.kind === 'task_generated')
         : [];
       statusMsg.textContent = `Applying to all ${totalBboxCount.toLocaleString()} bboxes…`;
       statusMsg.classList.add('review-toolbar__status--loading');

@@ -5344,6 +5344,18 @@
             },
             "type": "array",
             "title": "Taguuids"
+          },
+          "metadataJson": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Metadatajson"
           }
         },
         "type": "object",

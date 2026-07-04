@@ -83,6 +83,7 @@ class UpdateMetadataPayload(ApiPayload):
 class BboxPatchPayload(ApiPayload):
     label_uuid: Optional[str] = None
     tag_uuids: List[str] = Field(default_factory=list)
+    metadata_json: Optional[Dict[str, Any]] = None
 
 
 class BulkApplyAllPayload(ApiPayload):
@@ -1592,7 +1593,9 @@ class WebApp:
             operation_id="update_bbox",
         )
         async def update_bbox(bbox_uuid: str, payload: BboxPatchPayload) -> Response:
-            ok = await self._manager.update_single_bbox(bbox_uuid, payload.label_uuid, payload.tag_uuids)
+            ok = await self._manager.update_single_bbox(
+                bbox_uuid, payload.label_uuid, payload.tag_uuids, metadata_json=payload.metadata_json
+            )
             if not ok:
                 raise HTTPException(status_code=404, detail="Bbox not found")
             return Response(status_code=204)

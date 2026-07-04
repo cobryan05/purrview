@@ -26,12 +26,11 @@ from db_client.api.images_api import ImagesApi
 from db_client.api.tags_api import TagsApi
 from db_client.models.add_tag_payload import AddTagPayload
 from db_client.models.batch_by_uuids_payload import BatchByUuidsPayload
-from db_client.models.bounding_box_metadata_model import BoundingBoxMetadataModel
+from db_client.models.bbox_patch_payload import BboxPatchPayload
 from db_client.models.get_image_metadata_payload import GetImageMetadataPayload
 from db_client.models.image_search_params import ImageSearchParams
 from db_client.models.set_image_tag_payload import SetImageTagPayload
 from db_client.models.tag_kind import TagKind as ApiTagKind
-from db_client.models.update_metadata_payload import UpdateMetadataPayload
 from inference_client.api.inference_api import InferenceApi
 from inference_client.api.models_api import ModelsApi as InferenceModelsApi
 from inference_client.models.classify_payload import ClassifyPayload
@@ -55,7 +54,22 @@ _CLASSIFIER_KINDS = {"image_classifier", "multi_label_classifier"}
 _SCOPE_PAGE_SIZE = 200
 
 
+def _validate_model_name(model_name: str) -> None:
+    """A FilterChainStep.model_name is joined onto _MODELS_ROOT to build a sidecar
+    path — reject anything that could escape the models root via separators or
+    '..' traversal (same guard as RunClassifierTask._init)."""
+    if (
+        not model_name
+        or "/" in model_name
+        or "\\" in model_name
+        or model_name in (".", "..")
+        or Path(model_name).is_absolute()
+    ):
+        raise ValueError(f"Invalid model_name {model_name!r}: must be a bare model name (no path separators or '..')")
+
+
 def _read_model_kind(model_name: str) -> str:
+    _validate_model_name(model_name)
     model_path = _MODELS_ROOT / f"{model_name}.onnx"
     try:
         metadata = get_model_metadata(str(model_path), create_json_if_missing=False)
@@ -357,38 +371,28 @@ class ApplyFilterChainTask(Task):
             if any("label_uuid" in p for p in bbox_patches.values()):
                 await self._ensure_review_tag(tags_api, review_tag_uuid, review_tag_name)
 
-            boxes_payload = []
-            for b in bboxes_by_uuid.values():
-                if b.uuid in bbox_uuids_to_strip:
-                    continue  # deleted above; don't resurrect via the full-list replace
-                patch = bbox_patches.get(b.uuid)
-                tag_uuids = {t.uuid for t in (b.tags or [])}
-                extra = dict(b.metadata_json or {})
-                label_uuid = b.label_uuid
-                if patch:
-                    tag_uuids |= patch["add_tags"]
-                    if "label_uuid" in patch:
-                        label_uuid = patch["label_uuid"]
-                        extra["relabel_prev_label_uuid"] = patch["prev_label_uuid"]
-                boxes_payload.append(
-                    BoundingBoxMetadataModel(
-                        # This generated client model's fields are `bbox_uuid`/`bbox_meta`
-                        # (not `uuid`/`extra` like apps.helpers.types.BoundingBoxMetadataModel) —
-                        # and bbox_meta values must be strings.
-                        bbox_uuid=b.uuid,
-                        x=b.x,
-                        y=b.y,
-                        width=b.width,
-                        height=b.height,
-                        label_uuid=label_uuid,
-                        tag_uuids=sorted(tag_uuids),
-                        bbox_meta={k: str(v) for k, v in extra.items()},
-                    )
+            # PATCH each affected bbox individually (BboxPatchPayload) rather than
+            # a full-image update_image_metadata replace: that endpoint silently
+            # drops any bbox lacking a label_uuid from the *entire* image (server
+            # filters `if b.label_uuid`), which would permanently delete unrelated
+            # unlabeled bboxes on the same image as a side effect of this patch.
+            for bbox_uuid, patch in bbox_patches.items():
+                if bbox_uuid in bbox_uuids_to_strip:
+                    # A later step stripped this bbox after an earlier step queued
+                    # a patch for it — it's already deleted above; don't re-touch it.
+                    continue
+                b = bboxes_by_uuid[bbox_uuid]
+                tag_uuids = {t.uuid for t in (b.tags or [])} | patch["add_tags"]
+                metadata_json = None
+                label_uuid = None
+                if "label_uuid" in patch:
+                    label_uuid = patch["label_uuid"]
+                    metadata_json = {**(b.metadata_json or {}), "relabel_prev_label_uuid": patch["prev_label_uuid"]}
+                await asyncio.to_thread(
+                    images_api.update_bbox,
+                    bbox_uuid,
+                    BboxPatchPayload(label_uuid=label_uuid, tag_uuids=sorted(tag_uuids), metadata_json=metadata_json),
                 )
-            await asyncio.to_thread(
-                images_api.update_image_metadata,
-                UpdateMetadataPayload(image_path=stub.filename, boxes=boxes_payload),
-            )
 
         return True
 

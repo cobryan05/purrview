@@ -590,14 +590,20 @@ class Manager:
             await self._recompute_image_labels(image.uuid, update)
         return ImageRecordRead.model_validate(updated) if updated else None
 
-    async def update_single_bbox(self, bbox_uuid: str, label_uuid: Optional[str], tag_uuids: List[str]) -> bool:
+    async def update_single_bbox(
+        self,
+        bbox_uuid: str,
+        label_uuid: Optional[str],
+        tag_uuids: List[str],
+        metadata_json: Optional[Dict[str, Any]] = None,
+    ) -> bool:
         """Update one bbox's label and tags, then sync sidecar and image_labels."""
         result = await self._db_client.get_bbox_with_image(bbox_uuid)
         if result is None or result[1] is None:
             return False
         bbox, image_record = result
         old_label_uuid = bbox.label_uuid
-        await self._db_client.update_single_bbox(bbox_uuid, label_uuid, tag_uuids)
+        await self._db_client.update_single_bbox(bbox_uuid, label_uuid, tag_uuids, metadata_json=metadata_json)
         # Move bbox in hash index if label changed and bbox has a phash.
         if label_uuid and label_uuid != old_label_uuid and bbox.phash and old_label_uuid:
             self._hash_index.move_bbox(bbox_uuid, old_label_uuid, label_uuid, bbox.phash)

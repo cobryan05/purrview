@@ -11,7 +11,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from apps.tasks_server.tasks._filter_chain_runner import Detection
-from apps.tasks_server.tasks.ApplyFilterChainTask import ApplyFilterChainTask
+from apps.tasks_server.tasks.ApplyFilterChainTask import (
+    ApplyFilterChainTask,
+    _validate_model_name,
+)
 
 _MOCK_MANAGER = MagicMock()
 _MOCK_MANAGER.update_task_heartbeat = AsyncMock()
@@ -73,6 +76,16 @@ class TestScopeValidation:
         task = _make_task({"filter_chain_uuid": "chain-1", "image_uuids": ["a"], "max_images": 999999})
         await task._init(task._params, None)
         assert task._max_images == 5000
+
+
+class TestValidateModelName:
+    def test_bare_name_ok(self):
+        _validate_model_name("my_model")  # does not raise
+
+    @pytest.mark.parametrize("bad_name", ["../etc/passwd", "a/b", "a\\b", "..", ".", "", "/etc/passwd"])
+    def test_rejects_path_traversal(self, bad_name):
+        with pytest.raises(ValueError, match="Invalid model_name"):
+            _validate_model_name(bad_name)
 
 
 class TestRunEndToEnd:
@@ -201,12 +214,19 @@ class TestRunEndToEnd:
         img_path = tmp_path / "a.jpg"
         img_path.write_bytes(b"fake")
 
+        # A second, unrelated bbox on the same image with no label at all —
+        # regression guard for the bug where a full-image update_image_metadata
+        # replace would silently delete unlabeled bboxes as a side effect of
+        # patching a sibling bbox (the server drops boxes lacking label_uuid).
+        unrelated_unlabeled_bbox = _bbox(uuid="bbox-unlabeled", label_uuid=None, x=0.6, y=0.6, width=0.1, height=0.1)
         bbox = _bbox(uuid="bbox-1", label_uuid="cat", x=0.1, y=0.1, width=0.2, height=0.2, tags=["preexisting-tag"])
 
         mock_images_api = MagicMock()
         mock_images_api.batch_images_by_uuids.return_value = MagicMock(images=[_stub(filename=str(img_path))])
-        mock_images_api.get_image_metadata.return_value = MagicMock(status="success", image=MagicMock(bboxes=[bbox]))
-        mock_images_api.update_image_metadata.return_value = MagicMock()
+        mock_images_api.get_image_metadata.return_value = MagicMock(
+            status="success", image=MagicMock(bboxes=[bbox, unrelated_unlabeled_bbox])
+        )
+        mock_images_api.update_bbox.return_value = MagicMock()
 
         step = _step(
             model_name="valves",
@@ -231,13 +251,75 @@ class TestRunEndToEnd:
             result = await task._run()
 
         assert result["bboxes_relabeled"] == 1
-        mock_images_api.update_image_metadata.assert_called_once()
-        payload = mock_images_api.update_image_metadata.call_args.args[0]
-        assert len(payload.boxes) == 1
-        updated_box = payload.boxes[0]
-        assert updated_box.label_uuid == "water_valve_label"
-        assert updated_box.bbox_meta["relabel_prev_label_uuid"] == "cat"
-        assert "preexisting-tag" in updated_box.tag_uuids
+        # Only the matched bbox is patched — never a full-image replace, and the
+        # unrelated unlabeled sibling bbox is never touched at all.
+        mock_images_api.update_bbox.assert_called_once()
+        assert mock_images_api.update_bbox.call_args.args[0] == "bbox-1"
+        payload = mock_images_api.update_bbox.call_args.args[1]
+        assert payload.label_uuid == "water_valve_label"
+        assert payload.metadata_json["relabel_prev_label_uuid"] == "cat"
+        assert "preexisting-tag" in payload.tag_uuids
+        assert not hasattr(mock_images_api, "update_image_metadata") or not mock_images_api.update_image_metadata.called
+
+    async def test_relabel_then_strip_on_same_bbox_does_not_crash_or_double_apply(self, tmp_path):
+        """A two-step chain where step 1 relabels a bbox and step 2's
+        strip_unverified_bboxes image-level match also targets it: the bbox
+        must end up deleted, and the queued relabel patch must NOT also fire
+        against the now-deleted bbox."""
+        img_path = tmp_path / "a.jpg"
+        img_path.write_bytes(b"fake")
+
+        bbox = _bbox(
+            uuid="bbox-1",
+            label_uuid="cat",
+            x=0.1,
+            y=0.1,
+            width=0.2,
+            height=0.2,
+            tags=["00000000-0000-0000-0000-000000000001"],  # UNVERIFIED_TAG_UUID
+        )
+
+        mock_images_api = MagicMock()
+        mock_images_api.batch_images_by_uuids.return_value = MagicMock(images=[_stub(filename=str(img_path))])
+        mock_images_api.get_image_metadata.return_value = MagicMock(status="success", image=MagicMock(bboxes=[bbox]))
+        mock_images_api.delete_bbox.return_value = MagicMock()
+        mock_images_api.update_bbox.return_value = MagicMock()
+
+        relabel_step = _step(
+            order=0,
+            model_name="valves",
+            action="relabel_bbox",
+            confidence=0.5,
+            iou_threshold=0.5,
+            action_params={"target_label_uuid": "water_valve_label"},
+        )
+        strip_step = _step(order=1, model_name="blurry", action="strip_unverified_bboxes", confidence=0.5)
+        patches = self._patch_common([relabel_step, strip_step], mock_images_api)
+
+        det = Detection(x=0.1, y=0.1, width=0.2, height=0.2, confidence=0.9)
+
+        def _kind_for(model_name):
+            return "image_classifier" if model_name == "blurry" else "detector"
+
+        task = _make_task({"filter_chain_uuid": "chain-1", "image_uuids": [str(img_path)]})
+        with (
+            patches,
+            patch("apps.tasks_server.tasks.ApplyFilterChainTask._read_model_kind", side_effect=_kind_for),
+            patch(
+                "apps.tasks_server.tasks.ApplyFilterChainTask._HttpInferenceBackend.detect",
+                new=AsyncMock(return_value=[det]),
+            ),
+            patch(
+                "apps.tasks_server.tasks.ApplyFilterChainTask._HttpInferenceBackend.classify_whole_image",
+                new=AsyncMock(return_value=0.9),
+            ),
+        ):
+            await task._init(task._params, None)
+            result = await task._run()
+
+        assert result["images_processed"] == 1
+        mock_images_api.delete_bbox.assert_called_once_with("bbox-1")
+        mock_images_api.update_bbox.assert_not_called()
 
     async def test_dry_run_makes_no_mutations_but_counts_matches(self, tmp_path):
         img_path = tmp_path / "a.jpg"
