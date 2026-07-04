@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import logging
 import os
 import time
@@ -12,6 +13,7 @@ from uuid import uuid4
 import cv2
 import db_client
 import inference_client
+from db_client.api.filter_chains_api import FilterChainsApi
 from db_client.api.images_api import ImagesApi
 from db_client.api.labels_api import LabelsApi
 from db_client.api.settings_api import SettingsApi
@@ -39,6 +41,12 @@ from apps.helpers.imageProviders.imageProvider import (
 )
 from apps.helpers.imageUtils import base64_encode_jpg
 
+from ._filter_chain_runner import FilterChainRunner
+from .ApplyFilterChainTask import (
+    _CLASSIFIER_KINDS,
+    _HttpInferenceBackend,
+    _read_model_kind,
+)
 from .Registry import register_task
 from .Task import Task
 from .utils.imageHelper import ImageHelper
@@ -149,6 +157,15 @@ class CollectTrainingImagesTask(Task):
         # Set in _run() when a TASK_GENERATED tag is created or found; used in result actions.
         self._task_tag_uuid: Optional[str] = None
 
+        # Optional pre-save filter chain (WORKFLOW_FILTERCHAIN_PLAN.md Phase 4):
+        # applied to each frame's in-memory detections before they're saved.
+        self._filter_chain_uuid: Optional[str] = params.get("filter_chain_uuid") or None
+        self._filter_chain_runner = None  # built in _run() once the chain is resolved
+        self._filtered_discarded: int = resume_data.get("filtered_discarded", 0) if resume_data else 0
+        self._filtered_relabeled: int = resume_data.get("filtered_relabeled", 0) if resume_data else 0
+        self._filtered_tagged: int = resume_data.get("filtered_tagged", 0) if resume_data else 0
+        self._filtered_stripped: int = resume_data.get("filtered_stripped", 0) if resume_data else 0
+
         # Deduplication params
         self._enable_dedup: bool = bool(params.get("enable_dedup", False))
         self._image_dup_threshold: int = int(params.get("image_dup_threshold", 5))
@@ -243,6 +260,56 @@ class CollectTrainingImagesTask(Task):
                 logger.exception(f"Failed to pin model {name}")
                 self.log(f"Failed to pin model: {name}")
                 pin_ids[name] = None
+
+        self._chain_pin_ids: dict[str, str] = {}
+        if self._filter_chain_uuid:
+            self._status_msg = "Resolving filter chain"
+            filter_chains_api = FilterChainsApi(db_api_client)
+            chain_resp = await asyncio.to_thread(filter_chains_api.get_filter_chain, self._filter_chain_uuid)
+            chain = getattr(chain_resp, "chain", None)
+            if chain is None:
+                raise ValueError(f"Filter chain not found: {self._filter_chain_uuid}")
+            chain_steps = [
+                {
+                    "order": s.order,
+                    "model_name": s.model_name,
+                    "confidence": s.confidence,
+                    "iou_threshold": s.iou_threshold,
+                    "action": s.action,
+                    "action_params": s.action_params or {},
+                    "enabled": s.enabled,
+                }
+                for s in (chain.steps or [])
+                if s.enabled
+            ]
+            if chain_steps:
+                # Reuse a model already pinned by model_label_config where possible;
+                # only pin the chain's own detector-step models otherwise.
+                for name in sorted({s["model_name"] for s in chain_steps}):
+                    if pin_ids.get(name):
+                        continue
+                    try:
+                        kind = await asyncio.to_thread(_read_model_kind, name)
+                    except ValueError:
+                        logger.exception("Invalid filter-chain step model_name %r", name)
+                        continue
+                    if kind in _CLASSIFIER_KINDS:
+                        continue  # /classify auto-pins per call; no long-lived pin needed
+                    try:
+                        resp = await asyncio.to_thread(
+                            models_api.pin_model_api_api_models_model_name_pin_post,
+                            name,
+                            PinModelPayload(model_name=name, duration=3600),
+                        )
+                        if resp.pin_id:
+                            self._chain_pin_ids[name] = resp.pin_id
+                    except Exception:
+                        logger.exception("Failed to pin filter-chain model %s", name)
+
+                combined_pin_ids = {**pin_ids, **self._chain_pin_ids}
+                backend = _HttpInferenceBackend(inference_api_client, combined_pin_ids)
+                self._filter_chain_runner = FilterChainRunner(chain_steps, backend)
+                self.log(f"Filter chain '{chain.name}' active ({len(chain_steps)} step(s))")
 
         images_api = ImagesApi(db_api_client)
         inference_api = InferenceApi(inference_api_client)
@@ -426,6 +493,8 @@ class CollectTrainingImagesTask(Task):
                         t_encode = time.perf_counter()  # PERF
 
                     matching = await self._run_inference(inference_api, base64_img, pin_ids)
+                    if self._filter_chain_runner is not None:
+                        matching, _discarded = await self._apply_filter_chain_to_frame(base64_img, matching)
                     t_infer = time.perf_counter()  # PERF
 
                     # PERF BEGIN
@@ -518,6 +587,11 @@ class CollectTrainingImagesTask(Task):
                         self.log(f"Unpinned model: {name}")
                     except Exception:
                         logger.warning(f"Failed to unpin model '{name}' (pin {pid})")
+            for name, pid in self._chain_pin_ids.items():
+                try:
+                    await asyncio.to_thread(unpin_api.unpin_model, name, pid)
+                except Exception:
+                    logger.warning(f"Failed to unpin filter-chain model '{name}' (pin {pid})")
 
         self._resume_data = self._build_resume_data()
         self._data_ready_flag.set()
@@ -541,6 +615,14 @@ class CollectTrainingImagesTask(Task):
                 if self._enable_dedup
                 else ""
             )
+            + (
+                f", filter chain: {self._filtered_discarded} discarded"
+                f", {self._filtered_relabeled} relabeled"
+                f", {self._filtered_tagged} tagged"
+                f", {self._filtered_stripped} stripped"
+                if self._filter_chain_runner is not None
+                else ""
+            )
         )
         result: dict[str, Any] = {"images_saved": self._images_saved}
         if self._enable_dedup:
@@ -548,6 +630,11 @@ class CollectTrainingImagesTask(Task):
             result["dedup_image_hits"] = self._dedup_image_hits
             result["dedup_bbox_hits"] = self._dedup_bbox_hits
             result["dup_frames_discarded"] = self._dup_frames_discarded
+        if self._filter_chain_uuid:
+            result["filtered_discarded"] = self._filtered_discarded
+            result["filtered_relabeled"] = self._filtered_relabeled
+            result["filtered_tagged"] = self._filtered_tagged
+            result["filtered_stripped"] = self._filtered_stripped
         if self._task_tag_uuid:
             result["actions"] = [
                 {
@@ -568,6 +655,10 @@ class CollectTrainingImagesTask(Task):
             "dedup_frames_checked": self._dedup_frames_checked,
             "dedup_image_hits": self._dedup_image_hits,
             "dedup_bbox_hits": self._dedup_bbox_hits,
+            "filtered_discarded": self._filtered_discarded,
+            "filtered_relabeled": self._filtered_relabeled,
+            "filtered_tagged": self._filtered_tagged,
+            "filtered_stripped": self._filtered_stripped,
         }
 
     async def _run_inference(
@@ -683,6 +774,85 @@ class CollectTrainingImagesTask(Task):
                 deduped.append(det)
         return deduped
 
+    async def _apply_filter_chain_to_frame(self, base64_img: str, matching: list) -> tuple[list, bool]:
+        """Run the configured filter chain against this frame's in-memory detections
+        before they're saved (WORKFLOW_FILTERCHAIN_PLAN.md Phase 4).
+
+        Returns (possibly-mutated matching list, discard). `discard=True` means the
+        whole frame must not be saved at all — caller skips dispatch entirely.
+
+        Bbox-level actions (relabel_bbox / tag_bbox) mutate `matching` in place by
+        overlap-matching a chain detector step's new detections against `matching`
+        itself (there are no "existing" DB bboxes yet at collect time). Image-level
+        `tag_image` is folded into every detection's own tag_uuids so it reaches
+        _save_image/_dedup_worker without changing their signatures.
+        """
+        if self._filter_chain_runner is None or not matching:
+            return matching, False
+
+        image_bytes = base64.b64decode(base64_img)
+        existing = [
+            {
+                "uuid": str(i),
+                "x": det.bbox.x,
+                "y": det.bbox.y,
+                "width": det.bbox.width,
+                "height": det.bbox.height,
+                "label_uuid": det.bbox.label_uuid,
+            }
+            for i, det in enumerate(matching)
+        ]
+        try:
+            step_matches = await self._filter_chain_runner.evaluate_image(image_bytes, existing)
+        except Exception:
+            logger.exception("Filter chain evaluation failed for this frame; skipping filter")
+            return matching, False
+
+        discard = False
+        strip_all = False
+        for match in step_matches:
+            step = match.step
+            action = step["action"]
+            action_params = step.get("action_params") or {}
+            if match.image_match:
+                if action == "discard_image":
+                    discard = True
+                elif action == "tag_image":
+                    tag_uuid = action_params.get("tag_uuid")
+                    if tag_uuid:
+                        for det in matching:
+                            det.bbox.tag_uuids = [*(det.bbox.tag_uuids or []), tag_uuid]
+                        self._filtered_tagged += 1
+                elif action == "strip_unverified_bboxes":
+                    # At collect time every detection is unverified by definition.
+                    strip_all = True
+                    self._filtered_stripped += len(matching)
+                else:
+                    logger.warning("Action %r is not valid for an image-level (classifier) step; skipping", action)
+                continue
+
+            for uuid_str, _det_match in match.bbox_matches.items():
+                idx = int(uuid_str)
+                if action == "relabel_bbox":
+                    target = action_params.get("target_label_uuid")
+                    if target:
+                        matching[idx].bbox.label_uuid = target
+                        self._filtered_relabeled += 1
+                elif action == "tag_bbox":
+                    tag_uuid = action_params.get("tag_uuid")
+                    if tag_uuid:
+                        matching[idx].bbox.tag_uuids = [*(matching[idx].bbox.tag_uuids or []), tag_uuid]
+                        self._filtered_tagged += 1
+                else:
+                    logger.warning("Action %r is not valid for a bbox-level (detector) step; skipping", action)
+
+        if discard:
+            self._filtered_discarded += 1
+            return [], True
+        if strip_all:
+            return [], False
+        return matching, False
+
     async def _save_image(
         self,
         images_api: ImagesApi,
@@ -716,6 +886,9 @@ class CollectTrainingImagesTask(Task):
         boxes = []
         for det in matching:
             extra_tags = list(self._extra_tag_uuids)
+            # Filter-chain tag_image/tag_bbox matches (Phase 4) stash extra tags
+            # directly on the detection's own bbox.tag_uuids — fold them in here.
+            filter_chain_tags = list(det.bbox.tag_uuids or [])
             boxes.append(
                 BoundingBoxMetadataModel(
                     bbox_uuid=str(uuid4()),
@@ -725,7 +898,7 @@ class CollectTrainingImagesTask(Task):
                     height=det.bbox.height,
                     label_uuid=det.bbox.label_uuid,
                     class_str=det.bbox.class_str,
-                    tag_uuids=[self._unverified_tag_uuid, *extra_tags],
+                    tag_uuids=[self._unverified_tag_uuid, *extra_tags, *filter_chain_tags],
                     extra={"confidence": str(det.confidence)},
                 )
             )
@@ -923,6 +1096,7 @@ class CollectTrainingImagesTask(Task):
                     "apply_tags",
                     "generate_task_tag",
                     "task_tag_name",
+                    "filter_chain_uuid",
                     "dedup_group",
                 ]
             },
@@ -997,6 +1171,16 @@ class CollectTrainingImagesTask(Task):
                 "label": "Generated tag name (optional)",
                 "description": "Custom name for the per-task generated tag. Defaults to the config name if left blank.",
                 "default": "",
+            },
+            "filter_chain_uuid": {
+                "type": "str",
+                "label": "Filter Chain (optional)",
+                "required": False,
+                "description": (
+                    "Run this chain against each frame's detections before saving — "
+                    "discard corrupt frames, relabel known false-positives, or strip/tag "
+                    "matches before they ever land in the dataset."
+                ),
             },
             "dedup_group": {
                 "type": "group",
