@@ -19,9 +19,12 @@ from apps.helpers.inferenceProviders.inferenceProvider import (
     InferenceResult,
 )
 from apps.helpers.metadataUtils import (
+    DEFAULT_MODEL_DEVICE,
     VALID_MODEL_DEVICES,
     get_model_metadata,
     save_model_json_metadata,
+    validate_bare_model_name,
+    validate_onnx_bytes,
 )
 from apps.helpers.yoloUtils import load_yolo_onnx
 
@@ -198,6 +201,52 @@ class Manager:
         metadata["device"] = device
         save_model_json_metadata(model_path, metadata=metadata)
         return True
+
+    async def import_model_upload(self, model_name: str, onnx_bytes: bytes, overwrite: bool = False) -> Dict[str, Any]:
+        """Write an uploaded ONNX file to the models dir and auto-generate its sidecar
+        (classes parsed from the ONNX itself).
+
+        Args:
+            model_name (str): Bare model name (no extension, no path separators).
+            onnx_bytes (bytes): Raw ONNX file content.
+            overwrite (bool): If True, replace an existing model + sidecar. If False and
+                the model already exists, raise FileExistsError.
+
+        Returns:
+            Dict[str, Any]: {"model_name": ..., "classes": [...]}
+        """
+        from pathlib import Path
+
+        validate_bare_model_name(model_name)
+
+        model_path = Path(self._models_path) / f"{model_name}.onnx"
+        sidecar_path = model_path.with_suffix(".json")
+
+        if model_path.exists() and not overwrite:
+            raise FileExistsError(f"Model '{model_name}' already exists; pass overwrite=True to replace it")
+
+        # Validate before touching disk: a garbage upload must not leave an
+        # unparseable orphan file, and (on overwrite) must not clobber a previously
+        # working model.
+        validate_onnx_bytes(onnx_bytes)
+
+        if overwrite and sidecar_path.exists():
+            # Drop the stale sidecar first so get_model_metadata regenerates it fresh
+            # from the new ONNX's own `names` metadata instead of merging in the old
+            # model's classes/class_map.
+            await asyncio.to_thread(sidecar_path.unlink)
+
+        await asyncio.to_thread(model_path.parent.mkdir, parents=True, exist_ok=True)
+        await asyncio.to_thread(model_path.write_bytes, onnx_bytes)
+
+        metadata = await asyncio.to_thread(get_model_metadata, str(model_path))
+        if "device" not in metadata:
+            metadata["device"] = DEFAULT_MODEL_DEVICE
+            await asyncio.to_thread(save_model_json_metadata, str(model_path), metadata)
+
+        await self.list_models()
+
+        return {"model_name": model_name, "classes": metadata.get("classes", [])}
 
     async def pin_model(self, model_name: str, timeout: float = MODEL_PIN_TIME) -> str:
         """

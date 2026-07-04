@@ -17,6 +17,32 @@ DEFAULT_MODEL_DEVICE = "auto"
 VALID_MODEL_DEVICES = ("auto", "gpu", "cpu")
 
 
+def validate_bare_model_name(model_name: str) -> None:
+    """model_name is joined onto a models-root path to build .onnx/.json paths in both
+    the upload endpoint (inference_server.manager.import_model_upload) and
+    ImportModelTask — reject anything that could escape that root via separators or
+    '..' traversal. This is the only place this guard should live."""
+    if (
+        not model_name
+        or "/" in model_name
+        or "\\" in model_name
+        or model_name in (".", "..")
+        or Path(model_name).is_absolute()
+    ):
+        raise ValueError(f"Invalid model_name {model_name!r}: must be a bare model name (no path separators or '..')")
+
+
+def validate_onnx_bytes(onnx_bytes: bytes) -> None:
+    """Parse `onnx_bytes` in memory to confirm it's a well-formed ONNX model before any
+    caller writes it to disk. Raises ValueError on garbage/corrupt input — callers must
+    do this check before touching the filesystem so a bad upload/download can't clobber
+    an existing good model or leave an unparseable orphan file behind."""
+    try:
+        onnx.load_model_from_string(onnx_bytes)
+    except Exception as e:
+        raise ValueError(f"Not a valid ONNX model: {e}") from e
+
+
 def providers_for_device(device: str) -> List[str]:
     """Map a model's device preference to an ordered list of ONNX execution providers.
 

@@ -148,6 +148,41 @@ export async function setModelDevice(modelName, device) {
   return data.deviceSet;
 }
 
+/**
+ * Fetch the curated base-model list (key + display name only) offered for
+ * cold-start import. The full list (including onnx_url/model_family) lives
+ * server-side in apps/helpers/curatedModels.py.
+ * @returns {Promise<Array<{key: string, displayName: string}>>}
+ */
+export async function fetchCuratedModels() {
+  const res = await apiFetch('/api/models/curated');
+  const data = await res.json();
+  if (!res.ok || data.status === 'failure') {
+    throw new Error(data.message || 'Failed to fetch curated models list');
+  }
+  return data.models ?? [];
+}
+
+/**
+ * Upload a local .onnx file to the models directory; the server parses its
+ * classes from the ONNX's own `names` metadata and writes a sidecar.
+ * @param {{modelName: string, onnxBase64: string, overwrite?: boolean}} args
+ * @returns {Promise<{modelName: string, classes: string[]}>}
+ */
+export async function importModelUpload({ modelName, onnxBase64, overwrite = false }) {
+  const res = await apiFetch('/api/models/import/upload', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ modelName, onnxBase64, overwrite }),
+  });
+
+  const data = await res.json();
+  if (!res.ok || data.status === 'failure') {
+    throw new Error(data.message || 'Failed to import model');
+  }
+  return { modelName: data.modelName, classes: data.classes ?? [] };
+}
+
 /** -----------------------------
  * UPDATE FUNCTION
  * -----------------------------

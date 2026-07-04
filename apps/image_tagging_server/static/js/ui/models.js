@@ -1,9 +1,19 @@
 import { fetchLabels } from '/app-static/js/shared/api/labels.js';
 import { isDynamicLabelsVisible } from '/app-static/js/shared/activeModel.js';
-import { associateLabel, clearModelsCache, fetchModelDevice, fetchModelsLabelMappings, fetchModelsList, setModelDevice } from '/app-static/js/shared/api/models.js';
+import {
+  associateLabel,
+  clearModelsCache,
+  fetchCuratedModels,
+  fetchModelDevice,
+  fetchModelsLabelMappings,
+  fetchModelsList,
+  importModelUpload,
+  setModelDevice,
+} from '/app-static/js/shared/api/models.js';
 import { DropDownField, EditableField, LabelDropDownField } from '/app-static/js/ui/utils/fields/index.js';
 import { createGenericRow, Logger, showPaneError, toast } from '/app-static/js/ui/utils/index.js';
 import { openTrainingDataModal } from '/app-static/js/ui/trainingDataModal.js';
+import { createTaskRunnerSection } from '/app-static/js/ui/utils/taskRunnerSection.js';
 
 export function renderModelLabelAssignments({
   target = "model-labels-box",
@@ -55,6 +65,33 @@ export function renderModelLabelAssignments({
   }).catch(err => {
     showPaneError(modelSelectDiv, err.message);
   });
+
+  // --- Import model (cold-start): upload a .onnx or download a curated base model ---
+  const importSectionDiv = document.createElement('div');
+  importSectionDiv.style.marginTop = '0.5em';
+  container.appendChild(importSectionDiv);
+
+  const importToggleBtn = document.createElement('button');
+  importToggleBtn.type = 'button';
+  importToggleBtn.textContent = '+ Import model';
+  importToggleBtn.className = 'secondary panel-btn';
+  importSectionDiv.appendChild(importToggleBtn);
+
+  const importFormDiv = document.createElement('div');
+  importFormDiv.style.display = 'none';
+  importFormDiv.style.marginTop = '0.5em';
+  importSectionDiv.appendChild(importFormDiv);
+
+  importToggleBtn.onclick = () => {
+    const showing = importFormDiv.style.display !== 'none';
+    if (showing) {
+      importFormDiv.style.display = 'none';
+      importFormDiv.innerHTML = '';
+    } else {
+      importFormDiv.style.display = '';
+      renderImportModelForm(importFormDiv, { target, editable });
+    }
+  };
 
   if (!preselectedModel) return;
 
@@ -150,4 +187,207 @@ export function renderModelLabelAssignments({
   }).catch(err => {
     showPaneError(labelAssignmentDiv, err.message);
   });
+}
+
+/**
+ * Render the "Import model" inline form: a mode toggle between Upload (a local
+ * .onnx file, no network) and Curated (a background-downloaded base model),
+ * per Phase 5 of the filter-chain plan.
+ * @param {HTMLElement} formDiv - container to render into (cleared first).
+ * @param {{target: string, editable: boolean}} rerenderArgs - passed back into
+ *   renderModelLabelAssignments after a successful import.
+ */
+function renderImportModelForm(formDiv, { target, editable }) {
+  formDiv.innerHTML = '';
+
+  let mode = 'upload';
+
+  const modeRow = document.createElement('div');
+  modeRow.style.cssText = 'display:flex; gap:0.5em; margin-bottom:0.5em;';
+  formDiv.appendChild(modeRow);
+
+  const modeBody = document.createElement('div');
+  formDiv.appendChild(modeBody);
+
+  const uploadBtn = document.createElement('button');
+  uploadBtn.type = 'button';
+  uploadBtn.textContent = 'Upload';
+  const curatedBtn = document.createElement('button');
+  curatedBtn.type = 'button';
+  curatedBtn.textContent = 'Curated';
+  modeRow.append(uploadBtn, curatedBtn);
+
+  function setMode(newMode) {
+    mode = newMode;
+    uploadBtn.className = mode === 'upload' ? 'panel-btn' : 'secondary panel-btn';
+    curatedBtn.className = mode === 'curated' ? 'panel-btn' : 'secondary panel-btn';
+    modeBody.innerHTML = '';
+    if (mode === 'upload') {
+      modeBody.appendChild(buildUploadForm({ target, editable }));
+    } else {
+      modeBody.appendChild(buildCuratedForm({ target, editable }));
+    }
+  }
+
+  uploadBtn.onclick = () => setMode('upload');
+  curatedBtn.onclick = () => setMode('curated');
+  setMode('upload');
+}
+
+function _afterImportSuccess(target, editable, modelName) {
+  clearModelsCache();
+  renderModelLabelAssignments({ target, editable, preselectedModel: modelName });
+}
+
+function buildUploadForm({ target, editable }) {
+  const wrap = document.createElement('div');
+
+  const fileInput = document.createElement('input');
+  fileInput.type = 'file';
+  fileInput.accept = '.onnx';
+  fileInput.style.display = 'block';
+  fileInput.style.marginBottom = '0.5em';
+
+  const nameInput = document.createElement('input');
+  nameInput.type = 'text';
+  nameInput.placeholder = 'Model name (no extension)';
+  nameInput.style.display = 'block';
+  nameInput.style.marginBottom = '0.5em';
+
+  const overwriteLabel = document.createElement('label');
+  const overwriteCheckbox = document.createElement('input');
+  overwriteCheckbox.type = 'checkbox';
+  overwriteLabel.appendChild(overwriteCheckbox);
+  overwriteLabel.append(' Overwrite if exists');
+  overwriteLabel.style.display = 'block';
+  overwriteLabel.style.marginBottom = '0.5em';
+
+  const submitBtn = document.createElement('button');
+  submitBtn.type = 'button';
+  submitBtn.textContent = 'Upload';
+  submitBtn.className = 'panel-btn';
+
+  submitBtn.onclick = async () => {
+    const file = fileInput.files?.[0];
+    const modelName = nameInput.value.trim();
+    if (!file) {
+      toast('Choose a .onnx file first', 3000, 'warning');
+      return;
+    }
+    if (!modelName) {
+      toast('Enter a model name', 3000, 'warning');
+      return;
+    }
+
+    submitBtn.disabled = true;
+    submitBtn.textContent = 'Uploading…';
+    try {
+      const onnxBase64 = await _fileToBase64(file);
+      const result = await importModelUpload({
+        modelName,
+        onnxBase64,
+        overwrite: overwriteCheckbox.checked,
+      });
+      toast(`Imported model '${result.modelName}' (${result.classes.length} classes)`, 4000, 'success');
+      _afterImportSuccess(target, editable, result.modelName);
+    } catch (err) {
+      toast(err.message || 'Failed to upload model', 5000, 'error');
+    } finally {
+      submitBtn.disabled = false;
+      submitBtn.textContent = 'Upload';
+    }
+  };
+
+  wrap.append(fileInput, nameInput, overwriteLabel, submitBtn);
+  return wrap;
+}
+
+function _fileToBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      // dataURL is "data:<mime>;base64,<data>" — strip the prefix.
+      const result = /** @type {string} */ (reader.result);
+      const comma = result.indexOf(',');
+      resolve(comma >= 0 ? result.slice(comma + 1) : result);
+    };
+    reader.onerror = () => reject(reader.error || new Error('Failed to read file'));
+    reader.readAsDataURL(file);
+  });
+}
+
+function buildCuratedForm({ target, editable }) {
+  const wrap = document.createElement('div');
+
+  const dropdownDiv = document.createElement('div');
+  dropdownDiv.style.marginBottom = '0.5em';
+  wrap.appendChild(dropdownDiv);
+
+  const nameInput = document.createElement('input');
+  nameInput.type = 'text';
+  nameInput.placeholder = 'Model name (no extension)';
+  nameInput.style.display = 'block';
+  nameInput.style.marginBottom = '0.5em';
+  wrap.appendChild(nameInput);
+
+  const overwriteLabel = document.createElement('label');
+  const overwriteCheckbox = document.createElement('input');
+  overwriteCheckbox.type = 'checkbox';
+  overwriteLabel.appendChild(overwriteCheckbox);
+  overwriteLabel.append(' Overwrite if exists');
+  overwriteLabel.style.display = 'block';
+  overwriteLabel.style.marginBottom = '0.5em';
+  wrap.appendChild(overwriteLabel);
+
+  let selectedKey = null;
+
+  fetchCuratedModels().then(async models => {
+    const dropdown = new DropDownField({
+      value: null,
+      editMode: true,
+      options: models.map(m => ({ key: m.key, text: m.displayName })),
+      placeholder: 'Choose a curated model...',
+      onChange: value => { selectedKey = value; },
+    });
+    dropdownDiv.appendChild(await dropdown.renderEdit());
+  }).catch(err => {
+    showPaneError(dropdownDiv, err.message);
+  });
+
+  const { el: runnerSection } = createTaskRunnerSection({
+    buttonLabel: 'Download & Import',
+    runningLabel: 'Downloading…',
+    buildStartArgs: () => {
+      const modelName = nameInput.value.trim();
+      if (!selectedKey) {
+        toast('Choose a curated model first', 3000, 'warning');
+        return null;
+      }
+      if (!modelName) {
+        toast('Enter a model name', 3000, 'warning');
+        return null;
+      }
+      return {
+        typename: 'ImportModelTask',
+        name: `Import model: ${modelName}`,
+        params: {
+          curated_key: selectedKey,
+          model_name: modelName,
+          overwrite: overwriteCheckbox.checked,
+        },
+      };
+    },
+    onSettled: finalTaskInfo => {
+      const status = finalTaskInfo?.instance?.status;
+      if (status === 'completed') {
+        toast(`Imported model '${nameInput.value.trim()}'`, 4000, 'success');
+        _afterImportSuccess(target, editable, nameInput.value.trim());
+      } else if (status === 'error') {
+        toast('Model import failed — see task log', 5000, 'error');
+      }
+    },
+  });
+  wrap.appendChild(runnerSection);
+
+  return wrap;
 }

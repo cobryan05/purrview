@@ -17,6 +17,7 @@ from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 
 from apps.helpers.consts import ApiTags, JsonKeys, JsonValues
+from apps.helpers.curatedModels import CURATED_BASE_MODELS
 from apps.helpers.imageUtils import base64_decode_image
 from apps.helpers.types import (
     InferenceResult,
@@ -85,6 +86,26 @@ class SetModelDevicePayload(Payload):
 
 class SetModelDeviceResponse(StatusResponse):
     device_set: bool = False
+
+
+class ImportModelUploadPayload(Payload):
+    model_name: str
+    onnx_base64: str
+    overwrite: bool = False
+
+
+class ImportModelUploadResponse(StatusResponse):
+    model_name: Optional[str] = None
+    classes: Optional[List[str]] = None
+
+
+class CuratedModelInfo(Payload):
+    key: str
+    display_name: str
+
+
+class CuratedModelsResponse(StatusResponse):
+    models: List[CuratedModelInfo] = Field(default_factory=list)
 
 
 class ModelTrainingImagesResponse(StatusResponse):
@@ -313,6 +334,51 @@ class WebApp:
                 return SetModelDeviceResponse(status=JsonValues.SUCCESS, device_set=ret)
             except Exception as e:
                 return SetModelDeviceResponse(status=JsonValues.FAILURE, message=str(e))
+
+        @self._app.get(
+            "/api/models/curated",
+            response_model=CuratedModelsResponse,
+            tags=[ApiTags.MODELS],
+            operation_id="get_curated_models",
+        )
+        async def get_curated_models_api() -> CuratedModelsResponse:
+            """List the curated base models offered for cold-start import (key + display
+            name only — internal fields like onnx_url/model_family stay server-side)."""
+            try:
+                models = [
+                    CuratedModelInfo(key=entry["key"], display_name=entry["display_name"])
+                    for entry in CURATED_BASE_MODELS
+                ]
+                return CuratedModelsResponse(status=JsonValues.SUCCESS, models=models)
+            except Exception as e:
+                return CuratedModelsResponse(status=JsonValues.FAILURE, message=str(e))
+
+        @self._app.post(
+            "/api/models/import/upload",
+            response_model=ImportModelUploadResponse,
+            tags=[ApiTags.MODELS],
+            operation_id="import_model_upload",
+        )
+        async def import_model_upload_api(payload: ImportModelUploadPayload) -> ImportModelUploadResponse:
+            """Import an uploaded ONNX file: decode + write it + auto-generate its sidecar."""
+            try:
+                onnx_bytes = base64.b64decode(payload.onnx_base64, validate=True)
+            except Exception as e:
+                return ImportModelUploadResponse(status=JsonValues.FAILURE, message=f"Invalid onnx_base64: {e}")
+
+            try:
+                result = await self._manager.import_model_upload(
+                    model_name=payload.model_name,
+                    onnx_bytes=onnx_bytes,
+                    overwrite=payload.overwrite,
+                )
+                return ImportModelUploadResponse(
+                    status=JsonValues.SUCCESS,
+                    model_name=result["model_name"],
+                    classes=result["classes"],
+                )
+            except Exception as e:
+                return ImportModelUploadResponse(status=JsonValues.FAILURE, message=str(e))
 
         @self._app.get(
             "/api/models/{model_name}/training-images",
