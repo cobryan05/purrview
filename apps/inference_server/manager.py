@@ -18,7 +18,11 @@ from apps.helpers.inferenceProviders.inferenceProvider import (
     InferenceProvider,
     InferenceResult,
 )
-from apps.helpers.metadataUtils import get_model_metadata, save_model_json_metadata
+from apps.helpers.metadataUtils import (
+    VALID_MODEL_DEVICES,
+    get_model_metadata,
+    save_model_json_metadata,
+)
 from apps.helpers.yoloUtils import load_yolo_onnx
 
 logging.basicConfig(stream=sys.stdout)
@@ -165,6 +169,33 @@ class Manager:
         else:
             class_map[model_class] = label_uuid
         metadata["class_map"] = class_map
+        save_model_json_metadata(model_path, metadata=metadata)
+        return True
+
+    async def set_model_device(self, model_name: str, device: str) -> bool:
+        """
+        Set a model's device preference (auto/gpu/cpu), persisted to its sidecar JSON.
+
+        Args:
+            model_name (str): The name of the model to set the preference on
+            device (str): One of "auto", "gpu", "cpu"
+
+        Returns:
+            bool: True if the preference was persisted.
+        """
+        if device not in VALID_MODEL_DEVICES:
+            raise ValueError(f"Invalid device {device!r}; must be one of {VALID_MODEL_DEVICES}")
+
+        if model_name in self._avail_models:
+            model_path = self._avail_models[model_name]
+        else:
+            raise FileNotFoundError(f"Model '{model_name}' not found in available models")
+
+        try:
+            metadata = get_model_metadata(model_path)
+        except FileNotFoundError:
+            metadata = {}
+        metadata["device"] = device
         save_model_json_metadata(model_path, metadata=metadata)
         return True
 

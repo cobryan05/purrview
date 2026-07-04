@@ -5,13 +5,29 @@ import json
 import logging
 import sys
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, List
 
 import onnx
 
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger(__file__)
 logger.setLevel(logging.DEBUG)
+
+DEFAULT_MODEL_DEVICE = "auto"
+VALID_MODEL_DEVICES = ("auto", "gpu", "cpu")
+
+
+def providers_for_device(device: str) -> List[str]:
+    """Map a model's device preference to an ordered list of ONNX execution providers.
+
+    `auto` and `gpu` both prefer CUDA with a CPU fallback (so a GPU-less box still
+    runs); `cpu` forces CPU-only. Unknown values fall back to `auto`'s behavior.
+    """
+    if device == "cpu":
+        return ["CPUExecutionProvider"]
+    if device not in VALID_MODEL_DEVICES:
+        logger.warning(f"Unknown model device {device!r}; falling back to 'auto'")
+    return ["CUDAExecutionProvider", "CPUExecutionProvider"]
 
 
 def get_model_metadata(model_path: str, create_json_if_missing: bool = True) -> Dict[str, Any]:

@@ -85,11 +85,17 @@ class RunClassifierTask(Task):
     async def _run(self) -> dict[str, Any]:
         import onnxruntime as ort
 
+        from apps.helpers.metadataUtils import (
+            DEFAULT_MODEL_DEVICE,
+            providers_for_device,
+        )
+
         self.log(f"Loading model {self._model_name} from {self._model_path}")
+        providers = providers_for_device(self._model_config.get("device", DEFAULT_MODEL_DEVICE))
         session = await asyncio.to_thread(
             ort.InferenceSession,
             str(self._model_path),
-            providers=["CPUExecutionProvider"],
+            providers=providers,
         )
         input_name: str = session.get_inputs()[0].name
         self.log("Model loaded")

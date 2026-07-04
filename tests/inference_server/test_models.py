@@ -110,3 +110,46 @@ async def test_pin_unknown_model_returns_failure(http_client):
     )
     assert resp.status_code == 200
     assert resp.json()["status"] == "failure"
+
+
+async def test_get_model_meta_defaults_device_to_auto(http_client):
+    resp = await http_client.get("/api/models/yolo_test/meta")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["status"] == "success"
+    assert data["device"] == "auto"
+
+
+async def test_set_model_device(http_client, models_dir):
+    resp = await http_client.post(
+        "/api/models/yolo_test/device",
+        json={"device": "cpu"},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["status"] == "success"
+    assert data["deviceSet"] is True
+
+    meta = json.loads((models_dir / "yolo_test.json").read_text())
+    assert meta["device"] == "cpu"
+
+    resp = await http_client.get("/api/models/yolo_test/meta")
+    assert resp.json()["device"] == "cpu"
+
+
+async def test_set_model_device_invalid_returns_failure(http_client):
+    resp = await http_client.post(
+        "/api/models/yolo_test/device",
+        json={"device": "tpu"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "failure"
+
+
+async def test_set_model_device_unknown_model_returns_failure(http_client):
+    resp = await http_client.post(
+        "/api/models/nonexistent/device",
+        json={"device": "gpu"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "failure"

@@ -1,6 +1,6 @@
 import { fetchLabels } from '/app-static/js/shared/api/labels.js';
 import { isDynamicLabelsVisible } from '/app-static/js/shared/activeModel.js';
-import { associateLabel, clearModelsCache, fetchModelsLabelMappings, fetchModelsList } from '/app-static/js/shared/api/models.js';
+import { associateLabel, clearModelsCache, fetchModelDevice, fetchModelsLabelMappings, fetchModelsList, setModelDevice } from '/app-static/js/shared/api/models.js';
 import { DropDownField, EditableField, LabelDropDownField } from '/app-static/js/ui/utils/fields/index.js';
 import { createGenericRow, Logger, showPaneError, toast } from '/app-static/js/ui/utils/index.js';
 import { openTrainingDataModal } from '/app-static/js/ui/trainingDataModal.js';
@@ -57,6 +57,36 @@ export function renderModelLabelAssignments({
   });
 
   if (!preselectedModel) return;
+
+  const deviceDiv = document.createElement('div');
+  deviceDiv.style.display = 'flex';
+  deviceDiv.style.alignItems = 'center';
+  deviceDiv.style.gap = '0.5em';
+  container.appendChild(deviceDiv);
+  fetchModelDevice(preselectedModel).then(async device => {
+    const label = document.createElement('span');
+    label.textContent = 'Device:';
+    label.style.fontWeight = 'bold';
+    deviceDiv.appendChild(label);
+
+    const dropdown = new DropDownField({
+      value: device,
+      editMode: true,
+      options: ['auto', 'gpu', 'cpu'],
+      onChange: async value => {
+        if (!value || value === device) return;
+        try {
+          await setModelDevice(preselectedModel, value);
+        } catch (err) {
+          toast(err.message, 5000, 'error');
+        }
+        renderModelLabelAssignments({ target, editable, preselectedModel });
+      },
+    });
+    deviceDiv.appendChild(await dropdown.renderEdit());
+  }).catch(err => {
+    showPaneError(deviceDiv, err.message);
+  });
 
   const labelAssignmentDiv = document.createElement('div');
   container.appendChild(labelAssignmentDiv);

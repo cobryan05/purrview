@@ -162,6 +162,58 @@
         }
       }
     },
+    "/api/models/{model_name}/device": {
+      "post": {
+        "tags": [
+          "models"
+        ],
+        "summary": "Set Model Device Api",
+        "operationId": "set_model_device",
+        "parameters": [
+          {
+            "name": "model_name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Model Name"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetModelDevicePayload"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SetModelDeviceResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/models/{model_name}/training-images": {
       "get": {
         "tags": [
@@ -1060,6 +1112,11 @@
               }
             ],
             "title": "Labeluuids"
+          },
+          "device": {
+            "type": "string",
+            "title": "Device",
+            "default": "auto"
           }
         },
         "type": "object",
@@ -1153,6 +1210,46 @@
         },
         "type": "object",
         "title": "PinModelResponse"
+      },
+      "SetModelDevicePayload": {
+        "properties": {
+          "device": {
+            "type": "string",
+            "title": "Device"
+          }
+        },
+        "type": "object",
+        "required": [
+          "device"
+        ],
+        "title": "SetModelDevicePayload"
+      },
+      "SetModelDeviceResponse": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "title": "Status",
+            "default": "success"
+          },
+          "message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Message"
+          },
+          "deviceSet": {
+            "type": "boolean",
+            "title": "Deviceset",
+            "default": false
+          }
+        },
+        "type": "object",
+        "title": "SetModelDeviceResponse"
       },
       "StatusResponse": {
         "properties": {

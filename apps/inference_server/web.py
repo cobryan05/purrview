@@ -76,6 +76,15 @@ class ModelMetaResponse(StatusResponse):
     model_kind: Optional[str] = None
     label_uuid: Optional[str] = None
     label_uuids: Optional[List[str]] = None
+    device: str = "auto"
+
+
+class SetModelDevicePayload(Payload):
+    device: str
+
+
+class SetModelDeviceResponse(StatusResponse):
+    device_set: bool = False
 
 
 class ModelTrainingImagesResponse(StatusResponse):
@@ -287,9 +296,23 @@ class WebApp:
                     model_kind=model_kind,
                     label_uuid=config.get("label_uuid"),
                     label_uuids=config.get("label_uuids"),
+                    device=config.get("device", "auto"),
                 )
             except Exception as e:
                 return ModelMetaResponse(status=JsonValues.FAILURE, message=str(e))
+
+        @self._app.post(
+            "/api/models/{model_name}/device",
+            response_model=SetModelDeviceResponse,
+            tags=[ApiTags.MODELS],
+            operation_id="set_model_device",
+        )
+        async def set_model_device_api(model_name: str, payload: SetModelDevicePayload):
+            try:
+                ret = await self._manager.set_model_device(model_name=model_name, device=payload.device)
+                return SetModelDeviceResponse(status=JsonValues.SUCCESS, device_set=ret)
+            except Exception as e:
+                return SetModelDeviceResponse(status=JsonValues.FAILURE, message=str(e))
 
         @self._app.get(
             "/api/models/{model_name}/training-images",

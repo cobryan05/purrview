@@ -117,6 +117,37 @@ export async function fetchModelTrainingImages(modelName) {
   return { train: data.train_image_uuids ?? [], val: data.val_image_uuids ?? [] };
 }
 
+/**
+ * Fetch the device preference ("auto" | "gpu" | "cpu") stored in a model's sidecar JSON.
+ * @param {string} modelName
+ * @returns {Promise<string>}
+ */
+export async function fetchModelDevice(modelName) {
+  const res = await apiFetch(`/api/models/${encodeURIComponent(modelName)}/meta`);
+  const data = await res.json().catch(() => ({}));
+  return (res.ok && data.status === 'success') ? (data.device ?? 'auto') : 'auto';
+}
+
+/**
+ * Set the device preference ("auto" | "gpu" | "cpu") for a model, persisted to its sidecar JSON.
+ * @param {string} modelName
+ * @param {string} device
+ * @returns {Promise<boolean>}
+ */
+export async function setModelDevice(modelName, device) {
+  const res = await apiFetch(`/api/models/${encodeURIComponent(modelName)}/device`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ device }),
+  });
+
+  const data = await res.json();
+  if (!res.ok || data.status === 'failure') {
+    throw new Error(data.message || 'Failed to set model device');
+  }
+  return data.deviceSet;
+}
+
 /** -----------------------------
  * UPDATE FUNCTION
  * -----------------------------

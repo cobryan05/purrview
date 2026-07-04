@@ -41,6 +41,7 @@ def load_yolo_onnx(model_path: str) -> InferenceProvider:
     import apps.helpers.inferenceProviders.ultralyticsYoloV8InferenceProvider  # noqa: F401
 
     metadata = metadataUtils.get_model_metadata(model_path, create_json_if_missing=True)
+    providers = metadataUtils.providers_for_device(metadata.get("device", metadataUtils.DEFAULT_MODEL_DEVICE))
 
     model_kind: str = metadata.get("model_kind", "")
     if model_kind == "image_classifier":
@@ -50,7 +51,7 @@ def load_yolo_onnx(model_path: str) -> InferenceProvider:
 
         label_uuid: str = metadata.get("label_uuid", "")
         class_names: list[str] = metadata.get("class_names", ["absent", "present"])
-        return ImageClassifierInferenceProvider(model_path, label_uuid, class_names)
+        return ImageClassifierInferenceProvider(model_path, label_uuid, class_names, providers=providers)
 
     if model_kind == "multi_label_classifier":
         from apps.helpers.inferenceProviders.multiLabelClassifierInferenceProvider import (
@@ -58,14 +59,14 @@ def load_yolo_onnx(model_path: str) -> InferenceProvider:
         )
 
         label_uuids: list[str] = metadata.get("label_uuids") or []
-        return MultiLabelClassifierInferenceProvider(model_path, label_uuids)
+        return MultiLabelClassifierInferenceProvider(model_path, label_uuids, providers=providers)
 
     classes: list[str] = metadata.get("classes", None)
     model_family: str = metadata.get("model_family") or metadataUtils.resolve_legacy_model_family(metadata)
     provider_cls = inference_provider_registry.get(model_family)
     if provider_cls is None:
         raise Exception(f"Unhandled model family {model_family!r}. Registered: {sorted(inference_provider_registry)}")
-    return provider_cls(model_path, classes)
+    return provider_cls(model_path, classes, providers=providers)
 
 
 def preprocess_image(image: np.ndarray, input_shape: Tuple[int, int]) -> Tuple[np.ndarray, float, Tuple[int, int]]:

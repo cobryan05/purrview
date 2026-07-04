@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import time
 import uuid
-from typing import List
+from typing import List, Optional
 
 import numpy as np
 
@@ -30,12 +30,12 @@ class ImageClassifierInferenceProvider(InferenceProvider):
 
     _INPUT_SIZE = (224, 224)
 
-    def __init__(self, model_path: str, label_uuid: str, class_names: List[str]):
+    def __init__(self, model_path: str, label_uuid: str, class_names: List[str], providers: Optional[List[str]] = None):
         import onnxruntime as ort
 
         self._session = ort.InferenceSession(
             model_path,
-            providers=["CUDAExecutionProvider", "CPUExecutionProvider"],
+            providers=providers or ["CUDAExecutionProvider", "CPUExecutionProvider"],
         )
         self._input_name: str = self._session.get_inputs()[0].name
         self._label_uuid = label_uuid

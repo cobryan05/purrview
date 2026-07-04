@@ -27,7 +27,7 @@ from apps.helpers.inferenceProviders.Registry import inference_provider_registry
 from apps.helpers.inferenceProviders.ultralyticsYoloV8InferenceProvider import (
     UltralyticsYoloV8InferenceProvider,
 )
-from apps.helpers.metadataUtils import resolve_legacy_model_family
+from apps.helpers.metadataUtils import providers_for_device, resolve_legacy_model_family
 from apps.helpers.yoloUtils import load_yolo_onnx
 
 
@@ -83,3 +83,17 @@ class TestLoadYoloOnnxDispatch:
         model_path = self._write_sidecar(tmp_path, "yolov7", {"yolo": 7, "classes": ["a"]})
         with pytest.raises(Exception, match="Unhandled model family 'ultralytics_yolov5'"):
             load_yolo_onnx(model_path)
+
+
+class TestProvidersForDevice:
+    def test_auto_prefers_cuda_with_cpu_fallback(self):
+        assert providers_for_device("auto") == ["CUDAExecutionProvider", "CPUExecutionProvider"]
+
+    def test_gpu_prefers_cuda_with_cpu_fallback(self):
+        assert providers_for_device("gpu") == ["CUDAExecutionProvider", "CPUExecutionProvider"]
+
+    def test_cpu_is_cpu_only(self):
+        assert providers_for_device("cpu") == ["CPUExecutionProvider"]
+
+    def test_unknown_device_falls_back_to_auto_behavior(self):
+        assert providers_for_device("tpu") == ["CUDAExecutionProvider", "CPUExecutionProvider"]

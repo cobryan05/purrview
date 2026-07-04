@@ -36,8 +36,11 @@ class OnnxYoloInferenceProvider(InferenceProvider):
         class_names: Optional[List[str]] = None,
         conf_thresh: float = 0.251,
         iou_thresh: float = 0.45,
+        providers: Optional[List[str]] = None,
     ):
-        self.session = ort.InferenceSession(model_path, providers=["CUDAExecutionProvider", "CPUExecutionProvider"])
+        self.session = ort.InferenceSession(
+            model_path, providers=providers or ["CUDAExecutionProvider", "CPUExecutionProvider"]
+        )
         active_providers = self.session.get_providers()
         logger.info(f"ONNX providers active: {active_providers}")
 
