@@ -120,3 +120,26 @@ class BBox:
         """returns bbox coords as relative 4 coordinates"""
         x1, y1, w, h = self.asRX1Y1WH()
         return (x1, y1, x1 + w, y1 + h)
+
+
+def iou_xywh(a: dict, b: dict) -> float:
+    """Intersection-over-union of two bbox dicts/objects exposing x/y/width/height
+    attributes in a shared coordinate space (either both relative or both absolute).
+
+    Shared primitive for anything that needs "is this the same object" overlap
+    matching (FilterChainRunner's detector-overlap steps, and — conceptually —
+    DeduplicateOverlappingBBoxesTask / CollectTrainingImagesTask's own IoU checks).
+    """
+
+    def _get(obj, key):
+        return obj.get(key, 0) if isinstance(obj, dict) else getattr(obj, key, 0)
+
+    ax, ay, aw, ah = _get(a, "x"), _get(a, "y"), _get(a, "width"), _get(a, "height")
+    bx, by, bw, bh = _get(b, "x"), _get(b, "y"), _get(b, "width"), _get(b, "height")
+    inter_w = max(0.0, min(ax + aw, bx + bw) - max(ax, bx))
+    inter_h = max(0.0, min(ay + ah, by + bh) - max(ay, by))
+    inter = inter_w * inter_h
+    if inter <= 0.0:
+        return 0.0
+    union = (aw * ah) + (bw * bh) - inter
+    return inter / union if union > 0.0 else 0.0

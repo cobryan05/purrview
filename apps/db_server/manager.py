@@ -723,7 +723,7 @@ class Manager:
     async def _apply_bbox_bulk_action(
         self, bbox: BBox, action: str, label_uuid: Optional[str], tag_uuids: List[str]
     ) -> None:
-        """Apply one bulk action (relabel/delete/addTags/removeTags) to a single bbox.
+        """Apply one bulk action (relabel/delete/addTags/removeTags/revertRelabel) to a single bbox.
 
         Shared by bulk_apply_bboxes (filter-derived candidates) and
         bulk_apply_bboxes_by_uuids (explicit-list candidates) so the two entry
@@ -744,6 +744,19 @@ class Manager:
             remove_set = set(tag_uuids)
             new_tags = [u for u in current_tags if u not in remove_set]
             await self._db_client.update_single_bbox(bbox.uuid, None, new_tags)
+        elif action == "revertRelabel":
+            # Undo a filter-chain `relabel_bbox` step: restore the label stashed in
+            # metadata_json by ApplyFilterChainTask and drop the review tag(s)
+            # (tag_uuids — typically the caller's current tag filter).
+            metadata = dict(bbox.metadata_json or {})
+            prev_label = metadata.pop("relabel_prev_label_uuid", None)
+            if prev_label is None:
+                raise ValueError(f"bbox {bbox.uuid} has no relabel_prev_label_uuid to revert")
+            remove_set = set(tag_uuids)
+            new_tags = [u for u in current_tags if u not in remove_set]
+            if bbox.label_uuid and prev_label != bbox.label_uuid and bbox.phash:
+                self._hash_index.move_bbox(bbox.uuid, bbox.label_uuid, prev_label, bbox.phash)
+            await self._db_client.update_single_bbox(bbox.uuid, prev_label, new_tags, metadata_json=metadata)
         else:  # relabel
             assigning = bool(label_uuid)
             new_label = label_uuid if assigning else bbox.label_uuid

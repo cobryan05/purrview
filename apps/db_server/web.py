@@ -87,7 +87,7 @@ class BboxPatchPayload(ApiPayload):
 
 class BulkApplyAllPayload(ApiPayload):
     filter: ImageSearchParams
-    action: str  # relabel | delete | addTags | removeTags
+    action: str  # relabel | delete | addTags | removeTags | revertRelabel
     label_uuid: Optional[str] = None
     tag_uuids: List[str] = Field(default_factory=list)
     # Bbox-level subset filters (mirror the client-side render logic).
@@ -103,7 +103,7 @@ class BulkApplyAllResponse(StatusResponse):
 
 class BulkApplyBboxesByUuidsPayload(ApiPayload):
     bbox_uuids: List[str]
-    action: str  # relabel | delete | addTags | removeTags
+    action: str  # relabel | delete | addTags | removeTags | revertRelabel
     label_uuid: Optional[str] = None
     tag_uuids: List[str] = Field(default_factory=list)
 

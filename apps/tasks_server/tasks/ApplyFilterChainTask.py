@@ -1,0 +1,570 @@
+"""ApplyFilterChainTask — retroactively run a FilterChain against saved images.
+
+Scope MUST be bounded (directory / image_uuids / tag_uuid / label_uuid /
+dataset_uuid, capped by max_images) — see WORKFLOW_FILTERCHAIN_PLAN.md 2.4:
+"match existing bboxes" is an unbounded scan and must never silently run over
+the whole DB.
+
+Uses the shared `FilterChainRunner` (`_filter_chain_runner.py`) for match
+evaluation; this task owns the DB-write side: applying `discard_image` (a
+retroactive no-op — existing images are never deleted), `tag_image`,
+`strip_unverified_bboxes`, `relabel_bbox` (apply-now + review tag + prior-label
+stash, per plan 2.1a), and `tag_bbox`.
+"""
+
+import asyncio
+import base64
+import logging
+import os
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+from uuid import NAMESPACE_OID, uuid5
+
+from db_client.api.datasets_api import DatasetsApi
+from db_client.api.filter_chains_api import FilterChainsApi
+from db_client.api.images_api import ImagesApi
+from db_client.api.tags_api import TagsApi
+from db_client.models.add_tag_payload import AddTagPayload
+from db_client.models.batch_by_uuids_payload import BatchByUuidsPayload
+from db_client.models.bounding_box_metadata_model import BoundingBoxMetadataModel
+from db_client.models.get_image_metadata_payload import GetImageMetadataPayload
+from db_client.models.image_search_params import ImageSearchParams
+from db_client.models.set_image_tag_payload import SetImageTagPayload
+from db_client.models.tag_kind import TagKind as ApiTagKind
+from db_client.models.update_metadata_payload import UpdateMetadataPayload
+from inference_client.api.inference_api import InferenceApi
+from inference_client.api.models_api import ModelsApi as InferenceModelsApi
+from inference_client.models.classify_payload import ClassifyPayload
+from inference_client.models.inference_payload import InferencePayload
+from inference_client.models.pin_model_payload import PinModelPayload
+
+from apps.helpers.db.types import UNVERIFIED_TAG_UUID
+from apps.helpers.metadataUtils import get_model_metadata
+
+from ._filter_chain_runner import Detection, FilterChainRunner
+from .Registry import register_task
+from .Task import Task
+
+logging.basicConfig()
+logger = logging.getLogger(__file__)
+logger.setLevel(logging.DEBUG)
+
+_MODELS_ROOT = Path(os.environ.get("MODELS_ROOT", "/models"))
+_MAX_IMAGES_CEILING = 5000
+_CLASSIFIER_KINDS = {"image_classifier", "multi_label_classifier"}
+_SCOPE_PAGE_SIZE = 200
+
+
+def _read_model_kind(model_name: str) -> str:
+    model_path = _MODELS_ROOT / f"{model_name}.onnx"
+    try:
+        metadata = get_model_metadata(str(model_path), create_json_if_missing=False)
+    except FileNotFoundError:
+        return "detector"
+    return metadata.get("model_kind") or "detector"
+
+
+class _HttpInferenceBackend:
+    """InferenceBackend (see _filter_chain_runner.py) that talks to inference_server
+    over HTTP. Detector steps reuse a pin acquired once for the whole task run;
+    classifier steps go through /classify, which auto-pins per call (no pin_id
+    param exists on that endpoint) — acceptable overhead for a batch task, not a
+    hot path like collect-time inference."""
+
+    def __init__(self, inference_api_client, pin_ids: Dict[str, str]):
+        self._inference_api = InferenceApi(inference_api_client)
+        self._pin_ids = pin_ids
+        self._kind_cache: Dict[str, str] = {}
+
+    async def get_model_kind(self, model_name: str) -> str:
+        if model_name not in self._kind_cache:
+            self._kind_cache[model_name] = await asyncio.to_thread(_read_model_kind, model_name)
+        return self._kind_cache[model_name]
+
+    async def classify_whole_image(self, model_name: str, image_bytes: bytes) -> float:
+        b64 = base64.b64encode(image_bytes).decode()
+        resp = await asyncio.to_thread(self._inference_api.classify, model_name, ClassifyPayload(image_base64=b64))
+        if resp.status != "success" or resp.result is None:
+            return 0.0
+        preds = resp.result.predictions or []
+        return max((p.confidence for p in preds), default=0.0)
+
+    async def detect(self, model_name: str, image_bytes: bytes, conf_thresh: float) -> List[Detection]:
+        b64 = base64.b64encode(image_bytes).decode()
+        resp = await asyncio.to_thread(
+            self._inference_api.detect,
+            model_name,
+            InferencePayload(image_base64=b64, conf_thresh=conf_thresh, pin_id=self._pin_ids.get(model_name)),
+        )
+        if resp.status != "success" or resp.result is None:
+            return []
+        return [
+            Detection(
+                x=d.bbox.x,
+                y=d.bbox.y,
+                width=d.bbox.width,
+                height=d.bbox.height,
+                confidence=d.confidence,
+                label_uuid=d.bbox.label_uuid,
+            )
+            for d in (resp.result.detections or [])
+        ]
+
+
+@register_task()
+class ApplyFilterChainTask(Task):
+    async def _init(self, params: Dict[str, Any], resume_data: Optional[Dict[str, Any]]) -> None:
+        self._filter_chain_uuid: str = str(params.get("filter_chain_uuid") or "")
+        if not self._filter_chain_uuid:
+            raise ValueError("filter_chain_uuid is required")
+
+        self._directory: str = (params.get("directory") or "").strip().rstrip("/")
+        self._image_uuids: List[str] = list(params.get("image_uuids") or [])
+        self._tag_uuid: Optional[str] = params.get("tag_uuid") or None
+        self._label_uuid: Optional[str] = params.get("label_uuid") or None
+        self._dataset_uuid: Optional[str] = params.get("dataset_uuid") or None
+        if not any([self._directory, self._image_uuids, self._tag_uuid, self._label_uuid, self._dataset_uuid]):
+            raise ValueError(
+                "At least one scope filter is required: directory, image_uuids, tag_uuid, label_uuid, or dataset_uuid"
+            )
+
+        self._max_images: int = min(int(params.get("max_images", _MAX_IMAGES_CEILING)), _MAX_IMAGES_CEILING)
+        self._batch_size: int = int(params.get("batch_size", 32))
+        self._dry_run: bool = bool(params.get("dry_run", False))
+        self._image_source: str = str(params.get("image_source", "filesystem"))
+
+        self._images_processed: int = resume_data.get("images_processed", 0) if resume_data else 0
+        self._images_changed: int = resume_data.get("images_changed", 0) if resume_data else 0
+        self._bboxes_relabeled: int = resume_data.get("bboxes_relabeled", 0) if resume_data else 0
+        self._bboxes_tagged: int = resume_data.get("bboxes_tagged", 0) if resume_data else 0
+        self._bboxes_stripped: int = resume_data.get("bboxes_stripped", 0) if resume_data else 0
+        self._images_tagged: int = resume_data.get("images_tagged", 0) if resume_data else 0
+        self._images_discard_matched: int = resume_data.get("images_discard_matched", 0) if resume_data else 0
+
+        self._pin_ids: Dict[str, str] = {}
+        self._review_tag_ensured: bool = False
+
+    async def _run(self) -> Dict[str, Any]:
+        db_api_client = self._manager.get_db_api_client()
+        inference_api_client = self._manager.get_inference_api_client()
+        filter_chains_api = FilterChainsApi(db_api_client)
+        images_api = ImagesApi(db_api_client)
+        tags_api = TagsApi(db_api_client)
+
+        chain_resp = await asyncio.to_thread(filter_chains_api.get_filter_chain, self._filter_chain_uuid)
+        chain = getattr(chain_resp, "chain", None)
+        if chain is None:
+            raise ValueError(f"Filter chain not found: {self._filter_chain_uuid}")
+
+        steps = [
+            {
+                "order": s.order,
+                "model_name": s.model_name,
+                "confidence": s.confidence,
+                "iou_threshold": s.iou_threshold,
+                "action": s.action,
+                "action_params": s.action_params or {},
+                "enabled": s.enabled,
+            }
+            for s in (chain.steps or [])
+            if s.enabled
+        ]
+        if not steps:
+            self.log("Filter chain has no enabled steps; nothing to do")
+            return self._build_result()
+        if len(steps) > 5:
+            self.log(f"Warning: chain has {len(steps)} steps — this multiplies inference cost per image")
+
+        await self._pin_detector_models(inference_api_client, steps)
+        backend = _HttpInferenceBackend(inference_api_client, self._pin_ids)
+        runner = FilterChainRunner(steps, backend)
+
+        # One deterministic review tag per task instance, so each run's relabels
+        # are a separately reviewable/reversible batch (plan 2.1a / open item 4.2).
+        review_tag_uuid = str(uuid5(NAMESPACE_OID, self._instance_uuid))
+        review_tag_name = f"[Filter Chain] {chain.name} auto-relabeled ({self._instance_uuid[:8]})"
+
+        stubs = await self._collect_stubs(db_api_client, images_api)
+        if self._images_processed > 0 and self._images_processed < len(stubs):
+            stubs = stubs[self._images_processed :]
+            self.log(f"Resuming from image {self._images_processed}")
+        total = len(stubs)
+        dry_label = " [DRY RUN]" if self._dry_run else ""
+        self.log(f"Applying filter chain '{chain.name}' to {total} images{dry_label}")
+
+        await self.heartbeat(force=True)
+
+        for batch_start in range(0, total, self._batch_size):
+            if self._cancel_flag.is_set():
+                break
+            await self._check_pause()
+
+            batch = stubs[batch_start : batch_start + self._batch_size]
+            for stub in batch:
+                if self._cancel_flag.is_set():
+                    break
+                try:
+                    changed = await self._process_image(
+                        images_api, tags_api, runner, stub, review_tag_uuid, review_tag_name
+                    )
+                    if changed:
+                        self._images_changed += 1
+                except Exception:
+                    logger.exception("Failed to process image %s", getattr(stub, "filename", "?"))
+                self._images_processed += 1
+
+            progress = min(100.0, self._images_processed / max(total, 1) * 100.0)
+            self._update_progress(progress)
+            self.log(f"Processed {self._images_processed}/{total}, {self._images_changed} changed")
+
+            if self._data_req_flag.is_set():
+                self._data_req_flag.clear()
+                self._resume_data = self._build_resume_data()
+                self._data_ready_flag.set()
+
+            await self.heartbeat()
+            await asyncio.sleep(0)
+
+        self._resume_data = self._build_resume_data()
+        self._data_ready_flag.set()
+        self.log(f"Complete{dry_label}: {self._images_processed} processed, {self._images_changed} changed")
+        return self._build_result()
+
+    async def _pin_detector_models(self, inference_api_client, steps: List[Dict[str, Any]]) -> None:
+        """Pin every detector-step model once for the whole batch (classifier steps
+        auto-pin per /classify call — see _HttpInferenceBackend)."""
+        models_api = InferenceModelsApi(inference_api_client)
+        for name in sorted({s["model_name"] for s in steps}):
+            kind = await asyncio.to_thread(_read_model_kind, name)
+            if kind in _CLASSIFIER_KINDS:
+                continue
+            try:
+                pin_resp = await asyncio.to_thread(
+                    models_api.pin_model_api_api_models_model_name_pin_post,
+                    name,
+                    PinModelPayload(model_name=name, duration=3600),
+                )
+                if pin_resp.status == "success" and pin_resp.pin_id:
+                    self._pin_ids[name] = pin_resp.pin_id
+            except Exception:
+                logger.exception("Failed to pin model %s", name)
+
+    async def _ensure_review_tag(self, tags_api: TagsApi, tag_uuid: str, tag_name: str) -> None:
+        if self._review_tag_ensured:
+            return
+        existing = await asyncio.to_thread(tags_api.list_tags)
+        existing_uuids = {t.uuid for t in (existing.tags or [])}
+        if tag_uuid not in existing_uuids:
+            await asyncio.to_thread(
+                tags_api.add_tag,
+                AddTagPayload(uuid=tag_uuid, name=tag_name, color="#e8a020", kind=ApiTagKind.TASK_GENERATED),
+            )
+        self._review_tag_ensured = True
+
+    async def _process_image(
+        self,
+        images_api: ImagesApi,
+        tags_api: TagsApi,
+        runner: FilterChainRunner,
+        stub: Any,
+        review_tag_uuid: str,
+        review_tag_name: str,
+    ) -> bool:
+        image_bytes = await self._load_image_bytes(stub.filename, images_api)
+        meta_resp = await asyncio.to_thread(
+            images_api.get_image_metadata, GetImageMetadataPayload(image_path=stub.filename)
+        )
+        if meta_resp.status != "success" or meta_resp.image is None:
+            return False
+
+        bboxes_by_uuid = {b.uuid: b for b in (meta_resp.image.bboxes or [])}
+        existing = [
+            {"uuid": b.uuid, "x": b.x, "y": b.y, "width": b.width, "height": b.height, "label_uuid": b.label_uuid}
+            for b in bboxes_by_uuid.values()
+        ]
+
+        matches = await runner.evaluate_image(image_bytes, existing)
+        if not matches:
+            return False
+
+        image_tag_uuids_to_add: set = set()
+        bbox_uuids_to_strip: set = set()
+        # bbox_uuid -> {"add_tags": set, "label_uuid"?: str, "prev_label_uuid"?: str}
+        bbox_patches: Dict[str, Dict[str, Any]] = {}
+
+        for match in matches:
+            step = match.step
+            action = step["action"]
+            action_params = step.get("action_params") or {}
+            if match.image_match:
+                if action == "discard_image":
+                    # Retroactive no-op — existing images are never deleted (plan 2.1).
+                    self._images_discard_matched += 1
+                elif action == "tag_image":
+                    tag_uuid = action_params.get("tag_uuid")
+                    if tag_uuid:
+                        image_tag_uuids_to_add.add(tag_uuid)
+                elif action == "strip_unverified_bboxes":
+                    for b in bboxes_by_uuid.values():
+                        tag_uuids = {t.uuid for t in (b.tags or [])}
+                        if UNVERIFIED_TAG_UUID in tag_uuids and b.uuid not in bbox_uuids_to_strip:
+                            bbox_uuids_to_strip.add(b.uuid)
+                            self._bboxes_stripped += 1
+                else:
+                    logger.warning("Action %r is not valid for an image-level (classifier) step; skipping", action)
+                continue
+
+            for bbox_uuid in match.bbox_matches:
+                if bbox_uuid in bbox_uuids_to_strip:
+                    continue
+                if action == "relabel_bbox":
+                    target = action_params.get("target_label_uuid")
+                    if not target:
+                        continue
+                    patch = bbox_patches.setdefault(bbox_uuid, {"add_tags": set()})
+                    if "label_uuid" not in patch:
+                        patch["prev_label_uuid"] = bboxes_by_uuid[bbox_uuid].label_uuid
+                        self._bboxes_relabeled += 1
+                    patch["label_uuid"] = target
+                    patch["add_tags"].add(review_tag_uuid)
+                elif action == "tag_bbox":
+                    tag_uuid = action_params.get("tag_uuid")
+                    if not tag_uuid:
+                        continue
+                    patch = bbox_patches.setdefault(bbox_uuid, {"add_tags": set()})
+                    if tag_uuid not in patch["add_tags"]:
+                        patch["add_tags"].add(tag_uuid)
+                        self._bboxes_tagged += 1
+                else:
+                    logger.warning("Action %r is not valid for a bbox-level (detector) step; skipping", action)
+
+        changed = bool(image_tag_uuids_to_add or bbox_uuids_to_strip or bbox_patches)
+        if self._dry_run or not changed:
+            return changed
+
+        if image_tag_uuids_to_add:
+            for tag_uuid in image_tag_uuids_to_add:
+                await asyncio.to_thread(
+                    images_api.set_image_tag,
+                    SetImageTagPayload(image_path=stub.filename, tag_uuid=tag_uuid, action="add"),
+                )
+            self._images_tagged += 1
+
+        for bbox_uuid in bbox_uuids_to_strip:
+            await asyncio.to_thread(images_api.delete_bbox, bbox_uuid)
+
+        if bbox_patches:
+            if any("label_uuid" in p for p in bbox_patches.values()):
+                await self._ensure_review_tag(tags_api, review_tag_uuid, review_tag_name)
+
+            boxes_payload = []
+            for b in bboxes_by_uuid.values():
+                if b.uuid in bbox_uuids_to_strip:
+                    continue  # deleted above; don't resurrect via the full-list replace
+                patch = bbox_patches.get(b.uuid)
+                tag_uuids = {t.uuid for t in (b.tags or [])}
+                extra = dict(b.metadata_json or {})
+                label_uuid = b.label_uuid
+                if patch:
+                    tag_uuids |= patch["add_tags"]
+                    if "label_uuid" in patch:
+                        label_uuid = patch["label_uuid"]
+                        extra["relabel_prev_label_uuid"] = patch["prev_label_uuid"]
+                boxes_payload.append(
+                    BoundingBoxMetadataModel(
+                        # This generated client model's fields are `bbox_uuid`/`bbox_meta`
+                        # (not `uuid`/`extra` like apps.helpers.types.BoundingBoxMetadataModel) —
+                        # and bbox_meta values must be strings.
+                        bbox_uuid=b.uuid,
+                        x=b.x,
+                        y=b.y,
+                        width=b.width,
+                        height=b.height,
+                        label_uuid=label_uuid,
+                        tag_uuids=sorted(tag_uuids),
+                        bbox_meta={k: str(v) for k, v in extra.items()},
+                    )
+                )
+            await asyncio.to_thread(
+                images_api.update_image_metadata,
+                UpdateMetadataPayload(image_path=stub.filename, boxes=boxes_payload),
+            )
+
+        return True
+
+    async def _collect_stubs(self, db_api_client, images_api: ImagesApi) -> List[Any]:
+        """Resolve the bounded scope into a list of image stubs (uuid + filename)."""
+        if self._image_uuids:
+            capped = self._image_uuids[: self._max_images]
+            if len(capped) < len(self._image_uuids):
+                self.log(f"image_uuids capped at max_images={self._max_images} (had {len(self._image_uuids)})")
+            resp = await asyncio.to_thread(images_api.batch_images_by_uuids, BatchByUuidsPayload(image_uuids=capped))
+            return list(resp.images or [])
+
+        if self._directory:
+            resp = await asyncio.to_thread(images_api.list_image_stubs)
+            prefix = self._directory + "/"
+            stubs = [s for s in (resp.stubs or []) if s.filename.startswith(prefix) or s.filename == self._directory]
+            return self._cap_stubs(stubs, "directory")
+
+        if self._dataset_uuid:
+            datasets_api = DatasetsApi(db_api_client)
+            stubs: List[Any] = []
+            after_uuid = None
+            while len(stubs) < self._max_images:
+                resp = await asyncio.to_thread(
+                    datasets_api.get_dataset_images, self._dataset_uuid, limit=_SCOPE_PAGE_SIZE, after_uuid=after_uuid
+                )
+                page = list(resp.images or [])
+                if not page:
+                    break
+                stubs.extend(page)
+                if not resp.has_more:
+                    break
+                after_uuid = page[-1].uuid
+            return self._cap_stubs(stubs, "dataset_uuid")
+
+        if self._label_uuid:
+            resp = await asyncio.to_thread(images_api.list_images_for_label, self._label_uuid)
+            return self._cap_stubs(list(resp.images or []), "label_uuid")
+
+        # tag_uuid scope
+        stubs = []
+        after_uuid = None
+        after_sort_value = None
+        while len(stubs) < self._max_images:
+            params = ImageSearchParams(
+                tag_uuids=[self._tag_uuid],
+                show_all_bboxes=True,
+                limit=_SCOPE_PAGE_SIZE,
+                sort_by="uuid",
+                sort_order="asc",
+                after_uuid=after_uuid,
+                after_sort_value=after_sort_value,
+            )
+            resp = await asyncio.to_thread(images_api.get_review_queue, params)
+            page = list(resp.images or [])
+            if not page:
+                break
+            stubs.extend(page)
+            if not resp.has_more:
+                break
+            after_uuid = page[-1].uuid
+        return self._cap_stubs(stubs, "tag_uuid")
+
+    def _cap_stubs(self, stubs: List[Any], scope_name: str) -> List[Any]:
+        if len(stubs) > self._max_images:
+            self.log(f"{scope_name} scope capped at max_images={self._max_images} (matched {len(stubs)})")
+            return stubs[: self._max_images]
+        return stubs
+
+    async def _load_image_bytes(self, filename: str, images_api: ImagesApi) -> bytes:
+        if self._image_source == "filesystem":
+            return await asyncio.to_thread(_read_file, filename)
+        resp = await asyncio.to_thread(images_api.get_image_file, filename, True)
+        if not resp.image_base64:
+            raise ValueError(f"No image data returned for {filename}")
+        return base64.b64decode(resp.image_base64)
+
+    def _build_resume_data(self) -> Dict[str, Any]:
+        return {
+            "images_processed": self._images_processed,
+            "images_changed": self._images_changed,
+            "bboxes_relabeled": self._bboxes_relabeled,
+            "bboxes_tagged": self._bboxes_tagged,
+            "bboxes_stripped": self._bboxes_stripped,
+            "images_tagged": self._images_tagged,
+            "images_discard_matched": self._images_discard_matched,
+        }
+
+    def _build_result(self) -> Dict[str, Any]:
+        return {
+            **self._build_resume_data(),
+            "dry_run": self._dry_run,
+        }
+
+    async def _deinit(self) -> None:
+        if not self._pin_ids:
+            return
+        inference_api_client = self._manager.get_inference_api_client()
+        models_api = InferenceModelsApi(inference_api_client)
+        for name, pin_id in self._pin_ids.items():
+            try:
+                await asyncio.to_thread(models_api.unpin_model, name, pin_id)
+            except Exception:
+                logger.exception("Failed to unpin model %s", name)
+
+    @classmethod
+    def params_schema(cls) -> Dict[str, Dict[str, Any]]:
+        return {
+            "meta": {
+                "order": [
+                    "filter_chain_uuid",
+                    "directory",
+                    "image_uuids",
+                    "tag_uuid",
+                    "label_uuid",
+                    "dataset_uuid",
+                    "max_images",
+                    "batch_size",
+                    "dry_run",
+                ],
+            },
+            "filter_chain_uuid": {
+                "type": "str",
+                "required": True,
+                "help": "UUID of the FilterChain to apply",
+            },
+            "directory": {
+                "type": "directory",
+                "label": "Directory Filter",
+                "required": False,
+                "description": "Scope: only images under this directory.",
+            },
+            "image_uuids": {
+                "type": "list",
+                "label": "Explicit Image UUIDs",
+                "required": False,
+                "description": "Scope: an explicit list of image UUIDs.",
+            },
+            "tag_uuid": {
+                "type": "str",
+                "label": "Tag Filter",
+                "required": False,
+                "description": "Scope: only images carrying this tag.",
+            },
+            "label_uuid": {
+                "type": "str",
+                "label": "Label Filter",
+                "required": False,
+                "description": "Scope: only images with a bbox of this label.",
+            },
+            "dataset_uuid": {
+                "type": "str",
+                "label": "Dataset Filter",
+                "required": False,
+                "description": "Scope: only images belonging to this dataset.",
+            },
+            "max_images": {
+                "type": "int",
+                "label": "Max Images",
+                "default": _MAX_IMAGES_CEILING,
+                "description": f"Hard cap on images processed (ceiling {_MAX_IMAGES_CEILING}).",
+            },
+            "batch_size": {
+                "type": "int",
+                "label": "Batch Size",
+                "default": 32,
+            },
+            "dry_run": {
+                "type": "boolean",
+                "label": "Dry Run",
+                "default": False,
+                "description": "Count matches and report without changing anything.",
+            },
+        }
+
+
+def _read_file(filename: str) -> bytes:
+    with open(filename, "rb") as f:
+        return f.read()

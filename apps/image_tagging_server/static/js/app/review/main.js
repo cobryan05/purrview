@@ -2064,6 +2064,7 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
       { value: 'addTags', label: 'Add Tags' },
       { value: 'removeTags', label: 'Remove Tags' },
       { value: 'delete', label: 'Delete Bboxes' },
+      { value: 'revertRelabel', label: '↩ Revert Filter-Chain Relabel' },
     ];
 
     const radioGroup = document.createElement('div');
@@ -2130,7 +2131,11 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
       const resolvedAction = _VERIF_TAG_MAP[selectedAction] ? 'addTags' : selectedAction;
       const selectedTagUuids = _VERIF_TAG_MAP[selectedAction]
         ? [_VERIF_TAG_MAP[selectedAction]]
-        : (selectedAction === 'addTags' || selectedAction === 'removeTags') ? tagCheckboxField.getValue() : [];
+        : (selectedAction === 'addTags' || selectedAction === 'removeTags') ? tagCheckboxField.getValue()
+        // revertRelabel: strip whichever tag(s) the current filter is scoped to
+        // (the auto-relabel review tag) once the prior label is restored.
+        : (selectedAction === 'revertRelabel') ? (fs.tagUuids ?? [])
+        : [];
       statusMsg.textContent = `Applying to all ${totalBboxCount.toLocaleString()} bboxes…`;
       statusMsg.classList.add('review-toolbar__status--loading');
       try {

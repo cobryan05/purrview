@@ -1275,13 +1275,21 @@ class DbClient:
             result = await session.exec(stmt)
             return result.all()
 
-    async def update_single_bbox(self, bbox_uuid: str, label_uuid: Optional[str], tag_uuids: List[str]) -> None:
+    async def update_single_bbox(
+        self,
+        bbox_uuid: str,
+        label_uuid: Optional[str],
+        tag_uuids: List[str],
+        metadata_json: Optional[Dict[str, Any]] = None,
+    ) -> None:
         """Update one bbox's label and replace its tag links in place.
 
         Exclusive-group constraints are enforced: if multiple tags in tag_uuids share
         an exclusive_group, only the *last* one in the list is kept.  Callers can
         therefore pass [*existing_tags, *new_tags] and the new tags will win any
         exclusive-group conflict.
+
+        `metadata_json`, if given (not None), fully replaces the bbox's metadata_json.
         """
         async with self._async_session_maker() as session:
             bbox = await session.get(BBox, bbox_uuid)
@@ -1289,6 +1297,8 @@ class DbClient:
                 return
             if label_uuid is not None:
                 bbox.label_uuid = label_uuid
+            if metadata_json is not None:
+                bbox.metadata_json = metadata_json
 
             # Resolve exclusive-group conflicts before writing.
             if tag_uuids:

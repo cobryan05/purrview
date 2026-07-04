@@ -276,6 +276,109 @@ async def test_bulk_apply_bboxes_relabel(http_client, image_file, label_uuid):
     assert UNVERIFIED_TAG_UUID not in tag_uuids
 
 
+async def test_bulk_apply_bboxes_revert_relabel(http_client, image_file, label_uuid):
+    """POST /api/images/bbox/bulk-apply with action=revertRelabel restores the
+    prior label from metadata_json.relabel_prev_label_uuid and drops the tag(s)
+    passed in tagUuids (the review tag), mirroring ApplyFilterChainTask's
+    relabel_bbox action + Review tab's Revert bulk action."""
+    bid = str(uuid.uuid4())
+    review_tag_uuid = str(uuid.uuid4())
+    await http_client.post(
+        "/api/tags/add", json={"uuid": review_tag_uuid, "name": "auto-relabeled", "color": "#ff8800"}
+    )
+    r_prior = await http_client.post("/api/labels", json={"name": "prior_label", "color": "#654321"})
+    prior_label_uuid = r_prior.json()["label"]["uuid"]
+
+    await http_client.post(
+        "/api/images/metadata/update",
+        json={
+            "imagePath": "bbox_test.png",
+            "boxes": [
+                {
+                    "uuid": bid,
+                    "labelUuid": label_uuid,
+                    "x": 0.1,
+                    "y": 0.1,
+                    "width": 0.2,
+                    "height": 0.2,
+                    "tagUuids": [review_tag_uuid],
+                    "extra": {"relabel_prev_label_uuid": prior_label_uuid},
+                }
+            ],
+        },
+    )
+
+    r = await http_client.post(
+        "/api/images/bbox/bulk-apply",
+        json={
+            "filter": {"showAllBboxes": True, "limit": 50},
+            "action": "revertRelabel",
+            "tagUuids": [review_tag_uuid],
+            "bboxTagFilter": [review_tag_uuid],
+            "bboxLabelFilter": [],
+            "showAllBboxes": False,
+        },
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["status"] == "success", body
+    assert body["modifiedCount"] == 1
+    assert body["failCount"] == 0
+
+    meta_r = await http_client.post("/api/images/metadata/get", json={"imagePath": "bbox_test.png"})
+    bboxes = meta_r.json()["image"]["bboxes"]
+    assert len(bboxes) == 1
+    assert bboxes[0]["labelUuid"] == prior_label_uuid
+    tag_uuids = [t["uuid"] for t in bboxes[0]["tags"]]
+    assert review_tag_uuid not in tag_uuids
+    assert "relabel_prev_label_uuid" not in (bboxes[0].get("extra") or {})
+
+
+async def test_bulk_apply_bboxes_revert_relabel_without_prior_label_fails(http_client, image_file, label_uuid):
+    """A bbox with no relabel_prev_label_uuid in metadata_json can't be reverted;
+    it's counted as a failure rather than silently no-op'd."""
+    bid = str(uuid.uuid4())
+    review_tag_uuid = str(uuid.uuid4())
+    await http_client.post(
+        "/api/tags/add", json={"uuid": review_tag_uuid, "name": "auto-relabeled2", "color": "#ff8800"}
+    )
+
+    await http_client.post(
+        "/api/images/metadata/update",
+        json={
+            "imagePath": "bbox_test.png",
+            "boxes": [
+                {
+                    "uuid": bid,
+                    "labelUuid": label_uuid,
+                    "x": 0.1,
+                    "y": 0.1,
+                    "width": 0.2,
+                    "height": 0.2,
+                    "tagUuids": [review_tag_uuid],
+                }
+            ],
+        },
+    )
+
+    r = await http_client.post(
+        "/api/images/bbox/bulk-apply",
+        json={
+            "filter": {"showAllBboxes": True, "limit": 50},
+            "action": "revertRelabel",
+            "tagUuids": [review_tag_uuid],
+            "bboxTagFilter": [review_tag_uuid],
+            "bboxLabelFilter": [],
+            "showAllBboxes": False,
+        },
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["status"] == "success", body
+    assert body["modifiedCount"] == 0
+    assert body["failCount"] == 1
+
+
 async def test_bulk_apply_bboxes_terminates_when_sorted_by_updated_at_asc(
     http_client, files_root, label_uuid, monkeypatch
 ):
