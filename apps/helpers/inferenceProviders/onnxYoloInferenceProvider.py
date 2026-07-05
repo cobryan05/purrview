@@ -30,6 +30,12 @@ logger.setLevel(logging.DEBUG)
 
 
 class OnnxYoloInferenceProvider(InferenceProvider):
+    # Letterbox anchor used by YoloUtils.preprocess_image; must match the
+    # convention the model's own training/validation pipeline used, or
+    # decoded boxes end up offset by the padding amount. Override in
+    # subclasses for families that letterbox top-left instead of centered.
+    LETTERBOX_ANCHOR = "center"
+
     def __init__(
         self,
         model_path: str,
@@ -80,7 +86,7 @@ class OnnxYoloInferenceProvider(InferenceProvider):
 
         t0 = time.perf_counter()  # PERF
         image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-        img, scale, pad = YoloUtils.preprocess_image(image_rgb, self.input_shape)
+        img, scale, pad = YoloUtils.preprocess_image(image_rgb, self.input_shape, anchor=self.LETTERBOX_ANCHOR)
         t_pre = time.perf_counter()  # PERF
 
         if self.cuda_executor:

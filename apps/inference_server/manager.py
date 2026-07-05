@@ -152,6 +152,14 @@ class Manager:
                 model_classes = metadata.get("classes", [])
                 model_class_mappings = metadata.get("class_map", {})
                 class_uuids: Dict[str, Optional[str]] = {name: None for name in model_classes}
+                if not model_class_mappings:
+                    # Models trained in-app already know their class -> label
+                    # mapping (written positionally into the sidecar by the
+                    # trainer); use it to pre-fill instead of making the user
+                    # re-enter an assignment we already have.
+                    label_uuids = metadata.get("label_uuids") or []
+                    if len(label_uuids) == len(model_classes):
+                        model_class_mappings = dict(zip(model_classes, label_uuids))
                 for k, v in model_class_mappings.items():
                     class_uuids[k] = v
                 ret[model_name] = class_uuids
@@ -263,6 +271,30 @@ class Manager:
         await self.list_models()
 
         return {"model_name": model_name, "classes": metadata.get("classes", [])}
+
+    async def delete_model(self, model_name: str) -> None:
+        """Delete a model's ONNX weights and sidecar JSON from the models dir.
+
+        Args:
+            model_name (str): Bare model name (no extension) to delete.
+
+        Raises:
+            FileNotFoundError: If the model is not in the available-models list.
+            ValueError: If the model is currently pinned (in use) and can't be
+                safely removed.
+        """
+        if model_name not in self._avail_models:
+            raise FileNotFoundError(f"Model '{model_name}' not found in available models")
+        if model_name in self._pinned_models:
+            raise ValueError(f"Model '{model_name}' is currently pinned/in use and cannot be deleted")
+
+        model_path = Path(self._avail_models[model_name])
+        sidecar_path = model_path.with_suffix(".json")
+
+        await asyncio.to_thread(model_path.unlink, True)
+        await asyncio.to_thread(sidecar_path.unlink, True)
+
+        del self._avail_models[model_name]
 
     def detect_uploaded_model(self, filename: str, header: bytes) -> Dict[str, Any]:
         """Detect the format of an about-to-be-uploaded model file from its filename and

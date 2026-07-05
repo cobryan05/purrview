@@ -99,6 +99,10 @@ class ImportModelUploadResponse(StatusResponse):
     classes: Optional[List[str]] = None
 
 
+class DeleteModelResponse(StatusResponse):
+    model_name: Optional[str] = None
+
+
 class ImportModelDetectPayload(Payload):
     filename: str
     header_base64: str
@@ -558,6 +562,19 @@ class WebApp:
                 return StatusResponse(status=JsonValues.SUCCESS)
             except Exception as e:
                 return StatusResponse(status=JsonValues.FAILURE, message=str(e))
+
+        @self._app.delete(
+            "/api/models/{model_name}",
+            response_model=DeleteModelResponse,
+            tags=[ApiTags.MODELS],
+            operation_id="delete_model",
+        )
+        async def delete_model_api(model_name: str) -> DeleteModelResponse:
+            try:
+                await self._manager.delete_model(model_name)
+                return DeleteModelResponse(status=JsonValues.SUCCESS, model_name=model_name)
+            except Exception as e:
+                return DeleteModelResponse(status=JsonValues.FAILURE, message=str(e))
 
         @self._app.post(
             "/api/models/{model_name}/detect",

@@ -129,7 +129,7 @@ class ObjectDetectionTrainer(Trainer):
             def _epoch_cb(event) -> None:
                 epoch: int = event.epoch
                 total: int = event.total_epochs
-                map50: float = float(event.val_metrics.get("mAP50", 0.0))
+                map50: float = float(event.val_metrics.get("metrics/mAP50", 0.0))
                 loss: float = float(event.train_loss)
                 progress_cb(
                     {

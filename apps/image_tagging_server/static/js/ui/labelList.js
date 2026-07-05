@@ -31,9 +31,12 @@ const STATUS_CFG = Object.freeze({
   absent:    { text: '✗', color: '#e55' },
   uncertain: { text: '?', color: '#888' },
 });
-// Three-way cycle: uncertain → present → absent → uncertain
+// Three-way cycle: uncertain → absent → present → uncertain
+// Absent comes first because a click is more likely to be "confirmed not
+// present" than "present" — a present label is usually already established
+// via a drawn bbox rather than this toggle.
 // PRESENT derived from verified bboxes is locked regardless of this cycle.
-const STATUS_CYCLE = Object.freeze({ uncertain: 'present', present: 'absent', absent: 'uncertain' });
+const STATUS_CYCLE = Object.freeze({ uncertain: 'absent', absent: 'present', present: 'uncertain' });
 
 // ─── Shared hierarchy builder ────────────────────────────────────────────────
 

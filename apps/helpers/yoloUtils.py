@@ -69,13 +69,21 @@ def load_yolo_onnx(model_path: str) -> InferenceProvider:
     return provider_cls(model_path, classes, providers=providers)
 
 
-def preprocess_image(image: np.ndarray, input_shape: Tuple[int, int]) -> Tuple[np.ndarray, float, Tuple[int, int]]:
+def preprocess_image(
+    image: np.ndarray, input_shape: Tuple[int, int], anchor: str = "center"
+) -> Tuple[np.ndarray, float, Tuple[int, int]]:
     """
     Preprocess an image for YOLO model inference by resizing, padding, and normalizing.
 
     Args:
         image (np.ndarray): Input image as a NumPy array (HWC format, BGR color space).
         input_shape (Tuple[int, int]): Target input shape (height, width) for the model.
+        anchor (str): Where the resized image is placed within the padded canvas.
+            "center" (Ultralytics/YOLOv5-style, default) splits padding evenly on
+            both sides. "top_left" (LibreYOLO-style) places the resized image
+            flush against the top-left corner, with all padding on the
+            bottom/right — must match whatever convention the model was
+            trained/validated with, or decoded boxes will be offset.
 
     Returns:
         Tuple[np.ndarray, float, Tuple[int, int]]:
@@ -91,20 +99,28 @@ def preprocess_image(image: np.ndarray, input_shape: Tuple[int, int]) -> Tuple[n
     r = min(input_w / w0, input_h / h0)  # Scale factor to maintain aspect ratio
     new_unpad = (int(round(w0 * r)), int(round(h0 * r)))  # New dimensions after scaling
 
-    # Compute padding to center the image within the target dimensions
-    dw = (input_w - new_unpad[0]) / 2  # Padding width (left and right)
-    dh = (input_h - new_unpad[1]) / 2  # Padding height (top and bottom)
+    if anchor == "top_left":
+        dw = 0.0
+        dh = 0.0
+    else:
+        # Compute padding to center the image within the target dimensions
+        dw = (input_w - new_unpad[0]) / 2  # Padding width (left and right)
+        dh = (input_h - new_unpad[1]) / 2  # Padding height (top and bottom)
 
     # Resize the image to the new dimensions
     resized = cv2.resize(image, new_unpad, interpolation=cv2.INTER_LINEAR)
 
-    # Add padding to the resized image
+    # Add padding to the resized image, filling the canvas regardless of anchor
+    top = int(dh)
+    left = int(dw)
+    bottom = input_h - new_unpad[1] - top
+    right = input_w - new_unpad[0] - left
     padded = cv2.copyMakeBorder(
         resized,
-        top=int(dh),
-        bottom=int(dh + 0.1),  # Add a small offset to handle rounding issues
-        left=int(dw),
-        right=int(dw + 0.1),  # Add a small offset to handle rounding issues
+        top=top,
+        bottom=bottom,
+        left=left,
+        right=right,
         borderType=cv2.BORDER_CONSTANT,
         value=(114, 114, 114),  # Use a gray color for padding
     )

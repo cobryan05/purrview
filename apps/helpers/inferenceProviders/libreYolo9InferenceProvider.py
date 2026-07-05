@@ -13,6 +13,12 @@ class LibreYolo9InferenceProvider(OnnxYoloInferenceProvider):
     to (1, num_preds, 4+nc) by the caller — 4 box channels + nc class-score
     channels, no separate objectness channel."""
 
+    # LibreYOLO9's own training/validation preprocessor (YOLO9ValPreprocessor)
+    # letterboxes with the resized image flush top-left, all padding on the
+    # bottom/right — not centered like Ultralytics. Must match or decoded
+    # boxes come out offset by the padding amount.
+    LETTERBOX_ANCHOR = "top_left"
+
     def _extract(self, preds: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
         """Split raw preds (num_preds, 4+nc) into (boxes_xyxy, scores)."""
         if preds.shape[1] < 5:

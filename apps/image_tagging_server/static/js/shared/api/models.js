@@ -184,6 +184,22 @@ export async function importModelUpload({ modelName, onnxBase64, overwrite = fal
 }
 
 /**
+ * Delete a model's ONNX weights and sidecar JSON from the models directory.
+ * @param {string} modelName
+ * @returns {Promise<void>}
+ */
+export async function deleteModel(modelName) {
+  const res = await apiFetch(`/api/models/${encodeURIComponent(modelName)}`, {
+    method: 'DELETE',
+  });
+
+  const data = await res.json();
+  if (!res.ok || data.status === 'failure') {
+    throw new Error(data.message || 'Failed to delete model');
+  }
+}
+
+/**
  * Detect the format of a to-be-imported model from a small header slice, and
  * report whether server-side conversion to ONNX is supported for it.
  * @param {{filename: string, headerBase64: string}} args

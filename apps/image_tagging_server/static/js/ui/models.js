@@ -3,6 +3,7 @@ import { isDynamicLabelsVisible } from '/app-static/js/shared/activeModel.js';
 import {
   associateLabel,
   clearModelsCache,
+  deleteModel,
   detectModel,
   fetchCuratedModels,
   fetchModelDevice,
@@ -60,6 +61,21 @@ export function renderModelLabelAssignments({
           text: 'Browse training data',
           emoji: '🖼️',
           onClick: () => openTrainingDataModal(preselectedModel),
+        }] : []),
+        ...(preselectedModel ? [{
+          text: 'Delete model',
+          emoji: '🗑️',
+          onClick: async () => {
+            if (!window.confirm(`Delete model "${preselectedModel}"? This cannot be undone.`)) return;
+            try {
+              await deleteModel(preselectedModel);
+              clearModelsCache();
+              toast(`Deleted model "${preselectedModel}"`);
+              renderModelLabelAssignments({ target, editable, preselectedModel: null });
+            } catch (err) {
+              showPaneError(modelSelectDiv, err.message);
+            }
+          }
         }] : []),
       ]
     });
