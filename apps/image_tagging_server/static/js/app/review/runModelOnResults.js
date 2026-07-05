@@ -1,0 +1,479 @@
+/**
+ * "Run Model on Results" — Chunk B.
+ *
+ * Wires the review-browser toolbar button to:
+ *  1. resolve the candidate bbox/image scope from whatever the user currently
+ *     has selected/filtered (mirrors the existing Bulk Apply / Apply to All split),
+ *  2. surface hard/soft caps on the candidate count,
+ *  3. let the user pick a detector model + conf/IoU thresholds in a run dialog,
+ *  4. launch `PreviewModelRelabelTask` (a temporary, one-shot task config),
+ *     poll it to completion with a cancel button, and
+ *  5. hand the resulting candidate relabels off to the (Chunk C) confirmation
+ *     modal via `openRelabelConfirmationModal`.
+ *
+ * This module owns all of that logic so review/main.js only needs a button
+ * and a one-line call into `runModelOnResultsFlow`.
+ */
+
+import { fetchReviewQueue } from '/app-static/js/shared/api/review.js';
+import { fetchModelsList, fetchModelsKinds } from '/app-static/js/shared/api/models.js';
+import {
+  createTaskConfig,
+  startTask,
+  fetchTasksStatus,
+  fetchTasksResult,
+  cancelTasks,
+  deleteTasks,
+  TaskStatus,
+} from '/app-static/js/shared/api/tasks.js';
+import { createModalShell } from '/app-static/js/ui/utils/modalShell.js';
+import { toast, Logger } from '/app-static/js/ui/utils/logging.js';
+import { expandWithDescendants } from '/app-static/js/ui/labelList.js';
+
+// Hard refuse above this many candidate bboxes — mirrors the server-side
+// PreviewModelRelabelTask._MAX_BBOX_UUIDS ceiling (apps/tasks_server/tasks/PreviewModelRelabelTask.py).
+export const HARD_CAP = 5000;
+// Above this many, warn and require an explicit confirmation before running.
+export const WARN_CAP = 1000;
+
+const POLL_INTERVAL_MS = 700;
+
+/**
+ * Rebuilds the per-image bbox predicate used by review/main.js's `render()` to
+ * decide which of an image's bboxes count as "matching" the current filter —
+ * shared here so scope resolution (bbox candidates for a whole filtered set,
+ * or for selected images) applies exactly the same rule the grid is showing.
+ *
+ * @param {Object} opts
+ * @param {boolean} opts.fetchImagesMode - true when the panel is in custom-fetchImages
+ *   (nested search/dataset-preview) mode.
+ * @param {(bbox: object) => boolean} [opts.bboxFilterFn] - caller-supplied override filter.
+ * @param {object|null} opts.fs - filterPanel.getState() result, or null in fetchImages mode.
+ * @param {Map<string, object>} opts.labels
+ * @returns {(bbox: object) => boolean}
+ */
+export function makeBboxFilterPredicate({ fetchImagesMode, bboxFilterFn, fs, labels }) {
+  const showAll = (fetchImagesMode && !bboxFilterFn) || fs?.showAllBboxes;
+  const tagSet = (fs && !showAll) ? new Set(fs.tagUuids) : null;
+  const activeLabelUuids = (fs?.labelUuids?.length > 0)
+    ? (fs.labelIncludeChildren
+        ? expandWithDescendants(fs.labelUuids, labels)
+        : new Set(fs.labelUuids))
+    : null;
+
+  return (b) => {
+    const baseMatch = bboxFilterFn
+      ? bboxFilterFn(b)
+      : showAll || (b.tags || []).some(t => tagSet.has(t.uuid));
+    const labelMatch = !activeLabelUuids || activeLabelUuids.has(b.labelUuid);
+    return baseMatch && labelMatch;
+  };
+}
+
+function _collectFromImages(images, predicate) {
+  const bboxUuids = [];
+  const imageUuids = [];
+  for (const img of images) {
+    const matches = (img.bboxes || []).filter(predicate);
+    if (matches.length === 0) continue;
+    imageUuids.push(img.uuid);
+    for (const b of matches) bboxUuids.push(b.uuid);
+  }
+  return { bboxUuids, imageUuids };
+}
+
+/**
+ * Resolves the candidate bbox/image scope for "Run Model on Results", mirroring
+ * the existing Bulk Apply / Apply to All selection split:
+ *   - bboxes selected  → those bboxes, in memory.
+ *   - images selected  → those images' bboxes, filtered by the shared predicate.
+ *   - nothing selected, fetchImages mode → enumerate via fetchImages({limit: MAX}).
+ *   - nothing selected, full-filter mode → re-run fetchReviewQueue at a high limit.
+ *
+ * @param {Object} ctx - see `runModelOnResultsFlow` for field docs.
+ * @returns {Promise<{bboxUuids: string[], imageUuids: string[]}>}
+ */
+export async function resolveCandidateScope(ctx) {
+  const {
+    fetchImages, filterPanel, viewFilter, selectionKind, selected,
+    visibleEntries, bboxFilterFn, labels, sortBy, sortOrder,
+  } = ctx;
+
+  if (selectionKind === 'bbox' && selected.size > 0) {
+    const entries = visibleEntries.filter(e => e.kind === 'bbox' && selected.has(e.bbox.uuid));
+    const bboxUuids = entries.map(e => e.bbox.uuid);
+    const imageUuids = [...new Set(entries.map(e => e.img.uuid))];
+    return { bboxUuids, imageUuids };
+  }
+
+  if (selectionKind === 'image' && selected.size > 0) {
+    const selectedImages = visibleEntries
+      .filter(e => e.kind === 'image' && selected.has(e.img.uuid))
+      .map(e => e.img);
+    const fs = fetchImages ? null : filterPanel.getState();
+    const predicate = makeBboxFilterPredicate({ fetchImagesMode: !!fetchImages, bboxFilterFn, fs, labels });
+    return _collectFromImages(selectedImages, predicate);
+  }
+
+  if (fetchImages) {
+    const images = await fetchImages({ afterUuid: null, limit: Number.MAX_SAFE_INTEGER });
+    const predicate = makeBboxFilterPredicate({ fetchImagesMode: true, bboxFilterFn, fs: null, labels });
+    return _collectFromImages(images, predicate);
+  }
+
+  const fs = filterPanel.getState();
+  const { images } = await fetchReviewQueue({
+    tagUuids: fs.showAllBboxes ? [] : fs.tagUuids,
+    tagExcludeUuids: fs.tagExcludeUuids ?? [],
+    showAllBboxes: fs.showAllBboxes,
+    tagMatchMode: fs.tagMatchMode,
+    labelUuids: fs.labelUuids,
+    labelExcludeUuids: fs.labelExcludeUuids ?? [],
+    labelMatchMode: fs.labelMatchMode,
+    labelIncludeChildren: fs.labelIncludeChildren,
+    imageLabelConditions: fs.imageLabelConditions ?? [],
+    requireBboxes: viewFilter === 'bboxes',
+    sortBy,
+    sortOrder,
+    filenameSearch: fs.filenameSearch || undefined,
+    dateFrom: fs.dateFrom || undefined,
+    dateTo: fs.dateTo || undefined,
+    verificationCheck: fs.verificationCheck,
+    limit: Number.MAX_SAFE_INTEGER,
+  });
+  const predicate = makeBboxFilterPredicate({ fetchImagesMode: false, bboxFilterFn, fs, labels });
+  return _collectFromImages(images, predicate);
+}
+
+/**
+ * Placeholder integration point for Chunk C. Given the server's proposed
+ * relabel candidates and the run context, Chunk C shows a confirmation modal
+ * letting the user accept/reject each proposed relabel, applies the accepted
+ * ones (e.g. via updateBbox / bulkApplyBboxesByUuids), and calls `ctx.refresh()`
+ * so the review grid picks up the changes.
+ *
+ * @param {Array<{bboxUuid: string, imageUuid: string, imagePath: string,
+ *   currentLabelUuid: ?string, currentLabelName: ?string, proposedLabelUuid: string,
+ *   proposedLabelName: ?string, confidence: number}>} candidates
+ * @param {Object} ctx
+ * @param {string} ctx.modelName - detector used to generate the candidates.
+ * @param {number} ctx.confThresh
+ * @param {number} ctx.iouThresh
+ * @param {() => void} ctx.refresh - reload the current review-panel page (e.g. `render()`).
+ * @param {Map<string, object>} ctx.labels - label lookup, for display.
+ */
+export async function openRelabelConfirmationModal(candidates, ctx) {
+  // TODO(Chunk C): replace with the real confirm/apply modal.
+  toast(`${candidates.length} candidates`, 4000);
+}
+
+function _fmtPct(x) {
+  return `${Math.round((x ?? 0) * 100)}%`;
+}
+
+/**
+ * Builds and shows the "Run Model on Results" dialog: model picker (detectors
+ * only), conf/IoU sliders, candidate-count display with cap warnings, and a
+ * Run button that launches PreviewModelRelabelTask and switches the dialog to
+ * a poll/progress/cancel view until the task completes.
+ *
+ * @param {{bboxUuids: string[], imageUuids: string[]}} scope
+ * @param {Object} ctx - forwarded to `openRelabelConfirmationModal` (see its docs),
+ *   plus the fields `resolveCandidateScope` needs.
+ */
+async function _showRunDialog(scope, ctx) {
+  const { bboxUuids, imageUuids } = scope;
+
+  const { dialog, open, close } = createModalShell();
+  dialog.style.maxWidth = '520px';
+  dialog.classList.add('run-model-on-results-dialog');
+
+  const title = document.createElement('h3');
+  title.className = 'app-modal-title';
+  title.textContent = 'Run Model on Results';
+  dialog.appendChild(title);
+
+  const countLine = document.createElement('div');
+  countLine.textContent = `${bboxUuids.length.toLocaleString()} candidate bbox(es) across ${imageUuids.length.toLocaleString()} image(s).`;
+  dialog.appendChild(countLine);
+
+  // Hard-cap refusal happens in `runModelOnResultsFlow` before this dialog is
+  // ever shown (bboxUuids.length is guaranteed <= HARD_CAP here).
+  let confirmCheckbox = null;
+  if (bboxUuids.length > WARN_CAP) {
+    const warn = document.createElement('div');
+    warn.style.cssText = 'color:#e8a020;background:#e8a02015;border:1px solid #e8a02044;border-radius:4px;padding:0.5em 0.7em;';
+    warn.textContent = `⚠ This will run inference across ${bboxUuids.length.toLocaleString()} candidate bboxes — that's a lot. Confirm you want to proceed.`;
+    dialog.appendChild(warn);
+
+    const confirmRow = document.createElement('label');
+    confirmRow.style.cssText = 'display:flex;align-items:center;gap:0.5em;cursor:pointer;';
+    confirmCheckbox = document.createElement('input');
+    confirmCheckbox.type = 'checkbox';
+    confirmRow.append(confirmCheckbox, document.createTextNode('Yes, run anyway'));
+    dialog.appendChild(confirmRow);
+  }
+
+  // ── Model picker (detectors only) ──────────────────────────────────
+  const modelRow = document.createElement('div');
+  modelRow.style.cssText = 'display:flex;flex-direction:column;gap:0.3em;';
+  const modelLabel = document.createElement('div');
+  modelLabel.textContent = 'Detector model:';
+  modelLabel.style.cssText = 'font-size:0.85em;color:#aaa;';
+  const modelSelect = document.createElement('select');
+  modelRow.append(modelLabel, modelSelect);
+  dialog.appendChild(modelRow);
+
+  let detectors = [];
+  try {
+    const allModels = await fetchModelsList();
+    const kindMap = await fetchModelsKinds(allModels);
+    detectors = allModels.filter(m => {
+      const k = kindMap.get(m);
+      return k !== 'image_classifier' && k !== 'multi_label_classifier';
+    });
+  } catch (err) {
+    Logger.error('Failed to load models:', err);
+  }
+  if (detectors.length === 0) {
+    const opt = document.createElement('option');
+    opt.value = '';
+    opt.textContent = '(no detector models found)';
+    modelSelect.appendChild(opt);
+  } else {
+    for (const m of detectors) {
+      const opt = document.createElement('option');
+      opt.value = m;
+      opt.textContent = m;
+      modelSelect.appendChild(opt);
+    }
+  }
+
+  // ── Confidence + IoU sliders ─────────────────────────────────────────
+  let confThresh = 0.5;
+  let iouThresh = 0.5;
+
+  function makeSliderRow(labelText, initial, onChange) {
+    const row = document.createElement('div');
+    row.className = 'inference-conf-row';
+    const label = document.createElement('label');
+    label.className = 'inference-conf-label';
+    label.textContent = labelText;
+    const slider = document.createElement('input');
+    slider.type = 'range';
+    slider.min = '0';
+    slider.max = '1';
+    slider.step = '0.05';
+    slider.value = String(initial);
+    slider.className = 'inference-conf-slider';
+    const value = document.createElement('span');
+    value.className = 'inference-conf-value';
+    value.textContent = _fmtPct(initial);
+    slider.addEventListener('input', () => {
+      const v = parseFloat(slider.value);
+      value.textContent = _fmtPct(v);
+      onChange(v);
+    });
+    row.append(label, slider, value);
+    return row;
+  }
+
+  dialog.appendChild(makeSliderRow('Min confidence:', confThresh, (v) => { confThresh = v; }));
+  dialog.appendChild(makeSliderRow('Min IoU:', iouThresh, (v) => { iouThresh = v; }));
+
+  // ── Progress area (hidden until Run) ─────────────────────────────────
+  const progressWrap = document.createElement('div');
+  progressWrap.style.cssText = 'display:none;flex-direction:column;gap:0.4em;';
+  const progressLabel = document.createElement('div');
+  progressLabel.style.cssText = 'font-size:0.85em;color:#aaa;';
+  const progressBar = document.createElement('progress');
+  progressBar.max = 100;
+  progressBar.value = 0;
+  progressBar.style.width = '100%';
+  const progressCancelBtn = document.createElement('button');
+  progressCancelBtn.className = 'secondary';
+  progressCancelBtn.textContent = 'Cancel';
+  progressWrap.append(progressLabel, progressBar, progressCancelBtn);
+  dialog.appendChild(progressWrap);
+
+  // ── Buttons ───────────────────────────────────────────────────────────
+  const btnRow = document.createElement('div');
+  btnRow.style.cssText = 'display:flex;gap:0.5em;justify-content:flex-end;';
+  const runBtn = document.createElement('button');
+  runBtn.textContent = 'Run';
+  runBtn.disabled = detectors.length === 0;
+  const cancelBtn = document.createElement('button');
+  cancelBtn.className = 'secondary';
+  cancelBtn.textContent = 'Cancel';
+  cancelBtn.addEventListener('click', close);
+  btnRow.append(cancelBtn, runBtn);
+  dialog.appendChild(btnRow);
+
+  let taskUuid = null;
+  let pollTimer = null;
+  let cancelled = false;
+
+  function _stopPolling() {
+    if (pollTimer) { clearTimeout(pollTimer); pollTimer = null; }
+  }
+
+  progressCancelBtn.addEventListener('click', async () => {
+    cancelled = true;
+    progressCancelBtn.disabled = true;
+    _stopPolling();
+    if (taskUuid) {
+      try {
+        await cancelTasks({ taskUuids: [taskUuid] });
+        await deleteTasks({ taskUuids: [taskUuid] });
+      } catch (err) {
+        toast(`Failed to cancel task: ${err.message}`, 5000, 'error');
+      }
+    }
+    close();
+  });
+
+  runBtn.addEventListener('click', async () => {
+    if (!modelSelect.value) { toast('Please select a detector model', 3000, 'warning'); return; }
+    if (confirmCheckbox && !confirmCheckbox.checked) {
+      toast('Please confirm before running on this many candidates', 3000, 'warning');
+      return;
+    }
+
+    runBtn.disabled = true;
+    cancelBtn.disabled = true;
+    modelSelect.disabled = true;
+    progressWrap.style.display = 'flex';
+    progressLabel.textContent = `Starting… (0/${imageUuids.length} images)`;
+
+    const modelName = modelSelect.value;
+    const params = {
+      model_name: modelName,
+      conf_thresh: confThresh,
+      iou_thresh: iouThresh,
+      image_uuids: imageUuids,
+      bbox_uuids: bboxUuids,
+    };
+
+    try {
+      const configUuid = await createTaskConfig({
+        typename: 'PreviewModelRelabelTask',
+        name: `Run Model on Results: ${modelName}`,
+        params,
+        persistent: false,
+        isTemporary: true,
+      });
+      taskUuid = await startTask({ configUuid });
+
+      const finalInfo = await _pollUntilDone(taskUuid, imageUuids.length, (info) => {
+        if (cancelled) return;
+        const progress = info?.progress ?? 0;
+        const processed = Math.round((progress / 100) * imageUuids.length);
+        progressBar.value = progress;
+        progressLabel.textContent = `Processing… (${processed}/${imageUuids.length} images)`;
+      });
+
+      if (cancelled) return;
+
+      const status = finalInfo?.instance?.status;
+      if (status !== TaskStatus.COMPLETED) {
+        const msg = finalInfo?.instance?.errorMessage || `Task ended with status: ${status}`;
+        toast(`Run failed: ${msg}`, 5000, 'error');
+        await deleteTasks({ taskUuids: [taskUuid] }).catch(() => {});
+        return;
+      }
+
+      progressLabel.textContent = 'Fetching results…';
+      const resultsMap = await fetchTasksResult({ taskUuids: [taskUuid], cacheResults: false });
+      const result = resultsMap.get(taskUuid);
+      const candidates = result?.data?.candidates ?? [];
+
+      await deleteTasks({ taskUuids: [taskUuid] }).catch((e) => Logger.error('Cleanup failed', e));
+
+      close();
+      await openRelabelConfirmationModal(candidates, {
+        modelName,
+        confThresh,
+        iouThresh,
+        refresh: ctx.refresh,
+        labels: ctx.labels,
+      });
+    } catch (err) {
+      Logger.error('Run Model on Results failed:', err);
+      toast(`Run failed: ${err.message}`, 5000, 'error');
+      runBtn.disabled = false;
+      cancelBtn.disabled = false;
+      modelSelect.disabled = false;
+      progressWrap.style.display = 'none';
+    }
+  });
+
+  async function _pollUntilDone(uuid, totalImages, onUpdate) {
+    return new Promise((resolve, reject) => {
+      const _tick = async () => {
+        if (cancelled) { resolve(null); return; }
+        try {
+          const { tasks } = await fetchTasksStatus({ taskUuids: [uuid] });
+          const info = tasks?.[uuid];
+          if (info) onUpdate(info);
+          const status = info?.instance?.status;
+          if (status === TaskStatus.COMPLETED || status === TaskStatus.ERROR || status === TaskStatus.CANCELLED) {
+            resolve(info);
+            return;
+          }
+        } catch (err) {
+          reject(err);
+          return;
+        }
+        if (!cancelled) pollTimer = setTimeout(_tick, POLL_INTERVAL_MS);
+      };
+      _tick();
+    });
+  }
+
+  open();
+}
+
+/**
+ * Entry point wired to the review-browser toolbar button. Resolves the
+ * candidate scope from the current selection/filter state, enforces the
+ * hard/soft caps, and — if not hard-refused — opens the run dialog.
+ *
+ * @param {Object} ctx
+ * @param {Function|null} ctx.fetchImages - the panel's custom data-fetcher (null in full-filter mode).
+ * @param {Object|null} ctx.filterPanel - the panel's filter-panel instance (null in fetchImages mode).
+ * @param {'all'|'images'|'bboxes'} ctx.viewFilter
+ * @param {'bbox'|'image'|null} ctx.selectionKind
+ * @param {Set<string>} ctx.selected
+ * @param {Array<object>} ctx.visibleEntries
+ * @param {(bbox: object) => boolean|null} ctx.bboxFilterFn
+ * @param {Map<string, object>} ctx.labels
+ * @param {string} ctx.sortBy
+ * @param {string} ctx.sortOrder
+ * @param {() => void} ctx.refresh - reload the current review-panel page after apply (Chunk C).
+ */
+export async function runModelOnResultsFlow(ctx) {
+  let scope;
+  try {
+    scope = await resolveCandidateScope(ctx);
+  } catch (err) {
+    Logger.error('Failed to resolve candidate scope:', err);
+    toast(`Failed to resolve candidates: ${err.message}`, 5000, 'error');
+    return;
+  }
+
+  if (scope.bboxUuids.length === 0) {
+    toast('No candidate bboxes in the current selection/filter.', 4000, 'warning');
+    return;
+  }
+
+  if (scope.bboxUuids.length > HARD_CAP) {
+    toast(
+      `Too many candidates (${scope.bboxUuids.length.toLocaleString()} > ${HARD_CAP.toLocaleString()}). Narrow your filter or selection before running.`,
+      6000,
+      'error',
+    );
+    return;
+  }
+
+  await _showRunDialog(scope, ctx);
+}

@@ -46,6 +46,7 @@ import { createHoverPreview } from '/app-static/js/ui/thumbnailHoverPreview.js';
 import { createEntryView } from '/app-static/js/ui/entryView.js';
 import { reviewStateToDatasetForm, datasetFormToReviewState } from '/app-static/js/shared/filterUtils.js';
 import { openDissimilarGlobalModal } from '/app-static/js/ui/dissimilarSearch.js';
+import { runModelOnResultsFlow, makeBboxFilterPredicate } from '/app-static/js/app/review/runModelOnResults.js';
 
 
 const DEFAULT_PAGE_SIZE = 250;
@@ -274,6 +275,27 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
   bulkAllBtn.textContent = 'Apply to All';
   bulkAllBtn.disabled = true;
 
+  // Run Model on Results — proposes relabels for the current selection/filter
+  // scope by running a detector and matching detections to existing bboxes
+  // by IoU (see app/review/runModelOnResults.js). Enabled in both full-filter
+  // and custom-fetchImages modes; scope resolution happens on click.
+  const runModelBtn = document.createElement('button');
+  runModelBtn.className = 'review-toolbar__btn';
+  runModelBtn.textContent = 'Run Model on Results…';
+  runModelBtn.addEventListener('click', () => runModelOnResultsFlow({
+    fetchImages,
+    filterPanel,
+    viewFilter: _viewFilter,
+    selectionKind: _selectionKind,
+    selected: _selected,
+    visibleEntries: _visibleEntries,
+    bboxFilterFn,
+    labels,
+    sortBy: sortBySelect.value,
+    sortOrder: sortOrderSelect.value,
+    refresh: () => render(),
+  }));
+
   // Refresh
   const refreshBtn = document.createElement('button');
   refreshBtn.className = 'review-toolbar__btn';
@@ -328,7 +350,7 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
   const actionBar = document.createElement('div');
   actionBar.className = 'review-action-bar';
   actionBar.append(
-    makeToolbarGroup(selectAllLabel, bulkBtn, bulkAllBtn),
+    makeToolbarGroup(selectAllLabel, bulkBtn, bulkAllBtn, runModelBtn),
     makeToolbarGroup(prevBtn, pageInfo, nextBtn),
     makeToolbarGroup(statusMsg),
   );
@@ -1066,24 +1088,12 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
       }
 
       // Build _allEntries: for each image, one ImageEntry then its matching BboxEntries.
-      const showAll = (fetchImages && !bboxFilterFn) || fs?.showAllBboxes;
-      const tagSet = (fs && !showAll) ? new Set(fs.tagUuids) : null;
-      const activeLabelUuids = (fs?.labelUuids?.length > 0)
-        ? (fs.labelIncludeChildren
-            ? expandWithDescendants(fs.labelUuids, labels)
-            : new Set(fs.labelUuids))
-        : null;
+      // Shared with runModelOnResults.js's candidate-scope resolution so both
+      // agree on which bboxes "match" the current filter/bboxFilterFn.
+      const bboxMatches = makeBboxFilterPredicate({ fetchImagesMode: !!fetchImages, bboxFilterFn, fs, labels });
 
       for (const img of images) {
-        const matching = (img.bboxes || []).filter(b => {
-          // bboxFilterFn replaces the tag/showAll gate but the toolbar label filter
-          // still narrows on top of it, so both constraints compose correctly.
-          const baseMatch = bboxFilterFn
-            ? bboxFilterFn(b)
-            : showAll || (b.tags || []).some(t => tagSet.has(t.uuid));
-          const labelMatch = !activeLabelUuids || activeLabelUuids.has(b.labelUuid);
-          return baseMatch && labelMatch;
-        });
+        const matching = (img.bboxes || []).filter(bboxMatches);
         // Always add an image-level entry
         _allEntries.push({ kind: 'image', img });
         // Add bbox entries for each matching bbox
