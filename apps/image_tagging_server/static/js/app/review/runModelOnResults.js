@@ -15,7 +15,12 @@
  * and a one-line call into `runModelOnResultsFlow`.
  */
 
-import { fetchReviewQueue } from '/app-static/js/shared/api/review.js';
+import {
+  fetchReviewQueue,
+  getBboxThumbnailUrl,
+  bulkApplyBboxesByUuids,
+  invalidateBboxThumbnails,
+} from '/app-static/js/shared/api/review.js';
 import { fetchModelsList, fetchModelsKinds } from '/app-static/js/shared/api/models.js';
 import {
   createTaskConfig,
@@ -146,11 +151,26 @@ export async function resolveCandidateScope(ctx) {
 }
 
 /**
- * Placeholder integration point for Chunk C. Given the server's proposed
- * relabel candidates and the run context, Chunk C shows a confirmation modal
- * letting the user accept/reject each proposed relabel, applies the accepted
- * ones (e.g. via updateBbox / bulkApplyBboxesByUuids), and calls `ctx.refresh()`
- * so the review grid picks up the changes.
+ * Builds a colored `.label-chip` for a candidate row's current/proposed label.
+ * @param {?string} name
+ * @param {?string} uuid
+ * @param {Map<string, object>} labels
+ * @returns {HTMLSpanElement}
+ */
+function _labelChip(name, uuid, labels) {
+  const chip = document.createElement('span');
+  chip.className = 'label-chip relabel-modal-chip';
+  chip.textContent = name ?? '(none)';
+  const color = (uuid && labels.get(uuid)?.color) || '#888';
+  chip.style.cssText = `background:${color}33;border:1px solid ${color};color:${color};`;
+  return chip;
+}
+
+/**
+ * Confirmation modal for "Run Model on Results" (Chunk C). Lets the user
+ * review the server's proposed relabels, pick relabel-vs-delete, check/uncheck
+ * individual candidates, and apply the result via `bulkApplyBboxesByUuids`
+ * (grouped by proposed label for the relabel case, one call for delete).
  *
  * @param {Array<{bboxUuid: string, imageUuid: string, imagePath: string,
  *   currentLabelUuid: ?string, currentLabelName: ?string, proposedLabelUuid: string,
@@ -163,8 +183,221 @@ export async function resolveCandidateScope(ctx) {
  * @param {Map<string, object>} ctx.labels - label lookup, for display.
  */
 export async function openRelabelConfirmationModal(candidates, ctx) {
-  // TODO(Chunk C): replace with the real confirm/apply modal.
-  toast(`${candidates.length} candidates`, 4000);
+  const { dialog, open, close } = createModalShell();
+  dialog.style.maxWidth = '900px';
+  dialog.style.width = '90vw';
+  dialog.classList.add('relabel-confirm-modal');
+
+  const sorted = [...candidates].sort((a, b) => (b.confidence ?? 0) - (a.confidence ?? 0));
+
+  const title = document.createElement('h3');
+  title.className = 'app-modal-title';
+  title.textContent = sorted.length === 0
+    ? `No relabel candidates from ${ctx.modelName}`
+    : `${sorted.length} relabel candidate${sorted.length === 1 ? '' : 's'} from ${ctx.modelName}`;
+  dialog.appendChild(title);
+
+  if (sorted.length === 0) {
+    const empty = document.createElement('div');
+    empty.className = 'relabel-modal-empty';
+    empty.textContent = 'No candidates above threshold.';
+    dialog.appendChild(empty);
+
+    const footer = document.createElement('div');
+    footer.className = 'classify-modal-footer';
+    const closeBtn = document.createElement('button');
+    closeBtn.className = 'secondary';
+    closeBtn.textContent = 'Close';
+    closeBtn.addEventListener('click', close);
+    footer.appendChild(closeBtn);
+    dialog.appendChild(footer);
+
+    open();
+    return;
+  }
+
+  // ── Action selector: Relabel to proposed vs Delete ────────────────────
+  const actionRow = document.createElement('div');
+  actionRow.className = 'relabel-modal-action-row';
+  actionRow.style.cssText = 'display:flex;gap:1em;align-items:center;';
+
+  const relabelLabel = document.createElement('label');
+  relabelLabel.style.cssText = 'display:flex;align-items:center;gap:0.3em;cursor:pointer;';
+  const relabelRadio = document.createElement('input');
+  relabelRadio.type = 'radio';
+  relabelRadio.name = 'relabel-modal-action';
+  relabelRadio.value = 'relabel';
+  relabelRadio.checked = true;
+  relabelLabel.append(relabelRadio, document.createTextNode('Relabel to proposed'));
+
+  const deleteLabel = document.createElement('label');
+  deleteLabel.style.cssText = 'display:flex;align-items:center;gap:0.3em;cursor:pointer;';
+  const deleteRadio = document.createElement('input');
+  deleteRadio.type = 'radio';
+  deleteRadio.name = 'relabel-modal-action';
+  deleteRadio.value = 'delete';
+  deleteLabel.append(deleteRadio, document.createTextNode('Delete'));
+
+  actionRow.append(relabelLabel, deleteLabel);
+  dialog.appendChild(actionRow);
+
+  // ── Bulk select controls ───────────────────────────────────────────────
+  const bulkRow = document.createElement('div');
+  bulkRow.className = 'relabel-modal-bulk-row';
+  bulkRow.style.cssText = 'display:flex;gap:0.5em;';
+  const selectAllBtn = document.createElement('button');
+  selectAllBtn.className = 'secondary';
+  selectAllBtn.textContent = 'Select all';
+  const selectNoneBtn = document.createElement('button');
+  selectNoneBtn.className = 'secondary';
+  selectNoneBtn.textContent = 'Select none';
+  bulkRow.append(selectAllBtn, selectNoneBtn);
+  dialog.appendChild(bulkRow);
+
+  // ── Candidate grid ──────────────────────────────────────────────────────
+  const grid = document.createElement('div');
+  grid.className = 'relabel-modal-grid review-grid';
+  dialog.appendChild(grid);
+
+  /** @type {Array<{candidate: object, checkbox: HTMLInputElement, proposedChip: HTMLElement}>} */
+  const rows = [];
+
+  for (const candidate of sorted) {
+    const card = document.createElement('div');
+    card.className = 'review-card relabel-modal-card';
+
+    const checkbox = document.createElement('input');
+    checkbox.type = 'checkbox';
+    checkbox.checked = true;
+    checkbox.addEventListener('change', _updateApplyBtn);
+    card.appendChild(checkbox);
+
+    const thumb = document.createElement('img');
+    thumb.className = 'thumb';
+    thumb.loading = 'lazy';
+    thumb.src = getBboxThumbnailUrl(candidate.imagePath, candidate.bboxUuid, 300);
+    card.appendChild(thumb);
+
+    const info = document.createElement('div');
+    info.className = 'card-info';
+
+    const labelsRow = document.createElement('div');
+    labelsRow.className = 'relabel-modal-labels-row';
+    labelsRow.style.cssText = 'display:flex;align-items:center;gap:0.4em;flex-wrap:wrap;';
+    const currentChip = _labelChip(candidate.currentLabelName, candidate.currentLabelUuid, ctx.labels);
+    const arrow = document.createElement('span');
+    arrow.textContent = '→';
+    const proposedChip = _labelChip(candidate.proposedLabelName, candidate.proposedLabelUuid, ctx.labels);
+    proposedChip.classList.add('relabel-modal-proposed-chip');
+    labelsRow.append(currentChip, arrow, proposedChip);
+    info.appendChild(labelsRow);
+
+    const pct = Math.round((candidate.confidence ?? 0) * 100);
+    const barWrap = document.createElement('div');
+    barWrap.className = 'classify-modal-bar-wrap';
+    const bar = document.createElement('div');
+    bar.className = 'classify-modal-bar';
+    bar.style.width = `${pct}%`;
+    bar.style.background = 'var(--pico-primary)';
+    barWrap.appendChild(bar);
+    const pctSpan = document.createElement('span');
+    pctSpan.className = 'classify-modal-pct';
+    pctSpan.textContent = `${pct}%`;
+    const confRow = document.createElement('div');
+    confRow.style.cssText = 'display:flex;align-items:center;gap:0.4em;';
+    confRow.append(barWrap, pctSpan);
+    info.appendChild(confRow);
+
+    card.appendChild(info);
+    grid.appendChild(card);
+    rows.push({ candidate, checkbox, proposedChip });
+  }
+
+  function _setDeleteMode(isDelete) {
+    for (const r of rows) {
+      r.proposedChip.style.opacity = isDelete ? '0.35' : '1';
+    }
+  }
+  relabelRadio.addEventListener('change', () => _setDeleteMode(false));
+  deleteRadio.addEventListener('change', () => _setDeleteMode(true));
+
+  selectAllBtn.addEventListener('click', () => {
+    for (const r of rows) r.checkbox.checked = true;
+    _updateApplyBtn();
+  });
+  selectNoneBtn.addEventListener('click', () => {
+    for (const r of rows) r.checkbox.checked = false;
+    _updateApplyBtn();
+  });
+
+  // ── Footer ────────────────────────────────────────────────────────────
+  const footer = document.createElement('div');
+  footer.className = 'classify-modal-footer';
+  footer.style.cssText = 'display:flex;gap:0.5em;justify-content:flex-end;';
+
+  const applyBtn = document.createElement('button');
+  const cancelBtn = document.createElement('button');
+  cancelBtn.className = 'secondary';
+  cancelBtn.textContent = 'Cancel';
+  cancelBtn.addEventListener('click', close);
+  footer.append(cancelBtn, applyBtn);
+  dialog.appendChild(footer);
+
+  function _updateApplyBtn() {
+    const n = rows.filter(r => r.checkbox.checked).length;
+    applyBtn.textContent = `Apply to ${n} checked`;
+    applyBtn.disabled = n === 0;
+  }
+  _updateApplyBtn();
+
+  applyBtn.addEventListener('click', async () => {
+    const checkedRows = rows.filter(r => r.checkbox.checked);
+    if (checkedRows.length === 0) return;
+
+    applyBtn.disabled = true;
+    cancelBtn.disabled = true;
+    try {
+      const isDelete = deleteRadio.checked;
+      const affected = checkedRows.map(r => r.candidate.bboxUuid);
+      let modifiedCount = 0;
+      let failCount = 0;
+
+      if (isDelete) {
+        const res = await bulkApplyBboxesByUuids({ bboxUuids: affected, action: 'delete' });
+        modifiedCount += res.modifiedCount;
+        failCount += res.failCount;
+      } else {
+        const groups = new Map();
+        for (const r of checkedRows) {
+          const key = r.candidate.proposedLabelUuid;
+          if (!groups.has(key)) groups.set(key, []);
+          groups.get(key).push(r.candidate.bboxUuid);
+        }
+        for (const [labelUuid, bboxUuids] of groups) {
+          const res = await bulkApplyBboxesByUuids({ bboxUuids, action: 'relabel', labelUuid });
+          modifiedCount += res.modifiedCount;
+          failCount += res.failCount;
+        }
+      }
+
+      await invalidateBboxThumbnails(affected).catch((err) => Logger.error('invalidateBboxThumbnails failed:', err));
+
+      const summary = failCount > 0
+        ? `Applied to ${modifiedCount} bbox(es), ${failCount} failed`
+        : `Applied to ${modifiedCount} bbox(es)`;
+      toast(summary, 4000, failCount > 0 ? 'warning' : 'success');
+
+      close();
+      ctx.refresh?.();
+    } catch (err) {
+      Logger.error('Failed to apply relabel candidates:', err);
+      toast(`Apply failed: ${err.message}`, 5000, 'error');
+      applyBtn.disabled = false;
+      cancelBtn.disabled = false;
+    }
+  });
+
+  open();
 }
 
 function _fmtPct(x) {

@@ -1,16 +1,13 @@
 """
 Tests for app/review/runModelOnResults.js — the "Run Model on Results" button,
-scope resolution, run dialog, and task launch/poll/cancel plumbing (Chunk B).
-
-Chunk B's job ends at "task completed, candidates fetched" — it hands the
-result off to `openRelabelConfirmationModal`, a placeholder stubbed to toast
-"${candidates.length} candidates" until Chunk C replaces it. These tests
-assert up to that handoff.
+scope resolution, run dialog, task launch/poll/cancel plumbing (Chunk B), and
+the relabel-confirmation modal + apply (Chunk C).
 
 Because the Playwright `live_server` proxies are static mocks with no DB, the
 task endpoints (configs/create, instances/start, instances/get, instances/result)
 are mocked directly via page.route() with a fake task that "completes" after a
-couple of status polls.
+couple of status polls. Bbox thumbnails, bulk-apply-by-uuids, and the thumbnail
+invalidation endpoint are likewise mocked (no real DB/detector behind them).
 
 Run with:
     docker compose --profile dev run --rm --no-deps -w /project whiskerwatcher-dev \
@@ -99,6 +96,44 @@ def _mock_models(page: Page, detector_names: list, classifier_names: list = None
             body=json.dumps({"status": "success", "modelKind": kind}),
         )
     page.route("**/api/models/*/meta", handle_meta)
+
+
+_TINY_PNG = (
+    b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00"
+    b"\x1f\x15\xc4\x89\x00\x00\x00\nIDATx\x9cc\x00\x01\x00\x00\x05\x00\x01\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82"
+)
+
+
+def _mock_thumbnails(page: Page):
+    page.route(
+        "**/bbox/*/thumbnail*",
+        lambda route: route.fulfill(status=200, content_type="image/png", body=_TINY_PNG),
+    )
+
+
+def _mock_bulk_apply_by_uuids(page: Page, modified_count=None, fail_count=0):
+    calls = []
+
+    def handle(route: Route):
+        body = json.loads(route.request.post_data or "{}")
+        calls.append(body)
+        mc = modified_count if modified_count is not None else len(body.get("bboxUuids", []))
+        route.fulfill(
+            status=200, content_type="application/json",
+            body=json.dumps({"status": "success", "modifiedCount": mc, "failCount": fail_count}),
+        )
+    page.route("**/api/images/bbox/bulk-apply-by-uuids", handle)
+    return calls
+
+
+def _mock_invalidate_thumbnails(page: Page):
+    calls = []
+
+    def handle(route: Route):
+        calls.append(json.loads(route.request.post_data or "{}"))
+        route.fulfill(status=200, content_type="application/json", body=json.dumps({"status": "success"}))
+    page.route("**/api/images/bbox/thumbnails/invalidate", handle)
+    return calls
 
 
 class _FakeTask:
@@ -254,6 +289,7 @@ class TestRunModelFullFlow:
         _mock_labels(page, [LABEL_CAT, LABEL_DOG])
         _mock_tags(page, [UNVERIFIED_TAG])
         _mock_models(page, ["yolo9-detector"])
+        _mock_thumbnails(page)
         fake_task = _FakeTask()
         fake_task.install(page, CANDIDATES)
 
@@ -266,7 +302,10 @@ class TestRunModelFullFlow:
         dialog.locator("button", has_text="Run").click()
 
         # Poll loop runs on a ~700ms interval; give it a couple of rounds.
-        expect(page.locator("#toast-container")).to_contain_text("2 candidates", timeout=5000)
+        # Handoff lands in the Chunk-C confirmation modal.
+        confirm_modal = page.locator(".relabel-confirm-modal")
+        expect(confirm_modal).to_be_visible(timeout=5000)
+        expect(confirm_modal).to_contain_text("2 relabel candidates from yolo9-detector")
 
         assert len(fake_task.create_bodies) == 1
         body = fake_task.create_bodies[0]
@@ -280,7 +319,7 @@ class TestRunModelFullFlow:
         assert sorted(params["bbox_uuids"]) == ["bbox-1", "bbox-2"]
         assert sorted(params["image_uuids"]) == ["img-1", "img-2"]
 
-        # Dialog closed after handoff.
+        # Run dialog closed after handoff (confirmation modal took over).
         expect(dialog).to_have_count(0)
 
     def test_cancel_stops_polling_and_closes_dialog(self, page: Page, base_url: str):
@@ -408,3 +447,164 @@ class TestRunModelCaps:
         page.wait_for_timeout(200)
         expect(page.locator("#toast-container")).to_contain_text("confirm")
         expect(dialog).to_be_visible()
+
+
+# ---------------------------------------------------------------------------
+# Chunk C: the relabel-confirmation modal + apply
+# ---------------------------------------------------------------------------
+
+# Three candidates across two images, deliberately *not* pre-sorted by
+# confidence, with two candidates sharing a proposed label (lbl-dog) so
+# grouping-by-proposed-label is exercised.
+CANDIDATES_MIXED = [
+    {
+        "bboxUuid": "bbox-1", "imageUuid": "img-1", "imagePath": "folder/image1.jpg",
+        "currentLabelUuid": "lbl-cat", "currentLabelName": "Cat",
+        "proposedLabelUuid": "lbl-dog", "proposedLabelName": "Dog", "confidence": 0.55,
+    },
+    {
+        "bboxUuid": "bbox-2", "imageUuid": "img-2", "imagePath": "folder/image2.jpg",
+        "currentLabelUuid": "lbl-dog", "currentLabelName": "Dog",
+        "proposedLabelUuid": "lbl-cat", "proposedLabelName": "Cat", "confidence": 0.91,
+    },
+    {
+        "bboxUuid": "bbox-3", "imageUuid": "img-1", "imagePath": "folder/image1.jpg",
+        "currentLabelUuid": "lbl-cat", "currentLabelName": "Cat",
+        "proposedLabelUuid": "lbl-dog", "proposedLabelName": "Dog", "confidence": 0.70,
+    },
+]
+
+
+def _open_confirm_modal(page: Page, candidates: list, model_name: str = "yolo9-detector"):
+    """Drives straight into `openRelabelConfirmationModal`, bypassing the run
+    dialog/task-poll plumbing that Chunk B already covers. Stashes a
+    `window.__refreshCount` counter incremented by `ctx.refresh`."""
+    page.evaluate(
+        """async ([candidates, modelName]) => {
+            const { openRelabelConfirmationModal } = await import('/app-static/js/app/review/runModelOnResults.js');
+            window.__refreshCount = 0;
+            const labels = new Map([
+                ['lbl-cat', { uuid: 'lbl-cat', name: 'Cat', color: '#ff0000' }],
+                ['lbl-dog', { uuid: 'lbl-dog', name: 'Dog', color: '#00ff00' }],
+            ]);
+            window.__confirmModalPromise = openRelabelConfirmationModal(candidates, {
+                modelName,
+                confThresh: 0.5,
+                iouThresh: 0.5,
+                refresh: () => { window.__refreshCount++; },
+                labels,
+            });
+        }""",
+        [candidates, model_name],
+    )
+
+
+class TestRelabelConfirmationModal:
+    def _setup(self, page: Page, base_url: str):
+        _mock_review_queue(page, PAGE_1_IMAGES)
+        _mock_labels(page, [LABEL_CAT, LABEL_DOG])
+        _mock_tags(page, [UNVERIFIED_TAG])
+        _mock_thumbnails(page)
+        _navigate_to_review(page, base_url)
+
+    def test_cards_rendered_sorted_by_confidence_desc(self, page: Page, base_url: str):
+        self._setup(page, base_url)
+        _open_confirm_modal(page, CANDIDATES_MIXED)
+
+        modal = page.locator(".relabel-confirm-modal")
+        expect(modal).to_be_visible()
+        expect(modal).to_contain_text("3 relabel candidates from yolo9-detector")
+
+        cards = modal.locator(".relabel-modal-card")
+        expect(cards).to_have_count(3)
+        # Sorted desc by confidence: bbox-2 (91%), bbox-3 (70%), bbox-1 (55%).
+        expect(cards.nth(0)).to_contain_text("91%")
+        expect(cards.nth(1)).to_contain_text("70%")
+        expect(cards.nth(2)).to_contain_text("55%")
+
+    def test_uncheck_row_reduces_apply_count(self, page: Page, base_url: str):
+        self._setup(page, base_url)
+        _open_confirm_modal(page, CANDIDATES_MIXED)
+
+        modal = page.locator(".relabel-confirm-modal")
+        apply_btn = modal.locator("button", has_text="Apply to")
+        expect(apply_btn).to_contain_text("Apply to 3 checked")
+
+        modal.locator(".relabel-modal-card").nth(0).locator("input[type=checkbox]").uncheck()
+        expect(apply_btn).to_contain_text("Apply to 2 checked")
+
+    def test_select_none_disables_apply(self, page: Page, base_url: str):
+        self._setup(page, base_url)
+        _open_confirm_modal(page, CANDIDATES_MIXED)
+
+        modal = page.locator(".relabel-confirm-modal")
+        modal.locator("button", has_text="Select none").click()
+        apply_btn = modal.locator("button", has_text="Apply to")
+        expect(apply_btn).to_contain_text("Apply to 0 checked")
+        expect(apply_btn).to_be_disabled()
+
+    def test_delete_mode_greys_proposed_column_and_applies_delete(self, page: Page, base_url: str):
+        self._setup(page, base_url)
+        calls = _mock_bulk_apply_by_uuids(page)
+        invalidate_calls = _mock_invalidate_thumbnails(page)
+        _open_confirm_modal(page, CANDIDATES_MIXED)
+
+        modal = page.locator(".relabel-confirm-modal")
+        modal.locator("input[type=radio][value=delete]").check()
+        proposed_chip = modal.locator(".relabel-modal-proposed-chip").first
+        expect(proposed_chip).to_have_css("opacity", "0.35")
+
+        modal.locator("button", has_text="Apply to").click()
+        expect(modal).to_have_count(0, timeout=3000)
+
+        assert len(calls) == 1
+        assert calls[0]["action"] == "delete"
+        assert sorted(calls[0]["bboxUuids"]) == ["bbox-1", "bbox-2", "bbox-3"]
+        assert len(invalidate_calls) == 1
+        assert sorted(invalidate_calls[0]["bboxUuids"]) == ["bbox-1", "bbox-2", "bbox-3"]
+        assert page.evaluate("window.__refreshCount") == 1
+
+    def test_relabel_groups_by_proposed_label(self, page: Page, base_url: str):
+        self._setup(page, base_url)
+        calls = _mock_bulk_apply_by_uuids(page)
+        _mock_invalidate_thumbnails(page)
+        _open_confirm_modal(page, CANDIDATES_MIXED)
+
+        modal = page.locator(".relabel-confirm-modal")
+        modal.locator("button", has_text="Apply to").click()
+        expect(modal).to_have_count(0, timeout=3000)
+
+        # Two distinct proposed labels among the three checked candidates:
+        # lbl-dog (bbox-1, bbox-3) and lbl-cat (bbox-2) -> one call each.
+        assert len(calls) == 2
+        by_label = {c["labelUuid"]: sorted(c["bboxUuids"]) for c in calls}
+        assert by_label == {
+            "lbl-dog": ["bbox-1", "bbox-3"],
+            "lbl-cat": ["bbox-2"],
+        }
+        for c in calls:
+            assert c["action"] == "relabel"
+        assert page.evaluate("window.__refreshCount") == 1
+
+    def test_failcount_is_surfaced_without_crashing(self, page: Page, base_url: str):
+        self._setup(page, base_url)
+        _mock_bulk_apply_by_uuids(page, modified_count=1, fail_count=2)
+        _mock_invalidate_thumbnails(page)
+        _open_confirm_modal(page, CANDIDATES_MIXED)
+
+        modal = page.locator(".relabel-confirm-modal")
+        modal.locator("input[type=radio][value=delete]").check()
+        modal.locator("button", has_text="Apply to").click()
+
+        expect(modal).to_have_count(0, timeout=3000)
+        expect(page.locator("#toast-container")).to_contain_text("2 failed")
+        assert page.evaluate("window.__refreshCount") == 1
+
+    def test_empty_candidates_shows_empty_state(self, page: Page, base_url: str):
+        self._setup(page, base_url)
+        _open_confirm_modal(page, [])
+
+        modal = page.locator(".relabel-confirm-modal")
+        expect(modal).to_be_visible()
+        expect(modal).to_contain_text("No candidates above threshold")
+        expect(modal.locator(".relabel-modal-card")).to_have_count(0)
