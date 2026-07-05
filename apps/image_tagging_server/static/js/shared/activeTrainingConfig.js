@@ -9,9 +9,10 @@
  *   await activeTrainingConfig.init();
  *   activeTrainingConfig.getActive();          // TrainingConfigRead | null
  *   activeTrainingConfig.setActive(tc);        // publishes ACTIVE_TRAINING_CONFIG_CHANGED
- *   activeTrainingConfig.isFilterEnabled();
- *   activeTrainingConfig.setFilterEnabled(true);
+ *   activeTrainingConfig.getVisibilityMode();      // 'all' | 'focus' | 'filtered'
+ *   activeTrainingConfig.setVisibilityMode('focus');
  *   activeTrainingConfig.applyLabelFilter(labelsMap);
+ *   activeTrainingConfig.getExcludedUuids(labelsMap); // labels outside the active TC
  *   activeTrainingConfig.getCachedStats();     // { labelStats, totalImages } | null
  *   await activeTrainingConfig.refreshStats(); // fetches fresh stats + re-publishes
  */
@@ -23,9 +24,13 @@ import { fetchModelConfigs } from '/app-static/js/shared/api/modelConfigs.js';
 const SESSION_UUID_KEY = 'wtch_active_tc_uuid';
 const SESSION_FILTER_KEY = 'wtch_tc_filter_enabled';
 
+/** Visibility modes for the label list, in cycle order. */
+export const VISIBILITY_MODES = ['all', 'focus', 'filtered'];
+
 /** @type {object|null} TrainingConfigRead */
 let _config = null;
-let _filterEnabled = false;
+/** @type {'all'|'focus'|'filtered'} */
+let _visibilityMode = 'all';
 /** @type {Set<string>} Label UUIDs covered by this TC's model node */
 let _labelUuids = new Set();
 /** @type {{ labelStats: object[], totalImages: number } | null} */
@@ -74,7 +79,7 @@ async function _doFetchStats() {
 function _publish({ statsUpdated = false } = {}) {
   events.publish(EventTypes.ACTIVE_TRAINING_CONFIG_CHANGED, {
     config: _config,
-    filterEnabled: _filterEnabled,
+    visibilityMode: _visibilityMode,
     statsUpdated,
   });
 }
@@ -83,7 +88,11 @@ function _publish({ statsUpdated = false } = {}) {
 
 /** Initialise from sessionStorage. Call once at app startup before rendering. */
 export async function init() {
-  _filterEnabled = sessionStorage.getItem(SESSION_FILTER_KEY) === 'true';
+  const saved = sessionStorage.getItem(SESSION_FILTER_KEY);
+  // 'true'/'false' are legacy values from the old boolean filter toggle.
+  if (saved === 'true') _visibilityMode = 'filtered';
+  else if (VISIBILITY_MODES.includes(saved)) _visibilityMode = saved;
+  else _visibilityMode = 'all';
   const savedUuid = sessionStorage.getItem(SESSION_UUID_KEY);
   if (savedUuid) {
     try {
@@ -127,13 +136,14 @@ export async function setActive(tcOrNull) {
   }
 }
 
-/** @returns {boolean} */
-export function isFilterEnabled() { return _filterEnabled; }
+/** @returns {'all'|'focus'|'filtered'} */
+export function getVisibilityMode() { return _visibilityMode; }
 
-/** @param {boolean} enabled */
-export function setFilterEnabled(enabled) {
-  _filterEnabled = !!enabled;
-  sessionStorage.setItem(SESSION_FILTER_KEY, String(_filterEnabled));
+/** @param {'all'|'focus'|'filtered'} mode */
+export function setVisibilityMode(mode) {
+  if (!VISIBILITY_MODES.includes(mode)) return;
+  _visibilityMode = mode;
+  sessionStorage.setItem(SESSION_FILTER_KEY, _visibilityMode);
   _publish();
 }
 
@@ -158,16 +168,13 @@ export async function refreshStats() {
 export function getLabelUuids() { return _labelUuids; }
 
 /**
- * Filter a labelsMap to only labels covered by the active TC (plus ancestors).
- * Returns the original map when filtering is off or no TC is active.
+ * Labels covered by the active TC (plus ancestors, so the tree renders correctly).
+ * Returns null when there's nothing to compute against (no TC, or empty coverage).
  * @param {Map<string, object>} labelsMap
- * @returns {Map<string, object>}
+ * @returns {Set<string>|null}
  */
-export function applyLabelFilter(labelsMap) {
-  if (!_filterEnabled || !_config) return labelsMap;
-  if (_labelUuids.size === 0) return labelsMap;
-
-  // Expand with ancestors so the tree renders correctly
+function _computeDisplaySet(labelsMap) {
+  if (!_config || _labelUuids.size === 0) return null;
   const display = new Set(_labelUuids);
   for (const uuid of _labelUuids) {
     let label = labelsMap.get(uuid);
@@ -176,6 +183,19 @@ export function applyLabelFilter(labelsMap) {
       label = labelsMap.get(label.parentUuid);
     }
   }
+  return display;
+}
+
+/**
+ * Filter a labelsMap to only labels covered by the active TC (plus ancestors).
+ * Returns the original map unchanged unless visibility mode is 'filtered'.
+ * @param {Map<string, object>} labelsMap
+ * @returns {Map<string, object>}
+ */
+export function applyLabelFilter(labelsMap) {
+  if (_visibilityMode !== 'filtered') return labelsMap;
+  const display = _computeDisplaySet(labelsMap);
+  if (!display) return labelsMap;
 
   const filtered = new Map();
   for (const [uuid, label] of labelsMap) {
@@ -184,15 +204,33 @@ export function applyLabelFilter(labelsMap) {
   return filtered;
 }
 
+/**
+ * Labels NOT covered by the active TC — used in 'focus' mode to mark labels
+ * that stay visible but are excluded from "Mark all/Reset all" bulk ops.
+ * Empty when no TC is active or it covers everything.
+ * @param {Map<string, object>} labelsMap
+ * @returns {Set<string>}
+ */
+export function getExcludedUuids(labelsMap) {
+  const display = _computeDisplaySet(labelsMap);
+  if (!display) return new Set();
+  const excluded = new Set();
+  for (const uuid of labelsMap.keys()) {
+    if (!display.has(uuid)) excluded.add(uuid);
+  }
+  return excluded;
+}
+
 // Namespace export
 export const activeTrainingConfig = {
   init,
   getActive,
   setActive,
-  isFilterEnabled,
-  setFilterEnabled,
+  getVisibilityMode,
+  setVisibilityMode,
   getLabelUuids,
   applyLabelFilter,
+  getExcludedUuids,
   getCachedStats,
   refreshStats,
 };

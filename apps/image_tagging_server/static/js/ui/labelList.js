@@ -337,19 +337,67 @@ function computeDerivedPresent(bboxes) {
   return present;
 }
 
+const VISIBILITY_MODE_ICON = Object.freeze({
+  all: { icon: '👁', title: 'Show all labels (click to cycle) — no filtering' },
+  focus: { icon: '🎯', title: 'Show all, focus tagging (click to cycle) — labels outside this training run are excluded from Mark all/Reset all' },
+  filtered: { icon: '🚧', title: 'Filtered to training run (click to cycle) — labels outside it are hidden' },
+});
+const VISIBILITY_MODE_CYCLE = Object.freeze({ all: 'focus', focus: 'filtered', filtered: 'all' });
+
 async function mountSelectMode(container, { runtime, filter }) {
   Object.assign(container.style, { overflowY: 'auto', padding: '4px' });
 
   const header = document.createElement('div');
-  header.textContent = 'Labels';
   Object.assign(header.style, {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '6px',
+    padding: '4px 6px 6px',
+  });
+  const headerTitle = document.createElement('span');
+  headerTitle.textContent = 'Labels';
+  Object.assign(headerTitle.style, {
     fontWeight: 'bold',
     fontSize: '0.8em',
     textTransform: 'uppercase',
     letterSpacing: '0.05em',
-    padding: '4px 6px 6px',
     color: '#aaa',
   });
+  header.appendChild(headerTitle);
+
+  const refreshBtn = document.createElement('button');
+  refreshBtn.type = 'button';
+  refreshBtn.textContent = '↻';
+  refreshBtn.title = 'Refresh verified/unverified counts';
+  refreshBtn.style.cssText = 'background:none;border:none;cursor:pointer;padding:0 3px;font-size:1em;color:var(--pico-muted-color,#888);margin:0;';
+  refreshBtn.addEventListener('click', async () => {
+    refreshBtn.disabled = true;
+    try {
+      await activeTrainingConfig.refreshStats();
+    } finally {
+      refreshBtn.disabled = false;
+    }
+  });
+  header.appendChild(refreshBtn);
+
+  const tcForModeToggle = activeTrainingConfig.getActive();
+  if (tcForModeToggle) {
+    const modeBtn = document.createElement('button');
+    modeBtn.type = 'button';
+    modeBtn.style.cssText = 'background:none;border:none;cursor:pointer;padding:0 3px;font-size:1em;margin:0 0 0 auto;';
+    const applyModeBtnState = () => {
+      const mode = activeTrainingConfig.getVisibilityMode();
+      const info = VISIBILITY_MODE_ICON[mode];
+      modeBtn.textContent = info.icon;
+      modeBtn.title = info.title;
+    };
+    applyModeBtnState();
+    modeBtn.addEventListener('click', () => {
+      const next = VISIBILITY_MODE_CYCLE[activeTrainingConfig.getVisibilityMode()];
+      activeTrainingConfig.setVisibilityMode(next);
+    });
+    header.appendChild(modeBtn);
+  }
   container.appendChild(header);
 
   const bulkRow = document.createElement('div');
@@ -365,7 +413,11 @@ async function mountSelectMode(container, { runtime, filter }) {
   container.appendChild(bulkRow);
 
   const rawLabelsMap = await fetchLabels();
+  const visibilityMode = activeTrainingConfig.getVisibilityMode();
   const filteredMap = activeTrainingConfig.applyLabelFilter(rawLabelsMap);
+  const excludedUuids = visibilityMode === 'focus'
+    ? activeTrainingConfig.getExcludedUuids(rawLabelsMap)
+    : new Set();
   // Split by (scope, labelType): object-scope object labels / image-scope labels / dynamic labels.
   // Dynamic labels are always shown (no visibility toggle gate) so the user can mark present/absent.
   const regularMap = new Map([...filteredMap].filter(([, l]) => l.labelType !== 'dynamic' && l.scope !== 'image'));
@@ -373,6 +425,12 @@ async function mountSelectMode(container, { runtime, filter }) {
   const dynamicMap = new Map([...filteredMap].filter(([, l]) => l.labelType === 'dynamic'));
   const filterNotice = makeLabelFilterNotice(rawLabelsMap.size - regularMap.size - imageClassMap.size - dynamicMap.size);
   if (filterNotice) container.appendChild(filterNotice);
+  if (excludedUuids.size > 0) {
+    const focusNotice = document.createElement('span');
+    focusNotice.className = 'label-filter-notice';
+    focusNotice.textContent = `${excludedUuids.size} label(s) outside this training run are excluded from Mark all/Reset all (marked 🚫)`;
+    container.appendChild(focusNotice);
+  }
   const byParent = buildHierarchy(regularMap, filter);
   const byParentImageClass = buildHierarchy(imageClassMap, filter);
   const byParentDynamic = buildHierarchy(dynamicMap, filter);
@@ -422,6 +480,18 @@ async function mountSelectMode(container, { runtime, filter }) {
       const { row, nameEl } = buildLabelRow(label, indent);
       row.className = 'label-panel-row';
       row.style.cursor = 'pointer';
+
+      // Right-aligned row accessories: focus-mode exclusion marker + coverage badges.
+      const rightWrap = document.createElement('span');
+      rightWrap.style.cssText = 'margin-left:auto;display:flex;gap:3px;flex-shrink:0;align-items:center;';
+
+      if (excludedUuids.has(label.uuid)) {
+        const exclIcon = document.createElement('span');
+        exclIcon.textContent = '🚫';
+        exclIcon.title = 'Outside the active training run — not affected by Mark all/Reset all';
+        exclIcon.style.cssText = 'opacity:0.7;cursor:help;';
+        rightWrap.appendChild(exclIcon);
+      }
 
       // Mini coverage badges from active TC stats — [✓ verified] [⚠ unverified]
       const stat = _statsMap.get(label.uuid);
@@ -522,9 +592,9 @@ async function mountSelectMode(container, { runtime, filter }) {
           }
         }
 
-        // Build badge wrapper (pushed right via margin-left:auto)
+        // Badge wrapper (appended into the shared right-aligned rightWrap)
         const badgeWrap = document.createElement('span');
-        badgeWrap.style.cssText = 'margin-left:auto;display:flex;gap:3px;flex-shrink:0;align-items:center;';
+        badgeWrap.style.cssText = 'display:flex;gap:3px;flex-shrink:0;align-items:center;';
 
         // Verified badge (always shown)
         let verifiedText = `✓ ${ownVerified.toLocaleString()}`;
@@ -549,8 +619,10 @@ async function mountSelectMode(container, { runtime, filter }) {
           ));
         }
 
-        nameEl.after(badgeWrap);
+        rightWrap.appendChild(badgeWrap);
       }
+
+      if (rightWrap.childNodes.length > 0) nameEl.after(rightWrap);
 
       const btn = document.createElement('button');
       Object.assign(btn.style, {
@@ -622,12 +694,13 @@ async function mountSelectMode(container, { runtime, filter }) {
   let imageClassUuids = new Set();
 
   markAbsentBtn.addEventListener('click', () => bulkOp(
-    [...rowUpdaters.keys()].filter(uuid => !imageClassUuids.has(uuid) && effectiveStatus(uuid) !== 'present'),
+    [...rowUpdaters.keys()].filter(uuid =>
+      !imageClassUuids.has(uuid) && !excludedUuids.has(uuid) && effectiveStatus(uuid) !== 'present'),
     'absent',
   ));
 
   resetAllBtn.addEventListener('click', () => bulkOp(
-    [...serverStates.keys()].filter(uuid => !imageClassUuids.has(uuid)),
+    [...serverStates.keys()].filter(uuid => !imageClassUuids.has(uuid) && !excludedUuids.has(uuid)),
     'uncertain',
   ));
 
@@ -668,11 +741,11 @@ async function mountSelectMode(container, { runtime, filter }) {
     imageClassUuids = new Set([...rowUpdaters.keys()].filter(k => !keysBefore.has(k)));
 
     imgMarkAbsentBtn.addEventListener('click', () => bulkOp(
-      [...imageClassUuids].filter(uuid => effectiveStatus(uuid) !== 'present'),
+      [...imageClassUuids].filter(uuid => !excludedUuids.has(uuid) && effectiveStatus(uuid) !== 'present'),
       'absent',
     ));
     imgResetAllBtn.addEventListener('click', () => bulkOp(
-      [...imageClassUuids].filter(uuid => serverStates.has(uuid)),
+      [...imageClassUuids].filter(uuid => !excludedUuids.has(uuid) && serverStates.has(uuid)),
       'uncertain',
     ));
   }
@@ -752,6 +825,9 @@ async function mountSelectMode(container, { runtime, filter }) {
     runtime.id,
     EventTypes.CANVAS_ANNOTATIONS_SAVED,
     async () => {
+      // Verified/unverified counts may have changed (presence marks and/or bboxes) — refresh
+      // the cached coverage stats so badges elsewhere don't go stale until a manual refresh.
+      activeTrainingConfig.refreshStats();
       if (!currentImagePath || !pendingFlush.size) return;
       // Capture path and entries atomically; clear only after we know what succeeded.
       const pathAtSave = currentImagePath;

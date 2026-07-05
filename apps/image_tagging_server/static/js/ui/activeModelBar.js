@@ -68,6 +68,39 @@ export function mountActiveModelBar(containerId = 'active-model-bar') {
       return s;
     }
 
+    // Radio group for the label-visibility mode — each option carries a longer
+    // explanation than the compact icon toggle shown inline in the label list.
+    const VISIBILITY_MODE_INFO = [
+      { mode: 'all', title: 'Show all labels', desc: 'No filtering. Every label is visible and included in Mark all/Reset all.' },
+      { mode: 'focus', title: 'Show all, focus tagging', desc: 'Every label stays visible, but labels outside this training run are excluded from Mark all/Reset all (marked 🚫). Use this to focus on the active dataset while still being able to tag one-offs manually.' },
+      { mode: 'filtered', title: 'Filter to training run', desc: 'Labels outside this training run are hidden from the list entirely.' },
+    ];
+
+    function _makeRadioRow(name, checked, title, desc, onChange) {
+      const lbl = document.createElement('label');
+      lbl.style.cssText = 'display:flex;align-items:flex-start;gap:8px;padding:6px 14px;cursor:pointer;font-size:0.875em;user-select:none;';
+      lbl.addEventListener('mouseenter', () => lbl.style.background = 'var(--pico-primary-background,rgba(255,255,255,.07))');
+      lbl.addEventListener('mouseleave', () => lbl.style.background = '');
+      lbl.addEventListener('mousedown', e => e.stopPropagation());
+      const radio = document.createElement('input');
+      radio.type = 'radio';
+      radio.name = name;
+      radio.checked = checked;
+      radio.style.marginTop = '2px';
+      radio.addEventListener('change', () => { if (radio.checked) onChange(); });
+      const textWrap = document.createElement('span');
+      const titleEl = document.createElement('div');
+      titleEl.textContent = title;
+      const descEl = document.createElement('div');
+      descEl.style.cssText = 'font-size:0.85em;color:var(--pico-muted-color,#999);margin-top:1px;';
+      descEl.textContent = desc;
+      textWrap.appendChild(titleEl);
+      textWrap.appendChild(descEl);
+      lbl.appendChild(radio);
+      lbl.appendChild(textWrap);
+      return lbl;
+    }
+
     // ── Tags section ──────────────────────────────────────────────────────
     popup.appendChild(_makeSep('Tags'));
     popup.appendChild(_makeRow('Show system tags', activeModel.isTagKindVisible('system'),
@@ -80,8 +113,11 @@ export function mountActiveModelBar(containerId = 'active-model-bar') {
     popup.appendChild(_makeRow('Show dynamic labels', isDynamicLabelsVisible(),
       v => setDynamicLabelsVisible(v)));
     if (tc) {
-      popup.appendChild(_makeRow('Filter labels to training run', activeTrainingConfig.isFilterEnabled(),
-        v => activeTrainingConfig.setFilterEnabled(v)));
+      const currentMode = activeTrainingConfig.getVisibilityMode();
+      for (const { mode, title, desc } of VISIBILITY_MODE_INFO) {
+        popup.appendChild(_makeRadioRow('tc-visibility-mode', currentMode === mode, title, desc,
+          () => activeTrainingConfig.setVisibilityMode(mode)));
+      }
     }
 
     _visPopup = openAnchoredPopup(anchorEl, popup);
@@ -315,12 +351,15 @@ export function mountActiveModelBar(containerId = 'active-model-bar') {
       });
       left.appendChild(nameBtn);
 
-      // Filter toggle indicator
-      if (activeTrainingConfig.isFilterEnabled()) {
+      // Visibility mode indicator
+      const visMode = activeTrainingConfig.getVisibilityMode();
+      if (visMode !== 'all') {
         const filterBadge = document.createElement('span');
         filterBadge.className = 'active-model-bar__filter-badge';
-        filterBadge.textContent = 'filtered';
-        filterBadge.title = 'Label list is filtered to this training run';
+        filterBadge.textContent = visMode === 'filtered' ? 'filtered' : 'focus';
+        filterBadge.title = visMode === 'filtered'
+          ? 'Label list is filtered to this training run'
+          : 'Label list shows everything, but Mark all/Reset all skip labels outside this training run';
         left.appendChild(filterBadge);
       }
 

@@ -138,9 +138,9 @@ export const EventTypes = Object.freeze({
    */
   IMAGE_LABELS_CHANGED: "image:labels:changed",
   /**
-   * Fired when the active training config changes, the label-filter toggle changes,
+   * Fired when the active training config changes, the label visibility mode changes,
    * or coverage stats are freshly fetched.
-   * Payload: { config: TrainingConfigRead | null, filterEnabled: boolean, statsUpdated: boolean }
+   * Payload: { config: TrainingConfigRead | null, visibilityMode: 'all'|'focus'|'filtered', statsUpdated: boolean }
    */
   ACTIVE_TRAINING_CONFIG_CHANGED: "training-config:active:changed",
 });
