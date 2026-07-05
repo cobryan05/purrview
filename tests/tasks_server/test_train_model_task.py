@@ -125,16 +125,19 @@ class TestResolveBundleTargetFields:
 
     def test_returns_matching_target_role_and_labels(self):
         task = self._task()
-        target = MagicMock(node_uuid="node-1", role="submodel", label_uuids=["lbl-a", "lbl-b"])
-        other = MagicMock(node_uuid="node-other", role="top", label_uuids=["lbl-z"])
+        target = MagicMock(
+            node_uuid="node-1", role="submodel", label_uuids=["lbl-a", "lbl-b"], class_remap={"lbl-c": "lbl-a"}
+        )
+        other = MagicMock(node_uuid="node-other", role="top", label_uuids=["lbl-z"], class_remap={})
         mc_api = MagicMock()
         mc_api.get_model_config_training_targets.return_value = MagicMock(targets=[other, target])
 
-        role, label_uuids = task._resolve_bundle_target_fields(mc_api, "cfg-1", "node-1", "lbl-a")
+        role, label_uuids, class_remap = task._resolve_bundle_target_fields(mc_api, "cfg-1", "node-1", "lbl-a")
 
         mc_api.get_model_config_training_targets.assert_called_once_with("cfg-1")
         assert role == "submodel"
         assert label_uuids == ["lbl-a", "lbl-b"]
+        assert class_remap == {"lbl-c": "lbl-a"}
 
     def test_falls_back_when_node_not_a_bundle_target(self):
         """A node whose spec matches its inherited spec isn't its own boundary target —
@@ -143,30 +146,33 @@ class TestResolveBundleTargetFields:
         mc_api = MagicMock()
         mc_api.get_model_config_training_targets.return_value = MagicMock(targets=[])
 
-        role, label_uuids = task._resolve_bundle_target_fields(mc_api, "cfg-1", "node-1", "lbl-a")
+        role, label_uuids, class_remap = task._resolve_bundle_target_fields(mc_api, "cfg-1", "node-1", "lbl-a")
 
         assert role == "submodel"
         assert label_uuids == ["lbl-a"]
+        assert class_remap == {}
 
     def test_falls_back_to_top_role_for_root_node(self):
         task = self._task()
         mc_api = MagicMock()
         mc_api.get_model_config_training_targets.return_value = MagicMock(targets=[])
 
-        role, label_uuids = task._resolve_bundle_target_fields(mc_api, "cfg-1", "root-node", "")
+        role, label_uuids, class_remap = task._resolve_bundle_target_fields(mc_api, "cfg-1", "root-node", "")
 
         assert role == "top"
         assert label_uuids == []
+        assert class_remap == {}
 
     def test_swallows_lookup_errors_and_falls_back(self):
         task = self._task()
         mc_api = MagicMock()
         mc_api.get_model_config_training_targets.side_effect = RuntimeError("db_server unreachable")
 
-        role, label_uuids = task._resolve_bundle_target_fields(mc_api, "cfg-1", "node-1", "lbl-a")
+        role, label_uuids, class_remap = task._resolve_bundle_target_fields(mc_api, "cfg-1", "node-1", "lbl-a")
 
         assert role == "submodel"
         assert label_uuids == ["lbl-a"]
+        assert class_remap == {}
 
 
 class TestJobConfigBundleFields:
@@ -199,7 +205,7 @@ class TestJobConfigBundleFields:
         )
         mc_api = MagicMock()
         mc_api.get_model_config_node.return_value = node_data
-        target = MagicMock(node_uuid="node-1", role="submodel", label_uuids=["lbl-a"])
+        target = MagicMock(node_uuid="node-1", role="submodel", label_uuids=["lbl-a"], class_remap={})
         mc_api.get_model_config_training_targets.return_value = MagicMock(targets=[target])
 
         row = MagicMock(image_uuid="img-1", filename="a.jpg", status=MagicMock(value="present"))
@@ -254,12 +260,13 @@ class TestJobConfigBundleFields:
         task.log = MagicMock()
 
         img = MagicMock(image_uuid="img-1", filename="a.jpg", annotations=[])
-        tc_api = MagicMock()
-        tc_api.get_training_config_detection_dataset.return_value = MagicMock(class_names=["cat"], images=[img])
+        mc_api = MagicMock()
+        mc_api.get_bundle_target_detection_dataset.return_value = MagicMock(
+            status="success", class_names=["cat", "dog"], images=[img]
+        )
 
         _, _, job_config = task._resolve_object_detection(
-            training_config_uuid="tc-1",
-            tc_api=tc_api,
+            mc_api=mc_api,
             model_name="m1",
             architecture="yolo_v9_c",
             hyperparams={},
@@ -267,12 +274,20 @@ class TestJobConfigBundleFields:
             model_config_uuid="cfg-uuid",
             node_uuid="node-uuid",
             bundle_label_uuids=["lbl-a", "lbl-b"],
+            class_remap={},
+            dataset_uuids=["ds-1"],
         )
 
         assert job_config["role"] == "submodel"
         assert job_config["model_config_uuid"] == "cfg-uuid"
         assert job_config["model_config_node_uuid"] == "node-uuid"
         assert job_config["label_uuids"] == ["lbl-a", "lbl-b"]
+        mc_api.get_bundle_target_detection_dataset.assert_called_once()
+        call_args = mc_api.get_bundle_target_detection_dataset.call_args[0]
+        assert call_args[0] == "cfg-uuid"
+        assert call_args[1] == "node-uuid"
+        assert call_args[2].label_uuids == ["lbl-a", "lbl-b"]
+        assert call_args[2].dataset_uuids == ["ds-1"]
 
 
 class TestRun:

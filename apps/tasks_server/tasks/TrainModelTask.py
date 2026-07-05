@@ -26,6 +26,9 @@ from db_client.api.datasets_api import DatasetsApi
 from db_client.api.images_api import ImagesApi
 from db_client.api.model_configs_api import ModelConfigsApi
 from db_client.api.training_configs_api import TrainingConfigsApi
+from db_client.models.bundle_target_detection_dataset_payload import (
+    BundleTargetDetectionDatasetPayload,
+)
 
 from apps import APPS, APPS_CONFIG
 from apps.helpers.model_type_map import MODEL_TYPE_TO_TRAINER_TYPE
@@ -139,14 +142,15 @@ class TrainModelTask(Task, TrainingJobRunnerMixin):
         # backend's single authority (derive_bundle_training_targets) so trained
         # artifacts can self-describe their place in the model tree. Threaded into
         # every job_config below and from there into each trainer's sidecar.
-        role, bundle_label_uuids = self._resolve_bundle_target_fields(mc_api, model_config_uuid, node_uuid, label_uuid)
+        role, bundle_label_uuids, class_remap = self._resolve_bundle_target_fields(
+            mc_api, model_config_uuid, node_uuid, label_uuid
+        )
 
         # Object-detection nodes use a bbox-based dataset assembly; dispatch before the
         # image-label classifier paths below.
         if model_type == "object_detection":
             return self._resolve_object_detection(
-                training_config_uuid=training_config_uuid,
-                tc_api=tc_api,
+                mc_api=mc_api,
                 model_name=model_name,
                 architecture=architecture,
                 hyperparams=hyperparams,
@@ -154,6 +158,8 @@ class TrainModelTask(Task, TrainingJobRunnerMixin):
                 model_config_uuid=model_config_uuid,
                 node_uuid=node_uuid,
                 bundle_label_uuids=bundle_label_uuids,
+                class_remap=class_remap,
+                dataset_uuids=dataset_uuids,
             )
 
         # Get dataset image UUID set once (shared by both paths below).
@@ -205,9 +211,9 @@ class TrainModelTask(Task, TrainingJobRunnerMixin):
 
     def _resolve_bundle_target_fields(
         self, mc_api, model_config_uuid: str, node_uuid: str, label_uuid: str
-    ) -> tuple[str, list[str]]:
-        """Look up this node's role + in-scope label_uuids from the backend's single
-        source of truth (GET .../training-targets, backed by
+    ) -> tuple[str, list[str], dict[str, str]]:
+        """Look up this node's role + in-scope label_uuids (+ class_remap) from the
+        backend's single source of truth (GET .../training-targets, backed by
         DbClient.derive_bundle_training_targets).
 
         Falls back to a locally-derived role/label list if the node isn't a
@@ -228,10 +234,10 @@ class TrainModelTask(Task, TrainingJobRunnerMixin):
 
         for target in targets:
             if getattr(target, "node_uuid", None) == node_uuid:
-                return target.role, list(target.label_uuids or [])
+                return target.role, list(target.label_uuids or []), dict(target.class_remap or {})
 
         role = "top" if not label_uuid else "submodel"
-        return role, ([label_uuid] if label_uuid else [])
+        return role, ([label_uuid] if label_uuid else []), {}
 
     def _resolve_root_node(
         self,
@@ -294,8 +300,7 @@ class TrainModelTask(Task, TrainingJobRunnerMixin):
 
     def _resolve_object_detection(
         self,
-        training_config_uuid: str,
-        tc_api,
+        mc_api,
         model_name: str,
         architecture: str,
         hyperparams: dict,
@@ -303,22 +308,36 @@ class TrainModelTask(Task, TrainingJobRunnerMixin):
         model_config_uuid: str,
         node_uuid: str,
         bundle_label_uuids: list[str],
+        class_remap: dict[str, str],
+        dataset_uuids: list[str],
     ) -> tuple[str, list[dict], dict]:
         """Resolve an object_detection training config to a detection training job.
 
-        Calls the detection-dataset endpoint on db_server to assemble the bbox-based
-        dataset (class list + per-image annotations) and builds a manifest + job config
-        for the object_detection trainer.
+        Uses the same bundle-target detection-dataset endpoint (and the same
+        ``bundle_label_uuids`` ordering) as TrainBundleTask, so the class index
+        assigned to each label here is guaranteed to match the order the sidecar's
+        ``label_uuids`` are written in — the two must agree, or the label-matchup
+        UI pairs the wrong name with the wrong label UUID.
         """
-        result = tc_api.get_training_config_detection_dataset(training_config_uuid)
+        payload = BundleTargetDetectionDatasetPayload(
+            dataset_uuids=dataset_uuids,
+            label_uuids=bundle_label_uuids,
+            class_remap=class_remap,
+        )
+        result = mc_api.get_bundle_target_detection_dataset(model_config_uuid, node_uuid, payload)
+        if getattr(result, "status", None) != "success":
+            raise RuntimeError(
+                f"Could not assemble detection dataset for node={node_uuid!r}: "
+                f"{getattr(result, 'message', 'unknown error')}"
+            )
         # Result is a DetectionDatasetResponse (generated model).
         class_names = list(result.class_names or [])
         images = list(result.images or [])
 
         if not images:
             raise RuntimeError(
-                f"No eligible images found for object_detection training config "
-                f"{training_config_uuid!r}. Ensure images have verified bboxes in scope."
+                f"No eligible images found for object_detection node={node_uuid!r}. "
+                f"Ensure images have verified bboxes in scope."
             )
 
         manifest = [{"image_uuid": img.image_uuid, "filename": img.filename, "status": "present"} for img in images]
