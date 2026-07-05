@@ -224,7 +224,11 @@ def _find_redundant_bboxes(
         if not b_uuid or b_uuid in to_delete:
             continue
 
-        b_label = bbox.get("label_uuid")
+        # NOTE: these dicts come from batch_images_by_uuids, which serializes with
+        # by_alias=True (alias_generator=to_camel) — the JSON/dict key is "labelUuid",
+        # not "label_uuid". Reading the wrong key here always returns None, silently
+        # disabling all same-label/ancestor-label matching below (bug fixed in passing).
+        b_label = bbox.get("labelUuid")
         dominated = False
         to_supersede: list[int] = []
 
@@ -235,7 +239,7 @@ def _find_redundant_bboxes(
             if _iou(bbox, other) < iou_threshold:
                 continue
 
-            o_label = other.get("label_uuid")
+            o_label = other.get("labelUuid")
 
             if b_label is not None and b_label == o_label:
                 # Same label — first encountered wins
