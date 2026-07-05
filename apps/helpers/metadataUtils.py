@@ -65,12 +65,17 @@ def get_model_metadata(model_path: str, create_json_if_missing: bool = True) -> 
         metadata = {}
         onnx_metadata = get_onnx_metadata(model_path)
         description = onnx_metadata.get("description", "")
-        # Case insensitive check for Yolov7 or Yolov8 in description.
-        # If in description set yoloVer = 7 (or 8) as appropriate, else none
+        # Case insensitive check for Yolov7/Yolov8/YOLO11 in description (real
+        # ultralytics exports embed e.g. "Ultralytics YOLOv8x model trained on
+        # coco.yaml" / "Ultralytics YOLO11s model trained on ..."). YOLO11 uses
+        # the same Detect head and ONNX output layout as YOLOv8 — both are
+        # handled by ultralytics_yolov8 (see resolve_legacy_model_family) — so
+        # it's mapped to yolo version 8 rather than a separate number.
         yoloVer = 5
-        if "yolov7" in description.lower():
+        description_lower = description.lower()
+        if "yolov7" in description_lower:
             yoloVer = 7
-        elif "yolov8" in description.lower():
+        elif "yolov8" in description_lower or "yolo11" in description_lower or "yolov11" in description_lower:
             yoloVer = 8
         else:
             logger.warning(f"onnx metadata not explicit. Assuming YoloV5 for [{model_path}]")

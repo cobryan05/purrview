@@ -21,6 +21,19 @@ logger.setLevel(logging.DEBUG)
 INFERENCE_URL_SETTING_KEY = "inference_server_url"
 TRAINING_URL_SETTING_KEY = "training_server_url"
 
+# Service /status probes: a service that's simply busy (e.g. mid-inference or
+# mid-training-step) can take a while to answer its own health check. Rather
+# than flagging it "not responding" the moment the old short timeout elapses,
+# wait up to PROBE_HARD_TIMEOUT before giving up — but surface a non-alarming
+# "still waiting" notice once PROBE_SOFT_TIMEOUT passes, so the UI doesn't
+# look frozen while we wait.
+PROBE_SOFT_TIMEOUT = 3.0
+PROBE_HARD_TIMEOUT = 30.0
+# How long a poll waits inline for a freshly-started probe before falling back
+# to "checking"/"still waiting" — lets the common fast-success case resolve
+# within the same poll instead of always waiting for the next one.
+PROBE_INLINE_WAIT = 0.25
+
 
 class Manager:
     """Manages image tagging frontend"""
@@ -48,12 +61,17 @@ class Manager:
         self._inference_proxy = ReverseProxy(base_url=self._default_inference_url, path="/api/models")
         self._training_proxy = ReverseProxy(base_url=self._default_training_url, path="/api/training")
 
-        self._test_client = httpx.AsyncClient(timeout=5.0)
+        self._test_client = httpx.AsyncClient(timeout=PROBE_HARD_TIMEOUT)
 
         # Cache for aggregated service notices; refreshed at most every 5 seconds.
         self._notices_cache_ts: float = 0.0
         self._notices_cache: list[dict] = []
         self._NOTICES_CACHE_TTL: float = 5.0
+
+        # In-flight /status probes, keyed by service name, so a slow probe
+        # doesn't need to be re-issued (or block) on every poll — see _probe().
+        self._probe_tasks: Dict[str, asyncio.Task] = {}
+        self._probe_started_at: Dict[str, float] = {}
 
     async def start(self) -> None:
         """Load URL overrides from DB settings on startup."""
@@ -180,9 +198,19 @@ class Manager:
             # synthesize one here so it flows through that same pipeline.
             return {"key": f"{name}_unreachable", "level": "warning", "message": message}
 
-        async def _probe(name: str, base_url: str) -> dict:
+        def _waiting_notice(name: str) -> dict:
+            return {
+                "key": f"{name}_waiting",
+                "level": "info",
+                "message": f"Still waiting for {name}...",
+            }
+
+        async def _run_probe(name: str, base_url: str) -> dict:
+            """Issue the actual /status request. Runs to completion (success,
+            HTTP error, or PROBE_HARD_TIMEOUT) as a background task so a slow
+            service can't block other services' probes or the SSE loop."""
             try:
-                resp = await self._test_client.get(f"{base_url}/status", timeout=3.0)
+                resp = await self._test_client.get(f"{base_url}/status", timeout=PROBE_HARD_TIMEOUT)
                 if resp.status_code == 200:
                     data = resp.json()
                     data.setdefault("service", name)
@@ -201,6 +229,39 @@ class Manager:
                     "message": str(e),
                     "notices": [_unreachable_notice(name, f"{name} is not responding")],
                 }
+
+        async def _probe(name: str, base_url: str) -> dict:
+            task = self._probe_tasks.get(name)
+            if task is not None and task.done():
+                # Finished between polls (this poller runs every few seconds,
+                # so a probe can complete without ever being awaited again) —
+                # consume its result now rather than discarding it and
+                # starting a fresh probe/timer from scratch.
+                del self._probe_tasks[name]
+                return task.result()
+            if task is None:
+                task = asyncio.create_task(_run_probe(name, base_url))
+                self._probe_tasks[name] = task
+                self._probe_started_at[name] = time.monotonic()
+
+            # Give a freshly-started probe a brief window to resolve inline,
+            # so the common "everything is fine" case doesn't need to wait for
+            # a second poll cycle just to report success.
+            done, _pending = await asyncio.wait({task}, timeout=PROBE_INLINE_WAIT)
+            if task in done:
+                del self._probe_tasks[name]
+                return task.result()
+
+            elapsed = time.monotonic() - self._probe_started_at[name]
+            if elapsed >= PROBE_SOFT_TIMEOUT:
+                return {
+                    "service": name,
+                    "status": "waiting",
+                    "notices": [_waiting_notice(name)],
+                }
+            # Still under the soft threshold — no notice yet, avoid flapping
+            # the UI for probes that are merely a little slow.
+            return {"service": name, "status": "checking", "notices": []}
 
         return list(await asyncio.gather(*[_probe(name, url) for name, url in services]))
 

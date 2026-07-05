@@ -6,13 +6,17 @@ Covers:
   - `decode_detections` (apps/helpers/yoloUtils.py) — the family-agnostic NMS +
     rescale/clip tail shared by every provider.
   - Each provider's `_extract` — the family-specific raw-tensor decode:
-    - `UltralyticsYoloV8InferenceProvider._extract` — cxcywh boxes, raw logits
-      (real ultralytics YOLOv8 exports, yolo: 8).
+    - `UltralyticsYoloV8InferenceProvider._extract` — cxcywh boxes, scores
+      already sigmoid-activated by the exported graph (real ultralytics
+      YOLOv8/YOLO11 exports, yolo: 8).
     - `LibreYolo9InferenceProvider._extract` — xyxy boxes, pre-sigmoided scores
       (libreyolo9 exports, yolo: 9).
 
 Both layouts are (num_preds, 4 + nc): 4 box channels + nc class-score channels,
-with NO separate objectness channel.
+with NO separate objectness channel, and both are already sigmoid-activated —
+confirmed against real yolov8x.onnx/Yolo11S.onnx/libreyolo9 exports (see
+tests/helpers/test_yolo_sample_models.py, which runs the real ONNX fixtures
+end to end).
 """
 
 import numpy as np
@@ -25,11 +29,6 @@ from apps.helpers.inferenceProviders.ultralyticsYoloV8InferenceProvider import (
     UltralyticsYoloV8InferenceProvider,
 )
 from apps.helpers.yoloUtils import decode_detections
-
-
-def _logit(p: float) -> float:
-    """Inverse sigmoid — turn a desired post-sigmoid probability into a raw logit."""
-    return float(np.log(p / (1 - p)))
 
 
 def _extract_libreyolo9(preds: np.ndarray):
@@ -138,12 +137,13 @@ class TestExtractLibreYolo9Format:
 
 
 class TestExtractYolov8Format:
-    """UltralyticsYoloV8InferenceProvider._extract — cxcywh boxes, raw logits."""
+    """UltralyticsYoloV8InferenceProvider._extract — cxcywh boxes, scores
+    already sigmoid-activated by the exported graph."""
 
     def test_decodes_correct_box_and_class(self):
         # cx=150, cy=150, w=100, h=100 -> x1,y1,x2,y2 = 100,100,200,200
         preds = np.array(
-            [[150.0, 150.0, 100.0, 100.0, _logit(0.05), _logit(0.9)]],
+            [[150.0, 150.0, 100.0, 100.0, 0.05, 0.9]],
             dtype=np.float32,
         )
         boxes_xyxy, scores = _extract_yolov8(preds)
@@ -160,12 +160,12 @@ class TestExtractYolov8Format:
         x1, y1, x2, y2, confidence, class_id = dets[0]
         assert (x1, y1, x2, y2) == pytest.approx((100.0, 100.0, 200.0, 200.0), abs=1e-3)
         assert class_id == 1
-        assert confidence == pytest.approx(0.9, abs=1e-3)
+        assert confidence == pytest.approx(0.9, abs=1e-6)
 
     def test_class_zero_is_reachable(self):
         """class_id 0 must be selectable directly — no more '+1' shift downstream."""
         preds = np.array(
-            [[150.0, 150.0, 100.0, 100.0, _logit(0.9), _logit(0.05)]],
+            [[150.0, 150.0, 100.0, 100.0, 0.9, 0.05]],
             dtype=np.float32,
         )
         boxes_xyxy, scores = _extract_yolov8(preds)
@@ -185,6 +185,32 @@ class TestExtractYolov8Format:
         preds = np.zeros((1, 4), dtype=np.float32)
         with pytest.raises(ValueError):
             _extract_yolov8(preds)
+
+    def test_double_sigmoid_regression_would_fail(self):
+        """Guards against re-introducing a spurious extra sigmoid() call on
+
+        already-activated scores — that regression squashed every detection
+        toward ~0.5 confidence regardless of the model's actual prediction
+        (the "tons of boxes at 50% confidence" symptom for real YOLOv8/YOLO11
+        ONNX exports, whose Detect head already sigmoids class scores before
+        the graph returns).
+        """
+        preds = np.array(
+            [[150.0, 150.0, 100.0, 100.0, 0.02, 0.9]],
+            dtype=np.float32,
+        )
+        boxes_xyxy, scores = _extract_yolov8(preds)
+        dets = decode_detections(
+            boxes_xyxy,
+            scores,
+            conf_thresh=0.7,
+            iou_thresh=0.45,
+            scale=1.0,
+            pad=(0.0, 0.0),
+            original_shape=(640, 640),
+        )
+        assert len(dets) == 1
+        assert dets[0][4] == pytest.approx(0.9, abs=1e-6)
 
 
 class TestDecodeDetectionsNms:

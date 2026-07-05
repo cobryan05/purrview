@@ -15,7 +15,9 @@ provider construction (which would require a real ONNX session).
 
 import json
 
+import onnx
 import pytest
+from onnx import TensorProto, helper
 
 # Importing these triggers @register_inference_provider registration.
 import apps.helpers.inferenceProviders.libreYolo9InferenceProvider  # noqa: F401
@@ -27,7 +29,7 @@ from apps.helpers.inferenceProviders.Registry import inference_provider_registry
 from apps.helpers.inferenceProviders.ultralyticsYoloV8InferenceProvider import (
     UltralyticsYoloV8InferenceProvider,
 )
-from apps.helpers.metadataUtils import providers_for_device, resolve_legacy_model_family
+from apps.helpers.metadataUtils import get_model_metadata, providers_for_device, resolve_legacy_model_family
 from apps.helpers.yoloUtils import load_yolo_onnx
 
 
@@ -83,6 +85,52 @@ class TestLoadYoloOnnxDispatch:
         model_path = self._write_sidecar(tmp_path, "yolov7", {"yolo": 7, "classes": ["a"]})
         with pytest.raises(Exception, match="Unhandled model family 'ultralytics_yolov5'"):
             load_yolo_onnx(model_path)
+
+
+def _write_onnx_with_description(path, description: str) -> None:
+    """A minimal valid ONNX model whose only purpose is carrying a metadata
+    `description` string — mirrors what real ultralytics exports embed
+    (e.g. "Ultralytics YOLOv8x model trained on coco.yaml" /
+    "Ultralytics YOLO11s model trained on ...")."""
+    input_tensor = helper.make_tensor_value_info("x", TensorProto.FLOAT, [1])
+    output_tensor = helper.make_tensor_value_info("y", TensorProto.FLOAT, [1])
+    node = helper.make_node("Identity", inputs=["x"], outputs=["y"])
+    graph = helper.make_graph([node], "g", [input_tensor], [output_tensor])
+    model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 17)])
+    entry = model.metadata_props.add()
+    entry.key = "description"
+    entry.value = description
+    onnx.checker.check_model(model)
+    onnx.save(model, str(path))
+
+
+class TestGetModelMetadataYoloVersionSniffing:
+    """metadataUtils.get_model_metadata()'s description-string sniffing, run
+    against the real description format ultralytics embeds in its ONNX
+    exports (confirmed against actual yolov8x.onnx/Yolo11S.onnx files)."""
+
+    def test_yolov8_description_detected(self, tmp_path):
+        model_path = tmp_path / "m.onnx"
+        _write_onnx_with_description(model_path, "Ultralytics YOLOv8x model trained on coco.yaml")
+        metadata = get_model_metadata(str(model_path), create_json_if_missing=False)
+        assert metadata["yolo"] == 8
+
+    def test_yolo11_description_is_recognized_not_silently_misdetected(self, tmp_path):
+        """YOLO11 shares YOLOv8's Detect head/ONNX layout, so it's mapped to
+        yolo version 8 (same provider) rather than falling through to the
+        YoloV5 default — that default previously left YOLO11 models
+        undetected and only "working" by accident when a caller hardcoded
+        model_family: ultralytics_yolov8 in the sidecar."""
+        model_path = tmp_path / "m.onnx"
+        _write_onnx_with_description(model_path, "Ultralytics YOLO11s model trained on coco.yaml")
+        metadata = get_model_metadata(str(model_path), create_json_if_missing=False)
+        assert metadata["yolo"] == 8
+
+    def test_unrecognized_description_falls_back_to_yolov5(self, tmp_path):
+        model_path = tmp_path / "m.onnx"
+        _write_onnx_with_description(model_path, "some other export")
+        metadata = get_model_metadata(str(model_path), create_json_if_missing=False)
+        assert metadata["yolo"] == 5
 
 
 class TestProvidersForDevice:
