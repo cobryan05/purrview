@@ -727,7 +727,12 @@ class Manager:
         return modified_count, fail_count
 
     async def _apply_bbox_bulk_action(
-        self, bbox: BBox, action: str, label_uuid: Optional[str], tag_uuids: List[str]
+        self,
+        bbox: BBox,
+        action: str,
+        label_uuid: Optional[str],
+        tag_uuids: List[str],
+        geometry: Optional[Dict[str, float]] = None,
     ) -> None:
         """Apply one bulk action (relabel/delete/addTags/removeTags/revertRelabel) to a single bbox.
 
@@ -772,7 +777,9 @@ class Manager:
                     self._hash_index.move_bbox(bbox.uuid, bbox.label_uuid, label_uuid, bbox.phash)
             else:
                 new_tags = current_tags
-            await self._db_client.update_single_bbox(bbox.uuid, new_label, new_tags)
+            await self._db_client.update_single_bbox(
+                bbox.uuid, new_label, new_tags, geometry=geometry if assigning else None
+            )
 
     async def bulk_apply_bboxes_by_uuids(
         self,
@@ -780,6 +787,7 @@ class Manager:
         action: str,
         label_uuid: Optional[str],
         tag_uuids: List[str],
+        bbox_geometry: Optional[Dict[str, Dict[str, float]]] = None,
     ) -> Tuple[int, int]:
         """Apply action to an explicit list of bboxes in one server-side pass.
 
@@ -787,6 +795,12 @@ class Manager:
         equivalent (e.g. similarity/diversity search results ranked by phash
         distance) — the caller already knows the exact UUID list and only needs
         the action applied without round-tripping one HTTP call per bbox.
+
+        `bbox_geometry`, if given, maps bbox_uuid -> {"x","y","width","height"} —
+        used by "Run Model on Results" relabels to replace a bbox's coordinates
+        with the refinement model's suggested box instead of keeping the original
+        (the model that ran is assumed to be more precise than whatever produced
+        the original box).
 
         Returns (modified_count, fail_count).
         """
@@ -801,7 +815,8 @@ class Manager:
                 continue
             bbox, img = result
             try:
-                await self._apply_bbox_bulk_action(bbox, action, label_uuid, tag_uuids)
+                geometry = bbox_geometry.get(bbox_uuid) if bbox_geometry else None
+                await self._apply_bbox_bulk_action(bbox, action, label_uuid, tag_uuids, geometry=geometry)
                 modified_count += 1
                 synced_images[img.uuid] = img
             except Exception as e:

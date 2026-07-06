@@ -107,6 +107,9 @@ class BulkApplyBboxesByUuidsPayload(ApiPayload):
     action: str  # relabel | delete | addTags | removeTags | revertRelabel
     label_uuid: Optional[str] = None
     tag_uuids: List[str] = Field(default_factory=list)
+    # Optional bbox_uuid -> {"x","y","width","height"} overrides, applied on relabel
+    # (e.g. "Run Model on Results" replacing a bbox with a refinement model's box).
+    bbox_geometry: Optional[Dict[str, Dict[str, float]]] = None
 
 
 class BulkApplyImagesByUuidsPayload(ApiPayload):
@@ -1653,6 +1656,7 @@ class WebApp:
                     action=payload.action,
                     label_uuid=payload.label_uuid,
                     tag_uuids=payload.tag_uuids,
+                    bbox_geometry=payload.bbox_geometry,
                 )
                 return BulkApplyAllResponse(modified_count=modified_count, fail_count=fail_count)
             except Exception as e:

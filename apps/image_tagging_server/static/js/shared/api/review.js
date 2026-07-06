@@ -275,12 +275,17 @@ export async function bulkApplyAll({
  * Apply an action to an explicit list of bboxes in one server-side pass.
  * Used by candidate-list-driven modals (similarity/diversity search) that have
  * no server-side filter equivalent for their already-known result set.
+ *
+ * @param {Object} opts
+ * @param {?Record<string, {x: number, y: number, width: number, height: number}>}
+ *   [opts.bboxGeometry] - bboxUuid -> replacement coordinates, applied on relabel
+ *   (e.g. "Run Model on Results" swapping in a refinement model's suggested box).
  */
-export async function bulkApplyBboxesByUuids({ bboxUuids, action, labelUuid = null, tagUuids = [] }) {
+export async function bulkApplyBboxesByUuids({ bboxUuids, action, labelUuid = null, tagUuids = [], bboxGeometry = null }) {
   const res = await apiFetch('/api/images/bbox/bulk-apply-by-uuids', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ bboxUuids, action, labelUuid, tagUuids }),
+    body: JSON.stringify({ bboxUuids, action, labelUuid, tagUuids, bboxGeometry }),
   });
   const data = await res.json();
   if (!res.ok || data.status !== 'success') throw new Error(data.message || 'Bulk apply failed');

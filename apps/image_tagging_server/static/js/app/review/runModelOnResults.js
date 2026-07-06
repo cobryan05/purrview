@@ -173,7 +173,8 @@ function _labelChip(name, uuid, labels) {
  *
  * @param {Array<{bboxUuid: string, imageUuid: string, imagePath: string,
  *   currentLabelUuid: ?string, currentLabelName: ?string, proposedLabelUuid: string,
- *   proposedLabelName: ?string, confidence: number}>} candidates
+ *   proposedLabelName: ?string, confidence: number,
+ *   geometry: ?{x: number, y: number, width: number, height: number}}>} candidates
  * @param {Object} ctx
  * @param {string} ctx.modelName - detector used to generate the candidates.
  * @param {number} ctx.confThresh
@@ -186,14 +187,17 @@ function _labelChip(name, uuid, labels) {
  */
 export async function openRelabelConfirmationModal(candidates, ctx) {
   const { dialog, open, close } = createModalShell();
-  dialog.style.maxWidth = '900px';
-  dialog.style.width = '90vw';
+  // Reuses showReviewModal's layout pattern (apps/image_tagging_server/static/js/app/review/main.js):
+  // a max-height flex column with a fixed header/footer and a scrollable body,
+  // so a large candidate grid can't push the footer buttons off-screen.
+  dialog.style.cssText = 'max-width:900px;width:90vw;max-height:85vh;display:flex;flex-direction:column;';
   dialog.classList.add('relabel-confirm-modal');
 
   const sorted = [...candidates].sort((a, b) => (b.confidence ?? 0) - (a.confidence ?? 0));
 
   const title = document.createElement('h3');
   title.className = 'app-modal-title';
+  title.style.flexShrink = '0';
   title.textContent = sorted.length === 0
     ? `No relabel candidates from ${ctx.modelName}`
     : `${sorted.length} relabel candidate${sorted.length === 1 ? '' : 's'} from ${ctx.modelName}`;
@@ -225,6 +229,7 @@ export async function openRelabelConfirmationModal(candidates, ctx) {
 
     const footer = document.createElement('div');
     footer.className = 'classify-modal-footer';
+    footer.style.flexShrink = '0';
     const closeBtn = document.createElement('button');
     closeBtn.className = 'secondary';
     closeBtn.textContent = 'Close';
@@ -235,6 +240,11 @@ export async function openRelabelConfirmationModal(candidates, ctx) {
     open();
     return;
   }
+
+  // Scrollable body: everything between the fixed title and fixed footer.
+  const body = document.createElement('div');
+  body.style.cssText = 'flex:1;overflow-y:auto;min-height:0;';
+  dialog.appendChild(body);
 
   // ── Action selector: Relabel to proposed vs Delete ────────────────────
   const actionRow = document.createElement('div');
@@ -259,7 +269,7 @@ export async function openRelabelConfirmationModal(candidates, ctx) {
   deleteLabel.append(deleteRadio, document.createTextNode('Delete'));
 
   actionRow.append(relabelLabel, deleteLabel);
-  dialog.appendChild(actionRow);
+  body.appendChild(actionRow);
 
   // ── Bulk select controls ───────────────────────────────────────────────
   const bulkRow = document.createElement('div');
@@ -272,12 +282,12 @@ export async function openRelabelConfirmationModal(candidates, ctx) {
   selectNoneBtn.className = 'secondary';
   selectNoneBtn.textContent = 'Select none';
   bulkRow.append(selectAllBtn, selectNoneBtn);
-  dialog.appendChild(bulkRow);
+  body.appendChild(bulkRow);
 
   // ── Candidate grid ──────────────────────────────────────────────────────
   const grid = document.createElement('div');
   grid.className = 'relabel-modal-grid review-grid';
-  dialog.appendChild(grid);
+  body.appendChild(grid);
 
   /** @type {Array<{candidate: object, checkbox: HTMLInputElement, proposedChip: HTMLElement}>} */
   const rows = [];
@@ -353,7 +363,7 @@ export async function openRelabelConfirmationModal(candidates, ctx) {
   // ── Footer ────────────────────────────────────────────────────────────
   const footer = document.createElement('div');
   footer.className = 'classify-modal-footer';
-  footer.style.cssText = 'display:flex;gap:0.5em;justify-content:flex-end;';
+  footer.style.cssText = 'display:flex;gap:0.5em;justify-content:flex-end;flex-shrink:0;';
 
   const applyBtn = document.createElement('button');
   const cancelBtn = document.createElement('button');
@@ -391,10 +401,22 @@ export async function openRelabelConfirmationModal(candidates, ctx) {
         for (const r of checkedRows) {
           const key = r.candidate.proposedLabelUuid;
           if (!groups.has(key)) groups.set(key, []);
-          groups.get(key).push(r.candidate.bboxUuid);
+          groups.get(key).push(r.candidate);
         }
-        for (const [labelUuid, bboxUuids] of groups) {
-          const res = await bulkApplyBboxesByUuids({ bboxUuids, action: 'relabel', labelUuid });
+        for (const [labelUuid, groupCandidates] of groups) {
+          const bboxUuids = groupCandidates.map(c => c.bboxUuid);
+          // The model that just ran is assumed more precise than whatever produced
+          // the original box, so its suggested geometry (if any) replaces it.
+          const bboxGeometry = {};
+          for (const c of groupCandidates) {
+            if (c.geometry) bboxGeometry[c.bboxUuid] = c.geometry;
+          }
+          const res = await bulkApplyBboxesByUuids({
+            bboxUuids,
+            action: 'relabel',
+            labelUuid,
+            bboxGeometry: Object.keys(bboxGeometry).length > 0 ? bboxGeometry : null,
+          });
           modifiedCount += res.modifiedCount;
           failCount += res.failCount;
         }
@@ -438,13 +460,13 @@ async function _showRunDialog(scope, ctx) {
   const { bboxUuids, imageUuids } = scope;
 
   const { dialog, open, close } = createModalShell();
-  dialog.style.maxWidth = '520px';
+  dialog.style.cssText = 'max-width:520px;max-height:85vh;display:flex;flex-direction:column;overflow-y:auto;';
   dialog.classList.add('run-model-on-results-dialog');
 
   const title = document.createElement('h3');
   title.className = 'app-modal-title';
-  title.textContent = 'Run Model on Results';
   dialog.appendChild(title);
+  title.textContent = 'Run Model on Results';
 
   const countLine = document.createElement('div');
   countLine.textContent = `${bboxUuids.length.toLocaleString()} candidate bbox(es) across ${imageUuids.length.toLocaleString()} image(s).`;
@@ -455,9 +477,7 @@ async function _showRunDialog(scope, ctx) {
   // soft-confirmation step — a run over the hard cap's worth of candidates
   // still only takes a few seconds, so there's nothing worth gating on.
 
-  // ── Model + inference-input pickers, side by side so this doesn't grow the
-  // dialog's height (it's vertically centered with no scroll/max-height, so
-  // extra rows can push the footer buttons under the fixed #bottom-bars strip). ──
+  // ── Model + inference-input pickers, side by side to keep this compact ──
   const pickerRow = document.createElement('div');
   pickerRow.style.cssText = 'display:flex;gap:1em;';
   dialog.appendChild(pickerRow);

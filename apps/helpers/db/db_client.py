@@ -1281,6 +1281,7 @@ class DbClient:
         label_uuid: Optional[str],
         tag_uuids: List[str],
         metadata_json: Optional[Dict[str, Any]] = None,
+        geometry: Optional[Dict[str, float]] = None,
     ) -> None:
         """Update one bbox's label and replace its tag links in place.
 
@@ -1290,6 +1291,8 @@ class DbClient:
         exclusive-group conflict.
 
         `metadata_json`, if given (not None), fully replaces the bbox's metadata_json.
+        `geometry`, if given (not None), must have "x"/"y"/"width"/"height" keys and
+        replaces the bbox's coordinates (e.g. a refinement model's suggested box).
         """
         async with self._async_session_maker() as session:
             bbox = await session.get(BBox, bbox_uuid)
@@ -1299,6 +1302,11 @@ class DbClient:
                 bbox.label_uuid = label_uuid
             if metadata_json is not None:
                 bbox.metadata_json = metadata_json
+            if geometry is not None:
+                bbox.x = geometry["x"]
+                bbox.y = geometry["y"]
+                bbox.width = geometry["width"]
+                bbox.height = geometry["height"]
 
             # Resolve exclusive-group conflicts before writing.
             if tag_uuids:

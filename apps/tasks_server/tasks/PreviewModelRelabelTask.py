@@ -249,6 +249,7 @@ class PreviewModelRelabelTask(Task):
         label_names: Dict[str, str],
         best: Optional[Detection],
         best_label_uuid: Optional[str],
+        geometry: Optional[Dict[str, float]] = None,
     ) -> None:
         if best is None or best_label_uuid is None:
             self._no_detection_count += 1
@@ -267,6 +268,11 @@ class PreviewModelRelabelTask(Task):
                 "proposedLabelUuid": best_label_uuid,
                 "proposedLabelName": label_names.get(best_label_uuid),
                 "confidence": best.confidence,
+                # The refinement model's suggested box (image-relative x/y/width/height,
+                # or None if the caller didn't compute one) — the client applies this in
+                # place of the original box on relabel, assuming the model that matched
+                # is more precise than whatever produced the original.
+                "geometry": geometry,
             }
         )
 
@@ -313,7 +319,14 @@ class PreviewModelRelabelTask(Task):
                 if best is None or det.confidence > best.confidence:
                     best = det
                     best_label_uuid = label_uuid
-            self._maybe_add_candidate(bbox, image_uuid, filename, label_names, best, best_label_uuid)
+            # Whole-image detections already share the bbox's coordinate space
+            # (see module docstring), so the geometry needs no remapping.
+            geometry = (
+                {"x": best.x, "y": best.y, "width": best.width, "height": best.height}
+                if best is not None
+                else None
+            )
+            self._maybe_add_candidate(bbox, image_uuid, filename, label_names, best, best_label_uuid, geometry)
 
     async def _process_image_bbox_crop(
         self,
@@ -370,7 +383,18 @@ class PreviewModelRelabelTask(Task):
                 if best is None or det.confidence > best.confidence:
                     best = det
                     best_label_uuid = label_uuid
-            self._maybe_add_candidate(bbox, image_uuid, filename, label_names, best, best_label_uuid)
+            # The detector ran on the cropped bbox, so `best`'s coordinates are
+            # relative to the crop, not the full image — remap into the same
+            # image-relative space the bbox itself uses before proposing it.
+            geometry = None
+            if best is not None:
+                geometry = {
+                    "x": x + best.x * width,
+                    "y": y + best.y * height,
+                    "width": best.width * width,
+                    "height": best.height * height,
+                }
+            self._maybe_add_candidate(bbox, image_uuid, filename, label_names, best, best_label_uuid, geometry)
 
     @staticmethod
     def _crop_to_png_bytes(pil_image, box: tuple) -> bytes:
