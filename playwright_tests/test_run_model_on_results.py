@@ -145,7 +145,7 @@ class _FakeTask:
         self.create_bodies = []
         self.poll_count = 0
 
-    def install(self, page: Page, candidates: list):
+    def install(self, page: Page, candidates: list, stats: dict = None):
         def handle_create(route: Route):
             body = json.loads(route.request.post_data or "{}")
             self.create_bodies.append(body)
@@ -186,20 +186,22 @@ class _FakeTask:
         page.route("**/api/tasks/instances/get", handle_get)
 
         def handle_result(route: Route):
+            data = {
+                "images_processed": 2,
+                "bbox_count": len(candidates),
+                "candidate_count": len(candidates),
+                "candidates": candidates,
+                "images_failed": 0,
+                "sample_errors": [],
+                "no_detection_count": 0,
+                "no_op_count": 0,
+            }
+            data.update(stats or {})
             route.fulfill(
                 status=200, content_type="application/json",
                 body=json.dumps({
                     "status": "success",
-                    "results": {
-                        self.task_uuid: {
-                            "data": {
-                                "images_processed": 2,
-                                "bbox_count": len(candidates),
-                                "candidate_count": len(candidates),
-                                "candidates": candidates,
-                            }
-                        }
-                    },
+                    "results": {self.task_uuid: {"data": data}},
                 }),
             )
         page.route("**/api/tasks/instances/result", handle_result)
@@ -298,7 +300,7 @@ class TestRunModelFullFlow:
 
         dialog = page.locator(".run-model-on-results-dialog")
         expect(dialog).to_be_visible()
-        dialog.locator("select").select_option("yolo9-detector")
+        dialog.locator(".run-model-on-results-model-select").select_option("yolo9-detector")
         dialog.locator("button", has_text="Run").click()
 
         # Poll loop runs on a ~700ms interval; give it a couple of rounds.
@@ -314,6 +316,7 @@ class TestRunModelFullFlow:
         assert body["isTemporary"] is True
         params = body["params"]
         assert params["model_name"] == "yolo9-detector"
+        assert params["crop_mode"] == "image"
         assert params["conf_thresh"] == 0.5
         assert params["iou_thresh"] == 0.5
         assert sorted(params["bbox_uuids"]) == ["bbox-1", "bbox-2"]
@@ -321,6 +324,35 @@ class TestRunModelFullFlow:
 
         # Run dialog closed after handoff (confirmation modal took over).
         expect(dialog).to_have_count(0)
+
+    def test_bbox_crop_mode_sent_and_hides_iou_slider(self, page: Page, base_url: str):
+        _mock_review_queue(page, PAGE_1_IMAGES)
+        _mock_labels(page, [LABEL_CAT, LABEL_DOG])
+        _mock_tags(page, [UNVERIFIED_TAG])
+        _mock_models(page, ["yolo9-detector"])
+        _mock_thumbnails(page)
+        fake_task = _FakeTask()
+        fake_task.install(page, CANDIDATES)
+
+        _navigate_to_review(page, base_url)
+        _run_model_btn(page).click()
+
+        dialog = page.locator(".run-model-on-results-dialog")
+        expect(dialog).to_be_visible()
+        dialog.locator(".run-model-on-results-model-select").select_option("yolo9-detector")
+        dialog.locator(".run-model-on-results-crop-mode-select").select_option("bbox")
+
+        iou_row = dialog.locator("text=Min IoU:").locator("..")
+        expect(iou_row).to_be_hidden()
+
+        dialog.locator("button", has_text="Run").click()
+
+        confirm_modal = page.locator(".relabel-confirm-modal")
+        expect(confirm_modal).to_be_visible(timeout=5000)
+
+        assert len(fake_task.create_bodies) == 1
+        params = fake_task.create_bodies[0]["params"]
+        assert params["crop_mode"] == "bbox"
 
     def test_cancel_stops_polling_and_closes_dialog(self, page: Page, base_url: str):
         _mock_review_queue(page, PAGE_1_IMAGES)
@@ -364,7 +396,7 @@ class TestRunModelFullFlow:
 
         dialog = page.locator(".run-model-on-results-dialog")
         expect(dialog).to_be_visible()
-        dialog.locator("select").select_option("yolo9-detector")
+        dialog.locator(".run-model-on-results-model-select").select_option("yolo9-detector")
         dialog.locator("button", has_text="Run").click()
 
         cancel_btn = dialog.locator("button", has_text="Cancel").first
@@ -376,7 +408,8 @@ class TestRunModelFullFlow:
 
 
 # ---------------------------------------------------------------------------
-# Caps — hard refuse (>5000) and soft warn+confirm (>1000)
+# Caps — hard refuse only (>5000). There's no soft warn+confirm step: a run
+# even at the hard cap only takes a few seconds, so there's nothing to gate on.
 # ---------------------------------------------------------------------------
 
 class TestRunModelCaps:
@@ -414,8 +447,11 @@ class TestRunModelCaps:
         expect(page.locator(".run-model-on-results-dialog")).to_have_count(0)
         expect(page.locator("#toast-container")).to_contain_text("Too many candidates")
 
-    def test_warn_cap_requires_confirm_checkbox(self, page: Page, base_url: str):
+    def test_below_hard_cap_opens_dialog_with_no_confirm_gate(self, page: Page, base_url: str):
         self._setup(page, base_url)
+        _mock_thumbnails(page)
+        fake_task = _FakeTask()
+        fake_task.install(page, CANDIDATES)
 
         page.evaluate("""async () => {
             const { runModelOnResultsFlow } = await import('/app-static/js/app/review/runModelOnResults.js');
@@ -439,14 +475,12 @@ class TestRunModelCaps:
         dialog = page.locator(".run-model-on-results-dialog")
         expect(dialog).to_be_visible(timeout=3000)
         expect(dialog).to_contain_text("1,200 candidate bbox")
-        expect(dialog).to_contain_text("Yes, run anyway")
+        expect(dialog).not_to_contain_text("Yes, run anyway")
 
-        # Selecting a model and clicking Run without checking the confirm box warns and does not launch.
-        dialog.locator("select").select_option("yolo9-detector")
+        # No confirmation gate — selecting a model and clicking Run launches immediately.
+        dialog.locator(".run-model-on-results-model-select").select_option("yolo9-detector")
         dialog.locator("button", has_text="Run").click()
-        page.wait_for_timeout(200)
-        expect(page.locator("#toast-container")).to_contain_text("confirm")
-        expect(dialog).to_be_visible()
+        expect(dialog.locator("progress")).to_be_visible(timeout=3000)
 
 
 # ---------------------------------------------------------------------------
@@ -475,12 +509,12 @@ CANDIDATES_MIXED = [
 ]
 
 
-def _open_confirm_modal(page: Page, candidates: list, model_name: str = "yolo9-detector"):
+def _open_confirm_modal(page: Page, candidates: list, model_name: str = "yolo9-detector", stats: dict = None):
     """Drives straight into `openRelabelConfirmationModal`, bypassing the run
     dialog/task-poll plumbing that Chunk B already covers. Stashes a
     `window.__refreshCount` counter incremented by `ctx.refresh`."""
     page.evaluate(
-        """async ([candidates, modelName]) => {
+        """async ([candidates, modelName, stats]) => {
             const { openRelabelConfirmationModal } = await import('/app-static/js/app/review/runModelOnResults.js');
             window.__refreshCount = 0;
             const labels = new Map([
@@ -493,9 +527,10 @@ def _open_confirm_modal(page: Page, candidates: list, model_name: str = "yolo9-d
                 iouThresh: 0.5,
                 refresh: () => { window.__refreshCount++; },
                 labels,
+                stats,
             });
         }""",
-        [candidates, model_name],
+        [candidates, model_name, stats],
     )
 
 
@@ -608,3 +643,19 @@ class TestRelabelConfirmationModal:
         expect(modal).to_be_visible()
         expect(modal).to_contain_text("No candidates above threshold")
         expect(modal.locator(".relabel-modal-card")).to_have_count(0)
+
+    def test_empty_candidates_with_stats_explains_why(self, page: Page, base_url: str):
+        self._setup(page, base_url)
+        _open_confirm_modal(page, [], stats={
+            "imagesFailed": 3,
+            "noDetectionCount": 5,
+            "noOpCount": 7,
+            "sampleErrors": ["img-1: FileNotFoundError: /data/img-1.jpg"],
+        })
+
+        modal = page.locator(".relabel-confirm-modal")
+        expect(modal).to_be_visible()
+        expect(modal).to_contain_text("7 bbox(es) already matched the model's prediction")
+        expect(modal).to_contain_text("5 bbox(es) had no matching detection")
+        expect(modal).to_contain_text("3 image(s) failed to load/process")
+        expect(modal).to_contain_text("FileNotFoundError")

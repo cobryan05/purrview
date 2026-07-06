@@ -39,6 +39,7 @@ class Detection:
     height: float
     confidence: float
     label_uuid: Optional[str] = None
+    class_str: Optional[str] = None
 
 
 class InferenceBackend(Protocol):

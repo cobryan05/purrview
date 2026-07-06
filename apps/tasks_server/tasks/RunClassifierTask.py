@@ -21,8 +21,10 @@ from db_client.api.sources_api import SourcesApi
 from db_client.models.image_item_status import ImageItemStatus
 from db_client.models.set_image_label_payload import SetImageLabelPayload
 
+from apps import FILES_ROOT
 from apps.helpers.classifier_utils import preprocess_image_bytes as _preprocess_image
 from apps.helpers.classifier_utils import softmax as _softmax
+from apps.helpers.fileUtils import get_safe_path
 
 from .Registry import register_task
 from .Task import Task
@@ -253,8 +255,15 @@ class RunClassifierTask(Task):
         return tensors, valid_stubs
 
     async def _load_image_bytes(self, filename: str, images_api: ImagesApi) -> bytes:
+        # `filename` as stored/returned by the DB is FILES_ROOT-relative (or, in
+        # some cases, an absolute path under FILES_ROOT) — it is never valid to
+        # open() directly against the task-server process's cwd. Resolve it the
+        # same way db_server/manager.py does (get_safe_path handles both forms).
         if self._image_source == "filesystem":
-            return await asyncio.to_thread(_read_file, filename)
+            safe_path = get_safe_path(FILES_ROOT, Path(filename))
+            if safe_path is None:
+                raise FileNotFoundError(f"Refusing to read path outside FILES_ROOT: {filename!r}")
+            return await asyncio.to_thread(_read_file, str(safe_path))
         else:
             resp = await asyncio.to_thread(images_api.get_image_file, filename, True)  # include_binary=True
             if not resp.image_base64:

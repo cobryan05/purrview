@@ -127,6 +127,8 @@ class TestMatching:
         detections = [Detection(x=0.1, y=0.1, width=0.2, height=0.2, confidence=0.9, label_uuid="cat")]
         candidates = await self._run_process_image(task, detections)
         assert candidates == []
+        assert task._no_op_count == 1
+        assert task._no_detection_count == 0
 
     async def test_unmapped_detection_excluded(self):
         task = _make_task(_base_params())
@@ -135,12 +137,14 @@ class TestMatching:
         detections = [Detection(x=0.1, y=0.1, width=0.2, height=0.2, confidence=0.9, label_uuid=None)]
         candidates = await self._run_process_image(task, detections)
         assert candidates == []
+        assert task._no_detection_count == 1
 
     async def test_non_overlapping_detection_excluded(self):
         task = _make_task(_base_params())
         detections = [Detection(x=0.8, y=0.8, width=0.1, height=0.1, confidence=0.9, label_uuid="dog")]
         candidates = await self._run_process_image(task, detections)
         assert candidates == []
+        assert task._no_detection_count == 1
 
     async def test_highest_confidence_detection_wins(self):
         task = _make_task(_base_params())
@@ -179,3 +183,156 @@ class TestMatching:
         task = _make_task(_base_params())
         candidates = await self._run_process_image(task, detections=[])
         assert candidates == []
+        assert task._no_detection_count == 1
+
+    async def test_image_load_failure_counted_and_reported(self):
+        task = _make_task(_base_params())
+        await task._init(task._params, None)
+        task._load_image_bytes = AsyncMock(side_effect=FileNotFoundError("/data/x.jpg"))
+        backend = _FakeBackend([])
+        img = _image(bboxes=[_bbox(uuid="bbox-1", label_uuid="cat")])
+        with pytest.raises(FileNotFoundError):
+            await task._process_image(
+                images_api=MagicMock(),
+                backend=backend,
+                img=img,
+                label_names={"cat": "Cat", "dog": "Dog"},
+            )
+        # _process_image itself propagates — it's the _run() batch loop (not exercised
+        # here) that catches per-image failures and increments _images_failed.
+
+
+class TestUnmappedClassFallback:
+    """A detection whose model class isn't mapped to a label_uuid should still
+    produce a candidate if its raw class_str matches a project label's name by
+    name — mirrors the manual single-image "Run Model" UI's tolerance for
+    unmapped classes."""
+
+    async def _run_process_image(self, task, detections, name_to_label_uuid):
+        await task._init(task._params, None)
+        task._name_to_label_uuid = name_to_label_uuid
+        task._load_image_bytes = AsyncMock(return_value=b"fake-image-bytes")
+        backend = _FakeBackend(detections)
+        img = _image(bboxes=[_bbox(uuid="bbox-1", label_uuid="cat")])
+        await task._process_image(
+            images_api=MagicMock(),
+            backend=backend,
+            img=img,
+            label_names={"cat": "Cat", "dog": "Dog"},
+        )
+        return task._candidates
+
+    async def test_unmapped_class_resolved_by_name(self):
+        task = _make_task(_base_params())
+        detections = [Detection(x=0.1, y=0.1, width=0.2, height=0.2, confidence=0.86, label_uuid=None, class_str="Dog")]
+        candidates = await self._run_process_image(task, detections, {"Dog": "dog", "Cat": "cat"})
+        assert len(candidates) == 1
+        assert candidates[0]["proposedLabelUuid"] == "dog"
+        assert candidates[0]["confidence"] == 0.86
+
+    async def test_unmapped_class_with_no_name_match_excluded(self):
+        task = _make_task(_base_params())
+        detections = [Detection(x=0.1, y=0.1, width=0.2, height=0.2, confidence=0.9, label_uuid=None, class_str="Bird")]
+        candidates = await self._run_process_image(task, detections, {"Dog": "dog", "Cat": "cat"})
+        assert candidates == []
+
+    async def test_unmapped_class_with_no_class_str_excluded(self):
+        task = _make_task(_base_params())
+        detections = [Detection(x=0.1, y=0.1, width=0.2, height=0.2, confidence=0.9, label_uuid=None, class_str=None)]
+        candidates = await self._run_process_image(task, detections, {"Dog": "dog", "Cat": "cat"})
+        assert candidates == []
+
+
+class TestBboxCropMode:
+    """Exercises `_process_image_bbox_crop`: crops each candidate bbox out of a
+    real in-memory image and matches the crop's best detection directly, with
+    no IoU check."""
+
+    @staticmethod
+    def _make_image_bytes(width=200, height=200):
+        from io import BytesIO
+
+        from PIL import Image as PILImage
+
+        img = PILImage.new("RGB", (width, height), color=(10, 20, 30))
+        buf = BytesIO()
+        img.save(buf, format="PNG")
+        return buf.getvalue()
+
+    async def _run_process_image(self, task, detections, name_to_label_uuid=None):
+        await task._init(task._params, None)
+        task._name_to_label_uuid = name_to_label_uuid or {}
+        task._load_image_bytes = AsyncMock(return_value=self._make_image_bytes())
+        backend = _FakeBackend(detections)
+        img = _image(bboxes=[_bbox(uuid="bbox-1", label_uuid="cat")])
+        await task._process_image(
+            images_api=MagicMock(),
+            backend=backend,
+            img=img,
+            label_names={"cat": "Cat", "dog": "Dog"},
+        )
+        return task._candidates
+
+    async def test_bbox_crop_ignores_geometry_and_uses_best_detection(self):
+        task = _make_task(_base_params(crop_mode="bbox"))
+        # Detection coordinates are relative to the *crop*, not the source image,
+        # and don't overlap the original bbox geometry at all — crop mode must not
+        # apply an IoU check, so this still produces a candidate.
+        detections = [Detection(x=0.0, y=0.0, width=1.0, height=1.0, confidence=0.86, label_uuid="dog")]
+        candidates = await self._run_process_image(task, detections)
+        assert len(candidates) == 1
+        assert candidates[0]["proposedLabelUuid"] == "dog"
+        assert candidates[0]["confidence"] == 0.86
+
+    async def test_bbox_crop_unmapped_class_resolved_by_name(self):
+        task = _make_task(_base_params(crop_mode="bbox"))
+        detections = [Detection(x=0.0, y=0.0, width=1.0, height=1.0, confidence=0.7, label_uuid=None, class_str="Dog")]
+        candidates = await self._run_process_image(task, detections, {"Dog": "dog"})
+        assert len(candidates) == 1
+        assert candidates[0]["proposedLabelUuid"] == "dog"
+
+    async def test_bbox_crop_no_detections_produces_no_candidates(self):
+        task = _make_task(_base_params(crop_mode="bbox"))
+        candidates = await self._run_process_image(task, detections=[])
+        assert candidates == []
+
+
+class TestCropModeGuard:
+    async def test_invalid_crop_mode_raises(self):
+        task = _make_task(_base_params(crop_mode="whole-image"))
+        with pytest.raises(ValueError, match="crop_mode"):
+            await task._init(task._params, None)
+
+    async def test_default_crop_mode_is_image(self):
+        task = _make_task(_base_params())
+        await task._init(task._params, None)
+        assert task._crop_mode == "image"
+
+
+class TestLoadImageBytesResolvesFilesRoot:
+    """`filename` (as returned by batch_images_by_uuids) is FILES_ROOT-relative,
+    not a path valid against the tasks_server process's cwd — `_load_image_bytes`
+    must resolve it against FILES_ROOT before opening (regression test for a bug
+    where every filesystem read failed with FileNotFoundError, silently producing
+    zero candidates)."""
+
+    async def test_relative_filename_resolved_against_files_root(self, tmp_path, monkeypatch):
+        import apps.tasks_server.tasks.PreviewModelRelabelTask as mod
+
+        monkeypatch.setattr(mod, "FILES_ROOT", tmp_path)
+        (tmp_path / "subdir").mkdir()
+        (tmp_path / "subdir" / "img.jpg").write_bytes(b"fake-jpeg-bytes")
+
+        task = _make_task(_base_params())
+        await task._init(task._params, None)
+        result = await task._load_image_bytes("subdir/img.jpg", images_api=MagicMock())
+        assert result == b"fake-jpeg-bytes"
+
+    async def test_path_escaping_files_root_raises(self, tmp_path, monkeypatch):
+        import apps.tasks_server.tasks.PreviewModelRelabelTask as mod
+
+        monkeypatch.setattr(mod, "FILES_ROOT", tmp_path)
+        task = _make_task(_base_params())
+        await task._init(task._params, None)
+        with pytest.raises(FileNotFoundError):
+            await task._load_image_bytes("../../etc/passwd", images_api=MagicMock())

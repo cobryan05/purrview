@@ -27,6 +27,15 @@ _MOCK_MANAGER.update_task_heartbeat = AsyncMock()
 _BINARY_CONFIG = {"input_size": [224, 224], "class_names": ["absent", "present"], "model_kind": "image_classifier"}
 
 
+@pytest.fixture(autouse=True)
+def _files_root_is_tmp_path(tmp_path, monkeypatch):
+    # _load_image_bytes resolves filesystem-mode filenames against FILES_ROOT
+    # (get_safe_path) rather than opening them as-is; tests write real image
+    # bytes under tmp_path and pass that absolute path as `filename`, so
+    # FILES_ROOT must be tmp_path for get_safe_path to recognize it as in-root.
+    monkeypatch.setattr("apps.tasks_server.tasks.RunClassifierTask.FILES_ROOT", tmp_path)
+
+
 def _make_task(params: dict) -> RunClassifierTask:
     return RunClassifierTask(
         task_config_uuid="cfg-uuid",

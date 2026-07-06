@@ -4,7 +4,8 @@
  * Wires the review-browser toolbar button to:
  *  1. resolve the candidate bbox/image scope from whatever the user currently
  *     has selected/filtered (mirrors the existing Bulk Apply / Apply to All split),
- *  2. surface hard/soft caps on the candidate count,
+ *  2. refuse above a hard cap on the candidate count (no soft warn/confirm step —
+ *     a run at the cap only takes seconds),
  *  3. let the user pick a detector model + conf/IoU thresholds in a run dialog,
  *  4. launch `PreviewModelRelabelTask` (a temporary, one-shot task config),
  *     poll it to completion with a cancel button, and
@@ -38,8 +39,6 @@ import { expandWithDescendants } from '/app-static/js/ui/labelList.js';
 // Hard refuse above this many candidate bboxes — mirrors the server-side
 // PreviewModelRelabelTask._MAX_BBOX_UUIDS ceiling (apps/tasks_server/tasks/PreviewModelRelabelTask.py).
 export const HARD_CAP = 5000;
-// Above this many, warn and require an explicit confirmation before running.
-export const WARN_CAP = 1000;
 
 const POLL_INTERVAL_MS = 700;
 
@@ -181,6 +180,9 @@ function _labelChip(name, uuid, labels) {
  * @param {number} ctx.iouThresh
  * @param {() => void} ctx.refresh - reload the current review-panel page (e.g. `render()`).
  * @param {Map<string, object>} ctx.labels - label lookup, for display.
+ * @param {{imagesFailed: number, noDetectionCount: number, noOpCount: number,
+ *   sampleErrors: string[]}} [ctx.stats] - diagnostic breakdown from the task result,
+ *   shown when there are zero candidates so "0 results" isn't a silent mystery.
  */
 export async function openRelabelConfirmationModal(candidates, ctx) {
   const { dialog, open, close } = createModalShell();
@@ -200,7 +202,25 @@ export async function openRelabelConfirmationModal(candidates, ctx) {
   if (sorted.length === 0) {
     const empty = document.createElement('div');
     empty.className = 'relabel-modal-empty';
-    empty.textContent = 'No candidates above threshold.';
+    const stats = ctx.stats;
+    if (stats) {
+      const parts = [];
+      if (stats.noOpCount > 0) parts.push(`${stats.noOpCount} bbox(es) already matched the model's prediction`);
+      if (stats.noDetectionCount > 0) parts.push(`${stats.noDetectionCount} bbox(es) had no matching detection`);
+      if (stats.imagesFailed > 0) parts.push(`${stats.imagesFailed} image(s) failed to load/process`);
+      empty.textContent = parts.length > 0
+        ? `No candidates: ${parts.join('; ')}.`
+        : 'No candidates above threshold.';
+      if (stats.imagesFailed > 0 && stats.sampleErrors?.length) {
+        const errDetail = document.createElement('div');
+        errDetail.style.cssText = 'font-size:0.8em;color:#e88;margin-top:0.5em;';
+        errDetail.textContent = `Sample error: ${stats.sampleErrors[0]}`;
+        empty.appendChild(document.createElement('br'));
+        empty.appendChild(errDetail);
+      }
+    } else {
+      empty.textContent = 'No candidates above threshold.';
+    }
     dialog.appendChild(empty);
 
     const footer = document.createElement('div');
@@ -431,31 +451,26 @@ async function _showRunDialog(scope, ctx) {
   dialog.appendChild(countLine);
 
   // Hard-cap refusal happens in `runModelOnResultsFlow` before this dialog is
-  // ever shown (bboxUuids.length is guaranteed <= HARD_CAP here).
-  let confirmCheckbox = null;
-  if (bboxUuids.length > WARN_CAP) {
-    const warn = document.createElement('div');
-    warn.style.cssText = 'color:#e8a020;background:#e8a02015;border:1px solid #e8a02044;border-radius:4px;padding:0.5em 0.7em;';
-    warn.textContent = `⚠ This will run inference across ${bboxUuids.length.toLocaleString()} candidate bboxes — that's a lot. Confirm you want to proceed.`;
-    dialog.appendChild(warn);
+  // ever shown (bboxUuids.length is guaranteed <= HARD_CAP here). No separate
+  // soft-confirmation step — a run over the hard cap's worth of candidates
+  // still only takes a few seconds, so there's nothing worth gating on.
 
-    const confirmRow = document.createElement('label');
-    confirmRow.style.cssText = 'display:flex;align-items:center;gap:0.5em;cursor:pointer;';
-    confirmCheckbox = document.createElement('input');
-    confirmCheckbox.type = 'checkbox';
-    confirmRow.append(confirmCheckbox, document.createTextNode('Yes, run anyway'));
-    dialog.appendChild(confirmRow);
-  }
+  // ── Model + inference-input pickers, side by side so this doesn't grow the
+  // dialog's height (it's vertically centered with no scroll/max-height, so
+  // extra rows can push the footer buttons under the fixed #bottom-bars strip). ──
+  const pickerRow = document.createElement('div');
+  pickerRow.style.cssText = 'display:flex;gap:1em;';
+  dialog.appendChild(pickerRow);
 
-  // ── Model picker (detectors only) ──────────────────────────────────
   const modelRow = document.createElement('div');
-  modelRow.style.cssText = 'display:flex;flex-direction:column;gap:0.3em;';
+  modelRow.style.cssText = 'display:flex;flex-direction:column;gap:0.3em;flex:1;';
   const modelLabel = document.createElement('div');
   modelLabel.textContent = 'Detector model:';
   modelLabel.style.cssText = 'font-size:0.85em;color:#aaa;';
   const modelSelect = document.createElement('select');
+  modelSelect.className = 'run-model-on-results-model-select';
   modelRow.append(modelLabel, modelSelect);
-  dialog.appendChild(modelRow);
+  pickerRow.appendChild(modelRow);
 
   let detectors = [];
   try {
@@ -481,6 +496,25 @@ async function _showRunDialog(scope, ctx) {
       modelSelect.appendChild(opt);
     }
   }
+
+  // ── Crop mode: whole image vs. per-bbox crop ─────────────────────────
+  let cropMode = 'image';
+  const cropModeRow = document.createElement('div');
+  cropModeRow.style.cssText = 'display:flex;flex-direction:column;gap:0.3em;flex:1;';
+  const cropModeLabel = document.createElement('div');
+  cropModeLabel.textContent = 'Inference input:';
+  cropModeLabel.style.cssText = 'font-size:0.85em;color:#aaa;';
+  const cropModeSelect = document.createElement('select');
+  cropModeSelect.className = 'run-model-on-results-crop-mode-select';
+  const cropModeImageOpt = document.createElement('option');
+  cropModeImageOpt.value = 'image';
+  cropModeImageOpt.textContent = 'Whole image (IoU match)';
+  const cropModeBboxOpt = document.createElement('option');
+  cropModeBboxOpt.value = 'bbox';
+  cropModeBboxOpt.textContent = 'Bbox crop';
+  cropModeSelect.append(cropModeImageOpt, cropModeBboxOpt);
+  cropModeRow.append(cropModeLabel, cropModeSelect);
+  pickerRow.appendChild(cropModeRow);
 
   // ── Confidence + IoU sliders ─────────────────────────────────────────
   let confThresh = 0.5;
@@ -512,7 +546,15 @@ async function _showRunDialog(scope, ctx) {
   }
 
   dialog.appendChild(makeSliderRow('Min confidence:', confThresh, (v) => { confThresh = v; }));
-  dialog.appendChild(makeSliderRow('Min IoU:', iouThresh, (v) => { iouThresh = v; }));
+  const iouRow = makeSliderRow('Min IoU:', iouThresh, (v) => { iouThresh = v; });
+  dialog.appendChild(iouRow);
+
+  function _syncCropModeUI() {
+    cropMode = cropModeSelect.value;
+    iouRow.style.display = cropMode === 'bbox' ? 'none' : '';
+  }
+  cropModeSelect.addEventListener('change', _syncCropModeUI);
+  _syncCropModeUI();
 
   // ── Progress area (hidden until Run) ─────────────────────────────────
   const progressWrap = document.createElement('div');
@@ -567,20 +609,18 @@ async function _showRunDialog(scope, ctx) {
 
   runBtn.addEventListener('click', async () => {
     if (!modelSelect.value) { toast('Please select a detector model', 3000, 'warning'); return; }
-    if (confirmCheckbox && !confirmCheckbox.checked) {
-      toast('Please confirm before running on this many candidates', 3000, 'warning');
-      return;
-    }
 
     runBtn.disabled = true;
     cancelBtn.disabled = true;
     modelSelect.disabled = true;
+    cropModeSelect.disabled = true;
     progressWrap.style.display = 'flex';
     progressLabel.textContent = `Starting… (0/${imageUuids.length} images)`;
 
     const modelName = modelSelect.value;
     const params = {
       model_name: modelName,
+      crop_mode: cropMode,
       conf_thresh: confThresh,
       iou_thresh: iouThresh,
       image_uuids: imageUuids,
@@ -618,7 +658,16 @@ async function _showRunDialog(scope, ctx) {
       progressLabel.textContent = 'Fetching results…';
       const resultsMap = await fetchTasksResult({ taskUuids: [taskUuid], cacheResults: false });
       const result = resultsMap.get(taskUuid);
-      const candidates = result?.data?.candidates ?? [];
+      const data = result?.data ?? {};
+      const candidates = data.candidates ?? [];
+      // TaskResult.data is a raw passthrough dict (no camelCase alias conversion,
+      // unlike most other API responses) — read the task's snake_case keys directly.
+      const stats = {
+        imagesFailed: data.images_failed ?? 0,
+        noDetectionCount: data.no_detection_count ?? 0,
+        noOpCount: data.no_op_count ?? 0,
+        sampleErrors: data.sample_errors ?? [],
+      };
 
       await deleteTasks({ taskUuids: [taskUuid] }).catch((e) => Logger.error('Cleanup failed', e));
 
@@ -629,6 +678,7 @@ async function _showRunDialog(scope, ctx) {
         iouThresh,
         refresh: ctx.refresh,
         labels: ctx.labels,
+        stats,
       });
     } catch (err) {
       Logger.error('Run Model on Results failed:', err);
@@ -636,6 +686,7 @@ async function _showRunDialog(scope, ctx) {
       runBtn.disabled = false;
       cancelBtn.disabled = false;
       modelSelect.disabled = false;
+      cropModeSelect.disabled = false;
       progressWrap.style.display = 'none';
     }
   });

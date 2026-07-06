@@ -37,7 +37,9 @@ from inference_client.models.classify_payload import ClassifyPayload
 from inference_client.models.inference_payload import InferencePayload
 from inference_client.models.pin_model_payload import PinModelPayload
 
+from apps import FILES_ROOT
 from apps.helpers.db.types import UNVERIFIED_TAG_UUID
+from apps.helpers.fileUtils import get_safe_path
 from apps.helpers.metadataUtils import get_model_metadata
 
 from ._filter_chain_runner import Detection, FilterChainRunner
@@ -120,6 +122,7 @@ class _HttpInferenceBackend:
                 height=d.bbox.height,
                 confidence=d.confidence,
                 label_uuid=d.bbox.label_uuid,
+                class_str=d.bbox.class_str,
             )
             for d in (resp.result.detections or [])
         ]
@@ -463,8 +466,15 @@ class ApplyFilterChainTask(Task):
         return stubs
 
     async def _load_image_bytes(self, filename: str, images_api: ImagesApi) -> bytes:
+        # `filename` as stored/returned by the DB is FILES_ROOT-relative (or, in
+        # some cases, an absolute path under FILES_ROOT) — it is never valid to
+        # open() directly against the task-server process's cwd. Resolve it the
+        # same way db_server/manager.py does (get_safe_path handles both forms).
         if self._image_source == "filesystem":
-            return await asyncio.to_thread(_read_file, filename)
+            safe_path = get_safe_path(FILES_ROOT, Path(filename))
+            if safe_path is None:
+                raise FileNotFoundError(f"Refusing to read path outside FILES_ROOT: {filename!r}")
+            return await asyncio.to_thread(_read_file, str(safe_path))
         resp = await asyncio.to_thread(images_api.get_image_file, filename, True)
         if not resp.image_base64:
             raise ValueError(f"No image data returned for {filename}")

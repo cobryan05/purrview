@@ -20,6 +20,15 @@ _MOCK_MANAGER = MagicMock()
 _MOCK_MANAGER.update_task_heartbeat = AsyncMock()
 
 
+@pytest.fixture(autouse=True)
+def _files_root_is_tmp_path(tmp_path, monkeypatch):
+    # _load_image_bytes resolves filesystem-mode filenames against FILES_ROOT
+    # (get_safe_path) rather than opening them as-is; tests write real image
+    # bytes under tmp_path and pass that absolute path as `filename`, so
+    # FILES_ROOT must be tmp_path for get_safe_path to recognize it as in-root.
+    monkeypatch.setattr("apps.tasks_server.tasks.ApplyFilterChainTask.FILES_ROOT", tmp_path)
+
+
 def _make_task(params: dict) -> ApplyFilterChainTask:
     task = ApplyFilterChainTask(task_config_uuid="cfg-uuid", params=params, manager=_MOCK_MANAGER)
     task.set_instance_uuid("11111111-1111-1111-1111-111111111111")
