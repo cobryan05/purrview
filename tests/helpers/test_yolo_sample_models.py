@@ -40,9 +40,7 @@ def _build_fixed_output_onnx(path, output_data: np.ndarray) -> None:
     to transpose by comparing those two axis sizes (real exports have
     thousands of anchor boxes, so this always holds true in practice).
     """
-    input_tensor = helper.make_tensor_value_info(
-        "images", TensorProto.FLOAT, [1, 3, _INPUT_SIZE, _INPUT_SIZE]
-    )
+    input_tensor = helper.make_tensor_value_info("images", TensorProto.FLOAT, [1, 3, _INPUT_SIZE, _INPUT_SIZE])
     output_tensor = helper.make_tensor_value_info("output", TensorProto.FLOAT, list(output_data.shape))
     const_node = helper.make_node(
         "Constant",

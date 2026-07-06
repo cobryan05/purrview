@@ -57,26 +57,30 @@ EXISTING_TC = {
 def _mock_datasets(page: Page, datasets: list | None = None):
     page.route(
         lambda url: url.split("?")[0].endswith("/api/datasets"),
-        lambda route: route.fulfill(
-            status=200,
-            content_type="application/json",
-            body=json.dumps({"status": "success", "datasets": datasets or []}),
-        )
-        if route.request.method == "GET"
-        else route.fallback(),
+        lambda route: (
+            route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps({"status": "success", "datasets": datasets or []}),
+            )
+            if route.request.method == "GET"
+            else route.fallback()
+        ),
     )
 
 
 def _mock_model_configs(page: Page, configs: list | None = None):
     page.route(
         lambda url: url.split("?")[0].endswith("/api/model-configs"),
-        lambda route: route.fulfill(
-            status=200,
-            content_type="application/json",
-            body=json.dumps({"status": "success", "configs": configs or []}),
-        )
-        if route.request.method == "GET"
-        else route.fallback(),
+        lambda route: (
+            route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps({"status": "success", "configs": configs or []}),
+            )
+            if route.request.method == "GET"
+            else route.fallback()
+        ),
     )
 
 
@@ -84,13 +88,15 @@ def _mock_training_configs_list(page: Page, configs: list | None = None):
     """Intercept GET /api/training-configs (list only)."""
     page.route(
         lambda url: url.split("?")[0].endswith("/api/training-configs"),
-        lambda route: route.fulfill(
-            status=200,
-            content_type="application/json",
-            body=json.dumps({"status": "success", "configs": configs or []}),
-        )
-        if route.request.method == "GET"
-        else route.fallback(),
+        lambda route: (
+            route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps({"status": "success", "configs": configs or []}),
+            )
+            if route.request.method == "GET"
+            else route.fallback()
+        ),
     )
 
 
@@ -98,13 +104,15 @@ def _mock_training_config_get(page: Page, config: dict):
     """Intercept GET /api/training-configs/{uuid}."""
     page.route(
         f"**/api/training-configs/{config['uuid']}",
-        lambda route: route.fulfill(
-            status=200,
-            content_type="application/json",
-            body=json.dumps({"status": "success", "config": config}),
-        )
-        if route.request.method == "GET"
-        else route.fallback(),
+        lambda route: (
+            route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps({"status": "success", "config": config}),
+            )
+            if route.request.method == "GET"
+            else route.fallback()
+        ),
     )
 
 
@@ -114,14 +122,16 @@ def _mock_readiness(page: Page, config_uuid: str, ready: int = 3, needs_review: 
         lambda route: route.fulfill(
             status=200,
             content_type="application/json",
-            body=json.dumps({
-                "status": "success",
-                "readyCount": ready,
-                "needsReviewCount": needs_review,
-                "notStartedCount": not_started,
-                "datasetUuids": ["ds-alpha"],
-                "labelUuids": [],
-            }),
+            body=json.dumps(
+                {
+                    "status": "success",
+                    "readyCount": ready,
+                    "needsReviewCount": needs_review,
+                    "notStartedCount": not_started,
+                    "datasetUuids": ["ds-alpha"],
+                    "labelUuids": [],
+                }
+            ),
         ),
     )
 
@@ -212,8 +222,7 @@ class TestTrainingConfigPaneStructure:
         config_sel = _editor_body(page).locator("select").first
         expect(config_sel).to_be_visible(timeout=4000)
         options = config_sel.locator("option").all_text_contents()
-        assert any("My Model" in o for o in options), \
-            f"Expected 'My Model' in config selector options; got: {options}"
+        assert any("My Model" in o for o in options), f"Expected 'My Model' in config selector options; got: {options}"
 
     def test_node_selector_updates_when_config_chosen(self, page: Page, base_url: str):
         """Choosing a model config from the first selector populates the node selector."""
@@ -231,8 +240,7 @@ class TestTrainingConfigPaneStructure:
         # Node selector (second select) should now have "Root" option
         node_sel = _editor_body(page).locator("select").nth(1)
         node_options = node_sel.locator("option").all_text_contents()
-        assert any("Root" in o for o in node_options), \
-            f"Expected a Root node option; got: {node_options}"
+        assert any("Root" in o for o in node_options), f"Expected a Root node option; got: {node_options}"
 
 
 # ---------------------------------------------------------------------------
@@ -255,13 +263,21 @@ class TestCreateTrainingConfig:
             route.fulfill(
                 status=200,
                 content_type="application/json",
-                body=json.dumps({"status": "success", "config": {
-                    **EXISTING_TC, "uuid": "tc-new", "name": "My Run",
-                }}),
+                body=json.dumps(
+                    {
+                        "status": "success",
+                        "config": {
+                            **EXISTING_TC,
+                            "uuid": "tc-new",
+                            "name": "My Run",
+                        },
+                    }
+                ),
             )
 
-        page.route("**/api/training-configs",
-                   lambda r: handle_create(r) if r.request.method == "POST" else r.fallback())
+        page.route(
+            "**/api/training-configs", lambda r: handle_create(r) if r.request.method == "POST" else r.fallback()
+        )
 
         _navigate_to_training_configs(page, base_url)
 
@@ -362,13 +378,21 @@ class TestTrainingSettingsFieldset:
             route.fulfill(
                 status=200,
                 content_type="application/json",
-                body=json.dumps({"status": "success", "config": {
-                    **EXISTING_TC, "uuid": "tc-new", "name": "My Run",
-                }}),
+                body=json.dumps(
+                    {
+                        "status": "success",
+                        "config": {
+                            **EXISTING_TC,
+                            "uuid": "tc-new",
+                            "name": "My Run",
+                        },
+                    }
+                ),
             )
 
-        page.route("**/api/training-configs",
-                   lambda r: handle_create(r) if r.request.method == "POST" else r.fallback())
+        page.route(
+            "**/api/training-configs", lambda r: handle_create(r) if r.request.method == "POST" else r.fallback()
+        )
 
         _navigate_to_training_configs(page, base_url)
 
@@ -439,9 +463,7 @@ class TestReadinessPanel:
         _navigate_to_training_configs(page, base_url)
         _list_item(page, "tc-1").click()
 
-        page.wait_for_selector(
-            "#training-config-box div:has-text('Training readiness')", timeout=3000
-        )
+        page.wait_for_selector("#training-config-box div:has-text('Training readiness')", timeout=3000)
         needs_review_span = _box(page).locator("span", has_text="need review")
         expect(needs_review_span).to_contain_text("0 need review")
         style = needs_review_span.get_attribute("style") or ""
@@ -486,9 +508,14 @@ class TestReadinessPanel:
             route.fulfill(
                 status=200,
                 content_type="application/json",
-                body=json.dumps({
-                    "status": "success", "images": [], "hasMore": False, "totalCount": 0,
-                }),
+                body=json.dumps(
+                    {
+                        "status": "success",
+                        "images": [],
+                        "hasMore": False,
+                        "totalCount": 0,
+                    }
+                ),
             )
 
         page.route("**/api/training-configs/tc-1/partial-review-images", handle_partial_review)
@@ -569,6 +596,7 @@ def _mock_images_by_label_status(page: Page, config_uuid: str, captured: list):
             content_type="application/json",
             body=json.dumps({"status": "success", "images": [], "hasMore": False, "totalCount": 0}),
         )
+
     page.route(f"**/api/training-configs/{config_uuid}/images-by-label-status", handler)
 
 
@@ -606,8 +634,9 @@ class TestLabelStatsPanelBboxColumns:
 
         page.wait_for_timeout(400)
         assert len(captured) >= 1, "images-by-label-status was not called"
-        assert captured[0].get("status") == "has_verified_bbox", \
-            f"Expected status=has_verified_bbox, got: {captured[0].get('status')}"
+        assert (
+            captured[0].get("status") == "has_verified_bbox"
+        ), f"Expected status=has_verified_bbox, got: {captured[0].get('status')}"
         assert captured[0].get("labelUuid") == "lbl-obj"
 
     def test_verified_boxes_click_opens_bbox_view_modal(self, page: Page, base_url: str):
@@ -648,8 +677,9 @@ class TestLabelStatsPanelBboxColumns:
 
         page.wait_for_timeout(400)
         assert len(captured) >= 1, "images-by-label-status was not called"
-        assert captured[0].get("status") == "co_labels_covered", \
-            f"Expected status=co_labels_covered, got: {captured[0].get('status')}"
+        assert (
+            captured[0].get("status") == "co_labels_covered"
+        ), f"Expected status=co_labels_covered, got: {captured[0].get('status')}"
         assert captured[0].get("labelUuid") == "lbl-obj"
 
     def test_imgs_all_clear_click_opens_image_view_modal(self, page: Page, base_url: str):

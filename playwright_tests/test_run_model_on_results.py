@@ -13,6 +13,7 @@ Run with:
     docker compose --profile dev run --rm --no-deps -w /project whiskerwatcher-dev \
         python3.11 -m pytest playwright_tests/test_run_model_on_results.py -q
 """
+
 import json
 
 import pytest
@@ -26,13 +27,21 @@ LABEL_DOG = {"uuid": "lbl-dog", "name": "Dog", "color": "#00ff00", "parentUuid":
 UNVERIFIED_TAG = {"uuid": UNVERIFIED_TAG_UUID, "name": "Unverified", "color": "#888", "kind": "system", "icon": None}
 
 BBOX_1 = {
-    "uuid": "bbox-1", "x": 0.1, "y": 0.1, "width": 0.2, "height": 0.2,
+    "uuid": "bbox-1",
+    "x": 0.1,
+    "y": 0.1,
+    "width": 0.2,
+    "height": 0.2,
     "label": {"uuid": "lbl-cat", "name": "Cat", "color": "#ff0000"},
     "labelUuid": "lbl-cat",
     "tags": [UNVERIFIED_TAG],
 }
 BBOX_2 = {
-    "uuid": "bbox-2", "x": 0.3, "y": 0.3, "width": 0.1, "height": 0.1,
+    "uuid": "bbox-2",
+    "x": 0.3,
+    "y": 0.3,
+    "width": 0.1,
+    "height": 0.1,
     "label": {"uuid": "lbl-dog", "name": "Dog", "color": "#00ff00"},
     "labelUuid": "lbl-dog",
     "tags": [UNVERIFIED_TAG],
@@ -47,6 +56,7 @@ PAGE_1_IMAGES = [IMAGE_1, IMAGE_2]
 # ---------------------------------------------------------------------------
 # Mocking helpers
 # ---------------------------------------------------------------------------
+
 
 def _mock_review_queue(page: Page, images: list):
     page.route(
@@ -83,18 +93,22 @@ def _mock_models(page: Page, detector_names: list, classifier_names: list = None
 
     def handle_list(route: Route):
         route.fulfill(
-            status=200, content_type="application/json",
+            status=200,
+            content_type="application/json",
             body=json.dumps({"status": "success", "models": all_names}),
         )
+
     page.route("**/api/models", handle_list)
 
     def handle_meta(route: Route):
         name = route.request.url.rstrip("/").split("/")[-2]
         kind = "detector" if name in detector_names else "image_classifier"
         route.fulfill(
-            status=200, content_type="application/json",
+            status=200,
+            content_type="application/json",
             body=json.dumps({"status": "success", "modelKind": kind}),
         )
+
     page.route("**/api/models/*/meta", handle_meta)
 
 
@@ -119,9 +133,11 @@ def _mock_bulk_apply_by_uuids(page: Page, modified_count=None, fail_count=0):
         calls.append(body)
         mc = modified_count if modified_count is not None else len(body.get("bboxUuids", []))
         route.fulfill(
-            status=200, content_type="application/json",
+            status=200,
+            content_type="application/json",
             body=json.dumps({"status": "success", "modifiedCount": mc, "failCount": fail_count}),
         )
+
     page.route("**/api/images/bbox/bulk-apply-by-uuids", handle)
     return calls
 
@@ -132,6 +148,7 @@ def _mock_invalidate_thumbnails(page: Page):
     def handle(route: Route):
         calls.append(json.loads(route.request.post_data or "{}"))
         route.fulfill(status=200, content_type="application/json", body=json.dumps({"status": "success"}))
+
     page.route("**/api/images/bbox/thumbnails/invalidate", handle)
     return calls
 
@@ -150,16 +167,20 @@ class _FakeTask:
             body = json.loads(route.request.post_data or "{}")
             self.create_bodies.append(body)
             route.fulfill(
-                status=200, content_type="application/json",
+                status=200,
+                content_type="application/json",
                 body=json.dumps({"status": "success", "configUuid": self.config_uuid}),
             )
+
         page.route("**/api/tasks/configs/create", handle_create)
 
         def handle_start(route: Route):
             route.fulfill(
-                status=200, content_type="application/json",
+                status=200,
+                content_type="application/json",
                 body=json.dumps({"status": "success", "taskUuid": self.task_uuid}),
             )
+
         page.route("**/api/tasks/instances/start", handle_start)
 
         def handle_get(route: Route):
@@ -167,22 +188,31 @@ class _FakeTask:
             status = "running" if self.poll_count < 2 else "completed"
             progress = 50.0 if status == "running" else 100.0
             route.fulfill(
-                status=200, content_type="application/json",
-                body=json.dumps({
-                    "status": "success",
-                    "tasks": {
-                        self.task_uuid: {
-                            "config": {"uuid": self.config_uuid, "typename": "PreviewModelRelabelTask", "name": "x", "params": {}},
-                            "instance": {"uuid": self.task_uuid, "status": status},
-                            "progress": progress,
-                            "statusMessage": "",
-                            "statusActions": [],
-                            "logLines": [],
-                            "isPausedInPlace": False,
-                        }
-                    },
-                }),
+                status=200,
+                content_type="application/json",
+                body=json.dumps(
+                    {
+                        "status": "success",
+                        "tasks": {
+                            self.task_uuid: {
+                                "config": {
+                                    "uuid": self.config_uuid,
+                                    "typename": "PreviewModelRelabelTask",
+                                    "name": "x",
+                                    "params": {},
+                                },
+                                "instance": {"uuid": self.task_uuid, "status": status},
+                                "progress": progress,
+                                "statusMessage": "",
+                                "statusActions": [],
+                                "logLines": [],
+                                "isPausedInPlace": False,
+                            }
+                        },
+                    }
+                ),
             )
+
         page.route("**/api/tasks/instances/get", handle_get)
 
         def handle_result(route: Route):
@@ -198,16 +228,21 @@ class _FakeTask:
             }
             data.update(stats or {})
             route.fulfill(
-                status=200, content_type="application/json",
-                body=json.dumps({
-                    "status": "success",
-                    "results": {self.task_uuid: {"data": data}},
-                }),
+                status=200,
+                content_type="application/json",
+                body=json.dumps(
+                    {
+                        "status": "success",
+                        "results": {self.task_uuid: {"data": data}},
+                    }
+                ),
             )
+
         page.route("**/api/tasks/instances/result", handle_result)
 
         def handle_delete(route: Route):
             route.fulfill(status=200, content_type="application/json", body=json.dumps({"status": "success"}))
+
         page.route("**/api/tasks/instances/delete", handle_delete)
         page.route("**/api/tasks/instances/cancel", handle_delete)
 
@@ -226,14 +261,24 @@ def _run_model_btn(page: Page):
 
 CANDIDATES = [
     {
-        "bboxUuid": "bbox-1", "imageUuid": "img-1", "imagePath": "folder/image1.jpg",
-        "currentLabelUuid": "lbl-cat", "currentLabelName": "Cat",
-        "proposedLabelUuid": "lbl-dog", "proposedLabelName": "Dog", "confidence": 0.81,
+        "bboxUuid": "bbox-1",
+        "imageUuid": "img-1",
+        "imagePath": "folder/image1.jpg",
+        "currentLabelUuid": "lbl-cat",
+        "currentLabelName": "Cat",
+        "proposedLabelUuid": "lbl-dog",
+        "proposedLabelName": "Dog",
+        "confidence": 0.81,
     },
     {
-        "bboxUuid": "bbox-2", "imageUuid": "img-2", "imagePath": "folder/image2.jpg",
-        "currentLabelUuid": "lbl-dog", "currentLabelName": "Dog",
-        "proposedLabelUuid": "lbl-cat", "proposedLabelName": "Cat", "confidence": 0.77,
+        "bboxUuid": "bbox-2",
+        "imageUuid": "img-2",
+        "imagePath": "folder/image2.jpg",
+        "currentLabelUuid": "lbl-dog",
+        "currentLabelName": "Dog",
+        "proposedLabelUuid": "lbl-cat",
+        "proposedLabelName": "Cat",
+        "confidence": 0.77,
     },
 ]
 
@@ -241,6 +286,7 @@ CANDIDATES = [
 # ---------------------------------------------------------------------------
 # Button + dialog basics
 # ---------------------------------------------------------------------------
+
 
 class TestRunModelButton:
     def test_button_visible(self, page: Page, base_url: str):
@@ -284,6 +330,7 @@ class TestRunModelButton:
 # ---------------------------------------------------------------------------
 # Full run: launch -> poll -> result -> handoff to the Chunk-C placeholder
 # ---------------------------------------------------------------------------
+
 
 class TestRunModelFullFlow:
     def test_run_sends_expected_task_params_and_completes(self, page: Page, base_url: str):
@@ -364,30 +411,56 @@ class TestRunModelFullFlow:
         cancel_called = {"n": 0}
 
         def handle_create(route: Route):
-            route.fulfill(status=200, content_type="application/json", body=json.dumps({"status": "success", "configUuid": "cfg-1"}))
+            route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps({"status": "success", "configUuid": "cfg-1"}),
+            )
+
         page.route("**/api/tasks/configs/create", handle_create)
 
         def handle_start(route: Route):
-            route.fulfill(status=200, content_type="application/json", body=json.dumps({"status": "success", "taskUuid": "task-1"}))
+            route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps({"status": "success", "taskUuid": "task-1"}),
+            )
+
         page.route("**/api/tasks/instances/start", handle_start)
 
         def handle_get(route: Route):
             route.fulfill(
-                status=200, content_type="application/json",
-                body=json.dumps({
-                    "status": "success",
-                    "tasks": {"task-1": {
-                        "config": {"uuid": "cfg-1", "typename": "PreviewModelRelabelTask", "name": "x", "params": {}},
-                        "instance": {"uuid": "task-1", "status": "running"},
-                        "progress": 10.0, "statusMessage": "", "statusActions": [], "logLines": [], "isPausedInPlace": False,
-                    }},
-                }),
+                status=200,
+                content_type="application/json",
+                body=json.dumps(
+                    {
+                        "status": "success",
+                        "tasks": {
+                            "task-1": {
+                                "config": {
+                                    "uuid": "cfg-1",
+                                    "typename": "PreviewModelRelabelTask",
+                                    "name": "x",
+                                    "params": {},
+                                },
+                                "instance": {"uuid": "task-1", "status": "running"},
+                                "progress": 10.0,
+                                "statusMessage": "",
+                                "statusActions": [],
+                                "logLines": [],
+                                "isPausedInPlace": False,
+                            }
+                        },
+                    }
+                ),
             )
+
         page.route("**/api/tasks/instances/get", handle_get)
 
         def handle_cancel(route: Route):
             cancel_called["n"] += 1
             route.fulfill(status=200, content_type="application/json", body=json.dumps({"status": "success"}))
+
         page.route("**/api/tasks/instances/cancel", handle_cancel)
         page.route("**/api/tasks/instances/delete", handle_cancel)
 
@@ -411,6 +484,7 @@ class TestRunModelFullFlow:
 # Caps — hard refuse only (>5000). There's no soft warn+confirm step: a run
 # even at the hard cap only takes a few seconds, so there's nothing to gate on.
 # ---------------------------------------------------------------------------
+
 
 class TestRunModelCaps:
     def _setup(self, page: Page, base_url: str):
@@ -492,19 +566,34 @@ class TestRunModelCaps:
 # grouping-by-proposed-label is exercised.
 CANDIDATES_MIXED = [
     {
-        "bboxUuid": "bbox-1", "imageUuid": "img-1", "imagePath": "folder/image1.jpg",
-        "currentLabelUuid": "lbl-cat", "currentLabelName": "Cat",
-        "proposedLabelUuid": "lbl-dog", "proposedLabelName": "Dog", "confidence": 0.55,
+        "bboxUuid": "bbox-1",
+        "imageUuid": "img-1",
+        "imagePath": "folder/image1.jpg",
+        "currentLabelUuid": "lbl-cat",
+        "currentLabelName": "Cat",
+        "proposedLabelUuid": "lbl-dog",
+        "proposedLabelName": "Dog",
+        "confidence": 0.55,
     },
     {
-        "bboxUuid": "bbox-2", "imageUuid": "img-2", "imagePath": "folder/image2.jpg",
-        "currentLabelUuid": "lbl-dog", "currentLabelName": "Dog",
-        "proposedLabelUuid": "lbl-cat", "proposedLabelName": "Cat", "confidence": 0.91,
+        "bboxUuid": "bbox-2",
+        "imageUuid": "img-2",
+        "imagePath": "folder/image2.jpg",
+        "currentLabelUuid": "lbl-dog",
+        "currentLabelName": "Dog",
+        "proposedLabelUuid": "lbl-cat",
+        "proposedLabelName": "Cat",
+        "confidence": 0.91,
     },
     {
-        "bboxUuid": "bbox-3", "imageUuid": "img-1", "imagePath": "folder/image1.jpg",
-        "currentLabelUuid": "lbl-cat", "currentLabelName": "Cat",
-        "proposedLabelUuid": "lbl-dog", "proposedLabelName": "Dog", "confidence": 0.70,
+        "bboxUuid": "bbox-3",
+        "imageUuid": "img-1",
+        "imagePath": "folder/image1.jpg",
+        "currentLabelUuid": "lbl-cat",
+        "currentLabelName": "Cat",
+        "proposedLabelUuid": "lbl-dog",
+        "proposedLabelName": "Dog",
+        "confidence": 0.70,
     },
 ]
 
@@ -646,12 +735,16 @@ class TestRelabelConfirmationModal:
 
     def test_empty_candidates_with_stats_explains_why(self, page: Page, base_url: str):
         self._setup(page, base_url)
-        _open_confirm_modal(page, [], stats={
-            "imagesFailed": 3,
-            "noDetectionCount": 5,
-            "noOpCount": 7,
-            "sampleErrors": ["img-1: FileNotFoundError: /data/img-1.jpg"],
-        })
+        _open_confirm_modal(
+            page,
+            [],
+            stats={
+                "imagesFailed": 3,
+                "noDetectionCount": 5,
+                "noOpCount": 7,
+                "sampleErrors": ["img-1: FileNotFoundError: /data/img-1.jpg"],
+            },
+        )
 
         modal = page.locator(".relabel-confirm-modal")
         expect(modal).to_be_visible()

@@ -17,6 +17,7 @@ Model nodes now carry `modelType` + `architecture` instead of the old flat
 Run with:
     pytest playwright_tests/test_configuration_model_configs.py -p no:xdist -p no:asyncio -v
 """
+
 import json
 
 import pytest
@@ -35,8 +36,8 @@ EXISTING_CONFIG = {
     "name": "Animal Detector",
     "description": "Cats & dogs",
     "nodes": [
-        {"uuid": "node-root", "labelUuid": None,      "modelType": "object_detection", "architecture": "yolo_v9_c"},
-        {"uuid": "node-cat",  "labelUuid": "lbl-cat", "modelType": "crop_classifier",  "architecture": "efficientnet_b0"},
+        {"uuid": "node-root", "labelUuid": None, "modelType": "object_detection", "architecture": "yolo_v9_c"},
+        {"uuid": "node-cat", "labelUuid": "lbl-cat", "modelType": "crop_classifier", "architecture": "efficientnet_b0"},
     ],
 }
 
@@ -61,13 +62,15 @@ def _mock_model_configs(page: Page, configs: list | None = None):
     configs = configs or []
     page.route(
         lambda url: url.split("?")[0].endswith("/api/model-configs"),
-        lambda route: route.fulfill(
-            status=200,
-            content_type="application/json",
-            body=json.dumps({"status": "success", "configs": configs}),
-        )
-        if route.request.method == "GET"
-        else route.fallback(),
+        lambda route: (
+            route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps({"status": "success", "configs": configs}),
+            )
+            if route.request.method == "GET"
+            else route.fallback()
+        ),
     )
 
 
@@ -154,13 +157,15 @@ class TestModelConfigPaneStructure:
 
         # First select: model type — must include known types
         type_options = selects.first.locator("option").all_text_contents()
-        assert any("Object Detection" in o or "Crop Classifier" in o or "Image Classifier" in o
-                   for o in type_options), f"Expected model type options; got: {type_options}"
+        assert any(
+            "Object Detection" in o or "Crop Classifier" in o or "Image Classifier" in o for o in type_options
+        ), f"Expected model type options; got: {type_options}"
 
         # Second select: architecture — must include YOLO variants for the default OD type
         arch_options = selects.nth(1).locator("option").all_text_contents()
-        assert any("YOLO" in o or "yolo" in o.lower() for o in arch_options), \
-            f"Expected architecture options; got: {arch_options}"
+        assert any(
+            "YOLO" in o or "yolo" in o.lower() for o in arch_options
+        ), f"Expected architecture options; got: {arch_options}"
 
 
 # ---------------------------------------------------------------------------
@@ -182,10 +187,12 @@ class TestCreateModelConfig:
             route.fulfill(
                 status=200,
                 content_type="application/json",
-                body=json.dumps({
-                    "status": "success",
-                    "config": {"uuid": "cfg-new", "name": "My Config", "description": "", "nodes": []},
-                }),
+                body=json.dumps(
+                    {
+                        "status": "success",
+                        "config": {"uuid": "cfg-new", "name": "My Config", "description": "", "nodes": []},
+                    }
+                ),
             )
 
         page.route(
@@ -277,11 +284,14 @@ class TestEditModelConfig:
         def handle_patch(route: Route):
             calls.append(json.loads(route.request.post_data))
             updated = {**EXISTING_CONFIG, "name": "Animal Detector v2"}
-            route.fulfill(status=200, content_type="application/json",
-                          body=json.dumps({"status": "success", "config": updated}))
+            route.fulfill(
+                status=200, content_type="application/json", body=json.dumps({"status": "success", "config": updated})
+            )
 
-        page.route("**/api/model-configs/cfg-1",
-                   lambda route: handle_patch(route) if route.request.method == "PATCH" else route.fallback())
+        page.route(
+            "**/api/model-configs/cfg-1",
+            lambda route: handle_patch(route) if route.request.method == "PATCH" else route.fallback(),
+        )
 
         _navigate_to_model_configs(page, base_url)
         page.locator("#model-config-box [data-config-uuid='cfg-1']").click()
@@ -322,11 +332,16 @@ class TestClearAssignment:
 
         def handle_patch(route: Route):
             calls.append(json.loads(route.request.post_data))
-            route.fulfill(status=200, content_type="application/json",
-                          body=json.dumps({"status": "success", "config": EXISTING_CONFIG}))
+            route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps({"status": "success", "config": EXISTING_CONFIG}),
+            )
 
-        page.route("**/api/model-configs/cfg-1",
-                   lambda route: handle_patch(route) if route.request.method == "PATCH" else route.fallback())
+        page.route(
+            "**/api/model-configs/cfg-1",
+            lambda route: handle_patch(route) if route.request.method == "PATCH" else route.fallback(),
+        )
 
         _navigate_to_model_configs(page, base_url)
         page.locator("#model-config-box [data-config-uuid='cfg-1']").click()
@@ -337,8 +352,7 @@ class TestClearAssignment:
         cat_row.locator("input[type=checkbox]").first.click()  # uncheck
 
         # Unchecking clears the submodel too — its section label disappears
-        expect(page.locator("#model-config-box .panel-section-label",
-                            has_text="Sub-model overrides")).to_have_count(0)
+        expect(page.locator("#model-config-box .panel-section-label", has_text="Sub-model overrides")).to_have_count(0)
 
         _editor_bar(page).locator("button", has_text="Save").click()
         page.wait_for_timeout(700)
@@ -381,8 +395,7 @@ class TestDeleteModelConfig:
 
         def handle_delete(route: Route):
             calls.append(route.request.url)
-            route.fulfill(status=200, content_type="application/json",
-                          body=json.dumps({"status": "success"}))
+            route.fulfill(status=200, content_type="application/json", body=json.dumps({"status": "success"}))
 
         page.route(
             "**/api/model-configs/cfg-1",
@@ -410,11 +423,14 @@ class TestDeleteModelConfig:
         calls = []
         page.route(
             "**/api/model-configs/cfg-1",
-            lambda route: (calls.append(True),
-                           route.fulfill(status=200, content_type="application/json",
-                                         body=json.dumps({"status": "success"})))
-            if route.request.method == "DELETE"
-            else route.fallback(),
+            lambda route: (
+                (
+                    calls.append(True),
+                    route.fulfill(status=200, content_type="application/json", body=json.dumps({"status": "success"})),
+                )
+                if route.request.method == "DELETE"
+                else route.fallback()
+            ),
         )
 
         _navigate_to_model_configs(page, base_url)
@@ -450,13 +466,15 @@ BUNDLE_FOR_OTHER = {**BUNDLE_FOR_CFG1, "uuid": "b-2", "name": "other-v1", "model
 def _mock_model_bundles(page: Page, bundles: list | None = None):
     page.route(
         lambda url: url.split("?")[0].endswith("/api/model-bundles"),
-        lambda route: route.fulfill(
-            status=200,
-            content_type="application/json",
-            body=json.dumps({"status": "success", "bundles": bundles or []}),
-        )
-        if route.request.method == "GET"
-        else route.fallback(),
+        lambda route: (
+            route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps({"status": "success", "bundles": bundles or []}),
+            )
+            if route.request.method == "GET"
+            else route.fallback()
+        ),
     )
 
 
@@ -555,7 +573,8 @@ class TestModelTreePanel:
         page.wait_for_timeout(500)
 
         expect(page.locator("#model-config-box .mtp-bundles")).to_contain_text(
-            "No bundles trained from this blueprint yet")
+            "No bundles trained from this blueprint yet"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -568,29 +587,49 @@ BUNDLE_WITH_ARTIFACT_DETAILS = {
     "description": "",
     "modelConfigUuid": "cfg-1",
     "bundlePath": "/models/bundles/detailed-v1",
-    "manifestJson": {"artifacts": [
-        {
-            "role": "top", "node_uuid": "node-root", "label_uuid": None,
-            "label_uuids": ["lbl-cat", "lbl-dog"], "model_name": "detailed_top", "val_accuracy": 0.912,
-        },
-        {
-            "role": "submodel", "node_uuid": "node-cat", "label_uuid": "lbl-cat",
-            "label_uuids": [], "model_name": "detailed_sub_cat", "val_accuracy": 0.845,
-        },
-    ]},
+    "manifestJson": {
+        "artifacts": [
+            {
+                "role": "top",
+                "node_uuid": "node-root",
+                "label_uuid": None,
+                "label_uuids": ["lbl-cat", "lbl-dog"],
+                "model_name": "detailed_top",
+                "val_accuracy": 0.912,
+            },
+            {
+                "role": "submodel",
+                "node_uuid": "node-cat",
+                "label_uuid": "lbl-cat",
+                "label_uuids": [],
+                "model_name": "detailed_sub_cat",
+                "val_accuracy": 0.845,
+            },
+        ]
+    },
     "trainingConfigUuids": [],
     "createdAt": "2026-06-05T00:00:00",
 }
 
 TRAINING_TARGET_TOP = {
-    "nodeUuid": "node-root", "role": "top", "labelUuid": None,
-    "modelType": "object_detection", "architecture": "yolo_v9_c",
-    "labelUuids": ["lbl-cat", "lbl-dog"], "classNames": ["Cat", "Dog"], "classRemap": {},
+    "nodeUuid": "node-root",
+    "role": "top",
+    "labelUuid": None,
+    "modelType": "object_detection",
+    "architecture": "yolo_v9_c",
+    "labelUuids": ["lbl-cat", "lbl-dog"],
+    "classNames": ["Cat", "Dog"],
+    "classRemap": {},
 }
 TRAINING_TARGET_SUB = {
-    "nodeUuid": "node-cat", "role": "submodel", "labelUuid": "lbl-cat",
-    "modelType": "crop_classifier", "architecture": "efficientnet_b0",
-    "labelUuids": ["lbl-kitten"], "classNames": ["Kitten"], "classRemap": {},
+    "nodeUuid": "node-cat",
+    "role": "submodel",
+    "labelUuid": "lbl-cat",
+    "modelType": "crop_classifier",
+    "architecture": "efficientnet_b0",
+    "labelUuids": ["lbl-kitten"],
+    "classNames": ["Kitten"],
+    "classRemap": {},
 }
 
 DATASET_ALPHA = {"uuid": "ds-alpha", "name": "Alpha Dataset", "description": "", "filterJson": {}, "labelUuids": []}
@@ -599,13 +638,15 @@ DATASET_ALPHA = {"uuid": "ds-alpha", "name": "Alpha Dataset", "description": "",
 def _mock_datasets(page: Page, datasets: list | None = None):
     page.route(
         lambda url: url.split("?")[0].endswith("/api/datasets"),
-        lambda route: route.fulfill(
-            status=200,
-            content_type="application/json",
-            body=json.dumps({"status": "success", "datasets": datasets or []}),
-        )
-        if route.request.method == "GET"
-        else route.fallback(),
+        lambda route: (
+            route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps({"status": "success", "datasets": datasets or []}),
+            )
+            if route.request.method == "GET"
+            else route.fallback()
+        ),
     )
 
 
@@ -709,10 +750,14 @@ class TestTrainAllToBundle:
         captured = []
         page.route(
             "**/api/tasks/configs/create",
-            lambda route: (captured.append(1), route.fulfill(
-                status=200, content_type="application/json",
-                body=json.dumps({"status": "success", "configUuid": "tc-new"}),
-            ))[-1],
+            lambda route: (
+                captured.append(1),
+                route.fulfill(
+                    status=200,
+                    content_type="application/json",
+                    body=json.dumps({"status": "success", "configUuid": "tc-new"}),
+                ),
+            )[-1],
         )
 
         _navigate_to_model_configs(page, base_url)
@@ -775,9 +820,16 @@ class TestComposeBundleFromArtifacts:
             route.fulfill(
                 status=200,
                 content_type="application/json",
-                body=json.dumps({"status": "success", "bundle": {
-                    **BUNDLE_WITH_ARTIFACT_DETAILS, "uuid": "b-new", "name": "composed-v1",
-                }}),
+                body=json.dumps(
+                    {
+                        "status": "success",
+                        "bundle": {
+                            **BUNDLE_WITH_ARTIFACT_DETAILS,
+                            "uuid": "b-new",
+                            "name": "composed-v1",
+                        },
+                    }
+                ),
             )
 
         page.route(
