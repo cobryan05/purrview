@@ -21,6 +21,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import numpy as np
 import pytest
 
+from apps.helpers.bboxUtils import iou_xywh
 from apps.helpers.imageProviders.imageProvider import (
     ImageProvider,
     ImageProviderMetadata,
@@ -29,7 +30,6 @@ from apps.helpers.imageProviders.imageProvider import (
 from apps.tasks_server.tasks.CollectTrainingImagesTask import (
     SAME_BBOX_IOU_THRESHOLD,
     CollectTrainingImagesTask,
-    _bbox_iou,
 )
 
 # ─── Shared constants ─────────────────────────────────────────────────────────
@@ -352,7 +352,7 @@ async def test_run_inference_keeps_non_overlapping_boxes():
     assert matching == [box_a, box_b]
 
 
-# ─── _bbox_iou unit tests ─────────────────────────────────────────────────────
+# ─── iou_xywh unit tests (shared IoU primitive) ─────────────────────────────────────────────────────
 
 
 def _box(x, y, w, h):
@@ -365,14 +365,14 @@ def _box(x, y, w, h):
 def test_bbox_iou_identical_boxes_returns_one():
     """Two identical boxes have IoU of exactly 1.0."""
     box = _box(0.1, 0.1, 0.4, 0.4)
-    assert _bbox_iou(box, box) == pytest.approx(1.0)
+    assert iou_xywh(box, box) == pytest.approx(1.0)
 
 
 def test_bbox_iou_no_overlap_returns_zero():
     """Boxes that don't touch have IoU of 0.0."""
     a = _box(0.0, 0.0, 0.2, 0.2)
     b = _box(0.5, 0.5, 0.2, 0.2)
-    assert _bbox_iou(a, b) == 0.0
+    assert iou_xywh(a, b) == 0.0
 
 
 def test_bbox_iou_at_threshold_triggers_dedup():
@@ -388,7 +388,7 @@ def test_bbox_iou_at_threshold_triggers_dedup():
     # union = 1 + 1 - 0.81 = 1.19 → IoU ≈ 0.6807 >= 0.65
     a = _box(0.0, 0.0, 1.0, 1.0)
     b = _box(0.1, 0.1, 1.0, 1.0)
-    iou = _bbox_iou(a, b)
+    iou = iou_xywh(a, b)
     assert iou >= SAME_BBOX_IOU_THRESHOLD, f"Expected IoU >= {SAME_BBOX_IOU_THRESHOLD}, got {iou}"
 
 
@@ -399,7 +399,7 @@ def test_bbox_iou_below_threshold_does_not_dedup():
     # union = 0.09 + 0.09 - 0.0025 = 0.1775 → IoU ≈ 0.014, well below 0.65
     a = _box(0.0, 0.0, 0.3, 0.3)
     b = _box(0.25, 0.25, 0.3, 0.3)
-    iou = _bbox_iou(a, b)
+    iou = iou_xywh(a, b)
     assert iou < SAME_BBOX_IOU_THRESHOLD
 
 

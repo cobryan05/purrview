@@ -771,14 +771,20 @@ class Manager:
         else:  # relabel
             assigning = bool(label_uuid)
             new_label = label_uuid if assigning else bbox.label_uuid
+            metadata_json = None
             if assigning:
                 new_tags = [u for u in current_tags if u not in _VERIFICATION_UUIDS] + [VERIFIED_TAG_UUID]
                 if bbox.label_uuid and label_uuid != bbox.label_uuid and bbox.phash:
                     self._hash_index.move_bbox(bbox.uuid, bbox.label_uuid, label_uuid, bbox.phash)
+                # A manual relabel supersedes any prior filter-chain relabel: drop the
+                # stashed original label so a later "revert filter-chain relabel" can't
+                # silently restore a now-stale label over the user's manual choice.
+                if bbox.metadata_json and "relabel_prev_label_uuid" in bbox.metadata_json:
+                    metadata_json = {k: v for k, v in bbox.metadata_json.items() if k != "relabel_prev_label_uuid"}
             else:
                 new_tags = current_tags
             await self._db_client.update_single_bbox(
-                bbox.uuid, new_label, new_tags, geometry=geometry if assigning else None
+                bbox.uuid, new_label, new_tags, metadata_json=metadata_json, geometry=geometry if assigning else None
             )
 
     async def bulk_apply_bboxes_by_uuids(

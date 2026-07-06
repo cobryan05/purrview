@@ -237,7 +237,9 @@ class Manager:
                 # so a probe can complete without ever being awaited again) —
                 # consume its result now rather than discarding it and
                 # starting a fresh probe/timer from scratch.
-                del self._probe_tasks[name]
+                # pop (not del): concurrent pollers can both reach this cleanup
+                # for the same task, so removal must be idempotent.
+                self._probe_tasks.pop(name, None)
                 return task.result()
             if task is None:
                 task = asyncio.create_task(_run_probe(name, base_url))
@@ -249,7 +251,9 @@ class Manager:
             # a second poll cycle just to report success.
             done, _pending = await asyncio.wait({task}, timeout=PROBE_INLINE_WAIT)
             if task in done:
-                del self._probe_tasks[name]
+                # pop (not del): another poller awaiting the same task may have
+                # already consumed and removed it after it resolved.
+                self._probe_tasks.pop(name, None)
                 return task.result()
 
             elapsed = time.monotonic() - self._probe_started_at[name]

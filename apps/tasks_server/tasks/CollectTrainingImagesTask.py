@@ -30,6 +30,7 @@ from inference_client.api.models_api import ModelsApi
 from inference_client.models.inference_payload import InferencePayload
 from inference_client.models.pin_model_payload import PinModelPayload
 
+from apps.helpers.bboxUtils import iou_xywh
 from apps.helpers.db.db_client import UNVERIFIED_TAG_UUID
 from apps.helpers.hashUtils import (
     PHASH_JPEG_QUALITY,
@@ -63,17 +64,6 @@ logger.setLevel(logging.DEBUG)
 # model's detection is kept. Kept as a module constant for now — may later be routed
 # to the task-config UI.
 SAME_BBOX_IOU_THRESHOLD = 0.65
-
-
-def _bbox_iou(a, b) -> float:
-    """Intersection-over-union of two bbox-like objects exposing x/y/width/height."""
-    inter_w = max(0.0, min(a.x + a.width, b.x + b.width) - max(a.x, b.x))
-    inter_h = max(0.0, min(a.y + a.height, b.y + b.height) - max(a.y, b.y))
-    inter = inter_w * inter_h
-    if inter <= 0.0:
-        return 0.0
-    union = (a.width * a.height) + (b.width * b.height) - inter
-    return inter / union if union > 0.0 else 0.0
 
 
 # _compute_jpeg_phashes has moved to apps.helpers.hashUtils as
@@ -767,7 +757,7 @@ class CollectTrainingImagesTask(Task):
             dominated = False
             to_supersede: list[int] = []
             for i, kept in enumerate(deduped):
-                if _bbox_iou(det.bbox, kept.bbox) < self._overlap_iou_threshold:
+                if iou_xywh(det.bbox, kept.bbox) < self._overlap_iou_threshold:
                     continue
                 kept_label = kept.bbox.label_uuid
                 if det_label == kept_label:

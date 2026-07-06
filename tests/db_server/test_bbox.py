@@ -276,6 +276,76 @@ async def test_bulk_apply_bboxes_relabel(http_client, image_file, label_uuid):
     assert UNVERIFIED_TAG_UUID not in tag_uuids
 
 
+async def test_manual_relabel_clears_filter_chain_revert_stash(http_client, image_file, label_uuid):
+    """A manual relabel of a filter-chain-relabeled bbox must drop the stashed
+    relabel_prev_label_uuid, so a later revertRelabel can't silently restore the
+    stale original label over the user's manual choice (it fails cleanly instead)."""
+    bid = str(uuid.uuid4())
+    r_prior = await http_client.post("/api/labels", json={"name": "orig_label", "color": "#654321"})
+    prior_label_uuid = r_prior.json()["label"]["uuid"]
+    r_manual = await http_client.post("/api/labels", json={"name": "manual_label", "color": "#00aa00"})
+    manual_label_uuid = r_manual.json()["label"]["uuid"]
+
+    # A bbox as left by ApplyFilterChainTask's relabel_bbox: current label + stashed prior.
+    await http_client.post(
+        "/api/images/metadata/update",
+        json={
+            "imagePath": "bbox_test.png",
+            "boxes": [
+                {
+                    "uuid": bid,
+                    "labelUuid": label_uuid,
+                    "x": 0.1,
+                    "y": 0.1,
+                    "width": 0.2,
+                    "height": 0.2,
+                    "tagUuids": [],
+                    "extra": {"relabel_prev_label_uuid": prior_label_uuid},
+                }
+            ],
+        },
+    )
+
+    # User manually relabels to a different label.
+    r = await http_client.post(
+        "/api/images/bbox/bulk-apply",
+        json={
+            "filter": {"showAllBboxes": True, "limit": 50},
+            "action": "relabel",
+            "labelUuid": manual_label_uuid,
+            "tagUuids": [],
+            "bboxTagFilter": [],
+            "bboxLabelFilter": [],
+            "showAllBboxes": True,
+        },
+    )
+    assert r.status_code == 200
+    assert r.json()["modifiedCount"] == 1
+
+    meta_r = await http_client.post("/api/images/metadata/get", json={"imagePath": "bbox_test.png"})
+    bboxes = meta_r.json()["image"]["bboxes"]
+    assert bboxes[0]["labelUuid"] == manual_label_uuid
+    # Stash is gone, so a revert cannot resurrect the stale original label.
+    assert "relabel_prev_label_uuid" not in (bboxes[0].get("extra") or {})
+
+    r_revert = await http_client.post(
+        "/api/images/bbox/bulk-apply",
+        json={
+            "filter": {"showAllBboxes": True, "limit": 50},
+            "action": "revertRelabel",
+            "tagUuids": [],
+            "bboxTagFilter": [],
+            "bboxLabelFilter": [],
+            "showAllBboxes": True,
+        },
+    )
+    assert r_revert.status_code == 200
+    assert r_revert.json()["modifiedCount"] == 0  # nothing to revert; manual label preserved
+
+    meta_r2 = await http_client.post("/api/images/metadata/get", json={"imagePath": "bbox_test.png"})
+    assert meta_r2.json()["image"]["bboxes"][0]["labelUuid"] == manual_label_uuid
+
+
 async def test_bulk_apply_bboxes_revert_relabel(http_client, image_file, label_uuid):
     """POST /api/images/bbox/bulk-apply with action=revertRelabel restores the
     prior label from metadata_json.relabel_prev_label_uuid and drops the tag(s)

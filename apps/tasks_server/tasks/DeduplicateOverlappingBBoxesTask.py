@@ -6,6 +6,8 @@ from db_client.api.images_api import ImagesApi
 from db_client.api.labels_api import LabelsApi
 from db_client.models.batch_by_uuids_payload import BatchByUuidsPayload
 
+from apps.helpers.bboxUtils import iou_xywh
+
 from .Registry import register_task
 from .Task import Task
 from .utils.labelHelper import build_label_ancestry_map
@@ -236,7 +238,7 @@ def _find_redundant_bboxes(
             if other.get("uuid") in to_delete:
                 continue
 
-            if _iou(bbox, other) < iou_threshold:
+            if iou_xywh(bbox, other) < iou_threshold:
                 continue
 
             o_label = other.get("labelUuid")
@@ -265,16 +267,3 @@ def _find_redundant_bboxes(
             kept.append(bbox)
 
     return to_delete
-
-
-def _iou(a: dict, b: dict) -> float:
-    """Intersection-over-union of two bbox dicts with x/y/width/height keys."""
-    ax, ay, aw, ah = a.get("x", 0), a.get("y", 0), a.get("width", 0), a.get("height", 0)
-    bx, by, bw, bh = b.get("x", 0), b.get("y", 0), b.get("width", 0), b.get("height", 0)
-    inter_w = max(0.0, min(ax + aw, bx + bw) - max(ax, bx))
-    inter_h = max(0.0, min(ay + ah, by + bh) - max(ay, by))
-    inter = inter_w * inter_h
-    if inter <= 0.0:
-        return 0.0
-    union = (aw * ah) + (bw * bh) - inter
-    return inter / union if union > 0.0 else 0.0

@@ -17,6 +17,7 @@ import base64
 import logging
 import os
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Dict, List, Optional
 from uuid import NAMESPACE_OID, uuid5
 
@@ -28,6 +29,7 @@ from db_client.models.add_tag_payload import AddTagPayload
 from db_client.models.batch_by_uuids_payload import BatchByUuidsPayload
 from db_client.models.bbox_patch_payload import BboxPatchPayload
 from db_client.models.get_image_metadata_payload import GetImageMetadataPayload
+from db_client.models.image_record_read import ImageRecordRead
 from db_client.models.image_search_params import ImageSearchParams
 from db_client.models.set_image_tag_payload import SetImageTagPayload
 from db_client.models.tag_kind import TagKind as ApiTagKind
@@ -39,10 +41,10 @@ from inference_client.models.pin_model_payload import PinModelPayload
 
 from apps import FILES_ROOT
 from apps.helpers.db.types import UNVERIFIED_TAG_UUID
-from apps.helpers.fileUtils import get_safe_path
-from apps.helpers.metadataUtils import get_model_metadata
+from apps.helpers.metadataUtils import get_model_metadata, validate_bare_model_name
 
 from ._filter_chain_runner import Detection, FilterChainRunner
+from ._image_loading import load_image_bytes
 from .Registry import register_task
 from .Task import Task
 
@@ -56,22 +58,8 @@ _CLASSIFIER_KINDS = {"image_classifier", "multi_label_classifier"}
 _SCOPE_PAGE_SIZE = 200
 
 
-def _validate_model_name(model_name: str) -> None:
-    """A FilterChainStep.model_name is joined onto _MODELS_ROOT to build a sidecar
-    path — reject anything that could escape the models root via separators or
-    '..' traversal (same guard as RunClassifierTask._init)."""
-    if (
-        not model_name
-        or "/" in model_name
-        or "\\" in model_name
-        or model_name in (".", "..")
-        or Path(model_name).is_absolute()
-    ):
-        raise ValueError(f"Invalid model_name {model_name!r}: must be a bare model name (no path separators or '..')")
-
-
 def _read_model_kind(model_name: str) -> str:
-    _validate_model_name(model_name)
+    validate_bare_model_name(model_name)
     model_path = _MODELS_ROOT / f"{model_name}.onnx"
     try:
         metadata = get_model_metadata(str(model_path), create_json_if_missing=False)
@@ -217,12 +205,21 @@ class ApplyFilterChainTask(Task):
             await self._check_pause()
 
             batch = stubs[batch_start : batch_start + self._batch_size]
+            # Fetch the whole batch's image records in one round-trip instead of
+            # one get_image_metadata call per image (an N+1 over up to max_images).
+            prefetched = await self._prefetch_batch_records(images_api, batch)
             for stub in batch:
                 if self._cancel_flag.is_set():
                     break
                 try:
                     changed = await self._process_image(
-                        images_api, tags_api, runner, stub, review_tag_uuid, review_tag_name
+                        images_api,
+                        tags_api,
+                        runner,
+                        stub,
+                        review_tag_uuid,
+                        review_tag_name,
+                        prefetched.get(getattr(stub, "uuid", None)),
                     )
                     if changed:
                         self._images_changed += 1
@@ -266,6 +263,34 @@ class ApplyFilterChainTask(Task):
             except Exception:
                 logger.exception("Failed to pin model %s", name)
 
+    async def _prefetch_batch_records(self, images_api: ImagesApi, batch: List[Any]) -> Dict[str, Any]:
+        """Batch-fetch full image records (bboxes + tags) for a batch of stubs in one
+        round-trip, keyed by uuid. batch_images_by_uuids returns camelCase dicts
+        (BatchImagesResponse.images: List[dict]); deserialize each into the same typed
+        ImageRecordRead that get_image_metadata returns so _process_image is unchanged.
+
+        Best-effort: any stub without a uuid, or any record that fails to fetch/parse,
+        is simply absent from the map — _process_image falls back to get_image_metadata
+        for it, so this can never change results, only save round-trips."""
+        uuids = [u for u in (getattr(s, "uuid", None) for s in batch) if u]
+        if not uuids:
+            return {}
+        try:
+            resp = await asyncio.to_thread(images_api.batch_images_by_uuids, BatchByUuidsPayload(image_uuids=uuids))
+        except Exception:
+            logger.exception("Batch image prefetch failed; falling back to per-image fetch")
+            return {}
+        records: Dict[str, Any] = {}
+        for raw in resp.images or []:
+            try:
+                record = ImageRecordRead.from_dict(raw)
+            except Exception:
+                logger.exception("Failed to parse prefetched image record; will refetch individually")
+                continue
+            if record is not None and record.uuid:
+                records[record.uuid] = record
+        return records
+
     async def _ensure_review_tag(self, tags_api: TagsApi, tag_uuid: str, tag_name: str) -> None:
         if self._review_tag_ensured:
             return
@@ -286,15 +311,23 @@ class ApplyFilterChainTask(Task):
         stub: Any,
         review_tag_uuid: str,
         review_tag_name: str,
+        prefetched_record: Any = None,
     ) -> bool:
         image_bytes = await self._load_image_bytes(stub.filename, images_api)
-        meta_resp = await asyncio.to_thread(
-            images_api.get_image_metadata, GetImageMetadataPayload(image_path=stub.filename)
-        )
-        if meta_resp.status != "success" or meta_resp.image is None:
-            return False
+        # Use the batched record when it already carries bboxes. An empty bbox
+        # list can mean the DB row hasn't been synced from its JSON sidecar yet,
+        # so fall back to get_image_metadata (which performs that sync) to keep
+        # behavior identical to the un-batched path.
+        image_record = prefetched_record if (prefetched_record is not None and prefetched_record.bboxes) else None
+        if image_record is None:
+            meta_resp = await asyncio.to_thread(
+                images_api.get_image_metadata, GetImageMetadataPayload(image_path=stub.filename)
+            )
+            if meta_resp.status != "success" or meta_resp.image is None:
+                return False
+            image_record = meta_resp.image
 
-        bboxes_by_uuid = {b.uuid: b for b in (meta_resp.image.bboxes or [])}
+        bboxes_by_uuid = {b.uuid: b for b in (image_record.bboxes or [])}
         existing = [
             {"uuid": b.uuid, "x": b.x, "y": b.y, "width": b.width, "height": b.height, "label_uuid": b.label_uuid}
             for b in bboxes_by_uuid.values()
@@ -406,7 +439,11 @@ class ApplyFilterChainTask(Task):
             if len(capped) < len(self._image_uuids):
                 self.log(f"image_uuids capped at max_images={self._max_images} (had {len(self._image_uuids)})")
             resp = await asyncio.to_thread(images_api.batch_images_by_uuids, BatchByUuidsPayload(image_uuids=capped))
-            return list(resp.images or [])
+            # batch_images_by_uuids serializes with by_alias=True, so its response
+            # images are plain camelCase dicts (BatchImagesResponse.images: List[dict]),
+            # not attribute objects. Normalize to the same (uuid, filename) stub shape
+            # the other scopes return so _process_image's `stub.filename` works.
+            return [SimpleNamespace(uuid=img.get("uuid"), filename=img.get("filename")) for img in (resp.images or [])]
 
         if self._directory:
             resp = await asyncio.to_thread(images_api.list_image_stubs)
@@ -466,19 +503,7 @@ class ApplyFilterChainTask(Task):
         return stubs
 
     async def _load_image_bytes(self, filename: str, images_api: ImagesApi) -> bytes:
-        # `filename` as stored/returned by the DB is FILES_ROOT-relative (or, in
-        # some cases, an absolute path under FILES_ROOT) — it is never valid to
-        # open() directly against the task-server process's cwd. Resolve it the
-        # same way db_server/manager.py does (get_safe_path handles both forms).
-        if self._image_source == "filesystem":
-            safe_path = get_safe_path(FILES_ROOT, Path(filename))
-            if safe_path is None:
-                raise FileNotFoundError(f"Refusing to read path outside FILES_ROOT: {filename!r}")
-            return await asyncio.to_thread(_read_file, str(safe_path))
-        resp = await asyncio.to_thread(images_api.get_image_file, filename, True)
-        if not resp.image_base64:
-            raise ValueError(f"No image data returned for {filename}")
-        return base64.b64decode(resp.image_base64)
+        return await load_image_bytes(filename, self._image_source, images_api, FILES_ROOT)
 
     def _build_resume_data(self) -> Dict[str, Any]:
         return {
@@ -577,8 +602,3 @@ class ApplyFilterChainTask(Task):
                 "description": "Count matches and report without changing anything.",
             },
         }
-
-
-def _read_file(filename: str) -> bytes:
-    with open(filename, "rb") as f:
-        return f.read()

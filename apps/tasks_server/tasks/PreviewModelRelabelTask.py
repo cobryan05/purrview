@@ -27,10 +27,8 @@ by displaying the raw class string) before being discarded.
 """
 
 import asyncio
-import base64
 import io
 import logging
-from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 
 from db_client.api.images_api import ImagesApi
@@ -41,10 +39,11 @@ from inference_client.models.pin_model_payload import PinModelPayload
 
 from apps import FILES_ROOT
 from apps.helpers.bboxUtils import iou_xywh
-from apps.helpers.fileUtils import get_safe_path
+from apps.helpers.metadataUtils import validate_bare_model_name
 
 from ._filter_chain_runner import Detection
-from .ApplyFilterChainTask import _CLASSIFIER_KINDS, _HttpInferenceBackend, _read_model_kind, _validate_model_name
+from ._image_loading import load_image_bytes
+from .ApplyFilterChainTask import _CLASSIFIER_KINDS, _HttpInferenceBackend, _read_model_kind
 from .Registry import register_task
 from .Task import Task
 
@@ -67,7 +66,7 @@ class PreviewModelRelabelTask(Task):
         self._model_name: str = str(params.get("model_name") or "")
         if not self._model_name:
             raise ValueError("model_name is required")
-        _validate_model_name(self._model_name)
+        validate_bare_model_name(self._model_name)
 
         self._conf_thresh: float = float(params.get("conf_thresh", 0.25))
         self._iou_thresh: float = float(params.get("iou_thresh", 0.5))
@@ -157,9 +156,7 @@ class PreviewModelRelabelTask(Task):
 
             batch = remaining[batch_start : batch_start + _IMAGE_BATCH_SIZE]
             try:
-                resp = await asyncio.to_thread(
-                    images_api.batch_images_by_uuids, BatchByUuidsPayload(image_uuids=batch)
-                )
+                resp = await asyncio.to_thread(images_api.batch_images_by_uuids, BatchByUuidsPayload(image_uuids=batch))
                 images_data = resp.images or []
             except Exception as e:
                 logger.exception("Failed to fetch image batch starting at index %d", batch_start)
@@ -322,9 +319,7 @@ class PreviewModelRelabelTask(Task):
             # Whole-image detections already share the bbox's coordinate space
             # (see module docstring), so the geometry needs no remapping.
             geometry = (
-                {"x": best.x, "y": best.y, "width": best.width, "height": best.height}
-                if best is not None
-                else None
+                {"x": best.x, "y": best.y, "width": best.width, "height": best.height} if best is not None else None
             )
             self._maybe_add_candidate(bbox, image_uuid, filename, label_names, best, best_label_uuid, geometry)
 
@@ -386,13 +381,20 @@ class PreviewModelRelabelTask(Task):
             # The detector ran on the cropped bbox, so `best`'s coordinates are
             # relative to the crop, not the full image — remap into the same
             # image-relative space the bbox itself uses before proposing it.
+            # Use the *clamped* crop region (left/top/right/bottom), not the raw
+            # bbox width/height: a bbox extending past the image edge is cropped
+            # smaller, so scaling by the unclamped width/height would overshoot.
             geometry = None
             if best is not None:
+                crop_rx = left / img_w
+                crop_ry = top / img_h
+                crop_rw = (right - left) / img_w
+                crop_rh = (bottom - top) / img_h
                 geometry = {
-                    "x": x + best.x * width,
-                    "y": y + best.y * height,
-                    "width": best.width * width,
-                    "height": best.height * height,
+                    "x": crop_rx + best.x * crop_rw,
+                    "y": crop_ry + best.y * crop_rh,
+                    "width": best.width * crop_rw,
+                    "height": best.height * crop_rh,
                 }
             self._maybe_add_candidate(bbox, image_uuid, filename, label_names, best, best_label_uuid, geometry)
 
@@ -403,23 +405,7 @@ class PreviewModelRelabelTask(Task):
         return buf.getvalue()
 
     async def _load_image_bytes(self, filename: str, images_api: ImagesApi) -> bytes:
-        # The task runs where FILES_ROOT is mounted, so a local read avoids a
-        # base64 HTTP round-trip per image (mirrors ApplyFilterChainTask). The
-        # HTTP path stays as a fallback for image_source != "filesystem".
-        #
-        # `filename` as stored/returned by the DB is FILES_ROOT-relative (or, in
-        # some cases, an absolute path under FILES_ROOT) — it is never valid to
-        # open() directly against the task-server process's cwd. Resolve it the
-        # same way db_server/manager.py does (get_safe_path handles both forms).
-        if self._image_source == "filesystem":
-            safe_path = get_safe_path(FILES_ROOT, Path(filename))
-            if safe_path is None:
-                raise FileNotFoundError(f"Refusing to read path outside FILES_ROOT: {filename!r}")
-            return await asyncio.to_thread(_read_file, str(safe_path))
-        resp = await asyncio.to_thread(images_api.get_image_file, filename, True)
-        if not resp.image_base64:
-            raise ValueError(f"No image data returned for {filename}")
-        return base64.b64decode(resp.image_base64)
+        return await load_image_bytes(filename, self._image_source, images_api, FILES_ROOT)
 
     def _build_resume_data(self) -> Dict[str, Any]:
         return {
@@ -507,8 +493,3 @@ class PreviewModelRelabelTask(Task):
                 "description": f"Explicit list of bbox UUIDs to preview relabels for (hard cap {_MAX_BBOX_UUIDS}).",
             },
         }
-
-
-def _read_file(filename: str) -> bytes:
-    with open(filename, "rb") as f:
-        return f.read()

@@ -296,6 +296,32 @@ class TestBboxCropMode:
         candidates = await self._run_process_image(task, detections=[])
         assert candidates == []
 
+    async def test_bbox_crop_remaps_geometry_using_clamped_crop_region(self):
+        # A candidate bbox extends past the image's right/bottom edge, so the crop
+        # is clamped to the visible region. The detection covers the whole crop, so
+        # the proposed geometry must equal the *clamped* image-relative region —
+        # remapping with the unclamped bbox width/height overshoots past the image.
+        task = _make_task(_base_params(crop_mode="bbox"))
+        await task._init(task._params, None)
+        task._name_to_label_uuid = {}
+        task._load_image_bytes = AsyncMock(return_value=self._make_image_bytes(width=100, height=100))
+        # bbox spans image-relative [0.8, 0.8]..[1.2, 1.2]; clamped to [0.8,0.8]..[1.0,1.0].
+        img = _image(bboxes=[_bbox(uuid="bbox-1", label_uuid="cat", x=0.8, y=0.8, width=0.4, height=0.4)])
+        detections = [Detection(x=0.0, y=0.0, width=1.0, height=1.0, confidence=0.9, label_uuid="dog")]
+        await task._process_image(
+            images_api=MagicMock(),
+            backend=_FakeBackend(detections),
+            img=img,
+            label_names={"cat": "Cat", "dog": "Dog"},
+        )
+        assert len(task._candidates) == 1
+        geom = task._candidates[0]["geometry"]
+        # Visible crop is [0.8,0.8]..[1.0,1.0] => width/height 0.2, not the unclamped 0.4.
+        assert geom["x"] == pytest.approx(0.8, abs=0.01)
+        assert geom["y"] == pytest.approx(0.8, abs=0.01)
+        assert geom["width"] == pytest.approx(0.2, abs=0.01)
+        assert geom["height"] == pytest.approx(0.2, abs=0.01)
+
 
 class TestCropModeGuard:
     async def test_invalid_crop_mode_raises(self):

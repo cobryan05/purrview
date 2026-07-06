@@ -100,6 +100,23 @@ class TestProbeSoftHardTimeouts:
             assert notices[0]["level"] == "warning"
             assert "not responding" in notices[0]["message"].lower()
 
+    async def test_concurrent_pollers_do_not_double_delete_probe_task(self, manager):
+        """The cached /notices endpoint and the uncached SSE notices stream can
+        both call get_all_service_status concurrently. When they await the same
+        in-flight probe task and it resolves during the inline-wait window, both
+        reach the cleanup branch — removing the task from _probe_tasks must be
+        idempotent, else the second poller raises KeyError deleting a key the
+        first already removed."""
+        # Small nonzero delay: long enough for every concurrent poller to reach
+        # `await asyncio.wait(...)` on the shared task before it resolves, short
+        # enough to resolve inside PROBE_INLINE_WAIT so they all hit the branch.
+        _install_slow_get(manager, delay=_INLINE * 0.4)
+
+        results = await asyncio.gather(*[manager.get_all_service_status() for _ in range(16)])
+        assert len(results) == 16
+        for statuses in results:
+            assert isinstance(statuses, list)
+
     async def test_recovers_to_healthy_after_waiting(self, manager):
         """Once a slow-but-in-flight probe finally resolves successfully, the
         next poll should reflect that — no notice."""

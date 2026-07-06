@@ -10,11 +10,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from apps.helpers.metadataUtils import validate_bare_model_name
 from apps.tasks_server.tasks._filter_chain_runner import Detection
-from apps.tasks_server.tasks.ApplyFilterChainTask import (
-    ApplyFilterChainTask,
-    _validate_model_name,
-)
+from apps.tasks_server.tasks.ApplyFilterChainTask import ApplyFilterChainTask
 
 _MOCK_MANAGER = MagicMock()
 _MOCK_MANAGER.update_task_heartbeat = AsyncMock()
@@ -62,7 +60,12 @@ def _bbox(uuid="bbox-1", label_uuid="cat", x=0.1, y=0.1, width=0.2, height=0.2, 
 
 
 def _stub(uuid="img-1", filename="/tmp/x.jpg"):
-    return MagicMock(uuid=uuid, filename=filename)
+    # Mirrors batch_images_by_uuids' real payload: it serializes with
+    # by_alias=True, so BatchImagesResponse.images is a List[dict] of camelCase
+    # records — NOT attribute objects. Using a dict here keeps the image_uuids
+    # scope tests faithful (an object mock would mask the `stub.filename`
+    # AttributeError that silently skipped every image).
+    return {"uuid": uuid, "filename": filename}
 
 
 class TestScopeValidation:
@@ -89,12 +92,12 @@ class TestScopeValidation:
 
 class TestValidateModelName:
     def test_bare_name_ok(self):
-        _validate_model_name("my_model")  # does not raise
+        validate_bare_model_name("my_model")  # does not raise
 
     @pytest.mark.parametrize("bad_name", ["../etc/passwd", "a/b", "a\\b", "..", ".", "", "/etc/passwd"])
     def test_rejects_path_traversal(self, bad_name):
         with pytest.raises(ValueError, match="Invalid model_name"):
-            _validate_model_name(bad_name)
+            validate_bare_model_name(bad_name)
 
 
 class TestRunEndToEnd:
@@ -218,6 +221,53 @@ class TestRunEndToEnd:
 
         assert result["bboxes_stripped"] == 1
         mock_images_api.delete_bbox.assert_called_once_with("bbox-unverified")
+
+    async def test_batch_prefetch_avoids_per_image_metadata_fetch(self, tmp_path):
+        from apps.helpers.db.types import UNVERIFIED_TAG_UUID
+
+        # When batch_images_by_uuids already returns an image's bboxes, the per-image
+        # get_image_metadata round-trip (the old N+1) must be skipped entirely.
+        img_path = tmp_path / "a.jpg"
+        img_path.write_bytes(b"fake")
+
+        image_dict = {
+            "uuid": "img-1",
+            "filename": str(img_path),
+            "bboxes": [
+                {
+                    "uuid": "bbox-unverified",
+                    "x": 0.1,
+                    "y": 0.1,
+                    "width": 0.2,
+                    "height": 0.2,
+                    "labelUuid": "cat",
+                    "tags": [{"uuid": UNVERIFIED_TAG_UUID, "name": "unverified"}],
+                },
+            ],
+        }
+
+        mock_images_api = MagicMock()
+        mock_images_api.batch_images_by_uuids.return_value = MagicMock(images=[image_dict])
+        mock_images_api.delete_bbox.return_value = MagicMock()
+
+        step = _step(model_name="blurry", action="strip_unverified_bboxes", confidence=0.5)
+        patches = self._patch_common([step], mock_images_api)
+
+        task = _make_task({"filter_chain_uuid": "chain-1", "image_uuids": ["img-1"]})
+        with (
+            patches,
+            patch("apps.tasks_server.tasks.ApplyFilterChainTask._read_model_kind", return_value="image_classifier"),
+            patch(
+                "apps.tasks_server.tasks.ApplyFilterChainTask._HttpInferenceBackend.classify_whole_image",
+                new=AsyncMock(return_value=0.9),
+            ),
+        ):
+            await task._init(task._params, None)
+            result = await task._run()
+
+        assert result["bboxes_stripped"] == 1
+        mock_images_api.delete_bbox.assert_called_once_with("bbox-unverified")
+        mock_images_api.get_image_metadata.assert_not_called()
 
     async def test_relabel_bbox_stashes_prior_label_and_stamps_review_tag(self, tmp_path):
         img_path = tmp_path / "a.jpg"
