@@ -18,11 +18,8 @@ import httpx
 
 from apps.helpers.curatedModels import get_curated_model
 from apps.helpers.metadataUtils import (
-    DEFAULT_MODEL_DEVICE,
-    get_model_metadata,
-    save_model_json_metadata,
     validate_bare_model_name,
-    validate_onnx_bytes,
+    write_onnx_with_sidecar,
 )
 
 from .Registry import register_task
@@ -55,7 +52,6 @@ class ImportModelTask(Task):
         self._display_name: str = self._curated_entry["display_name"]
 
         self._model_path: Path = _MODELS_ROOT / f"{self._model_name}.onnx"
-        self._sidecar_path: Path = self._model_path.with_suffix(".json")
 
         # Fail fast (before downloading anything) if the target already exists.
         if self._model_path.exists() and not self._overwrite:
@@ -77,28 +73,14 @@ class ImportModelTask(Task):
             resp.raise_for_status()
             onnx_bytes = resp.content
 
-        self.log(f"Downloaded {len(onnx_bytes)} bytes; validating...")
-        # Validate before touching disk: a corrupted/truncated download must not leave
-        # an unparseable orphan file, and (on overwrite) must not clobber a previously
-        # working model.
-        await asyncio.to_thread(validate_onnx_bytes, onnx_bytes)
-
-        self.log(f"Writing to {self._model_path}")
-        self._model_path.parent.mkdir(parents=True, exist_ok=True)
-
-        if self._overwrite and self._sidecar_path.exists():
-            # Drop the stale sidecar first so get_model_metadata regenerates it fresh
-            # from the new ONNX's own `names` metadata instead of merging in the old
-            # model's classes/class_map.
-            self._sidecar_path.unlink()
-
-        await asyncio.to_thread(self._model_path.write_bytes, onnx_bytes)
-
-        metadata = await asyncio.to_thread(get_model_metadata, str(self._model_path))
-        metadata["model_family"] = self._model_family
-        metadata.setdefault("device", DEFAULT_MODEL_DEVICE)
-        metadata.setdefault("class_map", {})
-        await asyncio.to_thread(save_model_json_metadata, str(self._model_path), metadata)
+        self.log(f"Downloaded {len(onnx_bytes)} bytes; validating and writing to {self._model_path}")
+        metadata = await asyncio.to_thread(
+            write_onnx_with_sidecar,
+            str(self._model_path),
+            onnx_bytes,
+            overwrite=self._overwrite,
+            extra_metadata={"model_family": self._model_family, "class_map": {}},
+        )
 
         self.log("Import complete")
         return {"model_name": self._model_name, "classes": metadata.get("classes", [])}

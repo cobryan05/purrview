@@ -232,7 +232,7 @@ class ModelConverter(Trainer):
                 shutil.copy2(exported_path, onnx_path)
 
             model_family = "ultralytics_yolov8"
-            class_list = [str(name) for _, name in sorted(names.items(), key=lambda kv: int(kv[0]))]
+            class_list = _libreyolo_class_names({"names": names})
 
         sidecar = {
             "model_family": model_family,

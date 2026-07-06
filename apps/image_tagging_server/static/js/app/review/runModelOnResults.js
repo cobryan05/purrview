@@ -177,8 +177,6 @@ function _labelChip(name, uuid, labels) {
  *   geometry: ?{x: number, y: number, width: number, height: number}}>} candidates
  * @param {Object} ctx
  * @param {string} ctx.modelName - detector used to generate the candidates.
- * @param {number} ctx.confThresh
- * @param {number} ctx.iouThresh
  * @param {() => void} ctx.refresh - reload the current review-panel page (e.g. `render()`).
  * @param {Map<string, object>} ctx.labels - label lookup, for display.
  * @param {{imagesFailed: number, noDetectionCount: number, noOpCount: number,
@@ -694,8 +692,6 @@ async function _showRunDialog(scope, ctx) {
       close();
       await openRelabelConfirmationModal(candidates, {
         modelName,
-        confThresh,
-        iouThresh,
         refresh: ctx.refresh,
         labels: ctx.labels,
         stats,

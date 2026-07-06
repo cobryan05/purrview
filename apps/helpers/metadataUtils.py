@@ -5,7 +5,7 @@ import json
 import logging
 import sys
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 import onnx
 
@@ -133,3 +133,45 @@ def save_model_json_metadata(model_path: str, metadata: Dict[str, Any]) -> None:
     json_path = Path(model_path).with_suffix(".json")
     with open(json_path, "w") as f:
         f.write(json.dumps(metadata, indent=2))
+
+
+def write_onnx_with_sidecar(
+    model_path: str,
+    onnx_bytes: bytes,
+    *,
+    overwrite: bool,
+    extra_metadata: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Land an ONNX file and (re)generate its JSON sidecar. Returns the metadata.
+
+    Shared landing path for both the synchronous upload (inference_server.manager)
+    and the curated-download task (tasks_server.ImportModelTask):
+
+    - Validates the bytes before touching disk so a garbage/truncated file never
+      leaves an unparseable orphan or clobbers a working model on overwrite.
+    - On overwrite, drops any stale sidecar first so metadata regenerates fresh
+      from the new ONNX's own `names` instead of merging in the old model's
+      classes/class_map.
+    - Merges any `extra_metadata` (e.g. model_family, class_map) and defaults device.
+
+    Blocking (onnx.load + disk I/O); call under asyncio.to_thread from async code.
+    Callers are responsible for the pre-download existence check when they need to
+    fail fast before doing work.
+    """
+    path = Path(model_path)
+    sidecar_path = path.with_suffix(".json")
+
+    validate_onnx_bytes(onnx_bytes)
+
+    if overwrite and sidecar_path.exists():
+        sidecar_path.unlink()
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(onnx_bytes)
+
+    metadata = get_model_metadata(str(path))
+    if extra_metadata:
+        metadata.update(extra_metadata)
+    metadata.setdefault("device", DEFAULT_MODEL_DEVICE)
+    save_model_json_metadata(str(path), metadata)
+    return metadata
