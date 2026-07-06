@@ -51,10 +51,9 @@ logging.basicConfig()
 logger = logging.getLogger(__file__)
 logger.setLevel(logging.DEBUG)
 
-# Hard refusal ceiling on the candidate bbox list. The 1000-item *warning*
-# threshold (nudge the user to narrow their filter first) is a client-side
-# concern, handled in the review-browser UI, not here.
-_MAX_BBOX_UUIDS = 5000
+# No hard ceiling on the candidate bbox list: the review-browser UI *warns* the
+# user on large runs (and lets them cap the count), but "process all" is always
+# allowed, so this task accepts whatever bbox_uuids list it's handed.
 
 # Images fetched per batch_images_by_uuids round-trip.
 _IMAGE_BATCH_SIZE = 32
@@ -85,11 +84,6 @@ class PreviewModelRelabelTask(Task):
         bbox_uuids: List[str] = list(params.get("bbox_uuids") or [])
         if not bbox_uuids:
             raise ValueError("bbox_uuids is required")
-        if len(bbox_uuids) > _MAX_BBOX_UUIDS:
-            raise ValueError(
-                f"bbox_uuids has {len(bbox_uuids)} entries, exceeding the hard cap of "
-                f"{_MAX_BBOX_UUIDS}; narrow the filter before running the model"
-            )
         self._bbox_uuids: Set[str] = set(bbox_uuids)
 
         self._images_processed: int = resume_data.get("images_processed", 0) if resume_data else 0
@@ -490,6 +484,6 @@ class PreviewModelRelabelTask(Task):
                 "type": "list",
                 "label": "Candidate Bbox UUIDs",
                 "required": True,
-                "description": f"Explicit list of bbox UUIDs to preview relabels for (hard cap {_MAX_BBOX_UUIDS}).",
+                "description": "Explicit list of bbox UUIDs to preview relabels for.",
             },
         }

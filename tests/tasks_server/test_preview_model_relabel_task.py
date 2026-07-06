@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from apps.tasks_server.tasks._filter_chain_runner import Detection
-from apps.tasks_server.tasks.PreviewModelRelabelTask import _MAX_BBOX_UUIDS, PreviewModelRelabelTask
+from apps.tasks_server.tasks.PreviewModelRelabelTask import PreviewModelRelabelTask
 
 _MOCK_MANAGER = MagicMock()
 _MOCK_MANAGER.update_task_heartbeat = AsyncMock()
@@ -71,17 +71,13 @@ class TestGuards:
         with pytest.raises(ValueError, match="bbox_uuids"):
             await task._init(task._params, None)
 
-    async def test_over_cap_bbox_uuids_raises(self):
-        params = _base_params(bbox_uuids=[f"bbox-{i}" for i in range(_MAX_BBOX_UUIDS + 1)])
-        task = _make_task(params)
-        with pytest.raises(ValueError, match="exceeding the hard cap"):
-            await task._init(task._params, None)
-
-    async def test_exactly_at_cap_is_allowed(self):
-        params = _base_params(bbox_uuids=[f"bbox-{i}" for i in range(_MAX_BBOX_UUIDS)])
+    async def test_large_bbox_uuids_list_is_allowed(self):
+        # No hard ceiling — the client warns/caps large runs; the task accepts them.
+        n = 10_000
+        params = _base_params(bbox_uuids=[f"bbox-{i}" for i in range(n)])
         task = _make_task(params)
         await task._init(task._params, None)
-        assert len(task._bbox_uuids) == _MAX_BBOX_UUIDS
+        assert len(task._bbox_uuids) == n
 
     async def test_invalid_model_name_rejected(self):
         task = _make_task(_base_params(model_name="../escape"))

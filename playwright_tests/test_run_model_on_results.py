@@ -481,8 +481,9 @@ class TestRunModelFullFlow:
 
 
 # ---------------------------------------------------------------------------
-# Caps — hard refuse only (>5000). There's no soft warn+confirm step: a run
-# even at the hard cap only takes a few seconds, so there's nothing to gate on.
+# Large-run warning — no hard ceiling. Below WARN_THRESHOLD (1000) the run
+# dialog opens directly; above it, a warning modal lets the user cap how many
+# candidates to process (blank = all) or cancel.
 # ---------------------------------------------------------------------------
 
 
@@ -494,42 +495,11 @@ class TestRunModelCaps:
         _mock_models(page, ["yolo9-detector"])
         _navigate_to_review(page, base_url)
 
-    def test_hard_cap_refuses_without_opening_dialog(self, page: Page, base_url: str):
-        self._setup(page, base_url)
-
-        result = page.evaluate("""async () => {
+    def _start_flow(self, page: Page, count: int):
+        page.evaluate(
+            """async (count) => {
             const { runModelOnResultsFlow } = await import('/app-static/js/app/review/runModelOnResults.js');
-            const bboxes = Array.from({length: 5001}, (_, i) => ({ uuid: 'b' + i, labelUuid: 'lbl-cat', tags: [] }));
-            const visibleEntries = bboxes.map(b => ({ kind: 'bbox', bbox: b, img: { uuid: 'img-x' } }));
-            await runModelOnResultsFlow({
-                fetchImages: null,
-                filterPanel: { getState: () => ({ showAllBboxes: true, tagUuids: [], labelUuids: [] }) },
-                viewFilter: 'bboxes',
-                selectionKind: 'bbox',
-                selected: new Set(bboxes.map(b => b.uuid)),
-                visibleEntries,
-                bboxFilterFn: null,
-                labels: new Map(),
-                sortBy: 'created_at',
-                sortOrder: 'desc',
-                refresh: () => {},
-            });
-            return true;
-        }""")
-        assert result is True
-
-        expect(page.locator(".run-model-on-results-dialog")).to_have_count(0)
-        expect(page.locator("#toast-container")).to_contain_text("Too many candidates")
-
-    def test_below_hard_cap_opens_dialog_with_no_confirm_gate(self, page: Page, base_url: str):
-        self._setup(page, base_url)
-        _mock_thumbnails(page)
-        fake_task = _FakeTask()
-        fake_task.install(page, CANDIDATES)
-
-        page.evaluate("""async () => {
-            const { runModelOnResultsFlow } = await import('/app-static/js/app/review/runModelOnResults.js');
-            const bboxes = Array.from({length: 1200}, (_, i) => ({ uuid: 'b' + i, labelUuid: 'lbl-cat', tags: [] }));
+            const bboxes = Array.from({length: count}, (_, i) => ({ uuid: 'b' + i, labelUuid: 'lbl-cat', tags: [] }));
             const visibleEntries = bboxes.map(b => ({ kind: 'bbox', bbox: b, img: { uuid: 'img-' + b.uuid } }));
             window.__runFlow = runModelOnResultsFlow({
                 fetchImages: null,
@@ -544,17 +514,59 @@ class TestRunModelCaps:
                 sortOrder: 'desc',
                 refresh: () => {},
             });
-        }""")
+        }""",
+            count,
+        )
 
+    def test_below_warn_threshold_opens_dialog_directly(self, page: Page, base_url: str):
+        self._setup(page, base_url)
+        self._start_flow(page, 500)
+
+        # No warning modal for small runs — straight to the run dialog.
+        expect(page.locator(".run-model-large-warning-dialog")).to_have_count(0)
+        dialog = page.locator(".run-model-on-results-dialog")
+        expect(dialog).to_be_visible(timeout=3000)
+        expect(dialog).to_contain_text("500 candidate bbox")
+
+    def test_above_warn_threshold_process_all(self, page: Page, base_url: str):
+        self._setup(page, base_url)
+        self._start_flow(page, 1200)
+
+        warning = page.locator(".run-model-large-warning-dialog")
+        expect(warning).to_be_visible(timeout=3000)
+        expect(warning).to_contain_text("1,200 candidate bbox")
+
+        # Leave the count blank → process all; the run dialog shows the full count.
+        warning.locator("button", has_text="Continue").click()
         dialog = page.locator(".run-model-on-results-dialog")
         expect(dialog).to_be_visible(timeout=3000)
         expect(dialog).to_contain_text("1,200 candidate bbox")
-        expect(dialog).not_to_contain_text("Yes, run anyway")
 
-        # No confirmation gate — selecting a model and clicking Run launches immediately.
-        dialog.locator(".run-model-on-results-model-select").select_option("yolo9-detector")
-        dialog.locator("button", has_text="Run").click()
-        expect(dialog.locator("progress")).to_be_visible(timeout=3000)
+    def test_above_warn_threshold_caps_count(self, page: Page, base_url: str):
+        self._setup(page, base_url)
+        self._start_flow(page, 1200)
+
+        warning = page.locator(".run-model-large-warning-dialog")
+        expect(warning).to_be_visible(timeout=3000)
+
+        # Cap to the first 300 → the run dialog reflects the truncated scope.
+        warning.locator(".run-model-large-warning-limit").fill("300")
+        warning.locator("button", has_text="Continue").click()
+        dialog = page.locator(".run-model-on-results-dialog")
+        expect(dialog).to_be_visible(timeout=3000)
+        expect(dialog).to_contain_text("300 candidate bbox")
+        expect(dialog).to_contain_text("300 image")
+
+    def test_warning_cancel_aborts_run(self, page: Page, base_url: str):
+        self._setup(page, base_url)
+        self._start_flow(page, 1200)
+
+        warning = page.locator(".run-model-large-warning-dialog")
+        expect(warning).to_be_visible(timeout=3000)
+        warning.locator("button", has_text="Cancel").click()
+
+        expect(warning).to_have_count(0)
+        expect(page.locator(".run-model-on-results-dialog")).to_have_count(0)
 
 
 # ---------------------------------------------------------------------------

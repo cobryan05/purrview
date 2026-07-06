@@ -4,8 +4,8 @@
  * Wires the review-browser toolbar button to:
  *  1. resolve the candidate bbox/image scope from whatever the user currently
  *     has selected/filtered (mirrors the existing Bulk Apply / Apply to All split),
- *  2. refuse above a hard cap on the candidate count (no soft warn/confirm step —
- *     a run at the cap only takes seconds),
+ *  2. warn on large candidate counts (above WARN_THRESHOLD) and let the user cap
+ *     how many to process — but with no hard ceiling; "process all" is allowed,
  *  3. let the user pick a detector model + conf/IoU thresholds in a run dialog,
  *  4. launch `PreviewModelRelabelTask` (a temporary, one-shot task config),
  *     poll it to completion with a cancel button, and
@@ -36,9 +36,10 @@ import { createModalShell } from '/app-static/js/ui/utils/modalShell.js';
 import { toast, Logger } from '/app-static/js/ui/utils/logging.js';
 import { expandWithDescendants } from '/app-static/js/ui/labelList.js';
 
-// Hard refuse above this many candidate bboxes — mirrors the server-side
-// PreviewModelRelabelTask._MAX_BBOX_UUIDS ceiling (apps/tasks_server/tasks/PreviewModelRelabelTask.py).
-export const HARD_CAP = 5000;
+// Above this many candidate bboxes, warn the user (large runs take a while) and
+// let them cap how many to process before launching. There is no hard ceiling —
+// "process all" is always allowed (the server no longer enforces one either).
+export const WARN_THRESHOLD = 1000;
 
 const POLL_INTERVAL_MS = 700;
 
@@ -77,12 +78,37 @@ export function makeBboxFilterPredicate({ fetchImagesMode, bboxFilterFn, fs, lab
 function _collectFromImages(images, predicate) {
   const bboxUuids = [];
   const imageUuids = [];
+  // Parallel to bboxUuids: the owning image UUID for each candidate bbox, so a
+  // later `truncateScope` can drop the images left with no candidates.
+  const bboxImageUuids = [];
   for (const img of images) {
     const matches = (img.bboxes || []).filter(predicate);
     if (matches.length === 0) continue;
     imageUuids.push(img.uuid);
-    for (const b of matches) bboxUuids.push(b.uuid);
+    for (const b of matches) {
+      bboxUuids.push(b.uuid);
+      bboxImageUuids.push(img.uuid);
+    }
   }
+  return { bboxUuids, imageUuids, bboxImageUuids };
+}
+
+/**
+ * Caps a resolved scope to at most `limit` candidate bboxes, keeping only the
+ * images those retained bboxes belong to (so the task doesn't waste round-trips
+ * fetching images with no candidates left). A non-finite or non-positive limit
+ * means "process all" and returns the scope's full bbox/image lists unchanged.
+ *
+ * @param {{bboxUuids: string[], imageUuids: string[], bboxImageUuids: string[]}} scope
+ * @param {number} limit
+ * @returns {{bboxUuids: string[], imageUuids: string[]}}
+ */
+export function truncateScope(scope, limit) {
+  if (!Number.isFinite(limit) || limit <= 0 || scope.bboxUuids.length <= limit) {
+    return { bboxUuids: scope.bboxUuids, imageUuids: scope.imageUuids };
+  }
+  const bboxUuids = scope.bboxUuids.slice(0, limit);
+  const imageUuids = [...new Set(scope.bboxImageUuids.slice(0, limit))];
   return { bboxUuids, imageUuids };
 }
 
@@ -95,7 +121,8 @@ function _collectFromImages(images, predicate) {
  *   - nothing selected, full-filter mode → re-run fetchReviewQueue at a high limit.
  *
  * @param {Object} ctx - see `runModelOnResultsFlow` for field docs.
- * @returns {Promise<{bboxUuids: string[], imageUuids: string[]}>}
+ * @returns {Promise<{bboxUuids: string[], imageUuids: string[], bboxImageUuids: string[]}>}
+ *   `bboxImageUuids` is parallel to `bboxUuids` (owning image per candidate), for `truncateScope`.
  */
 export async function resolveCandidateScope(ctx) {
   const {
@@ -106,8 +133,9 @@ export async function resolveCandidateScope(ctx) {
   if (selectionKind === 'bbox' && selected.size > 0) {
     const entries = visibleEntries.filter(e => e.kind === 'bbox' && selected.has(e.bbox.uuid));
     const bboxUuids = entries.map(e => e.bbox.uuid);
-    const imageUuids = [...new Set(entries.map(e => e.img.uuid))];
-    return { bboxUuids, imageUuids };
+    const bboxImageUuids = entries.map(e => e.img.uuid);
+    const imageUuids = [...new Set(bboxImageUuids)];
+    return { bboxUuids, imageUuids, bboxImageUuids };
   }
 
   if (selectionKind === 'image' && selected.size > 0) {
@@ -445,6 +473,75 @@ function _fmtPct(x) {
 }
 
 /**
+ * Warns before a large "Run Model on Results" run (candidate count above
+ * `WARN_THRESHOLD`) and lets the user cap how many candidates to process. The
+ * count input defaults to blank, meaning "all of them".
+ *
+ * @param {number} total - total candidate bbox count.
+ * @returns {Promise<number|null>} the chosen limit (a positive integer), or
+ *   `Infinity` to process all, or `null` if the user cancels/dismisses.
+ */
+export function confirmLargeRun(total) {
+  return new Promise((resolve) => {
+    let resolved = false;
+    const finish = (v) => { if (resolved) return; resolved = true; resolve(v); close(); };
+    const { dialog, open, close } = createModalShell({ onClose: () => finish(null) });
+    dialog.style.cssText = 'max-width:480px;display:flex;flex-direction:column;gap:0.8em;';
+    dialog.classList.add('run-model-large-warning-dialog');
+
+    const title = document.createElement('h3');
+    title.className = 'app-modal-title';
+    title.textContent = 'Large run';
+    dialog.appendChild(title);
+
+    const msg = document.createElement('div');
+    msg.append(
+      document.createTextNode("You're about to run the model on "),
+      Object.assign(document.createElement('strong'), { textContent: total.toLocaleString() }),
+      document.createTextNode(' candidate bbox(es). Large runs can take a while.'),
+    );
+    dialog.appendChild(msg);
+
+    const inputRow = document.createElement('div');
+    inputRow.style.cssText = 'display:flex;flex-direction:column;gap:0.3em;';
+    const inputLabel = document.createElement('label');
+    inputLabel.style.cssText = 'font-size:0.85em;color:#aaa;';
+    inputLabel.textContent = 'How many to process? (leave blank for all)';
+    const input = document.createElement('input');
+    input.type = 'number';
+    input.min = '1';
+    input.max = String(total);
+    input.placeholder = `all (${total.toLocaleString()})`;
+    input.className = 'run-model-large-warning-limit';
+    inputRow.append(inputLabel, input);
+    dialog.appendChild(inputRow);
+
+    const btnRow = document.createElement('div');
+    btnRow.style.cssText = 'display:flex;gap:0.5em;justify-content:flex-end;';
+    const cancelBtn = document.createElement('button');
+    cancelBtn.className = 'secondary';
+    cancelBtn.textContent = 'Cancel';
+    cancelBtn.addEventListener('click', () => finish(null));
+    const continueBtn = document.createElement('button');
+    continueBtn.textContent = 'Continue';
+    continueBtn.addEventListener('click', () => {
+      const raw = input.value.trim();
+      if (raw === '') { finish(Infinity); return; }
+      const n = Math.floor(Number(raw));
+      if (!Number.isFinite(n) || n <= 0) {
+        toast('Enter a positive number, or leave blank to process all.', 3000, 'warning');
+        return;
+      }
+      finish(Math.min(n, total));
+    });
+    btnRow.append(cancelBtn, continueBtn);
+    dialog.appendChild(btnRow);
+
+    open();
+  });
+}
+
+/**
  * Builds and shows the "Run Model on Results" dialog: model picker (detectors
  * only), conf/IoU sliders, candidate-count display with cap warnings, and a
  * Run button that launches PreviewModelRelabelTask and switches the dialog to
@@ -470,10 +567,9 @@ async function _showRunDialog(scope, ctx) {
   countLine.textContent = `${bboxUuids.length.toLocaleString()} candidate bbox(es) across ${imageUuids.length.toLocaleString()} image(s).`;
   dialog.appendChild(countLine);
 
-  // Hard-cap refusal happens in `runModelOnResultsFlow` before this dialog is
-  // ever shown (bboxUuids.length is guaranteed <= HARD_CAP here). No separate
-  // soft-confirmation step — a run over the hard cap's worth of candidates
-  // still only takes a few seconds, so there's nothing worth gating on.
+  // The large-run warning (and optional cap) is handled in `runModelOnResultsFlow`
+  // before this dialog is shown, so `bboxUuids` here is already the user-approved
+  // set — no further gating needed.
 
   // ── Model + inference-input pickers, side by side to keep this compact ──
   const pickerRow = document.createElement('div');
@@ -735,8 +831,8 @@ async function _showRunDialog(scope, ctx) {
 
 /**
  * Entry point wired to the review-browser toolbar button. Resolves the
- * candidate scope from the current selection/filter state, enforces the
- * hard/soft caps, and — if not hard-refused — opens the run dialog.
+ * candidate scope from the current selection/filter state, warns (and lets the
+ * user cap the count) on large runs, then opens the run dialog.
  *
  * @param {Object} ctx
  * @param {Function|null} ctx.fetchImages - the panel's custom data-fetcher (null in full-filter mode).
@@ -766,14 +862,12 @@ export async function runModelOnResultsFlow(ctx) {
     return;
   }
 
-  if (scope.bboxUuids.length > HARD_CAP) {
-    toast(
-      `Too many candidates (${scope.bboxUuids.length.toLocaleString()} > ${HARD_CAP.toLocaleString()}). Narrow your filter or selection before running.`,
-      6000,
-      'error',
-    );
-    return;
+  let runScope = scope;
+  if (scope.bboxUuids.length > WARN_THRESHOLD) {
+    const limit = await confirmLargeRun(scope.bboxUuids.length);
+    if (limit === null) return; // user cancelled/dismissed the warning
+    runScope = truncateScope(scope, limit);
   }
 
-  await _showRunDialog(scope, ctx);
+  await _showRunDialog(runScope, ctx);
 }
