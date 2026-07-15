@@ -304,14 +304,21 @@ export function renderActiveTasks({ target = 'active-tasks-list', refresh = null
 
         const row = createGenericRow({ field: preRendered, leftButtons, rightButtons });
         row.dataset.taskUuid = taskId;
-        return { row, isCompleted: status === 'completed' || status === 'error' };
+        return {
+          row,
+          isCompleted: status === 'completed' || status === 'error',
+          endedAt: task.instance?.endedAt ?? null,
+        };
       }));
 
       // Partition into Active (running/pending/paused) and Completed (completed/error)
-      // sections, preserving the server-provided task order within each.
+      // sections. Active preserves server-provided order; Completed is sorted by
+      // endedAt descending so the most recently finished task appears first.
       const newListDiv = document.createElement('div');
       const activeRows = built.filter(b => !b.isCompleted).map(b => b.row);
-      const completedRows = built.filter(b => b.isCompleted).map(b => b.row);
+      const completedRows = built.filter(b => b.isCompleted)
+        .sort((a, b) => new Date(b.endedAt ?? 0) - new Date(a.endedAt ?? 0))
+        .map(b => b.row);
 
       const appendSection = (title, rows, actionEl = null) => {
         if (!rows.length) return;
