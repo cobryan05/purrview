@@ -51,9 +51,14 @@ logging.basicConfig()
 logger = logging.getLogger(__file__)
 logger.setLevel(logging.DEBUG)
 
-# No hard ceiling on the candidate bbox list: the review-browser UI *warns* the
-# user on large runs (and lets them cap the count), but "process all" is always
-# allowed, so this task accepts whatever bbox_uuids list it's handed.
+# No UX-facing ceiling on the candidate bbox list: the review-browser UI *warns*
+# the user on large runs (and lets them cap the count), but "process all" is
+# always allowed. This sanity cap is not a UX limit — a legitimate UI-driven
+# run should never approach it — it only guards against a pathological or
+# non-UI caller (e.g. a direct API request) handing this task an unbounded
+# list, since self._candidates accumulates every match in memory for the
+# life of the task and is serialized whole into checkpoints and the result.
+_SANITY_MAX_BBOX_UUIDS = 50_000
 
 # Images fetched per batch_images_by_uuids round-trip.
 _IMAGE_BATCH_SIZE = 32
@@ -84,6 +89,11 @@ class PreviewModelRelabelTask(Task):
         bbox_uuids: List[str] = list(params.get("bbox_uuids") or [])
         if not bbox_uuids:
             raise ValueError("bbox_uuids is required")
+        if len(bbox_uuids) > _SANITY_MAX_BBOX_UUIDS:
+            raise ValueError(
+                f"bbox_uuids has {len(bbox_uuids)} entries, exceeding the sanity cap of "
+                f"{_SANITY_MAX_BBOX_UUIDS}; narrow the filter before running the model"
+            )
         self._bbox_uuids: Set[str] = set(bbox_uuids)
 
         self._images_processed: int = resume_data.get("images_processed", 0) if resume_data else 0
