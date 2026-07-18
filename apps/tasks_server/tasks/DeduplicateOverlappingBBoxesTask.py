@@ -8,7 +8,7 @@ from db_client.models.batch_by_uuids_payload import BatchByUuidsPayload
 
 from apps import FILES_ROOT
 from apps.helpers.bboxUtils import iou_xywh
-from apps.helpers.fileUtils import get_safe_path
+from apps.helpers.fileUtils import filter_stubs_by_directory
 
 from .Registry import register_task
 from .Task import Task
@@ -61,16 +61,9 @@ class DeduplicateOverlappingBBoxesTask(Task):
         stubs_resp = await asyncio.to_thread(images_api.list_image_stubs)
         all_stubs = stubs_resp.stubs or []
 
-        # Optional directory filter. The DB stores filenames as absolute paths
-        # (e.g. /app/image_datasets/foo/bar.jpg), so the input directory must be
-        # resolved to an absolute path under FILES_ROOT before prefix-matching.
+        # Optional directory filter.
         if self._directory:
-            abs_dir = get_safe_path(FILES_ROOT, self._directory)
-            if abs_dir is not None:
-                prefix = str(abs_dir) + "/"
-                all_stubs = [s for s in all_stubs if s.filename.startswith(prefix) or s.filename == str(abs_dir)]
-            else:
-                all_stubs = []
+            all_stubs = filter_stubs_by_directory(FILES_ROOT, self._directory, all_stubs)
 
         total = len(all_stubs)
         dry_label = " [DRY RUN]" if self._dry_run else ""

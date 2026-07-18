@@ -1,7 +1,7 @@
 """File utilities"""
 
 from pathlib import Path
-from typing import Optional
+from typing import Any, List, Optional, Sequence
 
 
 def get_safe_path(root: Path, rel_path: Path) -> Optional[Path]:
@@ -35,3 +35,20 @@ def get_safe_path(root: Path, rel_path: Path) -> Optional[Path]:
         return target if root in target.parents or target == root else None
     except Exception:
         return None
+
+
+def filter_stubs_by_directory(root: Path, directory: str, stubs: Sequence[Any]) -> List[Any]:
+    """
+    Filter image stubs (objects with a `.filename` attribute) down to those whose
+    filename is under `directory`.
+
+    The DB stores filenames as absolute paths, so `directory` (which may be
+    relative or absolute) is first resolved to an absolute path under `root` via
+    `get_safe_path` before prefix-matching. Returns an empty list if `directory`
+    resolves outside `root`.
+    """
+    abs_dir = get_safe_path(root, Path(directory))
+    if abs_dir is None:
+        return []
+    prefix = str(abs_dir) + "/"
+    return [s for s in stubs if s.filename.startswith(prefix) or s.filename == str(abs_dir)]

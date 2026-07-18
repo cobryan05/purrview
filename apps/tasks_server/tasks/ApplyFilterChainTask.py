@@ -41,7 +41,7 @@ from inference_client.models.pin_model_payload import PinModelPayload
 
 from apps import FILES_ROOT
 from apps.helpers.db.types import UNVERIFIED_TAG_UUID
-from apps.helpers.fileUtils import get_safe_path
+from apps.helpers.fileUtils import filter_stubs_by_directory
 from apps.helpers.metadataUtils import get_model_metadata, validate_bare_model_name
 
 from ._filter_chain_runner import Detection, FilterChainRunner
@@ -448,14 +448,7 @@ class ApplyFilterChainTask(Task):
 
         if self._directory:
             resp = await asyncio.to_thread(images_api.list_image_stubs)
-            # The DB stores filenames as absolute paths, so the input directory
-            # must be resolved to an absolute path under FILES_ROOT before
-            # prefix-matching (see delete_images_by_directory for the same pattern).
-            abs_dir = get_safe_path(FILES_ROOT, self._directory)
-            if abs_dir is None:
-                return []
-            prefix = str(abs_dir) + "/"
-            stubs = [s for s in (resp.stubs or []) if s.filename.startswith(prefix) or s.filename == str(abs_dir)]
+            stubs = filter_stubs_by_directory(FILES_ROOT, self._directory, resp.stubs or [])
             return self._cap_stubs(stubs, "directory")
 
         if self._dataset_uuid:
