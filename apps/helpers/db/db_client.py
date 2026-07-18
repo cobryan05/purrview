@@ -4507,7 +4507,9 @@ class DbClient:
                     gap = base - co_covered
                     breakdown = []
                     for tl in other_tls:
-                        missing = gap - accounted_for_tl.get(tl, set())
+                        # Equivalent to `gap - accounted_for_tl[tl]`: co_covered (which gap
+                        # already excludes) is always a subset of accounted_for_tl[tl].
+                        missing = base - accounted_for_tl.get(tl, set())
                         if not missing:
                             continue
                         tl_label = labels_map.get(tl)
