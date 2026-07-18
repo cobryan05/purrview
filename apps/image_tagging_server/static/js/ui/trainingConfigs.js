@@ -386,7 +386,7 @@ function renderLabelStatsPanel(config, labelsMap) {
   const content = document.createElement('div');
   wrap.appendChild(content);
 
-  async function _openLabelModal(labelUuid, labelStatus, modalTitle, rollupChildUuids = []) {
+  async function _openLabelModal(labelUuid, labelStatus, modalTitle, rollupChildUuids = [], missingLabelUuid = null) {
     const { showReviewModal } = await import('/app-static/js/app/review/main.js');
     await showReviewModal({
       title: modalTitle,
@@ -395,6 +395,7 @@ function renderLabelStatsPanel(config, labelsMap) {
           labelUuid,
           rollupLabelUuids: rollupChildUuids.length > 0 ? rollupChildUuids : undefined,
           status: labelStatus,
+          missingLabelUuid,
           afterUuid,
           afterSortValue,
           limit,
@@ -535,6 +536,49 @@ function renderLabelStatsPanel(config, labelsMap) {
         thead.appendChild(headerRow);
         table.appendChild(thead);
 
+        const totalCols = columns.length + 1;
+
+        function _makeBreakdownRow(stat, col) {
+          const breakdown = stat[col.breakdownKey] ?? [];
+          const detailTr = document.createElement('tr');
+          const detailTd = document.createElement('td');
+          detailTd.colSpan = totalCols;
+          detailTd.style.cssText = 'padding: 4px 6px 8px 24px; background: rgba(255,255,255,0.03);';
+
+          const heading = document.createElement('div');
+          heading.style.cssText = 'font-size: 0.85em; color: var(--pico-muted-color, #888); margin-bottom: 2px;';
+          heading.textContent = `Labels driving these gaps for ${_labelName(stat.labelUuid)}:`;
+          detailTd.appendChild(heading);
+
+          const list = document.createElement('div');
+          list.style.cssText = 'display: flex; flex-direction: column; gap: 1px;';
+          for (const entry of breakdown) {
+            const row = document.createElement('div');
+            row.style.cssText = 'display: flex; justify-content: space-between; gap: 1em; padding: 1px 4px; cursor: pointer; text-decoration: underline dotted; text-underline-offset: 2px;';
+            row.title = `Browse images with a verified box for ${_labelName(stat.labelUuid)} where ${entry.labelName} is still unresolved`;
+
+            const nameSpan = document.createElement('span');
+            nameSpan.textContent = `↳ ${entry.labelName}`;
+            row.appendChild(nameSpan);
+
+            const countSpan = document.createElement('span');
+            countSpan.textContent = entry.count.toLocaleString();
+            row.appendChild(countSpan);
+
+            row.addEventListener('click', () => _openLabelModal(
+              stat.labelUuid, 'co_label_gaps',
+              `${_labelName(stat.labelUuid)} — gaps missing ${entry.labelName} (${config.name})`,
+              stat.hasRollup ? _rollupChildUuids(stat.labelUuid) : [],
+              entry.labelUuid
+            ));
+            list.appendChild(row);
+          }
+          detailTd.appendChild(list);
+
+          detailTr.appendChild(detailTd);
+          return detailTr;
+        }
+
         const tbody = document.createElement('tbody');
         for (const stat of stats) {
           const tr = document.createElement('tr');
@@ -579,12 +623,13 @@ function renderLabelStatsPanel(config, labelsMap) {
           }
           tr.appendChild(nameTd);
 
+          let detailTr = null;
           for (const col of columns) {
             const td = document.createElement('td');
             const val = stat[col.key] ?? 0;
-            td.textContent = val.toLocaleString();
 
             const isClickable = (col.browseStatus || col.browseFn) && val > 0;
+            const breakdown = col.breakdownKey ? (stat[col.breakdownKey] ?? []) : [];
             if (isClickable) {
               td.style.cssText = _clickableCellCss;
               if (col.warnIf?.(stat)) td.style.color = '#f90';
@@ -605,6 +650,32 @@ function renderLabelStatsPanel(config, labelsMap) {
               td.style.cssText = 'text-align: right; padding: 2px 6px;';
               if (col.warnIf?.(stat)) td.style.color = '#f90';
               if (col.goodIf?.(stat)) td.style.color = '#4c4';
+            }
+
+            if (breakdown.length > 0) {
+              const countSpan = document.createElement('span');
+              countSpan.textContent = val.toLocaleString();
+              td.appendChild(countSpan);
+
+              const toggle = document.createElement('span');
+              toggle.textContent = ' ▾';
+              toggle.title = 'Show which labels are driving these gaps';
+              toggle.style.cssText = 'cursor: pointer; text-decoration: none; opacity: 0.75;';
+              toggle.addEventListener('click', (ev) => {
+                ev.stopPropagation();
+                if (detailTr) {
+                  detailTr.remove();
+                  detailTr = null;
+                  toggle.textContent = ' ▾';
+                } else {
+                  detailTr = _makeBreakdownRow(stat, col);
+                  tr.after(detailTr);
+                  toggle.textContent = ' ▴';
+                }
+              });
+              td.appendChild(toggle);
+            } else {
+              td.textContent = val.toLocaleString();
             }
 
             tr.appendChild(td);
@@ -649,8 +720,8 @@ function renderLabelStatsPanel(config, labelsMap) {
             title: 'Images with a verified box for this label where every other label in the model blueprint is accounted for (verified present or marked absent) — click to browse',
             goodIf: s => s.coLabelGapsCount === 0 && s.coLabelsCoveredCount > 0,
             browseStatus: 'co_labels_covered' },
-          { header: 'Co-label gaps', key: 'coLabelGapsCount',
-            title: 'Images with a verified box for this label but where one or more other model-blueprint labels are not yet verified or marked absent — click to review',
+          { header: 'Co-label gaps', key: 'coLabelGapsCount', breakdownKey: 'coLabelGapBreakdown',
+            title: 'Images with a verified box for this label but where one or more other model-blueprint labels are not yet verified or marked absent — click the number to review all, or ▾ to see which labels are driving the gaps',
             warnIf: s => s.coLabelGapsCount > 0,
             browseStatus: 'co_label_gaps' },
         ]));

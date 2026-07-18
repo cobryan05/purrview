@@ -3768,6 +3768,7 @@ class DbClient:
         status: Optional[str],
         *,
         rollup_label_uuids: Optional[List[str]] = None,
+        missing_label_uuid: Optional[str] = None,
         limit: int = 50,
         after_uuid: Optional[str] = None,
         after_sort_value: Optional[datetime] = None,
@@ -3780,6 +3781,9 @@ class DbClient:
         rollup_label_uuids: when the label is a rollup parent, pass its children's UUIDs here so the
             query spans the full rollup group (parent + children), matching the aggregated counts shown
             in the stats panel.
+        missing_label_uuid: only used when status == 'co_label_gaps'. Narrows the gap set to images
+            where this specific other top-level label is the one left unaccounted for, matching a single
+            row of the co-label gap breakdown instead of the full (union of all) gap set.
         """
         tc = await self.get_training_config(uuid)
         if tc is None:
@@ -3866,11 +3870,11 @@ class DbClient:
                             )
                         )
 
-                        # Intersect with accounted_for for each other top-level label.
+                        # Compute "accounted for" per other top-level label, then intersect.
                         focus_tl_ancestor = child_to_parent_co.get(label_uuid, label_uuid)
                         other_tls_co = [tl for tl in top_level_uuids_co if tl != focus_tl_ancestor]
 
-                        co_covered = set(base)
+                        accounted_for_co: dict[str, set] = {}
                         for tl_uuid in other_tls_co:
                             eff = effective_for_tl_co[tl_uuid]
                             tl_label = co_labels_map.get(tl_uuid)
@@ -3897,9 +3901,9 @@ class DbClient:
                                         ImageLabel.status == ImageItemStatus.ABSENT,
                                     )
                                 )
-                                co_covered &= verified_bboxes | verified_absent
+                                accounted_for_co[tl_uuid] = verified_bboxes | verified_absent
                             else:
-                                co_covered &= await _collect(
+                                accounted_for_co[tl_uuid] = await _collect(
                                     lambda chunk, eff=eff: select(ImageLabel.image_uuid).where(
                                         ImageLabel.image_uuid.in_(chunk),
                                         ImageLabel.label_uuid.in_(eff),
@@ -3907,7 +3911,17 @@ class DbClient:
                                     )
                                 )
 
-                        matching = co_covered if status == "co_labels_covered" else base - co_covered
+                        co_covered = set(base)
+                        for accounted in accounted_for_co.values():
+                            co_covered &= accounted
+
+                        if status == "co_labels_covered":
+                            matching = co_covered
+                        elif missing_label_uuid and missing_label_uuid in accounted_for_co:
+                            # Narrow the gap to images where this specific other label is unresolved.
+                            matching = base - accounted_for_co[missing_label_uuid]
+                        else:
+                            matching = base - co_covered
                 else:
                     target = ImageItemStatus.PRESENT if status == "present" else ImageItemStatus.ABSENT
                     matching = await _collect(
@@ -4490,8 +4504,25 @@ class DbClient:
                     for tl in other_tls:
                         co_covered &= accounted_for_tl.get(tl, set())
 
+                    gap = base - co_covered
+                    breakdown = []
+                    for tl in other_tls:
+                        missing = gap - accounted_for_tl.get(tl, set())
+                        if not missing:
+                            continue
+                        tl_label = labels_map.get(tl)
+                        breakdown.append(
+                            {
+                                "label_uuid": tl,
+                                "label_name": tl_label.name if tl_label is not None else tl,
+                                "count": len(missing),
+                            }
+                        )
+                    breakdown.sort(key=lambda b: b["count"], reverse=True)
+
                     label_stats[lbl_uuid]["co_labels_covered_count"] = len(co_covered)
-                    label_stats[lbl_uuid]["co_label_gaps_count"] = len(base) - len(co_covered)
+                    label_stats[lbl_uuid]["co_label_gaps_count"] = len(gap)
+                    label_stats[lbl_uuid]["co_label_gap_breakdown"] = breakdown
 
         return {"label_stats": list(label_stats.values()), "total_images": total_images}
 

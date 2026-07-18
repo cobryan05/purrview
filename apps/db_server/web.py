@@ -553,6 +553,14 @@ class DetectionDatasetResponse(StatusResponse):
     images: List[DetectionImageEntry] = Field(default_factory=list)
 
 
+class CoLabelGapBreakdownEntry(BaseModel):
+    model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)
+
+    label_uuid: str
+    label_name: str
+    count: int = 0
+
+
 class LabelStatEntry(BaseModel):
     model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)
 
@@ -566,6 +574,7 @@ class LabelStatEntry(BaseModel):
     unverified_bbox_count: int = 0
     co_labels_covered_count: int = 0
     co_label_gaps_count: int = 0
+    co_label_gap_breakdown: List[CoLabelGapBreakdownEntry] = Field(default_factory=list)
     has_rollup: bool = False
     roll_up_parent_uuid: Optional[str] = None
 
@@ -608,6 +617,9 @@ class ImagesByLabelStatusPayload(Payload):
     status: Optional[
         Literal["present", "absent", "uncertain", "all", "has_verified_bbox", "co_labels_covered", "co_label_gaps"]
     ] = None
+    # Only used when status == "co_label_gaps": narrows to images where this specific other
+    # top-level label is the one unresolved, matching one row of the co-label gap breakdown.
+    missing_label_uuid: Optional[str] = None
     after_uuid: Optional[str] = None
     after_sort_value: Optional[datetime] = None
     sort_by: Literal["uuid", "created_at", "updated_at"] = "created_at"
