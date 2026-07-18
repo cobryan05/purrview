@@ -9,8 +9,8 @@ ARG PYTORCH_VERSION=2.7.1
 ARG PYTORCH_CUDA_VERSION=12.8
 
 # Shared Build Arguments across various target stages
-ARG APPUSER_UID=1001
-ARG APPUSER_GID=1001
+ARG APPUSER_UID=1000
+ARG APPUSER_GID=1000
 
 
 # =========================================================
