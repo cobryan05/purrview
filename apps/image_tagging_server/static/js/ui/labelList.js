@@ -18,7 +18,7 @@ import {
   fetchTrainingConfigNeedsReview,
 } from '/app-static/js/shared/api/trainingConfigs.js';
 import { fetchImageLabels, setImageLabel } from '/app-static/js/shared/api/imageLabels.js';
-import { VERIFIED_TAG_UUID } from '/app-static/js/shared/api/review.js';
+import { VERIFIED_TAG_UUID, UNVERIFIED_TAG_UUID } from '/app-static/js/shared/api/review.js';
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
 import { setTool } from '../app/image-tagging/canvas/tools.js';
 import { EditableField, TextBoxColorField } from '/app-static/js/ui/utils/fields/index.js';
@@ -582,9 +582,11 @@ async function mountSelectMode(container, { runtime, filter }) {
                 }),
             });
           } else {
+            const effectiveUuids = new Set([label.uuid, ...rollupChildUuids]);
             await showReviewModal({
               title: `${label.name} — needs review (${tc.name})`,
               initialViewFilter: 'bboxes',
+              bboxFilterFn: (b) => effectiveUuids.has(b.labelUuid) && (b.tags || []).some(t => t.uuid === UNVERIFIED_TAG_UUID),
               fetchImages: async ({ afterUuid = null, afterSortValue = null, limit }) =>
                 fetchTrainingConfigNeedsReview({
                   uuid: tc.uuid,
