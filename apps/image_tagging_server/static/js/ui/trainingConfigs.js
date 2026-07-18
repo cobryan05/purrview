@@ -14,7 +14,7 @@
  * explicitly verified (ready to train) vs. still unreviewed.
  */
 
-import { VERIFIED_TAG_UUID } from '/app-static/js/shared/api/review.js';
+import { VERIFIED_TAG_UUID, UNVERIFIED_TAG_UUID } from '/app-static/js/shared/api/review.js';
 import { fetchDatasets } from '/app-static/js/shared/api/datasets.js';
 import { fetchModelConfigs } from '/app-static/js/shared/api/modelConfigs.js';
 import { fetchLabels } from '/app-static/js/shared/api/labels.js';
@@ -425,9 +425,11 @@ function renderLabelStatsPanel(config, labelsMap) {
 
   async function _openBboxNeedsReviewModal(labelUuid, modalTitle, rollupChildUuids = []) {
     const { showReviewModal } = await import('/app-static/js/app/review/main.js');
+    const effectiveUuids = new Set([labelUuid, ...rollupChildUuids]);
     await showReviewModal({
       title: modalTitle,
       initialViewFilter: 'bboxes',
+      bboxFilterFn: (b) => effectiveUuids.has(b.labelUuid) && (b.tags || []).some(t => t.uuid === UNVERIFIED_TAG_UUID),
       fetchImages: async ({ afterUuid = null, afterSortValue = null, limit }) => {
         return fetchTrainingConfigNeedsReview({
           uuid: config.uuid,
