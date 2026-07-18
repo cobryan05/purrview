@@ -169,9 +169,12 @@ def write_onnx_with_sidecar(
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(onnx_bytes)
 
-    metadata = get_model_metadata(str(path))
+    sidecar_existed = sidecar_path.exists()
+    metadata = get_model_metadata(str(path), create_json_if_missing=False)
+    original_metadata = dict(metadata) if sidecar_existed else None
     if extra_metadata:
         metadata.update(extra_metadata)
     metadata.setdefault("device", DEFAULT_MODEL_DEVICE)
-    save_model_json_metadata(str(path), metadata)
+    if not sidecar_existed or metadata != original_metadata:
+        save_model_json_metadata(str(path), metadata)
     return metadata
