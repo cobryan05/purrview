@@ -1,0 +1,9 @@
+# GPU inference runtime.
+#
+# Installs onnxruntime-gpu (CUDA execution provider). Paired with the cuda-runtime
+# `app` base image via the ORT_REQUIREMENTS build arg for hosts that have a GPU and
+# want accelerated inference WITHOUT the full training/torch stack.
+#
+# Keep the pin aligned with requirements-cpu.txt (and with the onnxruntime-gpu pin
+# in requirements-training.txt) so the runtime version stays consistent across images.
+onnxruntime-gpu<1.27

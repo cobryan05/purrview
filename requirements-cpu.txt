@@ -1,0 +1,10 @@
+# CPU inference runtime.
+#
+# Installs the plain (CPU) onnxruntime. Paired with the slim (python:3.11-slim)
+# `app` base image via the ORT_REQUIREMENTS build arg for CPU-only / low-end
+# hosts — no CUDA is pulled. The inference path is pure-ONNX at runtime, so this
+# gives working (CPU) inference with none of the CUDA/torch weight.
+#
+# Keep the pin aligned with requirements-gpu.txt so switching CPU<->GPU inference
+# does not drift the onnxruntime version.
+onnxruntime<1.27
