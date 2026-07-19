@@ -1,67 +1,88 @@
+# =====================================================================
+# WhiskerWatcher — deployment topologies via compose profiles + .env
+# =====================================================================
+# One static set of services; a deployment is selected by COMPOSE_PROFILES
+# and parameterized by .env. Run ./setup.sh to generate a .env, or copy
+# .env.example and edit. With no .env, defaults give the slim CPU stack.
+#
+# Profiles (COMPOSE_PROFILES):
+#   app                 frontend + inference group in one container
+#   training            standalone training node (GPU)
+#   app,training        "split": frontend group + a local training container
+#   mono                everything in one container (GPU)
+#   dev                 app-dev + training-dev workspaces
+#   dev-mono            single-container dev workspace (everything)
+#
+# Build/runtime knobs (.env):
+#   APP_BASE            slim-runtime (CPU, default) | cuda-runtime (GPU inference)
+#   ORT_REQUIREMENTS    requirements-cpu.txt (default) | requirements-gpu.txt
+#   TRAINING_SERVER_HOST  hostname the frontend uses to reach training
+#                         (defaults to the `training` compose service)
+#   COMPOSE_FILE        add :docker-compose.gpu.yaml to give `app` a GPU
+#                       (needed for onnxruntime-gpu inference)
+# =====================================================================
+
+x-gpu: &gpu
+  deploy:
+    resources:
+      reservations:
+        devices:
+          - driver: nvidia
+            device_ids: ["0"]
+            capabilities: [gpu]
+
+x-build-args: &build-args
+  APP_BASE: ${APP_BASE:-slim-runtime}
+  ORT_REQUIREMENTS: ${ORT_REQUIREMENTS:-requirements-cpu.txt}
+  APPUSER_UID: ${APPUSER_UID:-1000}
+  APPUSER_GID: ${APPUSER_GID:-1000}
+
 services:
-  # =========================================================
-  #  Inference / Main Web Server (Production Profile)
-  # =========================================================
-  whiskerwatcher:
-    container_name: whiskerwatcher
+  # -------------------------------------------------------------------
+  # App: frontend + inference group (image_tagging / inference / tasks /
+  # db / relay / mediamtx) in one container. CPU by default; build with
+  # APP_BASE=cuda-runtime + ORT_REQUIREMENTS=requirements-gpu.txt and merge
+  # docker-compose.gpu.yaml for GPU inference.
+  # -------------------------------------------------------------------
+  app:
+    container_name: whiskerwatcher_app
     build:
       context: .
       dockerfile: Dockerfile
-      target: inference-app
-      args:
-        - APPUSER_UID=${APPUSER_UID:-1000}
-        - APPUSER_GID=${APPUSER_GID:-1000}
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              device_ids: [ '0' ]
-              capabilities: [ gpu ]
+      target: app
+      args: *build-args
     environment:
       THUMB_CACHE_MAX_MB: 100
-      TRAINING_SERVER_HOST: whiskerwatcher_training
       MODELS_ROOT: /app/models
+      # Reach the training node; defaults to the `training` compose service.
+      # Point at a remote host for a remote training box.
+      TRAINING_SERVER_HOST: ${TRAINING_SERVER_HOST:-training}
     volumes:
       - ./data/:/data
       - ./conf:/conf
       - ./logs:/logs
-      # tasks_server reads labeled images from FILES_ROOT (/app/image_datasets)
-      # to push them to the training server, and saves the trained/converted
-      # model back to MODELS_ROOT (/app/models) for the inference server to load.
-      # Without these mounts a training run fails with "image file(s) not found
-      # on disk" and finished models never persist. (MODELS_ROOT default is /models.)
       - ./models:/app/models
       - ./image_datasets:/app/image_datasets
     ports:
-      - "7999:7999"  # Whisker-Watcher main app
-      - "8553:8554"  # RTSP relay
-      - "9001:9001"  # Supervisord
+      - "7999:7999"   # Whisker-Watcher main app
+      - "8553:8554"   # RTSP relay
+      - "9001:9001"   # Supervisord
     restart: unless-stopped
-    profiles: ["prod"]
-    depends_on:
-      - whiskerwatcher_training
+    profiles: ["app"]
 
-  # =========================================================
-  #  Training Server (Production Profile)
-  # =========================================================
-  whiskerwatcher_training:
+  # -------------------------------------------------------------------
+  # Training: standalone ML node (GPU). Talks to the frontend only over
+  # HTTP, so it can live on a separate/remote GPU host.
+  # -------------------------------------------------------------------
+  training:
     container_name: whiskerwatcher_training
-    shm_size: '2gb'
+    shm_size: "2gb"
+    <<: *gpu
     build:
       context: .
       dockerfile: Dockerfile
       target: training-app
-      args:
-        - APPUSER_UID=${APPUSER_UID:-1000}
-        - APPUSER_GID=${APPUSER_GID:-1000}
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              device_ids: [ '0' ]
-              capabilities: [ gpu ]
+      args: *build-args
     environment:
       TRAINING_CACHE_DIR: /training-cache
       TRAINING_CACHE_MAX_MB: 10000
@@ -73,31 +94,59 @@ services:
       - "8005:8005"   # Training API server
       - "9002:9001"   # Supervisord dashboard
     restart: unless-stopped
-    profiles: ["prod"]
+    profiles: ["training"]
 
-  # =========================================================
-  #  Inference Core Workspace (Development Profile)
-  # =========================================================
-  whiskerwatcher-dev:
-    container_name: whiskerwatcher_dev
+  # -------------------------------------------------------------------
+  # Mono: everything in one PRODUCTION container (GPU). Build with
+  # APP_BASE=cuda-runtime + ORT_REQUIREMENTS=requirements-gpu.txt.
+  # -------------------------------------------------------------------
+  mono:
+    container_name: whiskerwatcher_mono
+    shm_size: "2gb"
+    <<: *gpu
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: combined
+      args: *build-args
+    environment:
+      THUMB_CACHE_MAX_MB: 100
+      MODELS_ROOT: /app/models
+      TRAINING_SERVER_HOST: localhost
+      DB_SERVER_HOST: localhost
+      TRAINING_CACHE_DIR: /training-cache
+      TRAINING_CACHE_MAX_MB: 10000
+    command: ["/usr/bin/supervisord", "-c", "/conf/supervisord-monolith.conf"]
+    volumes:
+      - ./data/:/data
+      - ./conf:/conf
+      - ./logs:/logs
+      - ./models:/app/models
+      - ./image_datasets:/app/image_datasets
+      - training_cache:/training-cache
+    ports:
+      - "7999:7999"   # Whisker-Watcher main app
+      - "8005:8005"   # Training server
+      - "8553:8554"   # RTSP relay
+      - "9001:9001"   # Supervisord
+    restart: unless-stopped
+    profiles: ["mono"]
+
+  # -------------------------------------------------------------------
+  # Dev workspaces (source-mounted, dev tooling). Assume a GPU host.
+  # -------------------------------------------------------------------
+  app-dev:
+    container_name: whiskerwatcher_app_dev
+    <<: *gpu
     build:
       context: .
       dockerfile: Dockerfile
       target: dev
-      args:
-        - APPUSER_UID=${APPUSER_UID:-1000}
-        - APPUSER_GID=${APPUSER_GID:-1000}
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              device_ids: [ '0' ]
-              capabilities: [ gpu ]
+      args: *build-args
     environment:
       THUMB_CACHE_MAX_MB: 100
-      TRAINING_SERVER_HOST: whiskerwatcher_training_dev
       MODELS_ROOT: /app/models
+      TRAINING_SERVER_HOST: ${TRAINING_SERVER_HOST:-training-dev}
       TZ: America/Chicago
     volumes:
       - /etc/localtime:/etc/localtime:ro
@@ -118,29 +167,16 @@ services:
       - "9001:9001"
     restart: "no"
     profiles: ["dev"]
-    depends_on:
-      - whiskerwatcher-training-dev
 
-  # =========================================================
-  #  Training Pipeline Workspace (Development Profile)
-  # =========================================================
-  whiskerwatcher-training-dev:
+  training-dev:
     container_name: whiskerwatcher_training_dev
-    shm_size: '2gb'
+    shm_size: "2gb"
+    <<: *gpu
     build:
       context: .
       dockerfile: Dockerfile
       target: training-dev
-      args:
-        - APPUSER_UID=${APPUSER_UID:-1000}
-        - APPUSER_GID=${APPUSER_GID:-1000}
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              device_ids: [ '0' ]
-              capabilities: [ gpu ]
+      args: *build-args
     environment:
       TRAINING_CACHE_DIR: /training-cache
       TRAINING_CACHE_MAX_MB: 10000
@@ -156,28 +192,15 @@ services:
     restart: "no"
     profiles: ["dev"]
 
-  # =========================================================
-  #  Combined Dev Workspace (inference + training, one container)
-  #  Dev sibling of the `combined` profile below: everything in one
-  #  container plus dev tooling. Use ./rebuild.sh dev-combined.
-  # =========================================================
-  whiskerwatcher-combined-dev:
-    container_name: whiskerwatcher_combined_dev
-    shm_size: '2gb'
+  mono-dev:
+    container_name: whiskerwatcher_mono_dev
+    shm_size: "2gb"
+    <<: *gpu
     build:
       context: .
       dockerfile: Dockerfile
       target: combined-dev
-      args:
-        - APPUSER_UID=${APPUSER_UID:-1000}
-        - APPUSER_GID=${APPUSER_GID:-1000}
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              device_ids: [ '0' ]
-              capabilities: [ gpu ]
+      args: *build-args
     environment:
       THUMB_CACHE_MAX_MB: 100
       TRAINING_SERVER_HOST: localhost
@@ -207,53 +230,7 @@ services:
       - "8553:8554"
       - "9001:9001"
     restart: "no"
-    profiles: ["dev-combined"]
-
-  # =========================================================
-  #  Combined Server (inference + training in one PRODUCTION container)
-  #  Single-container deployment: every service runs under
-  #  supervisord-monolith.conf in the lean `combined` image (no dev
-  #  tooling). All inter-service hosts are localhost. Use ./rebuild.sh combined.
-  # =========================================================
-  whiskerwatcher-combined:
-    container_name: whiskerwatcher_combined
-    shm_size: '2gb'
-    build:
-      context: .
-      dockerfile: Dockerfile
-      target: combined
-      args:
-        - APPUSER_UID=${APPUSER_UID:-1000}
-        - APPUSER_GID=${APPUSER_GID:-1000}
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              device_ids: [ '0' ]
-              capabilities: [ gpu ]
-    environment:
-      THUMB_CACHE_MAX_MB: 100
-      TRAINING_SERVER_HOST: localhost
-      DB_SERVER_HOST: localhost
-      TRAINING_CACHE_DIR: /training-cache
-      TRAINING_CACHE_MAX_MB: 10000
-      MODELS_ROOT: /app/models
-    command: ["/usr/bin/supervisord", "-c", "/conf/supervisord-monolith.conf"]
-    volumes:
-      - ./data/:/data
-      - ./conf:/conf
-      - ./logs:/logs
-      - ./models:/app/models
-      - ./image_datasets:/app/image_datasets
-      - training_cache:/training-cache
-    ports:
-      - "7999:7999"  # Whisker-Watcher main app
-      - "8005:8005"  # Training server
-      - "8553:8554"  # RTSP relay
-      - "9001:9001"  # Supervisord
-    restart: unless-stopped
-    profiles: ["combined"]
+    profiles: ["dev-mono"]
 
 volumes:
   training_cache:
