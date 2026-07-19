@@ -65,9 +65,11 @@ docker compose up -d --build   # build + start what .env selected
 Then open the UI at **http://localhost:7999**.
 
 `setup.sh` detects whether you have a GPU and asks what this host should run
-(everything / frontend+inference only / training only), then writes a `.env`.
-`docker compose` reads `.env` automatically, so from then on plain compose
-commands work. To reconfigure later, re-run `./setup.sh`.
+(everything / frontend+inference only / training only / a dev workspace), then
+writes a `.env`. Even on a GPU host it always offers CPU inference — e.g. to keep
+a slim frontend or reserve VRAM for training. `docker compose` reads `.env`
+automatically, so from then on plain compose commands work. To reconfigure later,
+re-run `./setup.sh`.
 
 ---
 
@@ -129,22 +131,33 @@ Host directories bind-mounted into the stack: `./data` (database), `./models`
 
 ## Development
 
-Bring up a source-mounted workspace (the repo is mounted at `/project`, code
-changes are live) and run the test suites inside it:
+Run `./setup.sh` and choose **"Development workspace"**. It offers two layouts:
+
+- **Single container** (`COMPOSE_PROFILES=dev-mono`, service `mono-dev`) — everything
+  plus dev tooling in one container. This is the old `combined-dev`.
+- **Split** (`COMPOSE_PROFILES=dev`, services `app-dev` + `training-dev`).
+
+The repo is bind-mounted at `/project`, so code changes are live. Bring it up and
+run the suites inside the workspace container (`mono-dev` for single-container,
+`app-dev` for split):
 
 ```bash
-./setup.sh                              # choose a "dev" workspace when prompted,
-                                        # or set COMPOSE_PROFILES=dev in .env
+./setup.sh                       # -> Development workspace
 docker compose up -d --build
 
 # Unit tests
-docker compose exec app-dev python -m pytest
+docker compose exec mono-dev python -m pytest
 
 # Browser (Playwright) tests
-docker compose exec app-dev bash -c 'cd /project/playwright_tests && python -m pytest'
+docker compose exec mono-dev bash -c 'cd /project/playwright_tests && python -m pytest'
 ```
 
 The dev images bundle the toolchain (formatters, pytest, Playwright + Chromium).
+
+Personal, machine-specific dev mounts (extra datasets, host `~/.claude`, etc.) go
+in a **gitignored** `docker-compose.override.yml`, which compose merges
+automatically. The shipped override targets the `app-dev` service; point it at
+`mono-dev` if you use the single-container dev layout.
 
 ---
 

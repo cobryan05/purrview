@@ -41,6 +41,17 @@ menu() {  # menu "Title" "opt1" "opt2" ... -> echoes chosen index (1-based) on s
   echo "${reply:-1}"
 }
 
+# Ask whether to use the GPU for inference. Echoes "y" or "n". Only prompts when
+# a GPU exists; on a CPU-only host it silently answers "n". Training, when part
+# of the deployment, always uses the GPU regardless of this answer.
+choose_gpu_inference() {
+  if [ "$GPU_DEFAULT" = "y" ]; then
+    if ask "Use the GPU for inference (onnxruntime-gpu)?" y; then echo "y"; else echo "n"; fi
+  else
+    echo "n"
+  fi
+}
+
 # ---- detect environment ---------------------------------------------------
 GPU_DEFAULT="n"
 if command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi -L >/dev/null 2>&1; then
@@ -63,7 +74,8 @@ echo
 ROLE="$(menu "What should this host run?" \
   "Everything (frontend + inference + training) on one box" \
   "Frontend + inference only (train elsewhere, or not at all)" \
-  "Training only (a GPU node serving a separate frontend)")"
+  "Training only (a GPU node serving a separate frontend)" \
+  "Development workspace (source-mounted, live code + dev tooling)")"
 echo
 
 # defaults
@@ -74,26 +86,39 @@ COMPOSE_FILE=""
 TRAINING_SERVER_HOST=""
 
 case "$ROLE" in
-  1)  # Everything on one box — requires a GPU (training needs it)
+  1)  # Everything on one box — training needs a GPU; inference GPU is optional
     if [ "$GPU_DEFAULT" != "y" ]; then
       echo "!! Training needs an NVIDIA GPU, but none was detected."
       ask "   Continue anyway (build will target CUDA)?" n || { echo "Aborted."; exit 1; }
     fi
-    APP_BASE="cuda-runtime"
-    ORT_REQUIREMENTS="requirements-gpu.txt"
     LAYOUT="$(menu "How should services be laid out?" \
       "One container (mono) — simplest single-box deploy" \
       "Separate app + training containers (split)")"
+    echo "(Training always uses the GPU. The next question is about inference only.)"
+    GI="$(choose_gpu_inference)"
     if [ "$LAYOUT" = "2" ]; then
+      # split: app and training are separate containers, so a CPU-inference
+      # frontend can use the slim base and skip CUDA entirely.
       COMPOSE_PROFILES="app,training"
-      COMPOSE_FILE="docker-compose.yaml:docker-compose.gpu.yaml"  # GPU inference in app
+      if [ "$GI" = "y" ]; then
+        APP_BASE="cuda-runtime"
+        ORT_REQUIREMENTS="requirements-gpu.txt"
+        COMPOSE_FILE="docker-compose.yaml:docker-compose.gpu.yaml"
+      else
+        APP_BASE="slim-runtime"
+        ORT_REQUIREMENTS="requirements-cpu.txt"
+      fi
     else
+      # mono: one container, so it must be the CUDA base (torch needs it); only
+      # the onnxruntime flavor follows the inference choice.
       COMPOSE_PROFILES="mono"
+      APP_BASE="cuda-runtime"
+      [ "$GI" = "y" ] && ORT_REQUIREMENTS="requirements-gpu.txt" || ORT_REQUIREMENTS="requirements-cpu.txt"
     fi
     ;;
 
   2)  # Frontend + inference only
-    if [ "$GPU_DEFAULT" = "y" ] && ask "Use the GPU for inference (onnxruntime-gpu)?" y; then
+    if [ "$(choose_gpu_inference)" = "y" ]; then
       APP_BASE="cuda-runtime"
       ORT_REQUIREMENTS="requirements-gpu.txt"
       COMPOSE_FILE="docker-compose.yaml:docker-compose.gpu.yaml"
@@ -114,6 +139,33 @@ case "$ROLE" in
     # base), but keep them consistent for any shared build args.
     APP_BASE="cuda-runtime"
     ORT_REQUIREMENTS="requirements-gpu.txt"
+    ;;
+
+  4)  # Development workspace (source-mounted, dev tooling)
+    if [ "$GPU_DEFAULT" != "y" ]; then
+      echo "!! The dev workspaces assume an NVIDIA GPU (training-dev / mono-dev reserve one)."
+      ask "   Continue anyway?" n || { echo "Aborted."; exit 1; }
+    fi
+    LAYOUT="$(menu "Dev layout?" \
+      "Single container — everything + dev tooling" \
+      "Separate app-dev + training-dev containers")"
+    GI="$(choose_gpu_inference)"
+    if [ "$LAYOUT" = "2" ]; then
+      COMPOSE_PROFILES="dev"
+      if [ "$GI" = "y" ]; then
+        APP_BASE="cuda-runtime"
+        ORT_REQUIREMENTS="requirements-gpu.txt"
+      else
+        APP_BASE="slim-runtime"
+        ORT_REQUIREMENTS="requirements-cpu.txt"
+      fi
+    else
+      COMPOSE_PROFILES="dev-mono"
+      APP_BASE="cuda-runtime"
+      [ "$GI" = "y" ] && ORT_REQUIREMENTS="requirements-gpu.txt" || ORT_REQUIREMENTS="requirements-cpu.txt"
+    fi
+    # Dev services already reserve a GPU in the base compose, so no GPU overlay
+    # is needed here (unlike the prod `app` service).
     ;;
 esac
 

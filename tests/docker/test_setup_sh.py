@@ -93,16 +93,23 @@ CASES = [
         {"COMPOSE_FILE"},
     ),
     (
-        "everything_mono",
+        "everything_mono_gpu_inference",
         True,
-        "1\n1\n\n",
+        "1\n1\ny\n\n",
         {"COMPOSE_PROFILES": "mono", "APP_BASE": "cuda-runtime", "ORT_REQUIREMENTS": "requirements-gpu.txt"},
         {"COMPOSE_FILE"},
     ),
     (
-        "everything_split",
+        "everything_mono_cpu_inference",
         True,
-        "1\n2\n\n",
+        "1\n1\nn\n\n",
+        {"COMPOSE_PROFILES": "mono", "APP_BASE": "cuda-runtime", "ORT_REQUIREMENTS": "requirements-cpu.txt"},
+        {"COMPOSE_FILE"},
+    ),
+    (
+        "everything_split_gpu_inference",
+        True,
+        "1\n2\ny\n\n",
         {
             "COMPOSE_PROFILES": "app,training",
             "APP_BASE": "cuda-runtime",
@@ -112,11 +119,41 @@ CASES = [
         set(),
     ),
     (
+        # split with CPU inference: the frontend uses the slim base, no CUDA.
+        "everything_split_cpu_inference",
+        True,
+        "1\n2\nn\n\n",
+        {"COMPOSE_PROFILES": "app,training", "APP_BASE": "slim-runtime", "ORT_REQUIREMENTS": "requirements-cpu.txt"},
+        {"COMPOSE_FILE"},
+    ),
+    (
+        # no GPU but "everything" confirmed -> CUDA base for torch, CPU inference.
         "everything_mono_no_gpu_confirmed",
         False,
         "1\ny\n1\n\n",
-        {"COMPOSE_PROFILES": "mono", "APP_BASE": "cuda-runtime", "ORT_REQUIREMENTS": "requirements-gpu.txt"},
+        {"COMPOSE_PROFILES": "mono", "APP_BASE": "cuda-runtime", "ORT_REQUIREMENTS": "requirements-cpu.txt"},
         set(),
+    ),
+    (
+        "dev_mono",
+        True,
+        "4\n1\ny\n\n",
+        {"COMPOSE_PROFILES": "dev-mono", "APP_BASE": "cuda-runtime", "ORT_REQUIREMENTS": "requirements-gpu.txt"},
+        {"COMPOSE_FILE"},
+    ),
+    (
+        "dev_split_gpu_inference",
+        True,
+        "4\n2\ny\n\n",
+        {"COMPOSE_PROFILES": "dev", "APP_BASE": "cuda-runtime", "ORT_REQUIREMENTS": "requirements-gpu.txt"},
+        {"COMPOSE_FILE"},
+    ),
+    (
+        "dev_split_cpu_inference",
+        True,
+        "4\n2\nn\n\n",
+        {"COMPOSE_PROFILES": "dev", "APP_BASE": "slim-runtime", "ORT_REQUIREMENTS": "requirements-cpu.txt"},
+        {"COMPOSE_FILE"},
     ),
     (
         "training_only_gpu",
