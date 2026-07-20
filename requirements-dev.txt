@@ -8,3 +8,5 @@ pytest-xdist>=3
 nest_asyncio>=1.6
 playwright>=1.44
 pytest-playwright>=0.5
+# tests/docker/test_dockerfile_compose_consistency.py parses the compose files
+pyyaml>=6
