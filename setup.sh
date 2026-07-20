@@ -52,6 +52,29 @@ choose_gpu_inference() {
   fi
 }
 
+# Resolve APP_BASE/ORT_REQUIREMENTS/COMPOSE_FILE (globals) from a GPU-inference
+# y/n answer, for a topology where the app container is a separate, CPU-buildable
+# service (split layouts): GPU inference pulls in the CUDA base + gpu overlay,
+# CPU inference stays on the slim base with no overlay.
+apply_inference_choice() {  # apply_inference_choice "$GI"
+  if [ "$1" = "y" ]; then
+    APP_BASE="cuda-runtime"
+    ORT_REQUIREMENTS="requirements-gpu.txt"
+    COMPOSE_FILE="docker-compose.yaml:docker-compose.gpu.yaml"
+  else
+    APP_BASE="slim-runtime"
+    ORT_REQUIREMENTS="requirements-cpu.txt"
+    COMPOSE_FILE=""
+  fi
+}
+
+# Resolve just the onnxruntime flavor from a GPU-inference y/n answer, for a
+# topology that must build on the CUDA base regardless (mono/dev-mono: torch
+# needs it there anyway, so only the onnxruntime flavor follows the choice).
+ort_requirements_for() {  # ort_requirements_for "$GI" -> echoes filename
+  if [ "$1" = "y" ]; then echo "requirements-gpu.txt"; else echo "requirements-cpu.txt"; fi
+}
+
 # ---- detect environment ---------------------------------------------------
 GPU_DEFAULT="n"
 if command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi -L >/dev/null 2>&1; then
@@ -100,29 +123,18 @@ case "$ROLE" in
       # split: app and training are separate containers, so a CPU-inference
       # frontend can use the slim base and skip CUDA entirely.
       COMPOSE_PROFILES="app,training"
-      if [ "$GI" = "y" ]; then
-        APP_BASE="cuda-runtime"
-        ORT_REQUIREMENTS="requirements-gpu.txt"
-        COMPOSE_FILE="docker-compose.yaml:docker-compose.gpu.yaml"
-      else
-        APP_BASE="slim-runtime"
-        ORT_REQUIREMENTS="requirements-cpu.txt"
-      fi
+      apply_inference_choice "$GI"
     else
       # mono: one container, so it must be the CUDA base (torch needs it); only
       # the onnxruntime flavor follows the inference choice.
       COMPOSE_PROFILES="mono"
       APP_BASE="cuda-runtime"
-      [ "$GI" = "y" ] && ORT_REQUIREMENTS="requirements-gpu.txt" || ORT_REQUIREMENTS="requirements-cpu.txt"
+      ORT_REQUIREMENTS="$(ort_requirements_for "$GI")"
     fi
     ;;
 
   2)  # Frontend + inference only
-    if [ "$(choose_gpu_inference)" = "y" ]; then
-      APP_BASE="cuda-runtime"
-      ORT_REQUIREMENTS="requirements-gpu.txt"
-      COMPOSE_FILE="docker-compose.yaml:docker-compose.gpu.yaml"
-    fi
+    apply_inference_choice "$(choose_gpu_inference)"
     COMPOSE_PROFILES="app"
     if ask "Point at a remote training server?" n; then
       TRAINING_SERVER_HOST="$(ask_str "  Training server hostname/IP:")"
@@ -155,20 +167,13 @@ case "$ROLE" in
       # CPU-inference app-dev can use the slim base and skip the GPU
       # reservation entirely (training-dev still always reserves one).
       COMPOSE_PROFILES="dev"
-      if [ "$GI" = "y" ]; then
-        APP_BASE="cuda-runtime"
-        ORT_REQUIREMENTS="requirements-gpu.txt"
-        COMPOSE_FILE="docker-compose.yaml:docker-compose.gpu.yaml"
-      else
-        APP_BASE="slim-runtime"
-        ORT_REQUIREMENTS="requirements-cpu.txt"
-      fi
+      apply_inference_choice "$GI"
     else
       # dev-mono: one container, so it must be the CUDA base (torch needs it);
       # mono-dev already reserves a GPU unconditionally in the base compose.
       COMPOSE_PROFILES="dev-mono"
       APP_BASE="cuda-runtime"
-      [ "$GI" = "y" ] && ORT_REQUIREMENTS="requirements-gpu.txt" || ORT_REQUIREMENTS="requirements-cpu.txt"
+      ORT_REQUIREMENTS="$(ort_requirements_for "$GI")"
     fi
     ;;
 esac
