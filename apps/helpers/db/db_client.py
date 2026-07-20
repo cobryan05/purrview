@@ -3917,7 +3917,16 @@ class DbClient:
 
                         if status == "co_labels_covered":
                             matching = co_covered
-                        elif missing_label_uuid and missing_label_uuid in accounted_for_co:
+                        elif missing_label_uuid:
+                            if missing_label_uuid not in accounted_for_co:
+                                # The caller asked to narrow to a specific other top-level
+                                # label, but it isn't one of this label's current co-label
+                                # breakdown rows (stale UI state, or a label config change
+                                # since the breakdown was computed). Fail loudly instead of
+                                # silently widening back out to the full (unfiltered) gap set.
+                                raise ValueError(
+                                    f"missing_label_uuid {missing_label_uuid!r} is not a co-label of {label_uuid!r}"
+                                )
                             # Narrow the gap to images where this specific other label is unresolved.
                             matching = base - accounted_for_co[missing_label_uuid]
                         else:
