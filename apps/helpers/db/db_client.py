@@ -3761,6 +3761,74 @@ class DbClient:
 
         return {"class_names": class_names, "images": image_entries}
 
+    async def _co_label_accounted_for(
+        self,
+        session,
+        all_image_uuids: list[str],
+        top_level_uuids: list[str],
+        effective_for_tl: dict[str, list[str]],
+        tl_label_lookup: dict[str, Any],
+        verified_bbox_sets: Optional[dict[str, set]] = None,
+    ) -> dict[str, set]:
+        """Images "accounted for" per top-level label, shared by the co-label-gap
+        filter (get_training_config_images_by_label_status) and the co-label stats
+        aggregation (get_training_config_label_stats):
+
+        object-scope: has a verified bbox OR an explicit absent ImageLabel (for the
+            label or its rollup children).
+        image-scope:  has any explicit PRESENT or ABSENT ImageLabel (ditto).
+
+        verified_bbox_sets: optional precomputed {label_uuid: verified-image-set} for
+        object-scope labels, so a caller that already queried those sets (the stats
+        aggregation, which needs them for other purposes too) doesn't re-query them.
+        """
+
+        async def _collect(build_stmt) -> set:
+            out: set[str] = set()
+            for chunk in _chunked(all_image_uuids):
+                out.update((await session.exec(build_stmt(chunk))).all())
+            return out
+
+        accounted_for: dict[str, set] = {}
+        for tl_uuid in top_level_uuids:
+            eff = effective_for_tl[tl_uuid]
+            tl_label = tl_label_lookup.get(tl_uuid)
+            if tl_label is None:
+                accounted_for[tl_uuid] = set()
+                continue
+            if tl_label.scope == LabelScope.OBJECT:
+                if verified_bbox_sets is not None and tl_uuid in verified_bbox_sets:
+                    verified_bboxes = verified_bbox_sets[tl_uuid]
+                else:
+                    verified_bboxes = await _collect(
+                        lambda chunk, eff=eff: select(BBox.image_uuid)
+                        .distinct()
+                        .where(
+                            BBox.image_uuid.in_(chunk),
+                            BBox.label_uuid.in_(eff),
+                            BBox.uuid.in_(
+                                select(BBoxTagLink.bbox_uuid).where(BBoxTagLink.tag_uuid == VERIFIED_TAG_UUID)
+                            ),
+                        )
+                    )
+                verified_absent = await _collect(
+                    lambda chunk, eff=eff: select(ImageLabel.image_uuid).where(
+                        ImageLabel.image_uuid.in_(chunk),
+                        ImageLabel.label_uuid.in_(eff),
+                        ImageLabel.status == ImageItemStatus.ABSENT,
+                    )
+                )
+                accounted_for[tl_uuid] = verified_bboxes | verified_absent
+            else:
+                accounted_for[tl_uuid] = await _collect(
+                    lambda chunk, eff=eff: select(ImageLabel.image_uuid).where(
+                        ImageLabel.image_uuid.in_(chunk),
+                        ImageLabel.label_uuid.in_(eff),
+                        ImageLabel.status.in_([ImageItemStatus.PRESENT, ImageItemStatus.ABSENT]),
+                    )
+                )
+        return accounted_for
+
     async def get_training_config_images_by_label_status(
         self,
         uuid: str,
@@ -3874,42 +3942,9 @@ class DbClient:
                         focus_tl_ancestor = child_to_parent_co.get(label_uuid, label_uuid)
                         other_tls_co = [tl for tl in top_level_uuids_co if tl != focus_tl_ancestor]
 
-                        accounted_for_co: dict[str, set] = {}
-                        for tl_uuid in other_tls_co:
-                            eff = effective_for_tl_co[tl_uuid]
-                            tl_label = co_labels_map.get(tl_uuid)
-                            if tl_label is None:
-                                continue
-                            if tl_label.scope == LabelScope.OBJECT:
-                                verified_bboxes = await _collect(
-                                    lambda chunk, eff=eff: select(BBox.image_uuid)
-                                    .distinct()
-                                    .where(
-                                        BBox.image_uuid.in_(chunk),
-                                        BBox.label_uuid.in_(eff),
-                                        BBox.uuid.in_(
-                                            select(BBoxTagLink.bbox_uuid).where(
-                                                BBoxTagLink.tag_uuid == VERIFIED_TAG_UUID
-                                            )
-                                        ),
-                                    )
-                                )
-                                verified_absent = await _collect(
-                                    lambda chunk, eff=eff: select(ImageLabel.image_uuid).where(
-                                        ImageLabel.image_uuid.in_(chunk),
-                                        ImageLabel.label_uuid.in_(eff),
-                                        ImageLabel.status == ImageItemStatus.ABSENT,
-                                    )
-                                )
-                                accounted_for_co[tl_uuid] = verified_bboxes | verified_absent
-                            else:
-                                accounted_for_co[tl_uuid] = await _collect(
-                                    lambda chunk, eff=eff: select(ImageLabel.image_uuid).where(
-                                        ImageLabel.image_uuid.in_(chunk),
-                                        ImageLabel.label_uuid.in_(eff),
-                                        ImageLabel.status.in_([ImageItemStatus.PRESENT, ImageItemStatus.ABSENT]),
-                                    )
-                                )
+                        accounted_for_co = await self._co_label_accounted_for(
+                            session, all_image_uuids, other_tls_co, effective_for_tl_co, co_labels_map
+                        )
 
                         co_covered = set(base)
                         for accounted in accounted_for_co.values():
@@ -4473,32 +4508,14 @@ class DbClient:
                     )
 
                 # "Accounted for" image sets per top-level label.
-                accounted_for_tl: dict[str, set[str]] = {}
-                for tl_uuid in top_level_uuids:
-                    eff = effective_for_tl[tl_uuid]
-                    tl_label = labels_map.get(tl_uuid)
-                    if tl_label is None:
-                        accounted_for_tl[tl_uuid] = set()
-                        continue
-                    if tl_label.scope == LabelScope.OBJECT:
-                        v_set = obj_verified_imgs.get(tl_uuid, set())
-                        absent_set = await _uuid_set_chunked(
-                            lambda chunk, eff=eff: select(ImageLabel.image_uuid).where(
-                                ImageLabel.image_uuid.in_(chunk),
-                                ImageLabel.label_uuid.in_(eff),
-                                ImageLabel.status == ImageItemStatus.ABSENT,
-                            )
-                        )
-                        accounted_for_tl[tl_uuid] = v_set | absent_set
-                    else:
-                        # Image-scope: any explicit PRESENT or ABSENT counts.
-                        accounted_for_tl[tl_uuid] = await _uuid_set_chunked(
-                            lambda chunk, eff=eff: select(ImageLabel.image_uuid).where(
-                                ImageLabel.image_uuid.in_(chunk),
-                                ImageLabel.label_uuid.in_(eff),
-                                ImageLabel.status.in_([ImageItemStatus.PRESENT, ImageItemStatus.ABSENT]),
-                            )
-                        )
+                accounted_for_tl = await self._co_label_accounted_for(
+                    session,
+                    all_image_uuids,
+                    top_level_uuids,
+                    effective_for_tl,
+                    labels_map,
+                    verified_bbox_sets=obj_verified_imgs,
+                )
 
                 # Compute co-label stats for each object label.
                 for lbl_uuid in object_label_uuids:
