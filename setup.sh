@@ -151,21 +151,25 @@ case "$ROLE" in
       "Separate app-dev + training-dev containers")"
     GI="$(choose_gpu_inference)"
     if [ "$LAYOUT" = "2" ]; then
+      # split: app-dev is a separate container from training-dev, so a
+      # CPU-inference app-dev can use the slim base and skip the GPU
+      # reservation entirely (training-dev still always reserves one).
       COMPOSE_PROFILES="dev"
       if [ "$GI" = "y" ]; then
         APP_BASE="cuda-runtime"
         ORT_REQUIREMENTS="requirements-gpu.txt"
+        COMPOSE_FILE="docker-compose.yaml:docker-compose.gpu.yaml"
       else
         APP_BASE="slim-runtime"
         ORT_REQUIREMENTS="requirements-cpu.txt"
       fi
     else
+      # dev-mono: one container, so it must be the CUDA base (torch needs it);
+      # mono-dev already reserves a GPU unconditionally in the base compose.
       COMPOSE_PROFILES="dev-mono"
       APP_BASE="cuda-runtime"
       [ "$GI" = "y" ] && ORT_REQUIREMENTS="requirements-gpu.txt" || ORT_REQUIREMENTS="requirements-cpu.txt"
     fi
-    # Dev services already reserve a GPU in the base compose, so no GPU overlay
-    # is needed here (unlike the prod `app` service).
     ;;
 esac
 

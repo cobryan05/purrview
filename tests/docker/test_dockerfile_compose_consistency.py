@@ -65,16 +65,17 @@ def test_app_and_mono_pass_base_build_args():
 
 
 def test_app_service_has_no_hardcoded_gpu_reservation():
-    """The base `app` service must start on CPU-only hosts; GPU is opt-in via the overlay."""
+    """The `app`/`app-dev` services must start on CPU-only hosts; GPU is opt-in via the overlay."""
     compose = _load_compose("docker-compose.yaml")
-    app = compose["services"]["app"]
-    assert "deploy" not in app or "resources" not in app.get("deploy", {}), \
-        "base `app` must not reserve a GPU (that would break CPU-only hosts)"
+    for svc_name in ("app", "app-dev"):
+        svc = compose["services"][svc_name]
+        assert "deploy" not in svc or "resources" not in svc.get("deploy", {}), \
+            f"base `{svc_name}` must not reserve a GPU (that would break CPU-only hosts)"
 
 
 def test_gpu_services_reserve_a_gpu():
     compose = _load_compose("docker-compose.yaml")
-    for svc_name in ("training", "mono"):
+    for svc_name in ("training", "mono", "training-dev", "mono-dev"):
         devices = compose["services"][svc_name]["deploy"]["resources"]["reservations"]["devices"]
         drivers = [d.get("driver") for d in devices]
         assert "nvidia" in drivers, f"{svc_name} must reserve an nvidia GPU"
@@ -82,9 +83,11 @@ def test_gpu_services_reserve_a_gpu():
 
 def test_gpu_overlay_only_augments_app():
     overlay = _load_compose("docker-compose.gpu.yaml")
-    assert set(overlay["services"].keys()) == {"app"}, "overlay must only touch the `app` service"
-    devices = overlay["services"]["app"]["deploy"]["resources"]["reservations"]["devices"]
-    assert any(d.get("driver") == "nvidia" for d in devices)
+    assert set(overlay["services"].keys()) == {"app", "app-dev"}, \
+        "overlay must only touch the CPU-buildable `app`/`app-dev` services"
+    for svc_name in ("app", "app-dev"):
+        devices = overlay["services"][svc_name]["deploy"]["resources"]["reservations"]["devices"]
+        assert any(d.get("driver") == "nvidia" for d in devices)
 
 
 def test_env_example_documents_core_keys():

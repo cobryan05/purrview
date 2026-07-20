@@ -145,8 +145,13 @@ CASES = [
         "dev_split_gpu_inference",
         True,
         "4\n2\ny\n\n",
-        {"COMPOSE_PROFILES": "dev", "APP_BASE": "cuda-runtime", "ORT_REQUIREMENTS": "requirements-gpu.txt"},
-        {"COMPOSE_FILE"},
+        {
+            "COMPOSE_PROFILES": "dev",
+            "APP_BASE": "cuda-runtime",
+            "ORT_REQUIREMENTS": "requirements-gpu.txt",
+            "COMPOSE_FILE": "docker-compose.yaml:docker-compose.gpu.yaml",
+        },
+        set(),
     ),
     (
         "dev_split_cpu_inference",

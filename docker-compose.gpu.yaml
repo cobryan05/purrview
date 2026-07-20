@@ -1,18 +1,29 @@
-# GPU inference overlay for the `app` container.
+# GPU inference overlay for CPU-buildable services (`app`, `app-dev`).
 #
-# Merge this alongside the base file to grant the frontend+inference `app`
+# Merge this alongside the base file to grant the frontend+inference
 # container access to the GPU, so onnxruntime-gpu uses the CUDA execution
 # provider:
 #
 #   COMPOSE_FILE=docker-compose.yaml:docker-compose.gpu.yaml
 #
-# Only meaningful when `app` is built for GPU inference, i.e.:
+# Only meaningful when the service is built for GPU inference, i.e.:
 #   APP_BASE=cuda-runtime  ORT_REQUIREMENTS=requirements-gpu.txt
 #
 # Do NOT merge this on a CPU-only host — reserving an nvidia device there
 # prevents the container from starting. (setup.sh wires this automatically.)
+#
+# training/mono/training-dev/mono-dev always need a GPU (training), so they
+# reserve one unconditionally in the base file and never need this overlay.
 services:
   app:
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["0"]
+              capabilities: [gpu]
+  app-dev:
     deploy:
       resources:
         reservations:

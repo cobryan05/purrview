@@ -57,6 +57,14 @@ services:
       # Reach the training node; defaults to the `training` compose service.
       # Point at a remote host for a remote training box.
       TRAINING_SERVER_HOST: ${TRAINING_SERVER_HOST:-training}
+    # `training` is only part of the compose project when its own profile is
+    # active (e.g. the "app,training" split); `required: false` lets `app`
+    # start on its own for the "frontend + remote training" topology while
+    # still sequencing after `training` when both are enabled together.
+    depends_on:
+      training:
+        condition: service_started
+        required: false
     volumes:
       - ./data/:/data
       - ./conf:/conf
@@ -133,11 +141,12 @@ services:
     profiles: ["mono"]
 
   # -------------------------------------------------------------------
-  # Dev workspaces (source-mounted, dev tooling). Assume a GPU host.
+  # Dev workspaces (source-mounted, dev tooling). training-dev/mono-dev
+  # always need a GPU (training); app-dev's GPU is opt-in via the overlay,
+  # same as the prod `app` service, since it can be built CPU-only.
   # -------------------------------------------------------------------
   app-dev:
     container_name: whiskerwatcher_app_dev
-    <<: *gpu
     build:
       context: .
       dockerfile: Dockerfile
@@ -148,6 +157,10 @@ services:
       MODELS_ROOT: /app/models
       TRAINING_SERVER_HOST: ${TRAINING_SERVER_HOST:-training-dev}
       TZ: America/Chicago
+    # training-dev is always part of the same "dev" profile as app-dev, so
+    # this can be an unconditional dependency (unlike app -> training).
+    depends_on:
+      - training-dev
     volumes:
       - /etc/localtime:/etc/localtime:ro
       - /etc/timezone:/etc/timezone:ro
