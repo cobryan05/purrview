@@ -17,8 +17,17 @@ fi
 export APPUSER_UID="$(id -u)"
 export APPUSER_GID="$(id -g)"
 
-echo "Stopping current stack (per .env profiles)..."
-docker compose down --remove-orphans
+# All topologies share the same host ports, so a plain `docker compose down`
+# (which only tears down .env's currently active profiles) can leave a
+# previous topology's containers running and collide on those ports if .env
+# was reconfigured (e.g. re-running setup.sh to switch app -> mono) since the
+# last rebuild. Tear down every known profile up front regardless of .env.
+KNOWN_PROFILES=(app training mono dev dev-mono)
+down_profile_args=()
+for p in "${KNOWN_PROFILES[@]}"; do down_profile_args+=(--profile "$p"); done
+
+echo "Stopping any running stack (all known profiles, to clear host ports)..."
+docker compose "${down_profile_args[@]}" down --remove-orphans
 
 echo "Rebuilding and starting..."
 docker compose up -d --build
