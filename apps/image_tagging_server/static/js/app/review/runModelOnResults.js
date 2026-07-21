@@ -34,7 +34,7 @@ import {
 } from '/app-static/js/shared/api/tasks.js';
 import { createModalShell } from '/app-static/js/ui/utils/modalShell.js';
 import { toast, Logger } from '/app-static/js/ui/utils/logging.js';
-import { expandWithDescendants } from '/app-static/js/ui/labelList.js';
+import { expandLabelFilterSet } from '/app-static/js/app/review/filterPredicate.js';
 
 // Above this many candidate bboxes, warn the user (large runs take a while) and
 // let them cap how many to process before launching. There is no hard ceiling —
@@ -60,10 +60,10 @@ const POLL_INTERVAL_MS = 700;
 export function makeBboxFilterPredicate({ fetchImagesMode, bboxFilterFn, fs, labels }) {
   const showAll = (fetchImagesMode && !bboxFilterFn) || fs?.showAllBboxes;
   const tagSet = (fs && !showAll) ? new Set(fs.tagUuids) : null;
+  // Share the label-set expansion helper with filterPredicate.js so the
+  // include/child-expansion policy can't drift between the two filter paths.
   const activeLabelUuids = (fs?.labelUuids?.length > 0)
-    ? (fs.labelIncludeChildren
-        ? expandWithDescendants(fs.labelUuids, labels)
-        : new Set(fs.labelUuids))
+    ? expandLabelFilterSet(fs.labelUuids, labels, fs.labelIncludeChildren)
     : null;
 
   return (b) => {
