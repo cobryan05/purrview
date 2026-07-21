@@ -111,7 +111,7 @@ async function _openRankedImagesModal({ title, makeFetchFn, referenceImageUuids 
   let toolbarEl;
   if (extraControls) {
     toolbarEl = document.createElement('div');
-    toolbarEl.style.cssText = 'display:flex;align-items:center;gap:0.75em;flex-wrap:wrap;';
+    toolbarEl.className = 'modal-toolbar-row';
     toolbarEl.append(countEl, extraControls);
   } else {
     toolbarEl = countEl;
@@ -262,7 +262,7 @@ export async function openDissimilarBboxesModal({ bboxUuid = null, bboxes = null
   });
 
   const headerEl = document.createElement('div');
-  headerEl.style.cssText = 'display:flex;align-items:center;gap:0.75em;flex-wrap:wrap;';
+  headerEl.className = 'modal-toolbar-row';
   headerEl.append(countEl, labelsDropdown.element, similarBtn);
 
   _refresh = await showReviewModal({

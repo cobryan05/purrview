@@ -21,10 +21,10 @@ export function pageStartIdx(order, afterUuid) {
  */
 export function buildCountControl(initial, { min = 10, max = 500, onChange }) {
   const el = document.createElement('div');
-  el.style.cssText = 'display:flex;align-items:center;gap:0.5em;font-size:0.85em;color:#aaa;margin-left:0.5em;';
+  el.className = 'modal-toolbar-control';
 
   const label = document.createElement('span');
-  label.style.cssText = 'white-space:nowrap;';
+  label.className = 'modal-toolbar-control__label';
   label.textContent = 'Result limit:';
 
   const input = document.createElement('input');
@@ -33,7 +33,7 @@ export function buildCountControl(initial, { min = 10, max = 500, onChange }) {
   input.max = String(max);
   input.step = '10';
   input.value = String(initial);
-  input.style.cssText = 'width:5em;accent-color:#c9a227;';
+  input.className = 'modal-count-input';
   input.title = `Maximum number of most-distinct results to return (${min}–${max})`;
 
   function _emit() {
@@ -56,9 +56,7 @@ export function buildSwitchModeButton(label, onClick) {
   const btn = document.createElement('button');
   btn.type = 'button';
   btn.textContent = label;
-  btn.style.cssText =
-    'font-size:0.8em;padding:0.15em 0.6em;cursor:pointer;' +
-    'border:1px solid #555;background:transparent;color:#aaa;border-radius:4px;white-space:nowrap;';
+  btn.className = 'modal-switch-btn';
   btn.addEventListener('click', () => Promise.resolve(onClick()).catch(() => {}));
   return btn;
 }

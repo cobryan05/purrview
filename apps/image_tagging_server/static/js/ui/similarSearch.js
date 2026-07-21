@@ -87,10 +87,10 @@ export async function getBboxDefaultThreshold(hashMax = null) {
  */
 function buildThresholdSlider(initial, { min = 0, max = 64, onChange }) {
   const el = document.createElement('div');
-  el.style.cssText = 'display:flex;align-items:center;gap:0.5em;font-size:0.85em;color:#aaa;margin-left:0.5em;';
+  el.className = 'modal-toolbar-control';
 
   const label = document.createElement('span');
-  label.style.cssText = 'white-space:nowrap;';
+  label.className = 'modal-toolbar-control__label';
   label.textContent = 'Threshold:';
 
   const slider = document.createElement('input');
@@ -99,11 +99,11 @@ function buildThresholdSlider(initial, { min = 0, max = 64, onChange }) {
   slider.max = String(max);
   slider.step = '1';
   slider.value = String(initial);
-  slider.style.cssText = 'width:120px;accent-color:#c9a227;cursor:pointer;';
+  slider.className = 'modal-threshold-slider';
   slider.title = `Similarity threshold (Hamming distance 0–${max}) — lower = stricter match`;
 
   const valueEl = document.createElement('span');
-  valueEl.style.cssText = 'min-width:2.5em;text-align:right;white-space:nowrap;';
+  valueEl.className = 'modal-threshold-value';
   valueEl.textContent = String(initial);
 
   // Update value label live while dragging, re-query only on release
@@ -189,7 +189,7 @@ export async function openSimilarImagesModal({ imageUuids, threshold = null, can
   });
 
   const imgHeaderEl = document.createElement('div');
-  imgHeaderEl.style.cssText = 'display:flex;align-items:center;gap:0.75em;flex-wrap:wrap;';
+  imgHeaderEl.className = 'modal-toolbar-row';
   imgHeaderEl.append(sliderEl, dissimilarBtn);
 
   _refresh = await showReviewModal({
@@ -356,7 +356,7 @@ export async function openSimilarBboxesModal({ bboxes, threshold = null, labelUu
 
   // Wrap slider + label + tag dropdowns + switch button side-by-side
   const headerEl = document.createElement('div');
-  headerEl.style.cssText = 'display:flex;align-items:center;gap:0.75em;flex-wrap:wrap;';
+  headerEl.className = 'modal-toolbar-row';
   headerEl.append(sliderEl, labelsDropdown.element, tagsDropdown.element, dissimilarBboxBtn);
 
   const referenceBboxUuids = new Set(bboxes.map(b => b.bboxUuid).filter(Boolean));

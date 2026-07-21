@@ -564,6 +564,62 @@ button.filter-active {
   color: #ff6666;
 }
 
+/* ===== Search/dissimilar modal toolbar controls ===== */
+/* Shared styling for the hand-built toolbar controls in similarSearch.js /
+   dissimilarSearch.js / searchUtils.js, so they visually match
+   .review-filter-panel's controls instead of each modal styling its own
+   inline cssText. */
+
+/* Row wrapper for a modal's toolbar controls (slider/count + dropdowns + switch button) */
+.modal-toolbar-row {
+  display: flex;
+  align-items: center;
+  gap: 0.75em;
+  flex-wrap: wrap;
+}
+
+/* Shared layout for a single labeled control (threshold slider, count input) */
+.modal-toolbar-control {
+  display: flex;
+  align-items: center;
+  gap: 0.5em;
+  font-size: 0.85em;
+  color: #aaa;
+  margin-left: 0.5em;
+}
+
+.modal-toolbar-control__label {
+  white-space: nowrap;
+}
+
+.modal-threshold-slider {
+  width: 120px;
+  accent-color: #c9a227;
+  cursor: pointer;
+}
+
+.modal-threshold-value {
+  min-width: 2.5em;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.modal-count-input {
+  width: 5em;
+  accent-color: #c9a227;
+}
+
+.modal-switch-btn {
+  font-size: 0.8em;
+  padding: 0.15em 0.6em;
+  cursor: pointer;
+  border: 1px solid #555;
+  background: transparent;
+  color: #aaa;
+  border-radius: 4px;
+  white-space: nowrap;
+}
+
 /* ===== Multi-select dropdown (createMultiSelectDropdown) ===== */
 /* Reusable trigger-button + floating panel with checkbox list.
    Used in the review filter toolbar (Tags, Labels) and anywhere else
