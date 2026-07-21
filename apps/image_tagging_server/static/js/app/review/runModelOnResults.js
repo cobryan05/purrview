@@ -34,7 +34,7 @@ import {
 } from '/app-static/js/shared/api/tasks.js';
 import { createModalShell } from '/app-static/js/ui/utils/modalShell.js';
 import { toast, Logger } from '/app-static/js/ui/utils/logging.js';
-import { expandLabelFilterSet } from '/app-static/js/app/review/filterPredicate.js';
+import { expandLabelFilterSet, bboxHasAnyTag, VERIFICATION_TAG_BY_STATE } from '/app-static/js/app/review/filterPredicate.js';
 
 // Above this many candidate bboxes, warn the user (large runs take a while) and
 // let them cap how many to process before launching. There is no hard ceiling —
@@ -65,13 +65,20 @@ export function makeBboxFilterPredicate({ fetchImagesMode, bboxFilterFn, fs, lab
   const activeLabelUuids = (fs?.labelUuids?.length > 0)
     ? expandLabelFilterSet(fs.labelUuids, labels, fs.labelIncludeChildren)
     : null;
+  // Bbox verification tri-state (V1) — reuse filterPredicate.js's tag-membership
+  // helper and verification-tag mapping so this render-time predicate can't
+  // drift from bboxMatchesFilter's semantics.
+  const wantVerificationTagUuid = (fs?.bboxVerification && fs.bboxVerification !== 'any')
+    ? VERIFICATION_TAG_BY_STATE[fs.bboxVerification]
+    : null;
 
   return (b) => {
     const baseMatch = bboxFilterFn
       ? bboxFilterFn(b)
       : showAll || (b.tags || []).some(t => tagSet.has(t.uuid));
     const labelMatch = !activeLabelUuids || activeLabelUuids.has(b.labelUuid);
-    return baseMatch && labelMatch;
+    const verificationMatch = !wantVerificationTagUuid || bboxHasAnyTag(b, new Set([wantVerificationTagUuid]));
+    return baseMatch && labelMatch && verificationMatch;
   };
 }
 
@@ -171,6 +178,7 @@ export async function resolveCandidateScope(ctx) {
     dateFrom: fs.dateFrom || undefined,
     dateTo: fs.dateTo || undefined,
     verificationCheck: fs.verificationCheck,
+    bboxVerification: fs.bboxVerification,
     limit: Number.MAX_SAFE_INTEGER,
   });
   const predicate = makeBboxFilterPredicate({ fetchImagesMode: false, bboxFilterFn, fs, labels });

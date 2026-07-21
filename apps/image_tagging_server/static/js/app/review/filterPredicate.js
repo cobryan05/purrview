@@ -21,7 +21,14 @@ import {
 } from '/app-static/js/shared/api/review.js';
 import { expandWithDescendants } from '/app-static/js/ui/labelList.js';
 
-const VERIFICATION_TAG_BY_STATE = {
+/**
+ * Maps a `bboxVerification` tri-state value ('any' has no entry — it's a
+ * no-op) to the tag UUID a matching bbox must carry. Exported so other
+ * verification-aware call sites (e.g. `makeBboxFilterPredicate` in
+ * runModelOnResults.js) can reuse the exact same mapping rather than
+ * re-declaring it and risking drift.
+ */
+export const VERIFICATION_TAG_BY_STATE = {
   verified: VERIFIED_TAG_UUID,
   unverified: UNVERIFIED_TAG_UUID,
   false_pos: FALSE_POS_TAG_UUID,

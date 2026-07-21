@@ -544,6 +544,7 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
       dateFrom: fs.dateFrom || undefined,
       dateTo: fs.dateTo || undefined,
       verificationCheck: fs.verificationCheck,
+      bboxVerification: fs.bboxVerification,
       limit: Number.MAX_SAFE_INTEGER,
     });
     return images.map(i => i.uuid);
@@ -1055,6 +1056,7 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
             afterUuid: cursor?.uuid ?? null,
             afterSortValue: cursor?.sortValue ?? null,
             verificationCheck: fs.verificationCheck,
+            bboxVerification: fs.bboxVerification,
             limit: _pageSize,
           }));
         }

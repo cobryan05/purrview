@@ -17,18 +17,16 @@
  *   Filter panel (element):     Date: [from]–[to]  |  File: [____]
  *                               Verification: [<select>]  |  Image Tag Filters: [condition list]
  */
-import { UNVERIFIED_TAG_UUID } from '/app-static/js/shared/api/review.js';
+import { VERIFICATION_TAG_UUIDS } from '/app-static/js/shared/api/review.js';
 import { createMultiSelectDropdown, makeLabelFilterNotice } from '/app-static/js/ui/utils/index.js';
 import { createImageLabelConditions } from '/app-static/js/ui/imageTagConditions.js';
+import { createBboxVerificationControl } from '/app-static/js/app/review/bboxVerificationControl.js';
 import { flattenHierarchy } from '/app-static/js/ui/labelList.js';
 import { filterVisibleTags, isDynamicLabelsVisible, groupTagsByKind } from '/app-static/js/shared/activeModel.js';
 import { activeTrainingConfig } from '/app-static/js/shared/activeTrainingConfig.js';
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
 import { fetchTags } from '/app-static/js/shared/api/tags.js';
 import { fetchLabels } from '/app-static/js/shared/api/labels.js';
-
-// System tags appear first in the tags dropdown, in this order.
-const SYSTEM_TAG_ORDER = [UNVERIFIED_TAG_UUID];
 
 const DEFAULT_STATE = () => ({
   tagUuids: [],
@@ -45,6 +43,11 @@ const DEFAULT_STATE = () => ({
   dateFrom: null,
   dateTo: null,
   verificationCheck: null,
+  // Bbox verification tri-state (V1) — filters bboxes by their VERIFIED /
+  // UNVERIFIED / FALSE_POS tag. Distinct from `verificationCheck` above,
+  // which is the whole-image label-completeness check. 'any' = no-op, same
+  // as filterPredicate.js's defaultCuratedFilterState().
+  bboxVerification: 'any',
 });
 
 /**
@@ -61,7 +64,10 @@ export function createFilterPanel(labels, tags, onFilterChange, { inlineControls
   // Tags whose kind is globally hidden don't appear in the picker.
   // Icon-less system tags are always excluded (they're used only via presets).
   function _visibleTags() {
-    return filterVisibleTags(tags.values());
+    // Verification tags (VERIFIED/UNVERIFIED/FALSE_POS) are owned exclusively
+    // by the bbox-verification tri-state control below — excluded here so
+    // there's only one way to filter by verification status (V1 decision).
+    return filterVisibleTags(tags.values()).filter(t => !VERIFICATION_TAG_UUIDS.has(t.uuid));
   }
 
   function _buildTagsDropdown() {
@@ -346,6 +352,19 @@ export function createFilterPanel(labels, tags, onFilterChange, { inlineControls
   });
   verificationSection.appendChild(verificationSelect);
 
+  // Bbox verification tri-state control (V1) — Any/Verified/Unverified/False-Pos,
+  // filtering bboxes by their VERIFIED/UNVERIFIED/FALSE_POS tag. Placed next to
+  // the whole-image Verification select since both live in the "verification"
+  // area of the panel, but they are deliberately distinct filters (see
+  // filterPredicate.js's defaultCuratedFilterState doc comment).
+  const bboxVerificationControl = createBboxVerificationControl({
+    value: _state.bboxVerification,
+    onChange: (value) => {
+      _state.bboxVerification = value;
+      emit();
+    },
+  });
+
   // Image label conditions section — filter by whole-image label status
   // (present / absent / uncertain) against the image_labels table.
   const imageLabelSection = document.createElement('div');
@@ -358,6 +377,7 @@ export function createFilterPanel(labels, tags, onFilterChange, { inlineControls
   imageLabelSection.appendChild(imageLabelConditionsComp.element);
 
   secondaryRow.appendChild(verificationSection);
+  secondaryRow.appendChild(bboxVerificationControl.element);
   secondaryRow.appendChild(imageLabelSection);
   panel.appendChild(secondaryRow);
 
@@ -372,7 +392,8 @@ export function createFilterPanel(labels, tags, onFilterChange, { inlineControls
       + (s.filenameSearch ? 1 : 0)
       + (s.dateFrom ? 1 : 0)
       + (s.dateTo ? 1 : 0)
-      + (s.verificationCheck ? 1 : 0);
+      + (s.verificationCheck ? 1 : 0)
+      + (s.bboxVerification !== 'any' ? 1 : 0);
   }
 
   function isDefault() {
@@ -389,6 +410,7 @@ export function createFilterPanel(labels, tags, onFilterChange, { inlineControls
       && !s.dateFrom
       && !s.dateTo
       && !s.verificationCheck
+      && s.bboxVerification === 'any'
     );
   }
 
@@ -431,6 +453,9 @@ export function createFilterPanel(labels, tags, onFilterChange, { inlineControls
     if (partial.verificationCheck !== undefined) {
       verificationSelect.value = _state.verificationCheck ?? '';
     }
+    if (partial.bboxVerification !== undefined) {
+      bboxVerificationControl.setValue(_state.bboxVerification);
+    }
 
     emit();
   }
@@ -439,6 +464,7 @@ export function createFilterPanel(labels, tags, onFilterChange, { inlineControls
     tagsDropdown.destroy();
     _labelsDropdown?.destroy();
     imageLabelConditionsComp.destroy();
+    bboxVerificationControl.destroy();
     _unsubAll();
   }
 

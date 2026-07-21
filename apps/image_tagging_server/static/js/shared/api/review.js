@@ -9,6 +9,17 @@ export const VERIFIED_TAG_UUID = '00000000-0000-0000-0000-000000000005';
 // All three are in the verification exclusive group — mutually exclusive per bbox
 export const VERIFICATION_TAG_UUIDS = new Set([UNVERIFIED_TAG_UUID, FALSE_POS_TAG_UUID, VERIFIED_TAG_UUID]);
 
+// Maps the bbox-verification tri-state filter's state values ('any' is a
+// no-op with no entry here) to the tag UUID that must be present on the bbox.
+// Shared with app/review/filterPredicate.js's VERIFICATION_TAG_BY_STATE
+// (kept as a separate small map here to avoid a review.js -> filterPredicate.js
+// import — this module is the lower-level one in the dependency direction).
+const BBOX_VERIFICATION_TAG_BY_STATE = {
+  verified: VERIFIED_TAG_UUID,
+  unverified: UNVERIFIED_TAG_UUID,
+  false_pos: FALSE_POS_TAG_UUID,
+};
+
 /**
  * Search the review queue with flexible filters and cursor-based pagination.
  *
@@ -29,6 +40,7 @@ export const VERIFICATION_TAG_UUIDS = new Set([UNVERIFIED_TAG_UUID, FALSE_POS_TA
  *   afterSortValue?: string|null,  // ISO datetime of last image's sort field (when sortBy != 'uuid')
  *   imageLabelFilters?: Array<{labelUuid: string, status: string, exclude: boolean}>,
  *   imageLabelConditions?: {labelUuid: string, state: 'present'|'absent'|'uncertain'}[],
+ *   bboxVerification?: 'any'|'verified'|'unverified'|'false_pos',  // V1 tri-state; 'any' is a no-op
  *   limit?: number,
  * }} opts
  */
@@ -52,6 +64,7 @@ export async function fetchReviewQueue({
   imageLabelFilters = [],
   imageLabelConditions = [],
   verificationCheck = null,
+  bboxVerification = null,
   requireBboxes = false,
   limit = 50,
 } = {}) {
@@ -69,9 +82,15 @@ export async function fetchReviewQueue({
     body.labelMatchMode = labelMatchMode;
     if (labelIncludeChildren) body.labelIncludeChildren = true;
   }
-  if (tagExcludeUuids.length > 0) {
-    body.tagPresenceFilters = tagExcludeUuids.map(uuid => ({ tagUuid: uuid, exclude: true }));
+  // tagPresenceFilters entries are each AND'd independently of tagMatchMode —
+  // this is why bboxVerification is appended here rather than injected into
+  // tagUuids (which would be subject to tagMatchMode='all'/'any' semantics).
+  const tagPresenceFilters = tagExcludeUuids.map(uuid => ({ tagUuid: uuid, exclude: true }));
+  if (bboxVerification && bboxVerification !== 'any') {
+    const wantTagUuid = BBOX_VERIFICATION_TAG_BY_STATE[bboxVerification];
+    if (wantTagUuid) tagPresenceFilters.push({ tagUuid: wantTagUuid, exclude: false });
   }
+  if (tagPresenceFilters.length > 0) body.tagPresenceFilters = tagPresenceFilters;
   if (labelExcludeUuids.length > 0) {
     body.labelExclusions = labelExcludeUuids;
   }
