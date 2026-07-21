@@ -722,6 +722,11 @@ button.filter-active {
   border-radius: 3px;
 }
 
+/* Config Ready section when disabled (no active training config, or bboxes view) */
+.filter-section--disabled .filter-section-label {
+  opacity: 0.5;
+}
+
 .itc-root {
   display: flex;
   flex-direction: column;

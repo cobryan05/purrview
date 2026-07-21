@@ -22,6 +22,7 @@ import {
   bulkApplyBboxesByUuids,
   invalidateBboxThumbnails,
 } from '/app-static/js/shared/api/review.js';
+import { activeTrainingConfig } from '/app-static/js/shared/activeTrainingConfig.js';
 import { fetchModelsList, fetchModelsKinds } from '/app-static/js/shared/api/models.js';
 import {
   createTaskConfig,
@@ -177,7 +178,13 @@ export async function resolveCandidateScope(ctx) {
     filenameSearch: fs.filenameSearch || undefined,
     dateFrom: fs.dateFrom || undefined,
     dateTo: fs.dateTo || undefined,
-    verificationCheck: fs.verificationCheck,
+    // V2: "Config Ready" is whole-image-only — gate both the check itself and
+    // its label-uuids override out of the request in bboxes view (mirrors
+    // main.js's _verificationCheckFor / _verificationLabelUuidsFor).
+    verificationCheck: viewFilter === 'bboxes' ? null : fs.verificationCheck,
+    verificationLabelUuids: (fs.verificationCheck && viewFilter !== 'bboxes')
+      ? [...activeTrainingConfig.getLabelUuids()]
+      : [],
     bboxVerification: fs.bboxVerification,
     limit: Number.MAX_SAFE_INTEGER,
   });

@@ -250,6 +250,9 @@ export function createFilterPanel(labels, tags, onFilterChange, { inlineControls
 
   const _unsubAll = events.subscribeMany([
     [EventTypes.ACTIVE_TRAINING_CONFIG_CHANGED,    ({ statsUpdated }) => {
+      // A stats-only refresh must not reset user selections — but the Config
+      // Ready enabled/disabled state is cheap and safe to re-evaluate either way.
+      _updateConfigReadyEnabled();
       if (statsUpdated) return; // stats refreshes don't change the label set; don't reset selections
       buildLabelsControls();
       imageLabelConditionsComp.setAvailableLabels(_imageScopedLabels());
@@ -325,21 +328,28 @@ export function createFilterPanel(labels, tags, onFilterChange, { inlineControls
   const secondaryRow = document.createElement('div');
   secondaryRow.className = 'filter-row-secondary';
 
-  // Verification section
+  // "Config Ready" section (V2) — whole-image label-completeness check
+  // (`verificationCheck`), repointed from the Labels-dropdown selection to the
+  // ACTIVE TRAINING CONFIG's target labels (see setConfigReadyAvailable below
+  // and main.js, which supplies `verificationLabelUuids` on every request that
+  // sends this field). Image-view only — disabled by main.js in bboxes view.
+  // Renamed from "Verification" in place; underlying state field name
+  // (`verificationCheck`) and values ('' | 'all_verified' | 'has_unverified')
+  // are unchanged so the server contract for the check itself is untouched.
   const verificationSection = document.createElement('div');
   verificationSection.className = 'filter-section';
 
   const verificationSectionLabel = document.createElement('div');
   verificationSectionLabel.className = 'filter-section-label';
-  verificationSectionLabel.textContent = 'Verification';
+  verificationSectionLabel.textContent = 'Config Ready';
   verificationSection.appendChild(verificationSectionLabel);
 
   const verificationSelect = document.createElement('select');
   verificationSelect.className = 'filter-verification-select';
   for (const [value, text] of [
     ['', 'Any'],
-    ['all_verified', 'All labels verified'],
-    ['has_unverified', 'Has unverified labels'],
+    ['all_verified', 'Ready'],
+    ['has_unverified', 'Needs review'],
   ]) {
     const opt = document.createElement('option');
     opt.value = value;
@@ -351,6 +361,26 @@ export function createFilterPanel(labels, tags, onFilterChange, { inlineControls
     emit();
   });
   verificationSection.appendChild(verificationSelect);
+
+  // Disabled + hint when there's no active training config (the check has
+  // nothing meaningful to run against) — kept in sync by
+  // _updateConfigReadyEnabled below, called on init and on
+  // ACTIVE_TRAINING_CONFIG_CHANGED. `setConfigReadyAvailable` (exposed on the
+  // returned API) additionally disables it in bboxes view; both gates AND
+  // together via `_configReadyViewAvailable`.
+  const NO_ACTIVE_CONFIG_HINT = 'Requires an active training config';
+  let _configReadyViewAvailable = true;
+
+  function _updateConfigReadyEnabled() {
+    const hasActiveConfig = !!activeTrainingConfig.getActive();
+    const enabled = hasActiveConfig && _configReadyViewAvailable;
+    verificationSelect.disabled = !enabled;
+    verificationSelect.title = !hasActiveConfig
+      ? NO_ACTIVE_CONFIG_HINT
+      : (!_configReadyViewAvailable ? 'Only available in Images view' : '');
+    verificationSection.classList.toggle('filter-section--disabled', !enabled);
+  }
+  _updateConfigReadyEnabled();
 
   // Bbox verification tri-state control (V1) — Any/Verified/Unverified/False-Pos,
   // filtering bboxes by their VERIFIED/UNVERIFIED/FALSE_POS tag. Placed next to
@@ -468,6 +498,19 @@ export function createFilterPanel(labels, tags, onFilterChange, { inlineControls
     _unsubAll();
   }
 
+  /**
+   * Enable/disable the Config Ready control based on view context (V2: the
+   * check is whole-image-only and meaningless in bboxes view). Combined (AND)
+   * with the "has an active training config" gate above — see
+   * _updateConfigReadyEnabled. Called by main.js on init and whenever
+   * _viewFilter changes.
+   * @param {boolean} available
+   */
+  function setConfigReadyAvailable(available) {
+    _configReadyViewAvailable = available;
+    _updateConfigReadyEnabled();
+  }
+
   return {
     element: panel,
     /** Dropdown elements to place in the sticky toolbar (Tags + Object Labels). */
@@ -479,6 +522,7 @@ export function createFilterPanel(labels, tags, onFilterChange, { inlineControls
     setState,
     isDefault,
     getActiveFilterCount,
+    setConfigReadyAvailable,
     destroy,
   };
 }

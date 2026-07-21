@@ -14,6 +14,8 @@ All tests share one pre-navigated `shared_page` (module-scoped, see
 conftest.py); each test builds and removes its own panel element so the
 shared page stays clean.
 """
+import json
+
 import pytest
 from playwright.sync_api import Page
 
@@ -604,3 +606,344 @@ class TestFetchReviewQueueBboxVerificationMapping:
         assert {"tagUuid": "some-other-tag", "exclude": True} in body["tagPresenceFilters"]
         assert {"tagUuid": FALSE_POS_UUID, "exclude": False} in body["tagPresenceFilters"]
         assert len(body["tagPresenceFilters"]) == 2
+
+
+# ── "Config Ready" (V2) — Verification select renamed + repointed ──────────
+#
+# V2 renames the whole-image Verification select to "Config Ready" in place
+# (same DOM node / class names, same underlying state field `verificationCheck`
+# and values '' | 'all_verified' | 'has_unverified' — only display text
+# changes) and repoints its target from the Labels-dropdown selection to the
+# ACTIVE TRAINING CONFIG's target labels via `verificationLabelUuids`. It is
+# disabled with a hint when there's no active config, and disabled in bboxes
+# view (whole-image-only check).
+#
+# activeTrainingConfig is a session-scoped ES-module singleton — setting it via
+# activeTrainingConfig.setActive(...) in one evaluate() call affects every
+# subsequent evaluate() on the same page (shared module cache), so these tests
+# use the plain `page` fixture (not `shared_page`) and reset activeTrainingConfig
+# to null in teardown so state doesn't leak across tests.
+
+MODEL_CFG_NODE = {"uuid": "node-cat", "labelUuid": "lbl-cat", "modelType": "object_detection", "architecture": "yolo_v9_c"}
+MODEL_CFG = {"uuid": "mc-1", "name": "My Model", "description": "", "nodes": [MODEL_CFG_NODE]}
+ACTIVE_TC = {
+    "uuid": "tc-1",
+    "name": "Cat Detector",
+    "description": "",
+    "datasetUuids": [],
+    "modelConfigNodeUuid": "node-cat",
+    "hyperparamsJson": {},
+    "createdAt": "2026-01-01T00:00:00",
+    "updatedAt": "2026-01-01T00:00:00",
+}
+
+
+def _mock_model_configs_and_stats(page: Page):
+    """Stub the network calls activeTrainingConfig.setActive() triggers:
+    fetchModelConfigs() (to derive label UUIDs from the TC's model config node)
+    and fetchTrainingConfigLabelStats() (fire-and-forget stats refresh)."""
+    page.route(
+        lambda url: url.split("?")[0].endswith("/api/model-configs"),
+        lambda route: route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps({"status": "success", "configs": [MODEL_CFG]}),
+        ) if route.request.method == "GET" else route.fallback(),
+    )
+    page.route(
+        "**/api/training-configs/tc-1/label-stats",
+        lambda route: route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps({"status": "success", "labelStats": [], "totalImages": 0}),
+        ),
+    )
+
+
+# JS snippets: activate/deactivate ACTIVE_TC via the real activeTrainingConfig
+# singleton, awaiting the publish so getActive()/getLabelUuids() are settled
+# before returning. Each is wrapped in its own block scope `{ ... }` because
+# some tests use BOTH snippets within the same evaluate() call, where two
+# top-level `const activeTrainingConfig` decls would be a SyntaxError.
+_ACTIVATE_TC = f"""
+    {{
+        const {{ activeTrainingConfig }} = await import('/app-static/js/shared/activeTrainingConfig.js');
+        await activeTrainingConfig.setActive({json.dumps(ACTIVE_TC)});
+    }}
+"""
+
+_DEACTIVATE_TC = """
+    {
+        const { activeTrainingConfig } = await import('/app-static/js/shared/activeTrainingConfig.js');
+        await activeTrainingConfig.setActive(null);
+    }
+"""
+
+
+@pytest.fixture()
+def _reset_active_tc(page: Page):
+    """Ensure activeTrainingConfig is cleared after each test in this module,
+    since it's a page-global singleton that would otherwise leak into the next test."""
+    yield
+    page.evaluate(f"async () => {{ {_DEACTIVATE_TC} }}")
+
+
+class TestConfigReadySection:
+    def test_section_label_is_config_ready(self, shared_page: Page):
+        result = shared_page.evaluate(f"""async () => {{
+            {_SETUP}
+            const sectionLabels = [...panel.element.querySelectorAll('.filter-section-label')].map(l => l.textContent);
+            {_TEARDOWN}
+            return sectionLabels;
+        }}""")
+        assert "Config Ready" in result
+        assert "Verification" not in result
+
+    def test_options_are_any_ready_needs_review(self, shared_page: Page):
+        result = shared_page.evaluate(f"""async () => {{
+            {_SETUP}
+            const select = panel.element.querySelector('.filter-verification-select:not(.bbox-verification-select)');
+            const texts = [...select.querySelectorAll('option')].map(o => o.textContent);
+            {_TEARDOWN}
+            return texts;
+        }}""")
+        assert result == ["Any", "Ready", "Needs review"]
+
+    def test_option_values_unchanged(self, shared_page: Page):
+        """Display text changes but underlying values must stay the server contract."""
+        result = shared_page.evaluate(f"""async () => {{
+            {_SETUP}
+            const select = panel.element.querySelector('.filter-verification-select:not(.bbox-verification-select)');
+            const values = [...select.querySelectorAll('option')].map(o => o.value);
+            {_TEARDOWN}
+            return values;
+        }}""")
+        assert result == ["", "all_verified", "has_unverified"]
+
+    def test_state_field_name_still_verification_check(self, shared_page: Page):
+        result = shared_page.evaluate(f"""async () => {{
+            {_SETUP}
+            const select = panel.element.querySelector('.filter-verification-select:not(.bbox-verification-select)');
+            select.value = 'all_verified';
+            select.dispatchEvent(new Event('change'));
+            const s = panel.getState();
+            {_TEARDOWN}
+            return s.verificationCheck;
+        }}""")
+        assert result == "all_verified"
+
+    def test_selecting_ready_still_counts_as_active_filter(self, shared_page: Page):
+        result = shared_page.evaluate(f"""async () => {{
+            {_SETUP}
+            const select = panel.element.querySelector('.filter-verification-select:not(.bbox-verification-select)');
+            select.value = 'has_unverified';
+            select.dispatchEvent(new Event('change'));
+            const count = panel.getActiveFilterCount();
+            const isDefault = panel.isDefault();
+            {_TEARDOWN}
+            return {{ count, isDefault }};
+        }}""")
+        assert result["count"] == 1
+        assert result["isDefault"] is False
+
+
+class TestConfigReadyDisabledWithoutActiveConfig:
+    def test_disabled_by_default_no_active_config(self, page: Page, base_url: str, _reset_active_tc):
+        page.goto(base_url)
+        result = page.evaluate(f"""async () => {{
+            {_SETUP}
+            const select = panel.element.querySelector('.filter-verification-select:not(.bbox-verification-select)');
+            const disabled = select.disabled;
+            const title = select.title;
+            {_TEARDOWN}
+            return {{ disabled, title }};
+        }}""")
+        assert result["disabled"] is True
+        assert "active training config" in result["title"].lower()
+
+    def test_enabled_once_config_becomes_active(self, page: Page, base_url: str, _reset_active_tc):
+        _mock_model_configs_and_stats(page)
+        page.goto(base_url)
+        result = page.evaluate(f"""async () => {{
+            {_SETUP}
+            {_ACTIVATE_TC}
+            const select = panel.element.querySelector('.filter-verification-select:not(.bbox-verification-select)');
+            const disabled = select.disabled;
+            {_TEARDOWN}
+            return disabled;
+        }}""")
+        assert result is False
+
+    def test_disabled_again_after_config_cleared(self, page: Page, base_url: str, _reset_active_tc):
+        _mock_model_configs_and_stats(page)
+        page.goto(base_url)
+        result = page.evaluate(f"""async () => {{
+            {_SETUP}
+            {_ACTIVATE_TC}
+            const enabledAfterActivate = !panel.element.querySelector('.filter-verification-select:not(.bbox-verification-select)').disabled;
+            {_DEACTIVATE_TC}
+            const disabledAfterClear = panel.element.querySelector('.filter-verification-select:not(.bbox-verification-select)').disabled;
+            {_TEARDOWN}
+            return {{ enabledAfterActivate, disabledAfterClear }};
+        }}""")
+        assert result["enabledAfterActivate"] is True
+        assert result["disabledAfterClear"] is True
+
+    def test_stats_only_refresh_does_not_reset_enabled_state(self, page: Page, base_url: str, _reset_active_tc):
+        """ACTIVE_TRAINING_CONFIG_CHANGED also fires for stats-only refreshes
+        (statsUpdated: true) — the enabled/disabled state must still reflect
+        reality after one of those (NOTES.md: naive subscribers wipe UI state)."""
+        _mock_model_configs_and_stats(page)
+        page.goto(base_url)
+        result = page.evaluate(f"""async () => {{
+            {_SETUP}
+            {_ACTIVATE_TC}
+            const {{ events, EventTypes }} = await import('/app-static/js/shared/events/index.js');
+            events.publish(EventTypes.ACTIVE_TRAINING_CONFIG_CHANGED, {{ statsUpdated: true }});
+            const disabled = panel.element.querySelector('.filter-verification-select:not(.bbox-verification-select)').disabled;
+            {_TEARDOWN}
+            return disabled;
+        }}""")
+        assert result is False
+
+
+# ── verificationLabelUuids sourcing + threading (V2) ────────────────────────
+#
+# main.js sources verificationLabelUuids from activeTrainingConfig.getLabelUuids()
+# and threads it through fetchReviewQueue/bulkApplyAll only when verificationCheck
+# is set and _viewFilter !== 'bboxes'. Test at the fetchReviewQueue/bulkApplyAll
+# API-boundary level (matches the existing TestFetchReviewQueueBboxVerificationMapping
+# pattern) since that's the shared contract main.js and runModelOnResults.js both use.
+
+class TestVerificationLabelUuidsMapping:
+    def test_omitted_when_verification_check_unset(self, page: Page, base_url: str):
+        captured = {}
+
+        def handle(route):
+            captured["body"] = route.request.post_data_json
+            route.fulfill(
+                status=200,
+                content_type="application/json",
+                body='{"status": "success", "images": [], "hasMore": false, "totalCount": 0}',
+            )
+
+        page.goto(base_url)
+        page.route("**/api/images/review", handle)
+
+        page.evaluate("""async () => {
+            const { fetchReviewQueue } = await import('/app-static/js/shared/api/review.js');
+            await fetchReviewQueue({ tagUuids: [], showAllBboxes: true, verificationLabelUuids: ['lbl-cat'] });
+        }""")
+
+        # Without verificationCheck the caller should not have supplied the
+        # override either, per main.js's _verificationLabelUuidsFor gating —
+        # but fetchReviewQueue itself just forwards whatever is passed non-empty,
+        # so this asserts the wire mapping happens whenever the caller does pass it.
+        body = captured["body"]
+        assert body["verificationLabelUuids"] == ["lbl-cat"]
+
+    def test_fetch_review_queue_sends_verification_label_uuids(self, page: Page, base_url: str):
+        captured = {}
+
+        def handle(route):
+            captured["body"] = route.request.post_data_json
+            route.fulfill(
+                status=200,
+                content_type="application/json",
+                body='{"status": "success", "images": [], "hasMore": false, "totalCount": 0}',
+            )
+
+        page.goto(base_url)
+        page.route("**/api/images/review", handle)
+
+        page.evaluate("""async () => {
+            const { fetchReviewQueue } = await import('/app-static/js/shared/api/review.js');
+            await fetchReviewQueue({
+                tagUuids: [],
+                showAllBboxes: true,
+                verificationCheck: 'all_verified',
+                verificationLabelUuids: ['lbl-cat', 'lbl-dog'],
+            });
+        }""")
+
+        body = captured["body"]
+        assert body["labelVerificationCheck"] == "all_verified"
+        assert body["verificationLabelUuids"] == ["lbl-cat", "lbl-dog"]
+
+    def test_fetch_review_queue_omits_empty_verification_label_uuids(self, page: Page, base_url: str):
+        captured = {}
+
+        def handle(route):
+            captured["body"] = route.request.post_data_json
+            route.fulfill(
+                status=200,
+                content_type="application/json",
+                body='{"status": "success", "images": [], "hasMore": false, "totalCount": 0}',
+            )
+
+        page.goto(base_url)
+        page.route("**/api/images/review", handle)
+
+        page.evaluate("""async () => {
+            const { fetchReviewQueue } = await import('/app-static/js/shared/api/review.js');
+            await fetchReviewQueue({ tagUuids: [], showAllBboxes: true, verificationCheck: 'all_verified' });
+        }""")
+
+        body = captured["body"]
+        assert "verificationLabelUuids" not in body
+
+    def test_bulk_apply_all_sends_verification_label_uuids(self, page: Page, base_url: str):
+        captured = {}
+
+        def handle(route):
+            captured["body"] = route.request.post_data_json
+            route.fulfill(
+                status=200,
+                content_type="application/json",
+                body='{"status": "success", "modifiedCount": 0, "failCount": 0}',
+            )
+
+        page.goto(base_url)
+        page.route("**/api/images/bbox/bulk-apply", handle)
+
+        page.evaluate("""async () => {
+            const { bulkApplyAll } = await import('/app-static/js/shared/api/review.js');
+            await bulkApplyAll({
+                tagUuids: [],
+                showAllBboxes: true,
+                verificationCheck: 'has_unverified',
+                verificationLabelUuids: ['lbl-cat'],
+                action: 'markVerified',
+            });
+        }""")
+
+        body = captured["body"]
+        assert body["filter"]["labelVerificationCheck"] == "has_unverified"
+        assert body["filter"]["verificationLabelUuids"] == ["lbl-cat"]
+
+    def test_bulk_apply_all_omits_empty_verification_label_uuids(self, page: Page, base_url: str):
+        captured = {}
+
+        def handle(route):
+            captured["body"] = route.request.post_data_json
+            route.fulfill(
+                status=200,
+                content_type="application/json",
+                body='{"status": "success", "modifiedCount": 0, "failCount": 0}',
+            )
+
+        page.goto(base_url)
+        page.route("**/api/images/bbox/bulk-apply", handle)
+
+        page.evaluate("""async () => {
+            const { bulkApplyAll } = await import('/app-static/js/shared/api/review.js');
+            await bulkApplyAll({
+                tagUuids: [],
+                showAllBboxes: true,
+                verificationCheck: 'has_unverified',
+                action: 'markVerified',
+            });
+        }""")
+
+        body = captured["body"]
+        assert "verificationLabelUuids" not in body["filter"]

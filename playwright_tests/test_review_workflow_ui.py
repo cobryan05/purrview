@@ -676,3 +676,156 @@ class TestListView:
         modal = page.locator(".canvas-modal-overlay")
         expect(modal).to_be_visible(timeout=8000)
         expect(modal.locator(".canvas-modal-title")).to_have_text("Edit: folder/image1.jpg")
+
+
+# ---------------------------------------------------------------------------
+# 11. "Config Ready" (V2) — image-view-only gating in the live review panel
+# ---------------------------------------------------------------------------
+#
+# filters.js unit tests (test_filter_panel.py) cover the control's own
+# disabled/hint mechanism in isolation. These tests confirm main.js actually
+# drives it: setConfigReadyAvailable(false) on switching to bboxes view, and
+# back to enabled (assuming an active config) on switching away — following
+# the same _navigate_to_review / _switch_view helpers used elsewhere in this file.
+
+class TestConfigReadyViewGating:
+    def test_disabled_in_bboxes_view(self, page: Page, base_url: str):
+        _mock_review_queue(page, PAGE_1_IMAGES)
+        _mock_labels(page, [LABEL_CAT, LABEL_DOG])
+        _mock_tags(page, [{**UNVERIFIED_TAG, "name": "Unverified", "color": "#888", "kind": "system"}])
+
+        _navigate_to_review(page, base_url)
+        _switch_view(page, "bboxes")
+
+        # Excludes .bbox-verification-select — the bbox tri-state control (V1)
+        # shares the base .filter-verification-select class name.
+        select = page.locator("#review-root .filter-verification-select:not(.bbox-verification-select)")
+        expect(select).to_be_disabled()
+
+    def test_reenabled_switching_back_to_images_view(self, page: Page, base_url: str):
+        """Without an active training config the control stays disabled for that
+        reason regardless of view — so this drives an active config first (same
+        activeTrainingConfig singleton used by test_filter_panel.py) to isolate
+        the view-gating behavior specifically."""
+        _mock_review_queue(page, PAGE_1_IMAGES)
+        _mock_labels(page, [LABEL_CAT, LABEL_DOG])
+        _mock_tags(page, [{**UNVERIFIED_TAG, "name": "Unverified", "color": "#888", "kind": "system"}])
+        page.route(
+            lambda url: url.split("?")[0].endswith("/api/model-configs"),
+            lambda route: route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps({"status": "success", "configs": [
+                    {"uuid": "mc-1", "name": "My Model", "description": "", "nodes": [
+                        {"uuid": "node-cat", "labelUuid": "lbl-cat", "modelType": "object_detection", "architecture": "yolo_v9_c"},
+                    ]},
+                ]}),
+            ) if route.request.method == "GET" else route.fallback(),
+        )
+        page.route(
+            "**/api/training-configs/tc-1/label-stats",
+            lambda route: route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps({"status": "success", "labelStats": [], "totalImages": 0}),
+            ),
+        )
+
+        _navigate_to_review(page, base_url)
+        page.evaluate("""async () => {
+            const { activeTrainingConfig } = await import('/app-static/js/shared/activeTrainingConfig.js');
+            await activeTrainingConfig.setActive({
+                uuid: 'tc-1', name: 'Cat Detector', description: '', datasetUuids: [],
+                modelConfigNodeUuid: 'node-cat', hyperparamsJson: {},
+                createdAt: '2026-01-01T00:00:00', updatedAt: '2026-01-01T00:00:00',
+            });
+        }""")
+
+        # Excludes .bbox-verification-select — the bbox tri-state control (V1)
+        # shares the base .filter-verification-select class name.
+        select = page.locator("#review-root .filter-verification-select:not(.bbox-verification-select)")
+        expect(select).to_be_enabled()
+
+        _switch_view(page, "bboxes")
+        expect(select).to_be_disabled()
+
+        _switch_view(page, "images")
+        expect(select).to_be_enabled()
+
+        # Cleanup: clear the singleton so it doesn't leak into later tests.
+        page.evaluate("""async () => {
+            const { activeTrainingConfig } = await import('/app-static/js/shared/activeTrainingConfig.js');
+            await activeTrainingConfig.setActive(null);
+        }""")
+
+    def test_verification_check_and_label_uuids_omitted_in_bboxes_view(self, page: Page, base_url: str):
+        """Gate the request itself, not just the control: in bboxes view,
+        verificationCheck/verificationLabelUuids must not be sent even if a
+        Config Ready selection + active config are already in place from a
+        prior images-view visit."""
+        _mock_labels(page, [LABEL_CAT, LABEL_DOG])
+        _mock_tags(page, [{**UNVERIFIED_TAG, "name": "Unverified", "color": "#888", "kind": "system"}])
+        page.route(
+            lambda url: url.split("?")[0].endswith("/api/model-configs"),
+            lambda route: route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps({"status": "success", "configs": [
+                    {"uuid": "mc-1", "name": "My Model", "description": "", "nodes": [
+                        {"uuid": "node-cat", "labelUuid": "lbl-cat", "modelType": "object_detection", "architecture": "yolo_v9_c"},
+                    ]},
+                ]}),
+            ) if route.request.method == "GET" else route.fallback(),
+        )
+        page.route(
+            "**/api/training-configs/tc-1/label-stats",
+            lambda route: route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps({"status": "success", "labelStats": [], "totalImages": 0}),
+            ),
+        )
+
+        captured = {}
+
+        def handle(route: Route):
+            captured["body"] = route.request.post_data_json
+            route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps({"status": "success", "images": PAGE_1_IMAGES, "hasMore": False, "totalCount": 2}),
+            )
+        page.route("**/api/images/review", handle)
+
+        _navigate_to_review(page, base_url)
+        page.evaluate("""async () => {
+            const { activeTrainingConfig } = await import('/app-static/js/shared/activeTrainingConfig.js');
+            await activeTrainingConfig.setActive({
+                uuid: 'tc-1', name: 'Cat Detector', description: '', datasetUuids: [],
+                modelConfigNodeUuid: 'node-cat', hyperparamsJson: {},
+                createdAt: '2026-01-01T00:00:00', updatedAt: '2026-01-01T00:00:00',
+            });
+        }""")
+
+        # The filter panel starts hidden — open it via the ☰ Filters toggle
+        # before interacting with the Config Ready select.
+        page.locator("#review-root .review-toolbar button", has_text="Filters").click()
+
+        # Excludes .bbox-verification-select — the bbox tri-state control (V1)
+        # shares the base .filter-verification-select class name.
+        select = page.locator("#review-root .filter-verification-select:not(.bbox-verification-select)")
+        select.select_option("all_verified")
+        page.wait_for_timeout(300)
+        assert captured["body"].get("labelVerificationCheck") == "all_verified"
+        assert captured["body"].get("verificationLabelUuids") == ["lbl-cat"]
+
+        _switch_view(page, "bboxes")
+        page.wait_for_timeout(300)
+        assert "labelVerificationCheck" not in captured["body"]
+        assert "verificationLabelUuids" not in captured["body"]
+
+        # Cleanup.
+        page.evaluate("""async () => {
+            const { activeTrainingConfig } = await import('/app-static/js/shared/activeTrainingConfig.js');
+            await activeTrainingConfig.setActive(null);
+        }""")

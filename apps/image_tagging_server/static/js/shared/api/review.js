@@ -41,6 +41,8 @@ const BBOX_VERIFICATION_TAG_BY_STATE = {
  *   imageLabelFilters?: Array<{labelUuid: string, status: string, exclude: boolean}>,
  *   imageLabelConditions?: {labelUuid: string, state: 'present'|'absent'|'uncertain'}[],
  *   bboxVerification?: 'any'|'verified'|'unverified'|'false_pos',  // V1 tri-state; 'any' is a no-op
+ *   verificationLabelUuids?: string[],  // V2: active training config's target labels,
+ *                                        // overrides labelUuids as the verificationCheck target
  *   limit?: number,
  * }} opts
  */
@@ -64,6 +66,7 @@ export async function fetchReviewQueue({
   imageLabelFilters = [],
   imageLabelConditions = [],
   verificationCheck = null,
+  verificationLabelUuids = [],
   bboxVerification = null,
   requireBboxes = false,
   limit = 50,
@@ -101,6 +104,7 @@ export async function fetchReviewQueue({
   if (afterUuid) body.afterUuid = afterUuid;
   if (afterSortValue) body.afterSortValue = afterSortValue;
   if (verificationCheck) body.labelVerificationCheck = verificationCheck;
+  if (verificationLabelUuids.length > 0) body.verificationLabelUuids = verificationLabelUuids;
 
   // Explicit imageLabelFilters (direct format) take precedence over conditions.
   // imageLabelConditions (from the filter panel) are mapped to the same wire format.
@@ -233,6 +237,7 @@ export async function bulkApplyAll({
   dateTo = null,
   imageLabelFilters = [],
   verificationCheck = null,
+  verificationLabelUuids = [],
   requireBboxes = false,
   // Bbox-level subset filters (client-computed)
   bboxTagFilter = [],
@@ -271,6 +276,7 @@ export async function bulkApplyAll({
     }));
   }
   if (verificationCheck) filterBody.labelVerificationCheck = verificationCheck;
+  if (verificationLabelUuids.length > 0) filterBody.verificationLabelUuids = verificationLabelUuids;
 
   const res = await apiFetch('/api/images/bbox/bulk-apply', {
     method: 'POST',

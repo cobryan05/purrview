@@ -23,6 +23,7 @@ import {
   swapVerificationTag,
 } from '/app-static/js/shared/api/review.js';
 import { fetchImageLabels, fetchImageLabelsBatch, setImageLabel } from '/app-static/js/shared/api/imageLabels.js';
+import { activeTrainingConfig } from '/app-static/js/shared/activeTrainingConfig.js';
 import { setImageTag, setImageTagStatus } from '/app-static/js/shared/api/imageTags.js';
 import { attachContext } from '/app-static/js/ui/contextMenu/index.js';
 import { getPrimaryRuntimeId } from '/app-static/js/app/image-tagging/runtime.js';
@@ -241,6 +242,8 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
         b.classList.toggle('active', b.dataset.viewKey === key));
       _selected.clear();
       _selectionKind = null;
+      // Config Ready (V2) is whole-image-only — disable it outside images/all view.
+      filterPanel?.setConfigReadyAvailable(_viewFilter !== 'bboxes');
       // Full re-fetch so requireBboxes takes effect (bboxes view filters
       // out empty-bbox images server-side for correct pagination).
       _pageCursors.length = 1;
@@ -387,6 +390,9 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
     filterPanel.element.hidden = true;
     stickyTop.appendChild(filterPanel.element);
     updateFilterBtn(); // reflect initial state (Unverified checked → shows "(1)")
+    // Config Ready (V2) is whole-image-only — start disabled if we're opening
+    // straight into bboxes view. Kept in sync by the view-toggle handler below.
+    filterPanel.setConfigReadyAvailable(initialViewFilter !== 'bboxes');
 
     filterToggleBtn.addEventListener('click', () => {
       filterPanel.element.hidden = !filterPanel.element.hidden;
@@ -516,6 +522,24 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
     ...VERIFICATION_TAG_UUIDS,
   ]);
 
+  // V2: "Config Ready" (verificationCheck) is repointed from the Labels-dropdown
+  // selection to the active training config's target labels, and is whole-image
+  // (not meaningful in bboxes view). Returns [] when there's no verificationCheck
+  // to run, no active config, or we're in bboxes view — callers only attach
+  // verificationLabelUuids to the request when this is non-empty.
+  function _verificationLabelUuidsFor(fs) {
+    if (!fs.verificationCheck) return [];
+    if (_viewFilter === 'bboxes') return [];
+    return [...activeTrainingConfig.getLabelUuids()];
+  }
+
+  // Gate verificationCheck itself out of the request in bboxes view — the
+  // check is whole-image-only (V2), so sending it there would silently filter
+  // bbox-view results by a check that's meaningless in that context.
+  function _verificationCheckFor(fs) {
+    return _viewFilter === 'bboxes' ? null : fs.verificationCheck;
+  }
+
   // Full set of image UUIDs matching this review panel's current scope — the
   // active filter panel state (top-level tab) or, inside a nested search-results
   // modal, the modal's own candidate list (fetchImages). Used by image/bbox
@@ -543,7 +567,8 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
       filenameSearch: fs.filenameSearch || undefined,
       dateFrom: fs.dateFrom || undefined,
       dateTo: fs.dateTo || undefined,
-      verificationCheck: fs.verificationCheck,
+      verificationCheck: _verificationCheckFor(fs),
+      verificationLabelUuids: _verificationLabelUuidsFor(fs),
       bboxVerification: fs.bboxVerification,
       limit: Number.MAX_SAFE_INTEGER,
     });
@@ -1055,7 +1080,8 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
             dateTo: fs.dateTo || undefined,
             afterUuid: cursor?.uuid ?? null,
             afterSortValue: cursor?.sortValue ?? null,
-            verificationCheck: fs.verificationCheck,
+            verificationCheck: _verificationCheckFor(fs),
+            verificationLabelUuids: _verificationLabelUuidsFor(fs),
             bboxVerification: fs.bboxVerification,
             limit: _pageSize,
           }));
@@ -2169,7 +2195,8 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
           filenameSearch: fs.filenameSearch || undefined,
           dateFrom: fs.dateFrom || undefined,
           dateTo: fs.dateTo || undefined,
-          verificationCheck: fs.verificationCheck,
+          verificationCheck: _verificationCheckFor(fs),
+          verificationLabelUuids: _verificationLabelUuidsFor(fs),
           bboxTagFilter,
           bboxLabelFilter,
           action: resolvedAction,
@@ -2219,7 +2246,8 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
         filenameSearch: fs.filenameSearch || undefined,
         dateFrom: fs.dateFrom || undefined,
         dateTo: fs.dateTo || undefined,
-        verificationCheck: fs.verificationCheck,
+        verificationCheck: _verificationCheckFor(fs),
+        verificationLabelUuids: _verificationLabelUuidsFor(fs),
         limit: 5,
       });
       const rawEntries = [];
