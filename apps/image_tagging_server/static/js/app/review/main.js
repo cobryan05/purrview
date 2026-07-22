@@ -1296,6 +1296,11 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
           while (_allEntries.length < _pageSize && !_curatedExhausted) {
             if (_renderGeneration !== _gen) { clearTimeout(_slowTimer); return; }
             const raw = await fetchImages({ afterUuid: _curatedCursor, afterSortValue: null, limit: _pageSize + 1 });
+            // Re-check after the await before touching shared cursor/entry state:
+            // a filter change or Refresh mid-fetch starts a newer render() that
+            // has already reset _allEntries/_curatedCursor, and writing this
+            // superseded chunk would corrupt it (mirrors _loadMoreCurated).
+            if (_renderGeneration !== _gen) { clearTimeout(_slowTimer); return; }
             const exhausted = raw.length <= _pageSize;
             const pageImages = raw.slice(0, _pageSize);
             if (pageImages.length > 0) _curatedCursor = pageImages[pageImages.length - 1].uuid;

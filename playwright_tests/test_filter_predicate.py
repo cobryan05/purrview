@@ -81,9 +81,24 @@ class TestDefaultState:
     def test_empty_state_image_matches_when_any_bbox(self, shared_page: Page):
         assert _eval(shared_page, "imageMatchesFilter(img(bbox('cat')), st(), labels)") is True
 
-    def test_empty_state_image_with_no_bboxes_is_false(self, shared_page: Page):
-        # imageMatchesFilter requires at least one matching bbox.
-        assert _eval(shared_page, "imageMatchesFilter(img(), st(), labels)") is False
+    def test_empty_state_image_with_no_bboxes_matches(self, shared_page: Page):
+        # Under the no-op default there is nothing to filter on, so a bbox-free
+        # image must pass — image-oriented modals (similar/dissimilar/diversity)
+        # return whole images that frequently have zero bboxes, and gating them
+        # out would silently hide unfiltered results.
+        assert _eval(shared_page, "imageMatchesFilter(img(), st(), labels)") is True
+
+    def test_active_filter_image_with_no_bboxes_is_false(self, shared_page: Page):
+        # With any active bbox-scoped constraint, a bbox-free image has nothing
+        # that can satisfy it and is correctly rejected.
+        assert _eval(shared_page, "imageMatchesFilter(img(), st({bboxVerification:'verified'}), labels)") is False
+        assert _eval(shared_page, "imageMatchesFilter(img(), st({labelUuids:['cat']}), labels)") is False
+        assert _eval(shared_page, "imageMatchesFilter(img(), st({tagUuids:[VERIFIED]}), labels)") is False
+
+    def test_active_filter_image_with_only_nonmatching_bbox_is_false(self, shared_page: Page):
+        # An image that has bboxes but none satisfying the active filter is
+        # still rejected (unchanged behavior).
+        assert _eval(shared_page, "imageMatchesFilter(img(bbox('dog')), st({labelUuids:['cat']}), labels)") is False
 
 
 # ---------------------------------------------------------------------------

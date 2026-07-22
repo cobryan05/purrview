@@ -52,6 +52,24 @@ export function defaultCuratedFilterState() {
 }
 
 /**
+ * True when `state` carries at least one active bbox-scoped constraint
+ * (verification tri-state, label include/exclude, or tag include/exclude).
+ * When false the curated filter is a no-op and matches everything — used by
+ * `imageMatchesFilter` to let bbox-free images through under the default state.
+ * @param {ReturnType<typeof defaultCuratedFilterState>} state
+ * @returns {boolean}
+ */
+export function hasActiveBboxFilter(state) {
+  return !!(
+    (state.bboxVerification && state.bboxVerification !== 'any') ||
+    state.labelUuids?.length > 0 ||
+    state.labelExcludeUuids?.length > 0 ||
+    state.tagUuids?.length > 0 ||
+    state.tagExcludeUuids?.length > 0
+  );
+}
+
+/**
  * Expand a label-uuid list to a membership Set, optionally including
  * descendants — the one place both this module and `makeBboxFilterPredicate`
  * (runModelOnResults.js) need "resolve a label filter to a Set" so the
@@ -157,7 +175,15 @@ export function bboxMatchesFilter(bbox, state, labels) {
  */
 export function imageMatchesFilter(img, state, labels) {
   const matching = (img.bboxes || []).filter(b => bboxMatchesFilter(b, state, labels));
-  if (matching.length === 0) return false;
+  if (matching.length === 0) {
+    // No matching bboxes. Only reject when there is an active bbox-scoped
+    // constraint the image failed — with the no-op default state there is
+    // nothing to filter on, so a bbox-free (or otherwise unconstrained) image
+    // must pass, matching the pre-curated behavior where every fetched image
+    // was shown. (Image-oriented modals — similar/dissimilar/diversity — return
+    // whole images that frequently have zero bboxes.)
+    return !hasActiveBboxFilter(state);
+  }
 
   if (state.labelMatchMode === 'all' && state.labelUuids?.length > 0) {
     // For each selected label, expand to itself (+descendants if requested)
