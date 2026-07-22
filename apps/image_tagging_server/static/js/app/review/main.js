@@ -2123,12 +2123,16 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
     }
     statusMsg.classList.remove('review-toolbar__status--loading');
 
+    // M3: apply the curated Verification/Label/Tag predicate (same one
+    // render() uses) so the count + first-3/last-3 preview below reflect the
+    // *filtered* candidate set, not the raw unfiltered fetch.
+    const curatedImages = images.filter(img => imageMatchesFilter(img, _curated, labels));
     const kind = _selectionKind ?? (_viewFilter === 'images' ? 'image' : 'bbox');
     const entries = kind === 'image'
-      ? images.map(img => ({ kind: 'image', img }))
-      : images.flatMap(img =>
+      ? curatedImages.map(img => ({ kind: 'image', img }))
+      : curatedImages.flatMap(img =>
           (img.bboxes || [])
-            .filter(b => !bboxFilterFn || bboxFilterFn(b))
+            .filter(b => (!bboxFilterFn || bboxFilterFn(b)) && bboxMatchesFilter(b, _curated, labels))
             .map(bbox => ({ kind: 'bbox', bbox, img })));
 
     if (entries.length === 0) {

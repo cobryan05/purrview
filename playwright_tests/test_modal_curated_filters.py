@@ -225,3 +225,27 @@ class TestCuratedTagFilter:
         expect(page.locator("[data-bbox-uuid='bbox-1']")).to_be_visible()
         expect(page.locator("[data-bbox-uuid='bbox-2']")).to_have_count(0)
         expect(page.locator("[data-bbox-uuid='bbox-3']")).to_be_visible()
+
+
+class TestApplyToAllRespectsCuratedFilter:
+    """M3: Apply-to-All (fetchImages/custom mode) must apply the curated
+    Verification/Label/Tag predicate before building its candidate list, so
+    the count shown in the bulk-action modal reflects the *filtered* set —
+    not every candidate the stub fetchImages returns."""
+
+    def test_apply_to_all_count_reflects_verification_filter(self, page: Page, base_url: str):
+        _mock_labels(page, [LABEL_CAT, LABEL_DOG])
+        _mock_tags(page, [UNVERIFIED_TAG, VERIFIED_TAG, FALSE_POS_TAG, REVIEWED_TAG])
+        _mock_image_labels_batch(page)
+
+        _open_curated_modal(page, base_url)
+
+        # Narrow to "verified" only — of the 3 candidates, only bbox-2 qualifies.
+        page.locator(".bbox-verification-select").select_option("verified")
+        page.wait_for_timeout(200)
+
+        page.locator("button", has_text="Apply to All").click()
+
+        # showBulkActionModal's title reflects entries.length from the curated,
+        # not raw, candidate set — asserts M3's fix in applyToAllCandidates.
+        expect(page.locator("strong", has_text="Apply to all 1 matched bbox")).to_be_visible()

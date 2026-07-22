@@ -26,7 +26,7 @@ import {
   fetchImagesByUuids,
 } from '/app-static/js/shared/api/images.js';
 import { getSetting } from '/app-static/js/shared/api/settings.js';
-import { pageStartIdx, buildSwitchModeButton } from '/app-static/js/ui/searchUtils.js';
+import { pageStartIdx, buildCountControl, buildSwitchModeButton } from '/app-static/js/ui/searchUtils.js';
 import { openDissimilarImagesModal, openDissimilarBboxesModal } from '/app-static/js/ui/dissimilarSearch.js';
 
 /** @returns {Promise<number>} */
@@ -125,6 +125,13 @@ function buildThresholdSlider(initial, { min = 0, max = 64, onChange }) {
  *   backend has no candidate-set param, so this is a client-side post-filter). The
  *   anchor images are always kept even if absent from the set — see NOTES.md: excluding
  *   the query image at the search layer breaks the single-item-dataset case.
+ *
+ * M3 ("unify Review filters"): unlike the dissimilar/diversity searches, this
+ * threshold-based BK-tree query has no server-side result cap of its own — a
+ * generous threshold can return most of the dataset, which is unbounded input
+ * to a whole-set operation (Apply-to-All / "search with current filters").
+ * Mirrors dissimilar's UX exactly: a `buildCountControl` (same default, 100)
+ * that top-N-slices the distance-sorted match list before anything else sees it.
  */
 export async function openSimilarImagesModal({ imageUuids, threshold = null, candidateUuids = null }) {
   if (!imageUuids?.length) return;
@@ -132,9 +139,10 @@ export async function openSimilarImagesModal({ imageUuids, threshold = null, can
   const candidateSet = candidateUuids ? new Set(candidateUuids) : null;
   const sliderMax = await getImageHashMax();
   let _threshold = threshold !== null ? threshold : await _readThreshold('dedup_image_threshold', sliderMax);
+  let _count = 100;
 
   // Sorted match list — [{imageUuid, distance}] ascending by distance.
-  // Null until the first query resolves; reset when threshold changes.
+  // Null until the first query resolves; reset when threshold or count changes.
   let _sortedMatches = null;
 
   function _runQuery(t) {
@@ -150,7 +158,9 @@ export async function openSimilarImagesModal({ imageUuids, threshold = null, can
       if (candidateSet) {
         entries = entries.filter(e => candidateSet.has(e.imageUuid) || imageUuids.includes(e.imageUuid));
       }
-      return entries.sort((a, b) => a.distance - b.distance);
+      // Anchors always sort first (distance 0), so the cap can only drop them
+      // if _count is smaller than the anchor count itself — not a realistic setting.
+      return entries.sort((a, b) => a.distance - b.distance).slice(0, _count);
     });
   }
 
@@ -180,13 +190,23 @@ export async function openSimilarImagesModal({ imageUuids, threshold = null, can
     },
   });
 
+  const { element: countEl } = buildCountControl(_count, {
+    onChange(newCount) {
+      _count = newCount;
+      _sortedMatches = null;
+      _queryGen++;
+      _queryPromise = _runQuery(_threshold);
+      _refresh?.();
+    },
+  });
+
   const dissimilarBtn = buildSwitchModeButton('Most Distinct →', () => {
     openDissimilarImagesModal({ imageUuids, candidateUuids });
   });
 
   const imgHeaderEl = document.createElement('div');
   imgHeaderEl.className = 'modal-toolbar-row';
-  imgHeaderEl.append(sliderEl, dissimilarBtn);
+  imgHeaderEl.append(sliderEl, countEl, dissimilarBtn);
 
   _refresh = await showReviewModal({
     title: candidateSet ? 'Similar Images (filtered)' : 'Similar Images',
