@@ -48,6 +48,11 @@ import { createEntryView } from '/app-static/js/ui/entryView.js';
 import { reviewStateToDatasetForm, datasetFormToReviewState } from '/app-static/js/shared/filterUtils.js';
 import { openDissimilarGlobalModal } from '/app-static/js/ui/dissimilarSearch.js';
 import { runModelOnResultsFlow, makeBboxFilterPredicate } from '/app-static/js/app/review/runModelOnResults.js';
+import { createBboxVerificationControl } from '/app-static/js/app/review/bboxVerificationControl.js';
+import { defaultCuratedFilterState, bboxMatchesFilter, imageMatchesFilter } from '/app-static/js/app/review/filterPredicate.js';
+import { createMultiSelectDropdown } from '/app-static/js/ui/utils/index.js';
+import { flattenHierarchy } from '/app-static/js/ui/labelList.js';
+import { isDynamicLabelsVisible } from '/app-static/js/shared/activeModel.js';
 
 
 const DEFAULT_PAGE_SIZE = 250;
@@ -183,7 +188,9 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
   container.innerHTML = '';
 
   const labelsPromise = fetchLabels().catch(() => new Map());
-  const tagsPromise = !fetchImages ? fetchTags().catch(() => new Map()) : null;
+  // Tags are needed both in filter mode (createFilterPanel) and in fetchImages
+  // mode (curated Tags control, M1) — fetch unconditionally.
+  const tagsPromise = fetchTags().catch(() => new Map());
   const labels = await labelsPromise;
 
   // ── Toolbar ───────────────────────────────────────────────────────
@@ -480,6 +487,112 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
     } // end if (datasetActions)
   }
 
+  // ── Curated result-filter surface (M1, fetchImages/custom mode only) ──────
+  // Filter mode gets the full createFilterPanel; custom/similarity mode never
+  // built any filter UI at all before this. M1 adds the *curated* subset
+  // (locked decision 3: bbox Verification + Label + Tag only — no date/
+  // filename/image-label conditions) as an in-memory predicate
+  // (filterPredicate.js) re-applied to the already-fetched candidate objects.
+  // `_curated` starts at the no-op default so an unfiltered modal behaves
+  // exactly as before this unit landed.
+  let _curated = defaultCuratedFilterState();
+  if (fetchImages) {
+    const tags = await tagsPromise;
+
+    function _onCuratedChange() {
+      // Mirror the existing filter-panel refresh path: reset paging state and
+      // re-render so the new predicate takes effect immediately.
+      _pageCursors = [null];
+      _lastCursor = null;
+      render();
+    }
+
+    // Bbox verification tri-state (V1) — Any/Verified/Unverified/False-Pos.
+    const verificationControl = createBboxVerificationControl({
+      value: _curated.bboxVerification,
+      onChange: (value) => {
+        _curated = { ..._curated, bboxVerification: value };
+        _onCuratedChange();
+      },
+    });
+
+    // Labels multi-select — object-scoped labels only, with "include child
+    // labels" hierarchy toggle, mirroring filters.js's buildLabelsControls.
+    const labelsContainer = document.createElement('div');
+    let _labelsDropdown = null;
+    function _buildCuratedLabelsDropdown() {
+      const regularMap = new Map([...labels].filter(([, l]) => l.labelType !== 'dynamic' && l.scope !== 'image'));
+      const dynamicMap = isDynamicLabelsVisible()
+        ? new Map([...labels].filter(([, l]) => l.labelType === 'dynamic' && l.scope !== 'image'))
+        : new Map();
+      const flatRegular = flattenHierarchy(regularMap);
+      const flatDynamic = flattenHierarchy(dynamicMap);
+      const toItem = l => ({ uuid: l.uuid, name: l.name, color: l.color || null, depth: l.depth, parentUuid: l.parentUuid ?? null });
+      const labelItems = [
+        ...flatRegular.map(toItem),
+        ...(flatDynamic.length > 0 ? [{ isSeparator: true, label: 'Dynamic' }, ...flatDynamic.map(toItem)] : []),
+      ];
+      return createMultiSelectDropdown({
+        label: 'Labels',
+        items: labelItems,
+        defaultWidth: '280px',
+        defaultHeight: '400px',
+        defaultSelected: _curated.labelUuids,
+        defaultMode: _curated.labelMatchMode,
+        filterKey: 'curated-labels',
+        hierarchyToggle: {
+          label: 'Include child labels',
+          default: _curated.labelIncludeChildren,
+          onChange: (val) => {
+            _curated = { ..._curated, labelIncludeChildren: val };
+            _onCuratedChange();
+          },
+        },
+        onChange: (selected, excluded, mode) => {
+          _curated = { ..._curated, labelUuids: selected, labelExcludeUuids: excluded, labelMatchMode: mode };
+          _onCuratedChange();
+        },
+      });
+    }
+    _labelsDropdown = _buildCuratedLabelsDropdown();
+    labelsContainer.appendChild(_labelsDropdown.element);
+
+    // Tags multi-select (include/exclude/mode) — visible tags minus the
+    // verification tags, which the tri-state control above owns exclusively
+    // (same "only one way to filter verification" rule V1 established in
+    // filters.js).
+    const tagsContainer = document.createElement('div');
+    let _tagsDropdown = null;
+    function _buildCuratedTagsDropdown() {
+      const visible = filterVisibleTags(tags.values()).filter(t => !VERIFICATION_TAG_UUIDS.has(t.uuid));
+      const items = visible.map(t => ({ uuid: t.uuid, name: t.name, color: t.color || null }));
+      return createMultiSelectDropdown({
+        label: 'Tags',
+        items,
+        defaultSelected: _curated.tagUuids,
+        defaultMode: _curated.tagMatchMode,
+        filterKey: 'curated-tags',
+        defaultWidth: '220px',
+        defaultHeight: '300px',
+        onChange: (selected, excluded, mode) => {
+          _curated = { ..._curated, tagUuids: selected, tagExcludeUuids: excluded, tagMatchMode: mode };
+          _onCuratedChange();
+        },
+      });
+    }
+    _tagsDropdown = _buildCuratedTagsDropdown();
+    tagsContainer.appendChild(_tagsDropdown.element);
+
+    // Append after the caller's own toolbarControls (threshold/count/switch) —
+    // toolbarControls is a positional contract elsewhere (createFilterPanel's
+    // toolbarControls array); here it's simpler (a single element/fragment),
+    // but the same "append, don't insert" rule applies so caller-built
+    // controls never shift position (NOTES.md).
+    const curatedGroup = makeToolbarGroup(verificationControl.element, labelsContainer, tagsContainer);
+    curatedGroup.classList.add('modal-toolbar-row');
+    toolbar.append(makeToolbarSep(), curatedGroup);
+  }
+
   // ── Hover preview ─────────────────────────────────────────────────
   const _imageCache = new Map();
   const hoverPreview = createHoverPreview({ imageCache: _imageCache });
@@ -548,7 +661,10 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
   async function _getFilteredImageUuids() {
     if (fetchImages) {
       const images = await fetchImages({ afterUuid: null, limit: Number.MAX_SAFE_INTEGER });
-      return images.map(i => i.uuid);
+      // Apply the curated predicate (M1) so "search with current filters" from
+      // inside a modal reflects the curated Verification/Label/Tag selection,
+      // parallel to how filter-mode already re-runs the full server query below.
+      return images.filter(img => imageMatchesFilter(img, _curated, labels)).map(i => i.uuid);
     }
     const fs = filterPanel.getState();
     const { images } = await fetchReviewQueue({
@@ -1121,12 +1237,23 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
       const bboxMatches = makeBboxFilterPredicate({ fetchImagesMode: !!fetchImages, bboxFilterFn, fs, labels });
 
       for (const img of images) {
-        const matching = (img.bboxes || []).filter(bboxMatches);
-        // Always add an image-level entry
-        _allEntries.push({ kind: 'image', img });
-        // Add bbox entries for each matching bbox
-        for (const bbox of matching) {
-          _allEntries.push({ kind: 'bbox', bbox, img });
+        // In fetchImages/custom mode (M1), further narrow by the curated
+        // result-filter predicate (Verification/Label/Tag) on top of whatever
+        // the caller's bboxFilterFn already narrowed (e.g. a similarity modal
+        // pre-narrows img.bboxes to the matched-similar set) — compose, don't
+        // replace, bboxFilterFn.
+        const matching = (img.bboxes || []).filter(b =>
+          bboxMatches(b) && (!fetchImages || bboxMatchesFilter(b, _curated, labels)));
+        // Filter mode: always add an image-level entry (unchanged behavior).
+        // fetchImages mode: only add the image entry when it has at least one
+        // curated-matching bbox — otherwise a non-matching image would leak
+        // into images-view (previously every fetched image was shown
+        // unconditionally, since there was no curated filter to gate on).
+        if (!fetchImages || imageMatchesFilter(img, _curated, labels)) {
+          _allEntries.push({ kind: 'image', img });
+          for (const bbox of matching) {
+            _allEntries.push({ kind: 'bbox', bbox, img });
+          }
         }
       }
 

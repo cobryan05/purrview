@@ -144,10 +144,12 @@ registerContextProvider('bbox', async (adapters, ctx) => {
       label: 'Search for dissimilar bboxes…',
       disabled: count > 1,
       onSelect: () => {
+        // Label filtering used to seed the modal's now-removed bespoke Labels
+        // dropdown (server-side push); M1 moved that to the panel's shared
+        // curated result-filter surface, so only the anchor bbox is needed here.
         const bboxUuid = adapters[0].getBboxUuid?.() ?? null;
-        const labelUuid = adapters[0].getLabelUuid?.() ?? null;
         ctx.close();
-        if (bboxUuid) openDissimilarBboxesModal({ bboxUuid, labelUuid });
+        if (bboxUuid) openDissimilarBboxesModal({ bboxUuid });
       },
     },
     {

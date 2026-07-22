@@ -6,8 +6,8 @@
  * Usage:
  *   openDissimilarImagesModal({ imageUuid })              — single anchor (backward-compat)
  *   openDissimilarImagesModal({ imageUuids: [...] })      — multi-anchor
- *   openDissimilarBboxesModal({ bboxUuid, labelUuid? })   — single anchor (backward-compat)
- *   openDissimilarBboxesModal({ bboxes: [...], labelUuids?: [...] }) — multi-anchor
+ *   openDissimilarBboxesModal({ bboxUuid })   — single anchor (backward-compat)
+ *   openDissimilarBboxesModal({ bboxes: [...] }) — multi-anchor
  *   openDissimilarGlobalModal()
  */
 
@@ -18,8 +18,6 @@ import {
   findDissimilarGlobal,
   fetchImagesByUuids,
 } from '/app-static/js/shared/api/images.js';
-import { fetchLabels } from '/app-static/js/shared/api/labels.js';
-import { createMultiSelectDropdown } from '/app-static/js/ui/utils/index.js';
 import { pageStartIdx, buildCountControl, buildSwitchModeButton } from '/app-static/js/ui/searchUtils.js';
 
 // ── Multi-anchor query helpers ─────────────────────────────────────────────────
@@ -51,10 +49,14 @@ function _fetchDissimilarImages(anchorUuids, count, candidateUuids = null) {
 /**
  * Fetch dissimilar bboxes for one or more anchor bbox UUIDs.
  * Merges results the same way as _fetchDissimilarImages.
+ *
+ * Label filtering used to be pushed server-side here; as of M1 it moved to
+ * the panel's curated result-filter surface (client-side predicate), so this
+ * no longer takes a labelUuids param — see openDissimilarBboxesModal's doc.
  */
-function _fetchDissimilarBboxes(anchorBboxUuids, count, labelUuids) {
-  if (anchorBboxUuids.length === 1) return findDissimilarBboxesByUuid(anchorBboxUuids[0], count, labelUuids);
-  return Promise.all(anchorBboxUuids.map(uuid => findDissimilarBboxesByUuid(uuid, count, labelUuids))).then(allResults => {
+function _fetchDissimilarBboxes(anchorBboxUuids, count) {
+  if (anchorBboxUuids.length === 1) return findDissimilarBboxesByUuid(anchorBboxUuids[0], count);
+  return Promise.all(anchorBboxUuids.map(uuid => findDissimilarBboxesByUuid(uuid, count))).then(allResults => {
     const bestEntry = new Map(); // bboxUuid → {rank, imageUuid, labelUuid}
     for (const results of allResults) {
       for (const { bboxUuid: bu, imageUuid: iu, rank, labelUuid: lu } of results) {
@@ -170,35 +172,37 @@ export async function openDissimilarImagesModal({ imageUuid = null, imageUuids =
 /**
  * Open a review modal showing bboxes most visually distinct from the given anchor(s).
  *
- * @param {{ bboxUuid?: string, bboxes?: Array<{bboxUuid: string}>, labelUuid?: string, labelUuids?: string[] }} params
+ * Label filtering used to be pushed server-side into this modal's own Labels
+ * dropdown (`findDissimilarBboxesByUuid(..., labelUuids)`). As of M1 ("unify
+ * Review filters") that moved to the panel's shared curated result-filter
+ * surface (client-side predicate) — this modal no longer owns or accepts
+ * label state; only the count control (a real query param) remains here.
+ *
+ * @param {{ bboxUuid?: string, bboxes?: Array<{bboxUuid: string}> }} params
  *   Pass `bboxUuid` (string) for a single anchor or `bboxes` (array) for multiple.
- *   `labelUuid` / `labelUuids` seed the label filter (backward-compat: prefer `labelUuids`).
  */
-export async function openDissimilarBboxesModal({ bboxUuid = null, bboxes = null, labelUuid = null, labelUuids = null }) {
+export async function openDissimilarBboxesModal({ bboxUuid = null, bboxes = null }) {
   const anchorBboxUuids = bboxes
     ? bboxes.map(b => b.bboxUuid).filter(Boolean)
     : (bboxUuid ? [bboxUuid] : []);
   if (!anchorBboxUuids.length) return;
 
-  const labelsMap = await fetchLabels().catch(() => new Map());
-
   let _count = 100;
-  let _labelUuids = labelUuids ?? (labelUuid ? [labelUuid] : []);
   let _refresh = null;
 
-  // Derived from match list; reset when count or label filter changes.
+  // Derived from match list; reset when count changes.
   // _imageOrder: [{imageUuid, minRank}] sorted ascending by minRank
   // _imageBboxes: Map<imageUuid, Set<bboxUuid>>
   let _imageOrder = null;
   let _imageBboxes = null;
   let _queryGen = 0;
-  let _queryPromise = _fetchDissimilarBboxes(anchorBboxUuids, _count, _labelUuids);
+  let _queryPromise = _fetchDissimilarBboxes(anchorBboxUuids, _count);
 
   function _invalidate() {
     _imageOrder = null;
     _imageBboxes = null;
     _queryGen++;
-    _queryPromise = _fetchDissimilarBboxes(anchorBboxUuids, _count, _labelUuids);
+    _queryPromise = _fetchDissimilarBboxes(anchorBboxUuids, _count);
     _refresh?.();
   }
 
@@ -239,31 +243,19 @@ export async function openDissimilarBboxesModal({ bboxUuid = null, bboxes = null
     },
   });
 
-  // ── Label filter dropdown ──────────────────────────────────────────────────
-  const labelItems = [...labelsMap.values()].map(l => ({ uuid: l.uuid, name: l.name, color: l.color ?? null }));
-  const labelsDropdown = createMultiSelectDropdown({
-    label: 'Labels',
-    items: labelItems,
-    defaultSelected: _labelUuids,
-    showModeToggle: false,
-    onChange(selected) {
-      _labelUuids = selected;
-      _invalidate();
-    },
-  });
-
   // ── Switch-to-similar button ───────────────────────────────────────────────
+  // Label/Tag filtering now comes from the panel's own curated result-filter
+  // surface (M1) — see the module doc comment on openDissimilarBboxesModal above.
   const similarBtn = buildSwitchModeButton('← Most Similar', async () => {
     const { openSimilarBboxesModal } = await import('/app-static/js/ui/similarSearch.js');
     openSimilarBboxesModal({
       bboxes: anchorBboxUuids.map(uuid => ({ bboxUuid: uuid })),
-      labelUuids: _labelUuids,
     });
   });
 
   const headerEl = document.createElement('div');
   headerEl.className = 'modal-toolbar-row';
-  headerEl.append(countEl, labelsDropdown.element, similarBtn);
+  headerEl.append(countEl, similarBtn);
 
   _refresh = await showReviewModal({
     title: 'Most Distinct Bboxes',

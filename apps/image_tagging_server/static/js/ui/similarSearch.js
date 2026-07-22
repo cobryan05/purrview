@@ -9,7 +9,7 @@
  *
  * Usage:
  * *   openSimilarImagesModal({ imageUuids, threshold? })
- *   openSimilarBboxesModal({ bboxes, threshold?, labelUuid? })
+ *   openSimilarBboxesModal({ bboxes, threshold? })
  *
  * Exported helpers (for settings page / context-menu providers):
  *   getImageHashMax()          → Promise<number>  (n² for current hash size n)
@@ -26,10 +26,6 @@ import {
   fetchImagesByUuids,
 } from '/app-static/js/shared/api/images.js';
 import { getSetting } from '/app-static/js/shared/api/settings.js';
-import { fetchTags } from '/app-static/js/shared/api/tags.js';
-import { filterVisibleTags } from '/app-static/js/shared/activeModel.js';
-import { fetchLabels } from '/app-static/js/shared/api/labels.js';
-import { createMultiSelectDropdown } from '/app-static/js/ui/utils/index.js';
 import { pageStartIdx, buildSwitchModeButton } from '/app-static/js/ui/searchUtils.js';
 import { openDissimilarImagesModal, openDissimilarBboxesModal } from '/app-static/js/ui/dissimilarSearch.js';
 
@@ -220,33 +216,30 @@ export async function openSimilarImagesModal({ imageUuids, threshold = null, can
  * Open a nested review modal showing images/bboxes similar to the given bbox UUID.
  * The modal appears immediately; results load asynchronously inside the panel.
  *
- * @param {{ bboxUuid: string, threshold: number, labelUuid?: string|null }} params
+ * Label/Tag filtering used to be pushed server-side into the BK-tree query
+ * here (`findSimilarBboxesByUuid(..., labelUuids, tagUuids, ...)`). As of M1
+ * ("unify Review filters") that filtering moved to the panel's shared curated
+ * result-filter surface (client-side predicate over the fetched candidates —
+ * see `createReviewPanel`'s `_curated` state), so this modal no longer owns
+ * or accepts label/tag state; only the threshold slider (a real query param,
+ * not a result-filter) remains here.
+ *
+ * @param {{ bboxUuid: string, threshold: number }} params
  */
-export async function openSimilarBboxesModal({ bboxes, threshold = null, labelUuid = null, labelUuids = null }) {
+export async function openSimilarBboxesModal({ bboxes, threshold = null }) {
   // bboxes: [{ bboxUuid, bboxCoords, imageUuid }]
   // bboxCoords present means the bbox is dirty (moved/resized since save); use coords path.
   // bboxUuid-only uses the saved UUID path, which ensures the source appears at distance 0.
-  // labelUuids (array) takes precedence over labelUuid (single, backward-compat).
   if (!bboxes?.length) return;
 
-  const [sliderMax, tagsMap, labelsMap] = await Promise.all([
-    getBboxHashMax(),
-    fetchTags().catch(() => new Map()),
-    fetchLabels().catch(() => new Map()),
-  ]);
+  const sliderMax = await getBboxHashMax();
   let _threshold = threshold !== null ? threshold : await _readThreshold('dedup_bbox_threshold', sliderMax);
-
-  // Label + tag filter state
-  let _labelUuids = labelUuids ?? (labelUuid ? [labelUuid] : []);
-  let _tagUuids = [];
-  let _excludeTagUuids = [];
-  let _tagMatchMode = 'any';
 
   function _runQuery(t) {
     return Promise.all(bboxes.map(({ bboxUuid, bboxCoords, imageUuid }) =>
       bboxCoords && imageUuid
-        ? findSimilarBboxesByCoords(imageUuid, bboxCoords.x, bboxCoords.y, bboxCoords.w, bboxCoords.h, t, _labelUuids, _tagUuids, _excludeTagUuids, _tagMatchMode)
-        : findSimilarBboxesByUuid(bboxUuid, t, _labelUuids, _tagUuids, _excludeTagUuids, _tagMatchMode)
+        ? findSimilarBboxesByCoords(imageUuid, bboxCoords.x, bboxCoords.y, bboxCoords.w, bboxCoords.h, t)
+        : findSimilarBboxesByUuid(bboxUuid, t)
     )).then(allResults => {
       // Union by bboxUuid, keeping minimum distance across all anchor queries.
       const byBboxUuid = new Map(); // bboxUuid → { imageUuid, distance }
@@ -267,7 +260,7 @@ export async function openSimilarBboxesModal({ bboxes, threshold = null, labelUu
   let _queryPromise = _runQuery(_threshold);
   let _refresh = null;
 
-  // Derived from the match list; reset when threshold or tag filter changes.
+  // Derived from the match list; reset when the threshold changes.
   // _imageOrder: [{imageUuid, minDist}] sorted ascending by minDist
   // _imageBboxes: Map<imageUuid, Set<bboxUuid>>
   let _imageOrder = null;
@@ -318,46 +311,20 @@ export async function openSimilarBboxesModal({ bboxes, threshold = null, labelUu
     },
   });
 
-  // ── Label filter dropdown ──────────────────────────────────────────────────
-  const labelItems = [...labelsMap.values()].map(l => ({ uuid: l.uuid, name: l.name, color: l.color ?? null }));
-  const labelsDropdown = createMultiSelectDropdown({
-    label: 'Labels',
-    items: labelItems,
-    defaultSelected: _labelUuids,
-    showModeToggle: false,  // label filter is always OR (each label maps to its own BK-tree)
-    onChange(selected) {
-      _labelUuids = selected;
-      _invalidate();
-    },
-  });
-
-  // ── Tag filter dropdown ────────────────────────────────────────────────────
-  const tagItems = filterVisibleTags(tagsMap.values())
-    .map(t => ({ uuid: t.uuid, name: t.name, color: t.color ?? null }));
-  const tagsDropdown = createMultiSelectDropdown({
-    label: 'Tags',
-    items: tagItems,
-    showModeToggle: true,
-    onChange(selected, excluded, mode) {
-      _tagUuids = selected;
-      _excludeTagUuids = excluded;
-      _tagMatchMode = mode;
-      _invalidate();
-    },
-  });
-
   // ── Switch-to-dissimilar button ────────────────────────────────────────────
   const bboxAnchorUuids = bboxes.map(b => b.bboxUuid).filter(Boolean);
   const dissimilarBboxBtn = buildSwitchModeButton('Most Distinct →', () => {
-    openDissimilarBboxesModal({ bboxes, labelUuids: _labelUuids });
+    openDissimilarBboxesModal({ bboxes });
   });
   // Only show the button when there is at least one saved bbox UUID to anchor from
   if (!bboxAnchorUuids.length) dissimilarBboxBtn.disabled = true;
 
-  // Wrap slider + label + tag dropdowns + switch button side-by-side
+  // Wrap slider + switch button side-by-side. Label/Tag filtering now comes
+  // from the panel's own curated result-filter surface (M1) — see the module
+  // doc comment on openSimilarBboxesModal above.
   const headerEl = document.createElement('div');
   headerEl.className = 'modal-toolbar-row';
-  headerEl.append(sliderEl, labelsDropdown.element, tagsDropdown.element, dissimilarBboxBtn);
+  headerEl.append(sliderEl, dissimilarBboxBtn);
 
   const referenceBboxUuids = new Set(bboxes.map(b => b.bboxUuid).filter(Boolean));
 
