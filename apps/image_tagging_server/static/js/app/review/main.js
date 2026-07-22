@@ -57,6 +57,7 @@ import { isDynamicLabelsVisible } from '/app-static/js/shared/activeModel.js';
 
 const DEFAULT_PAGE_SIZE = 250;
 const MAX_ENTRIES = 1000; // hard cap on total cards per page
+const SCROLL_LOAD_MARGIN_PX = 400; // infinite-scroll (M2) preload distance from the bottom of the scroll container
 
 /**
  * Loads thumbnail images with a concurrency cap and cancellation support.
@@ -311,7 +312,8 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
   refreshBtn.className = 'review-toolbar__btn';
   refreshBtn.textContent = 'Refresh';
 
-  // Pagination
+  // Pagination — filter mode only. Custom/fetchImages mode uses infinite
+  // scroll instead (M2), so Prev/Next never apply there.
   const pageInfo = document.createElement('span');
   pageInfo.className = 'review-toolbar__page-info';
   const prevBtn = document.createElement('button');
@@ -320,6 +322,7 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
   const nextBtn = document.createElement('button');
   nextBtn.className = 'review-toolbar__btn';
   nextBtn.textContent = 'Next ›';
+  if (fetchImages) { prevBtn.hidden = true; nextBtn.hidden = true; }
 
   // Status message
   const statusMsg = document.createElement('span');
@@ -621,6 +624,16 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
   let _renderGeneration = 0;
   let _hasMore = false;
   let _totalCount = 0;
+
+  // ── Infinite-scroll state (M2, fetchImages mode only) ────────────────────
+  // `_curatedCursor` is the afterUuid to resume from; `_curatedExhausted`
+  // means fetchImages returned fewer than a full chunk (no more candidates).
+  // Filter mode ignores these — it keeps fixed-page keyset pagination.
+  let _curatedCursor = null;
+  let _curatedExhausted = false;
+  let _loadingMore = false;
+  let _loadMorePending = false;
+  let _scrollHandler = null;
 
   // _visibleEntries is the filtered subset rendered to DOM (updated by renderFromEntries)
   let _visibleEntries = [];
@@ -1113,6 +1126,111 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
     updateStatusMsg();
   }
 
+  // ── Page/scroll status line (M2: text + Prev/Next differ by mode) ─────────
+  function updatePageInfo() {
+    const cardCount = _allEntries.length;
+    if (fetchImages) {
+      pageInfo.textContent = `${cardCount} card${cardCount === 1 ? '' : 's'}` +
+        (_hasMore ? ' · scroll for more' : '');
+    } else {
+      const totalPages = _totalCount > 0 ? Math.ceil(_totalCount / _pageSize) : null;
+      const pageLabel = totalPages ? `Page ${_pageCursors.length} of ${totalPages}` : `Page ${_pageCursors.length}`;
+      pageInfo.textContent = `${pageLabel} · ${cardCount} card${cardCount === 1 ? '' : 's'}`;
+    }
+    prevBtn.disabled = fetchImages ? true : _pageCursors.length <= 1;
+    nextBtn.disabled = fetchImages ? true : !_hasMore;
+  }
+
+  // Build image+bbox entries for one chunk of curated (fetchImages-mode)
+  // candidates — shared by render()'s initial bootstrap and _loadMoreCurated()
+  // so the two never drift on what counts as a "match".
+  function _buildCuratedEntries(images) {
+    const bboxMatches = makeBboxFilterPredicate({ fetchImagesMode: true, bboxFilterFn, fs: null, labels });
+    const entries = [];
+    for (const img of images) {
+      const matching = (img.bboxes || []).filter(b => bboxMatches(b) && bboxMatchesFilter(b, _curated, labels));
+      if (imageMatchesFilter(img, _curated, labels)) {
+        entries.push({ kind: 'image', img });
+        for (const bbox of matching) entries.push({ kind: 'bbox', bbox, img });
+      }
+    }
+    return entries;
+  }
+
+  // ── Infinite scroll (M2, fetchImages mode only) ─────────────────────────────
+  // `container` is the modal's own scroll parent (showReviewModal's `content`
+  // div, overflow:auto). `_nearBottom` reads its live geometry directly rather
+  // than through an IntersectionObserver + sentinel element — a plain 'scroll'
+  // listener (wired below, near render()'s initial call) already fires
+  // reliably on every scrollTop change, so there's no need for the observer's
+  // separate (and edge-triggered, easy-to-race) notification cycle.
+  function _nearBottom() {
+    if (!fetchImages || !container.isConnected) return false;
+    return container.scrollTop + container.clientHeight >= container.scrollHeight - SCROLL_LOAD_MARGIN_PX;
+  }
+
+  // A call that arrives while another is already running must not just be
+  // dropped — scroll events fire in bursts, and by the time one lands the
+  // page may already have moved further. `_loadMorePending` records "someone
+  // asked again while I was busy" so the running call loops once more before
+  // it actually exits, instead of assuming a later scroll event will retry it.
+  async function _loadMoreCurated() {
+    if (!fetchImages || _rendering) return;
+    if (_loadingMore) { _loadMorePending = true; return; }
+    _loadingMore = true;
+    const _gen = _renderGeneration;
+    try {
+      do {
+        _loadMorePending = false;
+        while (!_curatedExhausted && _allEntries.length < MAX_ENTRIES && _nearBottom()) {
+          const raw = await fetchImages({ afterUuid: _curatedCursor, afterSortValue: null, limit: _pageSize + 1 });
+          if (_renderGeneration !== _gen) return; // superseded by a full render() mid-flight
+
+          const exhausted = raw.length <= _pageSize;
+          const pageImages = raw.slice(0, _pageSize);
+          if (pageImages.length > 0) _curatedCursor = pageImages[pageImages.length - 1].uuid;
+          _curatedExhausted = exhausted;
+          _hasMore = !exhausted;
+          if (pageImages.length === 0) break;
+
+          let newEntries = _buildCuratedEntries(pageImages);
+          if (_allEntries.length + newEntries.length > MAX_ENTRIES) {
+            newEntries = newEntries.slice(0, MAX_ENTRIES - _allEntries.length);
+            _hasMore = false;
+            _curatedExhausted = true;
+          }
+          if (!newEntries.length) continue;
+
+          _allEntries.push(...newEntries);
+
+          const newImageUuids = [...new Set(newEntries.map(e => e.img.uuid))];
+          try {
+            const more = await fetchImageLabelsBatch(newImageUuids);
+            for (const [uuid, statuses] of more) _pageImageLabels.set(uuid, statuses);
+          } catch (err) {
+            Logger.error('review: batch image-labels fetch (load-more) failed', err);
+          }
+          if (_renderGeneration !== _gen) return;
+
+          const newVisible = newEntries.filter(e =>
+            _viewFilter === 'all' || (_viewFilter === 'images' ? e.kind === 'image' : e.kind === 'bbox'));
+          if (newVisible.length) {
+            entryView.setEmptyText('');
+            _visibleEntries.push(...newVisible);
+            entryView.appendEntries(newVisible);
+          }
+          updateBulkBtn();
+          updatePageInfo();
+          updateStatusMsg();
+        }
+      } while (_loadMorePending && !_curatedExhausted && _allEntries.length < MAX_ENTRIES);
+    } catch (err) {
+      Logger.error('review: load-more (infinite scroll) failed', err);
+    } finally {
+      _loadingMore = false;
+    }
+  }
+
   // ── Render (fetch + display) ──────────────────────────────────────
   async function render() {
     const _gen = ++_renderGeneration;
@@ -1166,17 +1284,27 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
       let totalCount = 0;
       try {
         if (fetchImages) {
-          images = await fetchImages({
-            sortBy,
-            sortOrder,
-            afterUuid: cursor?.uuid ?? null,
-            afterSortValue: cursor?.sortValue ?? null,
-            limit: _pageSize + 1,
-          });
-          // Sentinel pattern: request one extra row to distinguish "exactly limit" from
-          // "more exist" without relying on an unreliable length === limit heuristic.
-          hasMore = images.length > _pageSize;
-          images = images.slice(0, _pageSize);
+          // M2: infinite-scroll bootstrap. Fetch chunks (chunk size = _pageSize)
+          // until the first screenful is filled or the candidate list is
+          // exhausted; `_loadMoreCurated()` (wired to a scroll sentinel) takes
+          // over from `_curatedCursor` as the user scrolls further. Entries are
+          // built directly into `_allEntries` here via `_buildCuratedEntries`,
+          // so `images` is left empty — the generic per-image entry-building
+          // loop below is then a no-op for this branch.
+          _curatedCursor = null;
+          _curatedExhausted = false;
+          while (_allEntries.length < _pageSize && !_curatedExhausted) {
+            if (_renderGeneration !== _gen) { clearTimeout(_slowTimer); return; }
+            const raw = await fetchImages({ afterUuid: _curatedCursor, afterSortValue: null, limit: _pageSize + 1 });
+            const exhausted = raw.length <= _pageSize;
+            const pageImages = raw.slice(0, _pageSize);
+            if (pageImages.length > 0) _curatedCursor = pageImages[pageImages.length - 1].uuid;
+            _curatedExhausted = exhausted;
+            if (pageImages.length === 0) break;
+            _allEntries.push(..._buildCuratedEntries(pageImages));
+          }
+          hasMore = !_curatedExhausted;
+          images = [];
         } else {
           ({ images, hasMore, totalCount } = await fetchReviewQueue({
             tagUuids: fs.showAllBboxes ? [] : fs.tagUuids,
@@ -1287,18 +1415,19 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
     }
     if (_renderGeneration !== _gen) return;
 
-    const totalPages = _totalCount > 0 ? Math.ceil(_totalCount / _pageSize) : null;
-    const pageLabel = totalPages ? `Page ${_pageCursors.length} of ${totalPages}` : `Page ${_pageCursors.length}`;
-    const cardCount = _allEntries.length;
-    pageInfo.textContent = `${pageLabel} · ${cardCount} card${cardCount === 1 ? '' : 's'}`;
-    prevBtn.disabled = _pageCursors.length <= 1;
-    nextBtn.disabled = !_hasMore;
+    updatePageInfo();
 
     clearTimeout(_slowTimer);
     renderFromEntries();
 
     refreshBtn.disabled = false;
     _rendering = false;
+
+    // M2: top up past the bootstrap chunk if the viewport isn't full yet.
+    // Don't rely solely on the IntersectionObserver's own initial callback —
+    // it can race `_rendering` above and, being edge-triggered, never retry
+    // if that one callback is dropped (see _loadMoreCurated's doc comment).
+    if (fetchImages) _loadMoreCurated();
   }
 
   // ── Nav context builder for canvas modal ─────────────────────────
@@ -2164,6 +2293,15 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
 
   render();
 
+  // ── Infinite-scroll listener (M2, fetchImages mode only) ───────────────────
+  // Only needs to *start* _loadMoreCurated on each scroll — the initial
+  // viewport fill is handled explicitly by the `_loadMoreCurated()` call at
+  // the end of render() above.
+  if (fetchImages) {
+    _scrollHandler = () => _loadMoreCurated();
+    container.addEventListener('scroll', _scrollHandler, { passive: true });
+  }
+
   // ── Bulk Apply All Pages modal ────────────────────────────────────────────
   // Shows the action picker plus a "first 3 / last 3" preview of the bbox
   // range that will be affected, so the user can sanity-check the scope.
@@ -2407,6 +2545,7 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
       _thumbLoader.reset();
       hoverPreview.destroy();
       entryView.destroy();
+      if (_scrollHandler) container.removeEventListener('scroll', _scrollHandler);
       container.innerHTML = '';
     },
     filterPanel,
