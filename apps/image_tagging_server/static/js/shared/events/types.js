@@ -138,9 +138,14 @@ export const EventTypes = Object.freeze({
    */
   IMAGE_LABELS_CHANGED: "image:labels:changed",
   /**
-   * Fired when the active training config changes, the label visibility mode changes,
-   * or coverage stats are freshly fetched.
-   * Payload: { config: TrainingConfigRead | null, visibilityMode: 'all'|'focus'|'filtered', statsUpdated: boolean }
+   * Fired when the active training config changes, a label preset (visibility or
+   * Apply-to-all target) changes, or coverage stats are freshly fetched.
+   * Payload: {
+   *   config: TrainingConfigRead | null,
+   *   visibilityPreset: 'all'|'training-run',
+   *   targetPreset: 'all'|'training-run'|'object'|'image'|'dynamic'|'none',
+   *   statsUpdated: boolean,
+   * }
    */
   ACTIVE_TRAINING_CONFIG_CHANGED: "training-config:active:changed",
 });

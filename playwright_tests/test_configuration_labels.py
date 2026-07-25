@@ -620,3 +620,163 @@ class TestLabelScopeSelectMode:
         }}""")
         assert not result.get("hasSectionHeader"), \
             "Should NOT show 'Image Classification' header when no image-scope labels exist"
+
+
+# ---------------------------------------------------------------------------
+# Apply-to-all targeting — two orthogonal axes (visibility + target)
+# ---------------------------------------------------------------------------
+
+
+class TestLabelApplyToAllTargeting:
+    """
+    The old per-section "Mark all absent" buttons + 3-mode cycle are replaced by
+    a single global Apply-to-all bar whose scope is an explicit, per-row-toggle
+    "targeted" set. These tests pin the new behavior:
+
+      - "Mark absent" affects only targeted labels (the target preset baseline),
+        so the old bug where the object section's bulk op reached past Image
+        Classification into Dynamic Labels can no longer happen.
+      - The per-row ◉/⊘ toggle and the section-level all/none master override the
+        baseline individually.
+
+    A fake runtime with an image already loaded is required — bulkOp() no-ops
+    ("No image loaded") unless currentImagePath is set, which mountSelectMode
+    derives synchronously from runtime.state.image.image_path.
+    """
+
+    def _runtime_with_image(self, runtime_id: str) -> str:
+        return f"""{{
+            id: '{runtime_id}',
+            tool: 'select',
+            state: {{ image: {{ image_path: 'x.jpg', bboxes: new Map() }} }},
+            canvas: {{ layer: null, stage: {{ container: () => ({{ style: {{}} }}) }} }},
+            setTool(t) {{ this.tool = t; }},
+            markDirty() {{ this._dirty = true; }},
+            _dirty: false,
+        }}"""
+
+    def _status_helpers_js(self) -> str:
+        """JS helpers (closure over `container`) for reading row state."""
+        return """
+            const statusOf = (uuid) => {
+                const row = container.querySelector('[data-uuid="'+uuid+'"]');
+                return row ? row.querySelector('button').textContent : null;
+            };
+            const targetIconOf = (uuid) => {
+                const row = container.querySelector('[data-uuid="'+uuid+'"]');
+                return row ? row.querySelector('.label-target-toggle').textContent : null;
+            };
+            const clickMarkAbsent = () => {
+                const b = Array.from(container.querySelectorAll('button'))
+                    .find(x => x.textContent === 'Mark absent');
+                if (b && !b.disabled) b.click();
+                return !!b && !b.disabled;
+            };
+        """
+
+    def test_mark_absent_targets_object_preset_and_spares_dynamic(self, shared_page: Page):
+        """With target preset 'object', Mark absent hits object labels only — the
+        dynamic label is NOT swept (the regression this redesign fixes)."""
+        result = shared_page.evaluate(f"""async () => {{
+            const {{ labelsFetcher }} = await import('/app-static/js/shared/api/labels.js');
+            const {{ createLabelList }} = await import('/app-static/js/ui/labelList.js');
+            const {{ activeTrainingConfig }} = await import('/app-static/js/shared/activeTrainingConfig.js');
+
+            labelsFetcher.set('labelsMap', new Map([
+                ['obj-a', {{ uuid:'obj-a', name:'Cat',    color:'#f00', parentUuid:null, labelType:'standard', scope:'object' }}],
+                ['dyn-a', {{ uuid:'dyn-a', name:'Motion', color:'#888', parentUuid:null, labelType:'dynamic',  scope:'object' }}],
+            ]));
+            activeTrainingConfig.setTargetPreset('object');
+
+            const runtime = {self._runtime_with_image('rt-tgt-obj')};
+            const container = document.createElement('div');
+            document.body.appendChild(container);
+            const handle = await createLabelList(container, {{ mode:'select', runtime, filter:null }});
+            {self._status_helpers_js()}
+
+            const clicked = clickMarkAbsent();
+            const out = {{ clicked, obj: statusOf('obj-a'), dyn: statusOf('dyn-a'),
+                          objIcon: targetIconOf('obj-a'), dynIcon: targetIconOf('dyn-a') }};
+
+            activeTrainingConfig.setTargetPreset('all');
+            handle.destroy(); container.remove();
+            return out;
+        }}""")
+        assert result.get("clicked"), f"Mark absent should be enabled; got {result}"
+        assert result.get("objIcon") == "◉", f"object should start targeted; got {result}"
+        assert result.get("dynIcon") == "⊘", f"dynamic should start untargeted; got {result}"
+        assert result.get("obj") == "✗", f"object label should be marked absent; got {result}"
+        assert result.get("dyn") == "?", f"dynamic label must NOT be swept; got {result}"
+
+    def test_per_row_toggle_excludes_from_mark_absent(self, shared_page: Page):
+        """Preset 'all' targets everything; clicking a row's ◉ toggle excludes just
+        that row, so Mark absent skips it while still hitting the others."""
+        result = shared_page.evaluate(f"""async () => {{
+            const {{ labelsFetcher }} = await import('/app-static/js/shared/api/labels.js');
+            const {{ createLabelList }} = await import('/app-static/js/ui/labelList.js');
+            const {{ activeTrainingConfig }} = await import('/app-static/js/shared/activeTrainingConfig.js');
+
+            labelsFetcher.set('labelsMap', new Map([
+                ['obj-a', {{ uuid:'obj-a', name:'Cat', color:'#f00', parentUuid:null, labelType:'standard', scope:'object' }}],
+                ['obj-b', {{ uuid:'obj-b', name:'Dog', color:'#0f0', parentUuid:null, labelType:'standard', scope:'object' }}],
+            ]));
+            activeTrainingConfig.setTargetPreset('all');
+
+            const runtime = {self._runtime_with_image('rt-tgt-row')};
+            const container = document.createElement('div');
+            document.body.appendChild(container);
+            const handle = await createLabelList(container, {{ mode:'select', runtime, filter:null }});
+            {self._status_helpers_js()}
+
+            // Exclude obj-a via its per-row toggle.
+            container.querySelector('[data-uuid="obj-a"] .label-target-toggle').click();
+            const iconAfter = targetIconOf('obj-a');
+            const clicked = clickMarkAbsent();
+            const out = {{ clicked, iconAfter, a: statusOf('obj-a'), b: statusOf('obj-b') }};
+
+            activeTrainingConfig.setTargetPreset('all');
+            handle.destroy(); container.remove();
+            return out;
+        }}""")
+        assert result.get("iconAfter") == "⊘", f"toggled row should show excluded icon; got {result}"
+        assert result.get("clicked"), f"Mark absent should be enabled; got {result}"
+        assert result.get("a") == "?", f"excluded row must be skipped; got {result}"
+        assert result.get("b") == "✗", f"still-targeted row should be marked absent; got {result}"
+
+    def test_section_master_none_excludes_that_section_only(self, shared_page: Page):
+        """The Object-section '⊘ none' master untargets object labels but leaves the
+        Dynamic section targeted — Mark absent then hits only dynamic labels."""
+        result = shared_page.evaluate(f"""async () => {{
+            const {{ labelsFetcher }} = await import('/app-static/js/shared/api/labels.js');
+            const {{ createLabelList }} = await import('/app-static/js/ui/labelList.js');
+            const {{ activeTrainingConfig }} = await import('/app-static/js/shared/activeTrainingConfig.js');
+
+            labelsFetcher.set('labelsMap', new Map([
+                ['obj-a', {{ uuid:'obj-a', name:'Cat',    color:'#f00', parentUuid:null, labelType:'standard', scope:'object' }}],
+                ['obj-b', {{ uuid:'obj-b', name:'Dog',    color:'#0f0', parentUuid:null, labelType:'standard', scope:'object' }}],
+                ['dyn-a', {{ uuid:'dyn-a', name:'Motion', color:'#888', parentUuid:null, labelType:'dynamic',  scope:'object' }}],
+            ]));
+            activeTrainingConfig.setTargetPreset('all');
+
+            const runtime = {self._runtime_with_image('rt-tgt-sect')};
+            const container = document.createElement('div');
+            document.body.appendChild(container);
+            const handle = await createLabelList(container, {{ mode:'select', runtime, filter:null }});
+            {self._status_helpers_js()}
+
+            // First '.label-section-none' belongs to the Object Labels section.
+            container.querySelectorAll('.label-section-none')[0].click();
+            const clicked = clickMarkAbsent();
+            const out = {{ clicked, a: statusOf('obj-a'), b: statusOf('obj-b'), dyn: statusOf('dyn-a'),
+                          aIcon: targetIconOf('obj-a'), dynIcon: targetIconOf('dyn-a') }};
+
+            activeTrainingConfig.setTargetPreset('all');
+            handle.destroy(); container.remove();
+            return out;
+        }}""")
+        assert result.get("aIcon") == "⊘", f"object rows should be untargeted after 'none'; got {result}"
+        assert result.get("dynIcon") == "◉", f"dynamic row should stay targeted; got {result}"
+        assert result.get("clicked"), f"Mark absent should be enabled (dynamic still targeted); got {result}"
+        assert result.get("a") == "?", f"object row a should be spared; got {result}"
+        assert result.get("b") == "?", f"object row b should be spared; got {result}"
+        assert result.get("dyn") == "✗", f"dynamic row should be marked absent; got {result}"

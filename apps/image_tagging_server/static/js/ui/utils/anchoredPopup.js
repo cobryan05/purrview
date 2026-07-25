@@ -33,7 +33,14 @@ export function openAnchoredPopup(anchorEl, contentEl) {
     window.innerWidth - popupRect.width - 4,
   );
   contentEl.style.left = leftPos + 'px';
-  contentEl.style.top = (rect.top - popupRect.height - 4) + 'px';
+
+  // Prefer above the anchor (natural for bottom-anchored chrome). If it would
+  // run off the top — e.g. a menu opened from a panel header near the top of the
+  // viewport — flip below instead, then clamp so it stays fully on screen.
+  let topPos = rect.top - popupRect.height - 4;
+  if (topPos < 4) topPos = rect.bottom + 4;
+  topPos = Math.max(4, Math.min(topPos, window.innerHeight - popupRect.height - 4));
+  contentEl.style.top = topPos + 'px';
   contentEl.style.visibility = '';
 
   function close() {

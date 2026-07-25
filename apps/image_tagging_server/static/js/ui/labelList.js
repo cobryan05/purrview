@@ -23,6 +23,7 @@ import { events, EventTypes } from '/app-static/js/shared/events/index.js';
 import { setTool } from '../app/image-tagging/canvas/tools.js';
 import { EditableField, TextBoxColorField } from '/app-static/js/ui/utils/fields/index.js';
 import { createGenericRow, toast, makeLabelFilterNotice } from '/app-static/js/ui/utils/index.js';
+import { openAnchoredPopup } from '/app-static/js/ui/utils/anchoredPopup.js';
 
 const DEFAULT_COLOR = '#cccccc';
 
@@ -340,12 +341,73 @@ function computeDerivedPresent(bboxes) {
   return present;
 }
 
-const VISIBILITY_MODE_ICON = Object.freeze({
-  all: { icon: '👁', title: 'Show all labels (click to cycle) — no filtering' },
-  focus: { icon: '🎯', title: 'Show all, focus tagging (click to cycle) — labels outside this training run are excluded from Mark all/Reset all' },
-  filtered: { icon: '🚧', title: 'Filtered to training run (click to cycle) — labels outside it are hidden' },
-});
-const VISIBILITY_MODE_CYCLE = Object.freeze({ all: 'focus', focus: 'filtered', filtered: 'all' });
+// Option metadata for the two header preset menus. `needsTc` options only make
+// sense when a training config is active (they reference "the training run").
+const VISIBILITY_PRESET_OPTIONS = Object.freeze([
+  { value: 'all',          label: 'Show all labels',                  desc: 'Every label stays visible.' },
+  { value: 'training-run', label: 'Hide labels outside training run', desc: 'Show only labels in the active training run.', needsTc: true },
+]);
+const TARGET_PRESET_OPTIONS = Object.freeze([
+  { value: 'all',          label: 'Everything',                desc: 'Apply-to-all affects every visible label.' },
+  { value: 'training-run', label: 'Only active training run',  desc: 'Only labels in the active training run.', needsTc: true },
+  { value: 'object',       label: 'Only object labels',        desc: 'Only bounding-box / object labels.' },
+  { value: 'image',        label: 'Only image classification', desc: 'Only whole-image labels.' },
+  { value: 'dynamic',      label: 'Only dynamic labels',       desc: 'Only dynamic labels.' },
+  { value: 'none',         label: 'Nothing',                   desc: 'Clear the set — pick labels individually.' },
+]);
+
+/**
+ * Build a radio-style preset menu for openAnchoredPopup. Each row shows a check
+ * for the current value; clicking a row calls onPick(value).
+ * @param {string} title
+ * @param {Array<{value:string,label:string,desc:string}>} options
+ * @param {string} currentValue
+ * @param {(value:string)=>void} onPick
+ * @returns {HTMLDivElement}
+ */
+function buildPresetMenu(title, options, currentValue, onPick) {
+  const menu = document.createElement('div');
+  menu.style.cssText = [
+    'background:var(--pico-background-color,#1c1c1c)',
+    'border:1px solid var(--pico-border-color,#444)',
+    'border-radius:6px', 'padding:4px 0', 'min-width:240px',
+    'box-shadow:0 4px 14px rgba(0,0,0,.4)', 'z-index:10001', 'font-size:0.8em',
+  ].join(';');
+
+  const hdr = document.createElement('div');
+  hdr.textContent = title;
+  hdr.style.cssText = 'padding:4px 12px 6px;font-size:0.8em;text-transform:uppercase;letter-spacing:.05em;color:var(--pico-muted-color,#888);';
+  menu.appendChild(hdr);
+
+  for (const opt of options) {
+    const row = document.createElement('div');
+    row.dataset.value = opt.value;
+    row.className = 'label-preset-option';
+    row.style.cssText = 'display:flex;gap:8px;align-items:flex-start;padding:6px 12px;cursor:pointer;';
+    row.addEventListener('mouseenter', () => { row.style.background = 'var(--pico-primary-background,rgba(255,255,255,.07))'; });
+    row.addEventListener('mouseleave', () => { row.style.background = ''; });
+
+    const check = document.createElement('span');
+    check.textContent = opt.value === currentValue ? '✓' : '';
+    check.style.cssText = 'width:1em;flex-shrink:0;color:var(--pico-primary,#88aaff);';
+
+    const txt = document.createElement('span');
+    const t = document.createElement('div');
+    t.textContent = opt.label;
+    t.style.fontWeight = opt.value === currentValue ? '600' : '400';
+    const d = document.createElement('div');
+    d.textContent = opt.desc;
+    d.style.cssText = 'font-size:0.82em;color:var(--pico-muted-color,#999);margin-top:1px;';
+    txt.appendChild(t);
+    txt.appendChild(d);
+
+    row.appendChild(check);
+    row.appendChild(txt);
+    row.addEventListener('click', () => onPick(opt.value));
+    menu.appendChild(row);
+  }
+  return menu;
+}
 
 async function mountSelectMode(container, { runtime, filter }) {
   Object.assign(container.style, { overflowY: 'auto', padding: '4px' });
@@ -368,6 +430,50 @@ async function mountSelectMode(container, { runtime, filter }) {
   });
   header.appendChild(headerTitle);
 
+  const tc = activeTrainingConfig.getActive();
+  const visibilityPreset = activeTrainingConfig.getVisibilityPreset();
+  const targetPreset = activeTrainingConfig.getTargetPreset();
+
+  // Right-align the icon cluster (visibility / target menus + refresh).
+  const headerSpacer = document.createElement('span');
+  headerSpacer.style.marginLeft = 'auto';
+  header.appendChild(headerSpacer);
+
+  // A single shared popup for both menus — opening one closes the other.
+  let _menuPopup = null;
+  const closeMenu = () => { _menuPopup?.close(); _menuPopup = null; };
+
+  function _makeMenuButton(icon, title, buildMenu) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.textContent = icon;
+    btn.title = title;
+    btn.style.cssText = 'background:none;border:none;cursor:pointer;padding:0 3px;font-size:1em;margin:0;';
+    btn.addEventListener('click', () => {
+      if (_menuPopup) { closeMenu(); return; }
+      _menuPopup = openAnchoredPopup(btn, buildMenu());
+    });
+    return btn;
+  }
+
+  const visBtn = _makeMenuButton('👁', 'Label visibility', () =>
+    buildPresetMenu(
+      'Visibility',
+      VISIBILITY_PRESET_OPTIONS.filter(o => !o.needsTc || tc),
+      visibilityPreset,
+      (v) => { closeMenu(); activeTrainingConfig.setVisibilityPreset(v); },
+    ));
+  header.appendChild(visBtn);
+
+  const tgtBtn = _makeMenuButton('🎯', 'Apply-to-all target', () =>
+    buildPresetMenu(
+      'Apply-to-all target',
+      TARGET_PRESET_OPTIONS.filter(o => !o.needsTc || tc),
+      targetPreset,
+      (v) => { closeMenu(); activeTrainingConfig.setTargetPreset(v); },
+    ));
+  header.appendChild(tgtBtn);
+
   const refreshBtn = document.createElement('button');
   refreshBtn.type = 'button';
   refreshBtn.textContent = '↻';
@@ -382,58 +488,40 @@ async function mountSelectMode(container, { runtime, filter }) {
     }
   });
   header.appendChild(refreshBtn);
-
-  const tcForModeToggle = activeTrainingConfig.getActive();
-  if (tcForModeToggle) {
-    const modeBtn = document.createElement('button');
-    modeBtn.type = 'button';
-    modeBtn.style.cssText = 'background:none;border:none;cursor:pointer;padding:0 3px;font-size:1em;margin:0 0 0 auto;';
-    const applyModeBtnState = () => {
-      const mode = activeTrainingConfig.getVisibilityMode();
-      const info = VISIBILITY_MODE_ICON[mode];
-      modeBtn.textContent = info.icon;
-      modeBtn.title = info.title;
-    };
-    applyModeBtnState();
-    modeBtn.addEventListener('click', () => {
-      const next = VISIBILITY_MODE_CYCLE[activeTrainingConfig.getVisibilityMode()];
-      activeTrainingConfig.setVisibilityMode(next);
-    });
-    header.appendChild(modeBtn);
-  }
   container.appendChild(header);
 
+  // Single global "Apply to all" bar. It acts on exactly the targeted set
+  // (across every section), so the previous per-section buttons — and the bug
+  // where the top section's "Mark all absent" reached past Image Classification
+  // into Dynamic Labels — are gone by construction.
   const bulkRow = document.createElement('div');
-  Object.assign(bulkRow.style, { display: 'flex', gap: '4px', padding: '0 6px 4px' });
+  Object.assign(bulkRow.style, { display: 'flex', gap: '6px', alignItems: 'center', padding: '0 6px 6px', flexWrap: 'wrap' });
+  const bulkLabel = document.createElement('span');
+  bulkLabel.style.cssText = 'font-size:0.72em;color:#999;';
   const markAbsentBtn = document.createElement('button');
-  markAbsentBtn.textContent = 'Mark all absent';
+  markAbsentBtn.textContent = 'Mark absent';
+  markAbsentBtn.title = 'Mark every targeted label absent for this image';
   Object.assign(markAbsentBtn.style, { fontSize: '0.75em', padding: '2px 6px' });
   const resetAllBtn = document.createElement('button');
-  resetAllBtn.textContent = 'Reset all';
+  resetAllBtn.textContent = 'Reset';
+  resetAllBtn.title = 'Reset every targeted label to unreviewed for this image';
   Object.assign(resetAllBtn.style, { fontSize: '0.75em', padding: '2px 6px' });
+  bulkRow.appendChild(bulkLabel);
   bulkRow.appendChild(markAbsentBtn);
   bulkRow.appendChild(resetAllBtn);
   container.appendChild(bulkRow);
 
   const rawLabelsMap = await fetchLabels();
-  const visibilityMode = activeTrainingConfig.getVisibilityMode();
   const filteredMap = activeTrainingConfig.applyLabelFilter(rawLabelsMap);
-  const excludedUuids = visibilityMode === 'focus'
-    ? activeTrainingConfig.getExcludedUuids(rawLabelsMap)
-    : new Set();
   // Split by (scope, labelType): object-scope object labels / image-scope labels / dynamic labels.
-  // Dynamic labels are always shown (no visibility toggle gate) so the user can mark present/absent.
   const regularMap = new Map([...filteredMap].filter(([, l]) => l.labelType !== 'dynamic' && l.scope !== 'image'));
   const imageClassMap = new Map([...filteredMap].filter(([, l]) => l.labelType !== 'dynamic' && l.scope === 'image'));
   const dynamicMap = new Map([...filteredMap].filter(([, l]) => l.labelType === 'dynamic'));
   const filterNotice = makeLabelFilterNotice(rawLabelsMap.size - regularMap.size - imageClassMap.size - dynamicMap.size);
   if (filterNotice) container.appendChild(filterNotice);
-  if (excludedUuids.size > 0) {
-    const focusNotice = document.createElement('span');
-    focusNotice.className = 'label-filter-notice';
-    focusNotice.textContent = `${excludedUuids.size} label(s) outside this training run are excluded from Mark all/Reset all (marked 🚫)`;
-    container.appendChild(focusNotice);
-  }
+  // Labels outside the active TC — used only as the baseline for the
+  // 'training-run' target preset (they stay visible but start untargeted).
+  const excludedUuids = tc ? activeTrainingConfig.getExcludedUuids(rawLabelsMap) : new Set();
   const byParent = buildHierarchy(regularMap, filter);
   const byParentImageClass = buildHierarchy(imageClassMap, filter);
   const byParentDynamic = buildHierarchy(dynamicMap, filter);
@@ -477,24 +565,63 @@ async function mountSelectMode(container, { runtime, filter }) {
     pendingFlush.set(uuid, status);
   }
 
+  // ── Apply-to-all targeting ──────────────────────────────────────────────
+  // Two layers: a persisted preset provides the baseline; ephemeral per-row
+  // overrides (and the section all/none controls) refine it. Re-picking a
+  // preset remounts the panel, which discards overrides — that's the reset.
+  /** @type {Map<string, object>} uuid → label, for every rendered row */
+  const labelByUuid = new Map();
+  /** @type {Map<string, boolean>} ephemeral per-row target overrides */
+  const targetOverrides = new Map();
+  /** @type {Map<string, () => void>} uuid → refresh that row's ◉/⊘ icon */
+  const targetUpdaters = new Map();
+
+  function baselineTargeted(label) {
+    switch (targetPreset) {
+      case 'none':         return false;
+      case 'object':       return label.labelType !== 'dynamic' && label.scope !== 'image';
+      case 'image':        return label.labelType !== 'dynamic' && label.scope === 'image';
+      case 'dynamic':      return label.labelType === 'dynamic';
+      case 'training-run': return !excludedUuids.has(label.uuid);
+      case 'all':
+      default:             return true;
+    }
+  }
+
+  function effectiveTargeted(uuid) {
+    if (targetOverrides.has(uuid)) return targetOverrides.get(uuid);
+    const label = labelByUuid.get(uuid);
+    return label ? baselineTargeted(label) : false;
+  }
+
+  function targetedUuids() {
+    return [...labelByUuid.keys()].filter(u => effectiveTargeted(u));
+  }
+
+  function updateBulkLabel() {
+    const n = targetedUuids().length;
+    bulkLabel.textContent = `Apply to ${n} targeted:`;
+    markAbsentBtn.disabled = n === 0;
+    resetAllBtn.disabled = n === 0;
+  }
+
+  /** Set targeting for a set of rows and refresh their icons + the count. */
+  function setTargetedMany(uuids, on) {
+    uuids.forEach(u => { targetOverrides.set(u, on); targetUpdaters.get(u)?.(); });
+    updateBulkLabel();
+  }
+
   function renderSelectRows(parentUuid, indent, bp = byParent) {
     const children = bp.get(parentUuid ?? null) ?? [];
     for (const label of children) {
+      labelByUuid.set(label.uuid, label);
       const { row, nameEl } = buildLabelRow(label, indent);
       row.className = 'label-panel-row';
       row.style.cursor = 'pointer';
 
-      // Right-aligned row accessories: focus-mode exclusion marker + coverage badges.
+      // Right-aligned row accessories: coverage badges + Apply-to-all target toggle.
       const rightWrap = document.createElement('span');
       rightWrap.style.cssText = 'margin-left:auto;display:flex;gap:3px;flex-shrink:0;align-items:center;';
-
-      if (excludedUuids.has(label.uuid)) {
-        const exclIcon = document.createElement('span');
-        exclIcon.textContent = '🚫';
-        exclIcon.title = 'Outside the active training run — not affected by Mark all/Reset all';
-        exclIcon.style.cssText = 'opacity:0.7;cursor:help;';
-        rightWrap.appendChild(exclIcon);
-      }
 
       // Mini coverage badges from active TC stats — [✓ verified] [⚠ unverified]
       const stat = _statsMap.get(label.uuid);
@@ -627,7 +754,27 @@ async function mountSelectMode(container, { runtime, filter }) {
         rightWrap.appendChild(badgeWrap);
       }
 
-      if (rightWrap.childNodes.length > 0) nameEl.after(rightWrap);
+      // Apply-to-all target toggle — ◉ included / ⊘ excluded. Always rightmost.
+      const tgtToggle = document.createElement('span');
+      tgtToggle.className = 'label-target-toggle';
+      tgtToggle.style.cssText = 'cursor:pointer;font-size:0.95em;line-height:1;flex-shrink:0;';
+      function applyTargetIcon() {
+        const on = effectiveTargeted(label.uuid);
+        tgtToggle.textContent = on ? '◉' : '⊘';
+        tgtToggle.style.color = on ? '#88aaff' : '#666';
+        tgtToggle.title = on
+          ? 'Included in Apply-to-all — click to exclude'
+          : 'Excluded from Apply-to-all — click to include';
+      }
+      applyTargetIcon();
+      targetUpdaters.set(label.uuid, applyTargetIcon);
+      tgtToggle.addEventListener('click', (e) => {
+        e.stopPropagation();
+        setTargetedMany([label.uuid], !effectiveTargeted(label.uuid));
+      });
+      rightWrap.appendChild(tgtToggle);
+
+      nameEl.after(rightWrap);
 
       const btn = document.createElement('button');
       Object.assign(btn.style, {
@@ -695,86 +842,88 @@ async function mountSelectMode(container, { runtime, filter }) {
     if (uuids.length) runtime?.markDirty?.();
   }
 
-  // UUIDs belonging to the Image Classification section — populated after that section renders.
-  let imageClassUuids = new Set();
-
   markAbsentBtn.addEventListener('click', () => bulkOp(
-    [...rowUpdaters.keys()].filter(uuid =>
-      !imageClassUuids.has(uuid) && !excludedUuids.has(uuid) && effectiveStatus(uuid) !== 'present'),
+    targetedUuids().filter(uuid => effectiveStatus(uuid) !== 'present'),
     'absent',
   ));
 
   resetAllBtn.addEventListener('click', () => bulkOp(
-    [...serverStates.keys()].filter(uuid => !imageClassUuids.has(uuid) && !excludedUuids.has(uuid)),
+    targetedUuids().filter(uuid => serverStates.has(uuid)),
     'uncertain',
   ));
 
-  renderSelectRows(null, 0);
+  /**
+   * Render a labelled section: a header (title + [◉ all | ⊘ none] master
+   * control) followed by its rows. The title lives in its own <div> so
+   * callers/tests can still find it by exact text. Returns nothing; the master
+   * control is wired to the UUIDs that appeared during this section's render.
+   * @param {string} title
+   * @param {Map<string|null, object[]>} bp
+   * @param {{ color: string, italic?: boolean, rule?: boolean }} opts
+   */
+  function renderSection(title, bp, { color, italic = false, rule = false }) {
+    if (rule) {
+      const hr = document.createElement('hr');
+      Object.assign(hr.style, { margin: '6px 4px', borderColor: '#444' });
+      container.appendChild(hr);
+    }
 
+    const headerWrap = document.createElement('div');
+    Object.assign(headerWrap.style, { display: 'flex', alignItems: 'center', gap: '6px', padding: '2px 6px 4px' });
+
+    const titleEl = document.createElement('div');
+    titleEl.textContent = title;
+    Object.assign(titleEl.style, {
+      fontWeight: 'bold', fontSize: '0.8em', textTransform: 'uppercase',
+      letterSpacing: '0.05em', color, ...(italic ? { fontStyle: 'italic' } : {}),
+    });
+    headerWrap.appendChild(titleEl);
+
+    const master = document.createElement('span');
+    master.className = 'label-section-master';
+    master.style.cssText = 'margin-left:auto;display:flex;gap:5px;align-items:center;font-size:0.72em;';
+    const allBtn = document.createElement('span');
+    allBtn.className = 'label-section-all';
+    allBtn.textContent = '◉ all';
+    allBtn.title = 'Include every label in this section in Apply-to-all';
+    allBtn.style.cssText = 'cursor:pointer;color:#88aaff;';
+    const sep = document.createElement('span');
+    sep.textContent = '|';
+    sep.style.color = '#555';
+    const noneBtn = document.createElement('span');
+    noneBtn.className = 'label-section-none';
+    noneBtn.textContent = '⊘ none';
+    noneBtn.title = 'Exclude every label in this section from Apply-to-all';
+    noneBtn.style.cssText = 'cursor:pointer;color:#888;';
+    master.appendChild(allBtn);
+    master.appendChild(sep);
+    master.appendChild(noneBtn);
+    headerWrap.appendChild(master);
+    container.appendChild(headerWrap);
+
+    // Capture which UUIDs this section contributes so the master targets them.
+    const before = new Set(labelByUuid.keys());
+    renderSelectRows(null, 0, bp);
+    const sectionUuids = [...labelByUuid.keys()].filter(u => !before.has(u));
+    allBtn.addEventListener('click', () => setTargetedMany(sectionUuids, true));
+    noneBtn.addEventListener('click', () => setTargetedMany(sectionUuids, false));
+  }
+
+  // Object Labels are the primary section; Image Classification and Dynamic
+  // Labels follow, each preceded by a divider. Empty sections are omitted.
+  if (regularMap.size > 0) {
+    renderSection('Object Labels', byParent, { color: '#aaa' });
+  }
   if (imageClassMap.size > 0) {
-    const hr = document.createElement('hr');
-    Object.assign(hr.style, { margin: '6px 4px', borderColor: '#444' });
-    container.appendChild(hr);
-
-    const imgHeader = document.createElement('div');
-    imgHeader.textContent = 'Image Classification';
-    Object.assign(imgHeader.style, {
-      fontWeight: 'bold',
-      fontSize: '0.8em',
-      textTransform: 'uppercase',
-      letterSpacing: '0.05em',
-      padding: '2px 6px 6px',
-      color: '#88aaff',
-    });
-    container.appendChild(imgHeader);
-
-    const imgBulkRow = document.createElement('div');
-    Object.assign(imgBulkRow.style, { display: 'flex', gap: '4px', padding: '0 6px 4px' });
-    const imgMarkAbsentBtn = document.createElement('button');
-    imgMarkAbsentBtn.textContent = 'Mark all absent';
-    Object.assign(imgMarkAbsentBtn.style, { fontSize: '0.75em', padding: '2px 6px' });
-    const imgResetAllBtn = document.createElement('button');
-    imgResetAllBtn.textContent = 'Reset all';
-    Object.assign(imgResetAllBtn.style, { fontSize: '0.75em', padding: '2px 6px' });
-    imgBulkRow.appendChild(imgMarkAbsentBtn);
-    imgBulkRow.appendChild(imgResetAllBtn);
-    container.appendChild(imgBulkRow);
-
-    // Capture keys before rendering so we can identify which UUIDs belong to this section.
-    const keysBefore = new Set(rowUpdaters.keys());
-    renderSelectRows(null, 0, byParentImageClass);
-    imageClassUuids = new Set([...rowUpdaters.keys()].filter(k => !keysBefore.has(k)));
-
-    imgMarkAbsentBtn.addEventListener('click', () => bulkOp(
-      [...imageClassUuids].filter(uuid => !excludedUuids.has(uuid) && effectiveStatus(uuid) !== 'present'),
-      'absent',
-    ));
-    imgResetAllBtn.addEventListener('click', () => bulkOp(
-      [...imageClassUuids].filter(uuid => !excludedUuids.has(uuid) && serverStates.has(uuid)),
-      'uncertain',
-    ));
+    renderSection('Image Classification', byParentImageClass, { color: '#88aaff', rule: regularMap.size > 0 });
   }
-
   if (dynamicMap.size > 0) {
-    const hr = document.createElement('hr');
-    Object.assign(hr.style, { margin: '6px 4px', borderColor: '#444' });
-    container.appendChild(hr);
-
-    const dynHeader = document.createElement('div');
-    dynHeader.textContent = 'Dynamic Labels';
-    Object.assign(dynHeader.style, {
-      fontWeight: 'bold',
-      fontSize: '0.8em',
-      textTransform: 'uppercase',
-      letterSpacing: '0.05em',
-      padding: '2px 6px 6px',
-      color: '#888',
-      fontStyle: 'italic',
+    renderSection('Dynamic Labels', byParentDynamic, {
+      color: '#888', italic: true, rule: regularMap.size > 0 || imageClassMap.size > 0,
     });
-    container.appendChild(dynHeader);
-
-    renderSelectRows(null, 0, byParentDynamic);
   }
+
+  updateBulkLabel();
 
   function refreshStatusButtons() {
     for (const [uuid, update] of rowUpdaters) {
@@ -912,6 +1061,7 @@ async function mountSelectMode(container, { runtime, filter }) {
 
   return {
     destroy() {
+      closeMenu();
       unsubImage();
       unsubBboxes();
       unsubSaved();

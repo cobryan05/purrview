@@ -9,8 +9,10 @@
  *   await activeTrainingConfig.init();
  *   activeTrainingConfig.getActive();          // TrainingConfigRead | null
  *   activeTrainingConfig.setActive(tc);        // publishes ACTIVE_TRAINING_CONFIG_CHANGED
- *   activeTrainingConfig.getVisibilityMode();      // 'all' | 'focus' | 'filtered'
- *   activeTrainingConfig.setVisibilityMode('focus');
+ *   activeTrainingConfig.getVisibilityPreset();    // 'all' | 'training-run'
+ *   activeTrainingConfig.setVisibilityPreset('training-run');
+ *   activeTrainingConfig.getTargetPreset();        // 'all' | 'training-run' | 'object' | 'image' | 'dynamic' | 'none'
+ *   activeTrainingConfig.setTargetPreset('object');
  *   activeTrainingConfig.applyLabelFilter(labelsMap);
  *   activeTrainingConfig.getExcludedUuids(labelsMap); // labels outside the active TC
  *   activeTrainingConfig.getCachedStats();      // { labelStats, totalImages } | null
@@ -27,15 +29,26 @@ import {
 import { fetchModelConfigs } from '/app-static/js/shared/api/modelConfigs.js';
 
 const SESSION_UUID_KEY = 'wtch_active_tc_uuid';
-const SESSION_FILTER_KEY = 'wtch_tc_filter_enabled';
+const SESSION_FILTER_KEY = 'wtch_tc_filter_enabled';   // legacy 3-mode value — read once for migration
+const SESSION_VIS_KEY = 'wtch_tc_visibility_preset';
+const SESSION_TARGET_KEY = 'wtch_tc_target_preset';
 
-/** Visibility modes for the label list, in cycle order. */
-export const VISIBILITY_MODES = ['all', 'focus', 'filtered'];
+/**
+ * The two independent axes that used to be conflated in a single 3-way toggle:
+ *   - Visibility: does a label appear in the list at all?
+ *   - Target:     does "Apply to all" (mark absent / reset) affect this label?
+ * The old modes map to combinations: all=(all,all), focus=(all,training-run),
+ * filtered=(training-run,training-run).
+ */
+export const VISIBILITY_PRESETS = ['all', 'training-run'];
+export const TARGET_PRESETS = ['all', 'training-run', 'object', 'image', 'dynamic', 'none'];
 
 /** @type {object|null} TrainingConfigRead */
 let _config = null;
-/** @type {'all'|'focus'|'filtered'} */
-let _visibilityMode = 'all';
+/** @type {'all'|'training-run'} */
+let _visibilityPreset = 'all';
+/** @type {'all'|'training-run'|'object'|'image'|'dynamic'|'none'} */
+let _targetPreset = 'all';
 /** @type {Set<string>} Label UUIDs covered by this TC's model node */
 let _labelUuids = new Set();
 /** @type {{ labelStats: object[], totalImages: number } | null} */
@@ -90,7 +103,8 @@ async function _doFetchStats() {
 function _publish({ statsUpdated = false } = {}) {
   events.publish(EventTypes.ACTIVE_TRAINING_CONFIG_CHANGED, {
     config: _config,
-    visibilityMode: _visibilityMode,
+    visibilityPreset: _visibilityPreset,
+    targetPreset: _targetPreset,
     statsUpdated,
   });
 }
@@ -99,11 +113,20 @@ function _publish({ statsUpdated = false } = {}) {
 
 /** Initialise from sessionStorage. Call once at app startup before rendering. */
 export async function init() {
-  const saved = sessionStorage.getItem(SESSION_FILTER_KEY);
-  // 'true'/'false' are legacy values from the old boolean filter toggle.
-  if (saved === 'true') _visibilityMode = 'filtered';
-  else if (VISIBILITY_MODES.includes(saved)) _visibilityMode = saved;
-  else _visibilityMode = 'all';
+  const savedVis = sessionStorage.getItem(SESSION_VIS_KEY);
+  const savedTarget = sessionStorage.getItem(SESSION_TARGET_KEY);
+  if (VISIBILITY_PRESETS.includes(savedVis) && TARGET_PRESETS.includes(savedTarget)) {
+    _visibilityPreset = savedVis;
+    _targetPreset = savedTarget;
+  } else {
+    // Migrate from the legacy 3-mode toggle (all | focus | filtered, plus the
+    // even-older true/false boolean). Decompose it into the two new axes.
+    const legacy = sessionStorage.getItem(SESSION_FILTER_KEY);
+    const mode = legacy === 'true' ? 'filtered' : legacy === 'false' ? 'all' : legacy;
+    if (mode === 'filtered') { _visibilityPreset = 'training-run'; _targetPreset = 'training-run'; }
+    else if (mode === 'focus') { _visibilityPreset = 'all'; _targetPreset = 'training-run'; }
+    else { _visibilityPreset = 'all'; _targetPreset = 'all'; }
+  }
   const savedUuid = sessionStorage.getItem(SESSION_UUID_KEY);
   if (savedUuid) {
     try {
@@ -148,14 +171,25 @@ export async function setActive(tcOrNull) {
   }
 }
 
-/** @returns {'all'|'focus'|'filtered'} */
-export function getVisibilityMode() { return _visibilityMode; }
+/** @returns {'all'|'training-run'} */
+export function getVisibilityPreset() { return _visibilityPreset; }
 
-/** @param {'all'|'focus'|'filtered'} mode */
-export function setVisibilityMode(mode) {
-  if (!VISIBILITY_MODES.includes(mode)) return;
-  _visibilityMode = mode;
-  sessionStorage.setItem(SESSION_FILTER_KEY, _visibilityMode);
+/** @param {'all'|'training-run'} preset */
+export function setVisibilityPreset(preset) {
+  if (!VISIBILITY_PRESETS.includes(preset)) return;
+  _visibilityPreset = preset;
+  sessionStorage.setItem(SESSION_VIS_KEY, preset);
+  _publish();
+}
+
+/** @returns {'all'|'training-run'|'object'|'image'|'dynamic'|'none'} */
+export function getTargetPreset() { return _targetPreset; }
+
+/** @param {'all'|'training-run'|'object'|'image'|'dynamic'|'none'} preset */
+export function setTargetPreset(preset) {
+  if (!TARGET_PRESETS.includes(preset)) return;
+  _targetPreset = preset;
+  sessionStorage.setItem(SESSION_TARGET_KEY, preset);
   _publish();
 }
 
@@ -204,12 +238,12 @@ function _computeDisplaySet(labelsMap) {
 
 /**
  * Filter a labelsMap to only labels covered by the active TC (plus ancestors).
- * Returns the original map unchanged unless visibility mode is 'filtered'.
+ * Returns the original map unchanged unless the visibility preset is 'training-run'.
  * @param {Map<string, object>} labelsMap
  * @returns {Map<string, object>}
  */
 export function applyLabelFilter(labelsMap) {
-  if (_visibilityMode !== 'filtered') return labelsMap;
+  if (_visibilityPreset !== 'training-run') return labelsMap;
   const display = _computeDisplaySet(labelsMap);
   if (!display) return labelsMap;
 
@@ -221,8 +255,8 @@ export function applyLabelFilter(labelsMap) {
 }
 
 /**
- * Labels NOT covered by the active TC — used in 'focus' mode to mark labels
- * that stay visible but are excluded from "Mark all/Reset all" bulk ops.
+ * Labels NOT covered by the active TC — used by the 'training-run' target
+ * preset to leave these visible but excluded from "Apply to all" bulk ops.
  * Empty when no TC is active or it covers everything.
  * @param {Map<string, object>} labelsMap
  * @returns {Set<string>}
@@ -242,8 +276,10 @@ export const activeTrainingConfig = {
   init,
   getActive,
   setActive,
-  getVisibilityMode,
-  setVisibilityMode,
+  getVisibilityPreset,
+  setVisibilityPreset,
+  getTargetPreset,
+  setTargetPreset,
   getLabelUuids,
   applyLabelFilter,
   getExcludedUuids,

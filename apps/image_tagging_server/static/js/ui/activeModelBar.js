@@ -73,12 +73,20 @@ export function mountActiveModelBar(containerId = 'active-model-bar') {
       return s;
     }
 
-    // Radio group for the label-visibility mode — each option carries a longer
-    // explanation than the compact icon toggle shown inline in the label list.
-    const VISIBILITY_MODE_INFO = [
-      { mode: 'all', title: 'Show all labels', desc: 'No filtering. Every label is visible and included in Mark all/Reset all.' },
-      { mode: 'focus', title: 'Show all, focus tagging', desc: 'Every label stays visible, but labels outside this training run are excluded from Mark all/Reset all (marked 🚫). Use this to focus on the active dataset while still being able to tag one-offs manually.' },
-      { mode: 'filtered', title: 'Filter to training run', desc: 'Labels outside this training run are hidden from the list entirely.' },
+    // Two independent axes (each with a longer explanation than the compact
+    // menus in the label-list header): visibility (is a label shown) and target
+    // (does "Apply to all" affect it).
+    const VISIBILITY_PRESET_INFO = [
+      { value: 'all', title: 'Show all labels', desc: 'Every label is visible.' },
+      { value: 'training-run', title: 'Hide labels outside training run', desc: 'Only labels in this training run appear in the list.' },
+    ];
+    const TARGET_PRESET_INFO = [
+      { value: 'all', title: 'Everything', desc: 'Mark absent / Reset affect every visible label.' },
+      { value: 'training-run', title: 'Only this training run', desc: 'Only labels in this training run are affected; others stay visible but untargeted.' },
+      { value: 'object', title: 'Only object labels', desc: 'Only bounding-box labels are affected.' },
+      { value: 'image', title: 'Only image classification', desc: 'Only whole-image labels are affected.' },
+      { value: 'dynamic', title: 'Only dynamic labels', desc: 'Only dynamic labels are affected.' },
+      { value: 'none', title: 'Nothing', desc: 'Nothing is affected by default — target labels individually.' },
     ];
 
     function _makeRadioRow(name, checked, title, desc, onChange) {
@@ -118,10 +126,17 @@ export function mountActiveModelBar(containerId = 'active-model-bar') {
     popup.appendChild(_makeRow('Show dynamic labels', isDynamicLabelsVisible(),
       v => setDynamicLabelsVisible(v)));
     if (tc) {
-      const currentMode = activeTrainingConfig.getVisibilityMode();
-      for (const { mode, title, desc } of VISIBILITY_MODE_INFO) {
-        popup.appendChild(_makeRadioRow('tc-visibility-mode', currentMode === mode, title, desc,
-          () => activeTrainingConfig.setVisibilityMode(mode)));
+      popup.appendChild(_makeSep('Label visibility'));
+      const curVis = activeTrainingConfig.getVisibilityPreset();
+      for (const { value, title, desc } of VISIBILITY_PRESET_INFO) {
+        popup.appendChild(_makeRadioRow('tc-visibility-preset', curVis === value, title, desc,
+          () => activeTrainingConfig.setVisibilityPreset(value)));
+      }
+      popup.appendChild(_makeSep('Apply-to-all target'));
+      const curTgt = activeTrainingConfig.getTargetPreset();
+      for (const { value, title, desc } of TARGET_PRESET_INFO) {
+        popup.appendChild(_makeRadioRow('tc-target-preset', curTgt === value, title, desc,
+          () => activeTrainingConfig.setTargetPreset(value)));
       }
     }
 
@@ -416,15 +431,17 @@ export function mountActiveModelBar(containerId = 'active-model-bar') {
       });
       left.appendChild(pickerBtn);
 
-      // Visibility mode indicator
-      const visMode = activeTrainingConfig.getVisibilityMode();
-      if (visMode !== 'all') {
+      // Preset indicator: 'filtered' when the list hides labels, else 'focus'
+      // when Apply-to-all is narrowed to a subset.
+      const visP = activeTrainingConfig.getVisibilityPreset();
+      const tgtP = activeTrainingConfig.getTargetPreset();
+      if (visP === 'training-run' || tgtP !== 'all') {
         const filterBadge = document.createElement('span');
         filterBadge.className = 'active-model-bar__filter-badge';
-        filterBadge.textContent = visMode === 'filtered' ? 'filtered' : 'focus';
-        filterBadge.title = visMode === 'filtered'
+        filterBadge.textContent = visP === 'training-run' ? 'filtered' : 'focus';
+        filterBadge.title = visP === 'training-run'
           ? 'Label list is filtered to this training run'
-          : 'Label list shows everything, but Mark all/Reset all skip labels outside this training run';
+          : 'Apply-to-all is limited to a subset of labels';
         left.appendChild(filterBadge);
       }
 
