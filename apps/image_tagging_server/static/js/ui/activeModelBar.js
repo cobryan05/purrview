@@ -15,6 +15,8 @@ import { activeModel, isDynamicLabelsVisible, setDynamicLabelsVisible } from '/a
 import { navigateTabs } from '/app-static/js/app/utils/tabs.js';
 import { openAnchoredPopup } from '/app-static/js/ui/utils/anchoredPopup.js';
 import { fetchLabels } from '/app-static/js/shared/api/labels.js';
+import { fetchTrainingConfigs } from '/app-static/js/shared/api/trainingConfigs.js';
+import { renderCoverageStats } from '/app-static/js/ui/utils/coverageStatsTable.js';
 
 /**
  * @param {string} containerId  id of the mount <div>
@@ -26,14 +28,17 @@ export function mountActiveModelBar(containerId = 'active-model-bar') {
   // ── Popup state ─────────────────────────────────────────────────────────────
   let _visPopup = null;
   let _statsPopup = null;
+  let _runPickerPopup = null;
 
   function _closeVisPopup() { _visPopup?.close(); _visPopup = null; }
   function _closeStatsPopup() { _statsPopup?.close(); _statsPopup = null; }
+  function _closeRunPickerPopup() { _runPickerPopup?.close(); _runPickerPopup = null; }
 
   // ── Visibility options popup (tags / labels toggles) ─────────────────────
   function _openVisPopup(anchorEl) {
     _closeVisPopup();
     _closeStatsPopup();
+    _closeRunPickerPopup();
     const tc = activeTrainingConfig.getActive();
 
     const popup = document.createElement('div');
@@ -123,10 +128,118 @@ export function mountActiveModelBar(containerId = 'active-model-bar') {
     _visPopup = openAnchoredPopup(anchorEl, popup);
   }
 
+  // ── Run picker popup (switch/clear active training run) ──────────────────
+  // Uses openAnchoredPopup (caller-owned z-index) rather than the shared
+  // ui/contextMenu/menu.js engine, because that engine's z-index (2000) sits
+  // below open modals (~9999) — this bar must stay usable while a modal is up.
+  function _openRunPicker(anchorEl) {
+    _closeRunPickerPopup();
+    _closeStatsPopup();
+    _closeVisPopup();
+
+    const popup = document.createElement('div');
+    popup.className = 'tc-run-picker';
+    popup.style.cssText = [
+      'z-index:10001',
+      'background:var(--pico-card-background-color,#1e1e2e)',
+      'border:1px solid var(--pico-muted-border-color,#444)',
+      'border-radius:6px', 'padding:6px 0', 'min-width:220px', 'max-width:320px',
+      'max-height:60vh', 'overflow-y:auto',
+      'box-shadow:0 -4px 16px rgba(0,0,0,.4)',
+    ].join(';');
+
+    function _makeSep(text) {
+      const s = document.createElement('div');
+      s.style.cssText = 'padding:4px 14px 2px;font-size:0.75em;color:var(--pico-muted-color,#888);text-transform:uppercase;letter-spacing:.05em;';
+      s.textContent = text;
+      return s;
+    }
+
+    function _makeRunRow(labelText, active, onSelect) {
+      const row = document.createElement('div');
+      row.className = 'tc-run-picker__row';
+      row.style.cssText = 'display:flex;align-items:center;gap:8px;padding:6px 14px;cursor:pointer;font-size:0.875em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;';
+      if (active) row.style.color = 'var(--pico-primary, #ff6b6b)';
+      row.addEventListener('mouseenter', () => row.style.background = 'var(--pico-primary-background,rgba(255,255,255,.07))');
+      row.addEventListener('mouseleave', () => row.style.background = '');
+      const check = document.createElement('span');
+      check.style.cssText = 'width:1em;flex-shrink:0;';
+      check.textContent = active ? '✓' : '';
+      row.appendChild(check);
+      const lbl = document.createElement('span');
+      lbl.textContent = labelText;
+      lbl.style.cssText = 'overflow:hidden;text-overflow:ellipsis;';
+      row.appendChild(lbl);
+      row.addEventListener('click', async () => {
+        _closeRunPickerPopup();
+        await onSelect();
+      });
+      return row;
+    }
+
+    const loading = document.createElement('div');
+    loading.style.cssText = 'padding:6px 14px;color:var(--pico-muted-color,#888);font-size:0.875em;';
+    loading.textContent = 'Loading…';
+    popup.appendChild(loading);
+
+    const manageBtn = document.createElement('div');
+    manageBtn.className = 'tc-run-picker__manage-row';
+    manageBtn.style.cssText = 'padding:6px 14px;cursor:pointer;font-size:0.875em;color:var(--pico-muted-color,#aaa);border-top:1px solid var(--pico-muted-border-color,#444);margin-top:4px;';
+    manageBtn.textContent = 'Manage training runs →';
+    manageBtn.addEventListener('mouseenter', () => manageBtn.style.background = 'var(--pico-primary-background,rgba(255,255,255,.07))');
+    manageBtn.addEventListener('mouseleave', () => manageBtn.style.background = '');
+    manageBtn.addEventListener('click', () => {
+      _closeRunPickerPopup();
+      navigateTabs('tab-configuration', 'tab-training-management');
+    });
+
+    _runPickerPopup = openAnchoredPopup(anchorEl, popup);
+
+    // Content size changes once data loads (Loading… → rows) — the anchored
+    // popup only measures/positions once at open time, so re-anchor now that
+    // final size is known rather than leaving it mis-positioned.
+    function _reanchor() {
+      if (_runPickerPopup) _runPickerPopup.close();
+      _runPickerPopup = openAnchoredPopup(anchorEl, popup);
+    }
+
+    fetchTrainingConfigs().then(configsMap => {
+      popup.innerHTML = '';
+      const activeUuid = activeTrainingConfig.getActive()?.uuid ?? null;
+      const configs = [...configsMap.values()].sort((a, b) => a.name.localeCompare(b.name));
+
+      if (configs.length === 0) {
+        const none = document.createElement('div');
+        none.style.cssText = 'padding:6px 14px;color:var(--pico-muted-color,#888);font-style:italic;font-size:0.875em;';
+        none.textContent = 'No training runs yet.';
+        popup.appendChild(none);
+      } else {
+        popup.appendChild(_makeSep('Training Runs'));
+        for (const tc of configs) {
+          popup.appendChild(_makeRunRow(tc.name, tc.uuid === activeUuid, () => activeTrainingConfig.setActive(tc)));
+        }
+        if (activeUuid !== null) {
+          popup.appendChild(_makeRunRow('No active training run', false, () => activeTrainingConfig.setActive(null)));
+        }
+      }
+      popup.appendChild(manageBtn);
+      _reanchor();
+    }).catch(err => {
+      popup.innerHTML = '';
+      const errDiv = document.createElement('div');
+      errDiv.style.cssText = 'padding:6px 14px;color:#f66;font-size:0.875em;';
+      errDiv.textContent = `Could not load training runs: ${err.message}`;
+      popup.appendChild(errDiv);
+      popup.appendChild(manageBtn);
+      _reanchor();
+    });
+  }
+
   // ── Stats panel (full-height left-side overlay) ──────────────────────────
   function _openStatsPopup(anchorEl) {
     _closeStatsPopup();
     _closeVisPopup();
+    _closeRunPickerPopup();
     const tc = activeTrainingConfig.getActive();
     if (!tc) return;
 
@@ -141,7 +254,10 @@ export function mountActiveModelBar(containerId = 'active-model-bar') {
       'left:0',
       'top:0',
       `bottom:${bottomOffset}px`,
-      'width:360px',
+      'width:440px',
+      'min-width:300px',
+      'max-width:90vw',
+      'resize:horizontal',
       'z-index:10001',
       'background:var(--pico-card-background-color,#1e1e2e)',
       'border-right:1px solid var(--pico-muted-border-color,#444)',
@@ -180,7 +296,7 @@ export function mountActiveModelBar(containerId = 'active-model-bar') {
 
     // Scrollable content area
     const content = document.createElement('div');
-    content.style.cssText = 'flex:1;overflow-y:auto;padding:8px 12px;font-size:0.82em;';
+    content.style.cssText = 'flex:1;overflow:auto;padding:8px 12px;font-size:0.82em;';
     popup.appendChild(hdr);
     popup.appendChild(content);
 
@@ -205,90 +321,13 @@ export function mountActiveModelBar(containerId = 'active-model-bar') {
         const { labelStats, totalImages } = cached;
         content.innerHTML = '';
 
-        // Total images line
-        const totLine = document.createElement('div');
-        totLine.style.cssText = 'color:var(--pico-muted-color,#aaa);margin-bottom:6px;';
-        totLine.textContent = `${totalImages.toLocaleString()} image${totalImages === 1 ? '' : 's'} in dataset${(tc.datasetUuids?.length ?? 0) === 1 ? '' : 's'}`;
-        content.appendChild(totLine);
-
-        if (labelStats.length === 0) {
-          const none = document.createElement('div');
-          none.style.cssText = 'color:var(--pico-muted-color,#888);font-style:italic;';
-          none.textContent = 'No label stats available.';
-          content.appendChild(none);
-          return;
-        }
-
         // Fetch labels map for names / colors
         const labelsMap = await fetchLabels().catch(() => new Map());
 
-        function _labelName(uuid) {
-          return labelsMap?.get(uuid)?.name ?? uuid;
-        }
-
-        const imageLabels = labelStats.filter(s => s.labelScope === 'image');
-        const objectLabels = labelStats.filter(s => s.labelScope === 'object');
-
-        function _renderSection(title, stats, cols) {
-          if (stats.length === 0) return;
-          const secHdr = document.createElement('div');
-          secHdr.style.cssText = 'font-weight:600;font-size:0.88em;text-transform:uppercase;letter-spacing:.04em;color:var(--pico-muted-color,#999);margin:6px 0 3px;';
-          secHdr.textContent = title;
-          content.appendChild(secHdr);
-
-          const table = document.createElement('table');
-          table.style.cssText = 'width:100%;border-collapse:collapse;';
-
-          for (const stat of stats) {
-            const tr = document.createElement('tr');
-            tr.style.cssText = 'border-bottom:1px solid rgba(255,255,255,0.05);';
-
-            // Label name cell
-            const nameTd = document.createElement('td');
-            nameTd.style.cssText = 'padding:3px 6px 3px 0;';
-            const dot = labelsMap?.get(stat.labelUuid)?.color;
-            if (dot) {
-              const dotEl = document.createElement('span');
-              dotEl.style.cssText = `display:inline-block;width:7px;height:7px;border-radius:50%;background:${dot};margin-right:4px;vertical-align:middle;flex-shrink:0;`;
-              nameTd.appendChild(dotEl);
-            }
-            nameTd.appendChild(document.createTextNode(_labelName(stat.labelUuid)));
-            if (stat.hasRollup) {
-              const badge = document.createElement('span');
-              badge.style.cssText = 'display:inline-block;font-size:0.75em;background:#2a4a6a;color:#8cf;border-radius:3px;padding:0 3px;margin-left:4px;';
-              badge.textContent = '⟳';
-              badge.title = 'Roll-up active';
-              nameTd.appendChild(badge);
-            }
-            tr.appendChild(nameTd);
-
-            for (const col of cols) {
-              const td = document.createElement('td');
-              const val = stat[col.key] ?? 0;
-              td.textContent = val.toLocaleString();
-              td.style.cssText = 'text-align:right;padding:3px 0 3px 8px;white-space:nowrap;';
-              td.title = col.title ?? '';
-              if (col.warnIf?.(stat)) td.style.color = '#f90';
-              else if (col.goodIf?.(stat)) td.style.color = '#4c4';
-              tr.appendChild(td);
-            }
-            table.appendChild(tr);
-          }
-          content.appendChild(table);
-        }
-
-        _renderSection('Image Labels', imageLabels, [
-          { key: 'presentImageCount', title: 'Positive examples', goodIf: s => s.presentImageCount > 0 },
-          { key: 'absentImageCount', title: 'Negative examples', goodIf: s => s.absentImageCount > 0 },
-          { key: 'unverifiedImageCount', title: 'Unreviewed — click \'Review unverified\' to address', warnIf: s => s.unverifiedImageCount > 0 },
-        ]);
-
-        _renderSection('Object Labels', objectLabels, [
-          { key: 'verifiedBboxCount', title: 'Verified bounding boxes', goodIf: s => s.verifiedBboxCount > 0 && s.unverifiedBboxCount === 0 },
-          { key: 'unverifiedBboxCount', title: 'Unverified bounding boxes', warnIf: s => s.unverifiedBboxCount > 0 },
-          { key: 'coLabelGapsCount', title: 'Images with co-label gaps', warnIf: s => s.coLabelGapsCount > 0 },
-        ]);
-
+        // Coverage table cells open the review modal (much higher content, no
+        // side panel of its own) — close this floating popup first so it
+        // doesn't sit on top of the modal it just triggered.
+        renderCoverageStats(content, { config: tc, labelStats, totalImages, labelsMap, onNavigate: _closeStatsPopup });
       } catch (err) {
         content.innerHTML = '';
         const errDiv = document.createElement('div');
@@ -351,6 +390,16 @@ export function mountActiveModelBar(containerId = 'active-model-bar') {
       });
       left.appendChild(nameBtn);
 
+      const pickerBtn = document.createElement('button');
+      pickerBtn.type = 'button';
+      pickerBtn.className = 'active-model-bar__picker-btn';
+      pickerBtn.textContent = '▾';
+      pickerBtn.title = 'Switch training run';
+      pickerBtn.addEventListener('click', () => {
+        if (_runPickerPopup) { _closeRunPickerPopup(); } else { _openRunPicker(pickerBtn); }
+      });
+      left.appendChild(pickerBtn);
+
       // Visibility mode indicator
       const visMode = activeTrainingConfig.getVisibilityMode();
       if (visMode !== 'all') {
@@ -379,13 +428,17 @@ export function mountActiveModelBar(containerId = 'active-model-bar') {
       none.textContent = 'No active training run';
       left.appendChild(none);
 
-      // Link to set one
+      // Picker also covers this case — lists available runs plus a link to
+      // the training run page, so it works the same whether or not modals
+      // are currently covering the page.
       const setBtn = document.createElement('button');
       setBtn.type = 'button';
       setBtn.className = 'active-model-bar__set-tc-btn';
-      setBtn.textContent = 'Set one →';
-      setBtn.title = 'Go to Training Runs';
-      setBtn.addEventListener('click', () => navigateTabs('tab-configuration', 'tab-training-management'));
+      setBtn.textContent = 'Set one ▾';
+      setBtn.title = 'Select a training run';
+      setBtn.addEventListener('click', () => {
+        if (_runPickerPopup) { _closeRunPickerPopup(); } else { _openRunPicker(setBtn); }
+      });
       left.appendChild(setBtn);
     }
 
@@ -412,6 +465,7 @@ export function mountActiveModelBar(containerId = 'active-model-bar') {
     destroy() {
       _closeVisPopup();
       _closeStatsPopup();
+      _closeRunPickerPopup();
       unsubTC();
     },
   };

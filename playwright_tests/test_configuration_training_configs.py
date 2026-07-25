@@ -601,7 +601,7 @@ def _mock_images_by_label_status(page: Page, config_uuid: str, captured: list):
 
 
 class TestLabelStatsPanelBboxColumns:
-    """Clicking the Verified boxes and Imgs all clear columns opens the right modal
+    """Clicking the Verified and All clear columns opens the right modal
     and calls the right endpoint with the correct status value."""
 
     def _setup(self, page: Page, base_url: str, captured: list):
@@ -617,7 +617,7 @@ class TestLabelStatsPanelBboxColumns:
         _list_item(page, "tc-1").click()
         # Wait for the label stats table to appear
         page.wait_for_selector("text=Dataset coverage by label", timeout=5000)
-        page.wait_for_selector("text=Verified boxes", timeout=3000)
+        page.wait_for_selector("thead th[title^='Verified boxes']", timeout=3000)
 
     def test_verified_boxes_click_calls_has_verified_bbox_status(self, page: Page, base_url: str):
         """Clicking the Verified boxes count calls images-by-label-status with status=has_verified_bbox."""
@@ -695,7 +695,7 @@ class TestLabelStatsPanelBboxColumns:
             clear_cell.click()
 
         # Modal title should be visible
-        modal_title = page.locator("strong", has_text="imgs all clear")
+        modal_title = page.locator("strong", has_text="all clear")
         expect(modal_title).to_be_visible(timeout=4000)
 
         # The Images view button should be active (default)
