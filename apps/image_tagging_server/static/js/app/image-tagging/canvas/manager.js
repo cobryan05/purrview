@@ -56,12 +56,38 @@ export async function setCanvasViewport(canvas, viewport, size) {
 
   // Place background image
   if (canvas.backgroundImage) {
+    const imgWidth = viewport.imageWidth * viewport.scale;
+    const imgHeight = viewport.imageHeight * viewport.scale;
+
     canvas.backgroundImage.setAttrs({
       x: viewport.offsetX,
       y: viewport.offsetY,
-      width: viewport.imageWidth * viewport.scale,
-      height: viewport.imageHeight * viewport.scale,
+      width: imgWidth,
+      height: imgHeight,
     });
+
+    // Dashed border tracing the image bounds, so it's always obvious where
+    // the image edges are even when zoomed/panned away from fit-to-view.
+    let border = layer.findOne('.image-border');
+    if (!border) {
+      border = new Konva.Rect({
+        name: 'image-border',
+        stroke: '#4a90d9',
+        strokeWidth: 1,
+        dash: [6, 4],
+        listening: false,
+      });
+      layer.add(border);
+    }
+    border.setAttrs({
+      x: viewport.offsetX,
+      y: viewport.offsetY,
+      width: imgWidth,
+      height: imgHeight,
+    });
+    // Keep it just above the background image, below bboxes/handles.
+    border.moveToBottom();
+    border.moveUp();
   }
 
   // Place bounding boxes

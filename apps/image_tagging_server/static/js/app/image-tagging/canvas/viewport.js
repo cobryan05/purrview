@@ -22,11 +22,16 @@
  * @param {number} imageHeight
  * @returns {ViewportTransform}
  */
+// Fit-to-view leaves a small margin so the image edges (and any bboxes
+// touching them) stay visibly inside the container instead of butting up
+// against it, where a truncated status bar can hide them.
+const FIT_MARGIN = 0.96;
+
 export function computeViewport(containerWidth, containerHeight, imageWidth, imageHeight) {
   const scale = Math.min(
     containerWidth / imageWidth,
     containerHeight / imageHeight
-  );
+  ) * FIT_MARGIN;
 
   return {
     scale,

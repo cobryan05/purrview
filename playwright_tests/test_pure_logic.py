@@ -17,6 +17,13 @@ from playwright.sync_api import Page
 # ---------------------------------------------------------------------------
 
 class TestComputeViewport:
+    # computeViewport applies a small FIT_MARGIN (0.96) below the raw
+    # fit-to-container scale so the default zoom leaves a visible margin
+    # around the image instead of running edge-to-edge (WW-xxx: bboxes
+    # touching the top/bottom edge were getting truncated under the
+    # bottom status bar without the user noticing).
+    FIT_MARGIN = 0.96
+
     def test_landscape_image_fits_by_width(self, shared_page: Page):
         page = shared_page
         result = page.evaluate("""async () => {
@@ -24,9 +31,9 @@ class TestComputeViewport:
             // container 800x600, image 400x200 (landscape) → scale limited by width
             return computeViewport(800, 600, 400, 200);
         }""")
-        assert result["scale"] == 2.0
+        assert result["scale"] == pytest.approx(2.0 * self.FIT_MARGIN)
         assert result["offsetY"] > 0   # vertically centred
-        assert result["offsetX"] == 0  # fills width exactly
+        assert result["offsetX"] > 0   # margin leaves a gap on the fitted axis too
 
     def test_portrait_image_fits_by_height(self, shared_page: Page):
         page = shared_page
@@ -35,9 +42,9 @@ class TestComputeViewport:
             // container 400x800, image 100x400 → height-limited
             return computeViewport(400, 800, 100, 400);
         }""")
-        assert result["scale"] == 2.0
+        assert result["scale"] == pytest.approx(2.0 * self.FIT_MARGIN)
         assert result["offsetX"] > 0
-        assert result["offsetY"] == 0
+        assert result["offsetY"] > 0
 
     def test_square_image_square_container(self, shared_page: Page):
         page = shared_page
@@ -45,9 +52,9 @@ class TestComputeViewport:
             const { computeViewport } = await import('/app-static/js/app/image-tagging/canvas/viewport.js');
             return computeViewport(500, 500, 500, 500);
         }""")
-        assert result["scale"] == pytest.approx(1.0)
-        assert result["offsetX"] == 0
-        assert result["offsetY"] == 0
+        assert result["scale"] == pytest.approx(self.FIT_MARGIN)
+        assert result["offsetX"] == pytest.approx(result["offsetY"])
+        assert result["offsetX"] > 0
 
     def test_large_image_scales_down(self, shared_page: Page):
         page = shared_page
@@ -55,7 +62,7 @@ class TestComputeViewport:
             const { computeViewport } = await import('/app-static/js/app/image-tagging/canvas/viewport.js');
             return computeViewport(200, 200, 1000, 1000);
         }""")
-        assert result["scale"] == pytest.approx(0.2)
+        assert result["scale"] == pytest.approx(0.2 * self.FIT_MARGIN)
 
     def test_image_width_and_height_preserved(self, shared_page: Page):
         page = shared_page
@@ -65,6 +72,26 @@ class TestComputeViewport:
         }""")
         assert result["imageWidth"] == 320
         assert result["imageHeight"] == 240
+
+    def test_fitted_image_never_touches_container_edge(self, shared_page: Page):
+        """Both axes must have a strictly positive offset so the rendered
+        image (imageDim * scale) sits fully inside the container, with room
+        to spare on the axis that would otherwise fill it exactly."""
+        page = shared_page
+        result = page.evaluate("""async () => {
+            const { computeViewport } = await import('/app-static/js/app/image-tagging/canvas/viewport.js');
+            const vp = computeViewport(800, 600, 400, 200);
+            return {
+                offsetX: vp.offsetX,
+                offsetY: vp.offsetY,
+                renderedWidth: vp.imageWidth * vp.scale,
+                renderedHeight: vp.imageHeight * vp.scale,
+            };
+        }""")
+        assert result["offsetX"] > 0
+        assert result["offsetY"] > 0
+        assert result["renderedWidth"] < 800
+        assert result["renderedHeight"] < 600
 
 
 class TestScreenToImage:

@@ -207,10 +207,14 @@ class TestDrawBbox:
 
             """ + _SETUP + """
 
-            // Viewport: scale=2, offset=0,0  →  sw=800, sh=600
-            // Draw from (0,0) to (400,300): covers exactly half the image in each axis
+            // Draw from the image's top-left corner to its midpoint (in screen
+            // space, via the viewport's offset/scale) so it covers exactly
+            // half the image in each axis regardless of fit-to-view margin.
+            const vp = runtime.canvas.viewport;
+            const x0 = vp.offsetX, y0 = vp.offsetY;
+            const x1 = vp.offsetX + 200 * vp.scale, y1 = vp.offsetY + 150 * vp.scale;
             runtime.setTool('bbox');
-            await drawBbox(0, 0, 400, 300);
+            await drawBbox(x0, y0, x1, y1);
 
             const bbox = [...runtime.state.image.bboxes.values()][0];
             return { x: bbox.x, y: bbox.y, w: bbox.width, h: bbox.height };

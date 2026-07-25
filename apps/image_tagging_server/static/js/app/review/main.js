@@ -30,7 +30,7 @@ import { getPrimaryRuntimeId } from '/app-static/js/app/image-tagging/runtime.js
 import { Logger, toast } from '/app-static/js/ui/utils/logging.js';
 import { showUnsavedChangesModal, showExternalChangesModal, showConfirmModal } from '/app-static/js/ui/utils/confirmModal.js';
 import { deleteImage } from '/app-static/js/shared/api/images.js';
-import { rerenderBboxViews } from '/app-static/js/app/image-tagging/canvas/manager.js';
+import { rerenderBboxViews, resetCanvasZoom } from '/app-static/js/app/image-tagging/canvas/manager.js';
 import { nextModalZIndex, applyModalCascade, registerEscHandler, unregisterEscHandler } from '/app-static/js/ui/utils/modalZIndex.js';
 import { CheckboxField } from '/app-static/js/ui/utils/fields/CheckboxField.js';
 import { createCanvasInstance } from '/app-static/js/app/image-tagging/canvas/instance.js';
@@ -2988,6 +2988,13 @@ async function showCanvasModal(bbox, img, labels, onSaved, navContext = null) {
     min: 120,
     max: 500,
   });
+
+  // The first loadImage() above measured canvasWrap before the toolbar
+  // (populated by initToolbar, just before this) and the sidebar (resized
+  // to its persisted width by initSplitResize, just above) reached their
+  // final layout size, so its fit-to-view zoom can be wrong. Re-fit now
+  // that the modal chrome has settled.
+  resetCanvasZoom(instance.runtime.canvas);
 
   // ── Wire label list ────────────────────────────────────────────────
   labelHandle = await createLabelList(labelListEl, { mode: 'select', runtime: instance.runtime });
