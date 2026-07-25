@@ -53,6 +53,25 @@ def _mock_label_stats(page: Page, tc_uuid: str, label_stats: list, total_images:
     )
 
 
+def _mock_readiness(page: Page, tc_uuid: str, ready=0, needs_review=0, not_started=0, roll_up_active=False):
+    page.route(
+        f"**/api/training-configs/{tc_uuid}/readiness",
+        lambda route: route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps({
+                "status": "success",
+                "readyCount": ready,
+                "needsReviewCount": needs_review,
+                "notStartedCount": not_started,
+                "datasetUuids": [],
+                "labelUuids": [],
+                "rollUpActive": roll_up_active,
+            }),
+        ),
+    )
+
+
 def _mock_labels(page: Page, labels: list):
     page.route(
         lambda url: url.split("?")[0].endswith("/api/labels"),
@@ -259,3 +278,46 @@ class TestCoveragePopupTable:
         cat_row = page.locator(".tc-stats-panel tr", has_text="Cat")
         negative_cell = cat_row.locator("td").nth(2)  # Negative column, value 0
         expect(negative_cell).not_to_have_css("cursor", "pointer")
+
+
+class TestReadinessInPopup:
+    """The Coverage popup also shows the "images ready to train" readiness
+    summary — previously only on the full Training Runs page — sharing
+    ui/utils/coverageStatsTable.js's renderReadinessStats() with it."""
+
+    def _open_popup_with_readiness(self, page: Page, base_url: str, **readiness_kwargs):
+        _navigate(page, base_url, [TC_1])
+        _mock_label_stats(page, "tc-1", LABEL_STATS)
+        _mock_readiness(page, "tc-1", **readiness_kwargs)
+        _mock_labels(page, LABELS)
+        page.route(
+            lambda url: "/api/model-configs" in url.split("?")[0],
+            lambda route: route.fulfill(
+                status=200, content_type="application/json",
+                body=json.dumps({"status": "success", "configs": []}),
+            ) if route.request.method == "GET" else route.fallback(),
+        )
+        _set_active(page, TC_1)
+        page.locator(".active-model-bar__name").click()
+        page.wait_for_selector(".tc-stats-panel table")
+
+    def test_readiness_counts_are_displayed(self, page: Page, base_url: str):
+        self._open_popup_with_readiness(page, base_url, ready=5, needs_review=2, not_started=3)
+        panel = page.locator(".tc-stats-panel")
+        expect(panel.get_by_text("Training readiness")).to_be_visible()
+        expect(panel.get_by_text("✓ 5 ready", exact=False)).to_be_visible()
+        expect(panel.get_by_text("⚠ 2 need review", exact=False)).to_be_visible()
+        expect(panel.get_by_text("◌ 3 not started", exact=False)).to_be_visible()
+
+    def test_ready_count_click_opens_review_modal_and_closes_popup(self, page: Page, base_url: str):
+        self._open_popup_with_readiness(page, base_url, ready=5, needs_review=0, not_started=0)
+        page.route(
+            "**/api/training-configs/tc-1/ready-images",
+            lambda route: route.fulfill(
+                status=200, content_type="application/json",
+                body=json.dumps({"status": "success", "images": []}),
+            ),
+        )
+        page.locator(".tc-stats-panel", has_text="✓ 5 ready").get_by_text("✓ 5 ready", exact=False).click()
+        expect(page.locator(".canvas-modal-title, strong", has_text="Ready for Training")).to_be_visible()
+        expect(page.locator(".tc-stats-panel")).to_have_count(0)

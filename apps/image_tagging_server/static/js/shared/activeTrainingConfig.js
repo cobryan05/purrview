@@ -13,12 +13,17 @@
  *   activeTrainingConfig.setVisibilityMode('focus');
  *   activeTrainingConfig.applyLabelFilter(labelsMap);
  *   activeTrainingConfig.getExcludedUuids(labelsMap); // labels outside the active TC
- *   activeTrainingConfig.getCachedStats();     // { labelStats, totalImages } | null
- *   await activeTrainingConfig.refreshStats(); // fetches fresh stats + re-publishes
+ *   activeTrainingConfig.getCachedStats();      // { labelStats, totalImages } | null
+ *   activeTrainingConfig.getCachedReadiness();  // { readyCount, needsReviewCount, notStartedCount, rollUpActive } | null
+ *   await activeTrainingConfig.refreshStats();  // fetches fresh stats + readiness, re-publishes
  */
 
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
-import { fetchTrainingConfigs, fetchTrainingConfigLabelStats } from '/app-static/js/shared/api/trainingConfigs.js';
+import {
+  fetchTrainingConfigs,
+  fetchTrainingConfigLabelStats,
+  fetchTrainingConfigReadiness,
+} from '/app-static/js/shared/api/trainingConfigs.js';
 import { fetchModelConfigs } from '/app-static/js/shared/api/modelConfigs.js';
 
 const SESSION_UUID_KEY = 'wtch_active_tc_uuid';
@@ -35,6 +40,8 @@ let _visibilityMode = 'all';
 let _labelUuids = new Set();
 /** @type {{ labelStats: object[], totalImages: number } | null} */
 let _stats = null;
+/** @type {{ readyCount: number, needsReviewCount: number, notStartedCount: number, rollUpActive: boolean } | null} */
+let _readiness = null;
 let _statsFetching = false;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -66,14 +73,18 @@ async function _computeLabelUuids(tc) {
 async function _doFetchStats() {
   if (!_config || _statsFetching) return;
   _statsFetching = true;
-  try {
-    _stats = await fetchTrainingConfigLabelStats(_config.uuid);
-    _publish({ statsUpdated: true });
-  } catch (err) {
-    console.warn('[activeTrainingConfig] Failed to fetch stats:', err);
-  } finally {
-    _statsFetching = false;
-  }
+  // Fetched independently: a readiness failure shouldn't blank out label
+  // stats that loaded fine, or vice versa.
+  const [statsResult, readinessResult] = await Promise.allSettled([
+    fetchTrainingConfigLabelStats(_config.uuid),
+    fetchTrainingConfigReadiness(_config.uuid),
+  ]);
+  if (statsResult.status === 'fulfilled') _stats = statsResult.value;
+  else console.warn('[activeTrainingConfig] Failed to fetch label stats:', statsResult.reason);
+  if (readinessResult.status === 'fulfilled') _readiness = readinessResult.value;
+  else console.warn('[activeTrainingConfig] Failed to fetch readiness:', readinessResult.reason);
+  _statsFetching = false;
+  _publish({ statsUpdated: true });
 }
 
 function _publish({ statsUpdated = false } = {}) {
@@ -124,6 +135,7 @@ export function getActive() { return _config; }
 export async function setActive(tcOrNull) {
   _config = tcOrNull ?? null;
   _stats = null;
+  _readiness = null;
   if (_config) {
     sessionStorage.setItem(SESSION_UUID_KEY, _config.uuid);
     _labelUuids = await _computeLabelUuids(_config);
@@ -147,16 +159,20 @@ export function setVisibilityMode(mode) {
   _publish();
 }
 
-/** Returns cached stats, or null if not yet fetched. */
+/** Returns cached label stats, or null if not yet fetched. */
 export function getCachedStats() { return _stats; }
 
+/** Returns cached readiness (ready/needs-review/not-started counts), or null if not yet fetched. */
+export function getCachedReadiness() { return _readiness; }
+
 /**
- * Fetch fresh label stats and re-publish. Awaitable.
+ * Fetch fresh label stats + readiness and re-publish. Awaitable.
  * @returns {Promise<void>}
  */
 export async function refreshStats() {
   if (!_config) return;
   _stats = null;
+  _readiness = null;
   await _doFetchStats();
 }
 
@@ -232,5 +248,6 @@ export const activeTrainingConfig = {
   applyLabelFilter,
   getExcludedUuids,
   getCachedStats,
+  getCachedReadiness,
   refreshStats,
 };

@@ -16,7 +16,7 @@ import { navigateTabs } from '/app-static/js/app/utils/tabs.js';
 import { openAnchoredPopup } from '/app-static/js/ui/utils/anchoredPopup.js';
 import { fetchLabels } from '/app-static/js/shared/api/labels.js';
 import { fetchTrainingConfigs } from '/app-static/js/shared/api/trainingConfigs.js';
-import { renderCoverageStats } from '/app-static/js/ui/utils/coverageStatsTable.js';
+import { renderCoverageStats, renderReadinessStats } from '/app-static/js/ui/utils/coverageStatsTable.js';
 
 /**
  * @param {string} containerId  id of the mount <div>
@@ -310,23 +310,39 @@ export function mountActiveModelBar(containerId = 'active-model-bar') {
       content.appendChild(loading);
 
       try {
-        // Use cached stats if available, otherwise fetch
-        let cached = activeTrainingConfig.getCachedStats();
-        if (!cached) {
+        // Use cached stats/readiness if available, otherwise fetch both
+        // (refreshStats() fetches label-stats + readiness together).
+        let cachedStats = activeTrainingConfig.getCachedStats();
+        let cachedReadiness = activeTrainingConfig.getCachedReadiness();
+        if (!cachedStats || !cachedReadiness) {
           await activeTrainingConfig.refreshStats();
-          cached = activeTrainingConfig.getCachedStats();
+          cachedStats = activeTrainingConfig.getCachedStats();
+          cachedReadiness = activeTrainingConfig.getCachedReadiness();
         }
-        if (!cached) throw new Error('No stats available');
+        if (!cachedStats) throw new Error('No stats available');
 
-        const { labelStats, totalImages } = cached;
+        const { labelStats, totalImages } = cachedStats;
         content.innerHTML = '';
 
         // Fetch labels map for names / colors
         const labelsMap = await fetchLabels().catch(() => new Map());
 
-        // Coverage table cells open the review modal (much higher content, no
-        // side panel of its own) — close this floating popup first so it
-        // doesn't sit on top of the modal it just triggered.
+        // Readiness + coverage-table cells open the review modal (much
+        // taller content, no side panel of its own) — close this floating
+        // popup first so it doesn't sit on top of the modal it just triggered.
+        if (cachedReadiness) {
+          const readinessTitle = document.createElement('div');
+          readinessTitle.style.cssText = 'font-weight:600;margin-bottom:0.3em;';
+          readinessTitle.textContent = 'Training readiness';
+          content.appendChild(readinessTitle);
+          renderReadinessStats(content, { config: tc, readiness: cachedReadiness, onNavigate: _closeStatsPopup });
+
+          const coverageTitle = document.createElement('div');
+          coverageTitle.style.cssText = 'font-weight:600;margin:0.75em 0 0.3em;';
+          coverageTitle.textContent = 'Dataset coverage by label';
+          content.appendChild(coverageTitle);
+        }
+
         renderCoverageStats(content, { config: tc, labelStats, totalImages, labelsMap, onNavigate: _closeStatsPopup });
       } catch (err) {
         content.innerHTML = '';

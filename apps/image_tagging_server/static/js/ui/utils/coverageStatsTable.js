@@ -10,6 +10,9 @@ import { VERIFIED_TAG_UUID, UNVERIFIED_TAG_UUID } from '/app-static/js/shared/ap
 import {
   fetchTrainingConfigImagesByLabelStatus,
   fetchTrainingConfigNeedsReview,
+  fetchTrainingConfigReadyImages,
+  fetchTrainingConfigPartialReviewImages,
+  fetchTrainingConfigNotStartedImages,
 } from '/app-static/js/shared/api/trainingConfigs.js';
 
 /**
@@ -74,6 +77,92 @@ export async function openBboxNeedsReviewModal(config, labelUuid, modalTitle, ro
 
 const _clickableCellCss = 'text-align: right; padding: 2px 6px; cursor: pointer; text-decoration: underline dotted; text-underline-offset: 2px;';
 const _clickableLabelCss = 'padding: 2px 6px; cursor: pointer; text-decoration: underline dotted; text-underline-offset: 2px;';
+const _clickableCountCss = 'cursor: pointer; text-decoration: underline dotted; text-underline-offset: 2px;';
+
+/**
+ * Appends the "images ready to train" readiness summary (ready / needs
+ * review / not started counts, each clickable to browse that bucket) into
+ * `content`. Caller owns fetching `readiness` and clearing/loading states
+ * around this call — mirrors renderCoverageStats's contract so both the
+ * Training Runs page and the bottom-bar coverage popup can share it.
+ *
+ * @param {HTMLElement} content
+ * @param {{
+ *   config: {uuid: string, name: string},
+ *   readiness: { readyCount: number, needsReviewCount: number, notStartedCount: number, rollUpActive?: boolean },
+ *   onNavigate?: () => void,
+ * }} opts
+ * @param {() => void} [opts.onNavigate] - called right before any count click opens the
+ *   review modal, so a caller rendering this inside its own floating panel
+ *   (e.g. activeModelBar.js's coverage popup) can close itself first.
+ */
+export function renderReadinessStats(content, { config, readiness, onNavigate }) {
+  const { readyCount, needsReviewCount, notStartedCount, rollUpActive = false } = readiness;
+
+  async function _openImageModal(fetchImages, modalTitle) {
+    onNavigate?.();
+    const { showReviewModal } = await import('/app-static/js/app/review/main.js');
+    await showReviewModal({
+      title: modalTitle,
+      fetchImages: async ({ afterUuid = null, afterSortValue = null, limit }) => {
+        return fetchImages({ uuid: config.uuid, afterUuid, afterSortValue, limit });
+      },
+    });
+  }
+
+  if (rollUpActive) {
+    const badge = document.createElement('div');
+    badge.style.cssText = 'display: inline-block; font-size: 0.8em; background: #2a4a6a; color: #8cf; border-radius: 3px; padding: 1px 5px; margin-bottom: 0.3em; cursor: default;';
+    badge.title = 'Roll-up active: an image counts as ready as soon as any one of the child labels is verified';
+    badge.textContent = '⟳ roll-up';
+    content.appendChild(badge);
+    content.appendChild(document.createElement('br'));
+  }
+
+  const total = readyCount + needsReviewCount + notStartedCount;
+  const status = document.createElement('div');
+  if (total === 0) {
+    status.textContent = 'No images in dataset.';
+  } else {
+    const readySpan = document.createElement('span');
+    readySpan.style.cssText = `color:#4c4; ${readyCount > 0 ? _clickableCountCss : ''}`;
+    readySpan.textContent = `✓ ${readyCount} ready`;
+    if (readyCount > 0) {
+      readySpan.title = 'Browse images ready for training';
+      readySpan.addEventListener('click', () => _openImageModal(
+        fetchTrainingConfigReadyImages, `Ready for Training — ${config.name}`
+      ));
+    }
+
+    const needsReviewSpan = document.createElement('span');
+    needsReviewSpan.style.cssText = `color:#f90; ${needsReviewCount > 0 ? _clickableCountCss : ''}`;
+    needsReviewSpan.textContent = `⚠ ${needsReviewCount} need review`;
+    if (needsReviewCount > 0) {
+      needsReviewSpan.title = 'Browse partially-reviewed images';
+      needsReviewSpan.addEventListener('click', () => _openImageModal(
+        fetchTrainingConfigPartialReviewImages, `Needs Review — ${config.name}`
+      ));
+    }
+
+    const notStartedSpan = document.createElement('span');
+    notStartedSpan.style.cssText = `color: var(--pico-muted-color, #888); ${notStartedCount > 0 ? _clickableCountCss : ''}`;
+    notStartedSpan.textContent = `◌ ${notStartedCount} not started`;
+    if (notStartedCount > 0) {
+      notStartedSpan.title = 'Browse images that have not been reviewed at all';
+      notStartedSpan.addEventListener('click', () => _openImageModal(
+        fetchTrainingConfigNotStartedImages, `Not Started — ${config.name}`
+      ));
+    }
+
+    status.appendChild(readySpan);
+    status.appendChild(document.createTextNode(' · '));
+    status.appendChild(needsReviewSpan);
+    status.appendChild(document.createTextNode(' · '));
+    status.appendChild(notStartedSpan);
+    status.appendChild(document.createTextNode(`  (${total} total)`));
+  }
+  content.appendChild(status);
+}
 
 /**
  * Appends the "N images across dataset(s)" line plus Image/Object label
