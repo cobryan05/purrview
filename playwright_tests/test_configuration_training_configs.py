@@ -429,6 +429,77 @@ class TestTrainingSettingsFieldset:
 
 
 # ---------------------------------------------------------------------------
+# 2c. VRAM-tiered hyperparameter suggestions
+# ---------------------------------------------------------------------------
+
+
+class TestVramHyperparamsSelect:
+    def _vram_select(self, page: Page):
+        """The VRAM tier select, identified by its '— none —' placeholder option
+        (it's the only select with that text; config/node selects use
+        '— select a config/node —')."""
+        return _editor_body(page).locator("select").filter(has_text="— none —")
+
+    def test_vram_select_hidden_until_object_detection_node_chosen(self, page: Page, base_url: str):
+        """No config/node selected yet -> architecture is unknown -> the VRAM
+        select stays hidden rather than guessing."""
+        _mock_datasets(page, [DATASET_ALPHA])
+        _mock_model_configs(page, [MODEL_CFG])
+        _mock_training_configs_list(page, [])
+
+        _navigate_to_training_configs(page, base_url)
+        _editor_body(page).wait_for(timeout=4000)
+
+        expect(self._vram_select(page)).to_be_hidden()
+
+        config_sel = _editor_body(page).locator("select").first
+        config_sel.select_option("mc-1")
+        page.wait_for_timeout(200)
+        node_sel = _editor_body(page).locator("select").nth(1)
+        node_sel.select_option("node-root")  # MODEL_CFG_NODE arch = yolo_v9_c (object_detection)
+        page.wait_for_timeout(200)
+
+        expect(self._vram_select(page)).to_be_visible()
+
+    def test_selecting_vram_tier_prefills_batch_size_and_imgsz_and_stays_editable(self, page: Page, base_url: str):
+        """Picking a VRAM tier prefills batch_size/imgsz from the per-architecture
+        table (yolo_v9_c @ 8GB -> batch_size=8, imgsz=640 per vramHyperparams.js),
+        and the fields remain enabled/editable afterward — selecting a tier
+        must not lock them."""
+        _mock_datasets(page, [DATASET_ALPHA])
+        _mock_model_configs(page, [MODEL_CFG])
+        _mock_training_configs_list(page, [])
+
+        _navigate_to_training_configs(page, base_url)
+        _editor_body(page).wait_for(timeout=4000)
+
+        config_sel = _editor_body(page).locator("select").first
+        config_sel.select_option("mc-1")
+        page.wait_for_timeout(200)
+        node_sel = _editor_body(page).locator("select").nth(1)
+        node_sel.select_option("node-root")
+        page.wait_for_timeout(200)
+
+        vram_sel = self._vram_select(page)
+        expect(vram_sel).to_be_visible()
+        vram_sel.select_option("8")
+        page.wait_for_timeout(200)
+
+        number_inputs = _editor_body(page).locator("input[type='number']")
+        batch_size_input = number_inputs.nth(0)
+        imgsz_input = number_inputs.nth(1)
+
+        expect(batch_size_input).to_have_value("8")
+        expect(imgsz_input).to_have_value("640")
+
+        # Fields stay editable — not disabled by the VRAM pick.
+        expect(batch_size_input).to_be_enabled()
+        expect(imgsz_input).to_be_enabled()
+        batch_size_input.fill("2")
+        expect(batch_size_input).to_have_value("2")
+
+
+# ---------------------------------------------------------------------------
 # 3. Readiness panel
 # ---------------------------------------------------------------------------
 
