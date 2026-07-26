@@ -37,6 +37,20 @@ _OBJECT_DETECTION_ARCH_OVERRIDES: dict[str, str] = {
     "yolo12m": "ultralytics_object_detection",
     "yolo12l": "ultralytics_object_detection",
     "yolo12x": "ultralytics_object_detection",
+    # YOLOv10 / YOLO26 — NMS-free ("end-to-end") exports, still trained by the
+    # same UltralyticsDetectionTrainer (only the decode/model_family differs;
+    # see ultralytics_detection_trainer.py's _MODEL_FAMILY_MAP).
+    "yolov10n": "ultralytics_object_detection",
+    "yolov10s": "ultralytics_object_detection",
+    "yolov10m": "ultralytics_object_detection",
+    "yolov10b": "ultralytics_object_detection",
+    "yolov10l": "ultralytics_object_detection",
+    "yolov10x": "ultralytics_object_detection",
+    "yolo26n": "ultralytics_object_detection",
+    "yolo26s": "ultralytics_object_detection",
+    "yolo26m": "ultralytics_object_detection",
+    "yolo26l": "ultralytics_object_detection",
+    "yolo26x": "ultralytics_object_detection",
 }
 
 

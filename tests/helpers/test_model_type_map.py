@@ -39,6 +39,17 @@ class TestResolveTrainerTypeObjectDetection:
             "yolo12m",
             "yolo12l",
             "yolo12x",
+            "yolov10n",
+            "yolov10s",
+            "yolov10m",
+            "yolov10b",
+            "yolov10l",
+            "yolov10x",
+            "yolo26n",
+            "yolo26s",
+            "yolo26m",
+            "yolo26l",
+            "yolo26x",
         ],
     )
     def test_ultralytics_architectures_route_to_ultralytics_object_detection(self, arch):

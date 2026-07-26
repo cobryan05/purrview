@@ -36,6 +36,17 @@ class OnnxYoloInferenceProvider(InferenceProvider):
     # subclasses for families that letterbox top-left instead of centered.
     LETTERBOX_ANCHOR = "center"
 
+    # NMS-free ("end-to-end") export flag. Some newer architectures (YOLOv10,
+    # YOLO26) bake top-k selection into the exported graph itself: the raw
+    # output is already a fixed-size (e.g. 300) list of picked
+    # [x1, y1, x2, y2, conf, cls] rows, sorted by confidence, with no separate
+    # objectness/per-class-score columns left to argmax over and no
+    # overlapping candidates left for cv2.dnn.NMSBoxes to suppress. Subclasses
+    # for such families set this True; `_extract` still returns
+    # (boxes_xyxy, scores) but `scores` is (num_preds, 1) — a single
+    # already-picked confidence per row, not per-class logits.
+    SKIP_NMS = False
+
     def __init__(
         self,
         model_path: str,
@@ -114,6 +125,7 @@ class OnnxYoloInferenceProvider(InferenceProvider):
             scale=scale,
             pad=pad,
             original_shape=original_shape,
+            skip_nms=self.SKIP_NMS,
         )
         t_post = time.perf_counter()  # PERF
         # PERF BEGIN

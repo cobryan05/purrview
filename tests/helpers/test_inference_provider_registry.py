@@ -21,11 +21,15 @@ from onnx import TensorProto, helper
 
 # Importing these triggers @register_inference_provider registration.
 import apps.helpers.inferenceProviders.libreYolo9InferenceProvider  # noqa: F401
+import apps.helpers.inferenceProviders.ultralyticsE2eInferenceProvider  # noqa: F401
 import apps.helpers.inferenceProviders.ultralyticsYoloV8InferenceProvider  # noqa: F401
 from apps.helpers.inferenceProviders.libreYolo9InferenceProvider import (
     LibreYolo9InferenceProvider,
 )
 from apps.helpers.inferenceProviders.Registry import inference_provider_registry
+from apps.helpers.inferenceProviders.ultralyticsE2eInferenceProvider import (
+    UltralyticsE2eInferenceProvider,
+)
 from apps.helpers.inferenceProviders.ultralyticsYoloV8InferenceProvider import (
     UltralyticsYoloV8InferenceProvider,
 )
@@ -75,6 +79,12 @@ class TestRegistryResolvesExpectedProvider:
         second class, no data migration needed."""
         assert inference_provider_registry["ultralytics_detect"] is UltralyticsYoloV8InferenceProvider
         assert inference_provider_registry["ultralytics_detect"] is inference_provider_registry["ultralytics_yolov8"]
+
+    def test_ultralytics_e2e_registered(self):
+        """YOLOv10/YOLO26 NMS-free exports resolve to their own decode class,
+        distinct from the classic v8-shape UltralyticsYoloV8InferenceProvider."""
+        assert inference_provider_registry["ultralytics_e2e"] is UltralyticsE2eInferenceProvider
+        assert UltralyticsE2eInferenceProvider.SKIP_NMS is True
 
 
 class TestLoadYoloOnnxDispatch:

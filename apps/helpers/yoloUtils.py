@@ -38,6 +38,7 @@ def load_yolo_onnx(model_path: str) -> InferenceProvider:
     # provider modules import this module for the shared pipeline helpers, so a
     # module-level import here would be circular.
     import apps.helpers.inferenceProviders.libreYolo9InferenceProvider  # noqa: F401
+    import apps.helpers.inferenceProviders.ultralyticsE2eInferenceProvider  # noqa: F401
     import apps.helpers.inferenceProviders.ultralyticsYoloV8InferenceProvider  # noqa: F401
 
     metadata = metadataUtils.get_model_metadata(model_path, create_json_if_missing=True)
@@ -142,6 +143,7 @@ def decode_detections(
     scale: float,
     pad: Tuple[int, int],
     original_shape: Tuple[int, int],
+    skip_nms: bool = False,
 ) -> np.ndarray:
     """
     Shared NMS + rescale/clip tail for YOLO-family raw outputs.
@@ -155,11 +157,25 @@ def decode_detections(
     Args:
         boxes_xyxy (np.ndarray): Boxes as (num_preds, 4) in [x1, y1, x2, y2], canvas-pixel space.
         scores (np.ndarray): Per-class scores, shape (num_preds, nc), already activated (no raw logits).
+            When `skip_nms` is True, this is instead a single already-picked
+            confidence column, shape (num_preds, 1) — see below.
         conf_thresh (float): Confidence threshold for filtering detections.
-        iou_thresh (float): IoU threshold for NMS.
+        iou_thresh (float): IoU threshold for NMS. Unused when `skip_nms` is True.
         scale (float): Scaling factor used during preprocessing.
         pad (Tuple[int, int]): Padding added during preprocessing (dw, dh).
         original_shape (Tuple[int, int]): Original image dimensions (height, width).
+        skip_nms (bool): NMS-free ("end-to-end") models (e.g. YOLOv10, YOLO26)
+            already return picked rows — one row per detection, `scores` is a
+            single confidence column (num_preds, 1), and there is no per-class
+            score matrix to argmax over. When True, skip both the
+            confidence-argmax class selection and the `cv2.dnn.NMSBoxes` call;
+            only confidence thresholding + coordinate rescale/clip still apply.
+            `class_ids` for these rows come from `boxes_xyxy`'s companion
+            `scores` column-mate — callers must instead pass the already-picked
+            class id via `scores[:, 0]` for confidence and a matching class-id
+            array through the same row ordering (see
+            `ultralyticsE2eInferenceProvider.py`'s `_extract`, which returns
+            `scores` as (num_preds, 2): [confidence, class_id]).
 
     Returns:
         np.ndarray: Array of detections with shape (num_detections, 6) where each row contains
@@ -167,40 +183,55 @@ def decode_detections(
     """
     boxes = boxes_xyxy.copy()
 
-    # Compute final scores and class IDs
-    class_ids = np.argmax(scores, axis=1)  # Get class with highest score
-    confidences = scores[np.arange(len(scores)), class_ids]  # Confidence for the selected class
+    if skip_nms:
+        # Rows are already picked (one detection per row, no multi-class
+        # score matrix to argmax over, no overlapping candidates left for
+        # NMS to suppress). `scores` is (num_preds, 2): [confidence, class_id].
+        confidences = scores[:, 0]
+        class_ids = scores[:, 1].astype(np.float32)
 
-    # Filter out low-confidence detections
-    mask = confidences > conf_thresh
-    boxes = boxes[mask]
-    confidences = confidences[mask]
-    class_ids = class_ids[mask]
+        mask = confidences > conf_thresh
+        boxes = boxes[mask]
+        confidences = confidences[mask]
+        class_ids = class_ids[mask]
 
-    if len(boxes) == 0:
-        return np.zeros((0, 6), dtype=np.float32)
+        if len(boxes) == 0:
+            return np.zeros((0, 6), dtype=np.float32)
+    else:
+        # Compute final scores and class IDs
+        class_ids_int = np.argmax(scores, axis=1)  # Get class with highest score
+        confidences = scores[np.arange(len(scores)), class_ids_int]  # Confidence for the selected class
 
-    # Apply Non-Maximum Suppression (NMS). cv2.dnn.NMSBoxes expects boxes as
-    # (x, y, w, h) rects, not (x1, y1, x2, y2) corners — convert here; `boxes`
-    # itself (used for the returned detections) stays in xyxy.
-    nms_boxes = boxes.copy()
-    nms_boxes[:, 2] -= nms_boxes[:, 0]  # width = x2 - x1
-    nms_boxes[:, 3] -= nms_boxes[:, 1]  # height = y2 - y1
-    indices = cv2.dnn.NMSBoxes(
-        bboxes=nms_boxes.tolist(),
-        scores=confidences.tolist(),
-        score_threshold=conf_thresh,
-        nms_threshold=iou_thresh,
-    )
+        # Filter out low-confidence detections
+        mask = confidences > conf_thresh
+        boxes = boxes[mask]
+        confidences = confidences[mask]
+        class_ids_int = class_ids_int[mask]
 
-    if len(indices) == 0:
-        return np.zeros((0, 6), dtype=np.float32)
+        if len(boxes) == 0:
+            return np.zeros((0, 6), dtype=np.float32)
 
-    # Keep only the selected boxes, confidences, and class IDs
-    indices = np.array(indices).flatten()
-    boxes = boxes[indices]
-    confidences = confidences[indices]
-    class_ids = class_ids[indices]
+        # Apply Non-Maximum Suppression (NMS). cv2.dnn.NMSBoxes expects boxes as
+        # (x, y, w, h) rects, not (x1, y1, x2, y2) corners — convert here; `boxes`
+        # itself (used for the returned detections) stays in xyxy.
+        nms_boxes = boxes.copy()
+        nms_boxes[:, 2] -= nms_boxes[:, 0]  # width = x2 - x1
+        nms_boxes[:, 3] -= nms_boxes[:, 1]  # height = y2 - y1
+        indices = cv2.dnn.NMSBoxes(
+            bboxes=nms_boxes.tolist(),
+            scores=confidences.tolist(),
+            score_threshold=conf_thresh,
+            nms_threshold=iou_thresh,
+        )
+
+        if len(indices) == 0:
+            return np.zeros((0, 6), dtype=np.float32)
+
+        # Keep only the selected boxes, confidences, and class IDs
+        indices = np.array(indices).flatten()
+        boxes = boxes[indices]
+        confidences = confidences[indices]
+        class_ids = class_ids_int[indices].astype(np.float32)
 
     # Undo padding and scaling to restore original image coordinates
     dw, dh = pad
@@ -213,4 +244,4 @@ def decode_detections(
     boxes[:, 1::2] = np.clip(boxes[:, 1::2], 0, original_shape[0])  # Clip y-coordinates
 
     # Combine results into a single array
-    return np.hstack((boxes, confidences[:, None], class_ids[:, None].astype(np.float32)))
+    return np.hstack((boxes, confidences[:, None], class_ids[:, None]))

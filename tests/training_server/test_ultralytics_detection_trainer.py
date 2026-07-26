@@ -25,6 +25,7 @@ from apps.training_server.trainers import TRAINER_REGISTRY
 from apps.training_server.trainers.ultralytics_detection_trainer import (
     _ARCH_MAP,
     UltralyticsDetectionTrainer,
+    _model_family_for_arch,
 )
 
 
@@ -57,6 +58,17 @@ class TestArchMap:
             "yolo12m",
             "yolo12l",
             "yolo12x",
+            "yolov10n",
+            "yolov10s",
+            "yolov10m",
+            "yolov10b",
+            "yolov10l",
+            "yolov10x",
+            "yolo26n",
+            "yolo26s",
+            "yolo26m",
+            "yolo26l",
+            "yolo26x",
         ],
     )
     def test_all_planned_architectures_present(self, arch):
@@ -67,6 +79,49 @@ class TestArchMap:
         # (Ultralytics resolves "<stem>.pt" directly).
         for arch, stem in _ARCH_MAP.items():
             assert stem == arch
+
+
+class TestModelFamilyForArch:
+    """model_family is chosen per-architecture, not hardcoded to one family:
+    classic v8-shape archs (v8/Ultralytics-v9/v11/v12) write "ultralytics_detect"
+    (decoded by UltralyticsYoloV8InferenceProvider); NMS-free v10/YOLO26 write
+    "ultralytics_e2e" (decoded by UltralyticsE2eInferenceProvider) — see
+    MORE_YOLO_PLAN.md Section 2 research notes for the confirmed export shapes."""
+
+    @pytest.mark.parametrize(
+        "arch",
+        [
+            "yolov8n",
+            "yolov8x",
+            "yolov9t",
+            "yolov9e",
+            "yolo11n",
+            "yolo11x",
+            "yolo12n",
+            "yolo12x",
+        ],
+    )
+    def test_classic_architectures_write_ultralytics_detect(self, arch):
+        assert _model_family_for_arch(arch) == "ultralytics_detect"
+
+    @pytest.mark.parametrize(
+        "arch",
+        [
+            "yolov10n",
+            "yolov10s",
+            "yolov10m",
+            "yolov10b",
+            "yolov10l",
+            "yolov10x",
+            "yolo26n",
+            "yolo26s",
+            "yolo26m",
+            "yolo26l",
+            "yolo26x",
+        ],
+    )
+    def test_nms_free_architectures_write_ultralytics_e2e(self, arch):
+        assert _model_family_for_arch(arch) == "ultralytics_e2e"
 
 
 class TestHyperparamDefaults:
@@ -233,6 +288,49 @@ class TestTrainHappyPath:
 
         # Progress callback fired at least once with an epoch update.
         assert any("epoch" in e for e in events)
+
+    async def test_yolov10_arch_writes_ultralytics_e2e_family(self, trainer, base_config):
+        """NMS-free architectures must write model_family="ultralytics_e2e",
+        not the classic "ultralytics_detect" — the two decode differently
+        (see UltralyticsE2eInferenceProvider vs UltralyticsYoloV8InferenceProvider)."""
+        base_config["architecture"] = "yolov10n"
+        artifact_dir = base_config["artifact_dir"]
+        fake_exported = f"{artifact_dir}/exported_v10.onnx"
+        with open(fake_exported, "wb") as f:
+            f.write(b"fake onnx bytes")
+
+        fake_ultralytics = _make_fake_ultralytics_module(
+            fake_results_dict={"metrics/mAP50(B)": 0.7},
+            exported_path=fake_exported,
+        )
+        with patch.dict(sys.modules, {"ultralytics": fake_ultralytics}):
+            await trainer.train(base_config, progress_cb=lambda e: None, cancel_event=asyncio.Event())
+
+        sidecar_path = f"{artifact_dir}/test_model.json"
+        with open(sidecar_path) as f:
+            sidecar = json.load(f)
+        assert sidecar["model_family"] == "ultralytics_e2e"
+        assert sidecar["architecture"] == "yolov10n"
+
+    async def test_yolo26_arch_writes_ultralytics_e2e_family(self, trainer, base_config):
+        base_config["architecture"] = "yolo26n"
+        artifact_dir = base_config["artifact_dir"]
+        fake_exported = f"{artifact_dir}/exported_26.onnx"
+        with open(fake_exported, "wb") as f:
+            f.write(b"fake onnx bytes")
+
+        fake_ultralytics = _make_fake_ultralytics_module(
+            fake_results_dict={"metrics/mAP50(B)": 0.7},
+            exported_path=fake_exported,
+        )
+        with patch.dict(sys.modules, {"ultralytics": fake_ultralytics}):
+            await trainer.train(base_config, progress_cb=lambda e: None, cancel_event=asyncio.Event())
+
+        sidecar_path = f"{artifact_dir}/test_model.json"
+        with open(sidecar_path) as f:
+            sidecar = json.load(f)
+        assert sidecar["model_family"] == "ultralytics_e2e"
+        assert sidecar["architecture"] == "yolo26n"
 
     async def test_sidecar_has_no_libreyolo_only_keys(self, trainer, base_config):
         """Sanity guard: this trainer's sidecar must not carry the LibreYOLO9-

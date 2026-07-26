@@ -1,11 +1,22 @@
-"""Object detection trainer using Ultralytics (YOLOv8 / Ultralytics-YOLOv9 / YOLO11 / YOLO12).
+"""Object detection trainer using Ultralytics (YOLOv8 / Ultralytics-YOLOv9 /
+YOLO11 / YOLO12 / YOLOv10 / YOLO26).
 
 Trains YOLO-family object detection models via the ``ultralytics`` package's
 ``YOLO(...).train()`` API and exports to ONNX for serving by the inference
-server. All architectures in ``_ARCH_MAP`` share the identical exported tensor
-layout (cxcywh boxes, pre-sigmoid'd class scores, no objectness channel) that
-``UltralyticsYoloV8InferenceProvider`` already decodes correctly — this trainer
-requires zero new inference-decode code, only training + catalogue plumbing.
+server. Every architecture in ``_ARCH_MAP`` trains through the identical
+``YOLO(...).train()``/``model.export(format="onnx")`` call shape — only the
+exported tensor layout (and therefore the inference-side decode/sidecar
+``model_family``) differs per architecture, via ``_MODEL_FAMILY_MAP``:
+
+- v8 / Ultralytics-v9 / v11 / v12 share the "classic" cxcywh + pre-sigmoid'd
+  per-class-score layout, decoded by ``UltralyticsYoloV8InferenceProvider``
+  under family ``"ultralytics_detect"``.
+- v10 / YOLO26 are NMS-free ("end-to-end") exports: the graph itself already
+  returns a fixed top-k list of picked ``[x1, y1, x2, y2, conf, cls]`` rows —
+  confirmed empirically against real ``yolov10n.onnx``/``yolo26n.onnx``
+  exports from this installed ``ultralytics`` version (see
+  MORE_YOLO_PLAN.md Section 2) — decoded by
+  ``UltralyticsE2eInferenceProvider`` under family ``"ultralytics_e2e"``.
 
 Note: Ultralytics' own YOLOv9 (GELAN backbone, arch names ``yolov9t/s/m/c/e``)
 is architecturally distinct from LibreYOLO9 (``yolo_v9_t/s/m/c/e``, trained by
@@ -14,7 +25,9 @@ architecture catalogue; dispatch between the two trainers is handled by
 ``apps.helpers.model_type_map.resolve_trainer_type``.
 
 Adding new architectures: extend ``_ARCH_MAP`` with the Ultralytics model
-filename stem (e.g. ``"yolov8n"`` → loads ``yolov8n.pt``).
+filename stem (e.g. ``"yolov8n"`` → loads ``yolov8n.pt``), and
+``_MODEL_FAMILY_MAP`` with the sidecar ``model_family`` its ONNX export
+requires (confirm the real exported tensor layout first — do not guess).
 """
 
 from __future__ import annotations
@@ -59,7 +72,31 @@ _ARCH_MAP: dict[str, str] = {
     "yolo12m": "yolo12m",
     "yolo12l": "yolo12l",
     "yolo12x": "yolo12x",
+    # YOLOv10 (no "t" scale in this ultralytics version's cfg — only n/s/m/b/l/x).
+    "yolov10n": "yolov10n",
+    "yolov10s": "yolov10s",
+    "yolov10m": "yolov10m",
+    "yolov10b": "yolov10b",
+    "yolov10l": "yolov10l",
+    "yolov10x": "yolov10x",
+    # YOLO26 (no "t"/"b" scale — n/s/m/l/x).
+    "yolo26n": "yolo26n",
+    "yolo26s": "yolo26s",
+    "yolo26m": "yolo26m",
+    "yolo26l": "yolo26l",
+    "yolo26x": "yolo26x",
 }
+
+# Arch name -> sidecar model_family, chosen by architecture rather than
+# hardcoded to one family (see module docstring). Any arch NOT listed here
+# falls back to "ultralytics_detect" (the classic v8-shape layout) below.
+_MODEL_FAMILY_MAP: dict[str, str] = {
+    **{arch: "ultralytics_e2e" for arch in _ARCH_MAP if arch.startswith("yolov10") or arch.startswith("yolo26")},
+}
+
+
+def _model_family_for_arch(architecture: str) -> str:
+    return _MODEL_FAMILY_MAP.get(architecture, "ultralytics_detect")
 
 
 def _get_yolo_class():
@@ -218,16 +255,19 @@ class UltralyticsDetectionTrainer(Trainer):
                 shutil.copy2(exported_path, onnx_dest)
             logger.info("Exported ONNX → %s", onnx_dest)
 
-            # Write sidecar JSON understood by load_yolo_onnx. model_family
-            # "ultralytics_detect" is registered as a second decorator key on
-            # UltralyticsYoloV8InferenceProvider (same decode as v8) — see
-            # apps/helpers/inferenceProviders/ultralyticsYoloV8InferenceProvider.py.
+            # Write sidecar JSON understood by load_yolo_onnx. model_family is
+            # chosen per-architecture (see _MODEL_FAMILY_MAP): "ultralytics_detect"
+            # (classic cxcywh/pre-sigmoid layout, v8/Ultralytics-v9/v11/v12) is
+            # registered on UltralyticsYoloV8InferenceProvider; "ultralytics_e2e"
+            # (NMS-free top-k layout, v10/YOLO26) is registered on
+            # UltralyticsE2eInferenceProvider.
+            model_family = _model_family_for_arch(architecture)
             sidecar = {
                 "model_kind": "object_detection",
                 "trainer": "ultralytics_object_detection",
                 "architecture": architecture,
                 "classes": class_names,
-                "model_family": "ultralytics_detect",
+                "model_family": model_family,
                 "val_accuracy": best_map50,
                 "trained_at": datetime.now(timezone.utc).isoformat(),
                 "train_image_uuids": train_uuids,
