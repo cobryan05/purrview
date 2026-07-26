@@ -24,7 +24,9 @@ from uuid import NAMESPACE_OID, uuid5
 from db_client.api.datasets_api import DatasetsApi
 from db_client.api.filter_chains_api import FilterChainsApi
 from db_client.api.images_api import ImagesApi
+from db_client.api.labels_api import LabelsApi
 from db_client.api.tags_api import TagsApi
+from db_client.models.add_bbox_payload import AddBboxPayload
 from db_client.models.add_tag_payload import AddTagPayload
 from db_client.models.batch_by_uuids_payload import BatchByUuidsPayload
 from db_client.models.bbox_patch_payload import BboxPatchPayload
@@ -144,11 +146,16 @@ class ApplyFilterChainTask(Task):
         self._bboxes_relabeled: int = resume_data.get("bboxes_relabeled", 0) if resume_data else 0
         self._bboxes_tagged: int = resume_data.get("bboxes_tagged", 0) if resume_data else 0
         self._bboxes_stripped: int = resume_data.get("bboxes_stripped", 0) if resume_data else 0
+        self._bboxes_added: int = resume_data.get("bboxes_added", 0) if resume_data else 0
         self._images_tagged: int = resume_data.get("images_tagged", 0) if resume_data else 0
         self._images_discard_matched: int = resume_data.get("images_discard_matched", 0) if resume_data else 0
 
         self._pin_ids: Dict[str, str] = {}
-        self._review_tag_ensured: bool = False
+        # Per-instance review tags are created lazily; track which uuids we've
+        # already ensured so relabel and add_bbox can each have their own tag.
+        self._review_tags_ensured: set = set()
+        # name -> label_uuid fallback for add_bbox, populated in _run().
+        self._name_to_label_uuid: Dict[str, str] = {}
 
     async def _run(self) -> Dict[str, Any]:
         db_api_client = self._manager.get_db_api_client()
@@ -156,6 +163,7 @@ class ApplyFilterChainTask(Task):
         filter_chains_api = FilterChainsApi(db_api_client)
         images_api = ImagesApi(db_api_client)
         tags_api = TagsApi(db_api_client)
+        labels_api = LabelsApi(db_api_client)
 
         chain_resp = await asyncio.to_thread(filter_chains_api.get_filter_chain, self._filter_chain_uuid)
         chain = getattr(chain_resp, "chain", None)
@@ -181,14 +189,24 @@ class ApplyFilterChainTask(Task):
         if len(steps) > 5:
             self.log(f"Warning: chain has {len(steps)} steps — this multiplies inference cost per image")
 
+        # For add_bbox steps, a detection whose class isn't mapped to a project
+        # label falls back to a name match (first label with that name wins),
+        # mirroring PreviewModelRelabelTask / the manual single-image Run Model UI.
+        if any(s["action"] == "add_bbox" for s in steps):
+            self._name_to_label_uuid = await self._build_name_to_label_uuid(labels_api)
+
         await self._pin_detector_models(inference_api_client, steps)
         backend = _HttpInferenceBackend(inference_api_client, self._pin_ids)
         runner = FilterChainRunner(steps, backend)
 
-        # One deterministic review tag per task instance, so each run's relabels
-        # are a separately reviewable/reversible batch (plan 2.1a / open item 4.2).
+        # Deterministic per-instance review tags, so each run's relabels and each
+        # run's added boxes are separately reviewable/reversible batches (plan
+        # 2.1a / open item 4.2). add_bbox gets its own tag so newly-created boxes
+        # aren't conflated with relabeled existing ones.
         review_tag_uuid = str(uuid5(NAMESPACE_OID, self._instance_uuid))
         review_tag_name = f"[Filter Chain] {chain.name} auto-relabeled ({self._instance_uuid[:8]})"
+        add_tag_uuid = str(uuid5(NAMESPACE_OID, self._instance_uuid + ":add"))
+        add_tag_name = f"[Filter Chain] {chain.name} auto-added ({self._instance_uuid[:8]})"
 
         stubs = await self._collect_stubs(db_api_client, images_api)
         if self._images_processed > 0 and self._images_processed < len(stubs):
@@ -220,6 +238,8 @@ class ApplyFilterChainTask(Task):
                         stub,
                         review_tag_uuid,
                         review_tag_name,
+                        add_tag_uuid,
+                        add_tag_name,
                         prefetched.get(getattr(stub, "uuid", None)),
                     )
                     if changed:
@@ -292,8 +312,17 @@ class ApplyFilterChainTask(Task):
                 records[record.uuid] = record
         return records
 
+    async def _build_name_to_label_uuid(self, labels_api: LabelsApi) -> Dict[str, str]:
+        """name -> label_uuid, first label with a given name winning (matches the
+        unmapped-class fallback in PreviewModelRelabelTask)."""
+        resp = await asyncio.to_thread(labels_api.list_labels)
+        name_to_uuid: Dict[str, str] = {}
+        for lbl in resp.labels or []:
+            name_to_uuid.setdefault(lbl.name, lbl.uuid)
+        return name_to_uuid
+
     async def _ensure_review_tag(self, tags_api: TagsApi, tag_uuid: str, tag_name: str) -> None:
-        if self._review_tag_ensured:
+        if tag_uuid in self._review_tags_ensured:
             return
         existing = await asyncio.to_thread(tags_api.list_tags)
         existing_uuids = {t.uuid for t in (existing.tags or [])}
@@ -302,7 +331,7 @@ class ApplyFilterChainTask(Task):
                 tags_api.add_tag,
                 AddTagPayload(uuid=tag_uuid, name=tag_name, color="#e8a020", kind=ApiTagKind.TASK_GENERATED),
             )
-        self._review_tag_ensured = True
+        self._review_tags_ensured.add(tag_uuid)
 
     async def _process_image(
         self,
@@ -312,6 +341,8 @@ class ApplyFilterChainTask(Task):
         stub: Any,
         review_tag_uuid: str,
         review_tag_name: str,
+        add_tag_uuid: str,
+        add_tag_name: str,
         prefetched_record: Any = None,
     ) -> bool:
         image_bytes = await self._load_image_bytes(stub.filename, images_api)
@@ -342,11 +373,37 @@ class ApplyFilterChainTask(Task):
         bbox_uuids_to_strip: set = set()
         # bbox_uuid -> {"add_tags": set, "label_uuid"?: str, "prev_label_uuid"?: str}
         bbox_patches: Dict[str, Dict[str, Any]] = {}
+        # New boxes to create from add_bbox steps: list of
+        # {"label_uuid", "x", "y", "width", "height", "confidence", "model_name"}.
+        bboxes_to_add: List[Dict[str, Any]] = []
 
         for match in matches:
             step = match.step
             action = step["action"]
             action_params = step.get("action_params") or {}
+
+            if match.unmatched_detections:
+                # add_bbox: each detection that overlapped no existing box becomes a
+                # new box. Label = optional target override, else the detection's own
+                # predicted label, else a name match; unresolved detections are skipped.
+                forced_label = action_params.get("target_label_uuid")
+                for det in match.unmatched_detections:
+                    label_uuid = forced_label or self._resolve_detection_label(det)
+                    if not label_uuid:
+                        continue
+                    bboxes_to_add.append(
+                        {
+                            "label_uuid": label_uuid,
+                            "x": det.x,
+                            "y": det.y,
+                            "width": det.width,
+                            "height": det.height,
+                            "confidence": det.confidence,
+                            "model_name": step["model_name"],
+                        }
+                    )
+                continue
+
             if match.image_match:
                 if action == "discard_image":
                     # Retroactive no-op — existing images are never deleted (plan 2.1).
@@ -389,8 +446,11 @@ class ApplyFilterChainTask(Task):
                 else:
                     logger.warning("Action %r is not valid for a bbox-level (detector) step; skipping", action)
 
-        changed = bool(image_tag_uuids_to_add or bbox_uuids_to_strip or bbox_patches)
+        changed = bool(image_tag_uuids_to_add or bbox_uuids_to_strip or bbox_patches or bboxes_to_add)
         if self._dry_run or not changed:
+            if self._dry_run:
+                # Count add candidates so a dry run reports them without writing.
+                self._bboxes_added += len(bboxes_to_add)
             return changed
 
         if image_tag_uuids_to_add:
@@ -431,7 +491,42 @@ class ApplyFilterChainTask(Task):
                     BboxPatchPayload(label_uuid=label_uuid, tag_uuids=sorted(tag_uuids), metadata_json=metadata_json),
                 )
 
+        if bboxes_to_add:
+            # New boxes are created UNVERIFIED + this run's add tag, so they're a
+            # reviewable/reversible batch (a detector can be wrong — an added box
+            # should never silently count as a confirmed annotation).
+            await self._ensure_review_tag(tags_api, add_tag_uuid, add_tag_name)
+            for new in bboxes_to_add:
+                await asyncio.to_thread(
+                    images_api.add_bbox,
+                    AddBboxPayload(
+                        image_path=stub.filename,
+                        label_uuid=new["label_uuid"],
+                        x=new["x"],
+                        y=new["y"],
+                        width=new["width"],
+                        height=new["height"],
+                        tag_uuids=[UNVERIFIED_TAG_UUID, add_tag_uuid],
+                        metadata_json={
+                            "filter_chain_added": True,
+                            "source_model": new["model_name"],
+                            "source_confidence": new["confidence"],
+                        },
+                    ),
+                )
+                self._bboxes_added += 1
+
         return True
+
+    def _resolve_detection_label(self, det: Detection) -> Optional[str]:
+        """A detection's class may be unmapped to a label UUID (det.label_uuid is
+        None) — fall back to matching its raw class string against a project label
+        of the same name (see PreviewModelRelabelTask._resolve_label_uuid)."""
+        if det.label_uuid is not None:
+            return det.label_uuid
+        if det.class_str is None:
+            return None
+        return self._name_to_label_uuid.get(det.class_str)
 
     async def _collect_stubs(self, db_api_client, images_api: ImagesApi) -> List[Any]:
         """Resolve the bounded scope into a list of image stubs (uuid + filename)."""
@@ -512,6 +607,7 @@ class ApplyFilterChainTask(Task):
             "bboxes_relabeled": self._bboxes_relabeled,
             "bboxes_tagged": self._bboxes_tagged,
             "bboxes_stripped": self._bboxes_stripped,
+            "bboxes_added": self._bboxes_added,
             "images_tagged": self._images_tagged,
             "images_discard_matched": self._images_discard_matched,
         }

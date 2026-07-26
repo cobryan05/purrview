@@ -543,3 +543,78 @@ async def test_bulk_apply_bboxes_by_uuids_relabel(http_client, image_file, label
     meta_r = await http_client.post("/api/images/metadata/get", json={"imagePath": "bbox_test.png"})
     bboxes = meta_r.json()["image"]["bboxes"]
     assert bboxes[0]["labelUuid"] == other_uuid
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# POST /api/images/bbox  (single-bbox insert — filter-chain add_bbox uses this)
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+async def test_add_bbox_endpoint_inserts_new_box(http_client, setup_image_with_bbox, label_uuid):
+    r = await http_client.post(
+        "/api/images/bbox",
+        json={
+            "imagePath": "bbox_test.png",
+            "labelUuid": label_uuid,
+            "x": 0.5,
+            "y": 0.5,
+            "width": 0.2,
+            "height": 0.2,
+            "tagUuids": [UNVERIFIED_TAG_UUID],
+            "metadataJson": {"filter_chain_added": True},
+        },
+    )
+    assert r.status_code == 200
+    new_uuid = r.json()["bboxUuid"]
+    assert new_uuid
+
+    meta_r = await http_client.post("/api/images/metadata/get", json={"imagePath": "bbox_test.png"})
+    bboxes = meta_r.json()["image"]["bboxes"]
+    # Original bbox untouched + the newly inserted one.
+    assert len(bboxes) == 2
+    by_uuid = {b["uuid"]: b for b in bboxes}
+    assert setup_image_with_bbox in by_uuid
+    new = by_uuid[new_uuid]
+    assert new["labelUuid"] == label_uuid
+    assert new["x"] == 0.5 and new["width"] == 0.2
+    assert UNVERIFIED_TAG_UUID in [t["uuid"] for t in new["tags"]]
+
+
+async def test_add_bbox_endpoint_missing_image_returns_404(http_client, label_uuid):
+    r = await http_client.post(
+        "/api/images/bbox",
+        json={
+            "imagePath": "does_not_exist.png",
+            "labelUuid": label_uuid,
+            "x": 0.1,
+            "y": 0.1,
+            "width": 0.1,
+            "height": 0.1,
+        },
+    )
+    assert r.status_code == 404
+
+
+async def test_add_bbox_accumulates_without_disturbing_siblings(http_client, setup_image_with_bbox, label_uuid):
+    # A pure single-row insert: two successive adds must accumulate alongside the
+    # original bbox (a full-image replace path would risk rewriting/dropping it).
+    orig = setup_image_with_bbox
+    for cx in (0.5, 0.8):
+        r = await http_client.post(
+            "/api/images/bbox",
+            json={
+                "imagePath": "bbox_test.png",
+                "labelUuid": label_uuid,
+                "x": cx,
+                "y": cx,
+                "width": 0.05,
+                "height": 0.05,
+            },
+        )
+        assert r.status_code == 200
+
+    meta_r = await http_client.post("/api/images/metadata/get", json={"imagePath": "bbox_test.png"})
+    bboxes = meta_r.json()["image"]["bboxes"]
+    uuids = {b["uuid"] for b in bboxes}
+    assert len(bboxes) == 3
+    assert orig in uuids  # original bbox never touched by the inserts

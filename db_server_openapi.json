@@ -1426,6 +1426,48 @@
         }
       }
     },
+    "/api/images/bbox": {
+      "post": {
+        "tags": [
+          "images"
+        ],
+        "summary": "Add Bbox",
+        "description": "Insert a single new bbox on an image without disturbing its existing\nbboxes (the filter-chain add_bbox action uses this).",
+        "operationId": "add_bbox",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AddBboxPayload"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AddBboxResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/images/bbox/thumbnails/invalidate": {
       "post": {
         "tags": [
@@ -4966,9 +5008,106 @@
           "tag_image",
           "strip_unverified_bboxes",
           "relabel_bbox",
-          "tag_bbox"
+          "tag_bbox",
+          "add_bbox"
         ],
         "title": "ActionKind"
+      },
+      "AddBboxPayload": {
+        "properties": {
+          "imagePath": {
+            "type": "string",
+            "title": "Imagepath"
+          },
+          "labelUuid": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Labeluuid"
+          },
+          "x": {
+            "type": "number",
+            "title": "X"
+          },
+          "y": {
+            "type": "number",
+            "title": "Y"
+          },
+          "width": {
+            "type": "number",
+            "title": "Width"
+          },
+          "height": {
+            "type": "number",
+            "title": "Height"
+          },
+          "tagUuids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Taguuids"
+          },
+          "metadataJson": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Metadatajson"
+          }
+        },
+        "type": "object",
+        "required": [
+          "imagePath",
+          "x",
+          "y",
+          "width",
+          "height"
+        ],
+        "title": "AddBboxPayload"
+      },
+      "AddBboxResponse": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "title": "Status",
+            "default": "success"
+          },
+          "message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Message"
+          },
+          "bboxUuid": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bboxuuid"
+          }
+        },
+        "type": "object",
+        "title": "AddBboxResponse"
       },
       "AddLabelPayload": {
         "properties": {
@@ -5546,6 +5685,23 @@
             },
             "type": "array",
             "title": "Taguuids"
+          },
+          "bboxGeometry": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "additionalProperties": {
+                    "type": "number"
+                  },
+                  "type": "object"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bboxgeometry"
           }
         },
         "type": "object",
@@ -5778,6 +5934,29 @@
         },
         "type": "object",
         "title": "ClearOrphanGeneratedTagsResponse"
+      },
+      "CoLabelGapBreakdownEntry": {
+        "properties": {
+          "labelUuid": {
+            "type": "string",
+            "title": "Labeluuid"
+          },
+          "labelName": {
+            "type": "string",
+            "title": "Labelname"
+          },
+          "count": {
+            "type": "integer",
+            "title": "Count",
+            "default": 0
+          }
+        },
+        "type": "object",
+        "required": [
+          "labelUuid",
+          "labelName"
+        ],
+        "title": "CoLabelGapBreakdownEntry"
       },
       "CreateDirectoryPayload": {
         "properties": {
@@ -8264,6 +8443,17 @@
             ],
             "title": "Status"
           },
+          "missingLabelUuid": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Missinglabeluuid"
+          },
           "afterUuid": {
             "anyOf": [
               {
@@ -8437,6 +8627,13 @@
             "type": "integer",
             "title": "Colabelgapscount",
             "default": 0
+          },
+          "coLabelGapBreakdown": {
+            "items": {
+              "$ref": "#/components/schemas/CoLabelGapBreakdownEntry"
+            },
+            "type": "array",
+            "title": "Colabelgapbreakdown"
           },
           "hasRollup": {
             "type": "boolean",

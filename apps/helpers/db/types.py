@@ -858,6 +858,7 @@ class ActionKind(str, Enum):
     STRIP_UNVERIFIED_BBOXES = "strip_unverified_bboxes"
     RELABEL_BBOX = "relabel_bbox"
     TAG_BBOX = "tag_bbox"
+    ADD_BBOX = "add_bbox"
 
 
 class FilterChainStep(SQLModel, table=True):

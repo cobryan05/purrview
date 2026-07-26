@@ -127,6 +127,47 @@ class TestDetectorOverlapSteps:
         assert list(matches[0].bbox_matches.keys()) == ["bbox-1"]
 
 
+class TestAddBboxSteps:
+    async def test_non_overlapping_detection_becomes_unmatched(self):
+        existing = [{"uuid": "bbox-1", "x": 0.1, "y": 0.1, "width": 0.2, "height": 0.2, "label_uuid": "cat"}]
+        det = Detection(x=0.7, y=0.7, width=0.1, height=0.1, confidence=0.9, label_uuid="dog")
+        backend = FakeBackend(kinds={"det": "detector"}, detections={"det": [det]})
+        runner = FilterChainRunner([_step(model_name="det", action="add_bbox", iou_threshold=0.5)], backend)
+        matches = await runner.evaluate_image(b"img", existing)
+        assert len(matches) == 1
+        assert matches[0].unmatched_detections == [det]
+        assert matches[0].bbox_matches == {}
+
+    async def test_overlapping_detection_is_not_added(self):
+        existing = [{"uuid": "bbox-1", "x": 0.1, "y": 0.1, "width": 0.2, "height": 0.2, "label_uuid": "cat"}]
+        det = Detection(x=0.1, y=0.1, width=0.2, height=0.2, confidence=0.9, label_uuid="dog")
+        backend = FakeBackend(kinds={"det": "detector"}, detections={"det": [det]})
+        runner = FilterChainRunner([_step(model_name="det", action="add_bbox", iou_threshold=0.5)], backend)
+        matches = await runner.evaluate_image(b"img", existing)
+        assert matches == []
+
+    async def test_no_existing_bboxes_still_detects_and_adds_all(self):
+        """Unlike relabel/tag overlap steps (which short-circuit with no existing
+        bboxes), add_bbox must still run detection — every detection is new."""
+        d1 = Detection(x=0.1, y=0.1, width=0.1, height=0.1, confidence=0.9, label_uuid="dog")
+        d2 = Detection(x=0.5, y=0.5, width=0.1, height=0.1, confidence=0.8, label_uuid="cat")
+        backend = FakeBackend(kinds={"det": "detector"}, detections={"det": [d1, d2]})
+        runner = FilterChainRunner([_step(model_name="det", action="add_bbox")], backend)
+        matches = await runner.evaluate_image(b"img", [])
+        assert len(matches) == 1
+        assert matches[0].unmatched_detections == [d1, d2]
+
+    async def test_relabel_step_never_populates_unmatched_detections(self):
+        existing = [{"uuid": "bbox-1", "x": 0.7, "y": 0.7, "width": 0.1, "height": 0.1, "label_uuid": "cat"}]
+        det = Detection(x=0.1, y=0.1, width=0.1, height=0.1, confidence=0.9)
+        backend = FakeBackend(kinds={"det": "detector"}, detections={"det": [det]})
+        runner = FilterChainRunner([_step(model_name="det", action="relabel_bbox", iou_threshold=0.5)], backend)
+        matches = await runner.evaluate_image(b"img", existing)
+        # Non-overlapping under a relabel step yields no match at all (and would
+        # never carry unmatched_detections even if it did).
+        assert matches == []
+
+
 class TestStepOrderingAndEnabled:
     async def test_steps_run_in_order_field_order_not_list_order(self):
         backend = FakeBackend(
