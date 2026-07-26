@@ -10,6 +10,7 @@ import {
   fetchModelsLabelMappings,
   fetchModelsList,
   importModelUpload,
+  isTrainingServerReachable,
   setModelDevice,
   stageSourceModel,
 } from '/app-static/js/shared/api/models.js';
@@ -385,6 +386,14 @@ function buildCuratedForm({ target, editable }) {
   dropdownDiv.style.marginBottom = '0.5em';
   wrap.appendChild(dropdownDiv);
 
+  const conversionBadge = document.createElement('span');
+  conversionBadge.textContent = 'via training server';
+  conversionBadge.title = 'This model has no directly-published ONNX export; it will be converted from a .pt '
+    + 'checkpoint by the training server before import.';
+  conversionBadge.style.cssText = 'display:none; font-size:0.8em; padding:0.1em 0.5em; border-radius:1em; '
+    + 'background:var(--pico-mark-background-color, #ffe58f); margin-bottom:0.5em;';
+  wrap.appendChild(conversionBadge);
+
   const nameInput = document.createElement('input');
   nameInput.type = 'text';
   nameInput.placeholder = 'Model name (no extension)';
@@ -402,19 +411,12 @@ function buildCuratedForm({ target, editable }) {
   wrap.appendChild(overwriteLabel);
 
   let selectedKey = null;
+  let modelsByKey = new Map();
+  let trainingServerReachable = true;
 
-  fetchCuratedModels().then(async models => {
-    const dropdown = new DropDownField({
-      value: null,
-      editMode: true,
-      options: models.map(m => ({ key: m.key, text: m.displayName })),
-      placeholder: 'Choose a curated model...',
-      onChange: value => { selectedKey = value; },
-    });
-    dropdownDiv.appendChild(await dropdown.renderEdit());
-  }).catch(err => {
-    showPaneError(dropdownDiv, err.message);
-  });
+  function _selectedRequiresConversion() {
+    return Boolean(modelsByKey.get(selectedKey)?.requiresConversion);
+  }
 
   const { el: runnerSection } = createTaskRunnerSection({
     buttonLabel: 'Download & Import',
@@ -429,8 +431,13 @@ function buildCuratedForm({ target, editable }) {
         toast('Enter a model name', 3000, 'warning');
         return null;
       }
+      if (_selectedRequiresConversion() && !trainingServerReachable) {
+        toast('Training server is unreachable — cannot convert this model right now', 4000, 'warning');
+        return null;
+      }
+      const requiresConversion = _selectedRequiresConversion();
       return {
-        typename: 'ImportModelTask',
+        typename: requiresConversion ? 'ImportCuratedModelTask' : 'ImportModelTask',
         name: `Import model: ${modelName}`,
         params: {
           curated_key: selectedKey,
@@ -450,6 +457,46 @@ function buildCuratedForm({ target, editable }) {
     },
   });
   wrap.appendChild(runnerSection);
+
+  // createTaskRunnerSection doesn't expose its start button directly; it's
+  // always the first <button> appended to the section (before Cancel).
+  const startBtn = runnerSection.querySelector('button');
+
+  function _refreshConversionUI() {
+    const needsConversion = _selectedRequiresConversion();
+    conversionBadge.style.display = needsConversion ? 'inline-block' : 'none';
+
+    const disableDownload = needsConversion && !trainingServerReachable;
+    startBtn.disabled = disableDownload;
+    startBtn.title = disableDownload
+      ? 'Training server is unreachable — cannot convert this model right now.'
+      : '';
+  }
+
+  Promise.all([fetchCuratedModels(), isTrainingServerReachable()])
+    .then(async ([models, reachable]) => {
+      modelsByKey = new Map(models.map(m => [m.key, m]));
+      trainingServerReachable = reachable;
+
+      const dropdown = new DropDownField({
+        value: null,
+        editMode: true,
+        options: models.map(m => ({
+          key: m.key,
+          text: m.requiresConversion ? `${m.displayName} (via training server)` : m.displayName,
+        })),
+        placeholder: 'Choose a curated model...',
+        onChange: value => {
+          selectedKey = value;
+          _refreshConversionUI();
+        },
+      });
+      dropdownDiv.appendChild(await dropdown.renderEdit());
+      _refreshConversionUI();
+    })
+    .catch(err => {
+      showPaneError(dropdownDiv, err.message);
+    });
 
   return wrap;
 }

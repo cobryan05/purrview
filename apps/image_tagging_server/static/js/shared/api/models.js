@@ -149,10 +149,11 @@ export async function setModelDevice(modelName, device) {
 }
 
 /**
- * Fetch the curated base-model list (key + display name only) offered for
- * cold-start import. The full list (including onnx_url/model_family) lives
- * server-side in apps/helpers/curatedModels.py.
- * @returns {Promise<Array<{key: string, displayName: string}>>}
+ * Fetch the curated base-model list (key + display name + whether it needs
+ * training-server conversion) offered for cold-start import. The full list
+ * (including onnx_url/pt_url/model_family) lives server-side in
+ * apps/helpers/curatedModels.py.
+ * @returns {Promise<Array<{key: string, displayName: string, requiresConversion: boolean}>>}
  */
 export async function fetchCuratedModels() {
   const res = await apiFetch('/api/models/curated');
@@ -161,6 +162,24 @@ export async function fetchCuratedModels() {
     throw new Error(data.message || 'Failed to fetch curated models list');
   }
   return data.models ?? [];
+}
+
+/**
+ * Lightweight reachability check for the training server, used to enable/
+ * disable "needs conversion" curated downloads in the UI. Reuses the existing
+ * `/api/training/status` health endpoint (proxied straight through to the
+ * training server) — no new backend endpoint needed.
+ * @returns {Promise<boolean>}
+ */
+export async function isTrainingServerReachable() {
+  try {
+    const res = await apiFetch('/api/training/status');
+    if (!res.ok) return false;
+    const data = await res.json();
+    return data.status === 'success';
+  } catch {
+    return false;
+  }
 }
 
 /**
