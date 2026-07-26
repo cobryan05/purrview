@@ -354,6 +354,9 @@ const TARGET_PRESET_OPTIONS = Object.freeze([
   { value: 'image',        label: 'Only image classification', desc: 'Only whole-image labels.' },
   { value: 'dynamic',      label: 'Only dynamic labels',       desc: 'Only dynamic labels.' },
   { value: 'none',         label: 'Nothing',                   desc: 'Clear the set — pick labels individually.' },
+  // 'custom' is never picked from the menu — it's entered implicitly by toggling
+  // rows. It's listed so the menu can show it as the checked/active option.
+  { value: 'custom',       label: 'Custom (pick individually)', desc: 'Your hand-picked selection.' },
 ]);
 
 /**
@@ -468,7 +471,8 @@ async function mountSelectMode(container, { runtime, filter }) {
   const tgtBtn = _makeMenuButton('🎯', 'Apply-to-all target', () =>
     buildPresetMenu(
       'Apply-to-all target',
-      TARGET_PRESET_OPTIONS.filter(o => !o.needsTc || tc),
+      // 'custom' only appears once the user has hand-picked a selection.
+      TARGET_PRESET_OPTIONS.filter(o => (!o.needsTc || tc) && (o.value !== 'custom' || targetPreset === 'custom')),
       targetPreset,
       (v) => { closeMenu(); activeTrainingConfig.setTargetPreset(v); },
     ));
@@ -566,15 +570,19 @@ async function mountSelectMode(container, { runtime, filter }) {
   }
 
   // ── Apply-to-all targeting ──────────────────────────────────────────────
-  // Two layers: a persisted preset provides the baseline; ephemeral per-row
-  // overrides (and the section all/none controls) refine it. Re-picking a
-  // preset remounts the panel, which discards overrides — that's the reset.
+  // Two layers: a persisted preset provides the baseline; per-row overrides
+  // (and the section all/none controls) refine it. Any manual toggle switches
+  // the preset to 'custom' and persists the resulting selection to the session
+  // (via applyCustomTargeting), so it survives remounts — e.g. the remount a
+  // save triggers — instead of snapping back to the preset baseline.
   /** @type {Map<string, object>} uuid → label, for every rendered row */
   const labelByUuid = new Map();
-  /** @type {Map<string, boolean>} ephemeral per-row target overrides */
+  /** @type {Map<string, boolean>} per-row target overrides for this mount */
   const targetOverrides = new Map();
   /** @type {Map<string, () => void>} uuid → refresh that row's ◉/⊘ icon */
   const targetUpdaters = new Map();
+  // The hand-picked selection backing a 'custom' preset, restored on remount.
+  const customTargeted = activeTrainingConfig.getCustomTargeted();
 
   function baselineTargeted(label) {
     switch (targetPreset) {
@@ -583,6 +591,7 @@ async function mountSelectMode(container, { runtime, filter }) {
       case 'image':        return label.labelType !== 'dynamic' && label.scope === 'image';
       case 'dynamic':      return label.labelType === 'dynamic';
       case 'training-run': return !excludedUuids.has(label.uuid);
+      case 'custom':       return customTargeted.has(label.uuid);
       case 'all':
       default:             return true;
     }
@@ -609,6 +618,9 @@ async function mountSelectMode(container, { runtime, filter }) {
   function setTargetedMany(uuids, on) {
     uuids.forEach(u => { targetOverrides.set(u, on); targetUpdaters.get(u)?.(); });
     updateBulkLabel();
+    // Persist as a hand-picked 'custom' selection so it survives the next
+    // remount (does NOT publish, so this toggle won't itself trigger one).
+    activeTrainingConfig.applyCustomTargeting(targetedUuids());
   }
 
   function renderSelectRows(parentUuid, indent, bp = byParent) {

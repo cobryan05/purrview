@@ -780,3 +780,50 @@ class TestLabelApplyToAllTargeting:
         assert result.get("a") == "?", f"object row a should be spared; got {result}"
         assert result.get("b") == "?", f"object row b should be spared; got {result}"
         assert result.get("dyn") == "✗", f"dynamic row should be marked absent; got {result}"
+
+    def test_custom_targeting_persists_across_remount(self, shared_page: Page):
+        """A manual per-row toggle switches the preset to 'custom' and persists the
+        hand-picked selection, so it survives a remount (e.g. the one a save
+        triggers) instead of snapping back to the preset baseline."""
+        result = shared_page.evaluate(f"""async () => {{
+            const {{ labelsFetcher }} = await import('/app-static/js/shared/api/labels.js');
+            const {{ createLabelList }} = await import('/app-static/js/ui/labelList.js');
+            const {{ activeTrainingConfig }} = await import('/app-static/js/shared/activeTrainingConfig.js');
+
+            labelsFetcher.set('labelsMap', new Map([
+                ['obj-a', {{ uuid:'obj-a', name:'Cat', color:'#f00', parentUuid:null, labelType:'standard', scope:'object' }}],
+                ['obj-b', {{ uuid:'obj-b', name:'Dog', color:'#0f0', parentUuid:null, labelType:'standard', scope:'object' }}],
+            ]));
+            activeTrainingConfig.setTargetPreset('all');
+
+            const runtime = {self._runtime_with_image('rt-tgt-persist')};
+            const container = document.createElement('div');
+            document.body.appendChild(container);
+            const handle = await createLabelList(container, {{ mode:'select', runtime, filter:null }});
+            {self._status_helpers_js()}
+
+            // Exclude obj-a via its per-row toggle — this should flip the preset to 'custom'.
+            container.querySelector('[data-uuid="obj-a"] .label-target-toggle').click();
+            const presetAfterToggle = activeTrainingConfig.getTargetPreset();
+            const iconBeforeRemount = targetIconOf('obj-a');
+
+            // Remount (what saving an image triggers) must NOT reset the selection.
+            await handle.refresh();
+
+            const out = {{
+                presetAfterToggle,
+                iconBeforeRemount,
+                presetAfterRemount: activeTrainingConfig.getTargetPreset(),
+                aIconAfter: targetIconOf('obj-a'),
+                bIconAfter: targetIconOf('obj-b'),
+            }};
+
+            activeTrainingConfig.setTargetPreset('all');
+            handle.destroy(); container.remove();
+            return out;
+        }}""")
+        assert result.get("presetAfterToggle") == "custom", f"toggle should switch preset to custom; got {result}"
+        assert result.get("iconBeforeRemount") == "⊘", f"toggled row should be excluded; got {result}"
+        assert result.get("presetAfterRemount") == "custom", f"preset should stay custom after remount; got {result}"
+        assert result.get("aIconAfter") == "⊘", f"excluded row must survive remount; got {result}"
+        assert result.get("bIconAfter") == "◉", f"other row should stay targeted after remount; got {result}"

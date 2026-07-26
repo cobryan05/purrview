@@ -143,7 +143,7 @@ export const EventTypes = Object.freeze({
    * Payload: {
    *   config: TrainingConfigRead | null,
    *   visibilityPreset: 'all'|'training-run',
-   *   targetPreset: 'all'|'training-run'|'object'|'image'|'dynamic'|'none',
+   *   targetPreset: 'all'|'training-run'|'object'|'image'|'dynamic'|'none'|'custom',
    *   statsUpdated: boolean,
    * }
    */

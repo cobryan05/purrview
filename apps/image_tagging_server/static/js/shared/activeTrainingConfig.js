@@ -32,6 +32,7 @@ const SESSION_UUID_KEY = 'wtch_active_tc_uuid';
 const SESSION_FILTER_KEY = 'wtch_tc_filter_enabled';   // legacy 3-mode value — read once for migration
 const SESSION_VIS_KEY = 'wtch_tc_visibility_preset';
 const SESSION_TARGET_KEY = 'wtch_tc_target_preset';
+const SESSION_CUSTOM_KEY = 'wtch_tc_custom_targeted';  // JSON array of hand-picked targeted UUIDs (custom preset)
 
 /**
  * The two independent axes that used to be conflated in a single 3-way toggle:
@@ -41,14 +42,21 @@ const SESSION_TARGET_KEY = 'wtch_tc_target_preset';
  * filtered=(training-run,training-run).
  */
 export const VISIBILITY_PRESETS = ['all', 'training-run'];
-export const TARGET_PRESETS = ['all', 'training-run', 'object', 'image', 'dynamic', 'none'];
+export const TARGET_PRESETS = ['all', 'training-run', 'object', 'image', 'dynamic', 'none', 'custom'];
 
 /** @type {object|null} TrainingConfigRead */
 let _config = null;
 /** @type {'all'|'training-run'} */
 let _visibilityPreset = 'all';
-/** @type {'all'|'training-run'|'object'|'image'|'dynamic'|'none'} */
+/** @type {'all'|'training-run'|'object'|'image'|'dynamic'|'none'|'custom'} */
 let _targetPreset = 'all';
+/**
+ * Hand-picked targeted UUIDs backing the 'custom' preset. Only meaningful when
+ * _targetPreset === 'custom'. Persisted across remounts (e.g. the remount a
+ * save triggers) so a manual selection survives the whole session.
+ * @type {Set<string>}
+ */
+let _customTargeted = new Set();
 /** @type {Set<string>} Label UUIDs covered by this TC's model node */
 let _labelUuids = new Set();
 /** @type {{ labelStats: object[], totalImages: number } | null} */
@@ -118,6 +126,12 @@ export async function init() {
   if (VISIBILITY_PRESETS.includes(savedVis) && TARGET_PRESETS.includes(savedTarget)) {
     _visibilityPreset = savedVis;
     _targetPreset = savedTarget;
+    if (_targetPreset === 'custom') {
+      try {
+        const arr = JSON.parse(sessionStorage.getItem(SESSION_CUSTOM_KEY) || '[]');
+        if (Array.isArray(arr)) _customTargeted = new Set(arr);
+      } catch { _customTargeted = new Set(); }
+    }
   } else {
     // Migrate from the legacy 3-mode toggle (all | focus | filtered, plus the
     // even-older true/false boolean). Decompose it into the two new axes.
@@ -185,12 +199,34 @@ export function setVisibilityPreset(preset) {
 /** @returns {'all'|'training-run'|'object'|'image'|'dynamic'|'none'} */
 export function getTargetPreset() { return _targetPreset; }
 
-/** @param {'all'|'training-run'|'object'|'image'|'dynamic'|'none'} preset */
+/** @param {'all'|'training-run'|'object'|'image'|'dynamic'|'none'|'custom'} preset */
 export function setTargetPreset(preset) {
   if (!TARGET_PRESETS.includes(preset)) return;
   _targetPreset = preset;
   sessionStorage.setItem(SESSION_TARGET_KEY, preset);
+  // Picking any named preset discards a prior hand-picked selection.
+  if (preset !== 'custom') {
+    _customTargeted = new Set();
+    sessionStorage.removeItem(SESSION_CUSTOM_KEY);
+  }
   _publish();
+}
+
+/** @returns {Set<string>} copy of the hand-picked targeted UUIDs (custom preset) */
+export function getCustomTargeted() { return new Set(_customTargeted); }
+
+/**
+ * Record a hand-picked targeting selection and switch to the 'custom' preset.
+ * Persists to sessionStorage so it survives remounts, but intentionally does
+ * NOT publish ACTIVE_TRAINING_CONFIG_CHANGED — toggling a single row must not
+ * trigger a label-list remount (which would wipe in-progress interaction).
+ * @param {Iterable<string>} uuids  UUIDs currently targeted
+ */
+export function applyCustomTargeting(uuids) {
+  _customTargeted = new Set(uuids);
+  _targetPreset = 'custom';
+  sessionStorage.setItem(SESSION_TARGET_KEY, 'custom');
+  sessionStorage.setItem(SESSION_CUSTOM_KEY, JSON.stringify([..._customTargeted]));
 }
 
 /** Returns cached label stats, or null if not yet fetched. */
@@ -280,6 +316,8 @@ export const activeTrainingConfig = {
   setVisibilityPreset,
   getTargetPreset,
   setTargetPreset,
+  getCustomTargeted,
+  applyCustomTargeting,
   getLabelUuids,
   applyLabelFilter,
   getExcludedUuids,

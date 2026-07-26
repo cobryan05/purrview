@@ -134,7 +134,12 @@ export function mountActiveModelBar(containerId = 'active-model-bar') {
       }
       popup.appendChild(_makeSep('Apply-to-all target'));
       const curTgt = activeTrainingConfig.getTargetPreset();
-      for (const { value, title, desc } of TARGET_PRESET_INFO) {
+      // 'custom' is entered implicitly by toggling rows in the label list; show
+      // it here (as an active, selectable option) only once it's in effect.
+      const targetInfo = curTgt === 'custom'
+        ? [...TARGET_PRESET_INFO, { value: 'custom', title: 'Custom (pick individually)', desc: 'Your hand-picked selection from the label list.' }]
+        : TARGET_PRESET_INFO;
+      for (const { value, title, desc } of targetInfo) {
         popup.appendChild(_makeRadioRow('tc-target-preset', curTgt === value, title, desc,
           () => activeTrainingConfig.setTargetPreset(value)));
       }
