@@ -40,6 +40,7 @@ def load_yolo_onnx(model_path: str) -> InferenceProvider:
     import apps.helpers.inferenceProviders.libreYolo9InferenceProvider  # noqa: F401
     import apps.helpers.inferenceProviders.ultralyticsE2eInferenceProvider  # noqa: F401
     import apps.helpers.inferenceProviders.ultralyticsYoloV8InferenceProvider  # noqa: F401
+    import apps.helpers.inferenceProviders.yoloxInferenceProvider  # noqa: F401
 
     metadata = metadataUtils.get_model_metadata(model_path, create_json_if_missing=True)
     providers = metadataUtils.providers_for_device(metadata.get("device", metadataUtils.DEFAULT_MODEL_DEVICE))
