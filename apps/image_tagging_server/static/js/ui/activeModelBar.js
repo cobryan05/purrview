@@ -330,22 +330,29 @@ export function mountActiveModelBar(containerId = 'active-model-bar') {
       content.appendChild(loading);
 
       try {
+        // Fetch labels map for names / colors — independent of stats/readiness,
+        // so kick it off in parallel rather than after them.
+        const labelsPromise = fetchLabels().catch(() => new Map());
+
         // Use cached stats/readiness if available, otherwise fetch both
-        // (refreshStats() fetches label-stats + readiness together).
+        // (refreshStats() fetches label-stats + readiness together). Only
+        // retry readiness while it hasn't definitively failed — otherwise a
+        // persistent readiness error would force a full refetch every time
+        // the popup opens.
         let cachedStats = activeTrainingConfig.getCachedStats();
         let cachedReadiness = activeTrainingConfig.getCachedReadiness();
-        if (!cachedStats || !cachedReadiness) {
+        let readinessFailed = activeTrainingConfig.getReadinessFailed();
+        if (!cachedStats || (!cachedReadiness && !readinessFailed)) {
           await activeTrainingConfig.refreshStats();
           cachedStats = activeTrainingConfig.getCachedStats();
           cachedReadiness = activeTrainingConfig.getCachedReadiness();
+          readinessFailed = activeTrainingConfig.getReadinessFailed();
         }
         if (!cachedStats) throw new Error('No stats available');
 
         const { labelStats, totalImages } = cachedStats;
+        const labelsMap = await labelsPromise;
         content.innerHTML = '';
-
-        // Fetch labels map for names / colors
-        const labelsMap = await fetchLabels().catch(() => new Map());
 
         // Readiness + coverage-table cells open the review modal (much
         // taller content, no side panel of its own) — close this floating
@@ -356,12 +363,17 @@ export function mountActiveModelBar(containerId = 'active-model-bar') {
           readinessTitle.textContent = 'Training readiness';
           content.appendChild(readinessTitle);
           renderReadinessStats(content, { config: tc, readiness: cachedReadiness, onNavigate: _closeStatsPopup });
-
-          const coverageTitle = document.createElement('div');
-          coverageTitle.style.cssText = 'font-weight:600;margin:0.75em 0 0.3em;';
-          coverageTitle.textContent = 'Dataset coverage by label';
-          content.appendChild(coverageTitle);
+        } else if (readinessFailed) {
+          const readinessError = document.createElement('div');
+          readinessError.style.cssText = 'color:#f66;margin-bottom:0.3em;';
+          readinessError.textContent = 'Could not load training readiness.';
+          content.appendChild(readinessError);
         }
+
+        const coverageTitle = document.createElement('div');
+        coverageTitle.style.cssText = 'font-weight:600;margin:0.75em 0 0.3em;';
+        coverageTitle.textContent = 'Dataset coverage by label';
+        content.appendChild(coverageTitle);
 
         renderCoverageStats(content, { config: tc, labelStats, totalImages, labelsMap, onNavigate: _closeStatsPopup });
       } catch (err) {

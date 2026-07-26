@@ -321,3 +321,59 @@ class TestReadinessInPopup:
         page.locator(".tc-stats-panel", has_text="✓ 5 ready").get_by_text("✓ 5 ready", exact=False).click()
         expect(page.locator(".canvas-modal-title, strong", has_text="Ready for Training")).to_be_visible()
         expect(page.locator(".tc-stats-panel")).to_have_count(0)
+
+
+class TestReadinessFetchFailure:
+    """If the readiness endpoint errors, the popup must still show the
+    coverage table (with its heading) plus a visible error for the readiness
+    section — not silently drop both, and not refetch on every reopen."""
+
+    def _open_popup_with_failing_readiness(self, page: Page, base_url: str):
+        _navigate(page, base_url, [TC_1])
+        _mock_label_stats(page, "tc-1", LABEL_STATS)
+        _mock_labels(page, LABELS)
+        readiness_calls = {"count": 0}
+
+        def _fail_readiness(route):
+            readiness_calls["count"] += 1
+            route.fulfill(status=500, content_type="application/json", body="{}")
+
+        page.route("**/api/training-configs/tc-1/readiness", _fail_readiness)
+        page.route(
+            lambda url: "/api/model-configs" in url.split("?")[0],
+            lambda route: route.fulfill(
+                status=200, content_type="application/json",
+                body=json.dumps({"status": "success", "configs": []}),
+            ) if route.request.method == "GET" else route.fallback(),
+        )
+        _set_active(page, TC_1)
+        return readiness_calls
+
+    def test_coverage_table_still_shown_with_heading(self, page: Page, base_url: str):
+        self._open_popup_with_failing_readiness(page, base_url)
+        page.locator(".active-model-bar__name").click()
+        panel = page.locator(".tc-stats-panel")
+        expect(panel.get_by_text("Dataset coverage by label")).to_be_visible()
+        expect(panel.locator("table")).to_have_count(2)
+
+    def test_readiness_error_shown_instead_of_silent_omission(self, page: Page, base_url: str):
+        self._open_popup_with_failing_readiness(page, base_url)
+        page.locator(".active-model-bar__name").click()
+        panel = page.locator(".tc-stats-panel")
+        expect(panel.get_by_text("Could not load training readiness", exact=False)).to_be_visible()
+        expect(panel.get_by_text("Training readiness", exact=True)).to_have_count(0)
+
+    def test_reopening_popup_does_not_refetch_readiness_forever(self, page: Page, base_url: str):
+        readiness_calls = self._open_popup_with_failing_readiness(page, base_url)
+        page.locator(".active-model-bar__name").click()
+        page.wait_for_selector(".tc-stats-panel table")
+        expect(page.locator(".tc-stats-panel").get_by_text("Could not load training readiness", exact=False)).to_be_visible()
+        page.locator(".active-model-bar__name").click()  # toggle closed
+        expect(page.locator(".tc-stats-panel")).to_have_count(0)
+
+        page.locator(".active-model-bar__name").click()
+        page.wait_for_selector(".tc-stats-panel table")
+        assert readiness_calls["count"] == 1, (
+            "readiness should only be fetched once after a definitive failure, "
+            f"not refetched on every popup reopen (got {readiness_calls['count']} calls)"
+        )

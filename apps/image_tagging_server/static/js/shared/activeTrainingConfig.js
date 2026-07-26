@@ -63,6 +63,8 @@ let _labelUuids = new Set();
 let _stats = null;
 /** @type {{ readyCount: number, needsReviewCount: number, notStartedCount: number, rollUpActive: boolean } | null} */
 let _readiness = null;
+/** True if the most recent readiness fetch attempt failed (distinct from "not yet fetched"). */
+let _readinessFailed = false;
 let _statsFetching = false;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -102,8 +104,13 @@ async function _doFetchStats() {
   ]);
   if (statsResult.status === 'fulfilled') _stats = statsResult.value;
   else console.warn('[activeTrainingConfig] Failed to fetch label stats:', statsResult.reason);
-  if (readinessResult.status === 'fulfilled') _readiness = readinessResult.value;
-  else console.warn('[activeTrainingConfig] Failed to fetch readiness:', readinessResult.reason);
+  if (readinessResult.status === 'fulfilled') {
+    _readiness = readinessResult.value;
+    _readinessFailed = false;
+  } else {
+    console.warn('[activeTrainingConfig] Failed to fetch readiness:', readinessResult.reason);
+    _readinessFailed = true;
+  }
   _statsFetching = false;
   _publish({ statsUpdated: true });
 }
@@ -173,6 +180,7 @@ export async function setActive(tcOrNull) {
   _config = tcOrNull ?? null;
   _stats = null;
   _readiness = null;
+  _readinessFailed = false;
   if (_config) {
     sessionStorage.setItem(SESSION_UUID_KEY, _config.uuid);
     _labelUuids = await _computeLabelUuids(_config);
@@ -235,6 +243,9 @@ export function getCachedStats() { return _stats; }
 /** Returns cached readiness (ready/needs-review/not-started counts), or null if not yet fetched. */
 export function getCachedReadiness() { return _readiness; }
 
+/** True if the most recent readiness fetch failed — distinct from "not yet fetched". */
+export function getReadinessFailed() { return _readinessFailed; }
+
 /**
  * Fetch fresh label stats + readiness and re-publish. Awaitable.
  * @returns {Promise<void>}
@@ -243,6 +254,7 @@ export async function refreshStats() {
   if (!_config) return;
   _stats = null;
   _readiness = null;
+  _readinessFailed = false;
   await _doFetchStats();
 }
 
@@ -323,5 +335,6 @@ export const activeTrainingConfig = {
   getExcludedUuids,
   getCachedStats,
   getCachedReadiness,
+  getReadinessFailed,
   refreshStats,
 };
