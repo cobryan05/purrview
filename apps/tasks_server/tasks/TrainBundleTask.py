@@ -40,7 +40,7 @@ from db_client.models.bundle_target_detection_dataset_payload import (
 from db_client.models.model_bundle_create import ModelBundleCreate
 
 from apps import APPS, APPS_CONFIG
-from apps.helpers.model_type_map import MODEL_TYPE_TO_TRAINER_TYPE
+from apps.helpers.model_type_map import resolve_trainer_type
 
 from ._classifier_job_builders import (
     build_binary_classifier_job,
@@ -231,7 +231,7 @@ class TrainBundleTask(Task, TrainingJobRunnerMixin):
         )
 
         job_config = {
-            "trainer_type": "object_detection",
+            "trainer_type": resolve_trainer_type("object_detection", target["architecture"]),
             "model_name": model_name,
             "architecture": target["architecture"],
             "class_names": class_names,
@@ -248,7 +248,7 @@ class TrainBundleTask(Task, TrainingJobRunnerMixin):
         model_name, manifest, job_config = build_binary_classifier_job(
             img_api,
             label_uuid=target["label_uuids"][0],
-            trainer_type=MODEL_TYPE_TO_TRAINER_TYPE.get(target["model_type"], target["model_type"]),
+            trainer_type=resolve_trainer_type(target["model_type"], target["architecture"]),
             model_name=model_name,
             architecture=target["architecture"],
             role=target["role"],

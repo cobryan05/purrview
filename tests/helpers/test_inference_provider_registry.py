@@ -65,6 +65,17 @@ class TestRegistryResolvesExpectedProvider:
         """Choice (a): yolo 5/7 resolve to a family string with no provider."""
         assert "ultralytics_yolov5" not in inference_provider_registry
 
+    def test_ultralytics_detect_registered_same_class_as_yolov8(self):
+        """ultralytics_detection_trainer.py writes model_family="ultralytics_detect"
+        for v8/Ultralytics-v9/v11/v12 — all share UltralyticsYoloV8InferenceProvider's
+        decode (cxcywh boxes, pre-sigmoid'd scores, no objectness). Stacked
+        @register_inference_provider decorators must register the SAME class
+        under both the legacy "ultralytics_yolov8" key (existing on-disk
+        sidecars) and the new "ultralytics_detect" key (new sidecars) — no
+        second class, no data migration needed."""
+        assert inference_provider_registry["ultralytics_detect"] is UltralyticsYoloV8InferenceProvider
+        assert inference_provider_registry["ultralytics_detect"] is inference_provider_registry["ultralytics_yolov8"]
+
 
 class TestLoadYoloOnnxDispatch:
     """End-to-end through load_yolo_onnx for the cases that don't require an
