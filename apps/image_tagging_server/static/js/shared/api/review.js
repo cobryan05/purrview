@@ -216,6 +216,25 @@ export async function deleteBbox(bboxUuid) {
 }
 
 /**
+ * Insert a single new bbox on an image (targeted insert — leaves siblings
+ * untouched). Used by "Run Model on Results" to materialize a detection that
+ * overlapped no existing box.
+ * @param {{ imagePath: string, labelUuid: string, x: number, y: number,
+ *   width: number, height: number, tagUuids?: string[], metadataJson?: object }} opts
+ * @returns {Promise<string>} the new bbox uuid
+ */
+export async function addBbox({ imagePath, labelUuid, x, y, width, height, tagUuids = [], metadataJson = null }) {
+  const res = await apiFetch('/api/images/bbox', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ imagePath, labelUuid, x, y, width, height, tagUuids, metadataJson }),
+  });
+  if (!res.ok) throw new Error(`addBbox failed: ${res.status}`);
+  const data = await res.json();
+  return data.bboxUuid;
+}
+
+/**
  * Apply an action to all bboxes matching the current filter, across all pages.
  * The filter params mirror fetchReviewQueue; bboxTagFilter / bboxLabelFilter
  * are the client-computed bbox-level subset filters.
