@@ -252,6 +252,18 @@ main.container {
   margin-left: auto;
 }
 
+/* Curated Verification/Label/Tag surface (fetchImages/custom-mode modals, e.g.
+   similarity/dissimilarity search) — always its own full-width row instead of
+   sharing the toolbar row and inheriting the last-child right-float above,
+   which left it stranded on a half-empty line whenever the row didn't fit. */
+.review-toolbar .review-toolbar__group.modal-toolbar-row:last-child {
+  margin-left: 0;
+  flex-basis: 100%;
+  border-top: 1px solid #2a2a2a;
+  padding-top: 0.35em;
+  margin-top: 0.1em;
+}
+
 /* ===== Review: Action bar ===== */
 /* Sits directly above the result grid — select-all, bulk-apply, prev/next, status.
    Tighter padding so it reads as part of the results area, not the toolbar. */

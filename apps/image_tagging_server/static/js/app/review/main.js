@@ -54,8 +54,6 @@ import { createBboxVerificationControl } from '/app-static/js/app/review/bboxVer
 import { defaultCuratedFilterState, bboxMatchesFilter, imageMatchesFilter } from '/app-static/js/app/review/filterPredicate.js';
 import { createMultiSelectDropdown } from '/app-static/js/ui/utils/index.js';
 import { flattenHierarchy } from '/app-static/js/ui/labelList.js';
-import { isDynamicLabelsVisible } from '/app-static/js/shared/activeModel.js';
-
 
 const DEFAULT_PAGE_SIZE = 250;
 const MAX_ENTRIES = 1000; // hard cap on total cards per page
@@ -547,9 +545,10 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
     let _labelsDropdown = null;
     function _buildCuratedLabelsDropdown() {
       const regularMap = new Map([...labels].filter(([, l]) => l.labelType !== 'dynamic' && l.scope !== 'image'));
-      const dynamicMap = isDynamicLabelsVisible()
-        ? new Map([...labels].filter(([, l]) => l.labelType === 'dynamic' && l.scope !== 'image'))
-        : new Map();
+      // Dynamic labels are always filterable here — see filters.js's
+      // buildLabelsControls for why this doesn't gate on the "Show dynamic
+      // labels" picker-clutter preference.
+      const dynamicMap = new Map([...labels].filter(([, l]) => l.labelType === 'dynamic' && l.scope !== 'image'));
       const flatRegular = flattenHierarchy(regularMap);
       const flatDynamic = flattenHierarchy(dynamicMap);
       const toItem = l => ({ uuid: l.uuid, name: l.name, color: l.color || null, depth: l.depth, parentUuid: l.parentUuid ?? null });

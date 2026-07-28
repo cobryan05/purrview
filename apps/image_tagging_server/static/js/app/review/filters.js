@@ -22,7 +22,7 @@ import { createMultiSelectDropdown, makeLabelFilterNotice } from '/app-static/js
 import { createImageLabelConditions } from '/app-static/js/ui/imageTagConditions.js';
 import { createBboxVerificationControl } from '/app-static/js/app/review/bboxVerificationControl.js';
 import { flattenHierarchy } from '/app-static/js/ui/labelList.js';
-import { filterVisibleTags, isDynamicLabelsVisible, groupTagsByKind } from '/app-static/js/shared/activeModel.js';
+import { filterVisibleTags, groupTagsByKind } from '/app-static/js/shared/activeModel.js';
 import { activeTrainingConfig } from '/app-static/js/shared/activeTrainingConfig.js';
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
 import { fetchTags } from '/app-static/js/shared/api/tags.js';
@@ -118,9 +118,14 @@ export function createFilterPanel(labels, tags, onFilterChange, { inlineControls
     const regularMap = new Map(
       [...filteredLabels].filter(([, l]) => l.labelType !== 'dynamic' && l.scope !== 'image')
     );
-    const dynamicMap = isDynamicLabelsVisible()
-      ? new Map([...filteredLabels].filter(([, l]) => l.labelType === 'dynamic' && l.scope !== 'image'))
-      : new Map();
+    // Dynamic labels are always filterable here, even though the "Show dynamic
+    // labels" preference (activeModel.js) hides them from label-assignment
+    // pickers by default — that preference is about decluttering label
+    // *creation* UI, not about whether existing dynamic-labeled bboxes can be
+    // searched for.
+    const dynamicMap = new Map(
+      [...filteredLabels].filter(([, l]) => l.labelType === 'dynamic' && l.scope !== 'image')
+    );
 
     const flatRegular = flattenHierarchy(regularMap);
     const flatDynamic = flattenHierarchy(dynamicMap);
@@ -257,7 +262,6 @@ export function createFilterPanel(labels, tags, onFilterChange, { inlineControls
       buildLabelsControls();
       imageLabelConditionsComp.setAvailableLabels(_imageScopedLabels());
     }],
-    [EventTypes.DYNAMIC_LABELS_VISIBILITY_CHANGED, buildLabelsControls],
     [EventTypes.TAG_KIND_VISIBILITY_CHANGED,       _onTagKindVisibilityChanged],
     [EventTypes.TAGS_UPDATED,                      _onTagsUpdated],
     [EventTypes.LABELS_UPDATED,                    _onLabelsUpdated],
