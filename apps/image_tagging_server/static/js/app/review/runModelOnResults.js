@@ -43,6 +43,8 @@ import { toast, Logger } from '/app-static/js/ui/utils/logging.js';
 import { expandLabelFilterSet, bboxHasAnyTag, VERIFICATION_TAG_BY_STATE } from '/app-static/js/app/review/filterPredicate.js';
 import { openClassifierTagConfirmationModal } from '/app-static/js/app/review/runClassifierOnResults.js';
 import { labelChip as _labelChip } from '/app-static/js/app/review/labelChip.js';
+import { createCardGrid } from '/app-static/js/app/review/cardGrid.js';
+import { attachContext } from '/app-static/js/ui/contextMenu/index.js';
 
 const _CLASSIFIER_KINDS = new Set(['image_classifier', 'multi_label_classifier']);
 
@@ -202,6 +204,65 @@ export async function resolveCandidateScope(ctx) {
 }
 
 /**
+ * Per-card adapter for a preview candidate — the object the shared cardGrid
+ * builders and the `candidateBbox` context-menu provider drive off. It mutates
+ * the in-memory candidate / preview state ONLY; nothing hits the DB until the
+ * user hits Apply (the existing batch contract). Scope decision 3: no
+ * `setVerification` / `toggleTag` (the `candidateBbox` provider never calls
+ * them, so their absence is safe).
+ *
+ * Geometry edited in the canvas editor lands back on `candidate.geometry`
+ * (the `{x,y,width,height}` field the Apply path reads: existing boxes pass it
+ * as `bboxGeometry[bboxUuid]`, new boxes as `addBbox`'s x/y/width/height).
+ *
+ * @param {object} candidate - the transient preview candidate object.
+ * @param {HTMLElement} cardEl - the candidate's card element.
+ * @param {{
+ *   labels: Map<string, object>,
+ *   removeCandidate: (candidate: object) => void,
+ *   rerenderProposedChip: (candidate: object) => void,
+ *   openEditor: (candidate: object) => void,
+ * }} previewController
+ */
+export function makeCandidateBboxAdapter(candidate, cardEl, previewController) {
+  const { labels, removeCandidate, rerenderProposedChip, openEditor } = previewController;
+  return {
+    // ── Display getters (used by the context menu / any card builder) ──────
+    // New-box candidates have no real uuid — return null so the similar-search
+    // menu item (which `?.`-guards getBboxUuid) self-disables/filters them out.
+    getBboxUuid() { return candidate.isNew ? null : (candidate.bboxUuid ?? null); },
+    getImageUuid() { return candidate.imageUuid ?? null; },
+    getLabelUuid() { return candidate.proposedLabelUuid ?? null; },
+    getLabelName() { return candidate.proposedLabelName ?? null; },
+    getLabelColor() { return labels.get(candidate.proposedLabelUuid)?.color ?? null; },
+    getConfidence() { return candidate.confidence ?? null; },
+    getThumbnailUrl() {
+      return candidate.isNew
+        ? getImageThumbnailUrl(candidate.imagePath, 300)
+        : getBboxThumbnailUrl(candidate.imagePath, candidate.bboxUuid, 300);
+    },
+
+    // ── Relabel (no DB) ────────────────────────────────────────────────────
+    // Sets the proposed label on the candidate and re-renders its chip in place.
+    // The name comes from the labels Map (fetchLabels() returns a Map).
+    async applyLabel(labelUuid) {
+      candidate.proposedLabelUuid = labelUuid;
+      candidate.proposedLabelName = labelUuid ? (labels.get(labelUuid)?.name ?? null) : null;
+      rerenderProposedChip(candidate);
+    },
+
+    // ── Remove from preview (no DB) ────────────────────────────────────────
+    // Drops the candidate so Apply won't include it (unchecks + removes the row).
+    async remove() {
+      removeCandidate(candidate);
+    },
+
+    // ── Edit geometry (opens the shared canvas editor; no DB) ──────────────
+    openEditor() { openEditor(candidate); },
+  };
+}
+
+/**
  * Confirmation modal for "Run Model on Results" (Chunk C). Lets the user
  * review the server's proposed relabels, pick relabel-vs-delete, check/uncheck
  * individual candidates, and apply the result via `bulkApplyBboxesByUuids`
@@ -343,8 +404,109 @@ export async function openRelabelConfirmationModal(candidates, ctx) {
   grid.className = 'relabel-modal-grid review-grid';
   body.appendChild(grid);
 
-  /** @type {Array<{candidate: object, checkbox: HTMLInputElement, proposedChip: HTMLElement}>} */
+  /** @type {Array<{candidate: object, card: HTMLElement, checkbox: HTMLInputElement, proposedChip: HTMLElement}>} */
   const rows = [];
+
+  // ── Shared selection controller (click / shift-range select) ────────────
+  // The candidate cards get real review-card selection semantics via the shared
+  // cardGrid controller — distinct from the per-card "will Apply" checkbox
+  // (which stays the Apply bit). `_visibleEntries` mirrors `rows` in order so
+  // shift-range select and (future) type-fading iterate the same list.
+  const _visibleEntries = [];
+  const cardGrid = createCardGrid(grid, {
+    getVisibleEntries: () => _visibleEntries,
+    entryId: (entry) => entry.id,
+    onSelectionChange: () => {},
+    hooks: { toast: (m) => toast(m, 3000, 'warning') },
+  });
+
+  // Re-render the proposed-label chip in place after an in-memory relabel.
+  function _rerenderProposedChip(candidate) {
+    const row = rows.find(r => r.candidate === candidate);
+    if (!row) return;
+    const fresh = _labelChip(candidate.proposedLabelName, candidate.proposedLabelUuid, ctx.labels);
+    fresh.classList.add('relabel-modal-proposed-chip');
+    // Preserve the delete-mode dimming currently applied to proposed chips.
+    fresh.style.opacity = row.proposedChip.style.opacity;
+    row.proposedChip.replaceWith(fresh);
+    row.proposedChip = fresh;
+  }
+
+  // Drop a candidate from the preview so Apply won't include it. Uncheck (so the
+  // "will Apply" bit is off even if the row lingered) and remove the row/card.
+  function _removeCandidate(candidate) {
+    const idx = rows.findIndex(r => r.candidate === candidate);
+    if (idx === -1) return;
+    const { card, checkbox } = rows[idx];
+    checkbox.checked = false;
+    cardGrid.selected.delete(rows[idx].id);
+    rows.splice(idx, 1);
+    const veIdx = _visibleEntries.findIndex(e => e.candidate === candidate);
+    if (veIdx !== -1) _visibleEntries.splice(veIdx, 1);
+    card.remove();
+    _updateApplyBtn();
+  }
+
+  // Open the shared canvas editor on a candidate box. Editing geometry mutates
+  // `candidate.geometry` in memory (the field Apply reads); Cancel discards.
+  async function _openCandidateEditor(candidate) {
+    const { showCanvasModal } = await import('/app-static/js/app/review/main.js');
+    const img = {
+      uuid: candidate.imageUuid,
+      filename: candidate.imagePath,
+      // The canvas loads the real image's bboxes itself; for a NEW box we seed
+      // the proposed geometry as a not-yet-persisted box below.
+      bboxes: [],
+    };
+    // A synthetic bbox object for the editor's initial-target argument.
+    const candidateBbox = {
+      uuid: candidate.isNew ? 'new' : candidate.bboxUuid,
+      labelUuid: candidate.proposedLabelUuid,
+      label: ctx.labels.get(candidate.proposedLabelUuid) ?? null,
+      ...(candidate.geometry ?? {}),
+      tags: [],
+    };
+    const seedBboxes = (candidate.isNew && candidate.geometry)
+      ? [{
+          uuid: 'new',
+          label: ctx.labels.get(candidate.proposedLabelUuid)
+            ? { uuid: candidate.proposedLabelUuid, text: candidate.proposedLabelName, color: ctx.labels.get(candidate.proposedLabelUuid).color }
+            : undefined,
+          x: candidate.geometry.x,
+          y: candidate.geometry.y,
+          width: candidate.geometry.width,
+          height: candidate.geometry.height,
+          dirty: false,
+        }]
+      : null;
+    const previewEditOpts = {
+      allowNavigation: false,
+      broadcast: false,
+      seedBboxes,
+      // persist reads edited geometry back into the candidate(s) WITHOUT the DB.
+      // Existing boxes are matched by uuid; a single new box takes the sole
+      // seeded 'new' box's geometry.
+      persist: (runtime) => {
+        const uiBboxes = [...runtime.state.image.bboxes.values()];
+        if (candidate.isNew) {
+          const box = uiBboxes.find(b => b.uuid === 'new') ?? uiBboxes[0];
+          if (box) candidate.geometry = { x: box.x, y: box.y, width: box.width, height: box.height };
+        } else {
+          const box = uiBboxes.find(b => b.uuid === candidate.bboxUuid);
+          if (box) candidate.geometry = { x: box.x, y: box.y, width: box.width, height: box.height };
+        }
+        return true;
+      },
+    };
+    showCanvasModal(candidateBbox, img, ctx.labels, async () => {}, null, previewEditOpts);
+  }
+
+  const _previewController = {
+    labels: ctx.labels,
+    removeCandidate: _removeCandidate,
+    rerenderProposedChip: _rerenderProposedChip,
+    openEditor: _openCandidateEditor,
+  };
 
   // ── Same-image hover highlight ──────────────────────────────────────────
   // Candidates are already grouped adjacently by image (see `sorted` above);
@@ -364,10 +526,19 @@ export async function openRelabelConfirmationModal(candidates, ctx) {
     });
   }
 
+  let _cardIndex = 0;
   for (const candidate of sorted) {
     const card = document.createElement('div');
     card.className = 'review-card relabel-modal-card';
+    // Stable id for the selection controller: real uuid for existing boxes, a
+    // synthetic one for NEW candidates (no uuid yet). Cards carry data-kind and
+    // data-bbox-uuid so the shared applySelect shift-range selectors resolve.
+    const cardId = candidate.isNew
+      ? `candidate-new-${_cardIndex}`
+      : candidate.bboxUuid;
     card.dataset.imageUuid = candidate.imageUuid;
+    card.dataset.bboxUuid = cardId;
+    card.dataset.kind = 'bbox';
     _attachGroupHighlight(card, candidate.imageUuid);
 
     // Existing-bbox candidates: let the preview fetch the image's real bboxes
@@ -469,7 +640,53 @@ export async function openRelabelConfirmationModal(candidates, ctx) {
 
     card.appendChild(info);
     grid.appendChild(card);
-    rows.push({ candidate, checkbox, proposedChip });
+
+    const entry = { id: cardId, kind: 'bbox', candidate, card };
+    _visibleEntries.push(entry);
+    const index = _cardIndex;
+
+    // ── Card-click selection (separate from the Apply checkbox) ────────────
+    // The shared applySelect drives off a detached checkbox proxy so selection
+    // (the `.selected` class + the controller's Set, used for multi-target
+    // context-menu actions) stays independent of the visible "will Apply" box.
+    const selProxy = document.createElement('input');
+    selProxy.type = 'checkbox';
+    let _selTimer = null;
+    card.addEventListener('click', (e) => {
+      // Ignore clicks on the Apply checkbox and interactive card chrome.
+      if (e.target === checkbox) return;
+      if (e.shiftKey) e.preventDefault();
+      clearTimeout(_selTimer);
+      const shiftKey = e.shiftKey;
+      const newChecked = !cardGrid.selected.has(cardId);
+      _selTimer = setTimeout(() => {
+        if (!card.isConnected) return;
+        selProxy.checked = !newChecked; // applySelect flips it to newChecked
+        cardGrid.applySelect(selProxy, card, cardId, 'bbox', index, shiftKey, newChecked);
+      }, 220);
+    });
+
+    // ── Double-click → open the shared canvas geometry editor ──────────────
+    card.addEventListener('dblclick', (e) => {
+      if (e.target === checkbox) return;
+      clearTimeout(_selTimer);
+      _openCandidateEditor(candidate);
+    });
+
+    // ── Right-click context menu (Relabel / Edit-geometry / Remove / Similar)
+    attachContext(card, () => {
+      const _selected = cardGrid.selected;
+      // Multi-select: act on every selected candidate of this kind.
+      const targets = (_selected.has(cardId) && _selected.size > 1)
+        ? _visibleEntries.filter(en => _selected.has(en.id))
+        : [entry];
+      return targets.map(en => ({
+        adapters: { candidateBbox: makeCandidateBboxAdapter(en.candidate, en.card, _previewController) },
+      }));
+    });
+
+    rows.push({ id: cardId, candidate, card, checkbox, proposedChip });
+    _cardIndex += 1;
   }
 
   function _setDeleteMode(isDelete) {

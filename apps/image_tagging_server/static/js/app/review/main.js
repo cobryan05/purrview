@@ -2354,7 +2354,7 @@ export function _mergeExternalBboxChanges(runtime, updatedBboxes, deletedBboxUui
  *   Optional navigation context. When provided, the [ ] hotkeys navigate through
  *   `items`; `onClose` is called after the modal closes with the last-viewed image.
  */
-async function showCanvasModal(bbox, img, labels, onSaved, navContext = null, editOpts = {}) {
+export async function showCanvasModal(bbox, img, labels, onSaved, navContext = null, editOpts = {}) {
   if (_modalOpen) return;
   _modalOpen = true;
 

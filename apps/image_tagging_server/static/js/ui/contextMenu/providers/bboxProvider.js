@@ -43,25 +43,89 @@ async function _buildLabelPanel(onSelect) {
   return wrap;
 }
 
+// ── Individual menu-item builders ───────────────────────────────────────────
+// Exported so a trimmed context type (e.g. 'candidateBbox' in the Run-Model-on-
+// Results preview) can compose a subset of these items instead of forking the
+// whole provider. Each takes `(adapters, ctx)` — the same args the provider fn
+// receives — and returns a single menu-item descriptor.
+
+export function buildApplyLabelItem(adapters, ctx) {
+  const labelSuffix = ctx.count > 1 ? ` to ${ctx.count} boxes` : '';
+  return {
+    label: `Apply label${labelSuffix}`,
+    submenu: () => asyncPanel('240px', () => _buildLabelPanel(async uuid => {
+      await runAll(adapters, a => a.applyLabel(uuid));
+      ctx.close();
+    })),
+  };
+}
+
+export function buildTagsItem(adapters, ctx) {
+  const labelSuffix = ctx.count > 1 ? ` to ${ctx.count} boxes` : '';
+  return {
+    label: `Tags${labelSuffix}`,
+    submenu: () => asyncPanel('220px', () => buildTagPanel(adapters)),
+  };
+}
+
+export function buildEditGeometryItem(adapters, ctx) {
+  // Preview-only: opens the shared canvas editor on the (single) target box so
+  // its geometry can be tweaked. Disabled for multi-select — the canvas editor
+  // is single-image. Wired via the adapter's `openEditor()` method (candidate
+  // adapter only; the review grid uses double-click instead).
+  return {
+    label: 'Edit geometry…',
+    disabled: ctx.count > 1,
+    onSelect: () => {
+      const open = adapters[0].openEditor;
+      ctx.close();
+      open?.();
+    },
+  };
+}
+
+export function buildDeleteItem(adapters, ctx, { label } = {}) {
+  const count = ctx.count;
+  return {
+    label: label ?? (count > 1 ? `Delete ${count} boxes` : 'Delete'),
+    danger: true,
+    onSelect: async () => {
+      if (count > 1) {
+        const confirmed = await showConfirmModal({
+          title: 'Delete boxes',
+          message: `Delete ${count} boxes?`,
+          confirmText: 'Delete',
+          danger: true,
+        });
+        if (!confirmed) return;
+      }
+      await runAll(adapters, a => a.remove());
+    },
+  };
+}
+
+export function buildSimilarBboxesItem(adapters, ctx) {
+  return {
+    label: 'Search for similar bboxes…',
+    onSelect: () => {
+      const bboxes = adapters
+        .map(a => ({ bboxUuid: a.getBboxUuid?.() ?? null, bboxCoords: a.getBboxCoords?.() ?? null, imageUuid: a.getImageUuid?.() ?? null }))
+        .filter(b => b.bboxUuid || (b.bboxCoords && b.imageUuid));
+      ctx.close();
+      if (bboxes.length) openSimilarBboxesModal({ bboxes });
+    },
+  };
+}
+
 registerContextProvider('bbox', async (adapters, ctx) => {
   const count = ctx.count;
-  const labelSuffix = count > 1 ? ` to ${count} boxes` : '';
 
   const items = [
     // ── Apply label ────────────────────────────────────────────────────────
-    {
-      label: `Apply label${labelSuffix}`,
-      submenu: () => asyncPanel('240px', () => _buildLabelPanel(async uuid => {
-        await runAll(adapters, a => a.applyLabel(uuid));
-        ctx.close();
-      })),
-    },
+    buildApplyLabelItem(adapters, ctx),
 
     // ── Tags (toggle on/off, checkbox + indeterminate for multi-select) ────
-    {
-      label: `Tags${labelSuffix}`,
-      submenu: () => asyncPanel('220px', () => buildTagPanel(adapters)),
-    },
+    buildTagsItem(adapters, ctx),
 
     // ── Verification ───────────────────────────────────────────────────────
     {
@@ -91,34 +155,10 @@ registerContextProvider('bbox', async (adapters, ctx) => {
     },
 
     // ── Delete (danger) ────────────────────────────────────────────────────
-    {
-      label: count > 1 ? `Delete ${count} boxes` : 'Delete',
-      danger: true,
-      onSelect: async () => {
-        if (count > 1) {
-          const confirmed = await showConfirmModal({
-            title: 'Delete boxes',
-            message: `Delete ${count} boxes?`,
-            confirmText: 'Delete',
-            danger: true,
-          });
-          if (!confirmed) return;
-        }
-        await runAll(adapters, a => a.remove());
-      },
-    },
+    buildDeleteItem(adapters, ctx),
 
     // ── Similar search ─────────────────────────────────────────────────────
-    {
-      label: 'Search for similar bboxes…',
-      onSelect: () => {
-        const bboxes = adapters
-          .map(a => ({ bboxUuid: a.getBboxUuid?.() ?? null, bboxCoords: a.getBboxCoords?.() ?? null, imageUuid: a.getImageUuid?.() ?? null }))
-          .filter(b => b.bboxUuid || (b.bboxCoords && b.imageUuid));
-        ctx.close();
-        if (bboxes.length) openSimilarBboxesModal({ bboxes });
-      },
-    },
+    buildSimilarBboxesItem(adapters, ctx),
     {
       label: 'Search for similar images…',
       submenu: () => {
@@ -176,5 +216,26 @@ registerContextProvider('bbox', async (adapters, ctx) => {
     },
   ];
 
+  return [{ items }];
+});
+
+/**
+ * Context-menu provider for the 'candidateBbox' type — the Run-Model-on-Results
+ * preview's proposed/new boxes. Reuses the 'bbox' provider's item builders but
+ * exposes only Relabel / Edit-geometry / Remove / Similar-search (scope decision
+ * 3: no per-candidate verification or tag editing). The candidate adapter
+ * mutates in-memory preview state only; nothing hits the DB until Apply.
+ *
+ * Similar-search is naturally disabled for `isNew` candidates because the
+ * builder `?.`-guards `getBboxUuid()` (which returns null for new boxes) and
+ * filters them out, so no menu wiring change is needed here.
+ */
+registerContextProvider('candidateBbox', (adapters, ctx) => {
+  const items = [
+    buildApplyLabelItem(adapters, ctx),
+    buildEditGeometryItem(adapters, ctx),
+    buildSimilarBboxesItem(adapters, ctx),
+    buildDeleteItem(adapters, ctx, { label: ctx.count > 1 ? `Remove ${ctx.count} from preview` : 'Remove from preview' }),
+  ];
   return [{ items }];
 });
