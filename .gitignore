@@ -2,12 +2,19 @@
 .claude/
 .serena/
 docker-compose.override.yml
+.mcp.json
 
-# Model binary files — too large for git (use DVC or direct copy)
+# Local host/dev environment helpers — not part of the project
+cl.sh
+cl_install.sh
+uv.lock
+
+# Model binary files — too large for git (use DVC or direct copy).
+# The whole runtime models/ dir (binaries + their JSON sidecars) is local.
 *.onnx
 *.onnx.data
 *.pt
-models/job_state.json
+models/
 
 # Markdown files (notes, plans, etc.) — only README is committed
 *.md
