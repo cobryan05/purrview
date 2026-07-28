@@ -248,7 +248,7 @@ class TestRun:
         ):
             await task._init(task._params, None)
             result = await task._run()
-            assert task._cuda_executor is not None
+            assert task._runtime._cuda_executor is not None
             await task._deinit()
 
         assert result["images_processed"] == 1

@@ -1,27 +1,24 @@
 """Tests for PreviewClassifierMatchTask.
 
-Exercises the candidate-building logic against a fake InferenceBackend
-(returning ClassifyPrediction-like objects) injected directly into
-`_process_image` — no real inference server or db_client HTTP round-trip
-involved (mirrors PreviewModelRelabelTask's test pattern).
+Exercises the candidate-building logic against a fake ClassifierRuntime
+(returning (label_uuid, confidence) predictions) injected directly into
+`_classify_batch` — no real ONNX session, inference server, or db_client
+HTTP round-trip involved (mirrors PreviewModelRelabelTask's test pattern).
 """
 
-from dataclasses import dataclass
-from typing import Optional
-from unittest.mock import AsyncMock, MagicMock
+import json
+from unittest.mock import AsyncMock, MagicMock, patch
 
+import cv2
+import numpy as np
 import pytest
 
-from apps.tasks_server.tasks.PreviewClassifierMatchTask import PreviewClassifierMatchTask
+from apps.tasks_server.tasks.PreviewClassifierMatchTask import (
+    PreviewClassifierMatchTask,
+)
 
 _MOCK_MANAGER = MagicMock()
 _MOCK_MANAGER.update_task_heartbeat = AsyncMock()
-
-
-@dataclass
-class _Prediction:
-    label_uuid: Optional[str]
-    confidence: float
 
 
 def _make_task(params: dict) -> PreviewClassifierMatchTask:
@@ -44,14 +41,18 @@ def _image(uuid="img-1", filename="/data/x.jpg"):
     return {"uuid": uuid, "filename": filename}
 
 
-class _FakeBackend:
-    """Fake InferenceBackend — returns a fixed prediction list regardless of input."""
+class _FakeRuntime:
+    """Fake ClassifierRuntime — `predict_batch` returns a fixed per-image
+    prediction list regardless of the tensors passed in."""
 
-    def __init__(self, predictions):
-        self._predictions = predictions
+    def __init__(self, batch_predictions):
+        self._batch_predictions = batch_predictions
 
-    async def classify(self, model_name, image_bytes):
-        return self._predictions
+    def preprocess(self, img_bytes):
+        return np.zeros((3, 2, 2), dtype=np.float32)
+
+    async def predict_batch(self, tensors):
+        return self._batch_predictions
 
 
 class TestGuards:
@@ -77,26 +78,27 @@ class TestGuards:
 
 
 class TestMatching:
-    """Exercises `_process_image` directly with a fake backend, bypassing the
-    HTTP/db_client plumbing and the model-kind guard in `_run()`."""
+    """Exercises `_classify_batch` directly with a fake runtime, bypassing the
+    ONNX session/db_client plumbing and the model-kind guard in `_run()`."""
 
-    async def _run_process_image(self, task, predictions):
+    async def _run_classify_batch(self, task, predictions):
         await task._init(task._params, None)
         task._load_image_bytes = AsyncMock(return_value=b"fake-image-bytes")
-        backend = _FakeBackend(predictions)
+        runtime = _FakeRuntime([predictions])
         img = _image()
-        await task._process_image(
+        await task._classify_batch(
             images_api=MagicMock(),
-            backend=backend,
-            img=img,
+            runtime=runtime,
+            image_uuids=["img-1"],
+            images_by_uuid={"img-1": img},
             label_names={"corrupt": "Corrupt"},
         )
         return task._candidates
 
     async def test_match_above_threshold_produces_candidate(self):
         task = _make_task(_base_params())
-        predictions = [_Prediction(label_uuid="corrupt", confidence=0.9)]
-        candidates = await self._run_process_image(task, predictions)
+        predictions = [("corrupt", 0.9)]
+        candidates = await self._run_classify_batch(task, predictions)
         assert len(candidates) == 1
         c = candidates[0]
         assert c["imageUuid"] == "img-1"
@@ -107,52 +109,52 @@ class TestMatching:
 
     async def test_below_threshold_excluded(self):
         task = _make_task(_base_params(conf_thresh=0.5))
-        predictions = [_Prediction(label_uuid="corrupt", confidence=0.2)]
-        candidates = await self._run_process_image(task, predictions)
+        predictions = [("corrupt", 0.2)]
+        candidates = await self._run_classify_batch(task, predictions)
         assert candidates == []
         assert task._no_match_count == 1
 
     async def test_no_predictions_excluded(self):
         task = _make_task(_base_params())
-        candidates = await self._run_process_image(task, [])
+        candidates = await self._run_classify_batch(task, [])
         assert candidates == []
         assert task._no_match_count == 1
 
     async def test_unmapped_label_excluded(self):
         task = _make_task(_base_params())
-        predictions = [_Prediction(label_uuid=None, confidence=0.95)]
-        candidates = await self._run_process_image(task, predictions)
+        predictions = [(None, 0.95)]
+        candidates = await self._run_classify_batch(task, predictions)
         assert candidates == []
         assert task._no_match_count == 1
 
     async def test_multi_label_classifier_picks_max_confidence(self):
         task = _make_task(_base_params())
-        predictions = [
-            _Prediction(label_uuid="a", confidence=0.4),
-            _Prediction(label_uuid="b", confidence=0.95),
-            _Prediction(label_uuid="c", confidence=0.6),
-        ]
-        candidates = await self._run_process_image(task, predictions)
+        predictions = [("a", 0.4), ("b", 0.95), ("c", 0.6)]
+        candidates = await self._run_classify_batch(task, predictions)
         assert len(candidates) == 1
         assert candidates[0]["predictedLabelUuid"] == "b"
         assert candidates[0]["confidence"] == 0.95
 
-    async def test_image_load_failure_propagates(self):
+    async def test_image_load_failure_increments_failed_count(self):
+        """Unlike the old per-image HTTP path, `_classify_batch` catches
+        load/preprocess failures itself so one bad image in a batch doesn't
+        abort inference for the rest of the batch."""
         task = _make_task(_base_params())
         await task._init(task._params, None)
         task._load_image_bytes = AsyncMock(side_effect=FileNotFoundError("/data/x.jpg"))
-        backend = _FakeBackend([])
+        runtime = _FakeRuntime([])
         img = _image()
-        with pytest.raises(FileNotFoundError):
-            await task._process_image(
-                images_api=MagicMock(),
-                backend=backend,
-                img=img,
-                label_names={"corrupt": "Corrupt"},
-            )
-        # _process_image itself propagates — it's the _run() batch loop (not
-        # exercised here) that catches per-image failures and increments
-        # _images_failed, mirroring PreviewModelRelabelTask.
+        await task._classify_batch(
+            images_api=MagicMock(),
+            runtime=runtime,
+            image_uuids=["img-1"],
+            images_by_uuid={"img-1": img},
+            label_names={"corrupt": "Corrupt"},
+        )
+        assert task._candidates == []
+        assert task._images_failed == 1
+        assert task._images_processed == 1
+        assert task._sample_errors and "img-1" in task._sample_errors[0]
 
 
 class TestModelKindGuard:
@@ -164,6 +166,64 @@ class TestModelKindGuard:
         await task._init(task._params, None)
         with pytest.raises(ValueError, match="only supports classifier models"):
             await task._run()
+
+
+class TestRun:
+    """End-to-end `_run()` against a mocked ONNX session — proves the model is
+    loaded exactly once (the "pin") and multiple images share a single
+    `session.run` call (the batching), matching RunClassifierTask's approach."""
+
+    async def test_run_loads_model_once_and_batches_inference(self, tmp_path, monkeypatch):
+        import apps.tasks_server.tasks.PreviewClassifierMatchTask as mod
+
+        model_name = "corrupt_clf"
+        (tmp_path / f"{model_name}.onnx").write_bytes(b"fake")
+        config = {
+            "model_kind": "image_classifier",
+            "input_size": [224, 224],
+            "class_names": ["absent", "present"],
+            "label_uuid": "corrupt",
+        }
+        (tmp_path / f"{model_name}.json").write_text(json.dumps(config))
+
+        monkeypatch.setattr(mod, "_read_model_kind", lambda name: "image_classifier")
+
+        mock_session = MagicMock()
+        mock_session.get_inputs.return_value = [MagicMock(name="input")]
+        mock_session.get_providers.return_value = ["CPUExecutionProvider"]
+        # Two images fetched in one batch -> one batched call, two rows of logits.
+        mock_session.run.return_value = [np.array([[0.1, 5.0], [0.1, 5.0]])]
+
+        img_a = {"uuid": "img-a", "filename": "/data/a.jpg"}
+        img_b = {"uuid": "img-b", "filename": "/data/b.jpg"}
+
+        mock_images_api = MagicMock()
+        mock_images_api.batch_images_by_uuids.return_value = MagicMock(images=[img_a, img_b])
+
+        mock_labels_api = MagicMock()
+        label = MagicMock(uuid="corrupt", name="Corrupt")
+        mock_labels_api.list_labels.return_value = MagicMock(labels=[label])
+
+        task = _make_task(_base_params(model_name=model_name, image_uuids=["img-a", "img-b"], conf_thresh=0.5))
+
+        with (
+            patch("apps.tasks_server.tasks._classifier_runtime._MODELS_ROOT", tmp_path),
+            patch("apps.tasks_server.tasks.PreviewClassifierMatchTask.ImagesApi", return_value=mock_images_api),
+            patch("apps.tasks_server.tasks.PreviewClassifierMatchTask.LabelsApi", return_value=mock_labels_api),
+            patch("onnxruntime.InferenceSession", return_value=mock_session) as mock_ctor,
+        ):
+            img_bytes = cv2.imencode(".jpg", np.zeros((10, 10, 3), dtype=np.uint8))[1].tobytes()
+
+            await task._init(task._params, None)
+            task._load_image_bytes = AsyncMock(return_value=img_bytes)
+            result = await task._run()
+            await task._deinit()
+
+        assert mock_ctor.call_count == 1  # model loaded exactly once for the whole run
+        assert mock_session.run.call_count == 1  # both images inferred in a single batched call
+        assert result["candidate_count"] == 2
+        assert {c["imageUuid"] for c in result["candidates"]} == {"img-a", "img-b"}
+        assert all(c["predictedLabelUuid"] == "corrupt" for c in result["candidates"])
 
 
 class TestResume:

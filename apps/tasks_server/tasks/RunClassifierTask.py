@@ -10,7 +10,6 @@ import base64
 import json
 import logging
 import os
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Optional
 
@@ -26,6 +25,7 @@ from apps.helpers.classifier_utils import preprocess_image_bytes as _preprocess_
 from apps.helpers.classifier_utils import softmax as _softmax
 from apps.helpers.fileUtils import get_safe_path
 
+from ._classifier_runtime import ClassifierRuntime
 from .Registry import register_task
 from .Task import Task
 
@@ -84,39 +84,13 @@ class RunClassifierTask(Task):
 
         self._images_processed: int = resume_data.get("images_processed", 0) if resume_data else 0
         self._images_labeled: int = resume_data.get("images_labeled", 0) if resume_data else 0
-        self._cuda_executor: Optional[ThreadPoolExecutor] = None
+        self._runtime: Optional[ClassifierRuntime] = None
 
     async def _run(self) -> dict[str, Any]:
-        import onnxruntime as ort
-
-        from apps.helpers.metadataUtils import (
-            DEFAULT_MODEL_DEVICE,
-            providers_for_device,
-        )
-
         self.log(f"Loading model {self._model_name} from {self._model_path}")
-        providers = providers_for_device(self._model_config.get("device", DEFAULT_MODEL_DEVICE))
-        session = await asyncio.to_thread(
-            ort.InferenceSession,
-            str(self._model_path),
-            providers=providers,
-        )
-        input_name: str = session.get_inputs()[0].name
+        self._runtime = ClassifierRuntime(self._model_path, self._model_config)
+        await self._runtime.load()
         self.log("Model loaded")
-
-        # If CUDA ended up active, pin session.run to a dedicated single-threaded
-        # executor for the lifetime of this task — shifting CUDA calls across
-        # asyncio.to_thread's default-pool threads causes context/memory errors
-        # (see OnnxYoloInferenceProvider, which applies the same mitigation).
-        if "CUDAExecutionProvider" in session.get_providers():
-            self._cuda_executor = ThreadPoolExecutor(max_workers=1)
-
-        loop = asyncio.get_running_loop()
-
-        def _run_session(*args, **kwargs):
-            if self._cuda_executor:
-                return loop.run_in_executor(self._cuda_executor, lambda: session.run(*args, **kwargs))
-            return asyncio.to_thread(session.run, *args, **kwargs)
 
         db_api_client = self._manager.get_db_api_client()
         images_api = ImagesApi(db_api_client)
@@ -144,23 +118,14 @@ class RunClassifierTask(Task):
                 self._images_processed += len(batch)
                 continue
 
-            # Run inference in a thread (CPU-bound).
-            batch_arr = np.stack(tensors)  # (N, 3, H, W)
-            raw_outputs = await _run_session(None, {input_name: batch_arr})
-            logits: np.ndarray = raw_outputs[0]  # (N, num_classes)
-            probs = _softmax(logits, axis=1)
-
-            # "present" class is assumed to be index 1 (matches BinaryImageClassifier: absent=0, present=1).
-            present_class_idx = (
-                self._model_config.get("class_names", ["absent", "present"]).index("present")
-                if "present" in self._model_config.get("class_names", [])
-                else 1
-            )
-            present_probs = probs[:, present_class_idx]
+            # Run inference in a batch (CPU/GPU-bound); image_classifier models
+            # always yield exactly one (label_uuid, confidence) pair per image.
+            predictions = await self._runtime.predict_batch(tensors)
 
             # Write image_labels (PRESENT / ABSENT) for each classified image.
-            for stub, confidence in zip(valid_stubs, present_probs):
-                is_present = float(confidence) >= self._confidence_threshold
+            for stub, preds in zip(valid_stubs, predictions):
+                confidence = preds[0][1]
+                is_present = confidence >= self._confidence_threshold
                 status = ImageItemStatus.PRESENT if is_present else ImageItemStatus.ABSENT
                 try:
                     await asyncio.to_thread(
@@ -271,9 +236,8 @@ class RunClassifierTask(Task):
             return base64.b64decode(resp.image_base64)
 
     async def _deinit(self) -> None:
-        executor = getattr(self, "_cuda_executor", None)
-        if executor is not None:
-            executor.shutdown(wait=False)
+        if self._runtime is not None:
+            await self._runtime.close()
 
     @classmethod
     def params_schema(cls) -> dict[str, dict[str, Any]]:
