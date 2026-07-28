@@ -351,11 +351,54 @@ export async function openRelabelConfirmationModal(candidates, ctx) {
     const thumb = document.createElement('img');
     thumb.className = 'thumb';
     thumb.loading = 'lazy';
-    // A new box has no bbox uuid to crop yet — show the whole image for context.
-    thumb.src = candidate.isNew
-      ? getImageThumbnailUrl(candidate.imagePath, 300)
-      : getBboxThumbnailUrl(candidate.imagePath, candidate.bboxUuid, 300);
-    card.appendChild(thumb);
+    if (candidate.isNew) {
+      // A new box has no bbox uuid to crop yet — show the whole image for
+      // context, with the proposed geometry drawn as a canvas overlay (same
+      // letterbox-aware approach as review/main.js's buildImageCard).
+      thumb.src = getImageThumbnailUrl(candidate.imagePath, 300);
+      const thumbWrap = document.createElement('div');
+      thumbWrap.style.cssText = 'position:relative;';
+      const overlay = document.createElement('canvas');
+      overlay.className = 'thumb-overlay';
+      overlay.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;pointer-events:none;';
+      const overlayCtx = overlay.getContext('2d');
+
+      const drawOverlay = () => {
+        const natW = thumb.naturalWidth;
+        const natH = thumb.naturalHeight;
+        const cssW = thumb.clientWidth;
+        const cssH = thumb.clientHeight;
+        if (!natW || !natH || !cssW || !cssH || !candidate.geometry) return;
+        overlay.width = cssW;
+        overlay.height = cssH;
+        const scale = Math.min(cssW / natW, cssH / natH);
+        const dispW = natW * scale;
+        const dispH = natH * scale;
+        const offsetX = (cssW - dispW) / 2;
+        const offsetY = (cssH - dispH) / 2;
+        overlayCtx.clearRect(0, 0, cssW, cssH);
+        overlayCtx.strokeStyle = '#5cc45c';
+        overlayCtx.lineWidth = Math.max(1, Math.round(cssW / 150));
+        overlayCtx.strokeRect(
+          offsetX + candidate.geometry.x * dispW,
+          offsetY + candidate.geometry.y * dispH,
+          candidate.geometry.width * dispW,
+          candidate.geometry.height * dispH,
+        );
+      };
+
+      if (thumb.complete && thumb.naturalWidth) {
+        drawOverlay();
+      } else {
+        thumb.onload = drawOverlay;
+      }
+
+      thumbWrap.append(thumb, overlay);
+      card.appendChild(thumbWrap);
+    } else {
+      thumb.src = getBboxThumbnailUrl(candidate.imagePath, candidate.bboxUuid, 300);
+      card.appendChild(thumb);
+    }
 
     const info = document.createElement('div');
     info.className = 'card-info';

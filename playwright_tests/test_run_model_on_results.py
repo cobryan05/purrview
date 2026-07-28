@@ -125,6 +125,15 @@ def _mock_thumbnails(page: Page):
     )
 
 
+def _mock_image_thumbnails(page: Page):
+    """Mocks the whole-image thumbnail endpoint used for `isNew` candidates
+    (getImageThumbnailUrl), distinct from the bbox-crop thumbnail above."""
+    page.route(
+        lambda url: "/thumbnail" in url and "/bbox/" not in url,
+        lambda route: route.fulfill(status=200, content_type="image/png", body=_TINY_PNG),
+    )
+
+
 def _mock_bulk_apply_by_uuids(page: Page, modified_count=None, fail_count=0):
     calls = []
 
@@ -764,3 +773,35 @@ class TestRelabelConfirmationModal:
         expect(modal).to_contain_text("5 bbox(es) had no matching detection")
         expect(modal).to_contain_text("3 image(s) failed to load/process")
         expect(modal).to_contain_text("FileNotFoundError")
+
+    def test_new_box_candidate_draws_geometry_overlay(self, page: Page, base_url: str):
+        """New-box candidates have no bboxUuid, so the preview falls back to a
+        whole-image thumbnail — it must still draw the proposed geometry so the
+        user can see where the box will land, not just that a box exists."""
+        self._setup(page, base_url)
+        _mock_image_thumbnails(page)
+        candidate = {
+            "bboxUuid": None,
+            "imageUuid": "img-1",
+            "imagePath": "folder/image1.jpg",
+            "currentLabelUuid": None,
+            "currentLabelName": None,
+            "proposedLabelUuid": "lbl-dog",
+            "proposedLabelName": "Dog",
+            "confidence": 0.8,
+            "geometry": {"x": 0.2, "y": 0.3, "width": 0.4, "height": 0.1},
+            "isNew": True,
+        }
+        _open_confirm_modal(page, [candidate])
+
+        modal = page.locator(".relabel-confirm-modal")
+        expect(modal).to_be_visible()
+        card = modal.locator(".relabel-modal-card").first
+        expect(card).to_contain_text("＋ NEW")
+
+        overlay = card.locator("canvas.thumb-overlay")
+        expect(overlay).to_have_count(1)
+        # The overlay only gets sized once the thumb image has loaded and
+        # laid out — wait for that instead of asserting immediately.
+        overlay.page.wait_for_function("el => el.width > 0", arg=overlay.element_handle())
+        assert overlay.evaluate("el => el.height") > 0
