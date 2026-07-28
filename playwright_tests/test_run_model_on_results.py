@@ -354,7 +354,7 @@ class TestRunModelFullFlow:
         # Handoff lands in the Chunk-C confirmation modal.
         confirm_modal = page.locator(".relabel-confirm-modal")
         expect(confirm_modal).to_be_visible(timeout=5000)
-        expect(confirm_modal).to_contain_text("2 relabel candidates from yolo9-detector")
+        expect(confirm_modal).to_contain_text("2 candidates from yolo9-detector")
 
         assert len(fake_task.create_bodies) == 1
         body = fake_task.create_bodies[0]
@@ -649,7 +649,7 @@ class TestRelabelConfirmationModal:
 
         modal = page.locator(".relabel-confirm-modal")
         expect(modal).to_be_visible()
-        expect(modal).to_contain_text("3 relabel candidates from yolo9-detector")
+        expect(modal).to_contain_text("3 candidates from yolo9-detector")
 
         cards = modal.locator(".relabel-modal-card")
         expect(cards).to_have_count(3)

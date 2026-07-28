@@ -43,7 +43,11 @@ from apps.helpers.metadataUtils import validate_bare_model_name
 
 from ._filter_chain_runner import Detection
 from ._image_loading import load_image_bytes
-from .ApplyFilterChainTask import _CLASSIFIER_KINDS, _HttpInferenceBackend, _read_model_kind
+from .ApplyFilterChainTask import (
+    _CLASSIFIER_KINDS,
+    _HttpInferenceBackend,
+    _read_model_kind,
+)
 from .Registry import register_task
 from .Task import Task
 
@@ -80,6 +84,11 @@ class PreviewModelRelabelTask(Task):
         if self._crop_mode not in ("image", "bbox"):
             raise ValueError(f"crop_mode must be 'image' or 'bbox', got {self._crop_mode!r}")
 
+        # When set (whole-image crop_mode only), detections that overlap *no*
+        # existing bbox on the image are also proposed as brand-new boxes — the
+        # interactive counterpart to the filter-chain add_bbox action.
+        self._add_new: bool = bool(params.get("add_new", False))
+
         self._image_uuids: List[str] = list(params.get("image_uuids") or [])
         if not self._image_uuids:
             raise ValueError("image_uuids is required")
@@ -107,6 +116,7 @@ class PreviewModelRelabelTask(Task):
         self._sample_errors: List[str] = list(resume_data.get("sample_errors", [])) if resume_data else []
         self._no_detection_count: int = resume_data.get("no_detection_count", 0) if resume_data else 0
         self._no_op_count: int = resume_data.get("no_op_count", 0) if resume_data else 0
+        self._new_boxes_found: int = resume_data.get("new_boxes_found", 0) if resume_data else 0
 
         self._pin_id: Optional[str] = None
         # Populated in _run() once label names are fetched; defaults to empty so
@@ -327,6 +337,44 @@ class PreviewModelRelabelTask(Task):
             )
             self._maybe_add_candidate(bbox, image_uuid, filename, label_names, best, best_label_uuid, geometry)
 
+        if self._add_new:
+            self._collect_new_boxes(img, image_uuid, filename, detections, label_names)
+
+    def _collect_new_boxes(
+        self,
+        img: Dict[str, Any],
+        image_uuid: str,
+        filename: str,
+        detections: List[Detection],
+        label_names: Dict[str, str],
+    ) -> None:
+        """Propose detections that overlap *no* existing bbox on the image as new
+        boxes. Overlap is checked against *all* of the image's bboxes (not just
+        the candidate set), so a detection that lands on an already-correct,
+        non-candidate box isn't re-added."""
+        all_bboxes = img.get("bboxes") or []
+        for det in detections:
+            label_uuid = self._resolve_label_uuid(det)
+            if label_uuid is None:
+                continue
+            if any(iou_xywh(det, b) >= self._iou_thresh for b in all_bboxes):
+                continue  # overlaps an existing box — not new
+            self._candidates.append(
+                {
+                    "bboxUuid": None,
+                    "imageUuid": image_uuid,
+                    "imagePath": filename,
+                    "currentLabelUuid": None,
+                    "currentLabelName": None,
+                    "proposedLabelUuid": label_uuid,
+                    "proposedLabelName": label_names.get(label_uuid),
+                    "confidence": det.confidence,
+                    "geometry": {"x": det.x, "y": det.y, "width": det.width, "height": det.height},
+                    "isNew": True,
+                }
+            )
+            self._new_boxes_found += 1
+
     async def _process_image_bbox_crop(
         self,
         image_bboxes: List[Dict[str, Any]],
@@ -420,6 +468,7 @@ class PreviewModelRelabelTask(Task):
             "sample_errors": self._sample_errors,
             "no_detection_count": self._no_detection_count,
             "no_op_count": self._no_op_count,
+            "new_boxes_found": self._new_boxes_found,
         }
 
     def _build_result(self) -> Dict[str, Any]:
@@ -432,6 +481,7 @@ class PreviewModelRelabelTask(Task):
             "sample_errors": self._sample_errors,
             "no_detection_count": self._no_detection_count,
             "no_op_count": self._no_op_count,
+            "new_boxes_found": self._new_boxes_found,
         }
 
     async def _deinit(self) -> None:
@@ -448,7 +498,15 @@ class PreviewModelRelabelTask(Task):
     def params_schema(cls) -> Dict[str, Dict[str, Any]]:
         return {
             "meta": {
-                "order": ["model_name", "crop_mode", "conf_thresh", "iou_thresh", "image_uuids", "bbox_uuids"],
+                "order": [
+                    "model_name",
+                    "crop_mode",
+                    "add_new",
+                    "conf_thresh",
+                    "iou_thresh",
+                    "image_uuids",
+                    "bbox_uuids",
+                ],
             },
             "model_name": {
                 "type": "model_name",
@@ -465,6 +523,15 @@ class PreviewModelRelabelTask(Task):
                     "candidate bboxes by IoU. 'bbox' crops each candidate bbox out and runs the "
                     "detector on just that crop (no IoU matching needed) — one inference call per "
                     "bbox instead of per image."
+                ),
+            },
+            "add_new": {
+                "type": "boolean",
+                "label": "Add New Boxes",
+                "default": False,
+                "description": (
+                    "Also propose detections that overlap no existing bbox as brand-new boxes "
+                    "(whole-image crop_mode only)."
                 ),
             },
             "conf_thresh": {

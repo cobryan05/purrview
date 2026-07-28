@@ -12,9 +12,19 @@
  * read `early_stopping_patience`. One dropdown here writes BOTH keys with the
  * same value so it works regardless of which trainer ends up consuming it;
  * each trainer ignores keys it doesn't read.
+ *
+ * VRAM-aware suggestions: when the caller knows the target architecture
+ * (object-detection only — see vramHyperparams.js), an extra "GPU VRAM"
+ * select appears above Batch size / Image size. Choosing a tier PREFILLS
+ * (never locks) those two inputs from the per-architecture table; fields
+ * stay fully editable afterward, same as manual entry. If no architecture is
+ * known (e.g. the bundle "train all" flow spans multiple targets/arches) or
+ * the architecture has no table entry (classifiers), the select is omitted
+ * entirely rather than guessing.
  */
 
 import { makeFieldRow } from '/app-static/js/ui/utils/index.js';
+import { VRAM_TIERS_GB, getVramTableForArchitecture } from '/app-static/js/ui/utils/vramHyperparams.js';
 
 function _numInput({ placeholder, initial, min = 1, title }) {
   const input = document.createElement('input');
@@ -32,11 +42,20 @@ function _numInput({ placeholder, initial, min = 1, title }) {
  * @param {Object} [opts.initial] - snake_case hyperparams_json to prefill from
  *   (batch_size, imgsz, max_epochs, early_stopping_patience|patience).
  * @param {() => void} [opts.onChange] - fired on any field's `input` event.
- * @returns {{ rows: HTMLElement[], getHyperparamsJson: () => object }}
+ * @param {?string} [opts.architecture] - object-detection architecture string
+ *   (e.g. 'yolov8s', 'yolo_v9_c') used to look up the VRAM suggestion table.
+ *   Pass null/omit when the architecture isn't known yet (e.g. no node
+ *   selected) or spans multiple targets (bundle "train all" flow) — the VRAM
+ *   select is hidden rather than guessing.
+ * @returns {{ rows: HTMLElement[], getHyperparamsJson: () => object,
+ *             setArchitecture: (architecture: ?string) => void }}
  *   `rows` are ready-made field rows (label + input) to append in order;
- *   `getHyperparamsJson()` returns only the keys the user actually filled in.
+ *   `getHyperparamsJson()` returns only the keys the user actually filled in;
+ *   `setArchitecture()` lets a caller update the VRAM table after the target
+ *   architecture becomes known/changes post-render (e.g. trainingConfigs.js's
+ *   node selector).
  */
-export function createHyperparamsFieldset({ initial = {}, onChange } = {}) {
+export function createHyperparamsFieldset({ initial = {}, onChange, architecture = null } = {}) {
   const batchSizeInput = _numInput({
     placeholder: 'default 16–32', initial: initial.batch_size,
     title: 'Lower this first if you hit a GPU out-of-memory error.',
@@ -58,7 +77,52 @@ export function createHyperparamsFieldset({ initial = {}, onChange } = {}) {
     }
   }
 
+  // ── VRAM tier select (prefill-only; never disables the fields above) ──────
+  const vramSelect = document.createElement('select');
+  // Pico sets `select { width: 100% }` globally; inside the flex
+  // .panel-field-row this would squeeze the row (see NOTES.md gotcha).
+  vramSelect.style.cssText = 'width: auto; flex-shrink: 0;';
+  const vramBlankOpt = document.createElement('option');
+  vramBlankOpt.value = '';
+  vramBlankOpt.textContent = '— none —';
+  vramSelect.appendChild(vramBlankOpt);
+  for (const gb of VRAM_TIERS_GB) {
+    const o = document.createElement('option');
+    o.value = String(gb);
+    o.textContent = `${gb} GB`;
+    vramSelect.appendChild(o);
+  }
+  vramSelect.addEventListener('change', () => {
+    const gb = parseInt(vramSelect.value, 10);
+    const table = getVramTableForArchitecture(_architecture);
+    const suggestion = table?.[gb];
+    if (!suggestion) return;
+    batchSizeInput.value = String(suggestion.batch_size);
+    imgszInput.value = String(suggestion.imgsz);
+    onChange?.();
+  });
+
+  const vramRow = makeFieldRow('GPU VRAM', vramSelect);
+  vramRow.title = 'Pick your GPU VRAM to prefill batch size / image size with a suggested starting point. Fields stay editable.';
+  vramRow.style.display = 'none'; // shown by _refreshVramVisibility() once an architecture resolves
+
+  let _architecture = architecture;
+
+  function _refreshVramVisibility() {
+    const hasTable = !!getVramTableForArchitecture(_architecture);
+    vramRow.style.display = hasTable ? '' : 'none';
+    if (!hasTable) vramSelect.value = '';
+  }
+  _refreshVramVisibility();
+
+  /** Update the architecture used for VRAM lookups (e.g. once a node/arch is selected). */
+  function setArchitecture(newArchitecture) {
+    _architecture = newArchitecture ?? null;
+    _refreshVramVisibility();
+  }
+
   const rows = [
+    vramRow,
     makeFieldRow('Batch size', batchSizeInput),
     makeFieldRow('Image size', imgszInput),
     makeFieldRow('Max epochs', maxEpochsInput),
@@ -81,5 +145,5 @@ export function createHyperparamsFieldset({ initial = {}, onChange } = {}) {
     return hyperparamsJson;
   }
 
-  return { rows, getHyperparamsJson };
+  return { rows, getHyperparamsJson, setArchitecture };
 }

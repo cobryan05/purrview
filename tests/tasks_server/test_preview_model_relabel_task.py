@@ -239,6 +239,73 @@ class TestUnmappedClassFallback:
         assert candidates == []
 
 
+class TestAddNewBoxes:
+    """add_new (whole-image mode): detections overlapping no existing bbox on the
+    image become brand-new box candidates (bboxUuid=None, isNew=True)."""
+
+    async def _run(self, task, detections, image_bboxes):
+        await task._init(task._params, None)
+        task._load_image_bytes = AsyncMock(return_value=b"fake-image-bytes")
+        backend = _FakeBackend(detections)
+        img = _image(bboxes=image_bboxes)
+        await task._process_image(
+            images_api=MagicMock(),
+            backend=backend,
+            img=img,
+            label_names={"cat": "Cat", "dog": "Dog"},
+        )
+        return task._candidates
+
+    async def test_add_new_off_ignores_non_overlapping_detection(self):
+        task = _make_task(_base_params())  # add_new defaults False
+        detections = [Detection(x=0.7, y=0.7, width=0.1, height=0.1, confidence=0.9, label_uuid="dog")]
+        candidates = await self._run(task, detections, [_bbox(uuid="bbox-1", label_uuid="cat")])
+        assert candidates == []
+        assert task._new_boxes_found == 0
+
+    async def test_add_new_emits_new_box_for_non_overlapping_detection(self):
+        task = _make_task(_base_params(add_new=True))
+        detections = [Detection(x=0.7, y=0.7, width=0.1, height=0.1, confidence=0.88, label_uuid="dog")]
+        candidates = await self._run(task, detections, [_bbox(uuid="bbox-1", label_uuid="cat")])
+        assert len(candidates) == 1
+        c = candidates[0]
+        assert c["isNew"] is True
+        assert c["bboxUuid"] is None
+        assert c["currentLabelUuid"] is None
+        assert c["proposedLabelUuid"] == "dog"
+        assert c["confidence"] == 0.88
+        assert c["geometry"] == {"x": 0.7, "y": 0.7, "width": 0.1, "height": 0.1}
+        assert task._new_boxes_found == 1
+
+    async def test_add_new_skips_detection_overlapping_a_non_candidate_box(self):
+        # A detection landing on an existing, already-correct, non-candidate box
+        # must not be re-added as new.
+        task = _make_task(_base_params(add_new=True))
+        detections = [Detection(x=0.6, y=0.6, width=0.2, height=0.2, confidence=0.9, label_uuid="dog")]
+        image_bboxes = [
+            _bbox(uuid="bbox-1", label_uuid="cat", x=0.1, y=0.1),  # candidate, elsewhere
+            _bbox(uuid="bbox-2", label_uuid="dog", x=0.6, y=0.6, width=0.2, height=0.2),  # non-candidate overlap
+        ]
+        candidates = await self._run(task, detections, image_bboxes)
+        assert candidates == []
+        assert task._new_boxes_found == 0
+
+    async def test_add_new_and_relabel_not_double_emitted(self):
+        # One detection overlapping the candidate → relabel; a second detection
+        # overlapping nothing → new box. The relabel detection is not also "new".
+        task = _make_task(_base_params(add_new=True))
+        detections = [
+            Detection(x=0.1, y=0.1, width=0.2, height=0.2, confidence=0.9, label_uuid="dog"),  # overlaps candidate
+            Detection(x=0.8, y=0.8, width=0.1, height=0.1, confidence=0.7, label_uuid="dog"),  # new
+        ]
+        candidates = await self._run(task, detections, [_bbox(uuid="bbox-1", label_uuid="cat")])
+        assert len(candidates) == 2
+        relabel = [c for c in candidates if not c.get("isNew")]
+        new = [c for c in candidates if c.get("isNew")]
+        assert len(relabel) == 1 and relabel[0]["bboxUuid"] == "bbox-1"
+        assert len(new) == 1 and new[0]["geometry"]["x"] == 0.8
+
+
 class TestBboxCropMode:
     """Exercises `_process_image_bbox_crop`: crops each candidate bbox out of a
     real in-memory image and matches the crop's best detection directly, with

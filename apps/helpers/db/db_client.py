@@ -1359,6 +1359,47 @@ class DbClient:
             resolved.append(uuid)
         return resolved
 
+    async def add_single_bbox(
+        self,
+        image_uuid: str,
+        bbox_uuid: str,
+        label_uuid: Optional[str],
+        x: float,
+        y: float,
+        width: float,
+        height: float,
+        tag_uuids: List[str],
+        metadata_json: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Insert one new bbox into an image *without* touching its siblings.
+
+        Unlike write_image_metadata_to_db (a full DELETE+INSERT replace that
+        re-writes and re-phashes every existing bbox on the image), this is a
+        targeted single-row insert — the right primitive for programmatic
+        add-a-box callers such as the filter-chain add_bbox action. Exclusive-group
+        conflicts among tag_uuids are resolved the same way update_single_bbox does.
+        """
+        async with self._async_session_maker() as session:
+            session.add(
+                BBox(
+                    uuid=bbox_uuid,
+                    image_uuid=image_uuid,
+                    label_uuid=label_uuid,
+                    x=x,
+                    y=y,
+                    width=width,
+                    height=height,
+                    metadata_json=metadata_json or {},
+                )
+            )
+            if tag_uuids:
+                tag_rows = await session.exec(select(Tag).where(Tag.uuid.in_(tag_uuids)))
+                tags_by_uuid = {t.uuid: t for t in tag_rows.all()}
+                for tag_uuid in self._resolve_exclusive_groups(tag_uuids, tags_by_uuid):
+                    session.add(BBoxTagLink(bbox_uuid=bbox_uuid, tag_uuid=tag_uuid))
+            await self._touch_image(session, image_uuid)
+            await session.commit()
+
     async def delete_single_bbox(self, bbox_uuid: str) -> Optional[str]:
         """Delete one bbox and return its image_uuid, or None if not found."""
         async with self._async_session_maker() as session:

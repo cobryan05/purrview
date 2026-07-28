@@ -25,6 +25,9 @@ import pytest
 from apps.helpers.inferenceProviders.libreYolo9InferenceProvider import (
     LibreYolo9InferenceProvider,
 )
+from apps.helpers.inferenceProviders.ultralyticsE2eInferenceProvider import (
+    UltralyticsE2eInferenceProvider,
+)
 from apps.helpers.inferenceProviders.ultralyticsYoloV8InferenceProvider import (
     UltralyticsYoloV8InferenceProvider,
 )
@@ -37,6 +40,10 @@ def _extract_libreyolo9(preds: np.ndarray):
 
 def _extract_yolov8(preds: np.ndarray):
     return UltralyticsYoloV8InferenceProvider._extract(None, preds)
+
+
+def _extract_e2e(preds: np.ndarray):
+    return UltralyticsE2eInferenceProvider._extract(None, preds)
 
 
 class TestExtractLibreYolo9Format:
@@ -250,3 +257,125 @@ class TestDecodeDetectionsNms:
         )
         assert len(dets) == 1
         assert dets[0][4] == pytest.approx(0.9, abs=1e-6)
+
+
+class TestExtractUltralyticsE2eFormat:
+    """UltralyticsE2eInferenceProvider._extract — YOLOv10/YOLO26 NMS-free
+    export: (num_preds, 6) rows of already-picked [x1, y1, x2, y2, conf, cls],
+    confirmed against real yolov10n.onnx/yolo26n.onnx exports (see
+    MORE_YOLO_PLAN.md Section 2 research notes)."""
+
+    def test_decodes_correct_box_and_class(self):
+        preds = np.array(
+            [[100.0, 100.0, 200.0, 200.0, 0.92, 1.0]],  # [x1, y1, x2, y2, conf, cls]
+            dtype=np.float32,
+        )
+        boxes_xyxy, scores = _extract_e2e(preds)
+        dets = decode_detections(
+            boxes_xyxy,
+            scores,
+            conf_thresh=0.25,
+            iou_thresh=0.45,
+            scale=1.0,
+            pad=(0.0, 0.0),
+            original_shape=(640, 640),
+            skip_nms=True,
+        )
+        assert dets.shape == (1, 6)
+        x1, y1, x2, y2, confidence, class_id = dets[0]
+        assert (x1, y1, x2, y2) == pytest.approx((100.0, 100.0, 200.0, 200.0), abs=1e-3)
+        assert class_id == 1
+        assert confidence == pytest.approx(0.92, abs=1e-6)
+
+    def test_rejects_too_few_channels(self):
+        preds = np.zeros((1, 4), dtype=np.float32)
+        with pytest.raises(ValueError):
+            _extract_e2e(preds)
+
+    def test_low_score_filtered_out(self):
+        preds = np.array(
+            [[100.0, 100.0, 200.0, 200.0, 0.1, 0.0]],
+            dtype=np.float32,
+        )
+        boxes_xyxy, scores = _extract_e2e(preds)
+        dets = decode_detections(
+            boxes_xyxy,
+            scores,
+            conf_thresh=0.25,
+            iou_thresh=0.45,
+            scale=1.0,
+            pad=(0.0, 0.0),
+            original_shape=(640, 640),
+            skip_nms=True,
+        )
+        assert dets.shape == (0, 6)
+
+    def test_undoes_padding_and_scale(self):
+        preds = np.array(
+            [[110.0, 60.0, 210.0, 160.0, 0.9, 0.0]],
+            dtype=np.float32,
+        )
+        boxes_xyxy, scores = _extract_e2e(preds)
+        dets = decode_detections(
+            boxes_xyxy,
+            scores,
+            conf_thresh=0.25,
+            iou_thresh=0.45,
+            scale=2.0,
+            pad=(10.0, 20.0),
+            original_shape=(200, 200),
+            skip_nms=True,
+        )
+        assert len(dets) == 1
+        x1, y1, x2, y2 = dets[0][:4]
+        # (110-10)/2=50, (60-20)/2=20, (210-10)/2=100, (160-20)/2=70
+        assert (x1, y1, x2, y2) == pytest.approx((50.0, 20.0, 100.0, 70.0), abs=1e-3)
+
+    def test_skip_nms_does_not_drop_overlapping_boxes(self):
+        """NMS-free models can legitimately return two heavily overlapping
+        boxes if the graph's own dedup considered them distinct detections
+        (e.g. two different classes at the same location) — decode_detections
+        must NOT run cv2.dnn.NMSBoxes on skip_nms=True input and silently
+        suppress one of them."""
+        preds = np.array(
+            [
+                [100.0, 100.0, 200.0, 200.0, 0.9, 0.0],
+                [100.0, 100.0, 200.0, 200.0, 0.8, 1.0],
+            ],
+            dtype=np.float32,
+        )
+        boxes_xyxy, scores = _extract_e2e(preds)
+        dets = decode_detections(
+            boxes_xyxy,
+            scores,
+            conf_thresh=0.25,
+            iou_thresh=0.1,  # would aggressively suppress if NMS ran
+            scale=1.0,
+            pad=(0.0, 0.0),
+            original_shape=(640, 640),
+            skip_nms=True,
+        )
+        assert len(dets) == 2
+
+    def test_multiple_rows_preserve_ordering_and_class_ids(self):
+        preds = np.array(
+            [
+                [10.0, 10.0, 20.0, 20.0, 0.95, 3.0],
+                [30.0, 30.0, 40.0, 40.0, 0.5, 7.0],
+            ],
+            dtype=np.float32,
+        )
+        boxes_xyxy, scores = _extract_e2e(preds)
+        dets = decode_detections(
+            boxes_xyxy,
+            scores,
+            conf_thresh=0.25,
+            iou_thresh=0.45,
+            scale=1.0,
+            pad=(0.0, 0.0),
+            original_shape=(640, 640),
+            skip_nms=True,
+        )
+        assert len(dets) == 2
+        assert dets[0][5] == 3
+        assert dets[1][5] == 7

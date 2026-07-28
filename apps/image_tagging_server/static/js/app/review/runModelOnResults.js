@@ -19,8 +19,11 @@
 import {
   fetchReviewQueue,
   getBboxThumbnailUrl,
+  getImageThumbnailUrl,
   bulkApplyBboxesByUuids,
   invalidateBboxThumbnails,
+  addBbox,
+  UNVERIFIED_TAG_UUID,
 } from '/app-static/js/shared/api/review.js';
 import { activeTrainingConfig } from '/app-static/js/shared/activeTrainingConfig.js';
 import { fetchModelsList, fetchModelsKinds } from '/app-static/js/shared/api/models.js';
@@ -239,9 +242,11 @@ export async function openRelabelConfirmationModal(candidates, ctx) {
   const title = document.createElement('h3');
   title.className = 'app-modal-title';
   title.style.flexShrink = '0';
+  const _newCount = sorted.filter(c => c.isNew).length;
+  const _suffix = _newCount > 0 ? ` (${_newCount} new)` : '';
   title.textContent = sorted.length === 0
-    ? `No relabel candidates from ${ctx.modelName}`
-    : `${sorted.length} relabel candidate${sorted.length === 1 ? '' : 's'} from ${ctx.modelName}`;
+    ? `No candidates from ${ctx.modelName}`
+    : `${sorted.length} candidate${sorted.length === 1 ? '' : 's'} from ${ctx.modelName}${_suffix}`;
   dialog.appendChild(title);
 
   if (sorted.length === 0) {
@@ -346,7 +351,10 @@ export async function openRelabelConfirmationModal(candidates, ctx) {
     const thumb = document.createElement('img');
     thumb.className = 'thumb';
     thumb.loading = 'lazy';
-    thumb.src = getBboxThumbnailUrl(candidate.imagePath, candidate.bboxUuid, 300);
+    // A new box has no bbox uuid to crop yet — show the whole image for context.
+    thumb.src = candidate.isNew
+      ? getImageThumbnailUrl(candidate.imagePath, 300)
+      : getBboxThumbnailUrl(candidate.imagePath, candidate.bboxUuid, 300);
     card.appendChild(thumb);
 
     const info = document.createElement('div');
@@ -355,12 +363,21 @@ export async function openRelabelConfirmationModal(candidates, ctx) {
     const labelsRow = document.createElement('div');
     labelsRow.className = 'relabel-modal-labels-row';
     labelsRow.style.cssText = 'display:flex;align-items:center;gap:0.4em;flex-wrap:wrap;';
-    const currentChip = _labelChip(candidate.currentLabelName, candidate.currentLabelUuid, ctx.labels);
-    const arrow = document.createElement('span');
-    arrow.textContent = '→';
     const proposedChip = _labelChip(candidate.proposedLabelName, candidate.proposedLabelUuid, ctx.labels);
     proposedChip.classList.add('relabel-modal-proposed-chip');
-    labelsRow.append(currentChip, arrow, proposedChip);
+    if (candidate.isNew) {
+      // New box: a "NEW" badge instead of a current→proposed transition.
+      const newBadge = document.createElement('span');
+      newBadge.className = 'label-chip relabel-modal-new-badge';
+      newBadge.textContent = '＋ NEW';
+      newBadge.style.cssText = 'background:#2e7d3233;border:1px solid #2e7d32;color:#5cc45c;';
+      labelsRow.append(newBadge, proposedChip);
+    } else {
+      const currentChip = _labelChip(candidate.currentLabelName, candidate.currentLabelUuid, ctx.labels);
+      const arrow = document.createElement('span');
+      arrow.textContent = '→';
+      labelsRow.append(currentChip, arrow, proposedChip);
+    }
     info.appendChild(labelsRow);
 
     const pct = Math.round((candidate.confidence ?? 0) * 100);
@@ -429,17 +446,25 @@ export async function openRelabelConfirmationModal(candidates, ctx) {
     cancelBtn.disabled = true;
     try {
       const isDelete = deleteRadio.checked;
-      const affected = checkedRows.map(r => r.candidate.bboxUuid);
+      // New-box candidates have no bbox uuid yet — they're created (not
+      // relabeled/deleted). The Relabel/Delete radio governs only existing boxes;
+      // in Delete mode new boxes are simply not created.
+      const newRows = checkedRows.filter(r => r.candidate.isNew);
+      const existingRows = checkedRows.filter(r => !r.candidate.isNew);
+      const existingUuids = existingRows.map(r => r.candidate.bboxUuid);
       let modifiedCount = 0;
+      let addedCount = 0;
       let failCount = 0;
 
       if (isDelete) {
-        const res = await bulkApplyBboxesByUuids({ bboxUuids: affected, action: 'delete' });
-        modifiedCount += res.modifiedCount;
-        failCount += res.failCount;
+        if (existingUuids.length > 0) {
+          const res = await bulkApplyBboxesByUuids({ bboxUuids: existingUuids, action: 'delete' });
+          modifiedCount += res.modifiedCount;
+          failCount += res.failCount;
+        }
       } else {
         const groups = new Map();
-        for (const r of checkedRows) {
+        for (const r of existingRows) {
           const key = r.candidate.proposedLabelUuid;
           if (!groups.has(key)) groups.set(key, []);
           groups.get(key).push(r.candidate);
@@ -461,13 +486,38 @@ export async function openRelabelConfirmationModal(candidates, ctx) {
           modifiedCount += res.modifiedCount;
           failCount += res.failCount;
         }
+
+        // Create the accepted new boxes (UNVERIFIED, so they land as reviewable).
+        for (const r of newRows) {
+          const c = r.candidate;
+          try {
+            await addBbox({
+              imagePath: c.imagePath,
+              labelUuid: c.proposedLabelUuid,
+              x: c.geometry.x,
+              y: c.geometry.y,
+              width: c.geometry.width,
+              height: c.geometry.height,
+              tagUuids: [UNVERIFIED_TAG_UUID],
+              metadataJson: { run_model_added: true, source_model: ctx.modelName },
+            });
+            addedCount += 1;
+          } catch (err) {
+            Logger.error('addBbox failed:', err);
+            failCount += 1;
+          }
+        }
       }
 
-      await invalidateBboxThumbnails(affected).catch((err) => Logger.error('invalidateBboxThumbnails failed:', err));
+      if (existingUuids.length > 0) {
+        await invalidateBboxThumbnails(existingUuids).catch((err) => Logger.error('invalidateBboxThumbnails failed:', err));
+      }
 
-      const summary = failCount > 0
-        ? `Applied to ${modifiedCount} bbox(es), ${failCount} failed`
-        : `Applied to ${modifiedCount} bbox(es)`;
+      const applied = [];
+      if (modifiedCount > 0) applied.push(`${modifiedCount} bbox(es)`);
+      if (addedCount > 0) applied.push(`${addedCount} new box(es)`);
+      const head = applied.length > 0 ? `Applied to ${applied.join(' + ')}` : 'Nothing applied';
+      const summary = failCount > 0 ? `${head}, ${failCount} failed` : head;
       toast(summary, 4000, failCount > 0 ? 'warning' : 'success');
 
       close();
@@ -678,9 +728,25 @@ async function _showRunDialog(scope, ctx) {
   const iouRow = makeSliderRow('Min IoU:', iouThresh, (v) => { iouThresh = v; });
   dialog.appendChild(iouRow);
 
+  // ── Add-new-boxes toggle (whole-image mode only) ─────────────────────
+  const addNewRow = document.createElement('label');
+  addNewRow.style.cssText = 'display:flex;align-items:center;gap:0.4em;cursor:pointer;font-size:0.9em;';
+  const addNewCheckbox = document.createElement('input');
+  addNewCheckbox.type = 'checkbox';
+  addNewCheckbox.className = 'run-model-on-results-add-new';
+  addNewRow.append(
+    addNewCheckbox,
+    document.createTextNode('Also add new boxes (detections overlapping nothing)'),
+  );
+  dialog.appendChild(addNewRow);
+
   function _syncCropModeUI() {
     cropMode = cropModeSelect.value;
     iouRow.style.display = cropMode === 'bbox' ? 'none' : '';
+    // "Add new boxes" needs whole-image detections to reason about overlap, so
+    // it's only meaningful in image crop_mode.
+    addNewRow.style.display = cropMode === 'bbox' ? 'none' : 'flex';
+    if (cropMode === 'bbox') addNewCheckbox.checked = false;
   }
   cropModeSelect.addEventListener('change', _syncCropModeUI);
   _syncCropModeUI();
@@ -750,6 +816,7 @@ async function _showRunDialog(scope, ctx) {
     const params = {
       model_name: modelName,
       crop_mode: cropMode,
+      add_new: cropMode === 'image' && addNewCheckbox.checked,
       conf_thresh: confThresh,
       iou_thresh: iouThresh,
       image_uuids: imageUuids,

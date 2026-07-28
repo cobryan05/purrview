@@ -13,6 +13,7 @@ from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional, Set, Tuple
+from uuid import uuid4
 
 import aiofiles
 import jstyleson
@@ -609,6 +610,55 @@ class Manager:
             self._hash_index.move_bbox(bbox_uuid, old_label_uuid, label_uuid, bbox.phash)
         await self._sync_image_state(image_record)
         return True
+
+    async def add_single_bbox(
+        self,
+        image_rel_path: str,
+        label_uuid: Optional[str],
+        x: float,
+        y: float,
+        width: float,
+        height: float,
+        tag_uuids: List[str],
+        metadata_json: Optional[Dict[str, Any]] = None,
+    ) -> Optional[str]:
+        """Insert one new bbox on an image (leaving siblings untouched), then sync
+        its phash / hash-index entry / JSON sidecar / image_labels. Returns the new
+        bbox uuid, or None if the image path is invalid.
+
+        Unlike update_image_metadata (a full bbox replace that re-writes and
+        re-phashes every box on the image), this is a targeted single-row insert —
+        the right primitive for programmatic callers such as the filter-chain
+        add_bbox action.
+        """
+        safe_path = get_safe_path(self._files_root, image_rel_path)
+        if safe_path is None or not safe_path.exists():
+            logger.warning(f"Path not found or inaccessible: {image_rel_path}")
+            return None
+        image = await self._db_client.add_image(safe_path)
+        bbox_uuid = str(uuid4())
+        await self._db_client.add_single_bbox(
+            image.uuid, bbox_uuid, label_uuid, x, y, width, height, tag_uuids, metadata_json=metadata_json
+        )
+
+        # Compute the new crop's phash and register it in the hash index (mirrors
+        # the per-bbox phash bookkeeping in update_image_metadata).
+        try:
+            image_bgr = await asyncio.to_thread(__import__("cv2").imread, str(safe_path))
+            if image_bgr is not None:
+                bp = await asyncio.to_thread(
+                    phash_from_numpy_crop, image_bgr, x, y, width, height, self._bbox_hash_size
+                )
+                await self._db_client.update_phashes(image.uuid, image.phash, [{"uuid": bbox_uuid, "phash": bp}])
+                if label_uuid and bp:
+                    self._hash_index.add_bbox(bbox_uuid, label_uuid, bp)
+        except Exception:
+            logger.exception("phash computation failed for new bbox on %s", image_rel_path)
+
+        image_record = await self._db_client.get_image_by_uuid(image.uuid)
+        if image_record is not None:
+            await self._sync_image_state(image_record)
+        return bbox_uuid
 
     async def delete_single_bbox(self, bbox_uuid: str) -> bool:
         """Delete one bbox, then sync sidecar and image_labels."""

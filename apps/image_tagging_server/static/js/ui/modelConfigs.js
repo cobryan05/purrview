@@ -421,6 +421,10 @@ function renderTrainAllSection({ config, onBundleCreated }) {
     datasetHolder.replaceWith(datasetChecklist.el);
   }).catch((err) => { datasetHolder.textContent = `Failed to load datasets: ${err.message}`; });
 
+  // No `architecture` passed: this bundle flow trains every target (root +
+  // each sub-model) sequentially, potentially spanning multiple architectures
+  // at once, so there's no single arch to key a VRAM suggestion off of. The
+  // fieldset degrades gracefully and hides its VRAM select in this case.
   const hyperparamsFieldset = createHyperparamsFieldset({});
   for (const row of hyperparamsFieldset.rows) wrap.appendChild(row);
 

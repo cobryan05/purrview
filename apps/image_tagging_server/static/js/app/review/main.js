@@ -48,6 +48,7 @@ import { createEntryView } from '/app-static/js/ui/entryView.js';
 import { reviewStateToDatasetForm, datasetFormToReviewState } from '/app-static/js/shared/filterUtils.js';
 import { openDissimilarGlobalModal } from '/app-static/js/ui/dissimilarSearch.js';
 import { runModelOnResultsFlow, makeBboxFilterPredicate } from '/app-static/js/app/review/runModelOnResults.js';
+import { runFilterChainOnResultsFlow } from '/app-static/js/app/review/runFilterChainOnResults.js';
 import { createBboxVerificationControl } from '/app-static/js/app/review/bboxVerificationControl.js';
 import { defaultCuratedFilterState, bboxMatchesFilter, imageMatchesFilter } from '/app-static/js/app/review/filterPredicate.js';
 import { createMultiSelectDropdown } from '/app-static/js/ui/utils/index.js';
@@ -307,6 +308,26 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
     refresh: () => render(),
   }));
 
+  // Run Filter Chain on Results — runs a stored FilterChain (relabel/tag/add-box
+  // steps) over the images behind the current selection/filter. Same scope
+  // machinery as Run Model on Results, but image-scoped (see runFilterChainOnResults.js).
+  const runChainBtn = document.createElement('button');
+  runChainBtn.className = 'review-toolbar__btn';
+  runChainBtn.textContent = 'Run Filter Chain on Results…';
+  runChainBtn.addEventListener('click', () => runFilterChainOnResultsFlow({
+    fetchImages,
+    filterPanel,
+    viewFilter: _viewFilter,
+    selectionKind: _selectionKind,
+    selected: _selected,
+    visibleEntries: _visibleEntries,
+    bboxFilterFn,
+    labels,
+    sortBy: sortBySelect.value,
+    sortOrder: sortOrderSelect.value,
+    refresh: () => render(),
+  }));
+
   // Refresh
   const refreshBtn = document.createElement('button');
   refreshBtn.className = 'review-toolbar__btn';
@@ -363,7 +384,7 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
   const actionBar = document.createElement('div');
   actionBar.className = 'review-action-bar';
   actionBar.append(
-    makeToolbarGroup(selectAllLabel, bulkBtn, bulkAllBtn, runModelBtn),
+    makeToolbarGroup(selectAllLabel, bulkBtn, bulkAllBtn, runModelBtn, runChainBtn),
     makeToolbarGroup(prevBtn, pageInfo, nextBtn),
     makeToolbarGroup(statusMsg),
   );

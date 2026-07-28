@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from apps import APPS
-from apps.helpers.model_type_map import MODEL_TYPE_TO_TRAINER_TYPE
+from apps.helpers.model_type_map import resolve_trainer_type
 
 from .image_cache import ImageCache
 from .job_queue import Job, JobQueue
@@ -50,6 +50,7 @@ class Manager:
         from .trainers import model_converter  # noqa: F401
         from .trainers import multi_label_classifier  # noqa: F401
         from .trainers import object_detection_trainer  # noqa: F401
+        from .trainers import ultralytics_detection_trainer  # noqa: F401
 
         for name, trainer in TRAINER_REGISTRY.items():
             self._queue.register_trainer(name, trainer)
@@ -117,11 +118,11 @@ class Manager:
         """
         config = dict(config)
 
-        # Derive trainer_type from model_type when absent.
+        # Derive trainer_type from model_type (+ architecture) when absent.
         if "trainer_type" not in config:
             model_type = config.get("model_type", "")
-            trainer_type = MODEL_TYPE_TO_TRAINER_TYPE.get(model_type, model_type)
-            config["trainer_type"] = trainer_type
+            architecture = config.get("architecture", "")
+            config["trainer_type"] = resolve_trainer_type(model_type, architecture)
 
         m = manifest or []
         # Pin all required UUIDs in the cache so they won't be evicted.

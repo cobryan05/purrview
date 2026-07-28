@@ -101,7 +101,7 @@ class TestValidateModelName:
 
 
 class TestRunEndToEnd:
-    def _patch_common(self, chain_steps, mock_images_api, mock_tags_api=None):
+    def _patch_common(self, chain_steps, mock_images_api, mock_tags_api=None, mock_labels_api=None):
         mock_chain = MagicMock(uuid="chain-1", name="TestChain", steps=chain_steps)
         mock_chain.name = "TestChain"  # MagicMock(name=...) sets the mock's repr name, not an attribute
         mock_filter_chains_api = MagicMock()
@@ -109,6 +109,12 @@ class TestRunEndToEnd:
 
         mock_tags_api = mock_tags_api or MagicMock()
         mock_tags_api.list_tags.return_value = MagicMock(tags=[])
+
+        # Only add_bbox steps fetch labels (name->uuid fallback); default to empty
+        # unless the caller supplied its own labels mock.
+        if mock_labels_api is None:
+            mock_labels_api = MagicMock()
+            mock_labels_api.list_labels.return_value = MagicMock(labels=[])
 
         mock_models_api = MagicMock()
         mock_models_api.pin_model_api_api_models_model_name_pin_post.return_value = MagicMock(
@@ -123,6 +129,9 @@ class TestRunEndToEnd:
             patch("apps.tasks_server.tasks.ApplyFilterChainTask.ImagesApi", return_value=mock_images_api)
         )
         stack.enter_context(patch("apps.tasks_server.tasks.ApplyFilterChainTask.TagsApi", return_value=mock_tags_api))
+        stack.enter_context(
+            patch("apps.tasks_server.tasks.ApplyFilterChainTask.LabelsApi", return_value=mock_labels_api)
+        )
         stack.enter_context(
             patch("apps.tasks_server.tasks.ApplyFilterChainTask.InferenceModelsApi", return_value=mock_models_api)
         )
@@ -379,6 +388,111 @@ class TestRunEndToEnd:
         assert result["images_processed"] == 1
         mock_images_api.delete_bbox.assert_called_once_with("bbox-1")
         mock_images_api.update_bbox.assert_not_called()
+
+    async def _run_add_bbox(self, tmp_path, det, dry_run=False, labels=None):
+        """Shared driver: one add_bbox detector step over an image with no
+        existing bboxes, returning (result, mock_images_api)."""
+        img_path = tmp_path / "a.jpg"
+        img_path.write_bytes(b"fake")
+
+        mock_images_api = MagicMock()
+        mock_images_api.batch_images_by_uuids.return_value = MagicMock(images=[_stub(filename=str(img_path))])
+        mock_images_api.get_image_metadata.return_value = MagicMock(status="success", image=MagicMock(bboxes=[]))
+        mock_images_api.add_bbox.return_value = MagicMock(bbox_uuid="new-1")
+
+        mock_labels_api = MagicMock()
+        mock_labels_api.list_labels.return_value = MagicMock(labels=labels or [])
+
+        step = _step(model_name="det", action="add_bbox", confidence=0.5, iou_threshold=0.5)
+        patches = self._patch_common([step], mock_images_api, mock_labels_api=mock_labels_api)
+
+        params = {"filter_chain_uuid": "chain-1", "image_uuids": [str(img_path)]}
+        if dry_run:
+            params["dry_run"] = True
+        task = _make_task(params)
+        with (
+            patches,
+            patch("apps.tasks_server.tasks.ApplyFilterChainTask._read_model_kind", return_value="detector"),
+            patch(
+                "apps.tasks_server.tasks.ApplyFilterChainTask._HttpInferenceBackend.detect",
+                new=AsyncMock(return_value=[det]),
+            ),
+        ):
+            await task._init(task._params, None)
+            result = await task._run()
+        return result, mock_images_api
+
+    async def test_add_bbox_creates_box_with_unverified_and_add_tag(self, tmp_path):
+        from apps.helpers.db.types import UNVERIFIED_TAG_UUID
+
+        det = Detection(x=0.4, y=0.4, width=0.1, height=0.1, confidence=0.85, label_uuid="dog_label")
+        result, mock_images_api = await self._run_add_bbox(tmp_path, det)
+
+        assert result["bboxes_added"] == 1
+        assert result["images_changed"] == 1
+        mock_images_api.add_bbox.assert_called_once()
+        payload = mock_images_api.add_bbox.call_args.args[0]
+        assert payload.label_uuid == "dog_label"
+        assert payload.x == 0.4 and payload.width == 0.1
+        assert UNVERIFIED_TAG_UUID in payload.tag_uuids
+        # UNVERIFIED + this run's per-instance add tag.
+        assert len(payload.tag_uuids) == 2
+        assert payload.metadata_json["filter_chain_added"] is True
+        assert payload.metadata_json["source_model"] == "det"
+
+    async def test_add_bbox_dry_run_counts_without_writing(self, tmp_path):
+        det = Detection(x=0.4, y=0.4, width=0.1, height=0.1, confidence=0.85, label_uuid="dog_label")
+        result, mock_images_api = await self._run_add_bbox(tmp_path, det, dry_run=True)
+
+        assert result["bboxes_added"] == 1
+        mock_images_api.add_bbox.assert_not_called()
+
+    async def test_add_bbox_unmapped_class_resolves_by_name(self, tmp_path):
+        dog_label = MagicMock(uuid="dog-uuid")
+        dog_label.name = "dog"  # MagicMock(name=...) sets repr, not the attribute
+        det = Detection(x=0.4, y=0.4, width=0.1, height=0.1, confidence=0.85, label_uuid=None, class_str="dog")
+        result, mock_images_api = await self._run_add_bbox(tmp_path, det, labels=[dog_label])
+
+        assert result["bboxes_added"] == 1
+        assert mock_images_api.add_bbox.call_args.args[0].label_uuid == "dog-uuid"
+
+    async def test_add_bbox_unresolved_class_is_skipped(self, tmp_path):
+        det = Detection(x=0.4, y=0.4, width=0.1, height=0.1, confidence=0.85, label_uuid=None, class_str="ghost")
+        result, mock_images_api = await self._run_add_bbox(tmp_path, det, labels=[])
+
+        assert result["bboxes_added"] == 0
+        assert result["images_changed"] == 0
+        mock_images_api.add_bbox.assert_not_called()
+
+    async def test_add_bbox_force_label_overrides_detection_label(self, tmp_path):
+        img_path = tmp_path / "a.jpg"
+        img_path.write_bytes(b"fake")
+
+        mock_images_api = MagicMock()
+        mock_images_api.batch_images_by_uuids.return_value = MagicMock(images=[_stub(filename=str(img_path))])
+        mock_images_api.get_image_metadata.return_value = MagicMock(status="success", image=MagicMock(bboxes=[]))
+        mock_images_api.add_bbox.return_value = MagicMock(bbox_uuid="new-1")
+
+        step = _step(
+            model_name="det",
+            action="add_bbox",
+            action_params={"target_label_uuid": "forced-label"},
+        )
+        patches = self._patch_common([step], mock_images_api)
+        det = Detection(x=0.4, y=0.4, width=0.1, height=0.1, confidence=0.85, label_uuid="dog_label")
+        task = _make_task({"filter_chain_uuid": "chain-1", "image_uuids": [str(img_path)]})
+        with (
+            patches,
+            patch("apps.tasks_server.tasks.ApplyFilterChainTask._read_model_kind", return_value="detector"),
+            patch(
+                "apps.tasks_server.tasks.ApplyFilterChainTask._HttpInferenceBackend.detect",
+                new=AsyncMock(return_value=[det]),
+            ),
+        ):
+            await task._init(task._params, None)
+            await task._run()
+
+        assert mock_images_api.add_bbox.call_args.args[0].label_uuid == "forced-label"
 
     async def test_dry_run_makes_no_mutations_but_counts_matches(self, tmp_path):
         img_path = tmp_path / "a.jpg"

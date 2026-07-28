@@ -86,6 +86,21 @@ class BboxPatchPayload(ApiPayload):
     metadata_json: Optional[Dict[str, Any]] = None
 
 
+class AddBboxPayload(ApiPayload):
+    image_path: str
+    label_uuid: Optional[str] = None
+    x: float
+    y: float
+    width: float
+    height: float
+    tag_uuids: List[str] = Field(default_factory=list)
+    metadata_json: Optional[Dict[str, Any]] = None
+
+
+class AddBboxResponse(StatusResponse):
+    bbox_uuid: Optional[str] = None
+
+
 class BulkApplyAllPayload(ApiPayload):
     filter: ImageSearchParams
     action: str  # relabel | delete | addTags | removeTags | revertRelabel
@@ -1614,6 +1629,29 @@ class WebApp:
             if not ok:
                 raise HTTPException(status_code=404, detail="Bbox not found")
             return Response(status_code=204)
+
+        @self._app.post(
+            "/api/images/bbox",
+            response_model=AddBboxResponse,
+            tags=[ApiTags.IMAGES],
+            operation_id="add_bbox",
+        )
+        async def add_bbox(payload: AddBboxPayload) -> AddBboxResponse:
+            """Insert a single new bbox on an image without disturbing its existing
+            bboxes (the filter-chain add_bbox action uses this)."""
+            bbox_uuid = await self._manager.add_single_bbox(
+                payload.image_path,
+                payload.label_uuid,
+                payload.x,
+                payload.y,
+                payload.width,
+                payload.height,
+                payload.tag_uuids,
+                metadata_json=payload.metadata_json,
+            )
+            if bbox_uuid is None:
+                raise HTTPException(status_code=404, detail="Image not found")
+            return AddBboxResponse(bbox_uuid=bbox_uuid)
 
         @self._app.post(
             "/api/images/bbox/thumbnails/invalidate",

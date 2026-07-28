@@ -252,4 +252,11 @@ class TestCuratedModelsEndpoint:
         assert data["status"] == "success"
         assert len(data["models"]) == len(CURATED_BASE_MODELS)
         for m in data["models"]:
-            assert set(m.keys()) == {"key", "displayName"}
+            assert set(m.keys()) == {"key", "displayName", "requiresConversion"}
+
+    async def test_curated_models_flag_conversion_entries(self, http_client):
+        resp = await http_client.get("/api/models/curated")
+        data = resp.json()
+        by_key = {m["key"]: m for m in data["models"]}
+        for entry in CURATED_BASE_MODELS:
+            assert by_key[entry["key"]]["requiresConversion"] is bool(entry.get("requires_conversion", False))

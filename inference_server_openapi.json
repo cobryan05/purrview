@@ -849,6 +849,11 @@
           "displayName": {
             "type": "string",
             "title": "Displayname"
+          },
+          "requiresConversion": {
+            "type": "boolean",
+            "title": "Requiresconversion",
+            "default": false
           }
         },
         "type": "object",

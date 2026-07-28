@@ -74,6 +74,9 @@ class StepMatch:
     image_match: bool = False
     # existing-bbox uuid -> the detection that matched it (bbox-level action).
     bbox_matches: Dict[str, Detection] = field(default_factory=dict)
+    # Detections that overlapped *no* existing bbox — populated only for
+    # "add_bbox" steps, where each becomes a new box (add-new-box action).
+    unmatched_detections: List[Detection] = field(default_factory=list)
 
 
 class FilterChainRunner:
@@ -107,7 +110,11 @@ class FilterChainRunner:
                     matches.append(StepMatch(step=step, image_match=True))
                 continue
 
-            if not existing_bboxes:
+            # add_bbox keeps detections that overlap *nothing*, so — unlike the
+            # relabel/tag overlap steps — it still has work to do on an image with
+            # no existing bboxes (every detection is then "new").
+            is_add = step.get("action") == "add_bbox"
+            if not existing_bboxes and not is_add:
                 # A detector-overlap step has nothing to overlap against yet.
                 continue
             detections = await self._backend.detect(step["model_name"], image_bytes, step["confidence"])
@@ -115,9 +122,19 @@ class FilterChainRunner:
                 continue
 
             action_params = step.get("action_params") or {}
-            only_if_label = action_params.get("only_if_label_uuid")
             iou_threshold = step.get("iou_threshold", 0.5)
 
+            if is_add:
+                # Keep detections that overlap *no* existing bbox (IoU below the
+                # threshold against every one) — each becomes a brand-new box.
+                unmatched = [
+                    det for det in detections if all(iou_xywh(det, bbox) < iou_threshold for bbox in existing_bboxes)
+                ]
+                if unmatched:
+                    matches.append(StepMatch(step=step, unmatched_detections=unmatched))
+                continue
+
+            only_if_label = action_params.get("only_if_label_uuid")
             bbox_matches: Dict[str, Detection] = {}
             for det in detections:
                 for bbox in existing_bboxes:

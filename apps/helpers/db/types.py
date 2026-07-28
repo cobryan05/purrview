@@ -737,6 +737,37 @@ MODEL_TYPE_ARCHITECTURES: Dict[str, List[str]] = {
         "yolo_v9_s",
         "yolo_v9_m",
         "yolo_v9_c",
+        "yolov8n",
+        "yolov8s",
+        "yolov8m",
+        "yolov8l",
+        "yolov8x",
+        "yolov9t",
+        "yolov9s",
+        "yolov9m",
+        "yolov9c",
+        "yolov9e",
+        "yolo11n",
+        "yolo11s",
+        "yolo11m",
+        "yolo11l",
+        "yolo11x",
+        "yolo12n",
+        "yolo12s",
+        "yolo12m",
+        "yolo12l",
+        "yolo12x",
+        "yolov10n",
+        "yolov10s",
+        "yolov10m",
+        "yolov10b",
+        "yolov10l",
+        "yolov10x",
+        "yolo26n",
+        "yolo26s",
+        "yolo26m",
+        "yolo26l",
+        "yolo26x",
     ],
     "crop_classifier": [
         "efficientnet_b0",
@@ -827,6 +858,7 @@ class ActionKind(str, Enum):
     STRIP_UNVERIFIED_BBOXES = "strip_unverified_bboxes"
     RELABEL_BBOX = "relabel_bbox"
     TAG_BBOX = "tag_bbox"
+    ADD_BBOX = "add_bbox"
 
 
 class FilterChainStep(SQLModel, table=True):

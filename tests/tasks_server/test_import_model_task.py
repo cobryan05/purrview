@@ -73,6 +73,13 @@ class TestInit:
             with pytest.raises(ValueError, match="Unknown curated_key"):
                 await task._init(task._params, None)
 
+    async def test_requires_conversion_key_raises(self, tmp_path):
+        conversion_entry = next(e for e in CURATED_BASE_MODELS if e.get("requires_conversion"))
+        task = _make_task({"curated_key": conversion_entry["key"], "model_name": "my_model"})
+        with patch("apps.tasks_server.tasks.ImportModelTask._MODELS_ROOT", tmp_path):
+            with pytest.raises(ValueError, match="requires training-server conversion"):
+                await task._init(task._params, None)
+
     async def test_invalid_model_name_raises(self, tmp_path):
         task = _make_task({"curated_key": CURATED_BASE_MODELS[0]["key"], "model_name": "../escape"})
         with patch("apps.tasks_server.tasks.ImportModelTask._MODELS_ROOT", tmp_path):
@@ -199,5 +206,14 @@ class TestParamsSchema:
         assert "model_name" in schema
         assert "overwrite" in schema
         assert schema["curated_key"]["type"] == "select"
+        # Only direct-ONNX entries — "requires_conversion" entries go through
+        # ImportCuratedModelTask instead (see test_import_curated_model_task.py).
         option_values = {o["value"] for o in schema["curated_key"]["options"]}
-        assert option_values == {e["key"] for e in CURATED_BASE_MODELS}
+        assert option_values == {e["key"] for e in CURATED_BASE_MODELS if not e.get("requires_conversion")}
+
+    def test_requires_conversion_entries_excluded_from_options(self):
+        schema = ImportModelTask.params_schema()
+        option_values = {o["value"] for o in schema["curated_key"]["options"]}
+        conversion_keys = {e["key"] for e in CURATED_BASE_MODELS if e.get("requires_conversion")}
+        assert conversion_keys, "expected at least one requires_conversion entry in the catalogue"
+        assert option_values.isdisjoint(conversion_keys)

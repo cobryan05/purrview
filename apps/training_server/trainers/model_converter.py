@@ -15,18 +15,30 @@ Two conversion paths are attempted, in order:
    exported.
 2. **ultralytics fallback** — if no libreyolo family recognizes the checkpoint,
    we try loading it directly with ``ultralytics.YOLO`` (covers plain
-   YOLOv5/v8-style ``.pt`` files that libreyolo doesn't claim) and export via
-   its own ``.export(format="onnx")``.
+   YOLOv5/v8-style ``.pt`` files that libreyolo doesn't claim, as well as the
+   NMS-free v10/YOLO26 family) and export via its own ``.export(format="onnx")``.
 
-``model_family`` sidecar mapping: only ``"libreyolo9"`` and
-``"ultralytics_yolov8"`` have registered inference providers today (see
-``apps/helpers/yoloUtils.py`` + ``apps/helpers/metadataUtils.py::resolve_legacy_model_family``).
-A libreyolo9 match is written as ``"libreyolo9"``. Any other libreyolo family
-(RT-DETR, YOLO-NAS, YOLOX, ...) is written as ``f"libreyolo_{FAMILY}"`` — there
-is no inference provider registered for these yet, so the exported ONNX won't
-be loadable by the inference server today, but the conversion job itself still
+``model_family`` sidecar mapping: only ``"libreyolo9"``, ``"ultralytics_detect"``
+(alias ``"ultralytics_yolov8"``) and ``"ultralytics_e2e"`` have registered
+inference providers today (see ``apps/helpers/yoloUtils.py`` +
+``apps/helpers/metadataUtils.py::resolve_legacy_model_family``). A libreyolo9
+match is written as ``"libreyolo9"``. Any other libreyolo family (RT-DETR,
+YOLO-NAS, YOLOX, ...) is written as ``f"libreyolo_{FAMILY}"`` — there is no
+inference provider registered for these yet, so the exported ONNX won't be
+loadable by the inference server today, but the conversion job itself still
 succeeds and lands a valid ONNX + sidecar on disk. This is intentional per the
 Chunk B spec; wiring up more providers is future work.
+
+**Family-correctness hazard (ultralytics fallback only):** we do NOT trust the
+checkpoint's filename/arch name to decide "classic" (``ultralytics_detect``,
+cxcywh + raw per-class scores, wide ``(1, 4+nc, num_preds)`` output) vs.
+"NMS-free end-to-end" (``ultralytics_e2e``, YOLOv10/YOLO26, fixed top-k
+already-picked ``(1, 300, 6)`` rows) — a mislabeled/renamed ``.pt`` would
+silently get the wrong decode path with no error, just garbage detections (see
+MORE_YOLO_PLAN.md Section 6 / NOTES.md). Instead we inspect the EXPORTED
+ONNX's own output tensor shape after ``model.export(...)``: last dim == 6
+(``[x1,y1,x2,y2,conf,cls]``, already picked) => ``ultralytics_e2e``; otherwise
+(wide multi-class-score layout) => ``ultralytics_detect``.
 """
 
 from __future__ import annotations
@@ -81,6 +93,29 @@ def _unwrap_state_dict(checkpoint: dict) -> dict:
     if isinstance(checkpoint, dict) and isinstance(checkpoint.get("model"), dict):
         return checkpoint["model"]
     return checkpoint
+
+
+def _detect_ultralytics_model_family(onnx_path: Path) -> str:
+    """Inspect the EXPORTED ONNX's own output tensor shape to pick the right
+    sidecar ``model_family`` — do not trust the checkpoint's filename/arch name.
+
+    "Classic" ultralytics detect heads (v8/v9/v11/v12) export a wide
+    ``(1, 4+nc, num_preds)`` (or transposed ``(1, num_preds, 4+nc)``) tensor of
+    raw per-class scores with no picked confidence/class columns. NMS-free
+    "end-to-end" heads (v10/YOLO26) export a fixed top-k list of already-picked
+    ``[x1, y1, x2, y2, conf, cls]`` rows — last dim == 6. Falls back to
+    ``"ultralytics_detect"`` if the output shape doesn't match either pattern
+    exactly (safer default: still runs the classic argmax+NMS decode instead of
+    silently mis-reading picked rows as a per-class score matrix).
+    """
+    import onnx as onnx_lib
+
+    model = onnx_lib.load(str(onnx_path))
+    output = model.graph.output[0]
+    dims = [d.dim_value for d in output.type.tensor_type.shape.dim]
+    if len(dims) == 3 and dims[-1] == 6:
+        return "ultralytics_e2e"
+    return "ultralytics_detect"
 
 
 def _find_libreyolo_class(state_dict: dict, checkpoint: Optional[dict] = None):
@@ -148,27 +183,44 @@ class ModelConverter(Trainer):
 
         import libreyolo.models as lm
 
+        # `load_untrusted_torch_file` uses torch's `weights_only=True` safe
+        # loader — it only allowlists classes libreyolo itself uses, so it
+        # correctly REJECTS any genuine ultralytics-trained checkpoint (their
+        # pickled `ultralytics.nn.tasks.DetectionModel` isn't in that
+        # allowlist). That's expected, not a bug in libreyolo: a checkpoint
+        # the safe loader can't even parse clearly isn't a libreyolo
+        # checkpoint, so we fall straight to the ultralytics branch — which
+        # loads the raw file itself via `ultralytics.YOLO(source_path)` — and
+        # only surface an error if THAT path (or a missing ultralytics
+        # install) also fails. Don't raise here; that would make the
+        # documented "libreyolo path, then ultralytics fallback" scheme
+        # unreachable for every real ultralytics .pt file.
+        checkpoint: Optional[dict] = None
+        state_dict: Optional[dict] = None
         try:
             checkpoint = await asyncio.to_thread(lm.load_untrusted_torch_file, source_path)
-        except Exception as e:
-            raise ValueError(
-                f"Unsupported model checkpoint: could not load {source_path!r} as a PyTorch " f"checkpoint ({e})."
-            ) from e
+        except Exception:
+            logger.info(
+                "libreyolo safe-load rejected %r (not a libreyolo checkpoint); "
+                "will try the ultralytics fallback loader instead.",
+                source_path,
+            )
 
         if cancel_event.is_set():
             return {}
-
-        # Architecture probing (can_load / detect_*) reads raw per-layer weight
-        # keys, which live in the UNWRAPPED state dict — not in the metadata
-        # wrapper our trainers save. Metadata (model_family, names) is read from
-        # the wrapper (`checkpoint`) below.
-        state_dict = _unwrap_state_dict(checkpoint)
 
         onnx_path = artifact_path / f"{model_name}.onnx"
         model_family: str
         class_list: list[str]
 
-        libreyolo_cls = await asyncio.to_thread(_find_libreyolo_class, state_dict, checkpoint)
+        libreyolo_cls = None
+        if checkpoint is not None:
+            # Architecture probing (can_load / detect_*) reads raw per-layer
+            # weight keys, which live in the UNWRAPPED state dict — not in the
+            # metadata wrapper our trainers save. Metadata (model_family,
+            # names) is read from the wrapper (`checkpoint`) below.
+            state_dict = _unwrap_state_dict(checkpoint)
+            libreyolo_cls = await asyncio.to_thread(_find_libreyolo_class, state_dict, checkpoint)
 
         if libreyolo_cls is not None:
             progress_cb({"progress": 0.2, "log": f"Detected libreyolo family: {libreyolo_cls.FAMILY}"})
@@ -231,7 +283,7 @@ class ModelConverter(Trainer):
             if str(exported_path) != str(onnx_path):
                 shutil.copy2(exported_path, onnx_path)
 
-            model_family = "ultralytics_yolov8"
+            model_family = await asyncio.to_thread(_detect_ultralytics_model_family, onnx_path)
             class_list = _libreyolo_class_names({"names": names})
 
         sidecar = {

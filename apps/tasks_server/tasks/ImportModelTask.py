@@ -43,6 +43,12 @@ class ImportModelTask(Task):
         except KeyError as exc:
             raise ValueError(f"Unknown curated_key {curated_key!r}: {exc}") from exc
 
+        if self._curated_entry.get("requires_conversion"):
+            raise ValueError(
+                f"curated_key {curated_key!r} requires training-server conversion; "
+                "use ImportCuratedModelTask instead"
+            )
+
         self._model_name: str = str(params.get("model_name") or "")
         validate_bare_model_name(self._model_name)
 
@@ -93,12 +99,13 @@ class ImportModelTask(Task):
     def params_schema(cls) -> Dict[str, Dict[str, Any]]:
         from apps.helpers.curatedModels import CURATED_BASE_MODELS
 
+        direct_entries = [e for e in CURATED_BASE_MODELS if not e.get("requires_conversion")]
         return {
             "curated_key": {
                 "type": "select",
                 "required": True,
                 "label": "Curated Model",
-                "options": [{"value": e["key"], "label": e["display_name"]} for e in CURATED_BASE_MODELS],
+                "options": [{"value": e["key"], "label": e["display_name"]} for e in direct_entries],
                 "help": "Which curated pretrained base model to download",
             },
             "model_name": {

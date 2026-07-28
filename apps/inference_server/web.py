@@ -125,6 +125,7 @@ class StageSourceModelResponse(StatusResponse):
 class CuratedModelInfo(Payload):
     key: str
     display_name: str
+    requires_conversion: bool = False
 
 
 class CuratedModelsResponse(StatusResponse):
@@ -369,7 +370,11 @@ class WebApp:
             name only — internal fields like onnx_url/model_family stay server-side)."""
             try:
                 models = [
-                    CuratedModelInfo(key=entry["key"], display_name=entry["display_name"])
+                    CuratedModelInfo(
+                        key=entry["key"],
+                        display_name=entry["display_name"],
+                        requires_conversion=bool(entry.get("requires_conversion", False)),
+                    )
                     for entry in CURATED_BASE_MODELS
                 ]
                 return CuratedModelsResponse(status=JsonValues.SUCCESS, models=models)

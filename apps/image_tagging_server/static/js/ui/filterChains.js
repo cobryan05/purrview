@@ -17,6 +17,7 @@ const ACTIONS = [
   { key: 'strip_unverified_bboxes', text: 'Strip unverified bboxes' },
   { key: 'relabel_bbox', text: 'Relabel bbox' },
   { key: 'tag_bbox', text: 'Tag bbox' },
+  { key: 'add_bbox', text: 'Add new bbox (detections with no overlap)' },
 ];
 
 const MAX_RECOMMENDED_STEPS = 5;
@@ -32,6 +33,10 @@ function _actionParamsFor(action, params = {}) {
         target_label_uuid: params.target_label_uuid ?? null,
         only_if_label_uuid: params.only_if_label_uuid ?? null,
       };
+    case 'add_bbox':
+      // Optional: force every new box to one label. Null = use each detection's
+      // own predicted label.
+      return { target_label_uuid: params.target_label_uuid ?? null };
     default:
       return {};
   }
@@ -174,6 +179,15 @@ function buildStepRow(step, { modelNames, tagItems, labelItems, onAnyChange, onD
         onChange: (value) => { _actionParams.only_if_label_uuid = value; onAnyChange?.(); },
       });
       _onlyIfLabelField.renderEdit().then(el => paramsRow.appendChild(makeFieldRow('Only if currently labeled', el)));
+    } else if (_action === 'add_bbox') {
+      _targetLabelField = new DropDownField({
+        value: _actionParams.target_label_uuid ? labelItems.find(l => l.key === _actionParams.target_label_uuid) ?? _actionParams.target_label_uuid : null,
+        editMode: true,
+        options: labelItems,
+        placeholder: "(use detection's own label)",
+        onChange: (value) => { _actionParams.target_label_uuid = value; onAnyChange?.(); },
+      });
+      _targetLabelField.renderEdit().then(el => paramsRow.appendChild(makeFieldRow('Force label (optional)', el)));
     }
   }
   renderParamsRow();

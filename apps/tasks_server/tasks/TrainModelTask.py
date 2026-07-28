@@ -31,7 +31,7 @@ from db_client.models.bundle_target_detection_dataset_payload import (
 )
 
 from apps import APPS, APPS_CONFIG
-from apps.helpers.model_type_map import MODEL_TYPE_TO_TRAINER_TYPE
+from apps.helpers.model_type_map import resolve_trainer_type
 
 from ._classifier_job_builders import (
     build_binary_classifier_job,
@@ -187,7 +187,7 @@ class TrainModelTask(Task, TrainingJobRunnerMixin):
             )
 
         # Single labeled node → binary classifier.
-        trainer_type: str = MODEL_TYPE_TO_TRAINER_TYPE.get(model_type, model_type)
+        trainer_type: str = resolve_trainer_type(model_type, architecture)
 
         model_name, manifest, job_config = build_binary_classifier_job(
             img_api,
@@ -349,7 +349,7 @@ class TrainModelTask(Task, TrainingJobRunnerMixin):
         )
 
         job_config = {
-            "trainer_type": "object_detection",
+            "trainer_type": resolve_trainer_type("object_detection", architecture),
             "model_name": model_name,
             "architecture": architecture,
             "class_names": class_names,

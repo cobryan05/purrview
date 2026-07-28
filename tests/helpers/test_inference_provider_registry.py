@@ -21,11 +21,15 @@ from onnx import TensorProto, helper
 
 # Importing these triggers @register_inference_provider registration.
 import apps.helpers.inferenceProviders.libreYolo9InferenceProvider  # noqa: F401
+import apps.helpers.inferenceProviders.ultralyticsE2eInferenceProvider  # noqa: F401
 import apps.helpers.inferenceProviders.ultralyticsYoloV8InferenceProvider  # noqa: F401
 from apps.helpers.inferenceProviders.libreYolo9InferenceProvider import (
     LibreYolo9InferenceProvider,
 )
 from apps.helpers.inferenceProviders.Registry import inference_provider_registry
+from apps.helpers.inferenceProviders.ultralyticsE2eInferenceProvider import (
+    UltralyticsE2eInferenceProvider,
+)
 from apps.helpers.inferenceProviders.ultralyticsYoloV8InferenceProvider import (
     UltralyticsYoloV8InferenceProvider,
 )
@@ -64,6 +68,23 @@ class TestRegistryResolvesExpectedProvider:
     def test_ultralytics_yolov5_not_registered(self):
         """Choice (a): yolo 5/7 resolve to a family string with no provider."""
         assert "ultralytics_yolov5" not in inference_provider_registry
+
+    def test_ultralytics_detect_registered_same_class_as_yolov8(self):
+        """ultralytics_detection_trainer.py writes model_family="ultralytics_detect"
+        for v8/Ultralytics-v9/v11/v12 — all share UltralyticsYoloV8InferenceProvider's
+        decode (cxcywh boxes, pre-sigmoid'd scores, no objectness). Stacked
+        @register_inference_provider decorators must register the SAME class
+        under both the legacy "ultralytics_yolov8" key (existing on-disk
+        sidecars) and the new "ultralytics_detect" key (new sidecars) — no
+        second class, no data migration needed."""
+        assert inference_provider_registry["ultralytics_detect"] is UltralyticsYoloV8InferenceProvider
+        assert inference_provider_registry["ultralytics_detect"] is inference_provider_registry["ultralytics_yolov8"]
+
+    def test_ultralytics_e2e_registered(self):
+        """YOLOv10/YOLO26 NMS-free exports resolve to their own decode class,
+        distinct from the classic v8-shape UltralyticsYoloV8InferenceProvider."""
+        assert inference_provider_registry["ultralytics_e2e"] is UltralyticsE2eInferenceProvider
+        assert UltralyticsE2eInferenceProvider.SKIP_NMS is True
 
 
 class TestLoadYoloOnnxDispatch:

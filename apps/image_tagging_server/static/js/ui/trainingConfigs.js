@@ -113,7 +113,7 @@ function renderTrainingConfigForm({ config, datasetsMap, modelConfigsMap, labels
     if (uuid === initConfigUuid) o.selected = true;
     configSel.appendChild(o);
   }
-  configSel.addEventListener('change', () => { refreshNodeSel(); refreshTreePreview(); _markDirty(); });
+  configSel.addEventListener('change', () => { refreshNodeSel(); refreshTreePreview(); _markDirty(); _refreshHyperparamsArchitecture(); });
   el.appendChild(makeFieldRow('Model Blueprint', configSel));
   if (modelConfigsMap.size === 0) {
     el.appendChild(makeNavHint(
@@ -153,7 +153,7 @@ function renderTrainingConfigForm({ config, datasetsMap, modelConfigsMap, labels
   }
 
   refreshNodeSel();
-  nodeSel.addEventListener('change', () => { _markDirty(); refreshTreePreview(); });
+  nodeSel.addEventListener('change', () => { _markDirty(); refreshTreePreview(); _refreshHyperparamsArchitecture(); });
   const nodeRow = makeFieldRow('Model node', nodeSel);
   const nodeHelp = document.createElement('span');
   nodeHelp.textContent = ' (?)';
@@ -193,11 +193,25 @@ function renderTrainingConfigForm({ config, datasetsMap, modelConfigsMap, labels
   settingsHdr.textContent = 'Training settings';
   el.appendChild(settingsHdr);
 
+  /** Resolve the currently-selected node's architecture (object_detection
+   * only — the fieldset's VRAM select degrades gracefully to hidden for
+   * anything else), or null if no node is selected yet. */
+  function _selectedArchitecture() {
+    const mc = modelConfigsMap.get(configSel.value);
+    const node = mc?.nodes?.find(n => n.uuid === nodeSel.value);
+    return node?.modelType === 'object_detection' ? node.architecture : null;
+  }
+
   const hyperparamsFieldset = createHyperparamsFieldset({
     initial: config?.hyperparamsJson ?? {},
     onChange: _markDirty,
+    architecture: _selectedArchitecture(),
   });
   for (const row of hyperparamsFieldset.rows) el.appendChild(row);
+
+  function _refreshHyperparamsArchitecture() {
+    hyperparamsFieldset.setArchitecture(_selectedArchitecture());
+  }
 
   // ── Datasets ──────────────────────────────────────────────────────────────
   const hr2 = document.createElement('hr');
