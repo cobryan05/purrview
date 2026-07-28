@@ -27,10 +27,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Optional
 
-import numpy as np
-
 from . import register_trainer
 from .base import Trainer
+from .onnx_validation import export_and_validate_onnx
 
 logger = logging.getLogger(__name__)
 
@@ -290,33 +289,8 @@ class MultiLabelClassifier(Trainer):
         # ── Export best weights ──────────────────────────────────────────────
         if best_state is not None:
             model.load_state_dict(best_state)
-        model.eval()
-        model = model.cpu()
 
-        dummy = torch.zeros(1, 3, 224, 224)
-        torch.onnx.export(
-            model,
-            dummy,
-            str(onnx_path),
-            opset_version=17,
-            input_names=["input"],
-            output_names=["output"],
-            dynamic_axes={"input": {0: "batch_size"}, "output": {0: "batch_size"}},
-        )
-
-        import onnxruntime as ort
-
-        ort_session = ort.InferenceSession(str(onnx_path))
-        with torch.no_grad():
-            pt_out = model(dummy).numpy()
-        ort_out = ort_session.run(None, {"input": dummy.numpy()})[0]
-        max_diff = float(np.abs(pt_out - ort_out).max())
-        logger.info("ONNX validation: max abs diff = %.6f", max_diff)
-        if not np.allclose(pt_out, ort_out, atol=1e-2):
-            raise RuntimeError(
-                f"ONNX validation failed: PyTorch and OnnxRuntime outputs differ (max diff {max_diff:.6f})"
-            )
-        logger.info("ONNX validation passed, model saved to %s", onnx_path)
+        export_and_validate_onnx(model, onnx_path, timm_model)
         checkpoint_path.unlink(missing_ok=True)
 
         model_config = {
