@@ -42,7 +42,7 @@ import { rerenderBboxViews, resetCanvasZoom } from '/app-static/js/app/image-tag
 import { nextModalZIndex, applyModalCascade, registerEscHandler, unregisterEscHandler } from '/app-static/js/ui/utils/modalZIndex.js';
 import { CheckboxField } from '/app-static/js/ui/utils/fields/CheckboxField.js';
 import { createCanvasInstance } from '/app-static/js/app/image-tagging/canvas/instance.js';
-import { saveAnnotations, addInferenceResults } from '/app-static/js/app/image-tagging/canvas/image.js';
+import { saveAnnotations, addInferenceResults, seedRuntimeBboxes } from '/app-static/js/app/image-tagging/canvas/image.js';
 import { createInferencePanel } from '/app-static/js/app/image-tagging/inferencePanel.js';
 import { runDetection } from '/app-static/js/shared/api/inference.js';
 import { initSplitResize } from '/app-static/js/ui/utils/splitResize.js';
@@ -2354,9 +2354,23 @@ export function _mergeExternalBboxChanges(runtime, updatedBboxes, deletedBboxUui
  *   Optional navigation context. When provided, the [ ] hotkeys navigate through
  *   `items`; `onClose` is called after the modal closes with the last-viewed image.
  */
-async function showCanvasModal(bbox, img, labels, onSaved, navContext = null) {
+async function showCanvasModal(bbox, img, labels, onSaved, navContext = null, editOpts = {}) {
   if (_modalOpen) return;
   _modalOpen = true;
+
+  // ── Editor options (all defaulted to today's review-grid behavior) ──
+  // • persist(runtime)   → DB save (saveAnnotations); preview injects an
+  //                        in-memory persist that skips the DB.
+  // • seedBboxes         → not-yet-persisted candidate boxes to inject after
+  //                        loadImage (the bboxUuid:'new' case). Default: none.
+  // • broadcast          → gate the IMAGE_ANNOTATIONS_SAVED / IMAGE_BBOXES_CHANGED
+  //                        publishes so preview edits don't ripple into the live
+  //                        grid. Default: true (publish exactly as today).
+  // • allowNavigation    → wire the [ ] prev/next nav handlers. Default: true.
+  const _persist = editOpts.persist ?? saveAnnotations;
+  const _seedBboxes = editOpts.seedBboxes ?? null;
+  const _broadcast = editOpts.broadcast ?? true;
+  const _allowNavigation = editOpts.allowNavigation ?? true;
 
   // ── Navigation state ──────────────────────────────────────────────
   let _navIndex = navContext?.startIndex ?? 0;
@@ -2472,6 +2486,9 @@ async function showCanvasModal(bbox, img, labels, onSaved, navContext = null) {
   try {
     instance = await createCanvasInstance(canvasWrap, { tool: 'select' });
     await instance.loadImage(img.filename);
+    // Inject not-yet-persisted candidate boxes (preview bboxUuid:'new' case).
+    // No-op when absent, so the default review-grid path is untouched.
+    if (_seedBboxes?.length) seedRuntimeBboxes(instance.runtime, _seedBboxes);
   } catch (err) {
     Logger.error('Canvas modal: failed to load image', err);
     instance?.destroy();
@@ -2569,7 +2586,7 @@ async function showCanvasModal(bbox, img, labels, onSaved, navContext = null) {
 
   // ── Navigation: wire [ ] hotkeys to navigate within the results page ──
   let unsubNavLoad = null;
-  if (navContext?.items?.length) {
+  if (_allowNavigation && navContext?.items?.length) {
     // Duck-typed FileNavigation used by files.js's next_image / prev_image.
     // Those functions also call guardUnsavedChanges before advancing, so the
     // "are you sure?" dialog is handled for free on nav-hotkey presses.
@@ -2719,11 +2736,13 @@ async function showCanvasModal(bbox, img, labels, onSaved, navContext = null) {
     closeModal();
     // Broadcast to all review panels (including nested / parent modals) so
     // every card showing a bbox from this image gets refreshed.
-    events.publish(EventTypes.IMAGE_ANNOTATIONS_SAVED, {
-      imageUuid: currentImg?.uuid,
-      imageFilename: currentImg?.filename ?? currentImg?.image_path,
-      bboxes: currentBboxesMap,
-    });
+    if (_broadcast) {
+      events.publish(EventTypes.IMAGE_ANNOTATIONS_SAVED, {
+        imageUuid: currentImg?.uuid,
+        imageFilename: currentImg?.filename ?? currentImg?.image_path,
+        bboxes: currentBboxesMap,
+      });
+    }
     if (currentImg?.uuid !== img.uuid) {
       // Navigated to a different image before saving — let navContext refresh its cards.
       navContext?.onSaved?.(currentImg, currentBboxesMap);
@@ -2746,7 +2765,7 @@ async function showCanvasModal(bbox, img, labels, onSaved, navContext = null) {
       if (choice === 'cancel') return;
       if (choice === 'save') {
         _setAllButtonsDisabled(true);
-        const saved = await saveAnnotations(instance.runtime);
+        const saved = await _persist(instance.runtime);
         if (!saved) {
           _setAllButtonsDisabled(false);
           _updateSaveBtn();
@@ -2780,7 +2799,7 @@ async function showCanvasModal(bbox, img, labels, onSaved, navContext = null) {
 
     let saved = false;
     try {
-      saved = await saveAnnotations(instance.runtime);
+      saved = await _persist(instance.runtime);
     } catch (err) {
       Logger.error('Canvas modal: save failed', err);
     }
@@ -2789,7 +2808,7 @@ async function showCanvasModal(bbox, img, labels, onSaved, navContext = null) {
     saveOnlyBtn.textContent = 'Save';
     _updateSaveBtn();
 
-    if (saved) {
+    if (saved && _broadcast) {
       // Broadcast to other panels without closing
       const currentImg = _currentImg;
       const currentBboxesMap = new Map(instance.runtime.state.image.bboxes);
@@ -2809,7 +2828,7 @@ async function showCanvasModal(bbox, img, labels, onSaved, navContext = null) {
 
     let saved = false;
     try {
-      saved = await saveAnnotations(instance.runtime);
+      saved = await _persist(instance.runtime);
     } catch (err) {
       Logger.error('Canvas modal: save failed', err);
     }
