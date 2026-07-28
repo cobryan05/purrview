@@ -334,7 +334,51 @@ class TestRunModelButton:
         page.wait_for_timeout(200)
 
         expect(page.locator(".run-model-on-results-dialog")).to_have_count(0)
-        expect(page.locator("#toast-container")).to_contain_text("No candidate bboxes")
+        expect(page.locator("#toast-container")).to_contain_text("No candidates in the current selection/filter")
+
+    def test_refresh_button_picks_up_newly_added_model(self, page: Page, base_url: str):
+        """A model imported after the page/dialog first loaded (e.g. via the
+        Configuration tab in another browser tab) shouldn't require a full page
+        reload to show up here — clicking Refresh should re-fetch and repopulate
+        the model select without closing the dialog."""
+        _mock_review_queue(page, PAGE_1_IMAGES)
+        _mock_labels(page, [LABEL_CAT, LABEL_DOG])
+        _mock_tags(page, [UNVERIFIED_TAG])
+        # Starts with a single model; a second is "imported" between the initial
+        # load and the refresh click. `_mock_models` snapshots its model list at
+        # call time, so this test needs a route that re-reads a mutable list on
+        # every request instead.
+        detector_names = ["yolo9-detector"]
+
+        def handle_list(route: Route):
+            route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps({"status": "success", "models": list(detector_names)}),
+            )
+
+        page.route("**/api/models", handle_list)
+
+        def handle_meta(route: Route):
+            route.fulfill(status=200, content_type="application/json", body=json.dumps({"status": "success", "modelKind": "detector"}))
+
+        page.route("**/api/models/*/meta", handle_meta)
+
+        _navigate_to_review(page, base_url)
+        _run_model_btn(page).click()
+
+        dialog = page.locator(".run-model-on-results-dialog")
+        expect(dialog).to_be_visible()
+        model_select = dialog.locator(".run-model-on-results-model-select")
+        expect(model_select.locator("option")).to_have_count(1)
+
+        detector_names.append("new-detector")
+        dialog.locator(".run-model-on-results-refresh").click()
+
+        expect(model_select.locator("option")).to_have_count(2)
+        expect(model_select.locator("option").nth(1)).to_have_text("new-detector")
+        # Dialog stays open and unaffected otherwise.
+        expect(dialog).to_be_visible()
 
 
 # ---------------------------------------------------------------------------
