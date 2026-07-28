@@ -18,6 +18,56 @@ import { createHoverPreview } from '/app-static/js/ui/thumbnailHoverPreview.js';
 import { showConfirmModal } from '/app-static/js/ui/utils/confirmModal.js';
 import { deleteImage } from '/app-static/js/shared/api/images.js';
 import { toast, Logger } from '/app-static/js/ui/utils/logging.js';
+import { createCardGrid } from '/app-static/js/app/review/cardGrid.js';
+import { attachContext } from '/app-static/js/ui/contextMenu/index.js';
+
+/**
+ * Per-card adapter for an image-level classifier preview candidate — the object
+ * the `candidateImage` context-menu provider drives off. Mirrors
+ * runModelOnResults.js's `makeCandidateBboxAdapter`, but IMAGE-LEVEL: a
+ * classifier proposes a whole-image label, not a box, so there is NO geometry,
+ * verification, tags, or bbox uuid. It mutates the in-memory candidate / preview
+ * state ONLY; nothing hits the DB until the user hits Apply.
+ *
+ * @param {object} candidate - the transient preview candidate object.
+ * @param {HTMLElement} cardEl - the candidate's card element.
+ * @param {{
+ *   labels: Map<string, object>,
+ *   removeCandidate: (candidate: object) => void,
+ *   rerenderProposedChip: (candidate: object) => void,
+ * }} previewController
+ */
+export function makeCandidateImageAdapter(candidate, cardEl, previewController) {
+  const { labels, removeCandidate, rerenderProposedChip } = previewController;
+  return {
+    // ── Display getters ────────────────────────────────────────────────────
+    getImageUuid() { return candidate.imageUuid ?? null; },
+    getLabelUuid() { return candidate.predictedLabelUuid ?? null; },
+    getLabelName() { return candidate.predictedLabelName ?? null; },
+    getLabelColor() { return labels.get(candidate.predictedLabelUuid)?.color ?? null; },
+    getConfidence() { return candidate.confidence ?? null; },
+    // No box exists — return null so any box-only menu item (similar-search,
+    // edit-geometry) self-disables. The `candidateImage` provider omits those
+    // entirely, but this keeps the adapter safe if ever pointed at a box menu.
+    getBboxUuid() { return null; },
+    getBboxCoords() { return null; },
+
+    // ── Relabel (no DB) ────────────────────────────────────────────────────
+    // Sets the proposed image label on the candidate and re-renders its chip in
+    // place. The name comes from the labels Map (fetchLabels() returns a Map).
+    async applyLabel(labelUuid) {
+      candidate.predictedLabelUuid = labelUuid;
+      candidate.predictedLabelName = labelUuid ? (labels.get(labelUuid)?.name ?? null) : null;
+      rerenderProposedChip(candidate);
+    },
+
+    // ── Remove from preview (no DB) ────────────────────────────────────────
+    // Drops the candidate so Apply won't include it (unchecks + removes the row).
+    async remove() {
+      removeCandidate(candidate);
+    },
+  };
+}
 
 /**
  * Confirmation modal for "Run Model on Results" (classifier branch). Lets the
@@ -110,13 +160,65 @@ export async function openClassifierTagConfirmationModal(candidates, ctx) {
   grid.className = 'relabel-modal-grid review-grid';
   body.appendChild(grid);
 
-  /** @type {Array<{candidate: object, checkbox: HTMLInputElement}>} */
+  /** @type {Array<{id: string, candidate: object, card: HTMLElement, checkbox: HTMLInputElement, proposedChip: HTMLElement}>} */
   const rows = [];
 
+  // ── Shared selection controller (click / shift-range select) ────────────
+  // Image-level candidate cards get real review-card selection semantics via the
+  // shared cardGrid controller — distinct from the per-card "will Apply" checkbox
+  // (which stays the Apply bit). `_visibleEntries` mirrors `rows` in order so
+  // shift-range select iterates the same list. Mirrors runModelOnResults.js.
+  const _visibleEntries = [];
+  const cardGrid = createCardGrid(grid, {
+    getVisibleEntries: () => _visibleEntries,
+    entryId: (entry) => entry.id,
+    onSelectionChange: () => {},
+    hooks: { toast: (m) => toast(m, 3000, 'warning') },
+  });
+
+  // Re-render the proposed-label chip in place after an in-memory relabel.
+  function _rerenderProposedChip(candidate) {
+    const row = rows.find(r => r.candidate === candidate);
+    if (!row) return;
+    const fresh = _labelChip(candidate.predictedLabelName, candidate.predictedLabelUuid, ctx.labels);
+    fresh.classList.add('relabel-modal-proposed-chip');
+    row.proposedChip.replaceWith(fresh);
+    row.proposedChip = fresh;
+  }
+
+  // Drop a candidate from the preview so Apply won't include it. Uncheck (so the
+  // "will Apply" bit is off even if the row lingered) and remove the row/card.
+  function _removeCandidate(candidate) {
+    const idx = rows.findIndex(r => r.candidate === candidate);
+    if (idx === -1) return;
+    const { card, checkbox, id } = rows[idx];
+    checkbox.checked = false;
+    cardGrid.selected.delete(id);
+    rows.splice(idx, 1);
+    const veIdx = _visibleEntries.findIndex(e => e.candidate === candidate);
+    if (veIdx !== -1) _visibleEntries.splice(veIdx, 1);
+    card.remove();
+    _updateApplyBtn();
+  }
+
+  const _previewController = {
+    labels: ctx.labels,
+    removeCandidate: _removeCandidate,
+    rerenderProposedChip: _rerenderProposedChip,
+  };
+
+  let _cardIndex = 0;
   for (const candidate of sorted) {
     const card = document.createElement('div');
     card.className = 'review-card relabel-modal-card';
+    // Stable id for the selection controller. Classifier candidates are
+    // image-level (one per image), so the image uuid is a natural card id; the
+    // card carries data-kind/data-bbox-uuid so the shared applySelect shift-range
+    // selectors resolve (the controller keys bbox-kind cards off data-bbox-uuid).
+    const cardId = candidate.imageUuid;
     card.dataset.imageUuid = candidate.imageUuid;
+    card.dataset.bboxUuid = cardId;
+    card.dataset.kind = 'bbox';
 
     // Whole-image candidate — no bbox to highlight, so just show the image
     // (mirrors runModelOnResults.js's `isNew`-candidate hover preview, minus
@@ -145,7 +247,9 @@ export async function openClassifierTagConfirmationModal(candidates, ctx) {
     const labelsRow = document.createElement('div');
     labelsRow.className = 'relabel-modal-labels-row';
     labelsRow.style.cssText = 'display:flex;align-items:center;gap:0.4em;flex-wrap:wrap;';
-    labelsRow.appendChild(_labelChip(candidate.predictedLabelName, candidate.predictedLabelUuid, ctx.labels));
+    const proposedChip = _labelChip(candidate.predictedLabelName, candidate.predictedLabelUuid, ctx.labels);
+    proposedChip.classList.add('relabel-modal-proposed-chip');
+    labelsRow.appendChild(proposedChip);
     info.appendChild(labelsRow);
 
     const pct = Math.round((candidate.confidence ?? 0) * 100);
@@ -166,7 +270,47 @@ export async function openClassifierTagConfirmationModal(candidates, ctx) {
 
     card.appendChild(info);
     grid.appendChild(card);
-    rows.push({ candidate, checkbox });
+
+    const entry = { id: cardId, kind: 'bbox', candidate, card };
+    _visibleEntries.push(entry);
+    const index = _cardIndex;
+
+    // ── Card-click selection (separate from the Apply checkbox) ────────────
+    // The shared applySelect drives off a detached checkbox proxy so selection
+    // (the `.selected` class + the controller's Set, used for multi-target
+    // context-menu actions) stays independent of the visible "will Apply" box.
+    const selProxy = document.createElement('input');
+    selProxy.type = 'checkbox';
+    let _selTimer = null;
+    card.addEventListener('click', (e) => {
+      // Ignore clicks on the Apply checkbox and interactive card chrome.
+      if (e.target === checkbox) return;
+      if (e.shiftKey) e.preventDefault();
+      clearTimeout(_selTimer);
+      const shiftKey = e.shiftKey;
+      const newChecked = !cardGrid.selected.has(cardId);
+      _selTimer = setTimeout(() => {
+        if (!card.isConnected) return;
+        selProxy.checked = !newChecked; // applySelect flips it to newChecked
+        cardGrid.applySelect(selProxy, card, cardId, 'bbox', index, shiftKey, newChecked);
+      }, 220);
+    });
+
+    // ── Right-click context menu (Relabel / Remove-from-preview only) ──────
+    // Image-level candidates: NO geometry / similar-search / verification / tags.
+    attachContext(card, () => {
+      const _selected = cardGrid.selected;
+      // Multi-select: act on every selected candidate.
+      const targets = (_selected.has(cardId) && _selected.size > 1)
+        ? _visibleEntries.filter(en => _selected.has(en.id))
+        : [entry];
+      return targets.map(en => ({
+        adapters: { candidateImage: makeCandidateImageAdapter(en.candidate, en.card, _previewController) },
+      }));
+    });
+
+    rows.push({ id: cardId, candidate, card, checkbox, proposedChip });
+    _cardIndex += 1;
   }
 
   selectAllBtn.addEventListener('click', () => {

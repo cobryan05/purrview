@@ -239,3 +239,24 @@ registerContextProvider('candidateBbox', (adapters, ctx) => {
   ];
   return [{ items }];
 });
+
+/**
+ * Context-menu provider for the 'candidateImage' type — the classifier branch
+ * of the Run-Model-on-Results preview (`runClassifierOnResults.js`). Classifier
+ * candidates are IMAGE-LEVEL (whole-image predictions, no bbox geometry), so
+ * this provider exposes ONLY Relabel and Remove-from-preview — deliberately no
+ * geometry / similar-search / verification / tags (those are box-only concepts).
+ * The candidate adapter mutates in-memory preview state only; nothing hits the
+ * DB until Apply.
+ *
+ * `buildApplyLabelItem`'s label picker filters to object-scoped labels via a
+ * shared `_buildLabelPanel`, so image-scoped predictions are relabeled from the
+ * same curated label set the rest of the preview uses.
+ */
+registerContextProvider('candidateImage', (adapters, ctx) => {
+  const items = [
+    buildApplyLabelItem(adapters, ctx),
+    buildDeleteItem(adapters, ctx, { label: ctx.count > 1 ? `Remove ${ctx.count} from preview` : 'Remove from preview' }),
+  ];
+  return [{ items }];
+});
