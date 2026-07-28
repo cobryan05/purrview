@@ -244,6 +244,35 @@ class TestVerifyChip:
         expect(verified_chip).to_have_text("✓ Verified")
         expect(verified_chip).to_have_class("verify-chip verify-chip--verified")
 
+    def test_double_click_verify_chip_advances_state(self, page: Page, base_url: str):
+        """Double-clicking an unverified chip advances it Unverified → Verified.
+
+        Exercises the new buildVerifyChip onToggle path, which drives the same
+        setVerification adapter as the right-click menu (PATCHes the bbox and
+        rebuilds the chip via the IMAGE_BBOXES_CHANGED refresh path).
+        """
+        _mock_review_queue(page, PAGE_1_IMAGES)
+        _mock_labels(page, [LABEL_CAT, LABEL_DOG])
+        _mock_tags(page, [
+            {**UNVERIFIED_TAG, "name": "Unverified", "color": "#888", "kind": "system"},
+            {**VERIFIED_TAG, "name": "Verified", "color": "#27ae60", "kind": "system"},
+            REVIEWED_TAG,
+        ])
+        _mock_misc_review_endpoints(page)
+
+        _navigate_to_review(page, base_url)
+        _show_all_bboxes(page)
+        _switch_view(page, "bboxes")
+
+        chip = page.locator("#review-root [data-bbox-uuid='bbox-1'] .verify-chip")
+        expect(chip).to_have_text("◌ Unverified")
+
+        # Re-query after each toggle: setVerification replaces the chip element.
+        chip.dblclick()
+        chip = page.locator("#review-root [data-bbox-uuid='bbox-1'] .verify-chip")
+        expect(chip).to_have_text("✓ Verified")
+        expect(chip).to_have_class("verify-chip verify-chip--verified")
+
 
 # ---------------------------------------------------------------------------
 # 3. Single checkbox selection
