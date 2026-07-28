@@ -38,7 +38,6 @@ from db_client.models.tag_kind import TagKind as ApiTagKind
 from inference_client.api.inference_api import InferenceApi
 from inference_client.api.models_api import ModelsApi as InferenceModelsApi
 from inference_client.models.classify_payload import ClassifyPayload
-from inference_client.models.classify_prediction import ClassifyPrediction
 from inference_client.models.inference_payload import InferencePayload
 from inference_client.models.pin_model_payload import PinModelPayload
 
@@ -96,16 +95,6 @@ class _HttpInferenceBackend:
             return 0.0
         preds = resp.result.predictions or []
         return max((p.confidence for p in preds), default=0.0)
-
-    async def classify(self, model_name: str, image_bytes: bytes) -> List[ClassifyPrediction]:
-        """Raw per-label predictions, unlike classify_whole_image's single max float —
-        used by PreviewClassifierMatchTask, which needs to know *which* label matched,
-        not just the highest confidence seen."""
-        b64 = base64.b64encode(image_bytes).decode()
-        resp = await asyncio.to_thread(self._inference_api.classify, model_name, ClassifyPayload(image_base64=b64))
-        if resp.status != "success" or resp.result is None:
-            return []
-        return resp.result.predictions or []
 
     async def detect(self, model_name: str, image_bytes: bytes, conf_thresh: float) -> List[Detection]:
         b64 = base64.b64encode(image_bytes).decode()
