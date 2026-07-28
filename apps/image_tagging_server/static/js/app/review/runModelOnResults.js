@@ -237,7 +237,21 @@ export async function openRelabelConfirmationModal(candidates, ctx) {
   dialog.style.cssText = 'max-width:900px;width:90vw;max-height:85vh;display:flex;flex-direction:column;';
   dialog.classList.add('relabel-confirm-modal');
 
-  const sorted = [...candidates].sort((a, b) => (b.confidence ?? 0) - (a.confidence ?? 0));
+  // Group candidates from the same image together (ranked by that image's best
+  // candidate) so two boxes on one image are always adjacent in the grid —
+  // with 500 images and 15 visible at a time, hover-highlighting alone isn't
+  // enough to spot a same-image pair. Within a group, still highest-confidence first.
+  const _imageMaxConfidence = new Map();
+  for (const c of candidates) {
+    const prev = _imageMaxConfidence.get(c.imageUuid) ?? -Infinity;
+    _imageMaxConfidence.set(c.imageUuid, Math.max(prev, c.confidence ?? 0));
+  }
+  const sorted = [...candidates].sort((a, b) => {
+    const groupDiff = _imageMaxConfidence.get(b.imageUuid) - _imageMaxConfidence.get(a.imageUuid);
+    if (groupDiff !== 0) return groupDiff;
+    if (a.imageUuid !== b.imageUuid) return a.imageUuid < b.imageUuid ? -1 : 1;
+    return (b.confidence ?? 0) - (a.confidence ?? 0);
+  });
 
   const title = document.createElement('h3');
   title.className = 'app-modal-title';
@@ -339,10 +353,9 @@ export async function openRelabelConfirmationModal(candidates, ctx) {
   const rows = [];
 
   // ── Same-image hover highlight ──────────────────────────────────────────
-  // Candidates are sorted by confidence only, so two candidates from the same
-  // image (e.g. two boxes sharing a label) can land far apart in the grid.
-  // Mirrors review/main.js's attachGroupHighlight so hovering one card lights
-  // up every other card from the same image, regardless of grid position.
+  // Candidates are already grouped adjacently by image (see `sorted` above);
+  // this makes a same-image group visually obvious even when it's split
+  // across two grid rows. Mirrors review/main.js's attachGroupHighlight.
   function _attachGroupHighlight(card, imageUuid) {
     card.addEventListener('mouseenter', () => {
       card.classList.add('group-highlight-self-bbox');

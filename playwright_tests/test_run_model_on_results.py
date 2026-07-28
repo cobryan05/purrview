@@ -668,11 +668,37 @@ class TestRelabelConfirmationModal:
         expect(cards.nth(1)).to_contain_text("70%")
         expect(cards.nth(2)).to_contain_text("55%")
 
+    def test_candidates_grouped_adjacently_by_image(self, page: Page, base_url: str):
+        """Without grouping, a plain confidence sort would interleave these:
+        91(img-2), 70(img-1), 60(img-2), 55(img-1). Grouping by each image's
+        best candidate must keep img-2's two candidates adjacent, then img-1's."""
+        self._setup(page, base_url)
+        candidates = CANDIDATES_MIXED + [
+            {
+                "bboxUuid": "bbox-4",
+                "imageUuid": "img-2",
+                "imagePath": "folder/image2.jpg",
+                "currentLabelUuid": "lbl-dog",
+                "currentLabelName": "Dog",
+                "proposedLabelUuid": "lbl-cat",
+                "proposedLabelName": "Cat",
+                "confidence": 0.60,
+            },
+        ]
+        _open_confirm_modal(page, candidates)
+
+        cards = page.locator(".relabel-confirm-modal .relabel-modal-card")
+        expect(cards).to_have_count(4)
+        # img-2 group (91, 60) first since its best candidate beats img-1's (70, 55).
+        expect(cards.nth(0)).to_contain_text("91%")
+        expect(cards.nth(1)).to_contain_text("60%")
+        expect(cards.nth(2)).to_contain_text("70%")
+        expect(cards.nth(3)).to_contain_text("55%")
+
     def test_hover_highlights_other_candidates_from_same_image(self, page: Page, base_url: str):
-        """Candidates are sorted by confidence only, so two boxes on the same
-        image (bbox-1 and bbox-3, both img-1) aren't guaranteed to be adjacent.
-        Hovering one must still highlight the other via the shared
-        data-image-uuid grouping, mirroring review/main.js's card hover."""
+        """Hovering a card must highlight every other card from the same image
+        via the shared data-image-uuid grouping, mirroring review/main.js's
+        card hover (on top of the adjacency already guaranteed by sort order)."""
         self._setup(page, base_url)
         _open_confirm_modal(page, CANDIDATES_MIXED)
 
