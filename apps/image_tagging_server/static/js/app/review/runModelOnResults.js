@@ -37,6 +37,8 @@ import {
   TaskStatus,
 } from '/app-static/js/shared/api/tasks.js';
 import { createModalShell } from '/app-static/js/ui/utils/modalShell.js';
+import { createHoverPreview } from '/app-static/js/ui/thumbnailHoverPreview.js';
+import { drawLetterboxedBboxes } from '/app-static/js/ui/utils/bboxThumbOverlay.js';
 import { toast, Logger } from '/app-static/js/ui/utils/logging.js';
 import { expandLabelFilterSet, bboxHasAnyTag, VERIFICATION_TAG_BY_STATE } from '/app-static/js/app/review/filterPredicate.js';
 
@@ -230,7 +232,11 @@ function _labelChip(name, uuid, labels) {
  *   shown when there are zero candidates so "0 results" isn't a silent mystery.
  */
 export async function openRelabelConfirmationModal(candidates, ctx) {
-  const { dialog, open, close } = createModalShell();
+  // Same hover-zoom popover used for cards in review/main.js and the file
+  // browser — fetches the image at a larger thumbnail size and draws the
+  // relevant bbox on a canvas overlay, positioned near the hovered card.
+  const hoverPreview = createHoverPreview();
+  const { dialog, open, close } = createModalShell({ onClose: () => hoverPreview.destroy() });
   // Reuses showReviewModal's layout pattern (apps/image_tagging_server/static/js/app/review/main.js):
   // a max-height flex column with a fixed header/footer and a scrollable body,
   // so a large candidate grid can't push the footer buttons off-screen.
@@ -376,6 +382,26 @@ export async function openRelabelConfirmationModal(candidates, ctx) {
     card.dataset.imageUuid = candidate.imageUuid;
     _attachGroupHighlight(card, candidate.imageUuid);
 
+    // Existing-bbox candidates: let the preview fetch the image's real bboxes
+    // and highlight this one by uuid (no need to know its geometry ourselves).
+    // New-box candidates: no uuid exists yet, so hand it the proposed geometry
+    // directly as a single synthetic bbox.
+    if (candidate.isNew) {
+      hoverPreview.attach(card, {
+        imagePath: candidate.imagePath,
+        imageUuid: candidate.imageUuid,
+        allBboxes: candidate.geometry ? [{ uuid: 'new', ...candidate.geometry,
+          label: { color: ctx.labels.get(candidate.proposedLabelUuid)?.color } }] : [],
+        hoveredBboxUuid: 'new',
+      });
+    } else {
+      hoverPreview.attach(card, {
+        imagePath: candidate.imagePath,
+        imageUuid: candidate.imageUuid,
+        hoveredBboxUuid: candidate.bboxUuid,
+      });
+    }
+
     const checkbox = document.createElement('input');
     checkbox.type = 'checkbox';
     checkbox.checked = true;
@@ -395,30 +421,10 @@ export async function openRelabelConfirmationModal(candidates, ctx) {
       const overlay = document.createElement('canvas');
       overlay.className = 'thumb-overlay';
       overlay.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;pointer-events:none;';
-      const overlayCtx = overlay.getContext('2d');
 
       const drawOverlay = () => {
-        const natW = thumb.naturalWidth;
-        const natH = thumb.naturalHeight;
-        const cssW = thumb.clientWidth;
-        const cssH = thumb.clientHeight;
-        if (!natW || !natH || !cssW || !cssH || !candidate.geometry) return;
-        overlay.width = cssW;
-        overlay.height = cssH;
-        const scale = Math.min(cssW / natW, cssH / natH);
-        const dispW = natW * scale;
-        const dispH = natH * scale;
-        const offsetX = (cssW - dispW) / 2;
-        const offsetY = (cssH - dispH) / 2;
-        overlayCtx.clearRect(0, 0, cssW, cssH);
-        overlayCtx.strokeStyle = '#5cc45c';
-        overlayCtx.lineWidth = Math.max(1, Math.round(cssW / 150));
-        overlayCtx.strokeRect(
-          offsetX + candidate.geometry.x * dispW,
-          offsetY + candidate.geometry.y * dispH,
-          candidate.geometry.width * dispW,
-          candidate.geometry.height * dispH,
-        );
+        if (!candidate.geometry) return;
+        drawLetterboxedBboxes(thumb, overlay, [{ ...candidate.geometry, color: '#5cc45c' }]);
       };
 
       if (thumb.complete && thumb.naturalWidth) {

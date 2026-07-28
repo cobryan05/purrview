@@ -44,6 +44,7 @@ import { createTagPanel } from '/app-static/js/ui/inspector.js';
 import { setupSidebarTabs } from '/app-static/js/app/utils/tabs.js';
 import { parseToolUuid } from '/app-static/js/app/image-tagging/canvas/tools.js';
 import { createHoverPreview } from '/app-static/js/ui/thumbnailHoverPreview.js';
+import { drawLetterboxedBboxes } from '/app-static/js/ui/utils/bboxThumbOverlay.js';
 import { createEntryView } from '/app-static/js/ui/entryView.js';
 import { reviewStateToDatasetForm, datasetFormToReviewState } from '/app-static/js/shared/filterUtils.js';
 import { openDissimilarGlobalModal } from '/app-static/js/ui/dissimilarSearch.js';
@@ -1669,37 +1670,11 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
     // Bbox canvas overlay — draws normalized rects over the thumbnail
     const thumbCanvas = document.createElement('canvas');
     thumbCanvas.className = 'thumb-overlay';
-    const thumbCtx = thumbCanvas.getContext('2d');
 
     function drawBboxOverlay() {
-      const natW = thumbImg.naturalWidth;
-      const natH = thumbImg.naturalHeight;
-      if (!natW || !natH) return;
-      const cssW = thumbImg.clientWidth;
-      const cssH = thumbImg.clientHeight;
-      if (!cssW || !cssH) return;
-
-      thumbCanvas.width = cssW;
-      thumbCanvas.height = cssH;
-
-      // The img uses object-fit:contain, so compute the letterbox offsets.
-      const scale = Math.min(cssW / natW, cssH / natH);
-      const dispW = natW * scale;
-      const dispH = natH * scale;
-      const offsetX = (cssW - dispW) / 2;
-      const offsetY = (cssH - dispH) / 2;
-
-      thumbCtx.clearRect(0, 0, cssW, cssH);
-      thumbCtx.lineWidth = Math.max(1, Math.round(cssW / 150));
-      for (const bbox of (img.bboxes ?? [])) {
-        thumbCtx.strokeStyle = bbox.label?.color ?? '#ffdd00';
-        thumbCtx.strokeRect(
-          offsetX + bbox.x * dispW,
-          offsetY + bbox.y * dispH,
-          bbox.width * dispW,
-          bbox.height * dispH,
-        );
-      }
+      drawLetterboxedBboxes(thumbImg, thumbCanvas, (img.bboxes ?? []).map(bbox => ({
+        x: bbox.x, y: bbox.y, width: bbox.width, height: bbox.height, color: bbox.label?.color,
+      })));
     }
 
     if (thumbImg.complete && thumbImg.naturalWidth) {
