@@ -15,6 +15,7 @@ Run with:
 """
 
 import json
+import re
 
 import pytest
 from playwright.sync_api import Page, Route, expect
@@ -666,6 +667,30 @@ class TestRelabelConfirmationModal:
         expect(cards.nth(0)).to_contain_text("91%")
         expect(cards.nth(1)).to_contain_text("70%")
         expect(cards.nth(2)).to_contain_text("55%")
+
+    def test_hover_highlights_other_candidates_from_same_image(self, page: Page, base_url: str):
+        """Candidates are sorted by confidence only, so two boxes on the same
+        image (bbox-1 and bbox-3, both img-1) aren't guaranteed to be adjacent.
+        Hovering one must still highlight the other via the shared
+        data-image-uuid grouping, mirroring review/main.js's card hover."""
+        self._setup(page, base_url)
+        _open_confirm_modal(page, CANDIDATES_MIXED)
+
+        cards = page.locator(".relabel-confirm-modal .relabel-modal-card")
+        # Sorted desc by confidence: bbox-2/img-2 (91%), bbox-3/img-1 (70%), bbox-1/img-1 (55%).
+        bbox2_card = cards.nth(0)
+        bbox3_card = cards.nth(1)
+        bbox1_card = cards.nth(2)
+
+        bbox1_card.hover()
+        expect(bbox1_card).to_have_class(re.compile(r"\bgroup-highlight-self-bbox\b"))
+        expect(bbox3_card).to_have_class(re.compile(r"\bgroup-highlight-bbox\b"))
+        expect(bbox2_card).not_to_have_class(re.compile(r"group-highlight"))
+
+        # Moving off clears all highlight classes again.
+        page.locator(".relabel-confirm-modal h3").hover()
+        expect(bbox1_card).not_to_have_class(re.compile(r"group-highlight"))
+        expect(bbox3_card).not_to_have_class(re.compile(r"group-highlight"))
 
     def test_uncheck_row_reduces_apply_count(self, page: Page, base_url: str):
         self._setup(page, base_url)

@@ -338,9 +338,30 @@ export async function openRelabelConfirmationModal(candidates, ctx) {
   /** @type {Array<{candidate: object, checkbox: HTMLInputElement, proposedChip: HTMLElement}>} */
   const rows = [];
 
+  // ── Same-image hover highlight ──────────────────────────────────────────
+  // Candidates are sorted by confidence only, so two candidates from the same
+  // image (e.g. two boxes sharing a label) can land far apart in the grid.
+  // Mirrors review/main.js's attachGroupHighlight so hovering one card lights
+  // up every other card from the same image, regardless of grid position.
+  function _attachGroupHighlight(card, imageUuid) {
+    card.addEventListener('mouseenter', () => {
+      card.classList.add('group-highlight-self-bbox');
+      grid.querySelectorAll(`[data-image-uuid="${imageUuid}"]`).forEach(c => {
+        if (c === card) return;
+        c.classList.add('group-highlight-bbox');
+      });
+    });
+    card.addEventListener('mouseleave', () => {
+      card.classList.remove('group-highlight-self-bbox');
+      grid.querySelectorAll('.group-highlight-bbox').forEach(c => c.classList.remove('group-highlight-bbox'));
+    });
+  }
+
   for (const candidate of sorted) {
     const card = document.createElement('div');
     card.className = 'review-card relabel-modal-card';
+    card.dataset.imageUuid = candidate.imageUuid;
+    _attachGroupHighlight(card, candidate.imageUuid);
 
     const checkbox = document.createElement('input');
     checkbox.type = 'checkbox';
