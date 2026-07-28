@@ -196,6 +196,34 @@ export function exportAnnotations(state) {
 }
 
 /**
+ * Inject not-yet-persisted candidate bboxes into the current canvas so they are
+ * editable (the `bboxUuid:'new'` preview case). Each seed is a UIBBox-shaped
+ * object (as produced by `createUIBBbox`); anything else is coerced through it.
+ * Seeds become part of the clean baseline (via `pushState` + `markClean`) so the
+ * modal opens with them present but not flagged dirty — mirroring how a freshly
+ * loaded image with those boxes would look.
+ * @param {import('@image_tagging_types').ImageTaggingRuntime} runtime
+ * @param {Array<object>} seedBboxes
+ */
+export function seedRuntimeBboxes(runtime, seedBboxes) {
+  if (!runtime.canvas || !runtime.state?.image || !seedBboxes?.length) return;
+
+  const { layer, viewport } = runtime.canvas;
+  for (const seed of seedBboxes) {
+    // Accept an already-built UIBBox or a plain descriptor; createUIBBbox is
+    // idempotent enough for our fields and fills in defaults either way.
+    const uiBbox = createUIBBbox(seed);
+    runtime.state.image.bboxes.set(uiBbox.uuid, uiBbox);
+    layer.add(new BboxView(uiBbox, viewport));
+  }
+
+  syncBboxDraggable(runtime);
+  layer.draw();
+  runtime.pushState();
+  runtime.markClean();
+}
+
+/**
  * Adds recognition results to the current canvas
  * @param {import('@image_tagging_types').ImageTaggingRuntime} runtime
  * @param {import('@web_api').InferenceResultModel} results - The inference results to add to the current canvas
