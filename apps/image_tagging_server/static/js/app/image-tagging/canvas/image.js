@@ -296,7 +296,10 @@ export function labelKey(label) {
  * @param {import('@image_tagging_types').ImageTaggingRuntime} runtime
  * @param {import('@web_api').InferenceResultModel} results - The inference results to add to the current canvas
  * @param {{ replaceExisting?: boolean }} [opts] - When a detection significantly overlaps an
- *   existing bbox with a different label, replace it instead of leaving it untouched.
+ *   existing bbox with a different label, replace it instead of leaving it untouched. Only
+ *   applies when the new detection itself resolved to a real label (`bbox.labelUuid` mapped
+ *   to a known label) — an unmatched/grey detection never replaces an existing labeled bbox,
+ *   regardless of this flag.
  */
 export async function addInferenceResults(runtime, results, { replaceExisting = false } = {}) {
   if (!runtime.canvas || !runtime.state?.image) {
@@ -365,8 +368,14 @@ export async function addInferenceResults(runtime, results, { replaceExisting = 
         continue;
       }
 
-      if (!replaceExisting) {
+      if (!replaceExisting || !uiBbox.label?.uuid) {
         // Conflicting label detected on an existing box, but left untouched.
+        // Also applies when the new detection's class has no mapped label at
+        // all (grey/unmatched) — an unresolved detection must never evict an
+        // existing, resolved label just because replaceExisting is on for
+        // this model run. With multiple models running back-to-back, this
+        // stops a later model's unmapped class from silently wiping out a
+        // good label an earlier model already placed.
         matchView?.flash(GLOW_CONFLICT_KEPT);
         continue;
       }

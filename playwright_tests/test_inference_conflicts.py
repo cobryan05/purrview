@@ -259,6 +259,60 @@ class TestAddInferenceResultsConflicts:
         assert result["hasExisting"] is False
         assert result["newLabelUuid"] == "dog-uuid"
 
+    def test_unmatched_detection_never_replaces_existing_label_even_with_replace_existing(self, shared_page: Page):
+        """A detection whose class has no mapped label (grey/unmatched — no
+        labelUuid and no classStr) must never evict an existing, resolved
+        label just because replaceExisting is on. Symptom this guards against:
+        with multiple models running back-to-back, whichever model fires last
+        "wins" any overlap conflict — including a model that produced an
+        unmapped class for that box, silently wiping out a good label from an
+        earlier model in the same run."""
+        page = shared_page
+        result = page.evaluate("""async () => {
+            const { createImageTaggingRuntime } = await import('/app-static/js/app/image-tagging/runtime.js');
+            const { createUIBBbox } = await import('/app-static/js/shared/domain/image/mapper.js');
+            const { rerenderBboxViews } = await import('/app-static/js/app/image-tagging/canvas/manager.js');
+            const { addInferenceResults } = await import('/app-static/js/app/image-tagging/canvas/image.js');
+            const { labelsFetcher } = await import('/app-static/js/shared/api/labels.js');
+            const { tagsFetcher } = await import('/app-static/js/shared/api/tags.js');
+
+            """ + _SETUP + """
+
+            labelsFetcher.set('labelsMap', new Map([
+                ['cat-uuid', { uuid: 'cat-uuid', name: 'Cat', color: '#ff0000' }],
+            ]));
+            tagsFetcher.set('tagsMap', new Map());
+
+            const existing = createUIBBbox({
+                uuid: 'existing', x: 0.1, y: 0.1, width: 0.2, height: 0.2,
+                label: { uuid: 'cat-uuid', text: 'Cat', color: '#ff0000' },
+            });
+            runtime.state.image.bboxes.set('existing', existing);
+            rerenderBboxViews(runtime.canvas, runtime.state.image.bboxes, runtime.canvas.viewport);
+
+            const results = {
+                detections: [{
+                    confidence: 0.9,
+                    bbox: {
+                        uuid: 'new-detection', x: 0.1, y: 0.1, width: 0.2, height: 0.2,
+                        labelUuid: null, classStr: null, tagUuids: [],
+                    },
+                }],
+            };
+            await addInferenceResults(runtime, results, { replaceExisting: true });
+
+            return {
+                size: runtime.state.image.bboxes.size,
+                hasExisting: runtime.state.image.bboxes.has('existing'),
+                existingLabelUuid: runtime.state.image.bboxes.get('existing')?.label?.uuid,
+                hasNew: runtime.state.image.bboxes.has('new-detection'),
+            };
+        }""")
+        assert result["size"] == 1
+        assert result["hasExisting"] is True
+        assert result["existingLabelUuid"] == "cat-uuid"
+        assert result["hasNew"] is False
+
     def test_non_overlapping_detection_is_added_alongside_existing(self, shared_page: Page):
         """Detections with no significant overlap are added normally, existing box untouched."""
         page = shared_page
