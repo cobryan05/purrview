@@ -284,6 +284,23 @@ class TestPreviewCardBehavior:
         dialog = page.locator(".canvas-modal-dialog")
         expect(dialog).to_be_visible(timeout=5000)
 
+        # The dialog becomes visible synchronously (main.js appends it to the DOM)
+        # before the modal's image finishes loading and its BboxView Konva nodes
+        # are created (both happen inside an awaited loadImage() call afterwards).
+        # Wait for bbox-1's node to actually exist on the modal's stage before
+        # trying to drag it, or this races and intermittently fails under load.
+        page.wait_for_function(
+            """() => {
+                const stages = (window.Konva && window.Konva.stages) || [];
+                for (const stage of stages) {
+                    if (!stage.container()?.closest('.canvas-modal-canvas')) continue;
+                    if (stage.findOne('#bbox-1')) return true;
+                }
+                return false;
+            }""",
+            timeout=5000,
+        )
+
         # Move bbox-1 to normalized (0.5, 0.6, 0.25, 0.15) by repositioning its
         # Konva node using the view's own viewport transform, then firing the
         # 'dragend' event exactly as a real drag would. The BboxView 'dragend'
