@@ -20,6 +20,7 @@ export async function createInferencePanel(runtime, container) {
   /** @type {string|null} */ let _selected = null;
   /** @type {'detector'|'classifier'|null} */ let _selectedKind = null;
   /** @type {number} */ let _confThresh = 0.25;
+  /** @type {boolean} */ let _replaceExisting = false;
 
   container.innerHTML = '';
   container.classList.add('inference-panel');
@@ -68,7 +69,24 @@ export async function createInferencePanel(runtime, container) {
 
   confRow.append(confLabel, confSlider, confValue);
 
-  actionsEl.append(runBtn, refreshBtn, clearGreyBtn, confRow);
+  // ── Replace-existing-bboxes checkbox ──────────────────────────────
+  const replaceRow = document.createElement('label');
+  replaceRow.className = 'inference-replace-row';
+
+  const replaceCheckbox = document.createElement('input');
+  replaceCheckbox.type = 'checkbox';
+  replaceCheckbox.checked = _replaceExisting;
+  replaceCheckbox.addEventListener('change', () => {
+    _replaceExisting = replaceCheckbox.checked;
+  });
+
+  const replaceLabel = document.createElement('span');
+  replaceLabel.textContent = 'Replace existing bboxes';
+
+  replaceRow.append(replaceCheckbox, replaceLabel);
+  replaceRow.title = 'When a detection significantly overlaps an existing box with a different label, replace it instead of leaving it as-is';
+
+  actionsEl.append(runBtn, refreshBtn, clearGreyBtn, confRow, replaceRow);
 
   // ── Model sections ────────────────────────────────────────────────
   const listEl = document.createElement('div');
@@ -83,14 +101,17 @@ export async function createInferencePanel(runtime, container) {
       runBtn.textContent = 'Run';
       runBtn.disabled = false;
       clearGreyBtn.style.display = '';
+      replaceRow.style.display = '';
       return;
     }
     if (_selectedKind === 'classifier') {
       runBtn.textContent = 'Classify';
       clearGreyBtn.style.display = 'none';
+      replaceRow.style.display = 'none';
     } else {
       runBtn.textContent = 'Run Detection';
       clearGreyBtn.style.display = '';
+      replaceRow.style.display = '';
     }
   }
 
@@ -195,7 +216,12 @@ export async function createInferencePanel(runtime, container) {
     if (_selectedKind === 'classifier') {
       await handleClassify();
     } else {
-      events.publish(EventTypes.RUN_INFERENCE_ON_CANVAS, { modelName: _selected, runtimeId: runtime.id, confThresh: _confThresh });
+      events.publish(EventTypes.RUN_INFERENCE_ON_CANVAS, {
+        modelName: _selected,
+        runtimeId: runtime.id,
+        confThresh: _confThresh,
+        replaceExisting: _replaceExisting,
+      });
     }
   }
 

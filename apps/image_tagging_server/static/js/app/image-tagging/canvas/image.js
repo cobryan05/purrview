@@ -223,12 +223,53 @@ export function seedRuntimeBboxes(runtime, seedBboxes) {
   runtime.markClean();
 }
 
+// A new detection whose IOU against an existing bbox meets or exceeds this is
+// treated as "the same box" for conflict resolution rather than a new one.
+export const INFERENCE_DUPLICATE_IOU_THRESHOLD = 0.7;
+
+// Glow colors for the temporary flash drawn on conflicting bboxes:
+export const GLOW_MATCHED = '#ffd60a'; // duplicate skipped, or an existing box replaced
+export const GLOW_CONFLICT_KEPT = '#ff453a'; // different label detected but left untouched
+
+/**
+ * Intersection-over-union of two normalized (0-1) rects.
+ * @param {{x:number,y:number,width:number,height:number}} a
+ * @param {{x:number,y:number,width:number,height:number}} b
+ * @returns {number}
+ */
+export function computeIou(a, b) {
+  const ax2 = a.x + a.width, ay2 = a.y + a.height;
+  const bx2 = b.x + b.width, by2 = b.y + b.height;
+  const ix1 = Math.max(a.x, b.x), iy1 = Math.max(a.y, b.y);
+  const ix2 = Math.min(ax2, bx2), iy2 = Math.min(ay2, by2);
+  const iw = Math.max(0, ix2 - ix1), ih = Math.max(0, iy2 - iy1);
+  const inter = iw * ih;
+  if (inter <= 0) return 0;
+  const union = a.width * a.height + b.width * b.height - inter;
+  return union > 0 ? inter / union : 0;
+}
+
+/**
+ * Identifies a bbox's label for "same label" comparisons even before it has a
+ * resolved uuid (grey/unmatched inference results carry only display text).
+ * @param {import('@domain_image').UITag|undefined} label
+ * @returns {string|null}
+ */
+export function labelKey(label) {
+  if (!label) return null;
+  if (label.uuid) return `uuid:${label.uuid}`;
+  const text = (label.text || '').replace(/\s*\(\d+%\)\s*$/, '');
+  return text ? `text:${text}` : null;
+}
+
 /**
  * Adds recognition results to the current canvas
  * @param {import('@image_tagging_types').ImageTaggingRuntime} runtime
  * @param {import('@web_api').InferenceResultModel} results - The inference results to add to the current canvas
+ * @param {{ replaceExisting?: boolean }} [opts] - When a detection significantly overlaps an
+ *   existing bbox with a different label, replace it instead of leaving it untouched.
  */
-export async function addInferenceResults(runtime, results) {
+export async function addInferenceResults(runtime, results, { replaceExisting = false } = {}) {
   if (!runtime.canvas || !runtime.state?.image) {
     Logger.warn('addInferenceResults: no canvas or image loaded');
     return;
@@ -237,6 +278,11 @@ export async function addInferenceResults(runtime, results) {
   const { layer, viewport } = runtime.canvas;
   const [labelsMap, tagsMap] = await Promise.all([fetchLabels(), fetchTags()]);
   const unverifiedIcon = tagsMap.get(UNVERIFIED_TAG_UUID)?.icon ?? null;
+
+  // Snapshot pre-existing bboxes so newly-added detections in this same batch
+  // don't get matched against each other.
+  const existingBboxes = [...runtime.state.image.bboxes.values()];
+  let changed = false;
 
   for (const detection of results.detections) {
     const { bbox } = detection;
@@ -270,13 +316,46 @@ export async function addInferenceResults(runtime, results) {
       dirty: true,
     });
 
+    let bestMatch = null;
+    let bestIou = 0;
+    for (const existing of existingBboxes) {
+      const iou = computeIou(existing, uiBbox);
+      if (iou > bestIou) {
+        bestIou = iou;
+        bestMatch = existing;
+      }
+    }
+
+    if (bestMatch && bestIou >= INFERENCE_DUPLICATE_IOU_THRESHOLD) {
+      const matchView = layer.findOne(`#${bestMatch.uuid}`);
+      const sameLabel = labelKey(bestMatch.label) !== null && labelKey(bestMatch.label) === labelKey(uiBbox.label);
+
+      if (sameLabel) {
+        // Same box, same label already present — don't add a duplicate.
+        matchView?.flash(GLOW_MATCHED);
+        continue;
+      }
+
+      if (!replaceExisting) {
+        // Conflicting label detected on an existing box, but left untouched.
+        matchView?.flash(GLOW_CONFLICT_KEPT);
+        continue;
+      }
+
+      // Replace: drop the old box, fall through to add the new one.
+      runtime.state.image.bboxes.delete(bestMatch.uuid);
+      matchView?.destroy();
+    }
+
     runtime.state.image.bboxes.set(uiBbox.uuid, uiBbox);
     const bboxView = new BboxView(uiBbox, viewport);
     layer.add(bboxView);
+    if (bestMatch && bestIou >= INFERENCE_DUPLICATE_IOU_THRESHOLD) bboxView.flash(GLOW_MATCHED);
+    changed = true;
   }
 
   syncBboxDraggable(runtime);
   layer.draw();
-  if (results.detections.length) runtime.pushState();
+  if (changed) runtime.pushState();
   events.publish(EventTypes.CANVAS_BBOXES_CHANGED, { runtimeId: runtime.id });
 }
