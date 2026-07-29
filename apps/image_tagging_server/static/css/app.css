@@ -1778,21 +1778,49 @@ button.filter-active {
 .inference-panel {
   display: flex;
   flex-direction: column;
-  gap: 0.4em;
+  gap: 0.3em;
   padding: 0.5em;
+  height: 100%;
+  min-height: 0;
+  box-sizing: border-box;
 }
 
+/* Stays pinned to the top of the scroll container while the model list below scrolls,
+   so Run/Refresh/Clear are never scrolled out of view. */
 .inference-panel-actions {
   display: flex;
-  flex-wrap: wrap;
-  gap: 0.4em;
+  flex-direction: column;
+  gap: 0.25em;
+  flex-shrink: 0;
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--pico-background-color, #121212);
+  padding-bottom: 0.25em;
 }
 
-.inference-panel-actions button {
+.canvas-modal-sidebar .inference-panel-actions {
+  background: #161616;
+}
+
+.inference-buttons-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3em;
+}
+
+.inference-buttons-row button {
   flex: 1;
-  font-size: 0.8em;
-  padding: 0.3em 0.5em;
+  font-size: 0.75em;
+  padding: 0.2em 0.4em;
   cursor: pointer;
+}
+
+.inference-options-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.6em;
 }
 
 .inference-model-list {
@@ -1800,19 +1828,34 @@ button.filter-active {
   flex-direction: column;
   gap: 0.25em;
   overflow-y: auto;
-  max-height: 300px;
+  flex: 1;
+  min-height: 0;
 }
 
 .inference-model-item {
-  padding: 0.3em 0.6em;
+  display: flex;
+  align-items: center;
+  gap: 0.4em;
+  padding: 0.25em 0.5em;
   border-radius: 3px;
   border: 1px solid #444;
   cursor: pointer;
   font-size: 0.85em;
+  user-select: none;
+}
+
+.inference-model-item input[type="checkbox"] {
+  flex-shrink: 0;
+  margin: 0;
+  cursor: pointer;
+}
+
+.inference-model-name {
+  flex: 1;
+  min-width: 0;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  user-select: none;
 }
 
 .inference-model-item:hover {
@@ -1826,6 +1869,15 @@ button.filter-active {
   color: #ff9999;
 }
 
+.inference-model-badge {
+  flex-shrink: 0;
+  font-size: 0.75em;
+  color: #999;
+  border: 1px solid #555;
+  border-radius: 3px;
+  padding: 0 0.35em;
+}
+
 .inference-model-empty {
   color: #666;
   font-size: 0.8em;
@@ -1836,13 +1888,14 @@ button.filter-active {
 .inference-conf-row {
   display: flex;
   align-items: center;
-  gap: 0.4em;
-  padding-top: 0.25em;
+  gap: 0.3em;
+  flex: 1;
+  min-width: 6em;
   flex-wrap: nowrap;
 }
 
 .inference-conf-label {
-  font-size: 0.8em;
+  font-size: 0.75em;
   white-space: nowrap;
   color: #aaa;
 }
@@ -1857,18 +1910,18 @@ button.filter-active {
 .inference-replace-row {
   display: flex;
   align-items: center;
-  gap: 0.4em;
-  padding-top: 0.25em;
-  font-size: 0.8em;
+  gap: 0.3em;
+  font-size: 0.75em;
   color: #aaa;
   cursor: pointer;
   user-select: none;
+  white-space: nowrap;
 }
 
 .inference-conf-value {
-  font-size: 0.8em;
+  font-size: 0.75em;
   color: #ccc;
-  min-width: 2.8em;
+  min-width: 2.6em;
   text-align: right;
 }
 

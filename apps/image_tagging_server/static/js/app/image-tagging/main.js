@@ -33,14 +33,19 @@ export async function init(runtime, tab_pane) {
   await createCanvasInstance(canvasContainer, { runtime });
 
   // App-specific event subscriptions scoped to this canvas's runtime.
-  events.subscribeToCanvas(runtime.id, EventTypes.RUN_INFERENCE_ON_CANVAS, async ({ modelName, confThresh, replaceExisting }) => {
-    try {
-      const img = runtime.state?.image?.img;
-      if (!img) throw new Error('No image loaded');
-      const result = await runDetection(modelName, img, confThresh);
-      await addInferenceResults(runtime, result, { replaceExisting });
-    } catch (err) {
-      Logger.error('Failed to run inference:', err);
+  events.subscribeToCanvas(runtime.id, EventTypes.RUN_INFERENCE_ON_CANVAS, async ({ modelNames, confThresh, replaceExisting }) => {
+    const img = runtime.state?.image?.img;
+    if (!img) { Logger.error('Failed to run inference: no image loaded'); return; }
+    // Models run sequentially; each one applies `replaceExisting` independently against
+    // whatever the canvas looks like when it finishes, so the combined result depends on
+    // run order. That's an accepted tradeoff for letting users multi-select models.
+    for (const modelName of modelNames) {
+      try {
+        const result = await runDetection(modelName, img, confThresh);
+        await addInferenceResults(runtime, result, { replaceExisting });
+      } catch (err) {
+        Logger.error(`Failed to run inference (${modelName}):`, err);
+      }
     }
   });
 

@@ -7,8 +7,17 @@ import { Logger } from '/app-static/js/ui/utils/index.js';
 import { createModalShell } from '/app-static/js/ui/utils/modalShell.js';
 import { clearUnmatched } from './canvas/image.js';
 
+const SESSION_SELECTED_DETECTORS_KEY = 'wtch_inference_selected_detectors';
+const SESSION_SELECTED_CLASSIFIER_KEY = 'wtch_inference_selected_classifier';
+
 /**
  * Creates a self-contained inference panel: detector + classifier model lists and Run button.
+ *
+ * Detectors support multi-select (checkboxes) so several models can be run back-to-back;
+ * classifiers stay single-select since a match opens a review modal for that one model.
+ * Selections persist in sessionStorage and are reconciled against the live model list on
+ * every load/refresh, so models that disappear are silently dropped and new models simply
+ * arrive unchecked.
  *
  * @param {import('../image-tagging/runtime.js').ImageTaggingRuntime} runtime
  * @param {HTMLElement} container
@@ -17,8 +26,8 @@ import { clearUnmatched } from './canvas/image.js';
 export async function createInferencePanel(runtime, container) {
   /** @type {string[]} */ let _detectors = [];
   /** @type {string[]} */ let _classifiers = [];
-  /** @type {string|null} */ let _selected = null;
-  /** @type {'detector'|'classifier'|null} */ let _selectedKind = null;
+  /** @type {Set<string>} */ let _selectedDetectors = new Set();
+  /** @type {string|null} */ let _selectedClassifier = null;
   /** @type {number} */ let _confThresh = 0.25;
   /** @type {boolean} */ let _replaceExisting = false;
 
@@ -29,26 +38,36 @@ export async function createInferencePanel(runtime, container) {
   const actionsEl = document.createElement('div');
   actionsEl.className = 'inference-panel-actions';
 
+  const buttonsRow = document.createElement('div');
+  buttonsRow.className = 'inference-buttons-row';
+
   const runBtn = document.createElement('button');
   runBtn.textContent = 'Run';
   runBtn.addEventListener('click', handleRun);
 
   const refreshBtn = document.createElement('button');
-  refreshBtn.textContent = 'Refresh';
+  refreshBtn.textContent = '↻';
+  refreshBtn.title = 'Refresh: reload the model list from the server';
   refreshBtn.addEventListener('click', handleRefresh);
 
   const clearGreyBtn = document.createElement('button');
-  clearGreyBtn.textContent = 'Clear Grey';
-  clearGreyBtn.title = 'Remove unmatched (grey) detections from the canvas';
+  clearGreyBtn.textContent = 'Clear';
+  clearGreyBtn.title = 'Clear Grey: remove unmatched (grey) detections from the canvas';
   clearGreyBtn.addEventListener('click', () => clearUnmatched(runtime));
 
-  // ── Min confidence slider ─────────────────────────────────────────
+  buttonsRow.append(runBtn, refreshBtn, clearGreyBtn);
+
+  // ── Min confidence slider + replace-existing checkbox (one row) ───
+  const optionsRow = document.createElement('div');
+  optionsRow.className = 'inference-options-row';
+
   const confRow = document.createElement('div');
   confRow.className = 'inference-conf-row';
+  confRow.title = 'Minimum confidence threshold: detections below this score are discarded';
 
   const confLabel = document.createElement('label');
   confLabel.className = 'inference-conf-label';
-  confLabel.textContent = 'Min confidence:';
+  confLabel.textContent = 'Conf:';
 
   const confSlider = document.createElement('input');
   confSlider.type = 'range';
@@ -72,6 +91,7 @@ export async function createInferencePanel(runtime, container) {
   // ── Replace-existing-bboxes checkbox ──────────────────────────────
   const replaceRow = document.createElement('label');
   replaceRow.className = 'inference-replace-row';
+  replaceRow.title = 'Replace existing bboxes: when a detection significantly overlaps an existing box with a different label, replace it instead of leaving it as-is. With multiple models running, this applies independently for each model in whatever order it happens to finish.';
 
   const replaceCheckbox = document.createElement('input');
   replaceCheckbox.type = 'checkbox';
@@ -81,12 +101,12 @@ export async function createInferencePanel(runtime, container) {
   });
 
   const replaceLabel = document.createElement('span');
-  replaceLabel.textContent = 'Replace existing bboxes';
+  replaceLabel.textContent = 'Replace';
 
   replaceRow.append(replaceCheckbox, replaceLabel);
-  replaceRow.title = 'When a detection significantly overlaps an existing box with a different label, replace it instead of leaving it as-is';
 
-  actionsEl.append(runBtn, refreshBtn, clearGreyBtn, confRow, replaceRow);
+  optionsRow.append(confRow, replaceRow);
+  actionsEl.append(buttonsRow, optionsRow);
 
   // ── Model sections ────────────────────────────────────────────────
   const listEl = document.createElement('div');
@@ -94,52 +114,94 @@ export async function createInferencePanel(runtime, container) {
 
   container.append(actionsEl, listEl);
 
+  // ── Persistence ───────────────────────────────────────────────────
+
+  function _loadPersistedSelection() {
+    try {
+      const arr = JSON.parse(sessionStorage.getItem(SESSION_SELECTED_DETECTORS_KEY) || '[]');
+      if (Array.isArray(arr)) _selectedDetectors = new Set(arr);
+    } catch { /* ignore parse errors */ }
+    _selectedClassifier = sessionStorage.getItem(SESSION_SELECTED_CLASSIFIER_KEY) || null;
+  }
+
+  function _persistSelection() {
+    sessionStorage.setItem(SESSION_SELECTED_DETECTORS_KEY, JSON.stringify([..._selectedDetectors]));
+    if (_selectedClassifier) sessionStorage.setItem(SESSION_SELECTED_CLASSIFIER_KEY, _selectedClassifier);
+    else sessionStorage.removeItem(SESSION_SELECTED_CLASSIFIER_KEY);
+  }
+
   // ── Helpers ───────────────────────────────────────────────────────
 
   function _updateRunBtn() {
-    if (!_selected) {
-      runBtn.textContent = 'Run';
-      runBtn.disabled = false;
-      clearGreyBtn.style.display = '';
-      replaceRow.style.display = '';
-      return;
-    }
-    if (_selectedKind === 'classifier') {
-      runBtn.textContent = 'Classify';
+    if (_selectedClassifier) {
+      runBtn.title = `Run classifier: ${_selectedClassifier}`;
       clearGreyBtn.style.display = 'none';
       replaceRow.style.display = 'none';
+    } else if (_selectedDetectors.size > 0) {
+      runBtn.title = `Run Detection: ${[..._selectedDetectors].join(', ')}`;
+      clearGreyBtn.style.display = '';
+      replaceRow.style.display = '';
     } else {
-      runBtn.textContent = 'Run Detection';
+      runBtn.title = 'Select one or more models below first';
       clearGreyBtn.style.display = '';
       replaceRow.style.display = '';
     }
   }
 
-  function _makeItem(model, kind) {
-    const item = document.createElement('div');
-    item.className = 'inference-model-item' + (_selected === model ? ' selected' : '');
+  function _makeDetectorItem(model) {
+    const item = document.createElement('label');
+    item.className = 'inference-model-item' + (_selectedDetectors.has(model) ? ' selected' : '');
     item.title = model;
 
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.checked = _selectedDetectors.has(model);
+    cb.addEventListener('change', () => {
+      if (cb.checked) _selectedDetectors.add(model);
+      else _selectedDetectors.delete(model);
+      _selectedClassifier = null;
+      _persistSelection();
+      renderList();
+      _updateRunBtn();
+    });
+
     const nameSpan = document.createElement('span');
+    nameSpan.className = 'inference-model-name';
     nameSpan.textContent = model;
 
     const badge = document.createElement('span');
     badge.className = 'inference-model-badge';
-    badge.textContent = kind === 'image_classifier' ? 'binary'
-      : kind === 'multi_label_classifier' ? 'multi'
-      : 'yolo';
+    badge.textContent = 'yolo';
+
+    item.append(cb, nameSpan, badge);
+    return item;
+  }
+
+  function _makeClassifierItem(model, kind) {
+    const item = document.createElement('div');
+    item.className = 'inference-model-item' + (_selectedClassifier === model ? ' selected' : '');
+    item.title = model;
+
+    const nameSpan = document.createElement('span');
+    nameSpan.className = 'inference-model-name';
+    nameSpan.textContent = model;
+
+    const badge = document.createElement('span');
+    badge.className = 'inference-model-badge';
+    badge.textContent = kind === 'image_classifier' ? 'binary' : 'multi';
 
     item.append(nameSpan, badge);
     item.addEventListener('click', () => {
-      _selected = model;
-      _selectedKind = (kind === 'image_classifier' || kind === 'multi_label_classifier') ? 'classifier' : 'detector';
+      _selectedClassifier = model;
+      _selectedDetectors.clear();
+      _persistSelection();
       renderList();
       _updateRunBtn();
     });
     return item;
   }
 
-  function _makeSection(title, models, kindMap) {
+  function _makeSection(title, models, makeItem) {
     if (models.length === 0) return null;
     const section = document.createElement('div');
     section.className = 'inference-model-section';
@@ -150,7 +212,7 @@ export async function createInferencePanel(runtime, container) {
     section.appendChild(header);
 
     for (const model of models) {
-      section.appendChild(_makeItem(model, kindMap.get(model) ?? 'detector'));
+      section.appendChild(makeItem(model));
     }
     return section;
   }
@@ -166,8 +228,8 @@ export async function createInferencePanel(runtime, container) {
     }
 
     if (_kindMap) {
-      const detSection = _makeSection('Detectors', _detectors, _kindMap);
-      const clfSection = _makeSection('Classifiers', _classifiers, _kindMap);
+      const detSection = _makeSection('Detectors', _detectors, _makeDetectorItem);
+      const clfSection = _makeSection('Classifiers', _classifiers, m => _makeClassifierItem(m, _kindMap.get(m)));
       if (detSection) listEl.appendChild(detSection);
       if (clfSection) listEl.appendChild(clfSection);
     }
@@ -176,7 +238,7 @@ export async function createInferencePanel(runtime, container) {
   /** @type {Map<string, string>|null} */
   let _kindMap = null;
 
-  async function _loadModels() {
+  async function _loadModels({ isInitial = false } = {}) {
     const allModels = await fetchModelsList();
     _kindMap = await fetchModelsKinds(allModels);
     _detectors = allModels.filter(m => {
@@ -188,12 +250,20 @@ export async function createInferencePanel(runtime, container) {
       return k === 'image_classifier' || k === 'multi_label_classifier';
     });
 
-    // Preserve selection if still valid, otherwise default to first detector.
-    if (_selected && !allModels.includes(_selected)) _selected = null;
-    if (!_selected) {
-      if (_detectors.length > 0) { _selected = _detectors[0]; _selectedKind = 'detector'; }
-      else if (_classifiers.length > 0) { _selected = _classifiers[0]; _selectedKind = 'classifier'; }
+    // Drop persisted selections for models that no longer exist, without disturbing
+    // selections for models that are still present (new models simply arrive unchecked).
+    for (const m of _selectedDetectors) {
+      if (!_detectors.includes(m)) _selectedDetectors.delete(m);
     }
+    if (_selectedClassifier && !_classifiers.includes(_selectedClassifier)) _selectedClassifier = null;
+
+    // First-ever load with nothing persisted: default to the first detector, matching
+    // the previous single-select panel's behavior.
+    if (isInitial && _selectedDetectors.size === 0 && !_selectedClassifier && _detectors.length > 0) {
+      _selectedDetectors.add(_detectors[0]);
+    }
+
+    _persistSelection();
   }
 
   async function handleRefresh() {
@@ -211,18 +281,18 @@ export async function createInferencePanel(runtime, container) {
   }
 
   async function handleRun() {
-    if (!_selected) { alert('Please select a model first'); return; }
-
-    if (_selectedKind === 'classifier') {
+    if (_selectedClassifier) {
       await handleClassify();
-    } else {
-      events.publish(EventTypes.RUN_INFERENCE_ON_CANVAS, {
-        modelName: _selected,
-        runtimeId: runtime.id,
-        confThresh: _confThresh,
-        replaceExisting: _replaceExisting,
-      });
+      return;
     }
+    if (_selectedDetectors.size === 0) { alert('Please select at least one model first'); return; }
+
+    events.publish(EventTypes.RUN_INFERENCE_ON_CANVAS, {
+      modelNames: [..._selectedDetectors],
+      runtimeId: runtime.id,
+      confThresh: _confThresh,
+      replaceExisting: _replaceExisting,
+    });
   }
 
   async function handleClassify() {
@@ -232,7 +302,7 @@ export async function createInferencePanel(runtime, container) {
 
     runBtn.disabled = true;
     try {
-      const predictions = await runClassify(_selected, img);
+      const predictions = await runClassify(_selectedClassifier, img);
       if (!predictions.length) { alert('Model returned no predictions'); return; }
       await openClassifyModal(predictions, imagePath);
     } catch (err) {
@@ -254,7 +324,7 @@ export async function createInferencePanel(runtime, container) {
     // ── Title ────────────────────────────────────────────────────────
     const title = document.createElement('h3');
     title.className = 'app-modal-title';
-    title.textContent = `Classifier results — ${_selected}`;
+    title.textContent = `Classifier results — ${_selectedClassifier}`;
     dialog.appendChild(title);
 
     // ── Prediction rows ──────────────────────────────────────────────
@@ -332,8 +402,9 @@ export async function createInferencePanel(runtime, container) {
   }
 
   // ── Initial load ──────────────────────────────────────────────────
+  _loadPersistedSelection();
   try {
-    await _loadModels();
+    await _loadModels({ isInitial: true });
     renderList();
     _updateRunBtn();
   } catch (err) {
