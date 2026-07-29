@@ -74,6 +74,30 @@ async def test_associate_label_clears_with_null(http_client, models_dir):
     assert "cat" not in meta["class_map"]
 
 
+async def test_clearing_one_dynamic_label_does_not_clear_others(http_client, models_dir):
+    # Simulate a model trained in-app: no explicit class_map yet, but the
+    # trainer wrote positional label_uuids that get_models_classes()
+    # falls back to for pre-filling the mapping UI.
+    meta_path = models_dir / "yolo_test.json"
+    meta = json.loads(meta_path.read_text())
+    meta["label_uuids"] = ["uuid-cat", "uuid-dog"]
+    meta_path.write_text(json.dumps(meta))
+
+    # Clearing "cat" (which was only ever positionally mapped, never in
+    # class_map) should not wipe out "dog"'s positional mapping too.
+    resp = await http_client.put(
+        "/api/models/yolo_test/classes/cat/label",
+        json={"labelUuid": None},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "success"
+
+    resp = await http_client.get("/api/models/yolo_test/classes")
+    data = resp.json()
+    assert data["classes"]["cat"] is None
+    assert data["classes"]["dog"] == "uuid-dog"
+
+
 async def test_associate_label_unknown_class_returns_failure(http_client):
     resp = await http_client.put(
         "/api/models/yolo_test/classes/horse/label",

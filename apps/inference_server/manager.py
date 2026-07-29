@@ -149,18 +149,23 @@ class Manager:
             try:
                 metadata = get_model_metadata(model_path)
                 model_classes = metadata.get("classes", [])
-                model_class_mappings = metadata.get("class_map", {})
-                class_uuids: Dict[str, Optional[str]] = {name: None for name in model_classes}
-                if not model_class_mappings:
-                    # Models trained in-app already know their class -> label
-                    # mapping (written positionally into the sidecar by the
-                    # trainer); use it to pre-fill instead of making the user
-                    # re-enter an assignment we already have.
-                    label_uuids = metadata.get("label_uuids") or []
-                    if len(label_uuids) == len(model_classes):
-                        model_class_mappings = dict(zip(model_classes, label_uuids))
-                for k, v in model_class_mappings.items():
-                    class_uuids[k] = v
+                class_map = metadata.get("class_map", {})
+                # Models trained in-app already know their class -> label
+                # mapping (written positionally into the sidecar by the
+                # trainer); use it to pre-fill classes that don't yet have
+                # an explicit class_map entry, instead of making the user
+                # re-enter an assignment we already have. Evaluated per
+                # class so an explicit clear on one class (which persists
+                # as class_map[name] = None) doesn't suppress the
+                # positional fallback for every other class.
+                label_uuids = metadata.get("label_uuids") or []
+                positional_mappings = (
+                    dict(zip(model_classes, label_uuids)) if len(label_uuids) == len(model_classes) else {}
+                )
+                class_uuids: Dict[str, Optional[str]] = {
+                    name: class_map[name] if name in class_map else positional_mappings.get(name)
+                    for name in model_classes
+                }
                 ret[model_name] = class_uuids
             except FileNotFoundError:
                 continue
