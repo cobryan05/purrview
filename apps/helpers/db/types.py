@@ -941,6 +941,81 @@ class FilterChainUpdate(ApiModel):
     steps: Optional[List[FilterChainStepWrite]] = None  # None=no change; []=remove all
 
 
+# ─── Model Groups ────────────────────────────────────────────────────────────
+
+
+class ModelGroupMember(SQLModel, table=True):
+    __tablename__ = "model_group_members"
+    uuid: str = Field(default_factory=lambda: str(uuid4()), primary_key=True)
+    model_group_uuid: str = Field(foreign_key="model_groups.uuid", index=True, ondelete="CASCADE")
+    order: int
+    # Exactly one of these two is set — enforced by ModelGroupMemberWrite, not the DB row.
+    model_name: Optional[str] = None
+    # RESTRICT: deleting a group referenced as a nested member elsewhere must fail loudly
+    # rather than silently orphaning the parent's member row.
+    child_group_uuid: Optional[str] = Field(default=None, foreign_key="model_groups.uuid", ondelete="RESTRICT")
+    group: "ModelGroup" = Relationship(
+        back_populates="members",
+        sa_relationship_kwargs={"foreign_keys": "ModelGroupMember.model_group_uuid"},
+    )
+
+
+class ModelGroup(TimestampModel, table=True):
+    __tablename__ = "model_groups"
+    uuid: str = Field(default_factory=lambda: str(uuid4()), primary_key=True)
+    name: str = Field(unique=True, index=True)
+    description: Optional[str] = None
+    members: List[ModelGroupMember] = Relationship(
+        back_populates="group",
+        sa_relationship_kwargs={
+            "cascade": "all, delete-orphan",
+            "order_by": "ModelGroupMember.order",
+            "foreign_keys": "ModelGroupMember.model_group_uuid",
+        },
+    )
+
+
+class ModelGroupMemberRead(OrmModel):
+    uuid: str
+    model_group_uuid: str
+    order: int
+    model_name: Optional[str] = None
+    child_group_uuid: Optional[str] = None
+
+
+class ModelGroupRead(OrmModel):
+    uuid: str
+    name: str
+    description: Optional[str] = None
+    members: List[ModelGroupMemberRead] = Field(default_factory=list)
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
+
+class ModelGroupMemberWrite(ApiModel):
+    order: int
+    model_name: Optional[str] = None
+    child_group_uuid: Optional[str] = None
+
+    @model_validator(mode="after")
+    def _validate_exactly_one_member_kind(self) -> "ModelGroupMemberWrite":
+        if bool(self.model_name) == bool(self.child_group_uuid):
+            raise ValueError("Exactly one of model_name or child_group_uuid must be set")
+        return self
+
+
+class ModelGroupCreate(ApiModel):
+    name: str
+    description: Optional[str] = None
+    members: List[ModelGroupMemberWrite] = Field(default_factory=list)
+
+
+class ModelGroupUpdate(ApiModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    members: Optional[List[ModelGroupMemberWrite]] = None  # None=no change; []=remove all
+
+
 class TrainingConfigDatasetLink(SQLModel, table=True):
     __tablename__ = "training_config_dataset_links"
     training_config_uuid: str = Field(foreign_key="training_configs.uuid", primary_key=True, ondelete="CASCADE")

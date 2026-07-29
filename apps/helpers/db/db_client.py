@@ -70,6 +70,11 @@ from .types import (
     ModelConfigNodeRead,
     ModelConfigRead,
     ModelConfigUpdate,
+    ModelGroup,
+    ModelGroupCreate,
+    ModelGroupMember,
+    ModelGroupRead,
+    ModelGroupUpdate,
     Source,
     SourceRead,
     Tag,
@@ -4873,5 +4878,142 @@ class DbClient:
             if fc is None:
                 return False
             await session.delete(fc)
+            await session.commit()
+        return True
+
+    # ─── Model Groups ───────────────────────────────────────────────────────
+
+    @staticmethod
+    def _mg_to_read(mg: ModelGroup) -> ModelGroupRead:
+        return ModelGroupRead.model_validate(mg)
+
+    @staticmethod
+    def _validate_model_group_member_orders(orders) -> None:
+        seen: set = set()
+        for order in orders:
+            if order in seen:
+                raise ValueError(f"Duplicate member order in model group: {order!r}")
+            seen.add(order)
+
+    async def _collect_reachable_group_uuids(self, session, start_uuids: List[str]) -> set:
+        """BFS over child_group_uuid references. Returns every group uuid reachable
+        (directly or transitively) from `start_uuids`, including `start_uuids` themselves."""
+        seen: set = set()
+        frontier = list(start_uuids)
+        while frontier:
+            group_uuid = frontier.pop()
+            if group_uuid in seen:
+                continue
+            seen.add(group_uuid)
+            result = await session.exec(
+                select(ModelGroupMember.child_group_uuid).where(
+                    ModelGroupMember.model_group_uuid == group_uuid,
+                    ModelGroupMember.child_group_uuid.is_not(None),
+                )
+            )
+            for child_uuid in result.all():
+                if child_uuid not in seen:
+                    frontier.append(child_uuid)
+        return seen
+
+    async def _validate_no_model_group_cycle(
+        self, session, group_uuid: Optional[str], member_child_uuids: List[str]
+    ) -> None:
+        """Raise if saving `member_child_uuids` as members of `group_uuid` would create a
+        cycle — i.e. one of those child groups (directly or transitively) already contains
+        `group_uuid`. A brand-new group (`group_uuid` is None) can't yet be referenced by
+        anything, so it's trivially safe."""
+        if group_uuid is None or not member_child_uuids:
+            return
+        reachable = await self._collect_reachable_group_uuids(session, member_child_uuids)
+        if group_uuid in reachable:
+            raise ValueError(
+                "Model group members would create a cycle " "(a group cannot contain itself, directly or transitively)"
+            )
+
+    async def list_model_groups(self) -> List[ModelGroupRead]:
+        async with self._async_session_maker() as session:
+            stmt = select(ModelGroup).options(selectinload(ModelGroup.members))
+            result = await session.exec(stmt)
+            return [self._mg_to_read(mg) for mg in result.all()]
+
+    async def get_model_group(self, uuid: str) -> Optional[ModelGroupRead]:
+        async with self._async_session_maker() as session:
+            stmt = select(ModelGroup).where(ModelGroup.uuid == uuid).options(selectinload(ModelGroup.members))
+            result = await session.exec(stmt)
+            mg = result.one_or_none()
+            if mg is None:
+                return None
+            return self._mg_to_read(mg)
+
+    async def create_model_group(self, data: ModelGroupCreate) -> ModelGroupRead:
+        self._validate_model_group_member_orders(m.order for m in data.members)
+
+        async with self._async_session_maker() as session:
+            mg = ModelGroup(name=data.name, description=data.description)
+            session.add(mg)
+            await session.flush()
+            for member in data.members:
+                session.add(
+                    ModelGroupMember(
+                        model_group_uuid=mg.uuid,
+                        order=member.order,
+                        model_name=member.model_name,
+                        child_group_uuid=member.child_group_uuid,
+                    )
+                )
+            await session.commit()
+            stmt = select(ModelGroup).where(ModelGroup.uuid == mg.uuid).options(selectinload(ModelGroup.members))
+            result = await session.exec(stmt)
+            return self._mg_to_read(result.one())
+
+    async def update_model_group(self, uuid: str, data: ModelGroupUpdate) -> Optional[ModelGroupRead]:
+        if data.members is not None:
+            self._validate_model_group_member_orders(m.order for m in data.members)
+
+        async with self._async_session_maker() as session:
+            result = await session.exec(select(ModelGroup).where(ModelGroup.uuid == uuid))
+            mg = result.one_or_none()
+            if mg is None:
+                return None
+
+            changes = data.model_dump(exclude_unset=True, mode="json")
+            members_data = changes.pop("members", None)
+
+            if isinstance(members_data, list):
+                child_uuids = [m["child_group_uuid"] for m in members_data if m.get("child_group_uuid")]
+                await self._validate_no_model_group_cycle(session, uuid, child_uuids)
+
+            for key, value in changes.items():
+                if hasattr(mg, key):
+                    setattr(mg, key, value)
+
+            if isinstance(members_data, list):
+                await session.exec(delete(ModelGroupMember).where(ModelGroupMember.model_group_uuid == uuid))
+                for member in members_data:
+                    session.add(
+                        ModelGroupMember(
+                            model_group_uuid=uuid,
+                            order=member["order"],
+                            model_name=member.get("model_name"),
+                            child_group_uuid=member.get("child_group_uuid"),
+                        )
+                    )
+
+            mg.updated_at = datetime.now(timezone.utc)
+            session.add(mg)
+            await session.commit()
+
+            result2 = await session.exec(
+                select(ModelGroup).where(ModelGroup.uuid == uuid).options(selectinload(ModelGroup.members))
+            )
+            return self._mg_to_read(result2.one())
+
+    async def delete_model_group(self, uuid: str) -> bool:
+        async with self._async_session_maker() as session:
+            mg = await session.get(ModelGroup, uuid)
+            if mg is None:
+                return False
+            await session.delete(mg)
             await session.commit()
         return True

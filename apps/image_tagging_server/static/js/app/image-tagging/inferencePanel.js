@@ -2,6 +2,8 @@ import { fetchModelsList, fetchModelsKinds, clearModelsCache } from '/app-static
 import { runClassify } from '/app-static/js/shared/api/inference.js';
 import { setImageLabel } from '/app-static/js/shared/api/imageLabels.js';
 import { fetchLabelByUuid } from '/app-static/js/shared/api/labels.js';
+import { fetchModelGroups, createModelGroup, clearModelGroupsCache } from '/app-static/js/shared/api/modelGroups.js';
+import { expandModelGroupMembers } from '/app-static/js/shared/modelGroups/expand.js';
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
 import { Logger } from '/app-static/js/ui/utils/index.js';
 import { createModalShell } from '/app-static/js/ui/utils/modalShell.js';
@@ -10,14 +12,21 @@ import { clearUnmatched, verifyAllBboxes } from './canvas/image.js';
 const SESSION_SELECTED_DETECTORS_KEY = 'wtch_inference_selected_detectors';
 const SESSION_SELECTED_CLASSIFIER_KEY = 'wtch_inference_selected_classifier';
 
+const MODEL_ID_PREFIX = 'model:';
+const GROUP_ID_PREFIX = 'group:';
+
 /**
  * Creates a self-contained inference panel: detector + classifier model lists and Run button.
  *
- * Detectors support multi-select (checkboxes) so several models can be run back-to-back;
- * classifiers stay single-select since a match opens a review modal for that one model.
- * Selections persist in sessionStorage and are reconciled against the live model list on
- * every load/refresh, so models that disappear are silently dropped and new models simply
- * arrive unchecked.
+ * Detectors and saved model groups support multi-select (checkboxes) so several can be run
+ * back-to-back; classifiers stay single-select since a match opens a review modal for that
+ * one model. The detector/group selection is a single ordered `Set` of tagged ids
+ * (`model:<name>` / `group:<uuid>`) — `Set` preserves insertion order, so a mix of raw
+ * models and groups still runs in the order they were checked, and a saved group expands to
+ * its member models (recursively, for nested groups) at Run time.
+ * Selections persist in sessionStorage and are reconciled against the live model/group list
+ * on every load/refresh, so models or groups that disappear are silently dropped and new
+ * ones simply arrive unchecked.
  *
  * @param {import('../image-tagging/runtime.js').ImageTaggingRuntime} runtime
  * @param {HTMLElement} container
@@ -26,7 +35,10 @@ const SESSION_SELECTED_CLASSIFIER_KEY = 'wtch_inference_selected_classifier';
 export async function createInferencePanel(runtime, container) {
   /** @type {string[]} */ let _detectors = [];
   /** @type {string[]} */ let _classifiers = [];
-  /** @type {Set<string>} */ let _selectedDetectors = new Set();
+  /** @type {Array<{uuid: string, name: string}>} */ let _groups = [];
+  /** @type {Map<string, Object>} */ let _groupsMap = new Map();
+  /** @type {Set<string>} tagged ids: "model:<name>" or "group:<uuid>"; insertion order = run order */
+  let _selectedItems = new Set();
   /** @type {string|null} */ let _selectedClassifier = null;
   /** @type {number} */ let _confThresh = 0.25;
   /** @type {boolean} */ let _replaceExisting = false;
@@ -63,7 +75,13 @@ export async function createInferencePanel(runtime, container) {
   verifyAllBtn.title = 'Mark every bbox on this image as verified';
   verifyAllBtn.addEventListener('click', () => verifyAllBboxes(runtime));
 
-  buttonsRow.append(runBtn, refreshBtn, clearGreyBtn, verifyAllBtn);
+  const saveGroupBtn = document.createElement('button');
+  saveGroupBtn.className = 'secondary';
+  saveGroupBtn.textContent = 'Save as group';
+  saveGroupBtn.title = 'Save the currently checked detectors/groups, in their current order, as a reusable named group';
+  saveGroupBtn.addEventListener('click', handleSaveAsGroup);
+
+  buttonsRow.append(runBtn, refreshBtn, clearGreyBtn, verifyAllBtn, saveGroupBtn);
 
   // ── Min confidence slider + replace-existing checkbox (one row) ───
   const optionsRow = document.createElement('div');
@@ -127,46 +145,54 @@ export async function createInferencePanel(runtime, container) {
   function _loadPersistedSelection() {
     try {
       const arr = JSON.parse(sessionStorage.getItem(SESSION_SELECTED_DETECTORS_KEY) || '[]');
-      if (Array.isArray(arr)) _selectedDetectors = new Set(arr);
+      if (Array.isArray(arr)) _selectedItems = new Set(arr);
     } catch { /* ignore parse errors */ }
     _selectedClassifier = sessionStorage.getItem(SESSION_SELECTED_CLASSIFIER_KEY) || null;
   }
 
   function _persistSelection() {
-    sessionStorage.setItem(SESSION_SELECTED_DETECTORS_KEY, JSON.stringify([..._selectedDetectors]));
+    sessionStorage.setItem(SESSION_SELECTED_DETECTORS_KEY, JSON.stringify([..._selectedItems]));
     if (_selectedClassifier) sessionStorage.setItem(SESSION_SELECTED_CLASSIFIER_KEY, _selectedClassifier);
     else sessionStorage.removeItem(SESSION_SELECTED_CLASSIFIER_KEY);
   }
 
   // ── Helpers ───────────────────────────────────────────────────────
 
+  /** Resolve a tagged id back to its display name (model name, or group name). */
+  function _displayNameFor(id) {
+    if (id.startsWith(MODEL_ID_PREFIX)) return id.slice(MODEL_ID_PREFIX.length);
+    const group = _groupsMap.get(id.slice(GROUP_ID_PREFIX.length));
+    return group ? group.name : id;
+  }
+
   function _updateRunBtn() {
     if (_selectedClassifier) {
       runBtn.title = `Run classifier: ${_selectedClassifier}`;
       clearGreyBtn.style.display = 'none';
       replaceRow.style.display = 'none';
-    } else if (_selectedDetectors.size > 0) {
-      runBtn.title = `Run Detection: ${[..._selectedDetectors].join(', ')}`;
+    } else if (_selectedItems.size > 0) {
+      runBtn.title = `Run Detection: ${[..._selectedItems].map(_displayNameFor).join(', ')}`;
       clearGreyBtn.style.display = '';
       replaceRow.style.display = '';
     } else {
-      runBtn.title = 'Select one or more models below first';
+      runBtn.title = 'Select one or more models/groups below first';
       clearGreyBtn.style.display = '';
       replaceRow.style.display = '';
     }
+    saveGroupBtn.disabled = _selectedClassifier != null || _selectedItems.size === 0;
   }
 
-  function _makeDetectorItem(model) {
+  function _makeToggleItem({ id, label, badgeText }) {
     const item = document.createElement('label');
-    item.className = 'inference-model-item' + (_selectedDetectors.has(model) ? ' selected' : '');
-    item.title = model;
+    item.className = 'inference-model-item' + (_selectedItems.has(id) ? ' selected' : '');
+    item.title = label;
 
     const cb = document.createElement('input');
     cb.type = 'checkbox';
-    cb.checked = _selectedDetectors.has(model);
+    cb.checked = _selectedItems.has(id);
     cb.addEventListener('change', () => {
-      if (cb.checked) _selectedDetectors.add(model);
-      else _selectedDetectors.delete(model);
+      if (cb.checked) _selectedItems.add(id);
+      else _selectedItems.delete(id);
       _selectedClassifier = null;
       _persistSelection();
       renderList();
@@ -175,14 +201,22 @@ export async function createInferencePanel(runtime, container) {
 
     const nameSpan = document.createElement('span');
     nameSpan.className = 'inference-model-name';
-    nameSpan.textContent = model;
+    nameSpan.textContent = label;
 
     const badge = document.createElement('span');
     badge.className = 'inference-model-badge';
-    badge.textContent = 'yolo';
+    badge.textContent = badgeText;
 
     item.append(cb, nameSpan, badge);
     return item;
+  }
+
+  function _makeDetectorItem(model) {
+    return _makeToggleItem({ id: MODEL_ID_PREFIX + model, label: model, badgeText: 'yolo' });
+  }
+
+  function _makeGroupItem(group) {
+    return _makeToggleItem({ id: GROUP_ID_PREFIX + group.uuid, label: group.name, badgeText: 'group' });
   }
 
   function _makeClassifierItem(model, kind) {
@@ -201,7 +235,7 @@ export async function createInferencePanel(runtime, container) {
     item.append(nameSpan, badge);
     item.addEventListener('click', () => {
       _selectedClassifier = model;
-      _selectedDetectors.clear();
+      _selectedItems.clear();
       _persistSelection();
       renderList();
       _updateRunBtn();
@@ -227,7 +261,7 @@ export async function createInferencePanel(runtime, container) {
 
   function renderList() {
     listEl.innerHTML = '';
-    if (_detectors.length === 0 && _classifiers.length === 0) {
+    if (_detectors.length === 0 && _classifiers.length === 0 && _groups.length === 0) {
       const empty = document.createElement('div');
       empty.className = 'inference-model-empty';
       empty.textContent = 'No models found';
@@ -238,8 +272,10 @@ export async function createInferencePanel(runtime, container) {
     if (_kindMap) {
       const detSection = _makeSection('Detectors', _detectors, _makeDetectorItem);
       const clfSection = _makeSection('Classifiers', _classifiers, m => _makeClassifierItem(m, _kindMap.get(m)));
+      const groupSection = _makeSection('Groups', _groups, _makeGroupItem);
       if (detSection) listEl.appendChild(detSection);
       if (clfSection) listEl.appendChild(clfSection);
+      if (groupSection) listEl.appendChild(groupSection);
     }
   }
 
@@ -258,17 +294,29 @@ export async function createInferencePanel(runtime, container) {
       return k === 'image_classifier' || k === 'multi_label_classifier';
     });
 
-    // Drop persisted selections for models that no longer exist, without disturbing
-    // selections for models that are still present (new models simply arrive unchecked).
-    for (const m of _selectedDetectors) {
-      if (!_detectors.includes(m)) _selectedDetectors.delete(m);
+    _groupsMap = await fetchModelGroups();
+    _groups = [..._groupsMap.values()].sort((a, b) => a.name.localeCompare(b.name));
+
+    // Drop persisted selections for models/groups that no longer exist, without disturbing
+    // selections that are still present (new models/groups simply arrive unchecked).
+    for (const id of [..._selectedItems]) {
+      if (id.startsWith(MODEL_ID_PREFIX)) {
+        if (!_detectors.includes(id.slice(MODEL_ID_PREFIX.length))) _selectedItems.delete(id);
+      } else if (id.startsWith(GROUP_ID_PREFIX)) {
+        if (!_groupsMap.has(id.slice(GROUP_ID_PREFIX.length))) _selectedItems.delete(id);
+      } else {
+        // Pre-groups-feature sessionStorage held bare model names — migrate them to
+        // the tagged form so existing persisted selections survive the upgrade.
+        _selectedItems.delete(id);
+        if (_detectors.includes(id)) _selectedItems.add(MODEL_ID_PREFIX + id);
+      }
     }
     if (_selectedClassifier && !_classifiers.includes(_selectedClassifier)) _selectedClassifier = null;
 
     // First-ever load with nothing persisted: default to the first detector, matching
     // the previous single-select panel's behavior.
-    if (isInitial && _selectedDetectors.size === 0 && !_selectedClassifier && _detectors.length > 0) {
-      _selectedDetectors.add(_detectors[0]);
+    if (isInitial && _selectedItems.size === 0 && !_selectedClassifier && _detectors.length > 0) {
+      _selectedItems.add(MODEL_ID_PREFIX + _detectors[0]);
     }
 
     _persistSelection();
@@ -278,6 +326,7 @@ export async function createInferencePanel(runtime, container) {
     refreshBtn.disabled = true;
     try {
       clearModelsCache();
+      clearModelGroupsCache();
       await _loadModels();
       renderList();
       _updateRunBtn();
@@ -288,19 +337,58 @@ export async function createInferencePanel(runtime, container) {
     }
   }
 
+  /** Expand the current selection (models pass through, groups recurse) into a flat, ordered model-name list. */
+  function _resolveSelectedModelNames() {
+    const names = [];
+    for (const id of _selectedItems) {
+      if (id.startsWith(MODEL_ID_PREFIX)) {
+        names.push(id.slice(MODEL_ID_PREFIX.length));
+      } else if (id.startsWith(GROUP_ID_PREFIX)) {
+        names.push(...expandModelGroupMembers(id.slice(GROUP_ID_PREFIX.length), _groupsMap));
+      }
+    }
+    return names;
+  }
+
   async function handleRun() {
     if (_selectedClassifier) {
       await handleClassify();
       return;
     }
-    if (_selectedDetectors.size === 0) { alert('Please select at least one model first'); return; }
+    if (_selectedItems.size === 0) { alert('Please select at least one model or group first'); return; }
 
     events.publish(EventTypes.RUN_INFERENCE_ON_CANVAS, {
-      modelNames: [..._selectedDetectors],
+      modelNames: _resolveSelectedModelNames(),
       runtimeId: runtime.id,
       confThresh: _confThresh,
       replaceExisting: _replaceExisting,
     });
+  }
+
+  async function handleSaveAsGroup() {
+    if (_selectedItems.size === 0) return;
+    const name = prompt('Model group name:');
+    if (!name?.trim()) return;
+
+    const members = [..._selectedItems].map((id, order) =>
+      id.startsWith(MODEL_ID_PREFIX)
+        ? { order, model_name: id.slice(MODEL_ID_PREFIX.length) }
+        : { order, child_group_uuid: id.slice(GROUP_ID_PREFIX.length) }
+    );
+
+    saveGroupBtn.disabled = true;
+    try {
+      await createModelGroup({ name: name.trim(), members });
+      _groupsMap = await fetchModelGroups();
+      _groups = [..._groupsMap.values()].sort((a, b) => a.name.localeCompare(b.name));
+      renderList();
+      _updateRunBtn();
+    } catch (err) {
+      Logger.error('Failed to save model group:', err);
+      alert(`Failed to save group: ${err.message}`);
+    } finally {
+      saveGroupBtn.disabled = false;
+    }
   }
 
   async function handleClassify() {

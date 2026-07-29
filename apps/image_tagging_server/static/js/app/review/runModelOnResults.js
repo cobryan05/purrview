@@ -27,6 +27,8 @@ import {
 } from '/app-static/js/shared/api/review.js';
 import { activeTrainingConfig } from '/app-static/js/shared/activeTrainingConfig.js';
 import { fetchModelsList, fetchModelsKinds, clearModelsCache } from '/app-static/js/shared/api/models.js';
+import { fetchModelGroups, clearModelGroupsCache } from '/app-static/js/shared/api/modelGroups.js';
+import { expandModelGroupMembers } from '/app-static/js/shared/modelGroups/expand.js';
 import {
   createTaskConfig,
   startTask,
@@ -47,6 +49,9 @@ import { createCardGrid } from '/app-static/js/app/review/cardGrid.js';
 import { attachContext } from '/app-static/js/ui/contextMenu/index.js';
 
 const _CLASSIFIER_KINDS = new Set(['image_classifier', 'multi_label_classifier']);
+
+const MODEL_ID_PREFIX = 'model:';
+const GROUP_ID_PREFIX = 'group:';
 
 // Above this many candidate bboxes, warn the user (large runs take a while) and
 // let them cap how many to process before launching. There is no hard ceiling —
@@ -932,28 +937,35 @@ async function _showRunDialog(scope, ctx) {
   const modelLabelRow = document.createElement('div');
   modelLabelRow.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:0.5em;';
   const modelLabel = document.createElement('div');
-  modelLabel.textContent = 'Model:';
+  modelLabel.textContent = 'Model(s):';
   modelLabel.style.cssText = 'font-size:0.85em;color:#aaa;';
   const modelRefreshBtn = document.createElement('button');
   modelRefreshBtn.type = 'button';
   modelRefreshBtn.className = 'secondary run-model-on-results-refresh';
   modelRefreshBtn.textContent = 'Refresh';
-  modelRefreshBtn.title = 'Reload the model list (picks up newly imported models)';
+  modelRefreshBtn.title = 'Reload the model/group list (picks up newly imported models or saved groups)';
   modelRefreshBtn.style.cssText = 'padding:0.1em 0.6em;font-size:0.8em;';
   modelLabelRow.append(modelLabel, modelRefreshBtn);
 
   const modelRow = document.createElement('div');
   modelRow.style.cssText = 'display:flex;flex-direction:column;gap:0.3em;flex:1;';
-  const modelSelect = document.createElement('select');
-  modelSelect.className = 'run-model-on-results-model-select';
-  modelRow.append(modelLabelRow, modelSelect);
+  const modelListEl = document.createElement('div');
+  modelListEl.className = 'inference-model-list run-model-on-results-model-list';
+  modelListEl.style.cssText = 'max-height:180px;overflow-y:auto;border:1px solid #333;border-radius:4px;padding:0.3em;';
+  modelRow.append(modelLabelRow, modelListEl);
   pickerRow.appendChild(modelRow);
 
   let models = [];
   /** @type {Map<string, string>} model name -> modelKind */
   let modelKinds = new Map();
+  /** @type {Map<string, Object>} model group uuid -> group */
+  let groupsMap = new Map();
+  /** Multi-select detector/group ids ("model:<name>" / "group:<uuid>"); Set preserves check order. */
+  let selectedItems = new Set();
+  /** Single-select classifier name, mutually exclusive with `selectedItems` (same rule as inferencePanel.js). */
+  let selectedClassifier = null;
   // Declared here (assigned below near the other dialog buttons) so
-  // `_populateModelSelect` can toggle it whether it runs at initial load or
+  // `_renderModelList` can toggle it whether it runs at initial load or
   // from a later refresh click, without a temporal-dead-zone reference error.
   let runBtn = null;
 
@@ -964,36 +976,113 @@ async function _showRunDialog(scope, ctx) {
       const allModels = await fetchModelsList();
       modelKinds = await fetchModelsKinds(allModels);
       models = allModels;
+      groupsMap = await fetchModelGroups();
     } catch (err) {
       Logger.error('Failed to load models:', err);
     }
   }
 
-  function _populateModelSelect() {
-    const previousValue = modelSelect.value;
-    modelSelect.innerHTML = '';
-    if (models.length === 0) {
-      const opt = document.createElement('option');
-      opt.value = '';
-      opt.textContent = '(no models found)';
-      modelSelect.appendChild(opt);
-    } else {
-      const detectorNames = models.filter(m => !_CLASSIFIER_KINDS.has(modelKinds.get(m)));
-      const classifierNames = models.filter(m => _CLASSIFIER_KINDS.has(modelKinds.get(m)));
-      for (const [label, names] of [['Detectors', detectorNames], ['Classifiers', classifierNames]]) {
-        if (names.length === 0) continue;
-        const group = document.createElement('optgroup');
-        group.label = label;
-        for (const m of names) {
-          const opt = document.createElement('option');
-          opt.value = m;
-          opt.textContent = m;
-          group.appendChild(opt);
-        }
-        modelSelect.appendChild(group);
-      }
-      if (models.includes(previousValue)) modelSelect.value = previousValue;
+  function _resolveSelectedModelNames() {
+    const names = [];
+    for (const id of selectedItems) {
+      if (id.startsWith(MODEL_ID_PREFIX)) names.push(id.slice(MODEL_ID_PREFIX.length));
+      else if (id.startsWith(GROUP_ID_PREFIX)) names.push(...expandModelGroupMembers(id.slice(GROUP_ID_PREFIX.length), groupsMap));
     }
+    return names;
+  }
+
+  function _makeListItem({ id, label, badgeText, isSelected, onToggle }) {
+    const item = document.createElement('label');
+    item.className = 'inference-model-item' + (isSelected ? ' selected' : '');
+    item.title = label;
+
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.checked = isSelected;
+    cb.addEventListener('change', () => onToggle(cb.checked));
+
+    const nameSpan = document.createElement('span');
+    nameSpan.className = 'inference-model-name';
+    nameSpan.textContent = label;
+
+    const badge = document.createElement('span');
+    badge.className = 'inference-model-badge';
+    badge.textContent = badgeText;
+
+    item.append(cb, nameSpan, badge);
+    return item;
+  }
+
+  function _makeSectionEl(title, items, makeItem) {
+    if (items.length === 0) return null;
+    const section = document.createElement('div');
+    section.className = 'inference-model-section';
+    const header = document.createElement('div');
+    header.className = 'inference-model-section-header';
+    header.textContent = title;
+    section.appendChild(header);
+    for (const it of items) section.appendChild(makeItem(it));
+    return section;
+  }
+
+  function _renderModelList() {
+    modelListEl.innerHTML = '';
+    if (models.length === 0 && groupsMap.size === 0) {
+      const empty = document.createElement('div');
+      empty.className = 'inference-model-empty';
+      empty.textContent = '(no models found)';
+      modelListEl.appendChild(empty);
+      if (runBtn) runBtn.disabled = true;
+      return;
+    }
+
+    const detectorNames = models.filter(m => !_CLASSIFIER_KINDS.has(modelKinds.get(m)));
+    const classifierNames = models.filter(m => _CLASSIFIER_KINDS.has(modelKinds.get(m)));
+    const groups = [...groupsMap.values()].sort((a, b) => a.name.localeCompare(b.name));
+
+    const detSection = _makeSectionEl('Detectors', detectorNames, m => _makeListItem({
+      id: MODEL_ID_PREFIX + m,
+      label: m,
+      badgeText: 'yolo',
+      isSelected: selectedItems.has(MODEL_ID_PREFIX + m),
+      onToggle: (checked) => {
+        if (checked) selectedItems.add(MODEL_ID_PREFIX + m);
+        else selectedItems.delete(MODEL_ID_PREFIX + m);
+        selectedClassifier = null;
+        _renderModelList();
+        _syncCropModeUI();
+      },
+    }));
+    const groupSection = _makeSectionEl('Groups', groups, g => _makeListItem({
+      id: GROUP_ID_PREFIX + g.uuid,
+      label: g.name,
+      badgeText: 'group',
+      isSelected: selectedItems.has(GROUP_ID_PREFIX + g.uuid),
+      onToggle: (checked) => {
+        if (checked) selectedItems.add(GROUP_ID_PREFIX + g.uuid);
+        else selectedItems.delete(GROUP_ID_PREFIX + g.uuid);
+        selectedClassifier = null;
+        _renderModelList();
+        _syncCropModeUI();
+      },
+    }));
+    const clfSection = _makeSectionEl('Classifiers', classifierNames, m => _makeListItem({
+      id: 'classifier:' + m,
+      label: m,
+      badgeText: modelKinds.get(m) === 'image_classifier' ? 'binary' : 'multi',
+      isSelected: selectedClassifier === m,
+      onToggle: (checked) => {
+        selectedClassifier = checked ? m : null;
+        selectedItems.clear();
+        _renderModelList();
+        _syncCropModeUI();
+      },
+    }));
+
+    if (detSection) modelListEl.appendChild(detSection);
+    if (groupSection) modelListEl.appendChild(groupSection);
+    if (clfSection) modelListEl.appendChild(clfSection);
+
     if (runBtn) runBtn.disabled = models.length === 0;
   }
 
@@ -1001,8 +1090,9 @@ async function _showRunDialog(scope, ctx) {
     modelRefreshBtn.disabled = true;
     try {
       clearModelsCache();
+      clearModelGroupsCache();
       await _loadModels();
-      _populateModelSelect();
+      _renderModelList();
       _syncCropModeUI();
     } finally {
       modelRefreshBtn.disabled = false;
@@ -1010,7 +1100,7 @@ async function _showRunDialog(scope, ctx) {
   });
 
   await _loadModels();
-  _populateModelSelect();
+  _renderModelList();
 
   // ── Crop mode: whole image vs. per-bbox crop ─────────────────────────
   let cropMode = 'image';
@@ -1076,13 +1166,9 @@ async function _showRunDialog(scope, ctx) {
   );
   dialog.appendChild(addNewRow);
 
-  function _isClassifierSelected() {
-    return _CLASSIFIER_KINDS.has(modelKinds.get(modelSelect.value));
-  }
-
   function _syncCropModeUI() {
     cropMode = cropModeSelect.value;
-    const isClassifier = _isClassifierSelected();
+    const isClassifier = selectedClassifier !== null;
     // Crop mode, IoU matching, and "add new boxes" are all detector-only
     // concepts (whole-image classification has no geometry to match/refine).
     cropModeRow.style.display = isClassifier ? 'none' : '';
@@ -1093,7 +1179,6 @@ async function _showRunDialog(scope, ctx) {
     if (isClassifier || cropMode === 'bbox') addNewCheckbox.checked = false;
   }
   cropModeSelect.addEventListener('change', _syncCropModeUI);
-  modelSelect.addEventListener('change', _syncCropModeUI);
   _syncCropModeUI();
 
   // ── Progress area (hidden until Run) ─────────────────────────────────
@@ -1147,11 +1232,26 @@ async function _showRunDialog(scope, ctx) {
     close();
   });
 
-  runBtn.addEventListener('click', async () => {
-    if (!modelSelect.value) { toast('Please select a model', 3000, 'warning'); return; }
+  function _setModelListDisabled(disabled) {
+    modelListEl.querySelectorAll('input[type=checkbox]').forEach(cb => { cb.disabled = disabled; });
+  }
 
-    const modelName = modelSelect.value;
-    const isClassifier = _isClassifierSelected();
+  function _resetRunUI() {
+    runBtn.disabled = false;
+    cancelBtn.disabled = false;
+    _setModelListDisabled(false);
+    cropModeSelect.disabled = false;
+    progressWrap.style.display = 'none';
+  }
+
+  runBtn.addEventListener('click', async () => {
+    const isClassifier = selectedClassifier !== null;
+    const modelNames = isClassifier ? [selectedClassifier] : _resolveSelectedModelNames();
+
+    if (modelNames.length === 0) {
+      toast(isClassifier ? 'Please select a classifier' : 'Please select at least one model or group', 3000, 'warning');
+      return;
+    }
 
     if (isClassifier) {
       if (imageUuids.length === 0) {
@@ -1175,99 +1275,133 @@ async function _showRunDialog(scope, ctx) {
 
     runBtn.disabled = true;
     cancelBtn.disabled = true;
-    modelSelect.disabled = true;
+    _setModelListDisabled(true);
     cropModeSelect.disabled = true;
     progressWrap.style.display = 'flex';
     const totalImages = isClassifier ? runImageUuids.length : imageUuids.length;
-    progressLabel.textContent = `Starting… (0/${totalImages} images)`;
 
-    const params = isClassifier
-      ? {
-          model_name: modelName,
-          conf_thresh: confThresh,
-          image_uuids: runImageUuids,
-        }
-      : {
-          model_name: modelName,
-          crop_mode: cropMode,
-          add_new: cropMode === 'image' && addNewCheckbox.checked,
-          conf_thresh: confThresh,
-          iou_thresh: iouThresh,
-          image_uuids: imageUuids,
-          bbox_uuids: bboxUuids,
-        };
+    // Sequential run: each model in `modelNames` (raw picks + expanded group
+    // members, in selection order) launches its own PreviewModelRelabelTask
+    // against the same candidate scope. Results merge into a single final
+    // preview instead of one modal per model — last model in the sequence
+    // wins for any given bbox. "New box" candidates (bboxUuid === null, from
+    // add_new) have no stable identity to merge on, so they're appended from
+    // every model's run rather than deduped.
+    const mergedByBbox = new Map();
+    const newBoxCandidates = [];
+    let aggImagesFailed = 0;
+    let aggNoDetectionCount = 0;
+    let aggNoOpCount = 0;
+    let aggNoMatchCount = 0;
+    const aggSampleErrors = [];
 
     try {
-      const configUuid = await createTaskConfig({
-        typename: isClassifier ? 'PreviewClassifierMatchTask' : 'PreviewModelRelabelTask',
-        name: `Run Model on Results: ${modelName}`,
-        params,
-        persistent: false,
-        isTemporary: true,
-      });
-      taskUuid = await startTask({ configUuid });
+      for (let i = 0; i < modelNames.length; i++) {
+        if (cancelled) break;
+        const modelName = modelNames[i];
+        const stepPrefix = modelNames.length > 1 ? `Model ${i + 1}/${modelNames.length} (${modelName}): ` : '';
+        progressBar.value = 0;
+        progressLabel.textContent = `${stepPrefix}Starting… (0/${totalImages} images)`;
 
-      const finalInfo = await _pollUntilDone(taskUuid, totalImages, (info) => {
-        if (cancelled) return;
-        const progress = info?.progress ?? 0;
-        const processed = Math.round((progress / 100) * totalImages);
-        progressBar.value = progress;
-        progressLabel.textContent = `Processing… (${processed}/${totalImages} images)`;
-      });
+        const params = isClassifier
+          ? {
+              model_name: modelName,
+              conf_thresh: confThresh,
+              image_uuids: runImageUuids,
+            }
+          : {
+              model_name: modelName,
+              crop_mode: cropMode,
+              add_new: cropMode === 'image' && addNewCheckbox.checked,
+              conf_thresh: confThresh,
+              iou_thresh: iouThresh,
+              image_uuids: imageUuids,
+              bbox_uuids: bboxUuids,
+            };
+
+        const configUuid = await createTaskConfig({
+          typename: isClassifier ? 'PreviewClassifierMatchTask' : 'PreviewModelRelabelTask',
+          name: `Run Model on Results: ${modelName}`,
+          params,
+          persistent: false,
+          isTemporary: true,
+        });
+        taskUuid = await startTask({ configUuid });
+
+        const finalInfo = await _pollUntilDone(taskUuid, totalImages, (info) => {
+          if (cancelled) return;
+          const progress = info?.progress ?? 0;
+          const processed = Math.round((progress / 100) * totalImages);
+          progressBar.value = progress;
+          progressLabel.textContent = `${stepPrefix}Processing… (${processed}/${totalImages} images)`;
+        });
+
+        if (cancelled) break;
+
+        const status = finalInfo?.instance?.status;
+        if (status !== TaskStatus.COMPLETED) {
+          const msg = finalInfo?.instance?.errorMessage || `Task ended with status: ${status}`;
+          toast(`Run failed on ${modelName}: ${msg}`, 5000, 'error');
+          await deleteTasks({ taskUuids: [taskUuid] }).catch(() => {});
+          _resetRunUI();
+          return;
+        }
+
+        progressLabel.textContent = `${stepPrefix}Fetching results…`;
+        const resultsMap = await fetchTasksResult({ taskUuids: [taskUuid], cacheResults: false });
+        const result = resultsMap.get(taskUuid);
+        const data = result?.data ?? {};
+        const candidates = data.candidates ?? [];
+        // TaskResult.data is a raw passthrough dict (no camelCase alias conversion,
+        // unlike most other API responses) — read the task's snake_case keys directly.
+
+        await deleteTasks({ taskUuids: [taskUuid] }).catch((e) => Logger.error('Cleanup failed', e));
+        taskUuid = null;
+
+        for (const c of candidates) {
+          if (isClassifier || c.isNew || !c.bboxUuid) newBoxCandidates.push(c);
+          else mergedByBbox.set(c.bboxUuid, c);
+        }
+        aggImagesFailed += data.images_failed ?? 0;
+        aggNoDetectionCount += data.no_detection_count ?? 0;
+        aggNoOpCount += data.no_op_count ?? 0;
+        aggNoMatchCount += data.no_match_count ?? 0;
+        if (data.sample_errors?.length) aggSampleErrors.push(...data.sample_errors);
+      }
 
       if (cancelled) return;
 
-      const status = finalInfo?.instance?.status;
-      if (status !== TaskStatus.COMPLETED) {
-        const msg = finalInfo?.instance?.errorMessage || `Task ended with status: ${status}`;
-        toast(`Run failed: ${msg}`, 5000, 'error');
-        await deleteTasks({ taskUuids: [taskUuid] }).catch(() => {});
-        return;
-      }
-
-      progressLabel.textContent = 'Fetching results…';
-      const resultsMap = await fetchTasksResult({ taskUuids: [taskUuid], cacheResults: false });
-      const result = resultsMap.get(taskUuid);
-      const data = result?.data ?? {};
-      const candidates = data.candidates ?? [];
-      // TaskResult.data is a raw passthrough dict (no camelCase alias conversion,
-      // unlike most other API responses) — read the task's snake_case keys directly.
-
-      await deleteTasks({ taskUuids: [taskUuid] }).catch((e) => Logger.error('Cleanup failed', e));
-
       close();
+      const displayName = modelNames.join(' → ');
+      const finalCandidates = isClassifier ? newBoxCandidates : [...mergedByBbox.values(), ...newBoxCandidates];
       if (isClassifier) {
-        await openClassifierTagConfirmationModal(candidates, {
-          modelName,
+        await openClassifierTagConfirmationModal(finalCandidates, {
+          modelName: displayName,
           refresh: ctx.refresh,
           labels: ctx.labels,
           stats: {
-            imagesFailed: data.images_failed ?? 0,
-            noMatchCount: data.no_match_count ?? 0,
-            sampleErrors: data.sample_errors ?? [],
+            imagesFailed: aggImagesFailed,
+            noMatchCount: aggNoMatchCount,
+            sampleErrors: aggSampleErrors.slice(0, 5),
           },
         });
       } else {
-        await openRelabelConfirmationModal(candidates, {
-          modelName,
+        await openRelabelConfirmationModal(finalCandidates, {
+          modelName: displayName,
           refresh: ctx.refresh,
           labels: ctx.labels,
           stats: {
-            imagesFailed: data.images_failed ?? 0,
-            noDetectionCount: data.no_detection_count ?? 0,
-            noOpCount: data.no_op_count ?? 0,
-            sampleErrors: data.sample_errors ?? [],
+            imagesFailed: aggImagesFailed,
+            noDetectionCount: aggNoDetectionCount,
+            noOpCount: aggNoOpCount,
+            sampleErrors: aggSampleErrors.slice(0, 5),
           },
         });
       }
     } catch (err) {
       Logger.error('Run Model on Results failed:', err);
       toast(`Run failed: ${err.message}`, 5000, 'error');
-      runBtn.disabled = false;
-      cancelBtn.disabled = false;
-      modelSelect.disabled = false;
-      cropModeSelect.disabled = false;
-      progressWrap.style.display = 'none';
+      _resetRunUI();
     }
   });
 

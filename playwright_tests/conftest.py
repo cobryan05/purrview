@@ -5,6 +5,7 @@ Run with:
     pytest tests/playwright/ -p no:xdist
 (xdist is incompatible with session-scoped browser fixtures)
 """
+
 import socket
 import threading
 import time
@@ -19,6 +20,7 @@ from fastapi.responses import JSONResponse
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _free_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.bind(("127.0.0.1", 0))
@@ -28,6 +30,7 @@ def _free_port() -> int:
 def _make_label_mock():
     async def handle(path: str, request):
         return JSONResponse(content={"status": "success", "labels": []})
+
     return handle
 
 
@@ -35,18 +38,21 @@ def _make_tag_mock():
     async def handle(path: str, request):
         # tags.js fetches /api/tags/list and expects {"tags": [...]}
         return JSONResponse(content={"tags": []})
+
     return handle
 
 
 def _make_models_mock():
     async def handle(path: str, request):
         return JSONResponse(content={"status": "success", "models": {}})
+
     return handle
 
 
 def _make_sources_mock():
     async def handle(path: str, request):
         return JSONResponse(content={"status": "success", "sources": []})
+
     return handle
 
 
@@ -59,42 +65,56 @@ def _make_tasks_mock():
         if path.startswith("instances/"):
             return JSONResponse(content={"status": "success", "tasks": []})
         return JSONResponse(content={"status": "success"})
+
     return handle
 
 
 def _make_datasets_mock():
     async def handle(path: str, request):
         return JSONResponse(content={"status": "success", "datasets": []})
+
     return handle
 
 
 def _make_model_configs_mock():
     async def handle(path: str, request):
         return JSONResponse(content={"status": "success", "model_configs": []})
+
+    return handle
+
+
+def _make_model_groups_mock():
+    async def handle(path: str, request):
+        return JSONResponse(content={"status": "success", "groups": []})
+
     return handle
 
 
 def _make_settings_mock():
     async def handle(path: str, request):
         return JSONResponse(content={"status": "success", "settings": {}})
+
     return handle
 
 
 def _make_training_configs_mock():
     async def handle(path: str, request):
         return JSONResponse(content={"status": "success", "configs": []})
+
     return handle
 
 
 def _make_images_mock():
     async def handle(path: str, request):
         return JSONResponse(content={"status": "success", "images": [], "total": 0})
+
     return handle
 
 
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture(scope="session")
 def browser_type_launch_args(browser_type_launch_args: dict) -> dict:
@@ -157,6 +177,7 @@ def live_server() -> Generator[str, None, None]:
         ("TASKS_PROXY", _make_tasks_mock()),
         ("DATASETS_PROXY", _make_datasets_mock()),
         ("MODEL_CONFIGS_PROXY", _make_model_configs_mock()),
+        ("MODEL_GROUPS_PROXY", _make_model_groups_mock()),
         ("TRAINING_CONFIGS_PROXY", _make_training_configs_mock()),
         ("SETTINGS_PROXY", _make_settings_mock()),
     ]
@@ -170,6 +191,7 @@ def live_server() -> Generator[str, None, None]:
     # reachable in tests, but still replaces the proxy instances we patched).
     async def _noop_start():
         pass
+
     manager.start = _noop_start
 
     # --- patch manager's dynamic proxies (inference + training) ---
@@ -221,9 +243,7 @@ def _block_sse(page) -> None:
     for pattern in ("**/api/notices/stream", "**/api/tasks/stream"):
         page.route(
             pattern,
-            lambda route: route.fulfill(
-                status=200, content_type="text/event-stream", body=""
-            ),
+            lambda route: route.fulfill(status=200, content_type="text/event-stream", body=""),
         )
 
 
