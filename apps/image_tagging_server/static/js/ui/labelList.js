@@ -414,7 +414,14 @@ function buildPresetMenu(title, options, currentValue, onPick) {
 }
 
 async function mountSelectMode(container, { runtime, filter }) {
-  Object.assign(container.style, { overflowY: 'auto', padding: '4px' });
+  // No overflow here — the parent `.sidebar-tab-pane.active` is the actual
+  // scroll container (flex:1; overflow-y:auto). Giving this element its own
+  // overflow:auto too used to create nested scroll boxes, which broke the
+  // sticky header below: sticky anchors to the *nearest* scrolling ancestor,
+  // and this element never itself grows a scrollbar (its height is
+  // unconstrained), so the sticky child just rode along with the outer
+  // pane's scroll instead of pinning to it.
+  Object.assign(container.style, { padding: '4px' });
 
   // Pinned to the top of this scrollable panel (mirrors .inference-panel-actions)
   // so the header controls + bulk-op row stay reachable while the list scrolls.
@@ -505,9 +512,17 @@ async function mountSelectMode(container, { runtime, filter }) {
   // where the top section's "Mark all absent" reached past Image Classification
   // into Dynamic Labels — are gone by construction.
   const bulkRow = document.createElement('div');
-  Object.assign(bulkRow.style, { display: 'flex', gap: '6px', alignItems: 'center', padding: '0 6px 6px', flexWrap: 'wrap' });
-  const bulkLabel = document.createElement('span');
-  bulkLabel.style.cssText = 'font-size:0.72em;color:#999;';
+  Object.assign(bulkRow.style, { padding: '0 6px 6px' });
+
+  // "Apply to N targeted:" gets its own line — sharing a flex row with the
+  // buttons let a long count force an awkward mid-button wrap in the narrow
+  // sidebar.
+  const bulkLabel = document.createElement('div');
+  bulkLabel.style.cssText = 'font-size:0.72em;color:#999;margin-bottom:3px;';
+
+  const bulkButtonsRow = document.createElement('div');
+  Object.assign(bulkButtonsRow.style, { display: 'flex', gap: '6px', alignItems: 'center', flexWrap: 'wrap' });
+
   const markAbsentBtn = document.createElement('button');
   markAbsentBtn.textContent = 'Mark absent';
   markAbsentBtn.title = 'Mark every targeted label absent for this image';
@@ -516,18 +531,28 @@ async function mountSelectMode(container, { runtime, filter }) {
   resetAllBtn.textContent = 'Reset';
   resetAllBtn.title = 'Reset every targeted label to unreviewed for this image';
   Object.assign(resetAllBtn.style, { fontSize: '0.75em', padding: '2px 6px' });
+
+  // Visual separator: Verify All acts on bbox tags (canvas state), not label
+  // presence like Mark absent/Reset — kept in this row for one-glance access,
+  // but set apart so it doesn't read as a third variant of the same action.
+  const bulkSep = document.createElement('span');
+  bulkSep.style.cssText = 'width:1px;height:1.2em;background:#444;flex-shrink:0;';
+
   const verifyAllBtn = document.createElement('button');
   verifyAllBtn.textContent = 'Verify all';
   verifyAllBtn.title = 'Mark every bbox on this image as verified';
-  Object.assign(verifyAllBtn.style, { fontSize: '0.75em', padding: '2px 6px', marginLeft: 'auto' });
+  Object.assign(verifyAllBtn.style, { fontSize: '0.75em', padding: '2px 6px' });
   verifyAllBtn.addEventListener('click', () => {
     if (!runtime) return;
     verifyAllBboxes(runtime);
   });
+
+  bulkButtonsRow.appendChild(markAbsentBtn);
+  bulkButtonsRow.appendChild(resetAllBtn);
+  bulkButtonsRow.appendChild(bulkSep);
+  bulkButtonsRow.appendChild(verifyAllBtn);
   bulkRow.appendChild(bulkLabel);
-  bulkRow.appendChild(markAbsentBtn);
-  bulkRow.appendChild(resetAllBtn);
-  bulkRow.appendChild(verifyAllBtn);
+  bulkRow.appendChild(bulkButtonsRow);
   stickyHeader.appendChild(bulkRow);
   container.appendChild(stickyHeader);
 
