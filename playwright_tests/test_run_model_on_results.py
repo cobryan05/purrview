@@ -269,6 +269,12 @@ def _run_model_btn(page: Page):
     return page.locator("#review-root .review-action-bar button", has_text="Run Model on Results")
 
 
+def _check_model_in_dialog(dialog, name: str):
+    """Checks the checkbox for `name` in the (multi-select) model/group list."""
+    item = dialog.locator(".run-model-on-results-model-list .inference-model-item", has_text=name)
+    item.locator("input[type=checkbox]").check()
+
+
 CANDIDATES = [
     {
         "bboxUuid": "bbox-1",
@@ -360,7 +366,11 @@ class TestRunModelButton:
         page.route("**/api/models", handle_list)
 
         def handle_meta(route: Route):
-            route.fulfill(status=200, content_type="application/json", body=json.dumps({"status": "success", "modelKind": "detector"}))
+            route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps({"status": "success", "modelKind": "detector"}),
+            )
 
         page.route("**/api/models/*/meta", handle_meta)
 
@@ -369,16 +379,200 @@ class TestRunModelButton:
 
         dialog = page.locator(".run-model-on-results-dialog")
         expect(dialog).to_be_visible()
-        model_select = dialog.locator(".run-model-on-results-model-select")
-        expect(model_select.locator("option")).to_have_count(1)
+        model_items = dialog.locator(".run-model-on-results-model-list .inference-model-item")
+        expect(model_items).to_have_count(1)
 
         detector_names.append("new-detector")
         dialog.locator(".run-model-on-results-refresh").click()
 
-        expect(model_select.locator("option")).to_have_count(2)
-        expect(model_select.locator("option").nth(1)).to_have_text("new-detector")
+        expect(model_items).to_have_count(2)
+        expect(model_items.nth(1)).to_contain_text("new-detector")
         # Dialog stays open and unaffected otherwise.
         expect(dialog).to_be_visible()
+
+
+class _FakeSequentialTasks:
+    """Handles a sequential multi-model run: each model gets its own config/task
+    uuid derived from its name (via the `params.model_name` posted at create time),
+    so the same global `page.route` handlers can serve `configs/create` ->
+    `instances/start` -> `instances/get` -> `instances/result` correctly for each
+    model in turn, even though the JS launches them one after another against
+    identical URL patterns."""
+
+    def __init__(self, candidates_by_model: dict, stats_by_model: dict = None):
+        self.candidates_by_model = candidates_by_model
+        self.stats_by_model = stats_by_model or {}
+        self.create_bodies = []
+        self._config_to_model = {}
+        self._poll_counts = {}
+
+    def install(self, page: Page):
+        def handle_create(route: Route):
+            body = json.loads(route.request.post_data or "{}")
+            self.create_bodies.append(body)
+            model_name = body["params"]["model_name"]
+            config_uuid = f"cfg-{model_name}"
+            self._config_to_model[config_uuid] = model_name
+            route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps({"status": "success", "configUuid": config_uuid}),
+            )
+
+        page.route("**/api/tasks/configs/create", handle_create)
+
+        def handle_start(route: Route):
+            body = json.loads(route.request.post_data or "{}")
+            model_name = self._config_to_model[body["configUuid"]]
+            route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps({"status": "success", "taskUuid": f"task-{model_name}"}),
+            )
+
+        page.route("**/api/tasks/instances/start", handle_start)
+
+        def handle_get(route: Route):
+            body = json.loads(route.request.post_data or "{}")
+            task_uuid = body["taskUuids"][0]
+            self._poll_counts[task_uuid] = self._poll_counts.get(task_uuid, 0) + 1
+            status = "running" if self._poll_counts[task_uuid] < 2 else "completed"
+            progress = 50.0 if status == "running" else 100.0
+            route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps(
+                    {
+                        "status": "success",
+                        "tasks": {
+                            task_uuid: {
+                                "config": {
+                                    "uuid": "cfg",
+                                    "typename": "PreviewModelRelabelTask",
+                                    "name": "x",
+                                    "params": {},
+                                },
+                                "instance": {"uuid": task_uuid, "status": status},
+                                "progress": progress,
+                                "statusMessage": "",
+                                "statusActions": [],
+                                "logLines": [],
+                                "isPausedInPlace": False,
+                            }
+                        },
+                    }
+                ),
+            )
+
+        page.route("**/api/tasks/instances/get", handle_get)
+
+        def handle_result(route: Route):
+            body = json.loads(route.request.post_data or "{}")
+            task_uuid = body["taskUuids"][0]
+            model_name = task_uuid[len("task-") :]
+            candidates = self.candidates_by_model.get(model_name, [])
+            data = {
+                "images_processed": 2,
+                "bbox_count": len(candidates),
+                "candidate_count": len(candidates),
+                "candidates": candidates,
+                "images_failed": 0,
+                "sample_errors": [],
+                "no_detection_count": 0,
+                "no_op_count": 0,
+            }
+            data.update(self.stats_by_model.get(model_name, {}))
+            route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps({"status": "success", "results": {task_uuid: {"data": data}}}),
+            )
+
+        page.route("**/api/tasks/instances/result", handle_result)
+
+        def handle_delete(route: Route):
+            route.fulfill(status=200, content_type="application/json", body=json.dumps({"status": "success"}))
+
+        page.route("**/api/tasks/instances/delete", handle_delete)
+        page.route("**/api/tasks/instances/cancel", handle_delete)
+
+
+class TestRunModelMultiSelect:
+    """Multi-selecting several detectors runs them sequentially and collapses the
+    results into a single final preview (last model in the sequence wins per bbox),
+    rather than opening one confirmation modal per model."""
+
+    def test_two_models_merge_into_one_final_preview(self, page: Page, base_url: str):
+        _mock_review_queue(page, PAGE_1_IMAGES)
+        _mock_labels(page, [LABEL_CAT, LABEL_DOG])
+        _mock_tags(page, [UNVERIFIED_TAG])
+        _mock_models(page, ["det-a", "det-b"])
+        _mock_thumbnails(page)
+
+        candidates_det_a = [
+            {
+                "bboxUuid": "bbox-1",
+                "imageUuid": "img-1",
+                "imagePath": "folder/image1.jpg",
+                "currentLabelUuid": "lbl-cat",
+                "currentLabelName": "Cat",
+                "proposedLabelUuid": "lbl-dog",
+                "proposedLabelName": "Dog",
+                "confidence": 0.5,
+            },
+        ]
+        candidates_det_b = [
+            {
+                "bboxUuid": "bbox-1",
+                "imageUuid": "img-1",
+                "imagePath": "folder/image1.jpg",
+                "currentLabelUuid": "lbl-cat",
+                "currentLabelName": "Cat",
+                "proposedLabelUuid": "lbl-cat",
+                "proposedLabelName": "Cat",
+                "confidence": 0.9,
+            },
+            {
+                "bboxUuid": "bbox-2",
+                "imageUuid": "img-2",
+                "imagePath": "folder/image2.jpg",
+                "currentLabelUuid": "lbl-dog",
+                "currentLabelName": "Dog",
+                "proposedLabelUuid": "lbl-dog",
+                "proposedLabelName": "Dog",
+                "confidence": 0.6,
+            },
+        ]
+        fake_tasks = _FakeSequentialTasks({"det-a": candidates_det_a, "det-b": candidates_det_b})
+        fake_tasks.install(page)
+
+        _navigate_to_review(page, base_url)
+        _run_model_btn(page).click()
+
+        dialog = page.locator(".run-model-on-results-dialog")
+        expect(dialog).to_be_visible()
+        # Check order matters: det-a first, det-b second, so det-b's bbox-1
+        # proposal (Cat) must win over det-a's (Dog) in the merged result.
+        _check_model_in_dialog(dialog, "det-a")
+        _check_model_in_dialog(dialog, "det-b")
+        dialog.locator("button", has_text="Run").click()
+
+        # Both models actually ran (two task-config launches), and the dialog
+        # progressed through both before handing off.
+        confirm_modal = page.locator(".relabel-confirm-modal")
+        expect(confirm_modal).to_be_visible(timeout=8000)
+        assert len(fake_tasks.create_bodies) == 2
+        assert [b["params"]["model_name"] for b in fake_tasks.create_bodies] == ["det-a", "det-b"]
+
+        # Exactly one confirmation modal, with the merged set: bbox-1 (last-wins from
+        # det-b: Cat) and bbox-2 (only from det-b) — det-a's Dog proposal for bbox-1
+        # was overwritten, not shown as a separate/extra candidate.
+        expect(page.locator(".relabel-confirm-modal")).to_have_count(1)
+        expect(confirm_modal).to_contain_text("2 candidates from det-a → det-b")
+        cards = confirm_modal.locator(".relabel-modal-card")
+        expect(cards).to_have_count(2)
+        bbox1_card = confirm_modal.locator('.relabel-modal-card[data-bbox-uuid="bbox-1"]')
+        expect(bbox1_card).to_contain_text("90%")  # det-b's confidence, not det-a's 50%
 
 
 # ---------------------------------------------------------------------------
@@ -401,7 +595,7 @@ class TestRunModelFullFlow:
 
         dialog = page.locator(".run-model-on-results-dialog")
         expect(dialog).to_be_visible()
-        dialog.locator(".run-model-on-results-model-select").select_option("yolo9-detector")
+        _check_model_in_dialog(dialog, "yolo9-detector")
         dialog.locator("button", has_text="Run").click()
 
         # Poll loop runs on a ~700ms interval; give it a couple of rounds.
@@ -440,7 +634,7 @@ class TestRunModelFullFlow:
 
         dialog = page.locator(".run-model-on-results-dialog")
         expect(dialog).to_be_visible()
-        dialog.locator(".run-model-on-results-model-select").select_option("yolo9-detector")
+        _check_model_in_dialog(dialog, "yolo9-detector")
         dialog.locator(".run-model-on-results-crop-mode-select").select_option("bbox")
 
         iou_row = dialog.locator("text=Min IoU:").locator("..")
@@ -523,7 +717,7 @@ class TestRunModelFullFlow:
 
         dialog = page.locator(".run-model-on-results-dialog")
         expect(dialog).to_be_visible()
-        dialog.locator(".run-model-on-results-model-select").select_option("yolo9-detector")
+        _check_model_in_dialog(dialog, "yolo9-detector")
         dialog.locator("button", has_text="Run").click()
 
         cancel_btn = dialog.locator("button", has_text="Cancel").first

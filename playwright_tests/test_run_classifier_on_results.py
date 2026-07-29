@@ -233,6 +233,12 @@ def _run_model_btn(page: Page):
     return page.locator("#review-root .review-action-bar button", has_text="Run Model on Results")
 
 
+def _check_model_in_dialog(dialog, name: str):
+    """Checks the checkbox for `name` in the (multi-select) model/classifier/group list."""
+    item = dialog.locator(".run-model-on-results-model-list .inference-model-item", has_text=name)
+    item.locator("input[type=checkbox]").check()
+
+
 CLASSIFIER_CANDIDATES = [
     {
         "imageUuid": "img-1",
@@ -263,14 +269,13 @@ class TestModelPickerKindAwareness:
 
         dialog = page.locator(".run-model-on-results-dialog")
         expect(dialog).to_be_visible()
-        model_select = dialog.locator(".run-model-on-results-model-select")
-        model_select.select_option("corrupt-classifier")
+        _check_model_in_dialog(dialog, "corrupt-classifier")
 
         expect(dialog.locator(".run-model-on-results-crop-mode-select")).to_be_hidden()
         expect(dialog.locator("text=Min IoU:")).to_be_hidden()
         expect(dialog.locator("text=Also add new boxes")).to_be_hidden()
 
-        model_select.select_option("yolo9-detector")
+        _check_model_in_dialog(dialog, "yolo9-detector")
         expect(dialog.locator(".run-model-on-results-crop-mode-select")).to_be_visible()
 
 
@@ -292,7 +297,7 @@ class TestClassifierRunFlow:
 
         dialog = page.locator(".run-model-on-results-dialog")
         expect(dialog).to_be_visible()
-        dialog.locator(".run-model-on-results-model-select").select_option("corrupt-classifier")
+        _check_model_in_dialog(dialog, "corrupt-classifier")
         dialog.locator("button", has_text="Run").click()
 
         expect(dialog).to_have_count(0, timeout=5000)
@@ -324,7 +329,7 @@ class TestClassifierRunFlow:
         _run_model_btn(page).click()
 
         dialog = page.locator(".run-model-on-results-dialog")
-        dialog.locator(".run-model-on-results-model-select").select_option("corrupt-classifier")
+        _check_model_in_dialog(dialog, "corrupt-classifier")
         dialog.locator("button", has_text="Run").click()
 
         confirm_dialog = page.locator(".classifier-match-confirm-modal")
@@ -356,7 +361,7 @@ class TestClassifierRunFlow:
         _run_model_btn(page).click()
 
         dialog = page.locator(".run-model-on-results-dialog")
-        dialog.locator(".run-model-on-results-model-select").select_option("corrupt-classifier")
+        _check_model_in_dialog(dialog, "corrupt-classifier")
         dialog.locator("button", has_text="Run").click()
 
         confirm_dialog = page.locator(".classifier-match-confirm-modal")

@@ -46,6 +46,9 @@ from apps.helpers.db.types import (
     ModelConfigNodeRead,
     ModelConfigRead,
     ModelConfigUpdate,
+    ModelGroupCreate,
+    ModelGroupRead,
+    ModelGroupUpdate,
     Source,
     SourceRead,
     Tag,
@@ -666,6 +669,14 @@ class FilterChainResponse(StatusResponse):
     chain: Optional[FilterChainRead] = None
 
 
+class ListModelGroupsResponse(StatusResponse):
+    groups: List[ModelGroupRead] = Field(default_factory=list)
+
+
+class ModelGroupResponse(StatusResponse):
+    group: Optional[ModelGroupRead] = None
+
+
 class BundleTrainingTarget(ApiModel):
     """One artifact a full bundle training run must produce (see
     DbClient.derive_bundle_training_targets for the derivation semantics)."""
@@ -873,6 +884,7 @@ class WebApp:
         self._register_routes()
         self._register_model_config_routes()
         self._register_filter_chain_routes()
+        self._register_model_group_routes()
         self._register_bundle_routes()
         self._register_exception()
 
@@ -3197,6 +3209,101 @@ class WebApp:
                 if not ok:
                     return StatusResponse(status=JsonValues.FAILURE, message="Filter chain not found")
                 return StatusResponse(status=JsonValues.SUCCESS)
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return StatusResponse(status=JsonValues.FAILURE, message=str(e))
+
+    def _register_model_group_routes(self) -> None:
+        @self._app.get(
+            "/api/model-groups",
+            response_model=ListModelGroupsResponse,
+            tags=[ApiTags.MODEL_GROUPS],
+            operation_id="list_model_groups",
+        )
+        async def list_model_groups() -> ListModelGroupsResponse:
+            try:
+                groups = await self._manager.list_model_groups()
+                return ListModelGroupsResponse(status=JsonValues.SUCCESS, groups=groups)
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return ListModelGroupsResponse(status=JsonValues.FAILURE, message=str(e))
+
+        @self._app.post(
+            "/api/model-groups",
+            response_model=ModelGroupResponse,
+            tags=[ApiTags.MODEL_GROUPS],
+            operation_id="create_model_group",
+        )
+        async def create_model_group(payload: ModelGroupCreate) -> ModelGroupResponse:
+            try:
+                group = await self._manager.create_model_group(payload)
+                return ModelGroupResponse(status=JsonValues.SUCCESS, group=group)
+            except IntegrityError as e:
+                logger.error(e, exc_info=True)
+                return ModelGroupResponse(
+                    status=JsonValues.FAILURE,
+                    message=self._unique_constraint_msg(e, "model group"),
+                )
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return ModelGroupResponse(status=JsonValues.FAILURE, message=str(e))
+
+        @self._app.get(
+            "/api/model-groups/{uuid}",
+            response_model=ModelGroupResponse,
+            tags=[ApiTags.MODEL_GROUPS],
+            operation_id="get_model_group",
+        )
+        async def get_model_group(uuid: str) -> ModelGroupResponse:
+            try:
+                group = await self._manager.get_model_group(uuid)
+                if group is None:
+                    return ModelGroupResponse(status=JsonValues.FAILURE, message="Model group not found")
+                return ModelGroupResponse(status=JsonValues.SUCCESS, group=group)
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return ModelGroupResponse(status=JsonValues.FAILURE, message=str(e))
+
+        @self._app.patch(
+            "/api/model-groups/{uuid}",
+            response_model=ModelGroupResponse,
+            tags=[ApiTags.MODEL_GROUPS],
+            operation_id="update_model_group",
+        )
+        async def update_model_group(uuid: str, payload: ModelGroupUpdate) -> ModelGroupResponse:
+            try:
+                group = await self._manager.update_model_group(uuid, payload)
+                if group is None:
+                    return ModelGroupResponse(status=JsonValues.FAILURE, message="Model group not found")
+                return ModelGroupResponse(status=JsonValues.SUCCESS, group=group)
+            except IntegrityError as e:
+                logger.error(e, exc_info=True)
+                return ModelGroupResponse(
+                    status=JsonValues.FAILURE,
+                    message=self._unique_constraint_msg(e, "model group"),
+                )
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return ModelGroupResponse(status=JsonValues.FAILURE, message=str(e))
+
+        @self._app.delete(
+            "/api/model-groups/{uuid}",
+            response_model=StatusResponse,
+            tags=[ApiTags.MODEL_GROUPS],
+            operation_id="delete_model_group",
+        )
+        async def delete_model_group(uuid: str) -> StatusResponse:
+            try:
+                ok = await self._manager.delete_model_group(uuid)
+                if not ok:
+                    return StatusResponse(status=JsonValues.FAILURE, message="Model group not found")
+                return StatusResponse(status=JsonValues.SUCCESS)
+            except IntegrityError as e:
+                logger.error(e, exc_info=True)
+                return StatusResponse(
+                    status=JsonValues.FAILURE,
+                    message="Cannot delete: this model group is referenced as a member of another group.",
+                )
             except Exception as e:
                 logger.error(e, exc_info=True)
                 return StatusResponse(status=JsonValues.FAILURE, message=str(e))

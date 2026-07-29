@@ -53,6 +53,9 @@ from apps.helpers.db.types import (
     ModelConfigNodeWrite,
     ModelConfigRead,
     ModelConfigUpdate,
+    ModelGroupCreate,
+    ModelGroupRead,
+    ModelGroupUpdate,
     Source,
     Tag,
     TagRead,
@@ -2469,6 +2472,23 @@ class Manager:
 
     async def delete_filter_chain(self, uuid: str) -> bool:
         return await self._db_client.delete_filter_chain(uuid)
+
+    # ── Model groups ───────────────────────────────────────────────────────────
+
+    async def list_model_groups(self) -> List[ModelGroupRead]:
+        return await self._db_client.list_model_groups()
+
+    async def get_model_group(self, uuid: str) -> Optional[ModelGroupRead]:
+        return await self._db_client.get_model_group(uuid)
+
+    async def create_model_group(self, data: ModelGroupCreate) -> ModelGroupRead:
+        return await self._db_client.create_model_group(data)
+
+    async def update_model_group(self, uuid: str, data: ModelGroupUpdate) -> Optional[ModelGroupRead]:
+        return await self._db_client.update_model_group(uuid, data)
+
+    async def delete_model_group(self, uuid: str) -> bool:
+        return await self._db_client.delete_model_group(uuid)
 
     # ── Training configs ──────────────────────────────────────────────────────
 
