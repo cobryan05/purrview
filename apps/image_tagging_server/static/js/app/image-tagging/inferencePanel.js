@@ -5,7 +5,7 @@ import { fetchLabelByUuid } from '/app-static/js/shared/api/labels.js';
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
 import { Logger } from '/app-static/js/ui/utils/index.js';
 import { createModalShell } from '/app-static/js/ui/utils/modalShell.js';
-import { clearUnmatched } from './canvas/image.js';
+import { clearUnmatched, verifyAllBboxes } from './canvas/image.js';
 
 const SESSION_SELECTED_DETECTORS_KEY = 'wtch_inference_selected_detectors';
 const SESSION_SELECTED_CLASSIFIER_KEY = 'wtch_inference_selected_classifier';
@@ -55,7 +55,15 @@ export async function createInferencePanel(runtime, container) {
   clearGreyBtn.title = 'Clear Grey: remove unmatched (grey) detections from the canvas';
   clearGreyBtn.addEventListener('click', () => clearUnmatched(runtime));
 
-  buttonsRow.append(runBtn, refreshBtn, clearGreyBtn);
+  // Whole-image action, not detector-specific — shared with the Labels panel's
+  // bulk-op row (same underlying verifyAllBboxes helper) so it's reachable
+  // from wherever the user happens to be reviewing detections from.
+  const verifyAllBtn = document.createElement('button');
+  verifyAllBtn.textContent = 'Verify all';
+  verifyAllBtn.title = 'Mark every bbox on this image as verified';
+  verifyAllBtn.addEventListener('click', () => verifyAllBboxes(runtime));
+
+  buttonsRow.append(runBtn, refreshBtn, clearGreyBtn, verifyAllBtn);
 
   // ── Min confidence slider + replace-existing checkbox (one row) ───
   const optionsRow = document.createElement('div');

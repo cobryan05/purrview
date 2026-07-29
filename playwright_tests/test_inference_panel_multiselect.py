@@ -169,6 +169,71 @@ class TestMultiSelectDetectors:
         assert selected_detectors == 0
 
 
+class TestVerifyAllButton:
+    def test_button_present_alongside_clear(self, shared_page: Page):
+        page = shared_page
+        _reset_session(page)
+        _mock_models(page, ["det-a"], {})
+        _make_panel(page)
+
+        labels = page.eval_on_selector_all(
+            "#test-inference-panel .inference-buttons-row button", "els => els.map(el => el.textContent)",
+        )
+        assert "Verify all" in labels
+
+    def test_click_marks_every_bbox_verified(self, shared_page: Page):
+        """The button reuses canvas/image.js's verifyAllBboxes against whatever
+        runtime the panel was constructed with — same helper the Labels panel's
+        bulk-op row calls, exercised end-to-end here against a real canvas."""
+        page = shared_page
+        _reset_session(page)
+        _mock_models(page, ["det-a"], {})
+
+        result = page.evaluate("""async () => {
+            const { createImageTaggingRuntime } = await import('/app-static/js/app/image-tagging/runtime.js');
+            const { createUIBBbox } = await import('/app-static/js/shared/domain/image/mapper.js');
+            const { rerenderBboxViews } = await import('/app-static/js/app/image-tagging/canvas/manager.js');
+            const { createInferencePanel } = await import('/app-static/js/app/image-tagging/inferencePanel.js');
+            const { clearModelsCache } = await import('/app-static/js/shared/api/models.js');
+            clearModelsCache();
+
+            const div = document.createElement('div');
+            div.style.cssText = 'width:800px;height:600px;position:fixed;top:0;left:0;';
+            document.body.appendChild(div);
+
+            const runtime = createImageTaggingRuntime();
+            runtime.setCanvasContainer(div);
+
+            const imgCanvas = document.createElement('canvas');
+            imgCanvas.width = 400; imgCanvas.height = 300;
+            const img = new Image();
+            img.src = imgCanvas.toDataURL();
+            await new Promise(r => { img.onload = r; });
+            runtime.setImage({
+                uuid: 'img', filename: 'test.png', image_path: '/test.png',
+                img, bboxes: new Map(), dirty: false,
+            });
+
+            runtime.state.image.bboxes.set('b1', createUIBBbox({
+                uuid: 'b1', x: 0.1, y: 0.1, width: 0.2, height: 0.2,
+                tags: [{ uuid: '00000000-0000-0000-0000-000000000001', icon: null }],
+            }));
+            rerenderBboxViews(runtime.canvas, runtime.state.image.bboxes, runtime.canvas.viewport);
+
+            const container = document.createElement('div');
+            document.body.appendChild(container);
+            await createInferencePanel(runtime, container);
+
+            const btn = [...container.querySelectorAll('.inference-buttons-row button')]
+                .find(b => b.textContent === 'Verify all');
+            btn.click();
+
+            return runtime.state.image.bboxes.get('b1').tags.map(t => t.uuid);
+        }""")
+        assert "00000000-0000-0000-0000-000000000001" not in result  # UNVERIFIED
+        assert "00000000-0000-0000-0000-000000000005" in result      # VERIFIED
+
+
 class TestSessionPersistence:
     """
     These set sessionStorage directly (rather than driving checkboxes + reopening
