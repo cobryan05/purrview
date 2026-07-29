@@ -2535,12 +2535,12 @@ export async function showCanvasModal(bbox, img, labels, onSaved, navContext = n
   inferencePanelHandle = await createInferencePanel(instance.runtime, inferencePanelContentEl);
   unsubInference = events.subscribeToCanvas(
     instance.runtime.id, EventTypes.RUN_INFERENCE_ON_CANVAS,
-    async ({ modelName, confThresh }) => {
+    async ({ modelName, confThresh, replaceExisting }) => {
       try {
         const image = instance.runtime.state?.image?.img;
         if (!image) throw new Error('No image loaded');
         const result = await runDetection(modelName, image, confThresh);
-        await addInferenceResults(instance.runtime, result);
+        await addInferenceResults(instance.runtime, result, { replaceExisting });
       } catch (err) {
         Logger.error('Canvas modal: failed to run inference', err);
       }

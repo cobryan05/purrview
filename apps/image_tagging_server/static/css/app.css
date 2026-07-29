@@ -1854,6 +1854,17 @@ button.filter-active {
   cursor: pointer;
 }
 
+.inference-replace-row {
+  display: flex;
+  align-items: center;
+  gap: 0.4em;
+  padding-top: 0.25em;
+  font-size: 0.8em;
+  color: #aaa;
+  cursor: pointer;
+  user-select: none;
+}
+
 .inference-conf-value {
   font-size: 0.8em;
   color: #ccc;

@@ -152,6 +152,37 @@ export class BboxView extends Konva.Group {
     return this._rect.getClientRect(config);
   }
 
+  /**
+   * Temporarily draws attention to this bbox with a colored glow that fades out.
+   * Used to flag inference-conflict outcomes (duplicate skipped / replaced / kept-as-is).
+   * @param {string} color
+   * @param {number} [duration] seconds
+   */
+  flash(color, duration = 1.2) {
+    const glow = new Konva.Rect({
+      width: this.width(),
+      height: this.height(),
+      stroke: color,
+      strokeWidth: 8,
+      opacity: 0.9,
+      listening: false,
+      name: 'flash-glow',
+      strokeScaleEnabled: false,
+    });
+    this.add(glow);
+    glow.moveToTop();
+    new Konva.Tween({
+      node: glow,
+      duration,
+      opacity: 0,
+      easing: Konva.Easings.EaseOut,
+      onFinish: () => {
+        glow.destroy();
+        this.getLayer()?.batchDraw();
+      },
+    }).play();
+  }
+
   /** @param {import('@image_tagging_types').ViewportTransform} viewport */
   updateViewport(viewport) {
     this._viewport = viewport;
