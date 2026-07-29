@@ -2535,14 +2535,19 @@ export async function showCanvasModal(bbox, img, labels, onSaved, navContext = n
   inferencePanelHandle = await createInferencePanel(instance.runtime, inferencePanelContentEl);
   unsubInference = events.subscribeToCanvas(
     instance.runtime.id, EventTypes.RUN_INFERENCE_ON_CANVAS,
-    async ({ modelName, confThresh, replaceExisting }) => {
-      try {
-        const image = instance.runtime.state?.image?.img;
-        if (!image) throw new Error('No image loaded');
-        const result = await runDetection(modelName, image, confThresh);
-        await addInferenceResults(instance.runtime, result, { replaceExisting });
-      } catch (err) {
-        Logger.error('Canvas modal: failed to run inference', err);
+    async ({ modelNames, confThresh, replaceExisting }) => {
+      const image = instance.runtime.state?.image?.img;
+      if (!image) { Logger.error('Canvas modal: failed to run inference: no image loaded'); return; }
+      // Models run sequentially; each one applies `replaceExisting` independently against
+      // whatever the canvas looks like when it finishes, so the combined result depends on
+      // run order. That's an accepted tradeoff for letting users multi-select models.
+      for (const modelName of modelNames) {
+        try {
+          const result = await runDetection(modelName, image, confThresh);
+          await addInferenceResults(instance.runtime, result, { replaceExisting });
+        } catch (err) {
+          Logger.error(`Canvas modal: failed to run inference (${modelName})`, err);
+        }
       }
     },
   );
