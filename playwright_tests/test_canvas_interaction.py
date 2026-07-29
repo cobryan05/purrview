@@ -854,6 +854,98 @@ class TestClearAnnotations:
 
 
 # ---------------------------------------------------------------------------
+# verifyAllBboxes (whole-image bulk action)
+# ---------------------------------------------------------------------------
+
+class TestVerifyAllBboxes:
+    def test_marks_unverified_and_untagged_bboxes_as_verified(self, shared_page: Page):
+        page = shared_page
+        result = page.evaluate(f"""async () => {{
+            const {{ createImageTaggingRuntime }} = await import('/app-static/js/app/image-tagging/runtime.js');
+            const {{ createUIBBbox }} = await import('/app-static/js/shared/domain/image/mapper.js');
+            const {{ rerenderBboxViews }} = await import('/app-static/js/app/image-tagging/canvas/manager.js');
+            const {{ verifyAllBboxes }} = await import('/app-static/js/app/image-tagging/canvas/image.js');
+
+            {_SETUP}
+
+            const UNVERIFIED = '{UNVERIFIED_TAG_UUID}';
+            const VERIFIED = '{VERIFIED_TAG_UUID}';
+
+            runtime.state.image.bboxes.set('b1', createUIBBbox({{
+                uuid: 'b1', x: 0.1, y: 0.1, width: 0.2, height: 0.2,
+                tags: [{{ uuid: UNVERIFIED, icon: null }}],
+            }}));
+            runtime.state.image.bboxes.set('b2', createUIBBbox({{
+                uuid: 'b2', x: 0.5, y: 0.5, width: 0.2, height: 0.2,
+                tags: [],
+            }}));
+            rerenderBboxViews(runtime.canvas, runtime.state.image.bboxes, runtime.canvas.viewport);
+
+            verifyAllBboxes(runtime);
+
+            return [...runtime.state.image.bboxes.values()].map(b => b.tags.map(t => t.uuid));
+        }}""")
+        for tags in result:
+            assert UNVERIFIED_TAG_UUID not in tags
+            assert VERIFIED_TAG_UUID in tags
+
+    def test_leaves_already_verified_bbox_untouched(self, shared_page: Page):
+        page = shared_page
+        result = page.evaluate(f"""async () => {{
+            const {{ createImageTaggingRuntime }} = await import('/app-static/js/app/image-tagging/runtime.js');
+            const {{ createUIBBbox }} = await import('/app-static/js/shared/domain/image/mapper.js');
+            const {{ rerenderBboxViews }} = await import('/app-static/js/app/image-tagging/canvas/manager.js');
+            const {{ verifyAllBboxes }} = await import('/app-static/js/app/image-tagging/canvas/image.js');
+
+            {_SETUP}
+
+            const VERIFIED = '{VERIFIED_TAG_UUID}';
+
+            runtime.state.image.bboxes.set('b1', createUIBBbox({{
+                uuid: 'b1', x: 0.1, y: 0.1, width: 0.2, height: 0.2,
+                tags: [{{ uuid: VERIFIED, icon: null }}, {{ uuid: 'keep-me', icon: '★' }}],
+            }}));
+            rerenderBboxViews(runtime.canvas, runtime.state.image.bboxes, runtime.canvas.viewport);
+
+            verifyAllBboxes(runtime);
+
+            return [...runtime.state.image.bboxes.values()].map(b => b.tags.map(t => t.uuid));
+        }}""")
+        assert result == [[VERIFIED_TAG_UUID, 'keep-me']]
+
+    def test_pushes_state_so_undo_restores(self, shared_page: Page):
+        page = shared_page
+        result = page.evaluate(f"""async () => {{
+            const {{ createImageTaggingRuntime }} = await import('/app-static/js/app/image-tagging/runtime.js');
+            const {{ createUIBBbox }} = await import('/app-static/js/shared/domain/image/mapper.js');
+            const {{ rerenderBboxViews }} = await import('/app-static/js/app/image-tagging/canvas/manager.js');
+            const {{ verifyAllBboxes }} = await import('/app-static/js/app/image-tagging/canvas/image.js');
+
+            {_SETUP}
+
+            const UNVERIFIED = '{UNVERIFIED_TAG_UUID}';
+
+            runtime.state.image.bboxes.set('b1', createUIBBbox({{
+                uuid: 'b1', x: 0.1, y: 0.1, width: 0.2, height: 0.2,
+                tags: [{{ uuid: UNVERIFIED, icon: null }}],
+            }}));
+            rerenderBboxViews(runtime.canvas, runtime.state.image.bboxes, runtime.canvas.viewport);
+            runtime.pushState();  // snapshot with unverified bbox
+
+            verifyAllBboxes(runtime);
+            const afterVerify = [...runtime.state.image.bboxes.get('b1').tags].map(t => t.uuid);
+
+            runtime.undo();
+            const afterUndo = [...runtime.state.image.bboxes.get('b1').tags].map(t => t.uuid);
+
+            return {{ afterVerify, afterUndo }};
+        }}""")
+        assert VERIFIED_TAG_UUID in result['afterVerify']
+        assert UNVERIFIED_TAG_UUID not in result['afterVerify']
+        assert result['afterUndo'] == [UNVERIFIED_TAG_UUID]
+
+
+# ---------------------------------------------------------------------------
 # Transformend handler stacking on reselect
 # ---------------------------------------------------------------------------
 

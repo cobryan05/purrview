@@ -4,9 +4,10 @@ import { fetchLabels } from '/app-static/js/shared/api/labels.js';
 import { createUIBBbox } from '/app-static/js/shared/domain/image/mapper.js';
 import { Logger, toast, showUnsavedChangesModal } from '/app-static/js/ui/utils/index.js';
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
-import { UNVERIFIED_TAG_UUID } from '/app-static/js/shared/api/review.js';
+import { UNVERIFIED_TAG_UUID, VERIFIED_TAG_UUID } from '/app-static/js/shared/api/review.js';
 import { fetchTags } from '/app-static/js/shared/api/tags.js';
 import { syncBboxDraggable } from './tools.js';
+import { applyVerifiedTag } from './interaction.js';
 
 /**
  * Prompt about unsaved changes before navigating away from the current image.
@@ -78,6 +79,34 @@ export function clearAnnotations(runtime) {
   layer.draw();
   runtime.pushState();
   events.publish(EventTypes.CANVAS_BBOXES_CHANGED, { runtimeId: runtime.id });
+}
+
+/**
+ * Mark every bbox on the canvas as verified (strips UNVERIFIED/other verification
+ * tags, adds VERIFIED). Bboxes already carrying VERIFIED are left untouched.
+ * @param {import('@image_tagging_types').ImageTaggingRuntime} runtime
+ */
+export function verifyAllBboxes(runtime) {
+  if (!runtime.canvas) return;
+  const { layer } = runtime.canvas;
+
+  let changed = 0;
+  [...layer.getChildren()].forEach(child => {
+    if (child.name() !== 'bbox' || !(child instanceof BboxView)) return;
+    if (child.uiBBox.tags?.some(t => t.uuid === VERIFIED_TAG_UUID)) return;
+    applyVerifiedTag(child.uiBBox);
+    child.refreshIcons(child.uiBBox.tags);
+    changed++;
+  });
+
+  if (!changed) {
+    toast('All bboxes are already verified.');
+    return;
+  }
+
+  runtime.pushState();
+  events.publish(EventTypes.CANVAS_BBOXES_CHANGED, { runtimeId: runtime.id });
+  toast(`Verified ${changed} bbox${changed === 1 ? '' : 'es'}.`);
 }
 
 /**
