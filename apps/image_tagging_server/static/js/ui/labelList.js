@@ -21,6 +21,7 @@ import { fetchImageLabels, setImageLabel } from '/app-static/js/shared/api/image
 import { VERIFIED_TAG_UUID, UNVERIFIED_TAG_UUID } from '/app-static/js/shared/api/review.js';
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
 import { setTool } from '../app/image-tagging/canvas/tools.js';
+import { verifyAllBboxes } from '../app/image-tagging/canvas/image.js';
 import { EditableField, TextBoxColorField } from '/app-static/js/ui/utils/fields/index.js';
 import { createGenericRow, toast, makeLabelFilterNotice } from '/app-static/js/ui/utils/index.js';
 import { openAnchoredPopup } from '/app-static/js/ui/utils/anchoredPopup.js';
@@ -415,6 +416,11 @@ function buildPresetMenu(title, options, currentValue, onPick) {
 async function mountSelectMode(container, { runtime, filter }) {
   Object.assign(container.style, { overflowY: 'auto', padding: '4px' });
 
+  // Pinned to the top of this scrollable panel (mirrors .inference-panel-actions)
+  // so the header controls + bulk-op row stay reachable while the list scrolls.
+  const stickyHeader = document.createElement('div');
+  stickyHeader.className = 'label-panel-sticky-header';
+
   const header = document.createElement('div');
   Object.assign(header.style, {
     display: 'flex',
@@ -492,7 +498,7 @@ async function mountSelectMode(container, { runtime, filter }) {
     }
   });
   header.appendChild(refreshBtn);
-  container.appendChild(header);
+  stickyHeader.appendChild(header);
 
   // Single global "Apply to all" bar. It acts on exactly the targeted set
   // (across every section), so the previous per-section buttons — and the bug
@@ -510,10 +516,20 @@ async function mountSelectMode(container, { runtime, filter }) {
   resetAllBtn.textContent = 'Reset';
   resetAllBtn.title = 'Reset every targeted label to unreviewed for this image';
   Object.assign(resetAllBtn.style, { fontSize: '0.75em', padding: '2px 6px' });
+  const verifyAllBtn = document.createElement('button');
+  verifyAllBtn.textContent = 'Verify all';
+  verifyAllBtn.title = 'Mark every bbox on this image as verified';
+  Object.assign(verifyAllBtn.style, { fontSize: '0.75em', padding: '2px 6px', marginLeft: 'auto' });
+  verifyAllBtn.addEventListener('click', () => {
+    if (!runtime) return;
+    verifyAllBboxes(runtime);
+  });
   bulkRow.appendChild(bulkLabel);
   bulkRow.appendChild(markAbsentBtn);
   bulkRow.appendChild(resetAllBtn);
-  container.appendChild(bulkRow);
+  bulkRow.appendChild(verifyAllBtn);
+  stickyHeader.appendChild(bulkRow);
+  container.appendChild(stickyHeader);
 
   const rawLabelsMap = await fetchLabels();
   const filteredMap = activeTrainingConfig.applyLabelFilter(rawLabelsMap);

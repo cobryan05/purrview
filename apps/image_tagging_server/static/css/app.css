@@ -177,19 +177,20 @@ main.container {
 }
 
 /* ===== Sidebar tabs ===== */
+/* Single row — previously a 2x2 grid that reserved a whole second row of
+   height for only 3 tabs, wasting vertical space the panes badly need. */
 .sidebar-tab-header {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  grid-template-rows: 1fr 1fr;
+  display: flex;
   gap: 0.2em;
   border-bottom: 1px solid #ccc;
-  margin-bottom: 0.5em;
+  margin-bottom: 0.3em;
 }
 
 .sidebar-tab-button {
-  width: 100%;
+  flex: 1;
+  width: auto;
   text-align: center;
-  padding: 0.3em 0;
+  padding: 0.15em 0;
   cursor: pointer;
   border: none;
   background: none;
@@ -197,7 +198,7 @@ main.container {
   color: var(--pico-color);
   border-bottom: 2px solid transparent;
   transition: border-color 0.2s;
-  font-size: 0.95em;
+  font-size: 0.85em;
 }
 
 .sidebar-tab-button:hover {
@@ -223,6 +224,21 @@ main.container {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
+}
+
+/* Pins the Labels panel's header (visibility/target/refresh) + bulk-op row
+   (Mark absent / Reset / Verify all) to the top of the scrollable panel,
+   mirroring .inference-panel-actions so it stays reachable while the label
+   list scrolls beneath it. */
+.label-panel-sticky-header {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--pico-background-color, #121212);
+}
+
+.canvas-modal-sidebar .label-panel-sticky-header {
+  background: #161616;
 }
 
 /* ===== Review: Query toolbar ===== */
