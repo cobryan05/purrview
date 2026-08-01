@@ -1,5 +1,7 @@
 import { Field } from './Field.js';
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
+import { fetchTaskStatusSchemas, fetchTaskStatusData, sendTaskCommand } from '/app-static/js/shared/api/tasks.js';
+import { statusWidgets } from '/app-static/js/ui/utils/statusWidgets/index.js';
 
 const STATUS_COLORS = {
   pending: '#888',
@@ -8,6 +10,65 @@ const STATUS_COLORS = {
   completed: '#4CAF50',
   error: '#F44336',
 };
+
+// The base Task ships a status_schema() that reproduces this exact layout
+// (progress bar + status/error message + log tail) — this is the fallback
+// used when the backend hasn't landed yet, the fetch fails, or a typename
+// has no schema registered. It is what makes every pre-Phase-3 task card
+// render identically to before.
+const DEFAULT_STATUS_SCHEMA = [
+  { id: 'progress', type: 'progress_bar', source: 'summary' },
+  { id: 'statusMessage', type: 'text', source: 'summary' },
+  { id: 'logLines', type: 'log_tail', source: 'summary' },
+];
+
+// Poll cadence for status-data while a card is expanded. Independent of the
+// SSE-driven all-tasks poll (which intentionally never carries status-data).
+const STATUS_DATA_POLL_MS = 5000;
+
+/** Module-level, per-typename schema cache (parallels fetchTaskStatusSchemas'
+ * own createCachedFetcher, but also memoizes the "which fallback did we use"
+ * decision so repeated failures don't reissue requests every render). */
+async function resolveStatusSchema(typename) {
+  if (!typename) return DEFAULT_STATUS_SCHEMA;
+  try {
+    const schemas = await fetchTaskStatusSchemas([typename]);
+    const schema = schemas.get(typename);
+    if (Array.isArray(schema) && schema.length > 0) return schema;
+  } catch (err) {
+    // Backend may not have landed yet, or the request failed outright —
+    // fall back so the card still renders exactly as before.
+  }
+  return DEFAULT_STATUS_SCHEMA;
+}
+
+/**
+ * Renders a single schema widget, degrading gracefully rather than ever
+ * throwing: an unknown `type` or a factory exception must not break sibling
+ * widgets on the same card.
+ *
+ * @returns {Promise<{el: HTMLElement, destroy: (() => void)|null}|null>}
+ */
+async function renderStatusWidget(widget, data, ctx) {
+  const factory = statusWidgets[widget.type];
+  if (!factory) {
+    const placeholder = document.createElement('div');
+    placeholder.textContent = `[Unsupported status widget: ${widget.type}]`;
+    placeholder.style.cssText = 'color:#bbb; font-size:0.8em; font-style:italic;';
+    return { el: placeholder, destroy: null };
+  }
+  try {
+    const result = await factory(widget, data, ctx);
+    if (!result) return null;
+    return (result instanceof HTMLElement) ? { el: result, destroy: null } : result;
+  } catch (err) {
+    console.error(`Status widget "${widget.type}" (id=${widget.id}) failed to render:`, err);
+    const placeholder = document.createElement('div');
+    placeholder.textContent = `[Widget error: ${widget.id}]`;
+    placeholder.style.cssText = 'color:#f44336; font-size:0.8em; font-style:italic;';
+    return { el: placeholder, destroy: null };
+  }
+}
 
 export class ActiveTaskField extends Field {
   constructor({ ...rest }) {
@@ -26,7 +87,6 @@ export class ActiveTaskField extends Field {
     // genuine numeric 0, which is a normal 0%-complete batch task). The `progress`
     // field is already optional-shaped on the wire (existing code coalesced it with
     // `?? 0`); we just stop collapsing that distinction before it reaches rendering.
-    instance._progressIndeterminate = instance._value.progress === null || instance._value.progress === undefined;
     instance._progress = instance._value.progress ?? 0;
     instance._statusMessage = instance._value.statusMessage ?? '';
     instance._isPausedInPlace = instance._value.isPausedInPlace === true;
@@ -54,6 +114,22 @@ export class ActiveTaskField extends Field {
     const seenLabels = new Set(resultActions.map(a => a.label));
     const mergedActions = [...resultActions, ...statusActions.filter(a => !seenLabels.has(a.label))];
     instance._actions = mergedActions;
+
+    // Values readable by `source: "summary"` schema widgets — the field
+    // named by a widget's `id` is looked up here first (falling back to the
+    // raw already-polled payload for typenames with custom summary fields).
+    // `progress` is only meaningful while running (see progress_bar's own
+    // gate on ctx.taskStatus); statusMessage folds in the same error-message
+    // fallback the old hardcoded rendering used.
+    instance._summaryData = {
+      progress: instance._value.progress,
+      statusMessage: instance._statusMessage || instance._message || '',
+      logLines: instance._logLines,
+      log: instance._logLines, // alias — see status_schema wire-contract example using id "log"
+    };
+
+    instance._schema = await resolveStatusSchema(typename);
+
     return instance;
   }
 
@@ -61,6 +137,11 @@ export class ActiveTaskField extends Field {
     const container = document.createElement('div');
     container.innerHTML = 'Not Implemented';
     return container;
+  }
+
+  _getSummaryValue(widget) {
+    if (widget.id in this._summaryData) return this._summaryData[widget.id];
+    return this._value?.[widget.id];
   }
 
   async renderView() {
@@ -114,67 +195,101 @@ export class ActiveTaskField extends Field {
       }
     }
 
-    // Progress bar — shown for any running task, including a genuine 0%.
-    // Indeterminate (no known denominator) renders a striped/animated bar instead
-    // of a misleading permanent 0%.
-    if (this._status === 'running') {
-      const progressRow = document.createElement('div');
-      progressRow.style.cssText = 'display:flex; align-items:center; gap:0.5em; margin-bottom:0.3em;';
-      const bar = document.createElement('progress');
-      bar.style.cssText = 'flex:1; height:8px;';
-      bar.setAttribute('role', 'progressbar');
-      const pct = document.createElement('span');
-      pct.style.cssText = 'min-width:3em; text-align:right;';
-      if (this._progressIndeterminate) {
-        // No `value` attribute at all → native indeterminate <progress>; CSS
-        // (.progress-indeterminate) paints the striped/animated fill.
-        bar.classList.add('progress-indeterminate');
-        bar.removeAttribute('value');
-        bar.setAttribute('aria-valuetext', 'Working…');
-        pct.textContent = '';
+    // ── Schema-driven status widgets ───────────────────────────────────
+    const widgetsHost = document.createElement('div');
+    body.appendChild(widgetsHost);
+
+    const ctx = {
+      taskUuid: this._uuid,
+      taskStatus: this._status,
+      sendCommand: (command, params = null) => sendTaskCommand({ taskUuid: this._uuid, command, params }),
+    };
+
+    // status-source widgets are fetched only while expanded; summary-source
+    // widgets render immediately from the already-polled payload we have.
+    const statusSlots = []; // { widget, slot }
+    for (const widget of (this._schema || [])) {
+      const slot = document.createElement('div');
+      widgetsHost.appendChild(slot);
+
+      const source = widget.source ?? 'status';
+      if (source === 'summary') {
+        const value = this._getSummaryValue(widget);
+        const rendered = await renderStatusWidget(widget, value, ctx);
+        if (rendered) slot.appendChild(rendered.el);
+        // Summary widgets never own a resource that needs teardown.
       } else {
-        bar.value = this._progress;
-        bar.max = 100;
-        bar.setAttribute('aria-valuemin', '0');
-        bar.setAttribute('aria-valuemax', '100');
-        bar.setAttribute('aria-valuenow', String(Math.round(this._progress)));
-        pct.textContent = `${Math.round(this._progress)}%`;
+        statusSlots.push({ widget, slot });
       }
-      progressRow.appendChild(bar);
-      progressRow.appendChild(pct);
-      body.appendChild(progressRow);
     }
 
-    // Status / error message
-    const displayMsg = this._statusMessage || this._message;
-    if (displayMsg) {
-      const msgDiv = document.createElement('div');
-      msgDiv.textContent = displayMsg;
-      msgDiv.style.cssText = 'color:#555; margin-bottom:0.3em;';
-      body.appendChild(msgDiv);
+    if (statusSlots.length > 0 && this._uuid) {
+      let pollTimer = null;
+      let cleanupFns = [];
+      let refreshing = false; // re-entrancy guard
+
+      const teardown = () => {
+        for (const fn of cleanupFns) {
+          try { fn(); } catch (err) { console.error('Status widget teardown failed:', err); }
+        }
+        cleanupFns = [];
+      };
+
+      const stopPolling = () => {
+        if (pollTimer !== null) {
+          clearInterval(pollTimer);
+          pollTimer = null;
+        }
+      };
+
+      const refresh = async () => {
+        // Self-healing cleanup: if this card's DOM was replaced by a later
+        // poll/render cycle (renderActiveTasks does a full swap), stop.
+        if (!details.isConnected) {
+          stopPolling();
+          return;
+        }
+        if (!details.open || refreshing) return;
+        refreshing = true;
+        try {
+          let dataForTask = {};
+          try {
+            const dataMap = await fetchTaskStatusData([this._uuid]);
+            dataForTask = dataMap.get(this._uuid) || {};
+          } catch (err) {
+            console.error('Failed to fetch task status data:', err);
+            return;
+          }
+          // Card may have collapsed / been removed while the fetch was in flight.
+          if (!details.open || !details.isConnected) return;
+
+          teardown();
+          for (const { widget, slot } of statusSlots) {
+            slot.innerHTML = '';
+            const rendered = await renderStatusWidget(widget, dataForTask[widget.id], ctx);
+            if (rendered) {
+              slot.appendChild(rendered.el);
+              if (rendered.destroy) cleanupFns.push(rendered.destroy);
+            }
+          }
+        } finally {
+          refreshing = false;
+        }
+      };
+
+      details.addEventListener('toggle', () => {
+        if (details.open) {
+          refresh();
+          if (pollTimer === null) pollTimer = setInterval(refresh, STATUS_DATA_POLL_MS);
+        } else {
+          stopPolling();
+          teardown();
+        }
+      });
     }
 
-    // Log output (always rendered; shows placeholder when empty)
-    if (this._logLines.length > 0) {
-      const logLabel = document.createElement('div');
-      logLabel.textContent = this._status === 'error'
-        ? `Error log (${this._logLines.length} lines):`
-        : `Logs (${this._logLines.length} lines):`;
-      logLabel.style.cssText = 'color:#888; margin-bottom:0.15em;';
-      body.appendChild(logLabel);
-
-      const pre = document.createElement('pre');
-      pre.style.cssText = 'margin:0; padding:0.4em; background:#f5f5f5; border-radius:3px; max-height:10em; overflow-y:auto; white-space:pre-wrap; word-break:break-all; font-size:0.9em;';
-      pre.textContent = this._logJoined;
-      body.appendChild(pre);
-    } else {
-      const noLog = document.createElement('div');
-      noLog.textContent = 'No log output.';
-      noLog.style.cssText = 'color:#bbb;';
-      body.appendChild(noLog);
-    }
-
-    // Task-supplied action buttons (e.g. "See results")
+    // Task-supplied action buttons (e.g. "See results", or a `task_command`
+    // back-channel action like "capture now").
     if (this._actions.length > 0) {
       const actionsRow = document.createElement('div');
       actionsRow.style.cssText = 'display:flex; gap:0.5em; margin-top:0.4em; flex-wrap:wrap;';
@@ -193,11 +308,22 @@ export class ActiveTaskField extends Field {
     return container;
   }
 
-  _handleAction(action) {
+  async _handleAction(action) {
     if (action.type === 'open_review') {
       events.publish(EventTypes.OPEN_REVIEW_WITH_FILTERS, {
         tagUuids: action.payload?.tag_uuids ?? [],
       });
+      return;
+    }
+    if (action.type === 'task_command') {
+      const command = action.command ?? action.payload?.command;
+      const params = action.params ?? action.payload?.params ?? null;
+      if (!command || !this._uuid) return;
+      try {
+        await sendTaskCommand({ taskUuid: this._uuid, command, params });
+      } catch (err) {
+        console.error('Task command failed:', err);
+      }
     }
   }
 

@@ -74,6 +74,102 @@ export function clearTaskSchemaCache() {
   taskSchemaFetcher.clear();
 }
 
+/* ---- Task status schemas (Phase 3: task status schema framework) --- */
+/**
+ * Gets the status-display schemas (Task.status_schema()) for a list of task
+ * typenames. Static per typename — fetched once and cached, mirroring
+ * fetchTaskTypeSchemas / the existing get_task_type_schema path.
+ *
+ * @param {string[]} typenames
+ * @returns {Promise<Map<string, any[]>>}
+ * @throws {Error} If the fetch fails.
+ */
+async function fetchTaskStatusSchemasFromServer(typenames) {
+  const res = await apiFetch('/api/tasks/types/status-schema', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ taskTypenames: typenames }),
+  });
+  if (!res.ok) {
+    const err = await res.json();
+    throw new Error(err.message || 'Failed to fetch task status schema');
+  }
+  const response = await res.json();
+  // Defensive: an older/not-yet-landed backend may respond with
+  // {status: "success"} and no `schemas` key at all.
+  const schemas = response.schemas || {};
+  return new Map(Object.entries(schemas));
+}
+
+const taskStatusSchemaFetcher = createCachedFetcher(fetchTaskStatusSchemasFromServer);
+
+export async function fetchTaskStatusSchemas(typenames) {
+  const result = new Map();
+  for (const t of typenames) {
+    const schema = await taskStatusSchemaFetcher.fetch(t);
+    result.set(t, schema);
+  }
+  return result;
+}
+
+export function clearTaskStatusSchemaCache() {
+  taskStatusSchemaFetcher.clear();
+}
+
+/* ---- Task status data (Phase 3) --- */
+/**
+ * Gets live status-data values for a set of running task instances.
+ *
+ * Deliberately NOT cached via createCachedFetcher: callers (expanded task
+ * cards) own their own polling cadence, and caching here would either go
+ * stale or defeat the whole point of splitting this out of the cheap
+ * all-tasks summary poll. Only call this while a card is actually expanded.
+ *
+ * Unknown/missing uuids are simply omitted from the returned Map — not an error.
+ *
+ * @param {string[]} taskUuids
+ * @returns {Promise<Map<string, any>>}
+ * @throws {Error} If the fetch fails.
+ */
+export async function fetchTaskStatusData(taskUuids) {
+  if (!taskUuids?.length) return new Map();
+  const res = await apiFetch('/api/tasks/instances/status-data', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ taskUuids }),
+  });
+  if (!res.ok) {
+    const err = await res.json();
+    throw new Error(err.message || 'Failed to fetch task status data');
+  }
+  const data = await res.json();
+  const statusData = data.statusData || {};
+  return new Map(Object.entries(statusData));
+}
+
+/**
+ * Sends a command to a running task instance — the `task_command` status-action
+ * back-channel. `Task.handle_command()` on the backend is only supposed to set
+ * a flag or push to a queue (never perform I/O), so this call is expected to
+ * resolve quickly regardless of what the task itself is doing.
+ *
+ * @param {{taskUuid: string, command: string, params?: any}} payload
+ * @returns {Promise<{status: string, message?: string}>}
+ * @throws {Error} If the fetch fails.
+ */
+export async function sendTaskCommand({ taskUuid, command, params = null }) {
+  const res = await apiFetch('/api/tasks/instances/command', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ taskUuid, command, params }),
+  });
+  if (!res.ok) {
+    const err = await res.json();
+    throw new Error(err.message || 'Failed to send task command');
+  }
+  return res.json();
+}
+
 /** -----------------------------
  * TASK CONFIGS
  * -----------------------------
