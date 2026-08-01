@@ -169,129 +169,133 @@ class MultiLabelClassifier(Trainer):
         model.classifier = nn.Linear(in_features, N)
         model = model.to(device)
 
-        pos_weight = ds_train.pos_weights().to(device)
-        criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight, reduction="none")
-        optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3, weight_decay=1e-4)
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=max_epochs)
+        try:
+            pos_weight = ds_train.pos_weights().to(device)
+            criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight, reduction="none")
+            optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3, weight_decay=1e-4)
+            scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=max_epochs)
 
-        # ── Training loop ────────────────────────────────────────────────────
-        best_val_loss = float("inf")
-        best_val_acc = 0.0
-        patience_counter = 0
-        best_state: Optional[dict] = None
+            # ── Training loop ────────────────────────────────────────────────
+            best_val_loss = float("inf")
+            best_val_acc = 0.0
+            patience_counter = 0
+            best_state: Optional[dict] = None
 
-        artifact_dir = Path(artifact_dir_str)
-        artifact_dir.mkdir(parents=True, exist_ok=True)
-        onnx_path = artifact_dir / f"{model_name}.onnx"
-        json_path = artifact_dir / f"{model_name}.json"
-        checkpoint_path = artifact_dir / "checkpoint.pt"
+            artifact_dir = Path(artifact_dir_str)
+            artifact_dir.mkdir(parents=True, exist_ok=True)
+            onnx_path = artifact_dir / f"{model_name}.onnx"
+            json_path = artifact_dir / f"{model_name}.json"
+            checkpoint_path = artifact_dir / "checkpoint.pt"
 
-        start_epoch = 1
-        if checkpoint_path.exists():
-            try:
-                ckpt = await asyncio.to_thread(torch.load, str(checkpoint_path), map_location=device)
-                model.load_state_dict(ckpt["model_state_dict"])
-                optimizer.load_state_dict(ckpt["optimizer_state_dict"])
-                scheduler.load_state_dict(ckpt["scheduler_state_dict"])
-                best_val_loss = ckpt["best_val_loss"]
-                best_val_acc = ckpt["best_val_acc"]
-                patience_counter = ckpt["patience_counter"]
-                if ckpt.get("best_state"):
-                    best_state = {k: v.cpu().clone() for k, v in ckpt["best_state"].items()}
-                start_epoch = ckpt["epoch"] + 1
-                logger.info("Resuming from checkpoint at epoch %d/%d", ckpt["epoch"], max_epochs)
-            except Exception:
-                logger.exception("Failed to load checkpoint; starting from scratch")
+            start_epoch = 1
+            if checkpoint_path.exists():
+                try:
+                    ckpt = await asyncio.to_thread(torch.load, str(checkpoint_path), map_location=device)
+                    model.load_state_dict(ckpt["model_state_dict"])
+                    optimizer.load_state_dict(ckpt["optimizer_state_dict"])
+                    scheduler.load_state_dict(ckpt["scheduler_state_dict"])
+                    best_val_loss = ckpt["best_val_loss"]
+                    best_val_acc = ckpt["best_val_acc"]
+                    patience_counter = ckpt["patience_counter"]
+                    if ckpt.get("best_state"):
+                        best_state = {k: v.cpu().clone() for k, v in ckpt["best_state"].items()}
+                    start_epoch = ckpt["epoch"] + 1
+                    logger.info("Resuming from checkpoint at epoch %d/%d", ckpt["epoch"], max_epochs)
+                except Exception:
+                    logger.exception("Failed to load checkpoint; starting from scratch")
 
-        for epoch in range(start_epoch, max_epochs + 1):
-            if cancel_event.is_set():
-                break
-
-            # ── Train ─────────────────────────────────────────────────────
-            model.train()
-            train_loss_sum = 0.0
-            for xb, yb in loader_train:
-                xb, yb = xb.to(device), yb.to(device)
-                optimizer.zero_grad()
-                logits = model(xb)  # [B, N]
-                mask = yb >= 0  # [B, N] — known labels only
-                loss_elem = criterion(logits, yb.clamp(min=0))  # [B, N]
-                loss = (loss_elem * mask).sum() / mask.sum().clamp(min=1)
-                loss.backward()
-                optimizer.step()
-                train_loss_sum += loss.item() * xb.size(0)
-            train_loss = train_loss_sum / len(ds_train)
-
-            # ── Validate ──────────────────────────────────────────────────
-            model.eval()
-            val_loss_sum = 0.0
-            correct = 0
-            total_known = 0
-            with torch.no_grad():
-                for xb, yb in loader_val:
-                    xb, yb = xb.to(device), yb.to(device)
-                    logits = model(xb)
-                    mask = yb >= 0
-                    loss_elem = criterion(logits, yb.clamp(min=0))
-                    val_loss_sum += ((loss_elem * mask).sum() / mask.sum().clamp(min=1)).item() * xb.size(0)
-                    preds = (logits.sigmoid() > 0.5).float()
-                    correct += ((preds == yb.clamp(min=0)) & mask).sum().item()
-                    total_known += mask.sum().item()
-            val_loss = val_loss_sum / len(ds_val)
-            val_acc = correct / total_known if total_known > 0 else 0.0
-
-            scheduler.step()
-
-            log_msg = (
-                f"Epoch {epoch}/{max_epochs}  "
-                f"train_loss={train_loss:.4f}  val_loss={val_loss:.4f}  val_acc={val_acc:.4f}"
-            )
-            logger.info(log_msg)
-            progress_cb(
-                {
-                    "progress": epoch / max_epochs,
-                    "epoch": epoch,
-                    "total_epochs": max_epochs,
-                    "val_accuracy": round(val_acc, 4),
-                    "train_loss": round(train_loss, 4),
-                    "val_loss": round(val_loss, 4),
-                    "log": log_msg,
-                }
-            )
-
-            if val_loss < best_val_loss:
-                best_val_loss = val_loss
-                best_val_acc = val_acc
-                best_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
-                patience_counter = 0
-            else:
-                patience_counter += 1
-                if patience_counter >= patience:
-                    logger.info("Early stopping at epoch %d (patience=%d)", epoch, patience)
+            for epoch in range(start_epoch, max_epochs + 1):
+                if cancel_event.is_set():
                     break
 
-            await asyncio.to_thread(
-                torch.save,
-                {
-                    "epoch": epoch,
-                    "model_state_dict": {k: v.cpu().clone() for k, v in model.state_dict().items()},
-                    "optimizer_state_dict": optimizer.state_dict(),
-                    "scheduler_state_dict": scheduler.state_dict(),
-                    "best_val_loss": best_val_loss,
-                    "best_val_acc": best_val_acc,
-                    "patience_counter": patience_counter,
-                    "best_state": best_state,
-                },
-                str(checkpoint_path),
-            )
-            await asyncio.sleep(0)
+                # ── Train ─────────────────────────────────────────────────
+                model.train()
+                train_loss_sum = 0.0
+                for xb, yb in loader_train:
+                    xb, yb = xb.to(device), yb.to(device)
+                    optimizer.zero_grad()
+                    logits = model(xb)  # [B, N]
+                    mask = yb >= 0  # [B, N] — known labels only
+                    loss_elem = criterion(logits, yb.clamp(min=0))  # [B, N]
+                    loss = (loss_elem * mask).sum() / mask.sum().clamp(min=1)
+                    loss.backward()
+                    optimizer.step()
+                    train_loss_sum += loss.item() * xb.size(0)
+                train_loss = train_loss_sum / len(ds_train)
 
-        # ── Export best weights ──────────────────────────────────────────────
-        if best_state is not None:
-            model.load_state_dict(best_state)
+                # ── Validate ──────────────────────────────────────────────
+                model.eval()
+                val_loss_sum = 0.0
+                correct = 0
+                total_known = 0
+                with torch.no_grad():
+                    for xb, yb in loader_val:
+                        xb, yb = xb.to(device), yb.to(device)
+                        logits = model(xb)
+                        mask = yb >= 0
+                        loss_elem = criterion(logits, yb.clamp(min=0))
+                        val_loss_sum += ((loss_elem * mask).sum() / mask.sum().clamp(min=1)).item() * xb.size(0)
+                        preds = (logits.sigmoid() > 0.5).float()
+                        correct += ((preds == yb.clamp(min=0)) & mask).sum().item()
+                        total_known += mask.sum().item()
+                val_loss = val_loss_sum / len(ds_val)
+                val_acc = correct / total_known if total_known > 0 else 0.0
 
-        export_and_validate_onnx(model, onnx_path, timm_model)
-        checkpoint_path.unlink(missing_ok=True)
+                scheduler.step()
+
+                log_msg = (
+                    f"Epoch {epoch}/{max_epochs}  "
+                    f"train_loss={train_loss:.4f}  val_loss={val_loss:.4f}  val_acc={val_acc:.4f}"
+                )
+                logger.info(log_msg)
+                progress_cb(
+                    {
+                        "progress": epoch / max_epochs,
+                        "epoch": epoch,
+                        "total_epochs": max_epochs,
+                        "val_accuracy": round(val_acc, 4),
+                        "train_loss": round(train_loss, 4),
+                        "val_loss": round(val_loss, 4),
+                        "log": log_msg,
+                    }
+                )
+
+                if val_loss < best_val_loss:
+                    best_val_loss = val_loss
+                    best_val_acc = val_acc
+                    best_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
+                    patience_counter = 0
+                else:
+                    patience_counter += 1
+                    if patience_counter >= patience:
+                        logger.info("Early stopping at epoch %d (patience=%d)", epoch, patience)
+                        break
+
+                await asyncio.to_thread(
+                    torch.save,
+                    {
+                        "epoch": epoch,
+                        "model_state_dict": {k: v.cpu().clone() for k, v in model.state_dict().items()},
+                        "optimizer_state_dict": optimizer.state_dict(),
+                        "scheduler_state_dict": scheduler.state_dict(),
+                        "best_val_loss": best_val_loss,
+                        "best_val_acc": best_val_acc,
+                        "patience_counter": patience_counter,
+                        "best_state": best_state,
+                    },
+                    str(checkpoint_path),
+                )
+                await asyncio.sleep(0)
+
+            # ── Export best weights ──────────────────────────────────────────
+            if best_state is not None:
+                model.load_state_dict(best_state)
+
+            export_and_validate_onnx(model, onnx_path, timm_model)
+            checkpoint_path.unlink(missing_ok=True)
+        finally:
+            del model
+            self.release_gpu_memory()
 
         model_config = {
             "model_kind": "multi_label_classifier",

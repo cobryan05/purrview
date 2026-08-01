@@ -214,25 +214,29 @@ class UltralyticsDetectionTrainer(Trainer):
             def _run_training() -> dict:
                 YOLO = _get_yolo_class()
                 model = YOLO(f"{weights_stem}.pt")
-                model.add_callback("on_train_epoch_end", _on_train_epoch_end)
-                results = model.train(
-                    data=data_yaml,
-                    epochs=max_epochs,
-                    imgsz=imgsz,
-                    batch=batch_size,
-                    patience=patience,
-                    project=str(artifact_path / "runs"),
-                    name=model_name,
-                    exist_ok=True,
-                )
-                # results.results_dict has keys like "metrics/mAP50(B)".
-                results_dict = dict(getattr(results, "results_dict", None) or {})
-                best_map50 = float(results_dict.get("metrics/mAP50(B)", 0.0))
+                try:
+                    model.add_callback("on_train_epoch_end", _on_train_epoch_end)
+                    results = model.train(
+                        data=data_yaml,
+                        epochs=max_epochs,
+                        imgsz=imgsz,
+                        batch=batch_size,
+                        patience=patience,
+                        project=str(artifact_path / "runs"),
+                        name=model_name,
+                        exist_ok=True,
+                    )
+                    # results.results_dict has keys like "metrics/mAP50(B)".
+                    results_dict = dict(getattr(results, "results_dict", None) or {})
+                    best_map50 = float(results_dict.get("metrics/mAP50(B)", 0.0))
 
-                # Export to ONNX. Ultralytics writes next to the best weights;
-                # move/copy it to our stable artifact path.
-                exported = model.export(format="onnx")
-                return {"exported_path": str(exported), "best_map50": best_map50}
+                    # Export to ONNX. Ultralytics writes next to the best weights;
+                    # move/copy it to our stable artifact path.
+                    exported = model.export(format="onnx")
+                    return {"exported_path": str(exported), "best_map50": best_map50}
+                finally:
+                    del model
+                    self.release_gpu_memory()
 
             logger.info("Starting training: arch=%s", architecture)
             self.log_effective_hyperparams(

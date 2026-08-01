@@ -36,6 +36,35 @@ class Trainer(ABC):
         if progress_cb is not None:
             progress_cb({"progress": 0.0, "log": msg})
 
+    @staticmethod
+    def release_gpu_memory() -> None:
+        """Best-effort release of GPU memory back to the driver after a job ends.
+
+        A trainer's ``model``/optimizer/loader locals going out of scope is not
+        enough on its own: PyTorch's caching allocator holds freed CUDA memory
+        for reuse rather than returning it to the driver, and the training_server
+        process stays alive between jobs (single in-process worker). Without an
+        explicit ``empty_cache()``, VRAM used by one job appears "stuck" even
+        when idle. Call this from a ``finally`` block wrapping every trainer's
+        ``train()`` so it runs on success, error, and cancellation alike.
+
+        Only touches ``torch`` if it is already imported (it always will be in
+        production — every real trainer imports it before this runs). Avoids
+        triggering a fresh, first-time ``import torch`` as a side effect of
+        cleanup, which is both pointless (nothing to release yet) and unsafe to
+        do concurrently from a background thread — importing torch for the
+        first time from two threads at once can hit a known thread-safety bug
+        in ``torch.overrides`` (docstring double-registration).
+        """
+        import gc
+        import sys
+
+        gc.collect()
+        torch = sys.modules.get("torch")
+        if torch is not None and torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            torch.cuda.ipc_collect()
+
     @abstractmethod
     async def train(
         self,
