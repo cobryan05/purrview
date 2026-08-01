@@ -1031,3 +1031,56 @@ class TestSourceLevelIntervalOverride:
             task = await _run_task(images, detect=True, tmp_path=tmp_path, provider=provider)
 
         assert task._resume_data["images_saved"] == 1
+
+
+class TestCheckpointRequestHoist:
+    """Phase 2: the _data_req_flag check used to sit inside the per-provider loop,
+    after a frame was successfully fetched — so a source rate-limited to a long
+    interval (e.g. 15 minutes) at the task level left a checkpoint request
+    unanswered for the whole interval. It now sits at the top of the OUTER while
+    loop, serviced every pass regardless of how any individual source is paced."""
+
+    async def test_checkpoint_serviced_promptly_despite_long_task_level_interval(self, tmp_path):
+        # A single LIVE_SNAPSHOT provider with no self-pacing (min_capture_interval=0)
+        # falls back to the task-level snapshot_interval rate limit. Set that interval
+        # absurdly high: after the first frame is fetched, the provider is skipped via
+        # a fast `continue` on every subsequent outer-loop pass — it never blocks.
+        images = [_tracked_image(0), _tracked_image(1)]
+        provider = _LiveProvider(images, ptype=ImageProviderType.LIVE_SNAPSHOT)
+        params = {**_PARAMS, "snapshot_interval": 999_999}
+
+        task = _make_task(params=params)
+
+        inf_result = MagicMock()
+        inf_result.result.detections = [_detection()]
+        pin_resp = MagicMock()
+        pin_resp.pin_id = "pin-1"
+        files_root = str(tmp_path)
+
+        with (
+            patch("apps.tasks_server.tasks.CollectTrainingImagesTask.SourceHelper") as mock_sh,
+            patch("apps.tasks_server.tasks.CollectTrainingImagesTask.ModelsApi") as mock_models_cls,
+            patch("apps.tasks_server.tasks.CollectTrainingImagesTask.InferenceApi") as mock_inf_cls,
+            patch("apps.tasks_server.tasks.CollectTrainingImagesTask.ImagesApi") as mock_img_cls,
+            patch.dict(os.environ, {"FILES_ROOT": files_root}),
+        ):
+            mock_sh.return_value.get_image_provider.return_value = provider
+            mock_models_cls.return_value.pin_model_api_api_models_model_name_pin_post.return_value = pin_resp
+            mock_inf_cls.return_value.inference.return_value = inf_result
+            mock_img_cls.return_value.update_image_metadata.return_value = MagicMock()
+
+            await task.start()
+            # Let the task fetch+save the first frame; the source is now rate-limited
+            # for a simulated ~11.5 days (999_999s) before it will be polled again.
+            await asyncio.sleep(0.3)
+
+            task.request_data_update()
+            # Pre-hoist, this would only be serviced after the source's next
+            # successful fetch — i.e. it would hang for 999_999s and this
+            # wait_for_data_ready() call would time out. Post-hoist it's serviced
+            # on the very next outer-loop pass (a sub-second busy-loop tick).
+            await task.wait_for_data_ready(timeout=2.0)
+            assert task.is_data_ready()
+
+            task.cancel_task()
+            await task.wait_for_task_done(timeout=5.0)

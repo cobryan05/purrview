@@ -109,12 +109,12 @@ export function renderTaskConfigs({ target = 'task-config-list', onEdit, onDelet
     emoji: '✅',
     onClick: async ({ field }) => {
       try {
-        const { name, typename, params } = field.getValue();
+        const { name, typename, params, persistent } = field.getValue();
         if (!name) {
           toast('Error: Name required', 5000, "error");
           return;
         }
-        await createTaskConfig({ name, typename, params });
+        await createTaskConfig({ name, typename, params, persistent });
         refresh?.();
       } catch (err) {
         Logger.error('Error creating task config:', err);
@@ -143,7 +143,8 @@ function _taskFingerprint(tasks) {
     .map(([id, t]) => {
       const logs = t.logLines ?? [];
       const actionCount = (t.statusActions ?? []).length + (t.instance?.result?.actions ?? []).length;
-      return `${id}:${t.instance?.status}:${t.isPausedInPlace ?? false}:${Math.round(t.progress ?? 0)}:${logs.length}:${logs[logs.length - 1] ?? ''}:${t.instance?.startedAt ?? ''}:${t.instance?.endedAt ?? ''}:${actionCount}`;
+      const progressPart = (t.progress === null || t.progress === undefined) ? 'ind' : Math.round(t.progress);
+      return `${id}:${t.instance?.status}:${t.isPausedInPlace ?? false}:${progressPart}:${logs.length}:${logs[logs.length - 1] ?? ''}:${t.instance?.startedAt ?? ''}:${t.instance?.endedAt ?? ''}:${actionCount}`;
     })
     .sort()
     .join('|');

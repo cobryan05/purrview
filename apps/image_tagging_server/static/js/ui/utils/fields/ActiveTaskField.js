@@ -22,6 +22,11 @@ export class ActiveTaskField extends Field {
     instance._uuid = uuid;
     instance._status = status;
     instance._message = errorMessage;
+    // Wire signal for "indeterminate": a null/absent `progress` (as opposed to a
+    // genuine numeric 0, which is a normal 0%-complete batch task). The `progress`
+    // field is already optional-shaped on the wire (existing code coalesced it with
+    // `?? 0`); we just stop collapsing that distinction before it reaches rendering.
+    instance._progressIndeterminate = instance._value.progress === null || instance._value.progress === undefined;
     instance._progress = instance._value.progress ?? 0;
     instance._statusMessage = instance._value.statusMessage ?? '';
     instance._isPausedInPlace = instance._value.isPausedInPlace === true;
@@ -109,18 +114,33 @@ export class ActiveTaskField extends Field {
       }
     }
 
-    // Progress bar (running + progress > 0)
-    if (this._status === 'running' && this._progress > 0) {
+    // Progress bar — shown for any running task, including a genuine 0%.
+    // Indeterminate (no known denominator) renders a striped/animated bar instead
+    // of a misleading permanent 0%.
+    if (this._status === 'running') {
       const progressRow = document.createElement('div');
       progressRow.style.cssText = 'display:flex; align-items:center; gap:0.5em; margin-bottom:0.3em;';
       const bar = document.createElement('progress');
-      bar.value = this._progress;
-      bar.max = 100;
       bar.style.cssText = 'flex:1; height:8px;';
-      progressRow.appendChild(bar);
+      bar.setAttribute('role', 'progressbar');
       const pct = document.createElement('span');
-      pct.textContent = `${Math.round(this._progress)}%`;
       pct.style.cssText = 'min-width:3em; text-align:right;';
+      if (this._progressIndeterminate) {
+        // No `value` attribute at all → native indeterminate <progress>; CSS
+        // (.progress-indeterminate) paints the striped/animated fill.
+        bar.classList.add('progress-indeterminate');
+        bar.removeAttribute('value');
+        bar.setAttribute('aria-valuetext', 'Working…');
+        pct.textContent = '';
+      } else {
+        bar.value = this._progress;
+        bar.max = 100;
+        bar.setAttribute('aria-valuemin', '0');
+        bar.setAttribute('aria-valuemax', '100');
+        bar.setAttribute('aria-valuenow', String(Math.round(this._progress)));
+        pct.textContent = `${Math.round(this._progress)}%`;
+      }
+      progressRow.appendChild(bar);
       progressRow.appendChild(pct);
       body.appendChild(progressRow);
     }

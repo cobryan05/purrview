@@ -23,11 +23,23 @@ class Task(ABC):
     class InternalKeys(str, Enum):
         PERSISTENT = "_persistent"
         ONESHOT_RESULT = "_oneshot_result"  # delete the task when the result is fetched
+        # Crash-loop guard bookkeeping for PERSISTENT auto-restart, stored on the task
+        # CONFIG's params (see Manager._auto_restart_with_guard). Deliberately NOT stored
+        # in a task instance's resume_data: that blob is owned by the task itself and is
+        # wholesale-replaced on every checkpoint (Task._build_resume_data), which would
+        # silently erase this bookkeeping the moment the task checkpoints again.
+        RESTART_INFO = "_restart_info"
         # TODO: Task *configs* need a way to delete or else Preview tasks can build up
 
     # How often (seconds) a running task pings the DB to confirm it is alive.
     # The stale-check threshold in the manager uses a multiple of this value.
     HEARTBEAT_INTERVAL: int = 30
+
+    # How often (seconds) the manager's periodic checkpoint pass should request this
+    # task write its resume data to the DB (Manager._checkpoint_running_tasks). Long-lived
+    # live-collection tasks should override this with a shorter value; batch tasks that
+    # complete quickly on their own can leave the default alone.
+    CHECKPOINT_INTERVAL: int = 300
 
     def __init__(self, task_config_uuid: str, params: dict[str, Any], manager: Manager):
         self._config_uuid: str = task_config_uuid

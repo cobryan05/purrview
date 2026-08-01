@@ -88,6 +88,9 @@ class CollectTrainingImagesTask(Task):
     # inference blocks.  A small buffer absorbs per-frame jitter without wasting memory
     # (each slot holds a numpy array reference, not a copy).
     _DEDUP_QUEUE_SIZE: int = 4
+    # Live-collection tasks can run for days; checkpoint far more often than the base
+    # Task default so an unexpected restart loses at most a few minutes of progress.
+    CHECKPOINT_INTERVAL: int = 60
 
     async def _init(self, params: dict[str, Any], resume_data: Optional[dict[str, Any]]) -> None:
         self._status_msg: str = "Initializing"
@@ -416,10 +419,34 @@ class CollectTrainingImagesTask(Task):
             self._dedup_queue: asyncio.Queue = asyncio.Queue(maxsize=self._DEDUP_QUEUE_SIZE)
             dedup_task = asyncio.create_task(self._dedup_worker(images_api, files_root))
 
+        async def _service_checkpoint_request() -> None:
+            """Snapshot resume data now if the manager has requested a checkpoint.
+
+            Checked at the top of the OUTER while loop (once per pass over the active
+            provider set) rather than only after a provider yields a frame. Sources are
+            paced independently (min_capture_interval / task-level rate limits) and can be
+            far slower than the checkpoint interval — e.g. a 15-minute snapshot source.
+            Checking only after a successful fetch would leave a checkpoint request
+            unanswered for the whole fetch interval. Checking here means it's serviced on
+            (at most) the next outer-loop tick — a busy-spin every ~50ms when no provider
+            has fresh data (see `if not any_fetched: sleep(0.05)` below) — regardless of
+            how slowly any individual source is paced.
+            """
+            if self._data_req_flag.is_set():
+                # Drain the dedup queue first so all matched frames are accounted for in
+                # the resume snapshot (join() waits for task_done() in worker).
+                if self._enable_dedup:
+                    await self._dedup_queue.join()
+                await _drain_saves()
+                self._data_req_flag.clear()
+                self._resume_data = self._build_resume_data()
+                self._data_ready_flag.set()
+
         try:
             active = set(providers)
             while active and not self._cancel_flag.is_set():
                 await self._check_pause()
+                await _service_checkpoint_request()
                 _collect_saves()
                 self._status_msg = _full_status()
 
@@ -562,16 +589,6 @@ class CollectTrainingImagesTask(Task):
                         # worth the complexity of special-casing dedup for an empty bbox set.
                         save_task = asyncio.create_task(self._save_image(images_api, provided, [], files_root, ptype))
                         self._pending_saves.append((save_task, unique_id))
-
-                    if self._data_req_flag.is_set():
-                        # Drain the dedup queue first so all matched frames are accounted
-                        # for in the resume snapshot (join() waits for task_done() in worker).
-                        if self._enable_dedup:
-                            await self._dedup_queue.join()
-                        await _drain_saves()
-                        self._data_req_flag.clear()
-                        self._resume_data = self._build_resume_data()
-                        self._data_ready_flag.set()
 
                     # Yield to the event loop between frames so HTTP handlers get cycles
                     # even when providers deliver images as fast as they can be processed.

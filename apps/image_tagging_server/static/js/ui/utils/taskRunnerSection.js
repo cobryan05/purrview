@@ -54,10 +54,11 @@ export function createTaskRunnerSection({ buttonLabel, runningLabel, buildStartA
 
   function _fp(task) {
     const logs = task.logLines ?? [];
+    const progressPart = (task.progress === null || task.progress === undefined) ? 'ind' : Math.round(task.progress);
     return [
       task.instance?.status,
       task.isPausedInPlace ?? false,
-      Math.round(task.progress ?? 0),
+      progressPart,
       logs.length,
       logs[logs.length - 1] ?? '',
     ].join(':');
@@ -115,6 +116,9 @@ export function createTaskRunnerSection({ buttonLabel, runningLabel, buildStartA
         typename: startArgs.typename,
         name: startArgs.name,
         params: startArgs.params,
+        // Transient runner (e.g. "Start Training") — must never silently
+        // auto-resume across a server restart.
+        persistent: false,
         isTemporary: true,
       });
       const taskUuid = await startTask({ configUuid });

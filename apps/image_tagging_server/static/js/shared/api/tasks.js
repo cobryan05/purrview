@@ -120,11 +120,20 @@ export async function deleteTaskConfigs({ uuids }) {
   }
 }
 
-export async function createTaskConfig(config) {
+/**
+ * Creates a new task config.
+ *
+ * `persistent` controls whether the task auto-restarts after a server restart/reboot.
+ * It must be explicit opt-in: default it to `false` here rather than relying on the
+ * backend's default, and only surface a way to set it to `true` in UI where restarting
+ * on its own makes sense (e.g. the task-config management form). Transient/preview
+ * one-shot task runners should never set it.
+ */
+export async function createTaskConfig({ persistent = false, ...config }) {
   const res = await apiFetch('/api/tasks/configs/create', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(config),
+    body: JSON.stringify({ persistent, ...config }),
   });
 
   if (!res.ok) {

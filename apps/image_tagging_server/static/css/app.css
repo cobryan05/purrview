@@ -2701,4 +2701,51 @@ main.container {
   line-height: 1.4;
 }
 
+/* ===== Indeterminate active-task progress bar =====
+   Used by ActiveTaskField when a task reports no denominator to measure
+   progress against (e.g. a live/streaming collection task). A striped,
+   animated fill communicates "still working" instead of a stuck 0%. */
+
+progress.progress-indeterminate {
+  -webkit-appearance: none;
+  appearance: none;
+  border: none;
+  border-radius: 4px;
+  overflow: hidden;
+  background-color: var(--pico-progress-background-color, #e0e0e0);
+}
+
+/* Chromium/WebKit: <progress> without a `value` attribute paints only
+   ::-webkit-progress-bar (the track); style that as our striped fill. */
+progress.progress-indeterminate::-webkit-progress-bar {
+  border-radius: 4px;
+  background-image: repeating-linear-gradient(
+    45deg,
+    #2196F3,
+    #2196F3 10px,
+    #64b5f6 10px,
+    #64b5f6 20px
+  );
+  background-size: 40px 40px;
+  animation: progress-indeterminate-stripes 1s linear infinite;
+}
+
+/* Firefox: native :indeterminate styling target. */
+progress.progress-indeterminate:indeterminate {
+  background-image: repeating-linear-gradient(
+    45deg,
+    #2196F3,
+    #2196F3 10px,
+    #64b5f6 10px,
+    #64b5f6 20px
+  );
+  background-size: 40px 40px;
+  animation: progress-indeterminate-stripes 1s linear infinite;
+}
+
+@keyframes progress-indeterminate-stripes {
+  from { background-position: 0 0; }
+  to { background-position: 40px 0; }
+}
+
 
