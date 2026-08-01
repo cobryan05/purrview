@@ -148,127 +148,131 @@ class BinaryImageClassifier(Trainer):
         model.classifier = nn.Linear(in_features, len(class_names))
         model = model.to(device)
 
-        class_weights = ds_train.class_weights().to(device)
-        criterion = nn.CrossEntropyLoss(weight=class_weights)
-        optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3, weight_decay=1e-4)
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=max_epochs)
+        try:
+            class_weights = ds_train.class_weights().to(device)
+            criterion = nn.CrossEntropyLoss(weight=class_weights)
+            optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3, weight_decay=1e-4)
+            scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=max_epochs)
 
-        # ── Training loop ────────────────────────────────────────────────────
-        best_val_loss = float("inf")
-        best_val_acc = 0.0
-        patience_counter = 0
-        best_state: Optional[dict] = None
+            # ── Training loop ────────────────────────────────────────────────
+            best_val_loss = float("inf")
+            best_val_acc = 0.0
+            patience_counter = 0
+            best_state: Optional[dict] = None
 
-        artifact_dir = Path(artifact_dir_str)
-        artifact_dir.mkdir(parents=True, exist_ok=True)
-        onnx_path = artifact_dir / f"{model_name}.onnx"
-        json_path = artifact_dir / f"{model_name}.json"
-        checkpoint_path = artifact_dir / "checkpoint.pt"
+            artifact_dir = Path(artifact_dir_str)
+            artifact_dir.mkdir(parents=True, exist_ok=True)
+            onnx_path = artifact_dir / f"{model_name}.onnx"
+            json_path = artifact_dir / f"{model_name}.json"
+            checkpoint_path = artifact_dir / "checkpoint.pt"
 
-        # Resume from checkpoint if one exists (e.g. after server restart).
-        start_epoch = 1
-        if checkpoint_path.exists():
-            try:
-                ckpt = await asyncio.to_thread(torch.load, str(checkpoint_path), map_location=device)
-                model.load_state_dict(ckpt["model_state_dict"])
-                optimizer.load_state_dict(ckpt["optimizer_state_dict"])
-                scheduler.load_state_dict(ckpt["scheduler_state_dict"])
-                best_val_loss = ckpt["best_val_loss"]
-                best_val_acc = ckpt["best_val_acc"]
-                patience_counter = ckpt["patience_counter"]
-                if ckpt.get("best_state"):
-                    best_state = {k: v.cpu().clone() for k, v in ckpt["best_state"].items()}
-                start_epoch = ckpt["epoch"] + 1
-                logger.info("Resuming from checkpoint at epoch %d/%d", ckpt["epoch"], max_epochs)
-            except Exception:
-                logger.exception("Failed to load checkpoint; starting training from scratch")
+            # Resume from checkpoint if one exists (e.g. after server restart).
+            start_epoch = 1
+            if checkpoint_path.exists():
+                try:
+                    ckpt = await asyncio.to_thread(torch.load, str(checkpoint_path), map_location=device)
+                    model.load_state_dict(ckpt["model_state_dict"])
+                    optimizer.load_state_dict(ckpt["optimizer_state_dict"])
+                    scheduler.load_state_dict(ckpt["scheduler_state_dict"])
+                    best_val_loss = ckpt["best_val_loss"]
+                    best_val_acc = ckpt["best_val_acc"]
+                    patience_counter = ckpt["patience_counter"]
+                    if ckpt.get("best_state"):
+                        best_state = {k: v.cpu().clone() for k, v in ckpt["best_state"].items()}
+                    start_epoch = ckpt["epoch"] + 1
+                    logger.info("Resuming from checkpoint at epoch %d/%d", ckpt["epoch"], max_epochs)
+                except Exception:
+                    logger.exception("Failed to load checkpoint; starting training from scratch")
 
-        for epoch in range(start_epoch, max_epochs + 1):
-            if cancel_event.is_set():
-                break
-
-            # Train
-            model.train()
-            train_loss = 0.0
-            for xb, yb in loader_train:
-                xb, yb = xb.to(device), yb.to(device)
-                optimizer.zero_grad()
-                logits = model(xb)
-                loss = criterion(logits, yb)
-                loss.backward()
-                optimizer.step()
-                train_loss += loss.item() * xb.size(0)
-            train_loss /= len(ds_train)
-
-            # Validate
-            model.eval()
-            val_loss = 0.0
-            correct = 0
-            with torch.no_grad():
-                for xb, yb in loader_val:
-                    xb, yb = xb.to(device), yb.to(device)
-                    logits = model(xb)
-                    val_loss += criterion(logits, yb).item() * xb.size(0)
-                    correct += (logits.argmax(dim=1) == yb).sum().item()
-            val_loss /= len(ds_val)
-            val_acc = correct / len(ds_val)
-
-            scheduler.step()
-
-            log_msg = (
-                f"Epoch {epoch}/{max_epochs}  "
-                f"train_loss={train_loss:.4f}  val_loss={val_loss:.4f}  val_acc={val_acc:.4f}"
-            )
-            logger.info(log_msg)
-            progress_cb(
-                {
-                    "progress": epoch / max_epochs,
-                    "epoch": epoch,
-                    "total_epochs": max_epochs,
-                    "val_accuracy": round(val_acc, 4),
-                    "train_loss": round(train_loss, 4),
-                    "val_loss": round(val_loss, 4),
-                    "log": log_msg,
-                }
-            )
-
-            if val_loss < best_val_loss:
-                best_val_loss = val_loss
-                best_val_acc = val_acc
-                best_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
-                patience_counter = 0
-            else:
-                patience_counter += 1
-                if patience_counter >= patience:
-                    logger.info("Early stopping at epoch %d (patience=%d)", epoch, patience)
+            for epoch in range(start_epoch, max_epochs + 1):
+                if cancel_event.is_set():
                     break
 
-            # Save checkpoint so training can resume after a server restart.
-            await asyncio.to_thread(
-                torch.save,
-                {
-                    "epoch": epoch,
-                    "model_state_dict": {k: v.cpu().clone() for k, v in model.state_dict().items()},
-                    "optimizer_state_dict": optimizer.state_dict(),
-                    "scheduler_state_dict": scheduler.state_dict(),
-                    "best_val_loss": best_val_loss,
-                    "best_val_acc": best_val_acc,
-                    "patience_counter": patience_counter,
-                    "best_state": best_state,
-                },
-                str(checkpoint_path),
-            )
+                # Train
+                model.train()
+                train_loss = 0.0
+                for xb, yb in loader_train:
+                    xb, yb = xb.to(device), yb.to(device)
+                    optimizer.zero_grad()
+                    logits = model(xb)
+                    loss = criterion(logits, yb)
+                    loss.backward()
+                    optimizer.step()
+                    train_loss += loss.item() * xb.size(0)
+                train_loss /= len(ds_train)
 
-            # Yield to the event loop so cancel_event can be checked.
-            await asyncio.sleep(0)
+                # Validate
+                model.eval()
+                val_loss = 0.0
+                correct = 0
+                with torch.no_grad():
+                    for xb, yb in loader_val:
+                        xb, yb = xb.to(device), yb.to(device)
+                        logits = model(xb)
+                        val_loss += criterion(logits, yb).item() * xb.size(0)
+                        correct += (logits.argmax(dim=1) == yb).sum().item()
+                val_loss /= len(ds_val)
+                val_acc = correct / len(ds_val)
 
-        # ── Export best checkpoint ───────────────────────────────────────────
-        if best_state is not None:
-            model.load_state_dict(best_state)
+                scheduler.step()
 
-        export_and_validate_onnx(model, onnx_path, timm_model)
-        if checkpoint_path.exists():
-            checkpoint_path.unlink(missing_ok=True)
+                log_msg = (
+                    f"Epoch {epoch}/{max_epochs}  "
+                    f"train_loss={train_loss:.4f}  val_loss={val_loss:.4f}  val_acc={val_acc:.4f}"
+                )
+                logger.info(log_msg)
+                progress_cb(
+                    {
+                        "progress": epoch / max_epochs,
+                        "epoch": epoch,
+                        "total_epochs": max_epochs,
+                        "val_accuracy": round(val_acc, 4),
+                        "train_loss": round(train_loss, 4),
+                        "val_loss": round(val_loss, 4),
+                        "log": log_msg,
+                    }
+                )
+
+                if val_loss < best_val_loss:
+                    best_val_loss = val_loss
+                    best_val_acc = val_acc
+                    best_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
+                    patience_counter = 0
+                else:
+                    patience_counter += 1
+                    if patience_counter >= patience:
+                        logger.info("Early stopping at epoch %d (patience=%d)", epoch, patience)
+                        break
+
+                # Save checkpoint so training can resume after a server restart.
+                await asyncio.to_thread(
+                    torch.save,
+                    {
+                        "epoch": epoch,
+                        "model_state_dict": {k: v.cpu().clone() for k, v in model.state_dict().items()},
+                        "optimizer_state_dict": optimizer.state_dict(),
+                        "scheduler_state_dict": scheduler.state_dict(),
+                        "best_val_loss": best_val_loss,
+                        "best_val_acc": best_val_acc,
+                        "patience_counter": patience_counter,
+                        "best_state": best_state,
+                    },
+                    str(checkpoint_path),
+                )
+
+                # Yield to the event loop so cancel_event can be checked.
+                await asyncio.sleep(0)
+
+            # ── Export best checkpoint ───────────────────────────────────────
+            if best_state is not None:
+                model.load_state_dict(best_state)
+
+            export_and_validate_onnx(model, onnx_path, timm_model)
+            if checkpoint_path.exists():
+                checkpoint_path.unlink(missing_ok=True)
+        finally:
+            del model
+            self.release_gpu_memory()
 
         # Write companion JSON config.
         model_config = {

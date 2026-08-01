@@ -154,44 +154,48 @@ class ObjectDetectionTrainer(Trainer):
 
             model = model_cls(weight_filename, size=size)
 
-            # Run training in a thread (libreyolo train() is synchronous).
-            logger.info("Starting training: arch=%s", architecture)
-            self.log_effective_hyperparams(
-                logger,
-                progress_cb,
-                architecture=architecture,
-                epochs=max_epochs,
-                imgsz=imgsz,
-                batch=batch_size,
-                patience=patience,
-            )
-            results: dict = await asyncio.to_thread(
-                model.train,
-                data_yaml,
-                epochs=max_epochs,
-                imgsz=imgsz,
-                batch=batch_size,
-                patience=patience,
-                project=str(artifact_path / "runs"),
-                name=model_name,
-                exist_ok=True,
-                callbacks=_epoch_cb,
-            )
+            try:
+                # Run training in a thread (libreyolo train() is synchronous).
+                logger.info("Starting training: arch=%s", architecture)
+                self.log_effective_hyperparams(
+                    logger,
+                    progress_cb,
+                    architecture=architecture,
+                    epochs=max_epochs,
+                    imgsz=imgsz,
+                    batch=batch_size,
+                    patience=patience,
+                )
+                results: dict = await asyncio.to_thread(
+                    model.train,
+                    data_yaml,
+                    epochs=max_epochs,
+                    imgsz=imgsz,
+                    batch=batch_size,
+                    patience=patience,
+                    project=str(artifact_path / "runs"),
+                    name=model_name,
+                    exist_ok=True,
+                    callbacks=_epoch_cb,
+                )
 
-            best_map50: float = float(results.get("best_mAP50", 0.0))
-            logger.info("Training complete. best_mAP50=%.4f", best_map50)
+                best_map50: float = float(results.get("best_mAP50", 0.0))
+                logger.info("Training complete. best_mAP50=%.4f", best_map50)
 
-            # Export trained model to ONNX.
-            onnx_dest = str(artifact_path / f"{model_name}.onnx")
-            logger.info("Exporting ONNX → %s", onnx_dest)
-            exported_path: str = await asyncio.to_thread(
-                model.export,
-                "onnx",
-                output_path=onnx_dest,
-            )
-            # If export wrote to a different path (shouldn't happen), copy it.
-            if str(exported_path) != onnx_dest:
-                shutil.copy2(exported_path, onnx_dest)
+                # Export trained model to ONNX.
+                onnx_dest = str(artifact_path / f"{model_name}.onnx")
+                logger.info("Exporting ONNX → %s", onnx_dest)
+                exported_path: str = await asyncio.to_thread(
+                    model.export,
+                    "onnx",
+                    output_path=onnx_dest,
+                )
+                # If export wrote to a different path (shouldn't happen), copy it.
+                if str(exported_path) != onnx_dest:
+                    shutil.copy2(exported_path, onnx_dest)
+            finally:
+                del model
+                self.release_gpu_memory()
 
             # Write sidecar JSON understood by load_yolo_onnx.
             sidecar = {
