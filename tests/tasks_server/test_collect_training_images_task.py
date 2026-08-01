@@ -14,6 +14,7 @@ Covers the resume/dedup logic introduced alongside the timing instrumentation:
 
 import asyncio
 import os
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -25,18 +26,23 @@ from apps.helpers.bboxUtils import iou_xywh
 from apps.helpers.imageProviders.imageProvider import (
     ImageProvider,
     ImageProviderMetadata,
+    ImageProviderType,
     ImageWithProviderMetadata,
 )
 from apps.tasks_server.tasks.CollectTrainingImagesTask import (
     SAME_BBOX_IOU_THRESHOLD,
     CollectTrainingImagesTask,
 )
+from apps.tasks_server.tasks.utils.imageHelper import ImageHelper
 
 # ─── Shared constants ─────────────────────────────────────────────────────────
 
 _LABEL_UUID = "label-test-uuid"
 _MODEL_NAME = "test-model"
 _SOURCE = "clip.mp4"
+# _save_image sanitizes the source name for the filename (dots aren't filesystem-safe
+# in this context); unique_id/processed_ids use the raw _SOURCE instead.
+_SOURCE_FILE = ImageHelper.sanitize_filename(_SOURCE)
 
 _PARAMS = {
     "source_uuids": ["src-uuid"],
@@ -62,10 +68,39 @@ def _untracked_image() -> ImageWithProviderMetadata:
 
 
 class _FiniteProvider(ImageProvider):
-    """Yields a fixed list of images then signals exhaustion."""
+    """Yields a fixed list of images then signals exhaustion.
+
+    Models a FIXED provider (known frame count, e.g. a file list) — the type whose
+    processed_ids resume-by-frame-idx tracking is still exercised by these tests.
+    """
 
     def __init__(self, images: list):
         self._queue = list(images)
+
+    @classmethod
+    def provider_type(cls) -> ImageProviderType:
+        return ImageProviderType.FIXED
+
+    async def start(self) -> None:
+        pass
+
+    async def stop(self) -> None:
+        pass
+
+    async def getNextImage(self) -> Optional[ImageWithProviderMetadata]:
+        return self._queue.pop(0) if self._queue else None
+
+
+class _LiveProvider(ImageProvider):
+    """Yields a fixed list of images then signals exhaustion, but reports a live
+    provider type (LIVE_SNAPSHOT by default) — models a real camera/stream source."""
+
+    def __init__(self, images: list, ptype: ImageProviderType = ImageProviderType.LIVE_SNAPSHOT):
+        self._queue = list(images)
+        self._ptype = ptype
+
+    def provider_type(self) -> ImageProviderType:
+        return self._ptype
 
     async def start(self) -> None:
         pass
@@ -103,13 +138,15 @@ async def _run_task(
     resume_data=None,
     detect: bool = True,
     tmp_path: Path = None,
+    provider: Optional[ImageProvider] = None,
 ) -> CollectTrainingImagesTask:
     """Run a CollectTrainingImagesTask against a fake provider with all I/O mocked.
 
     Returns the completed task for assertion.
     """
     task = _make_task(params=params, resume_data=resume_data)
-    provider = _FiniteProvider(images)
+    if provider is None:
+        provider = _FiniteProvider(images)
 
     inf_result = MagicMock()
     inf_result.result.detections = [_detection()] if detect else []
@@ -859,3 +896,138 @@ async def test_filter_chain_tag_image_calls_set_image_tag_end_to_end(tmp_path):
     # The tag must not have leaked into the per-bbox tag_uuids sent for the image.
     boxes_payload = mock_img_cls.return_value.update_image_metadata.call_args.args[0].boxes
     assert all("tag-x" not in b.tag_uuids for b in boxes_payload)
+
+
+# ─── Live-provider filename uniqueness (Phase 1, second half) ────────────────
+
+# Live providers with no min_capture_interval fall back to the task-level
+# snapshot_interval/stream_interval rate limit (default 15s / 1s). These tests care
+# about filenames, not rate limiting, so zero out the fallback to avoid a real-time
+# stall between successive getNextImage() calls in the same test run.
+_NO_RATE_LIMIT_PARAMS = {**_PARAMS, "snapshot_interval": 0, "stream_interval": 0}
+
+
+class TestLiveFilenameUniqueness:
+    """Live providers (LIVE_SNAPSHOT / LIVE_STREAM) reset frame_idx to 0 on every
+    task restart, so _save_image must fold a UTC timestamp into their filenames.
+    FIXED providers must keep the old {source}_{frame_idx}.jpg naming exactly,
+    since resume-by-processed_ids depends on it."""
+
+    async def test_fixed_provider_keeps_old_naming(self, tmp_path):
+        images = [_tracked_image(0), _tracked_image(1)]
+        await _run_task(images, detect=True, tmp_path=tmp_path)
+        saved = sorted(p.name for p in tmp_path.rglob("*.jpg"))
+        assert saved == [f"{_SOURCE_FILE}_0.jpg", f"{_SOURCE_FILE}_1.jpg"]
+
+    async def test_live_provider_filenames_include_utc_timestamp(self, tmp_path):
+        images = [_tracked_image(0), _tracked_image(1)]
+        provider = _LiveProvider(images)
+        fixed_now = datetime(2024, 6, 1, 12, 30, 45, tzinfo=timezone.utc)
+        with patch("apps.tasks_server.tasks.CollectTrainingImagesTask.datetime") as mock_dt:
+            mock_dt.now.return_value = fixed_now
+            await _run_task(images, params=_NO_RATE_LIMIT_PARAMS, detect=True, tmp_path=tmp_path, provider=provider)
+        saved = sorted(p.name for p in tmp_path.rglob("*.jpg"))
+        assert saved == [
+            f"{_SOURCE_FILE}_20240601T123045_0.jpg",
+            f"{_SOURCE_FILE}_20240601T123045_1.jpg",
+        ]
+
+    async def test_live_provider_filenames_unique_across_simulated_restart(self, tmp_path):
+        """Simulate a task restart: frame_idx resets to 0 on the second run, but
+        the UTC timestamp differs between the two runs, so no filename collides
+        (a plain {source}_{frame_idx}.jpg scheme would silently overwrite here)."""
+        first_images = [_tracked_image(0)]
+        second_images = [_tracked_image(0)]  # frame_idx reset, as after a restart
+
+        with patch("apps.tasks_server.tasks.CollectTrainingImagesTask.datetime") as mock_dt:
+            mock_dt.now.return_value = datetime(2024, 6, 1, 12, 0, 0, tzinfo=timezone.utc)
+            await _run_task(
+                first_images,
+                params=_NO_RATE_LIMIT_PARAMS,
+                detect=True,
+                tmp_path=tmp_path,
+                provider=_LiveProvider(first_images),
+            )
+
+            mock_dt.now.return_value = datetime(2024, 6, 1, 12, 5, 0, tzinfo=timezone.utc)
+            await _run_task(
+                second_images,
+                params=_NO_RATE_LIMIT_PARAMS,
+                detect=True,
+                tmp_path=tmp_path,
+                provider=_LiveProvider(second_images),
+            )
+
+        jpg_files = sorted(p.name for p in tmp_path.rglob("*.jpg"))
+        assert len(jpg_files) == 2
+        assert len(set(jpg_files)) == 2  # no collision despite frame_idx resetting to 0
+
+
+class TestProcessedIdsLiveVsFixed:
+    """processed_ids must only accumulate for FIXED providers — tracking it for
+    live providers would grow resume-data JSON unboundedly over a long-lived run."""
+
+    async def test_live_provider_processed_ids_stays_empty(self, tmp_path):
+        images = [_tracked_image(0), _tracked_image(1)]
+        provider = _LiveProvider(images)
+        task = await _run_task(images, params=_NO_RATE_LIMIT_PARAMS, detect=True, tmp_path=tmp_path, provider=provider)
+        assert task._resume_data["processed_ids"] == []
+        assert task._resume_data["images_saved"] == 2
+
+    async def test_fixed_provider_processed_ids_still_populated(self, tmp_path):
+        images = [_tracked_image(0), _tracked_image(1)]
+        task = await _run_task(images, detect=True, tmp_path=tmp_path)  # default _FiniteProvider is FIXED
+        saved_ids = set(task._resume_data["processed_ids"])
+        assert saved_ids == {f"{_SOURCE}:0", f"{_SOURCE}:1"}
+
+
+class TestSourceLevelIntervalOverride:
+    """A provider with min_capture_interval > 0 paces itself inside getNextImage();
+    the task-level _rate_limits fallback (snapshot_interval/stream_interval) must
+    not also apply to it, or the two intervals compound."""
+
+    async def test_self_pacing_provider_not_rate_limited_by_task_interval(self, tmp_path):
+        images = [_tracked_image(0), _tracked_image(1)]
+        provider = _LiveProvider(images, ptype=ImageProviderType.LIVE_SNAPSHOT)
+        provider.min_capture_interval = 5.0  # provider paces itself
+
+        # Freeze the clock: the task-level fallback (snapshot_interval defaults to 15s)
+        # would never re-fetch under a frozen clock if it were still being applied —
+        # the test would hang (and time out) instead of completing.
+        with patch("apps.tasks_server.tasks.CollectTrainingImagesTask.time.perf_counter", return_value=100.0):
+            task = await _run_task(images, detect=True, tmp_path=tmp_path, provider=provider)
+
+        assert task._resume_data["images_saved"] == 2
+
+    async def test_interval_longer_than_fetch_timeout_is_not_dropped(self, tmp_path):
+        """A source configured slower than _FETCH_TIMEOUT_S must still work.
+
+        The pacing sleep happens inside getNextImage(), so if the fetch budget did not
+        sit on top of min_capture_interval, a camera polled once a minute would time out
+        on every call, exhaust _MAX_RETRIES and be dropped from the active set on its
+        very first fetch — despite behaving exactly as configured.
+        """
+        images = [_tracked_image(0)]
+        provider = _LiveProvider(images, ptype=ImageProviderType.LIVE_SNAPSHOT)
+        # Scaled-down stand-ins for the real ratio (a 60s source vs a 30s fetch timeout):
+        # the provider's internal pacing sleep is deliberately longer than the bare
+        # fetch timeout, so the test fails unless the budget includes the interval.
+        pacing_sleep = 0.2
+        provider.min_capture_interval = 1.0
+
+        real_get = provider.getNextImage
+
+        async def _paced_get():
+            # Real self-pacing providers sleep inside getNextImage() before fetching.
+            await asyncio.sleep(pacing_sleep)
+            return await real_get()
+
+        provider.getNextImage = _paced_get
+
+        # Bare timeout (0.05s) < pacing sleep (0.2s): without the fix every call raises
+        # TimeoutError, all _MAX_RETRIES are burned and the provider is dropped, so
+        # images_saved would be 0. With the fix the budget is 0.05 + 1.0 = 1.05s.
+        with patch.object(CollectTrainingImagesTask, "_FETCH_TIMEOUT_S", 0.05):
+            task = await _run_task(images, detect=True, tmp_path=tmp_path, provider=provider)
+
+        assert task._resume_data["images_saved"] == 1
