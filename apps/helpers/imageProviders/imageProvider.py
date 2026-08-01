@@ -30,6 +30,11 @@ class ImageWithProviderMetadata:
 
 class ImageProvider:
     source_name: Optional[str] = None
+    # Minimum seconds between frames this provider will return, self-paced inside
+    # getNextImage() (snapshots sleep, streams drain to the newest frame). 0.0 = unset;
+    # the task-level fallback interval (keyed by ImageProviderType) applies instead.
+    # Subclasses that support source-level pacing assign this in __init__.
+    min_capture_interval: float = 0.0
 
     def set_source_identity(self, name: str) -> None:
         """Sets the human-readable identity of the source this provider reads from,

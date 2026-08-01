@@ -6,6 +6,7 @@ import time
 import uuid as uuid_module
 from collections import deque
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 from uuid import uuid4
@@ -219,7 +220,7 @@ class CollectTrainingImagesTask(Task):
         providers: list[ImageProvider] = []
         for source_uuid in self._source_uuids:
             try:
-                provider = source_helper.get_image_provider(source_uuid)
+                provider = await asyncio.to_thread(source_helper.get_image_provider, source_uuid)
             except ValueError:
                 self.log(f"Failed to get provider for {source_uuid}")
                 continue
@@ -428,16 +429,26 @@ class CollectTrainingImagesTask(Task):
                         break
 
                     # Rate-limit LIVE providers: skip until enough time has elapsed.
+                    # Providers with their own min_capture_interval pace themselves inside
+                    # getNextImage() (source-level interval overrides the task-level fallback) —
+                    # skip the task-level check for them so the two intervals don't compound.
                     ptype = provider.provider_type()
-                    if (interval := _rate_limits.get(ptype)) is not None:
+                    if provider.min_capture_interval <= 0 and (interval := _rate_limits.get(ptype)) is not None:
                         if time.perf_counter() - last_fetch.get(id(provider), 0) < interval:
                             continue
 
                     t0 = time.perf_counter()  # PERF
                     provided = None
+                    # A self-pacing provider sleeps for up to min_capture_interval *inside*
+                    # getNextImage() before it even starts fetching. That scheduled wait is not
+                    # a stall, so the fetch budget has to sit on top of it — otherwise any
+                    # source configured slower than _FETCH_TIMEOUT_S (e.g. a camera polled once
+                    # a minute) times out on every call, burns all _MAX_RETRIES attempts and is
+                    # dropped from `active` on its very first fetch despite behaving correctly.
+                    fetch_timeout = self._FETCH_TIMEOUT_S + max(0.0, provider.min_capture_interval)
                     for _attempt in range(self._MAX_RETRIES):
                         try:
-                            provided = await asyncio.wait_for(provider.getNextImage(), timeout=self._FETCH_TIMEOUT_S)
+                            provided = await asyncio.wait_for(provider.getNextImage(), timeout=fetch_timeout)
                             break
                         except asyncio.TimeoutError:
                             if _attempt < self._MAX_RETRIES - 1:
@@ -461,9 +472,16 @@ class CollectTrainingImagesTask(Task):
                     last_fetch[id(provider)] = t_fetch
 
                     # Build a stable unique ID when the provider gives us source + frame_idx.
-                    # Used to skip already-processed frames on resume (file-based providers only).
+                    # Used to skip already-processed frames on resume — FIXED providers only:
+                    # live providers now also populate source/frame_idx (Phase 1), but their
+                    # frame_idx resets on every task restart and runs unbounded, so tracking
+                    # them would grow processed_ids/resume-data JSON without bound.
                     unique_id: Optional[str] = None
-                    if provided.metadata.source is not None and provided.metadata.frame_idx is not None:
+                    if (
+                        ptype == ImageProviderType.FIXED
+                        and provided.metadata.source is not None
+                        and provided.metadata.frame_idx is not None
+                    ):
                         unique_id = f"{provided.metadata.source}:{provided.metadata.frame_idx}"
                     if unique_id and unique_id in self._processed_ids:
                         logger.debug(f"Skipping already-processed: {unique_id}")
@@ -529,10 +547,10 @@ class CollectTrainingImagesTask(Task):
                             # Hand off to the dedup coroutine.  This may block briefly if
                             # the worker is still processing the previous frame (queue
                             # maxsize=1), providing natural backpressure.
-                            await self._dedup_queue.put((provided, matching))
+                            await self._dedup_queue.put((provided, matching, ptype))
                         else:
                             save_task = asyncio.create_task(
-                                self._save_image(images_api, provided, matching, files_root)
+                                self._save_image(images_api, provided, matching, files_root, ptype)
                             )
                             self._pending_saves.append((save_task, unique_id))
                     elif force_save and not self._enable_dedup:
@@ -542,7 +560,7 @@ class CollectTrainingImagesTask(Task):
                         # `all(bbox_flags)` vacuously true, which would wrongly discard the
                         # frame under duplicate_action="discard" — narrow edge case, not
                         # worth the complexity of special-casing dedup for an empty bbox set.
-                        save_task = asyncio.create_task(self._save_image(images_api, provided, [], files_root))
+                        save_task = asyncio.create_task(self._save_image(images_api, provided, [], files_root, ptype))
                         self._pending_saves.append((save_task, unique_id))
 
                     if self._data_req_flag.is_set():
@@ -873,12 +891,22 @@ class CollectTrainingImagesTask(Task):
         provided: ImageWithProviderMetadata,
         matching: list,
         files_root: Path,
+        provider_type: ImageProviderType = ImageProviderType.FIXED,
     ) -> Optional[str]:
         """Writes image to disk and persists bounding-box metadata. Returns filename on success, None on failure."""
         t_save_start = time.perf_counter()  # PERF
         source_name = ImageHelper.sanitize_filename(provided.metadata.source or "unknown")
         frame_idx = provided.metadata.frame_idx or 0
-        filename = f"{source_name}_{frame_idx}.jpg"
+        if provider_type == ImageProviderType.FIXED:
+            # Stable naming preserved exactly: resume-by-processed_ids depends on it.
+            filename = f"{source_name}_{frame_idx}.jpg"
+        else:
+            # Live providers (LIVE_SNAPSHOT / LIVE_STREAM) reset frame_idx to 0 on every
+            # task restart, so frame_idx alone would overwrite earlier files across
+            # restarts. A UTC timestamp (second resolution) makes the filename unique
+            # across restarts; frame_idx already guarantees uniqueness within a run.
+            utc_stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
+            filename = f"{source_name}_{utc_stamp}_{frame_idx}.jpg"
         rel_path = str(Path(self._output_dir) / filename)
         abs_path = files_root / self._output_dir / filename
         await asyncio.to_thread(abs_path.parent.mkdir, parents=True, exist_ok=True)
@@ -976,14 +1004,18 @@ class CollectTrainingImagesTask(Task):
                 if item is None:
                     break  # sentinel — main loop is done
 
-                provided, matching = item
+                provided, matching, ptype = item
 
                 # When action is 'ignore', skip dedup entirely and save without any tagging.
                 if self._duplicate_action == "ignore":
                     unique_id = None
-                    if provided.metadata.source is not None and provided.metadata.frame_idx is not None:
+                    if (
+                        ptype == ImageProviderType.FIXED
+                        and provided.metadata.source is not None
+                        and provided.metadata.frame_idx is not None
+                    ):
                         unique_id = f"{provided.metadata.source}:{provided.metadata.frame_idx}"
-                    save_task = asyncio.create_task(self._save_image(images_api, provided, matching, files_root))
+                    save_task = asyncio.create_task(self._save_image(images_api, provided, matching, files_root, ptype))
                     self._pending_saves.append((save_task, unique_id))
                     continue
 
@@ -1074,9 +1106,13 @@ class CollectTrainingImagesTask(Task):
                         self.log(f"Dedup: {self._dup_frames_discarded} duplicate frames discarded so far")
                     continue
 
-                save_task = asyncio.create_task(self._save_image(images_api, provided, matching, files_root))
+                save_task = asyncio.create_task(self._save_image(images_api, provided, matching, files_root, ptype))
                 unique_id: Optional[str] = None
-                if provided.metadata.source is not None and provided.metadata.frame_idx is not None:
+                if (
+                    ptype == ImageProviderType.FIXED
+                    and provided.metadata.source is not None
+                    and provided.metadata.frame_idx is not None
+                ):
                     unique_id = f"{provided.metadata.source}:{provided.metadata.frame_idx}"
                 self._pending_saves.append((save_task, unique_id))
                 # Must wait for the save to complete before checking the next frame:

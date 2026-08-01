@@ -45,6 +45,7 @@ class UrlImageProvider(ImageProvider):
         self._request = urllib.request.Request(url)
         self._ignore_ssl_errors: bool = ignore_ssl_errors
         self._min_capture_interval: float = min_capture_interval
+        self.min_capture_interval: float = min_capture_interval
         self._next_capture_time: float = 0.0
         self._frame_idx: int = 0
         if bust_cache:

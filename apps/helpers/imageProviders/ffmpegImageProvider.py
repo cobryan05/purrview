@@ -74,6 +74,7 @@ class FfmpegImageProvider(ImageProvider):
         self._video_path: str = video_path.strip()
         self._ffmpeg_args: dict = output_args
         self._min_capture_interval: float = min_capture_interval
+        self.min_capture_interval: float = min_capture_interval
         self._next_capture_time: float = 0.0
         self._frame_idx: int = 0
         self._restart_count: int = 0
