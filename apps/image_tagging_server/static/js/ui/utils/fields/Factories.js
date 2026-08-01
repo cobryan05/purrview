@@ -335,5 +335,9 @@ export const fieldFactories = {
   },
 };
 
-// 'number' is an alias for 'int' — both render a numeric text input.
+// 'number' and 'float' are aliases for 'int' — all render a numeric text input.
+// ('int' already parses with parseFloat, so fractional values round-trip fine.)
+// Without the 'float' entry, min_capture_interval falls through to the
+// "Unhandled type" text field in SchemaField._createInputField.
 fieldFactories.number = fieldFactories.int;
+fieldFactories.float = fieldFactories.int;

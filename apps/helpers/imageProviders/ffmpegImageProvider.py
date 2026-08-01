@@ -12,7 +12,12 @@ import numpy as np
 from apps import APPS, APPS_CONFIG
 from apps.helpers.streams.ffmpegStreamerIn import FFmpegStreamerIn
 
-from .imageProvider import ImageProvider, ImageProviderType, ImageWithProviderMetadata
+from .imageProvider import (
+    ImageProvider,
+    ImageProviderMetadata,
+    ImageProviderType,
+    ImageWithProviderMetadata,
+)
 from .Registry import register_image_provider
 
 logging.basicConfig()
@@ -29,16 +34,36 @@ FFMPEG_START_TIMEOUT = 30.0
 
 @register_image_provider()
 class FfmpegImageProvider(ImageProvider):
+    # Bound on consecutive stream-restart attempts inside getNextImage() so a stream that
+    # stops yielding data (EOF, dead source, etc.) can't spin astop()/astart() forever.
+    _MAX_STREAM_RESTARTS = 3
+    _RESTART_BACKOFF = 0.5
+
+    # Injectable seams for tests (patch on the class/instance instead of the global
+    # asyncio/time modules, which are shared process-wide and unsafe to monkeypatch
+    # while other tests may be running concurrently).
+    _sleep = staticmethod(asyncio.sleep)
+    _now = staticmethod(time.monotonic)
+
     @classmethod
     def provider_type(cls) -> ImageProviderType:
         return ImageProviderType.LIVE_STREAM
 
-    def __init__(self, video_path: str, loop: bool = True, rtsp_relay: bool = True):
+    def __init__(
+        self,
+        video_path: str,
+        loop: bool = True,
+        rtsp_relay: bool = True,
+        min_capture_interval: float = 0.0,
+    ):
         output_args = {
             "format": "rawvideo",
             "pix_fmt": "rgb24",
             "codec": "rawvideo",
         }  # decode raw frames
+        if min_capture_interval > 0:
+            # Let ffmpeg itself decimate frames rather than decoding+discarding in Python.
+            output_args["vf"] = f"fps=1/{min_capture_interval}"
         self._video_path: str = video_path.strip()
         self._loop: bool = loop
         self._frame_size: Optional[Tuple[int, int]] = None
@@ -48,6 +73,10 @@ class FfmpegImageProvider(ImageProvider):
         self._stream: Optional[FFmpegStreamerIn] = None
         self._video_path: str = video_path.strip()
         self._ffmpeg_args: dict = output_args
+        self._min_capture_interval: float = min_capture_interval
+        self._next_capture_time: float = 0.0
+        self._frame_idx: int = 0
+        self._restart_count: int = 0
         if rtsp_relay and video_path.lower().startswith("rtsp:"):
             relay_host, relay_port = (
                 APPS_CONFIG[APPS.RELAY_BUFFER_SERVER].host,
@@ -90,13 +119,17 @@ class FfmpegImageProvider(ImageProvider):
             stream_url = self._video_path
 
         self._stream = FFmpegStreamerIn(stream_url, output_args=self._ffmpeg_args)
-        await asyncio.to_thread(self._stream.start)
+        await self._stream.astart()
 
     async def stop(self) -> None:
-        await asyncio.to_thread(self._stream.stop)
+        if self._stream is not None:
+            await self._stream.astop()
         if self._rtsp_relay_api:
-            api: relay_buffer_client.StreamsApi = relay_buffer_client.StreamsApi(self._rtsp_relay_api)
-            await asyncio.to_thread(api.destroy_stream, self._relayed_name)
+            try:
+                api: relay_buffer_client.StreamsApi = relay_buffer_client.StreamsApi(self._rtsp_relay_api)
+                await asyncio.to_thread(api.destroy_stream, self._relayed_name)
+            except Exception as e:
+                logger.error(f"Failed to destroy relay stream {self._relayed_name}: {e}")
 
     async def getNextImage(self) -> Optional[ImageWithProviderMetadata]:
         if self._frame_size is None:
@@ -108,28 +141,85 @@ class FfmpegImageProvider(ImageProvider):
             self._frame_size = self._stream.get_frame_size()
         width, height = self._frame_size
         frame_size_bytes = width * height * 3
+
+        if self._min_capture_interval > 0:
+            now = self._now()
+            if now < self._next_capture_time:
+                await self._sleep(self._next_capture_time - now)
+
         while True:
+            frame_bytes = await self._read_latest_frame(frame_size_bytes)
+
+            if frame_bytes:
+                self._restart_count = 0  # a successful frame clears cumulative restart history
+
+                if self._min_capture_interval > 0:
+                    self._next_capture_time = self._now() + self._min_capture_interval
+
+                image = np.frombuffer(frame_bytes, dtype=np.uint8).reshape((height, width, 3))
+                frame_idx = self._frame_idx
+                self._frame_idx += 1
+                return ImageWithProviderMetadata(
+                    image, metadata=ImageProviderMetadata(source=self.source_name, frame_idx=frame_idx)
+                )
+
+            if not self._loop:
+                return None
+
+            self._restart_count += 1
+            if self._restart_count > self._MAX_STREAM_RESTARTS:
+                logger.error(
+                    f"Giving up on stream {self._stream} after {self._MAX_STREAM_RESTARTS} consecutive "
+                    "restart attempts with no data"
+                )
+                return None
+
+            logger.debug(
+                f"Looping stream {self._stream} (restart attempt {self._restart_count}/{self._MAX_STREAM_RESTARTS})"
+            )
+            await self._stream.astop()
+            await self._stream.astart()
+            self._buffer = b""  # Clear the buffer
+            await self._sleep(self._RESTART_BACKOFF)
+
+    async def _read_latest_frame(self, frame_size_bytes: int) -> Optional[bytes]:
+        """Returns the freshest full frame available, draining stale queued frames first.
+
+        When the underlying streamer's queue items are whole frames (the normal case for this
+        provider, since output is always rawvideo), drains via read_nowait() to the newest item
+        and only blocks on read_async() if nothing was queued. Falls back to chunk accumulation
+        if the streamer somehow isn't frame-aligned yet.
+        """
+        if self._stream.is_frame_aligned():
+            latest: Optional[bytes] = None
+            drained = self._stream.read_nowait()
+            while drained is not None:
+                latest = drained
+                drained = self._stream.read_nowait()
+
+            if latest is not None:
+                return latest
+
+            try:
+                return await asyncio.wait_for(self._stream.read_async(), timeout=STREAM_READ_TIMEOUT)
+            except asyncio.TimeoutError:
+                logger.error(f"FFmpeg stream read timed out after {STREAM_READ_TIMEOUT} seconds")
+                return None
+
+        # Not frame-aligned yet (e.g. metadata just arrived) — accumulate chunks the old way.
+        while len(self._buffer) < frame_size_bytes:
             try:
                 chunk: Optional[bytes] = await asyncio.wait_for(self._stream.read_async(), timeout=STREAM_READ_TIMEOUT)
             except asyncio.TimeoutError:
                 logger.error(f"FFmpeg stream read timed out after {STREAM_READ_TIMEOUT} seconds")
                 chunk = None
-            if not chunk and self._loop:  # If no data is returned, restart the stream
-                self._stream.stop()
-                self._stream.start()
-                self._buffer = b""  # Clear the buffer
-                logger.debug(f"Looping stream {self._stream}")
-                continue
-            if chunk:
-                self._buffer += chunk
+            if not chunk:
+                return None
+            self._buffer += chunk
 
-            if len(self._buffer) >= frame_size_bytes:
-                # Extract one full frame from the buffer
-                frame_bytes = self._buffer[:frame_size_bytes]
-                self._buffer = self._buffer[frame_size_bytes:]  # Keep remaining data in the buffer
-
-                image = np.frombuffer(frame_bytes, dtype=np.uint8).reshape((height, width, 3))
-                return ImageWithProviderMetadata(image)
+        frame_bytes = self._buffer[:frame_size_bytes]
+        self._buffer = self._buffer[frame_size_bytes:]
+        return frame_bytes
 
     @classmethod
     def params_schema(cls) -> dict[str, dict[str, Any]]:
@@ -162,5 +252,12 @@ class FfmpegImageProvider(ImageProvider):
                 "required": False,
                 "default": True,
                 "description": "Whether to loop the video",
+            },
+            "min_capture_interval": {
+                "label": "Min Capture Interval (s)",
+                "type": "float",
+                "required": False,
+                "default": 0.0,
+                "description": "Minimum seconds between frames returned by this source. 0 = no source-level limit (the task's own interval applies).",
             },
         }

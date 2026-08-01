@@ -4,18 +4,30 @@ import asyncio
 import base64
 import random
 import ssl
+import time
 import urllib.request
 from typing import Any, Optional
 
 import cv2
 import numpy as np
 
-from .imageProvider import ImageProvider, ImageProviderType, ImageWithProviderMetadata
+from .imageProvider import (
+    ImageProvider,
+    ImageProviderMetadata,
+    ImageProviderType,
+    ImageWithProviderMetadata,
+)
 from .Registry import register_image_provider
 
 
 @register_image_provider()
 class UrlImageProvider(ImageProvider):
+    # Injectable seams for tests (patch on the class/instance instead of the global
+    # asyncio/time modules, which are shared process-wide and unsafe to monkeypatch
+    # while other tests may be running concurrently).
+    _sleep = staticmethod(asyncio.sleep)
+    _now = staticmethod(time.monotonic)
+
     @classmethod
     def provider_type(cls) -> ImageProviderType:
         return ImageProviderType.LIVE_SNAPSHOT
@@ -27,10 +39,14 @@ class UrlImageProvider(ImageProvider):
         password: str = None,
         bust_cache: bool = False,
         ignore_ssl_errors: bool = True,
+        min_capture_interval: float = 0.0,
     ):
         self._url: str = url
         self._request = urllib.request.Request(url)
         self._ignore_ssl_errors: bool = ignore_ssl_errors
+        self._min_capture_interval: float = min_capture_interval
+        self._next_capture_time: float = 0.0
+        self._frame_idx: int = 0
         if bust_cache:
             separator = "&" if "?" in url else "?"
             self._url += f"{separator}{random.randint(100000, 999999)}"
@@ -42,8 +58,21 @@ class UrlImageProvider(ImageProvider):
         return f"UrlImageProvider [{self._url}]"
 
     async def getNextImage(self) -> Optional[ImageWithProviderMetadata]:
+        if self._min_capture_interval > 0:
+            now = self._now()
+            if now < self._next_capture_time:
+                await self._sleep(self._next_capture_time - now)
+
         frame = await asyncio.to_thread(self._downloadImage)
-        return ImageWithProviderMetadata(frame)
+
+        if self._min_capture_interval > 0:
+            self._next_capture_time = self._now() + self._min_capture_interval
+
+        frame_idx = self._frame_idx
+        self._frame_idx += 1
+        return ImageWithProviderMetadata(
+            frame, metadata=ImageProviderMetadata(source=self.source_name, frame_idx=frame_idx)
+        )
 
     def _downloadImage(self):
         if self._ignore_ssl_errors:
@@ -98,5 +127,12 @@ class UrlImageProvider(ImageProvider):
                 "required": False,
                 "description": "Ignore SSL certificate errors",
                 "default": True,
+            },
+            "min_capture_interval": {
+                "label": "Min Capture Interval (s)",
+                "type": "float",
+                "required": False,
+                "default": 0.0,
+                "description": "Minimum seconds between frames returned by this source. 0 = no source-level limit (the task's own interval applies).",
             },
         }

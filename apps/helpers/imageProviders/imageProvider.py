@@ -29,6 +29,13 @@ class ImageWithProviderMetadata:
 
 
 class ImageProvider:
+    source_name: Optional[str] = None
+
+    def set_source_identity(self, name: str) -> None:
+        """Sets the human-readable identity of the source this provider reads from,
+        used to name notices, status rows and output filenames."""
+        self.source_name = name
+
     @classmethod
     def provider_type(cls) -> ImageProviderType:
         """Return the behavioral type of this provider. Default is LIVE_STREAM (safest fallback)."""
