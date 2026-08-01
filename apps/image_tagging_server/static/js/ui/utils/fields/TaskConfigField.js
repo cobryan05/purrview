@@ -8,6 +8,11 @@ import { pickExistingModal } from '/app-static/js/ui/utils/pickExistingModal.js'
 
 const FROM_EXISTING_SENTINEL = '__from_existing__';
 
+// Mirrors Task.InternalKeys.PERSISTENT ("_persistent") in apps/tasks_server/tasks/Task.py.
+// The backend stuffs this into a task config's `params` dict; there's no dedicated
+// field on the update endpoint, so it has to travel inside `params` on edits.
+const PERSISTENT_PARAM_KEY = '_persistent';
+
 export class TaskConfigField extends Field {
   constructor({ ...rest }) {
     super(rest);
@@ -31,6 +36,8 @@ export class TaskConfigField extends Field {
     instance._invalidTypename = isInvalid ? typename : null;
     instance._textField = new TextField({ value: name, placeholder: 'Enter new config name' });
     instance._schemaField = await SchemaField.create({ schema: schema ?? {}, values: instance._value || {} });
+    // Default false — this must be explicit opt-in (see PERSISTENT_PARAM_KEY comment above).
+    instance._persistent = (instance._value || {})[PERSISTENT_PARAM_KEY] === true;
     const taskTypes = await fetchTaskTypeList();
     const taskTypeOptions = [
       { key: FROM_EXISTING_SENTINEL, text: 'From Existing...' },
@@ -75,6 +82,8 @@ export class TaskConfigField extends Field {
   async _prefillFrom({ typename, params, name }) {
     this._dropDownField.setValue(typename);
     this._textField.setValue(`Copy of ${name}`);
+    this._persistent = (params || {})[PERSISTENT_PARAM_KEY] === true;
+    if (this._persistentChk) this._persistentChk.checked = this._persistent;
     try {
       const schema = await fetchTaskTypeSchemas([typename]).then(s => s.get(typename));
       this._schemaField = await SchemaField.create({ schema, values: params });
@@ -126,11 +135,31 @@ export class TaskConfigField extends Field {
     this._schemaContainer = schemaRow; // remember container for re-render
     await this._rerenderSchema();
 
+    // Persistent (auto-restart-after-reboot) opt-in checkbox.
+    const persistentRow = document.createElement('div');
+    persistentRow.style.cssText = 'margin:0.5em 0; font-size:0.85em;';
+    const persistentLabel = document.createElement('label');
+    persistentLabel.style.cssText = 'display:flex; align-items:center; gap:0.4em; cursor:pointer;';
+    const persistentChk = document.createElement('input');
+    persistentChk.type = 'checkbox';
+    persistentChk.checked = this._persistent === true;
+    persistentChk.addEventListener('change', () => {
+      this._persistent = persistentChk.checked;
+    });
+    persistentLabel.append(persistentChk, 'Restart automatically after a server restart');
+    persistentRow.appendChild(persistentLabel);
+    const persistentHelp = document.createElement('div');
+    persistentHelp.textContent = 'If checked, this task resumes on its own after the container restarts (e.g. crash, redeploy). Leave unchecked for one-off or transient runs.';
+    persistentHelp.style.cssText = 'color:#888; margin-left:1.5em;';
+    persistentRow.appendChild(persistentHelp);
+    this._persistentChk = persistentChk;
+
     container.appendChild(topRow);
     if (this._uuid) {
       container.appendChild(uuidInfo);
     }
     container.appendChild(schemaRow);
+    container.appendChild(persistentRow);
     return container;
   }
 
@@ -151,14 +180,28 @@ export class TaskConfigField extends Field {
     container.appendChild(await this._dropDownField.renderView());
     container.appendChild(await this._textField.renderView());
 
+    if (this._persistent) {
+      const badge = document.createElement('span');
+      badge.textContent = '🔁 persistent';
+      badge.title = 'Restarts automatically after a server restart';
+      badge.style.cssText = 'font-size:0.75em; background:#e0e0e0; border-radius:3px; padding:1px 5px; color:#444;';
+      container.appendChild(badge);
+    }
+
     return container;
   }
 
   getValue() {
+    const persistent = this._persistent === true;
     return {
       name: this._textField.getValue(),
       typename: this._dropDownField.getValue(),
-      params: this._schemaField.getValue()
+      // `_persistent` travels inside params too — the update-config endpoint has no
+      // dedicated `persistent` field and just replaces `params` wholesale, so this is
+      // the only way the flag survives an edit. `persistent` (top-level) is what the
+      // create-config endpoint reads.
+      params: { ...this._schemaField.getValue(), [PERSISTENT_PARAM_KEY]: persistent },
+      persistent,
     };
   }
 }

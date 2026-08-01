@@ -3,6 +3,7 @@
 import asyncio
 import logging
 import sys
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Union
 
@@ -25,6 +26,15 @@ logger.setLevel(logging.DEBUG)
 class Manager:
     """Manages running tasks and coordinates with db_server and inference_server."""
 
+    # Crash-loop guard for PERSISTENT auto-restart (see _auto_restart_with_guard):
+    # stop auto-restarting an instance once it has crashed and been restarted this
+    # many times inside a rolling window. The window resets (count -> 1) the next
+    # time a crash is seen after the window has elapsed since it started — this is
+    # also how a task that crashes only occasionally (e.g. once a month) decays back
+    # to a clean slate instead of being permanently barred.
+    _CRASH_LOOP_MAX_RESTARTS: int = 5
+    _CRASH_LOOP_WINDOW: timedelta = timedelta(hours=1)
+
     def __init__(
         self,
         db_api_client: db_client.ApiClient,
@@ -36,6 +46,9 @@ class Manager:
         self._running_tasks: Dict[str, TaskInfo] = {}
         self._completion_tasks: set[asyncio.Task] = set()
         self._pending_oneshot_deletes: set[str] = set()
+        # monotonic time.monotonic() of the last time we asked each running task
+        # (keyed by instance uuid) to checkpoint. See _checkpoint_running_tasks.
+        self._last_checkpoint_request: Dict[str, float] = {}
         self._config = {
             "db_server": db_api_client.configuration.host,
             "inference_server": inference_api_client.configuration.host,
@@ -515,12 +528,14 @@ class Manager:
         # can resume it.  If there is no checkpoint there is nothing to resume from,
         # so mark it as an error so it's clearly visible but not misleadingly resumable.
         running_tasks = [inst for inst in all_instances if inst.status == TaskStatus.RUNNING]
+        resumable_instances: List[db_models.TaskInstanceRead] = []
         if running_tasks:
             coros = []
             for inst in running_tasks:
                 if inst.resume_data:
                     recovered_status = db_models.TaskStatus.PAUSED
                     logger.info(f"Task {inst.uuid} interrupted with checkpoint — marking paused (resumable)")
+                    resumable_instances.append(inst)
                 else:
                     recovered_status = db_models.TaskStatus.ERROR
                     logger.info(f"Task {inst.uuid} interrupted without checkpoint — marking error")
@@ -532,6 +547,29 @@ class Manager:
                     )
                 )
             await asyncio.gather(*coros)
+
+        # Auto-restart PERSISTENT configs whose interrupted instance recovered with a
+        # checkpoint (resumable). This is the only path that restarts a task without
+        # explicit user action, so it stays strictly opt-in per config (a crashed
+        # TrainModelTask, or any config that never set _persistent, is left PAUSED for
+        # the user to resume manually) and is subject to the crash-loop guard.
+        if resumable_instances:
+            config_uuids = list({inst.config_uuid for inst in resumable_instances})
+            configs_resp = await asyncio.to_thread(
+                TasksApi(self._db_api_client).list_task_configs,
+                uuids=config_uuids,
+            )
+            configs = configs_resp.configs or {}
+            for inst in resumable_instances:
+                config = configs.get(inst.config_uuid)
+                if config is None:
+                    continue
+                if not config.params.get(Task.InternalKeys.PERSISTENT, False):
+                    continue
+                try:
+                    await self._auto_restart_with_guard(config, inst)
+                except Exception:
+                    logger.exception(f"Failed to auto-restart persistent task instance {inst.uuid}")
 
     async def _check_stale_tasks(self) -> None:
         """Mark running tasks as error when their heartbeat has gone stale.
@@ -575,12 +613,143 @@ class Manager:
         except Exception:
             logger.exception("Error checking stale tasks")
 
+    async def _checkpoint_running_tasks(self) -> None:
+        """Periodic checkpoint pass, run from the 60s worker loop.
+
+        Handshake with each task (mirrors Task's own docstring on _data_req_flag /
+        _data_ready_flag): request and collect are deliberately two separate,
+        non-blocking steps run every pass, so one slow task can never stall this
+        loop or delay checkpointing of any other task.
+
+          1. Collect: for every running task, check is_data_ready(). A task notices
+             _data_req_flag at its own next convenient point (ideally promptly — see
+             the hoisted check at the top of CollectTrainingImagesTask's main loop),
+             builds resume data, and sets _data_ready_flag. That may happen on this
+             pass or several passes later for a slow task; whenever it does, we pick
+             it up here and write it via the NARROW set_task_instance_resume_data
+             path only — never _save_task_data, which also writes result/status/
+             ended_at and would clobber a task that is still running.
+          2. Request: if this task's CHECKPOINT_INTERVAL has elapsed since we last
+             asked it to checkpoint, call request_data_update(). This only sets an
+             asyncio.Event — it never blocks and never waits for the task to react.
+
+        Because request and collect are decoupled, a task with CHECKPOINT_INTERVAL
+        shorter than 60s (this loop's tick) still only actually writes to the DB
+        once it responds — it is not force-checkpointed on every tick.
+        """
+        now = time.monotonic()
+        # Prune stale entries for tasks that are no longer running so this dict
+        # doesn't grow unboundedly across a long server uptime.
+        self._last_checkpoint_request = {
+            uuid: t for uuid, t in self._last_checkpoint_request.items() if uuid in self._running_tasks
+        }
+        for uuid, task_info in list(self._running_tasks.items()):
+            task = task_info.task
+            if task is None or task_info.instance is None:
+                continue
+            if task_info.instance.status != TaskStatus.RUNNING:
+                continue
+
+            if task.is_data_ready():
+                try:
+                    await asyncio.to_thread(
+                        TasksApi(self._db_api_client).set_task_instance_resume_data,
+                        uuid,
+                        db_models.SetTaskResumeDataPayload(resume_data=task.get_resume_data()),
+                    )
+                    task.clear_data_ready()
+                except Exception:
+                    logger.exception(f"Failed to write periodic checkpoint for task {uuid}")
+
+            interval = getattr(task, "CHECKPOINT_INTERVAL", Task.CHECKPOINT_INTERVAL)
+            last_request = self._last_checkpoint_request.get(uuid, 0.0)
+            if (now - last_request) >= interval:
+                self._last_checkpoint_request[uuid] = now
+                task.request_data_update()
+
+    async def _auto_restart_with_guard(
+        self, config: db_models.TaskConfigRead, inst: db_models.TaskInstanceRead
+    ) -> None:
+        """Auto-resume a PERSISTENT task instance recovered (with a checkpoint) after
+        an unexpected restart, subject to a crash-loop guard.
+
+        The restart counter + window-start timestamp live on the task CONFIG's params
+        (Task.InternalKeys.RESTART_INFO) rather than the instance's resume_data: that
+        blob is owned by the task itself and gets wholesale-replaced the next time it
+        checkpoints (Task._build_resume_data), which would silently erase this
+        bookkeeping. Policy: stop auto-restarting once an instance has been restarted
+        more than _CRASH_LOOP_MAX_RESTARTS times inside _CRASH_LOOP_WINDOW; a restart
+        seen after the window has elapsed starts a fresh window (count -> 1), which is
+        also how the guard decays for a task that only crashes occasionally.
+        """
+        now = datetime.now(timezone.utc)
+        restart_info = dict(config.params.get(Task.InternalKeys.RESTART_INFO) or {})
+        window_start: Optional[datetime] = None
+        raw_window_start = restart_info.get("window_start")
+        if raw_window_start:
+            try:
+                window_start = datetime.fromisoformat(raw_window_start)
+            except ValueError:
+                window_start = None
+
+        if window_start is None or (now - window_start) > self._CRASH_LOOP_WINDOW:
+            count = 0
+            window_start = now
+        else:
+            count = restart_info.get("count", 0)
+        count += 1
+
+        new_params = {
+            **config.params,
+            Task.InternalKeys.RESTART_INFO: {"count": count, "window_start": window_start.isoformat()},
+        }
+
+        if count > self._CRASH_LOOP_MAX_RESTARTS:
+            logger.error(
+                "Crash-loop guard tripped for task config %r (%s): %d restarts within %s — "
+                "NOT auto-restarting instance %s; marking it ERROR",
+                config.name,
+                config.uuid,
+                count,
+                self._CRASH_LOOP_WINDOW,
+                inst.uuid,
+            )
+            await asyncio.gather(
+                asyncio.to_thread(
+                    TasksApi(self._db_api_client).set_task_instance_status,
+                    inst.uuid,
+                    db_models.SetTaskStatusPayload(status=TaskStatus.ERROR),
+                ),
+                asyncio.to_thread(
+                    TasksApi(self._db_api_client).update_task_config,
+                    config.uuid,
+                    db_models.UpdateTaskConfigPayload(params=new_params),
+                ),
+            )
+            return
+
+        await asyncio.to_thread(
+            TasksApi(self._db_api_client).update_task_config,
+            config.uuid,
+            db_models.UpdateTaskConfigPayload(params=new_params),
+        )
+        logger.info(
+            "Auto-restarting persistent task instance %s (config %r): restart %d/%d in window",
+            inst.uuid,
+            config.name,
+            count,
+            self._CRASH_LOOP_MAX_RESTARTS,
+        )
+        restarted_config = config.model_copy(update={"params": new_params})
+        await self._start_task(restarted_config, resume_instance=inst)
+
     async def _worker_task(self):
         try:
             await self._init()
             while True:
                 await asyncio.sleep(60)
                 await self._check_stale_tasks()
+                await self._checkpoint_running_tasks()
         except asyncio.CancelledError:
             logger.info("Periodic task was cancelled.")
         except Exception as e:

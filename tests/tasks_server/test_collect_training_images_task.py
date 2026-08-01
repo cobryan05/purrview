@@ -13,7 +13,9 @@ Covers the resume/dedup logic introduced alongside the timing instrumentation:
 """
 
 import asyncio
+import itertools
 import os
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
@@ -23,6 +25,7 @@ import numpy as np
 import pytest
 
 from apps.helpers.bboxUtils import iou_xywh
+from apps.helpers.consts import TaskStatus
 from apps.helpers.imageProviders.imageProvider import (
     ImageProvider,
     ImageProviderMetadata,
@@ -110,6 +113,37 @@ class _LiveProvider(ImageProvider):
 
     async def getNextImage(self) -> Optional[ImageWithProviderMetadata]:
         return self._queue.pop(0) if self._queue else None
+
+
+class _InfiniteLiveProvider(ImageProvider):
+    """Yields an unbounded stream of tracked images with a live provider type.
+
+    Used to exercise stop conditions (max_images/max_duration) and pin renewal:
+    a provider that would run forever on its own, so the test hangs (and fails on
+    timeout) if the stop condition/renewal logic under test doesn't actually work,
+    rather than passing vacuously because the provider ran out of frames anyway.
+    """
+
+    def __init__(self, ptype: ImageProviderType = ImageProviderType.LIVE_SNAPSHOT, source: str = _SOURCE):
+        self._ptype = ptype
+        self._source = source
+        self._idx = itertools.count()
+        self.stopped = False
+
+    def provider_type(self) -> ImageProviderType:
+        return self._ptype
+
+    async def start(self) -> None:
+        pass
+
+    async def stop(self) -> None:
+        self.stopped = True
+
+    async def getNextImage(self) -> Optional[ImageWithProviderMetadata]:
+        return ImageWithProviderMetadata(
+            image=np.zeros((8, 8, 3), dtype=np.uint8),
+            metadata=ImageProviderMetadata(source=self._source, frame_idx=next(self._idx)),
+        )
 
 
 def _detection(label_uuid: str = _LABEL_UUID, confidence: float = 0.9) -> MagicMock:
@@ -1031,3 +1065,420 @@ class TestSourceLevelIntervalOverride:
             task = await _run_task(images, detect=True, tmp_path=tmp_path, provider=provider)
 
         assert task._resume_data["images_saved"] == 1
+
+
+class TestCheckpointRequestHoist:
+    """Phase 2: the _data_req_flag check used to sit inside the per-provider loop,
+    after a frame was successfully fetched — so a source rate-limited to a long
+    interval (e.g. 15 minutes) at the task level left a checkpoint request
+    unanswered for the whole interval. It now sits at the top of the OUTER while
+    loop, serviced every pass regardless of how any individual source is paced."""
+
+    async def test_checkpoint_serviced_promptly_despite_long_task_level_interval(self, tmp_path):
+        # A single LIVE_SNAPSHOT provider with no self-pacing (min_capture_interval=0)
+        # falls back to the task-level snapshot_interval rate limit. Set that interval
+        # absurdly high: after the first frame is fetched, the provider is skipped via
+        # a fast `continue` on every subsequent outer-loop pass — it never blocks.
+        images = [_tracked_image(0), _tracked_image(1)]
+        provider = _LiveProvider(images, ptype=ImageProviderType.LIVE_SNAPSHOT)
+        params = {**_PARAMS, "snapshot_interval": 999_999}
+
+        task = _make_task(params=params)
+
+        inf_result = MagicMock()
+        inf_result.result.detections = [_detection()]
+        pin_resp = MagicMock()
+        pin_resp.pin_id = "pin-1"
+        files_root = str(tmp_path)
+
+        with (
+            patch("apps.tasks_server.tasks.CollectTrainingImagesTask.SourceHelper") as mock_sh,
+            patch("apps.tasks_server.tasks.CollectTrainingImagesTask.ModelsApi") as mock_models_cls,
+            patch("apps.tasks_server.tasks.CollectTrainingImagesTask.InferenceApi") as mock_inf_cls,
+            patch("apps.tasks_server.tasks.CollectTrainingImagesTask.ImagesApi") as mock_img_cls,
+            patch.dict(os.environ, {"FILES_ROOT": files_root}),
+        ):
+            mock_sh.return_value.get_image_provider.return_value = provider
+            mock_models_cls.return_value.pin_model_api_api_models_model_name_pin_post.return_value = pin_resp
+            mock_inf_cls.return_value.inference.return_value = inf_result
+            mock_img_cls.return_value.update_image_metadata.return_value = MagicMock()
+
+            await task.start()
+            # Let the task fetch+save the first frame; the source is now rate-limited
+            # for a simulated ~11.5 days (999_999s) before it will be polled again.
+            await asyncio.sleep(0.3)
+
+            task.request_data_update()
+            # Pre-hoist, this would only be serviced after the source's next
+            # successful fetch — i.e. it would hang for 999_999s and this
+            # wait_for_data_ready() call would time out. Post-hoist it's serviced
+            # on the very next outer-loop pass (a sub-second busy-loop tick).
+            await task.wait_for_data_ready(timeout=2.0)
+            assert task.is_data_ready()
+
+            task.cancel_task()
+            await task.wait_for_task_done(timeout=5.0)
+
+
+# ─── Long-run hygiene: max_images / max_duration stop conditions ──────────────
+
+
+class TestStopConditions:
+    """max_images/max_duration must stop an otherwise-unbounded live task cleanly:
+    the existing `finally` teardown (drain saves, stop providers, unpin models,
+    write final resume data) must still run — not a bare `break` that skips it."""
+
+    async def test_max_images_stops_cleanly_with_full_teardown(self, tmp_path):
+        provider = _InfiniteLiveProvider()
+        params = {**_NO_RATE_LIMIT_PARAMS, "max_images": 3}
+        task = _make_task(params=params)
+
+        inf_result = MagicMock()
+        inf_result.result.detections = [_detection()]
+        pin_resp = MagicMock()
+        pin_resp.pin_id = "pin-1"
+
+        with (
+            patch("apps.tasks_server.tasks.CollectTrainingImagesTask.SourceHelper") as mock_sh,
+            patch("apps.tasks_server.tasks.CollectTrainingImagesTask.ModelsApi") as mock_models_cls,
+            patch("apps.tasks_server.tasks.CollectTrainingImagesTask.InferenceApi") as mock_inf_cls,
+            patch("apps.tasks_server.tasks.CollectTrainingImagesTask.ImagesApi") as mock_img_cls,
+            patch.dict(os.environ, {"FILES_ROOT": str(tmp_path)}),
+        ):
+            mock_sh.return_value.get_image_provider.return_value = provider
+            mock_models_cls.return_value.pin_model_api_api_models_model_name_pin_post.return_value = pin_resp
+            mock_inf_cls.return_value.inference.return_value = inf_result
+            mock_img_cls.return_value.update_image_metadata.return_value = MagicMock()
+
+            await task.start()
+            # If the stop condition didn't work, the provider is infinite and this
+            # would time out — the test fails loudly instead of passing vacuously.
+            await task.wait_for_task_done(timeout=10.0)
+
+            assert task.get_status() == TaskStatus.COMPLETED
+            assert task._resume_data["images_saved"] >= 3
+            assert provider.stopped is True, "provider.stop() must be called — normal teardown, not a bare break"
+            mock_models_cls.return_value.unpin_model.assert_called()
+
+    async def test_max_duration_stops_cleanly_with_full_teardown(self, tmp_path):
+        provider = _InfiniteLiveProvider()
+        params = {**_NO_RATE_LIMIT_PARAMS, "max_duration": 0.1}
+        task = _make_task(params=params)
+
+        inf_result = MagicMock()
+        inf_result.result.detections = [_detection()]
+        pin_resp = MagicMock()
+        pin_resp.pin_id = "pin-1"
+
+        with (
+            patch("apps.tasks_server.tasks.CollectTrainingImagesTask.SourceHelper") as mock_sh,
+            patch("apps.tasks_server.tasks.CollectTrainingImagesTask.ModelsApi") as mock_models_cls,
+            patch("apps.tasks_server.tasks.CollectTrainingImagesTask.InferenceApi") as mock_inf_cls,
+            patch("apps.tasks_server.tasks.CollectTrainingImagesTask.ImagesApi") as mock_img_cls,
+            patch.dict(os.environ, {"FILES_ROOT": str(tmp_path)}),
+        ):
+            mock_sh.return_value.get_image_provider.return_value = provider
+            mock_models_cls.return_value.pin_model_api_api_models_model_name_pin_post.return_value = pin_resp
+            mock_inf_cls.return_value.inference.return_value = inf_result
+            mock_img_cls.return_value.update_image_metadata.return_value = MagicMock()
+
+            await task.start()
+            await task.wait_for_task_done(timeout=10.0)
+
+            assert task.get_status() == TaskStatus.COMPLETED
+            assert task._resume_data["elapsed_duration_s"] >= 0.1
+            assert provider.stopped is True
+            mock_models_cls.return_value.unpin_model.assert_called()
+
+    async def test_stop_conditions_default_to_unlimited(self):
+        """A blank/0 max_images or max_duration must not stop the task early —
+        the defaults must remain unlimited (live sources are normally user-stopped)."""
+        task = _make_task()
+        await task._init(_PARAMS, resume_data=None)
+        assert task._max_images is None
+        assert task._max_duration_s is None
+
+        params = {**_PARAMS, "max_images": 0, "max_duration": 0}
+        task2 = _make_task(params=params)
+        await task2._init(params, resume_data=None)
+        assert task2._max_images is None
+        assert task2._max_duration_s is None
+
+
+# ─── Long-run hygiene: progress for live tasks ─────────────────────────────────
+
+
+class TestLiveProgress:
+    """Live tasks (no FIXED provider) used to report 0% forever. Progress must be
+    measured against whichever stop condition is set, and indeterminate (None —
+    the frontend's striped bar) when neither is."""
+
+    async def test_no_stop_condition_reports_indeterminate_progress(self, tmp_path):
+        provider = _InfiniteLiveProvider()
+        task = _make_task(params=_NO_RATE_LIMIT_PARAMS)
+
+        inf_result = MagicMock()
+        inf_result.result.detections = [_detection()]
+        pin_resp = MagicMock()
+        pin_resp.pin_id = "pin-1"
+
+        with (
+            patch("apps.tasks_server.tasks.CollectTrainingImagesTask.SourceHelper") as mock_sh,
+            patch("apps.tasks_server.tasks.CollectTrainingImagesTask.ModelsApi") as mock_models_cls,
+            patch("apps.tasks_server.tasks.CollectTrainingImagesTask.InferenceApi") as mock_inf_cls,
+            patch("apps.tasks_server.tasks.CollectTrainingImagesTask.ImagesApi") as mock_img_cls,
+            patch.dict(os.environ, {"FILES_ROOT": str(tmp_path)}),
+        ):
+            mock_sh.return_value.get_image_provider.return_value = provider
+            mock_models_cls.return_value.pin_model_api_api_models_model_name_pin_post.return_value = pin_resp
+            mock_inf_cls.return_value.inference.return_value = inf_result
+            mock_img_cls.return_value.update_image_metadata.return_value = MagicMock()
+
+            await task.start()
+            # Poll on a real-time budget rather than a fixed tick count: under
+            # xdist parallel load, the outer loop's asyncio.to_thread calls (model
+            # pinning, tag lookup, etc.) can take longer than a handful of bare
+            # event-loop ticks to complete.
+            deadline = time.monotonic() + 5.0
+            while time.monotonic() < deadline and task.get_progress() is not None:
+                await asyncio.sleep(0.05)
+            assert task.get_progress() is None
+
+            task.cancel_task()
+            await task.wait_for_task_done(timeout=5.0)
+
+    async def test_max_images_stop_condition_reports_determinate_progress(self, tmp_path):
+        # Large enough that the task is still running (not yet stopped) once we
+        # sample progress, small enough that the ratio-driven progress value is
+        # measurably different from the base Task default of 0.0.
+        provider = _InfiniteLiveProvider()
+        params = {**_NO_RATE_LIMIT_PARAMS, "max_images": 1_000_000}
+        task = _make_task(params=params)
+
+        inf_result = MagicMock()
+        inf_result.result.detections = [_detection()]
+        pin_resp = MagicMock()
+        pin_resp.pin_id = "pin-1"
+
+        with (
+            patch("apps.tasks_server.tasks.CollectTrainingImagesTask.SourceHelper") as mock_sh,
+            patch("apps.tasks_server.tasks.CollectTrainingImagesTask.ModelsApi") as mock_models_cls,
+            patch("apps.tasks_server.tasks.CollectTrainingImagesTask.InferenceApi") as mock_inf_cls,
+            patch("apps.tasks_server.tasks.CollectTrainingImagesTask.ImagesApi") as mock_img_cls,
+            patch.dict(os.environ, {"FILES_ROOT": str(tmp_path)}),
+        ):
+            mock_sh.return_value.get_image_provider.return_value = provider
+            mock_models_cls.return_value.pin_model_api_api_models_model_name_pin_post.return_value = pin_resp
+            mock_inf_cls.return_value.inference.return_value = inf_result
+            mock_img_cls.return_value.update_image_metadata.return_value = MagicMock()
+
+            await task.start()
+            # Wait for at least one image to actually save, so the ratio-driven
+            # progress value has diverged from the (also non-None) base default —
+            # otherwise this assertion would pass vacuously even without the fix.
+            deadline = time.monotonic() + 5.0
+            while time.monotonic() < deadline and getattr(task, "_images_saved", 0) == 0:
+                await asyncio.sleep(0.05)
+            assert getattr(task, "_images_saved", 0) > 0, "test setup: no images were saved to measure progress"
+
+            progress = task.get_progress()
+            assert progress is not None
+            expected = min(100.0, task._images_saved / params["max_images"] * 100.0)
+            assert progress == pytest.approx(expected)
+            assert 0.0 < progress < 100.0
+
+            task.cancel_task()
+            await task.wait_for_task_done(timeout=5.0)
+
+
+# ─── Long-run hygiene: model pin renewal ───────────────────────────────────────
+
+
+class TestPinRenewal:
+    """Pins are requested with a finite duration and never renewed today, so a task
+    that outlives the pin duration silently reloads the model. Renewal must happen
+    on a timer at roughly half the pin duration, swap in the new pin_id everywhere
+    it's used, and release the stale one."""
+
+    async def test_pin_renewed_after_half_duration(self, tmp_path):
+        provider = _InfiniteLiveProvider()
+        task = _make_task(params=_NO_RATE_LIMIT_PARAMS)
+
+        inf_result = MagicMock()
+        inf_result.result.detections = [_detection()]
+
+        pin_id_counter = itertools.count(1)
+
+        def _pin_resp(*_args, **_kwargs):
+            resp = MagicMock()
+            resp.pin_id = f"pin-{next(pin_id_counter)}"
+            return resp
+
+        with (
+            patch("apps.tasks_server.tasks.CollectTrainingImagesTask.SourceHelper") as mock_sh,
+            patch("apps.tasks_server.tasks.CollectTrainingImagesTask.ModelsApi") as mock_models_cls,
+            patch("apps.tasks_server.tasks.CollectTrainingImagesTask.InferenceApi") as mock_inf_cls,
+            patch("apps.tasks_server.tasks.CollectTrainingImagesTask.ImagesApi") as mock_img_cls,
+            patch.object(CollectTrainingImagesTask, "_PIN_RENEWAL_INTERVAL_S", 0.05),
+            patch.dict(os.environ, {"FILES_ROOT": str(tmp_path)}),
+        ):
+            mock_sh.return_value.get_image_provider.return_value = provider
+            mock_models_cls.return_value.pin_model_api_api_models_model_name_pin_post.side_effect = _pin_resp
+            mock_inf_cls.return_value.inference.return_value = inf_result
+            mock_img_cls.return_value.update_image_metadata.return_value = MagicMock()
+
+            await task.start()
+            # Give the renewal loop several intervals to fire at least once.
+            for _ in range(50):
+                await asyncio.sleep(0.02)
+                if task._combined_pin_ids.get(_MODEL_NAME) not in (None, "pin-1"):
+                    break
+
+            assert task._combined_pin_ids[_MODEL_NAME] != "pin-1", "pin_id must have been swapped by renewal"
+            assert mock_models_cls.return_value.pin_model_api_api_models_model_name_pin_post.call_count >= 2
+            unpin_calls = [c.args for c in mock_models_cls.return_value.unpin_model.call_args_list]
+            assert (_MODEL_NAME, "pin-1") in unpin_calls, "the stale pin_id must be released after renewal"
+
+            task.cancel_task()
+            await task.wait_for_task_done(timeout=5.0)
+
+    async def test_renewal_failure_does_not_kill_task(self, tmp_path):
+        """A renewal HTTP failure must be logged and skipped, never raised — it
+        must not tear down an otherwise-healthy long-running task."""
+        provider = _InfiniteLiveProvider()
+        task = _make_task(params=_NO_RATE_LIMIT_PARAMS)
+
+        inf_result = MagicMock()
+        inf_result.result.detections = [_detection()]
+        pin_resp = MagicMock()
+        pin_resp.pin_id = "pin-1"
+
+        with (
+            patch("apps.tasks_server.tasks.CollectTrainingImagesTask.SourceHelper") as mock_sh,
+            patch("apps.tasks_server.tasks.CollectTrainingImagesTask.ModelsApi") as mock_models_cls,
+            patch("apps.tasks_server.tasks.CollectTrainingImagesTask.InferenceApi") as mock_inf_cls,
+            patch("apps.tasks_server.tasks.CollectTrainingImagesTask.ImagesApi") as mock_img_cls,
+            patch.object(CollectTrainingImagesTask, "_PIN_RENEWAL_INTERVAL_S", 0.05),
+            patch.dict(os.environ, {"FILES_ROOT": str(tmp_path)}),
+        ):
+            mock_sh.return_value.get_image_provider.return_value = provider
+            pin_api = mock_models_cls.return_value.pin_model_api_api_models_model_name_pin_post
+            # Initial pin succeeds; every renewal attempt raises.
+            pin_api.side_effect = [pin_resp, Exception("boom"), Exception("boom"), Exception("boom")]
+            mock_inf_cls.return_value.inference.return_value = inf_result
+            mock_img_cls.return_value.update_image_metadata.return_value = MagicMock()
+
+            await task.start()
+            await asyncio.sleep(0.3)  # several renewal intervals' worth
+
+            assert task.get_status() == TaskStatus.RUNNING, "renewal failures must not crash the task"
+            assert task._combined_pin_ids[_MODEL_NAME] == "pin-1", "failed renewal must leave the old pin in place"
+
+            task.cancel_task()
+            await task.wait_for_task_done(timeout=5.0)
+            assert task.get_status() == TaskStatus.COMPLETED
+
+
+# ─── Long-run hygiene: stale-source notices ────────────────────────────────────
+
+
+class TestStaleSourceNotices:
+    """Notices escalate info -> warning -> error as multiples of the source's own
+    configured fetch interval elapse without a successful frame, and clear the
+    moment the source yields a frame again — tracked by provider.source_name
+    (Phase 1's stable identity), not id(provider)."""
+
+    async def _task_with_source_state(self, interval: float = 10.0, last_fetch_offset: float = 0.0):
+        task = _make_task()
+        await task._init(_PARAMS, resume_data=None)
+        task._status = TaskStatus.RUNNING
+        task._source_intervals = {"cam1": interval}
+        task._run_started_at = 1000.0
+        task._last_fetch_by_source = {"cam1": 1000.0 + last_fetch_offset}
+        return task
+
+    async def test_no_notice_below_info_threshold(self):
+        task = await self._task_with_source_state(interval=10.0)
+        with patch("apps.tasks_server.tasks.CollectTrainingImagesTask.time.perf_counter", return_value=1000.0 + 20.0):
+            assert task.get_notices() == []
+
+    async def test_info_notice_at_info_multiple(self):
+        task = await self._task_with_source_state(interval=10.0)
+        with patch("apps.tasks_server.tasks.CollectTrainingImagesTask.time.perf_counter", return_value=1000.0 + 30.0):
+            notices = task.get_notices()
+        assert len(notices) == 1
+        assert notices[0]["level"] == "info"
+        assert "cam1" in notices[0]["message"]
+
+    async def test_warning_notice_at_warning_multiple(self):
+        task = await self._task_with_source_state(interval=10.0)
+        with patch("apps.tasks_server.tasks.CollectTrainingImagesTask.time.perf_counter", return_value=1000.0 + 100.0):
+            notices = task.get_notices()
+        assert len(notices) == 1
+        assert notices[0]["level"] == "warning"
+
+    async def test_error_notice_at_error_multiple(self):
+        task = await self._task_with_source_state(interval=10.0)
+        with patch("apps.tasks_server.tasks.CollectTrainingImagesTask.time.perf_counter", return_value=1000.0 + 300.0):
+            notices = task.get_notices()
+        assert len(notices) == 1
+        assert notices[0]["level"] == "error"
+
+    async def test_recovery_clears_the_notice(self):
+        """Once the source yields a frame again, the notice must disappear on the
+        very next get_notices() call — no separate recovery bookkeeping."""
+        task = await self._task_with_source_state(interval=10.0)
+        with patch("apps.tasks_server.tasks.CollectTrainingImagesTask.time.perf_counter", return_value=1000.0 + 300.0):
+            assert task.get_notices()[0]["level"] == "error"
+
+        # A frame arrives — simulate the main loop's bookkeeping.
+        task._last_fetch_by_source["cam1"] = 1000.0 + 300.0
+        with patch("apps.tasks_server.tasks.CollectTrainingImagesTask.time.perf_counter", return_value=1000.0 + 301.0):
+            assert task.get_notices() == []
+
+    async def test_no_notices_when_task_not_running(self):
+        task = await self._task_with_source_state(interval=10.0)
+        task._status = TaskStatus.COMPLETED
+        with patch("apps.tasks_server.tasks.CollectTrainingImagesTask.time.perf_counter", return_value=1000.0 + 300.0):
+            assert task.get_notices() == []
+
+
+class TestMaxDurationExcludesPausedTime:
+    """Time spent paused in place must NOT count toward max_duration.
+
+    Counting it means a task paused overnight and resumed in the morning has
+    already blown its duration budget and stops collecting immediately — both
+    surprising and silently destructive, since the user's intent in pausing was
+    to keep the task alive.
+    """
+
+    async def test_paused_time_is_excluded_from_elapsed_duration(self):
+        task = _make_task(params={**_PARAMS, "max_duration": 1000})
+        await task._init(task._params, resume_data=None)
+
+        start = time.perf_counter()
+        task._run_started_at = start
+
+        # Simulate 100s of wall clock, 60s of which the task spent paused in place.
+        with patch(
+            "apps.tasks_server.tasks.CollectTrainingImagesTask.time.perf_counter",
+            return_value=start + 100.0,
+        ):
+            assert task._elapsed_duration_s() == pytest.approx(100.0)
+            task._paused_duration_s = 60.0
+            # Only the 40s of ACTIVE time counts toward the budget.
+            assert task._elapsed_duration_s() == pytest.approx(40.0)
+
+    async def test_banked_active_time_survives_restart_without_paused_time(self):
+        """elapsed_duration_s in resume_data carries active time only, so a restart
+        doesn't re-import previously-paused time."""
+        task = _make_task(params={**_PARAMS, "max_duration": 1000})
+        await task._init(task._params, resume_data={"elapsed_duration_s": 40.0})
+
+        start = time.perf_counter()
+        task._run_started_at = start
+        with patch(
+            "apps.tasks_server.tasks.CollectTrainingImagesTask.time.perf_counter",
+            return_value=start + 10.0,
+        ):
+            assert task._elapsed_duration_s() == pytest.approx(50.0)

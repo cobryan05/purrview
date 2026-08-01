@@ -16,6 +16,7 @@ Run with:
     pytest tests/playwright/test_configuration_tasks.py -p no:xdist -v
 """
 import json
+import re
 
 import pytest
 from playwright.sync_api import Page, Route, expect
@@ -64,6 +65,32 @@ RUNNING_TASK = {
     "progress": 42.0,
     "isPausedInPlace": False,
     "logLines": ["Starting…", "Processing images…"],
+}
+
+INDETERMINATE_TASK = {
+    "instance": {
+        "uuid": "ffffffff-0000-0000-0000-000000000003",
+        "status": "running",
+        "startedAt": "2024-01-01T00:00:00",
+        "endedAt": None,
+    },
+    "config": {"name": "Live Collector", "uuid": FAKE_CONFIG["uuid"]},
+    "progress": None,
+    "isPausedInPlace": False,
+    "logLines": ["Watching camera…"],
+}
+
+ZERO_PROGRESS_TASK = {
+    "instance": {
+        "uuid": "ffffffff-0000-0000-0000-000000000004",
+        "status": "running",
+        "startedAt": "2024-01-01T00:00:00",
+        "endedAt": None,
+    },
+    "config": {"name": "Batch Job", "uuid": FAKE_CONFIG["uuid"]},
+    "progress": 0.0,
+    "isPausedInPlace": False,
+    "logLines": ["Starting…"],
 }
 
 COMPLETED_TASK = {
@@ -364,6 +391,82 @@ class TestCreateTaskConfig:
 
 
 # ---------------------------------------------------------------------------
+# Persistent (auto-restart-after-restart) flag on task configs
+# ---------------------------------------------------------------------------
+
+
+class TestPersistentFlag:
+    def test_persistent_checkbox_present_and_unchecked_by_default(self, page: Page, base_url: str):
+        """The create-config form offers a persistent checkbox, defaulting unchecked."""
+        _setup_full_task_mocks(page, configs={}, tasks={})
+        _navigate_to_tasks(page, base_url)
+        page.wait_for_selector("#task-config-list select", timeout=5000)
+        page.locator("#task-config-list select").last.select_option(TASK_TYPE)
+        page.wait_for_timeout(800)
+
+        chk = page.locator("#task-config-list").get_by_label("Restart automatically after a server restart")
+        expect(chk).to_be_attached()
+        expect(chk).not_to_be_checked()
+
+    def test_create_defaults_persistent_false_in_payload(self, page: Page, base_url: str):
+        """Leaving the checkbox untouched sends persistent: false to the API."""
+        create_calls: list[dict] = []
+
+        def handle_create(route: Route):
+            create_calls.append(json.loads(route.request.post_data))
+            route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps({"status": "success", "configUuid": FAKE_CONFIG["uuid"]}),
+            )
+
+        _setup_full_task_mocks(page, configs={}, tasks={})
+        page.route("**/api/tasks/configs/create", handle_create)
+
+        _navigate_to_tasks(page, base_url)
+        page.wait_for_selector("#task-config-list select", timeout=5000)
+        page.locator("#task-config-list select").last.select_option(TASK_TYPE)
+        page.wait_for_timeout(800)
+        page.locator("#task-config-list input[placeholder='Enter new config name']").fill("Persist Test")
+        page.locator("#task-config-list button[title='Add Config']").click()
+        page.wait_for_timeout(800)
+
+        assert create_calls, "Expected POST to /api/tasks/configs/create"
+        payload = create_calls[0]
+        assert payload.get("persistent") is False, f"Expected persistent=False by default, got: {payload}"
+        assert payload["params"].get("_persistent") is False
+
+    def test_checking_persistent_reaches_create_payload(self, page: Page, base_url: str):
+        """Checking the box sends persistent: true, both top-level and inside params."""
+        create_calls: list[dict] = []
+
+        def handle_create(route: Route):
+            create_calls.append(json.loads(route.request.post_data))
+            route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps({"status": "success", "configUuid": FAKE_CONFIG["uuid"]}),
+            )
+
+        _setup_full_task_mocks(page, configs={}, tasks={})
+        page.route("**/api/tasks/configs/create", handle_create)
+
+        _navigate_to_tasks(page, base_url)
+        page.wait_for_selector("#task-config-list select", timeout=5000)
+        page.locator("#task-config-list select").last.select_option(TASK_TYPE)
+        page.wait_for_timeout(800)
+        page.locator("#task-config-list input[placeholder='Enter new config name']").fill("Persist Test")
+        page.locator("#task-config-list").get_by_label("Restart automatically after a server restart").check()
+        page.locator("#task-config-list button[title='Add Config']").click()
+        page.wait_for_timeout(800)
+
+        assert create_calls, "Expected POST to /api/tasks/configs/create"
+        payload = create_calls[0]
+        assert payload.get("persistent") is True, f"Expected persistent=True after checking box, got: {payload}"
+        assert payload["params"].get("_persistent") is True
+
+
+# ---------------------------------------------------------------------------
 # Active tasks list
 # ---------------------------------------------------------------------------
 
@@ -419,6 +522,59 @@ class TestActiveTasksList:
         # Button text is rendered as text (not emoji-button), so use has_text
         clear_btn = page.locator("#active-tasks-list button", has_text="Clear completed")
         expect(clear_btn).to_be_visible()
+
+
+# ---------------------------------------------------------------------------
+# Active task progress bar — indeterminate vs. real 0%
+# ---------------------------------------------------------------------------
+
+
+class TestActiveTaskProgressBar:
+    def test_null_progress_renders_indeterminate_striped_bar(self, page: Page, base_url: str):
+        """A running task with progress: null (no denominator, e.g. a live capture
+        task) renders the striped/animated indeterminate bar, not a stuck 0%."""
+        task_id = INDETERMINATE_TASK["instance"]["uuid"]
+        _setup_full_task_mocks(page, configs={}, tasks={task_id: INDETERMINATE_TASK})
+
+        _navigate_to_tasks(page, base_url)
+        page.wait_for_selector(f"[data-task-uuid='{task_id}'] summary", timeout=5000)
+        page.locator(f"[data-task-uuid='{task_id}'] summary").click()
+
+        bar = page.locator(f"[data-task-uuid='{task_id}'] progress")
+        expect(bar).to_be_visible()
+        expect(bar).to_have_class(re.compile("progress-indeterminate"))
+        assert bar.get_attribute("value") is None, "Indeterminate bar must not have a numeric value attribute"
+        assert bar.get_attribute("role") == "progressbar"
+
+    def test_zero_progress_renders_normal_bar(self, page: Page, base_url: str):
+        """A running task genuinely at progress: 0 (start of a batch task) still
+        renders a normal (non-indeterminate) 0% bar — this is the regression that
+        matters: don't collapse 'no denominator' and 'real 0%' into the same thing."""
+        task_id = ZERO_PROGRESS_TASK["instance"]["uuid"]
+        _setup_full_task_mocks(page, configs={}, tasks={task_id: ZERO_PROGRESS_TASK})
+
+        _navigate_to_tasks(page, base_url)
+        page.wait_for_selector(f"[data-task-uuid='{task_id}'] summary", timeout=5000)
+        page.locator(f"[data-task-uuid='{task_id}'] summary").click()
+
+        bar = page.locator(f"[data-task-uuid='{task_id}'] progress")
+        expect(bar).to_be_visible()
+        expect(bar).not_to_have_class(re.compile("progress-indeterminate"))
+        assert bar.get_attribute("value") == "0"
+
+    def test_running_progress_renders_normal_bar(self, page: Page, base_url: str):
+        """Sanity check: a running task with real, positive progress keeps
+        rendering the normal numeric bar (pre-existing behavior)."""
+        task_id = RUNNING_TASK["instance"]["uuid"]
+        _setup_full_task_mocks(page, configs={}, tasks={task_id: RUNNING_TASK})
+
+        _navigate_to_tasks(page, base_url)
+        page.wait_for_selector(f"[data-task-uuid='{task_id}'] summary", timeout=5000)
+        page.locator(f"[data-task-uuid='{task_id}'] summary").click()
+
+        bar = page.locator(f"[data-task-uuid='{task_id}'] progress")
+        expect(bar).not_to_have_class(re.compile("progress-indeterminate"))
+        assert bar.get_attribute("value") == "42"
 
 
 # ---------------------------------------------------------------------------

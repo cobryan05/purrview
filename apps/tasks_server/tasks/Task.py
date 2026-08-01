@@ -23,11 +23,23 @@ class Task(ABC):
     class InternalKeys(str, Enum):
         PERSISTENT = "_persistent"
         ONESHOT_RESULT = "_oneshot_result"  # delete the task when the result is fetched
+        # Crash-loop guard bookkeeping for PERSISTENT auto-restart, stored on the task
+        # CONFIG's params (see Manager._auto_restart_with_guard). Deliberately NOT stored
+        # in a task instance's resume_data: that blob is owned by the task itself and is
+        # wholesale-replaced on every checkpoint (Task._build_resume_data), which would
+        # silently erase this bookkeeping the moment the task checkpoints again.
+        RESTART_INFO = "_restart_info"
         # TODO: Task *configs* need a way to delete or else Preview tasks can build up
 
     # How often (seconds) a running task pings the DB to confirm it is alive.
     # The stale-check threshold in the manager uses a multiple of this value.
     HEARTBEAT_INTERVAL: int = 30
+
+    # How often (seconds) the manager's periodic checkpoint pass should request this
+    # task write its resume data to the DB (Manager._checkpoint_running_tasks). Long-lived
+    # live-collection tasks should override this with a shorter value; batch tasks that
+    # complete quickly on their own can leave the default alone.
+    CHECKPOINT_INTERVAL: int = 300
 
     def __init__(self, task_config_uuid: str, params: dict[str, Any], manager: Manager):
         self._config_uuid: str = task_config_uuid
@@ -35,7 +47,11 @@ class Task(ABC):
         self._status: TaskStatus = TaskStatus.PENDING
         self._params: dict[str, Any] = params
         self._task: asyncio.Task | None = None
-        self._progress: float = 0.0
+        # None means "indeterminate" (frontend renders a striped progress bar).
+        # The base default MUST stay 0.0, not None — tasks opt into indeterminate
+        # progress explicitly (see CollectTrainingImagesTask), otherwise every
+        # existing batch task would suddenly render as indeterminate.
+        self._progress: Optional[float] = 0.0
         self._results: dict[str, Any] = {}
         self._resume_data: dict[str, Any] = {}
         self._log_lines: deque[str] = deque(maxlen=100)
@@ -119,12 +135,15 @@ class Task(ABC):
             self._results = {"status": TaskStatus.ERROR, "message": str(e)}
             self.log(f"Error: {e}")
         finally:
+            # Completion always ends at a determinate 100% — even a task that ran with
+            # indeterminate (None) progress the whole way must not leave the frontend's
+            # striped bar showing after the task is actually done.
             self._progress = 100.0
             await self._deinit()
             self._task_done.set()
 
-    def _update_progress(self, percent: float):
-        """Store progress"""
+    def _update_progress(self, percent: Optional[float]):
+        """Store progress. Pass None for indeterminate progress (striped bar in the UI)."""
         self._progress = percent
 
     def log(self, msg: str) -> None:
@@ -246,8 +265,8 @@ class Task(ABC):
         """
         return []
 
-    def get_progress(self) -> float:
-        """Return the current progress of the task."""
+    def get_progress(self) -> Optional[float]:
+        """Return the current progress of the task, or None if indeterminate."""
         return self._progress
 
     def get_results(self) -> Optional[dict[str, Any]]:
