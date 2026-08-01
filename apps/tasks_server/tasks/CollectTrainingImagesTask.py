@@ -54,7 +54,7 @@ from .ApplyFilterChainTask import (
 from .Registry import register_task
 from .Task import Task
 from .utils.imageHelper import ImageHelper
-from .utils.labelHelper import build_label_ancestry_map
+from .utils.labelHelper import build_label_ancestry_map, build_label_metadata_map
 from .utils.sourceHelper import SourceHelper
 
 logging.basicConfig()
@@ -102,6 +102,25 @@ class CollectTrainingImagesTask(Task):
     _STALE_NOTICE_INFO_MULTIPLE: float = 3.0
     _STALE_NOTICE_WARNING_MULTIPLE: float = 10.0
     _STALE_NOTICE_ERROR_MULTIPLE: float = 30.0
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        # get_status_data()/get_notices() can be polled in the narrow PENDING window
+        # before _init() has run (task.start() constructs the instance; _execute()
+        # awaits _init() asynchronously right after) — set safe defaults here so
+        # that window never raises, rather than only guarding inside _init().
+        self._elapsed_duration_at_start: float = 0.0
+        self._run_started_at: float = time.perf_counter()
+        self._paused_duration_s: float = 0.0
+        self._images_saved: int = 0
+        self._images_processed: int = 0
+        self._enable_dedup: bool = False
+        self._filter_chain_runner = None
+        self._last_capture: Optional[dict[str, Any]] = None
+        self._source_names: list[str] = []
+        self._source_types: dict[str, str] = {}
+        self._source_intervals: dict[str, float] = {}
+        self._last_fetch_by_source: dict[str, float] = {}
 
     async def _init(self, params: dict[str, Any], resume_data: Optional[dict[str, Any]]) -> None:
         self._status_msg: str = "Initializing"
@@ -207,11 +226,22 @@ class CollectTrainingImagesTask(Task):
         # recomputing all stored hashes). Read from DB settings, fall back to defaults.
         _settings_api = SettingsApi(self._manager.get_db_api_client())
         _labels_api = LabelsApi(self._manager.get_db_api_client())
-        self._image_hash_size, self._bbox_hash_size, self._label_ancestry = await asyncio.gather(
+        (
+            self._image_hash_size,
+            self._bbox_hash_size,
+            self._label_ancestry,
+            self._label_meta,
+        ) = await asyncio.gather(
             self._read_int_setting(_settings_api, "dedup_image_hash_size", 8),
             self._read_int_setting(_settings_api, "dedup_bbox_hash_size", 16),
             build_label_ancestry_map(_labels_api),
+            build_label_metadata_map(_labels_api),
         )
+
+        # Status-panel bookkeeping (Phase 4 — live collection panel): _last_capture,
+        # _source_names/_types/_intervals, _last_fetch_by_source, and
+        # _filter_chain_runner already have safe pre-run defaults from __init__;
+        # populated for real once _run() starts and providers are known.
 
     async def _run(self) -> dict[str, Any]:
         # Real start of this process's run — _elapsed_duration_s() adds this delta to
@@ -367,7 +397,15 @@ class CollectTrainingImagesTask(Task):
         # than id(provider): id() is not stable across GC and isn't meaningful in the UI.
         self._last_fetch_by_source: dict[str, float] = {}
         self._source_intervals: dict[str, float] = {}
+        # Every source, in configured order, for the status-panel sources table —
+        # unlike _source_intervals (live sources only, used for staleness), this
+        # covers FIXED sources too so the table lists everything the task reads from.
+        self._source_names = []
+        self._source_types = {}
         for provider in providers:
+            name = provider.source_name or "unknown"
+            self._source_names.append(name)
+            self._source_types[name] = provider.provider_type().value
             if provider.provider_type() == ImageProviderType.FIXED:
                 continue
             interval = provider.min_capture_interval or _rate_limits.get(provider.provider_type(), 0.0)
@@ -799,6 +837,150 @@ class CollectTrainingImagesTask(Task):
         """
         return self._elapsed_duration_at_start + (time.perf_counter() - self._run_started_at) - self._paused_duration_s
 
+    def _build_seed_bbox(self, det, bbox_uuid: str) -> dict[str, Any]:
+        """A detection → the plain-object bbox shape `seedRuntimeBboxes()`
+        (canvas/image.js) expects: it feeds each entry straight into
+        `createUIBBbox(seed)`, which fills in any UIBBox field we don't set
+        (uuid/tags/selected/dirty) with its own defaults.
+
+        `label` must be `{uuid, text, color}` or `None` — `BboxView` reads
+        `label?.text`/`label?.color` directly, not a bare uuid — so a bare
+        label_uuid resolves to name/color via `self._label_meta` (fetched once at
+        task start; see build_label_metadata_map) rather than a DB round trip here.
+        """
+        label_uuid = det.bbox.label_uuid
+        label = None
+        if label_uuid:
+            meta = self._label_meta.get(label_uuid, {})
+            label = {"uuid": label_uuid, "text": meta.get("text") or label_uuid, "color": meta.get("color")}
+        return {
+            "uuid": bbox_uuid,
+            "label": label,
+            "x": det.bbox.x,
+            "y": det.bbox.y,
+            "width": det.bbox.width,
+            "height": det.bbox.height,
+        }
+
+    @staticmethod
+    def _format_duration(seconds: float) -> str:
+        """Human-readable elapsed duration for the stat-grid 'Uptime' cell."""
+        total = max(0, int(seconds))
+        hours, rem = divmod(total, 3600)
+        minutes, secs = divmod(rem, 60)
+        if hours:
+            return f"{hours}h {minutes}m"
+        if minutes:
+            return f"{minutes}m {secs}s"
+        return f"{secs}s"
+
+    @classmethod
+    def status_schema(cls) -> list[dict[str, Any]]:
+        return [
+            {
+                "id": "last_capture",
+                "type": "annotated_image",
+                "source": "status",
+                "label": "Last capture",
+                "height": "16em",
+            },
+            {
+                "id": "stats",
+                "type": "stat_grid",
+                "source": "status",
+                "label": "Collection stats",
+                # Superset of every field this task type can ever report. Per-instance,
+                # get_status_data() only *populates* the subset that's actually active
+                # (dedup / filter-chain) — an inactive one's key is simply absent, which
+                # the stat_grid widget renders as "—" rather than a misleading "0".
+                "fields": {
+                    "saved": "Saved",
+                    "processed": "Processed",
+                    "captures_per_min": "Captures/min",
+                    "uptime": "Uptime",
+                    "dedup_checked": "Dedup checked",
+                    "dedup_image_hits": "Dedup image hits",
+                    "dedup_bbox_hits": "Dedup bbox hits",
+                    "dedup_discarded": "Dedup discarded",
+                    "filter_discarded": "Filter discarded",
+                    "filter_relabeled": "Filter relabeled",
+                    "filter_tagged": "Filter tagged",
+                    "filter_stripped": "Filter stripped",
+                },
+            },
+            {
+                "id": "sources",
+                "type": "table",
+                "source": "status",
+                "label": "Sources",
+                "columns": [
+                    {"key": "name", "label": "Source"},
+                    {"key": "type", "label": "Type"},
+                    {"key": "interval", "label": "Interval"},
+                    {"key": "last_frame", "label": "Last frame"},
+                    {"key": "health", "label": "Health"},
+                ],
+            },
+        ]
+
+    def get_status_data(self) -> dict[str, Any]:
+        """Live values for the Phase 4 live-collection status panel.
+
+        Reads only already-in-memory counters/attributes — no I/O, no awaits, no
+        DB/filesystem access — per the base class contract (this is called
+        synchronously from a poll handler while a task card is expanded). Every
+        attribute touched here is initialised in _init() (safe pre-_run(), e.g. in
+        the "pending" window) and refined in _run() once providers are known.
+        """
+        elapsed = self._elapsed_duration_s()
+
+        stats: dict[str, Any] = {
+            "saved": self._images_saved,
+            "processed": self._images_processed,
+            "captures_per_min": round(self._images_saved / (elapsed / 60.0), 1) if elapsed > 0 else 0,
+            "uptime": self._format_duration(elapsed),
+        }
+        if self._enable_dedup:
+            stats["dedup_checked"] = self._dedup_frames_checked
+            stats["dedup_image_hits"] = self._dedup_image_hits
+            stats["dedup_bbox_hits"] = self._dedup_bbox_hits
+            stats["dedup_discarded"] = self._dup_frames_discarded
+        if getattr(self, "_filter_chain_runner", None) is not None:
+            stats["filter_discarded"] = self._filtered_discarded
+            stats["filter_relabeled"] = self._filtered_relabeled
+            stats["filter_tagged"] = self._filtered_tagged
+            stats["filter_stripped"] = self._filtered_stripped
+
+        now = time.perf_counter()
+        rows: list[dict[str, Any]] = []
+        for name in self._source_names:
+            interval = self._source_intervals.get(name)
+            last_fetch = self._last_fetch_by_source.get(name)
+            last_frame = f"{now - last_fetch:.0f}s ago" if last_fetch is not None else "never"
+            if interval:
+                health, _elapsed = self._source_staleness(name, interval)
+                interval_str = f"{interval:.0f}s"
+            else:
+                # FIXED sources (and any live source with no configured interval) have
+                # no staleness baseline — mirror get_notices(), which never tracks them.
+                health = "n/a"
+                interval_str = "—"
+            rows.append(
+                {
+                    "name": name,
+                    "type": self._source_types.get(name, ""),
+                    "interval": interval_str,
+                    "last_frame": last_frame,
+                    "health": health,
+                }
+            )
+
+        return {
+            "last_capture": self._last_capture,
+            "stats": stats,
+            "sources": rows,
+        }
+
     def _build_resume_data(self) -> dict[str, Any]:
         return {
             "images_saved": self._images_saved,
@@ -1060,15 +1242,17 @@ class CollectTrainingImagesTask(Task):
         logger.debug("Image write: %.1fms → %s", 1000 * (time.perf_counter() - t_write), abs_path)  # PERF
 
         boxes = []
+        seed_bboxes: list[dict[str, Any]] = []
         for det in matching:
             extra_tags = list(self._extra_tag_uuids)
             # Filter-chain tag_bbox matches (Phase 4) stash extra tags directly on
             # the matched detection's own bbox.tag_uuids — fold them in here.
             # (tag_image is image-level — applied via set_image_tag below instead.)
             filter_chain_tags = list(det.bbox.tag_uuids or [])
+            bbox_uuid = str(uuid4())
             boxes.append(
                 BoundingBoxMetadataModel(
-                    bbox_uuid=str(uuid4()),
+                    bbox_uuid=bbox_uuid,
                     x=det.bbox.x,
                     y=det.bbox.y,
                     width=det.bbox.width,
@@ -1079,6 +1263,7 @@ class CollectTrainingImagesTask(Task):
                     extra={"confidence": str(det.confidence)},
                 )
             )
+            seed_bboxes.append(self._build_seed_bbox(det, bbox_uuid))
 
         try:
             t_meta = time.perf_counter()  # PERF
@@ -1093,6 +1278,13 @@ class CollectTrainingImagesTask(Task):
                 1000 * (time.perf_counter() - t_meta),
                 filename,
             )  # PERF
+            # Status-panel "last capture" widget (Phase 4) — by reference only (path +
+            # bbox descriptors), never image bytes. Set only on a successful save, and
+            # only here (not in the dedup/discard paths), so the panel always reflects
+            # a frame that actually made it into the dataset. Racy across concurrent
+            # save tasks (last one to finish wins) — acceptable for a "most recent"
+            # display, and avoids adding a lock to the hot save path.
+            self._last_capture = {"path": rel_path, "bboxes": seed_bboxes}
         except Exception:
             logger.exception(f"Failed to save metadata for {rel_path}")
             self.log(f"Failed to save metadata: {filename}")
@@ -1335,32 +1527,46 @@ class CollectTrainingImagesTask(Task):
     async def _deinit(self) -> None:
         pass
 
+    def _source_staleness(self, source_name: str, interval: float) -> tuple[str, float]:
+        """(level, elapsed_s) for one live source, as a function of how many multiples
+        of its configured fetch interval have elapsed since its last successful frame.
+
+        Single source of truth for the escalation thresholds (_STALE_NOTICE_*_MULTIPLE)
+        — shared by get_notices() (which only surfaces "info" and above) and the
+        status-panel sources table (which shows every level, including "ok"), so the
+        two can never independently drift apart on what counts as stale.
+        """
+        now = time.perf_counter()
+        last = self._last_fetch_by_source.get(source_name)
+        baseline = last if last is not None else getattr(self, "_run_started_at", now)
+        elapsed = now - baseline
+        multiple = (elapsed / interval) if interval > 0 else 0.0
+        if multiple >= self._STALE_NOTICE_ERROR_MULTIPLE:
+            level = "error"
+        elif multiple >= self._STALE_NOTICE_WARNING_MULTIPLE:
+            level = "warning"
+        elif multiple >= self._STALE_NOTICE_INFO_MULTIPLE:
+            level = "info"
+        else:
+            level = "ok"
+        return level, elapsed
+
     def get_notices(self) -> list[dict]:
         """Advisory notices for sources that have gone quiet.
 
         Escalates info → warning → error as multiples of the source's own configured
-        fetch interval elapse without a successful frame (_STALE_NOTICE_*_MULTIPLE).
-        Recomputed fresh on every call from _last_fetch_by_source, so a notice clears
-        (or downgrades) automatically the moment the source yields a frame again — no
-        separate recovery bookkeeping needed.
+        fetch interval elapse without a successful frame (_STALE_NOTICE_*_MULTIPLE, via
+        _source_staleness()). Recomputed fresh on every call from _last_fetch_by_source,
+        so a notice clears (or downgrades) automatically the moment the source yields a
+        frame again — no separate recovery bookkeeping needed.
         """
         status = self.get_status()
         if status not in (TaskStatus.RUNNING, TaskStatus.PAUSED):
             return []
         notices: list[dict] = []
-        now = time.perf_counter()
         for source_name, interval in getattr(self, "_source_intervals", {}).items():
-            last = self._last_fetch_by_source.get(source_name)
-            baseline = last if last is not None else getattr(self, "_run_started_at", now)
-            elapsed = now - baseline
-            multiple = elapsed / interval
-            if multiple >= self._STALE_NOTICE_ERROR_MULTIPLE:
-                level = "error"
-            elif multiple >= self._STALE_NOTICE_WARNING_MULTIPLE:
-                level = "warning"
-            elif multiple >= self._STALE_NOTICE_INFO_MULTIPLE:
-                level = "info"
-            else:
+            level, elapsed = self._source_staleness(source_name, interval)
+            if level == "ok":
                 continue
             notices.append(
                 {

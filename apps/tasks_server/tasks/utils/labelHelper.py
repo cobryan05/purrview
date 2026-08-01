@@ -30,3 +30,16 @@ async def build_label_ancestry_map(labels_api) -> dict[str, set[str]]:
         _get_ancestors(uuid)
 
     return ancestry
+
+
+async def build_label_metadata_map(labels_api) -> dict[str, dict[str, "str | None"]]:
+    """Fetch all labels and return {uuid: {"text": name, "color": color}}.
+
+    Used to resolve a bare label_uuid into display-ready name/color once (e.g. at
+    task start), so hot paths that only carry a label_uuid — like a saved
+    detection's bbox — can build a UI-ready label descriptor without any further
+    DB access. Unknown UUIDs are absent from the map; callers should use
+    .get(uuid, {}).
+    """
+    resp = await asyncio.to_thread(labels_api.list_labels)
+    return {lbl.uuid: {"text": lbl.name, "color": lbl.color} for lbl in (resp.labels or [])}
