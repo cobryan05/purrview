@@ -119,6 +119,61 @@ class Task(ABC):
         """
         return {}
 
+    @classmethod
+    def status_schema(cls) -> list[dict[str, Any]]:
+        """
+        Return an ordered list of widget descriptors describing the rich task-status
+        card for this task type. Static per typename — fetched once by the frontend
+        and cached (mirrors params_schema()/the existing get_task_type_schema path).
+
+        Each descriptor is a dict:
+            - id     — stable key. For "status"-sourced widgets this is the key
+                       get_status_data() returns its value under.
+            - type   — widget type name, resolved by a frontend registry.
+            - source — "summary" (read from the already-polled TaskInfoRead payload,
+                       e.g. "progress"/"statusMessage"/"logLines" — costs nothing extra)
+                       or "status" (read from the per-instance status-data endpoint,
+                       fetched only while a card is expanded). Defaults to "status"
+                       when absent.
+            - plus arbitrary widget-specific config keys (label, lines, columns, ...).
+
+        The base implementation reproduces today's card exactly (progress bar +
+        status message + log tail) so every existing task is unaffected unless it
+        overrides this.
+        """
+        return [
+            {"id": "progress", "type": "progress_bar", "source": "summary"},
+            {"id": "statusMessage", "type": "text", "source": "summary"},
+            {"id": "log", "type": "log_tail", "source": "summary", "lines": 5},
+        ]
+
+    def get_status_data(self) -> dict[str, Any]:
+        """
+        Return live values for this task's "status"-sourced status_schema() widgets,
+        keyed by widget id.
+
+        MUST be cheap and non-blocking — no I/O. This is called synchronously from a
+        poll handler while a task card is expanded; anything that awaits I/O here
+        blocks that handler.
+        """
+        return {}
+
+    async def handle_command(self, command: str, params: dict[str, Any]) -> None:
+        """
+        Handle a UI-issued command sent via POST /api/tasks/instances/command
+        (Manager.send_task_command()).
+
+        MUST ONLY set a flag or push to a queue for the running _run() loop to pick
+        up later — exactly like the existing _data_req_flag/_cancel_flag pattern.
+        NEVER perform I/O directly here: this is invoked from a request handler, and
+        any blocking or awaited I/O in this method stalls that handler.
+
+        The base implementation raises NotImplementedError; the web layer translates
+        that into a clean failure response rather than a 500. Override in subclasses
+        that advertise a "task_command" status action.
+        """
+        raise NotImplementedError(f"{self.typename()} does not implement any commands")
+
     async def _execute(self) -> None:
         try:
             self.log("Initializing")
@@ -251,7 +306,18 @@ class Task(ABC):
         return ""
 
     def get_status_actions(self) -> list[dict]:
-        """Returns action buttons to show in the live task status UI while the task is running."""
+        """Returns action buttons to show in the live task status UI while the task is running.
+
+        Each action is a dict with at minimum a "type" key naming the action kind and
+        a "label" for the button text; other keys are kind-specific. Existing kinds:
+            - "open_review" — {"type": "open_review", "label": ..., "payload": {"tag_uuids": [...]}}
+            - "task_command" — {"type": "task_command", "label": ..., "command": <str>,
+                                 "params": {...}}. The frontend posts {taskUuid, command, params}
+                                 to POST /api/tasks/instances/command, which forwards to this
+                                 task's handle_command(command, params). Only meaningful for a
+                                 task that overrides handle_command() (the base raises
+                                 NotImplementedError).
+        """
         return []
 
     def get_notices(self) -> list[dict]:

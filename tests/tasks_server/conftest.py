@@ -91,8 +91,58 @@ if "PausableTestTask" not in task_registry:
             pass
 
 
+# Register a task that overrides status_schema()/get_status_data()/handle_command()
+# to exercise the Phase 3 task-status-schema framework end to end.
+if "StatusSchemaTask" not in task_registry:
+
+    @register_task("StatusSchemaTask")
+    class StatusSchemaTask(Task):
+        async def _init(self, params: dict, resume_data: Optional[dict]) -> None:
+            self._capture_now_requested = False
+            self._counter = 0
+
+        async def _run(self) -> dict[str, Any]:
+            await self._cancel_flag.wait()
+            return {"canceled": True}
+
+        async def _deinit(self) -> None:
+            pass
+
+        @classmethod
+        def status_schema(cls) -> list[dict[str, Any]]:
+            return [
+                {"id": "progress", "type": "progress_bar", "source": "summary"},
+                {"id": "counter", "type": "stat_grid"},
+                {"id": "mystery_widget", "type": "some_future_widget_type"},
+            ]
+
+        def get_status_data(self) -> dict[str, Any]:
+            return {"counter": self._counter}
+
+        def get_status_actions(self) -> list[dict]:
+            return [
+                {
+                    "type": "task_command",
+                    "label": "Capture now",
+                    "command": "capture_now",
+                    "params": {},
+                }
+            ]
+
+        async def handle_command(self, command: str, params: dict[str, Any]) -> None:
+            if command == "capture_now":
+                self._capture_now_requested = True
+                self._counter += 1
+                return
+            raise NotImplementedError(f"Unknown command: {command}")
+
+    STATUS_SCHEMA_TASK_TYPENAME = "StatusSchemaTask"
+
+
 CONFIG_UUID = str(uuid.uuid4())
 TASK_UUID = str(uuid.uuid4())
+STATUS_SCHEMA_CONFIG_UUID = str(uuid.uuid4())
+STATUS_SCHEMA_TASK_UUID = str(uuid.uuid4())
 
 
 @pytest.fixture
@@ -114,11 +164,35 @@ def tasks_api_mock():
         result=None,
         error_message=None,
     )
+    status_schema_config = db_models.TaskConfigRead(
+        uuid=STATUS_SCHEMA_CONFIG_UUID,
+        name="status-schema-config",
+        typename="StatusSchemaTask",
+        params={},
+        marked_for_delete=False,
+        description=None,
+    )
+    status_schema_instance = db_models.TaskInstanceRead(
+        uuid=STATUS_SCHEMA_TASK_UUID,
+        config_uuid=STATUS_SCHEMA_CONFIG_UUID,
+        status=TaskStatus.PENDING,
+        resume_data=None,
+        result=None,
+        error_message=None,
+    )
     mock.create_task_config.return_value = MagicMock(config=mock_config)
-    mock.list_task_configs.return_value = MagicMock(configs={CONFIG_UUID: mock_config})
+    mock.list_task_configs.return_value = MagicMock(
+        configs={CONFIG_UUID: mock_config, STATUS_SCHEMA_CONFIG_UUID: status_schema_config}
+    )
     mock.update_task_config.return_value = MagicMock()
     mock.delete_task_configs.return_value = MagicMock()
-    mock.create_task_instance.return_value = MagicMock(instance=mock_instance)
+
+    def _create_task_instance(payload):
+        if payload.config_uuid == STATUS_SCHEMA_CONFIG_UUID:
+            return MagicMock(instance=status_schema_instance)
+        return MagicMock(instance=mock_instance)
+
+    mock.create_task_instance.side_effect = _create_task_instance
     mock.list_task_instances.return_value = MagicMock(instances=[])
     mock.delete_task_instances.return_value = MagicMock()
     mock.set_task_instance_status.return_value = MagicMock()

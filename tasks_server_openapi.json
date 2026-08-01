@@ -121,6 +121,132 @@
         }
       }
     },
+    "/api/tasks/types/status-schema": {
+      "post": {
+        "tags": [
+          "tasks"
+        ],
+        "summary": "Get Task Type Status Schema Api",
+        "description": "API endpoint for getting the rich-status-card widget schema for one or more\ntask types. Static per typename \u2014 safe for the frontend to fetch once and cache.",
+        "operationId": "get_task_type_status_schema",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TasksStatusSchemaPayload"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TasksStatusSchemaResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/tasks/instances/status-data": {
+      "post": {
+        "tags": [
+          "tasks"
+        ],
+        "summary": "Get Tasks Status Data Api",
+        "description": "API endpoint for getting live status_data for one or more running task\ninstances (fetched only while a task's status card is expanded). Unknown or\nnot-currently-running uuids are simply omitted from the response, not an error.",
+        "operationId": "get_tasks_status_data",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TasksStatusDataPayload"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TasksStatusDataResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/tasks/instances/command": {
+      "post": {
+        "tags": [
+          "tasks"
+        ],
+        "summary": "Send Task Command Api",
+        "description": "API endpoint for sending a UI-issued command to a running task instance\n(e.g. \"capture now\", \"skip this source\"). Forwarded to\nTask.handle_command(), which must only set a flag or push to a queue \u2014\nnever perform I/O. A task that doesn't implement handle_command() (the\nbase implementation raises NotImplementedError) is translated into a\nclean failure response here rather than an unhandled 500.",
+        "operationId": "send_task_command",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TaskCommandPayload"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskCommandResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/tasks/instances/start": {
       "post": {
         "tags": [
@@ -1253,6 +1379,51 @@
         "type": "object",
         "title": "StartTasksResponse"
       },
+      "TaskCommandPayload": {
+        "properties": {
+          "taskUuid": {
+            "type": "string",
+            "title": "Taskuuid"
+          },
+          "command": {
+            "type": "string",
+            "title": "Command"
+          },
+          "params": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Params"
+          }
+        },
+        "type": "object",
+        "required": [
+          "taskUuid",
+          "command"
+        ],
+        "title": "TaskCommandPayload"
+      },
+      "TaskCommandResponse": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "title": "Status",
+            "default": "success"
+          },
+          "message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Message"
+          }
+        },
+        "type": "object",
+        "title": "TaskCommandResponse"
+      },
       "TaskConfigRead": {
         "properties": {
           "uuid": {
@@ -1586,6 +1757,101 @@
         },
         "type": "object",
         "title": "TasksResultResponse"
+      },
+      "TasksStatusDataPayload": {
+        "properties": {
+          "taskUuids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Taskuuids"
+          }
+        },
+        "type": "object",
+        "required": [
+          "taskUuids"
+        ],
+        "title": "TasksStatusDataPayload"
+      },
+      "TasksStatusDataResponse": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "title": "Status",
+            "default": "success"
+          },
+          "message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Message"
+          },
+          "statusData": {
+            "additionalProperties": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "object",
+            "title": "Statusdata"
+          }
+        },
+        "type": "object",
+        "title": "TasksStatusDataResponse"
+      },
+      "TasksStatusSchemaPayload": {
+        "properties": {
+          "taskTypenames": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Tasktypenames"
+          }
+        },
+        "type": "object",
+        "required": [
+          "taskTypenames"
+        ],
+        "title": "TasksStatusSchemaPayload"
+      },
+      "TasksStatusSchemaResponse": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "title": "Status",
+            "default": "success"
+          },
+          "message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Message"
+          },
+          "schemas": {
+            "additionalProperties": {
+              "items": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "type": "object",
+            "title": "Schemas"
+          }
+        },
+        "type": "object",
+        "title": "TasksStatusSchemaResponse"
       },
       "TasksTypeSchemaPayload": {
         "properties": {
