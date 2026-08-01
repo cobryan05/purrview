@@ -51,6 +51,24 @@ if "TestTask" not in task_registry:
             pass
 
 
+# Register a task that reports indeterminate (None) progress while running, to
+# exercise the progress: Optional[float] wire round-trip (TaskInfoRead.progress).
+if "IndeterminateProgressTask" not in task_registry:
+
+    @register_task("IndeterminateProgressTask")
+    class IndeterminateProgressTask(Task):
+        async def _init(self, params: dict, resume_data: Optional[dict]) -> None:
+            pass
+
+        async def _run(self) -> dict[str, Any]:
+            self._update_progress(None)
+            await self._cancel_flag.wait()
+            return {"canceled": True}
+
+        async def _deinit(self) -> None:
+            pass
+
+
 # Register a task that supports cooperative pause via _check_pause()
 if "PausableTestTask" not in task_registry:
 

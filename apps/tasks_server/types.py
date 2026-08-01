@@ -18,7 +18,10 @@ class TaskInfo:
 class TaskInfoRead(ApiModel):
     config: TaskConfigRead
     instance: Optional[TaskInstanceRead] = None
-    progress: float = 0.0
+    # None means indeterminate progress (frontend renders a striped bar); the field
+    # default stays 0.0 so tasks that never call this out explicitly keep their
+    # existing determinate 0% rendering.
+    progress: Optional[float] = 0.0
     status_message: str = ""
     status_actions: list[dict] = Field(default_factory=list)
     log_lines: list[str] = Field(default_factory=list)
@@ -29,7 +32,7 @@ class TaskInfoRead(ApiModel):
         return cls(
             config=TaskConfigRead.model_validate(task_info.config),
             instance=(TaskInstanceRead.model_validate(task_info.instance) if task_info.instance else None),
-            progress=task_info.task.get_progress() if task_info.task else 0.0,
+            progress=(task_info.task.get_progress() if task_info.task else 0.0),
             status_message=(task_info.task.get_status_message() if task_info.task else ""),
             status_actions=(task_info.task.get_status_actions() if task_info.task else []),
             log_lines=task_info.task.get_log_lines() if task_info.task else [],

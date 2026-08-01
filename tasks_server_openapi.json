@@ -1319,7 +1319,14 @@
             ]
           },
           "progress": {
-            "type": "number",
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Progress",
             "default": 0.0
           },

@@ -47,7 +47,11 @@ class Task(ABC):
         self._status: TaskStatus = TaskStatus.PENDING
         self._params: dict[str, Any] = params
         self._task: asyncio.Task | None = None
-        self._progress: float = 0.0
+        # None means "indeterminate" (frontend renders a striped progress bar).
+        # The base default MUST stay 0.0, not None — tasks opt into indeterminate
+        # progress explicitly (see CollectTrainingImagesTask), otherwise every
+        # existing batch task would suddenly render as indeterminate.
+        self._progress: Optional[float] = 0.0
         self._results: dict[str, Any] = {}
         self._resume_data: dict[str, Any] = {}
         self._log_lines: deque[str] = deque(maxlen=100)
@@ -131,12 +135,15 @@ class Task(ABC):
             self._results = {"status": TaskStatus.ERROR, "message": str(e)}
             self.log(f"Error: {e}")
         finally:
+            # Completion always ends at a determinate 100% — even a task that ran with
+            # indeterminate (None) progress the whole way must not leave the frontend's
+            # striped bar showing after the task is actually done.
             self._progress = 100.0
             await self._deinit()
             self._task_done.set()
 
-    def _update_progress(self, percent: float):
-        """Store progress"""
+    def _update_progress(self, percent: Optional[float]):
+        """Store progress. Pass None for indeterminate progress (striped bar in the UI)."""
         self._progress = percent
 
     def log(self, msg: str) -> None:
@@ -258,8 +265,8 @@ class Task(ABC):
         """
         return []
 
-    def get_progress(self) -> float:
-        """Return the current progress of the task."""
+    def get_progress(self) -> Optional[float]:
+        """Return the current progress of the task, or None if indeterminate."""
         return self._progress
 
     def get_results(self) -> Optional[dict[str, Any]]:

@@ -197,3 +197,45 @@ async def test_get_task_info_uses_in_memory_status_not_stale_db(manager, tasks_a
     ), "In-memory 'running' status must not be overwritten by stale DB 'new' status"
 
     await manager.cancel_tasks([TASK_UUID])
+
+
+# ─── progress: Optional[float] wire round-trip ─────────────────────────────────
+#
+# Task._progress / TaskInfoRead.progress must distinguish "indeterminate" (None,
+# which the frontend renders as a striped bar) from "determinate 0%" (0.0, a
+# normal progress bar at the start). Both must round-trip through the actual
+# JSON API response, not just the Python object, since a naive `progress or 0.0`
+# anywhere in the serialization path would silently collapse the distinction.
+
+
+async def test_indeterminate_progress_serializes_as_null(http_client, tasks_api_mock):
+    """A task that reports None progress must serialize as JSON null, not 0."""
+    tasks_api_mock.list_task_configs.return_value.configs[CONFIG_UUID].typename = "IndeterminateProgressTask"
+
+    await http_client.post("/api/tasks/instances/start", json={"configUuid": CONFIG_UUID})
+    await asyncio.sleep(0)  # let the task run far enough to call _update_progress(None)
+
+    resp = await http_client.post("/api/tasks/instances/get", json={"taskUuids": [TASK_UUID]})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["tasks"][TASK_UUID]["progress"] is None
+
+    await http_client.post("/api/tasks/instances/cancel", json={"taskUuids": [TASK_UUID]})
+
+
+async def test_determinate_zero_progress_serializes_as_zero_not_null(http_client, tasks_api_mock):
+    """A task that never touches progress (base Task default) must serialize as
+    0.0/0, not null — the base default must stay determinate so every pre-existing
+    batch task keeps rendering a normal (non-striped) progress bar."""
+    tasks_api_mock.list_task_configs.return_value.configs[CONFIG_UUID].params = {"duration": 60}
+
+    await http_client.post("/api/tasks/instances/start", json={"configUuid": CONFIG_UUID})
+    await asyncio.sleep(0)
+
+    resp = await http_client.post("/api/tasks/instances/get", json={"taskUuids": [TASK_UUID]})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["tasks"][TASK_UUID]["progress"] == 0.0
+    assert data["tasks"][TASK_UUID]["progress"] is not None
+
+    await http_client.post("/api/tasks/instances/cancel", json={"taskUuids": [TASK_UUID]})

@@ -32,6 +32,7 @@ from inference_client.models.inference_payload import InferencePayload
 from inference_client.models.pin_model_payload import PinModelPayload
 
 from apps.helpers.bboxUtils import iou_xywh
+from apps.helpers.consts import TaskStatus
 from apps.helpers.db.db_client import UNVERIFIED_TAG_UUID
 from apps.helpers.hashUtils import (
     PHASH_JPEG_QUALITY,
@@ -91,6 +92,16 @@ class CollectTrainingImagesTask(Task):
     # Live-collection tasks can run for days; checkpoint far more often than the base
     # Task default so an unexpected restart loses at most a few minutes of progress.
     CHECKPOINT_INTERVAL: int = 60
+    # Seconds a model pin is requested for. Renewed on a timer at roughly half this
+    # duration (_PIN_RENEWAL_INTERVAL_S) so a run longer than this never lets a pin
+    # lapse silently.
+    _PIN_DURATION_S: int = 3600
+    _PIN_RENEWAL_INTERVAL_S: float = _PIN_DURATION_S / 2
+    # Stale-source notice escalation thresholds, as a multiple of the source's own
+    # configured fetch interval elapsed without a successful frame.
+    _STALE_NOTICE_INFO_MULTIPLE: float = 3.0
+    _STALE_NOTICE_WARNING_MULTIPLE: float = 10.0
+    _STALE_NOTICE_ERROR_MULTIPLE: float = 30.0
 
     async def _init(self, params: dict[str, Any], resume_data: Optional[dict[str, Any]]) -> None:
         self._status_msg: str = "Initializing"
@@ -133,6 +144,25 @@ class CollectTrainingImagesTask(Task):
         # Intervals for rate-limited provider types
         self._snapshot_interval: float = float(params.get("snapshot_interval", 15))
         self._stream_interval: float = float(params.get("stream_interval", 1.0))
+
+        # Stop conditions — both default to unlimited (None). Live sources otherwise
+        # never complete on their own, and these also give the progress bar something
+        # to measure against when no FIXED provider is present (see _run()).
+        _max_images_raw = params.get("max_images")
+        self._max_images: Optional[int] = int(_max_images_raw) if _max_images_raw else None
+        _max_duration_raw = params.get("max_duration")
+        self._max_duration_s: Optional[float] = float(_max_duration_raw) if _max_duration_raw else None
+        # Total elapsed run time in seconds, accumulated across restarts (persisted in
+        # resume_data) plus whatever this process instance has been running — so
+        # max_duration and duration-based progress are correct even after a checkpoint
+        # restart, not just within a single process lifetime.
+        self._elapsed_duration_at_start: float = resume_data.get("elapsed_duration_s", 0.0) if resume_data else 0.0
+        # Set for real at the top of _run(); placeholder here so _elapsed_duration_s()
+        # is safe to call before _run() starts (e.g. from tests exercising _init alone).
+        self._run_started_at: float = time.perf_counter()
+        # Wall time this run has spent paused in place, subtracted from elapsed
+        # duration so a pause doesn't burn down the max_duration budget.
+        self._paused_duration_s: float = 0.0
 
         self._images_saved: int = resume_data.get("images_saved", 0) if resume_data else 0
         self._images_processed: int = resume_data.get("images_processed", 0) if resume_data else 0
@@ -184,6 +214,9 @@ class CollectTrainingImagesTask(Task):
         )
 
     async def _run(self) -> dict[str, Any]:
+        # Real start of this process's run — _elapsed_duration_s() adds this delta to
+        # whatever was already accumulated in resume_data before this restart.
+        self._run_started_at = time.perf_counter()
         self._unverified_tag_uuid = UNVERIFIED_TAG_UUID
 
         db_api_client = self._manager.get_db_api_client()
@@ -238,7 +271,7 @@ class CollectTrainingImagesTask(Task):
                 resp = await asyncio.to_thread(
                     models_api.pin_model_api_api_models_model_name_pin_post,
                     name,
-                    PinModelPayload(model_name=name, duration=3600),
+                    PinModelPayload(model_name=name, duration=self._PIN_DURATION_S),
                 )
                 if resp.pin_id:
                     pin_ids[name] = resp.pin_id
@@ -255,6 +288,11 @@ class CollectTrainingImagesTask(Task):
                 logger.exception(f"Failed to pin model {name}")
                 self.log(f"Failed to pin model: {name}")
                 pin_ids[name] = None
+
+        # Single mutable dict shared with the filter-chain backend (when built below) and
+        # with the pin-renewal loop, so a renewal's new pin_id is visible everywhere
+        # without having to re-construct the backend.
+        self._combined_pin_ids: dict[str, str] = {k: v for k, v in pin_ids.items() if v}
 
         self._chain_pin_ids: dict[str, str] = {}
         if self._filter_chain_uuid:
@@ -294,15 +332,15 @@ class CollectTrainingImagesTask(Task):
                         resp = await asyncio.to_thread(
                             models_api.pin_model_api_api_models_model_name_pin_post,
                             name,
-                            PinModelPayload(model_name=name, duration=3600),
+                            PinModelPayload(model_name=name, duration=self._PIN_DURATION_S),
                         )
                         if resp.pin_id:
                             self._chain_pin_ids[name] = resp.pin_id
                     except Exception:
                         logger.exception("Failed to pin filter-chain model %s", name)
 
-                combined_pin_ids = {**pin_ids, **self._chain_pin_ids}
-                backend = _HttpInferenceBackend(inference_api_client, combined_pin_ids)
+                self._combined_pin_ids.update({k: v for k, v in self._chain_pin_ids.items() if v})
+                backend = _HttpInferenceBackend(inference_api_client, self._combined_pin_ids)
                 self._filter_chain_runner = FilterChainRunner(chain_steps, backend)
                 self.log(f"Filter chain '{chain.name}' active ({len(chain_steps)} step(s))")
 
@@ -322,6 +360,19 @@ class CollectTrainingImagesTask(Task):
             ImageProviderType.LIVE_SNAPSHOT: self._snapshot_interval,
             ImageProviderType.LIVE_STREAM: self._stream_interval,
         }
+
+        # Stale-source tracking (live providers only — FIXED providers complete and
+        # drop out of `active` on their own via the existing timeout/exhaustion path).
+        # Keyed by provider.source_name (Phase 1's stable, user-facing identity) rather
+        # than id(provider): id() is not stable across GC and isn't meaningful in the UI.
+        self._last_fetch_by_source: dict[str, float] = {}
+        self._source_intervals: dict[str, float] = {}
+        for provider in providers:
+            if provider.provider_type() == ImageProviderType.FIXED:
+                continue
+            interval = provider.min_capture_interval or _rate_limits.get(provider.provider_type(), 0.0)
+            if provider.source_name and interval > 0:
+                self._source_intervals[provider.source_name] = interval
 
         def _status_msg_str() -> str:
             # Switch to generic message once all fixed providers are exhausted.
@@ -347,6 +398,27 @@ class CollectTrainingImagesTask(Task):
 
         def _full_status() -> str:
             return _status_msg_str() + _dup_stats_str()
+
+        def _stop_condition_progress() -> Optional[float]:
+            """Progress (0-100) measured against whichever stop condition is set, or
+            None (indeterminate) when neither is. Only consulted when there are no
+            FIXED providers — their real frame-count progress takes priority and is
+            left untouched (see _collect_saves)."""
+            ratios: list[float] = []
+            if self._max_images:
+                ratios.append(min(1.0, self._images_saved / self._max_images))
+            if self._max_duration_s:
+                ratios.append(min(1.0, self._elapsed_duration_s() / self._max_duration_s))
+            if not ratios:
+                return None
+            return max(ratios) * 100.0
+
+        def _stop_condition_reached() -> bool:
+            if self._max_images is not None and self._images_saved >= self._max_images:
+                return True
+            if self._max_duration_s is not None and self._elapsed_duration_s() >= self._max_duration_s:
+                return True
+            return False
 
         def _collect_saves() -> None:
             """Harvest results from any completed save tasks and update counters."""
@@ -419,6 +491,12 @@ class CollectTrainingImagesTask(Task):
             self._dedup_queue: asyncio.Queue = asyncio.Queue(maxsize=self._DEDUP_QUEUE_SIZE)
             dedup_task = asyncio.create_task(self._dedup_worker(images_api, files_root))
 
+        # Background pin-renewal loop: runs independently of the main capture loop so a
+        # slow/paced source never delays renewal, and a renewal failure never blocks a frame.
+        renew_pins_task: Optional[asyncio.Task] = asyncio.create_task(
+            self._renew_pins_periodically(models_api, pin_ids, self._chain_pin_ids)
+        )
+
         async def _service_checkpoint_request() -> None:
             """Snapshot resume data now if the manager has requested a checkpoint.
 
@@ -445,10 +523,26 @@ class CollectTrainingImagesTask(Task):
         try:
             active = set(providers)
             while active and not self._cancel_flag.is_set():
+                # _check_pause() returns immediately unless the task is paused in place,
+                # so this is a no-op delta on the hot path; when it does block, the time
+                # is banked as paused and excluded from the max_duration budget.
+                _t_pause = time.perf_counter()
                 await self._check_pause()
+                self._paused_duration_s += time.perf_counter() - _t_pause
                 await _service_checkpoint_request()
                 _collect_saves()
                 self._status_msg = _full_status()
+
+                # Live tasks (no FIXED provider) otherwise report 0% forever. Measure
+                # against whichever stop condition is configured; indeterminate (None,
+                # which renders the frontend's striped bar) when neither is set. FIXED
+                # providers' real frame-count progress (in _collect_saves) is untouched.
+                if not fixed_providers:
+                    self._update_progress(_stop_condition_progress())
+
+                if _stop_condition_reached():
+                    self.log("Stop condition reached (max_images/max_duration) — stopping")
+                    break
 
                 any_fetched = False
                 for provider in list(active):
@@ -497,6 +591,8 @@ class CollectTrainingImagesTask(Task):
 
                     any_fetched = True
                     last_fetch[id(provider)] = t_fetch
+                    if provider.source_name:
+                        self._last_fetch_by_source[provider.source_name] = t_fetch
 
                     # Build a stable unique ID when the provider gives us source + frame_idx.
                     # Used to skip already-processed frames on resume — FIXED providers only:
@@ -607,6 +703,14 @@ class CollectTrainingImagesTask(Task):
                     self.log(_full_status())
 
         finally:
+            # Stop the pin-renewal loop first so it can't race the unpinning below
+            # (e.g. renewing a model this same teardown is about to unpin).
+            if renew_pins_task is not None:
+                renew_pins_task.cancel()
+                try:
+                    await renew_pins_task
+                except asyncio.CancelledError:
+                    pass
             # Shut down the dedup coroutine cleanly before draining saves so that any
             # frames still queued for dedup get processed and their save tasks are in
             # _pending_saves before we wait on them.
@@ -683,6 +787,18 @@ class CollectTrainingImagesTask(Task):
             ]
         return result
 
+    def _elapsed_duration_s(self) -> float:
+        """Total ACTIVE run time in seconds, accumulated across restarts.
+
+        Time spent paused in place is excluded: counting it would mean a task paused
+        overnight and resumed in the morning instantly satisfies its max_duration and
+        stops collecting, which is both surprising and silently destructive. Time
+        between separate runs (suspend to checkpoint, server restart) is likewise not
+        counted, since _run_started_at resets on each run while
+        _elapsed_duration_at_start carries only the active time already banked.
+        """
+        return self._elapsed_duration_at_start + (time.perf_counter() - self._run_started_at) - self._paused_duration_s
+
     def _build_resume_data(self) -> dict[str, Any]:
         return {
             "images_saved": self._images_saved,
@@ -697,6 +813,7 @@ class CollectTrainingImagesTask(Task):
             "filtered_relabeled": self._filtered_relabeled,
             "filtered_tagged": self._filtered_tagged,
             "filtered_stripped": self._filtered_stripped,
+            "elapsed_duration_s": self._elapsed_duration_s(),
         }
 
     async def _run_inference(
@@ -1146,8 +1263,115 @@ class CollectTrainingImagesTask(Task):
             finally:
                 self._dedup_queue.task_done()
 
+    async def _renew_pins_periodically(
+        self,
+        models_api: ModelsApi,
+        pin_ids: dict[str, Optional[str]],
+        chain_pin_ids: dict[str, str],
+    ) -> None:
+        """Background loop: re-pins every held model roughly every
+        _PIN_RENEWAL_INTERVAL_S (~half of _PIN_DURATION_S) so a run longer than the
+        pin duration never lets a pin lapse and silently reload the model mid-stream.
+
+        Runs as its own task, independent of the main capture loop, so a slow/paced
+        source can't delay a renewal and a renewal failure can't stall a frame.
+        Renewal failures are logged and skipped — never raised — so a transient
+        inference-server hiccup can't kill an otherwise-healthy long-running task.
+
+        `pin_ids` and `chain_pin_ids` are mutated in place (new pin_id swapped in)
+        so the main loop's `_run_inference` and the filter-chain backend, which hold
+        references to these same dicts, immediately see the renewed pin.
+        """
+        try:
+            while True:
+                try:
+                    await asyncio.wait_for(self._cancel_flag.wait(), timeout=self._PIN_RENEWAL_INTERVAL_S)
+                    return  # cancelled — teardown's finally block will unpin
+                except asyncio.TimeoutError:
+                    pass  # timer elapsed — time to renew
+
+                for name, pid in list(pin_ids.items()):
+                    if not pid:
+                        continue
+                    new_pid = await self._renew_one_pin(models_api, name, pid, label="model")
+                    if new_pid:
+                        pin_ids[name] = new_pid
+                        self._combined_pin_ids[name] = new_pid
+
+                for name, pid in list(chain_pin_ids.items()):
+                    if not pid:
+                        continue
+                    new_pid = await self._renew_one_pin(models_api, name, pid, label="filter-chain model")
+                    if new_pid:
+                        chain_pin_ids[name] = new_pid
+                        self._combined_pin_ids[name] = new_pid
+        except asyncio.CancelledError:
+            raise
+
+    async def _renew_one_pin(self, models_api: ModelsApi, name: str, old_pid: str, label: str) -> Optional[str]:
+        """Re-pin `name`, unpin the old pin_id, and return the new pin_id (or None on
+        any failure, in which case the old pin is left alone and will keep working
+        until it naturally expires)."""
+        try:
+            resp = await asyncio.to_thread(
+                models_api.pin_model_api_api_models_model_name_pin_post,
+                name,
+                PinModelPayload(model_name=name, duration=self._PIN_DURATION_S),
+            )
+        except Exception:
+            logger.exception(f"Failed to renew pin for {label} '{name}'")
+            return None
+        new_pid = resp.pin_id
+        if not new_pid:
+            logger.warning(f"Pin renewal for {label} '{name}' returned no pin_id")
+            return None
+        self.log(f"Renewed pin for {label}: {name}")
+        try:
+            await asyncio.to_thread(models_api.unpin_model, name, old_pid)
+        except Exception:
+            logger.warning(f"Failed to unpin stale pin for {label} '{name}' (pin {old_pid})")
+        return new_pid
+
     async def _deinit(self) -> None:
         pass
+
+    def get_notices(self) -> list[dict]:
+        """Advisory notices for sources that have gone quiet.
+
+        Escalates info → warning → error as multiples of the source's own configured
+        fetch interval elapse without a successful frame (_STALE_NOTICE_*_MULTIPLE).
+        Recomputed fresh on every call from _last_fetch_by_source, so a notice clears
+        (or downgrades) automatically the moment the source yields a frame again — no
+        separate recovery bookkeeping needed.
+        """
+        status = self.get_status()
+        if status not in (TaskStatus.RUNNING, TaskStatus.PAUSED):
+            return []
+        notices: list[dict] = []
+        now = time.perf_counter()
+        for source_name, interval in getattr(self, "_source_intervals", {}).items():
+            last = self._last_fetch_by_source.get(source_name)
+            baseline = last if last is not None else getattr(self, "_run_started_at", now)
+            elapsed = now - baseline
+            multiple = elapsed / interval
+            if multiple >= self._STALE_NOTICE_ERROR_MULTIPLE:
+                level = "error"
+            elif multiple >= self._STALE_NOTICE_WARNING_MULTIPLE:
+                level = "warning"
+            elif multiple >= self._STALE_NOTICE_INFO_MULTIPLE:
+                level = "info"
+            else:
+                continue
+            notices.append(
+                {
+                    "key": f"stale_source_{source_name}",
+                    "level": level,
+                    "message": (
+                        f"No frames from '{source_name}' in {elapsed:.0f}s " f"(expected every {interval:.0f}s)"
+                    ),
+                }
+            )
+        return notices
 
     def get_status_message(self) -> str:
         return self._status_msg
@@ -1178,6 +1402,8 @@ class CollectTrainingImagesTask(Task):
                     "generate_task_tag",
                     "task_tag_name",
                     "filter_chain_uuid",
+                    "max_images",
+                    "max_duration",
                     "dedup_group",
                 ]
             },
@@ -1262,6 +1488,24 @@ class CollectTrainingImagesTask(Task):
                     "discard corrupt frames, relabel known false-positives, or strip/tag "
                     "matches before they ever land in the dataset."
                 ),
+            },
+            "max_images": {
+                "type": "int",
+                "label": "Max Images to Save",
+                "description": (
+                    "Stop the task once this many images have been saved. "
+                    "Leave blank / 0 for unlimited (the default — live sources are normally user-stopped)."
+                ),
+                "default": 0,
+            },
+            "max_duration": {
+                "type": "float",
+                "label": "Max Duration (s)",
+                "description": (
+                    "Stop the task after this many seconds of run time have elapsed. "
+                    "Leave blank / 0 for unlimited (the default — live sources are normally user-stopped)."
+                ),
+                "default": 0,
             },
             "dedup_group": {
                 "type": "group",
