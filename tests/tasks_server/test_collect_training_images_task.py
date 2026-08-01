@@ -37,7 +37,10 @@ from apps.tasks_server.tasks.CollectTrainingImagesTask import (
     CollectTrainingImagesTask,
 )
 from apps.tasks_server.tasks.utils.imageHelper import ImageHelper
-from apps.tasks_server.tasks.utils.labelHelper import build_label_ancestry_map
+from apps.tasks_server.tasks.utils.labelHelper import (
+    build_label_ancestry_map,
+    build_label_metadata_map,
+)
 
 # ─── Shared constants ─────────────────────────────────────────────────────────
 
@@ -1842,3 +1845,325 @@ class TestBuildLabelAncestryMap:
         labels_api = self._labels_api([])
         ancestry = await build_label_ancestry_map(labels_api)
         assert ancestry == {}
+
+
+# ─── Phase 4: live collection status panel ─────────────────────────────────────
+
+
+class TestStatusSchema:
+    """status_schema() must describe exactly the three Phase 4 widgets, with ids
+    matching the keys get_status_data() returns — a silent rename of one side
+    without the other would break the id <-> data pairing without any error."""
+
+    def test_schema_widget_ids_match_status_data_keys(self):
+        schema = CollectTrainingImagesTask.status_schema()
+        schema_ids = {w["id"] for w in schema}
+
+        task = _make_task()
+        # get_status_data() must be callable straight after construction (before
+        # _init even runs) without raising — it's read by a poll handler that has
+        # no idea whether the task has started yet.
+        data_keys = set(task.get_status_data().keys())
+
+        assert schema_ids == data_keys == {"last_capture", "stats", "sources"}
+
+    def test_schema_entries_are_status_sourced_with_expected_types(self):
+        schema = {w["id"]: w for w in CollectTrainingImagesTask.status_schema()}
+        assert schema["last_capture"]["type"] == "annotated_image"
+        assert schema["stats"]["type"] == "stat_grid"
+        assert schema["sources"]["type"] == "table"
+        for widget in schema.values():
+            assert widget.get("source", "status") == "status"
+
+    def test_sources_table_columns_include_health(self):
+        schema = {w["id"]: w for w in CollectTrainingImagesTask.status_schema()}
+        col_keys = {c["key"] for c in schema["sources"]["columns"]}
+        assert {"name", "type", "interval", "last_frame", "health"} <= col_keys
+
+
+class TestGetStatusDataNoIO:
+    """get_status_data() is called synchronously from a request handler and MUST
+    NOT perform I/O (no DB/filesystem access, no awaits) — see the base class
+    docstring. Constructing it as `async def` at all would make a bare call
+    return a coroutine instead of a dict; that alone proves nothing awaits."""
+
+    def test_get_status_data_is_a_plain_sync_method(self):
+        assert not asyncio.iscoroutinefunction(CollectTrainingImagesTask.get_status_data)
+
+    def test_get_status_data_never_touches_the_api_clients(self):
+        task = _make_task()
+        # Any attribute access on these mocks that isn't a plain read is a red flag;
+        # since get_status_data() takes no arguments and isn't a coroutine, the only
+        # way it could reach the DB/inference clients at all is through self._manager.
+        task._manager = MagicMock()
+        task._manager.get_db_api_client.side_effect = AssertionError("get_status_data must not touch the DB client")
+        task._manager.get_inference_api_client.side_effect = AssertionError(
+            "get_status_data must not touch the inference client"
+        )
+
+        result = task.get_status_data()
+
+        task._manager.get_db_api_client.assert_not_called()
+        task._manager.get_inference_api_client.assert_not_called()
+        assert set(result.keys()) == {"last_capture", "stats", "sources"}
+
+    async def test_get_status_data_safe_before_init(self):
+        """Pending-state tasks (never _init'd) must not crash a poll handler."""
+        task = _make_task()
+        data = task.get_status_data()
+        assert data["last_capture"] is None
+        assert data["sources"] == []
+
+
+class TestLastCaptureStatusData:
+    """The 'last capture' widget carries an image path + bbox list by reference —
+    never inline image bytes — matching seedRuntimeBboxes()'s expected shape
+    (canvas/image.js): uuid, label {uuid,text,color}|None, x/y/width/height."""
+
+    async def test_last_capture_populated_after_a_save(self, tmp_path):
+        images = [_tracked_image(0)]
+        task = await _run_task(images, detect=True, tmp_path=tmp_path)
+
+        last_capture = task.get_status_data()["last_capture"]
+        assert last_capture is not None
+        assert last_capture is task._last_capture
+
+    async def test_last_capture_is_path_and_bboxes_never_image_bytes(self, tmp_path):
+        images = [_tracked_image(0)]
+        task = await _run_task(images, detect=True, tmp_path=tmp_path)
+
+        last_capture = task.get_status_data()["last_capture"]
+        assert set(last_capture.keys()) == {"path", "bboxes"}
+        assert isinstance(last_capture["path"], str)
+        assert "test_collected" in last_capture["path"]  # output_dir from _PARAMS
+        # Never leak raw pixel/bytes data into the status payload.
+        assert "image" not in last_capture
+        assert "bytes" not in last_capture
+        assert "image_base64" not in last_capture
+
+    async def test_last_capture_bbox_shape_matches_seedRuntimeBboxes_contract(self, tmp_path):
+        images = [_tracked_image(0)]
+        task = await _run_task(images, detect=True, tmp_path=tmp_path)
+
+        bboxes = task.get_status_data()["last_capture"]["bboxes"]
+        assert len(bboxes) == 1
+        bbox = bboxes[0]
+        assert set(bbox.keys()) == {"uuid", "label", "x", "y", "width", "height"}
+        assert isinstance(bbox["uuid"], str) and bbox["uuid"]
+        assert bbox["label"]["uuid"] == _LABEL_UUID
+        assert bbox["x"] == 0.0 and bbox["y"] == 0.0
+        assert bbox["width"] == 0.5 and bbox["height"] == 0.5
+
+    def test_build_seed_bbox_resolves_label_text_and_color(self):
+        task = _make_task()
+        task._label_meta = {_LABEL_UUID: {"text": "Cat", "color": "#ff0000"}}
+        det = _detection()
+        seed = task._build_seed_bbox(det, "bbox-uuid-1")
+        assert seed == {
+            "uuid": "bbox-uuid-1",
+            "label": {"uuid": _LABEL_UUID, "text": "Cat", "color": "#ff0000"},
+            "x": 0.0,
+            "y": 0.0,
+            "width": 0.5,
+            "height": 0.5,
+        }
+
+    def test_build_seed_bbox_falls_back_to_uuid_when_no_meta(self):
+        task = _make_task()
+        task._label_meta = {}
+        det = _detection()
+        seed = task._build_seed_bbox(det, "bbox-uuid-2")
+        assert seed["label"] == {"uuid": _LABEL_UUID, "text": _LABEL_UUID, "color": None}
+
+    def test_build_seed_bbox_no_label_is_none(self):
+        task = _make_task()
+        task._label_meta = {}
+        det = _detection(label_uuid=None)
+        seed = task._build_seed_bbox(det, "bbox-uuid-3")
+        assert seed["label"] is None
+
+
+class TestStatGridDedupAndFilterChainToggle:
+    """Dedup and filter-chain stat_grid entries only appear in get_status_data()'s
+    'stats' payload when the corresponding feature is actually active — otherwise
+    the grid would be full of permanent zeros for features the config never
+    enabled."""
+
+    _DEDUP_KEYS = {"dedup_checked", "dedup_image_hits", "dedup_bbox_hits", "dedup_discarded"}
+    _FILTER_KEYS = {"filter_discarded", "filter_relabeled", "filter_tagged", "filter_stripped"}
+
+    async def test_dedup_and_filter_keys_absent_when_both_disabled(self):
+        task = _make_task()
+        await task._init(_PARAMS, resume_data=None)
+        stats = task.get_status_data()["stats"]
+        assert not (self._DEDUP_KEYS & stats.keys())
+        assert not (self._FILTER_KEYS & stats.keys())
+        assert {"saved", "processed", "captures_per_min", "uptime"} <= stats.keys()
+
+    async def test_dedup_keys_present_when_dedup_enabled(self):
+        params = {**_PARAMS, "enable_dedup": True}
+        task = _make_task(params=params)
+        await task._init(params, resume_data=None)
+        stats = task.get_status_data()["stats"]
+        assert self._DEDUP_KEYS <= stats.keys()
+        assert not (self._FILTER_KEYS & stats.keys())
+
+    async def test_filter_keys_present_when_chain_active(self):
+        task = _make_task()
+        await task._init(_PARAMS, resume_data=None)
+        # _filter_chain_runner is only built for real inside _run() once a chain
+        # resolves with enabled steps; simulate "active" the same way the sources
+        # table's own health check treats it (getattr(..., None) is not None).
+        task._filter_chain_runner = MagicMock()
+        stats = task.get_status_data()["stats"]
+        assert self._FILTER_KEYS <= stats.keys()
+        assert not (self._DEDUP_KEYS & stats.keys())
+
+
+class TestSourcesTableHealth:
+    """Sources table health must mirror get_notices()' stale-source escalation
+    thresholds exactly — both read from the shared _source_staleness() helper, so
+    a live source below the info threshold reports 'ok', and above it reports the
+    same level get_notices() would surface."""
+
+    async def _task_with_source_state(self):
+        task = _make_task()
+        await task._init(_PARAMS, resume_data=None)
+        task._status = TaskStatus.RUNNING  # get_notices() only surfaces for running/paused tasks
+        task._source_names = ["cam1", "cam2"]
+        task._source_types = {"cam1": "live_snapshot", "cam2": "fixed"}
+        task._source_intervals = {"cam1": 10.0}  # cam2 is FIXED: no interval tracked
+        task._run_started_at = 1000.0
+        task._last_fetch_by_source = {"cam1": 1000.0}
+        return task
+
+    def _row(self, task, name):
+        rows = task.get_status_data()["sources"]
+        return next(r for r in rows if r["name"] == name)
+
+    async def test_healthy_source_reports_ok(self):
+        task = await self._task_with_source_state()
+        with patch("apps.tasks_server.tasks.CollectTrainingImagesTask.time.perf_counter", return_value=1000.0 + 2.0):
+            row = self._row(task, "cam1")
+            notices = task.get_notices()
+        assert row["health"] == "ok"
+        assert notices == []
+
+    async def test_health_escalation_matches_get_notices_levels(self):
+        task = await self._task_with_source_state()
+        # Same offsets TestStaleSourceNotices uses for interval=10.0: 30s -> info,
+        # 100s -> warning, 300s -> error.
+        for offset, expected_level in ((30.0, "info"), (100.0, "warning"), (300.0, "error")):
+            with patch(
+                "apps.tasks_server.tasks.CollectTrainingImagesTask.time.perf_counter",
+                return_value=1000.0 + offset,
+            ):
+                row = self._row(task, "cam1")
+                notices = task.get_notices()
+            assert row["health"] == expected_level
+            assert notices[0]["level"] == expected_level
+
+    async def test_fixed_source_with_no_tracked_interval_reports_na(self):
+        task = await self._task_with_source_state()
+        with patch("apps.tasks_server.tasks.CollectTrainingImagesTask.time.perf_counter", return_value=1000.0 + 300.0):
+            row = self._row(task, "cam2")
+        assert row["health"] == "n/a"
+        assert row["interval"] == "—"
+
+    async def test_source_table_includes_type_and_interval(self):
+        task = await self._task_with_source_state()
+        with patch("apps.tasks_server.tasks.CollectTrainingImagesTask.time.perf_counter", return_value=1000.0 + 2.0):
+            row = self._row(task, "cam1")
+        assert row["type"] == "live_snapshot"
+        assert row["interval"] == "10s"
+        assert row["last_frame"] == "2s ago"
+
+    async def test_never_fetched_source_reports_never(self):
+        task = await self._task_with_source_state()
+        task._last_fetch_by_source = {}
+        with patch("apps.tasks_server.tasks.CollectTrainingImagesTask.time.perf_counter", return_value=1000.0 + 2.0):
+            row = self._row(task, "cam1")
+        assert row["last_frame"] == "never"
+
+
+class TestUptimeAndCapturesPerMinuteExcludePausedTime:
+    """Uptime and captures-per-minute must be computed from _elapsed_duration_s(),
+    which already excludes time spent paused in place — otherwise a long pause
+    would inflate the run's apparent wall-clock duration and crater the reported
+    captures-per-minute rate for no real reason."""
+
+    async def test_uptime_excludes_paused_time(self):
+        task = _make_task()
+        await task._init(_PARAMS, resume_data=None)
+        start = time.perf_counter()
+        task._run_started_at = start
+        task._images_saved = 10
+
+        with patch(
+            "apps.tasks_server.tasks.CollectTrainingImagesTask.time.perf_counter",
+            return_value=start + 100.0,
+        ):
+            stats_before_pause = task.get_status_data()["stats"]
+            task._paused_duration_s = 60.0
+            stats_after_pause = task.get_status_data()["stats"]
+
+        # 100s of wall clock, un-adjusted, would report "1m 40s"; excluding the 60s
+        # spent paused, only the 40s of ACTIVE time counts.
+        assert stats_before_pause["uptime"] == "1m 40s"
+        assert stats_after_pause["uptime"] == "40s"
+
+    async def test_captures_per_minute_excludes_paused_time(self):
+        task = _make_task()
+        await task._init(_PARAMS, resume_data=None)
+        start = time.perf_counter()
+        task._run_started_at = start
+        task._images_saved = 20
+        task._paused_duration_s = 60.0
+
+        with patch(
+            "apps.tasks_server.tasks.CollectTrainingImagesTask.time.perf_counter",
+            return_value=start + 100.0,
+        ):
+            # Active time = 100 - 60 = 40s = 40/60 min -> 20 / (40/60) = 30/min.
+            # If paused time were wrongly included, active time would be 100s ->
+            # 20 / (100/60) = 12/min instead.
+            stats = task.get_status_data()["stats"]
+
+        assert stats["captures_per_min"] == pytest.approx(30.0)
+
+
+class TestBuildLabelMetadataMap:
+    """build_label_metadata_map (tasks/utils/labelHelper.py) resolves a bare
+    label_uuid to {text, color} — used by CollectTrainingImagesTask to build
+    UI-ready 'last capture' bbox descriptors without any status-time DB access."""
+
+    @staticmethod
+    def _labels_api(labels: list) -> MagicMock:
+        """labels: list of (uuid, name, color) tuples.
+
+        MagicMock's constructor treats `name=` specially (it sets the mock's own
+        repr, not an attribute), so `.name` must be assigned after construction.
+        """
+        api = MagicMock()
+        resp = MagicMock()
+        label_mocks = []
+        for u, n, c in labels:
+            lbl = MagicMock(uuid=u, color=c)
+            lbl.name = n
+            label_mocks.append(lbl)
+        resp.labels = label_mocks
+        api.list_labels.return_value = resp
+        return api
+
+    async def test_maps_uuid_to_name_and_color(self):
+        labels_api = self._labels_api([("l1", "Cat", "#ff0000"), ("l2", "Dog", "#00ff00")])
+        meta = await build_label_metadata_map(labels_api)
+        assert meta == {
+            "l1": {"text": "Cat", "color": "#ff0000"},
+            "l2": {"text": "Dog", "color": "#00ff00"},
+        }
+
+    async def test_no_labels_returns_empty_map(self):
+        labels_api = self._labels_api([])
+        meta = await build_label_metadata_map(labels_api)
+        assert meta == {}
