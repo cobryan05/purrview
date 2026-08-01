@@ -37,6 +37,7 @@ from apps.tasks_server.tasks.CollectTrainingImagesTask import (
     CollectTrainingImagesTask,
 )
 from apps.tasks_server.tasks.utils.imageHelper import ImageHelper
+from apps.tasks_server.tasks.utils.labelHelper import build_label_ancestry_map
 
 # ─── Shared constants ─────────────────────────────────────────────────────────
 
@@ -1328,11 +1329,31 @@ class TestPinRenewal:
             mock_img_cls.return_value.update_image_metadata.return_value = MagicMock()
 
             await task.start()
-            # Give the renewal loop several intervals to fire at least once.
-            for _ in range(50):
-                await asyncio.sleep(0.02)
-                if task._combined_pin_ids.get(_MODEL_NAME) not in (None, "pin-1"):
-                    break
+
+            # Wait on the OBSERVABLE END STATE, not on the pin call or a fixed wall-clock
+            # budget. Two earlier formulations of this wait were flaky:
+            #   - a fixed ~1s of real time: under CPU contention the renewal coroutine
+            #     simply isn't scheduled in time, and the test fails though the code is fine;
+            #   - an event set from inside the pin mock: that fires in the to_thread worker
+            #     BEFORE the coroutine resumes and swaps the new pin_id in, so the assert
+            #     could still observe the stale value.
+            # Renewal completes only once the new pin is swapped in AND the stale one is
+            # released, so wait for exactly that. Exits in ~one 0.05s interval normally;
+            # the deadline only bites if renewal is genuinely broken.
+            def _renewal_complete() -> bool:
+                # _combined_pin_ids is only created once _run() has finished pinning, so
+                # it may not exist yet on the first poll — hence getattr, not direct access.
+                swapped = getattr(task, "_combined_pin_ids", {}).get(_MODEL_NAME) not in (None, "pin-1")
+                unpinned = (_MODEL_NAME, "pin-1") in [
+                    c.args for c in mock_models_cls.return_value.unpin_model.call_args_list
+                ]
+                return swapped and unpinned
+
+            async def _await_renewal() -> None:
+                while not _renewal_complete():
+                    await asyncio.sleep(0.01)
+
+            await asyncio.wait_for(_await_renewal(), timeout=30.0)
 
             assert task._combined_pin_ids[_MODEL_NAME] != "pin-1", "pin_id must have been swapped by renewal"
             assert mock_models_cls.return_value.pin_model_api_api_models_model_name_pin_post.call_count >= 2
@@ -1482,3 +1503,342 @@ class TestMaxDurationExcludesPausedTime:
             return_value=start + 10.0,
         ):
             assert task._elapsed_duration_s() == pytest.approx(50.0)
+
+
+# ─── Characterization tests: inference merge/dedup parity (Phase 5 prep) ──────
+#
+# CollectTrainingImagesTask._run_inference() ends with a merge block (search for
+# "Flatten in priority order then apply cross-model hierarchy-aware IoU dedup")
+# that Phase 5 of LIVE_COLLECTION_PLAN.md will extract into a shared, policy-
+# parameterized helper. These tests pin *exactly* what that block does today —
+# including edge cases (multi-supersede in one pass, IoU boundary behaviour,
+# transitive ancestry, model-priority ordering under skewed completion timing) —
+# so the refactor can be verified behaviour-preserving. They must keep passing,
+# unmodified, against the pre-refactor code.
+#
+# Pinned rule set (for each detection, in model-priority order, versus already-
+# kept boxes, whenever iou_xywh(det, kept) >= self._overlap_iou_threshold):
+#   1. same label_uuid                          → drop the later (lower-priority) det
+#   2. det's label is an ancestor of kept's      → kept is more specific → drop det
+#   3. kept's label is an ancestor of det's      → det is more specific → supersede
+#      (remove kept, keep det) — a single det may supersede several kept boxes
+#   4. unrelated labels                          → keep both
+#   IoU strictly below threshold                 → keep both (no comparison happens)
+#
+# Boundary: the code says `if iou_xywh(det.bbox, kept.bbox) < threshold: continue`,
+# i.e. it *skips* only when IoU is strictly less than the threshold. IoU == threshold
+# is NOT skipped, so equality participates in dedup exactly like "above" — the
+# comparison is effectively `>=` triggers merge logic, `<` does not.
+
+
+class TestInferenceMergeParity:
+    """Characterization (parity) tests pinning CollectTrainingImagesTask._run_inference's
+    current merge/dedup behaviour ahead of the Phase 5 extraction into a shared,
+    first-wins/last-wins-parameterized helper (see LIVE_COLLECTION_PLAN.md).
+
+    These tests intentionally assert on *which* detection object survives (by
+    identity/confidence), not just counts, so a refactor that silently swaps which
+    detection wins is caught. No production code is touched here — this class only
+    records today's behaviour, bugs and all.
+    """
+
+    # 3-level label hierarchy shared by several tests below:
+    #   ROOT (no parent) <- MID (parent=ROOT) <- LEAF (parent=MID)
+    _ROOT = "label-root"
+    _MID = "label-mid"
+    _LEAF = "label-leaf"
+    _UNRELATED = "label-unrelated"
+
+    def _ancestry(self) -> dict[str, set]:
+        return {
+            self._ROOT: set(),
+            self._MID: {self._ROOT},
+            self._LEAF: {self._MID, self._ROOT},
+            self._UNRELATED: set(),
+        }
+
+    async def _task_with_models(self, *model_names: str, overlap_iou_threshold: Optional[float] = None):
+        model_label_config = [
+            {
+                "modelName": name,
+                "labelValues": {
+                    self._ROOT: 0.1,
+                    self._MID: 0.1,
+                    self._LEAF: 0.1,
+                    self._UNRELATED: 0.1,
+                },
+            }
+            for name in model_names
+        ]
+        params = {**_PARAMS, "model_label_config": model_label_config}
+        if overlap_iou_threshold is not None:
+            params["overlap_iou_threshold"] = overlap_iou_threshold
+        task = _make_task(params=params)
+        await task._init(params, resume_data=None)
+        task._label_ancestry = self._ancestry()
+        return task
+
+    @staticmethod
+    def _inference_api(per_model: dict[str, list]) -> MagicMock:
+        def _inference(name, payload):
+            result = MagicMock()
+            result.result.detections = per_model.get(name, [])
+            return result
+
+        api = MagicMock()
+        api.inference.side_effect = _inference
+        return api
+
+    # ── Rule 1: same label, two models — priority wins by identity ────────────
+
+    async def test_same_label_higher_priority_model_survives_by_identity(self):
+        task = await self._task_with_models("model-a", "model-b")
+        high_priority = _detection_at(0.0, 0.0, 0.5, 0.5, label_uuid=self._LEAF, confidence=0.4)
+        low_priority = _detection_at(0.01, 0.01, 0.5, 0.5, label_uuid=self._LEAF, confidence=0.99)
+
+        inference_api = self._inference_api({"model-a": [high_priority], "model-b": [low_priority]})
+        matching = await task._run_inference(inference_api, "b64", {"model-a": None, "model-b": None})
+
+        # Identity check, not just count/label: the surviving object must be
+        # model-a's detection even though model-b's has higher confidence.
+        assert len(matching) == 1
+        assert matching[0] is high_priority
+        assert matching[0].confidence == pytest.approx(0.4)
+
+    # ── Rule 2 vs Rule 3: ancestor/descendant pairs, both orderings ───────────
+
+    async def test_ancestor_kept_first_descendant_second_supersedes(self):
+        """kept=coarser label first; det=more-specific label second (higher IoU
+        priority order) → det supersedes kept (kept removed, det kept)."""
+        task = await self._task_with_models("model-a", "model-b")
+        ancestor_det = _detection_at(0.0, 0.0, 0.5, 0.5, label_uuid=self._ROOT, confidence=0.5)
+        descendant_det = _detection_at(0.01, 0.01, 0.5, 0.5, label_uuid=self._LEAF, confidence=0.5)
+
+        inference_api = self._inference_api({"model-a": [ancestor_det], "model-b": [descendant_det]})
+        matching = await task._run_inference(inference_api, "b64", {"model-a": None, "model-b": None})
+
+        assert len(matching) == 1
+        assert matching[0] is descendant_det
+
+    async def test_descendant_kept_first_ancestor_second_is_dropped(self):
+        """kept=more-specific label first; det=coarser label second → det is
+        dropped (dominated); the original kept object is untouched."""
+        task = await self._task_with_models("model-a", "model-b")
+        descendant_det = _detection_at(0.0, 0.0, 0.5, 0.5, label_uuid=self._LEAF, confidence=0.5)
+        ancestor_det = _detection_at(0.01, 0.01, 0.5, 0.5, label_uuid=self._ROOT, confidence=0.5)
+
+        inference_api = self._inference_api({"model-a": [descendant_det], "model-b": [ancestor_det]})
+        matching = await task._run_inference(inference_api, "b64", {"model-a": None, "model-b": None})
+
+        assert len(matching) == 1
+        assert matching[0] is descendant_det
+
+    # ── Rule 4: unrelated labels — keep both ───────────────────────────────────
+
+    async def test_unrelated_labels_overlapping_both_kept(self):
+        task = await self._task_with_models("model-a", "model-b")
+        det_a = _detection_at(0.0, 0.0, 0.5, 0.5, label_uuid=self._LEAF, confidence=0.5)
+        det_b = _detection_at(0.01, 0.01, 0.5, 0.5, label_uuid=self._UNRELATED, confidence=0.5)
+
+        inference_api = self._inference_api({"model-a": [det_a], "model-b": [det_b]})
+        matching = await task._run_inference(inference_api, "b64", {"model-a": None, "model-b": None})
+
+        assert len(matching) == 2
+        assert det_a in matching and det_b in matching
+
+    # ── IoU boundary behaviour: pinned via the real iou_xywh primitive ────────
+
+    def _shifted_pair(self, dx: float):
+        """Two same-label unit-square boxes, second shifted by dx along x. IoU is
+        a strictly decreasing function of dx here, letting us bisect a boundary."""
+        a = _detection_at(0.0, 0.0, 1.0, 1.0, label_uuid=self._LEAF, confidence=0.9)
+        b = _detection_at(dx, 0.0, 1.0, 1.0, label_uuid=self._LEAF, confidence=0.9)
+        return a, b
+
+    async def test_iou_exactly_at_threshold_triggers_merge(self):
+        """IoU == threshold is NOT skipped by the `< threshold: continue` check,
+        so equality DOES trigger the same-label dedup (only one detection survives)."""
+        boundary_a, boundary_b = self._shifted_pair(dx=0.2)
+        threshold = iou_xywh(boundary_a.bbox, boundary_b.bbox)
+
+        task = await self._task_with_models("model-a", "model-b", overlap_iou_threshold=threshold)
+        inference_api = self._inference_api({"model-a": [boundary_a], "model-b": [boundary_b]})
+        matching = await task._run_inference(inference_api, "b64", {"model-a": None, "model-b": None})
+
+        assert len(matching) == 1
+        assert matching[0] is boundary_a
+
+    async def test_iou_just_below_threshold_keeps_both(self):
+        """A dx nudged slightly larger drops IoU just below threshold → no merge,
+        both detections kept (distinct objects)."""
+        boundary_a, boundary_b = self._shifted_pair(dx=0.2)
+        threshold = iou_xywh(boundary_a.bbox, boundary_b.bbox)
+
+        below_a, below_b = self._shifted_pair(dx=0.2 + 1e-6)
+        below_iou = iou_xywh(below_a.bbox, below_b.bbox)
+        assert below_iou < threshold, "test construction assumption: dx increase must decrease IoU"
+
+        task = await self._task_with_models("model-a", "model-b", overlap_iou_threshold=threshold)
+        inference_api = self._inference_api({"model-a": [below_a], "model-b": [below_b]})
+        matching = await task._run_inference(inference_api, "b64", {"model-a": None, "model-b": None})
+
+        assert len(matching) == 2
+
+    async def test_iou_just_above_threshold_triggers_merge(self):
+        """A dx nudged slightly smaller raises IoU just above threshold → merge
+        still triggers (same as at-threshold), only the priority winner survives."""
+        boundary_a, boundary_b = self._shifted_pair(dx=0.2)
+        threshold = iou_xywh(boundary_a.bbox, boundary_b.bbox)
+
+        above_a, above_b = self._shifted_pair(dx=0.2 - 1e-6)
+        above_iou = iou_xywh(above_a.bbox, above_b.bbox)
+        assert above_iou > threshold, "test construction assumption: dx decrease must increase IoU"
+
+        task = await self._task_with_models("model-a", "model-b", overlap_iou_threshold=threshold)
+        inference_api = self._inference_api({"model-a": [above_a], "model-b": [above_b]})
+        matching = await task._run_inference(inference_api, "b64", {"model-a": None, "model-b": None})
+
+        assert len(matching) == 1
+        assert matching[0] is above_a
+
+    # ── Rule 3, multiple supersessions in one pass ─────────────────────────────
+
+    async def test_single_detection_supersedes_multiple_kept_boxes(self):
+        """Two already-kept ancestor-labeled boxes (that do NOT overlap each other)
+        both get superseded by one later, more-specific detection that overlaps
+        each of them — exercises `to_supersede` with 2 entries and confirms the
+        `reversed()` pop order doesn't corrupt indices (a forward pop order would
+        shift index 1 before it's used, or IndexError on the second pop)."""
+        task = await self._task_with_models("model-a", "model-b", "model-c")
+
+        # root_det and mid_det don't overlap each other at all (iou=0), but the
+        # wide leaf_det overlaps both of them at iou=0.3.
+        root_det = _detection_at(0.0, 0.0, 0.3, 1.0, label_uuid=self._ROOT, confidence=0.5)
+        mid_det = _detection_at(0.7, 0.0, 0.3, 1.0, label_uuid=self._MID, confidence=0.5)
+        leaf_det = _detection_at(0.0, 0.0, 1.0, 1.0, label_uuid=self._LEAF, confidence=0.5)
+
+        assert iou_xywh(root_det.bbox, mid_det.bbox) == 0.0
+        assert iou_xywh(leaf_det.bbox, root_det.bbox) == pytest.approx(0.3)
+        assert iou_xywh(leaf_det.bbox, mid_det.bbox) == pytest.approx(0.3)
+
+        task._overlap_iou_threshold = 0.25
+        inference_api = self._inference_api({"model-a": [root_det], "model-b": [mid_det], "model-c": [leaf_det]})
+        matching = await task._run_inference(inference_api, "b64", {"model-a": None, "model-b": None, "model-c": None})
+
+        assert len(matching) == 1
+        assert matching[0] is leaf_det
+
+    # ── Transitive ancestry across 3 levels ─────────────────────────────────────
+
+    async def test_ancestry_is_transitive_grandchild_supersedes_grandparent(self):
+        """LEAF is two hops below ROOT (LEAF -> MID -> ROOT); a ROOT-labeled kept
+        box is still recognized as an ancestor of a LEAF det and gets superseded,
+        confirming ancestry is resolved transitively, not just parent-of."""
+        task = await self._task_with_models("model-a", "model-b")
+        root_det = _detection_at(0.0, 0.0, 0.5, 0.5, label_uuid=self._ROOT, confidence=0.5)
+        leaf_det = _detection_at(0.01, 0.01, 0.5, 0.5, label_uuid=self._LEAF, confidence=0.5)
+
+        inference_api = self._inference_api({"model-a": [root_det], "model-b": [leaf_det]})
+        matching = await task._run_inference(inference_api, "b64", {"model-a": None, "model-b": None})
+
+        assert len(matching) == 1
+        assert matching[0] is leaf_det
+
+    async def test_ancestry_is_transitive_grandparent_det_dropped_by_grandchild_kept(self):
+        """Same pair, reversed priority: LEAF kept first, ROOT det second → ROOT
+        det is dominated (dropped) since LEAF (already kept) is more specific."""
+        task = await self._task_with_models("model-a", "model-b")
+        leaf_det = _detection_at(0.0, 0.0, 0.5, 0.5, label_uuid=self._LEAF, confidence=0.5)
+        root_det = _detection_at(0.01, 0.01, 0.5, 0.5, label_uuid=self._ROOT, confidence=0.5)
+
+        inference_api = self._inference_api({"model-a": [leaf_det], "model-b": [root_det]})
+        matching = await task._run_inference(inference_api, "b64", {"model-a": None, "model-b": None})
+
+        assert len(matching) == 1
+        assert matching[0] is leaf_det
+
+    # ── Model ordering: gather() result order matches priority, not completion order ──
+
+    async def test_gather_result_order_follows_priority_not_completion_time(self):
+        """model-a is configured first (higher priority) but its (thread-pool)
+        inference call is made artificially slower than model-b's. asyncio.gather
+        preserves input order regardless of completion order, so results_per_model
+        must still line up with self._model_names — model-a's detection must win
+        the same-label dedup even though model-b's HTTP call actually returns first."""
+        task = await self._task_with_models("model-a", "model-b")
+        assert task._model_names == ["model-a", "model-b"]
+
+        high_priority = _detection_at(0.0, 0.0, 0.5, 0.5, label_uuid=self._LEAF, confidence=0.1)
+        low_priority = _detection_at(0.01, 0.01, 0.5, 0.5, label_uuid=self._LEAF, confidence=0.99)
+
+        def _inference(name, payload):
+            # model-a (higher priority) is deliberately slower than model-b, so
+            # model-b's call returns first in real wall-clock time.
+            if name == "model-a":
+                time.sleep(0.08)
+            result = MagicMock()
+            result.result.detections = [high_priority] if name == "model-a" else [low_priority]
+            return result
+
+        inference_api = MagicMock()
+        inference_api.inference.side_effect = _inference
+
+        matching = await task._run_inference(inference_api, "b64", {"model-a": None, "model-b": None})
+
+        assert len(matching) == 1
+        assert matching[0] is high_priority
+
+
+class TestBuildLabelAncestryMap:
+    """Characterization tests for build_label_ancestry_map (tasks/utils/labelHelper.py),
+    the map CollectTrainingImagesTask._run_inference consults (via self._label_ancestry)
+    for the ancestor/descendant dedup rules pinned in TestInferenceMergeParity above."""
+
+    @staticmethod
+    def _labels_api(labels: list) -> MagicMock:
+        """labels: list of (uuid, parent_uuid) tuples."""
+        api = MagicMock()
+        resp = MagicMock()
+        resp.labels = [MagicMock(uuid=u, parent_uuid=p) for u, p in labels]
+        api.list_labels.return_value = resp
+        return api
+
+    async def test_multi_level_ancestry_is_transitive(self):
+        labels_api = self._labels_api(
+            [("root", None), ("mid", "root"), ("leaf", "mid")],
+        )
+        ancestry = await build_label_ancestry_map(labels_api)
+        assert ancestry["root"] == set()
+        assert ancestry["mid"] == {"root"}
+        assert ancestry["leaf"] == {"mid", "root"}
+
+    async def test_label_with_no_parent_maps_to_empty_set(self):
+        labels_api = self._labels_api([("only", None)])
+        ancestry = await build_label_ancestry_map(labels_api)
+        assert ancestry["only"] == set()
+
+    async def test_unknown_uuid_absent_from_map_get_returns_empty_default(self):
+        """A label uuid never seen by build_label_ancestry_map (e.g. a stale/
+        deleted label still referenced by a detection) is simply absent from the
+        dict — callers must use .get(uuid, ()), exactly as _run_inference does."""
+        labels_api = self._labels_api([("known", None)])
+        ancestry = await build_label_ancestry_map(labels_api)
+        assert "unknown-uuid" not in ancestry
+        assert ancestry.get("unknown-uuid", ()) == ()
+
+    async def test_dangling_parent_uuid_becomes_synthetic_ancestry_entry(self):
+        """A label whose parent_uuid points at a uuid absent from the fetched label
+        list (e.g. a parent that was deleted, or a data inconsistency) does not
+        raise: the dangling parent uuid is still recorded as an ancestor of the
+        child, and gets its own map entry with an empty ancestor set (since its
+        own parent_uuid is unknown -> None via .get())."""
+        labels_api = self._labels_api([("child", "ghost-parent")])
+        ancestry = await build_label_ancestry_map(labels_api)
+        assert ancestry["child"] == {"ghost-parent"}
+        # The dangling parent itself gets synthesized into the map with no ancestors.
+        assert ancestry["ghost-parent"] == set()
+
+    async def test_no_labels_returns_empty_map(self):
+        labels_api = self._labels_api([])
+        ancestry = await build_label_ancestry_map(labels_api)
+        assert ancestry == {}

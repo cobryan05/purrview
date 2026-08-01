@@ -126,6 +126,32 @@ class TasksTypeSchemaResponse(StatusResponse):
     schemas: Dict[str, dict] = Field(default_factory=dict)
 
 
+class TasksStatusSchemaPayload(Payload):
+    task_typenames: List[str]
+
+
+class TasksStatusSchemaResponse(StatusResponse):
+    schemas: Dict[str, List[dict]] = Field(default_factory=dict)
+
+
+class TasksStatusDataPayload(Payload):
+    task_uuids: List[str]
+
+
+class TasksStatusDataResponse(StatusResponse):
+    status_data: Dict[str, dict] = Field(default_factory=dict)
+
+
+class TaskCommandPayload(Payload):
+    task_uuid: str
+    command: str
+    params: dict = Field(default_factory=dict)
+
+
+class TaskCommandResponse(StatusResponse):
+    pass
+
+
 class TasksResultPayload(Payload):
     task_uuids: List[str]
 
@@ -370,6 +396,69 @@ class WebApp:
                 return TasksTypeSchemaResponse(status=WebApp.SUCCESS_KEY, schemas=schemas)
             except Exception as e:
                 return TasksTypeSchemaResponse(status=WebApp.FAILURE_KEY, message=str(e))
+
+        @self._app.post(
+            "/api/tasks/types/status-schema",
+            tags=[WebApp.TASKS_API_TAG_NAME],
+            operation_id="get_task_type_status_schema",
+            response_model=TasksStatusSchemaResponse,
+        )
+        async def get_task_type_status_schema_api(
+            payload: TasksStatusSchemaPayload,
+        ) -> TasksStatusSchemaResponse:
+            """
+            API endpoint for getting the rich-status-card widget schema for one or more
+            task types. Static per typename — safe for the frontend to fetch once and cache.
+            """
+            try:
+                schemas = await self._manager.get_tasks_status_schema(typenames=payload.task_typenames)
+                return TasksStatusSchemaResponse(status=WebApp.SUCCESS_KEY, schemas=schemas)
+            except Exception as e:
+                return TasksStatusSchemaResponse(status=WebApp.FAILURE_KEY, message=str(e))
+
+        @self._app.post(
+            "/api/tasks/instances/status-data",
+            tags=[WebApp.TASKS_API_TAG_NAME],
+            operation_id="get_tasks_status_data",
+            response_model=TasksStatusDataResponse,
+        )
+        async def get_tasks_status_data_api(
+            payload: TasksStatusDataPayload,
+        ) -> TasksStatusDataResponse:
+            """
+            API endpoint for getting live status_data for one or more running task
+            instances (fetched only while a task's status card is expanded). Unknown or
+            not-currently-running uuids are simply omitted from the response, not an error.
+            """
+            try:
+                status_data = await self._manager.get_tasks_status_data(payload.task_uuids)
+                return TasksStatusDataResponse(status=WebApp.SUCCESS_KEY, status_data=status_data)
+            except Exception as e:
+                return TasksStatusDataResponse(status=WebApp.FAILURE_KEY, message=str(e))
+
+        @self._app.post(
+            "/api/tasks/instances/command",
+            tags=[WebApp.TASKS_API_TAG_NAME],
+            operation_id="send_task_command",
+            response_model=TaskCommandResponse,
+        )
+        async def send_task_command_api(payload: TaskCommandPayload) -> TaskCommandResponse:
+            """
+            API endpoint for sending a UI-issued command to a running task instance
+            (e.g. "capture now", "skip this source"). Forwarded to
+            Task.handle_command(), which must only set a flag or push to a queue —
+            never perform I/O. A task that doesn't implement handle_command() (the
+            base implementation raises NotImplementedError) is translated into a
+            clean failure response here rather than an unhandled 500.
+            """
+            try:
+                await self._manager.send_task_command(
+                    task_uuid=payload.task_uuid, command=payload.command, params=payload.params
+                )
+                return TaskCommandResponse(status=WebApp.SUCCESS_KEY)
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return TaskCommandResponse(status=WebApp.FAILURE_KEY, message=str(e))
 
         @self._app.post(
             "/api/tasks/instances/start",

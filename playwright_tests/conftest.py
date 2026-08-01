@@ -60,6 +60,16 @@ def _make_tasks_mock():
     async def handle(path: str, request):
         if path == "types/list":
             return JSONResponse(content={"status": "success", "task_types": []})
+        if path == "types/status-schema":
+            # Phase 3 status_schema() endpoint. Empty by default — callers
+            # that need a specific schema override this route with page.route().
+            return JSONResponse(content={"status": "success", "schemas": {}})
+        if path == "instances/status-data":
+            # Phase 3 per-instance status-data endpoint. Empty by default —
+            # callers that need specific status-data override with page.route().
+            return JSONResponse(content={"status": "success", "statusData": {}})
+        if path == "instances/command":
+            return JSONResponse(content={"status": "success", "message": "ok"})
         if path.startswith("configs/"):
             return JSONResponse(content={"status": "success", "task_configs": []})
         if path.startswith("instances/"):

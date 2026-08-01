@@ -286,6 +286,17 @@ export function renderActiveTasks({ target = 'active-tasks-list', refresh = null
           const details = content.querySelector('details');
           if (details) {
             details.open = saved.detailsOpen;
+            // Explicitly (re-)dispatch 'toggle' rather than relying on the
+            // programmatic-open-assignment case of the native event: browser
+            // support for firing 'toggle' on a scripted `.open =` set (as
+            // opposed to a user click) is a relatively recent addition to the
+            // spec. ActiveTaskField's status-data polling (only-while-
+            // expanded) is wired entirely off this event, and every poll
+            // cycle that changes the fingerprint rebuilds this <details> node
+            // from scratch — without this, a card the user left open could
+            // silently stop refreshing its status-data widgets after the
+            // first SSE-driven rebuild.
+            details.dispatchEvent(new Event('toggle'));
             if (saved.detailsOpen && saved.scrollTop) {
               requestAnimationFrame(() => {
                 const pre = details.querySelector('pre');

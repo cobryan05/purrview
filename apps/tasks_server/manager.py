@@ -390,6 +390,45 @@ class Manager:
             schemas[typename] = task_registry[typename].params_schema()
         return schemas
 
+    async def get_tasks_status_schema(self, typenames: Union[List[str], str]) -> dict[str, list[dict]]:
+        if isinstance(typenames, str):
+            typenames = [typenames]
+
+        schemas = {}
+        for typename in typenames:
+            if typename not in task_registry:
+                raise ValueError(f"Unknown task: {typename}")
+            schemas[typename] = task_registry[typename].status_schema()
+        return schemas
+
+    async def get_tasks_status_data(self, task_uuids: Union[List[str], str]) -> dict[str, dict]:
+        """Return live status_data for the given task instance uuids.
+
+        Unknown or not-currently-running uuids are simply omitted, not an error —
+        the task may have completed, been deleted, or never existed.
+        """
+        if isinstance(task_uuids, str):
+            task_uuids = [task_uuids]
+
+        status_data = {}
+        for uuid in task_uuids:
+            task_info = self._running_tasks.get(uuid)
+            if task_info is None or task_info.task is None:
+                continue
+            status_data[uuid] = task_info.task.get_status_data()
+        return status_data
+
+    async def send_task_command(self, task_uuid: str, command: str, params: dict[str, Any]) -> None:
+        """Forward a UI-issued command to the running task instance's handle_command().
+
+        Raises ValueError if the task isn't currently running; propagates any
+        exception raised by handle_command() (e.g. NotImplementedError) to the caller.
+        """
+        task_info = self._running_tasks.get(task_uuid)
+        if task_info is None or task_info.task is None:
+            raise ValueError(f"Task {task_uuid} is not currently running")
+        await task_info.task.handle_command(command, params)
+
     async def _on_task_complete(self, task_info: TaskInfo) -> None:
         if task_info.task is None:
             return
