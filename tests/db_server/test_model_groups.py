@@ -172,6 +172,52 @@ class TestModelGroups:
         assert r.status_code == 200
         assert r.json()["status"] == "failure"
 
+    # ── Phase 5A: merge_policy column ──────────────────────────────────────────
+
+    async def test_merge_policy_defaults_to_first_wins(self, http_client):
+        """A group created without specifying merge_policy must default to
+        first_wins — this is the value CollectTrainingImagesTask._init falls
+        back to, so existing groups keep today's merge behaviour unchanged."""
+        group = await _create_group(http_client, "DefaultPolicy")
+        assert group["mergePolicy"] == "first_wins"
+
+    async def test_create_with_explicit_last_wins(self, http_client):
+        r = await http_client.post(
+            "/api/model-groups",
+            json={"name": "ExplicitLastWins", "members": [], "merge_policy": "last_wins"},
+        )
+        assert r.status_code == 200
+        body = r.json()
+        assert body["status"] == "success", body
+        assert body["group"]["mergePolicy"] == "last_wins"
+
+    async def test_update_merge_policy(self, http_client):
+        group = await _create_group(http_client, "PolicyUpdate")
+        assert group["mergePolicy"] == "first_wins"
+
+        r = await http_client.patch(
+            f"/api/model-groups/{group['uuid']}",
+            json={"merge_policy": "last_wins"},
+        )
+        assert r.status_code == 200
+        body = r.json()
+        assert body["status"] == "success"
+        assert body["group"]["mergePolicy"] == "last_wins"
+
+    async def test_update_without_merge_policy_leaves_it_unchanged(self, http_client):
+        r = await http_client.post(
+            "/api/model-groups",
+            json={"name": "PolicyUntouched", "members": [], "merge_policy": "last_wins"},
+        )
+        group = r.json()["group"]
+
+        r = await http_client.patch(
+            f"/api/model-groups/{group['uuid']}",
+            json={"description": "unrelated change"},
+        )
+        assert r.status_code == 200
+        assert r.json()["group"]["mergePolicy"] == "last_wins"
+
     async def test_direct_self_reference_cycle_rejected(self, http_client):
         group = await _create_group(http_client, "SelfRef")
         r = await http_client.patch(
@@ -278,3 +324,19 @@ class TestModelGroupsDbClient:
 
     async def test_delete_returns_false_for_missing(self, db_client):
         assert await db_client.delete_model_group("no-such-uuid") is False
+
+    async def test_merge_policy_defaults_to_first_wins_unit_level(self, db_client):
+        from apps.helpers.db.types import ModelGroupCreate
+
+        created = await db_client.create_model_group(ModelGroupCreate(name="UnitDefaultPolicy"))
+        assert created.merge_policy == "first_wins"
+
+    async def test_merge_policy_round_trips_through_create_and_update(self, db_client):
+        from apps.helpers.db.types import ModelGroupCreate, ModelGroupUpdate
+
+        created = await db_client.create_model_group(ModelGroupCreate(name="UnitLastWins", merge_policy="last_wins"))
+        assert created.merge_policy == "last_wins"
+
+        updated = await db_client.update_model_group(created.uuid, ModelGroupUpdate(merge_policy="first_wins"))
+        assert updated is not None
+        assert updated.merge_policy == "first_wins"

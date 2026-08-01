@@ -31,7 +31,6 @@ from inference_client.api.models_api import ModelsApi
 from inference_client.models.inference_payload import InferencePayload
 from inference_client.models.pin_model_payload import PinModelPayload
 
-from apps.helpers.bboxUtils import iou_xywh
 from apps.helpers.consts import TaskStatus
 from apps.helpers.db.db_client import UNVERIFIED_TAG_UUID
 from apps.helpers.hashUtils import (
@@ -45,6 +44,7 @@ from apps.helpers.imageProviders.imageProvider import (
 )
 from apps.helpers.imageUtils import base64_encode_jpg
 
+from ._detection_merger import MergePolicy, merge_detections_by_iou_and_hierarchy
 from ._filter_chain_runner import FilterChainRunner
 from .ApplyFilterChainTask import (
     _CLASSIFIER_KINDS,
@@ -153,6 +153,13 @@ class CollectTrainingImagesTask(Task):
                     label_conf[label_uuid] = min(label_conf.get(label_uuid, 1.0), conf_f)
         self._model_names: list[str] = ordered_model_names
         self._overlap_iou_threshold: float = float(params.get("overlap_iou_threshold", SAME_BBOX_IOU_THRESHOLD))
+        # Cross-model merge policy for same-label collisions (Phase 5A). Default preserves
+        # today's behaviour: earlier-configured (higher priority) models win.
+        _merge_policy_raw = params.get("merge_policy", MergePolicy.FIRST_WINS.value)
+        try:
+            self._merge_policy = MergePolicy(_merge_policy_raw)
+        except ValueError:
+            self._merge_policy = MergePolicy.FIRST_WINS
 
         self._target_labels: list[TargetLabel] = [
             TargetLabel(label_uuid=u, min_confidence=c) for u, c in label_conf.items()
@@ -1078,38 +1085,12 @@ class CollectTrainingImagesTask(Task):
             results_per_model.append(r if isinstance(r, list) else [])
 
         # Flatten in priority order then apply cross-model hierarchy-aware IoU dedup.
-        matching = [det for dets in results_per_model for det in dets]
-
-        # For each detection in model-priority order, compare against already-kept boxes:
-        #   same label_uuid       → drop the lower-priority (later) detection
-        #   det label is ancestor of kept label → kept is more specific → drop det
-        #   kept label is ancestor of det label → det is more specific → replace kept
-        #   unrelated labels      → keep both (different objects)
-        deduped: list = []
-        for det in matching:
-            det_label = det.bbox.label_uuid
-            dominated = False
-            to_supersede: list[int] = []
-            for i, kept in enumerate(deduped):
-                if iou_xywh(det.bbox, kept.bbox) < self._overlap_iou_threshold:
-                    continue
-                kept_label = kept.bbox.label_uuid
-                if det_label == kept_label:
-                    dominated = True
-                    break
-                elif det_label and det_label in self._label_ancestry.get(kept_label, ()):
-                    # det's label is an ancestor of kept's → kept is more specific → drop det
-                    dominated = True
-                    break
-                elif kept_label and kept_label in self._label_ancestry.get(det_label, ()):
-                    # kept's label is an ancestor of det's → det is more specific → supersede kept
-                    to_supersede.append(i)
-                # else: unrelated labels — keep both
-            if not dominated:
-                for i in reversed(to_supersede):
-                    deduped.pop(i)
-                deduped.append(det)
-        return deduped
+        return merge_detections_by_iou_and_hierarchy(
+            results_per_model,
+            label_ancestry=self._label_ancestry,
+            overlap_iou_threshold=self._overlap_iou_threshold,
+            policy=self._merge_policy,
+        )
 
     async def _apply_filter_chain_to_frame(
         self, provided: ImageWithProviderMetadata, base64_img: str, matching: list
@@ -1604,6 +1585,7 @@ class CollectTrainingImagesTask(Task):
                     "source_uuids",
                     "model_label_config",
                     "overlap_iou_threshold",
+                    "merge_policy",
                     "apply_tags",
                     "generate_task_tag",
                     "task_tag_name",
@@ -1665,6 +1647,20 @@ class CollectTrainingImagesTask(Task):
                 "min": 0.0,
                 "max": 1.0,
                 "step": 0.05,
+            },
+            "merge_policy": {
+                "type": "select",
+                "label": "Multi-Model Merge Policy",
+                "description": (
+                    "When two models produce a same-label, overlapping detection, which one wins: "
+                    "the higher-priority (earlier-configured) model, or the lower-priority (later-configured) one. "
+                    "Hierarchy supersede (a more specific label beats a coarser ancestor label) applies either way."
+                ),
+                "default": MergePolicy.FIRST_WINS.value,
+                "options": [
+                    {"value": MergePolicy.FIRST_WINS.value, "label": "First model wins (priority order)"},
+                    {"value": MergePolicy.LAST_WINS.value, "label": "Last model wins (reverse priority order)"},
+                ],
             },
             "apply_tags": {
                 "type": "tags",

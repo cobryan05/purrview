@@ -4806,6 +4806,198 @@
         }
       }
     },
+    "/api/model-groups": {
+      "get": {
+        "tags": [
+          "model_groups"
+        ],
+        "summary": "List Model Groups",
+        "operationId": "list_model_groups",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListModelGroupsResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "model_groups"
+        ],
+        "summary": "Create Model Group",
+        "operationId": "create_model_group",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ModelGroupCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ModelGroupResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/model-groups/{uuid}": {
+      "get": {
+        "tags": [
+          "model_groups"
+        ],
+        "summary": "Get Model Group",
+        "operationId": "get_model_group",
+        "parameters": [
+          {
+            "name": "uuid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ModelGroupResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "model_groups"
+        ],
+        "summary": "Update Model Group",
+        "operationId": "update_model_group",
+        "parameters": [
+          {
+            "name": "uuid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ModelGroupUpdate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ModelGroupResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "model_groups"
+        ],
+        "summary": "Delete Model Group",
+        "operationId": "delete_model_group",
+        "parameters": [
+          {
+            "name": "uuid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StatusResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/model-bundles": {
       "get": {
         "tags": [
@@ -8993,6 +9185,35 @@
         "type": "object",
         "title": "ListModelConfigsResponse"
       },
+      "ListModelGroupsResponse": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "title": "Status",
+            "default": "success"
+          },
+          "message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Message"
+          },
+          "groups": {
+            "items": {
+              "$ref": "#/components/schemas/ModelGroupRead"
+            },
+            "type": "array",
+            "title": "Groups"
+          }
+        },
+        "type": "object",
+        "title": "ListModelGroupsResponse"
+      },
       "ListTagsResponse": {
         "properties": {
           "status": {
@@ -9532,6 +9753,284 @@
         },
         "type": "object",
         "title": "ModelConfigUpdate"
+      },
+      "ModelGroupCreate": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "mergePolicy": {
+            "type": "string",
+            "enum": [
+              "first_wins",
+              "last_wins"
+            ],
+            "title": "Mergepolicy",
+            "default": "first_wins"
+          },
+          "members": {
+            "items": {
+              "$ref": "#/components/schemas/ModelGroupMemberWrite"
+            },
+            "type": "array",
+            "title": "Members"
+          }
+        },
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "title": "ModelGroupCreate"
+      },
+      "ModelGroupMemberRead": {
+        "properties": {
+          "uuid": {
+            "type": "string",
+            "title": "Uuid"
+          },
+          "modelGroupUuid": {
+            "type": "string",
+            "title": "Modelgroupuuid"
+          },
+          "order": {
+            "type": "integer",
+            "title": "Order"
+          },
+          "modelName": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Modelname"
+          },
+          "childGroupUuid": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Childgroupuuid"
+          }
+        },
+        "type": "object",
+        "required": [
+          "uuid",
+          "modelGroupUuid",
+          "order"
+        ],
+        "title": "ModelGroupMemberRead"
+      },
+      "ModelGroupMemberWrite": {
+        "properties": {
+          "order": {
+            "type": "integer",
+            "title": "Order"
+          },
+          "modelName": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Modelname"
+          },
+          "childGroupUuid": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Childgroupuuid"
+          }
+        },
+        "type": "object",
+        "required": [
+          "order"
+        ],
+        "title": "ModelGroupMemberWrite"
+      },
+      "ModelGroupRead": {
+        "properties": {
+          "uuid": {
+            "type": "string",
+            "title": "Uuid"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "mergePolicy": {
+            "type": "string",
+            "enum": [
+              "first_wins",
+              "last_wins"
+            ],
+            "title": "Mergepolicy",
+            "default": "first_wins"
+          },
+          "members": {
+            "items": {
+              "$ref": "#/components/schemas/ModelGroupMemberRead"
+            },
+            "type": "array",
+            "title": "Members"
+          },
+          "createdAt": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Createdat"
+          },
+          "updatedAt": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updatedat"
+          }
+        },
+        "type": "object",
+        "required": [
+          "uuid",
+          "name"
+        ],
+        "title": "ModelGroupRead"
+      },
+      "ModelGroupResponse": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "title": "Status",
+            "default": "success"
+          },
+          "message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Message"
+          },
+          "group": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ModelGroupRead"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "type": "object",
+        "title": "ModelGroupResponse"
+      },
+      "ModelGroupUpdate": {
+        "properties": {
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "mergePolicy": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "first_wins",
+                  "last_wins"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mergepolicy"
+          },
+          "members": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/ModelGroupMemberWrite"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Members"
+          }
+        },
+        "type": "object",
+        "title": "ModelGroupUpdate"
       },
       "NeedsReviewImagesPayload": {
         "properties": {

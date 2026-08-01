@@ -32,6 +32,7 @@ from apps.helpers.imageProviders.imageProvider import (
     ImageProviderType,
     ImageWithProviderMetadata,
 )
+from apps.tasks_server.tasks._detection_merger import MergePolicy
 from apps.tasks_server.tasks.CollectTrainingImagesTask import (
     SAME_BBOX_IOU_THRESHOLD,
     CollectTrainingImagesTask,
@@ -1790,6 +1791,140 @@ class TestInferenceMergeParity:
 
         assert len(matching) == 1
         assert matching[0] is high_priority
+
+
+class TestMergePolicyLastWins:
+    """Phase 5A: merge_policy="last_wins" is the mirror image of the default
+    first-wins policy pinned by TestInferenceMergeParity above. Same 3-level
+    hierarchy (ROOT <- MID <- LEAF), same helper machinery, but every task is
+    built with `merge_policy` set explicitly so first-wins remains the default
+    for configs that don't set it."""
+
+    _ROOT = TestInferenceMergeParity._ROOT
+    _MID = TestInferenceMergeParity._MID
+    _LEAF = TestInferenceMergeParity._LEAF
+    _UNRELATED = TestInferenceMergeParity._UNRELATED
+
+    def _ancestry(self) -> dict[str, set]:
+        return {
+            self._ROOT: set(),
+            self._MID: {self._ROOT},
+            self._LEAF: {self._MID, self._ROOT},
+            self._UNRELATED: set(),
+        }
+
+    async def _task_with_models(self, *model_names: str, merge_policy: str = MergePolicy.LAST_WINS.value):
+        model_label_config = [
+            {
+                "modelName": name,
+                "labelValues": {
+                    self._ROOT: 0.1,
+                    self._MID: 0.1,
+                    self._LEAF: 0.1,
+                    self._UNRELATED: 0.1,
+                },
+            }
+            for name in model_names
+        ]
+        params = {**_PARAMS, "model_label_config": model_label_config, "merge_policy": merge_policy}
+        task = _make_task(params=params)
+        await task._init(params, resume_data=None)
+        task._label_ancestry = self._ancestry()
+        return task
+
+    @staticmethod
+    def _inference_api(per_model: dict[str, list]) -> MagicMock:
+        return TestInferenceMergeParity._inference_api(per_model)
+
+    async def test_default_policy_is_first_wins(self):
+        """Sanity check: omitting merge_policy from params keeps today's default."""
+        task = _make_task(params=_PARAMS)
+        await task._init(_PARAMS, resume_data=None)
+        assert task._merge_policy is MergePolicy.FIRST_WINS
+
+    async def test_unknown_policy_value_falls_back_to_first_wins(self):
+        """Unvalidated task params (CLAUDE.md: '_init params are unvalidated —
+        cast and validate inside _init') must not raise or silently misbehave
+        on garbage input; fall back to the safe default."""
+        params = {**_PARAMS, "merge_policy": "not-a-real-policy"}
+        task = _make_task(params=params)
+        await task._init(params, resume_data=None)
+        assert task._merge_policy is MergePolicy.FIRST_WINS
+
+    async def test_same_label_lower_priority_model_survives_under_last_wins(self):
+        """Mirror of TestInferenceMergeParity.test_same_label_higher_priority_model_survives_by_identity:
+        under last_wins, model-b (configured second / lower priority) wins the
+        same-label collision instead of model-a."""
+        task = await self._task_with_models("model-a", "model-b")
+        high_priority = _detection_at(0.0, 0.0, 0.5, 0.5, label_uuid=self._LEAF, confidence=0.4)
+        low_priority = _detection_at(0.01, 0.01, 0.5, 0.5, label_uuid=self._LEAF, confidence=0.99)
+
+        inference_api = self._inference_api({"model-a": [high_priority], "model-b": [low_priority]})
+        matching = await task._run_inference(inference_api, "b64", {"model-a": None, "model-b": None})
+
+        assert len(matching) == 1
+        assert matching[0] is low_priority
+
+    async def test_ancestor_supersede_preserved_regardless_of_processing_order(self):
+        """Hierarchy supersede (more-specific label beats a coarser ancestor) must
+        hold under last_wins too, for both orderings of which arrives 'first'."""
+        task = await self._task_with_models("model-a", "model-b")
+        ancestor_det = _detection_at(0.0, 0.0, 0.5, 0.5, label_uuid=self._ROOT, confidence=0.5)
+        descendant_det = _detection_at(0.01, 0.01, 0.5, 0.5, label_uuid=self._LEAF, confidence=0.5)
+
+        inference_api = self._inference_api({"model-a": [ancestor_det], "model-b": [descendant_det]})
+        matching = await task._run_inference(inference_api, "b64", {"model-a": None, "model-b": None})
+
+        assert len(matching) == 1
+        assert matching[0] is descendant_det
+
+    async def test_ancestor_supersede_preserved_reverse_model_order(self):
+        task = await self._task_with_models("model-a", "model-b")
+        descendant_det = _detection_at(0.0, 0.0, 0.5, 0.5, label_uuid=self._LEAF, confidence=0.5)
+        ancestor_det = _detection_at(0.01, 0.01, 0.5, 0.5, label_uuid=self._ROOT, confidence=0.5)
+
+        inference_api = self._inference_api({"model-a": [descendant_det], "model-b": [ancestor_det]})
+        matching = await task._run_inference(inference_api, "b64", {"model-a": None, "model-b": None})
+
+        assert len(matching) == 1
+        assert matching[0] is descendant_det
+
+    async def test_unrelated_labels_overlapping_both_kept_under_last_wins(self):
+        task = await self._task_with_models("model-a", "model-b")
+        det_a = _detection_at(0.0, 0.0, 0.5, 0.5, label_uuid=self._LEAF, confidence=0.5)
+        det_b = _detection_at(0.01, 0.01, 0.5, 0.5, label_uuid=self._UNRELATED, confidence=0.5)
+
+        inference_api = self._inference_api({"model-a": [det_a], "model-b": [det_b]})
+        matching = await task._run_inference(inference_api, "b64", {"model-a": None, "model-b": None})
+
+        assert len(matching) == 2
+        assert det_a in matching and det_b in matching
+
+    async def test_gather_result_order_still_follows_config_priority_not_completion_time(self):
+        """Even under last_wins, results_per_model must line up with
+        self._model_names (asyncio.gather preserves input order) before the
+        policy's own reversal is applied — otherwise the "last model" the
+        policy picks wouldn't be the actually-lowest-priority-configured one."""
+        task = await self._task_with_models("model-a", "model-b")
+        assert task._model_names == ["model-a", "model-b"]
+
+        high_priority = _detection_at(0.0, 0.0, 0.5, 0.5, label_uuid=self._LEAF, confidence=0.1)
+        low_priority = _detection_at(0.01, 0.01, 0.5, 0.5, label_uuid=self._LEAF, confidence=0.99)
+
+        def _inference(name, payload):
+            if name == "model-b":
+                time.sleep(0.08)
+            result = MagicMock()
+            result.result.detections = [high_priority] if name == "model-a" else [low_priority]
+            return result
+
+        inference_api = MagicMock()
+        inference_api.inference.side_effect = _inference
+
+        matching = await task._run_inference(inference_api, "b64", {"model-a": None, "model-b": None})
+
+        assert len(matching) == 1
+        assert matching[0] is low_priority
 
 
 class TestBuildLabelAncestryMap:
