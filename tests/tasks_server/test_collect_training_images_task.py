@@ -1061,6 +1061,27 @@ class TestProcessedIdsLiveVsFixed:
         assert saved_ids == {f"{_SOURCE}:0", f"{_SOURCE}:1"}
 
 
+class TestUndecodableFrameSkipped:
+    """A live source (e.g. UrlImageProvider) that fails to decode a response into
+    an image returns a wrapper with `image=None` (not a bare `None` — that's
+    reserved for "this source is exhausted/dead", the FIXED-provider and
+    fetch-timeout cases). _run() must skip such a frame without crashing (it used
+    to reach cv2.imencode with an empty array and raise cv2.error) and without
+    discarding the source from `active` — a single bad frame from a flaky camera
+    must not permanently stop it from being polled again."""
+
+    async def test_none_image_frame_is_skipped_without_crashing_or_dropping_source(self, tmp_path):
+        images = [
+            ImageWithProviderMetadata(image=None, metadata=ImageProviderMetadata(source=_SOURCE, frame_idx=0)),
+            _tracked_image(1),
+        ]
+        provider = _LiveProvider(images)
+        task = await _run_task(images, params=_NO_RATE_LIMIT_PARAMS, detect=True, tmp_path=tmp_path, provider=provider)
+
+        assert task.get_status() == TaskStatus.COMPLETED
+        assert task._images_saved == 1
+
+
 class TestSourceLevelIntervalOverride:
     """A provider with min_capture_interval > 0 paces itself inside getNextImage();
     the task-level _rate_limits fallback (snapshot_interval/stream_interval) must

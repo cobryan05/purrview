@@ -713,6 +713,14 @@ class CollectTrainingImagesTask(Task):
                     if provided is None:
                         active.discard(provider)
                         continue
+                    if provided.image is None:
+                        # The provider got a response but couldn't decode it into an
+                        # image (e.g. a camera returning a transient non-image reply) —
+                        # distinct from `provided is None`, which means the source
+                        # itself is exhausted/dead. Skip just this frame; don't drop
+                        # the source from `active` over one bad frame.
+                        logger.debug("Skipping frame with no decodable image (source=%s)", provider.source_name)
+                        continue
 
                     any_fetched = True
                     last_fetch[id(provider)] = t_fetch
