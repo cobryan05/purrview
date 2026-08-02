@@ -2,17 +2,20 @@ import { Field } from './Field.js';
 import { fieldFactories } from './Factories.js';
 
 import { createEmojiButton } from '/app-static/js/ui/utils/index.js';
+import { fetchModelGroups } from '/app-static/js/shared/api/modelGroups.js';
+import { expandModelGroupMembers } from '/app-static/js/shared/modelGroups/expand.js';
 
 export class ArrayField extends Field {
   constructor({ ...rest }) {
     super(rest);
   }
 
-  static async create({ fieldFactory, value = [], ...rest } = {}) {
+  static async create({ fieldFactory, value = [], allowGroupInsert = false, ...rest } = {}) {
     const instance = new ArrayField({ value, ...rest });
     instance._fieldFactory = fieldFactory; // function that returns a new Field instance
     instance._value = Array.isArray(value) ? value : [];
     instance._fields = []; // store wrapped subfields
+    instance._allowGroupInsert = !!allowGroupInsert;
 
     for (let idx = 0; idx < instance._value.length; idx++) {
       instance._fields[idx] = await instance._makeSubfield(instance._value[idx]);
@@ -107,10 +110,101 @@ export class ArrayField extends Field {
       });
 
       container.appendChild(addBtn);
+
+      if (this._allowGroupInsert) {
+        container.appendChild(await this._renderGroupInsertControl(renderItems));
+      }
     };
 
     await renderItems();
     return container;
+  }
+
+  /**
+   * One-shot "insert models from group" control. Appends one subfield per
+   * model in the group (in group order), seeded with `{modelName,
+   * labelValues: {}}` so ModelLabelSelectField fills in its own defaults.
+   * This is a one-time expansion, not a live binding — editing the group
+   * later does not touch entries already inserted from it.
+   */
+  async _renderGroupInsertControl(renderItems) {
+    const row = document.createElement('div');
+    row.classList.add('array-group-insert-row');
+    row.style.display = 'flex';
+    row.style.alignItems = 'center';
+    row.style.gap = '0.5em';
+    row.style.marginTop = '0.5em';
+
+    let groupsMap;
+    try {
+      groupsMap = await fetchModelGroups();
+    } catch (err) {
+      groupsMap = new Map();
+    }
+
+    const select = document.createElement('select');
+    if (groupsMap.size === 0) {
+      const opt = document.createElement('option');
+      opt.textContent = 'No model groups configured';
+      opt.value = '';
+      select.appendChild(opt);
+      select.disabled = true;
+    } else {
+      for (const group of groupsMap.values()) {
+        const opt = document.createElement('option');
+        opt.value = group.uuid;
+        opt.textContent = group.name;
+        select.appendChild(opt);
+      }
+      // Restore the previously-selected group across rebuilds (renderItems() tears
+      // down and recreates this control after every insert/delete/reorder). Falls
+      // back to the first option if the remembered uuid no longer exists (e.g. the
+      // group was deleted between renders), rather than leaving the select blank.
+      if (this._groupInsertSelection && groupsMap.has(this._groupInsertSelection)) {
+        select.value = this._groupInsertSelection;
+      } else {
+        this._groupInsertSelection = select.value;
+      }
+    }
+
+    select.addEventListener('change', () => {
+      this._groupInsertSelection = select.value;
+    });
+
+    const insertBtn = document.createElement('button');
+    insertBtn.type = 'button';
+    insertBtn.textContent = 'Insert models from group';
+    insertBtn.disabled = groupsMap.size === 0;
+
+    const statusEl = document.createElement('span');
+    statusEl.style.fontSize = '0.85em';
+    statusEl.style.color = '#aaa';
+    statusEl.style.fontStyle = 'italic';
+
+    insertBtn.addEventListener('click', async () => {
+      statusEl.textContent = '';
+      const groupUuid = select.value;
+      if (!groupUuid) return;
+
+      const modelNames = expandModelGroupMembers(groupUuid, groupsMap);
+      if (modelNames.length === 0) {
+        statusEl.textContent = 'Group has no models — nothing inserted.';
+        return;
+      }
+
+      for (const modelName of modelNames) {
+        const seed = { modelName, labelValues: {} };
+        this._value.push(seed);
+        this._fields.push(await this._makeSubfield(seed));
+      }
+      await renderItems();
+      this._onChange?.(this._value);
+    });
+
+    row.appendChild(select);
+    row.appendChild(insertBtn);
+    row.appendChild(statusEl);
+    return row;
   }
 
 

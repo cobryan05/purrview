@@ -1739,6 +1739,7 @@ class CollectTrainingImagesTask(Task):
                 "type": "array",
                 "required": "true",
                 "label": "Model/Label Configuration",
+                "allow_group_insert": True,
                 "items": {
                     "type": "model_label",
                     "label": "Model/Label selection",

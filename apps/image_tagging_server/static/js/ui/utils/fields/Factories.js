@@ -18,11 +18,12 @@ import { GroupField } from './GroupField.js';
 // Factory map
 export const fieldFactories = {
   async array(fieldName, fieldMeta, values, onChange) {
-    const { type, required, description, items, options, ...rest } = fieldMeta;
+    const { type, required, description, items, options, allow_group_insert, ...rest } = fieldMeta;
 
     return ArrayField.create({
       ...rest,
       description,
+      allowGroupInsert: !!allow_group_insert,
       value: values[fieldName] || [],
       onChange: (arr) => {
         onChange?.(arr);
