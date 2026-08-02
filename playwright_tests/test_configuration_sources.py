@@ -12,6 +12,7 @@ Configuration > Source Management > #source-management-box:
 Run with:
     pytest tests/playwright/test_configuration_sources.py -p no:xdist -v
 """
+
 import json
 
 import pytest
@@ -40,6 +41,17 @@ URL_PROVIDER_SCHEMA = {
         "label": "Username",
         "required": False,
         "description": "Username for authentication",
+    },
+}
+
+URL_PROVIDER_SCHEMA_WITH_INTERVAL = {
+    **URL_PROVIDER_SCHEMA,
+    "min_capture_interval": {
+        "type": "float",
+        "label": "Min Capture Interval (s)",
+        "required": False,
+        "default": 0.0,
+        "description": "Minimum seconds between frames.",
     },
 }
 
@@ -149,9 +161,7 @@ class TestSourceListLoading:
         _mock_providers(page, ["UrlImageProvider"])
         _mock_provider_schema(page)
         _navigate_to_sources(page, base_url)
-        page.wait_for_selector(
-            "#source-management-box button[title='Test Source']", timeout=5000
-        )
+        page.wait_for_selector("#source-management-box button[title='Test Source']", timeout=5000)
         expect(page.locator("#source-management-box button[title='Test Source']").first).to_be_visible()
 
     def test_existing_source_has_delete_button(self, page: Page, base_url: str):
@@ -160,9 +170,7 @@ class TestSourceListLoading:
         _mock_providers(page, ["UrlImageProvider"])
         _mock_provider_schema(page)
         _navigate_to_sources(page, base_url)
-        page.wait_for_selector(
-            "#source-management-box button[title='Delete']", timeout=5000
-        )
+        page.wait_for_selector("#source-management-box button[title='Delete']", timeout=5000)
         expect(page.locator("#source-management-box button[title='Delete']").first).to_be_visible()
 
 
@@ -260,7 +268,9 @@ class TestCreateSource:
         page.wait_for_timeout(800)
 
         # 2. Fill source name (second text input in the create area — first might be the provider name)
-        name_inputs = page.locator("#source-management-box input[type='text'], #source-management-box input:not([type])").all()
+        name_inputs = page.locator(
+            "#source-management-box input[type='text'], #source-management-box input:not([type])"
+        ).all()
         # The source-name field has placeholder "Enter new source name"
         name_input = page.locator("#source-management-box input[placeholder='Enter new source name']")
         name_input.fill("My New Camera")
@@ -269,7 +279,9 @@ class TestCreateSource:
         url_input = page.locator("#source-management-box input").filter(has_text="").last
         # Use placeholder or description to identify URL input; schema field description is "URL of the image"
         # Find any input that appeared after schema loaded (not the source name or provider)
-        all_inputs = page.locator("#source-management-box input[type='text'], #source-management-box input:not([type='checkbox']):not([placeholder='Enter new source name'])").all()
+        all_inputs = page.locator(
+            "#source-management-box input[type='text'], #source-management-box input:not([type='checkbox']):not([placeholder='Enter new source name'])"
+        ).all()
         for inp in all_inputs:
             placeholder = inp.get_attribute("placeholder") or ""
             if "url" in placeholder.lower() or "URL" in placeholder or not inp.input_value():
@@ -292,10 +304,101 @@ class TestCreateSource:
         _mock_provider_schema(page, URL_PROVIDER_SCHEMA)
 
         _navigate_to_sources(page, base_url)
-        page.wait_for_selector(
-            "#source-management-box button[title='Test Source']", timeout=4000
-        )
+        page.wait_for_selector("#source-management-box button[title='Test Source']", timeout=4000)
         expect(page.locator("#source-management-box button[title='Test Source']").first).to_be_visible()
+
+
+# ---------------------------------------------------------------------------
+# Numeric ("float"/"int") schema field type coercion
+# ---------------------------------------------------------------------------
+
+
+class TestNumericSchemaFieldCoercion:
+    """Regression tests for a bug where a schema `float` field (e.g.
+    UrlImageProvider's `min_capture_interval`) was sent to the backend as a
+    string instead of a number, crashing the provider with
+    `TypeError: '>' not supported between instances of 'str' and 'int'`.
+
+    Two bugs compounded: `fieldFactories.int` seeded the TextField's initial
+    value with `values[fieldName] || ''`, so a falsy schema default of `0`
+    silently became `''`; and `TextField.getValue()` returned the raw string
+    typed into the input rather than a parsed number, so even a hand-edited
+    value like "5" stayed a string all the way into the create payload.
+    """
+
+    def test_untouched_default_zero_saves_as_number_not_empty_string(self, page: Page, base_url: str):
+        """A field left untouched, with a schema default of 0.0, must save
+        as the number 0 — not '' (the `||` vs `??` fallback bug)."""
+        create_calls: list[dict] = []
+
+        def handle_create(route: Route):
+            create_calls.append(json.loads(route.request.post_data))
+            route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps({"status": "success", "source": FAKE_SOURCE}),
+            )
+
+        _mock_providers(page, ["UrlImageProvider"])
+        _mock_sources(page, {})
+        _mock_provider_schema(page, URL_PROVIDER_SCHEMA_WITH_INTERVAL)
+        page.route("**/api/sources/create", handle_create)
+
+        _navigate_to_sources(page, base_url)
+        page.wait_for_selector("#source-management-box select", timeout=4000)
+
+        page.locator("#source-management-box select").last.select_option("UrlImageProvider")
+        page.wait_for_timeout(800)
+
+        page.locator("#source-management-box input[placeholder='Enter new source name']").fill("My New Camera")
+        page.locator("#source-management-box input[type='text']").last.fill("http://camera.example.com/snap.jpg")
+
+        page.locator("#source-management-box button[title='Save']").first.click()
+        page.wait_for_timeout(800)
+
+        assert create_calls, "Expected POST to /api/sources/create"
+        interval = create_calls[0]["providerParams"]["min_capture_interval"]
+        assert interval == 0 and isinstance(interval, (int, float)), (
+            f"Expected numeric 0 for untouched default, got {interval!r} "
+            "(likely the ||-vs-?? default-0-becomes-empty-string bug)"
+        )
+
+    def test_typed_value_saves_as_number_not_string(self, page: Page, base_url: str):
+        """Typing a value into a `float` schema field must save as a number,
+        not the raw string from the input element."""
+        create_calls: list[dict] = []
+
+        def handle_create(route: Route):
+            create_calls.append(json.loads(route.request.post_data))
+            route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps({"status": "success", "source": FAKE_SOURCE}),
+            )
+
+        _mock_providers(page, ["UrlImageProvider"])
+        _mock_sources(page, {})
+        _mock_provider_schema(page, URL_PROVIDER_SCHEMA_WITH_INTERVAL)
+        page.route("**/api/sources/create", handle_create)
+
+        _navigate_to_sources(page, base_url)
+        page.wait_for_selector("#source-management-box select", timeout=4000)
+
+        page.locator("#source-management-box select").last.select_option("UrlImageProvider")
+        page.wait_for_timeout(800)
+
+        page.locator("#source-management-box input[placeholder='Enter new source name']").fill("My New Camera")
+        page.locator("#source-management-box input[type='text']").last.fill("http://camera.example.com/snap.jpg")
+        page.locator("#source-management-box input[type='number']").first.fill("2.5")
+
+        page.locator("#source-management-box button[title='Save']").first.click()
+        page.wait_for_timeout(800)
+
+        assert create_calls, "Expected POST to /api/sources/create"
+        interval = create_calls[0]["providerParams"]["min_capture_interval"]
+        assert interval == 2.5 and isinstance(
+            interval, (int, float)
+        ), f"Expected numeric 2.5, got {interval!r} (getValue() returning the raw input string)"
 
 
 # ---------------------------------------------------------------------------
@@ -350,11 +453,17 @@ class TestDeleteSource:
     def test_delete_dismissed_does_not_call_api(self, page: Page, base_url: str):
         """Dismissing the confirm dialog does NOT send a delete request."""
         calls: list[bool] = []
-        page.route("**/api/sources/delete", lambda route: (calls.append(True), route.fulfill(
-            status=200,
-            content_type="application/json",
-            body=json.dumps({"status": "success"}),
-        )))
+        page.route(
+            "**/api/sources/delete",
+            lambda route: (
+                calls.append(True),
+                route.fulfill(
+                    status=200,
+                    content_type="application/json",
+                    body=json.dumps({"status": "success"}),
+                ),
+            ),
+        )
         _mock_sources(page, {FAKE_SOURCE["uuid"]: FAKE_SOURCE})
         _mock_providers(page, ["UrlImageProvider"])
         _mock_provider_schema(page)

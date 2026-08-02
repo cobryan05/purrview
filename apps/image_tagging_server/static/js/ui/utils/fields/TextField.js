@@ -60,6 +60,15 @@ export class TextField extends Field {
   }
 
   getValue() {
+    // Numeric inputs store the raw string typed by the user (or a number set
+    // programmatically via setValue/the constructor) — parse here so callers
+    // consistently get a number rather than sometimes a string, sometimes a
+    // number depending on whether the user touched the field.
+    if (this._type === 'number') {
+      if (this._value === '' || this._value === null || this._value === undefined) return null;
+      const parsed = parseFloat(this._value);
+      return Number.isNaN(parsed) ? null : parsed;
+    }
     return this._value;
   }
 }

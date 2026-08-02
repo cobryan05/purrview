@@ -119,7 +119,9 @@ export const fieldFactories = {
       ...rest,
       placeholder: description || '',
       type: 'number',
-      value: values[fieldName] || '',
+      // `??` (not `||`) — a falsy default of 0 must render as "0", not fall
+      // through to '' and later be sent as an empty string.
+      value: values[fieldName] ?? '',
       onChange: (val) => {
         onChange?.(parseFloat(val));
       }
