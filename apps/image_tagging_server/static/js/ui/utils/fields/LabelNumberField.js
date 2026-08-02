@@ -1,21 +1,95 @@
 import { TextField } from './TextField.js';
 import { Field } from './Field.js';
 
+/**
+ * Normalizes an incoming value into a `{min, max}` confidence band.
+ *
+ * Accepts either a legacy bare scalar confidence floor (e.g. `0.25`) or an
+ * already-banded `{min, max}` object. Mirrors the backend's
+ * `_parse_confidence_band` convention (CollectTrainingImagesTask.py): a bare
+ * scalar loads as `{min: scalar, max: 1.0}`. Handles null/undefined/garbage
+ * without throwing.
+ */
+function normalizeBand(value) {
+  if (value != null && typeof value === 'object') {
+    const min = Number(value.min);
+    const max = Number(value.max);
+    return {
+      min: Number.isFinite(min) ? min : 0,
+      max: Number.isFinite(max) ? max : 1,
+    };
+  }
+
+  const scalar = Number(value);
+  return {
+    min: Number.isFinite(scalar) ? scalar : 0,
+    max: 1,
+  };
+}
 
 export class LabelNumberField extends Field {
   constructor({ label, min = null, max = null, step = null, color = "#cccc", ...rest }) {
     super(rest);
     this._labelText = label;
     this._labelColor = color;
-    this._numberField = new TextField({
+
+    const band = normalizeBand(this._value);
+
+    this._minField = new TextField({
       type: 'number',
-      value: this._value,
+      value: band.min,
       placeholder: this._placeholder,
       onChange: this._onChange,
       min: min,
       max: max,
-      step: step
+      step: step,
     });
+    this._maxField = new TextField({
+      type: 'number',
+      value: band.max,
+      placeholder: this._placeholder,
+      onChange: this._onChange,
+      min: min,
+      max: max,
+      step: step,
+    });
+  }
+
+  async _renderFields() {
+    const container = document.createElement('div');
+    container.style.display = 'flex';
+    container.style.alignItems = 'center';
+    container.style.gap = '0.35em';
+
+    const minWrap = document.createElement('label');
+    minWrap.style.display = 'flex';
+    minWrap.style.alignItems = 'center';
+    minWrap.style.gap = '0.25em';
+    const minTag = document.createElement('span');
+    minTag.textContent = 'min';
+    minTag.style.fontSize = '0.8em';
+    minTag.style.color = '#aaa';
+    minWrap.appendChild(minTag);
+    const minInput = await this._minField.renderEdit();
+    minInput.style.width = '4.5em';
+    minWrap.appendChild(minInput);
+
+    const maxWrap = document.createElement('label');
+    maxWrap.style.display = 'flex';
+    maxWrap.style.alignItems = 'center';
+    maxWrap.style.gap = '0.25em';
+    const maxTag = document.createElement('span');
+    maxTag.textContent = 'max';
+    maxTag.style.fontSize = '0.8em';
+    maxTag.style.color = '#aaa';
+    maxWrap.appendChild(maxTag);
+    const maxInput = await this._maxField.renderEdit();
+    maxInput.style.width = '4.5em';
+    maxWrap.appendChild(maxInput);
+
+    container.appendChild(minWrap);
+    container.appendChild(maxWrap);
+    return container;
   }
 
   async renderEdit() {
@@ -29,7 +103,7 @@ export class LabelNumberField extends Field {
     classSpan.style.fontWeight = 'bold';
     container.appendChild(classSpan);
 
-    container.appendChild(await this._numberField.renderEdit());
+    container.appendChild(await this._renderFields());
     return container;
   }
 
@@ -44,35 +118,17 @@ export class LabelNumberField extends Field {
     labelSpan.style.fontWeight = 'bold';
     labelSpan.style.color = this._labelColor;
     container.appendChild(labelSpan);
-    container.appendChild(await this._numberField.renderEdit());
-
-    // // Assigned label
-    // const assignedSpan = document.createElement('span');
-    // assignedSpan.textContent = this._value?.text || this._value || '(unassigned)';
-
-    // if (this._value) {
-    //   let matchingOption = null;
-
-    //   if (typeof this._value === 'object' && this._value.key) {
-    //     // If value is an object, search for a matching 'key' in options
-    //     matchingOption = this._options.find(option => option.key === this._value.key);
-    //   } else if (typeof this._value === 'string') {
-    //     // If value is a string, search for a matching string in options
-    //     matchingOption = this._options.find(option => option === this._value);
-    //   }
-
-    //   if (matchingOption) {
-    //     if (matchingOption.color) assignedSpan.style.color = matchingOption.color;
-    //     assignedSpan.style.fontWeight = 'bold';
-    //   }
-    // }
-
-    // container.appendChild(assignedSpan);
+    container.appendChild(await this._renderFields());
 
     return container;
   }
 
   getValue() {
-    return this._numberField.getValue();
+    const min = Number(this._minField.getValue());
+    const max = Number(this._maxField.getValue());
+    return {
+      min: Number.isFinite(min) ? min : 0,
+      max: Number.isFinite(max) ? max : 1,
+    };
   }
 }
