@@ -713,19 +713,22 @@ class CollectTrainingImagesTask(Task):
                     if provided is None:
                         active.discard(provider)
                         continue
+                    any_fetched = True
+                    last_fetch[id(provider)] = t_fetch
+                    if provider.source_name:
+                        self._last_fetch_by_source[provider.source_name] = t_fetch
+
                     if provided.image is None:
                         # The provider got a response but couldn't decode it into an
                         # image (e.g. a camera returning a transient non-image reply) —
                         # distinct from `provided is None`, which means the source
                         # itself is exhausted/dead. Skip just this frame; don't drop
-                        # the source from `active` over one bad frame.
+                        # the source from `active` over one bad frame. The rate-limit
+                        # clock must still be updated above, or a source that keeps
+                        # returning undecodable frames gets retried on every loop
+                        # iteration instead of respecting its configured interval.
                         logger.debug("Skipping frame with no decodable image (source=%s)", provider.source_name)
                         continue
-
-                    any_fetched = True
-                    last_fetch[id(provider)] = t_fetch
-                    if provider.source_name:
-                        self._last_fetch_by_source[provider.source_name] = t_fetch
 
                     # Build a stable unique ID when the provider gives us source + frame_idx.
                     # Used to skip already-processed frames on resume — FIXED providers only:
@@ -1240,7 +1243,8 @@ class CollectTrainingImagesTask(Task):
         # side, not a bare base64 string. Fall back to treating it as raw base64 for
         # any caller that already passes an unwrapped string.
         try:
-            b64_data = json.loads(base64_img)["data"]
+            parsed = json.loads(base64_img)
+            b64_data = parsed["data"] if isinstance(parsed, dict) else base64_img
         except json.JSONDecodeError:
             b64_data = base64_img
         image_bytes = base64.b64decode(b64_data)

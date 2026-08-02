@@ -332,6 +332,37 @@ class TestAnnotatedImageWidget:
         )
 
 
+class TestSummarySourceWidgetMount:
+    def test_annotated_image_with_summary_source_calls_mount(self, page: Page, base_url: str):
+        """Regression test: the source:'summary' render path used to append each
+        widget's `el` without ever calling `mount()`. annotated_image's real setup
+        (creating the Konva canvas via createCanvasInstance) happens entirely inside
+        mount() (Factories.js) — so a summary-source annotated_image widget rendered
+        an empty container forever, with no <canvas> ever created."""
+        task_id = "task-summary-annotimg-1"
+        schema = [
+            {
+                "id": "lastFrame",
+                "type": "annotated_image",
+                "source": "summary",
+                "label": "Last capture",
+            }
+        ]
+        _mock_status_schema(page, schema)
+        _mock_image_file(page)
+        _setup_base_mocks(
+            page,
+            {task_id: _make_task(task_id, lastFrame={"path": "folder/frame.jpg", "bboxes": []})},
+        )
+
+        _navigate_to_tasks(page, base_url)
+        page.wait_for_selector(f"[data-task-uuid='{task_id}'] summary", timeout=5000)
+        page.wait_for_timeout(500)
+
+        canvas = page.locator(f"[data-task-uuid='{task_id}'] canvas")
+        assert canvas.count() > 0, "Expected mount() to create a <canvas> for a summary-source annotated_image widget"
+
+
 class TestStatusWidgetPollDiffing:
     def test_unchanged_status_data_does_not_rebuild_widget_across_polls(self, page: Page, base_url: str):
         """Regression test: a poll tick used to tear down and rebuild every

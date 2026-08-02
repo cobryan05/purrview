@@ -704,6 +704,30 @@ class TestApplyFilterChainToFrame:
 
         assert captured["image_bytes"] == raw_bytes
 
+    async def test_bare_base64_string_that_is_also_valid_json_falls_back_correctly(self):
+        """Regression test: the fallback for a bare (unwrapped) base64 string only
+        catches json.JSONDecodeError. A digit-only base64 string is also valid JSON
+        (it parses as an int), so json.loads() succeeds but returns something that
+        isn't a dict — `["data"]` on it must not be attempted, or this raises
+        `TypeError: 'int' object is not subscriptable` instead of falling back to
+        raw-base64 decoding as intended."""
+        captured: dict = {}
+
+        class _CapturingBackend(_FakeFilterChainBackend):
+            async def classify_whole_image(self, model_name, image_bytes):
+                captured["image_bytes"] = image_bytes
+                return await super().classify_whole_image(model_name, image_bytes)
+
+        backend = _CapturingBackend(kinds={"m1": "image_classifier"}, classify_results={"m1": 0.9})
+        step = _fc_step(model_name="m1", action="tag_image", confidence=0.5, action_params={"tag_uuid": "tag-x"})
+        task = await _task_with_chain_runner([step], backend)
+
+        bare_b64 = "12345678"  # digit-only: valid base64 AND valid JSON (parses as an int)
+        matching = [_fc_detection()]
+        await task._apply_filter_chain_to_frame(_fc_provided(), bare_b64, matching)
+
+        assert captured["image_bytes"] == base64.b64decode(bare_b64)
+
     async def test_discard_image_match_discards_frame(self):
         backend = _FakeFilterChainBackend(kinds={"corrupt": "image_classifier"}, classify_results={"corrupt": 0.9})
         step = _fc_step(model_name="corrupt", action="discard_image", confidence=0.5)
@@ -1080,6 +1104,50 @@ class TestUndecodableFrameSkipped:
 
         assert task.get_status() == TaskStatus.COMPLETED
         assert task._images_saved == 1
+
+
+class TestUndecodableFrameRateLimit:
+    """A source that repeatedly returns undecodable frames must still have its
+    rate-limit clock (last_fetch) updated, so the task-level snapshot_interval
+    check keeps throttling it — otherwise it's retried on essentially every loop
+    iteration instead of backing off as configured."""
+
+    async def test_undecodable_frames_still_respect_rate_limit(self, tmp_path):
+        call_count = 0
+
+        class _AlwaysUndecodableProvider(ImageProvider):
+            """A live source that never produces a decodable frame — models a
+            camera stuck returning transient non-image replies."""
+
+            def provider_type(self) -> ImageProviderType:
+                return ImageProviderType.LIVE_SNAPSHOT
+
+            async def start(self) -> None:
+                pass
+
+            async def stop(self) -> None:
+                pass
+
+            async def getNextImage(self) -> Optional[ImageWithProviderMetadata]:
+                nonlocal call_count
+                call_count += 1
+                return ImageWithProviderMetadata(
+                    image=None, metadata=ImageProviderMetadata(source=_SOURCE, frame_idx=call_count)
+                )
+
+        provider = _AlwaysUndecodableProvider()
+        # Bounded by max_duration (real wall clock) rather than the provider running
+        # out of frames — this provider never does.
+        params = {**_PARAMS, "snapshot_interval": 0.2, "stream_interval": 0.2, "max_duration": 0.5}
+
+        task = await _run_task([], params=params, detect=True, tmp_path=tmp_path, provider=provider)
+
+        assert task.get_status() == TaskStatus.COMPLETED
+        # 0.5s / 0.2s interval ⇒ at most ~3 polls when correctly rate-limited.
+        # Without the fix, last_fetch is never updated for undecodable frames, so
+        # the source is hammered on essentially every loop iteration instead —
+        # producing far more than a handful of calls in the same window.
+        assert call_count <= 5, f"expected the source to be rate-limited, got {call_count} polls"
 
 
 class TestSourceLevelIntervalOverride:

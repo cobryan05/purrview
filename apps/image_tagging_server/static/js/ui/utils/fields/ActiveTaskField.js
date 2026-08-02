@@ -216,7 +216,13 @@ export class ActiveTaskField extends Field {
       if (source === 'summary') {
         const value = this._getSummaryValue(widget);
         const rendered = await renderStatusWidget(widget, value, ctx);
-        if (rendered) slot.appendChild(rendered.el);
+        if (rendered) {
+          slot.appendChild(rendered.el);
+          // mount() runs post-attach layout (e.g. sizing a canvas) — some widget
+          // factories (annotated_image) defer their real setup to it, so it must
+          // run regardless of which source the widget is configured with.
+          await rendered.mount?.();
+        }
         // Summary widgets never own a resource that needs teardown.
       } else {
         statusSlots.push({ widget, slot });
