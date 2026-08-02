@@ -4950,7 +4950,7 @@ class DbClient:
         self._validate_model_group_member_orders(m.order for m in data.members)
 
         async with self._async_session_maker() as session:
-            mg = ModelGroup(name=data.name, description=data.description)
+            mg = ModelGroup(name=data.name, description=data.description, merge_policy=data.merge_policy)
             session.add(mg)
             await session.flush()
             for member in data.members:

@@ -965,6 +965,10 @@ class ModelGroup(TimestampModel, table=True):
     uuid: str = Field(default_factory=lambda: str(uuid4()), primary_key=True)
     name: str = Field(unique=True, index=True)
     description: Optional[str] = None
+    # Cross-model detection merge policy for CollectTrainingImagesTask (Phase 5A,
+    # LIVE_COLLECTION_PLAN.md): which model's detection wins a same-label collision.
+    # Defaulted to "first_wins" so existing rows keep today's behaviour unchanged.
+    merge_policy: str = Field(default="first_wins")
     members: List[ModelGroupMember] = Relationship(
         back_populates="group",
         sa_relationship_kwargs={
@@ -987,6 +991,7 @@ class ModelGroupRead(OrmModel):
     uuid: str
     name: str
     description: Optional[str] = None
+    merge_policy: Literal["first_wins", "last_wins"] = "first_wins"
     members: List[ModelGroupMemberRead] = Field(default_factory=list)
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
@@ -1007,12 +1012,14 @@ class ModelGroupMemberWrite(ApiModel):
 class ModelGroupCreate(ApiModel):
     name: str
     description: Optional[str] = None
+    merge_policy: Literal["first_wins", "last_wins"] = "first_wins"
     members: List[ModelGroupMemberWrite] = Field(default_factory=list)
 
 
 class ModelGroupUpdate(ApiModel):
     name: Optional[str] = None
     description: Optional[str] = None
+    merge_policy: Optional[Literal["first_wins", "last_wins"]] = None
     members: Optional[List[ModelGroupMemberWrite]] = None  # None=no change; []=remove all
 
 

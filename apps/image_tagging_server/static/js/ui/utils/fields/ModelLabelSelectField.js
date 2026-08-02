@@ -47,7 +47,10 @@ export class ModelLabelSelectField extends Field {
           min: 0,
           max: 1,
           step: 0.01,
-          value: values[uuid] || ModelLabelSelectField.DEFAULT_CONFIDENCE,
+          // `??` (not `||`) so a legitimately-saved scalar `0` — the existing
+          // "label disabled" convention — survives instead of silently
+          // falling back to DEFAULT_CONFIDENCE and re-enabling the label.
+          value: values[uuid] ?? ModelLabelSelectField.DEFAULT_CONFIDENCE,
         }));
       }
     }
@@ -90,7 +93,7 @@ export class ModelLabelSelectField extends Field {
     // Right column: help text
     const helpText = document.createElement('div');
     helpText.textContent =
-      'Select a model, then set a non-zero confidence threshold to enable labels';
+      'Select a model, then set a min/max confidence band to enable labels (min > 0 enables; min = 0 disables)';
     helpText.style.fontSize = '0.85em';
     helpText.style.color = '#aaa';
     helpText.style.fontStyle = 'italic';
