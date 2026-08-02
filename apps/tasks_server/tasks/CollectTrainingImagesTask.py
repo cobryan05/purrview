@@ -1099,7 +1099,7 @@ class CollectTrainingImagesTask(Task):
                     t_start = time.perf_counter()  # PERF
                     result = await asyncio.wait_for(
                         asyncio.to_thread(
-                            inference_api.inference,
+                            inference_api.detect,
                             name,
                             InferencePayload(
                                 image_base64=base64_img,

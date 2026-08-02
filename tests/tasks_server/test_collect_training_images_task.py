@@ -23,6 +23,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import numpy as np
 import pytest
+from inference_client.api.inference_api import InferenceApi
 
 from apps.helpers.bboxUtils import iou_xywh
 from apps.helpers.consts import TaskStatus
@@ -200,13 +201,13 @@ async def _run_task(
     with (
         patch("apps.tasks_server.tasks.CollectTrainingImagesTask.SourceHelper") as mock_sh,
         patch("apps.tasks_server.tasks.CollectTrainingImagesTask.ModelsApi") as mock_models_cls,
-        patch("apps.tasks_server.tasks.CollectTrainingImagesTask.InferenceApi") as mock_inf_cls,
+        patch("apps.tasks_server.tasks.CollectTrainingImagesTask.InferenceApi", autospec=True) as mock_inf_cls,
         patch("apps.tasks_server.tasks.CollectTrainingImagesTask.ImagesApi") as mock_img_cls,
         patch.dict(os.environ, {"FILES_ROOT": files_root}),
     ):
         mock_sh.return_value.get_image_provider.return_value = provider
         mock_models_cls.return_value.pin_model_api_api_models_model_name_pin_post.return_value = pin_resp
-        mock_inf_cls.return_value.inference.return_value = inf_result
+        mock_inf_cls.return_value.detect.return_value = inf_result
         mock_img_cls.return_value.update_image_metadata.return_value = MagicMock()
 
         await task.start()
@@ -304,7 +305,7 @@ async def test_already_processed_images_are_skipped(tmp_path):
     with (
         patch("apps.tasks_server.tasks.CollectTrainingImagesTask.SourceHelper") as mock_sh,
         patch("apps.tasks_server.tasks.CollectTrainingImagesTask.ModelsApi") as mock_models_cls,
-        patch("apps.tasks_server.tasks.CollectTrainingImagesTask.InferenceApi") as mock_inf_cls,
+        patch("apps.tasks_server.tasks.CollectTrainingImagesTask.InferenceApi", autospec=True) as mock_inf_cls,
         patch("apps.tasks_server.tasks.CollectTrainingImagesTask.ImagesApi") as mock_img_cls,
         patch.dict(os.environ, {"FILES_ROOT": str(tmp_path)}),
     ):
@@ -312,14 +313,14 @@ async def test_already_processed_images_are_skipped(tmp_path):
         mock_models_cls.return_value.pin_model_api_api_models_model_name_pin_post.return_value = pin_resp
         inf_result = MagicMock()
         inf_result.result.detections = [_detection()]
-        mock_inf_cls.return_value.inference.return_value = inf_result
+        mock_inf_cls.return_value.detect.return_value = inf_result
         mock_img_cls.return_value.update_image_metadata.return_value = MagicMock()
 
         await task.start()
         await task.wait_for_task_done(timeout=10.0)
 
         # Inference must not have been called at all — images were skipped.
-        mock_inf_cls.return_value.inference.assert_not_called()
+        mock_inf_cls.return_value.detect.assert_not_called()
 
     # images_saved should remain at the resumed count; no new saves.
     assert task._resume_data["images_saved"] == 2
@@ -396,8 +397,8 @@ async def test_run_inference_dedups_overlapping_boxes_keeping_priority():
         result.result.detections = [high_priority] if name == "model-a" else [overlapping]
         return result
 
-    inference_api = MagicMock()
-    inference_api.inference.side_effect = _inference
+    inference_api = MagicMock(spec=InferenceApi)
+    inference_api.detect.side_effect = _inference
 
     matching = await task._run_inference(inference_api, "b64", {"model-a": None, "model-b": None})
     assert matching == [high_priority]
@@ -423,8 +424,8 @@ async def test_run_inference_keeps_non_overlapping_boxes():
         result.result.detections = [box_a] if name == "model-a" else [box_b]
         return result
 
-    inference_api = MagicMock()
-    inference_api.inference.side_effect = _inference
+    inference_api = MagicMock(spec=InferenceApi)
+    inference_api.detect.side_effect = _inference
 
     matching = await task._run_inference(inference_api, "b64", {"model-a": None, "model-b": None})
     assert matching == [box_a, box_b]
@@ -493,10 +494,10 @@ async def test_run_inference_single_model_multiple_boxes_all_kept():
     box2 = _detection_at(0.4, 0.4, 0.2, 0.2)
     box3 = _detection_at(0.8, 0.0, 0.1, 0.1)
 
-    inference_api = MagicMock()
+    inference_api = MagicMock(spec=InferenceApi)
     result = MagicMock()
     result.result.detections = [box1, box2, box3]
-    inference_api.inference.return_value = result
+    inference_api.detect.return_value = result
 
     matching = await task._run_inference(inference_api, "b64", {_MODEL_NAME: None})
     assert matching == [box1, box2, box3]
@@ -549,8 +550,8 @@ async def test_run_inference_runs_all_models_even_when_first_has_no_detections()
         result.result.detections = [] if name == "model-a" else [box_b]
         return result
 
-    inference_api = MagicMock()
-    inference_api.inference.side_effect = _inference
+    inference_api = MagicMock(spec=InferenceApi)
+    inference_api.detect.side_effect = _inference
 
     matching = await task._run_inference(inference_api, "b64", {"model-a": None, "model-b": None})
 
@@ -794,7 +795,7 @@ async def test_filter_chain_discard_prevents_save_end_to_end(tmp_path):
     with (
         patch("apps.tasks_server.tasks.CollectTrainingImagesTask.SourceHelper") as mock_sh,
         patch("apps.tasks_server.tasks.CollectTrainingImagesTask.ModelsApi") as mock_models_cls,
-        patch("apps.tasks_server.tasks.CollectTrainingImagesTask.InferenceApi") as mock_inf_cls,
+        patch("apps.tasks_server.tasks.CollectTrainingImagesTask.InferenceApi", autospec=True) as mock_inf_cls,
         patch("apps.tasks_server.tasks.CollectTrainingImagesTask.ImagesApi") as mock_img_cls,
         patch(
             "apps.tasks_server.tasks.CollectTrainingImagesTask.FilterChainsApi",
@@ -809,7 +810,7 @@ async def test_filter_chain_discard_prevents_save_end_to_end(tmp_path):
     ):
         mock_sh.return_value.get_image_provider.return_value = provider
         mock_models_cls.return_value.pin_model_api_api_models_model_name_pin_post.return_value = pin_resp
-        mock_inf_cls.return_value.inference.return_value = inf_result
+        mock_inf_cls.return_value.detect.return_value = inf_result
         mock_img_cls.return_value.update_image_metadata.return_value = MagicMock()
 
         await task.start()
@@ -858,7 +859,7 @@ async def test_filter_chain_strip_unverified_bboxes_still_saves_image_end_to_end
     with (
         patch("apps.tasks_server.tasks.CollectTrainingImagesTask.SourceHelper") as mock_sh,
         patch("apps.tasks_server.tasks.CollectTrainingImagesTask.ModelsApi") as mock_models_cls,
-        patch("apps.tasks_server.tasks.CollectTrainingImagesTask.InferenceApi") as mock_inf_cls,
+        patch("apps.tasks_server.tasks.CollectTrainingImagesTask.InferenceApi", autospec=True) as mock_inf_cls,
         patch("apps.tasks_server.tasks.CollectTrainingImagesTask.ImagesApi") as mock_img_cls,
         patch(
             "apps.tasks_server.tasks.CollectTrainingImagesTask.FilterChainsApi",
@@ -873,7 +874,7 @@ async def test_filter_chain_strip_unverified_bboxes_still_saves_image_end_to_end
     ):
         mock_sh.return_value.get_image_provider.return_value = provider
         mock_models_cls.return_value.pin_model_api_api_models_model_name_pin_post.return_value = pin_resp
-        mock_inf_cls.return_value.inference.return_value = inf_result
+        mock_inf_cls.return_value.detect.return_value = inf_result
         mock_img_cls.return_value.update_image_metadata.return_value = MagicMock()
 
         await task.start()
@@ -907,7 +908,7 @@ async def test_filter_chain_tag_image_calls_set_image_tag_end_to_end(tmp_path):
     with (
         patch("apps.tasks_server.tasks.CollectTrainingImagesTask.SourceHelper") as mock_sh,
         patch("apps.tasks_server.tasks.CollectTrainingImagesTask.ModelsApi") as mock_models_cls,
-        patch("apps.tasks_server.tasks.CollectTrainingImagesTask.InferenceApi") as mock_inf_cls,
+        patch("apps.tasks_server.tasks.CollectTrainingImagesTask.InferenceApi", autospec=True) as mock_inf_cls,
         patch("apps.tasks_server.tasks.CollectTrainingImagesTask.ImagesApi") as mock_img_cls,
         patch(
             "apps.tasks_server.tasks.CollectTrainingImagesTask.FilterChainsApi",
@@ -922,7 +923,7 @@ async def test_filter_chain_tag_image_calls_set_image_tag_end_to_end(tmp_path):
     ):
         mock_sh.return_value.get_image_provider.return_value = provider
         mock_models_cls.return_value.pin_model_api_api_models_model_name_pin_post.return_value = pin_resp
-        mock_inf_cls.return_value.inference.return_value = inf_result
+        mock_inf_cls.return_value.detect.return_value = inf_result
         mock_img_cls.return_value.update_image_metadata.return_value = MagicMock()
         mock_img_cls.return_value.set_image_tag.return_value = MagicMock()
 
@@ -1101,13 +1102,13 @@ class TestCheckpointRequestHoist:
         with (
             patch("apps.tasks_server.tasks.CollectTrainingImagesTask.SourceHelper") as mock_sh,
             patch("apps.tasks_server.tasks.CollectTrainingImagesTask.ModelsApi") as mock_models_cls,
-            patch("apps.tasks_server.tasks.CollectTrainingImagesTask.InferenceApi") as mock_inf_cls,
+            patch("apps.tasks_server.tasks.CollectTrainingImagesTask.InferenceApi", autospec=True) as mock_inf_cls,
             patch("apps.tasks_server.tasks.CollectTrainingImagesTask.ImagesApi") as mock_img_cls,
             patch.dict(os.environ, {"FILES_ROOT": files_root}),
         ):
             mock_sh.return_value.get_image_provider.return_value = provider
             mock_models_cls.return_value.pin_model_api_api_models_model_name_pin_post.return_value = pin_resp
-            mock_inf_cls.return_value.inference.return_value = inf_result
+            mock_inf_cls.return_value.detect.return_value = inf_result
             mock_img_cls.return_value.update_image_metadata.return_value = MagicMock()
 
             await task.start()
@@ -1148,13 +1149,13 @@ class TestStopConditions:
         with (
             patch("apps.tasks_server.tasks.CollectTrainingImagesTask.SourceHelper") as mock_sh,
             patch("apps.tasks_server.tasks.CollectTrainingImagesTask.ModelsApi") as mock_models_cls,
-            patch("apps.tasks_server.tasks.CollectTrainingImagesTask.InferenceApi") as mock_inf_cls,
+            patch("apps.tasks_server.tasks.CollectTrainingImagesTask.InferenceApi", autospec=True) as mock_inf_cls,
             patch("apps.tasks_server.tasks.CollectTrainingImagesTask.ImagesApi") as mock_img_cls,
             patch.dict(os.environ, {"FILES_ROOT": str(tmp_path)}),
         ):
             mock_sh.return_value.get_image_provider.return_value = provider
             mock_models_cls.return_value.pin_model_api_api_models_model_name_pin_post.return_value = pin_resp
-            mock_inf_cls.return_value.inference.return_value = inf_result
+            mock_inf_cls.return_value.detect.return_value = inf_result
             mock_img_cls.return_value.update_image_metadata.return_value = MagicMock()
 
             await task.start()
@@ -1180,13 +1181,13 @@ class TestStopConditions:
         with (
             patch("apps.tasks_server.tasks.CollectTrainingImagesTask.SourceHelper") as mock_sh,
             patch("apps.tasks_server.tasks.CollectTrainingImagesTask.ModelsApi") as mock_models_cls,
-            patch("apps.tasks_server.tasks.CollectTrainingImagesTask.InferenceApi") as mock_inf_cls,
+            patch("apps.tasks_server.tasks.CollectTrainingImagesTask.InferenceApi", autospec=True) as mock_inf_cls,
             patch("apps.tasks_server.tasks.CollectTrainingImagesTask.ImagesApi") as mock_img_cls,
             patch.dict(os.environ, {"FILES_ROOT": str(tmp_path)}),
         ):
             mock_sh.return_value.get_image_provider.return_value = provider
             mock_models_cls.return_value.pin_model_api_api_models_model_name_pin_post.return_value = pin_resp
-            mock_inf_cls.return_value.inference.return_value = inf_result
+            mock_inf_cls.return_value.detect.return_value = inf_result
             mock_img_cls.return_value.update_image_metadata.return_value = MagicMock()
 
             await task.start()
@@ -1232,13 +1233,13 @@ class TestLiveProgress:
         with (
             patch("apps.tasks_server.tasks.CollectTrainingImagesTask.SourceHelper") as mock_sh,
             patch("apps.tasks_server.tasks.CollectTrainingImagesTask.ModelsApi") as mock_models_cls,
-            patch("apps.tasks_server.tasks.CollectTrainingImagesTask.InferenceApi") as mock_inf_cls,
+            patch("apps.tasks_server.tasks.CollectTrainingImagesTask.InferenceApi", autospec=True) as mock_inf_cls,
             patch("apps.tasks_server.tasks.CollectTrainingImagesTask.ImagesApi") as mock_img_cls,
             patch.dict(os.environ, {"FILES_ROOT": str(tmp_path)}),
         ):
             mock_sh.return_value.get_image_provider.return_value = provider
             mock_models_cls.return_value.pin_model_api_api_models_model_name_pin_post.return_value = pin_resp
-            mock_inf_cls.return_value.inference.return_value = inf_result
+            mock_inf_cls.return_value.detect.return_value = inf_result
             mock_img_cls.return_value.update_image_metadata.return_value = MagicMock()
 
             await task.start()
@@ -1270,13 +1271,13 @@ class TestLiveProgress:
         with (
             patch("apps.tasks_server.tasks.CollectTrainingImagesTask.SourceHelper") as mock_sh,
             patch("apps.tasks_server.tasks.CollectTrainingImagesTask.ModelsApi") as mock_models_cls,
-            patch("apps.tasks_server.tasks.CollectTrainingImagesTask.InferenceApi") as mock_inf_cls,
+            patch("apps.tasks_server.tasks.CollectTrainingImagesTask.InferenceApi", autospec=True) as mock_inf_cls,
             patch("apps.tasks_server.tasks.CollectTrainingImagesTask.ImagesApi") as mock_img_cls,
             patch.dict(os.environ, {"FILES_ROOT": str(tmp_path)}),
         ):
             mock_sh.return_value.get_image_provider.return_value = provider
             mock_models_cls.return_value.pin_model_api_api_models_model_name_pin_post.return_value = pin_resp
-            mock_inf_cls.return_value.inference.return_value = inf_result
+            mock_inf_cls.return_value.detect.return_value = inf_result
             mock_img_cls.return_value.update_image_metadata.return_value = MagicMock()
 
             await task.start()
@@ -1324,14 +1325,14 @@ class TestPinRenewal:
         with (
             patch("apps.tasks_server.tasks.CollectTrainingImagesTask.SourceHelper") as mock_sh,
             patch("apps.tasks_server.tasks.CollectTrainingImagesTask.ModelsApi") as mock_models_cls,
-            patch("apps.tasks_server.tasks.CollectTrainingImagesTask.InferenceApi") as mock_inf_cls,
+            patch("apps.tasks_server.tasks.CollectTrainingImagesTask.InferenceApi", autospec=True) as mock_inf_cls,
             patch("apps.tasks_server.tasks.CollectTrainingImagesTask.ImagesApi") as mock_img_cls,
             patch.object(CollectTrainingImagesTask, "_PIN_RENEWAL_INTERVAL_S", 0.05),
             patch.dict(os.environ, {"FILES_ROOT": str(tmp_path)}),
         ):
             mock_sh.return_value.get_image_provider.return_value = provider
             mock_models_cls.return_value.pin_model_api_api_models_model_name_pin_post.side_effect = _pin_resp
-            mock_inf_cls.return_value.inference.return_value = inf_result
+            mock_inf_cls.return_value.detect.return_value = inf_result
             mock_img_cls.return_value.update_image_metadata.return_value = MagicMock()
 
             await task.start()
@@ -1383,7 +1384,7 @@ class TestPinRenewal:
         with (
             patch("apps.tasks_server.tasks.CollectTrainingImagesTask.SourceHelper") as mock_sh,
             patch("apps.tasks_server.tasks.CollectTrainingImagesTask.ModelsApi") as mock_models_cls,
-            patch("apps.tasks_server.tasks.CollectTrainingImagesTask.InferenceApi") as mock_inf_cls,
+            patch("apps.tasks_server.tasks.CollectTrainingImagesTask.InferenceApi", autospec=True) as mock_inf_cls,
             patch("apps.tasks_server.tasks.CollectTrainingImagesTask.ImagesApi") as mock_img_cls,
             patch.object(CollectTrainingImagesTask, "_PIN_RENEWAL_INTERVAL_S", 0.05),
             patch.dict(os.environ, {"FILES_ROOT": str(tmp_path)}),
@@ -1392,7 +1393,7 @@ class TestPinRenewal:
             pin_api = mock_models_cls.return_value.pin_model_api_api_models_model_name_pin_post
             # Initial pin succeeds; every renewal attempt raises.
             pin_api.side_effect = [pin_resp, Exception("boom"), Exception("boom"), Exception("boom")]
-            mock_inf_cls.return_value.inference.return_value = inf_result
+            mock_inf_cls.return_value.detect.return_value = inf_result
             mock_img_cls.return_value.update_image_metadata.return_value = MagicMock()
 
             await task.start()
@@ -1591,8 +1592,8 @@ class TestInferenceMergeParity:
             result.result.detections = per_model.get(name, [])
             return result
 
-        api = MagicMock()
-        api.inference.side_effect = _inference
+        api = MagicMock(spec=InferenceApi)
+        api.detect.side_effect = _inference
         return api
 
     # ── Rule 1: same label, two models — priority wins by identity ────────────
@@ -1786,8 +1787,8 @@ class TestInferenceMergeParity:
             result.result.detections = [high_priority] if name == "model-a" else [low_priority]
             return result
 
-        inference_api = MagicMock()
-        inference_api.inference.side_effect = _inference
+        inference_api = MagicMock(spec=InferenceApi)
+        inference_api.detect.side_effect = _inference
 
         matching = await task._run_inference(inference_api, "b64", {"model-a": None, "model-b": None})
 
@@ -1920,8 +1921,8 @@ class TestMergePolicyLastWins:
             result.result.detections = [high_priority] if name == "model-a" else [low_priority]
             return result
 
-        inference_api = MagicMock()
-        inference_api.inference.side_effect = _inference
+        inference_api = MagicMock(spec=InferenceApi)
+        inference_api.detect.side_effect = _inference
 
         matching = await task._run_inference(inference_api, "b64", {"model-a": None, "model-b": None})
 
@@ -2405,8 +2406,8 @@ class TestConfidenceBandScalarBackCompat:
         await task._init(params, resume_data=None)
 
         at_floor = _detection_at(0.0, 0.0, 0.2, 0.2, confidence=0.5)
-        inference_api = MagicMock()
-        inference_api.inference.return_value.result.detections = [at_floor]
+        inference_api = MagicMock(spec=InferenceApi)
+        inference_api.detect.return_value.result.detections = [at_floor]
         matching = await task._run_inference(inference_api, "b64", {_MODEL_NAME: None})
         assert matching == [at_floor]
 
@@ -2416,8 +2417,8 @@ class TestConfidenceBandScalarBackCompat:
         await task._init(params, resume_data=None)
 
         below_floor = _detection_at(0.0, 0.0, 0.2, 0.2, confidence=0.49)
-        inference_api = MagicMock()
-        inference_api.inference.return_value.result.detections = [below_floor]
+        inference_api = MagicMock(spec=InferenceApi)
+        inference_api.detect.return_value.result.detections = [below_floor]
         matching = await task._run_inference(inference_api, "b64", {_MODEL_NAME: None})
         assert matching == []
 
@@ -2429,8 +2430,8 @@ class TestConfidenceBandScalarBackCompat:
         await task._init(params, resume_data=None)
 
         very_confident = _detection_at(0.0, 0.0, 0.2, 0.2, confidence=0.999)
-        inference_api = MagicMock()
-        inference_api.inference.return_value.result.detections = [very_confident]
+        inference_api = MagicMock(spec=InferenceApi)
+        inference_api.detect.return_value.result.detections = [very_confident]
         matching = await task._run_inference(inference_api, "b64", {_MODEL_NAME: None})
         assert matching == [very_confident]
 
@@ -2484,8 +2485,8 @@ class TestConfidenceBandPostMergeOrdering:
             result.result.detections = [out_of_band_priority] if name == "model-a" else [in_band_duplicate]
             return result
 
-        inference_api = MagicMock()
-        inference_api.inference.side_effect = _inference
+        inference_api = MagicMock(spec=InferenceApi)
+        inference_api.detect.side_effect = _inference
 
         matching = await task._run_inference(inference_api, "b64", {"model-a": None, "model-b": None})
 
@@ -2509,8 +2510,8 @@ class TestConfidenceBandPostMergeOrdering:
             result.result.detections = [in_band_priority] if name == "model-a" else [also_in_band_duplicate]
             return result
 
-        inference_api = MagicMock()
-        inference_api.inference.side_effect = _inference
+        inference_api = MagicMock(spec=InferenceApi)
+        inference_api.detect.side_effect = _inference
 
         matching = await task._run_inference(inference_api, "b64", {"model-a": None, "model-b": None})
 
@@ -2553,8 +2554,8 @@ class TestConfidenceBandTriggerVsAnnotation:
         in_band_det = _detection_at(0.0, 0.0, 0.2, 0.2, label_uuid=self._LABEL_IN_BAND, confidence=0.7)
         out_of_band_det = _detection_at(0.7, 0.7, 0.2, 0.2, label_uuid=self._LABEL_OUT_OF_BAND, confidence=0.6)
 
-        inference_api = MagicMock()
-        inference_api.inference.return_value.result.detections = [in_band_det, out_of_band_det]
+        inference_api = MagicMock(spec=InferenceApi)
+        inference_api.detect.return_value.result.detections = [in_band_det, out_of_band_det]
 
         matching = await task._run_inference(inference_api, "b64", {_MODEL_NAME: None})
 
@@ -2569,8 +2570,8 @@ class TestConfidenceBandTriggerVsAnnotation:
 
         only_out_of_band = _detection_at(0.7, 0.7, 0.2, 0.2, label_uuid=self._LABEL_OUT_OF_BAND, confidence=0.6)
 
-        inference_api = MagicMock()
-        inference_api.inference.return_value.result.detections = [only_out_of_band]
+        inference_api = MagicMock(spec=InferenceApi)
+        inference_api.detect.return_value.result.detections = [only_out_of_band]
 
         matching = await task._run_inference(inference_api, "b64", {_MODEL_NAME: None})
         assert matching == []
@@ -2593,8 +2594,8 @@ class TestConfidenceBandBoundaryInclusivity:
 
     async def _run(self, task, confidence: float):
         det = _detection_at(0.0, 0.0, 0.2, 0.2, confidence=confidence)
-        inference_api = MagicMock()
-        inference_api.inference.return_value.result.detections = [det]
+        inference_api = MagicMock(spec=InferenceApi)
+        inference_api.detect.return_value.result.detections = [det]
         matching = await task._run_inference(inference_api, "b64", {_MODEL_NAME: None})
         return matching, det
 
