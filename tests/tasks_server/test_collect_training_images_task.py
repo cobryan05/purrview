@@ -36,6 +36,8 @@ from apps.tasks_server.tasks._detection_merger import MergePolicy
 from apps.tasks_server.tasks.CollectTrainingImagesTask import (
     SAME_BBOX_IOU_THRESHOLD,
     CollectTrainingImagesTask,
+    ConfidenceBand,
+    _parse_confidence_band,
 )
 from apps.tasks_server.tasks.utils.imageHelper import ImageHelper
 from apps.tasks_server.tasks.utils.labelHelper import (
@@ -2302,3 +2304,316 @@ class TestBuildLabelMetadataMap:
         labels_api = self._labels_api([])
         meta = await build_label_metadata_map(labels_api)
         assert meta == {}
+
+
+# ─── Phase 5B: confidence bands (LIVE_COLLECTION_PLAN.md) ─────────────────────
+#
+# Wire format: model_label_config[i].labelValues[labelUuid] is either the legacy
+# scalar floor (`0.25`, every already-saved task config) or a `{min, max}` band
+# dict. Both bounds are INCLUSIVE: `min <= confidence <= max` is "in band".
+#
+# The band is applied AFTER the cross-model merge, never before — filtering
+# per-detection inside _run_model (pre-merge) would let a merge-worthy
+# suppression never happen, because the detection that should have done the
+# suppressing (e.g. a higher-priority model's box that happens to be outside
+# the band) would already be gone by the time merge runs. See
+# TestConfidenceBandPostMergeOrdering below for the airtight regression test.
+#
+# TRIGGER vs ANNOTATION: a trigger predicate (any merged detection in-band)
+# decides whether the frame is saved at all; the annotation set (what actually
+# gets written) is NOT filtered by band — it's every merged detection,
+# in-band or not, once the trigger fires. See TestConfidenceBandTriggerVsAnnotation.
+
+
+class TestParseConfidenceBand:
+    """Unit tests for _parse_confidence_band, the wire-format parser that
+    accepts both the legacy scalar and the new {min, max} dict."""
+
+    def test_scalar_becomes_floor_with_max_one(self):
+        band = _parse_confidence_band(0.25)
+        assert band == ConfidenceBand(min_confidence=0.25, max_confidence=1.0)
+
+    def test_int_scalar_is_accepted(self):
+        band = _parse_confidence_band(1)
+        assert band == ConfidenceBand(min_confidence=1.0, max_confidence=1.0)
+
+    def test_zero_scalar_means_disabled(self):
+        """Matches the pre-Phase-5B convention: the UI writes 0 to mean 'not
+        collecting this label' — _init has always skipped these entries."""
+        assert _parse_confidence_band(0) is None
+        assert _parse_confidence_band(0.0) is None
+
+    def test_negative_scalar_means_disabled(self):
+        assert _parse_confidence_band(-0.1) is None
+
+    def test_band_dict_parsed_directly(self):
+        band = _parse_confidence_band({"min": 0.2, "max": 0.6})
+        assert band == ConfidenceBand(min_confidence=0.2, max_confidence=0.6)
+
+    def test_band_dict_missing_max_defaults_to_one(self):
+        band = _parse_confidence_band({"min": 0.3})
+        assert band == ConfidenceBand(min_confidence=0.3, max_confidence=1.0)
+
+    def test_band_dict_zero_min_means_disabled(self):
+        assert _parse_confidence_band({"min": 0.0, "max": 0.6}) is None
+
+    def test_unparsable_scalar_is_disabled_not_a_crash(self):
+        assert _parse_confidence_band("not-a-number") is None
+        assert _parse_confidence_band(None) is None
+
+    def test_inverted_band_clamped_to_single_point(self):
+        """_init params are unvalidated raw JSON (CLAUDE.md) — a malformed/
+        inverted band must degrade safely rather than raise or silently match
+        nothing/everything."""
+        band = _parse_confidence_band({"min": 0.6, "max": 0.2})
+        assert band == ConfidenceBand(min_confidence=0.6, max_confidence=0.6)
+
+    def test_out_of_range_bounds_are_clamped_to_zero_one(self):
+        band = _parse_confidence_band({"min": 0.3, "max": 5.0})
+        assert band == ConfidenceBand(min_confidence=0.3, max_confidence=1.0)
+
+
+class TestConfidenceBandContains:
+    def test_inclusive_at_min_and_max(self):
+        band = ConfidenceBand(min_confidence=0.2, max_confidence=0.6)
+        assert band.contains(0.2) is True
+        assert band.contains(0.6) is True
+        assert band.contains(0.4) is True
+
+    def test_exclusive_just_outside_bounds(self):
+        band = ConfidenceBand(min_confidence=0.2, max_confidence=0.6)
+        assert band.contains(0.2 - 1e-9) is False
+        assert band.contains(0.6 + 1e-9) is False
+
+
+class TestConfidenceBandScalarBackCompat:
+    """A task config saved before Phase 5B uses a bare scalar for every
+    labelValues entry. _init must keep parsing that exactly as a floor with no
+    ceiling — this protects every already-saved config."""
+
+    async def test_init_parses_scalar_into_floor_band(self):
+        params = {**_PARAMS, "model_label_config": [{"modelName": _MODEL_NAME, "labelValues": {_LABEL_UUID: 0.25}}]}
+        task = _make_task(params=params)
+        await task._init(params, resume_data=None)
+        assert task._target_label_bands[_LABEL_UUID] == ConfidenceBand(min_confidence=0.25, max_confidence=1.0)
+
+    async def test_scalar_config_triggers_and_annotates_exactly_like_a_floor(self):
+        """A detection at/above the scalar floor triggers a save; one below it
+        does not — matching pre-Phase-5B `det.confidence >= threshold` semantics."""
+        params = {**_PARAMS, "model_label_config": [{"modelName": _MODEL_NAME, "labelValues": {_LABEL_UUID: 0.5}}]}
+        task = _make_task(params=params)
+        await task._init(params, resume_data=None)
+
+        at_floor = _detection_at(0.0, 0.0, 0.2, 0.2, confidence=0.5)
+        inference_api = MagicMock()
+        inference_api.inference.return_value.result.detections = [at_floor]
+        matching = await task._run_inference(inference_api, "b64", {_MODEL_NAME: None})
+        assert matching == [at_floor]
+
+    async def test_scalar_config_below_floor_does_not_trigger(self):
+        params = {**_PARAMS, "model_label_config": [{"modelName": _MODEL_NAME, "labelValues": {_LABEL_UUID: 0.5}}]}
+        task = _make_task(params=params)
+        await task._init(params, resume_data=None)
+
+        below_floor = _detection_at(0.0, 0.0, 0.2, 0.2, confidence=0.49)
+        inference_api = MagicMock()
+        inference_api.inference.return_value.result.detections = [below_floor]
+        matching = await task._run_inference(inference_api, "b64", {_MODEL_NAME: None})
+        assert matching == []
+
+    async def test_scalar_config_has_no_ceiling_very_high_confidence_still_triggers(self):
+        """Pre-Phase-5B behaviour: a scalar floor never rejects a detection for
+        being TOO confident — only a real {min, max} band can have a ceiling."""
+        params = {**_PARAMS, "model_label_config": [{"modelName": _MODEL_NAME, "labelValues": {_LABEL_UUID: 0.1}}]}
+        task = _make_task(params=params)
+        await task._init(params, resume_data=None)
+
+        very_confident = _detection_at(0.0, 0.0, 0.2, 0.2, confidence=0.999)
+        inference_api = MagicMock()
+        inference_api.inference.return_value.result.detections = [very_confident]
+        matching = await task._run_inference(inference_api, "b64", {_MODEL_NAME: None})
+        assert matching == [very_confident]
+
+
+class TestConfidenceBandPostMergeOrdering:
+    """The whole point of Phase 5B: the band must be applied AFTER the
+    cross-model merge, never before.
+
+    Scenario: model-a (higher priority) detects the object at 0.9 confidence,
+    which is OUTSIDE its label's band (max=0.6) — a plausible real case: a
+    band is often used to target a "needs review" confidence range, not raw
+    detector certainty. model-b (lower priority) detects the SAME physical
+    object (overlapping bbox, same label) at 0.4 confidence, which IS inside
+    the band.
+
+    Correct (post-merge) order: merge runs first and is band-agnostic — it
+    only knows about label/IoU/priority — so model-a's higher-priority
+    detection wins the same-label collision and model-b's is dropped as a
+    duplicate of the same object. The band check then runs against the single
+    surviving (0.9, out-of-band) detection, which does not trigger a save.
+
+    A regression to filtering-first would instead drop model-a's detection
+    before merge ever runs (0.9 is out-of-band), leaving model-b's 0.4 to
+    reach merge alone with nothing to suppress it — surviving, in-band, and
+    triggering a save with the LOW-confidence duplicate. That is exactly the
+    bug the plan describes: "a high-confidence detection no longer suppresses
+    an overlapping low-confidence one, so the task would collect low-confidence
+    boxes for objects another model is certain about."
+    """
+
+    async def _task_with_band(self, band: dict):
+        params = {
+            **_PARAMS,
+            "model_label_config": [
+                {"modelName": "model-a", "labelValues": {_LABEL_UUID: band}},
+                {"modelName": "model-b", "labelValues": {_LABEL_UUID: band}},
+            ],
+        }
+        task = _make_task(params=params)
+        await task._init(params, resume_data=None)
+        return task
+
+    async def test_high_priority_out_of_band_detection_suppresses_low_priority_in_band_duplicate(self):
+        task = await self._task_with_band({"min": 0.2, "max": 0.6})
+
+        out_of_band_priority = _detection_at(0.0, 0.0, 0.5, 0.5, confidence=0.9)  # model-a, wins merge
+        in_band_duplicate = _detection_at(0.01, 0.01, 0.5, 0.5, confidence=0.4)  # model-b, same object
+
+        def _inference(name, payload):
+            result = MagicMock()
+            result.result.detections = [out_of_band_priority] if name == "model-a" else [in_band_duplicate]
+            return result
+
+        inference_api = MagicMock()
+        inference_api.inference.side_effect = _inference
+
+        matching = await task._run_inference(inference_api, "b64", {"model-a": None, "model-b": None})
+
+        # If band filtering had run BEFORE merge, model-a's 0.9 would already be
+        # gone and model-b's 0.4 would survive alone -> matching == [in_band_duplicate].
+        # Post-merge, model-a wins the same-label collision and the lone
+        # survivor (0.9) is out of band -> nothing triggers a save.
+        assert matching == []
+
+    async def test_merge_still_wins_by_priority_when_survivor_is_in_band(self):
+        """Companion case: same setup, but the higher-priority detection's
+        confidence IS inside the band -> it survives merge AND triggers, and
+        the lower-priority duplicate is correctly dropped (never double-saved)."""
+        task = await self._task_with_band({"min": 0.2, "max": 0.6})
+
+        in_band_priority = _detection_at(0.0, 0.0, 0.5, 0.5, confidence=0.5)  # model-a
+        also_in_band_duplicate = _detection_at(0.01, 0.01, 0.5, 0.5, confidence=0.3)  # model-b, same object
+
+        def _inference(name, payload):
+            result = MagicMock()
+            result.result.detections = [in_band_priority] if name == "model-a" else [also_in_band_duplicate]
+            return result
+
+        inference_api = MagicMock()
+        inference_api.inference.side_effect = _inference
+
+        matching = await task._run_inference(inference_api, "b64", {"model-a": None, "model-b": None})
+
+        assert matching == [in_band_priority]
+
+
+class TestConfidenceBandTriggerVsAnnotation:
+    """A trigger predicate (any merged detection in-band) decides whether the
+    frame is saved; the annotation set (what's written) is NOT filtered by
+    band — it's every merged detection, in-band or not, once the trigger
+    fires. Otherwise a frame could be saved with a known true positive (the
+    out-of-band box) left unlabeled."""
+
+    _LABEL_IN_BAND = _LABEL_UUID
+    _LABEL_OUT_OF_BAND = "label-out-of-band"
+
+    async def _task(self):
+        params = {
+            **_PARAMS,
+            "model_label_config": [
+                {
+                    "modelName": _MODEL_NAME,
+                    "labelValues": {
+                        self._LABEL_IN_BAND: {"min": 0.5, "max": 1.0},
+                        self._LABEL_OUT_OF_BAND: {"min": 0.9, "max": 1.0},
+                    },
+                }
+            ],
+        }
+        task = _make_task(params=params)
+        await task._init(params, resume_data=None)
+        return task
+
+    async def test_frame_with_one_in_band_and_one_out_of_band_box_is_saved_with_both_annotated(self):
+        task = await self._task()
+
+        # Non-overlapping boxes with different (unrelated) labels: merge keeps
+        # both untouched, so this isolates the trigger/annotation split from
+        # the merge step entirely.
+        in_band_det = _detection_at(0.0, 0.0, 0.2, 0.2, label_uuid=self._LABEL_IN_BAND, confidence=0.7)
+        out_of_band_det = _detection_at(0.7, 0.7, 0.2, 0.2, label_uuid=self._LABEL_OUT_OF_BAND, confidence=0.6)
+
+        inference_api = MagicMock()
+        inference_api.inference.return_value.result.detections = [in_band_det, out_of_band_det]
+
+        matching = await task._run_inference(inference_api, "b64", {_MODEL_NAME: None})
+
+        # Trigger fired (in_band_det is in band) -> frame saved. Annotation set
+        # is unfiltered -> the out-of-band box is written too, not dropped.
+        assert len(matching) == 2
+        assert in_band_det in matching
+        assert out_of_band_det in matching
+
+    async def test_frame_with_no_in_band_detection_is_not_saved(self):
+        task = await self._task()
+
+        only_out_of_band = _detection_at(0.7, 0.7, 0.2, 0.2, label_uuid=self._LABEL_OUT_OF_BAND, confidence=0.6)
+
+        inference_api = MagicMock()
+        inference_api.inference.return_value.result.detections = [only_out_of_band]
+
+        matching = await task._run_inference(inference_api, "b64", {_MODEL_NAME: None})
+        assert matching == []
+
+
+class TestConfidenceBandBoundaryInclusivity:
+    """Pinned convention: both the min and max bounds of a confidence band are
+    INCLUSIVE — `min <= confidence <= max` triggers a save."""
+
+    async def _task_with_band(self, min_c: float, max_c: float):
+        params = {
+            **_PARAMS,
+            "model_label_config": [
+                {"modelName": _MODEL_NAME, "labelValues": {_LABEL_UUID: {"min": min_c, "max": max_c}}}
+            ],
+        }
+        task = _make_task(params=params)
+        await task._init(params, resume_data=None)
+        return task
+
+    async def _run(self, task, confidence: float):
+        det = _detection_at(0.0, 0.0, 0.2, 0.2, confidence=confidence)
+        inference_api = MagicMock()
+        inference_api.inference.return_value.result.detections = [det]
+        matching = await task._run_inference(inference_api, "b64", {_MODEL_NAME: None})
+        return matching, det
+
+    async def test_confidence_exactly_at_min_triggers(self):
+        task = await self._task_with_band(0.2, 0.8)
+        matching, det = await self._run(task, 0.2)
+        assert matching == [det]
+
+    async def test_confidence_exactly_at_max_triggers(self):
+        task = await self._task_with_band(0.2, 0.8)
+        matching, det = await self._run(task, 0.8)
+        assert matching == [det]
+
+    async def test_confidence_just_below_min_does_not_trigger(self):
+        task = await self._task_with_band(0.2, 0.8)
+        matching, _det = await self._run(task, 0.2 - 1e-6)
+        assert matching == []
+
+    async def test_confidence_just_above_max_does_not_trigger(self):
+        task = await self._task_with_band(0.2, 0.8)
+        matching, _det = await self._run(task, 0.8 + 1e-6)
+        assert matching == []

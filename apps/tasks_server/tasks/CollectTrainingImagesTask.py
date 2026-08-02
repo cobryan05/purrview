@@ -74,9 +74,70 @@ SAME_BBOX_IOU_THRESHOLD = 0.65
 
 
 @dataclass
+class ConfidenceBand:
+    """A `[min, max]` confidence range for a target label (Phase 5B of
+    LIVE_COLLECTION_PLAN.md). Both bounds are INCLUSIVE:
+    `min_confidence <= confidence <= max_confidence` is "in band".
+
+    The wire format's bare scalar (`labelValues: {labelUuid: 0.25}`, every
+    already-saved task config) means `{min: 0.25, max: 1.0}` — today's
+    floor-only behaviour, unchanged. See `_parse_confidence_band`.
+    """
+
+    min_confidence: float
+    max_confidence: float = 1.0
+
+    def contains(self, confidence: float) -> bool:
+        return self.min_confidence <= confidence <= self.max_confidence
+
+
+@dataclass
 class TargetLabel:
     label_uuid: str
-    min_confidence: float
+    band: ConfidenceBand
+
+
+def _parse_confidence_band(raw: Any) -> Optional[ConfidenceBand]:
+    """Parses one `labelValues` entry into a `ConfidenceBand`.
+
+    `_init` params are unvalidated raw JSON (CLAUDE.md) — this must not raise
+    on garbage input. Accepts either:
+      - the legacy scalar floor, e.g. `0.25`               -> {min: 0.25, max: 1.0}
+      - the Phase 5B band dict, e.g. `{"min": 0.2, "max": 0.6}`
+
+    Returns None (label disabled — matches the pre-Phase-5B "skip
+    zero-confidence" convention, where the UI writes 0 to mean "not
+    collecting this label") when the parsed floor is <= 0 or the value can't
+    be parsed as a number at all.
+    """
+    if isinstance(raw, dict):
+        try:
+            min_f = float(raw.get("min", 0.0))
+        except (TypeError, ValueError):
+            return None
+        try:
+            max_f = float(raw.get("max", 1.0))
+        except (TypeError, ValueError):
+            max_f = 1.0
+    else:
+        try:
+            min_f = float(raw)
+        except (TypeError, ValueError):
+            return None
+        max_f = 1.0
+
+    if min_f <= 0:
+        return None
+
+    # Defensive clamps: keep both bounds in [0, 1] and max >= min, so a
+    # malformed/inverted band (e.g. {"min": 0.6, "max": 0.2}) degrades to a
+    # single-point band rather than silently never matching or matching
+    # everything.
+    min_f = max(0.0, min(1.0, min_f))
+    max_f = max(0.0, min(1.0, max_f))
+    if max_f < min_f:
+        max_f = min_f
+    return ConfidenceBand(min_confidence=min_f, max_confidence=max_f)
 
 
 @register_task()
@@ -136,21 +197,36 @@ class CollectTrainingImagesTask(Task):
                 f"Invalid output_dir {self._output_dir!r}: must be a relative path within the dataset root"
             )
 
-        # model_label_config: [{modelName, labelValues: {labelUuid: confidence}}]
+        # model_label_config: [{modelName, labelValues: {labelUuid: confidence | {min, max}}}]
+        # (Phase 5B: labelValues entries are either the legacy scalar floor or a
+        # {min, max} confidence band — see _parse_confidence_band.)
         model_label_config: list[dict] = params.get("model_label_config", [])
         # Preserve config order: it doubles as model priority — earlier-configured
         # models win when two models produce overlapping (same-bbox) detections.
         ordered_model_names: list[str] = []
-        # Flatten to label_uuid → min_confidence; skip zero-confidence (disabled in UI)
-        label_conf: dict[str, float] = {}
+        # Flatten to label_uuid → ConfidenceBand; skip disabled (parsed as None,
+        # e.g. zero-confidence, matching the pre-band "disabled in UI" convention).
+        label_bands: dict[str, ConfidenceBand] = {}
         for item in model_label_config:
             name = item.get("modelName")
             if name and name not in ordered_model_names:
                 ordered_model_names.append(name)
-            for label_uuid, conf in item.get("labelValues", {}).items():
-                conf_f = float(conf)
-                if conf_f > 0:
-                    label_conf[label_uuid] = min(label_conf.get(label_uuid, 1.0), conf_f)
+            for label_uuid, raw_band in item.get("labelValues", {}).items():
+                band = _parse_confidence_band(raw_band)
+                if band is None:
+                    continue
+                existing = label_bands.get(label_uuid)
+                if existing is not None:
+                    # Two model configs target the same label: widen to the union
+                    # (loosest min, loosest max) so a detection in-band for either
+                    # config's range still counts. For the all-scalar case (max
+                    # always 1.0) this reduces to the pre-Phase-5B behaviour of
+                    # taking the min of the two floors.
+                    band = ConfidenceBand(
+                        min_confidence=min(existing.min_confidence, band.min_confidence),
+                        max_confidence=max(existing.max_confidence, band.max_confidence),
+                    )
+                label_bands[label_uuid] = band
         self._model_names: list[str] = ordered_model_names
         self._overlap_iou_threshold: float = float(params.get("overlap_iou_threshold", SAME_BBOX_IOU_THRESHOLD))
         # Cross-model merge policy for same-label collisions (Phase 5A). Default preserves
@@ -161,11 +237,14 @@ class CollectTrainingImagesTask(Task):
         except ValueError:
             self._merge_policy = MergePolicy.FIRST_WINS
 
-        self._target_labels: list[TargetLabel] = [
-            TargetLabel(label_uuid=u, min_confidence=c) for u, c in label_conf.items()
-        ]
-        self._target_label_map: dict[str, float] = {t.label_uuid: t.min_confidence for t in self._target_labels}
-        self._min_all_conf: float = min((t.min_confidence for t in self._target_labels), default=0.5)
+        self._target_labels: list[TargetLabel] = [TargetLabel(label_uuid=u, band=b) for u, b in label_bands.items()]
+        self._target_label_bands: dict[str, ConfidenceBand] = {t.label_uuid: t.band for t in self._target_labels}
+        # Network-level floor sent as the inference call's conf_thresh — the loosest
+        # (lowest) min across all configured bands, so no in-band detection for ANY
+        # target label is ever filtered out before it even reaches this task. This is
+        # a coarse pre-merge floor only, never a substitute for the per-label band
+        # check, which happens post-merge (see _run_inference / _frame_triggers_save).
+        self._min_all_conf: float = min((b.min_confidence for b in self._target_label_bands.values()), default=0.5)
 
         # Intervals for rate-limited provider types
         self._snapshot_interval: float = float(params.get("snapshot_interval", 15))
@@ -1039,12 +1118,19 @@ class CollectTrainingImagesTask(Task):
                         len(result.result.detections or []),
                     )
                     # PERF END
+                    # Only restrict to target labels here — NOT to each label's
+                    # confidence band. Band filtering must happen AFTER the
+                    # cross-model merge (see _run_inference): filtering first
+                    # would mean a high-confidence detection from one model no
+                    # longer suppresses an overlapping low-confidence/out-of-band
+                    # detection of the same object from another model, since the
+                    # merge would never even see the suppressed one (Phase 5B,
+                    # LIVE_COLLECTION_PLAN.md).
                     dets = []
                     for det in result.result.detections or []:
                         luuid = det.bbox.label_uuid
-                        if luuid and luuid in self._target_label_map:
-                            if det.confidence >= self._target_label_map[luuid]:
-                                dets.append(det)
+                        if luuid and luuid in self._target_label_bands:
+                            dets.append(det)
                     return dets
                 except asyncio.TimeoutError:
                     if _attempt < self._MAX_RETRIES - 1:
@@ -1085,12 +1171,37 @@ class CollectTrainingImagesTask(Task):
             results_per_model.append(r if isinstance(r, list) else [])
 
         # Flatten in priority order then apply cross-model hierarchy-aware IoU dedup.
-        return merge_detections_by_iou_and_hierarchy(
+        # This MUST happen before any confidence-band filtering — see the comment
+        # in _run_model above and _frame_triggers_save below.
+        deduped = merge_detections_by_iou_and_hierarchy(
             results_per_model,
             label_ancestry=self._label_ancestry,
             overlap_iou_threshold=self._overlap_iou_threshold,
             policy=self._merge_policy,
         )
+
+        # Phase 5B trigger/annotation split (LIVE_COLLECTION_PLAN.md): the TRIGGER
+        # decides whether this frame is saved at all — true if ANY merged detection
+        # falls inside its label's confidence band. The ANNOTATION set (what gets
+        # written) is deliberately NOT filtered by band: it's every merged
+        # detection, in-band or not, so a saved frame is never missing a bbox for
+        # an object another model is confident is there. If the trigger doesn't
+        # fire, nothing is saved and `matching` is empty — same "no match" contract
+        # the caller already understands.
+        if not self._frame_triggers_save(deduped):
+            return []
+        return deduped
+
+    def _frame_triggers_save(self, detections: list) -> bool:
+        """True if any (post-merge) detection lands inside its label's confidence
+        band — both bounds inclusive (`min <= confidence <= max`). Only this
+        decides whether the frame is saved; it does not filter which boxes are
+        written (see _run_inference)."""
+        for det in detections:
+            band = self._target_label_bands.get(det.bbox.label_uuid)
+            if band is not None and band.contains(det.confidence):
+                return True
+        return False
 
     async def _apply_filter_chain_to_frame(
         self, provided: ImageWithProviderMetadata, base64_img: str, matching: list
