@@ -252,3 +252,117 @@ class TestEditingBandWritesToConfig:
         payload = create_calls[0]
         band = payload["params"]["model_label_config"]["labelValues"][CAT_UUID]
         assert band == {"min": 0.4, "max": 0.8}, f"Unexpected band payload: {band}"
+
+
+class TestBandNormalizationMatchesBackend:
+    """`normalizeBand()` must agree with the backend's `_parse_confidence_band`
+    for every value either side can produce, or the config the user sees drifts
+    from the band the collect task actually enforces (LIVE_COLLECTION_PLAN.md
+    Phase 5C explicitly wants the two readings not to drift apart).
+
+    The two divergences these cover both collapse a band to a single point that
+    matches essentially no real detection, silently halting collection for that
+    label.
+    """
+
+    def _edit_and_save(self, page: Page, base_url: str, saved_band, min_fill: str, max_fill: str) -> dict:
+        update_calls: list[dict] = []
+
+        def handle_update(route: Route):
+            update_calls.append(json.loads(route.request.post_data))
+            route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps({"status": "success"}),
+            )
+
+        _mock_apis(page, configs={FAKE_CONFIG_UUID: _config({CAT_UUID: saved_band})})
+        page.route("**/api/tasks/configs/update", handle_update)
+
+        _navigate_to_tasks(page, base_url)
+        page.wait_for_selector("#task-config-list button[title='Edit']", timeout=5000)
+        page.locator("#task-config-list button[title='Edit']").first.click()
+        page.wait_for_selector("#task-config-list input[type='number']", timeout=5000)
+
+        number_inputs = page.locator("#task-config-list input[type='number']")
+        expect(number_inputs).to_have_count(2)
+        number_inputs.nth(0).fill(min_fill)
+        number_inputs.nth(1).fill(max_fill)
+
+        page.locator("#task-config-list button[title='Save']").first.click()
+        page.wait_for_timeout(600)
+
+        assert update_calls, "Expected POST to /api/tasks/configs/update"
+        return update_calls[0]["params"]["model_label_config"]["labelValues"][CAT_UUID]
+
+    def test_blank_max_saves_as_unbounded_one(self, page: Page, base_url: str):
+        """Clearing the max input means 'no upper cap' and must save as 1.0.
+
+        `Number('')` is 0 — finite — so a naive `Number.isFinite(max) ? max : 1`
+        guard never fires and writes `max: 0`. The backend then clamps
+        `max < min` up to `min`, collapsing the band to [0.3, 0.3]. Python's own
+        reading of an unparseable max is the opposite (1.0).
+        """
+        band = self._edit_and_save(page, base_url, 0.2, min_fill="0.3", max_fill="")
+        assert band == {"min": 0.3, "max": 1}, (
+            f"Blank max should mean unbounded (1.0), got {band} (Number('') === 0 slipping past the isFinite guard)"
+        )
+
+    def test_blank_min_saves_as_zero_disabled(self, page: Page, base_url: str):
+        """Clearing min yields 0 — the backend's 'label disabled' convention,
+        and what `_parse_confidence_band` returns for an unparseable min."""
+        band = self._edit_and_save(page, base_url, 0.2, min_fill="", max_fill="0.8")
+        assert band == {"min": 0, "max": 0.8}, f"Blank min should save as 0, got {band}"
+
+    def test_inverted_band_is_normalized_on_save(self, page: Page, base_url: str):
+        """An inverted band must be corrected client-side the same way the
+        backend corrects it (`max = min`), so the saved value and the displayed
+        value both match what is enforced."""
+        band = self._edit_and_save(page, base_url, 0.2, min_fill="0.9", max_fill="0.1")
+        assert band == {"min": 0.9, "max": 0.9}, (
+            f"Inverted band should collapse to max=min like the backend does, got {band}"
+        )
+
+    def test_out_of_range_band_is_clamped_on_save(self, page: Page, base_url: str):
+        """Values outside [0, 1] are clamped, mirroring the backend's clamps.
+        HTML min/max attributes don't prevent a typed out-of-range value from
+        reaching getValue()."""
+        band = self._edit_and_save(page, base_url, 0.2, min_fill="5", max_fill="9")
+        assert band == {"min": 1, "max": 1}, f"Out-of-range band should clamp into [0, 1], got {band}"
+
+    def test_saved_inverted_band_displays_as_backend_reads_it(self, page: Page, base_url: str):
+        """Load side: an already-saved inverted band renders as the backend
+        reads it, instead of the UI showing 0.9/0.1 forever while the task
+        enforces [0.9, 0.9]."""
+        _mock_apis(page, configs={FAKE_CONFIG_UUID: _config({CAT_UUID: {"min": 0.9, "max": 0.1}})})
+        _navigate_to_tasks(page, base_url)
+
+        page.wait_for_selector("#task-config-list button[title='Edit']", timeout=5000)
+        page.locator("#task-config-list button[title='Edit']").first.click()
+        page.wait_for_selector("#task-config-list input[type='number']", timeout=5000)
+
+        number_inputs = page.locator("#task-config-list input[type='number']")
+        expect(number_inputs).to_have_count(2)
+        assert number_inputs.nth(0).input_value() == "0.9"
+        assert number_inputs.nth(1).input_value() == "0.9", (
+            f"Expected inverted max to display as 0.9, got {number_inputs.nth(1).input_value()!r}"
+        )
+
+    def test_saved_null_max_displays_as_one(self, page: Page, base_url: str):
+        """A hand-edited or legacy config with `max: null` must load as 1.0 —
+        `float(None)` raises in Python and falls back to 1.0, but
+        `Number(null)` is 0."""
+        _mock_apis(page, configs={FAKE_CONFIG_UUID: _config({CAT_UUID: {"min": 0.3, "max": None}})})
+        _navigate_to_tasks(page, base_url)
+
+        page.wait_for_selector("#task-config-list button[title='Edit']", timeout=5000)
+        page.locator("#task-config-list button[title='Edit']").first.click()
+        page.wait_for_selector("#task-config-list input[type='number']", timeout=5000)
+
+        number_inputs = page.locator("#task-config-list input[type='number']")
+        expect(number_inputs).to_have_count(2)
+        assert number_inputs.nth(0).input_value() == "0.3"
+        assert number_inputs.nth(1).input_value() == "1", (
+            f"Expected null max to load as 1.0, got {number_inputs.nth(1).input_value()!r} "
+            "(Number(null) === 0)"
+        )

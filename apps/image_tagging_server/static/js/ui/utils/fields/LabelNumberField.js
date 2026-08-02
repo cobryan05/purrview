@@ -2,29 +2,47 @@ import { TextField } from './TextField.js';
 import { Field } from './Field.js';
 
 /**
+ * Coerces one bound to a number, falling back when it is absent or unparseable.
+ *
+ * `Number()` alone is not enough: `Number(null)`, `Number('')` and
+ * `Number(false)` are all `0` — finite, so an `isFinite` guard never fires and
+ * the fallback is silently skipped. Python's `float()` raises on all three, so
+ * the backend takes its own fallback. Blanking the max input has to mean
+ * "unbounded", not "max = 0".
+ */
+function coerceBound(value, fallback) {
+  if (value === null || value === undefined || value === '') return fallback;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+/**
  * Normalizes an incoming value into a `{min, max}` confidence band.
  *
  * Accepts either a legacy bare scalar confidence floor (e.g. `0.25`) or an
  * already-banded `{min, max}` object. Mirrors the backend's
- * `_parse_confidence_band` convention (CollectTrainingImagesTask.py): a bare
- * scalar loads as `{min: scalar, max: 1.0}`. Handles null/undefined/garbage
- * without throwing.
+ * `_parse_confidence_band` convention (CollectTrainingImagesTask.py) exactly —
+ * a bare scalar loads as `{min: scalar, max: 1.0}`, bounds are clamped into
+ * [0, 1], and an inverted band collapses to `max = min` rather than being
+ * swapped. Any divergence here means the band the user sees is not the band the
+ * collect task enforces. Handles null/undefined/garbage without throwing.
  */
 function normalizeBand(value) {
+  let min;
+  let max;
   if (value != null && typeof value === 'object') {
-    const min = Number(value.min);
-    const max = Number(value.max);
-    return {
-      min: Number.isFinite(min) ? min : 0,
-      max: Number.isFinite(max) ? max : 1,
-    };
+    min = coerceBound(value.min, 0);
+    max = coerceBound(value.max, 1);
+  } else {
+    min = coerceBound(value, 0);
+    max = 1;
   }
 
-  const scalar = Number(value);
-  return {
-    min: Number.isFinite(scalar) ? scalar : 0,
-    max: 1,
-  };
+  // Same defensive clamps as `_parse_confidence_band`, in the same order.
+  min = Math.min(1, Math.max(0, min));
+  max = Math.min(1, Math.max(0, max));
+  if (max < min) max = min;
+  return { min, max };
 }
 
 export class LabelNumberField extends Field {
@@ -124,11 +142,12 @@ export class LabelNumberField extends Field {
   }
 
   getValue() {
-    const min = Number(this._minField.getValue());
-    const max = Number(this._maxField.getValue());
-    return {
-      min: Number.isFinite(min) ? min : 0,
-      max: Number.isFinite(max) ? max : 1,
-    };
+    // Routed through normalizeBand so what is saved is what the backend will
+    // read back — a blanked max is unbounded, not 0, and an inverted or
+    // out-of-range band is corrected here rather than only inside the task.
+    return normalizeBand({
+      min: this._minField.getValue(),
+      max: this._maxField.getValue(),
+    });
   }
 }
