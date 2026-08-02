@@ -28,6 +28,7 @@ import numpy as np
 import pytest
 
 from apps.helpers.imageProviders import ffmpegImageProvider as ffmpeg_provider_module
+from apps.helpers.imageProviders import urlImageProvider as url_provider_module
 from apps.helpers.imageProviders.ffmpegImageProvider import FfmpegImageProvider
 from apps.helpers.imageProviders.urlImageProvider import UrlImageProvider
 from apps.helpers.streams.ffmpegStreamerIn import FFmpegStreamerIn
@@ -144,6 +145,43 @@ class TestUrlImageProviderMetadata:
 
         assert len(pairs) == 5
         assert all(source == "cam1" for source, _ in pairs)
+
+
+class TestUrlImageProviderDownloadFailure:
+    # Regression test: a UrlImageProvider whose target URL hangs or errors used
+    # to give no diagnostic signal at all — no timeout on urlopen() and no
+    # logger in the module, unlike every other image provider (ffmpeg/mqtt/cv2),
+    # which log extensively via their own per-module logger. That combination
+    # left preview requests silently stuck until the frontend's own 30s SSE
+    # timeout fired, with nothing in server logs pointing at the cause.
+
+    def test_downloadImage_passes_a_timeout_to_urlopen(self, monkeypatch):
+        captured = {}
+
+        def fake_urlopen(request, *args, **kwargs):
+            captured["timeout"] = kwargs.get("timeout")
+            raise TimeoutError("simulated hang")
+
+        monkeypatch.setattr(url_provider_module.urllib.request, "urlopen", fake_urlopen)
+
+        provider = UrlImageProvider(url="http://example.invalid/img.jpg", ignore_ssl_errors=False)
+        with pytest.raises(TimeoutError):
+            provider._downloadImage()
+
+        assert captured["timeout"] is not None
+
+    def test_downloadImage_failure_is_logged(self, monkeypatch, caplog):
+        def fake_urlopen(request, *args, **kwargs):
+            raise OSError("connection refused")
+
+        monkeypatch.setattr(url_provider_module.urllib.request, "urlopen", fake_urlopen)
+
+        provider = UrlImageProvider(url="http://example.invalid/img.jpg", ignore_ssl_errors=False)
+        with caplog.at_level("ERROR", logger=url_provider_module.logger.name):
+            with pytest.raises(OSError):
+                provider._downloadImage()
+
+        assert any("example.invalid" in record.message for record in caplog.records)
 
 
 # ─── FfmpegImageProvider ────────────────────────────────────────────────────────

@@ -2,6 +2,7 @@
 
 import asyncio
 import base64
+import logging
 import random
 import ssl
 import time
@@ -18,6 +19,12 @@ from .imageProvider import (
     ImageWithProviderMetadata,
 )
 from .Registry import register_image_provider
+
+logging.basicConfig()
+logger = logging.getLogger(__file__)
+logger.setLevel(logging.DEBUG)
+
+DOWNLOAD_TIMEOUT = 10.0
 
 
 @register_image_provider()
@@ -76,14 +83,23 @@ class UrlImageProvider(ImageProvider):
         )
 
     def _downloadImage(self):
-        if self._ignore_ssl_errors:
-            ssl_context = ssl._create_unverified_context()
-            req = urllib.request.urlopen(self._request, context=ssl_context)
-        else:
-            req = urllib.request.urlopen(self._request)
+        logger.debug(f"Downloading image from {self._url}")
+        try:
+            if self._ignore_ssl_errors:
+                ssl_context = ssl._create_unverified_context()
+                req = urllib.request.urlopen(self._request, timeout=DOWNLOAD_TIMEOUT, context=ssl_context)
+            else:
+                req = urllib.request.urlopen(self._request, timeout=DOWNLOAD_TIMEOUT)
 
-        buffer = np.array(bytearray(req.read()), dtype=np.uint8)
-        return cv2.imdecode(buffer, flags=cv2.IMREAD_COLOR)
+            buffer = np.array(bytearray(req.read()), dtype=np.uint8)
+        except Exception:
+            logger.exception(f"Failed to download image from {self._url}")
+            raise
+
+        frame = cv2.imdecode(buffer, flags=cv2.IMREAD_COLOR)
+        if frame is None:
+            logger.error(f"Failed to decode image from {self._url} (response was not a valid image)")
+        return frame
 
     @classmethod
     def params_schema(cls) -> dict[str, dict[str, Any]]:
