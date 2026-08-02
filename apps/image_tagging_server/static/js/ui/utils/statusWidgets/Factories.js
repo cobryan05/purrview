@@ -214,21 +214,28 @@ export const statusWidgets = {
     wrap.appendChild(canvasContainer);
 
     let instance = null;
-    try {
-      instance = await createCanvasInstance(canvasContainer, { tool: 'select' });
-      await instance.loadImage(data.path);
-      if (Array.isArray(data.bboxes) && data.bboxes.length) {
-        seedRuntimeBboxes(instance.runtime, data.bboxes);
+    // Deferred to mount(): createCanvasInstance measures the container's
+    // clientWidth/clientHeight to fit-to-view the image, which read 0 (and
+    // silently collapsed every bbox to (0,0)) if done here — `wrap` isn't
+    // attached to the document yet at factory-call time, only once the
+    // caller appends the returned element. mount() runs after that append.
+    const mount = async () => {
+      try {
+        instance = await createCanvasInstance(canvasContainer, { tool: 'select' });
+        await instance.loadImage(data.path);
+        if (Array.isArray(data.bboxes) && data.bboxes.length) {
+          seedRuntimeBboxes(instance.runtime, data.bboxes);
+        }
+      } catch (err) {
+        instance?.destroy?.();
+        instance = null;
+        const errEl = document.createElement('div');
+        errEl.textContent = 'Failed to load image.';
+        errEl.style.cssText = 'color:#f44336; padding:0.5em;';
+        canvasContainer.replaceWith(errEl);
       }
-    } catch (err) {
-      instance?.destroy?.();
-      const errEl = document.createElement('div');
-      errEl.textContent = 'Failed to load image.';
-      errEl.style.cssText = 'color:#f44336; padding:0.5em;';
-      canvasContainer.replaceWith(errEl);
-      return wrap;
-    }
+    };
 
-    return { el: wrap, destroy: () => instance?.destroy() };
+    return { el: wrap, mount, destroy: () => instance?.destroy() };
   },
 };

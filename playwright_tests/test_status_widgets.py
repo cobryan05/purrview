@@ -12,20 +12,30 @@ schema-driven ActiveTaskField.renderView() (ui/utils/fields/ActiveTaskField.js):
 Run with:
     pytest playwright_tests/test_status_widgets.py -p no:xdist -p no:asyncio -v
 """
+
 import base64
 import json
 import re
 
+import cv2
+import numpy as np
 import pytest
 from playwright.sync_api import Page, Route, expect
 
 TASK_TYPE = "CollectTrainingImagesTask"
 
 # A 1x1 transparent PNG, base64-encoded — small valid image for canvas loadImage().
-TINY_PNG_B64 = (
-    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk"
-    "+A8AAQUBAScY42YAAAAASUVORK5CYII="
-)
+TINY_PNG_B64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk" "+A8AAQUBAScY42YAAAAASUVORK5CYII="
+
+
+def _solid_color_png_b64(size: int = 64, color_bgr: tuple = (0, 0, 255)) -> str:
+    """A solid-color square PNG, base64-encoded — big enough (unlike TINY_PNG_B64)
+    to tell apart "scaled to fill the container" from "collapsed to a 0x0 region
+    at the origin" by sampling a pixel away from the top-left corner."""
+    img = np.full((size, size, 3), color_bgr, dtype=np.uint8)
+    success, buffer = cv2.imencode(".png", img)
+    assert success
+    return base64.b64encode(buffer).decode("utf-8")
 
 
 def _make_task(uuid, name="Live Collector", **overrides):
@@ -130,18 +140,20 @@ def _setup_base_mocks(page: Page, tasks: dict):
     _mock_active_tasks(page, tasks)
 
 
-def _mock_image_file(page: Page):
+def _mock_image_file(page: Page, image_b64: str = TINY_PNG_B64):
     page.route(
         "**/api/images/*/file",
         lambda route: route.fulfill(
             status=200,
             content_type="application/json",
-            body=json.dumps({
-                "status": "success",
-                "imageBase64": TINY_PNG_B64,
-                "mimeType": "image/png",
-                "image": {"uuid": "img-1", "filename": "folder/frame.jpg", "bboxes": []},
-            }),
+            body=json.dumps(
+                {
+                    "status": "success",
+                    "imageBase64": image_b64,
+                    "mimeType": "image/png",
+                    "image": {"uuid": "img-1", "filename": "folder/frame.jpg", "bboxes": []},
+                }
+            ),
         ),
     )
 
@@ -214,12 +226,14 @@ class TestStatusDataFetchGating:
 class TestStatGridWidget:
     def test_stat_grid_renders_from_stubbed_payload(self, page: Page, base_url: str):
         task_id = "task-statgrid-1"
-        schema = [{
-            "id": "stats",
-            "type": "stat_grid",
-            "source": "status",
-            "fields": {"saved": "Saved", "processed": "Processed"},
-        }]
+        schema = [
+            {
+                "id": "stats",
+                "type": "stat_grid",
+                "source": "status",
+                "fields": {"saved": "Saved", "processed": "Processed"},
+            }
+        ]
         _mock_status_schema(page, schema)
         _mock_status_data(page, {task_id: {"stats": {"saved": 12, "processed": 34}}})
         _setup_base_mocks(page, {task_id: _make_task(task_id)})
@@ -237,12 +251,14 @@ class TestStatGridWidget:
 class TestAnnotatedImageWidget:
     def test_annotated_image_renders_from_stubbed_payload(self, page: Page, base_url: str):
         task_id = "task-annotimg-1"
-        schema = [{
-            "id": "lastFrame",
-            "type": "annotated_image",
-            "source": "status",
-            "label": "Last capture",
-        }]
+        schema = [
+            {
+                "id": "lastFrame",
+                "type": "annotated_image",
+                "source": "status",
+                "label": "Last capture",
+            }
+        ]
         _mock_status_schema(page, schema)
         _mock_status_data(page, {task_id: {"lastFrame": {"path": "folder/frame.jpg", "bboxes": []}}})
         _mock_image_file(page)
@@ -258,6 +274,99 @@ class TestAnnotatedImageWidget:
 
         content = page.locator(f"[data-task-uuid='{task_id}']").inner_text()
         assert "Last capture" in content
+
+    def test_image_is_scaled_to_fill_container_not_collapsed_to_corner(self, page: Page, base_url: str):
+        """Regression test: annotated_image used to create the Konva canvas and
+        load the image (createCanvasInstance -> loadImage, which internally
+        computes the fit-to-view scale from the container's clientWidth/
+        clientHeight) before the widget's own element was attached to the
+        document, so clientWidth/clientHeight read 0 and the scale collapsed to
+        0 — the background image and every bbox rendered at (0,0) with 0 size.
+
+        A later ResizeObserver (canvas/main.js) does correct the Konva stage's
+        own width/height once the container is actually attached, so checking
+        the <canvas> element's bounding box alone is NOT enough to catch this —
+        handleResize() (canvas/manager.js) reuses the already-computed (stale,
+        zero-scale) viewport rather than recomputing it, so the image/bboxes
+        stay frozen at the origin even after the stage itself resizes. This
+        test instead samples an actual rendered pixel away from the corner to
+        confirm the image was really scaled to fill the container.
+
+        mount() must only run after the caller has appended the element to the
+        live DOM, so the fit-to-view scale is computed against the real
+        container size from the start."""
+        task_id = "task-canvas-scale-1"
+        schema = [
+            {
+                "id": "lastFrame",
+                "type": "annotated_image",
+                "source": "status",
+                "label": "Last capture",
+                "height": "16em",
+            }
+        ]
+        _mock_status_schema(page, schema)
+        _mock_status_data(page, {task_id: {"lastFrame": {"path": "folder/frame.jpg", "bboxes": []}}})
+        _mock_image_file(page, _solid_color_png_b64(size=64, color_bgr=(0, 0, 255)))  # solid red
+        _setup_base_mocks(page, {task_id: _make_task(task_id)})
+
+        _navigate_to_tasks(page, base_url)
+        page.wait_for_selector(f"[data-task-uuid='{task_id}'] summary", timeout=5000)
+        page.locator(f"[data-task-uuid='{task_id}'] summary").click()
+
+        canvas = page.locator(f"[data-task-uuid='{task_id}'] canvas").first
+        expect(canvas).to_be_visible(timeout=5000)
+        page.wait_for_timeout(500)  # let the image decode + first draw settle
+
+        center_rgba = canvas.evaluate("""(el) => {
+                const ctx = el.getContext('2d');
+                const x = Math.floor(el.width / 2);
+                const y = Math.floor(el.height / 2);
+                return Array.from(ctx.getImageData(x, y, 1, 1).data);
+            }""")
+        r, g, b, a = center_rgba
+        assert a > 0 and r > 150 and g < 100 and b < 100, (
+            f"Center pixel is not the test image's solid red fill (got rgba={center_rgba!r}); "
+            "the image likely collapsed to a 0x0 region at the origin instead of scaling to fill "
+            "the container"
+        )
+
+
+class TestStatusWidgetPollDiffing:
+    def test_unchanged_status_data_does_not_rebuild_widget_across_polls(self, page: Page, base_url: str):
+        """Regression test: a poll tick used to tear down and rebuild every
+        status widget's DOM unconditionally, every ~5s, even when the
+        underlying data was byte-for-byte identical to the previous poll —
+        for annotated_image this meant destroying and recreating the Konva
+        canvas (and re-fetching/re-decoding the image) for no reason, which
+        is what made the panel visibly flash/flicker while open."""
+        task_id = "task-diffing-1"
+        schema = [
+            {
+                "id": "lastFrame",
+                "type": "annotated_image",
+                "source": "status",
+                "label": "Last capture",
+            }
+        ]
+        _mock_status_schema(page, schema)
+        _mock_status_data(page, {task_id: {"lastFrame": {"path": "folder/frame.jpg", "bboxes": []}}})
+        _mock_image_file(page)
+        _setup_base_mocks(page, {task_id: _make_task(task_id)})
+
+        _navigate_to_tasks(page, base_url)
+        page.wait_for_selector(f"[data-task-uuid='{task_id}'] summary", timeout=5000)
+        page.locator(f"[data-task-uuid='{task_id}'] summary").click()
+
+        canvas = page.locator(f"[data-task-uuid='{task_id}'] canvas").first
+        expect(canvas).to_be_visible(timeout=5000)
+        canvas.evaluate("el => el.dataset.testMarker = 'stable'")
+
+        page.wait_for_timeout(6000)  # longer than the ~5s in-card poll interval; data never changes
+
+        canvas_after = page.locator(f"[data-task-uuid='{task_id}'] canvas").first
+        marker = canvas_after.evaluate("el => el.dataset.testMarker")
+        assert marker == "stable", "Widget was torn down and rebuilt despite unchanged status-data"
 
 
 # ---------------------------------------------------------------------------
@@ -331,9 +440,17 @@ class TestDefaultSchemaRegression:
 class TestTaskCommandAction:
     def test_task_command_action_posts_expected_body(self, page: Page, base_url: str):
         task_id = "task-command-1"
-        task = _make_task(task_id, statusActions=[
-            {"type": "task_command", "label": "Capture now", "command": "capture_now", "params": {"source": "cam1"}},
-        ])
+        task = _make_task(
+            task_id,
+            statusActions=[
+                {
+                    "type": "task_command",
+                    "label": "Capture now",
+                    "command": "capture_now",
+                    "params": {"source": "cam1"},
+                },
+            ],
+        )
         _setup_base_mocks(page, {task_id: task})
 
         command_calls: list[dict] = []

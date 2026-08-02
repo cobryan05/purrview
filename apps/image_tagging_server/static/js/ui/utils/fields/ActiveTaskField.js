@@ -225,14 +225,21 @@ export class ActiveTaskField extends Field {
 
     if (statusSlots.length > 0 && this._uuid) {
       let pollTimer = null;
-      let cleanupFns = [];
       let refreshing = false; // re-entrancy guard
+      // Per-widget (not global) teardown + last-seen-data tracking: a poll tick
+      // only tears down and re-renders the widgets whose data actually changed,
+      // instead of unconditionally rebuilding every widget's DOM (and, for
+      // annotated_image, its Konva canvas) every STATUS_DATA_POLL_MS regardless
+      // of whether anything is new. Keyed by widget.id.
+      const cleanupFnsByWidget = new Map();
+      const lastDataJsonByWidget = new Map();
 
       const teardown = () => {
-        for (const fn of cleanupFns) {
+        for (const fn of cleanupFnsByWidget.values()) {
           try { fn(); } catch (err) { console.error('Status widget teardown failed:', err); }
         }
-        cleanupFns = [];
+        cleanupFnsByWidget.clear();
+        lastDataJsonByWidget.clear();
       };
 
       const stopPolling = () => {
@@ -263,13 +270,29 @@ export class ActiveTaskField extends Field {
           // Card may have collapsed / been removed while the fetch was in flight.
           if (!details.open || !details.isConnected) return;
 
-          teardown();
           for (const { widget, slot } of statusSlots) {
+            const data = dataForTask[widget.id];
+            const dataJson = JSON.stringify(data ?? null);
+            if (lastDataJsonByWidget.has(widget.id) && lastDataJsonByWidget.get(widget.id) === dataJson) {
+              continue; // unchanged since the last poll — leave this widget's DOM/resources alone
+            }
+            lastDataJsonByWidget.set(widget.id, dataJson);
+
+            const prevDestroy = cleanupFnsByWidget.get(widget.id);
+            if (prevDestroy) {
+              try { prevDestroy(); } catch (err) { console.error('Status widget teardown failed:', err); }
+              cleanupFnsByWidget.delete(widget.id);
+            }
+
             slot.innerHTML = '';
-            const rendered = await renderStatusWidget(widget, dataForTask[widget.id], ctx);
+            const rendered = await renderStatusWidget(widget, data, ctx);
             if (rendered) {
               slot.appendChild(rendered.el);
-              if (rendered.destroy) cleanupFns.push(rendered.destroy);
+              // mount() is an optional hook for widgets that need real layout
+              // (e.g. a canvas) — called only once the element is attached to
+              // the live document, unlike measuring during the factory call.
+              await rendered.mount?.();
+              if (rendered.destroy) cleanupFnsByWidget.set(widget.id, rendered.destroy);
             }
           }
         } finally {
