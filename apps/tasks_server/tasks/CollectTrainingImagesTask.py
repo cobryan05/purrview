@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import json
 import logging
 import os
 import time
@@ -1225,7 +1226,16 @@ class CollectTrainingImagesTask(Task):
         if self._filter_chain_runner is None or not matching:
             return matching, False, False
 
-        image_bytes = base64.b64decode(base64_img)
+        # base64_img is the JSON packet produced by base64_encode_jpg (imageUtils.py)
+        # — `{"format": ..., "data": <b64>, "metadata": {}}` — the same "universal
+        # reader" packet shape base64_decode_image() unwraps on the inference-server
+        # side, not a bare base64 string. Fall back to treating it as raw base64 for
+        # any caller that already passes an unwrapped string.
+        try:
+            b64_data = json.loads(base64_img)["data"]
+        except json.JSONDecodeError:
+            b64_data = base64_img
+        image_bytes = base64.b64decode(b64_data)
         existing = [
             {
                 "uuid": str(i),

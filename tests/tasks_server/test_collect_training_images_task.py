@@ -13,7 +13,9 @@ Covers the resume/dedup logic introduced alongside the timing instrumentation:
 """
 
 import asyncio
+import base64
 import itertools
+import json
 import os
 import time
 from datetime import datetime, timezone
@@ -647,6 +649,14 @@ def _fc_provided() -> MagicMock:
     return provided
 
 
+def _fc_packet(raw_bytes: bytes = b"fake-jpeg-bytes") -> str:
+    """Mirrors base64_encode_jpg's real wire format (imageUtils.py) — a JSON
+    packet with a base64 `data` field — rather than a bare base64 string.
+    _run()'s actual base64_img (from base64_encode_jpg or a provider's
+    pre-encoded frame) is always this packet shape."""
+    return json.dumps({"format": "jpeg", "metadata": {}, "data": base64.b64encode(raw_bytes).decode("utf-8")})
+
+
 class TestApplyFilterChainToFrame:
     async def test_no_runner_configured_returns_matching_unchanged(self):
         task = _make_task()
@@ -665,6 +675,34 @@ class TestApplyFilterChainToFrame:
         assert result == []
         assert discard is False
         assert force_save is False
+
+    async def test_real_encoded_packet_is_unwrapped_before_evaluation(self):
+        """Regression test: base64_img is always the JSON packet produced by
+        base64_encode_jpg (imageUtils.py) — `{"format": "jpeg", "data": <b64>,
+        "metadata": {}}` — never a bare base64 string. Every other test in this
+        class passes a bare base64 string ("aGVsbG8="), which happens to
+        base64-decode cleanly and so never exercised the real shape of a live
+        frame's encoded bytes. Feeding the real packet through
+        `base64.b64decode()` directly (as production code did) raises
+        `binascii.Error: Incorrect padding`, crashing the whole collection
+        task on its very first matched frame whenever a filter chain is
+        configured."""
+        captured: dict = {}
+
+        class _CapturingBackend(_FakeFilterChainBackend):
+            async def classify_whole_image(self, model_name, image_bytes):
+                captured["image_bytes"] = image_bytes
+                return await super().classify_whole_image(model_name, image_bytes)
+
+        backend = _CapturingBackend(kinds={"m1": "image_classifier"}, classify_results={"m1": 0.9})
+        step = _fc_step(model_name="m1", action="tag_image", confidence=0.5, action_params={"tag_uuid": "tag-x"})
+        task = await _task_with_chain_runner([step], backend)
+
+        raw_bytes = b"fake-jpeg-bytes"
+        matching = [_fc_detection()]
+        await task._apply_filter_chain_to_frame(_fc_provided(), _fc_packet(raw_bytes), matching)
+
+        assert captured["image_bytes"] == raw_bytes
 
     async def test_discard_image_match_discards_frame(self):
         backend = _FakeFilterChainBackend(kinds={"corrupt": "image_classifier"}, classify_results={"corrupt": 0.9})
