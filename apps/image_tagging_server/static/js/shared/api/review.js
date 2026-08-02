@@ -348,7 +348,97 @@ export async function bulkApplyImagesByUuids({ imageUuids, action, labelUuid = n
   });
   const data = await res.json();
   if (!res.ok || data.status !== 'success') throw new Error(data.message || 'Bulk apply failed');
-  return { modifiedCount: data.modifiedCount ?? 0, failCount: data.failCount ?? 0 };
+  return {
+    modifiedCount: data.modifiedCount ?? 0,
+    failCount: data.failCount ?? 0,
+    skippedCount: data.skippedCount ?? 0,
+  };
+}
+
+/**
+ * Apply an image-level action to every image matching a server-side filter,
+ * across all pages — the image-kind counterpart of bulkApplyAll. Unlike
+ * bulkApplyImagesByUuids (explicit uuid list, capped by whatever the caller
+ * already fetched), this paginates server-side so the caller never needs to
+ * download the full candidate set (e.g. Number.MAX_SAFE_INTEGER) just to
+ * apply an action to it.
+ *
+ * Filter params mirror fetchReviewQueue/bulkApplyAll's shape exactly — pass
+ * the review filter panel's live getState() output. Action params use
+ * `selectedTagUuids` (not `tagUuids`) to avoid colliding with the filter's
+ * own `tagUuids`, same convention as bulkApplyAll.
+ */
+export async function bulkApplyImages({
+  // Filter params (same shape as fetchReviewQueue, no pagination)
+  tagUuids = [UNVERIFIED_TAG_UUID],
+  tagExcludeUuids = [],
+  showAllBboxes = false,
+  tagMatchMode = 'any',
+  labelUuids = [],
+  labelExcludeUuids = [],
+  labelMatchMode = 'any',
+  labelIncludeChildren = false,
+  sortBy = 'created_at',
+  sortOrder = 'desc',
+  filenameSearch,
+  dateFrom = null,
+  dateTo = null,
+  imageLabelFilters = [],
+  verificationCheck = null,
+  verificationLabelUuids = [],
+  requireBboxes = false,
+  // Action params
+  action,
+  labelUuid = null,
+  selectedTagUuids = [],
+} = {}) {
+  const filterBody = {
+    tagUuids: showAllBboxes ? [] : tagUuids,
+    showAllBboxes,
+    tagMatchMode,
+    sortBy,
+    sortOrder,
+  };
+  if (requireBboxes) filterBody.requireBboxes = true;
+  if (labelUuids.length > 0) {
+    filterBody.labelUuids = labelUuids;
+    filterBody.labelMatchMode = labelMatchMode;
+    if (labelIncludeChildren) filterBody.labelIncludeChildren = true;
+  }
+  if (tagExcludeUuids.length > 0) {
+    filterBody.tagPresenceFilters = tagExcludeUuids.map(uuid => ({ tagUuid: uuid, exclude: true }));
+  }
+  if (labelExcludeUuids.length > 0) filterBody.labelExclusions = labelExcludeUuids;
+  if (filenameSearch) filterBody.filenameSearch = filenameSearch;
+  if (dateFrom) filterBody.dateFrom = dateFrom;
+  if (dateTo) filterBody.dateTo = dateTo;
+  if (imageLabelFilters.length > 0) {
+    filterBody.imageLabelFilters = imageLabelFilters.map(f => ({
+      labelUuid: f.labelUuid,
+      status: f.status,
+      exclude: f.exclude,
+    }));
+  }
+  if (verificationCheck) filterBody.labelVerificationCheck = verificationCheck;
+  if (verificationLabelUuids.length > 0) filterBody.verificationLabelUuids = verificationLabelUuids;
+
+  const res = await apiFetch('/api/images/bulk-apply', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      filter: filterBody,
+      action,
+      labelUuid: labelUuid ?? null,
+      tagUuids: selectedTagUuids,
+    }),
+  });
+  const data = await res.json();
+  if (!res.ok || data.status !== 'success') throw new Error(data.message || 'Bulk apply failed');
+  return {
+    modifiedCount: data.modifiedCount ?? 0,
+    failCount: data.failCount ?? 0,
+    skippedCount: data.skippedCount ?? 0,
+  };
 }
 
 /**

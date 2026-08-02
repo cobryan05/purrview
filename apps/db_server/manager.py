@@ -85,6 +85,10 @@ logger.setLevel(logging.DEBUG)
 # Only bboxes explicitly carrying this tag produce PRESENT image-label rows.
 _BBOX_VERIFIED_TAG = VERIFIED_TAG_UUID
 
+# Sentinel for Manager.update_label's parent_uuid param: `None` is itself a
+# meaningful value there (promote to root), so it can't also mean "not supplied".
+_PARENT_UUID_NOT_SET = object()
+
 
 class Manager:
     """Manages interactions with the database"""
@@ -245,9 +249,10 @@ class Manager:
         color: Optional[str] = None,
         label_type: Optional[LabelType] = None,
         scope: Optional[LabelScope] = None,
+        parent_uuid: Any = _PARENT_UUID_NOT_SET,
     ) -> None:
         """
-        Update a label's name, color, label_type, and/or scope.
+        Update a label's name, color, label_type, scope, and/or parent.
 
         Args:
             label_uuid (str): uuid of the label to update.
@@ -255,6 +260,15 @@ class Manager:
             color (Optional[str]): New color for the label.
             label_type (Optional[LabelType]): New label type.
             scope (Optional[LabelScope]): New label scope.
+            parent_uuid: New parent uuid ("move" the label), or None to promote
+                the label to root. Uses the sentinel default `_PARENT_UUID_NOT_SET`
+                (rather than `None`) because `None` is itself a meaningful value
+                here (promote to root) distinct from "the caller didn't ask to
+                change the parent at all".
+
+        Raises:
+            ValueError: if `parent_uuid` would make the label its own parent, or
+                a descendant of itself (a cycle).
         """
         updates = {
             k: v
@@ -266,8 +280,38 @@ class Manager:
             }.items()
             if v is not None
         }
+
+        if parent_uuid is not _PARENT_UUID_NOT_SET:
+            if parent_uuid is not None:
+                await self._assert_no_reparent_cycle(label_uuid, parent_uuid)
+            updates["parent_uuid"] = parent_uuid
+
         await self._db_client.update_label(label_uuid=label_uuid, **updates)
         # TODO CJO: await self._db_client.export_labels_from_db_to_json(str(self._labels_json))
+
+    async def _assert_no_reparent_cycle(self, label_uuid: str, new_parent_uuid: str) -> None:
+        """
+        Walk up from `new_parent_uuid` toward the root. If we encounter
+        `label_uuid` along the way (including immediately, i.e. new_parent_uuid
+        == label_uuid), the move would make the label its own ancestor — reject it.
+
+        Complexity: O(V) to build the uuid->label map (get_label_uuid_map already
+        does this walk once) + O(depth) for the upward walk.
+        """
+        uuid_to_node = await self.get_label_uuid_map()
+        current: Optional[str] = new_parent_uuid
+        seen: Set[str] = set()
+        while current is not None:
+            if current == label_uuid:
+                raise ValueError(
+                    f"Cannot re-parent label '{label_uuid}': the target parent "
+                    f"'{new_parent_uuid}' is the label itself or one of its own descendants."
+                )
+            if current in seen:
+                break  # defensive: pre-existing cycle in stored data; don't loop forever
+            seen.add(current)
+            node = uuid_to_node.get(current)
+            current = node.parent_uuid if node else None
 
     async def get_label_uuid_map(self) -> Dict[str, Label]:
         flat_list: List[Label] = await self._db_client.list_labels()
@@ -894,51 +938,160 @@ class Manager:
 
         return modified_count, fail_count
 
+    async def _apply_image_bulk_action(
+        self,
+        image_uuid: str,
+        action: str,
+        label_uuid: Optional[str],
+        tag_uuids: List[str],
+    ) -> str:
+        """Apply one image-level bulk action to a single image uuid.
+
+        Shared by bulk_apply_images_by_uuids (explicit-list candidates) and
+        bulk_apply_images (filter-derived candidates) so the two entry points
+        can't drift.
+
+        Returns "modified" or "skipped" ("skipped" == setAbsent refused because
+        the image already has a verified bbox for that label — a legitimate
+        skip, not a failure). Raises on real failure — caller is responsible
+        for catching and counting it as a fail.
+        """
+        if action == "delete":
+            rel_path = await self.delete_image_permanently(image_uuid)
+            if rel_path is None:
+                raise ValueError(f"image {image_uuid} not found or already deleted")
+        elif action == "setUncertain":
+            await self._db_client.delete_image_labels(image_uuid, [label_uuid])
+        elif action == "addTags":
+            await self._db_client.add_image_tags(image_uuid, tag_uuids)
+        elif action == "removeTags":
+            await self._db_client.remove_image_tags(image_uuid, tag_uuids)
+        elif action == "setTagAbsent":
+            for tag_uuid in tag_uuids:
+                await self._db_client.set_image_tag_status(image_uuid, tag_uuid, ImageItemStatus.ABSENT)
+        elif action == "setTagUncertain":
+            for tag_uuid in tag_uuids:
+                await self._db_client.set_image_tag_status(image_uuid, tag_uuid, ImageItemStatus.UNCERTAIN)
+        elif action == "setAbsent":
+            # Mirror the single-image path's rule (set_image_label_status): ABSENT is
+            # refused when a verified bbox already contradicts it. A bulk run treats
+            # that as a skip, not a failure.
+            if await self._db_client.image_has_verified_bbox_for_label(image_uuid, label_uuid):
+                return "skipped"
+            await self._db_client.set_image_label_status(image_uuid, label_uuid, ImageItemStatus.ABSENT)
+        elif action == "setPresent":
+            await self._db_client.set_image_label_status(image_uuid, label_uuid, ImageItemStatus.PRESENT)
+        else:
+            raise ValueError(f"Unknown bulk image action: {action}")
+        return "modified"
+
     async def bulk_apply_images_by_uuids(
         self,
         image_uuids: List[str],
         action: str,
         label_uuid: Optional[str] = None,
         tag_uuids: Optional[List[str]] = None,
-    ) -> Tuple[int, int]:
-        """Apply an image-level bulk action (setAbsent/setUncertain/delete/addTags/
-        removeTags/setTagAbsent/setTagUncertain) to an explicit list of images in one
-        server-side pass — the image-kind counterpart of bulk_apply_bboxes_by_uuids.
+    ) -> Tuple[int, int, int]:
+        """Apply an image-level bulk action (setPresent/setAbsent/setUncertain/delete/
+        addTags/removeTags/setTagAbsent/setTagUncertain) to an explicit list of images
+        in one server-side pass — the image-kind counterpart of bulk_apply_bboxes_by_uuids.
 
-        Returns (modified_count, fail_count).
+        Returns (modified_count, fail_count, skipped_count).
         """
         tag_uuids = tag_uuids or []
         if action in ("addTags", "removeTags", "setTagAbsent", "setTagUncertain") and not tag_uuids:
             # Nothing to do — don't report images as "modified" for a no-op.
-            return 0, 0
+            return 0, 0, 0
         modified_count = 0
         fail_count = 0
+        skipped_count = 0
         for image_uuid in image_uuids:
             try:
-                if action == "delete":
-                    rel_path = await self.delete_image_permanently(image_uuid)
-                    if rel_path is None:
-                        fail_count += 1
-                        continue
-                elif action == "setUncertain":
-                    await self._db_client.delete_image_labels(image_uuid, [label_uuid])
-                elif action == "addTags":
-                    await self._db_client.add_image_tags(image_uuid, tag_uuids)
-                elif action == "removeTags":
-                    await self._db_client.remove_image_tags(image_uuid, tag_uuids)
-                elif action == "setTagAbsent":
-                    for tag_uuid in tag_uuids:
-                        await self._db_client.set_image_tag_status(image_uuid, tag_uuid, ImageItemStatus.ABSENT)
-                elif action == "setTagUncertain":
-                    for tag_uuid in tag_uuids:
-                        await self._db_client.set_image_tag_status(image_uuid, tag_uuid, ImageItemStatus.UNCERTAIN)
-                else:  # setAbsent
-                    await self._db_client.set_image_label_status(image_uuid, label_uuid, ImageItemStatus.ABSENT)
-                modified_count += 1
+                result = await self._apply_image_bulk_action(image_uuid, action, label_uuid, tag_uuids)
+                if result == "skipped":
+                    skipped_count += 1
+                else:
+                    modified_count += 1
             except Exception as e:
                 logger.error("bulk_apply_images_by_uuids: image %s failed: %s", image_uuid, e)
                 fail_count += 1
-        return modified_count, fail_count
+        return modified_count, fail_count, skipped_count
+
+    async def bulk_apply_images(
+        self,
+        search_params: ImageSearchParams,
+        action: str,
+        label_uuid: Optional[str] = None,
+        tag_uuids: Optional[List[str]] = None,
+    ) -> Tuple[int, int, int]:
+        """Apply an image-level action to every image matching the filter, across all pages.
+
+        Pages through list_images_search in batches of self.BULK_APPLY_PAGE_SIZE and applies
+        the requested action to each image — the image-kind counterpart of bulk_apply_bboxes.
+
+        Returns (modified_count, fail_count, skipped_count).
+        """
+        tag_uuids = tag_uuids or []
+        if action in ("addTags", "removeTags", "setTagAbsent", "setTagUncertain") and not tag_uuids:
+            return 0, 0, 0
+
+        # Paginate by uuid regardless of the caller's requested sort — mirrors
+        # bulk_apply_bboxes: the action can mutate rows the cursor depends on
+        # (e.g. updated_at), so keyset-paginating by anything but uuid risks
+        # re-matching an already-processed row on the next page. Traversal
+        # order is irrelevant to the action (each matching image is touched
+        # exactly once).
+        search_params = search_params.model_copy(update={"sort_by": "uuid", "sort_order": "asc"})
+
+        modified_count = 0
+        fail_count = 0
+        skipped_count = 0
+        _PAGE_SIZE = self.BULK_APPLY_PAGE_SIZE
+        cursor_uuid: Optional[str] = None
+        cursor_sort_value = None
+
+        while True:
+            page_params = search_params.model_copy(
+                update={
+                    "limit": _PAGE_SIZE + 1,
+                    "after_uuid": cursor_uuid,
+                    "after_sort_value": cursor_sort_value,
+                }
+            )
+            batch = await self._db_client.list_images_search(page_params)
+            has_more = len(batch) > _PAGE_SIZE
+            batch = batch[:_PAGE_SIZE]
+
+            if not batch:
+                break
+
+            for img in batch:
+                try:
+                    result = await self._apply_image_bulk_action(img.uuid, action, label_uuid, tag_uuids)
+                    if result == "skipped":
+                        skipped_count += 1
+                    else:
+                        modified_count += 1
+                except Exception as e:
+                    logger.error("bulk_apply_images: image %s failed: %s", img.uuid, e)
+                    fail_count += 1
+
+            if not has_more:
+                break
+
+            last = batch[-1]
+            sort_by = search_params.sort_by
+            cursor_uuid = last.uuid
+            # sort_by is forced to "uuid" above, so this is always None — kept in
+            # this shape (rather than hardcoding None) to mirror bulk_apply_bboxes
+            # exactly, in case that forcing is ever relaxed for either function.
+            cursor_sort_value = (
+                (last.updated_at if sort_by == "updated_at" else last.created_at)
+                if sort_by not in ("uuid", "filename")
+                else None
+            )
+
+        return modified_count, fail_count, skipped_count
 
     async def _sync_image_state(self, image_record: ImageRecord) -> None:
         """Rebuild JSON sidecar and image_labels after a single-bbox mutation."""
@@ -1003,27 +1156,32 @@ class Manager:
             return None
         return await self._db_client.get_image_uuid_by_filename(safe_path)
 
-    async def set_image_label_status(self, image_path: str, label_uuid: str, status: ImageItemStatus) -> bool:
+    async def set_image_label_status(self, image_path: str, label_uuid: str, status: ImageItemStatus) -> str:
         """Explicitly set a label state for an image.
 
         PRESENT and ABSENT create/update the row.  UNCERTAIN clears an existing
         row (deletes it so the label reverts to the implicit default).
 
         ABSENT is blocked when the image already has a verified bbox with the
-        same label — that would be contradictory evidence.  Returns False on
-        conflict or when the image is not found.
+        same label — that would be contradictory evidence, not a failure. This
+        mirrors the bulk paths' "setAbsent" handling in _apply_image_bulk_action:
+        same predicate (image_has_verified_bbox_for_label), same "skipped" outcome
+        vocabulary, so a single-image save and a bulk action never disagree about
+        what counts as a legitimate skip vs. a real error.
+
+        Returns "modified", "skipped" (verified-bbox conflict), or "not_found".
         """
         image_uuid = await self._resolve_image_uuid(image_path)
         if image_uuid is None:
-            return False
+            return "not_found"
         if status == ImageItemStatus.ABSENT:
             if await self._db_client.image_has_verified_bbox_for_label(image_uuid, label_uuid):
-                return False
+                return "skipped"
         if status == ImageItemStatus.UNCERTAIN:
             await self._db_client.delete_image_labels(image_uuid, [label_uuid])
         else:
             await self._db_client.set_image_label_status(image_uuid, label_uuid, status)
-        return True
+        return "modified"
 
     async def get_image_labels(self, image_path: str) -> Optional[List[ImageLabelRead]]:
         """Return all label statuses for an image."""

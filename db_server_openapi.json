@@ -146,7 +146,7 @@
           "labels"
         ],
         "summary": "Update Label Api",
-        "description": "API endpoint to update an existing label's name and/or color.",
+        "description": "API endpoint to update an existing label's name, color, type, scope,\nand/or parent (re-parent / \"move\" it in the hierarchy).",
         "operationId": "update_label",
         "parameters": [
           {
@@ -1606,6 +1606,48 @@
             "application/json": {
               "schema": {
                 "$ref": "#/components/schemas/BulkApplyImagesByUuidsPayload"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BulkApplyAllResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/images/bulk-apply": {
+      "post": {
+        "tags": [
+          "images"
+        ],
+        "summary": "Bulk Apply Images Endpoint",
+        "description": "Apply an image-level action to every image matching the given filter,\nacross all pages \u2014 the image-kind counterpart of bulk_apply_bboxes_endpoint.",
+        "operationId": "bulk_apply_images",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BulkApplyImagesPayload"
               }
             }
           },
@@ -5842,6 +5884,11 @@
             "type": "integer",
             "title": "Failcount",
             "default": 0
+          },
+          "skippedCount": {
+            "type": "integer",
+            "title": "Skippedcount",
+            "default": 0
           }
         },
         "type": "object",
@@ -5941,6 +5988,41 @@
           "action"
         ],
         "title": "BulkApplyImagesByUuidsPayload"
+      },
+      "BulkApplyImagesPayload": {
+        "properties": {
+          "filter": {
+            "$ref": "#/components/schemas/ImageSearchParams"
+          },
+          "action": {
+            "type": "string",
+            "title": "Action"
+          },
+          "labelUuid": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Labeluuid"
+          },
+          "tagUuids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Taguuids"
+          }
+        },
+        "type": "object",
+        "required": [
+          "filter",
+          "action"
+        ],
+        "title": "BulkApplyImagesPayload"
       },
       "BundleTargetDetectionDatasetPayload": {
         "properties": {
@@ -10427,6 +10509,11 @@
               }
             ],
             "title": "Message"
+          },
+          "skipped": {
+            "type": "boolean",
+            "title": "Skipped",
+            "default": false
           }
         },
         "type": "object",

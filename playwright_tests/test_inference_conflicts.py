@@ -358,3 +358,65 @@ class TestAddInferenceResultsConflicts:
         assert result["size"] == 2
         assert result["hasExisting"] is True
         assert result["hasNew"] is True
+
+    def test_replace_detaches_transformer_from_destroyed_bbox(self, shared_page: Page):
+        """When a replace evicts a currently-selected bbox, the Transformer must be
+        detached from the destroyed node (and the stale selectedBbox reference
+        cleared) rather than left pointing at a destroyed Konva node — otherwise
+        the dotted selection rectangle stays rendered at the old box's position."""
+        page = shared_page
+        result = page.evaluate("""async () => {
+            const { createImageTaggingRuntime } = await import('/app-static/js/app/image-tagging/runtime.js');
+            const { createUIBBbox } = await import('/app-static/js/shared/domain/image/mapper.js');
+            const { rerenderBboxViews } = await import('/app-static/js/app/image-tagging/canvas/manager.js');
+            const { addInferenceResults } = await import('/app-static/js/app/image-tagging/canvas/image.js');
+            const { labelsFetcher } = await import('/app-static/js/shared/api/labels.js');
+            const { tagsFetcher } = await import('/app-static/js/shared/api/tags.js');
+
+            """ + _SETUP + """
+
+            labelsFetcher.set('labelsMap', new Map([
+                ['cat-uuid', { uuid: 'cat-uuid', name: 'Cat', color: '#ff0000' }],
+                ['dog-uuid', { uuid: 'dog-uuid', name: 'Dog', color: '#00ff00' }],
+            ]));
+            tagsFetcher.set('tagsMap', new Map());
+
+            const existing = createUIBBbox({
+                uuid: 'existing', x: 0.1, y: 0.1, width: 0.2, height: 0.2,
+                label: { uuid: 'cat-uuid', text: 'Cat', color: '#ff0000' },
+            });
+            runtime.state.image.bboxes.set('existing', existing);
+            rerenderBboxViews(runtime.canvas, runtime.state.image.bboxes, runtime.canvas.viewport);
+
+            // Select the existing bbox, exactly as a real click would: attach it
+            // to the transformer and record it as the interaction state's
+            // selectedBbox.
+            const { transformer, interactionState, layer } = runtime.canvas;
+            const matchView = layer.findOne('#existing');
+            transformer.nodes([matchView]);
+            interactionState.selectedBbox = matchView;
+
+            const results = {
+                detections: [{
+                    confidence: 0.9,
+                    bbox: {
+                        uuid: 'new-detection', x: 0.1, y: 0.1, width: 0.2, height: 0.2,
+                        labelUuid: 'dog-uuid', classStr: null, tagUuids: [],
+                    },
+                }],
+            };
+            await addInferenceResults(runtime, results, { replaceExisting: true });
+
+            return {
+                transformerNodeCount: transformer.nodes().length,
+                // A destroyed Konva node's parent is set to null by destroy() ->
+                // remove() — this Konva build has no isDestroyed() helper.
+                transformerHasDetachedNode: transformer.nodes().some(n => n.getParent() === null),
+                matchViewParentAfterDestroy: matchView.getParent(),
+                selectedBboxIsDestroyedMatch: interactionState.selectedBbox === matchView,
+            };
+        }""")
+        assert result["matchViewParentAfterDestroy"] is None
+        assert result["transformerHasDetachedNode"] is False
+        assert result["transformerNodeCount"] == 0
+        assert result["selectedBboxIsDestroyedMatch"] is False

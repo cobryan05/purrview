@@ -17,6 +17,7 @@ import {
   bulkApplyAll,
   bulkApplyBboxesByUuids,
   bulkApplyImagesByUuids,
+  bulkApplyImages,
   updateImageBboxes,
   updateBbox,
   deleteBbox,
@@ -275,12 +276,38 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
   bulkBtn.textContent = 'Bulk Apply (0)';
   bulkBtn.disabled = true;
 
+  // Apply to Parent Images button — visible only when the current selection is
+  // bbox-kind. Bulk Apply (above) can only offer bbox-level actions (relabel/
+  // delete/tags) for a bbox selection; this resolves the DISTINCT parent images
+  // behind the selected bboxes and routes them into the image-level bulk-action
+  // flow instead (e.g. filter by a bbox label, then mark the image-level label
+  // for a *different* object confirmed-absent across those images).
+  const bulkParentImagesBtn = document.createElement('button');
+  bulkParentImagesBtn.className = 'review-toolbar__btn';
+  bulkParentImagesBtn.textContent = 'Apply to Parent Images';
+  bulkParentImagesBtn.disabled = true;
+  bulkParentImagesBtn.hidden = true;
+
   // Bulk Apply All button — all matching results across all pages (filter mode),
   // or the full candidate list (custom fetchImages mode, e.g. similarity search).
   const bulkAllBtn = document.createElement('button');
   bulkAllBtn.className = 'review-toolbar__btn review-toolbar__btn--primary';
   bulkAllBtn.textContent = 'Apply to All';
   bulkAllBtn.disabled = true;
+
+  // Apply to All Matching Images — filter-mode only sibling of bulkAllBtn.
+  // bulkAllBtn (→ showBulkAllPagesModal) only ever offers bbox-level actions,
+  // no matter which view is active. This uses the new filter-based
+  // bulkApplyImages endpoint to apply an image-level action (setPresent/
+  // setAbsent/tags/delete) to every image matching the CURRENT filter, across
+  // all pages, without downloading the candidate set client-side. Not offered
+  // in custom/fetchImages (similarity) mode — there is no ImageSearchParams
+  // filter to reuse there; applyToAllCandidates's uuid-list path covers that
+  // mode instead.
+  const bulkAllImagesBtn = document.createElement('button');
+  bulkAllImagesBtn.className = 'review-toolbar__btn';
+  bulkAllImagesBtn.textContent = 'Apply to Filtered Images';
+  bulkAllImagesBtn.hidden = !!fetchImages;
 
   // Run Model on Results — proposes relabels for the current selection/filter
   // scope by running a detector and matching detections to existing bboxes
@@ -396,7 +423,7 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
   const actionBar = document.createElement('div');
   actionBar.className = 'review-action-bar';
   actionBar.append(
-    makeToolbarGroup(selectAllLabel, bulkBtn, bulkAllBtn, runModelBtn, runChainBtn),
+    makeToolbarGroup(selectAllLabel, bulkBtn, bulkParentImagesBtn, bulkAllBtn, bulkAllImagesBtn, runModelBtn, runChainBtn),
     makeToolbarGroup(prevBtn, pageInfo, nextBtn),
     makeToolbarGroup(statusMsg),
   );
@@ -942,6 +969,17 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
     bulkBtn.disabled = _selected.size === 0;
     selectAllCb.checked = _selected.size > 0 && _selected.size === activeCount;
     selectAllCb.indeterminate = _selected.size > 0 && _selected.size < activeCount;
+
+    // "Apply to Parent Images" only makes sense for a bbox-kind selection —
+    // it resolves the distinct images behind the selected bboxes.
+    const isBboxSelection = _selectionKind === 'bbox' && _selected.size > 0;
+    bulkParentImagesBtn.hidden = !isBboxSelection;
+    bulkParentImagesBtn.disabled = !isBboxSelection;
+    if (isBboxSelection) {
+      const selectedBboxEntries = _visibleEntries.filter(e => _selected.has(entryId(e)));
+      const distinctCount = _distinctParentImageEntries(selectedBboxEntries).length;
+      bulkParentImagesBtn.textContent = `Apply to Parent Images (${distinctCount})`;
+    }
     if (!fetchImages) {
       const countStr = _totalCount > 0 ? _totalCount.toLocaleString() : '?';
       bulkAllBtn.textContent = `Apply to All (${countStr})`;
@@ -1507,6 +1545,88 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
     updateTypeFading();
   });
 
+  // Resolve the DISTINCT parent images behind a list of bbox-kind entries,
+  // deduped by image uuid, as image-kind entries suitable for
+  // showImageBulkActionModal / executeBulkImageAction.
+  function _distinctParentImageEntries(bboxEntries) {
+    const seen = new Map();
+    for (const { img } of bboxEntries) {
+      if (!seen.has(img.uuid)) seen.set(img.uuid, { kind: 'image', img });
+    }
+    return [...seen.values()];
+  }
+
+  // Shared by the "Bulk Apply" image-selection branch and "Apply to Parent
+  // Images" (bbox selection → distinct parent images). titleText overrides
+  // showImageBulkActionModal's default "Apply to N selected images" title —
+  // callers acting on parent images MUST pass an explicit title so the modal
+  // never implies it's acting on bboxes.
+  async function _runImageBulkAction(imageEntries, titleText = null) {
+    await showImageBulkActionModal(imageEntries, labels, async (action, labelUuid, tagUuids) => {
+      if (action === 'delete') {
+        const n = imageEntries.length;
+        const noun = n === 1 ? 'image' : 'images';
+        const confirmed = await showConfirmModal({
+          title: `Delete ${n} ${noun}`,
+          message: `Permanently delete ${n} ${noun}? This removes the files and all their annotations from disk. This cannot be undone.`,
+          confirmText: 'Delete',
+          danger: true,
+        });
+        if (!confirmed) return;
+
+        let failCount = 0;
+        for (const { img } of imageEntries) {
+          try {
+            await deleteImage(img.uuid);
+            const card = grid.querySelector(`[data-image-uuid="${img.uuid}"][data-kind="image"]`);
+            if (card) markCardStale(card, 'deleted');
+            events.publish(EventTypes.IMAGE_DELETED, { imageUuid: img.uuid, imagePath: img.filename });
+          } catch (err) {
+            Logger.error(`Delete image failed for ${img.uuid}: ${err.message}`);
+            failCount++;
+          }
+        }
+        clearSelection();
+        updateStatusMsg();
+        if (failCount > 0) {
+          statusMsg.textContent += ` (${failCount} deletion${failCount === 1 ? '' : 's'} failed — check console)`;
+        }
+        return;
+      }
+
+      const { failCount, skippedCount, succeededEntries } = await executeBulkImageAction(action, imageEntries, labelUuid, tagUuids);
+      for (const { img } of succeededEntries) {
+        const card = grid.querySelector(`[data-image-uuid="${img.uuid}"][data-kind="image"]`);
+        if (card) markCardStale(card, 'tagged');
+      }
+      clearSelection();
+      updateStatusMsg();
+      if (skippedCount > 0) {
+        statusMsg.textContent += ` (${skippedCount} skipped — verified bbox present)`;
+      }
+      if (failCount > 0) {
+        statusMsg.textContent += ` (${failCount} action${failCount === 1 ? '' : 's'} failed — check console)`;
+      }
+    }, titleText);
+  }
+
+  // ── Apply to Parent Images (bbox selection → distinct parent images) ──
+  bulkParentImagesBtn.addEventListener('click', async () => {
+    const _selected = cardGrid.selected;
+    if (_selected.size === 0 || cardGrid.selectionKind !== 'bbox') return;
+    const selectedBboxEntries = _visibleEntries.filter(e => _selected.has(entryId(e)));
+    const imageEntries = _distinctParentImageEntries(selectedBboxEntries);
+    if (imageEntries.length === 0) return;
+    const bboxCount = selectedBboxEntries.length;
+    const imgCount = imageEntries.length;
+    // Title is explicit about acting on N distinct IMAGES, not the M selected
+    // bboxes — the two counts often differ (multiple bboxes per image) and
+    // must never be conflated.
+    const titleText = `Apply to ${imgCount} distinct image${imgCount === 1 ? '' : 's'} `
+      + `(behind ${bboxCount} selected bbox${bboxCount === 1 ? '' : 'es'})`;
+    await _runImageBulkAction(imageEntries, titleText);
+  });
+
   // ── Bulk Apply ────────────────────────────────────────────────────
   bulkBtn.addEventListener('click', async () => {
     const _selected = cardGrid.selected;
@@ -1514,49 +1634,7 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
     const selectedEntries = _visibleEntries.filter(e => _selected.has(entryId(e)));
 
     if (cardGrid.selectionKind === 'image') {
-      await showImageBulkActionModal(selectedEntries, labels, async (action, labelUuid, tagUuids) => {
-        if (action === 'delete') {
-          const n = selectedEntries.length;
-          const noun = n === 1 ? 'image' : 'images';
-          const confirmed = await showConfirmModal({
-            title: `Delete ${n} ${noun}`,
-            message: `Permanently delete ${n} selected ${noun}? This removes the files and all their annotations from disk. This cannot be undone.`,
-            confirmText: 'Delete',
-            danger: true,
-          });
-          if (!confirmed) return;
-
-          let failCount = 0;
-          for (const { img } of selectedEntries) {
-            try {
-              await deleteImage(img.uuid);
-              const card = grid.querySelector(`[data-image-uuid="${img.uuid}"][data-kind="image"]`);
-              if (card) markCardStale(card, 'deleted');
-              events.publish(EventTypes.IMAGE_DELETED, { imageUuid: img.uuid, imagePath: img.filename });
-            } catch (err) {
-              Logger.error(`Delete image failed for ${img.uuid}: ${err.message}`);
-              failCount++;
-            }
-          }
-          clearSelection();
-          updateStatusMsg();
-          if (failCount > 0) {
-            statusMsg.textContent += ` (${failCount} deletion${failCount === 1 ? '' : 's'} failed — check console)`;
-          }
-          return;
-        }
-
-        const { failCount, succeededEntries } = await executeBulkImageAction(action, selectedEntries, labelUuid, tagUuids);
-        for (const { img } of succeededEntries) {
-          const card = grid.querySelector(`[data-image-uuid="${img.uuid}"][data-kind="image"]`);
-          if (card) markCardStale(card, 'tagged');
-        }
-        clearSelection();
-        updateStatusMsg();
-        if (failCount > 0) {
-          statusMsg.textContent += ` (${failCount} action${failCount === 1 ? '' : 's'} failed — check console)`;
-        }
-      });
+      await _runImageBulkAction(selectedEntries);
     } else {
       await showBulkActionModal(selectedEntries, labels, async (action, newLabelUuid, selectedTagUuids, tagsMap) => {
         const { failCount, succeededEntries } = await executeBulkAction(action, selectedEntries, newLabelUuid, selectedTagUuids, tagsMap);
@@ -1668,7 +1746,7 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
         statusMsg.classList.add('review-toolbar__status--loading');
         statusMsg.textContent = `Applying to ${entries.length.toLocaleString()} images…`;
         try {
-          const { modifiedCount, failCount } = await bulkApplyImagesByUuids({
+          const { modifiedCount, failCount, skippedCount } = await bulkApplyImagesByUuids({
             imageUuids: entries.map(e => e.img.uuid),
             action,
             labelUuid,
@@ -1681,6 +1759,7 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
           }
           statusMsg.classList.remove('review-toolbar__status--loading');
           statusMsg.textContent = `Applied to ${modifiedCount.toLocaleString()} images` +
+            (skippedCount > 0 ? ` (${skippedCount} skipped — verified bbox present)` : '') +
             (failCount > 0 ? ` (${failCount} failed — check console)` : '');
         } catch (err) {
           statusMsg.classList.remove('review-toolbar__status--loading');
@@ -1717,6 +1796,71 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
     if (fetchImages) applyToAllCandidates();
     else showBulkAllPagesModal();
   });
+
+  // ── Apply to All Images (filtered) ─────────────────────────────────
+  // Filter-mode-only sibling of "Apply to All": applies an image-level action
+  // (setPresent/setAbsent/setUncertain/tags/delete) to every image matching
+  // the CURRENT filter — paginated server-side via the new bulkApplyImages
+  // endpoint, never downloading the full candidate list client-side. This is
+  // what makes "filter by label X, then mark label Y absent on all of them"
+  // tractable at scale without selecting every bbox by hand.
+  async function applyToAllImagesByFilter() {
+    const fs = filterPanel.getState();
+    const titleText = 'Apply to all images matching the current filter';
+    await showImageBulkActionModal([], labels, async (action, labelUuid, tagUuids) => {
+      if (action === 'delete') {
+        const confirmed = await showConfirmModal({
+          title: 'Delete All Matching Images',
+          message: 'Permanently delete every image matching the current filter, across all pages? '
+            + 'This removes the files and all their annotations from disk. This cannot be undone.',
+          confirmText: 'Delete',
+          danger: true,
+        });
+        if (!confirmed) return;
+      }
+      statusMsg.classList.add('review-toolbar__status--loading');
+      statusMsg.textContent = 'Applying to all matching images…';
+      try {
+        const { modifiedCount, failCount, skippedCount } = await bulkApplyImages({
+          tagUuids: fs.showAllBboxes ? [] : (fs.tagUuids ?? []),
+          tagExcludeUuids: fs.tagExcludeUuids ?? [],
+          showAllBboxes: fs.showAllBboxes,
+          tagMatchMode: fs.tagMatchMode,
+          labelUuids: fs.labelUuids ?? [],
+          labelExcludeUuids: fs.labelExcludeUuids ?? [],
+          labelMatchMode: fs.labelMatchMode,
+          labelIncludeChildren: fs.labelIncludeChildren,
+          requireBboxes: _viewFilter === 'bboxes',
+          sortBy: sortBySelect.value,
+          sortOrder: sortOrderSelect.value,
+          filenameSearch: fs.filenameSearch || undefined,
+          dateFrom: fs.dateFrom || undefined,
+          dateTo: fs.dateTo || undefined,
+          imageLabelFilters: (fs.imageLabelConditions ?? []).map(c => ({
+            labelUuid: c.labelUuid,
+            status: c.state,
+            exclude: false,
+          })),
+          verificationCheck: _verificationCheckFor(fs),
+          verificationLabelUuids: _verificationLabelUuidsFor(fs),
+          action,
+          labelUuid,
+          selectedTagUuids: tagUuids,
+        });
+        statusMsg.classList.remove('review-toolbar__status--loading');
+        statusMsg.textContent = `Applied to ${modifiedCount.toLocaleString()} images` +
+          (skippedCount > 0 ? ` (${skippedCount} skipped — verified bbox present)` : '') +
+          (failCount > 0 ? ` (${failCount} failed — check console)` : '');
+        render();
+      } catch (err) {
+        statusMsg.classList.remove('review-toolbar__status--loading');
+        statusMsg.textContent = `Bulk apply failed: ${err.message}`;
+        Logger.error('applyToAllImagesByFilter failed:', err);
+      }
+    }, titleText);
+  }
+
+  bulkAllImagesBtn.addEventListener('click', applyToAllImagesByFilter);
 
   // ── Pagination ────────────────────────────────────────────────────
   prevBtn.addEventListener('click', () => {

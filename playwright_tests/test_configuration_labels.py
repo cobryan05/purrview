@@ -14,6 +14,7 @@ Configuration > Labels & Tags > #labels-list:
 Run with:
     pytest playwright_tests/test_configuration_labels.py -p no:xdist -v
 """
+
 import json
 
 import pytest
@@ -212,11 +213,15 @@ class TestCreateRootLabel:
         def handle_create(route: Route):
             if route.request.method == "POST":
                 calls.append(True)
-                route.fulfill(status=200, content_type="application/json",
-                              body=json.dumps({"status": "success", "label": ROOT_LABEL}))
+                route.fulfill(
+                    status=200,
+                    content_type="application/json",
+                    body=json.dumps({"status": "success", "label": ROOT_LABEL}),
+                )
             else:
-                route.fulfill(status=200, content_type="application/json",
-                              body=json.dumps({"status": "success", "labels": []}))
+                route.fulfill(
+                    status=200, content_type="application/json", body=json.dumps({"status": "success", "labels": []})
+                )
 
         _mock_labels(page, [])
         page.route(lambda url: url.split("?")[0].endswith("/api/labels"), handle_create)
@@ -343,11 +348,17 @@ class TestDeleteLabel:
     def test_delete_dismissed_does_not_call_api(self, page: Page, base_url: str):
         """Dismissing the delete dialog does NOT send a DELETE request."""
         calls: list[bool] = []
-        page.route("**/api/labels/**", lambda route: (
-            calls.append(True) if route.request.method == "DELETE" else None,
-            route.fulfill(status=200, content_type="application/json",
-                          body=json.dumps({"status": "success", "labels": [ROOT_LABEL]})),
-        ))
+        page.route(
+            "**/api/labels/**",
+            lambda route: (
+                calls.append(True) if route.request.method == "DELETE" else None,
+                route.fulfill(
+                    status=200,
+                    content_type="application/json",
+                    body=json.dumps({"status": "success", "labels": [ROOT_LABEL]}),
+                ),
+            ),
+        )
         _mock_labels(page, [ROOT_LABEL])
 
         _navigate_to_labels(page, base_url)
@@ -424,8 +435,7 @@ class TestLabelScopeEditMode:
         page.wait_for_timeout(600)
 
         assert calls, "Expected POST to /api/labels"
-        assert calls[0].get("scope") == "object", \
-            f"Expected scope='object' in POST payload; got: {calls[0]}"
+        assert calls[0].get("scope") == "object", f"Expected scope='object' in POST payload; got: {calls[0]}"
 
     def test_create_image_scope_label_sends_scope_in_payload(self, page: Page, base_url: str):
         """Adding a label via the Image Labels section sends scope='image' in POST."""
@@ -457,9 +467,7 @@ class TestLabelScopeEditMode:
         page.wait_for_timeout(600)
 
         assert calls, "Expected POST to /api/labels"
-        assert calls[0].get("scope") == "image", \
-            f"Expected scope='image' in POST payload; got: {calls[0]}"
-
+        assert calls[0].get("scope") == "image", f"Expected scope='image' in POST payload; got: {calls[0]}"
 
 
 # ---------------------------------------------------------------------------
@@ -516,8 +524,7 @@ class TestLabelScopeSelectMode:
             container.remove();
             return {{ toolCalls: runtime._toolCalls }};
         }}""")
-        assert result.get("toolCalls") == [], \
-            f"Expected no setTool calls for image-scope label; got: {result}"
+        assert result.get("toolCalls") == [], f"Expected no setTool calls for image-scope label; got: {result}"
 
     def test_object_scope_label_click_sets_bbox_tool(self, shared_page: Page):
         """Clicking a label with scope='object' arms the bbox draw tool."""
@@ -545,8 +552,7 @@ class TestLabelScopeSelectMode:
             container.remove();
             return {{ toolCalls: runtime._toolCalls }};
         }}""")
-        assert "bbox:obj-lbl-1" in result.get("toolCalls", []), \
-            f"Expected setTool('bbox:obj-lbl-1'); got: {result}"
+        assert "bbox:obj-lbl-1" in result.get("toolCalls", []), f"Expected setTool('bbox:obj-lbl-1'); got: {result}"
 
     def test_image_scope_labels_appear_under_image_classification_section(self, shared_page: Page):
         """Image-scope labels render under an 'Image Classification' section header."""
@@ -587,10 +593,10 @@ class TestLabelScopeSelectMode:
                 hasObjRow: !!objRow,
             }};
         }}""")
-        assert result.get("hasSectionHeader"), \
-            f"Expected 'Image Classification' section header; got: {result}"
-        assert "Image" in (result.get("sectionText") or ""), \
-            f"Section header text should contain 'Image'; got: {result}"
+        assert result.get("hasSectionHeader"), f"Expected 'Image Classification' section header; got: {result}"
+        assert "Image" in (
+            result.get("sectionText") or ""
+        ), f"Section header text should contain 'Image'; got: {result}"
         assert result.get("hasImgRow"), "Image-scope label row should be rendered"
         assert result.get("hasObjRow"), "Object-scope label row should be rendered"
 
@@ -618,8 +624,9 @@ class TestLabelScopeSelectMode:
             container.remove();
             return {{ hasSectionHeader: !!header }};
         }}""")
-        assert not result.get("hasSectionHeader"), \
-            "Should NOT show 'Image Classification' header when no image-scope labels exist"
+        assert not result.get(
+            "hasSectionHeader"
+        ), "Should NOT show 'Image Classification' header when no image-scope labels exist"
 
 
 # ---------------------------------------------------------------------------
@@ -827,3 +834,181 @@ class TestLabelApplyToAllTargeting:
         assert result.get("presetAfterRemount") == "custom", f"preset should stay custom after remount; got {result}"
         assert result.get("aIconAfter") == "⊘", f"excluded row must survive remount; got {result}"
         assert result.get("bIconAfter") == "◉", f"other row should stay targeted after remount; got {result}"
+
+
+# ---------------------------------------------------------------------------
+# Re-parent ("Move to…") flow — edit mode
+# ---------------------------------------------------------------------------
+
+
+ROOT_A = {
+    "uuid": "cccccccc-0000-0000-0000-0000000000a1",
+    "name": "RootA",
+    "color": "#ff0000",
+    "parentUuid": None,
+    "scope": "object",
+}
+
+ROOT_B = {
+    "uuid": "cccccccc-0000-0000-0000-0000000000a2",
+    "name": "RootB",
+    "color": "#00ff00",
+    "parentUuid": None,
+    "scope": "object",
+}
+
+MOVABLE_CHILD = {
+    "uuid": "cccccccc-0000-0000-0000-0000000000a3",
+    "name": "MovableChild",
+    "color": "#0000ff",
+    "parentUuid": ROOT_A["uuid"],
+    "scope": "object",
+}
+
+
+class TestReparentLabel:
+    def test_each_label_has_move_button(self, page: Page, base_url: str):
+        """Each editable label row provides a 'Move' affordance."""
+        _mock_labels(page, [ROOT_A])
+        _navigate_to_labels(page, base_url)
+        row = page.locator(f"#labels-list [data-uuid='{ROOT_A['uuid']}']")
+        expect(row).to_be_visible()
+        expect(row.locator("button[title='Move']")).to_have_count(1)
+
+    def test_move_opens_target_picker_excluding_self(self, page: Page, base_url: str):
+        """Clicking Move opens an inline picker; the label itself is not offered
+        as a valid target (that would be a no-op self-parent)."""
+        _mock_labels(page, [ROOT_A, ROOT_B])
+        _navigate_to_labels(page, base_url)
+        row = page.locator(f"#labels-list [data-uuid='{ROOT_A['uuid']}']")
+        expect(row).to_be_visible()
+
+        row.locator("button[title='Move']").click()
+        page.wait_for_timeout(300)
+
+        select = page.locator(".label-move-select").first
+        expect(select).to_be_visible()
+        option_texts = select.locator("option").all_inner_texts()
+        assert "RootA" not in option_texts, f"Label must not offer itself as a move target; got {option_texts}"
+        assert any("RootB" in t for t in option_texts), f"Expected RootB as a valid target; got {option_texts}"
+        assert "(root)" in option_texts
+
+    def test_move_to_root_sends_null_parent_uuid(self, page: Page, base_url: str):
+        """Picking '(root)' and confirming PATCHes parentUuid: null."""
+        calls: list[dict] = []
+
+        def handle(route: Route):
+            if route.request.method == "PATCH":
+                calls.append(json.loads(route.request.post_data))
+                route.fulfill(status=200, content_type="application/json", body=json.dumps({"status": "success"}))
+            else:
+                route.fulfill(
+                    status=200,
+                    content_type="application/json",
+                    body=json.dumps({"status": "success", "labels": [ROOT_A, MOVABLE_CHILD]}),
+                )
+
+        _mock_labels(page, [ROOT_A, MOVABLE_CHILD])
+        page.route(lambda url: "/api/labels/" in url, handle)
+
+        _navigate_to_labels(page, base_url)
+        row = page.locator(f"#labels-list [data-uuid='{MOVABLE_CHILD['uuid']}']")
+        expect(row).to_be_visible()
+
+        row.locator("button[title='Move']").click()
+        page.wait_for_timeout(300)
+        select = page.locator(".label-move-select").first
+        select.select_option("")  # "(root)"
+        page.locator(".label-move-apply").first.click()
+        page.wait_for_timeout(600)
+
+        assert calls, "Expected a PATCH to /api/labels/{uuid}"
+        assert calls[0].get("parentUuid") is None
+        assert "parentUuid" in calls[0]
+
+    def test_move_to_other_root_sends_its_uuid(self, page: Page, base_url: str):
+        """Picking a real target label sends that label's uuid as parentUuid."""
+        calls: list[dict] = []
+
+        def handle(route: Route):
+            if route.request.method == "PATCH":
+                calls.append(json.loads(route.request.post_data))
+                route.fulfill(status=200, content_type="application/json", body=json.dumps({"status": "success"}))
+            else:
+                route.fulfill(
+                    status=200,
+                    content_type="application/json",
+                    body=json.dumps({"status": "success", "labels": [ROOT_A, ROOT_B, MOVABLE_CHILD]}),
+                )
+
+        _mock_labels(page, [ROOT_A, ROOT_B, MOVABLE_CHILD])
+        page.route(lambda url: "/api/labels/" in url, handle)
+
+        _navigate_to_labels(page, base_url)
+        row = page.locator(f"#labels-list [data-uuid='{MOVABLE_CHILD['uuid']}']")
+        expect(row).to_be_visible()
+
+        row.locator("button[title='Move']").click()
+        page.wait_for_timeout(300)
+        select = page.locator(".label-move-select").first
+        select.select_option(ROOT_B["uuid"])
+        page.locator(".label-move-apply").first.click()
+        page.wait_for_timeout(600)
+
+        assert calls, "Expected a PATCH to /api/labels/{uuid}"
+        assert calls[0].get("parentUuid") == ROOT_B["uuid"]
+
+    def test_move_rerenders_tree_with_new_hierarchy(self, page: Page, base_url: str):
+        """After a successful move, the list re-fetches (a real GET, not a
+        cached/stale one) and the label re-renders nested under its new parent.
+
+        Uses one stateful route (rather than the static `_mock_labels` helper)
+        so the post-PATCH GET reflects the move — proving the re-render used
+        fresh data, not just that the DOM node happened to survive.
+        """
+        state = {
+            "labels": [dict(ROOT_A), dict(ROOT_B), dict(MOVABLE_CHILD)],
+            "patch_calls": 0,
+        }
+
+        def handle(route: Route):
+            url = route.request.url
+            if route.request.method == "PATCH":
+                state["patch_calls"] += 1
+                body = json.loads(route.request.post_data)
+                for lbl in state["labels"]:
+                    if lbl["uuid"] in url and "parentUuid" in body:
+                        lbl["parentUuid"] = body["parentUuid"]
+                route.fulfill(status=200, content_type="application/json", body=json.dumps({"status": "success"}))
+            elif url.split("?")[0].endswith("/api/labels") and "api/labels/" not in url:
+                route.fulfill(
+                    status=200,
+                    content_type="application/json",
+                    body=json.dumps({"status": "success", "labels": state["labels"]}),
+                )
+            else:
+                route.continue_()
+
+        page.route(lambda url: "/api/labels" in url, handle)
+
+        _navigate_to_labels(page, base_url)
+        row = page.locator(f"#labels-list [data-uuid='{MOVABLE_CHILD['uuid']}']")
+        expect(row).to_be_visible()
+
+        row.locator("button[title='Move']").click()
+        page.wait_for_timeout(300)
+        select = page.locator(".label-move-select").first
+        select.select_option(ROOT_B["uuid"])
+        page.locator(".label-move-apply").first.click()
+        page.wait_for_timeout(700)
+
+        assert state["patch_calls"] == 1
+        # The label now nests under RootB in the re-fetched/re-rendered tree.
+        root_b_row = page.locator(f"#labels-list [data-uuid='{ROOT_B['uuid']}']")
+        moved_row = page.locator(f"#labels-list [data-uuid='{MOVABLE_CHILD['uuid']}']")
+        expect(moved_row).to_be_visible()
+        # The moved row's indentation should now match a direct child of RootB
+        # rather than its old position under RootA (which no longer has children).
+        root_a_row = page.locator(f"#labels-list [data-uuid='{ROOT_A['uuid']}']")
+        expect(root_a_row).to_be_visible()
+        assert state["labels"][2]["parentUuid"] == ROOT_B["uuid"]

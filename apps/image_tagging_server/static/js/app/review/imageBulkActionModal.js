@@ -10,7 +10,6 @@
 import { fetchTags } from '/app-static/js/shared/api/tags.js';
 import { filterVisibleTags } from '/app-static/js/shared/activeModel.js';
 import { bulkApplyImagesByUuids } from '/app-static/js/shared/api/review.js';
-import { setImageLabel } from '/app-static/js/shared/api/imageLabels.js';
 import { Logger, toast } from '/app-static/js/ui/utils/logging.js';
 import { nextModalZIndex, applyModalCascade, registerEscHandler, unregisterEscHandler } from '/app-static/js/ui/utils/modalZIndex.js';
 import { CheckboxField } from '/app-static/js/ui/utils/fields/CheckboxField.js';
@@ -123,6 +122,7 @@ export async function showImageBulkActionModal(entries, labels, onConfirm, title
 
 export async function executeBulkImageAction(action, entries, labelUuid, tagUuids = []) {
   let failCount = 0;
+  let skippedCount = 0;
   const succeededEntries = [];
 
   if (TAG_ACTIONS.includes(action)) {
@@ -150,20 +150,33 @@ export async function executeBulkImageAction(action, entries, labelUuid, tagUuid
       Logger.error(`Bulk image tag action failed: ${err.message}`);
       failCount = entries.length;
     }
-    return { failCount, succeededEntries };
+    return { failCount, skippedCount, succeededEntries };
   }
 
-  for (const entry of entries) {
-    const { img } = entry;
-    try {
-      const status = action === 'setPresent' ? 'present' : action === 'setAbsent' ? 'absent' : 'uncertain';
-      await setImageLabel(img.filename, labelUuid, status);
-      succeededEntries.push(entry);
-    } catch (err) {
-      Logger.error(`Image label action failed for ${img.uuid}: ${err.message}`);
-      failCount++;
-    }
+  // Label-status actions (setPresent/setAbsent/setUncertain) — batch through
+  // the same server-side bulk endpoint as tag actions above, instead of one
+  // HTTP round-trip per image (setImageLabel). The action names line up
+  // 1:1 with the backend's bulk-apply action dispatch, so no status-string
+  // translation is needed here anymore.
+  //
+  // Note: like the tag-action branch above, the bulk endpoint only reports
+  // aggregate counts, not a per-image breakdown — every entry is optimistically
+  // treated as "succeeded" for card-staleness purposes. skippedCount (setAbsent
+  // refused because a verified bbox already contradicts it) is surfaced
+  // separately so callers can report it distinctly from a real failure.
+  try {
+    const { failCount: serverFailCount, skippedCount: serverSkippedCount } = await bulkApplyImagesByUuids({
+      imageUuids: entries.map(e => e.img.uuid),
+      action,
+      labelUuid,
+    });
+    failCount = serverFailCount;
+    skippedCount = serverSkippedCount;
+    succeededEntries.push(...entries);
+  } catch (err) {
+    Logger.error(`Bulk image label action failed: ${err.message}`);
+    failCount = entries.length;
   }
 
-  return { failCount, succeededEntries };
+  return { failCount, skippedCount, succeededEntries };
 }

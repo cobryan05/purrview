@@ -18,6 +18,7 @@ import jstyleson
 from alembic.runtime.migration import MigrationContext
 from pydantic import TypeAdapter
 from sqlalchemy import Select, and_, delete, event, exists, func, or_, text
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import selectinload, sessionmaker
@@ -2226,14 +2227,27 @@ class DbClient:
     ################################################################################
 
     async def set_image_label_status(self, image_uuid: str, label_uuid: str, status: ImageItemStatus) -> None:
-        """Upsert an image_label record, overwriting any existing status."""
+        """Upsert an image_label record, overwriting any existing status.
+
+        Uses a single atomic INSERT ... ON CONFLICT DO UPDATE rather than a
+        get-then-insert round trip. Two concurrent calls for the same
+        (image_uuid, label_uuid) would otherwise both miss the SELECT and both
+        attempt an INSERT — the loser hits a PK violation and surfaces as a
+        failure to its caller even though the winner's write landed correctly.
+        """
+        now = datetime.now(timezone.utc)
         async with self._async_session_maker() as session:
-            existing = await session.get(ImageLabel, (image_uuid, label_uuid))
-            if existing:
-                existing.status = status
-                existing.updated_at = datetime.now(timezone.utc)
-            else:
-                session.add(ImageLabel(image_uuid=image_uuid, label_uuid=label_uuid, status=status))
+            stmt = sqlite_insert(ImageLabel).values(
+                image_uuid=image_uuid,
+                label_uuid=label_uuid,
+                status=status,
+                updated_at=now,
+            )
+            stmt = stmt.on_conflict_do_update(
+                index_elements=[ImageLabel.image_uuid, ImageLabel.label_uuid],
+                set_={"status": stmt.excluded.status, "updated_at": stmt.excluded.updated_at},
+            )
+            await session.exec(stmt)
             await session.commit()
 
     async def get_image_labels(self, image_uuid: str) -> List[ImageLabel]:

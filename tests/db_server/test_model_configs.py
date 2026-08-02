@@ -268,6 +268,71 @@ async def test_label_delete_cascades_node(http_client):
     assert remaining_nodes[0]["labelUuid"] is None
 
 
+async def test_reparent_label_preserves_model_config_nodes(http_client):
+    """Constructive counterpart to test_label_delete_cascades_node: re-parenting
+    a label (the only way to 'move a model in the hierarchy' today) must
+    preserve every ModelConfigNode hanging off the moved label AND its
+    descendants — same uuids, same model_type, same architecture, same
+    roll_up_unchecked. ModelConfigNode is keyed by label_uuid, not by tree
+    position, so a true re-parent (as opposed to delete+recreate) should not
+    touch these rows at all.
+    """
+    old_parent = await _create_label(http_client, "OldParent")
+    new_parent = await _create_label(http_client, "NewParent")
+    moved_label = await _create_label(http_client, "MovedLabel", parent_uuid=old_parent)
+    descendant = await _create_label(http_client, "Descendant", parent_uuid=moved_label)
+
+    nodes = [
+        {
+            "label_uuid": None,
+            "model_type": "object_detection",
+            "architecture": "yolo_v9_c",
+        },
+        {
+            # A sub-model boundary on the label being moved.
+            "label_uuid": moved_label,
+            "model_type": "crop_classifier",
+            "architecture": "efficientnet_b0",
+            "roll_up_unchecked": True,
+        },
+        {
+            "label_uuid": descendant,
+            "model_type": "image_classifier",
+            "architecture": "resnet_18",
+            "roll_up_unchecked": False,
+        },
+    ]
+    cfg = await _create_config(http_client, "ReparentSurvives", nodes=nodes)
+    assert len(cfg["nodes"]) == 3
+    before_by_uuid = {n["uuid"]: n for n in cfg["nodes"]}
+
+    # Re-parent the label — the whole point of the feature: no destructive
+    # delete+recreate should be necessary, and none happens here.
+    r = await http_client.patch(f"/api/labels/{moved_label}", json={"parentUuid": new_parent})
+    assert r.status_code == 200
+    assert r.json()["status"] == "success", r.json()
+
+    r2 = await http_client.get(f"/api/model-configs/{cfg['uuid']}")
+    body = r2.json()
+    assert body["status"] == "success"
+    after_nodes = body["config"]["nodes"]
+    assert len(after_nodes) == 3
+
+    after_by_uuid = {n["uuid"]: n for n in after_nodes}
+    assert set(after_by_uuid) == set(before_by_uuid), "every node uuid must survive the move untouched"
+    for uuid, before in before_by_uuid.items():
+        after = after_by_uuid[uuid]
+        assert after["labelUuid"] == before["labelUuid"]
+        assert after["modelType"] == before["modelType"]
+        assert after["architecture"] == before["architecture"]
+        assert after["rollUpUnchecked"] == before["rollUpUnchecked"]
+
+    # And the label tree itself actually moved.
+    labels_r = await http_client.get("/api/labels")
+    moved = next(l for l in labels_r.json()["labels"] if l["uuid"] == moved_label)
+    assert moved["parentUuid"] == new_parent
+
+
 async def test_invalid_model_type_rejected(http_client):
     r = await http_client.post(
         "/api/model-configs",

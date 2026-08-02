@@ -57,6 +57,11 @@ export async function fetchImageLabels(imagePath) {
  *   'present'   - include as a positive training example for this label
  *   'absent'    - confirmed not present; clean negative training example
  *   'uncertain' - unreviewed (clears any existing present/absent row)
+ * @returns {Promise<{ skipped: boolean, message?: string }>}
+ *   `skipped: true` means the server deliberately refused the write (e.g. ABSENT
+ *   blocked by a verified bbox for the label) — a legitimate outcome, not a
+ *   failure. The stored state is unchanged and is exactly what it should be;
+ *   callers must not treat this as an error or retry it.
  */
 export async function setImageLabel(imagePath, labelUuid, status) {
   const res = await apiFetch('/api/images/labels/set', {
@@ -69,4 +74,5 @@ export async function setImageLabel(imagePath, labelUuid, status) {
   if (!res.ok || data.status !== 'success') {
     throw new Error(data.message || 'Failed to set image label');
   }
+  return { skipped: !!data.skipped, message: data.message };
 }

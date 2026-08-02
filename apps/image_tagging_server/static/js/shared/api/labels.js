@@ -68,10 +68,14 @@ export async function createNewLabel(name, color, parentUuid = null, labelType =
 }
 
 
-export async function updateLabel(uuid, name, color, { labelType, scope } = {}) {
+export async function updateLabel(uuid, name, color, { labelType, scope, parentUuid } = {}) {
   const body = { name, color };
   if (labelType !== undefined) body.labelType = labelType;
   if (scope !== undefined) body.scope = scope;
+  // Only send parentUuid when the caller explicitly provided it (including
+  // `null`, which promotes to root) — omitting it must leave the label's
+  // existing parent untouched, never accidentally re-parent on a plain rename.
+  if (parentUuid !== undefined) body.parentUuid = parentUuid;
 
   const res = await apiFetch(`/api/labels/${uuid}`, {
     method: 'PATCH',

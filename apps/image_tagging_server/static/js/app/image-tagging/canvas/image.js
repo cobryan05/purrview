@@ -380,8 +380,19 @@ export async function addInferenceResults(runtime, results, { replaceExisting = 
         continue;
       }
 
-      // Replace: drop the old box, fall through to add the new one.
+      // Replace: drop the old box, fall through to add the new one. Detach it
+      // from the transformer first — Konva caches the bounds of whatever was
+      // passed to transformer.nodes([...]) and destroying a node does not
+      // clear or reposition that cached selection rectangle. Also clear any
+      // stale selectedBbox reference so a later click doesn't operate on a
+      // destroyed node.
       runtime.state.image.bboxes.delete(bestMatch.uuid);
+      const { transformer, interactionState } = runtime.canvas;
+      transformer?.nodes(transformer.nodes().filter(n => n !== matchView && n.getParent() !== matchView));
+      if (interactionState?.selectedBbox === matchView) {
+        matchView.off('transformend.transformer');
+        interactionState.selectedBbox = null;
+      }
       matchView?.destroy();
     }
 

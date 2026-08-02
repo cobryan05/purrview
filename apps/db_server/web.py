@@ -118,6 +118,7 @@ class BulkApplyAllPayload(ApiPayload):
 class BulkApplyAllResponse(StatusResponse):
     modified_count: int = 0
     fail_count: int = 0
+    skipped_count: int = 0
 
 
 class BulkApplyBboxesByUuidsPayload(ApiPayload):
@@ -132,7 +133,18 @@ class BulkApplyBboxesByUuidsPayload(ApiPayload):
 
 class BulkApplyImagesByUuidsPayload(ApiPayload):
     image_uuids: List[str]
-    action: str  # setAbsent | setUncertain | delete | addTags | removeTags | setTagAbsent | setTagUncertain
+    action: (
+        str  # setPresent | setAbsent | setUncertain | delete | addTags | removeTags | setTagAbsent | setTagUncertain
+    )
+    label_uuid: Optional[str] = None
+    tag_uuids: List[str] = Field(default_factory=list)
+
+
+class BulkApplyImagesPayload(ApiPayload):
+    filter: ImageSearchParams
+    action: (
+        str  # setPresent | setAbsent | setUncertain | delete | addTags | removeTags | setTagAbsent | setTagUncertain
+    )
     label_uuid: Optional[str] = None
     tag_uuids: List[str] = Field(default_factory=list)
 
@@ -379,7 +391,12 @@ class SetImageLabelPayload(ApiPayload):
 
 
 class SetImageLabelResponse(StatusResponse):
-    pass
+    # True when the write was refused as a legitimate business-rule conflict
+    # (ABSENT blocked by an existing verified bbox for the label) rather than a
+    # real error. status stays "success" — the stored state is exactly what it
+    # should be — so callers can tell "nothing to worry about" apart from an
+    # actual failure (e.g. image not found).
+    skipped: bool = False
 
 
 class GetImageLabelsResponse(StatusResponse):
@@ -1027,15 +1044,24 @@ class WebApp:
         )
         async def update_label_api(label_uuid: str, request: LabelUpdate) -> UpdateLabelResponse:
             """
-            API endpoint to update an existing label's name and/or color.
+            API endpoint to update an existing label's name, color, type, scope,
+            and/or parent (re-parent / "move" it in the hierarchy).
             """
             try:
+                # parentUuid is only forwarded when the caller explicitly set it —
+                # `None` (promote to root) must stay distinguishable from "field
+                # absent from the request body" (leave the existing parent alone).
+                parent_uuid_kwargs = {}
+                if "parent_uuid" in request.model_fields_set:
+                    parent_uuid_kwargs["parent_uuid"] = request.parent_uuid
+
                 await self._manager.update_label(
                     label_uuid=label_uuid,
                     name=request.name,
                     color=request.color,
                     label_type=request.label_type,
                     scope=request.scope,
+                    **parent_uuid_kwargs,
                 )
                 return UpdateLabelResponse(status=JsonValues.SUCCESS)
             except Exception as e:
@@ -1504,14 +1530,18 @@ class WebApp:
         async def set_image_label_status(
             payload: SetImageLabelPayload,
         ) -> SetImageLabelResponse:
-            ok = await self._manager.set_image_label_status(payload.image_path, payload.label_uuid, payload.status)
-            if not ok:
-                if payload.status == ImageItemStatus.ABSENT:
-                    return SetImageLabelResponse(
-                        status=JsonValues.FAILURE,
-                        message="Cannot mark label absent: the image has a verified bbox with this label",
-                    )
+            outcome = await self._manager.set_image_label_status(payload.image_path, payload.label_uuid, payload.status)
+            if outcome == "not_found":
                 return SetImageLabelResponse(status=JsonValues.FAILURE, message="Image not found")
+            if outcome == "skipped":
+                # Deliberate business-rule rejection, not a failure: the stored
+                # state is exactly correct. Keep status=success so the client
+                # doesn't treat this as something going wrong.
+                return SetImageLabelResponse(
+                    status=JsonValues.SUCCESS,
+                    skipped=True,
+                    message="Cannot mark label absent: the image has a verified bbox with this label",
+                )
             return SetImageLabelResponse()
 
         @self._app.get(
@@ -1737,15 +1767,42 @@ class WebApp:
             """Apply an image-level action to an explicit list of images (no filter
             equivalent, e.g. similarity/diversity search results)."""
             try:
-                modified_count, fail_count = await self._manager.bulk_apply_images_by_uuids(
+                modified_count, fail_count, skipped_count = await self._manager.bulk_apply_images_by_uuids(
                     image_uuids=payload.image_uuids,
                     action=payload.action,
                     label_uuid=payload.label_uuid,
                     tag_uuids=payload.tag_uuids,
                 )
-                return BulkApplyAllResponse(modified_count=modified_count, fail_count=fail_count)
+                return BulkApplyAllResponse(
+                    modified_count=modified_count, fail_count=fail_count, skipped_count=skipped_count
+                )
             except Exception as e:
                 logger.exception("bulk_apply_images_by_uuids failed")
+                return BulkApplyAllResponse(status=JsonValues.FAILURE, message=str(e))
+
+        @self._app.post(
+            "/api/images/bulk-apply",
+            response_model=BulkApplyAllResponse,
+            tags=[ApiTags.IMAGES],
+            operation_id="bulk_apply_images",
+        )
+        async def bulk_apply_images_endpoint(
+            payload: BulkApplyImagesPayload,
+        ) -> BulkApplyAllResponse:
+            """Apply an image-level action to every image matching the given filter,
+            across all pages — the image-kind counterpart of bulk_apply_bboxes_endpoint."""
+            try:
+                modified_count, fail_count, skipped_count = await self._manager.bulk_apply_images(
+                    search_params=payload.filter,
+                    action=payload.action,
+                    label_uuid=payload.label_uuid,
+                    tag_uuids=payload.tag_uuids,
+                )
+                return BulkApplyAllResponse(
+                    modified_count=modified_count, fail_count=fail_count, skipped_count=skipped_count
+                )
+            except Exception as e:
+                logger.exception("bulk_apply_images failed")
                 return BulkApplyAllResponse(status=JsonValues.FAILURE, message=str(e))
 
         @self._app.delete(

@@ -5,14 +5,17 @@ ABSENT rows are set explicitly by the user and survive recomputation.
 Unverified and false-positive bboxes produce no image_label rows.
 """
 
+import asyncio
 import uuid
 
 import pytest
 
+from apps.db_server.manager import Manager
 from apps.helpers.db.types import (
     FALSE_POS_TAG_UUID,
     UNVERIFIED_TAG_UUID,
     VERIFIED_TAG_UUID,
+    ImageItemStatus,
 )
 from tests.conftest import make_png
 
@@ -395,7 +398,10 @@ async def test_set_uncertain_clears_manual_present(http_client, image_file, labe
 
 
 async def test_absent_blocked_by_verified_bbox(http_client, image_file, label_uuid):
-    """ABSENT is rejected when the image already has a verified bbox for that label."""
+    """ABSENT is refused when the image already has a verified bbox for that
+    label — but this is a deliberate business-rule skip, not a failure: the
+    response keeps status=success and sets skipped=True so the client doesn't
+    treat it as an error worth surfacing/retrying (see labelList.js flush)."""
     await _update_bboxes(
         http_client,
         "labels_test.png",
@@ -411,7 +417,6 @@ async def test_absent_blocked_by_verified_bbox(http_client, image_file, label_uu
             }
         ],
     )
-    # Setting ABSENT should fail (contradicts verified bbox)
     r = await http_client.post(
         "/api/images/labels/set",
         json={
@@ -421,10 +426,26 @@ async def test_absent_blocked_by_verified_bbox(http_client, image_file, label_uu
         },
     )
     assert r.status_code == 200
-    assert r.json()["status"] == "failure"
-    # Label should still be PRESENT (from the verified bbox)
+    body = r.json()
+    assert body["status"] == "success"
+    assert body["skipped"] is True
+    assert body["message"]
+    # Label should still be PRESENT (from the verified bbox) — nothing was overwritten.
     labels = await _get_image_labels(http_client, "labels_test.png")
     assert labels[label_uuid] == "present"
+
+
+async def test_absent_not_blocked_reports_skipped_false(http_client, image_file, label_uuid):
+    """The common, unblocked case must NOT carry skipped=True."""
+    await _update_bboxes(http_client, "labels_test.png", [])
+    r = await http_client.post(
+        "/api/images/labels/set",
+        json={"imagePath": "labels_test.png", "labelUuid": label_uuid, "status": "absent"},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["status"] == "success"
+    assert body.get("skipped", False) is False
 
 
 async def test_absent_allowed_without_verified_bbox(http_client, image_file, label_uuid):
@@ -634,3 +655,253 @@ class TestBatchImageLabels:
         r = await http_client.post("/api/images/labels/batch", json={"imageUuids": []})
         assert r.status_code == 200
         assert r.json()["imageLabels"] == {}
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Bulk apply by UUIDs — POST /api/images/bulk-apply-by-uuids (image-label actions)
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+class TestBulkApplyImagesByUuidsLabelActions:
+    """setPresent/setAbsent/setUncertain via the by-uuids bulk endpoint.
+
+    setPresent regression: the manager's action dispatch used to end with a
+    bare `else` that treated any unmatched action (including "setPresent",
+    which the frontend's applyToAllCandidates DOES send) as "setAbsent" —
+    silently storing ABSENT for a request that asked for PRESENT.
+    """
+
+    async def _make_image(self, http_client, files_root, name):
+        (files_root / name).write_bytes(make_png())
+        r = await _update_bboxes(http_client, name, [])
+        return r["image"]["uuid"]
+
+    async def test_bulk_apply_set_present(self, http_client, files_root, label_uuid):
+        image_uuid = await self._make_image(http_client, files_root, "bulk_present.png")
+
+        r = await http_client.post(
+            "/api/images/bulk-apply-by-uuids",
+            json={"imageUuids": [image_uuid], "action": "setPresent", "labelUuid": label_uuid},
+        )
+        assert r.status_code == 200
+        body = r.json()
+        assert body["status"] == "success"
+        assert body["modifiedCount"] == 1
+        assert body["failCount"] == 0
+
+        labels = await _get_image_labels(http_client, "bulk_present.png")
+        assert labels[label_uuid] == "present"
+
+    async def test_bulk_apply_set_absent(self, http_client, files_root, label_uuid):
+        image_uuid = await self._make_image(http_client, files_root, "bulk_absent.png")
+
+        r = await http_client.post(
+            "/api/images/bulk-apply-by-uuids",
+            json={"imageUuids": [image_uuid], "action": "setAbsent", "labelUuid": label_uuid},
+        )
+        assert r.status_code == 200
+        body = r.json()
+        assert body["modifiedCount"] == 1
+
+        labels = await _get_image_labels(http_client, "bulk_absent.png")
+        assert labels[label_uuid] == "absent"
+
+    async def test_bulk_apply_set_uncertain(self, http_client, files_root, label_uuid):
+        image_uuid = await self._make_image(http_client, files_root, "bulk_uncertain.png")
+        await _set_label(http_client, "bulk_uncertain.png", label_uuid, "absent")
+
+        r = await http_client.post(
+            "/api/images/bulk-apply-by-uuids",
+            json={"imageUuids": [image_uuid], "action": "setUncertain", "labelUuid": label_uuid},
+        )
+        assert r.status_code == 200
+        assert r.json()["modifiedCount"] == 1
+
+        labels = await _get_image_labels(http_client, "bulk_uncertain.png")
+        assert label_uuid not in labels
+
+    async def test_bulk_apply_set_absent_skipped_when_verified_bbox_present(self, http_client, files_root, label_uuid):
+        """setAbsent must be reported as skipped (not failed, not modified) when
+        the image already has a verified bbox for the label — mirrors the
+        single-image set_image_label_status contradiction rule."""
+        name = "bulk_absent_skip.png"
+        (files_root / name).write_bytes(make_png())
+        r = await _update_bboxes(
+            http_client,
+            name,
+            [
+                {
+                    "uuid": str(uuid.uuid4()),
+                    "labelUuid": label_uuid,
+                    "x": 0.1,
+                    "y": 0.1,
+                    "width": 0.2,
+                    "height": 0.2,
+                    "tagUuids": [VERIFIED_TAG_UUID],
+                }
+            ],
+        )
+        image_uuid = r["image"]["uuid"]
+
+        resp = await http_client.post(
+            "/api/images/bulk-apply-by-uuids",
+            json={"imageUuids": [image_uuid], "action": "setAbsent", "labelUuid": label_uuid},
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["status"] == "success"
+        assert body["modifiedCount"] == 0
+        assert body["failCount"] == 0
+        assert body["skippedCount"] == 1
+
+        # Untouched: still present from the verified bbox.
+        labels = await _get_image_labels(http_client, name)
+        assert labels[label_uuid] == "present"
+
+    async def test_bulk_apply_unknown_action_raises(self, http_client, files_root, label_uuid):
+        image_uuid = await self._make_image(http_client, files_root, "bulk_unknown_action.png")
+
+        r = await http_client.post(
+            "/api/images/bulk-apply-by-uuids",
+            json={"imageUuids": [image_uuid], "action": "bogusAction", "labelUuid": label_uuid},
+        )
+        assert r.status_code == 200
+        body = r.json()
+        assert body["modifiedCount"] == 0
+        assert body["failCount"] == 1
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Filter-based bulk apply — POST /api/images/bulk-apply
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+class TestBulkApplyImagesByFilter:
+    """The image-kind counterpart of POST /api/images/bbox/bulk-apply: paginates
+    list_images_search server-side instead of requiring the caller to already
+    know every uuid."""
+
+    async def test_bulk_apply_by_filter_sets_absent_for_matching_images(self, http_client, files_root, label_uuid):
+        matching = ["filter_match_a.png", "filter_match_b.png"]
+        other = "filter_other.png"
+        for name in (*matching, other):
+            (files_root / name).write_bytes(make_png())
+            await _update_bboxes(http_client, name, [])
+
+        r = await http_client.post(
+            "/api/images/bulk-apply",
+            json={
+                "filter": {"showAllBboxes": True, "filenameSearch": "filter_match"},
+                "action": "setAbsent",
+                "labelUuid": label_uuid,
+            },
+        )
+        assert r.status_code == 200
+        body = r.json()
+        assert body["status"] == "success"
+        assert body["modifiedCount"] == len(matching)
+        assert body["failCount"] == 0
+
+        for name in matching:
+            labels = await _get_image_labels(http_client, name)
+            assert labels[label_uuid] == "absent"
+        other_labels = await _get_image_labels(http_client, other)
+        assert label_uuid not in other_labels
+
+    async def test_bulk_apply_by_filter_paginates_across_pages(self, http_client, files_root, label_uuid, monkeypatch):
+        """Force a tiny page size so the keyset cursor loop actually runs
+        multiple iterations, mirroring bulk_apply_bboxes's own pagination test."""
+        monkeypatch.setattr(Manager, "BULK_APPLY_PAGE_SIZE", 2)
+        names = [f"filter_page_{i}.png" for i in range(5)]
+        for name in names:
+            (files_root / name).write_bytes(make_png())
+            await _update_bboxes(http_client, name, [])
+
+        r = await http_client.post(
+            "/api/images/bulk-apply",
+            json={
+                "filter": {"showAllBboxes": True, "filenameSearch": "filter_page_"},
+                "action": "setAbsent",
+                "labelUuid": label_uuid,
+            },
+        )
+        assert r.status_code == 200
+        body = r.json()
+        assert body["modifiedCount"] == len(names)
+
+        for name in names:
+            labels = await _get_image_labels(http_client, name)
+            assert labels[label_uuid] == "absent"
+
+    async def test_bulk_apply_by_filter_reports_skipped(self, http_client, files_root, label_uuid):
+        name = "filter_skip.png"
+        (files_root / name).write_bytes(make_png())
+        r = await _update_bboxes(
+            http_client,
+            name,
+            [
+                {
+                    "uuid": str(uuid.uuid4()),
+                    "labelUuid": label_uuid,
+                    "x": 0.1,
+                    "y": 0.1,
+                    "width": 0.2,
+                    "height": 0.2,
+                    "tagUuids": [VERIFIED_TAG_UUID],
+                }
+            ],
+        )
+
+        resp = await http_client.post(
+            "/api/images/bulk-apply",
+            json={
+                "filter": {"showAllBboxes": True, "filenameSearch": "filter_skip"},
+                "action": "setAbsent",
+                "labelUuid": label_uuid,
+            },
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["modifiedCount"] == 0
+        assert body["skippedCount"] == 1
+
+        labels = await _get_image_labels(http_client, name)
+        assert labels[label_uuid] == "present"
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Concurrent upsert — DbClient.set_image_label_status must not race
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+class TestConcurrentSetImageLabelStatus:
+    """A get-then-insert upsert lets two concurrent calls for the same
+    (image_uuid, label_uuid) both miss the SELECT and both attempt an INSERT —
+    the loser hits a PK violation. The fix must make the upsert atomic."""
+
+    async def test_concurrent_calls_for_same_key_all_succeed(self, db_client, files_root):
+        img = await db_client.add_image(files_root / "concurrent.png")
+        label = await db_client.add_label(name="concurrent-label")
+
+        await asyncio.gather(
+            *[db_client.set_image_label_status(img.uuid, label.uuid, ImageItemStatus.PRESENT) for _ in range(10)]
+        )
+
+        rows = await db_client.get_image_labels(img.uuid)
+        matching = [r for r in rows if r.label_uuid == label.uuid]
+        assert len(matching) == 1
+        assert matching[0].status == ImageItemStatus.PRESENT
+
+    async def test_concurrent_calls_with_different_final_status_leave_one_consistent_row(self, db_client, files_root):
+        """Mixed PRESENT/ABSENT calls racing on the same key must not crash; exactly
+        one row must remain, holding whichever status won the race."""
+        img = await db_client.add_image(files_root / "concurrent2.png")
+        label = await db_client.add_label(name="concurrent-label-2")
+
+        statuses = [ImageItemStatus.PRESENT, ImageItemStatus.ABSENT] * 5
+        await asyncio.gather(*[db_client.set_image_label_status(img.uuid, label.uuid, s) for s in statuses])
+
+        rows = await db_client.get_image_labels(img.uuid)
+        matching = [r for r in rows if r.label_uuid == label.uuid]
+        assert len(matching) == 1
+        assert matching[0].status in (ImageItemStatus.PRESENT, ImageItemStatus.ABSENT)

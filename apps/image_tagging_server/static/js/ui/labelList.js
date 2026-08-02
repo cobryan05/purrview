@@ -114,6 +114,126 @@ export function expandWithDescendants(labelUuids, labelsMap) {
   return result;
 }
 
+// ─── Re-parent ("Move to…") picker ──────────────────────────────────────────
+// Shared between edit mode and model-config mode: the invalid-target set
+// (self + descendants) is computed client-side for a snappy, testable picker,
+// but the server-side cycle guard (Manager._assert_no_reparent_cycle) is still
+// the authority — this is a UX nicety, not the enforcement point.
+
+/**
+ * Labels that would create a cycle if `uuid` were re-parented under them: the
+ * label itself and every one of its descendants.
+ *
+ * @param {Map<string, object>} labelsMap
+ * @param {string} uuid
+ * @returns {Set<string>}
+ */
+function invalidMoveTargets(labelsMap, uuid) {
+  const byParent = buildHierarchy(labelsMap, null);
+  const invalid = new Set([uuid]);
+  const queue = [uuid];
+  while (queue.length > 0) {
+    const cur = queue.shift();
+    for (const child of (byParent.get(cur) ?? [])) {
+      if (!invalid.has(child.uuid)) {
+        invalid.add(child.uuid);
+        queue.push(child.uuid);
+      }
+    }
+  }
+  return invalid;
+}
+
+/**
+ * Build a <select> of valid re-parent targets: "(root)" plus every label in
+ * `labelsMap` not in `excludeUuids`, indented to show hierarchy depth.
+ *
+ * @param {Map<string, object>} labelsMap
+ * @param {Set<string>} excludeUuids
+ * @param {string|null} currentParentUuid
+ * @returns {HTMLSelectElement}
+ */
+function buildMoveTargetSelect(labelsMap, excludeUuids, currentParentUuid) {
+  const select = document.createElement('select');
+  select.className = 'label-move-select';
+  select.style.cssText = 'font-size: 0.78em; max-width: 220px;';
+
+  const rootOpt = document.createElement('option');
+  rootOpt.value = '';
+  rootOpt.textContent = '(root)';
+  select.appendChild(rootOpt);
+
+  for (const label of flattenHierarchy(labelsMap)) {
+    if (excludeUuids.has(label.uuid)) continue;
+    const opt = document.createElement('option');
+    opt.value = label.uuid;
+    opt.textContent = `${'—'.repeat(label.depth)} ${label.name}`.trim();
+    select.appendChild(opt);
+  }
+
+  select.value = currentParentUuid ?? '';
+  return select;
+}
+
+/**
+ * Toggle an inline "Move to…" row directly beneath `anchorRow`: a target
+ * picker plus Move/Cancel buttons. Clicking the trigger again while the
+ * picker for the same label is open closes it instead of opening a second one.
+ *
+ * @param {HTMLElement} anchorRow
+ * @param {{label: object, labelsMap: Map<string,object>, indentLevel: number, onMove: (newParentUuid: string|null) => Promise<void>}} opts
+ */
+function toggleMovePicker(anchorRow, { label, labelsMap, indentLevel, onMove }) {
+  const existing = anchorRow.nextElementSibling;
+  if (existing?.dataset?.moveRowFor === label.uuid) {
+    existing.remove();
+    return;
+  }
+  // Only one picker open at a time within this row's parent container.
+  anchorRow.parentElement?.querySelectorAll('[data-move-row-for]').forEach((el) => el.remove());
+
+  const moveRow = document.createElement('div');
+  moveRow.className = 'label-move-row';
+  moveRow.dataset.moveRowFor = label.uuid;
+  Object.assign(moveRow.style, {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '0.4em',
+    padding: '3px 5px',
+    paddingLeft: `${6 + (indentLevel + 1) * 14}px`,
+  });
+
+  const select = buildMoveTargetSelect(labelsMap, invalidMoveTargets(labelsMap, label.uuid), label.parentUuid ?? null);
+  moveRow.appendChild(select);
+
+  const applyBtn = document.createElement('button');
+  applyBtn.type = 'button';
+  applyBtn.className = 'label-move-apply';
+  applyBtn.textContent = 'Move here';
+  applyBtn.style.cssText = 'font-size: 0.75em; padding: 1px 6px;';
+  applyBtn.onclick = async () => {
+    const newParentUuid = select.value || null;
+    applyBtn.disabled = true;
+    try {
+      await onMove(newParentUuid);
+    } catch (err) {
+      toast(err.message, 5000, 'error');
+      applyBtn.disabled = false;
+    }
+  };
+  moveRow.appendChild(applyBtn);
+
+  const cancelBtn = document.createElement('button');
+  cancelBtn.type = 'button';
+  cancelBtn.className = 'label-move-cancel';
+  cancelBtn.textContent = 'Cancel';
+  cancelBtn.style.cssText = 'font-size: 0.75em; padding: 1px 6px;';
+  cancelBtn.onclick = () => moveRow.remove();
+  moveRow.appendChild(cancelBtn);
+
+  anchorRow.after(moveRow);
+}
+
 // ─── Shared row builder ──────────────────────────────────────────────────────
 
 /**
@@ -161,7 +281,7 @@ export function buildLabelRow(label, indent, { padding = '3px 5px' } = {}) {
 // ─── Edit mode ───────────────────────────────────────────────────────────────
 
 
-function renderEditRows(byParent, container, parentUuid, indentLevel, onRerender) {
+function renderEditRows(byParent, container, parentUuid, indentLevel, onRerender, labelsMap) {
   const children = byParent.get(parentUuid ?? null) ?? [];
   for (const label of children) {
     const { name, color, uuid } = label;
@@ -188,6 +308,22 @@ function renderEditRows(byParent, container, parentUuid, indentLevel, onRerender
           indentLevel: indentLevel + 1,
         });
         row.after(childRow);
+      },
+    };
+
+    const moveButton = {
+      text: 'Move',
+      emoji: '↕️',
+      onClick: ({ row }) => {
+        toggleMovePicker(row, {
+          label,
+          labelsMap,
+          indentLevel,
+          onMove: async (newParentUuid) => {
+            await updateLabel(uuid, name, color, { parentUuid: newParentUuid });
+            onRerender();
+          },
+        });
       },
     };
 
@@ -221,14 +357,14 @@ function renderEditRows(byParent, container, parentUuid, indentLevel, onRerender
       }),
       indentLevel,
       alignLeftButtons: true,
-      leftButtons: [addChildButton, deleteButton],
+      leftButtons: [addChildButton, moveButton, deleteButton],
       rightButtons: [],
     });
 
     labelRow.dataset.uuid = uuid;
     container.appendChild(labelRow);
 
-    renderEditRows(byParent, container, uuid, indentLevel + 1, onRerender);
+    renderEditRows(byParent, container, uuid, indentLevel + 1, onRerender, labelsMap);
   }
 }
 
@@ -294,9 +430,14 @@ async function mountEditMode(container, { filter, onRerender }) {
   }
 
   // Object Labels section
+  // Scoped to a per-section labelsMap (not just a filtered byParent view) so
+  // the Move picker's target list only ever offers same-scope labels — the
+  // two sections are already rendered as separate trees, so this just keeps
+  // "Move to…" consistent with what's on screen.
+  const objLabelsMap = new Map([...labelsMap].filter(([, l]) => l.scope === 'object'));
   addSectionHeader('Object Labels');
-  const byParentObj = buildHierarchy(labelsMap, (l) => l.scope === 'object');
-  renderEditRows(byParentObj, inner, null, 0, onRerender);
+  const byParentObj = buildHierarchy(objLabelsMap, null);
+  renderEditRows(byParentObj, inner, null, 0, onRerender, objLabelsMap);
   addCreateRow('object');
 
   // Spacer between sections
@@ -305,9 +446,10 @@ async function mountEditMode(container, { filter, onRerender }) {
   inner.appendChild(spacer);
 
   // Image Labels section
+  const imgLabelsMap = new Map([...labelsMap].filter(([, l]) => l.scope === 'image'));
   addSectionHeader('Image Labels');
-  const byParentImg = buildHierarchy(labelsMap, (l) => l.scope === 'image');
-  renderEditRows(byParentImg, inner, null, 0, onRerender);
+  const byParentImg = buildHierarchy(imgLabelsMap, null);
+  renderEditRows(byParentImg, inner, null, 0, onRerender, imgLabelsMap);
   addCreateRow('image');
 
   // Refresh button
@@ -591,6 +733,11 @@ async function mountSelectMode(container, { runtime, filter }) {
    */
   let pendingFlush = new Map();
   let derivedPresent = computeDerivedPresent(runtime?.state?.image?.bboxes);
+  // Re-entrancy guard for the CANVAS_ANNOTATIONS_SAVED flush below, matching the
+  // `_flushInFlight` idiom in ui/inspector.js. A rapid double-save (or a save
+  // racing a navigation auto-save) could otherwise put two setImageLabel calls
+  // for the same key in flight concurrently.
+  let _flushInFlight = false;
 
   /** @type {Map<string, (status: string) => void>} */
   const rowUpdaters = new Map();
@@ -1028,6 +1175,13 @@ async function mountSelectMode(container, { runtime, filter }) {
   );
 
   // Flush pending presence changes to the server when the canvas is saved.
+  // Guarded by _flushInFlight (mirrors ui/inspector.js's identical handler): a
+  // rapid double-save, or a save racing a navigation auto-save, would otherwise
+  // put two setImageLabel calls for the same key in flight at once, which is
+  // exactly the race that turns a get-then-insert upsert into a spurious
+  // failure. Uses a while loop so entries queued *during* an in-flight flush
+  // (the user toggled something while awaiting the network) are picked up on
+  // the next iteration rather than silently dropped.
   const unsubSaved = events.subscribeToCanvas(
     runtime.id,
     EventTypes.CANVAS_ANNOTATIONS_SAVED,
@@ -1035,28 +1189,57 @@ async function mountSelectMode(container, { runtime, filter }) {
       // Verified/unverified counts may have changed (presence marks and/or bboxes) — refresh
       // the cached coverage stats so badges elsewhere don't go stale until a manual refresh.
       activeTrainingConfig.refreshStats();
-      if (!currentImagePath || !pendingFlush.size) return;
-      // Capture path and entries atomically; clear only after we know what succeeded.
-      const pathAtSave = currentImagePath;
-      const entries = [...pendingFlush];
-      pendingFlush.clear();
-      const results = await Promise.allSettled(
-        entries.map(([uuid, status]) => setImageLabel(pathAtSave, uuid, status))
-      );
-      results.forEach(r => {
-        if (r.status === 'rejected') console.error('Failed to persist image label:', r.reason);
-      });
-      const failed = entries.filter((_, i) => results[i].status === 'rejected');
-      if (failed.length) {
-        if (currentImagePath === pathAtSave) {
-          // Re-queue only entries that haven't been superseded by a newer user
-          // interaction while the save was in flight.
-          failed.forEach(([uuid, status]) => {
-            if (!pendingFlush.has(uuid)) pendingFlush.set(uuid, status);
+      if (!currentImagePath || !pendingFlush.size || _flushInFlight) return;
+      _flushInFlight = true;
+      try {
+        while (currentImagePath && pendingFlush.size) {
+          // Capture path and entries atomically; clear only after we know what succeeded.
+          const pathAtSave = currentImagePath;
+          const entries = [...pendingFlush];
+          pendingFlush.clear();
+          const results = await Promise.allSettled(
+            entries.map(([uuid, status]) => setImageLabel(pathAtSave, uuid, status))
+          );
+          if (currentImagePath !== pathAtSave) break; // navigated away mid-flush; discard, matching IMAGE_LOADED_ONTO_CANVAS's own pendingFlush.clear()
+
+          let skippedCount = 0;
+          const failed = [];
+          results.forEach((r, i) => {
+            if (r.status === 'rejected') {
+              console.error('Failed to persist image label:', r.reason);
+              failed.push(entries[i]);
+            } else if (r.value?.skipped) {
+              skippedCount += 1;
+            }
           });
+
+          if (failed.length) {
+            // Re-queue only entries that haven't been superseded by a newer user
+            // interaction while the save was in flight.
+            failed.forEach(([uuid, status]) => {
+              if (!pendingFlush.has(uuid)) pendingFlush.set(uuid, status);
+            });
+            // Always show the error — data was lost whether or not we can retry.
+            toast(`${failed.length} label state(s) failed to save`, 5000, 'error');
+            break; // stop looping on persistent errors to avoid thrashing
+          }
+
+          if (skippedCount) {
+            // A verified-bbox conflict is permanently blocked server-side — never
+            // re-queue it (that would make it fire again on every subsequent save,
+            // matching the "periodically" complaint) and never count it toward the
+            // red "failed to save" toast, since nothing actually went wrong.
+            toast(
+              skippedCount === 1
+                ? 'Label left unchanged: image has a verified bbox for it'
+                : `${skippedCount} label state(s) left unchanged: verified bboxes exist`,
+              4000,
+              'info'
+            );
+          }
         }
-        // Always show the error — data was lost whether or not we can retry.
-        toast(`${failed.length} label state(s) failed to save`, 5000, 'error');
+      } finally {
+        _flushInFlight = false;
       }
     }
   );
@@ -1147,6 +1330,7 @@ async function mountModelConfigMode(container, {
   defaultSpec = null,
   onSubmodelsChanged = () => {},
   onRollUpUncheckedChanged = () => {},
+  onLabelsChanged = () => {},
   scopeFilter = null,  // 'object' | 'image' | null (null = show all)
 } = {}) {
   const rawMap = preloaded ?? await fetchLabels();
@@ -1252,6 +1436,33 @@ async function mountModelConfigMode(container, {
         badge.appendChild(document.createTextNode('sub model'));
         row.appendChild(badge);
       }
+
+      // "move" control — reachable regardless of parent/child status; keyed
+      // entirely by label_uuid downstream (ModelConfigNode), so re-parenting
+      // here never disturbs the selection/submodel/roll-up state above.
+      const moveBtn = document.createElement('button');
+      moveBtn.type = 'button';
+      moveBtn.className = 'label-move-trigger';
+      moveBtn.title = 'Move to a different parent';
+      moveBtn.textContent = '↕️ Move';
+      moveBtn.style.cssText = [
+        'font-size: 0.72em', 'padding: 1px 6px', 'flex-shrink: 0', 'cursor: pointer',
+        'border-radius: 3px', 'border: 1px solid var(--pico-border-color)',
+        'background: transparent', 'color: var(--pico-muted-color)',
+      ].join('; ');
+      moveBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        toggleMovePicker(row, {
+          label,
+          labelsMap: displayMap,
+          indentLevel: indent,
+          onMove: async (newParentUuid) => {
+            await updateLabel(label.uuid, label.name, label.color, { parentUuid: newParentUuid });
+            await onLabelsChanged?.();
+          },
+        });
+      });
+      row.appendChild(moveBtn);
 
       // ---- Checkbox event -------------------------------------------------
       cb.addEventListener('change', () => {
@@ -1377,6 +1588,9 @@ async function mountModelConfigMode(container, {
  *   initialSubmodels?: Map<string,string>, model-config mode
  *   defaultSpec?: {modelType:string,architecture:string}|null,                  model-config mode
  *   onSubmodelsChanged?: function,         model-config mode
+ *   onLabelsChanged?: () => (void|Promise<void>), model-config mode; called after
+ *     a re-parent ("Move to…") succeeds, so callers can refetch labels and
+ *     rebuild both the tree and the sub-model panels derived from it.
  * }} options
  * @returns {Promise<{
  *   destroy(): void,
@@ -1397,6 +1611,7 @@ export async function createLabelList(container, options = {}) {
     defaultSpec = null,
     onSubmodelsChanged = () => {},
     onRollUpUncheckedChanged = () => {},
+    onLabelsChanged = () => {},
     scopeFilter = null,
   } = options;
 
@@ -1427,7 +1642,7 @@ export async function createLabelList(container, options = {}) {
         } else if (mode === 'model-config') {
           handle = await mountModelConfigMode(container, {
             labelsMap, initialSelected, initialSubmodels, initialRollUpUnchecked,
-            defaultSpec, onSubmodelsChanged, onRollUpUncheckedChanged, scopeFilter,
+            defaultSpec, onSubmodelsChanged, onRollUpUncheckedChanged, onLabelsChanged, scopeFilter,
           });
         } else {
           handle = await mountSelectMode(container, { runtime, filter });

@@ -408,12 +408,17 @@ class TestBulkBboxAction:
 
 
 # ---------------------------------------------------------------------------
-# 7. Bulk image action modal
+# 6b. Apply to Parent Images (bbox selection -> distinct parent images)
 # ---------------------------------------------------------------------------
 
-class TestBulkImageAction:
-    def test_image_bulk_action_modal_fires_api_with_selected_entries(self, page: Page, base_url: str):
-        """Selecting image cards and confirming 'Mark label Absent' calls the image-labels API."""
+class TestBulkParentImagesAction:
+    def test_apply_to_parent_images_resolves_distinct_images_from_bbox_selection(
+        self, page: Page, base_url: str
+    ):
+        """Selecting bboxes from DIFFERENT images and using 'Apply to Parent
+        Images' routes the DISTINCT parent image uuids into the image-level
+        bulk endpoint — not one call per bbox, and not the bbox bulk endpoint.
+        """
         _mock_review_queue(page, PAGE_1_IMAGES)
         _mock_labels(page, [LABEL_CAT, LABEL_DOG])
         _mock_tags(page, [{**UNVERIFIED_TAG, "name": "Unverified", "color": "#888", "kind": "system"}])
@@ -421,11 +426,76 @@ class TestBulkImageAction:
 
         calls = []
 
-        def handle_set(route: Route):
+        def handle_bulk_apply(route: Route):
             calls.append(json.loads(route.request.post_data))
-            route.fulfill(status=200, content_type="application/json", body=json.dumps({"status": "success"}))
+            route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps({"status": "success", "modifiedCount": 2, "failCount": 0, "skippedCount": 0}),
+            )
 
-        page.route("**/api/images/labels/set", handle_set)
+        page.route("**/api/images/bulk-apply-by-uuids", handle_bulk_apply)
+
+        _navigate_to_review(page, base_url)
+        _switch_view(page, "bboxes")
+
+        # Default tag filter shows the two unverified bboxes: bbox-1 (img-1),
+        # bbox-3 (img-2) — two DIFFERENT parent images.
+        page.locator("#review-root [data-bbox-uuid='bbox-1'] input[type=checkbox]").click()
+        page.locator("#review-root [data-bbox-uuid='bbox-3'] input[type=checkbox]").click()
+
+        parent_btn = page.locator("#review-root .review-action-bar button", has_text="Apply to Parent Images")
+        expect(parent_btn).to_be_visible()
+        expect(parent_btn).to_have_text(re.compile(r"\(2\)"))
+        parent_btn.click()
+
+        # Title must be explicit about acting on 2 distinct IMAGES, not bboxes.
+        modal_title = page.locator("strong", has_text="distinct image")
+        expect(modal_title).to_be_visible()
+        expect(modal_title).to_contain_text("2 distinct image")
+        expect(modal_title).to_contain_text("2 selected bbox")
+
+        page.locator("input[type=radio][value=setAbsent]").click()
+        modal_locator = page.locator("div:has(> strong:has-text('distinct image'))")
+        modal_locator.locator("select").select_option("lbl-cat")
+        modal_locator.locator("button", has_text="Apply").click()
+        page.wait_for_timeout(600)
+
+        assert len(calls) == 1, f"Expected 1 batched bulk-apply-by-uuids call, got {calls}"
+        call = calls[0]
+        assert call["action"] == "setAbsent"
+        assert call["labelUuid"] == "lbl-cat"
+        assert sorted(call["imageUuids"]) == ["img-1", "img-2"]
+
+
+# ---------------------------------------------------------------------------
+# 7. Bulk image action modal
+# ---------------------------------------------------------------------------
+
+class TestBulkImageAction:
+    def test_image_bulk_action_modal_fires_api_with_selected_entries(self, page: Page, base_url: str):
+        """Selecting image cards and confirming 'Mark label Absent' calls the bulk-apply-by-uuids API.
+
+        Label actions route through the same server-side bulk endpoint as tag
+        actions (one request for the whole selection), not one
+        /api/images/labels/set call per image.
+        """
+        _mock_review_queue(page, PAGE_1_IMAGES)
+        _mock_labels(page, [LABEL_CAT, LABEL_DOG])
+        _mock_tags(page, [{**UNVERIFIED_TAG, "name": "Unverified", "color": "#888", "kind": "system"}])
+        _mock_misc_review_endpoints(page)
+
+        calls = []
+
+        def handle_bulk_apply(route: Route):
+            calls.append(json.loads(route.request.post_data))
+            route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps({"status": "success", "modifiedCount": 2, "failCount": 0, "skippedCount": 0}),
+            )
+
+        page.route("**/api/images/bulk-apply-by-uuids", handle_bulk_apply)
 
         _navigate_to_review(page, base_url)
         _switch_view(page, "images")
@@ -446,10 +516,11 @@ class TestBulkImageAction:
         page.locator("div:has(> strong:text-is('Apply to 2 selected images')) button", has_text="Apply").click()
         page.wait_for_timeout(600)
 
-        assert len(calls) == 2, f"Expected 2 setImageLabel calls, got {calls}"
-        for call in calls:
-            assert call["labelUuid"] == "lbl-cat"
-            assert call["status"] == "absent"
+        assert len(calls) == 1, f"Expected 1 batched bulk-apply-by-uuids call, got {calls}"
+        call = calls[0]
+        assert call["action"] == "setAbsent"
+        assert call["labelUuid"] == "lbl-cat"
+        assert sorted(call["imageUuids"]) == ["img-1", "img-2"]
 
 
 # ---------------------------------------------------------------------------
