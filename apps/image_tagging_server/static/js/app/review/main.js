@@ -733,6 +733,32 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
     return _viewFilter === 'bboxes' ? null : fs.verificationCheck;
   }
 
+  // Filter fields shared verbatim between the two fetchReviewQueue call sites
+  // below (_getFilteredImageUuids and the main render() query) — everything
+  // except pagination (afterUuid/afterSortValue/limit), requireBboxes and
+  // sortBy/sortOrder, which differ per call site and stay inline at the
+  // call site. Extracted here (PR 1.5) purely to remove byte-identical
+  // duplication; the two blocks were already field-for-field identical.
+  function _baseReviewFilterOpts(fs) {
+    return {
+      tagUuids: fs.showAllBboxes ? [] : fs.tagUuids,
+      tagExcludeUuids: fs.tagExcludeUuids ?? [],
+      showAllBboxes: fs.showAllBboxes,
+      tagMatchMode: fs.tagMatchMode,
+      labelUuids: fs.labelUuids,
+      labelExcludeUuids: fs.labelExcludeUuids ?? [],
+      labelMatchMode: fs.labelMatchMode,
+      labelIncludeChildren: fs.labelIncludeChildren,
+      imageLabelConditions: fs.imageLabelConditions ?? [],
+      filenameSearch: fs.filenameSearch || undefined,
+      dateFrom: fs.dateFrom || undefined,
+      dateTo: fs.dateTo || undefined,
+      verificationCheck: _verificationCheckFor(fs),
+      verificationLabelUuids: _verificationLabelUuidsFor(fs),
+      bboxVerification: fs.bboxVerification,
+    };
+  }
+
   // Full set of image UUIDs matching this review panel's current scope — the
   // active filter panel state (top-level tab) or, inside a nested search-results
   // modal, the modal's own candidate list (fetchImages). Used by image/bbox
@@ -748,24 +774,10 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
     }
     const fs = filterPanel.getState();
     const { images } = await fetchReviewQueue({
-      tagUuids: fs.showAllBboxes ? [] : fs.tagUuids,
-      tagExcludeUuids: fs.tagExcludeUuids ?? [],
-      showAllBboxes: fs.showAllBboxes,
-      tagMatchMode: fs.tagMatchMode,
-      labelUuids: fs.labelUuids,
-      labelExcludeUuids: fs.labelExcludeUuids ?? [],
-      labelMatchMode: fs.labelMatchMode,
-      labelIncludeChildren: fs.labelIncludeChildren,
-      imageLabelConditions: fs.imageLabelConditions ?? [],
+      ..._baseReviewFilterOpts(fs),
       requireBboxes: _viewFilter === 'bboxes',
       sortBy: sortBySelect.value,
       sortOrder: sortOrderSelect.value,
-      filenameSearch: fs.filenameSearch || undefined,
-      dateFrom: fs.dateFrom || undefined,
-      dateTo: fs.dateTo || undefined,
-      verificationCheck: _verificationCheckFor(fs),
-      verificationLabelUuids: _verificationLabelUuidsFor(fs),
-      bboxVerification: fs.bboxVerification,
       limit: Number.MAX_SAFE_INTEGER,
     });
     return images.map(i => i.uuid);
@@ -1348,26 +1360,12 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
           images = [];
         } else {
           ({ images, hasMore, totalCount } = await fetchReviewQueue({
-            tagUuids: fs.showAllBboxes ? [] : fs.tagUuids,
-            tagExcludeUuids: fs.tagExcludeUuids ?? [],
-            showAllBboxes: fs.showAllBboxes,
-            tagMatchMode: fs.tagMatchMode,
-            labelUuids: fs.labelUuids,
-            labelExcludeUuids: fs.labelExcludeUuids ?? [],
-            labelMatchMode: fs.labelMatchMode,
-            labelIncludeChildren: fs.labelIncludeChildren,
-            imageLabelConditions: fs.imageLabelConditions ?? [],
+            ..._baseReviewFilterOpts(fs),
             requireBboxes: _viewFilter === 'bboxes',
             sortBy,
             sortOrder,
-            filenameSearch: fs.filenameSearch || undefined,
-            dateFrom: fs.dateFrom || undefined,
-            dateTo: fs.dateTo || undefined,
             afterUuid: cursor?.uuid ?? null,
             afterSortValue: cursor?.sortValue ?? null,
-            verificationCheck: _verificationCheckFor(fs),
-            verificationLabelUuids: _verificationLabelUuidsFor(fs),
-            bboxVerification: fs.bboxVerification,
             limit: _pageSize,
           }));
         }
@@ -1829,28 +1827,18 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
       statusMsg.classList.add('review-toolbar__status--loading');
       statusMsg.textContent = 'Applying to all matching images…';
       try {
+        // bulkApplyImages doesn't accept bboxVerification (no such param on
+        // that function). _baseReviewFilterOpts includes it, but bulkApplyImages
+        // destructures its params explicitly with no rest spread, so the extra
+        // key is dropped and never reaches the request body.
+        // NOTE: this means "Apply to All Images" ignores the bbox-verification
+        // tri-state that the visible grid IS filtered by. Pre-existing, not
+        // introduced here — see the bulkApplyAll site below for the same gap.
         const { modifiedCount, failCount, skippedCount } = await bulkApplyImages({
-          tagUuids: fs.showAllBboxes ? [] : (fs.tagUuids ?? []),
-          tagExcludeUuids: fs.tagExcludeUuids ?? [],
-          showAllBboxes: fs.showAllBboxes,
-          tagMatchMode: fs.tagMatchMode,
-          labelUuids: fs.labelUuids ?? [],
-          labelExcludeUuids: fs.labelExcludeUuids ?? [],
-          labelMatchMode: fs.labelMatchMode,
-          labelIncludeChildren: fs.labelIncludeChildren,
+          ..._baseReviewFilterOpts(fs),
           requireBboxes: _viewFilter === 'bboxes',
           sortBy: sortBySelect.value,
           sortOrder: sortOrderSelect.value,
-          filenameSearch: fs.filenameSearch || undefined,
-          dateFrom: fs.dateFrom || undefined,
-          dateTo: fs.dateTo || undefined,
-          imageLabelFilters: (fs.imageLabelConditions ?? []).map(c => ({
-            labelUuid: c.labelUuid,
-            status: c.state,
-            exclude: false,
-          })),
-          verificationCheck: _verificationCheckFor(fs),
-          verificationLabelUuids: _verificationLabelUuidsFor(fs),
           action,
           labelUuid,
           selectedTagUuids: tagUuids,

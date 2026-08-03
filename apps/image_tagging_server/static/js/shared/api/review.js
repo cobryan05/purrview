@@ -11,14 +11,99 @@ export const VERIFICATION_TAG_UUIDS = new Set([UNVERIFIED_TAG_UUID, FALSE_POS_TA
 
 // Maps the bbox-verification tri-state filter's state values ('any' is a
 // no-op with no entry here) to the tag UUID that must be present on the bbox.
-// Shared with app/review/filterPredicate.js's VERIFICATION_TAG_BY_STATE
-// (kept as a separate small map here to avoid a review.js -> filterPredicate.js
-// import — this module is the lower-level one in the dependency direction).
-const BBOX_VERIFICATION_TAG_BY_STATE = {
+// This is the single canonical copy — app/review/filterPredicate.js imports
+// and re-exports it (that module already imports the UUID constants above
+// from here, so this is the established import direction; filterPredicate.js
+// is the higher-level module and review.js must not import back from it).
+export const VERIFICATION_TAG_BY_STATE = {
   verified: VERIFIED_TAG_UUID,
   unverified: UNVERIFIED_TAG_UUID,
   false_pos: FALSE_POS_TAG_UUID,
 };
+
+/**
+ * Build the JSON body sent to the review-queue / bulk-apply-filter endpoints.
+ * The single source of truth for filter-body assembly — fetchReviewQueue,
+ * bulkApplyAll and bulkApplyImages each call this with the option subset they
+ * support (pagination, limit and bboxVerification only apply to some of them)
+ * rather than each re-deriving the same tagPresenceFilters/imageLabelFilters/
+ * labelUuids logic independently, which had drifted out of sync between them.
+ *
+ * @param {object} opts - same shape as fetchReviewQueue's opts, plus `limit`
+ *   left `undefined` to omit the field entirely (bulkApplyImages paginates
+ *   server-side across all pages and never sends a limit).
+ * @returns {object} the request body
+ */
+function buildReviewFilterBody({
+  tagUuids,
+  tagExcludeUuids = [],
+  showAllBboxes = false,
+  tagMatchMode = 'any',
+  labelUuids = [],
+  labelExcludeUuids = [],
+  labelMatchMode = 'any',
+  labelIncludeChildren = false,
+  labelUuid,
+  sortBy,
+  sortOrder,
+  limit,
+  requireBboxes = false,
+  filenameSearch,
+  dateFrom = null,
+  dateTo = null,
+  afterUuid = null,
+  afterSortValue = null,
+  imageLabelFilters = [],
+  imageLabelConditions = [],
+  verificationCheck = null,
+  verificationLabelUuids = [],
+  bboxVerification = null,
+} = {}) {
+  const body = {
+    tagUuids: showAllBboxes ? [] : tagUuids,
+    showAllBboxes,
+    tagMatchMode,
+    sortBy,
+    sortOrder,
+  };
+  if (limit !== undefined) body.limit = limit;
+  if (requireBboxes) body.requireBboxes = true;
+  if (labelUuids.length > 0) {
+    body.labelUuids = labelUuids;
+    body.labelMatchMode = labelMatchMode;
+    if (labelIncludeChildren) body.labelIncludeChildren = true;
+  }
+  // tagPresenceFilters entries are each AND'd independently of tagMatchMode —
+  // this is why bboxVerification is appended here rather than injected into
+  // tagUuids (which would be subject to tagMatchMode='all'/'any' semantics).
+  const tagPresenceFilters = tagExcludeUuids.map(uuid => ({ tagUuid: uuid, exclude: true }));
+  if (bboxVerification && bboxVerification !== 'any') {
+    const wantTagUuid = VERIFICATION_TAG_BY_STATE[bboxVerification];
+    if (wantTagUuid) tagPresenceFilters.push({ tagUuid: wantTagUuid, exclude: false });
+  }
+  if (tagPresenceFilters.length > 0) body.tagPresenceFilters = tagPresenceFilters;
+  if (labelExcludeUuids.length > 0) {
+    body.labelExclusions = labelExcludeUuids;
+  }
+  if (labelUuid) body.labelUuid = labelUuid;
+  if (filenameSearch) body.filenameSearch = filenameSearch;
+  if (dateFrom) body.dateFrom = dateFrom;
+  if (dateTo) body.dateTo = dateTo;
+  if (afterUuid) body.afterUuid = afterUuid;
+  if (afterSortValue) body.afterSortValue = afterSortValue;
+  if (verificationCheck) body.labelVerificationCheck = verificationCheck;
+  if (verificationLabelUuids.length > 0) body.verificationLabelUuids = verificationLabelUuids;
+
+  // Explicit imageLabelFilters (direct format) take precedence over conditions.
+  // imageLabelConditions (from the filter panel) are mapped to the same wire format.
+  const allLabelFilters = [
+    ...imageLabelFilters.map(f => ({ labelUuid: f.labelUuid, status: f.status, exclude: f.exclude ?? false })),
+    ...imageLabelConditions.map(c => ({ labelUuid: c.labelUuid, status: c.state, exclude: false })),
+  ];
+  if (allLabelFilters.length > 0) body.imageLabelFilters = allLabelFilters;
+
+  return body;
+}
 
 /**
  * Search the review queue with flexible filters and cursor-based pagination.
@@ -71,48 +156,31 @@ export async function fetchReviewQueue({
   requireBboxes = false,
   limit = 50,
 } = {}) {
-  const body = {
+  const body = buildReviewFilterBody({
     tagUuids,
+    tagExcludeUuids,
     showAllBboxes,
     tagMatchMode,
+    labelUuids,
+    labelExcludeUuids,
+    labelMatchMode,
+    labelIncludeChildren,
+    labelUuid,
     sortBy,
     sortOrder,
     limit,
-  };
-  if (requireBboxes) body.requireBboxes = true;
-  if (labelUuids.length > 0) {
-    body.labelUuids = labelUuids;
-    body.labelMatchMode = labelMatchMode;
-    if (labelIncludeChildren) body.labelIncludeChildren = true;
-  }
-  // tagPresenceFilters entries are each AND'd independently of tagMatchMode —
-  // this is why bboxVerification is appended here rather than injected into
-  // tagUuids (which would be subject to tagMatchMode='all'/'any' semantics).
-  const tagPresenceFilters = tagExcludeUuids.map(uuid => ({ tagUuid: uuid, exclude: true }));
-  if (bboxVerification && bboxVerification !== 'any') {
-    const wantTagUuid = BBOX_VERIFICATION_TAG_BY_STATE[bboxVerification];
-    if (wantTagUuid) tagPresenceFilters.push({ tagUuid: wantTagUuid, exclude: false });
-  }
-  if (tagPresenceFilters.length > 0) body.tagPresenceFilters = tagPresenceFilters;
-  if (labelExcludeUuids.length > 0) {
-    body.labelExclusions = labelExcludeUuids;
-  }
-  if (labelUuid) body.labelUuid = labelUuid;
-  if (filenameSearch) body.filenameSearch = filenameSearch;
-  if (dateFrom) body.dateFrom = dateFrom;
-  if (dateTo) body.dateTo = dateTo;
-  if (afterUuid) body.afterUuid = afterUuid;
-  if (afterSortValue) body.afterSortValue = afterSortValue;
-  if (verificationCheck) body.labelVerificationCheck = verificationCheck;
-  if (verificationLabelUuids.length > 0) body.verificationLabelUuids = verificationLabelUuids;
-
-  // Explicit imageLabelFilters (direct format) take precedence over conditions.
-  // imageLabelConditions (from the filter panel) are mapped to the same wire format.
-  const allLabelFilters = [
-    ...imageLabelFilters.map(f => ({ labelUuid: f.labelUuid, status: f.status, exclude: f.exclude ?? false })),
-    ...imageLabelConditions.map(c => ({ labelUuid: c.labelUuid, status: c.state, exclude: false })),
-  ];
-  if (allLabelFilters.length > 0) body.imageLabelFilters = allLabelFilters;
+    requireBboxes,
+    filenameSearch,
+    dateFrom,
+    dateTo,
+    afterUuid,
+    afterSortValue,
+    imageLabelFilters,
+    imageLabelConditions,
+    verificationCheck,
+    verificationLabelUuids,
+    bboxVerification,
+  });
 
   const res = await apiFetch('/api/images/review', {
     method: 'POST',
@@ -266,36 +334,28 @@ export async function bulkApplyAll({
   labelUuid = null,
   selectedTagUuids = [],
 } = {}) {
-  const filterBody = {
-    tagUuids: showAllBboxes ? [] : tagUuids,
+  // Note: bulkApplyAll never accepted bboxVerification or imageLabelConditions
+  // params (unlike fetchReviewQueue) — preserved as-is here; see PR 1.5 report.
+  const filterBody = buildReviewFilterBody({
+    tagUuids,
+    tagExcludeUuids,
     showAllBboxes,
     tagMatchMode,
+    labelUuids,
+    labelExcludeUuids,
+    labelMatchMode,
+    labelIncludeChildren,
     sortBy,
     sortOrder,
     limit: 200,
-  };
-  if (requireBboxes) filterBody.requireBboxes = true;
-  if (labelUuids.length > 0) {
-    filterBody.labelUuids = labelUuids;
-    filterBody.labelMatchMode = labelMatchMode;
-    if (labelIncludeChildren) filterBody.labelIncludeChildren = true;
-  }
-  if (tagExcludeUuids.length > 0) {
-    filterBody.tagPresenceFilters = tagExcludeUuids.map(uuid => ({ tagUuid: uuid, exclude: true }));
-  }
-  if (labelExcludeUuids.length > 0) filterBody.labelExclusions = labelExcludeUuids;
-  if (filenameSearch) filterBody.filenameSearch = filenameSearch;
-  if (dateFrom) filterBody.dateFrom = dateFrom;
-  if (dateTo) filterBody.dateTo = dateTo;
-  if (imageLabelFilters.length > 0) {
-    filterBody.imageLabelFilters = imageLabelFilters.map(f => ({
-      labelUuid: f.labelUuid,
-      status: f.status,
-      exclude: f.exclude,
-    }));
-  }
-  if (verificationCheck) filterBody.labelVerificationCheck = verificationCheck;
-  if (verificationLabelUuids.length > 0) filterBody.verificationLabelUuids = verificationLabelUuids;
+    requireBboxes,
+    filenameSearch,
+    dateFrom,
+    dateTo,
+    imageLabelFilters,
+    verificationCheck,
+    verificationLabelUuids,
+  });
 
   const res = await apiFetch('/api/images/bbox/bulk-apply', {
     method: 'POST',
@@ -384,6 +444,7 @@ export async function bulkApplyImages({
   dateFrom = null,
   dateTo = null,
   imageLabelFilters = [],
+  imageLabelConditions = [],
   verificationCheck = null,
   verificationLabelUuids = [],
   requireBboxes = false,
@@ -392,35 +453,32 @@ export async function bulkApplyImages({
   labelUuid = null,
   selectedTagUuids = [],
 } = {}) {
-  const filterBody = {
-    tagUuids: showAllBboxes ? [] : tagUuids,
+  // Note: bulkApplyImages never accepted bboxVerification (unlike
+  // fetchReviewQueue) — preserved as-is here; see PR 1.5 report.
+  // imageLabelConditions is new here (additive): callers used to have to
+  // pre-map fs.imageLabelConditions to imageLabelFilters themselves before
+  // this shared builder existed; now the builder does that merge for them,
+  // same as fetchReviewQueue already did.
+  const filterBody = buildReviewFilterBody({
+    tagUuids,
+    tagExcludeUuids,
     showAllBboxes,
     tagMatchMode,
+    labelUuids,
+    labelExcludeUuids,
+    labelMatchMode,
+    labelIncludeChildren,
     sortBy,
     sortOrder,
-  };
-  if (requireBboxes) filterBody.requireBboxes = true;
-  if (labelUuids.length > 0) {
-    filterBody.labelUuids = labelUuids;
-    filterBody.labelMatchMode = labelMatchMode;
-    if (labelIncludeChildren) filterBody.labelIncludeChildren = true;
-  }
-  if (tagExcludeUuids.length > 0) {
-    filterBody.tagPresenceFilters = tagExcludeUuids.map(uuid => ({ tagUuid: uuid, exclude: true }));
-  }
-  if (labelExcludeUuids.length > 0) filterBody.labelExclusions = labelExcludeUuids;
-  if (filenameSearch) filterBody.filenameSearch = filenameSearch;
-  if (dateFrom) filterBody.dateFrom = dateFrom;
-  if (dateTo) filterBody.dateTo = dateTo;
-  if (imageLabelFilters.length > 0) {
-    filterBody.imageLabelFilters = imageLabelFilters.map(f => ({
-      labelUuid: f.labelUuid,
-      status: f.status,
-      exclude: f.exclude,
-    }));
-  }
-  if (verificationCheck) filterBody.labelVerificationCheck = verificationCheck;
-  if (verificationLabelUuids.length > 0) filterBody.verificationLabelUuids = verificationLabelUuids;
+    requireBboxes,
+    filenameSearch,
+    dateFrom,
+    dateTo,
+    imageLabelFilters,
+    imageLabelConditions,
+    verificationCheck,
+    verificationLabelUuids,
+  });
 
   const res = await apiFetch('/api/images/bulk-apply', {
     method: 'POST',

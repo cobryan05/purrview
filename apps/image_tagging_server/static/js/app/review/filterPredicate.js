@@ -14,25 +14,17 @@
  * `labels` is the standard Map<uuid, labelRecord> (records carry `parentUuid`)
  * used throughout the review UI (see ui/labelList.js).
  */
-import {
-  VERIFIED_TAG_UUID,
-  UNVERIFIED_TAG_UUID,
-  FALSE_POS_TAG_UUID,
-} from '/app-static/js/shared/api/review.js';
+import { VERIFICATION_TAG_BY_STATE } from '/app-static/js/shared/api/review.js';
 import { expandWithDescendants } from '/app-static/js/ui/labelList.js';
 
 /**
  * Maps a `bboxVerification` tri-state value ('any' has no entry — it's a
- * no-op) to the tag UUID a matching bbox must carry. Exported so other
- * verification-aware call sites (e.g. `makeBboxFilterPredicate` in
- * runModelOnResults.js) can reuse the exact same mapping rather than
- * re-declaring it and risking drift.
+ * no-op) to the tag UUID a matching bbox must carry. Defined once in
+ * shared/api/review.js (re-exported here for existing importers, e.g.
+ * `makeBboxFilterPredicate` in runModelOnResults.js) so it can't drift
+ * from the server-side filter-body builder's copy.
  */
-export const VERIFICATION_TAG_BY_STATE = {
-  verified: VERIFIED_TAG_UUID,
-  unverified: UNVERIFIED_TAG_UUID,
-  false_pos: FALSE_POS_TAG_UUID,
-};
+export { VERIFICATION_TAG_BY_STATE };
 
 /**
  * @returns {object} a fresh curated filter state, all fields at their
