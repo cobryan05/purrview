@@ -346,6 +346,139 @@ class TagPresenceFilter(ApiModel):
     exclude: bool = False  # False = require at least one bbox has this tag; True = require none do
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Discriminated-union filter-term model (PR 1.4a).
+#
+# `ImageSearchParams.terms` is a new, additive query surface that sits ALONGSIDE
+# the existing flat fields above (tag_uuids, image_label_filters, label_uuids,
+# etc.) — nothing here replaces them yet. All terms in the list are ANDed
+# together; OR lives *inside* a term via multi-select + match_mode. See
+# db_client._apply_filter_terms for the query-building side.
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class ImageLabelState(str, Enum):
+    """Discriminant state for imageLabel / imageTag filter terms.
+
+    present / absent   — the existing verified-status match.
+    unreviewed         — existing require_unset semantics (NOT EXISTS any row).
+    any_reviewed       — existing require_verified semantics (EXISTS a
+                          PRESENT-or-ABSENT row).
+    """
+
+    PRESENT = "present"
+    ABSENT = "absent"
+    UNREVIEWED = "unreviewed"
+    ANY_REVIEWED = "any_reviewed"
+
+
+class ObjectLabelTerm(ApiModel):
+    """Matches images having a BBOX with one of the given labels."""
+
+    kind: Literal["objectLabel"] = "objectLabel"
+    label_uuids: List[str]
+    match_mode: Literal["any", "all"] = "any"
+    # Replaces the old flat label_include_children for this term.
+    roll_up: bool = True
+    negate: bool = False
+
+
+class ImageLabelTerm(ApiModel):
+    """Matches on the image_labels table (whole-image label assessment)."""
+
+    kind: Literal["imageLabel"] = "imageLabel"
+    label_uuid: str
+    state: ImageLabelState
+    # Applies to present / unreviewed / any_reviewed; ignored for absent (see
+    # ImageLabelFilter.roll_up docstring for why absent can't roll up).
+    roll_up: bool = True
+    negate: bool = False
+
+
+class BBoxTagTerm(ApiModel):
+    """Matches images having a BBOX carrying one of the given tags."""
+
+    kind: Literal["bboxTag"] = "bboxTag"
+    tag_uuids: List[str]
+    match_mode: Literal["any", "all"] = "any"
+    negate: bool = False
+
+
+class ImageTagTerm(ApiModel):
+    """Matches on the image_tags table (whole-image tag assessment)."""
+
+    kind: Literal["imageTag"] = "imageTag"
+    tag_uuid: str
+    state: ImageLabelState
+    negate: bool = False
+
+
+class BBoxVerificationTerm(ApiModel):
+    """Matches images having a BBOX in the given verification state.
+
+    Backed by the system verification tags (UNVERIFIED / FALSE_POS / VERIFIED),
+    which are mutually exclusive per bbox via exclusive_group="verification".
+    """
+
+    kind: Literal["bboxVerification"] = "bboxVerification"
+    state: Literal["verified", "unverified", "false_positive"]
+    negate: bool = False
+
+
+class LabelVerificationTerm(ApiModel):
+    """The "Config Ready" predicate: has every target label been assessed?
+
+    An empty label_uuids means "resolve against the query's object-label set"
+    — i.e. fall back to ImageSearchParams.label_uuids, preserving today's
+    `verification_label_uuids ?? label_uuids` fallback.
+    """
+
+    kind: Literal["labelVerification"] = "labelVerification"
+    check: Literal["all_verified", "has_unverified"]
+    label_uuids: List[str] = Field(default_factory=list)
+    negate: bool = False
+
+
+class DateTerm(ApiModel):
+    """Date range filter on images.created_at or images.updated_at.
+
+    `from` is a Python keyword, so the field is named `from_` internally but
+    aliased to "from" at the API boundary (overriding the alias_generator,
+    which would otherwise leave a trailing-underscore "from_" key — see
+    pydantic.alias_generators.to_camel). populate_by_name (inherited from
+    ApiModel) still accepts the Python name `from_` too.
+    """
+
+    kind: Literal["date"] = "date"
+    field: Literal["created", "updated"]
+    from_: Optional[datetime] = Field(default=None, alias="from")
+    to: Optional[datetime] = None
+    negate: bool = False
+
+
+class FilenameTerm(ApiModel):
+    """AND of substring patterns against images.filename (like filename_searches)."""
+
+    kind: Literal["filename"] = "filename"
+    patterns: List[str] = Field(default_factory=list)
+    negate: bool = False
+
+
+FilterTerm = Annotated[
+    Union[
+        ObjectLabelTerm,
+        ImageLabelTerm,
+        BBoxTagTerm,
+        ImageTagTerm,
+        BBoxVerificationTerm,
+        LabelVerificationTerm,
+        DateTerm,
+        FilenameTerm,
+    ],
+    Field(discriminator="kind"),
+]
+
+
 class ImageSearchParams(ApiModel):
     show_all_bboxes: bool = False
     tag_uuids: List[str] = Field(default_factory=list)
@@ -395,6 +528,10 @@ class ImageSearchParams(ApiModel):
     # Keyset pagination cursor.
     after_uuid: Optional[str] = None
     after_sort_value: Optional[datetime] = None  # populated when sort_by != "uuid"
+    # New discriminated-union filter-term model (PR 1.4a). Additive: coexists
+    # with every flat field above. All terms are ANDed together; see
+    # apps.helpers.db.db_client._apply_filter_terms for query building.
+    terms: List[FilterTerm] = Field(default_factory=list)
 
 
 class BBoxTagLink(SQLModel, table=True):

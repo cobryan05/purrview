@@ -5578,6 +5578,73 @@
         "title": "BBoxRead",
         "description": "The public read-only representation of a bounding box."
       },
+      "BBoxTagTerm": {
+        "properties": {
+          "kind": {
+            "type": "string",
+            "const": "bboxTag",
+            "title": "Kind",
+            "default": "bboxTag"
+          },
+          "tagUuids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Taguuids"
+          },
+          "matchMode": {
+            "type": "string",
+            "enum": [
+              "any",
+              "all"
+            ],
+            "title": "Matchmode",
+            "default": "any"
+          },
+          "negate": {
+            "type": "boolean",
+            "title": "Negate",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "tagUuids"
+        ],
+        "title": "BBoxTagTerm",
+        "description": "Matches images having a BBOX carrying one of the given tags."
+      },
+      "BBoxVerificationTerm": {
+        "properties": {
+          "kind": {
+            "type": "string",
+            "const": "bboxVerification",
+            "title": "Kind",
+            "default": "bboxVerification"
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "verified",
+              "unverified",
+              "false_positive"
+            ],
+            "title": "State"
+          },
+          "negate": {
+            "type": "boolean",
+            "title": "Negate",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "state"
+        ],
+        "title": "BBoxVerificationTerm",
+        "description": "Matches images having a BBOX in the given verification state.\n\nBacked by the system verification tags (UNVERIFIED / FALSE_POS / VERIFIED),\nwhich are mutually exclusive per bbox via exclusive_group=\"verification\"."
+      },
       "BatchByUuidsPayload": {
         "properties": {
           "imageUuids": {
@@ -6764,6 +6831,59 @@
         "type": "object",
         "title": "DatasetUpdate"
       },
+      "DateTerm": {
+        "properties": {
+          "kind": {
+            "type": "string",
+            "const": "date",
+            "title": "Kind",
+            "default": "date"
+          },
+          "field": {
+            "type": "string",
+            "enum": [
+              "created",
+              "updated"
+            ],
+            "title": "Field"
+          },
+          "from": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "From"
+          },
+          "to": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "To"
+          },
+          "negate": {
+            "type": "boolean",
+            "title": "Negate",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "field"
+        ],
+        "title": "DateTerm",
+        "description": "Date range filter on images.created_at or images.updated_at.\n\n`from` is a Python keyword, so the field is named `from_` internally but\naliased to \"from\" at the API boundary (overriding the alias_generator,\nwhich would otherwise leave a trailing-underscore \"from_\" key \u2014 see\npydantic.alias_generators.to_camel). populate_by_name (inherited from\nApiModel) still accepts the Python name `from_` too."
+      },
       "DeleteImageResponse": {
         "properties": {
           "status": {
@@ -7164,6 +7284,31 @@
         ],
         "title": "FileEntryRead",
         "description": "File entry as returned by the API, optionally enriched with DB info."
+      },
+      "FilenameTerm": {
+        "properties": {
+          "kind": {
+            "type": "string",
+            "const": "filename",
+            "title": "Kind",
+            "default": "filename"
+          },
+          "patterns": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Patterns"
+          },
+          "negate": {
+            "type": "boolean",
+            "title": "Negate",
+            "default": false
+          }
+        },
+        "type": "object",
+        "title": "FilenameTerm",
+        "description": "AND of substring patterns against images.filename (like filename_searches)."
       },
       "FilterChainCreate": {
         "properties": {
@@ -8252,6 +8397,51 @@
         ],
         "title": "ImageLabelRead"
       },
+      "ImageLabelState": {
+        "type": "string",
+        "enum": [
+          "present",
+          "absent",
+          "unreviewed",
+          "any_reviewed"
+        ],
+        "title": "ImageLabelState",
+        "description": "Discriminant state for imageLabel / imageTag filter terms.\n\npresent / absent   \u2014 the existing verified-status match.\nunreviewed         \u2014 existing require_unset semantics (NOT EXISTS any row).\nany_reviewed       \u2014 existing require_verified semantics (EXISTS a\n                      PRESENT-or-ABSENT row)."
+      },
+      "ImageLabelTerm": {
+        "properties": {
+          "kind": {
+            "type": "string",
+            "const": "imageLabel",
+            "title": "Kind",
+            "default": "imageLabel"
+          },
+          "labelUuid": {
+            "type": "string",
+            "title": "Labeluuid"
+          },
+          "state": {
+            "$ref": "#/components/schemas/ImageLabelState"
+          },
+          "rollUp": {
+            "type": "boolean",
+            "title": "Rollup",
+            "default": true
+          },
+          "negate": {
+            "type": "boolean",
+            "title": "Negate",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "labelUuid",
+          "state"
+        ],
+        "title": "ImageLabelTerm",
+        "description": "Matches on the image_labels table (whole-image label assessment)."
+      },
       "ImageLabelWithFilename": {
         "properties": {
           "imageUuid": {
@@ -8567,6 +8757,51 @@
               }
             ],
             "title": "Aftersortvalue"
+          },
+          "terms": {
+            "items": {
+              "oneOf": [
+                {
+                  "$ref": "#/components/schemas/ObjectLabelTerm"
+                },
+                {
+                  "$ref": "#/components/schemas/ImageLabelTerm"
+                },
+                {
+                  "$ref": "#/components/schemas/BBoxTagTerm"
+                },
+                {
+                  "$ref": "#/components/schemas/ImageTagTerm"
+                },
+                {
+                  "$ref": "#/components/schemas/BBoxVerificationTerm"
+                },
+                {
+                  "$ref": "#/components/schemas/LabelVerificationTerm"
+                },
+                {
+                  "$ref": "#/components/schemas/DateTerm"
+                },
+                {
+                  "$ref": "#/components/schemas/FilenameTerm"
+                }
+              ],
+              "discriminator": {
+                "propertyName": "kind",
+                "mapping": {
+                  "bboxTag": "#/components/schemas/BBoxTagTerm",
+                  "bboxVerification": "#/components/schemas/BBoxVerificationTerm",
+                  "date": "#/components/schemas/DateTerm",
+                  "filename": "#/components/schemas/FilenameTerm",
+                  "imageLabel": "#/components/schemas/ImageLabelTerm",
+                  "imageTag": "#/components/schemas/ImageTagTerm",
+                  "labelVerification": "#/components/schemas/LabelVerificationTerm",
+                  "objectLabel": "#/components/schemas/ObjectLabelTerm"
+                }
+              }
+            },
+            "type": "array",
+            "title": "Terms"
           }
         },
         "type": "object",
@@ -8686,6 +8921,35 @@
           "status"
         ],
         "title": "ImageTagStatusRead"
+      },
+      "ImageTagTerm": {
+        "properties": {
+          "kind": {
+            "type": "string",
+            "const": "imageTag",
+            "title": "Kind",
+            "default": "imageTag"
+          },
+          "tagUuid": {
+            "type": "string",
+            "title": "Taguuid"
+          },
+          "state": {
+            "$ref": "#/components/schemas/ImageLabelState"
+          },
+          "negate": {
+            "type": "boolean",
+            "title": "Negate",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "tagUuid",
+          "state"
+        ],
+        "title": "ImageTagTerm",
+        "description": "Matches on the image_tags table (whole-image tag assessment)."
       },
       "ImagesByLabelStatusPayload": {
         "properties": {
@@ -9009,6 +9273,42 @@
         },
         "type": "object",
         "title": "LabelUpdate"
+      },
+      "LabelVerificationTerm": {
+        "properties": {
+          "kind": {
+            "type": "string",
+            "const": "labelVerification",
+            "title": "Kind",
+            "default": "labelVerification"
+          },
+          "check": {
+            "type": "string",
+            "enum": [
+              "all_verified",
+              "has_unverified"
+            ],
+            "title": "Check"
+          },
+          "labelUuids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Labeluuids"
+          },
+          "negate": {
+            "type": "boolean",
+            "title": "Negate",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "check"
+        ],
+        "title": "LabelVerificationTerm",
+        "description": "The \"Config Ready\" predicate: has every target label been assessed?\n\nAn empty label_uuids means \"resolve against the query's object-label set\"\n\u2014 i.e. fall back to ImageSearchParams.label_uuids, preserving today's\n`verification_label_uuids ?? label_uuids` fallback."
       },
       "ListDatasetsResponse": {
         "properties": {
@@ -10183,6 +10483,48 @@
         },
         "type": "object",
         "title": "NeedsReviewImagesPayload"
+      },
+      "ObjectLabelTerm": {
+        "properties": {
+          "kind": {
+            "type": "string",
+            "const": "objectLabel",
+            "title": "Kind",
+            "default": "objectLabel"
+          },
+          "labelUuids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Labeluuids"
+          },
+          "matchMode": {
+            "type": "string",
+            "enum": [
+              "any",
+              "all"
+            ],
+            "title": "Matchmode",
+            "default": "any"
+          },
+          "rollUp": {
+            "type": "boolean",
+            "title": "Rollup",
+            "default": true
+          },
+          "negate": {
+            "type": "boolean",
+            "title": "Negate",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "labelUuids"
+        ],
+        "title": "ObjectLabelTerm",
+        "description": "Matches images having a BBOX with one of the given labels."
       },
       "PruneImagesPayload": {
         "properties": {

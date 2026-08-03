@@ -191,6 +191,7 @@ class TestDispatchDecision:
             {"tag_presence_filters": [TagPresenceFilter(tag_uuid=str(uuidlib.uuid4()), exclude=True)]},
             {"label_exclusions": [str(uuidlib.uuid4())]},
             {"label_verification_check": "has_unverified"},
+            {"terms": [{"kind": "filename", "patterns": ["frame"]}]},
         ],
         ids=[
             "filename_search",
@@ -201,6 +202,7 @@ class TestDispatchDecision:
             "tag_presence_filter",
             "label_exclusion",
             "verification_check",
+            "terms",
         ],
     )
     async def test_unestimatable_filters_disable_dispatch(self, db_client, seeded, extra):

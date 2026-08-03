@@ -17,7 +17,7 @@ ALEMBIC_INI_PATH = Path(__file__).parent / "alembic.ini"
 import jstyleson
 from alembic.runtime.migration import MigrationContext
 from pydantic import TypeAdapter
-from sqlalchemy import Select, and_, delete, event, exists, func, or_, text
+from sqlalchemy import Select, and_, delete, event, exists, func, or_, text, true
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
@@ -37,12 +37,16 @@ from .types import (
     WHOLE_DATABASE_DATASET_UUID,
     BBox,
     BBoxTagLink,
+    BBoxTagTerm,
+    BBoxVerificationTerm,
     Dataset,
     DatasetCreate,
     DatasetFilterCriteria,
     DatasetLabelLink,
     DatasetRead,
     DatasetUpdate,
+    DateTerm,
+    FilenameTerm,
     FilterChain,
     FilterChainCreate,
     FilterChainRead,
@@ -51,6 +55,8 @@ from .types import (
     ImageItemStatus,
     ImageLabel,
     ImageLabelFilter,
+    ImageLabelState,
+    ImageLabelTerm,
     ImageLabelWithFilename,
     ImageRecord,
     ImageRecordRead,
@@ -58,9 +64,11 @@ from .types import (
     ImageSearchParams,
     ImageTagFilter,
     ImageTagLink,
+    ImageTagTerm,
     Label,
     LabelScope,
     LabelType,
+    LabelVerificationTerm,
     ModelBundle,
     ModelBundleCreate,
     ModelBundleRead,
@@ -76,6 +84,7 @@ from .types import (
     ModelGroupMember,
     ModelGroupRead,
     ModelGroupUpdate,
+    ObjectLabelTerm,
     Source,
     SourceRead,
     Tag,
@@ -449,6 +458,13 @@ def _apply_image_search_filters(stmt: Select, params: ImageSearchParams, *, use_
             ]
             stmt = stmt.where(or_(*not_verified))
 
+    # ── New discriminated-union filter terms (PR 1.4a) ────────────────────────
+    # Additive: coexists with every flat filter above. All terms are ANDed
+    # together; see _apply_filter_terms for the per-kind predicate building.
+    if params.terms:
+        stmt, _terms_bbox_implied = _apply_filter_terms(stmt, params, use_exists=use_exists)
+        _bbox_implied = _bbox_implied or _terms_bbox_implied
+
     # ── Require at least one bbox ─────────────────────────────────────────────
     # Skip when any earlier filter already guarantees bbox existence.
     if params.require_bboxes and not _bbox_implied:
@@ -461,6 +477,228 @@ def _apply_image_search_filters(stmt: Select, params: ImageSearchParams, *, use_
         stmt = stmt.where(ImageRecord.uuid.not_in(image_uuids))
 
     return stmt
+
+
+# Maps BBoxVerificationTerm.state to the system verification tag UUIDs. These
+# tags are mutually exclusive per bbox (exclusive_group="verification").
+_BBOX_VERIFICATION_STATE_TO_TAG_UUID = {
+    "verified": VERIFIED_TAG_UUID,
+    "unverified": UNVERIFIED_TAG_UUID,
+    "false_positive": FALSE_POS_TAG_UUID,
+}
+
+
+def _apply_filter_terms(stmt: Select, params: ImageSearchParams, *, use_exists: bool = False) -> "tuple[Select, bool]":
+    """Apply params.terms (the new discriminated-union filter model) to *stmt*.
+
+    Returns (stmt, bbox_implied) — bbox_implied mirrors _apply_image_search_filters'
+    _bbox_implied tracking: True if any (non-negated) term here already
+    guarantees the image has at least one bbox, so callers can skip a redundant
+    require_bboxes subquery.
+
+    Each term contributes exactly one AND'd predicate to *stmt*. A term with
+    match_mode="all" (objectLabel / bboxTag) or multiple date bounds is built
+    as a single and_()/or_() expression first so that negate can invert the
+    WHOLE term correctly (rather than negating each sub-condition
+    independently, which would change the boolean structure).
+
+    CTE naming: recursive descendant CTEs built here use the prefix
+    "term_desc_{term_index}" (or "term_desc_{term_index}_{label_index}" for
+    per-label expansion under match_mode="all"), keyed off the term's position
+    in params.terms — distinct from "label_desc"/"label_desc_{i}" (bbox-loop),
+    "imglabel_desc_{i}" (image_label_filters loop), and "label_desc_probe"
+    (selectivity dispatch probe) used elsewhere in this module.
+    """
+
+    def _tag_predicate(tag_condition):
+        if use_exists:
+            return (
+                select(BBox.uuid)
+                .join(BBoxTagLink, BBoxTagLink.bbox_uuid == BBox.uuid)
+                .where(BBox.image_uuid == ImageRecord.uuid, tag_condition)
+                .exists()
+                .correlate(ImageRecord)
+            )
+        return ImageRecord.uuid.in_(
+            select(BBox.image_uuid).join(BBoxTagLink, BBoxTagLink.bbox_uuid == BBox.uuid).where(tag_condition)
+        )
+
+    def _label_predicate(label_condition):
+        if use_exists:
+            return (
+                select(BBox.uuid)
+                .where(BBox.image_uuid == ImageRecord.uuid, label_condition)
+                .exists()
+                .correlate(ImageRecord)
+            )
+        return ImageRecord.uuid.in_(select(BBox.image_uuid).where(label_condition))
+
+    bbox_implied = False
+
+    for i, term in enumerate(params.terms):
+        expr = None
+        term_implies_bbox = False
+
+        if isinstance(term, ObjectLabelTerm):
+            term_implies_bbox = True
+            if term.match_mode == "all":
+                sub_exprs = []
+                for j, label_uuid in enumerate(term.label_uuids):
+                    if term.roll_up:
+                        label_set = _label_uuids_with_descendants([label_uuid], cte_name=f"term_desc_{i}_{j}")
+                        condition = BBox.label_uuid.in_(label_set)
+                    else:
+                        condition = BBox.label_uuid == label_uuid
+                    sub_exprs.append(_label_predicate(condition))
+                expr = and_(*sub_exprs) if sub_exprs else true()
+            else:
+                if term.roll_up:
+                    label_set = _label_uuids_with_descendants(term.label_uuids, cte_name=f"term_desc_{i}")
+                    condition = BBox.label_uuid.in_(label_set)
+                else:
+                    condition = BBox.label_uuid.in_(term.label_uuids)
+                expr = _label_predicate(condition)
+
+        elif isinstance(term, ImageLabelTerm):
+            # Roll-up applies to present / unreviewed / any_reviewed; ignored
+            # for absent (same asymmetry as ImageLabelFilter.roll_up — see its
+            # docstring).
+            rolls_up = term.roll_up and term.state != ImageLabelState.ABSENT
+            if rolls_up:
+                label_condition = ImageLabel.label_uuid.in_(
+                    _label_uuids_with_descendants([term.label_uuid], cte_name=f"term_desc_{i}")
+                )
+            else:
+                label_condition = ImageLabel.label_uuid == term.label_uuid
+
+            if term.state == ImageLabelState.UNREVIEWED:
+                expr = ~(select(ImageLabel).where(ImageLabel.image_uuid == ImageRecord.uuid, label_condition).exists())
+            elif term.state == ImageLabelState.ANY_REVIEWED:
+                expr = (
+                    select(ImageLabel)
+                    .where(
+                        ImageLabel.image_uuid == ImageRecord.uuid,
+                        label_condition,
+                        ImageLabel.status.in_([ImageItemStatus.PRESENT, ImageItemStatus.ABSENT]),
+                    )
+                    .exists()
+                )
+            else:
+                target_status = (
+                    ImageItemStatus.PRESENT if term.state == ImageLabelState.PRESENT else ImageItemStatus.ABSENT
+                )
+                expr = (
+                    select(ImageLabel)
+                    .where(
+                        ImageLabel.image_uuid == ImageRecord.uuid,
+                        label_condition,
+                        ImageLabel.status == target_status,
+                    )
+                    .exists()
+                )
+
+        elif isinstance(term, BBoxTagTerm):
+            term_implies_bbox = True
+            if term.match_mode == "all":
+                sub_exprs = [_tag_predicate(BBoxTagLink.tag_uuid == tag_uuid) for tag_uuid in term.tag_uuids]
+                expr = and_(*sub_exprs) if sub_exprs else true()
+            else:
+                expr = _tag_predicate(BBoxTagLink.tag_uuid.in_(term.tag_uuids))
+
+        elif isinstance(term, ImageTagTerm):
+            if term.state == ImageLabelState.UNREVIEWED:
+                expr = ~(
+                    select(ImageTagLink)
+                    .where(ImageTagLink.image_uuid == ImageRecord.uuid, ImageTagLink.tag_uuid == term.tag_uuid)
+                    .exists()
+                )
+            elif term.state == ImageLabelState.ANY_REVIEWED:
+                expr = (
+                    select(ImageTagLink)
+                    .where(
+                        ImageTagLink.image_uuid == ImageRecord.uuid,
+                        ImageTagLink.tag_uuid == term.tag_uuid,
+                        ImageTagLink.status.in_([ImageItemStatus.PRESENT, ImageItemStatus.ABSENT]),
+                    )
+                    .exists()
+                )
+            else:
+                target_status = (
+                    ImageItemStatus.PRESENT if term.state == ImageLabelState.PRESENT else ImageItemStatus.ABSENT
+                )
+                expr = (
+                    select(ImageTagLink)
+                    .where(
+                        ImageTagLink.image_uuid == ImageRecord.uuid,
+                        ImageTagLink.tag_uuid == term.tag_uuid,
+                        ImageTagLink.status == target_status,
+                    )
+                    .exists()
+                )
+
+        elif isinstance(term, BBoxVerificationTerm):
+            term_implies_bbox = True
+            tag_uuid = _BBOX_VERIFICATION_STATE_TO_TAG_UUID[term.state]
+            expr = _tag_predicate(BBoxTagLink.tag_uuid == tag_uuid)
+
+        elif isinstance(term, LabelVerificationTerm):
+            targets = term.label_uuids or params.label_uuids
+            if not targets:
+                expr = true()
+            elif term.check == "all_verified":
+                sub_exprs = [
+                    select(ImageLabel)
+                    .where(
+                        ImageLabel.image_uuid == ImageRecord.uuid,
+                        ImageLabel.label_uuid == lu,
+                        ImageLabel.status.in_([ImageItemStatus.PRESENT, ImageItemStatus.ABSENT]),
+                    )
+                    .exists()
+                    for lu in targets
+                ]
+                expr = and_(*sub_exprs)
+            else:  # has_unverified
+                sub_exprs = [
+                    ~(
+                        select(ImageLabel)
+                        .where(
+                            ImageLabel.image_uuid == ImageRecord.uuid,
+                            ImageLabel.label_uuid == lu,
+                            ImageLabel.status.in_([ImageItemStatus.PRESENT, ImageItemStatus.ABSENT]),
+                        )
+                        .exists()
+                    )
+                    for lu in targets
+                ]
+                expr = or_(*sub_exprs)
+
+        elif isinstance(term, DateTerm):
+            col = ImageRecord.created_at if term.field == "created" else ImageRecord.updated_at
+            sub_exprs = []
+            if term.from_ is not None:
+                sub_exprs.append(col >= term.from_)
+            if term.to is not None:
+                sub_exprs.append(col <= term.to)
+            expr = and_(*sub_exprs) if sub_exprs else true()
+
+        elif isinstance(term, FilenameTerm):
+            sub_exprs = []
+            for pattern in term.patterns:
+                escaped = _escape_like_pattern(pattern)
+                sub_exprs.append(ImageRecord.filename.like(f"%{escaped}%", escape="!"))
+            expr = and_(*sub_exprs) if sub_exprs else true()
+
+        else:  # pragma: no cover - unreachable, pydantic discriminator rejects unknown kinds
+            raise ValueError(f"Unknown filter term kind: {term!r}")
+
+        stmt = stmt.where(~expr if term.negate else expr)
+        # A negated term only proves the ABSENCE of a matching bbox — it does
+        # not guarantee the image has any bbox at all, so it must never set
+        # bbox_implied (an all-absent image with zero bboxes still passes).
+        if term_implies_bbox and not term.negate:
+            bbox_implied = True
+
+    return stmt, bbox_implied
 
 
 # Eager-load options shared by all training-config queries.
@@ -1101,6 +1339,7 @@ class DbClient:
             or params.tag_presence_filters
             or params.label_exclusions
             or params.label_verification_check
+            or params.terms
         ):
             return False
 
