@@ -8210,6 +8210,11 @@
             "type": "boolean",
             "title": "Requireverified",
             "default": false
+          },
+          "requireUnset": {
+            "type": "boolean",
+            "title": "Requireunset",
+            "default": false
           }
         },
         "type": "object",

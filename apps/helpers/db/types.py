@@ -281,6 +281,7 @@ class ImageLabelFilter(ApiModel):
     status: ImageItemStatus
     exclude: bool = False
     require_verified: bool = False  # if True: EXISTS (status IN PRESENT, ABSENT); status/exclude ignored
+    require_unset: bool = False  # if True: NOT EXISTS any row for this label (never assessed)
 
 
 class ImageTagFilter(ApiModel):

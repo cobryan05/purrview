@@ -301,7 +301,18 @@ def _apply_image_search_filters(stmt: Select, params: ImageSearchParams, *, use_
     # These filter on the image_labels table (not bboxes), which is small and
     # accessed by PK — correlated EXISTS is fine here.
     for f in params.image_label_filters:
-        if f.require_verified:
+        if f.require_unset:
+            # NOT EXISTS any row for this image+label (label was never assessed)
+            subq = (
+                select(ImageLabel)
+                .where(
+                    ImageLabel.image_uuid == ImageRecord.uuid,
+                    ImageLabel.label_uuid == f.label_uuid,
+                )
+                .exists()
+            )
+            stmt = stmt.where(~subq)
+        elif f.require_verified:
             # require EXISTS row with PRESENT or ABSENT (not uncertain)
             subq = (
                 select(ImageLabel)

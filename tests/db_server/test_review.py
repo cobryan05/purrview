@@ -403,6 +403,123 @@ async def test_image_label_filter_exclude(http_client, files_root, label_uuid):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# image_label_filters — require_unset
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+async def test_image_label_filter_require_unset_matches_never_assessed(http_client, files_root, label_uuid):
+    """require_unset=True returns only images with NO image_labels row for the
+    label at all — i.e. the label was never assessed for that image."""
+    _make_image(files_root, "ru-unassessed.png")
+    _make_image(files_root, "ru-present.png")
+    # Register the unassessed image with no bboxes, so no image_labels row exists.
+    r = await http_client.post("/api/images/metadata/update", json={"imagePath": "ru-unassessed.png", "boxes": []})
+    assert r.status_code == 200
+    # This image gets a PRESENT image_labels row via the verified-bbox sync path.
+    await _add_bbox(http_client, "ru-present.png", label_uuid, [VERIFIED_TAG_UUID])
+
+    images = await _review(
+        http_client,
+        show_all_bboxes=True,
+        image_label_filters=[{"label_uuid": label_uuid, "status": "present", "exclude": False, "require_unset": True}],
+    )
+    filenames = [img["filename"] for img in images]
+    assert any("ru-unassessed.png" in f for f in filenames)
+    assert not any("ru-present.png" in f for f in filenames)
+
+
+async def test_image_label_filter_require_unset_excludes_present(http_client, files_root, label_uuid):
+    """An image with a PRESENT image_labels row for the label is excluded by
+    require_unset — row existence alone disqualifies it, regardless of status."""
+    _make_image(files_root, "ru-excl-present.png")
+    await _add_bbox(http_client, "ru-excl-present.png", label_uuid, [VERIFIED_TAG_UUID])
+
+    images = await _review(
+        http_client,
+        show_all_bboxes=True,
+        image_label_filters=[{"label_uuid": label_uuid, "status": "present", "exclude": False, "require_unset": True}],
+    )
+    filenames = [img["filename"] for img in images]
+    assert not any("ru-excl-present.png" in f for f in filenames)
+
+
+async def test_image_label_filter_require_unset_excludes_absent(http_client, files_root, label_uuid):
+    """An image with an ABSENT image_labels row for the label is also excluded
+    by require_unset — this is the case that IN(status)/EXISTS(status) queries
+    silently miss today, since ABSENT is a real row, not the missing state."""
+    _make_image(files_root, "ru-excl-absent.png")
+    r = await http_client.post("/api/images/metadata/update", json={"imagePath": "ru-excl-absent.png", "boxes": []})
+    assert r.status_code == 200
+    r = await http_client.post(
+        "/api/images/labels/set",
+        json={"imagePath": "ru-excl-absent.png", "labelUuid": label_uuid, "status": "absent"},
+    )
+    assert r.status_code == 200
+    assert r.json()["status"] == "success"
+
+    images = await _review(
+        http_client,
+        show_all_bboxes=True,
+        image_label_filters=[{"label_uuid": label_uuid, "status": "present", "exclude": False, "require_unset": True}],
+    )
+    filenames = [img["filename"] for img in images]
+    assert not any("ru-excl-absent.png" in f for f in filenames)
+
+
+async def test_image_label_filter_require_unset_ignores_exclude(http_client, files_root, label_uuid):
+    """require_unset takes precedence over `exclude`, matching the documented
+    ImageTagFilter semantics: exclude is ignored entirely once require_unset is set.
+
+    Both an unassessed image (would match on require_unset alone) and a PRESENT
+    image (would be excluded by require_unset alone) keep that same outcome
+    whether exclude is True or False — proving exclude has no effect here.
+    """
+    _make_image(files_root, "ru-ign-unassessed.png")
+    _make_image(files_root, "ru-ign-present.png")
+    r = await http_client.post("/api/images/metadata/update", json={"imagePath": "ru-ign-unassessed.png", "boxes": []})
+    assert r.status_code == 200
+    await _add_bbox(http_client, "ru-ign-present.png", label_uuid, [VERIFIED_TAG_UUID])
+
+    images = await _review(
+        http_client,
+        show_all_bboxes=True,
+        image_label_filters=[{"label_uuid": label_uuid, "status": "present", "exclude": True, "require_unset": True}],
+    )
+    filenames = [img["filename"] for img in images]
+    assert any("ru-ign-unassessed.png" in f for f in filenames)
+    assert not any("ru-ign-present.png" in f for f in filenames)
+
+
+async def test_image_label_filter_require_unset_beats_require_verified(http_client, files_root, label_uuid):
+    """When both require_unset and require_verified are set, require_unset wins
+    (it is checked first in the filter loop, mirroring ImageTagFilter)."""
+    _make_image(files_root, "ru-vs-rv-unassessed.png")
+    r = await http_client.post(
+        "/api/images/metadata/update", json={"imagePath": "ru-vs-rv-unassessed.png", "boxes": []}
+    )
+    assert r.status_code == 200
+
+    images = await _review(
+        http_client,
+        show_all_bboxes=True,
+        image_label_filters=[
+            {
+                "label_uuid": label_uuid,
+                "status": "present",
+                "exclude": False,
+                "require_verified": True,
+                "require_unset": True,
+            }
+        ],
+    )
+    filenames = [img["filename"] for img in images]
+    # require_verified alone would EXCLUDE this image (no PRESENT/ABSENT row
+    # exists yet, so the "require verified" EXISTS check would fail). Getting
+    # it back proves require_unset short-circuited require_verified.
+    assert any("ru-vs-rv-unassessed.png" in f for f in filenames)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # require_bboxes
 # ──────────────────────────────────────────────────────────────────────────────
 
