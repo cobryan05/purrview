@@ -646,9 +646,14 @@ class TestCanvasModalRoundTrip:
         page.wait_for_timeout(300)
         save_btn = modal.locator("button", has_text="Save & Close")
         save_btn.click()
-        page.wait_for_timeout(800)
 
-        expect(modal).to_have_count(0)
+        # Don't blind-sleep then hard-assert: let Playwright's auto-retrying expect
+        # poll for the modal's removal instead, matching the modal-open assertion's
+        # own timeout above. A fixed sleep here either wastes time (fast path) or,
+        # under rare heavy parallel-suite load, could fire the assertion before an
+        # in-flight save-then-close finishes — auto-retry removes that race outright
+        # rather than gambling on a longer fixed delay.
+        expect(modal).to_have_count(0, timeout=8000)
         expect(card).to_have_class("review-card stale-deleted")
         expect(card.locator(".card-state-badge")).to_have_text("🗑 Deleted")
         expect(card.locator("input[type=checkbox]")).to_be_disabled()
