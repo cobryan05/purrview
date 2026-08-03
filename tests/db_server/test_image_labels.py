@@ -39,6 +39,12 @@ async def label2_uuid(http_client):
     return r.json()["label"]["uuid"]
 
 
+@pytest.fixture
+async def image_scope_label_uuid(http_client):
+    r = await http_client.post("/api/labels", json={"name": "Corrupt", "color": "#00FF00", "scope": "image"})
+    return r.json()["label"]["uuid"]
+
+
 async def _get_image_labels(http_client, image_path: str) -> dict:
     """Return {label_uuid: status} for the given image path."""
     r = await http_client.get(f"/api/images/{image_path}/labels")
@@ -389,6 +395,71 @@ async def test_set_uncertain_clears_manual_present(http_client, image_file, labe
     await _set_label(http_client, "labels_test.png", label_uuid, "present")
     await _set_label(http_client, "labels_test.png", label_uuid, "uncertain")
     labels = await _get_image_labels(http_client, "labels_test.png")
+    assert label_uuid not in labels
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Image-scope labels: PRESENT is user-owned, never bbox-derived (data loss regression)
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+async def test_image_scope_present_survives_recompute(http_client, image_file, image_scope_label_uuid):
+    """Image-scope labels (e.g. 'Corrupt') can never have a bbox — the UI short-circuits
+    the draw tool for them — so their PRESENT row must never be treated as stale by the
+    bbox-derived sweep in _recompute_image_labels. Regression test for data loss where a
+    manually-set image-scope PRESENT was silently wiped on the next image save."""
+    await _update_bboxes(http_client, "labels_test.png", [])  # register image
+    await _set_label(http_client, "labels_test.png", image_scope_label_uuid, "present")
+    labels = await _get_image_labels(http_client, "labels_test.png")
+    assert labels[image_scope_label_uuid] == "present"
+
+    # Any recompute-triggering save (e.g. saving image metadata again with no bboxes)
+    # must not wipe the image-scope PRESENT row.
+    await _update_bboxes(http_client, "labels_test.png", [])
+
+    labels = await _get_image_labels(http_client, "labels_test.png")
+    assert labels.get(image_scope_label_uuid) == "present"
+
+
+async def test_object_scope_manual_present_still_reaped_without_verified_bbox(http_client, image_file, label_uuid):
+    """Deliberate asymmetry: unlike image-scope labels, an object-scope label's PRESENT
+    state is owned by bbox sync, not the user. A manually-set PRESENT on an object-scope
+    label with no backing verified bbox must still be reaped on recompute — you cannot
+    durably mark e.g. 'Cat' present without a verified Cat bbox."""
+    await _update_bboxes(http_client, "labels_test.png", [])  # register image
+    await _set_label(http_client, "labels_test.png", label_uuid, "present")
+    labels = await _get_image_labels(http_client, "labels_test.png")
+    assert labels[label_uuid] == "present"
+
+    # Trigger recompute via another bbox-mutating save; no verified bbox backs label_uuid.
+    await _update_bboxes(http_client, "labels_test.png", [])
+
+    labels = await _get_image_labels(http_client, "labels_test.png")
+    assert label_uuid not in labels
+
+
+async def test_stale_present_row_for_deleted_label_still_swept(http_client, files_root):
+    """A PRESENT row whose label has since been deleted is an orphan and must still be
+    swept by recompute — the image-scope exemption must not accidentally protect uuids
+    that no longer resolve to any label at all."""
+    img_path = files_root / "orphan_test.png"
+    img_path.write_bytes(make_png())
+
+    r = await http_client.post("/api/labels", json={"name": "to-delete", "color": "#123456"})
+    label_uuid = r.json()["label"]["uuid"]
+
+    await _update_bboxes(http_client, "orphan_test.png", [])  # register image
+    await _set_label(http_client, "orphan_test.png", label_uuid, "present")
+    labels = await _get_image_labels(http_client, "orphan_test.png")
+    assert labels[label_uuid] == "present"
+
+    del_r = await http_client.delete(f"/api/labels/{label_uuid}")
+    assert del_r.status_code == 200
+
+    # Trigger recompute via a bbox-mutating save on the (now label-less) image.
+    await _update_bboxes(http_client, "orphan_test.png", [])
+
+    labels = await _get_image_labels(http_client, "orphan_test.png")
     assert label_uuid not in labels
 
 

@@ -1134,6 +1134,13 @@ class Manager:
 
         Bboxes tagged UNVERIFIED or FALSE_POSITIVE are excluded from PRESENT tracking,
         as they have not been confirmed as true positive annotations.
+
+        The stale-PRESENT sweep below only applies to object-scope labels, whose
+        PRESENT state is owned by bbox sync (derived from verified bboxes). Image-scope
+        labels can never have a bbox — the UI short-circuits the draw tool for them — so
+        their PRESENT state is user-asserted, exactly like ABSENT, and must never be
+        treated as stale here. A candidate whose label no longer exists (deleted) is not
+        exempt: it's an orphan and is still swept.
         """
         present_label_uuids = {
             b.label_uuid for b in update.bboxes if b.label_uuid and _BBOX_VERIFIED_TAG in b.tag_uuids
@@ -1142,11 +1149,17 @@ class Manager:
             await self._db_client.set_image_label_status(image_uuid, label_uuid, ImageItemStatus.PRESENT)
 
         existing = await self._db_client.get_image_labels(image_uuid)
-        stale_present = [
+        stale_candidates = [
             r.label_uuid
             for r in existing
             if r.status == ImageItemStatus.PRESENT and r.label_uuid not in present_label_uuids
         ]
+        stale_present = stale_candidates
+        if stale_candidates:
+            labels = await self._db_client.get_labels_by_uuids(stale_candidates)
+            stale_present = [
+                u for u in stale_candidates if labels.get(u) is None or labels[u].scope != LabelScope.IMAGE
+            ]
         await self._db_client.delete_image_labels(image_uuid, stale_present)
 
     async def _resolve_image_uuid(self, image_path: str) -> Optional[str]:
