@@ -241,8 +241,9 @@ export async function openSimilarImagesModal({ imageUuids, threshold = null, can
  * ("unify Review filters") that filtering moved to the panel's shared curated
  * result-filter surface (client-side predicate over the fetched candidates —
  * see `createReviewPanel`'s `_curated` state), so this modal no longer owns
- * or accepts label/tag state; only the threshold slider (a real query param,
- * not a result-filter) remains here.
+ * or accepts label/tag state. What remains here is the threshold slider (a
+ * real query param, not a result-filter) and the result-limit control, which
+ * caps the otherwise-unbounded BK-tree radius query — see `_runQuery`.
  *
  * @param {{ bboxUuid: string, threshold: number }} params
  */
@@ -254,6 +255,7 @@ export async function openSimilarBboxesModal({ bboxes, threshold = null }) {
 
   const sliderMax = await getBboxHashMax();
   let _threshold = threshold !== null ? threshold : await _readThreshold('dedup_bbox_threshold', sliderMax);
+  let _count = 100;
 
   function _runQuery(t) {
     return Promise.all(bboxes.map(({ bboxUuid, bboxCoords, imageUuid }) =>
@@ -270,9 +272,16 @@ export async function openSimilarBboxesModal({ bboxes, threshold = null }) {
           }
         }
       }
-      return [...byBboxUuid.entries()].map(([bu, { imageUuid: iu, distance }]) => ({
+      const entries = [...byBboxUuid.entries()].map(([bu, { imageUuid: iu, distance }]) => ({
         bboxUuid: bu, imageUuid: iu, distance,
       }));
+      // Cap the BBOX match list (not the image list) before _ensureMatches groups
+      // it by image: the anchor is a bbox and the results are bboxes, so the
+      // result unit is the bbox — capping images instead would leave a single
+      // image with hundreds of matching boxes unbounded, defeating the purpose.
+      // Anchors always sort first (distance 0), so the cap can only drop them
+      // if _count is smaller than the anchor count itself — not a realistic setting.
+      return entries.sort((a, b) => a.distance - b.distance).slice(0, _count);
     });
   }
 
@@ -331,6 +340,13 @@ export async function openSimilarBboxesModal({ bboxes, threshold = null }) {
     },
   });
 
+  const { element: countEl } = buildCountControl(_count, {
+    onChange(newCount) {
+      _count = newCount;
+      _invalidate();
+    },
+  });
+
   // ── Switch-to-dissimilar button ────────────────────────────────────────────
   const bboxAnchorUuids = bboxes.map(b => b.bboxUuid).filter(Boolean);
   const dissimilarBboxBtn = buildSwitchModeButton('Most Distinct →', () => {
@@ -339,12 +355,12 @@ export async function openSimilarBboxesModal({ bboxes, threshold = null }) {
   // Only show the button when there is at least one saved bbox UUID to anchor from
   if (!bboxAnchorUuids.length) dissimilarBboxBtn.disabled = true;
 
-  // Wrap slider + switch button side-by-side. Label/Tag filtering now comes
-  // from the panel's own curated result-filter surface (M1) — see the module
-  // doc comment on openSimilarBboxesModal above.
+  // Wrap slider + count + switch button side-by-side. Label/Tag filtering now
+  // comes from the panel's own curated result-filter surface (M1) — see the
+  // module doc comment on openSimilarBboxesModal above.
   const headerEl = document.createElement('div');
   headerEl.className = 'modal-toolbar-row';
-  headerEl.append(sliderEl, dissimilarBboxBtn);
+  headerEl.append(sliderEl, countEl, dissimilarBboxBtn);
 
   const referenceBboxUuids = new Set(bboxes.map(b => b.bboxUuid).filter(Boolean));
 
