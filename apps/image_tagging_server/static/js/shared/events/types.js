@@ -70,7 +70,6 @@ export const EventTypes = Object.freeze({
   RUN_INFERENCE_ON_CANVAS: "canvas:run-inference",
   TAGS_UPDATED: "tags:updated",
   DATASETS_UPDATED: "datasets:updated",
-  ACTIVE_DATASET_CHANGED: "dataset:active:changed",
   /**
    * Fired when a task action requests the Review tab to open with specific filters.
    * Payload: { tagUuids: string[] }

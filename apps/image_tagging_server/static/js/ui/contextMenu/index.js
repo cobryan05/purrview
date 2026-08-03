@@ -6,9 +6,12 @@
 
 import './providers/bboxProvider.js';    // registers 'bbox'
 import './providers/imageProvider.js';   // registers 'image'
-// Note: canvasProvider ('canvas' type) is intentionally NOT auto-registered here to
-// preserve the right-click → tool-toggle fallthrough on empty canvas.  If you want the
-// canvas surface menu, import and register it explicitly.
+import './providers/canvasProvider.js';  // registers 'canvas'
+// Note: the canvas surface menu ('canvas' type — similar/dissimilar image search) is
+// reached only via the canvas toolbar button (see app/image-tagging/toolbar.js), never
+// from right-click. Right-clicking empty canvas space still falls straight through to
+// the tool-toggle behavior in canvas/interaction.js's handleContextMenu(); that handler
+// never builds a 'canvas' adapter, so registering this provider does not affect it.
 import { installContextMenuController } from './controller.js';
 
 export function initContextMenus() {

@@ -276,8 +276,9 @@ async function _buildDedupSection() {
   const warning = document.createElement('p');
   warning.className = 'settings-dedup-warning';
   warning.textContent =
-    'Hash sizes must match the index. Saving a new hash size rebuilds the index immediately. ' +
-    'Existing images keep their old hashes until reprocessed — run Database Maintenance (recompute hashes) to update them all at once.';
+    'Hash sizes must match the index. Saving a new hash size clears all stored hashes and rebuilds an empty index immediately — ' +
+    'existing images will not match in similarity search until reprocessed. Each image can be reprocessed individually, or you ' +
+    'can run a Database Maintenance task (Configuration → Tasks) with "Recompute ALL perceptual hashes" enabled to update them all at once.';
   section.appendChild(warning);
 
   // Load all four settings in parallel
@@ -387,9 +388,10 @@ function _buildHashSizeRow({ key, label, description, currentN }) {
     const confirmed = await showConfirmModal({
       title: 'Change hash size?',
       message:
-        `Changing the hash size will save the new setting and immediately rebuild the similarity index. ` +
-        `Existing images will get new-size hashes the next time they are processed, or you can run ` +
-        `Database Maintenance (recompute hashes) to update them all at once. Continue?`,
+        `Changing the hash size will save the new setting and immediately clear all stored hashes, rebuilding an ` +
+        `empty similarity index. Existing images will have no hash — and won't match in similarity search — until ` +
+        `each is reprocessed individually, or you run a Database Maintenance task (Configuration → Tasks) with ` +
+        `"Recompute ALL perceptual hashes" enabled to update them all at once. Continue?`,
       confirmText: 'Change & Rebuild',
       cancelText: 'Cancel',
       danger: true,
@@ -491,11 +493,6 @@ function _buildThresholdRow({ key, label, description, currentVal, max }) {
   return { element: row, input };
 }
 
-/**
- * Build a server URL configuration row.
- * @param {{label:string, serverType:string, settingKey:string, defaultUrl:string, currentOverride:string|null}} opts
- * @returns {HTMLElement}
- */
 async function _buildUiSettingsSection() {
   const section = document.createElement('section');
   section.className = 'settings-section';
@@ -583,6 +580,11 @@ async function _buildUiSettingsSection() {
   return section;
 }
 
+/**
+ * Build a server URL configuration row.
+ * @param {{label:string, serverType:string, settingKey:string, defaultUrl:string, currentOverride:string|null}} opts
+ * @returns {HTMLElement}
+ */
 function _buildServerRow({ label, serverType, settingKey, defaultUrl, currentOverride }) {
   const row = document.createElement('div');
   row.className = 'settings-server-row';
@@ -664,7 +666,6 @@ function _buildServerRow({ label, serverType, settingKey, defaultUrl, currentOve
       const res = await apiFetch('/api/reload-server-config', { method: 'POST' });
       const data = await res.json();
       if (data.status === 'success') {
-        const effective = url || defaultUrl;
         statusLine.textContent = url ? `Using: ${url}` : `Using default: ${defaultUrl}`;
         statusLine.dataset.state = url ? 'info' : 'muted';
         saveBtn.textContent = '✓ Saved';

@@ -10,7 +10,7 @@ import { UNVERIFIED_TAG_UUID, VERIFIED_TAG_UUID, VERIFICATION_TAG_UUIDS } from '
 import { setCanvasViewport, visibleContainerHeight } from './manager.js';
 import { screenToImage } from './viewport.js';
 import { openContextMenuForObjects } from '/app-static/js/ui/contextMenu/registry.js';
-import { makeCanvasBboxAdapter, makeCanvasSurfaceAdapter } from './contextTargets.js';
+import { makeCanvasBboxAdapter } from './contextTargets.js';
 
 /**
  * Mutates uiBBox.tags in-place: if no verification tag is present, assigns one based on
@@ -469,12 +469,15 @@ export async function handleContextMenu(e, runtime) {
     node = node.getParent();
   }
 
-  const obj = bboxGroup
-    ? { adapters: { bbox: makeCanvasBboxAdapter(bboxGroup, runtime) } }
-    : { adapters: { canvas: makeCanvasSurfaceAdapter(runtime) } };
-
-  const opened = await openContextMenuForObjects([obj], { x: e.evt.clientX, y: e.evt.clientY });
-  if (opened) return;
+  // Only right-clicking a bbox opens a context menu here. Right-clicking empty canvas
+  // space intentionally falls straight through to the tool-toggle behavior below; the
+  // canvas surface menu (similar/dissimilar search) is reached via the toolbar button
+  // instead (see toolbar.js), not via right-click.
+  if (bboxGroup) {
+    const obj = { adapters: { bbox: makeCanvasBboxAdapter(bboxGroup, runtime) } };
+    const opened = await openContextMenuForObjects([obj], { x: e.evt.clientX, y: e.evt.clientY });
+    if (opened) return;
+  }
 
   // FALLBACK: original tool-toggle behavior (unchanged)
   clearSelection();

@@ -7,7 +7,11 @@ Tests cover:
   3. Review bbox card right-click → Delete → card shows deleted-state badge
   4. Review image card right-click → Open on main canvas → LOAD_IMAGE_ONTO_CANVAS published
   5. Multi-select: two bbox cards selected, right-click → actions on both
-  6. Fall-through: empty canvas, no canvas provider → no menu, draw tool toggles
+  6. Fall-through: empty canvas right-click still toggles the draw tool (canvas surface
+     menu is registered, but only reachable via the toolbar search button, never via
+     right-click on empty canvas)
+  8. Canvas toolbar search button → opens the canvas surface menu (similar/dissimilar
+     search) instead
 
 Run with:
     pytest playwright_tests/test_context_menu.py -p no:xdist -p no:asyncio -v
@@ -461,17 +465,23 @@ class TestContextMenuRegistryIntersection:
 
 
 # ---------------------------------------------------------------------------
-# 6. Fall-through: empty canvas → no menu, tool toggles
+# 6. Fall-through: empty canvas right-click → no menu, tool toggles
 # ---------------------------------------------------------------------------
 
 class TestCanvasFallthrough:
     def test_empty_canvas_right_click_falls_through_to_tool_toggle(self, shared_page: Page):
-        """Right-clicking empty canvas (no 'canvas' providers) falls through to tool toggle."""
+        """Right-clicking empty canvas still falls through to tool toggle.
+
+        This is the regression this suite guards: canvasProvider ('canvas' type) IS
+        registered (it powers the toolbar search button), but handleContextMenu() never
+        builds a 'canvas' adapter for a plain right-click with no bboxGroup under the
+        cursor, so no menu should open here regardless.
+        """
         page = shared_page
         result = page.evaluate(f"""async () => {{
             const {{ createImageTaggingRuntime }} = await import('/app-static/js/app/image-tagging/runtime.js');
             const {{ handleContextMenu }} = await import('/app-static/js/app/image-tagging/canvas/interaction.js');
-            // Import index to ensure bbox/image providers are registered but NOT canvas
+            // Import index so bbox/image/canvas providers are all registered.
             const {{ initContextMenus }} = await import('/app-static/js/ui/contextMenu/index.js');
             initContextMenus();
 
@@ -597,3 +607,68 @@ class TestMenuEngine:
         }""")
         assert result['visibleBefore'] is True
         assert result['visibleAfter'] is False
+
+
+# ---------------------------------------------------------------------------
+# 8. Canvas toolbar search button → canvas surface menu
+# ---------------------------------------------------------------------------
+
+class TestCanvasToolbarSearchButton:
+    def test_toolbar_has_search_button(self, shared_page: Page):
+        """The canvas toolbar renders a button keyed 'search'."""
+        page = shared_page
+        result = page.evaluate(f"""async () => {{
+            const {{ createImageTaggingRuntime }} = await import('/app-static/js/app/image-tagging/runtime.js');
+            const {{ init: initToolbar }} = await import('/app-static/js/app/image-tagging/toolbar.js');
+
+            const container = document.createElement('div');
+            document.body.appendChild(container);
+
+            const runtime = createImageTaggingRuntime();
+            initToolbar(runtime, container);
+
+            const btn = container.querySelector('[data-toolbar-key="search"]');
+            const result = {{ found: !!btn, disabledNoImage: btn?.disabled ?? null }};
+
+            container.remove();
+            return result;
+        }}""")
+        assert result['found'], "Toolbar should render a button with data-toolbar-key='search'"
+        assert result['disabledNoImage'] is True, "Search button should be disabled with no image loaded"
+
+    def test_search_button_click_opens_canvas_surface_menu(self, shared_page: Page):
+        """Clicking the toolbar search button (with an image loaded) opens a menu with
+        the similar/dissimilar search entries."""
+        page = shared_page
+        result = page.evaluate(f"""async () => {{
+            const {{ createImageTaggingRuntime }} = await import('/app-static/js/app/image-tagging/runtime.js');
+            const {{ init: initToolbar }} = await import('/app-static/js/app/image-tagging/toolbar.js');
+            const {{ initContextMenus }} = await import('/app-static/js/ui/contextMenu/index.js');
+            initContextMenus();
+
+            {_CANVAS_SETUP}
+
+            const toolbarContainer = document.createElement('div');
+            document.body.appendChild(toolbarContainer);
+            initToolbar(runtime, toolbarContainer);
+
+            const btn = toolbarContainer.querySelector('[data-toolbar-key="search"]');
+            const disabledWithImage = btn.disabled;
+            btn.click();
+            await new Promise(r => setTimeout(r, 50));
+
+            const menu = document.querySelector('.ctx-menu');
+            const itemTexts = menu
+                ? [...menu.querySelectorAll('.ctx-menu-item')].map(el => el.textContent.trim())
+                : [];
+
+            toolbarContainer.remove();
+            {_CLEANUP}
+            return {{ disabledWithImage, found: !!menu, itemTexts }};
+        }}""")
+        assert result['disabledWithImage'] is False, "Search button should be enabled once an image is loaded"
+        assert result['found'], "Clicking the search button should open a context menu"
+        assert any('Search for similar images' in t for t in result['itemTexts']), \
+            f"Expected similar-search entry, got: {result['itemTexts']}"
+        assert any('Search for dissimilar images' in t for t in result['itemTexts']), \
+            f"Expected dissimilar-search entry, got: {result['itemTexts']}"

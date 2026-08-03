@@ -154,9 +154,10 @@ export function makeCanvasBboxAdapter(bboxView, runtime) {
 }
 
 /**
- * Stub adapter for the 'canvas' surface type.
- * No actions are registered for this type initially, so right-clicking an empty
- * canvas falls through to the original draw-tool toggle.
+ * Adapter for the 'canvas' surface type (similar/dissimilar image search).
+ * Only reachable via the canvas toolbar's search button (see toolbar.js) — right-clicking
+ * empty canvas space never builds this adapter, so it still falls through to the
+ * original draw-tool toggle in canvas/interaction.js.
  */
 export function makeCanvasSurfaceAdapter(runtime) {
   return {
