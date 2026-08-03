@@ -282,6 +282,25 @@ class ImageLabelFilter(ApiModel):
     exclude: bool = False
     require_verified: bool = False  # if True: EXISTS (status IN PRESENT, ABSENT); status/exclude ignored
     require_unset: bool = False  # if True: NOT EXISTS any row for this label (never assessed)
+    # If True (default), the filter also matches on any DESCENDANT of label_uuid, not
+    # just label_uuid itself — e.g. a "Cat present" filter also matches images that only
+    # have "Tabby" (a child of Cat) recorded PRESENT. This is a settled product decision:
+    # roll-up defaults on, per-term overridable via roll_up=False.
+    #
+    # Applies to PRESENT-status terms, require_unset, and require_verified (require_unset
+    # and require_verified must stay complements of each other, so both roll up the same
+    # way: require_unset becomes "no PRESENT/ABSENT/uncertain row for this label OR any
+    # descendant"; require_verified becomes "a row exists for this label OR any
+    # descendant").
+    #
+    # EXCEPTION: ignored for ABSENT-status terms. Roll-up direction is asymmetric for
+    # absence — if the parent is ABSENT that implies all descendants are absent, but a
+    # descendant being ABSENT says nothing about the parent (other descendants, or the
+    # parent itself, may still be PRESENT). Expanding ABSENT over descendants with EXISTS
+    # would match the wrong set, so ABSENT terms always behave as if roll_up=False
+    # server-side. The field is kept in the schema (rather than restricted to non-ABSENT
+    # terms) so ABSENT roll-up can be added later without a migration.
+    roll_up: bool = True
 
 
 class ImageTagFilter(ApiModel):

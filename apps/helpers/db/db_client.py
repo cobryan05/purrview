@@ -300,25 +300,44 @@ def _apply_image_search_filters(stmt: Select, params: ImageSearchParams, *, use_
     # ── Image-label filters (EXISTS / NOT EXISTS subqueries) ──────────────────
     # These filter on the image_labels table (not bboxes), which is small and
     # accessed by PK — correlated EXISTS is fine here.
-    for f in params.image_label_filters:
+    for i, f in enumerate(params.image_label_filters):
+        # Roll-up expands the label to itself + descendants for require_unset,
+        # require_verified, and PRESENT-status terms. ABSENT-status terms ignore
+        # roll_up (see ImageLabelFilter.roll_up docstring for why) and are always
+        # matched on the single label_uuid. Only build the recursive CTE when it's
+        # actually going to be used, so ABSENT terms and roll_up=False terms don't
+        # pay for it.
+        _rolls_up = f.roll_up and (f.require_unset or f.require_verified or f.status == ImageItemStatus.PRESENT)
+        if _rolls_up:
+            _label_condition = ImageLabel.label_uuid.in_(
+                _label_uuids_with_descendants([f.label_uuid], cte_name=f"imglabel_desc_{i}")
+            )
+        else:
+            _label_condition = ImageLabel.label_uuid == f.label_uuid
+
         if f.require_unset:
-            # NOT EXISTS any row for this image+label (label was never assessed)
+            # NOT EXISTS any row for this image+label (label was never assessed).
+            # Under roll-up this must be NOT EXISTS over the WHOLE descendant set in
+            # a single predicate (not two independent NOT EXISTS checks) so that a
+            # row on a descendant correctly counts as "assessed" for the parent.
             subq = (
                 select(ImageLabel)
                 .where(
                     ImageLabel.image_uuid == ImageRecord.uuid,
-                    ImageLabel.label_uuid == f.label_uuid,
+                    _label_condition,
                 )
                 .exists()
             )
             stmt = stmt.where(~subq)
         elif f.require_verified:
-            # require EXISTS row with PRESENT or ABSENT (not uncertain)
+            # require EXISTS row with PRESENT or ABSENT (not uncertain), for this
+            # label or (under roll-up) any descendant. Kept symmetric with
+            # require_unset above so the two remain exact complements.
             subq = (
                 select(ImageLabel)
                 .where(
                     ImageLabel.image_uuid == ImageRecord.uuid,
-                    ImageLabel.label_uuid == f.label_uuid,
+                    _label_condition,
                     ImageLabel.status.in_([ImageItemStatus.PRESENT, ImageItemStatus.ABSENT]),
                 )
                 .exists()
@@ -329,7 +348,7 @@ def _apply_image_search_filters(stmt: Select, params: ImageSearchParams, *, use_
                 select(ImageLabel)
                 .where(
                     ImageLabel.image_uuid == ImageRecord.uuid,
-                    ImageLabel.label_uuid == f.label_uuid,
+                    _label_condition,
                     ImageLabel.status == f.status,
                 )
                 .exists()

@@ -8215,6 +8215,11 @@
             "type": "boolean",
             "title": "Requireunset",
             "default": false
+          },
+          "rollUp": {
+            "type": "boolean",
+            "title": "Rollup",
+            "default": true
           }
         },
         "type": "object",

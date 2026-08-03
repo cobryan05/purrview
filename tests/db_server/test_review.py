@@ -520,6 +520,214 @@ async def test_image_label_filter_require_unset_beats_require_verified(http_clie
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# image_label_filters — roll_up
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+async def test_image_label_filter_roll_up_matches_child_present(http_client, files_root, label_uuid):
+    """A PRESENT term on the parent (roll_up defaults True) matches an image
+    that only has the CHILD label recorded PRESENT — the Tabby->Cat case."""
+    child = await http_client.post("/api/labels", json={"name": "tabby", "color": "#abc", "parentUuid": label_uuid})
+    child_uuid = child.json()["label"]["uuid"]
+
+    _make_image(files_root, "rollup-child.png")
+    await _add_bbox(http_client, "rollup-child.png", child_uuid, [VERIFIED_TAG_UUID])
+
+    images = await _review(
+        http_client,
+        show_all_bboxes=True,
+        image_label_filters=[{"label_uuid": label_uuid, "status": "present", "exclude": False}],
+    )
+    filenames = [img["filename"] for img in images]
+    assert any("rollup-child.png" in f for f in filenames)
+
+
+async def test_image_label_filter_roll_up_matches_grandchild_present(http_client, files_root, label_uuid):
+    """Roll-up recurses through a three-level hierarchy: PRESENT on the
+    grandchild matches a filter term on the top-level parent."""
+    child = await http_client.post("/api/labels", json={"name": "tabby", "color": "#abc", "parentUuid": label_uuid})
+    child_uuid = child.json()["label"]["uuid"]
+    grandchild = await http_client.post(
+        "/api/labels", json={"name": "tabby-kitten", "color": "#abd", "parentUuid": child_uuid}
+    )
+    grandchild_uuid = grandchild.json()["label"]["uuid"]
+
+    _make_image(files_root, "rollup-grandchild.png")
+    await _add_bbox(http_client, "rollup-grandchild.png", grandchild_uuid, [VERIFIED_TAG_UUID])
+
+    images = await _review(
+        http_client,
+        show_all_bboxes=True,
+        image_label_filters=[{"label_uuid": label_uuid, "status": "present", "exclude": False}],
+    )
+    filenames = [img["filename"] for img in images]
+    assert any("rollup-grandchild.png" in f for f in filenames)
+
+
+async def test_image_label_filter_roll_up_false_returns_old_result(http_client, files_root, label_uuid):
+    """roll_up=False restores the pre-roll-up behaviour: a child-only image is
+    NOT matched by a PRESENT term on the parent."""
+    child = await http_client.post("/api/labels", json={"name": "tabby", "color": "#abc", "parentUuid": label_uuid})
+    child_uuid = child.json()["label"]["uuid"]
+
+    _make_image(files_root, "no-rollup-child.png")
+    await _add_bbox(http_client, "no-rollup-child.png", child_uuid, [VERIFIED_TAG_UUID])
+
+    images = await _review(
+        http_client,
+        show_all_bboxes=True,
+        image_label_filters=[{"label_uuid": label_uuid, "status": "present", "exclude": False, "roll_up": False}],
+    )
+    filenames = [img["filename"] for img in images]
+    assert not any("no-rollup-child.png" in f for f in filenames)
+
+
+async def test_image_label_filter_absent_ignores_roll_up(http_client, files_root, label_uuid):
+    """ABSENT-status terms ignore roll_up server-side: a child recorded ABSENT
+    must NOT cause an ABSENT+roll_up=True filter on the parent to match, since
+    that's exactly the roll_up=False behaviour too (pins the documented
+    exception)."""
+    child = await http_client.post("/api/labels", json={"name": "tabby", "color": "#abc", "parentUuid": label_uuid})
+    child_uuid = child.json()["label"]["uuid"]
+
+    _make_image(files_root, "absent-child.png")
+    r = await http_client.post("/api/images/metadata/update", json={"imagePath": "absent-child.png", "boxes": []})
+    assert r.status_code == 200
+    r = await http_client.post(
+        "/api/images/labels/set",
+        json={"imagePath": "absent-child.png", "labelUuid": child_uuid, "status": "absent"},
+    )
+    assert r.status_code == 200
+
+    images_rollup_on = await _review(
+        http_client,
+        show_all_bboxes=True,
+        image_label_filters=[{"label_uuid": label_uuid, "status": "absent", "exclude": False, "roll_up": True}],
+    )
+    images_rollup_off = await _review(
+        http_client,
+        show_all_bboxes=True,
+        image_label_filters=[{"label_uuid": label_uuid, "status": "absent", "exclude": False, "roll_up": False}],
+    )
+    filenames_on = [img["filename"] for img in images_rollup_on]
+    filenames_off = [img["filename"] for img in images_rollup_off]
+    assert not any("absent-child.png" in f for f in filenames_on)
+    assert filenames_on == filenames_off
+
+
+async def test_image_label_filter_roll_up_require_unset_excludes_descendant_row(http_client, files_root, label_uuid):
+    """A rolled-up require_unset term on the parent is NOT "unreviewed" when a
+    DESCENDANT has an image_labels row — this must be a single NOT EXISTS over
+    the whole descendant set, not two independent checks."""
+    child = await http_client.post("/api/labels", json={"name": "tabby", "color": "#abc", "parentUuid": label_uuid})
+    child_uuid = child.json()["label"]["uuid"]
+
+    _make_image(files_root, "ru-rollup-child-present.png")
+    await _add_bbox(http_client, "ru-rollup-child-present.png", child_uuid, [VERIFIED_TAG_UUID])
+
+    _make_image(files_root, "ru-rollup-truly-unset.png")
+    r = await http_client.post(
+        "/api/images/metadata/update", json={"imagePath": "ru-rollup-truly-unset.png", "boxes": []}
+    )
+    assert r.status_code == 200
+
+    images = await _review(
+        http_client,
+        show_all_bboxes=True,
+        image_label_filters=[{"label_uuid": label_uuid, "status": "present", "exclude": False, "require_unset": True}],
+    )
+    filenames = [img["filename"] for img in images]
+    assert not any("ru-rollup-child-present.png" in f for f in filenames)
+    assert any("ru-rollup-truly-unset.png" in f for f in filenames)
+
+
+async def test_image_label_filter_roll_up_require_verified_matches_descendant_row(http_client, files_root, label_uuid):
+    """require_verified rolls up: a PRESENT (or ABSENT) row on a descendant
+    satisfies a require_verified term on the parent, keeping it the exact
+    complement of the rolled-up require_unset test above."""
+    child = await http_client.post("/api/labels", json={"name": "tabby", "color": "#abc", "parentUuid": label_uuid})
+    child_uuid = child.json()["label"]["uuid"]
+
+    _make_image(files_root, "rv-rollup-child-present.png")
+    await _add_bbox(http_client, "rv-rollup-child-present.png", child_uuid, [VERIFIED_TAG_UUID])
+
+    _make_image(files_root, "rv-rollup-unset.png")
+    r = await http_client.post("/api/images/metadata/update", json={"imagePath": "rv-rollup-unset.png", "boxes": []})
+    assert r.status_code == 200
+
+    images = await _review(
+        http_client,
+        show_all_bboxes=True,
+        image_label_filters=[
+            {"label_uuid": label_uuid, "status": "present", "exclude": False, "require_verified": True}
+        ],
+    )
+    filenames = [img["filename"] for img in images]
+    assert any("rv-rollup-child-present.png" in f for f in filenames)
+    assert not any("rv-rollup-unset.png" in f for f in filenames)
+
+
+async def test_image_label_filter_roll_up_coexists_with_bbox_label_cte(
+    http_client, files_root, label_uuid, label2_uuid
+):
+    """Combine an image-label roll-up term (imglabel_desc_{i} CTE) with a bbox
+    label_uuids filter using label_include_children (label_desc_{i} CTE) in the
+    SAME request, to prove the two differently-prefixed recursive CTEs coexist
+    without a SQLAlchemy 'Multiple, unrelated CTEs found with the same name'
+    CompileError."""
+    child = await http_client.post("/api/labels", json={"name": "tabby", "color": "#abc", "parentUuid": label_uuid})
+    child_uuid = child.json()["label"]["uuid"]
+
+    _make_image(files_root, "coexist.png")
+    # Two bboxes on the SAME image in one call — _add_bbox replaces the whole
+    # boxes array, so a second call would clobber the first. One bbox carries
+    # the child label (rolls up to satisfy the image_label_filters term), the
+    # other carries label2 (a completely separate subtree, for the
+    # label_uuids/label_include_children filter).
+    r = await http_client.post(
+        "/api/images/metadata/update",
+        json={
+            "imagePath": "coexist.png",
+            "boxes": [
+                {
+                    "uuid": str(uuid.uuid4()),
+                    "labelUuid": child_uuid,
+                    "x": 0.1,
+                    "y": 0.1,
+                    "width": 0.2,
+                    "height": 0.2,
+                    "tagUuids": [VERIFIED_TAG_UUID],
+                },
+                {
+                    "uuid": str(uuid.uuid4()),
+                    "labelUuid": label2_uuid,
+                    "x": 0.4,
+                    "y": 0.4,
+                    "width": 0.2,
+                    "height": 0.2,
+                    "tagUuids": [VERIFIED_TAG_UUID],
+                },
+            ],
+        },
+    )
+    assert r.status_code == 200
+
+    images = await _review(
+        http_client,
+        show_all_bboxes=True,
+        image_label_filters=[{"label_uuid": label_uuid, "status": "present", "exclude": False}],
+        label_uuids=[label2_uuid],
+        label_include_children=True,
+        # "all" mode drives the bbox-loop label_desc_{i} CTE (label_desc_0 here),
+        # the exact same index as our image_label_filters loop's imglabel_desc_0
+        # — the closest the two loops get to an actual name collision.
+        label_match_mode="all",
+    )
+    filenames = [img["filename"] for img in images]
+    assert any("coexist.png" in f for f in filenames)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # require_bboxes
 # ──────────────────────────────────────────────────────────────────────────────
 
