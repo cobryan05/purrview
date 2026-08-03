@@ -3,9 +3,17 @@
  *
  * This is the curated filter contract that runs in-memory over already-fetched
  * `ImageRecordRead`-shaped objects, so the same filters that drive the main
- * Review page's server-side search (`_apply_image_search_filters` in
- * apps/helpers/db/db_client.py) can also run inside similarity/dissimilarity
- * modals, which have no server-side search of their own.
+ * Review page's server-side search (as of PR 1.4b, entirely the discriminated-
+ * union `_apply_filter_terms` in apps/helpers/db/db_client.py — the old flat-
+ * field `_apply_image_search_filters` logic it originally mirrored was
+ * deleted in that PR) can also run inside similarity/dissimilarity modals,
+ * which have no server-side search of their own. This module's own state
+ * shape (`defaultCuratedFilterState()`) is unchanged by 1.4b — it's fed
+ * directly from widget selections (label/tag pickers, verification control),
+ * never serialised to the wire, so there was nothing here that needed to
+ * change to track the server's flat-field -> terms cutover; only the
+ * doc comments below (which named the now-deleted flat-field code) needed
+ * updating.
  *
  * Shapes (already on the objects returned by fetchImagesByUuids/fetchReviewQueue):
  *   bbox = { uuid, labelUuid, label, tags: [{uuid, icon}] }
@@ -124,11 +132,15 @@ export function bboxMatchesFilter(bbox, state, labels) {
   // ── Label exclude ────────────────────────────────────────────────────────
   // Deviation from the plan doc's proposed spec: the plan suggested expanding
   // exclusions with descendants under the same `labelIncludeChildren` flag.
-  // The server does NOT do this — `_apply_image_search_filters`'s "Label
-  // exclusions" block (db_client.py, "for label_uuid in params.label_exclusions")
-  // is a plain `BBox.label_uuid == label_uuid` check with no descendant
-  // expansion, regardless of `label_include_children` (that flag only affects
-  // the include-side `label_uuids`/`label_match_mode` predicate). We mirror the
+  // The server does NOT do this. Pre-1.4b, `_apply_image_search_filters`'s
+  // "Label exclusions" block was a plain `BBox.label_uuid == label_uuid`
+  // check with no descendant expansion. As of 1.4b it's an ObjectLabelTerm
+  // with `negate: true` — and callers (db_client.build_dataset_search_params,
+  // shared/api/review.js's buildReviewFilterBody) explicitly pass
+  // `rollUp: false` for it, since ObjectLabelTerm.rollUp defaults true and
+  // would otherwise silently change this behaviour. Either way,
+  // `label_include_children`/`labelIncludeChildren` only ever affects the
+  // include-side label_uuids/label_match_mode predicate. We mirror the
   // server here: exclusion is an exact-UUID match, never child-expanded.
   if (state.labelExcludeUuids?.length > 0) {
     if (state.labelExcludeUuids.includes(bbox.labelUuid)) return false;

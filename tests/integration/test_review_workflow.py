@@ -25,6 +25,7 @@ from apps.helpers.db.types import (
     ImageItemStatus,
 )
 from tests.conftest import make_png
+from tests.helpers.legacy_filter_params import legacy_params_to_body
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Fixtures
@@ -97,12 +98,14 @@ async def _put_image(files_root, client, filename="img.png", label_uuid=None, ta
 
 
 async def _review(client, tag_uuids=None, show_all=False, **extra):
-    # ImageSearchParams accepts both snake_case (field names) and camelCase (aliases)
+    # ImageSearchParams accepts both snake_case (field names) and camelCase (aliases).
+    # Legacy flat-filter kwargs are translated to `terms` — see
+    # legacy_filter_params.py's docstring for why.
     params = {"show_all_bboxes": show_all}
     if tag_uuids is not None:
         params["tag_uuids"] = tag_uuids
     params.update(extra)
-    r = await client.post("/api/images/review", json=params)
+    r = await client.post("/api/images/review", json=legacy_params_to_body(params))
     assert r.status_code == 200
     return r.json()["images"]
 

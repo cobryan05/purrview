@@ -21,13 +21,29 @@ export const VERIFICATION_TAG_BY_STATE = {
   false_pos: FALSE_POS_TAG_UUID,
 };
 
+// Maps the legacy 'false_pos' bboxVerification state value to the term
+// model's 'false_positive' BBoxVerificationTerm.state literal.
+const BBOX_VERIFICATION_STATE_TO_TERM_STATE = {
+  verified: 'verified',
+  unverified: 'unverified',
+  false_pos: 'false_positive',
+};
+
 /**
  * Build the JSON body sent to the review-queue / bulk-apply-filter endpoints.
  * The single source of truth for filter-body assembly — fetchReviewQueue,
  * bulkApplyAll and bulkApplyImages each call this with the option subset they
  * support (pagination, limit and bboxVerification only apply to some of them)
- * rather than each re-deriving the same tagPresenceFilters/imageLabelFilters/
- * labelUuids logic independently, which had drifted out of sync between them.
+ * rather than each re-deriving the same term-assembly logic independently,
+ * which had drifted out of sync between them.
+ *
+ * As of PR 1.4b the request body carries a single `terms` list (the
+ * discriminated-union filter-term model) instead of the old flat fields
+ * (tagUuids, labelUuids, imageLabelFilters, filenameSearch, ...) — those
+ * flat ImageSearchParams fields were deleted server-side. This function's
+ * *option* shape (the caller-facing opts object) is unchanged; only what it
+ * serialises onto the wire changed, so every call site below keeps working
+ * unmodified.
  *
  * @param {object} opts - same shape as fetchReviewQueue's opts, plus `limit`
  *   left `undefined` to omit the field entirely (bulkApplyImages paginates
@@ -60,47 +76,72 @@ function buildReviewFilterBody({
   bboxVerification = null,
 } = {}) {
   const body = {
-    tagUuids: showAllBboxes ? [] : tagUuids,
     showAllBboxes,
-    tagMatchMode,
     sortBy,
     sortOrder,
   };
   if (limit !== undefined) body.limit = limit;
   if (requireBboxes) body.requireBboxes = true;
-  if (labelUuids.length > 0) {
-    body.labelUuids = labelUuids;
-    body.labelMatchMode = labelMatchMode;
-    if (labelIncludeChildren) body.labelIncludeChildren = true;
+
+  const terms = [];
+
+  if (!showAllBboxes && tagUuids && tagUuids.length > 0) {
+    terms.push({ kind: 'bboxTag', tagUuids, matchMode: tagMatchMode });
   }
-  // tagPresenceFilters entries are each AND'd independently of tagMatchMode —
-  // this is why bboxVerification is appended here rather than injected into
-  // tagUuids (which would be subject to tagMatchMode='all'/'any' semantics).
-  const tagPresenceFilters = tagExcludeUuids.map(uuid => ({ tagUuid: uuid, exclude: true }));
+  for (const uuid of tagExcludeUuids) {
+    terms.push({ kind: 'bboxTag', tagUuids: [uuid], negate: true });
+  }
   if (bboxVerification && bboxVerification !== 'any') {
-    const wantTagUuid = VERIFICATION_TAG_BY_STATE[bboxVerification];
-    if (wantTagUuid) tagPresenceFilters.push({ tagUuid: wantTagUuid, exclude: false });
+    const state = BBOX_VERIFICATION_STATE_TO_TERM_STATE[bboxVerification];
+    if (state) terms.push({ kind: 'bboxVerification', state });
   }
-  if (tagPresenceFilters.length > 0) body.tagPresenceFilters = tagPresenceFilters;
-  if (labelExcludeUuids.length > 0) {
-    body.labelExclusions = labelExcludeUuids;
+
+  if (labelUuids.length > 0) {
+    terms.push({ kind: 'objectLabel', labelUuids, matchMode: labelMatchMode, rollUp: labelIncludeChildren });
   }
-  if (labelUuid) body.labelUuid = labelUuid;
-  if (filenameSearch) body.filenameSearch = filenameSearch;
-  if (dateFrom) body.dateFrom = dateFrom;
-  if (dateTo) body.dateTo = dateTo;
-  if (afterUuid) body.afterUuid = afterUuid;
-  if (afterSortValue) body.afterSortValue = afterSortValue;
-  if (verificationCheck) body.labelVerificationCheck = verificationCheck;
-  if (verificationLabelUuids.length > 0) body.verificationLabelUuids = verificationLabelUuids;
+  if (labelUuid && !labelUuids.includes(labelUuid)) {
+    terms.push({ kind: 'objectLabel', labelUuids: [labelUuid] });
+  }
+  for (const uuid of labelExcludeUuids) {
+    // rollUp: false — the pre-1.4b flat labelExclusions field was a plain
+    // equality check, never child-expanded (see filterPredicate.js's
+    // matching client-side divergence comment). ObjectLabelTerm.rollUp
+    // defaults true server-side, so this must be explicit.
+    terms.push({ kind: 'objectLabel', labelUuids: [uuid], negate: true, rollUp: false });
+  }
+
+  if (filenameSearch) terms.push({ kind: 'filename', patterns: [filenameSearch] });
+  if (dateFrom || dateTo) {
+    const term = { kind: 'date', field: 'created' };
+    if (dateFrom) term.from = dateFrom;
+    if (dateTo) term.to = dateTo;
+    terms.push(term);
+  }
+
+  if (verificationCheck) {
+    const targets = verificationLabelUuids.length > 0 ? verificationLabelUuids : labelUuids;
+    terms.push({ kind: 'labelVerification', check: verificationCheck, labelUuids: targets });
+  }
 
   // Explicit imageLabelFilters (direct format) take precedence over conditions.
-  // imageLabelConditions (from the filter panel) are mapped to the same wire format.
-  const allLabelFilters = [
-    ...imageLabelFilters.map(f => ({ labelUuid: f.labelUuid, status: f.status, exclude: f.exclude ?? false })),
-    ...imageLabelConditions.map(c => ({ labelUuid: c.labelUuid, status: c.state, exclude: false })),
-  ];
-  if (allLabelFilters.length > 0) body.imageLabelFilters = allLabelFilters;
+  // imageLabelConditions (from the filter panel) are mapped to the same term kind.
+  for (const f of imageLabelFilters) {
+    terms.push({ kind: 'imageLabel', labelUuid: f.labelUuid, state: f.status, negate: f.exclude ?? false });
+  }
+  for (const c of imageLabelConditions) {
+    // 'uncertain' (the condition-panel's "never assessed" state) maps to the
+    // term model's 'unreviewed' (NOT EXISTS any row) — the correct semantic
+    // equivalent; the pre-1.4b flat ImageLabelFilter.status='uncertain' path
+    // queried image_labels.status == 'uncertain', which per the tri-state
+    // invariant (a row only ever exists for present/absent) always matched
+    // zero rows. See PR 1.4b report for detail.
+    const state = c.state === 'uncertain' ? 'unreviewed' : c.state;
+    terms.push({ kind: 'imageLabel', labelUuid: c.labelUuid, state });
+  }
+
+  if (afterUuid) body.afterUuid = afterUuid;
+  if (afterSortValue) body.afterSortValue = afterSortValue;
+  if (terms.length > 0) body.terms = terms;
 
   return body;
 }

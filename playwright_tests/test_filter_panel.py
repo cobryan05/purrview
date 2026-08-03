@@ -569,14 +569,13 @@ class TestFetchReviewQueueBboxVerificationMapping:
         }""")
 
         body = captured["body"]
-        assert body["tagPresenceFilters"] == [{"tagUuid": VERIFIED_UUID, "exclude": False}]
+        assert {"kind": "bboxVerification", "state": "verified"} in body["terms"]
 
     def test_bbox_verification_merges_with_tag_exclude_uuids(self, page: Page, base_url: str):
         """
-        The builder used to ASSIGN body.tagPresenceFilters = tagExcludeUuids.map(...)
-        — a naive fix could overwrite that instead of merging. Confirm both the
-        exclude entry (from tagExcludeUuids) and the verification entry (from
-        bboxVerification) are present together.
+        Confirm both the exclude entry (from tagExcludeUuids) and the
+        verification entry (from bboxVerification) are present together as
+        independent terms — one doesn't overwrite the other.
         """
         captured = {}
         FALSE_POS_UUID = "00000000-0000-0000-0000-000000000003"
@@ -603,9 +602,8 @@ class TestFetchReviewQueueBboxVerificationMapping:
         }""")
 
         body = captured["body"]
-        assert {"tagUuid": "some-other-tag", "exclude": True} in body["tagPresenceFilters"]
-        assert {"tagUuid": FALSE_POS_UUID, "exclude": False} in body["tagPresenceFilters"]
-        assert len(body["tagPresenceFilters"]) == 2
+        assert {"kind": "bboxTag", "tagUuids": ["some-other-tag"], "negate": True} in body["terms"]
+        assert {"kind": "bboxVerification", "state": "false_positive"} in body["terms"]
 
 
 # ── "Config Ready" (V2) — Verification select renamed + repointed ──────────
@@ -836,11 +834,11 @@ class TestVerificationLabelUuidsMapping:
         }""")
 
         # Without verificationCheck the caller should not have supplied the
-        # override either, per main.js's _verificationLabelUuidsFor gating —
-        # but fetchReviewQueue itself just forwards whatever is passed non-empty,
-        # so this asserts the wire mapping happens whenever the caller does pass it.
+        # override either. Without verificationCheck there's nothing for
+        # verificationLabelUuids to parametrize — buildReviewFilterBody only
+        # emits a labelVerification term when verificationCheck is set.
         body = captured["body"]
-        assert body["verificationLabelUuids"] == ["lbl-cat"]
+        assert not any(t.get("kind") == "labelVerification" for t in body.get("terms", []))
 
     def test_fetch_review_queue_sends_verification_label_uuids(self, page: Page, base_url: str):
         captured = {}
@@ -867,8 +865,11 @@ class TestVerificationLabelUuidsMapping:
         }""")
 
         body = captured["body"]
-        assert body["labelVerificationCheck"] == "all_verified"
-        assert body["verificationLabelUuids"] == ["lbl-cat", "lbl-dog"]
+        assert {
+            "kind": "labelVerification",
+            "check": "all_verified",
+            "labelUuids": ["lbl-cat", "lbl-dog"],
+        } in body["terms"]
 
     def test_fetch_review_queue_omits_empty_verification_label_uuids(self, page: Page, base_url: str):
         captured = {}
@@ -918,8 +919,11 @@ class TestVerificationLabelUuidsMapping:
         }""")
 
         body = captured["body"]
-        assert body["filter"]["labelVerificationCheck"] == "has_unverified"
-        assert body["filter"]["verificationLabelUuids"] == ["lbl-cat"]
+        assert {
+            "kind": "labelVerification",
+            "check": "has_unverified",
+            "labelUuids": ["lbl-cat"],
+        } in body["filter"]["terms"]
 
     def test_bulk_apply_all_omits_empty_verification_label_uuids(self, page: Page, base_url: str):
         captured = {}

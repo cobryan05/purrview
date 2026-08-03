@@ -11,6 +11,7 @@ import pytest
 
 from apps.helpers.db.types import UNVERIFIED_TAG_UUID, VERIFIED_TAG_UUID
 from tests.conftest import make_png
+from tests.helpers.legacy_filter_params import legacy_params_to_body
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Fixtures
@@ -63,9 +64,12 @@ async def _add_bbox(http_client, image_path: str, label_uuid: str, tag_uuids: li
 async def _review(http_client, **params):
     """POST /api/images/review with the given params and return the images list.
 
-    ImageSearchParams uses snake_case field names (no alias_generator).
+    ImageSearchParams uses snake_case field names (no alias_generator). Legacy
+    flat-filter kwargs (tag_uuids, label_uuids, image_label_filters, ...) are
+    translated to `terms` by legacy_params_to_body — see that module's
+    docstring for why the call sites below were left unchanged.
     """
-    r = await http_client.post("/api/images/review", json=params)
+    r = await http_client.post("/api/images/review", json=legacy_params_to_body(params))
     assert r.status_code == 200
     body = r.json()
     assert body["status"] == "success"

@@ -229,8 +229,7 @@ async def test_review_queue_filters_by_image_tag(http_client, files_root, tag_uu
     r = await http_client.post(
         "/api/images/review",
         json={
-            "showAllBboxes": True,
-            "imageTagFilters": [{"tagUuid": tag_uuid, "exclude": False}],
+            "terms": [{"kind": "imageTag", "tagUuid": tag_uuid, "state": "present"}],
         },
     )
     assert r.status_code == 200
@@ -250,8 +249,7 @@ async def test_review_queue_excludes_by_image_tag(http_client, files_root, tag_u
     r = await http_client.post(
         "/api/images/review",
         json={
-            "showAllBboxes": True,
-            "imageTagFilters": [{"tagUuid": tag_uuid, "exclude": True}],
+            "terms": [{"kind": "imageTag", "tagUuid": tag_uuid, "state": "present", "negate": True}],
         },
     )
     assert r.status_code == 200
@@ -371,8 +369,7 @@ async def test_review_queue_filters_by_verified_absent_tag(http_client, files_ro
     r = await http_client.post(
         "/api/images/review",
         json={
-            "showAllBboxes": True,
-            "imageTagFilters": [{"tagUuid": tag_uuid, "status": "absent", "exclude": False}],
+            "terms": [{"kind": "imageTag", "tagUuid": tag_uuid, "state": "absent"}],
         },
     )
     assert r.status_code == 200
@@ -393,15 +390,7 @@ async def test_review_queue_require_verified_image_tag(http_client, files_root, 
     r = await http_client.post(
         "/api/images/review",
         json={
-            "showAllBboxes": True,
-            "imageTagFilters": [
-                {
-                    "tagUuid": tag_uuid,
-                    "status": "present",
-                    "exclude": False,
-                    "requireVerified": True,
-                }
-            ],
+            "terms": [{"kind": "imageTag", "tagUuid": tag_uuid, "state": "any_reviewed"}],
         },
     )
     assert r.status_code == 200
@@ -423,8 +412,7 @@ async def test_review_queue_filters_by_unset_image_tag(http_client, files_root, 
     r = await http_client.post(
         "/api/images/review",
         json={
-            "showAllBboxes": True,
-            "imageTagFilters": [{"tagUuid": tag_uuid, "requireUnset": True}],
+            "terms": [{"kind": "imageTag", "tagUuid": tag_uuid, "state": "unreviewed"}],
         },
     )
     assert r.status_code == 200

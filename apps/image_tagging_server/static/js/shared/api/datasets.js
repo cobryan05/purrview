@@ -127,7 +127,11 @@ export async function previewDatasetImages({ filterJson, labelUuids = [], limit 
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      filterJson: filterJson || { conditions: [] },
+      // `{}` is a valid empty DatasetFilterCriteria (all fields optional).
+      // The old `{ conditions: [] }` default here was already-stale legacy
+      // shape from before terms existed; as of PR 1.4b DatasetFilterCriteria
+      // rejects unknown fields (extra='forbid'), so it would now 422.
+      filterJson: filterJson || {},
       labelUuids,
     }),
   });

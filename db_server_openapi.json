@@ -6462,29 +6462,6 @@
       },
       "DatasetFilterCriteria": {
         "properties": {
-          "tagUuids": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "title": "Taguuids"
-          },
-          "tagExcludeUuids": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "title": "Tagexcludeuuids"
-          },
-          "tagMatchMode": {
-            "type": "string",
-            "enum": [
-              "any",
-              "all"
-            ],
-            "title": "Tagmatchmode",
-            "default": "any"
-          },
           "labelExcludeUuids": {
             "items": {
               "type": "string"
@@ -6506,41 +6483,6 @@
             "title": "Labelincludechildren",
             "default": false
           },
-          "dateFrom": {
-            "anyOf": [
-              {
-                "type": "string",
-                "format": "date-time"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Datefrom"
-          },
-          "dateTo": {
-            "anyOf": [
-              {
-                "type": "string",
-                "format": "date-time"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Dateto"
-          },
-          "filenameSearch": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Filenamesearch"
-          },
           "verificationCheck": {
             "anyOf": [
               {
@@ -6556,24 +6498,56 @@
             ],
             "title": "Verificationcheck"
           },
-          "imageTagConditions": {
+          "terms": {
             "items": {
-              "$ref": "#/components/schemas/ImageTagConditionItem"
+              "oneOf": [
+                {
+                  "$ref": "#/components/schemas/ObjectLabelTerm"
+                },
+                {
+                  "$ref": "#/components/schemas/ImageLabelTerm"
+                },
+                {
+                  "$ref": "#/components/schemas/BBoxTagTerm"
+                },
+                {
+                  "$ref": "#/components/schemas/ImageTagTerm"
+                },
+                {
+                  "$ref": "#/components/schemas/BBoxVerificationTerm"
+                },
+                {
+                  "$ref": "#/components/schemas/LabelVerificationTerm"
+                },
+                {
+                  "$ref": "#/components/schemas/DateTerm"
+                },
+                {
+                  "$ref": "#/components/schemas/FilenameTerm"
+                }
+              ],
+              "discriminator": {
+                "propertyName": "kind",
+                "mapping": {
+                  "bboxTag": "#/components/schemas/BBoxTagTerm",
+                  "bboxVerification": "#/components/schemas/BBoxVerificationTerm",
+                  "date": "#/components/schemas/DateTerm",
+                  "filename": "#/components/schemas/FilenameTerm",
+                  "imageLabel": "#/components/schemas/ImageLabelTerm",
+                  "imageTag": "#/components/schemas/ImageTagTerm",
+                  "labelVerification": "#/components/schemas/LabelVerificationTerm",
+                  "objectLabel": "#/components/schemas/ObjectLabelTerm"
+                }
+              }
             },
             "type": "array",
-            "title": "Imagetagconditions"
-          },
-          "imageLabelConditions": {
-            "items": {
-              "$ref": "#/components/schemas/ImageLabelConditionItem"
-            },
-            "type": "array",
-            "title": "Imagelabelconditions"
+            "title": "Terms"
           }
         },
+        "additionalProperties": false,
         "type": "object",
         "title": "DatasetFilterCriteria",
-        "description": "Stored as JSON in datasets.filter_json. Mirrors the review filter panel state exactly."
+        "description": "Stored as JSON in datasets.filter_json.\n\nAs of PR 1.4b, self-contained criteria (tags, dates, filename, whole-image\ntag/label conditions) live in `terms` \u2014 the same discriminated-union shape\nas ImageSearchParams.terms (see db_client.build_dataset_search_params for\nhow the two are combined). The remaining flat fields here are modifiers of\nDataset.label_uuids, a structurally separate column (dataset_label_links,\nfor FK integrity) that cannot itself live inside this JSON blob."
       },
       "DatasetImageUuidsResponse": {
         "properties": {
@@ -8313,68 +8287,6 @@
         "title": "ImageItemStatus",
         "description": "Tri-state verification status shared by per-image labels and whole-image tags."
       },
-      "ImageLabelConditionItem": {
-        "properties": {
-          "labelUuid": {
-            "type": "string",
-            "title": "Labeluuid"
-          },
-          "state": {
-            "type": "string",
-            "enum": [
-              "present",
-              "absent",
-              "uncertain"
-            ],
-            "title": "State"
-          }
-        },
-        "type": "object",
-        "required": [
-          "labelUuid",
-          "state"
-        ],
-        "title": "ImageLabelConditionItem",
-        "description": "A single image-label filter condition stored in a dataset's filter_json.\n\nstate:\n  'present'   \u2014 image must have this label verified PRESENT\n  'absent'    \u2014 image must have this label verified ABSENT\n  'uncertain' \u2014 image must have this label in UNCERTAIN state"
-      },
-      "ImageLabelFilter": {
-        "properties": {
-          "labelUuid": {
-            "type": "string",
-            "title": "Labeluuid"
-          },
-          "status": {
-            "$ref": "#/components/schemas/ImageItemStatus"
-          },
-          "exclude": {
-            "type": "boolean",
-            "title": "Exclude",
-            "default": false
-          },
-          "requireVerified": {
-            "type": "boolean",
-            "title": "Requireverified",
-            "default": false
-          },
-          "requireUnset": {
-            "type": "boolean",
-            "title": "Requireunset",
-            "default": false
-          },
-          "rollUp": {
-            "type": "boolean",
-            "title": "Rollup",
-            "default": true
-          }
-        },
-        "type": "object",
-        "required": [
-          "labelUuid",
-          "status"
-        ],
-        "title": "ImageLabelFilter",
-        "description": "A single condition on the image_labels table used when searching images."
-      },
       "ImageLabelRead": {
         "properties": {
           "imageUuid": {
@@ -8535,38 +8447,6 @@
             "title": "Showallbboxes",
             "default": false
           },
-          "tagUuids": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "title": "Taguuids"
-          },
-          "labelUuid": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Labeluuid"
-          },
-          "imageLabelFilters": {
-            "items": {
-              "$ref": "#/components/schemas/ImageLabelFilter"
-            },
-            "type": "array",
-            "title": "Imagelabelfilters"
-          },
-          "imageTagFilters": {
-            "items": {
-              "$ref": "#/components/schemas/ImageTagFilter"
-            },
-            "type": "array",
-            "title": "Imagetagfilters"
-          },
           "limit": {
             "type": "integer",
             "title": "Limit",
@@ -8591,149 +8471,10 @@
             "title": "Sortorder",
             "default": "desc"
           },
-          "filenameSearch": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Filenamesearch"
-          },
-          "filenameSearches": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "title": "Filenamesearches"
-          },
-          "dateFrom": {
-            "anyOf": [
-              {
-                "type": "string",
-                "format": "date-time"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Datefrom"
-          },
-          "dateTo": {
-            "anyOf": [
-              {
-                "type": "string",
-                "format": "date-time"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Dateto"
-          },
-          "updatedDateFrom": {
-            "anyOf": [
-              {
-                "type": "string",
-                "format": "date-time"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Updateddatefrom"
-          },
-          "updatedDateTo": {
-            "anyOf": [
-              {
-                "type": "string",
-                "format": "date-time"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Updateddateto"
-          },
-          "tagPresenceFilters": {
-            "items": {
-              "$ref": "#/components/schemas/TagPresenceFilter"
-            },
-            "type": "array",
-            "title": "Tagpresencefilters"
-          },
-          "labelUuids": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "title": "Labeluuids"
-          },
-          "labelMatchMode": {
-            "type": "string",
-            "enum": [
-              "any",
-              "all"
-            ],
-            "title": "Labelmatchmode",
-            "default": "any"
-          },
-          "labelIncludeChildren": {
-            "type": "boolean",
-            "title": "Labelincludechildren",
-            "default": false
-          },
-          "tagMatchMode": {
-            "type": "string",
-            "enum": [
-              "any",
-              "all"
-            ],
-            "title": "Tagmatchmode",
-            "default": "any"
-          },
-          "labelExclusions": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "title": "Labelexclusions"
-          },
           "requireBboxes": {
             "type": "boolean",
             "title": "Requirebboxes",
             "default": false
-          },
-          "labelVerificationCheck": {
-            "anyOf": [
-              {
-                "type": "string",
-                "enum": [
-                  "all_verified",
-                  "has_unverified"
-                ]
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Labelverificationcheck"
-          },
-          "verificationLabelUuids": {
-            "anyOf": [
-              {
-                "items": {
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Verificationlabeluuids"
           },
           "afterUuid": {
             "anyOf": [
@@ -8842,63 +8583,6 @@
           "bboxHexLen"
         ],
         "title": "ImageStubsNeedingPhashPayload"
-      },
-      "ImageTagConditionItem": {
-        "properties": {
-          "tagUuid": {
-            "type": "string",
-            "title": "Taguuid"
-          },
-          "state": {
-            "type": "string",
-            "enum": [
-              "present",
-              "absent",
-              "unset"
-            ],
-            "title": "State"
-          }
-        },
-        "type": "object",
-        "required": [
-          "tagUuid",
-          "state"
-        ],
-        "title": "ImageTagConditionItem",
-        "description": "A single image-tag filter condition stored in a dataset's filter_json.\n\nstate:\n  'present' \u2014 image must have this tag verified PRESENT\n  'absent'  \u2014 image must have this tag verified ABSENT\n  'unset'   \u2014 image must have no assessment row for this tag (never checked)"
-      },
-      "ImageTagFilter": {
-        "properties": {
-          "tagUuid": {
-            "type": "string",
-            "title": "Taguuid"
-          },
-          "status": {
-            "$ref": "#/components/schemas/ImageItemStatus",
-            "default": "present"
-          },
-          "exclude": {
-            "type": "boolean",
-            "title": "Exclude",
-            "default": false
-          },
-          "requireVerified": {
-            "type": "boolean",
-            "title": "Requireverified",
-            "default": false
-          },
-          "requireUnset": {
-            "type": "boolean",
-            "title": "Requireunset",
-            "default": false
-          }
-        },
-        "type": "object",
-        "required": [
-          "tagUuid"
-        ],
-        "title": "ImageTagFilter",
-        "description": "A single condition on the image_tags table used when searching images (whole-image tags)."
       },
       "ImageTagStatusRead": {
         "properties": {
@@ -9308,7 +8992,7 @@
           "check"
         ],
         "title": "LabelVerificationTerm",
-        "description": "The \"Config Ready\" predicate: has every target label been assessed?\n\nAn empty label_uuids means \"resolve against the query's object-label set\"\n\u2014 i.e. fall back to ImageSearchParams.label_uuids, preserving today's\n`verification_label_uuids ?? label_uuids` fallback."
+        "description": "The \"Config Ready\" predicate: has every target label been assessed?\n\nlabel_uuids must be supplied explicitly by the caller \u2014 as of PR 1.4b\nthere is no flat ImageSearchParams field to fall back to. An empty list\nis vacuously true/false (see _apply_filter_terms)."
       },
       "ListDatasetsResponse": {
         "properties": {
@@ -11202,25 +10886,6 @@
           "task_generated"
         ],
         "title": "TagKind"
-      },
-      "TagPresenceFilter": {
-        "properties": {
-          "tagUuid": {
-            "type": "string",
-            "title": "Taguuid"
-          },
-          "exclude": {
-            "type": "boolean",
-            "title": "Exclude",
-            "default": false
-          }
-        },
-        "type": "object",
-        "required": [
-          "tagUuid"
-        ],
-        "title": "TagPresenceFilter",
-        "description": "Require or exclude images based on bbox-level tag presence."
       },
       "TagRead": {
         "properties": {

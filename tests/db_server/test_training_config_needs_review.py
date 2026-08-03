@@ -368,9 +368,7 @@ class TestVerificationLabelUuidsDecoupled:
         r = await http_client.post(
             "/api/images/review",
             json={
-                "showAllBboxes": True,
-                "verificationLabelUuids": [verify_label_uuid],
-                "labelVerificationCheck": "has_unverified",
+                "terms": [{"kind": "labelVerification", "check": "has_unverified", "labelUuids": [verify_label_uuid]}],
                 "limit": 50,
             },
         )
@@ -421,10 +419,10 @@ class TestVerificationLabelUuidsDecoupled:
         r = await http_client.post(
             "/api/images/review",
             json={
-                "showAllBboxes": True,
-                "labelUuids": [pool_label_uuid],
-                "verificationLabelUuids": [verify_label_uuid],
-                "labelVerificationCheck": "has_unverified",
+                "terms": [
+                    {"kind": "objectLabel", "labelUuids": [pool_label_uuid]},
+                    {"kind": "labelVerification", "check": "has_unverified", "labelUuids": [verify_label_uuid]},
+                ],
                 "limit": 50,
             },
         )

@@ -8,6 +8,7 @@ filenameSearch, verificationCheck) instead of the old conditions[] list.
 import uuid
 from datetime import datetime, timedelta, timezone
 
+import pydantic
 import pytest
 from sqlmodel import select
 
@@ -15,6 +16,7 @@ from apps.helpers.db.types import (
     UNVERIFIED_TAG_UUID,
     VERIFIED_TAG_UUID,
     BBox,
+    DatasetFilterCriteria,
     ImageRecord,
 )
 from tests.conftest import make_png
@@ -223,7 +225,7 @@ async def test_filter_json_invalid_value_rejected_at_create(http_client):
         "/api/datasets",
         json={
             "name": "bad",
-            "filter_json": {"tag_match_mode": "invalid_mode"},
+            "filter_json": {"label_match_mode": "invalid_mode"},
         },
     )
     assert r.status_code == 422
@@ -239,8 +241,44 @@ async def test_filter_json_invalid_value_rejected_at_update(http_client):
     assert r.status_code == 422
 
 
-async def test_filter_json_unknown_fields_silently_ignored(http_client):
-    """Unknown fields in filter_json are silently ignored (extra='ignore')."""
+async def test_filter_json_valid_flat_fields_accepted(http_client):
+    """terms and the remaining flat (label_uuids-modifier) fields are accepted
+    and round-trip correctly."""
+    ds = await _create_dataset(
+        http_client,
+        "valid-flat",
+        filter_json={"terms": [{"kind": "filename", "patterns": ["test"]}], "label_match_mode": "all"},
+    )
+    assert ds["filterJson"]["terms"] == [{"kind": "filename", "patterns": ["test"], "negate": False}]
+    assert ds["filterJson"]["labelMatchMode"] == "all"
+
+
+class TestDatasetFilterCriteriaExtraFields:
+    """Unit-level coverage for the extra='ignore' -> 'forbid' fix (PR 1.4b).
+
+    Before this fix, an unrecognised filter_json field would validate
+    successfully, get silently dropped, and vanish from every subsequent GET —
+    data loss by design. It must now be rejected outright.
+    """
+
+    def test_unknown_field_rejected(self):
+        with pytest.raises(pydantic.ValidationError):
+            DatasetFilterCriteria(**{"notARealField": "x"})
+
+    def test_known_fields_still_accepted(self):
+        # Sanity check the fix didn't also reject legitimate fields.
+        criteria = DatasetFilterCriteria(
+            terms=[{"kind": "filename", "patterns": ["x"]}],
+            label_match_mode="all",
+        )
+        assert criteria.terms[0].patterns == ["x"]
+        assert criteria.label_match_mode == "all"
+
+
+async def test_filter_json_unknown_fields_rejected(http_client):
+    """Unknown fields in filter_json are now rejected (extra='forbid'), not
+    silently dropped — see TestDatasetFilterCriteriaExtraFields for the
+    unit-level version of this."""
     r = await http_client.post(
         "/api/datasets",
         json={
@@ -248,22 +286,7 @@ async def test_filter_json_unknown_fields_silently_ignored(http_client):
             "filter_json": {"conditions": [{"type": "filename", "pattern": "test"}]},
         },
     )
-    # Should succeed — conditions is an unknown field, silently dropped
-    assert r.status_code == 200
-    ds = r.json()["dataset"]
-    # The stored filterJson must NOT contain the legacy conditions key
-    assert "conditions" not in ds["filterJson"]
-
-
-async def test_filter_json_valid_flat_fields_accepted(http_client):
-    """Flat filter fields are accepted and round-trip correctly."""
-    ds = await _create_dataset(
-        http_client,
-        "valid-flat",
-        filter_json={"filename_search": "test", "tag_match_mode": "all"},
-    )
-    assert ds["filterJson"]["filenameSearch"] == "test"
-    assert ds["filterJson"]["tagMatchMode"] == "all"
+    assert r.status_code == 422
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -387,7 +410,7 @@ async def test_filename_search_single_pattern(http_client, files_root):
     ds = await _create_dataset(
         http_client,
         "cats-only",
-        filter_json={"filename_search": "orange_cat"},
+        filter_json={"terms": [{"kind": "filename", "patterns": ["orange_cat"]}]},
     )
     result = await _dataset_images(http_client, ds["uuid"])
     names = [img["filename"] for img in result["images"]]
@@ -411,7 +434,7 @@ async def test_updated_at_range_filter(http_client, files_root, db_client):
     cutoff = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
     r = await http_client.post(
         "/api/images/review",
-        json={"show_all_bboxes": True, "tag_uuids": [], "updated_date_from": cutoff},
+        json={"terms": [{"kind": "date", "field": "updated", "from": cutoff}]},
     )
     assert r.status_code == 200
     names = [img["filename"] for img in r.json()["images"]]
@@ -435,9 +458,7 @@ async def test_tag_presence_filter(http_client, files_root):
     r = await http_client.post(
         "/api/images/review",
         json={
-            "show_all_bboxes": True,
-            "tag_uuids": [],
-            "tag_presence_filters": [{"tag_uuid": tag_uuid, "exclude": False}],
+            "terms": [{"kind": "bboxTag", "tagUuids": [tag_uuid]}],
         },
     )
     names = [img["filename"] for img in r.json()["images"]]
@@ -448,9 +469,7 @@ async def test_tag_presence_filter(http_client, files_root):
     r2 = await http_client.post(
         "/api/images/review",
         json={
-            "show_all_bboxes": True,
-            "tag_uuids": [],
-            "tag_presence_filters": [{"tag_uuid": tag_uuid, "exclude": True}],
+            "terms": [{"kind": "bboxTag", "tagUuids": [tag_uuid], "negate": True}],
         },
     )
     names2 = [img["filename"] for img in r2.json()["images"]]
@@ -473,15 +492,7 @@ async def test_require_verified_filter(http_client, files_root):
     r = await http_client.post(
         "/api/images/review",
         json={
-            "show_all_bboxes": True,
-            "tag_uuids": [],
-            "image_label_filters": [
-                {
-                    "label_uuid": label_uuid,
-                    "status": "present",
-                    "require_verified": True,
-                }
-            ],
+            "terms": [{"kind": "imageLabel", "labelUuid": label_uuid, "state": "any_reviewed"}],
         },
     )
     assert r.status_code == 200
@@ -516,14 +527,14 @@ async def test_patch_filter_json(http_client):
     label_uuid = r.json()["label"]["uuid"]
     ds = await _create_dataset(http_client, "filter-patch-ds", label_uuids=[label_uuid])
 
-    new_filter = {"filename_search": "cats"}
+    new_filter = {"terms": [{"kind": "filename", "patterns": ["cats"]}]}
     r = await http_client.patch(
         f"/api/datasets/{ds['uuid']}",
         json={"filter_json": new_filter},
     )
     assert r.json()["status"] == "success"
     updated = r.json()["dataset"]
-    assert updated["filterJson"]["filenameSearch"] == "cats"
+    assert updated["filterJson"]["terms"] == [{"kind": "filename", "patterns": ["cats"], "negate": False}]
     assert label_uuid in updated["labelUuids"]  # labelUuids unchanged
 
 
@@ -577,7 +588,7 @@ async def test_dataset_filter_date_from(http_client, files_root, db_client):
     ds = await _create_dataset(
         http_client,
         "recent-images",
-        filter_json={"date_from": cutoff},
+        filter_json={"terms": [{"kind": "date", "field": "created", "from": cutoff}]},
     )
     result = await _dataset_images(http_client, ds["uuid"])
     names = [img["filename"] for img in result["images"]]
@@ -597,7 +608,7 @@ async def test_dataset_filter_date_to(http_client, files_root, db_client):
     ds = await _create_dataset(
         http_client,
         "older-images",
-        filter_json={"date_to": cutoff},
+        filter_json={"terms": [{"kind": "date", "field": "created", "to": cutoff}]},
     )
     result = await _dataset_images(http_client, ds["uuid"])
     names = [img["filename"] for img in result["images"]]
@@ -625,7 +636,7 @@ async def test_dataset_filter_tag_include(http_client, files_root):
     ds = await _create_dataset(
         http_client,
         "has-tag",
-        filter_json={"tag_uuids": [tag_uuid]},
+        filter_json={"terms": [{"kind": "bboxTag", "tagUuids": [tag_uuid]}]},
     )
     result = await _dataset_images(http_client, ds["uuid"])
     names = [img["filename"] for img in result["images"]]
@@ -648,7 +659,7 @@ async def test_dataset_filter_tag_exclude(http_client, files_root):
     ds = await _create_dataset(
         http_client,
         "no-tag",
-        filter_json={"tag_exclude_uuids": [tag_uuid]},
+        filter_json={"terms": [{"kind": "bboxTag", "tagUuids": [tag_uuid], "negate": True}]},
     )
     result = await _dataset_images(http_client, ds["uuid"])
     names = [img["filename"] for img in result["images"]]
@@ -763,7 +774,7 @@ async def test_created_at_range_filter(http_client, files_root, db_client):
     cutoff = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
     r = await http_client.post(
         "/api/images/review",
-        json={"show_all_bboxes": True, "tag_uuids": [], "date_from": cutoff},
+        json={"terms": [{"kind": "date", "field": "created", "from": cutoff}]},
     )
     assert r.status_code == 200
     names = [img["filename"] for img in r.json()["images"]]
@@ -811,24 +822,30 @@ async def _make_label(http_client, name: str) -> str:
 
 
 async def test_image_label_conditions_round_trip(http_client, files_root):
-    """image_label_conditions must survive a dataset save/load cycle unchanged."""
+    """An imageLabel term must survive a dataset save/load cycle unchanged.
+
+    Replaces the pre-1.4b imageLabelConditions flat field, which is now
+    expressed as a term (kind='imageLabel') in filter_json.terms.
+    """
     label_uuid = await _make_label(http_client, "litter_box_rt")
-    filter_json = {"imageLabelConditions": [{"labelUuid": label_uuid, "state": "absent"}]}
+    filter_json = {"terms": [{"kind": "imageLabel", "labelUuid": label_uuid, "state": "absent"}]}
     ds = await _create_dataset(http_client, "rt-test", filter_json=filter_json)
 
     saved = ds["filterJson"]
-    assert "imageLabelConditions" in saved, "imageLabelConditions dropped from filterJson on save"
-    assert saved["imageLabelConditions"] == [{"labelUuid": label_uuid, "state": "absent"}]
+    assert "terms" in saved, "terms dropped from filterJson on save"
+    assert saved["terms"] == [
+        {"kind": "imageLabel", "labelUuid": label_uuid, "state": "absent", "rollUp": True, "negate": False}
+    ]
 
     r = await http_client.get("/api/datasets")
     assert r.status_code == 200, r.text
     all_ds = {d["uuid"]: d for d in r.json()["datasets"]}
     fetched = all_ds[ds["uuid"]]["filterJson"]
-    assert fetched.get("imageLabelConditions") == [{"labelUuid": label_uuid, "state": "absent"}]
+    assert fetched.get("terms") == saved["terms"]
 
 
 async def test_image_label_conditions_filter_absent(http_client, files_root):
-    """Dataset with imageLabelConditions[absent] returns only images where label is ABSENT."""
+    """Dataset with an imageLabel[absent] term returns only images where label is ABSENT."""
     label_uuid = await _make_label(http_client, "litter_box_flt")
 
     for name in ("ilc_absent.png", "ilc_present.png", "ilc_unset.png"):
@@ -839,7 +856,7 @@ async def test_image_label_conditions_filter_absent(http_client, files_root):
     await _set_image_label(http_client, "ilc_present.png", label_uuid, "present")
     # ilc_unset.png has no image_label row
 
-    filter_json = {"imageLabelConditions": [{"labelUuid": label_uuid, "state": "absent"}]}
+    filter_json = {"terms": [{"kind": "imageLabel", "labelUuid": label_uuid, "state": "absent"}]}
     ds = await _create_dataset(http_client, "ilc-absent-ds", filter_json=filter_json)
     result = await _dataset_images(http_client, ds["uuid"])
     names = {img["filename"] for img in result["images"]}
@@ -850,7 +867,7 @@ async def test_image_label_conditions_filter_absent(http_client, files_root):
 
 
 async def test_image_label_conditions_filter_present(http_client, files_root):
-    """Dataset with imageLabelConditions[present] returns only images where label is PRESENT."""
+    """Dataset with an imageLabel[present] term returns only images where label is PRESENT."""
     label_uuid = await _make_label(http_client, "litter_box_prs")
 
     for name in ("ilcp_absent.png", "ilcp_present.png"):
@@ -860,7 +877,7 @@ async def test_image_label_conditions_filter_present(http_client, files_root):
     await _set_image_label(http_client, "ilcp_absent.png", label_uuid, "absent")
     await _set_image_label(http_client, "ilcp_present.png", label_uuid, "present")
 
-    filter_json = {"imageLabelConditions": [{"labelUuid": label_uuid, "state": "present"}]}
+    filter_json = {"terms": [{"kind": "imageLabel", "labelUuid": label_uuid, "state": "present"}]}
     ds = await _create_dataset(http_client, "ilc-present-ds", filter_json=filter_json)
     result = await _dataset_images(http_client, ds["uuid"])
     names = {img["filename"] for img in result["images"]}

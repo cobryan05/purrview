@@ -28,6 +28,7 @@ from db_client.api.labels_api import LabelsApi
 from db_client.api.tags_api import TagsApi
 from db_client.models.add_bbox_payload import AddBboxPayload
 from db_client.models.add_tag_payload import AddTagPayload
+from db_client.models.b_box_tag_term import BBoxTagTerm
 from db_client.models.batch_by_uuids_payload import BatchByUuidsPayload
 from db_client.models.bbox_patch_payload import BboxPatchPayload
 from db_client.models.get_image_metadata_payload import GetImageMetadataPayload
@@ -35,6 +36,7 @@ from db_client.models.image_record_read import ImageRecordRead
 from db_client.models.image_search_params import ImageSearchParams
 from db_client.models.set_image_tag_payload import SetImageTagPayload
 from db_client.models.tag_kind import TagKind as ApiTagKind
+from db_client.models.terms_inner import TermsInner
 from inference_client.api.inference_api import InferenceApi
 from inference_client.api.models_api import ModelsApi as InferenceModelsApi
 from inference_client.models.classify_payload import ClassifyPayload
@@ -573,8 +575,7 @@ class ApplyFilterChainTask(Task):
         after_sort_value = None
         while len(stubs) < self._max_images:
             params = ImageSearchParams(
-                tag_uuids=[self._tag_uuid],
-                show_all_bboxes=True,
+                terms=[TermsInner(BBoxTagTerm(tag_uuids=[self._tag_uuid], match_mode="any"))],
                 limit=_SCOPE_PAGE_SIZE,
                 sort_by="uuid",
                 sort_order="asc",

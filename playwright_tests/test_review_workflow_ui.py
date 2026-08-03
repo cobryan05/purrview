@@ -923,13 +923,15 @@ class TestConfigReadyViewGating:
         select = page.locator("#review-root .filter-verification-select:not(.bbox-verification-select)")
         select.select_option("all_verified")
         page.wait_for_timeout(300)
-        assert captured["body"].get("labelVerificationCheck") == "all_verified"
-        assert captured["body"].get("verificationLabelUuids") == ["lbl-cat"]
+        assert {
+            "kind": "labelVerification",
+            "check": "all_verified",
+            "labelUuids": ["lbl-cat"],
+        } in captured["body"].get("terms", [])
 
         _switch_view(page, "bboxes")
         page.wait_for_timeout(300)
-        assert "labelVerificationCheck" not in captured["body"]
-        assert "verificationLabelUuids" not in captured["body"]
+        assert not any(t.get("kind") == "labelVerification" for t in captured["body"].get("terms", []))
 
         # Cleanup.
         page.evaluate("""async () => {

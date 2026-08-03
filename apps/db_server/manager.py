@@ -1309,9 +1309,8 @@ class Manager:
         """Return (images, has_more, total_count) for the review queue."""
         t0 = time.monotonic()
         logger.info(
-            "[review] request: label_uuids=%s tag_uuids=%s require_bboxes=%s after_uuid=%s",
-            params.label_uuids,
-            params.tag_uuids,
+            "[review] request: terms=%s require_bboxes=%s after_uuid=%s",
+            params.terms,
             params.require_bboxes,
             params.after_uuid,
         )

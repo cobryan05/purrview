@@ -52,9 +52,9 @@ from .types import (
     FilterChainRead,
     FilterChainStep,
     FilterChainUpdate,
+    FilterTerm,
     ImageItemStatus,
     ImageLabel,
-    ImageLabelFilter,
     ImageLabelState,
     ImageLabelTerm,
     ImageLabelWithFilename,
@@ -62,7 +62,6 @@ from .types import (
     ImageRecordRead,
     ImageRecordUpdate,
     ImageSearchParams,
-    ImageTagFilter,
     ImageTagLink,
     ImageTagTerm,
     Label,
@@ -89,7 +88,6 @@ from .types import (
     SourceRead,
     Tag,
     TagKind,
-    TagPresenceFilter,
     TaskConfig,
     TaskInstance,
     TrainingConfig,
@@ -210,8 +208,12 @@ def _apply_image_search_filters(stmt: Select, params: ImageSearchParams, *, use_
     Does not add ORDER BY, LIMIT, or keyset cursors — those are caller concerns.
     Works for any Select target (ImageRecord, ImageRecord.uuid, etc.).
 
-    Performance note: the bbox tag/label filters have two shapes, selected by
-    *use_exists* (see DbClient._should_use_exists_dispatch):
+    As of PR 1.4b, `terms` is the only filter surface (the old flat fields —
+    tag_uuids, label_uuids, image_label_filters, date_from, etc. — were
+    deleted; see _apply_filter_terms for the per-kind predicate building).
+
+    Performance note: the bbox tag/label term predicates have two shapes,
+    selected by *use_exists* (see DbClient._should_use_exists_dispatch):
 
     - use_exists=False (default): non-correlated ``IN (subquery)``. SQLite
       materialises the inner SELECT once as a hash table; right choice for
@@ -224,257 +226,18 @@ def _apply_image_search_filters(stmt: Select, params: ImageSearchParams, *, use_
       rare predicate this degrades to a full-table scan, so callers must only
       set it when the *conjunction* of all predicates is common.
     """
-
-    def _tag_predicate(tag_condition):
-        if use_exists:
-            return (
-                select(BBox.uuid)
-                .join(BBoxTagLink, BBoxTagLink.bbox_uuid == BBox.uuid)
-                .where(BBox.image_uuid == ImageRecord.uuid, tag_condition)
-                .exists()
-                .correlate(ImageRecord)
-            )
-        return ImageRecord.uuid.in_(
-            select(BBox.image_uuid).join(BBoxTagLink, BBoxTagLink.bbox_uuid == BBox.uuid).where(tag_condition)
-        )
-
-    def _label_predicate(label_condition):
-        if use_exists:
-            return (
-                select(BBox.uuid)
-                .where(BBox.image_uuid == ImageRecord.uuid, label_condition)
-                .exists()
-                .correlate(ImageRecord)
-            )
-        return ImageRecord.uuid.in_(select(BBox.image_uuid).where(label_condition))
-
     # Track whether any filter that already guarantees at least one bbox has
     # been applied, so we can skip the redundant require_bboxes subquery.
     _bbox_implied = False
 
-    # ── Tag filter ────────────────────────────────────────────────────────────
-    # When show_all_bboxes is True or tag_uuids is empty, skip so all images
-    # are candidates regardless of bbox tags.
-    if not params.show_all_bboxes and params.tag_uuids:
-        if params.tag_match_mode == "all":
-            # Image must have at least one bbox carrying EACH selected tag
-            # (the bboxes can be different).
-            for tag_uuid in params.tag_uuids:
-                stmt = stmt.where(_tag_predicate(BBoxTagLink.tag_uuid == tag_uuid))
-        else:
-            # "any of" — image has a bbox tagged with ANY of the selected tags.
-            stmt = stmt.where(_tag_predicate(BBoxTagLink.tag_uuid.in_(params.tag_uuids)))
-        _bbox_implied = True
-
-    # ── Single-label backward-compat filter ───────────────────────────────────
-    # Kept for API callers that still send label_uuid.  New callers should use
-    # label_uuids instead.
-    if params.label_uuid and params.label_uuid not in params.label_uuids:
-        stmt = stmt.where(_label_predicate(BBox.label_uuid == params.label_uuid))
-        _bbox_implied = True
-
-    # ── Filename search ────────────────────────────────────────────────────────
-    if params.filename_search:
-        escaped = _escape_like_pattern(params.filename_search)
-        stmt = stmt.where(ImageRecord.filename.like(f"%{escaped}%", escape="!"))
-    for pattern in params.filename_searches:
-        escaped = _escape_like_pattern(pattern)
-        stmt = stmt.where(ImageRecord.filename.like(f"%{escaped}%", escape="!"))
-
-    # ── Date range on created_at ───────────────────────────────────────────────
-    if params.date_from:
-        stmt = stmt.where(ImageRecord.created_at >= params.date_from)
-    if params.date_to:
-        stmt = stmt.where(ImageRecord.created_at <= params.date_to)
-
-    # ── Date range on updated_at ───────────────────────────────────────────────
-    if params.updated_date_from:
-        stmt = stmt.where(ImageRecord.updated_at >= params.updated_date_from)
-    if params.updated_date_to:
-        stmt = stmt.where(ImageRecord.updated_at <= params.updated_date_to)
-
-    # ── Tag presence/absence filters ──────────────────────────────────────────
-    for tf in params.tag_presence_filters:
-        image_uuids = (
-            select(BBox.image_uuid)
-            .join(BBoxTagLink, BBoxTagLink.bbox_uuid == BBox.uuid)
-            .where(BBoxTagLink.tag_uuid == tf.tag_uuid)
-        )
-        if tf.exclude:
-            stmt = stmt.where(ImageRecord.uuid.not_in(image_uuids))
-        else:
-            stmt = stmt.where(ImageRecord.uuid.in_(image_uuids))
-            _bbox_implied = True
-
-    # ── Image-label filters (EXISTS / NOT EXISTS subqueries) ──────────────────
-    # These filter on the image_labels table (not bboxes), which is small and
-    # accessed by PK — correlated EXISTS is fine here.
-    for i, f in enumerate(params.image_label_filters):
-        # Roll-up expands the label to itself + descendants for require_unset,
-        # require_verified, and PRESENT-status terms. ABSENT-status terms ignore
-        # roll_up (see ImageLabelFilter.roll_up docstring for why) and are always
-        # matched on the single label_uuid. Only build the recursive CTE when it's
-        # actually going to be used, so ABSENT terms and roll_up=False terms don't
-        # pay for it.
-        _rolls_up = f.roll_up and (f.require_unset or f.require_verified or f.status == ImageItemStatus.PRESENT)
-        if _rolls_up:
-            _label_condition = ImageLabel.label_uuid.in_(
-                _label_uuids_with_descendants([f.label_uuid], cte_name=f"imglabel_desc_{i}")
-            )
-        else:
-            _label_condition = ImageLabel.label_uuid == f.label_uuid
-
-        if f.require_unset:
-            # NOT EXISTS any row for this image+label (label was never assessed).
-            # Under roll-up this must be NOT EXISTS over the WHOLE descendant set in
-            # a single predicate (not two independent NOT EXISTS checks) so that a
-            # row on a descendant correctly counts as "assessed" for the parent.
-            subq = (
-                select(ImageLabel)
-                .where(
-                    ImageLabel.image_uuid == ImageRecord.uuid,
-                    _label_condition,
-                )
-                .exists()
-            )
-            stmt = stmt.where(~subq)
-        elif f.require_verified:
-            # require EXISTS row with PRESENT or ABSENT (not uncertain), for this
-            # label or (under roll-up) any descendant. Kept symmetric with
-            # require_unset above so the two remain exact complements.
-            subq = (
-                select(ImageLabel)
-                .where(
-                    ImageLabel.image_uuid == ImageRecord.uuid,
-                    _label_condition,
-                    ImageLabel.status.in_([ImageItemStatus.PRESENT, ImageItemStatus.ABSENT]),
-                )
-                .exists()
-            )
-            stmt = stmt.where(subq)
-        else:
-            subq = (
-                select(ImageLabel)
-                .where(
-                    ImageLabel.image_uuid == ImageRecord.uuid,
-                    _label_condition,
-                    ImageLabel.status == f.status,
-                )
-                .exists()
-            )
-            stmt = stmt.where(~subq if f.exclude else subq)
-
-    # ── Whole-image tag filters (EXISTS / NOT EXISTS subqueries) ──────────────
-    # These filter on the image_tags table (not bboxes), which is small and
-    # accessed by PK — correlated EXISTS is fine here.
-    for tf in params.image_tag_filters:
-        if tf.require_unset:
-            # NOT EXISTS any row for this image+tag (tag was never assessed)
-            subq = (
-                select(ImageTagLink)
-                .where(
-                    ImageTagLink.image_uuid == ImageRecord.uuid,
-                    ImageTagLink.tag_uuid == tf.tag_uuid,
-                )
-                .exists()
-            )
-            stmt = stmt.where(~subq)
-        elif tf.require_verified:
-            # require EXISTS row with PRESENT or ABSENT (not uncertain)
-            subq = (
-                select(ImageTagLink)
-                .where(
-                    ImageTagLink.image_uuid == ImageRecord.uuid,
-                    ImageTagLink.tag_uuid == tf.tag_uuid,
-                    ImageTagLink.status.in_([ImageItemStatus.PRESENT, ImageItemStatus.ABSENT]),
-                )
-                .exists()
-            )
-            stmt = stmt.where(subq)
-        else:
-            subq = (
-                select(ImageTagLink)
-                .where(
-                    ImageTagLink.image_uuid == ImageRecord.uuid,
-                    ImageTagLink.tag_uuid == tf.tag_uuid,
-                    ImageTagLink.status == tf.status,
-                )
-                .exists()
-            )
-            stmt = stmt.where(~subq if tf.exclude else subq)
-
-    # ── Dataset / review label filter ─────────────────────────────────────────
-    if params.label_uuids:
-        if params.label_match_mode == "all":
-            # Image must have at least one bbox with EACH selected label (or any
-            # of its descendants when label_include_children is True).
-            for i, label_uuid in enumerate(params.label_uuids):
-                if params.label_include_children:
-                    label_set = _label_uuids_with_descendants([label_uuid], cte_name=f"label_desc_{i}")
-                    condition = BBox.label_uuid.in_(label_set)
-                else:
-                    condition = BBox.label_uuid == label_uuid
-                stmt = stmt.where(_label_predicate(condition))
-        else:
-            # "any of" — image has a bbox with ANY of the selected labels (or
-            # their descendants when label_include_children is True).
-            if params.label_include_children:
-                label_condition = BBox.label_uuid.in_(_label_uuids_with_descendants(params.label_uuids))
-            else:
-                label_condition = BBox.label_uuid.in_(params.label_uuids)
-            stmt = stmt.where(_label_predicate(label_condition))
-        _bbox_implied = True
-
-    # ── Verification check ────────────────────────────────────────────────────
-    # Uses verification_label_uuids when set, falling back to label_uuids.
-    # This lets callers decouple the pool filter from the verification target.
-    _verification_targets = params.verification_label_uuids or params.label_uuids
-    if params.label_verification_check and _verification_targets:
-        if params.label_verification_check == "all_verified":
-            for lu in _verification_targets:
-                subq = (
-                    select(ImageLabel)
-                    .where(
-                        ImageLabel.image_uuid == ImageRecord.uuid,
-                        ImageLabel.label_uuid == lu,
-                        ImageLabel.status.in_([ImageItemStatus.PRESENT, ImageItemStatus.ABSENT]),
-                    )
-                    .exists()
-                )
-                stmt = stmt.where(subq)
-        elif params.label_verification_check == "has_unverified":
-            # At least one label must NOT have a verified row
-            not_verified = [
-                ~(
-                    select(ImageLabel)
-                    .where(
-                        ImageLabel.image_uuid == ImageRecord.uuid,
-                        ImageLabel.label_uuid == lu,
-                        ImageLabel.status.in_([ImageItemStatus.PRESENT, ImageItemStatus.ABSENT]),
-                    )
-                    .exists()
-                )
-                for lu in _verification_targets
-            ]
-            stmt = stmt.where(or_(*not_verified))
-
-    # ── New discriminated-union filter terms (PR 1.4a) ────────────────────────
-    # Additive: coexists with every flat filter above. All terms are ANDed
-    # together; see _apply_filter_terms for the per-kind predicate building.
     if params.terms:
-        stmt, _terms_bbox_implied = _apply_filter_terms(stmt, params, use_exists=use_exists)
-        _bbox_implied = _bbox_implied or _terms_bbox_implied
+        stmt, _bbox_implied = _apply_filter_terms(stmt, params, use_exists=use_exists)
 
     # ── Require at least one bbox ─────────────────────────────────────────────
     # Skip when any earlier filter already guarantees bbox existence.
     if params.require_bboxes and not _bbox_implied:
         image_uuids = select(BBox.image_uuid)
         stmt = stmt.where(ImageRecord.uuid.in_(image_uuids))
-
-    # ── Label exclusions (NOT IN per label UUID) ───────────────────────────────
-    for label_uuid in params.label_exclusions:
-        image_uuids = select(BBox.image_uuid).where(BBox.label_uuid == label_uuid)
-        stmt = stmt.where(ImageRecord.uuid.not_in(image_uuids))
 
     return stmt
 
@@ -505,9 +268,7 @@ def _apply_filter_terms(stmt: Select, params: ImageSearchParams, *, use_exists: 
     CTE naming: recursive descendant CTEs built here use the prefix
     "term_desc_{term_index}" (or "term_desc_{term_index}_{label_index}" for
     per-label expansion under match_mode="all"), keyed off the term's position
-    in params.terms — distinct from "label_desc"/"label_desc_{i}" (bbox-loop),
-    "imglabel_desc_{i}" (image_label_filters loop), and "label_desc_probe"
-    (selectivity dispatch probe) used elsewhere in this module.
+    in params.terms.
     """
 
     def _tag_predicate(tag_condition):
@@ -561,8 +322,8 @@ def _apply_filter_terms(stmt: Select, params: ImageSearchParams, *, use_exists: 
 
         elif isinstance(term, ImageLabelTerm):
             # Roll-up applies to present / unreviewed / any_reviewed; ignored
-            # for absent (same asymmetry as ImageLabelFilter.roll_up — see its
-            # docstring).
+            # for absent (see ImageLabelTerm.roll_up docstring in types.py for
+            # why absent can't roll up).
             rolls_up = term.roll_up and term.state != ImageLabelState.ABSENT
             if rolls_up:
                 label_condition = ImageLabel.label_uuid.in_(
@@ -642,7 +403,10 @@ def _apply_filter_terms(stmt: Select, params: ImageSearchParams, *, use_exists: 
             expr = _tag_predicate(BBoxTagLink.tag_uuid == tag_uuid)
 
         elif isinstance(term, LabelVerificationTerm):
-            targets = term.label_uuids or params.label_uuids
+            # No flat ImageSearchParams.label_uuids to fall back to as of 1.4b —
+            # callers (build_dataset_search_params, get_training_config_needs_
+            # review_images) must supply label_uuids explicitly on the term.
+            targets = term.label_uuids
             if not targets:
                 expr = true()
             elif term.check == "all_verified":
@@ -1310,88 +1074,16 @@ class DbClient:
     async def _should_use_exists_dispatch(self, params: ImageSearchParams) -> bool:
         """Decide IN vs correlated-EXISTS for the bbox tag/label search filters.
 
-        The EXISTS shape only wins when SQLite can scan the (sort_col, uuid)
-        index and stop after LIMIT rows pass the filter — which requires the
-        CONJUNCTION of every restrictive predicate to be common. A single rare
-        predicate (or an unestimatable one) turns the ordered scan into a
-        full-table scan, so this is deliberately all-or-nothing:
-
-        - Bail out if any filter we cannot cheaply estimate is present.
-        - Probe each positive tag/label predicate with an indexed COUNT
-          (cached, see _selectivity_count) and require every predicate's
-          estimated matched-image fraction to clear the threshold.
-
-        The probes count bbox links rather than distinct images (a COUNT on a
-        covering index, ~1ms, vs an expensive DISTINCT join), which
-        overestimates the fraction — the safe error direction: wrongly picking
-        EXISTS near the threshold costs 10s of ms, while a zero/near-zero
-        count always keeps IN and avoids the catastrophic full-scan case.
+        PR 1.4b deleted the flat ImageSearchParams filter fields (tag_uuids,
+        label_uuids, label_uuid, label_match_mode, label_include_children, …)
+        that this selectivity-probing dispatch used to estimate against —
+        `terms` is now the only filter surface, and it has no selectivity
+        estimation yet (deliberately out of scope for 1.4b; see NOTES.md /
+        the 1.4b PR description). So this always bails to the safe IN path.
+        A future PR can reintroduce EXISTS dispatch by probing term
+        selectivity the same way this used to probe the flat fields.
         """
-        if (
-            params.filename_search
-            or params.filename_searches
-            or params.date_from
-            or params.date_to
-            or params.updated_date_from
-            or params.updated_date_to
-            or params.image_label_filters
-            or params.image_tag_filters
-            or params.tag_presence_filters
-            or params.label_exclusions
-            or params.label_verification_check
-            or params.terms
-        ):
-            return False
-
-        predicate_estimates: List[int] = []
-
-        if not params.show_all_bboxes and params.tag_uuids:
-            counts = await asyncio.gather(
-                *(
-                    self._selectivity_count(
-                        f"tag:{tag_uuid}",
-                        select(func.count()).select_from(BBoxTagLink).where(BBoxTagLink.tag_uuid == tag_uuid),
-                    )
-                    for tag_uuid in params.tag_uuids
-                )
-            )
-            # "any" matches the union of the tags (bounded below by the biggest
-            # one); "all" matches at most the smallest one.
-            predicate_estimates.append(max(counts) if params.tag_match_mode == "any" else min(counts))
-
-        async def _label_count(label_uuids: List[str]) -> int:
-            key = "label:" + ",".join(sorted(label_uuids))
-            if params.label_include_children:
-                key += ":tree"
-                condition = BBox.label_uuid.in_(_label_uuids_with_descendants(label_uuids, cte_name="label_desc_probe"))
-            elif len(label_uuids) == 1:
-                condition = BBox.label_uuid == label_uuids[0]
-            else:
-                condition = BBox.label_uuid.in_(label_uuids)
-            return await self._selectivity_count(key, select(func.count()).select_from(BBox).where(condition))
-
-        if params.label_uuids:
-            if params.label_match_mode == "all":
-                counts = await asyncio.gather(*(_label_count([label_uuid]) for label_uuid in params.label_uuids))
-                predicate_estimates.append(min(counts))
-            else:
-                predicate_estimates.append(await _label_count(params.label_uuids))
-
-        if params.label_uuid and params.label_uuid not in params.label_uuids:
-            # Backward-compat single-label filter (never expands children).
-            predicate_estimates.append(
-                await self._selectivity_count(
-                    f"label:{params.label_uuid}",
-                    select(func.count()).select_from(BBox).where(BBox.label_uuid == params.label_uuid),
-                )
-            )
-
-        if not predicate_estimates or min(predicate_estimates) == 0:
-            return False
-        total_images = await self._selectivity_count("images:total", select(func.count()).select_from(ImageRecord))
-        if total_images == 0:
-            return False
-        return (min(predicate_estimates) / total_images) >= _EXISTS_DISPATCH_MIN_FRACTION
+        return False
 
     async def list_images_search(self, params: ImageSearchParams) -> List[ImageRecord]:
         """Flexible image search used by the review queue.
@@ -3301,45 +2993,39 @@ class DbClient:
         after_uuid: Optional[str] = None,
         after_sort_value: Optional[datetime] = None,
     ) -> ImageSearchParams:
-        """Expand a DatasetRead's flat filter criteria into an ImageSearchParams."""
+        """Expand a DatasetRead's filter criteria into an ImageSearchParams.
+
+        f.terms (self-contained criteria: tags, dates, filename, whole-image
+        tag/label conditions) are carried straight through. The label_uuids
+        modifiers (label_match_mode / label_include_children / verification_check)
+        parametrize the structurally separate dataset.label_uuids column
+        (dataset_label_links), so they're expanded here into ObjectLabelTerm /
+        LabelVerificationTerm entries appended to the term list.
+        """
         f = dataset.filter_json
-        tag_presence_filters: List[TagPresenceFilter] = []
-        # Tag excludes go through tag_presence_filters (work regardless of show_all_bboxes)
-        for u in f.tag_exclude_uuids:
-            tag_presence_filters.append(TagPresenceFilter(tag_uuid=u, exclude=True))
+        terms: List[FilterTerm] = list(f.terms)
 
-        # show_all_bboxes=True means the tag_uuids include-filter is skipped.
-        # Mirror the review panel: show_all_bboxes=True only when no tag includes.
-        show_all_bboxes = len(f.tag_uuids) == 0
-
-        image_tag_filters: List[ImageTagFilter] = []
-        for cond in f.image_tag_conditions:
-            if cond.state == "present":
-                image_tag_filters.append(ImageTagFilter(tag_uuid=cond.tag_uuid, status=ImageItemStatus.PRESENT))
-            elif cond.state == "absent":
-                image_tag_filters.append(ImageTagFilter(tag_uuid=cond.tag_uuid, status=ImageItemStatus.ABSENT))
-            elif cond.state == "unset":
-                image_tag_filters.append(ImageTagFilter(tag_uuid=cond.tag_uuid, require_unset=True))
-
-        image_label_filters: List[ImageLabelFilter] = []
-        for cond in f.image_label_conditions:
-            image_label_filters.append(ImageLabelFilter(label_uuid=cond.label_uuid, status=ImageItemStatus(cond.state)))
+        if dataset.label_uuids:
+            terms.append(
+                ObjectLabelTerm(
+                    label_uuids=dataset.label_uuids,
+                    match_mode=f.label_match_mode,
+                    roll_up=f.label_include_children,
+                )
+            )
+        for excluded_uuid in f.label_exclude_uuids:
+            # roll_up=False: the pre-1.4b flat label_exclusions field was a
+            # plain equality check, never child-expanded, regardless of
+            # label_include_children (that flag only ever applied to the
+            # include-side label_uuids/label_match_mode predicate). Preserve
+            # that — ObjectLabelTerm.roll_up defaults to True, which would
+            # silently change exclusion behaviour here if left unset.
+            terms.append(ObjectLabelTerm(label_uuids=[excluded_uuid], negate=True, roll_up=False))
+        if f.verification_check:
+            terms.append(LabelVerificationTerm(check=f.verification_check, label_uuids=dataset.label_uuids))
 
         return ImageSearchParams(
-            show_all_bboxes=show_all_bboxes,
-            tag_uuids=f.tag_uuids,
-            tag_match_mode=f.tag_match_mode,
-            tag_presence_filters=tag_presence_filters,
-            label_uuids=dataset.label_uuids,
-            label_match_mode=f.label_match_mode,
-            label_include_children=f.label_include_children,
-            label_exclusions=f.label_exclude_uuids,
-            date_from=f.date_from,
-            date_to=f.date_to,
-            filename_search=f.filename_search or None,
-            label_verification_check=f.verification_check,
-            image_tag_filters=image_tag_filters,
-            image_label_filters=image_label_filters,
+            terms=terms,
             limit=limit,
             sort_by=sort_by,
             sort_order=sort_order,
@@ -4410,11 +4096,21 @@ class DbClient:
         # Collect all needs-review images from each linked dataset (union, de-duped by UUID).
         def _add_verification_predicates(params: ImageSearchParams) -> None:
             # Decouple verification targets from the pool label filter.
-            params.verification_label_uuids = label_uuids
-            params.label_verification_check = "has_unverified"
+            params.terms = list(params.terms) + [LabelVerificationTerm(check="has_unverified", label_uuids=label_uuids)]
             if extra_label_uuids:
                 # Narrow pool: image must also have bboxes with the extra labels.
-                params.label_uuids = list(set(params.label_uuids) | set(extra_label_uuids))
+                # Merge into the dataset's own pool ObjectLabelTerm (built by
+                # build_dataset_search_params) when there is one, so the union
+                # stays a single "any of these labels" predicate rather than an
+                # AND of two independent (and possibly disjoint) pool filters.
+                pool_term = next(
+                    (t for t in params.terms if isinstance(t, ObjectLabelTerm) and not t.negate),
+                    None,
+                )
+                if pool_term is not None:
+                    pool_term.label_uuids = list(set(pool_term.label_uuids) | set(extra_label_uuids))
+                else:
+                    params.terms.append(ObjectLabelTerm(label_uuids=list(extra_label_uuids), roll_up=False))
 
         all_images = await self._enumerate_dataset_union_stubs(
             tc.dataset_uuids, mutate_params=_add_verification_predicates

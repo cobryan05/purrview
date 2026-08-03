@@ -274,86 +274,13 @@ class ImageRecordRead(OrmModel):
     updated_at: Optional[datetime] = None
 
 
-class ImageLabelFilter(ApiModel):
-    """A single condition on the image_labels table used when searching images."""
-
-    label_uuid: str
-    status: ImageItemStatus
-    exclude: bool = False
-    require_verified: bool = False  # if True: EXISTS (status IN PRESENT, ABSENT); status/exclude ignored
-    require_unset: bool = False  # if True: NOT EXISTS any row for this label (never assessed)
-    # If True (default), the filter also matches on any DESCENDANT of label_uuid, not
-    # just label_uuid itself — e.g. a "Cat present" filter also matches images that only
-    # have "Tabby" (a child of Cat) recorded PRESENT. This is a settled product decision:
-    # roll-up defaults on, per-term overridable via roll_up=False.
-    #
-    # Applies to PRESENT-status terms, require_unset, and require_verified (require_unset
-    # and require_verified must stay complements of each other, so both roll up the same
-    # way: require_unset becomes "no PRESENT/ABSENT/uncertain row for this label OR any
-    # descendant"; require_verified becomes "a row exists for this label OR any
-    # descendant").
-    #
-    # EXCEPTION: ignored for ABSENT-status terms. Roll-up direction is asymmetric for
-    # absence — if the parent is ABSENT that implies all descendants are absent, but a
-    # descendant being ABSENT says nothing about the parent (other descendants, or the
-    # parent itself, may still be PRESENT). Expanding ABSENT over descendants with EXISTS
-    # would match the wrong set, so ABSENT terms always behave as if roll_up=False
-    # server-side. The field is kept in the schema (rather than restricted to non-ABSENT
-    # terms) so ABSENT roll-up can be added later without a migration.
-    roll_up: bool = True
-
-
-class ImageTagFilter(ApiModel):
-    """A single condition on the image_tags table used when searching images (whole-image tags)."""
-
-    tag_uuid: str
-    status: ImageItemStatus = ImageItemStatus.PRESENT
-    exclude: bool = False  # False = require this status; True = require its absence
-    require_verified: bool = False  # if True: EXISTS (status IN PRESENT, ABSENT); status/exclude ignored
-    require_unset: bool = False  # if True: NOT EXISTS any row for this tag (never assessed)
-
-
-class ImageTagConditionItem(ApiModel):
-    """A single image-tag filter condition stored in a dataset's filter_json.
-
-    state:
-      'present' — image must have this tag verified PRESENT
-      'absent'  — image must have this tag verified ABSENT
-      'unset'   — image must have no assessment row for this tag (never checked)
-    """
-
-    tag_uuid: str
-    state: Literal["present", "absent", "unset"]
-
-
-class ImageLabelConditionItem(ApiModel):
-    """A single image-label filter condition stored in a dataset's filter_json.
-
-    state:
-      'present'   — image must have this label verified PRESENT
-      'absent'    — image must have this label verified ABSENT
-      'uncertain' — image must have this label in UNCERTAIN state
-    """
-
-    label_uuid: str
-    state: Literal["present", "absent", "uncertain"]
-
-
-class TagPresenceFilter(ApiModel):
-    """Require or exclude images based on bbox-level tag presence."""
-
-    tag_uuid: str
-    exclude: bool = False  # False = require at least one bbox has this tag; True = require none do
-
-
 # ─────────────────────────────────────────────────────────────────────────────
-# Discriminated-union filter-term model (PR 1.4a).
+# Discriminated-union filter-term model (PR 1.4a; sole filter surface as of 1.4b).
 #
-# `ImageSearchParams.terms` is a new, additive query surface that sits ALONGSIDE
-# the existing flat fields above (tag_uuids, image_label_filters, label_uuids,
-# etc.) — nothing here replaces them yet. All terms in the list are ANDed
-# together; OR lives *inside* a term via multi-select + match_mode. See
-# db_client._apply_filter_terms for the query-building side.
+# `ImageSearchParams.terms` is the query surface for all image-search
+# filtering. All terms in the list are ANDed together; OR lives *inside* a
+# term via multi-select + match_mode. See db_client._apply_filter_terms for
+# the query-building side.
 # ─────────────────────────────────────────────────────────────────────────────
 
 
@@ -389,8 +316,17 @@ class ImageLabelTerm(ApiModel):
     kind: Literal["imageLabel"] = "imageLabel"
     label_uuid: str
     state: ImageLabelState
-    # Applies to present / unreviewed / any_reviewed; ignored for absent (see
-    # ImageLabelFilter.roll_up docstring for why absent can't roll up).
+    # If True (default), also matches on any DESCENDANT of label_uuid, not
+    # just label_uuid itself — e.g. a "Cat present" filter also matches images
+    # that only have "Tabby" (a child of Cat) recorded PRESENT.
+    #
+    # Applies to present / unreviewed / any_reviewed. ignored for absent:
+    # roll-up direction is asymmetric for absence — if the parent is ABSENT
+    # that implies all descendants are absent, but a descendant being ABSENT
+    # says nothing about the parent (other descendants, or the parent itself,
+    # may still be PRESENT). Expanding ABSENT over descendants with EXISTS
+    # would match the wrong set, so absent terms always behave as if
+    # roll_up=False server-side.
     roll_up: bool = True
     negate: bool = False
 
@@ -428,9 +364,9 @@ class BBoxVerificationTerm(ApiModel):
 class LabelVerificationTerm(ApiModel):
     """The "Config Ready" predicate: has every target label been assessed?
 
-    An empty label_uuids means "resolve against the query's object-label set"
-    — i.e. fall back to ImageSearchParams.label_uuids, preserving today's
-    `verification_label_uuids ?? label_uuids` fallback.
+    label_uuids must be supplied explicitly by the caller — as of PR 1.4b
+    there is no flat ImageSearchParams field to fall back to. An empty list
+    is vacuously true/false (see _apply_filter_terms).
     """
 
     kind: Literal["labelVerification"] = "labelVerification"
@@ -480,57 +416,22 @@ FilterTerm = Annotated[
 
 
 class ImageSearchParams(ApiModel):
+    # Not a filter: display-mode flag consumed by callers outside the term
+    # pipeline (e.g. bulk-apply's own bbox subset logic). Has no effect on
+    # `terms` evaluation — a future slice may wire it into term evaluation.
     show_all_bboxes: bool = False
-    tag_uuids: List[str] = Field(default_factory=list)
-    label_uuid: Optional[str] = None
-    image_label_filters: List["ImageLabelFilter"] = Field(default_factory=list)
-    image_tag_filters: List["ImageTagFilter"] = Field(default_factory=list)
     limit: int = 50
     sort_by: Literal["uuid", "created_at", "updated_at"] = "created_at"
     sort_order: Literal["asc", "desc"] = "desc"
-    filename_search: Optional[str] = None
-    filename_searches: List[str] = Field(default_factory=list)  # AND of all patterns
-    # Date range filters on images.created_at.
-    date_from: Optional[datetime] = None
-    date_to: Optional[datetime] = None
-    # Date range filters on images.updated_at.
-    updated_date_from: Optional[datetime] = None
-    updated_date_to: Optional[datetime] = None
-    # Tag presence/absence filters (complement to tag_uuids positive-only filter).
-    tag_presence_filters: List["TagPresenceFilter"] = Field(default_factory=list)
-    # Dataset / review label filter: images must have at least one bbox with one of these
-    # label uuids ("any") or all of them ("all").  Empty list = no label filter.
-    label_uuids: List[str] = Field(default_factory=list)
-    # "any" = image has a bbox with ANY of the selected labels (OR logic, default)
-    # "all" = image has a bbox with EACH of the selected labels (AND logic)
-    label_match_mode: Literal["any", "all"] = "any"
-    # When True, label_uuids is expanded to include all descendant labels in the
-    # hierarchy before filtering (e.g. "cat" also matches "tabby", "siamese", …).
-    label_include_children: bool = False
-    # "any" = image has a bbox with ANY of the selected tags (OR logic, default)
-    # "all" = image has a bbox with EACH of the selected tags (AND logic, one per bbox ok)
-    tag_match_mode: Literal["any", "all"] = "any"
-    # Per-label exclusion: image must NOT have any bbox with these label UUIDs.
-    label_exclusions: List[str] = Field(default_factory=list)
     # When True, only images that have at least one bbox are returned.
     # Useful for bbox-view pagination so empty-bbox images don't dilute pages.
     require_bboxes: bool = False
-    # Verification check — operates on label_uuids by default, or on
-    # verification_label_uuids when that field is non-empty.
-    # "all_verified"   = every target label has a verified image_label row (PRESENT or ABSENT)
-    # "has_unverified" = at least one target label is uncertain or missing a row
-    label_verification_check: Optional[Literal["all_verified", "has_unverified"]] = None
-    # Override the label set used for verification checks. When non-empty, the
-    # verification predicate runs against these UUIDs instead of label_uuids,
-    # allowing the pool filter and the verification target to differ (e.g. when
-    # checking a training config's target labels across a dataset's pool filter).
-    verification_label_uuids: Optional[List[str]] = None
     # Keyset pagination cursor.
     after_uuid: Optional[str] = None
     after_sort_value: Optional[datetime] = None  # populated when sort_by != "uuid"
-    # New discriminated-union filter-term model (PR 1.4a). Additive: coexists
-    # with every flat field above. All terms are ANDed together; see
-    # apps.helpers.db.db_client._apply_filter_terms for query building.
+    # Discriminated-union filter-term model (PR 1.4a; sole filter surface as
+    # of 1.4b — the old flat filter fields were deleted). All terms are
+    # ANDed together; see apps.helpers.db.db_client._apply_filter_terms.
     terms: List[FilterTerm] = Field(default_factory=list)
 
 
@@ -804,34 +705,37 @@ class ImageTagStatusRead(OrmModel):
 
 
 class DatasetFilterCriteria(ApiModel):
-    """Stored as JSON in datasets.filter_json. Mirrors the review filter panel state exactly."""
+    """Stored as JSON in datasets.filter_json.
 
-    # Tags
-    tag_uuids: List[str] = Field(default_factory=list)
-    tag_exclude_uuids: List[str] = Field(default_factory=list)
-    tag_match_mode: Literal["any", "all"] = "any"
+    As of PR 1.4b, self-contained criteria (tags, dates, filename, whole-image
+    tag/label conditions) live in `terms` — the same discriminated-union shape
+    as ImageSearchParams.terms (see db_client.build_dataset_search_params for
+    how the two are combined). The remaining flat fields here are modifiers of
+    Dataset.label_uuids, a structurally separate column (dataset_label_links,
+    for FK integrity) that cannot itself live inside this JSON blob.
+    """
+
     # Label modifiers (label_uuids lives on Dataset.label_uuids / dataset_label_links)
     label_exclude_uuids: List[str] = Field(default_factory=list)
     label_match_mode: Literal["any", "all"] = "any"
     label_include_children: bool = False
-    # Date range on image created_at
-    date_from: Optional[datetime] = None
-    date_to: Optional[datetime] = None
-    # Filename substring
-    filename_search: Optional[str] = None
     # Verification status check (operates on dataset.label_uuids)
     # "all_verified"   = every dataset label has a verified image_label row (PRESENT or ABSENT)
     # "has_unverified" = at least one dataset label is uncertain or missing
     verification_check: Optional[Literal["all_verified", "has_unverified"]] = None
-    # Whole-image tag conditions (unified replacement for the old three-axis approach)
-    image_tag_conditions: List["ImageTagConditionItem"] = Field(default_factory=list)
-    # Whole-image label conditions (filter by image_labels table: present/absent/uncertain)
-    image_label_conditions: List["ImageLabelConditionItem"] = Field(default_factory=list)
+    # Discriminated-union filter terms — tags, dates, filename, whole-image
+    # tag/label conditions. ANDed together, same as ImageSearchParams.terms.
+    terms: List[FilterTerm] = Field(default_factory=list)
 
     model_config = ConfigDict(
         alias_generator=to_camel,
         populate_by_name=True,
-        extra="ignore",  # silently drop legacy 'conditions' field
+        # Unknown fields must be rejected, not silently dropped — extra="ignore"
+        # here previously meant a client sending a not-yet-recognised filter
+        # field would have it "save" successfully then silently vanish from
+        # every subsequent GET (data loss by design). See test_datasets.py
+        # TestDatasetFilterCriteriaExtraFields.
+        extra="forbid",
     )
 
 

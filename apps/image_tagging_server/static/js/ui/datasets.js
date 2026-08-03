@@ -27,16 +27,19 @@ function _datasetMetaSummary(dataset) {
   if (labelCount > 0) parts.push(`${labelCount} label${labelCount !== 1 ? 's' : ''}`);
 
   const f = dataset.filterJson ?? {};
+  const terms = f.terms ?? [];
 
-  const tagCount = (f.tagUuids?.length ?? 0) + (f.tagExcludeUuids?.length ?? 0);
+  const tagCount = terms
+    .filter(t => t.kind === 'bboxTag')
+    .reduce((n, t) => n + (t.tagUuids?.length ?? 0), 0);
   if (tagCount > 0) parts.push(`${tagCount} tag filter${tagCount !== 1 ? 's' : ''}`);
 
-  const condCount = f.imageLabelConditions?.length ?? 0;
+  const condCount = terms.filter(t => t.kind === 'imageLabel').length;
   if (condCount > 0) parts.push(`${condCount} image condition${condCount !== 1 ? 's' : ''}`);
 
   const extras = [];
-  if (f.filenameSearch) extras.push('filename');
-  if (f.dateFrom || f.dateTo) extras.push('date range');
+  if (terms.some(t => t.kind === 'filename')) extras.push('filename');
+  if (terms.some(t => t.kind === 'date')) extras.push('date range');
   if (f.verificationCheck) extras.push('verification');
   if (extras.length > 0) parts.push(extras.join(', '));
 

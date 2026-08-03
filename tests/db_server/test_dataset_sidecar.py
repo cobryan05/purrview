@@ -109,20 +109,20 @@ async def test_sidecar_includes_label_uuids(tmp_path):
 
 
 async def test_sidecar_stores_filter_json(tmp_path):
-    """datasets.json preserves flat filter_json fields."""
+    """datasets.json preserves filter_json's terms."""
     client = DbClient(db_dir=tmp_path, memory=True)
     await client.init_db()
 
     uuid = await _create(
         client,
         "filtered",
-        filter_json=DatasetFilterCriteria(filename_search=".jpg"),
+        filter_json=DatasetFilterCriteria(terms=[{"kind": "filename", "patterns": [".jpg"]}]),
     )
 
     rows = await _read_sidecar(tmp_path)
     row = next((r for r in rows if r["uuid"] == uuid), None)
     assert row is not None
-    assert row["filter_json"]["filename_search"] == ".jpg"
+    assert row["filter_json"]["terms"] == [{"kind": "filename", "patterns": [".jpg"], "negate": False}]
 
     await client.close()
 

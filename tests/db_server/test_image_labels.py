@@ -862,7 +862,7 @@ class TestBulkApplyImagesByFilter:
         r = await http_client.post(
             "/api/images/bulk-apply",
             json={
-                "filter": {"showAllBboxes": True, "filenameSearch": "filter_match"},
+                "filter": {"terms": [{"kind": "filename", "patterns": ["filter_match"]}]},
                 "action": "setAbsent",
                 "labelUuid": label_uuid,
             },
@@ -891,7 +891,7 @@ class TestBulkApplyImagesByFilter:
         r = await http_client.post(
             "/api/images/bulk-apply",
             json={
-                "filter": {"showAllBboxes": True, "filenameSearch": "filter_page_"},
+                "filter": {"terms": [{"kind": "filename", "patterns": ["filter_page_"]}]},
                 "action": "setAbsent",
                 "labelUuid": label_uuid,
             },
@@ -926,7 +926,7 @@ class TestBulkApplyImagesByFilter:
         resp = await http_client.post(
             "/api/images/bulk-apply",
             json={
-                "filter": {"showAllBboxes": True, "filenameSearch": "filter_skip"},
+                "filter": {"terms": [{"kind": "filename", "patterns": ["filter_skip"]}]},
                 "action": "setAbsent",
                 "labelUuid": label_uuid,
             },
