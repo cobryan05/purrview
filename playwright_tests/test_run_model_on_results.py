@@ -266,7 +266,7 @@ def _navigate_to_review(page: Page, base_url: str):
 
 
 def _run_model_btn(page: Page):
-    return page.locator("#review-root .review-action-bar button", has_text="Run Model on Results")
+    return page.get_by_test_id("review-run-model-on-results")
 
 
 def _check_model_in_dialog(dialog, name: str):

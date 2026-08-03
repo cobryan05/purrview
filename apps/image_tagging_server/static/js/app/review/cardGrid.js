@@ -353,6 +353,7 @@ export function buildBboxCard(controller, entry, opts) {
 
   const card = document.createElement('div');
   card.className = 'review-card';
+  card.dataset.testid = 'review-card';
   card.dataset.bboxUuid = bbox.uuid;
   card.dataset.imageUuid = img.uuid;
   card.dataset.kind = 'bbox';
@@ -429,6 +430,7 @@ export function buildImageCard(controller, entry, opts) {
 
   const card = document.createElement('div');
   card.className = 'review-card review-card--image';
+  card.dataset.testid = 'review-card';
   card.dataset.imageUuid = img.uuid;
   card.dataset.kind = 'image';
 
@@ -582,6 +584,7 @@ export function buildBboxRow(controller, entry, opts) {
 
   const row = document.createElement('li');
   row.className = 'review-row review-card';
+  row.dataset.testid = 'review-row';
   row.dataset.bboxUuid = bbox.uuid;
   row.dataset.imageUuid = img.uuid;
   row.dataset.kind = 'bbox';
@@ -657,6 +660,7 @@ export function buildImageRow(controller, entry, opts) {
 
   const row = document.createElement('li');
   row.className = 'review-row review-card review-card--image';
+  row.dataset.testid = 'review-row';
   row.dataset.imageUuid = img.uuid;
   row.dataset.kind = 'image';
 

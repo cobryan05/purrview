@@ -86,6 +86,7 @@ export function renderModelTreePanel({ nodes, labelsMap, compact = false, highli
   // ── Root node ─────────────────────────────────────────────────────────────
   const rootRow = document.createElement('div');
   rootRow.className = 'mtp-node mtp-node--root';
+  rootRow.dataset.testid = 'model-tree-root-node';
   if (highlightNodeUuid && nodeUuidByLabel.get(null) === highlightNodeUuid) {
     rootRow.classList.add('mtp-node--target');
   }
@@ -106,6 +107,7 @@ export function renderModelTreePanel({ nodes, labelsMap, compact = false, highli
   for (const [uuid, spec] of subRows) {
     const row = document.createElement('div');
     row.className = 'mtp-node mtp-node--sub';
+    row.dataset.testid = 'model-tree-sub-node';
     if (highlightNodeUuid && nodeUuidByLabel.get(uuid) === highlightNodeUuid) {
       row.classList.add('mtp-node--target');
     }

@@ -317,7 +317,7 @@ class TestDeleteDataset:
         page.wait_for_timeout(300)
 
         # Custom modal (not window.confirm) — verify it appears with the dataset name
-        modal = page.locator(".app-modal-dialog")
+        modal = page.get_by_test_id("modal-shell-dialog")
         expect(modal).to_be_visible()
         expect(modal).to_contain_text(FAKE_DATASET["name"])
 
@@ -348,7 +348,7 @@ class TestDeleteDataset:
         page.wait_for_timeout(300)
 
         # Confirm by clicking "Delete" inside the modal
-        page.locator(".app-modal-dialog button", has_text="Delete").click()
+        page.get_by_test_id("modal-shell-dialog").locator("button", has_text="Delete").click()
         page.wait_for_timeout(600)
 
         assert delete_calls, "Expected DELETE request to /api/datasets/{uuid}"
@@ -378,7 +378,7 @@ class TestDeleteDataset:
         page.wait_for_timeout(300)
 
         # Cancel the modal — no API call should happen
-        page.locator(".app-modal-dialog button", has_text="Cancel").click()
+        page.get_by_test_id("modal-shell-dialog").locator("button", has_text="Cancel").click()
         page.wait_for_timeout(500)
 
         assert not calls, "API must NOT be called when delete is cancelled"

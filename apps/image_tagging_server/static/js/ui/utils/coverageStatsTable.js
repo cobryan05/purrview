@@ -125,6 +125,7 @@ export function renderReadinessStats(content, { config, readiness, onNavigate })
     status.textContent = 'No images in dataset.';
   } else {
     const readySpan = document.createElement('span');
+    readySpan.dataset.testid = 'training-readiness-ready-count';
     readySpan.style.cssText = `color:#4c4; ${readyCount > 0 ? _clickableCountCss : ''}`;
     readySpan.textContent = `✓ ${readyCount} ready`;
     if (readyCount > 0) {
@@ -135,6 +136,7 @@ export function renderReadinessStats(content, { config, readiness, onNavigate })
     }
 
     const needsReviewSpan = document.createElement('span');
+    needsReviewSpan.dataset.testid = 'training-readiness-needs-review-count';
     needsReviewSpan.style.cssText = `color:#f90; ${needsReviewCount > 0 ? _clickableCountCss : ''}`;
     needsReviewSpan.textContent = `⚠ ${needsReviewCount} need review`;
     if (needsReviewCount > 0) {
@@ -145,6 +147,7 @@ export function renderReadinessStats(content, { config, readiness, onNavigate })
     }
 
     const notStartedSpan = document.createElement('span');
+    notStartedSpan.dataset.testid = 'training-readiness-not-started-count';
     notStartedSpan.style.cssText = `color: var(--pico-muted-color, #888); ${notStartedCount > 0 ? _clickableCountCss : ''}`;
     notStartedSpan.textContent = `◌ ${notStartedCount} not started`;
     if (notStartedCount > 0) {

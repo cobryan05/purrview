@@ -194,7 +194,7 @@ class TestRunPickerAboveModals:
             window.__testModal.dialog.textContent = 'Test modal';
             window.__testModal.open();
         }""")
-        expect(page.locator(".app-modal-overlay")).to_be_visible()
+        expect(page.get_by_test_id("modal-shell-overlay")).to_be_visible()
 
         page.locator(".active-model-bar__picker-btn").click()
         expect(page.locator(".tc-run-picker")).to_be_visible()
@@ -203,7 +203,7 @@ class TestRunPickerAboveModals:
 
         expect(page.locator(".active-model-bar__name")).to_have_text("Dog Detector")
         # The modal is untouched — no navigation happened underneath it.
-        expect(page.locator(".app-modal-overlay")).to_be_visible()
+        expect(page.get_by_test_id("modal-shell-overlay")).to_be_visible()
 
 
 LABEL_STATS = [
@@ -269,7 +269,7 @@ class TestCoveragePopupTable:
         cat_row = page.locator(".tc-stats-panel tr", has_text="Cat")
         cat_row.locator("td").nth(1).click()  # Positive column, value 12
 
-        expect(page.locator(".canvas-modal-title, strong", has_text="Cat — positive (Cat Detector)")).to_be_visible()
+        expect(page.locator("[data-testid='canvas-edit-modal-title'], strong", has_text="Cat — positive (Cat Detector)")).to_be_visible()
         # The popup closes itself so it doesn't sit on top of the modal it opened.
         expect(page.locator(".tc-stats-panel")).to_have_count(0)
 
@@ -319,7 +319,7 @@ class TestReadinessInPopup:
             ),
         )
         page.locator(".tc-stats-panel", has_text="✓ 5 ready").get_by_text("✓ 5 ready", exact=False).click()
-        expect(page.locator(".canvas-modal-title, strong", has_text="Ready for Training")).to_be_visible()
+        expect(page.locator("[data-testid='canvas-edit-modal-title'], strong", has_text="Ready for Training")).to_be_visible()
         expect(page.locator(".tc-stats-panel")).to_have_count(0)
 
 

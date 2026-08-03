@@ -382,7 +382,7 @@ class TestDeleteModelConfig:
         _editor_bar(page).locator("button", has_text="Delete").click()
         page.wait_for_timeout(300)
 
-        modal = page.locator(".app-modal-dialog")
+        modal = page.get_by_test_id("modal-shell-dialog")
         expect(modal).to_be_visible()
         expect(modal).to_contain_text("Animal Detector")
 
@@ -409,7 +409,7 @@ class TestDeleteModelConfig:
         _editor_bar(page).locator("button", has_text="Delete").click()
         page.wait_for_timeout(300)
 
-        page.locator(".app-modal-dialog button", has_text="Delete").click()
+        page.get_by_test_id("modal-shell-dialog").locator("button", has_text="Delete").click()
         page.wait_for_timeout(600)
 
         assert calls, "Expected DELETE to /api/model-configs/cfg-1"
@@ -440,7 +440,7 @@ class TestDeleteModelConfig:
         _editor_bar(page).locator("button", has_text="Delete").click()
         page.wait_for_timeout(300)
 
-        page.locator(".app-modal-dialog button", has_text="Cancel").click()
+        page.get_by_test_id("modal-shell-dialog").locator("button", has_text="Cancel").click()
         page.wait_for_timeout(500)
 
         assert not calls, "API must NOT be called when delete is cancelled"
@@ -508,13 +508,13 @@ class TestModelTreePanel:
 
         panel = _tree_panel(page)
         expect(panel).to_be_visible()
-        root_row = panel.locator(".mtp-node--root")
+        root_row = panel.get_by_test_id("model-tree-root-node")
         expect(root_row).to_contain_text("Top model")
         expect(root_row).to_contain_text("Object Detection")
         expect(root_row).to_contain_text("YOLOv9-c")
         expect(root_row).to_contain_text("Cat")  # cat is a top-model class
 
-        sub_row = panel.locator(".mtp-node--sub")
+        sub_row = panel.get_by_test_id("model-tree-sub-node")
         expect(sub_row).to_have_count(1)
         expect(sub_row).to_contain_text("Cat")
         expect(sub_row).to_contain_text("Crop Classifier")
@@ -535,13 +535,13 @@ class TestModelTreePanel:
         page.locator("#model-config-box [data-config-uuid='cfg-1']").click()
         page.wait_for_timeout(500)
 
-        sub_row = _tree_panel(page).locator(".mtp-node--sub")
+        sub_row = _tree_panel(page).get_by_test_id("model-tree-sub-node")
         expect(sub_row.locator(".mtp-detail--warn")).to_be_visible()
 
         _label_row(page, "lbl-kitten").locator("input[type=checkbox]").first.click()
         page.wait_for_timeout(300)
 
-        sub_row = _tree_panel(page).locator(".mtp-node--sub")
+        sub_row = _tree_panel(page).get_by_test_id("model-tree-sub-node")
         expect(sub_row.locator(".mtp-detail--warn")).to_have_count(0)
         expect(sub_row).to_contain_text("distinguishes:")
         expect(sub_row).to_contain_text("Kitten")

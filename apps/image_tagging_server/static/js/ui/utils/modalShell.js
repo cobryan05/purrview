@@ -13,9 +13,11 @@ import { nextModalZIndex, applyModalCascade, registerEscHandler, unregisterEscHa
 export function createModalShell({ onClose } = {}) {
   const overlay = document.createElement('div');
   overlay.className = 'app-modal-overlay';
+  overlay.dataset.testid = 'modal-shell-overlay';
 
   const dialog = document.createElement('div');
   dialog.className = 'app-modal-dialog';
+  dialog.dataset.testid = 'modal-shell-dialog';
   overlay.appendChild(dialog);
 
   let _closed = false;

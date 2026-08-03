@@ -535,7 +535,7 @@ class TestReadinessPanel:
         _list_item(page, "tc-1").click()
 
         page.wait_for_selector("#training-config-box div:has-text('Training readiness')", timeout=3000)
-        needs_review_span = _box(page).locator("span", has_text="need review")
+        needs_review_span = _box(page).get_by_test_id("training-readiness-needs-review-count")
         expect(needs_review_span).to_contain_text("0 need review")
         style = needs_review_span.get_attribute("style") or ""
         assert "cursor: pointer" not in style, "count should not be clickable when count is 0"
@@ -552,7 +552,7 @@ class TestReadinessPanel:
         _navigate_to_training_configs(page, base_url)
         _list_item(page, "tc-1").click()
 
-        needs_review_span = _box(page).locator("span", has_text="need review")
+        needs_review_span = _box(page).get_by_test_id("training-readiness-needs-review-count")
         expect(needs_review_span).to_be_visible(timeout=3000)
         style = needs_review_span.get_attribute("style") or ""
         assert "cursor: pointer" in style, "count should be clickable when count > 0"
@@ -594,7 +594,7 @@ class TestReadinessPanel:
         _navigate_to_training_configs(page, base_url)
         _list_item(page, "tc-1").click()
 
-        needs_review_span = _box(page).locator("span", has_text="need review")
+        needs_review_span = _box(page).get_by_test_id("training-readiness-needs-review-count")
         expect(needs_review_span).to_be_visible(timeout=3000)
 
         with page.expect_request(
@@ -817,10 +817,10 @@ class TestModelTreePreview:
 
         preview = _preview(page)
         expect(preview).to_be_visible()
-        expect(preview.locator(".mtp-node--root")).to_contain_text("Top model")
+        expect(preview.get_by_test_id("model-tree-root-node")).to_contain_text("Top model")
         # Compact mode shows counts, not chips: kitten rolls up into cat → 1 class
-        expect(preview.locator(".mtp-node--root")).to_contain_text("detects: 1 class")
-        sub_row = preview.locator(".mtp-node--sub")
+        expect(preview.get_by_test_id("model-tree-root-node")).to_contain_text("detects: 1 class")
+        sub_row = preview.get_by_test_id("model-tree-sub-node")
         expect(sub_row).to_have_count(1)
         expect(sub_row).to_contain_text("Cat")
         expect(sub_row).to_contain_text("distinguishes: 1 child label")

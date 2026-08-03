@@ -79,6 +79,8 @@ export function renderTaskConfigs({ target = 'task-config-list', onEdit, onDelet
           leftButtons: [deleteButton],
           rightButtons: [startButton]
         })
+        row.dataset.testid = 'task-row';
+        row.dataset.configUuid = configUuid;
         configListDiv.appendChild(row);
       }).catch(err => {
         Logger.error('Failed to render task config row:', err);

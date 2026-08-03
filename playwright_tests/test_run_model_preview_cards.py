@@ -264,7 +264,7 @@ class TestPreviewCardBehavior:
         card = page.locator(".relabel-confirm-modal .relabel-modal-card").first
         card.locator(".card-info").dblclick()
 
-        expect(page.locator(".canvas-modal-dialog")).to_be_visible(timeout=5000)
+        expect(page.get_by_test_id("canvas-edit-modal-dialog")).to_be_visible(timeout=5000)
 
     def test_geometry_edit_lands_on_candidate_and_apply_persists_it(self, page: Page, base_url: str):
         """Full contract: open the editor, move bbox-1 to a new geometry (via a
@@ -281,7 +281,7 @@ class TestPreviewCardBehavior:
 
         card = page.locator(".relabel-confirm-modal .relabel-modal-card").first
         card.locator(".card-info").dblclick()
-        dialog = page.locator(".canvas-modal-dialog")
+        dialog = page.get_by_test_id("canvas-edit-modal-dialog")
         expect(dialog).to_be_visible(timeout=5000)
 
         # The dialog becomes visible synchronously (main.js appends it to the DOM)

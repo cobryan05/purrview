@@ -197,6 +197,7 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
   // reflow the whole bar — each cluster wraps and aligns independently.
   const toolbar = document.createElement('div');
   toolbar.className = 'review-toolbar';
+  toolbar.dataset.testid = 'review-toolbar';
 
   function makeToolbarGroup(...children) {
     const group = document.createElement('div');
@@ -215,6 +216,7 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
   // Filter toggle — only visible in full-filter mode
   const filterToggleBtn = document.createElement('button');
   filterToggleBtn.className = 'review-toolbar__btn';
+  filterToggleBtn.dataset.testid = 'review-filter-toggle';
   filterToggleBtn.textContent = '☰ Filters';
   filterToggleBtn.title = 'Toggle search filters';
   if (fetchImages) filterToggleBtn.hidden = true;
@@ -273,6 +275,7 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
   // Bulk Apply button (selected items on current page)
   const bulkBtn = document.createElement('button');
   bulkBtn.className = 'review-toolbar__btn review-toolbar__btn--primary';
+  bulkBtn.dataset.testid = 'review-bulk-apply';
   bulkBtn.textContent = 'Bulk Apply (0)';
   bulkBtn.disabled = true;
 
@@ -284,6 +287,7 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
   // for a *different* object confirmed-absent across those images).
   const bulkParentImagesBtn = document.createElement('button');
   bulkParentImagesBtn.className = 'review-toolbar__btn';
+  bulkParentImagesBtn.dataset.testid = 'review-bulk-apply-parent';
   bulkParentImagesBtn.textContent = 'Apply to Parent Images';
   bulkParentImagesBtn.disabled = true;
   bulkParentImagesBtn.hidden = true;
@@ -315,6 +319,7 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
   // and custom-fetchImages modes; scope resolution happens on click.
   const runModelBtn = document.createElement('button');
   runModelBtn.className = 'review-toolbar__btn';
+  runModelBtn.dataset.testid = 'review-run-model-on-results';
   runModelBtn.textContent = 'Run Model on Results…';
   runModelBtn.addEventListener('click', () => runModelOnResultsFlow({
     fetchImages,
@@ -361,9 +366,11 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
   pageInfo.className = 'review-toolbar__page-info';
   const prevBtn = document.createElement('button');
   prevBtn.className = 'review-toolbar__btn';
+  prevBtn.dataset.testid = 'review-page-prev';
   prevBtn.textContent = '‹ Prev';
   const nextBtn = document.createElement('button');
   nextBtn.className = 'review-toolbar__btn';
+  nextBtn.dataset.testid = 'review-page-next';
   nextBtn.textContent = 'Next ›';
   if (fetchImages) { prevBtn.hidden = true; nextBtn.hidden = true; }
 
@@ -422,6 +429,7 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
   // ── Action bar: select-all, bulk-apply, prev/next, status ─────────
   const actionBar = document.createElement('div');
   actionBar.className = 'review-action-bar';
+  actionBar.dataset.testid = 'review-action-bar';
   actionBar.append(
     makeToolbarGroup(selectAllLabel, bulkBtn, bulkParentImagesBtn, bulkAllBtn, bulkAllImagesBtn, runModelBtn, runChainBtn),
     makeToolbarGroup(prevBtn, pageInfo, nextBtn),
@@ -2524,18 +2532,22 @@ export async function showCanvasModal(bbox, img, labels, onSaved, navContext = n
   // ── Build DOM ─────────────────────────────────────────────────────
   const overlay = document.createElement('div');
   overlay.className = 'canvas-modal-overlay';
+  overlay.dataset.testid = 'canvas-edit-modal';
 
   const dialog = document.createElement('div');
   dialog.className = 'canvas-modal-dialog';
+  dialog.dataset.testid = 'canvas-edit-modal-dialog';
 
   // Header
   const header = document.createElement('div');
   header.className = 'canvas-modal-header';
   const titleEl = document.createElement('span');
   titleEl.className = 'canvas-modal-title';
+  titleEl.dataset.testid = 'canvas-edit-modal-title';
   titleEl.textContent = `Edit: ${img.filename.split('/').slice(-2).join('/')}`;
   const closeBtn = document.createElement('button');
   closeBtn.className = 'canvas-modal-close';
+  closeBtn.dataset.testid = 'canvas-edit-modal-close';
   closeBtn.textContent = '✕';
   closeBtn.title = 'Close';
   header.append(titleEl, closeBtn);

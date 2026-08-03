@@ -208,7 +208,7 @@ class TestReviewQueueRendering:
         _switch_view(page, "all")
 
         # Default: no tag filter → all bboxes visible (bbox-1, bbox-2, bbox-3).
-        cards = page.locator("#review-root .review-card")
+        cards = page.locator("#review-root [data-testid='review-card']")
         expect(cards).to_have_count(5)  # 2 image cards + 3 bbox cards
         expect(page.locator("#review-root [data-image-uuid='img-1'][data-kind='image']")).to_be_visible()
         expect(page.locator("#review-root [data-image-uuid='img-2'][data-kind='image']")).to_be_visible()
@@ -286,7 +286,7 @@ class TestSingleSelection:
 
         _navigate_to_review(page, base_url)
         _switch_view(page, "bboxes")
-        bulk_btn = page.locator("#review-root .review-action-bar button", has_text="Bulk Apply")
+        bulk_btn = page.get_by_test_id("review-bulk-apply")
         expect(bulk_btn).to_have_text("Bulk Apply (0)")
         expect(bulk_btn).to_be_disabled()
 
@@ -310,7 +310,7 @@ class TestShiftClickRangeSelection:
         _show_all_bboxes(page)
         _switch_view(page, "bboxes")
 
-        cards = page.locator("#review-root .review-card")
+        cards = page.locator("#review-root [data-testid='review-card']")
         expect(cards).to_have_count(3)  # bbox-1, bbox-2, bbox-3
 
         cards.nth(0).locator("input[type=checkbox]").click()
@@ -318,7 +318,7 @@ class TestShiftClickRangeSelection:
 
         for i in range(3):
             expect(cards.nth(i).locator("input[type=checkbox]")).to_be_checked()
-        bulk_btn = page.locator("#review-root .review-action-bar button", has_text="Bulk Apply")
+        bulk_btn = page.get_by_test_id("review-bulk-apply")
         expect(bulk_btn).to_have_text("Bulk Apply (3)")
 
 
@@ -336,7 +336,7 @@ class TestSelectAll:
         _show_all_bboxes(page)
         _switch_view(page, "bboxes")
 
-        cards = page.locator("#review-root .review-card")
+        cards = page.locator("#review-root [data-testid='review-card']")
         expect(cards).to_have_count(3)
 
         select_all = page.locator("#review-root label", has_text="Select all").locator("input[type=checkbox]")
@@ -344,7 +344,7 @@ class TestSelectAll:
 
         for i in range(3):
             expect(cards.nth(i).locator("input[type=checkbox]")).to_be_checked()
-        bulk_btn = page.locator("#review-root .review-action-bar button", has_text="Bulk Apply")
+        bulk_btn = page.get_by_test_id("review-bulk-apply")
         expect(bulk_btn).to_have_text("Bulk Apply (3)")
 
         # Unchecking clears the selection again
@@ -383,9 +383,11 @@ class TestBulkBboxAction:
         page.locator("#review-root [data-bbox-uuid='bbox-1'] input[type=checkbox]").click()
         page.locator("#review-root [data-bbox-uuid='bbox-3'] input[type=checkbox]").click()
 
-        page.locator("#review-root .review-action-bar button", has_text="Bulk Apply").click()
+        page.get_by_test_id("review-bulk-apply").click()
 
-        modal = page.locator(".app-modal-overlay, div:has(> strong:text-is('Apply to 2 selected bboxes'))").last
+        modal = page.locator(
+            "[data-testid='modal-shell-overlay'], div:has(> strong:text-is('Apply to 2 selected bboxes'))"
+        ).last
         expect(page.locator("strong", has_text="Apply to 2 selected bboxes")).to_be_visible()
 
         # 'Change Label' (relabel) is selected by default.
@@ -444,7 +446,7 @@ class TestBulkParentImagesAction:
         page.locator("#review-root [data-bbox-uuid='bbox-1'] input[type=checkbox]").click()
         page.locator("#review-root [data-bbox-uuid='bbox-3'] input[type=checkbox]").click()
 
-        parent_btn = page.locator("#review-root .review-action-bar button", has_text="Apply to Parent Images")
+        parent_btn = page.get_by_test_id("review-bulk-apply-parent")
         expect(parent_btn).to_be_visible()
         expect(parent_btn).to_have_text(re.compile(r"\(2\)"))
         parent_btn.click()
@@ -500,12 +502,12 @@ class TestBulkImageAction:
         _navigate_to_review(page, base_url)
         _switch_view(page, "images")
 
-        cards = page.locator("#review-root .review-card")
+        cards = page.locator("#review-root [data-testid='review-card']")
         expect(cards).to_have_count(2)
         for i in range(2):
             cards.nth(i).locator("input[type=checkbox]").click()
 
-        page.locator("#review-root .review-action-bar button", has_text="Bulk Apply").click()
+        page.get_by_test_id("review-bulk-apply").click()
 
         modal_title = page.locator("strong", has_text="Apply to 2 selected images")
         expect(modal_title).to_be_visible()
@@ -537,8 +539,8 @@ class TestPagination:
         # Image cards only appear in 'all' view (default is 'bboxes').
         _switch_view(page, "all")
 
-        prev_btn = page.locator("#review-root .review-action-bar button", has_text="Prev")
-        next_btn = page.locator("#review-root .review-action-bar button", has_text="Next")
+        prev_btn = page.get_by_test_id("review-page-prev")
+        next_btn = page.get_by_test_id("review-page-next")
 
         img_card_1 = page.locator("#review-root [data-image-uuid='img-1'][data-kind='image']")
         img_card_3 = page.locator("#review-root [data-image-uuid='img-3'][data-kind='image']")
@@ -571,7 +573,7 @@ class TestFilterToggleButton:
         _mock_tags(page, [{**UNVERIFIED_TAG, "name": "Unverified", "color": "#888", "kind": "system"}])
 
         _navigate_to_review(page, base_url)
-        toggle_btn = page.locator("#review-root .review-toolbar button", has_text="Filters")
+        toggle_btn = page.get_by_test_id("review-filter-toggle")
 
         # Default state: no filters active.
         expect(toggle_btn).to_have_text("☰ Filters")
@@ -637,9 +639,9 @@ class TestCanvasModalRoundTrip:
         card = page.locator("#review-root [data-bbox-uuid='bbox-1']")
         card.locator("img.thumb").dblclick()
 
-        modal = page.locator(".canvas-modal-overlay")
+        modal = page.get_by_test_id("canvas-edit-modal")
         expect(modal).to_be_visible(timeout=8000)
-        expect(modal.locator(".canvas-modal-title")).to_have_text("Edit: folder/image1.jpg")
+        expect(modal.get_by_test_id("canvas-edit-modal-title")).to_have_text("Edit: folder/image1.jpg")
 
         # Delete the highlighted (originally-opened) bbox, then Save & Close.
         modal.locator("button[data-toolbar-key='delete']").click()
@@ -685,7 +687,7 @@ class TestGroupHighlight:
         expect(image_card).to_have_class("review-card review-card--image group-highlight-image")
 
         # Move away — highlight should clear
-        page.locator("#review-root .review-toolbar").hover()
+        page.get_by_test_id("review-toolbar").hover()
         page.wait_for_timeout(200)
         expect(bbox_card).to_have_class("review-card")
         expect(image_card).to_have_class("review-card review-card--image")
@@ -709,13 +711,13 @@ class TestListView:
         _switch_view(page, "bboxes")
 
         # Explicitly in bboxes view, no tag filter → all 3 bbox cards visible.
-        expect(page.locator("#review-root .review-card")).to_have_count(3)
-        expect(page.locator("#review-root .review-row")).to_have_count(0)
+        expect(page.locator("#review-root [data-testid='review-card']")).to_have_count(3)
+        expect(page.locator("#review-root [data-testid='review-row']")).to_have_count(0)
 
         page.locator("#review-root .fb-view-toggle button[title='List view']").click()
         page.wait_for_timeout(200)
 
-        expect(page.locator("#review-root .review-row")).to_have_count(3)
+        expect(page.locator("#review-root [data-testid='review-row']")).to_have_count(3)
         expect(page.locator("#review-root .review-list")).to_have_count(1)
         expect(page.locator("#review-root .review-grid")).to_have_count(0)
         assert page.evaluate("() => localStorage.getItem('review-view')") == "list"
@@ -726,7 +728,7 @@ class TestListView:
         page.locator(".main-tab-button[data-tab='tab-review']").click()
         page.wait_for_load_state("networkidle")
         page.wait_for_selector("#review-root .review-list", timeout=4000)
-        expect(page.locator("#review-root .review-row")).to_have_count(2)
+        expect(page.locator("#review-root [data-testid='review-row']")).to_have_count(2)
 
 
     def test_list_view_selection_and_canvas_modal(self, page: Page, base_url: str):
@@ -765,11 +767,11 @@ class TestListView:
         page.locator("#review-root .fb-view-toggle button[title='List view']").click()
         page.wait_for_timeout(200)
 
-        rows = page.locator("#review-root .review-row")
+        rows = page.locator("#review-root [data-testid='review-row']")
         # Explicitly in bboxes view, no tag filter → all 3 bbox rows visible.
         expect(rows).to_have_count(3)
 
-        bulk_btn = page.locator("#review-root .review-action-bar button", has_text="Bulk Apply")
+        bulk_btn = page.get_by_test_id("review-bulk-apply")
         expect(bulk_btn).to_have_text("Bulk Apply (0)")
 
         row = page.locator("#review-root [data-bbox-uuid='bbox-1']")
@@ -778,9 +780,9 @@ class TestListView:
         expect(bulk_btn).to_be_enabled()
 
         row.locator("img.thumb").dblclick()
-        modal = page.locator(".canvas-modal-overlay")
+        modal = page.get_by_test_id("canvas-edit-modal")
         expect(modal).to_be_visible(timeout=8000)
-        expect(modal.locator(".canvas-modal-title")).to_have_text("Edit: folder/image1.jpg")
+        expect(modal.get_by_test_id("canvas-edit-modal-title")).to_have_text("Edit: folder/image1.jpg")
 
 
 # ---------------------------------------------------------------------------
@@ -914,7 +916,7 @@ class TestConfigReadyViewGating:
 
         # The filter panel starts hidden — open it via the ☰ Filters toggle
         # before interacting with the Config Ready select.
-        page.locator("#review-root .review-toolbar button", has_text="Filters").click()
+        page.get_by_test_id("review-filter-toggle").click()
 
         # Excludes .bbox-verification-select — the bbox tri-state control (V1)
         # shares the base .filter-verification-select class name.

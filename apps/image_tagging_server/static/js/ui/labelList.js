@@ -248,6 +248,7 @@ function toggleMovePicker(anchorRow, { label, labelsMap, indentLevel, onMove }) 
 export function buildLabelRow(label, indent, { padding = '3px 5px' } = {}) {
   const row = document.createElement('div');
   row.dataset.uuid = label.uuid;
+  row.dataset.testid = 'label-list-row';
   Object.assign(row.style, {
     display: 'flex',
     alignItems: 'center',
@@ -269,6 +270,7 @@ export function buildLabelRow(label, indent, { padding = '3px 5px' } = {}) {
   });
 
   const nameEl = document.createElement('span');
+  nameEl.dataset.testid = 'label-list-row-name';
   nameEl.textContent = label.name;
   nameEl.style.fontSize = '0.82em';
 
@@ -362,6 +364,7 @@ function renderEditRows(byParent, container, parentUuid, indentLevel, onRerender
     });
 
     labelRow.dataset.uuid = uuid;
+    labelRow.dataset.testid = 'label-list-row-edit';
     container.appendChild(labelRow);
 
     renderEditRows(byParent, container, uuid, indentLevel + 1, onRerender, labelsMap);
@@ -426,6 +429,7 @@ async function mountEditMode(container, { filter, onRerender }) {
       ],
       rightButtons: [],
     });
+    row.dataset.testid = scopeValue === 'object' ? 'label-list-new-object-row' : 'label-list-new-image-row';
     inner.appendChild(row);
   }
 

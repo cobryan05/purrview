@@ -68,12 +68,12 @@ def _mock_labels(page: Page, labels: list):
 
 def _obj_add_row(page: Page):
     """Return the add-row locator for the Object Labels section."""
-    return page.locator(".label-row:has(input[placeholder='New Object Label'])")
+    return page.get_by_test_id("label-list-new-object-row")
 
 
 def _img_add_row(page: Page):
     """Return the add-row locator for the Image Labels section."""
-    return page.locator(".label-row:has(input[placeholder='New Image Label'])")
+    return page.get_by_test_id("label-list-new-image-row")
 
 
 # ---------------------------------------------------------------------------
