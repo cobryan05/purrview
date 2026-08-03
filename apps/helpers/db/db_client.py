@@ -130,6 +130,11 @@ _SYSTEM_TAGS = [
     ),
 ]
 
+# Default image-scope labels seeded on startup. These are ordinary labels (not
+# addressable system objects) — seeding only creates them if no label with the
+# same name+scope already exists; it never assigns or relies on a fixed UUID.
+_DEFAULT_IMAGE_LABEL_NAMES = ["Corrupt", "Blurry", "Occluded", "Empty"]
+
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger(__file__)
 logger.setLevel(logging.DEBUG)
@@ -549,6 +554,7 @@ class DbClient:
 
         await self._seed_system_tags()
         await self._seed_system_datasets()
+        await self._seed_system_labels()
 
         if label_count == 0:
             await self.sync_labels_from_json()
@@ -630,6 +636,40 @@ class DbClient:
                     )
                 )
                 await session.commit()
+
+    async def _seed_system_labels(self) -> None:
+        """Ensure default image-scope labels always exist (idempotent).
+
+        Unlike _seed_system_tags/_seed_system_datasets, these are NOT looked up by a
+        fixed UUID. bboxes/image_labels reference labels by UUID, and a label with a
+        matching name may already exist (pre-created by a user, or from an older DB)
+        with annotation rows already pointing at its UUID. Inventing a fixed UUID here
+        and matching on it would create a duplicate label and orphan those rows.
+        Instead, match on (name, scope) case-insensitively — case-insensitive so a
+        pre-existing "corrupt" or "blurry" is recognized as the same label rather than
+        producing a near-duplicate that differs only in case. If a match exists, it is
+        left completely untouched (no UUID/color/type/parent changes). Only missing
+        labels are inserted, with a freshly generated UUID.
+        """
+        async with self._async_session_maker() as session:
+            statement = select(Label).where(Label.scope == LabelScope.IMAGE)
+            result = await session.exec(statement)
+            existing_names = {label.name.lower() for label in result.all()}
+
+            for name in _DEFAULT_IMAGE_LABEL_NAMES:
+                if name.lower() in existing_names:
+                    continue
+                session.add(
+                    Label(
+                        uuid=str(uuid4()),
+                        name=name,
+                        color=None,
+                        parent_uuid=None,
+                        label_type=LabelType.STANDARD,
+                        scope=LabelScope.IMAGE,
+                    )
+                )
+            await session.commit()
 
     async def get_dataset_image_uuids(self, dataset_uuids: list[str]) -> list[str]:
         """Return deduplicated image UUIDs from the union of the given datasets."""

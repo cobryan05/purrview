@@ -1,12 +1,18 @@
 import pytest
 
+from apps.helpers.db.db_client import DbClient
+from apps.helpers.db.types import LabelScope, LabelType
+
 
 async def test_list_labels_empty(http_client):
+    """A freshly-seeded DB has no user-created labels — only the four default
+    image-scope labels (Corrupt, Blurry, Occluded, Empty) seeded on startup."""
     r = await http_client.get("/api/labels")
     assert r.status_code == 200
     body = r.json()
     assert body["status"] == "success"
-    assert body["labels"] == []
+    names = {lbl["name"] for lbl in body["labels"]}
+    assert names == {"Corrupt", "Blurry", "Occluded", "Empty"}
 
 
 async def test_create_label(http_client):
@@ -122,8 +128,8 @@ async def test_label_type_roundtrip_from_migration_default(db_client, http_clien
     r = await http_client.get("/api/labels")
     assert r.status_code == 200, r.text
     labels = r.json()["labels"]
-    assert len(labels) == 1
-    assert labels[0]["labelType"] == "standard"
+    cat = next(lbl for lbl in labels if lbl["name"] == "cat")
+    assert cat["labelType"] == "standard"
 
 
 class TestLabelScope:
@@ -300,3 +306,91 @@ class TestLabelReparent:
         # Grandchild's parent is untouched — it still points at subtree_top.
         gc = await self._get(http_client, grandchild)
         assert gc["parentUuid"] == subtree_top
+
+
+class TestSeedSystemLabels:
+    """Coverage for DbClient._seed_system_labels(), which seeds the four default
+    image-scope labels (Corrupt, Blurry, Occluded, Empty) on startup. Unlike
+    _seed_system_tags, these are matched by (name, scope) rather than a fixed
+    UUID, since a matching label may pre-exist with annotation rows already
+    pointing at its UUID.
+
+    These tests use a raw DbClient (not the shared db_client fixture) so each
+    test controls exactly when init_db()/seeding runs relative to its setup.
+    """
+
+    _DEFAULT_NAMES = {"Corrupt", "Blurry", "Occluded", "Empty"}
+
+    async def test_seed_creates_all_four_on_empty_db(self, tmp_path):
+        client = DbClient(db_dir=tmp_path, memory=True)
+        await client.init_db()
+        try:
+            labels = await client.list_labels()
+            image_labels = {lbl.name: lbl for lbl in labels if lbl.scope == LabelScope.IMAGE}
+            assert set(image_labels) == self._DEFAULT_NAMES
+            for lbl in image_labels.values():
+                assert lbl.label_type == LabelType.STANDARD
+                assert lbl.parent_uuid is None
+        finally:
+            await client.close()
+
+    async def test_seed_is_idempotent(self, tmp_path):
+        client = DbClient(db_dir=tmp_path, memory=True)
+        await client.init_db()
+        try:
+            labels_before = await client.list_labels()
+            uuids_before = {lbl.name: lbl.uuid for lbl in labels_before if lbl.scope == LabelScope.IMAGE}
+
+            await client._seed_system_labels()
+
+            labels_after = await client.list_labels()
+            image_after = [lbl for lbl in labels_after if lbl.scope == LabelScope.IMAGE]
+            assert len(image_after) == 4
+            uuids_after = {lbl.name: lbl.uuid for lbl in image_after}
+            assert uuids_after == uuids_before
+        finally:
+            await client.close()
+
+    async def test_preexisting_label_with_same_name_and_scope_is_left_untouched(self, tmp_path):
+        """Regression test: a label with the same name+scope that already exists
+        (e.g. carrying real annotation rows against its UUID) must not be
+        duplicated or have its UUID replaced by seeding."""
+        client = DbClient(db_dir=tmp_path, memory=True)
+        await client.init_db()
+        try:
+            labels = await client.list_labels()
+            seeded_corrupt = next(lbl for lbl in labels if lbl.name == "Corrupt" and lbl.scope == LabelScope.IMAGE)
+            await client.delete_label(seeded_corrupt.uuid)
+            await client.add_label(name="Corrupt", uuid="custom-corrupt-uuid", scope=LabelScope.IMAGE)
+
+            await client._seed_system_labels()
+
+            labels_after = await client.list_labels()
+            corrupt_labels = [lbl for lbl in labels_after if lbl.name == "Corrupt" and lbl.scope == LabelScope.IMAGE]
+            assert len(corrupt_labels) == 1
+            assert corrupt_labels[0].uuid == "custom-corrupt-uuid"
+        finally:
+            await client.close()
+
+    async def test_object_scope_same_name_does_not_block_image_scope_seed(self, tmp_path):
+        """An object-scope label named 'Empty' is a distinct label from the
+        image-scope 'Empty' default — its presence must not suppress seeding."""
+        client = DbClient(db_dir=tmp_path, memory=True)
+        await client.init_db()
+        try:
+            labels = await client.list_labels()
+            image_empty = next(lbl for lbl in labels if lbl.name == "Empty" and lbl.scope == LabelScope.IMAGE)
+            await client.delete_label(image_empty.uuid)
+            obj_empty = await client.add_label(name="Empty", scope=LabelScope.OBJECT)
+
+            await client._seed_system_labels()
+
+            labels_after = await client.list_labels()
+            empties = [lbl for lbl in labels_after if lbl.name == "Empty"]
+            assert len(empties) == 2
+            scopes = {lbl.scope for lbl in empties}
+            assert scopes == {LabelScope.IMAGE, LabelScope.OBJECT}
+            image_empty_after = next(lbl for lbl in empties if lbl.scope == LabelScope.IMAGE)
+            assert image_empty_after.uuid != obj_empty.uuid
+        finally:
+            await client.close()
