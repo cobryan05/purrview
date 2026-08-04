@@ -588,8 +588,7 @@ main.container {
 }
 
 /* Two horizontal rows inside the panel */
-.filter-row-primary,
-.filter-row-labels {
+.filter-row-primary {
   display: flex;
   align-items: center;
   gap: 0.35em;
@@ -634,7 +633,6 @@ main.container {
 .filter-sort-by    { max-width: 115px; }
 .filter-sort-dir   { max-width: 105px; }
 .filter-page-size  { width: auto; }
-.filter-label-select { max-width: 140px; }
 .filter-presets-select { max-width: 140px; }
 
 /* Shown whenever the training-config label filter is hiding labels from a picker or list */
@@ -651,127 +649,6 @@ main.container {
   color: var(--pico-muted-color, #888);
   white-space: nowrap;
   user-select: none;
-}
-
-.filter-tag-checkboxes {
-  display: flex;
-  gap: 0.5em;
-  flex-wrap: wrap;
-  align-items: center;
-}
-
-.filter-tag-checkboxes label {
-  display: flex;
-  align-items: center;
-  gap: 0.25em;
-  cursor: pointer;
-  white-space: nowrap;
-  font-size: 0.8em;
-  padding: 1px 4px;
-  border-radius: 3px;
-  transition: background 0.1s;
-}
-
-.filter-tag-checkboxes label:has(input:checked) {
-  background: #ffffff18;
-}
-
-/* Advanced filters accordion */
-.filter-advanced {
-  border: none;
-  padding: 0;
-  margin: 0;
-}
-
-.filter-advanced__summary {
-  cursor: pointer;
-  user-select: none;
-  list-style: none; /* remove default triangle in some browsers */
-  display: inline-flex;
-  align-items: center;
-  gap: 0.25em;
-  padding: 1px 0;
-}
-
-/* Custom triangle indicator */
-.filter-advanced__summary::before {
-  content: '▸';
-  font-size: 0.7em;
-  transition: transform 0.15s;
-  display: inline-block;
-}
-
-details[open] .filter-advanced__summary::before {
-  transform: rotate(90deg);
-}
-
-/* Suppress the default <summary> marker in Firefox / Chrome */
-.filter-advanced__summary::-webkit-details-marker { display: none; }
-
-.filter-imlabel-builder {
-  display: flex;
-  gap: 0.3em;
-  align-items: center;
-  flex-wrap: wrap;
-}
-
-.filter-imlabel-builder button {
-  font-size: 0.75em;
-  padding: 0.15em 0.4em;
-  cursor: pointer;
-  border: 1px solid #555;
-  border-radius: 3px;
-  background: #2a2a2a;
-  color: #ccc;
-  white-space: nowrap;
-}
-
-.filter-imlabel-builder button:hover {
-  background: #3a3a3a;
-}
-
-.filter-exclude-label {
-  display: flex;
-  align-items: center;
-  gap: 0.2em;
-  cursor: pointer;
-  font-size: 0.8em;
-  white-space: nowrap;
-}
-
-.filter-imlabel-list {
-  margin: 0;
-  padding: 0;
-  list-style: none;
-  display: flex;
-  gap: 0.3em;
-  flex-wrap: wrap;
-  align-items: center;
-}
-
-.filter-imlabel-list li {
-  background: #2a2a2a;
-  border: 1px solid #555;
-  border-radius: 3px;
-  padding: 1px 5px;
-  font-size: 0.75em;
-  display: flex;
-  align-items: center;
-  gap: 0.25em;
-}
-
-.filter-imlabel-list li button {
-  background: none;
-  border: none;
-  color: #888;
-  cursor: pointer;
-  padding: 0;
-  font-size: 0.85em;
-  line-height: 1;
-}
-
-.filter-imlabel-list li button:hover {
-  color: #fff;
 }
 
 button.filter-active {
@@ -1707,16 +1584,6 @@ button.filter-active {
   outline-offset: -2px;
 }
 
-@keyframes fb-flash {
-  0%   { background-color: rgba(0, 112, 243, 0.35); }
-  100% { background-color: transparent; }
-}
-
-.fb-entry--flash,
-.fb-grid-cell--flash {
-  animation: fb-flash 0.8s ease-out;
-}
-
 .fb-entry__icon {
   flex-shrink: 0;
 }
@@ -2513,29 +2380,38 @@ button.filter-active {
   max-height: 55vh;
   padding: 0;
 }
-.mc-list-item {
+/* Shared with .ds-list-item* (Dataset config's list panel is the same
+   layout) — see the Dataset config section below, which re-declares only
+   its own panel width/max-height, not these list-item rules. */
+.mc-list-item,
+.ds-list-item {
   padding: 0.45em 0.75em;
   cursor: pointer;
   border-bottom: 1px solid var(--pico-muted-border-color, rgba(0, 0, 0, 0.07));
   transition: background 0.1s;
 }
-.mc-list-item:last-child { border-bottom: none; }
-.mc-list-item:hover {
+.mc-list-item:last-child,
+.ds-list-item:last-child { border-bottom: none; }
+.mc-list-item:hover,
+.ds-list-item:hover {
   background: var(--pico-card-sectioning-background-color, rgba(0, 0, 0, 0.05));
 }
-.mc-list-item.active {
+.mc-list-item.active,
+.ds-list-item.active {
   background: var(--pico-primary-background, #e8eeff);
   padding-left: calc(0.75em - 2px);
   border-left: 2px solid var(--pico-primary, #0070f3);
 }
-.mc-list-item__name {
+.mc-list-item__name,
+.ds-list-item__name {
   font-size: 0.88em;
   font-weight: 600;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.mc-list-item__desc {
+.mc-list-item__desc,
+.ds-list-item__desc {
   font-size: 0.76em;
   color: var(--pico-muted-color, #888);
   overflow: hidden;
@@ -2543,7 +2419,8 @@ button.filter-active {
   white-space: nowrap;
   margin-top: 1px;
 }
-.mc-list-item__meta {
+.mc-list-item__meta,
+.ds-list-item__meta {
   font-size: 0.72em;
   color: var(--pico-muted-color, #aaa);
   margin-top: 1px;
@@ -2554,8 +2431,10 @@ button.filter-active {
   flex: 1;
   min-width: 0;
 }
-/* Editor bar title is the active config name, not a section label */
-.mc-editor .panel-box__title {
+/* Editor bar title is the active config/dataset name, not a section label —
+   shared with .ds-editor .panel-box__title below */
+.mc-editor .panel-box__title,
+.ds-editor .panel-box__title {
   font-size: 0.95em;
   font-weight: 600;
   text-transform: none;
@@ -2577,7 +2456,6 @@ button.filter-active {
 .mc-submodel-card select { margin-bottom: 0; font-size: 0.85em; width: auto; flex-shrink: 0; }
 .mc-submodel-swatch { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
 .mc-submodel-name { font-weight: 600; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.mc-submodel-type-label { font-size: 0.82em; color: var(--pico-muted-color, #888); white-space: nowrap; }
 
 /* ===== Dataset config: list panel (left column) ===== */
 .ds-list-panel {
@@ -2588,42 +2466,6 @@ button.filter-active {
   max-height: 55vh;
   padding: 0;
 }
-.ds-list-item {
-  padding: 0.45em 0.75em;
-  cursor: pointer;
-  border-bottom: 1px solid var(--pico-muted-border-color, rgba(0, 0, 0, 0.07));
-  transition: background 0.1s;
-}
-.ds-list-item:last-child { border-bottom: none; }
-.ds-list-item:hover {
-  background: var(--pico-card-sectioning-background-color, rgba(0, 0, 0, 0.05));
-}
-.ds-list-item.active {
-  background: var(--pico-primary-background, #e8eeff);
-  padding-left: calc(0.75em - 2px);
-  border-left: 2px solid var(--pico-primary, #0070f3);
-}
-.ds-list-item__name {
-  font-size: 0.88em;
-  font-weight: 600;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.ds-list-item__desc {
-  font-size: 0.76em;
-  color: var(--pico-muted-color, #888);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  margin-top: 1px;
-}
-.ds-list-item__meta {
-  font-size: 0.72em;
-  color: var(--pico-muted-color, #aaa);
-  margin-top: 1px;
-}
-
 /* ===== Dataset config: editor panel (right column) ===== */
 .ds-editor {
   flex: 1;
@@ -2638,14 +2480,7 @@ button.filter-active {
   min-height: 0;
   overflow-y: auto;
 }
-/* Editor bar title is the active dataset name, not a section label */
-.ds-editor .panel-box__title {
-  font-size: 0.95em;
-  font-weight: 600;
-  text-transform: none;
-  letter-spacing: 0;
-  color: var(--pico-color, inherit);
-}
+/* .panel-box__title rule shared with .mc-editor, see above */
 
 /* Annotation JSON */
 #annotation-json {
@@ -2943,20 +2778,6 @@ button.filter-active {
 .active-model-bar__none {
   opacity: 0.5;
   font-style: italic;
-}
-
-.active-model-bar__filter-label {
-  display: flex;
-  align-items: center;
-  gap: 0.4em;
-  cursor: pointer;
-  user-select: none;
-  margin: 0;
-}
-
-.active-model-bar__filter-label input[type="checkbox"] {
-  margin: 0;
-  width: auto;
 }
 
 /* Give the page enough bottom clearance so the bottom bars don't cover content.
