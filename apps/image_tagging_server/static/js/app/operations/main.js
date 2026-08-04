@@ -2,8 +2,13 @@ import { setupWorkspaceTabs } from '/app-static/js/app/utils/tabs.js';
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
 import { renderSourceManager } from '/app-static/js/ui/sources.js';
 import { renderActiveTasks, renderTaskConfigs } from '/app-static/js/ui/tasks.js';
+import { renderServiceStatus } from '/app-static/js/ui/serviceStatus.js';
 
 export async function init() {
+  // Service health sits above the sub-tabs — it applies to the whole surface,
+  // not to Sources or Tasks individually.
+  renderServiceStatus({ target: 'service-status-box' });
+
   let taskEventSource = null;
   let activeSubTab = null;
 

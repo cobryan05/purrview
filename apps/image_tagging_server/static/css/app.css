@@ -2645,6 +2645,22 @@ button.filter-active {
   margin-top: 0;
 }
 
+/* ===== Operations tab — service health ===== */
+.service-status-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75em;
+  padding: 0.75em 0.5em 0;
+}
+
+.service-status-panel__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid var(--pico-muted-border-color, #ccc);
+  padding-bottom: 0.4em;
+}
+
 /* ===== Settings tab ===== */
 .settings-wrap {
   max-width: 560px;
