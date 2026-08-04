@@ -1059,10 +1059,12 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
     if (chip) {
       if (uiBbox.label) {
         chip.textContent = uiBbox.label.text;
+        chip.classList.remove('label-chip--fallback');
         chip.style.cssText = `background:${uiBbox.label.color}33;border:1px solid ${uiBbox.label.color};`;
       } else {
         chip.textContent = '(unknown)';
-        chip.style.cssText = 'background:#88888833;border:1px solid #888;';
+        chip.style.cssText = '';
+        chip.classList.add('label-chip--fallback');
       }
     }
     // Refresh the verify chip to reflect the saved tag state
@@ -1986,29 +1988,28 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
 
     // ── Build modal shell ────────────────────────────────────────────────
     const overlay = document.createElement('div');
-    overlay.style.cssText = `position:fixed;inset:0;background:#0008;display:flex;
-      align-items:center;justify-content:center;z-index:${nextModalZIndex()};`;
+    overlay.className = 'bulk-modal-overlay';
+    overlay.style.zIndex = nextModalZIndex();
 
     const dialog = document.createElement('div');
-    dialog.style.cssText = `background:#222;border:1px solid #555;border-radius:6px;
-      padding:1.5em;min-width:420px;max-width:600px;display:flex;flex-direction:column;gap:0.9em;`;
+    dialog.className = 'bulk-modal-dialog bulk-modal-dialog--wide';
 
     const title = document.createElement('strong');
     title.textContent = `Apply to All ${totalBboxCount.toLocaleString()} Matching Bboxes`;
 
     // ── Preview section ──────────────────────────────────────────────────
     const previewSection = document.createElement('div');
-    previewSection.style.cssText = 'display:flex;flex-direction:column;gap:0.4em;';
+    previewSection.className = 'bulk-modal-preview-section';
 
     const previewHdr = document.createElement('div');
-    previewHdr.style.cssText = 'font-size:0.82em;color:#aaa;text-transform:uppercase;letter-spacing:0.04em;';
+    previewHdr.className = 'bulk-modal-preview-hdr';
     previewHdr.textContent = 'Preview range';
 
     const previewRow = document.createElement('div');
-    previewRow.style.cssText = 'display:flex;align-items:center;gap:0.5em;min-height:88px;';
+    previewRow.className = 'bulk-modal-preview-row';
 
     const previewStatus = document.createElement('span');
-    previewStatus.style.cssText = 'color:#aaa;font-size:0.85em;';
+    previewStatus.className = 'bulk-modal-preview-status';
     previewStatus.textContent = 'Loading preview…';
     previewRow.appendChild(previewStatus);
 
@@ -2027,7 +2028,7 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
     ];
 
     const radioGroup = document.createElement('div');
-    radioGroup.style.cssText = 'display:flex;flex-direction:column;gap:0.4em;';
+    radioGroup.className = 'bulk-modal-radio-group';
     let selectedAction = 'relabel';
 
     let _selectedLabelUuid = undefined;
@@ -2035,22 +2036,22 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
       onSelect: (uuid) => { _selectedLabelUuid = uuid; },
     });
     const labelPickerRow = document.createElement('div');
-    labelPickerRow.style.cssText = 'display:flex;flex-direction:column;gap:0.3em;';
+    labelPickerRow.className = 'bulk-modal-label-picker-row';
     const labelPickerHdr = document.createElement('div');
     labelPickerHdr.textContent = 'New label:';
-    labelPickerHdr.style.cssText = 'font-size:0.85em;color:#aaa;';
+    labelPickerHdr.className = 'bulk-modal-label-picker-hdr';
     labelPickerRow.append(labelPickerHdr, dynPicker.element);
 
     const tagOptions = filterVisibleTags(tags.values())
       .map(tag => ({ key: tag.uuid, text: (tag.icon ? tag.icon + ' ' : '') + tag.name, color: tag.color || '#cccccc' }));
     const tagCheckboxField = new CheckboxField({ value: [], options: tagOptions });
     const tagPickerRow = document.createElement('div');
-    tagPickerRow.style.cssText = 'max-height:180px;overflow-y:auto;display:none;flex-direction:column;gap:0.3em;padding:0.3em 0;';
+    tagPickerRow.className = 'bulk-modal-tag-picker-row';
     tagPickerRow.appendChild(await tagCheckboxField.renderEdit());
 
     for (const action of actions) {
       const lbl = document.createElement('label');
-      lbl.style.cssText = 'display:flex;align-items:center;gap:0.5em;cursor:pointer;';
+      lbl.className = 'bulk-modal-action-label';
       const radio = document.createElement('input');
       radio.type = 'radio';
       radio.name = 'bulk-all-action';
@@ -2067,12 +2068,12 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
 
     // ── Warning ──────────────────────────────────────────────────────────
     const warning = document.createElement('div');
-    warning.style.cssText = 'font-size:0.85em;color:#e8a020;background:#e8a02015;border:1px solid #e8a02044;border-radius:4px;padding:0.5em 0.7em;';
+    warning.className = 'bulk-modal-warning';
     warning.textContent = `⚠ This will modify all ${totalBboxCount.toLocaleString()} bboxes matching your current filters, across every page. This cannot be undone.`;
 
     // ── Buttons ──────────────────────────────────────────────────────────
     const btnRow = document.createElement('div');
-    btnRow.style.cssText = 'display:flex;gap:0.5em;justify-content:flex-end;';
+    btnRow.className = 'bulk-modal-btn-row';
 
     function close() { unregisterEscHandler(close); dynPicker.destroy(); overlay.remove(); }
 
@@ -2082,7 +2083,7 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
 
     const okBtn = document.createElement('button');
     okBtn.textContent = `Apply to All ${totalBboxCount.toLocaleString()}`;
-    okBtn.style.cssText = 'background:#ff003322;border:1px solid #ff0033;border-radius:3px;padding:0.2em 0.8em;cursor:pointer;';
+    okBtn.className = 'bulk-modal-ok-btn';
     okBtn.addEventListener('click', async () => {
       close();
       const newLabelUuid = selectedAction === 'relabel' ? (_selectedLabelUuid ?? undefined) : undefined;
@@ -2261,14 +2262,15 @@ export async function init() {
 export async function showReviewModal({ title = 'Browse Images', fetchImages, editableDataset, toolbarControls, referenceBboxUuids = new Set(), referenceImageUuids = new Set(), initialViewFilter = 'images', bboxFilterFn = null } = {}) {
   const overlay = document.createElement('div');
   const _modalZ = nextModalZIndex();
-  overlay.style.cssText = `position:fixed;inset:0;background:#0009;display:flex;align-items:center;justify-content:center;z-index:${_modalZ};`;
+  overlay.className = 'compare-modal-overlay';
+  overlay.style.zIndex = _modalZ;
 
   const dialog = document.createElement('div');
-  dialog.style.cssText = 'background:var(--pico-background-color,#121212);border:1px solid #555;border-radius:6px;width:92vw;height:90vh;display:flex;flex-direction:column;overflow:hidden;';
+  dialog.className = 'compare-modal-dialog';
 
   // Header
   const header = document.createElement('div');
-  header.style.cssText = 'display:flex;align-items:center;padding:0.5em 1em;border-bottom:1px solid #444;gap:0.8em;flex-shrink:0;';
+  header.className = 'compare-modal-header';
 
   const titleEl = document.createElement('strong');
   titleEl.textContent = title;
@@ -2276,7 +2278,7 @@ export async function showReviewModal({ title = 'Browse Images', fetchImages, ed
   const closeBtn = document.createElement('button');
   closeBtn.textContent = '✕';
   closeBtn.title = 'Close';
-  closeBtn.style.cssText = 'margin-left:auto;cursor:pointer;padding:0.2em 0.6em;';
+  closeBtn.className = 'compare-modal-close-btn';
 
   header.append(titleEl);
 
@@ -2287,7 +2289,7 @@ export async function showReviewModal({ title = 'Browse Images', fetchImages, ed
     const updateBtn = document.createElement('button');
     updateBtn.textContent = 'Update Dataset';
     updateBtn.title = 'Apply current filters back to the dataset form (you must still Save to persist)';
-    updateBtn.style.cssText = 'cursor:pointer;padding:0.2em 0.8em;';
+    updateBtn.className = 'compare-modal-update-btn';
     // Will be wired up after the review panel is created and filterPanel is accessible
     header.appendChild(updateBtn);
     // Store for wiring after panel init
@@ -2298,7 +2300,7 @@ export async function showReviewModal({ title = 'Browse Images', fetchImages, ed
 
   // Scrollable content area for the panel
   const content = document.createElement('div');
-  content.style.cssText = 'flex:1;overflow:auto;display:flex;flex-direction:column;min-height:0;';
+  content.className = 'compare-modal-content';
 
   dialog.append(header, content);
   overlay.appendChild(dialog);
@@ -2598,15 +2600,15 @@ export async function showCanvasModal(bbox, img, labels, onSaved, navContext = n
 
   const cancelBtn = document.createElement('button');
   cancelBtn.textContent = 'Cancel';
-  cancelBtn.style.cssText = 'border:1px solid #555;border-radius:3px;padding:0.3em 1em;cursor:pointer;color:#aaa;margin-left:auto;';
+  cancelBtn.className = 'canvas-modal-cancel-btn';
 
   const saveOnlyBtn = document.createElement('button');
   saveOnlyBtn.textContent = 'Save';
-  saveOnlyBtn.style.cssText = 'background:#33333322;border:1px solid #555;border-radius:3px;padding:0.3em 1em;cursor:pointer;color:#888;';
+  saveOnlyBtn.className = 'save-btn--clean';
 
   const saveBtn = document.createElement('button');
   saveBtn.textContent = 'Save & Close';
-  saveBtn.style.cssText = 'background:#33333322;border:1px solid #555;border-radius:3px;padding:0.3em 1em;cursor:pointer;color:#888;';
+  saveBtn.className = 'save-btn--clean';
   footer.append(cancelBtn, saveOnlyBtn, saveBtn);
 
   dialog.append(header, toolbarEl, contentArea, footer);
@@ -2721,13 +2723,11 @@ export async function showCanvasModal(bbox, img, labels, onSaved, navContext = n
   _highlightBbox(bbox.uuid);
 
   // ── Save button state: highlight only when there are unsaved changes ──
-  const _SAVE_BTN_CLEAN = 'background:#33333322;border:1px solid #555;border-radius:3px;padding:0.3em 1em;cursor:pointer;color:#888;';
-  const _SAVE_BTN_DIRTY = 'background:#ff003322;border:1px solid #ff0033;border-radius:3px;padding:0.3em 1em;cursor:pointer;color:#ff6666;';
   function _updateSaveBtn() {
     if (saveBtn.disabled) return; // don't override while saving
     const dirty = instance.runtime.isDirty;
-    saveBtn.style.cssText = dirty ? _SAVE_BTN_DIRTY : _SAVE_BTN_CLEAN;
-    saveOnlyBtn.style.cssText = dirty ? _SAVE_BTN_DIRTY : _SAVE_BTN_CLEAN;
+    saveBtn.className = dirty ? 'save-btn--dirty' : 'save-btn--clean';
+    saveOnlyBtn.className = dirty ? 'save-btn--dirty' : 'save-btn--clean';
   }
   const unsubDirty = events.subscribeToCanvas(
     instance.runtime.id, EventTypes.CANVAS_BBOXES_CHANGED, _updateSaveBtn,
@@ -2996,20 +2996,20 @@ export async function showCanvasModal(bbox, img, labels, onSaved, navContext = n
 
 function _makeBboxThumbGroup(entries, label) {
   const group = document.createElement('div');
-  group.style.cssText = 'display:flex;flex-direction:column;align-items:center;gap:0.3em;';
+  group.className = 'image-compare-group';
   const thumbs = document.createElement('div');
-  thumbs.style.cssText = 'display:flex;gap:4px;';
+  thumbs.className = 'image-compare-thumbs';
   for (const { bbox, img } of entries) {
     const wrapper = document.createElement('div');
-    wrapper.style.cssText = 'position:relative;';
+    wrapper.className = 'image-compare-thumb-wrap';
     const thumb = document.createElement('img');
-    thumb.style.cssText = 'width:80px;height:80px;object-fit:cover;border-radius:3px;border:1px solid #555;display:block;';
+    thumb.className = 'image-compare-thumb';
     thumb.src = getBboxThumbnailUrl(img.filename, bbox.uuid, 80);
     wrapper.appendChild(thumb);
     thumbs.appendChild(wrapper);
   }
   const lbl = document.createElement('div');
-  lbl.style.cssText = 'font-size:0.75em;color:#888;';
+  lbl.className = 'image-compare-group-label';
   lbl.textContent = label;
   group.append(thumbs, lbl);
   return group;
@@ -3019,7 +3019,7 @@ function _makeBboxThumbGroup(entries, label) {
 function _populateBboxPreviewRow(row, first3, last3) {
   if (first3.length === 0 && last3.length === 0) {
     const msg = document.createElement('span');
-    msg.style.cssText = 'color:#888;font-size:0.85em;';
+    msg.className = 'image-compare-empty-msg';
     msg.textContent = 'No preview available.';
     row.appendChild(msg);
     return;
@@ -3029,7 +3029,7 @@ function _populateBboxPreviewRow(row, first3, last3) {
   if (first3.length > 0) row.appendChild(_makeBboxThumbGroup(first3, 'First'));
   if (uniqueLast3.length > 0) {
     const sep = document.createElement('div');
-    sep.style.cssText = 'color:#555;font-size:1.2em;letter-spacing:0.1em;align-self:center;padding:0 0.2em;';
+    sep.className = 'image-compare-sep';
     sep.textContent = '···';
     row.appendChild(sep);
     row.appendChild(_makeBboxThumbGroup(uniqueLast3, 'Last'));
@@ -3046,12 +3046,11 @@ async function showBulkActionModal(entries, labels, onConfirm, titleText = null,
   ]);
 
   const overlay = document.createElement('div');
-  overlay.style.cssText = `position:fixed;inset:0;background:#0008;display:flex;
-    align-items:center;justify-content:center;z-index:${nextModalZIndex()};`;
+  overlay.className = 'bulk-modal-overlay';
+  overlay.style.zIndex = nextModalZIndex();
 
   const dialog = document.createElement('div');
-  dialog.style.cssText = `background:#222;border:1px solid #555;border-radius:6px;
-    padding:1.5em;min-width:320px;display:flex;flex-direction:column;gap:0.8em;`;
+  dialog.className = 'bulk-modal-dialog';
 
   const title = document.createElement('strong');
   title.textContent = titleText ?? `Apply to ${entries.length} selected bbox${entries.length === 1 ? '' : 'es'}`;
@@ -3060,14 +3059,14 @@ async function showBulkActionModal(entries, labels, onConfirm, titleText = null,
   if (opts.showPreview) {
     const bboxEntries = entries.filter(e => e.kind === 'bbox');
     const previewSection = document.createElement('div');
-    previewSection.style.cssText = 'display:flex;flex-direction:column;gap:0.4em;';
+    previewSection.className = 'bulk-modal-preview-section';
 
     const previewHdr = document.createElement('div');
-    previewHdr.style.cssText = 'font-size:0.82em;color:#aaa;text-transform:uppercase;letter-spacing:0.04em;';
+    previewHdr.className = 'bulk-modal-preview-hdr';
     previewHdr.textContent = 'Preview range';
 
     const previewRow = document.createElement('div');
-    previewRow.style.cssText = 'display:flex;align-items:center;gap:0.5em;min-height:88px;';
+    previewRow.className = 'bulk-modal-preview-row';
 
     _populateBboxPreviewRow(previewRow, bboxEntries.slice(0, 3), bboxEntries.slice(-3));
 
@@ -3090,12 +3089,12 @@ async function showBulkActionModal(entries, labels, onConfirm, titleText = null,
   ];
 
   const radioGroup = document.createElement('div');
-  radioGroup.style.cssText = 'display:flex;flex-direction:column;gap:0.4em;';
+  radioGroup.className = 'bulk-modal-radio-group';
   let selectedAction = 'relabel';
 
   for (const action of actions) {
     const lbl = document.createElement('label');
-    lbl.style.cssText = 'display:flex;align-items:center;gap:0.5em;cursor:pointer;';
+    lbl.className = 'bulk-modal-action-label';
     const radio = document.createElement('input');
     radio.type = 'radio';
     radio.name = 'bulk-action';
@@ -3117,10 +3116,10 @@ async function showBulkActionModal(entries, labels, onConfirm, titleText = null,
     onSelect: (uuid) => { _selectedLabelUuid = uuid; },
   });
   const labelPickerRow = document.createElement('div');
-  labelPickerRow.style.cssText = 'display:flex;flex-direction:column;gap:0.3em;';
+  labelPickerRow.className = 'bulk-modal-label-picker-row';
   const labelPickerHdr = document.createElement('div');
   labelPickerHdr.textContent = 'New label:';
-  labelPickerHdr.style.cssText = 'font-size:0.85em;color:#aaa;';
+  labelPickerHdr.className = 'bulk-modal-label-picker-hdr';
   labelPickerRow.appendChild(labelPickerHdr);
   labelPickerRow.appendChild(dynPicker.element);
 
@@ -3133,11 +3132,11 @@ async function showBulkActionModal(entries, labels, onConfirm, titleText = null,
     }));
   const tagCheckboxField = new CheckboxField({ value: [], options: tagOptions });
   const tagPickerRow = document.createElement('div');
-  tagPickerRow.style.cssText = 'max-height:180px;overflow-y:auto;display:none;flex-direction:column;gap:0.3em;padding:0.3em 0;';
+  tagPickerRow.className = 'bulk-modal-tag-picker-row';
   tagPickerRow.appendChild(await tagCheckboxField.renderEdit());
 
   const btnRow = document.createElement('div');
-  btnRow.style.cssText = 'display:flex;gap:0.5em;justify-content:flex-end;';
+  btnRow.className = 'bulk-modal-btn-row';
 
   function close() { unregisterEscHandler(close); dynPicker.destroy(); overlay.remove(); }
 
@@ -3147,7 +3146,7 @@ async function showBulkActionModal(entries, labels, onConfirm, titleText = null,
 
   const okBtn = document.createElement('button');
   okBtn.textContent = 'Apply';
-  okBtn.style.cssText = 'background:#ff003322;border:1px solid #ff0033;border-radius:3px;padding:0.2em 0.8em;cursor:pointer;';
+  okBtn.className = 'bulk-modal-ok-btn';
   okBtn.addEventListener('click', async () => {
     close();
     // _selectedLabelUuid: undefined = picker not used (no change), null = clear label, string = set label

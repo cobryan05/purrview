@@ -1979,6 +1979,246 @@ button.filter-active {
   flex-shrink: 0;
 }
 
+.canvas-modal-cancel-btn {
+  border: 1px solid #555;
+  border-radius: var(--radius-sm);
+  padding: 0.3em 1em;
+  cursor: pointer;
+  color: #aaa;
+  margin-left: auto;
+}
+
+.save-btn--clean {
+  background: #33333322;
+  border: 1px solid #555;
+  border-radius: var(--radius-sm);
+  padding: 0.3em 1em;
+  cursor: pointer;
+  color: #888;
+}
+
+.save-btn--dirty {
+  background: #ff003322;
+  border: 1px solid #ff0033;
+  border-radius: var(--radius-sm);
+  padding: 0.3em 1em;
+  cursor: pointer;
+  color: #ff6666;
+}
+
+/* ===== Review: extracted modal/chip styles (slice 2, PR 2.3) ===== */
+
+/* Fallback (unknown-label) styling for .label-chip */
+.label-chip--fallback {
+  background: #88888833;
+  border: 1px solid #888;
+}
+
+/* Bulk-action modal shell — shared by showBulkActionModal() and the
+   "Apply to All Matching" variant. The two dialogs differ slightly in
+   sizing (see --wide modifier). */
+.bulk-modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: #0008;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.bulk-modal-dialog {
+  background: #222;
+  border: 1px solid #555;
+  border-radius: var(--radius-lg);
+  padding: 1.5em;
+  min-width: 320px;
+  display: flex;
+  flex-direction: column;
+  gap: 0.8em;
+}
+
+/* "Apply to All Matching" variant needs more room for the preview row */
+.bulk-modal-dialog--wide {
+  min-width: 420px;
+  max-width: 600px;
+  gap: 0.9em;
+}
+
+.bulk-modal-preview-section {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4em;
+}
+
+.bulk-modal-preview-hdr {
+  font-size: 0.82em;
+  color: #aaa;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.bulk-modal-preview-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: 88px;
+}
+
+.bulk-modal-preview-status {
+  color: #aaa;
+  font-size: 0.85em;
+}
+
+.bulk-modal-radio-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4em;
+}
+
+.bulk-modal-action-label {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  cursor: pointer;
+}
+
+.bulk-modal-label-picker-row {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3em;
+}
+
+.bulk-modal-label-picker-hdr {
+  font-size: 0.85em;
+  color: #aaa;
+}
+
+.bulk-modal-tag-picker-row {
+  max-height: 180px;
+  overflow-y: auto;
+  display: none;
+  flex-direction: column;
+  gap: 0.3em;
+  padding: 0.3em 0;
+}
+
+.bulk-modal-warning {
+  font-size: 0.85em;
+  color: #e8a020;
+  background: #e8a02015;
+  border: 1px solid #e8a02044;
+  border-radius: var(--radius-md);
+  padding: 0.5em 0.7em;
+}
+
+.bulk-modal-btn-row {
+  display: flex;
+  gap: var(--space-2);
+  justify-content: flex-end;
+}
+
+.bulk-modal-ok-btn {
+  background: #ff003322;
+  border: 1px solid #ff0033;
+  border-radius: var(--radius-sm);
+  padding: 0.2em 0.8em;
+  cursor: pointer;
+}
+
+/* Image/label compare-and-review modal (showReviewModal) */
+.compare-modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: #0009;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.compare-modal-dialog {
+  background: var(--pico-background-color, #121212);
+  border: 1px solid #555;
+  border-radius: var(--radius-lg);
+  width: 92vw;
+  height: 90vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.compare-modal-header {
+  display: flex;
+  align-items: center;
+  padding: 0.5em 1em;
+  border-bottom: 1px solid #444;
+  gap: 0.8em;
+  flex-shrink: 0;
+}
+
+.compare-modal-close-btn {
+  margin-left: auto;
+  cursor: pointer;
+  padding: 0.2em 0.6em;
+}
+
+.compare-modal-update-btn {
+  cursor: pointer;
+  padding: 0.2em 0.8em;
+}
+
+.compare-modal-content {
+  flex: 1;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+/* Bbox-thumbnail preview groups (used by bulk-action "preview range" and
+   the image-compare modal) */
+.image-compare-group {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.3em;
+}
+
+.image-compare-thumbs {
+  display: flex;
+  gap: 4px;
+}
+
+.image-compare-thumb-wrap {
+  position: relative;
+}
+
+.image-compare-thumb {
+  width: 80px;
+  height: 80px;
+  object-fit: cover;
+  border-radius: var(--radius-sm);
+  border: 1px solid #555;
+  display: block;
+}
+
+.image-compare-group-label {
+  font-size: 0.75em;
+  color: #888;
+}
+
+.image-compare-empty-msg {
+  color: #888;
+  font-size: 0.85em;
+}
+
+.image-compare-sep {
+  color: #555;
+  font-size: 1.2em;
+  letter-spacing: 0.1em;
+  align-self: center;
+  padding: 0 0.2em;
+}
+
 /* ===== Inference Panel ===== */
 .inference-panel {
   display: flex;
