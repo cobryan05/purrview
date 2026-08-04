@@ -1,0 +1,124 @@
+/* Design tokens — spacing / type / radius / color.
+ * Values chosen to match the modal value already dominant in app.css usage
+ * (see UI_REDESIGN_PLAN.md, Slice 2), so migrating existing rules onto these
+ * is a like-for-like swap. Dark is the app's de-facto current theme; light is
+ * a new, deliberately-designed variant.
+ *
+ * Nothing in app.css consumes these yet (PR 2.1) — this file is a no-op until
+ * later PRs migrate rules onto it.
+ */
+
+:root {
+  color-scheme: light dark;
+
+  /* ---- spacing scale ---- */
+  --space-0: 0.125rem;
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-5: 1.5rem;
+  --space-6: 2rem;
+  --space-7: 3rem;
+
+  /* ---- type scale ---- */
+  --text-2xs: 0.7rem;
+  --text-xs: 0.78rem;
+  --text-sm: 0.85rem;
+  --text-base: 0.95rem;
+  --text-md: 1.1rem;
+  --text-lg: 1.35rem;
+  --text-xl: 1.75rem;
+
+  /* ---- radius scale ---- */
+  --radius-xs: 2px;
+  --radius-sm: 3px;
+  --radius-md: 4px;
+  --radius-lg: 6px;
+  --radius-full: 999px;
+
+  /* ---- color: dark (de-facto current theme) ---- */
+  --bg: #14141c;
+  --surface: #1c1c28;
+  --surface-raised: #22222f;
+  --surface-sunken: #101017;
+  --border: #302f40;
+  --border-strong: #423f56;
+  --text: #ececf2;
+  --text-muted: #9d9caa;
+  --text-faint: #6f6e7c;
+  --color-accent: #ff3d5c;
+  --color-accent-fg: #1a0508;
+  --color-accent-soft: #3a1420;
+  --color-success: #4fce88;
+  --color-warning: #e0c14f;
+  --color-danger: #ff7a5c;
+  --color-danger-soft: #3a1c14;
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 8px 24px rgba(0, 0, 0, 0.4);
+}
+
+/* ---- color: light (new — see PR 2.2 note in UI_REDESIGN_PLAN.md) ---- */
+@media (prefers-color-scheme: light) {
+  :root {
+    --bg: #f7f7f9;
+    --surface: #ffffff;
+    --surface-raised: #ffffff;
+    --surface-sunken: #eeeef1;
+    --border: #dddde3;
+    --border-strong: #c7c7cf;
+    --text: #1b1b21;
+    --text-muted: #66666f;
+    --text-faint: #8d8d96;
+    --color-accent: #ff0033;
+    --color-accent-fg: #ffffff;
+    --color-accent-soft: #ffe4ea;
+    --color-success: #1f8a4c;
+    --color-warning: #a8790c;
+    --color-danger: #c93a24;
+    --color-danger-soft: #fbe4de;
+    --shadow: 0 1px 2px rgba(20, 20, 30, 0.06), 0 4px 16px rgba(20, 20, 30, 0.08);
+  }
+}
+
+/* Explicit overrides win over the OS preference in both directions, for a
+ * future in-app theme toggle (none exists yet as of Slice 2 — checked
+ * settings/main.js and index.html). */
+:root[data-theme="dark"] {
+  --bg: #14141c;
+  --surface: #1c1c28;
+  --surface-raised: #22222f;
+  --surface-sunken: #101017;
+  --border: #302f40;
+  --border-strong: #423f56;
+  --text: #ececf2;
+  --text-muted: #9d9caa;
+  --text-faint: #6f6e7c;
+  --color-accent: #ff3d5c;
+  --color-accent-fg: #1a0508;
+  --color-accent-soft: #3a1420;
+  --color-success: #4fce88;
+  --color-warning: #e0c14f;
+  --color-danger: #ff7a5c;
+  --color-danger-soft: #3a1c14;
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 8px 24px rgba(0, 0, 0, 0.4);
+}
+
+:root[data-theme="light"] {
+  --bg: #f7f7f9;
+  --surface: #ffffff;
+  --surface-raised: #ffffff;
+  --surface-sunken: #eeeef1;
+  --border: #dddde3;
+  --border-strong: #c7c7cf;
+  --text: #1b1b21;
+  --text-muted: #66666f;
+  --text-faint: #8d8d96;
+  --color-accent: #ff0033;
+  --color-accent-fg: #ffffff;
+  --color-accent-soft: #ffe4ea;
+  --color-success: #1f8a4c;
+  --color-warning: #a8790c;
+  --color-danger: #c93a24;
+  --color-danger-soft: #fbe4de;
+  --shadow: 0 1px 2px rgba(20, 20, 30, 0.06), 0 4px 16px rgba(20, 20, 30, 0.08);
+}
