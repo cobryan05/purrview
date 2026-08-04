@@ -445,15 +445,53 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
     persistentUtilityGroup,
   );
 
-  // ── Action bar: select-all, bulk-apply, prev/next, status ─────────
+  // ── Action bar: select-all, prev/next, status (always visible) ────
   const actionBar = document.createElement('div');
   actionBar.className = 'review-action-bar';
   actionBar.dataset.testid = 'review-action-bar';
   actionBar.append(
-    makeToolbarGroup(selectAllLabel, bulkBtn, bulkParentImagesBtn, bulkAllBtn, bulkAllImagesBtn, runModelBtn, runChainBtn),
+    makeToolbarGroup(selectAllLabel),
     makeToolbarGroup(prevBtn, pageInfo, nextBtn),
     makeToolbarGroup(statusMsg),
   );
+
+  // ── Filter-scoped action bar (slice 3, PR 3.3) ─────────────────────
+  // Apply to Filtered Images / Apply to All / Run Model on Results… / Run
+  // Filter Chain on Results… all operate on the current filter or candidate
+  // scope, NOT a checked selection — none of them are disabled or hidden by
+  // selection state today (confirmed: bulkAllBtn gates on _totalCount,
+  // runModelBtn/runChainBtn are never gated at all; a curated-mode Playwright
+  // test clicks "Apply to All" with nothing selected). They must stay
+  // reachable at zero selection, so — despite UI_REDESIGN §32.6's original
+  // table putting them in the selection-gated contextual bar's ⋯ overflow —
+  // they live here instead, always visible. Bulk Apply / Apply to Parent
+  // Images are the only genuinely selection-dependent actions; see the
+  // contextual action bar below.
+  const filterScopedActionsBar = document.createElement('div');
+  filterScopedActionsBar.className = 'review-filter-scoped-actions';
+  filterScopedActionsBar.dataset.testid = 'review-filter-scoped-actions';
+  filterScopedActionsBar.append(bulkAllImagesBtn, bulkAllBtn, runModelBtn, runChainBtn);
+
+  // ── Contextual action bar (slice 3, PR 3.3) ────────────────────────
+  // Appears only with an active selection — hidden the rest of the time.
+  // Bulk Apply always shows; Apply to Parent Images additionally requires a
+  // bbox-kind selection (unchanged condition from updateBulkBtn below).
+  const clearSelectionBtn = document.createElement('button');
+  clearSelectionBtn.className = 'review-toolbar__btn';
+  clearSelectionBtn.dataset.testid = 'review-clear-selection';
+  clearSelectionBtn.textContent = 'Clear selection';
+  clearSelectionBtn.addEventListener('click', () => {
+    clearSelection();
+    updateBulkBtn();
+  });
+
+  const contextualActionBar = document.createElement('div');
+  contextualActionBar.className = 'review-contextual-action-bar';
+  contextualActionBar.dataset.testid = 'review-contextual-action-bar';
+  contextualActionBar.hidden = true;
+  const contextualRightGroup = makeToolbarGroup(clearSelectionBtn);
+  contextualRightGroup.classList.add('review-contextual-action-bar__right');
+  contextualActionBar.append(bulkBtn, bulkParentImagesBtn, contextualRightGroup);
 
   // ── Filter chip bar (slice 3, PR 3.2) ──────────────────────────────
   // Always-visible summary of active filters, replacing the old "☰ Filters
@@ -470,12 +508,12 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
   filterChipBarWrap.appendChild(filterChipBar);
 
   // ── Sticky top wrapper ────────────────────────────────────────────
-  // Pins toolbar + chip bar + action bar to the top of the scroll container.
+  // Pins toolbar + chip bar + action bars to the top of the scroll container.
   const stickyTop = document.createElement('div');
   stickyTop.className = 'review-sticky-top';
   stickyTop.append(toolbar);
   if (!fetchImages) stickyTop.append(filterChipBarWrap);
-  stickyTop.append(actionBar);
+  stickyTop.append(filterScopedActionsBar, actionBar, contextualActionBar);
   container.appendChild(stickyTop);
   container.appendChild(entryView.layout);
 
@@ -1044,6 +1082,8 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
     bulkBtn.disabled = _selected.size === 0;
     selectAllCb.checked = _selected.size > 0 && _selected.size === activeCount;
     selectAllCb.indeterminate = _selected.size > 0 && _selected.size < activeCount;
+    // Contextual action bar (slice 3, PR 3.3) — only visible with a selection.
+    contextualActionBar.hidden = _selected.size === 0;
 
     // "Apply to Parent Images" only makes sense for a bbox-kind selection —
     // it resolves the distinct images behind the selected bboxes.

@@ -494,6 +494,40 @@ main.container {
   flex-shrink: 0;
 }
 
+/* Selection-independent, filter/candidate-scoped actions (Apply to Filtered
+   Images, Apply to All, Run Model/Filter Chain on Results…) — always
+   visible, never gated on a checked selection (slice 3, PR 3.3). */
+.review-filter-scoped-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5em;
+  padding: 0.3em 0;
+  flex-wrap: wrap;
+  flex-shrink: 0;
+}
+
+/* Appears only with an active selection (slice 3, PR 3.3) — hidden via the
+   `hidden` attribute, toggled in updateBulkBtn(). */
+.review-contextual-action-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.5em;
+  padding: 0.3em 0;
+  border-top: 1px solid var(--border-strong, #423f56);
+  background: var(--color-accent-soft, #3a1420);
+  margin-top: 0.2em;
+  flex-wrap: wrap;
+  flex-shrink: 0;
+}
+
+.review-contextual-action-bar[hidden] {
+  display: none;
+}
+
+.review-contextual-action-bar__right {
+  margin-left: auto;
+}
+
 
 /* Shared group/sep helpers used in both bars */
 .review-toolbar__group {
