@@ -156,7 +156,6 @@ function invalidMoveTargets(labelsMap, uuid) {
 function buildMoveTargetSelect(labelsMap, excludeUuids, currentParentUuid) {
   const select = document.createElement('select');
   select.className = 'label-move-select';
-  select.style.cssText = 'font-size: 0.78em; max-width: 220px;';
 
   const rootOpt = document.createElement('option');
   rootOpt.value = '';
@@ -210,7 +209,6 @@ function toggleMovePicker(anchorRow, { label, labelsMap, indentLevel, onMove }) 
   applyBtn.type = 'button';
   applyBtn.className = 'label-move-apply';
   applyBtn.textContent = 'Move here';
-  applyBtn.style.cssText = 'font-size: 0.75em; padding: 1px 6px;';
   applyBtn.onclick = async () => {
     const newParentUuid = select.value || null;
     applyBtn.disabled = true;
@@ -227,7 +225,6 @@ function toggleMovePicker(anchorRow, { label, labelsMap, indentLevel, onMove }) 
   cancelBtn.type = 'button';
   cancelBtn.className = 'label-move-cancel';
   cancelBtn.textContent = 'Cancel';
-  cancelBtn.style.cssText = 'font-size: 0.75em; padding: 1px 6px;';
   cancelBtn.onclick = () => moveRow.remove();
   moveRow.appendChild(cancelBtn);
 
@@ -458,10 +455,10 @@ async function mountEditMode(container, { filter, onRerender }) {
 
   // Refresh button
   const refreshWrap = document.createElement('div');
-  refreshWrap.style.cssText = 'padding:6px 2px 2px;';
+  refreshWrap.className = 'label-refresh-wrap';
   const refreshBtn = document.createElement('button');
   refreshBtn.textContent = '🔄 Refresh';
-  refreshBtn.style.cssText = 'font-size:0.78em;padding:2px 8px;background:#222;color:#777;border:1px solid #444;border-radius:3px;cursor:pointer;';
+  refreshBtn.className = 'label-refresh-btn';
   refreshBtn.onclick = () => { clearLabelsCache(); onRerender(); };
   refreshWrap.appendChild(refreshBtn);
   inner.appendChild(refreshWrap);
@@ -517,29 +514,23 @@ const TARGET_PRESET_OPTIONS = Object.freeze([
  */
 function buildPresetMenu(title, options, currentValue, onPick) {
   const menu = document.createElement('div');
-  menu.style.cssText = [
-    'background:var(--pico-background-color,#1c1c1c)',
-    'border:1px solid var(--pico-border-color,#444)',
-    'border-radius:6px', 'padding:4px 0', 'min-width:240px',
-    'box-shadow:0 4px 14px rgba(0,0,0,.4)', 'z-index:10001', 'font-size:0.8em',
-  ].join(';');
+  menu.className = 'label-preset-menu';
 
   const hdr = document.createElement('div');
   hdr.textContent = title;
-  hdr.style.cssText = 'padding:4px 12px 6px;font-size:0.8em;text-transform:uppercase;letter-spacing:.05em;color:var(--pico-muted-color,#888);';
+  hdr.className = 'label-preset-menu-header';
   menu.appendChild(hdr);
 
   for (const opt of options) {
     const row = document.createElement('div');
     row.dataset.value = opt.value;
     row.className = 'label-preset-option';
-    row.style.cssText = 'display:flex;gap:8px;align-items:flex-start;padding:6px 12px;cursor:pointer;';
     row.addEventListener('mouseenter', () => { row.style.background = 'var(--pico-primary-background,rgba(255,255,255,.07))'; });
     row.addEventListener('mouseleave', () => { row.style.background = ''; });
 
     const check = document.createElement('span');
     check.textContent = opt.value === currentValue ? '✓' : '';
-    check.style.cssText = 'width:1em;flex-shrink:0;color:var(--pico-primary,#88aaff);';
+    check.className = 'label-preset-check';
 
     const txt = document.createElement('span');
     const t = document.createElement('div');
@@ -547,7 +538,7 @@ function buildPresetMenu(title, options, currentValue, onPick) {
     t.style.fontWeight = opt.value === currentValue ? '600' : '400';
     const d = document.createElement('div');
     d.textContent = opt.desc;
-    d.style.cssText = 'font-size:0.82em;color:var(--pico-muted-color,#999);margin-top:1px;';
+    d.className = 'label-preset-desc';
     txt.appendChild(t);
     txt.appendChild(d);
 
@@ -610,7 +601,7 @@ async function mountSelectMode(container, { runtime, filter }) {
     btn.type = 'button';
     btn.textContent = icon;
     btn.title = title;
-    btn.style.cssText = 'background:none;border:none;cursor:pointer;padding:0 3px;font-size:1em;margin:0;';
+    btn.className = 'label-icon-btn';
     btn.addEventListener('click', () => {
       if (_menuPopup) { closeMenu(); return; }
       _menuPopup = openAnchoredPopup(btn, buildMenu());
@@ -641,7 +632,7 @@ async function mountSelectMode(container, { runtime, filter }) {
   refreshBtn.type = 'button';
   refreshBtn.textContent = '↻';
   refreshBtn.title = 'Refresh verified/unverified counts';
-  refreshBtn.style.cssText = 'background:none;border:none;cursor:pointer;padding:0 3px;font-size:1em;color:var(--pico-muted-color,#888);margin:0;';
+  refreshBtn.className = 'label-icon-btn label-icon-btn--muted';
   refreshBtn.addEventListener('click', async () => {
     refreshBtn.disabled = true;
     try {
@@ -664,7 +655,7 @@ async function mountSelectMode(container, { runtime, filter }) {
   // buttons let a long count force an awkward mid-button wrap in the narrow
   // sidebar.
   const bulkLabel = document.createElement('div');
-  bulkLabel.style.cssText = 'font-size:0.72em;color:#999;margin-bottom:3px;';
+  bulkLabel.className = 'label-bulk-caption';
 
   const bulkButtonsRow = document.createElement('div');
   Object.assign(bulkButtonsRow.style, { display: 'flex', gap: '6px', alignItems: 'center', flexWrap: 'wrap' });
@@ -682,7 +673,7 @@ async function mountSelectMode(container, { runtime, filter }) {
   // presence like Mark absent/Reset — kept in this row for one-glance access,
   // but set apart so it doesn't read as a third variant of the same action.
   const bulkSep = document.createElement('span');
-  bulkSep.style.cssText = 'width:1px;height:1.2em;background:#444;flex-shrink:0;';
+  bulkSep.className = 'label-bulk-separator';
 
   const verifyAllBtn = document.createElement('button');
   verifyAllBtn.textContent = 'Verify all';
@@ -825,7 +816,7 @@ async function mountSelectMode(container, { runtime, filter }) {
 
       // Right-aligned row accessories: coverage badges + Apply-to-all target toggle.
       const rightWrap = document.createElement('span');
-      rightWrap.style.cssText = 'margin-left:auto;display:flex;gap:3px;flex-shrink:0;align-items:center;';
+      rightWrap.className = 'label-row-right-wrap';
 
       // Mini coverage badges from active TC stats — [✓ verified] [⚠ unverified]
       const stat = _statsMap.get(label.uuid);
@@ -930,7 +921,7 @@ async function mountSelectMode(container, { runtime, filter }) {
 
         // Badge wrapper (appended into the shared right-aligned rightWrap)
         const badgeWrap = document.createElement('span');
-        badgeWrap.style.cssText = 'display:flex;gap:3px;flex-shrink:0;align-items:center;';
+        badgeWrap.className = 'label-badge-wrap';
 
         // Verified badge (always shown)
         let verifiedText = `✓ ${ownVerified.toLocaleString()}`;
@@ -961,7 +952,6 @@ async function mountSelectMode(container, { runtime, filter }) {
       // Apply-to-all target toggle — ◉ included / ⊘ excluded. Always rightmost.
       const tgtToggle = document.createElement('span');
       tgtToggle.className = 'label-target-toggle';
-      tgtToggle.style.cssText = 'cursor:pointer;font-size:0.95em;line-height:1;flex-shrink:0;';
       function applyTargetIcon() {
         const on = effectiveTargeted(label.uuid);
         tgtToggle.textContent = on ? '◉' : '⊘';
@@ -1085,12 +1075,10 @@ async function mountSelectMode(container, { runtime, filter }) {
 
     const master = document.createElement('span');
     master.className = 'label-section-master';
-    master.style.cssText = 'margin-left:auto;display:flex;gap:5px;align-items:center;font-size:0.72em;';
     const allBtn = document.createElement('span');
     allBtn.className = 'label-section-all';
     allBtn.textContent = '◉ all';
     allBtn.title = 'Include every label in this section in Apply-to-all';
-    allBtn.style.cssText = 'cursor:pointer;color:#88aaff;';
     const sep = document.createElement('span');
     sep.textContent = '|';
     sep.style.color = '#555';
@@ -1098,7 +1086,6 @@ async function mountSelectMode(container, { runtime, filter }) {
     noneBtn.className = 'label-section-none';
     noneBtn.textContent = '⊘ none';
     noneBtn.title = 'Exclude every label in this section from Apply-to-all';
-    noneBtn.style.cssText = 'cursor:pointer;color:#888;';
     master.appendChild(allBtn);
     master.appendChild(sep);
     master.appendChild(noneBtn);
@@ -1382,7 +1369,7 @@ async function mountModelConfigMode(container, {
       const cb = document.createElement('input');
       cb.type = 'checkbox';
       cb.checked = selected.has(label.uuid);
-      cb.style.cssText = 'margin: 0; flex-shrink: 0;';
+      cb.className = 'label-row-checkbox';
 
       nameEl.style.cursor = 'pointer';
       nameEl.style.whiteSpace = 'nowrap';
@@ -1397,20 +1384,13 @@ async function mountModelConfigMode(container, {
       let rollUpToggle = null;
       if (showSubmodel) {
         const rollUpBadge = document.createElement('label');
-        rollUpBadge.style.cssText = [
-          'display: inline-flex', 'align-items: center', 'gap: 3px',
-          'font-size: 0.72em', 'cursor: pointer', 'margin: 0',
-          'padding: 1px 5px', 'border-radius: 3px',
-          'border: 1px solid var(--pico-border-color)',
-          'color: var(--pico-muted-color)',
-          'white-space: nowrap', 'flex-shrink: 0',
-        ].join('; ');
+        rollUpBadge.className = 'label-toggle-badge';
         rollUpBadge.title = 'During training, attribute images from unchecked child labels to this label';
 
         rollUpToggle = document.createElement('input');
         rollUpToggle.type = 'checkbox';
         rollUpToggle.checked = rollUpUnchecked.has(label.uuid);
-        rollUpToggle.style.cssText = 'margin: 0;';
+        rollUpToggle.className = 'label-toggle-checkbox';
 
         rollUpBadge.appendChild(rollUpToggle);
         rollUpBadge.appendChild(document.createTextNode('roll-up'));
@@ -1421,20 +1401,13 @@ async function mountModelConfigMode(container, {
       let subToggle = null;
       if (showSubmodel) {
         const badge = document.createElement('label');
-        badge.style.cssText = [
-          'display: inline-flex', 'align-items: center', 'gap: 3px',
-          'font-size: 0.72em', 'cursor: pointer', 'margin: 0',
-          'padding: 1px 5px', 'border-radius: 3px',
-          'border: 1px solid var(--pico-border-color)',
-          'color: var(--pico-muted-color)',
-          'white-space: nowrap', 'flex-shrink: 0',
-        ].join('; ');
+        badge.className = 'label-toggle-badge';
         badge.title = 'Use a separate sub-model for this label and its children';
 
         subToggle = document.createElement('input');
         subToggle.type = 'checkbox';
         subToggle.checked = submodels.has(label.uuid);
-        subToggle.style.cssText = 'margin: 0;';
+        subToggle.className = 'label-toggle-checkbox';
 
         badge.appendChild(subToggle);
         badge.appendChild(document.createTextNode('sub model'));
@@ -1449,11 +1422,6 @@ async function mountModelConfigMode(container, {
       moveBtn.className = 'label-move-trigger';
       moveBtn.title = 'Move to a different parent';
       moveBtn.textContent = '↕️ Move';
-      moveBtn.style.cssText = [
-        'font-size: 0.72em', 'padding: 1px 6px', 'flex-shrink: 0', 'cursor: pointer',
-        'border-radius: 3px', 'border: 1px solid var(--pico-border-color)',
-        'background: transparent', 'color: var(--pico-muted-color)',
-      ].join('; ');
       moveBtn.addEventListener('click', (e) => {
         e.stopPropagation();
         toggleMovePicker(row, {
@@ -1531,12 +1499,12 @@ async function mountModelConfigMode(container, {
   // toggles since dynamic labels don't have a structured parent/child hierarchy.
   if (dynamicMap.size > 0) {
     const hr = document.createElement('hr');
-    hr.style.cssText = 'margin: 0.5em 0; opacity: 0.3;';
+    hr.className = 'label-dynamic-hr';
     container.appendChild(hr);
 
     const dynHdr = document.createElement('p');
     dynHdr.className = 'panel-section-label';
-    dynHdr.style.cssText = 'margin: 0.3em 0 0.2em; font-style: italic; color: var(--pico-muted-color);';
+    dynHdr.classList.add('label-dynamic-header');
     dynHdr.textContent = 'Dynamic Labels';
     container.appendChild(dynHdr);
 
@@ -1546,7 +1514,7 @@ async function mountModelConfigMode(container, {
       const cb = document.createElement('input');
       cb.type = 'checkbox';
       cb.checked = selected.has(label.uuid);
-      cb.style.cssText = 'margin: 0; flex-shrink: 0;';
+      cb.className = 'label-row-checkbox';
 
       nameEl.style.cursor = 'pointer';
       nameEl.style.whiteSpace = 'nowrap';

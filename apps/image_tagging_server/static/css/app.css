@@ -241,6 +241,195 @@ main.container {
   background: #161616;
 }
 
+/* ===== Label list: extracted styles (slice 2, PR 2.4) ===== */
+/* Static styles pulled out of ui/labelList.js's `el.style.cssText = '...'`
+   assignments. State-dependent styling stays inline (see labelList.js). */
+
+/* "Move to…" picker row (edit mode + model-config mode, shared via toggleMovePicker) */
+.label-move-select {
+  font-size: 0.78em;
+  max-width: 220px;
+}
+
+.label-move-apply,
+.label-move-cancel {
+  font-size: 0.75em;
+  padding: 1px 6px;
+}
+
+.label-move-trigger {
+  font-size: 0.72em;
+  padding: 1px 6px;
+  flex-shrink: 0;
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--pico-border-color);
+  background: transparent;
+  color: var(--pico-muted-color);
+}
+
+/* Edit mode: refresh row at the bottom of the label list */
+.label-refresh-wrap {
+  padding: 6px 2px 2px;
+}
+
+.label-refresh-btn {
+  font-size: 0.78em;
+  padding: 2px 8px;
+  background: #222;
+  color: #777;
+  border: 1px solid #444;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+/* Visibility / Apply-to-all target preset menu (openAnchoredPopup content) */
+.label-preset-menu {
+  background: var(--pico-background-color, #1c1c1c);
+  border: 1px solid var(--pico-border-color, #444);
+  border-radius: var(--radius-lg);
+  padding: 4px 0;
+  min-width: 240px;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, .4);
+  z-index: 10001;
+  font-size: 0.8em;
+}
+
+.label-preset-menu-header {
+  padding: 4px 12px 6px;
+  font-size: 0.8em;
+  text-transform: uppercase;
+  letter-spacing: .05em;
+  color: var(--pico-muted-color, #888);
+}
+
+.label-preset-option {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  padding: 6px 12px;
+  cursor: pointer;
+}
+
+.label-preset-check {
+  width: 1em;
+  flex-shrink: 0;
+  color: var(--pico-primary, #88aaff);
+}
+
+.label-preset-desc {
+  font-size: 0.82em;
+  color: var(--pico-muted-color, #999);
+  margin-top: 1px;
+}
+
+/* Select mode header: icon buttons (visibility/target menu triggers, refresh) */
+.label-icon-btn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 0 3px;
+  font-size: 1em;
+  margin: 0;
+}
+
+.label-icon-btn--muted {
+  color: var(--pico-muted-color, #888);
+}
+
+/* Select mode: bulk-op row ("Apply to N targeted:" + Mark absent/Reset/Verify all) */
+.label-bulk-caption {
+  font-size: 0.72em;
+  color: #999;
+  margin-bottom: 3px;
+}
+
+.label-bulk-separator {
+  width: 1px;
+  height: 1.2em;
+  background: #444;
+  flex-shrink: 0;
+}
+
+/* Select mode row accessories: right-aligned coverage badges + target toggle */
+.label-row-right-wrap {
+  margin-left: auto;
+  display: flex;
+  gap: 3px;
+  flex-shrink: 0;
+  align-items: center;
+}
+
+.label-badge-wrap {
+  display: flex;
+  gap: 3px;
+  flex-shrink: 0;
+  align-items: center;
+}
+
+.label-target-toggle {
+  cursor: pointer;
+  font-size: 0.95em;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+/* Select mode: per-section [◉ all | ⊘ none] master targeting control */
+.label-section-master {
+  margin-left: auto;
+  display: flex;
+  gap: 5px;
+  align-items: center;
+  font-size: 0.72em;
+}
+
+.label-section-all {
+  cursor: pointer;
+  color: #88aaff;
+}
+
+.label-section-none {
+  cursor: pointer;
+  color: #888;
+}
+
+/* Model-config mode: row checkbox + roll-up/sub-model toggle badges */
+.label-row-checkbox {
+  margin: 0;
+  flex-shrink: 0;
+}
+
+.label-toggle-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 0.72em;
+  cursor: pointer;
+  margin: 0;
+  padding: 1px 5px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--pico-border-color);
+  color: var(--pico-muted-color);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.label-toggle-checkbox {
+  margin: 0;
+}
+
+/* Model-config mode: Dynamic Labels section divider + heading */
+.label-dynamic-hr {
+  margin: 0.5em 0;
+  opacity: 0.3;
+}
+
+.label-dynamic-header {
+  margin: 0.3em 0 0.2em;
+  font-style: italic;
+  color: var(--pico-muted-color);
+}
+
 /* ===== Review: Query toolbar ===== */
 /* Top bar: filters toggle · sort controls · view mode (All/Images/Bboxes + grid/list) · page size · refresh */
 /* ===== Review: Sticky top wrapper ===== */
