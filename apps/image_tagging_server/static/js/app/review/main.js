@@ -360,6 +360,20 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
   refreshBtn.className = 'review-toolbar__btn';
   refreshBtn.textContent = 'Refresh';
 
+  // ── Persistent utility group (slice 3, PR 3.1) ─────────────────────
+  // Refresh, "Most Unique First", "Open in Datasets Tab", and any
+  // caller-supplied controls (e.g. a similarity-search threshold slider)
+  // read as one "toolbar" cluster instead of being scattered across
+  // separately-appended groups. Created once and appended to `toolbar` in
+  // its final position below; the buttons built inside later conditional
+  // blocks (uniqueFirstBtn, exportToDatasetBtn) are appended into this same
+  // node rather than creating new sibling groups, so this group's DOM
+  // position never has to be revisited.
+  const persistentUtilityGroup = makeToolbarGroup();
+  persistentUtilityGroup.classList.add('review-toolbar__group--persistent');
+  if (toolbarControls) persistentUtilityGroup.appendChild(toolbarControls);
+  persistentUtilityGroup.appendChild(refreshBtn);
+
   // Pagination — filter mode only. Custom/fetchImages mode uses infinite
   // scroll instead (M2), so Prev/Next never apply there.
   const pageInfo = document.createElement('span');
@@ -422,8 +436,8 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
     makeToolbarGroup(filterToggleBtn, sortLabel, sortBySelect, sortOrderSelect),
     makeToolbarSep(),
     makeToolbarGroup(viewToggle, entryView.element, pageSizeSelect),
-    ...(toolbarControls ? [makeToolbarSep(), makeToolbarGroup(toolbarControls)] : []),
-    makeToolbarGroup(refreshBtn),
+    makeToolbarSep(),
+    persistentUtilityGroup,
   );
 
   // ── Action bar: select-all, bulk-apply, prev/next, status ─────────
@@ -546,7 +560,10 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
       toast('Opening Datasets editor…', 2000);
     });
 
-    toolbar.append(makeToolbarSep(), makeToolbarGroup(presetsSelect, savePresetBtn, exportToDatasetBtn));
+    toolbar.append(makeToolbarSep(), makeToolbarGroup(presetsSelect, savePresetBtn));
+    // Joins the persistent utility group (Refresh, ★ Most Unique First) rather
+    // than its own toolbar row — see the group's definition above.
+    persistentUtilityGroup.appendChild(exportToDatasetBtn);
 
     // ── "Label most unique first" — diversity-ranked unverified queue ────────
     const uniqueFirstBtn = document.createElement('button');
@@ -554,7 +571,10 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
     uniqueFirstBtn.textContent = '★ Most Unique First';
     uniqueFirstBtn.title = 'Open the most visually distinct unverified images in a review panel (farthest-point sampling)';
     uniqueFirstBtn.addEventListener('click', () => openDissimilarGlobalModal());
-    toolbar.append(makeToolbarSep(), makeToolbarGroup(uniqueFirstBtn));
+    // Insert before exportToDatasetBtn so the group reads Refresh → ★ Most
+    // Unique First → ⊞ Open in Datasets Tab, matching creation-order-independent
+    // display order (UI_REDESIGN_PLAN.md, slice 3, PR 3.1).
+    persistentUtilityGroup.insertBefore(uniqueFirstBtn, exportToDatasetBtn);
     } // end if (datasetActions)
   }
 

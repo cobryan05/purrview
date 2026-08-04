@@ -452,8 +452,19 @@ main.container {
   flex-shrink: 0;
 }
 
-/* The last group (Refresh) floats to the right */
+/* The last group floats to the right (stale name — no longer always Refresh;
+   see .review-toolbar__group--persistent below for the group that's actually
+   meant to float right regardless of DOM position). */
 .review-toolbar .review-toolbar__group:last-child {
+  margin-left: auto;
+}
+
+/* Persistent utility group (slice 3, PR 3.1): Refresh, Most Unique First,
+   Open in Datasets Tab, and any caller-supplied toolbarControls. Floats
+   right explicitly rather than relying on being the last DOM child, since
+   the curated-mode group (modal-toolbar-row) is appended after it and forces
+   its own full-width row via the rule below. */
+.review-toolbar .review-toolbar__group--persistent {
   margin-left: auto;
 }
 
