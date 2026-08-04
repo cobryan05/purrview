@@ -885,3 +885,27 @@ class TestRequireBboxesInteraction:
         # zero bboxes.
         assert not any("no-bbox.png" in f for f in images)
         assert any("other-label.png" in f for f in images)
+
+    async def test_empty_label_uuids_all_mode_does_not_short_circuit_require_bboxes(
+        self, http_client, files_root, label_uuid
+    ):
+        """An objectLabel term with match_mode="all" and an empty label_uuids
+        list builds a vacuously-true and_() expression (matches every image,
+        bbox or not) and must NOT set the internal bbox_implied flag, or
+        require_bboxes=True would wrongly skip its own subquery and let
+        zero-bbox images through."""
+        _make_image(files_root, "has-bbox.png")
+        _make_image(files_root, "no-bbox.png")
+        await _add_bbox(http_client, "has-bbox.png", label_uuid, [])
+        await _register_image(http_client, "no-bbox.png")
+
+        images = _filenames(
+            await _review(
+                http_client,
+                show_all_bboxes=True,
+                require_bboxes=True,
+                terms=[{"kind": "objectLabel", "labelUuids": [], "matchMode": "all"}],
+            )
+        )
+        assert any("has-bbox.png" in f for f in images)
+        assert not any("no-bbox.png" in f for f in images)

@@ -301,7 +301,7 @@ def _apply_filter_terms(stmt: Select, params: ImageSearchParams, *, use_exists: 
         term_implies_bbox = False
 
         if isinstance(term, ObjectLabelTerm):
-            term_implies_bbox = True
+            term_implies_bbox = bool(term.label_uuids)
             if term.match_mode == "all":
                 sub_exprs = []
                 for j, label_uuid in enumerate(term.label_uuids):
@@ -359,7 +359,7 @@ def _apply_filter_terms(stmt: Select, params: ImageSearchParams, *, use_exists: 
                 )
 
         elif isinstance(term, BBoxTagTerm):
-            term_implies_bbox = True
+            term_implies_bbox = bool(term.tag_uuids)
             if term.match_mode == "all":
                 sub_exprs = [_tag_predicate(BBoxTagLink.tag_uuid == tag_uuid) for tag_uuid in term.tag_uuids]
                 expr = and_(*sub_exprs) if sub_exprs else true()
@@ -4103,8 +4103,13 @@ class DbClient:
                 # build_dataset_search_params) when there is one, so the union
                 # stays a single "any of these labels" predicate rather than an
                 # AND of two independent (and possibly disjoint) pool filters.
+                # build_dataset_search_params appends that term (from
+                # dataset.label_uuids) *after* the user-supplied f.terms, so it
+                # is the LAST non-negated ObjectLabelTerm, not the first — a
+                # user-supplied objectLabel term earlier in f.terms is an
+                # unrelated filter and must not be widened here.
                 pool_term = next(
-                    (t for t in params.terms if isinstance(t, ObjectLabelTerm) and not t.negate),
+                    (t for t in reversed(params.terms) if isinstance(t, ObjectLabelTerm) and not t.negate),
                     None,
                 )
                 if pool_term is not None:

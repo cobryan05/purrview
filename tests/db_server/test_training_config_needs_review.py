@@ -12,6 +12,8 @@ Coverage:
   decoupled target set, not the pool filter.
 """
 
+import uuid as _uuid_mod
+
 from tests.conftest import make_png
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -342,6 +344,65 @@ class TestNeedsReviewImages:
         body_filtered = await _needs_review(http_client, cfg["uuid"], labelUuids=[pool_label_uuid])
         assert len(body_filtered["images"]) == 1
         assert "nr_extra_with_pool" in body_filtered["images"][0]["filename"]
+
+    async def test_extra_label_uuids_merges_into_dataset_pool_term_not_unrelated_term(self, http_client, files_root):
+        """extra_label_uuids must widen the dataset's own label_uuids-derived pool
+        ObjectLabelTerm, not some unrelated non-negated objectLabel term the user
+        already put in filter_json.terms — merging into the wrong term would let
+        images through that only satisfy the unrelated term's widened set while
+        failing the pool label filter it was supposed to widen."""
+        target_label_uuid = await _create_label(http_client, "nr-merge-target")
+        pool_label_uuid = await _create_label(http_client, "nr-merge-pool")
+        decoy_label_uuid = await _create_label(http_client, "nr-merge-decoy")
+        extra_label_uuid = await _create_label(http_client, "nr-merge-extra")
+
+        r = await http_client.post(
+            "/api/datasets",
+            json={
+                "name": "nr-merge-ds",
+                "filter_json": {"terms": [{"kind": "objectLabel", "labelUuids": [decoy_label_uuid]}]},
+                "label_uuids": [pool_label_uuid],
+            },
+        )
+        assert r.status_code == 200, r.text
+        ds = r.json()["dataset"]
+
+        # Has bboxes for the pool label and the extra label, but NOT the decoy
+        # label — the decoy term must stay strict (unwidened by extra_label_uuids)
+        # and exclude this image even though the pool term alone is satisfied.
+        await _register_image(http_client, files_root, "nr_merge_pool_only.png")
+        r = await http_client.post(
+            "/api/images/metadata/update",
+            json={
+                "imagePath": "nr_merge_pool_only.png",
+                "boxes": [
+                    {
+                        "uuid": str(_uuid_mod.uuid4()),
+                        "labelUuid": pool_label_uuid,
+                        "x": 0.1,
+                        "y": 0.1,
+                        "width": 0.3,
+                        "height": 0.3,
+                        "tagUuids": [],
+                    },
+                    {
+                        "uuid": str(_uuid_mod.uuid4()),
+                        "labelUuid": extra_label_uuid,
+                        "x": 0.5,
+                        "y": 0.5,
+                        "width": 0.2,
+                        "height": 0.2,
+                        "tagUuids": [],
+                    },
+                ],
+            },
+        )
+        assert r.status_code == 200, r.text
+
+        cfg, _ = await self._make_tc(http_client, "nr-tc-merge", [ds["uuid"]], target_label_uuid)
+
+        body = await _needs_review(http_client, cfg["uuid"], labelUuids=[extra_label_uuid])
+        assert len(body["images"]) == 0
 
 
 class TestVerificationLabelUuidsDecoupled:
