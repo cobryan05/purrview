@@ -7,21 +7,21 @@ body {
 
 main.container {
   max-width: 100%;
-  padding: 0.5em 1em;
+  padding: var(--space-2) var(--space-4);
   box-sizing: border-box;
 }
 
 /* ===== Top-level tabs ===== */
 .main-tab-header {
   display: flex;
-  border-bottom: 1px solid #ccc;
-  margin-bottom: 0.5em;
+  border-bottom: 1px solid var(--border-strong);
+  margin-bottom: var(--space-2);
 }
 
 .main-tab-button {
   flex: 1;
   text-align: center;
-  padding: 0.5em 0;
+  padding: var(--space-2) 0;
   cursor: pointer;
   border: none;
   background: none;
@@ -29,12 +29,12 @@ main.container {
   color: var(--pico-color);
   border-bottom: 2px solid transparent;
   transition: border-color 0.2s;
-  font-size: 1.1em;
+  font-size: var(--text-md);
 }
 
 .main-tab-button--icon {
   flex: 0 0 auto;
-  padding: 0.5em 0.75em;
+  padding: var(--space-2) var(--space-3);
   font-size: 1.2em;
   opacity: 0.6;
 }
@@ -53,7 +53,7 @@ main.container {
 
 .main-tab-button.active {
   font-weight: bold;
-  border-bottom: 2px solid #ff0033;
+  border-bottom: 2px solid var(--color-accent);
 }
 
 .main-tab-pane {
