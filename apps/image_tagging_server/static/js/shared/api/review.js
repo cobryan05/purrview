@@ -136,7 +136,11 @@ function buildReviewFilterBody({
     // invariant (a row only ever exists for present/absent) always matched
     // zero rows. See PR 1.4b report for detail.
     const state = c.state === 'uncertain' ? 'unreviewed' : c.state;
-    terms.push({ kind: 'imageLabel', labelUuid: c.labelUuid, state });
+    // rollUp/negate (slice 3, PR 3.2): default to the server's own defaults
+    // (roll_up: true, negate: false — apps/helpers/db/types.py's
+    // ImageLabelTerm) when the condition predates the UI control that sets
+    // them, so existing saved presets/datasets keep behaving as before.
+    terms.push({ kind: 'imageLabel', labelUuid: c.labelUuid, state, rollUp: c.rollUp ?? true, negate: c.negate ?? false });
   }
 
   if (afterUuid) body.afterUuid = afterUuid;

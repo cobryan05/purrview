@@ -17,6 +17,14 @@ function _createConditionPicker(items, onChange, {
   states,
   placeholder,
   emptyMsg,
+  // Image-label conditions only (slice 3, PR 3.2): expose the server's
+  // per-term roll_up/negate fields (ImageLabelTerm, apps/helpers/db/types.py)
+  // which previously had no UI control at all — roll_up defaulted to True
+  // with no way to turn it off, negate had no equivalent. Ignored for
+  // states where the server ignores roll-up too (absent — direction is
+  // asymmetric, see ImageLabelTerm's docstring).
+  allowRollUp = false,
+  allowNegate = false,
 } = {}) {
   let _conditions = [];
   let _items = [...items];
@@ -69,9 +77,43 @@ function _createConditionPicker(items, onChange, {
     const stateSelect = _makeStateSelect(cond.state);
     stateSelect.addEventListener('change', () => {
       _conditions[idx] = { ..._conditions[idx], state: stateSelect.value };
+      _renderAll();
       onChange([..._conditions]);
     });
     row.appendChild(stateSelect);
+
+    if (allowRollUp) {
+      const rollUpLabel = document.createElement('label');
+      rollUpLabel.className = 'itc-rollup-label';
+      rollUpLabel.title = 'Also match on child labels (e.g. "Cat present" matches an image with only "Tabby" recorded)';
+      const rollUpCb = document.createElement('input');
+      rollUpCb.type = 'checkbox';
+      rollUpCb.checked = cond.rollUp ?? true;
+      // Server ignores roll_up for 'absent' — direction is asymmetric
+      // (ImageLabelTerm's docstring, apps/helpers/db/types.py).
+      rollUpCb.disabled = cond.state === 'absent';
+      rollUpCb.addEventListener('change', () => {
+        _conditions[idx] = { ..._conditions[idx], rollUp: rollUpCb.checked };
+        onChange([..._conditions]);
+      });
+      rollUpLabel.append(rollUpCb, document.createTextNode('+sub'));
+      row.appendChild(rollUpLabel);
+    }
+
+    if (allowNegate) {
+      const negateLabel = document.createElement('label');
+      negateLabel.className = 'itc-negate-label';
+      negateLabel.title = 'Negate this condition';
+      const negateCb = document.createElement('input');
+      negateCb.type = 'checkbox';
+      negateCb.checked = cond.negate ?? false;
+      negateCb.addEventListener('change', () => {
+        _conditions[idx] = { ..._conditions[idx], negate: negateCb.checked };
+        onChange([..._conditions]);
+      });
+      negateLabel.append(negateCb, document.createTextNode('¬'));
+      row.appendChild(negateLabel);
+    }
 
     const removeBtn = document.createElement('button');
     removeBtn.type = 'button';
@@ -116,7 +158,12 @@ function _createConditionPicker(items, onChange, {
     picker.addEventListener('change', () => {
       const uuid = picker.value;
       if (!uuid) return;
-      _conditions.push({ [idKey]: uuid, state: states[0][0] });
+      _conditions.push({
+        [idKey]: uuid,
+        state: states[0][0],
+        ...(allowRollUp ? { rollUp: true } : {}),
+        ...(allowNegate ? { negate: false } : {}),
+      });
       _renderAll();
       onChange([..._conditions]);
     });
@@ -131,7 +178,12 @@ function _createConditionPicker(items, onChange, {
   }
 
   function setState(conditions) {
-    _conditions = (conditions ?? []).map(c => ({ [idKey]: c[idKey], state: c.state ?? states[0][0] }));
+    _conditions = (conditions ?? []).map(c => ({
+      [idKey]: c[idKey],
+      state: c.state ?? states[0][0],
+      ...(allowRollUp ? { rollUp: c.rollUp ?? true } : {}),
+      ...(allowNegate ? { negate: c.negate ?? false } : {}),
+    }));
     _renderAll();
   }
 
@@ -176,6 +228,8 @@ export function createImageLabelConditions(labels, onChange) {
     states: [['present', 'Present'], ['absent', 'Absent'], ['uncertain', 'Uncertain']],
     placeholder: 'Add image label filter…',
     emptyMsg: 'No image labels defined',
+    allowRollUp: true,
+    allowNegate: true,
   });
   return {
     element: inner.element,

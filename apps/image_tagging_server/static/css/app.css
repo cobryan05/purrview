@@ -876,6 +876,32 @@ button.filter-active {
   margin-bottom: 0;
   border-radius: 3px;
   flex-shrink: 0;
+  /* Pico's `select { width: 100% }` combined with flex-shrink:0 above made
+     this item refuse to shrink from its 100%-of-row basis, pushing every
+     later sibling (previously just the remove button, squished tiny; now
+     also the roll-up/negate checkboxes) out of the visible row. Pre-existing
+     bug, surfaced by adding those checkboxes (slice 3, PR 3.2). */
+  width: auto;
+}
+
+.itc-rollup-label,
+.itc-negate-label {
+  display: flex;
+  align-items: center;
+  gap: 0.2em;
+  font-size: 0.76em;
+  color: var(--text-faint, #777);
+  flex-shrink: 0;
+  cursor: pointer;
+}
+
+.itc-rollup-label input,
+.itc-negate-label input {
+  margin: 0;
+}
+
+.itc-negate-label {
+  color: var(--color-danger, #e66);
 }
 
 .itc-remove {
