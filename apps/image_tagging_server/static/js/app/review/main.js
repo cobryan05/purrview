@@ -214,11 +214,16 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
   }
 
   // Filter toggle — only visible in full-filter mode
+  // Slice 3, PR 3.2: no longer a "☰ Filters (n)" toggle for a hidden inline
+  // panel — the chip bar below is always visible and shows what's active, so
+  // this only ever opens the popover editor for filters that aren't already
+  // one of the toolbar's own dropdowns (Date / Filename / Config Ready /
+  // Bbox Verification / Image Label Filters — see filterPanel.element).
   const filterToggleBtn = document.createElement('button');
-  filterToggleBtn.className = 'review-toolbar__btn';
+  filterToggleBtn.className = 'review-toolbar__btn review-filter-chip-bar__add';
   filterToggleBtn.dataset.testid = 'review-filter-toggle';
-  filterToggleBtn.textContent = '☰ Filters';
-  filterToggleBtn.title = 'Toggle search filters';
+  filterToggleBtn.textContent = '+ Add filter';
+  filterToggleBtn.title = 'Date, filename, config-ready and image-label filters';
   if (fetchImages) filterToggleBtn.hidden = true;
 
   // Sort controls — hidden when a custom fetchImages is provided (caller controls ordering)
@@ -433,7 +438,7 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
   // ── Query bar: filter · sort · view mode · page size · refresh ────
   // Controls that change *what* is shown. Stays compact so it never wraps.
   toolbar.append(
-    makeToolbarGroup(filterToggleBtn, sortLabel, sortBySelect, sortOrderSelect),
+    makeToolbarGroup(sortLabel, sortBySelect, sortOrderSelect),
     makeToolbarSep(),
     makeToolbarGroup(viewToggle, entryView.element, pageSizeSelect),
     makeToolbarSep(),
@@ -450,38 +455,68 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
     makeToolbarGroup(statusMsg),
   );
 
+  // ── Filter chip bar (slice 3, PR 3.2) ──────────────────────────────
+  // Always-visible summary of active filters, replacing the old "☰ Filters
+  // (n)" toggle-to-reveal-a-hidden-panel pattern. filterPanel.element (Date /
+  // Filename / Config Ready / Bbox Verification / Image Label Filters) is
+  // repositioned as a popover anchored under this bar instead of an inline
+  // block that pushed the grid down — see .review-filter-popover in app.css.
+  // Full-filter mode only; fetchImages/curated mode has no filter panel.
+  const filterChipBarWrap = document.createElement('div');
+  filterChipBarWrap.className = 'review-filter-chip-bar-wrap';
+  const filterChipBar = document.createElement('div');
+  filterChipBar.className = 'review-filter-chip-bar';
+  filterChipBar.dataset.testid = 'review-filter-chip-bar';
+  filterChipBarWrap.appendChild(filterChipBar);
+
   // ── Sticky top wrapper ────────────────────────────────────────────
-  // Pins toolbar + action bar (and the expandable filter panel) to the top
-  // of the scroll container. The filter panel lives here so expanding it
-  // never requires scrolling back up to find the filter controls.
+  // Pins toolbar + chip bar + action bar to the top of the scroll container.
   const stickyTop = document.createElement('div');
   stickyTop.className = 'review-sticky-top';
-  stickyTop.append(toolbar, actionBar);
+  stickyTop.append(toolbar);
+  if (!fetchImages) stickyTop.append(filterChipBarWrap);
+  stickyTop.append(actionBar);
   container.appendChild(stickyTop);
   container.appendChild(entryView.layout);
 
   // ── Filter panel (full mode only) ─────────────────────────────────
-  // Lives inside stickyTop so it expands in-place and never scrolls away.
-  // Starts hidden; the ☰ Filters button toggles it.
+  // Lives inside filterChipBarWrap as a popover; opened by "+ Add filter".
   let filterPanel = null;
   if (!fetchImages) {
     const tags = await tagsPromise;
 
-    function updateFilterBtn() {
-      const n = filterPanel.getActiveFilterCount();
-      filterToggleBtn.textContent = n > 0 ? `☰ Filters (${n})` : '☰ Filters';
+    function renderChipBar() {
       filterToggleBtn.classList.toggle('filter-active', !filterPanel.isDefault());
+      filterChipBar.querySelectorAll('.review-filter-chip').forEach(el => el.remove());
+      for (const { key, label, onRemove } of filterPanel.getChipDescriptors()) {
+        const chip = document.createElement('span');
+        chip.className = 'review-filter-chip';
+        chip.dataset.chipKey = key;
+        const text = document.createElement('span');
+        text.className = 'review-filter-chip__label';
+        text.textContent = label;
+        const remove = document.createElement('button');
+        remove.type = 'button';
+        remove.className = 'review-filter-chip__remove';
+        remove.textContent = '✕';
+        remove.title = 'Remove filter';
+        remove.addEventListener('click', onRemove);
+        chip.append(text, remove);
+        filterChipBar.insertBefore(chip, filterToggleBtn);
+      }
     }
 
     filterPanel = createFilterPanel(labels, tags, () => {
-      updateFilterBtn();
+      renderChipBar();
       _pageCursors = [null];
       _lastCursor = null;
       render();
     });
     filterPanel.element.hidden = true;
-    stickyTop.appendChild(filterPanel.element);
-    updateFilterBtn(); // reflect initial state (Unverified checked → shows "(1)")
+    filterPanel.element.classList.add('review-filter-popover');
+    filterChipBarWrap.appendChild(filterPanel.element);
+    filterChipBar.appendChild(filterToggleBtn);
+    renderChipBar(); // reflect initial state (Unverified checked → shows a chip)
     // Config Ready (V2) is whole-image-only — start disabled if we're opening
     // straight into bboxes view. Kept in sync by the view-toggle handler below.
     filterPanel.setConfigReadyAvailable(initialViewFilter !== 'bboxes');

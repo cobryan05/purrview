@@ -598,6 +598,77 @@ main.container {
   gap: 0.25em;
 }
 
+/* ===== Review: filter chip bar (slice 3, PR 3.2) ===== */
+/* Always-visible summary of active filters, replacing the old "☰ Filters (n)"
+   toggle-to-reveal-a-hidden-panel pattern. Sits between the toolbar and the
+   action bar; .review-filter-popover below is anchored to this wrapper. */
+.review-filter-chip-bar-wrap {
+  position: relative;
+}
+
+.review-filter-chip-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2, 0.5em);
+  padding: var(--space-1, 0.25em) 0;
+  min-height: 1.8em;
+}
+
+.review-filter-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35em;
+  font-size: var(--text-xs, 0.78rem);
+  background: var(--surface-raised, #22222f);
+  border: 1px solid var(--border-strong, #423f56);
+  border-radius: var(--radius-full, 999px);
+  padding: 0.2em 0.3em 0.2em 0.65em;
+  color: var(--text, #ececf2);
+  max-width: 320px;
+}
+
+.review-filter-chip__label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.review-filter-chip__remove {
+  font: inherit;
+  font-size: 0.85em;
+  line-height: 1;
+  background: none;
+  border: none;
+  color: var(--text-faint, #6f6e7c);
+  cursor: pointer;
+  padding: 0.15em 0.3em;
+  border-radius: var(--radius-full, 999px);
+  flex-shrink: 0;
+}
+
+.review-filter-chip__remove:hover {
+  color: var(--color-danger, #ff7a5c);
+  background: var(--color-danger-soft, #3a1c14);
+}
+
+.review-filter-chip-bar__add {
+  font-size: var(--text-xs, 0.78rem);
+}
+
+/* filterPanel.element, repositioned as a popover under the chip bar instead
+   of an inline block that used to push the action bar/grid down whenever
+   opened. */
+.review-filter-popover {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  z-index: 20;
+  margin-top: var(--space-1, 0.25em) !important;
+  box-shadow: var(--shadow, 0 4px 16px rgba(0, 0, 0, 0.4));
+  min-width: 480px;
+}
+
 /* Two horizontal rows inside the panel */
 .filter-row-primary {
   display: flex;

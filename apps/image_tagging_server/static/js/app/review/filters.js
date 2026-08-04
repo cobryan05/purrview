@@ -430,6 +430,71 @@ export function createFilterPanel(labels, tags, onFilterChange, { inlineControls
       + (s.bboxVerification !== 'any' ? 1 : 0);
   }
 
+  // ── Filter chip bar (slice 3, PR 3.2) ───────────────────────────────────
+  // One descriptor per active filter dimension, for main.js to render as an
+  // always-visible chip row. Reuses the existing category-based state
+  // wholesale (no atomic term-list rewrite — see UI_REDESIGN §32.6): Tags and
+  // Object Labels are each one aggregate chip (the multi-select dropdowns
+  // they summarize stay put in the toolbar, unchanged); Image Label
+  // Filters, being already a real per-condition list, gets one chip per row.
+  function _labelName(uuid) { return labels.get(uuid)?.name ?? uuid; }
+  function _tagName(uuid) { return tags.get(uuid)?.name ?? uuid; }
+
+  function getChipDescriptors() {
+    const s = _state;
+    const chips = [];
+
+    if (s.tagUuids.length > 0 || s.tagExcludeUuids.length > 0) {
+      const names = [...s.tagUuids.map(_tagName), ...s.tagExcludeUuids.map(u => `¬${_tagName(u)}`)];
+      chips.push({
+        key: 'tags',
+        label: `Tags: ${names.join(', ')}`,
+        onRemove: () => setState({ tagUuids: [], tagExcludeUuids: [] }),
+      });
+    }
+
+    if (s.labelUuids.length > 0 || s.labelExcludeUuids.length > 0) {
+      const names = [...s.labelUuids.map(_labelName), ...s.labelExcludeUuids.map(u => `¬${_labelName(u)}`)];
+      const rollUp = s.labelIncludeChildren ? ' +sub' : '';
+      chips.push({
+        key: 'labels',
+        label: `Labels: ${names.join(', ')}${rollUp}`,
+        onRemove: () => setState({ labelUuids: [], labelExcludeUuids: [], labelIncludeChildren: false }),
+      });
+    }
+
+    s.imageLabelConditions.forEach((c, idx) => {
+      const negate = c.negate ? '¬' : '';
+      const rollUp = c.rollUp !== false && c.state !== 'absent' ? ' +sub' : '';
+      chips.push({
+        key: `imageLabel-${c.labelUuid}-${idx}`,
+        label: `${negate}${_labelName(c.labelUuid)} · ${c.state}${rollUp}`,
+        onRemove: () => setState({ imageLabelConditions: s.imageLabelConditions.filter((_, i) => i !== idx) }),
+      });
+    });
+
+    if (s.filenameSearch) {
+      chips.push({ key: 'filename', label: `File: ${s.filenameSearch}`, onRemove: () => setState({ filenameSearch: '' }) });
+    }
+
+    if (s.dateFrom || s.dateTo) {
+      const from = s.dateFrom ? new Date(s.dateFrom).toLocaleDateString() : '…';
+      const to = s.dateTo ? new Date(s.dateTo).toLocaleDateString() : '…';
+      chips.push({ key: 'date', label: `Date: ${from}–${to}`, onRemove: () => setState({ dateFrom: null, dateTo: null }) });
+    }
+
+    if (s.verificationCheck) {
+      const text = s.verificationCheck === 'all_verified' ? 'Ready' : 'Needs review';
+      chips.push({ key: 'configReady', label: `Config Ready: ${text}`, onRemove: () => setState({ verificationCheck: null }) });
+    }
+
+    if (s.bboxVerification !== 'any') {
+      chips.push({ key: 'bboxVerification', label: `Bbox: ${s.bboxVerification}`, onRemove: () => setState({ bboxVerification: 'any' }) });
+    }
+
+    return chips;
+  }
+
   function isDefault() {
     const s = _state;
     return (
@@ -526,6 +591,7 @@ export function createFilterPanel(labels, tags, onFilterChange, { inlineControls
     setState,
     isDefault,
     getActiveFilterCount,
+    getChipDescriptors,
     setConfigReadyAvailable,
     destroy,
   };

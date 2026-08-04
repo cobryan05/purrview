@@ -567,16 +567,22 @@ class TestPagination:
 # ---------------------------------------------------------------------------
 
 class TestFilterToggleButton:
-    def test_filter_toggle_button_reflects_active_count(self, page: Page, base_url: str):
+    def test_filter_chip_bar_reflects_active_filters(self, page: Page, base_url: str):
+        """Slice 3, PR 3.2: the "+ Add filter" button text no longer carries an
+        active-filter count — the always-visible chip bar does, one chip per
+        active filter dimension, each independently removable."""
         _mock_review_queue(page, PAGE_1_IMAGES)
         _mock_labels(page, [LABEL_CAT, LABEL_DOG])
         _mock_tags(page, [{**UNVERIFIED_TAG, "name": "Unverified", "color": "#888", "kind": "system"}])
 
         _navigate_to_review(page, base_url)
         toggle_btn = page.get_by_test_id("review-filter-toggle")
+        chip_bar = page.get_by_test_id("review-filter-chip-bar")
 
-        # Default state: no filters active.
-        expect(toggle_btn).to_have_text("☰ Filters")
+        # Default state: no filters active, no chips.
+        expect(toggle_btn).to_have_text("+ Add filter")
+        expect(toggle_btn).not_to_have_class(re.compile(r"\bfilter-active\b"))
+        expect(chip_bar.locator(".review-filter-chip")).to_have_count(0)
 
         # The Labels dropdown is in the toolbar — open it and check 'Cat'.
         labels_trigger = page.locator("#review-root .ms-dropdown[data-filter-key='labels-v2'] .ms-dropdown__trigger")
@@ -586,8 +592,18 @@ class TestFilterToggleButton:
         page.mouse.click(0, 0)  # close dropdown
         page.wait_for_timeout(300)
 
-        expect(toggle_btn).to_have_text("☰ Filters (1)")
+        expect(toggle_btn).to_have_text("+ Add filter")
         expect(toggle_btn).to_have_class(re.compile(r"\bfilter-active\b"))
+        chips = chip_bar.locator(".review-filter-chip")
+        expect(chips).to_have_count(1)
+        expect(chips.first).to_contain_text("Cat")
+
+        # The chip's own remove button clears the filter without opening the
+        # popover editor.
+        chips.first.locator(".review-filter-chip__remove").click()
+        page.wait_for_timeout(300)
+        expect(chip_bar.locator(".review-filter-chip")).to_have_count(0)
+        expect(toggle_btn).not_to_have_class(re.compile(r"\bfilter-active\b"))
 
 
 # ---------------------------------------------------------------------------
