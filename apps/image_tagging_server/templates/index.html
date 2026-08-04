@@ -24,6 +24,7 @@
       <span class="main-tab-button" data-tab="tab-image-tagging">Image Tagging</span>
       <span class="main-tab-button" data-tab="tab-configuration">Configuration</span>
       <span class="main-tab-button" data-tab="tab-review">Review</span>
+      <span class="main-tab-button" data-tab="tab-operations">Operations</span>
       <span class="main-tab-button main-tab-button--icon" data-tab="tab-settings" title="Settings">⚙</span>
     </div>
 
@@ -76,8 +77,6 @@
         <span class="workspace-tab-button" data-tab="tab-model-management">Model Blueprints</span>
         <span class="workspace-tab-button" data-tab="tab-training-management">Training Runs</span>
         <span class="workspace-tab-button" data-tab="tab-filterchain-management">Filter Chains</span>
-        <span class="workspace-tab-button" data-tab="tab-source-management">Sources</span>
-        <span class="workspace-tab-button" data-tab="tab-task-management">Tasks</span>
       </div>
 
       <div id="tab-tag-management" class="workspace-tab-pane">
@@ -95,6 +94,33 @@
             <div id="tags-list"></div>
           </div>
         </div>
+      </div>
+
+      <div id="tab-dataset-management" class="workspace-tab-pane">
+        <div id="dataset-management-box"></div>
+      </div>
+
+      <div id="tab-model-management" class="workspace-tab-pane">
+        <div id="model-config-box"></div>
+      </div>
+
+      <div id="tab-training-management" class="workspace-tab-pane">
+        <div id="training-config-box"></div>
+      </div>
+
+      <div id="tab-filterchain-management" class="workspace-tab-pane">
+        <div id="filter-chain-management-box"></div>
+      </div>
+    </div>
+
+    <div id="tab-review" class="main-tab-pane">
+      <div id="review-root"></div>
+    </div>
+
+    <div id="tab-operations" class="main-tab-pane" data-testid="tab-operations">
+      <div class="workspace-tab-header">
+        <span class="workspace-tab-button" data-tab="tab-source-management">Sources</span>
+        <span class="workspace-tab-button" data-tab="tab-task-management">Tasks</span>
       </div>
 
       <div id="tab-source-management" class="workspace-tab-pane">
@@ -120,26 +146,6 @@
           </div>
         </div>
       </div>
-
-      <div id="tab-dataset-management" class="workspace-tab-pane">
-        <div id="dataset-management-box"></div>
-      </div>
-
-      <div id="tab-model-management" class="workspace-tab-pane">
-        <div id="model-config-box"></div>
-      </div>
-
-      <div id="tab-training-management" class="workspace-tab-pane">
-        <div id="training-config-box"></div>
-      </div>
-
-      <div id="tab-filterchain-management" class="workspace-tab-pane">
-        <div id="filter-chain-management-box"></div>
-      </div>
-    </div>
-
-    <div id="tab-review" class="main-tab-pane">
-      <div id="review-root"></div>
     </div>
 
     <div id="tab-settings" class="main-tab-pane"></div>

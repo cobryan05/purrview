@@ -115,9 +115,9 @@ def _navigate_to_tasks(page: Page, base_url: str):
     """Open the app and activate Configuration > Task Management."""
     page.goto(base_url)
     page.wait_for_load_state("networkidle")
-    page.locator(".main-tab-button[data-tab='tab-configuration']").click()
+    page.locator(".main-tab-button[data-tab='tab-operations']").click()
     page.wait_for_load_state("networkidle")
-    page.locator("#tab-configuration .workspace-tab-button[data-tab='tab-task-management']").click()
+    page.locator("#tab-operations .workspace-tab-button[data-tab='tab-task-management']").click()
     page.wait_for_load_state("networkidle")
 
 

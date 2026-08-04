@@ -1,6 +1,7 @@
 import { init as initImageTagging } from './image-tagging/main.js';
 import { init as initConfiguration } from './configuration/main.js';
 import { init as initReview, applyFilterWhenReady } from './review/main.js';
+import { init as initOperations } from './operations/main.js';
 import { init as initSettings } from './settings/main.js';
 import { setupMainTabs, navigateTabs } from '/app-static/js/app/utils/tabs.js';
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
@@ -53,11 +54,13 @@ export async function init(appState) {
         await initConfiguration?.();
       } else if (tabName === 'tab-review') {
         await initReview?.();
+      } else if (tabName === 'tab-operations') {
+        await initOperations?.();
       } else if (tabName === 'tab-settings') {
         await initSettings?.();
       }
     }
-    // Let features react to main-tab focus changes (e.g. the Configuration
+    // Let features react to main-tab focus changes (e.g. the Operations
     // tab closes its task SSE stream when it loses focus).
     events.publish(EventTypes.MAIN_TAB_CHANGED, { tabName });
   });

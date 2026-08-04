@@ -97,9 +97,9 @@ class TestConfigTaskStreamLifecycle:
         page.goto(base_url)
         page.wait_for_load_state("networkidle")
 
-        page.locator(".main-tab-button[data-tab='tab-configuration']").click()
+        page.locator(".main-tab-button[data-tab='tab-operations']").click()
         page.wait_for_timeout(300)
-        page.locator("#tab-configuration [data-tab='tab-task-management']").click()
+        page.locator("#tab-operations [data-tab='tab-task-management']").click()
         page.wait_for_timeout(500)
         opened = page.evaluate("() => window.__taskStreams.length")
         assert opened >= 1, "task SSE stream never opened on Task Management sub-tab"

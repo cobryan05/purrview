@@ -168,8 +168,8 @@ export function renderActiveTasks({ target = 'active-tasks-list', refresh = null
   const container = document.getElementById(target);
   if (!container) return;
 
-  // Skip when the Configuration main tab or Task Management sub-tab is not visible.
-  if (!document.getElementById('tab-configuration')?.classList.contains('active') ||
+  // Skip when the Operations main tab or Task Management sub-tab is not visible.
+  if (!document.getElementById('tab-operations')?.classList.contains('active') ||
       !document.getElementById('tab-task-management')?.classList.contains('active')) {
     return;
   }

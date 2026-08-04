@@ -69,7 +69,7 @@ def test_switch_tabs_and_back(page: Page, base_url: str):
     page.goto(base_url)
     page.wait_for_load_state("networkidle")
 
-    for tab in ["tab-configuration", "tab-review", "tab-image-tagging"]:
+    for tab in ["tab-configuration", "tab-review", "tab-operations", "tab-image-tagging"]:
         page.locator(f".main-tab-button[data-tab='{tab}']").click()
         expect(page.locator(f"#{tab}")).to_have_class(re.compile(r"\bactive\b"))
 
@@ -105,13 +105,54 @@ def test_configuration_subtab_switching(page: Page, base_url: str):
     sub_tabs = [
         "tab-dataset-management",
         "tab-model-management",
-        "tab-source-management",
-        "tab-task-management",
+        "tab-training-management",
+        "tab-filterchain-management",
         "tab-tag-management",
     ]
     for tab in sub_tabs:
         page.locator(f"#tab-configuration .workspace-tab-button[data-tab='{tab}']").click()
         expect(page.locator(f"#{tab}")).to_have_class(re.compile(r"\bactive\b"))
+
+
+# ---------------------------------------------------------------------------
+# Operations tab — Sources and Tasks moved here out of Configuration
+# ---------------------------------------------------------------------------
+
+def test_operations_default_subtab_is_sources(page: Page, base_url: str):
+    """The Sources sub-tab should be active by default inside Operations."""
+    page.goto(base_url)
+    page.wait_for_load_state("networkidle")
+
+    page.locator(".main-tab-button[data-tab='tab-operations']").click()
+
+    sources_btn = page.locator("#tab-operations .workspace-tab-button[data-tab='tab-source-management']")
+    expect(sources_btn).to_have_class(re.compile(r"\bactive\b"))
+    expect(page.locator("#tab-source-management")).to_have_class(re.compile(r"\bactive\b"))
+
+
+def test_operations_subtab_switching(page: Page, base_url: str):
+    """Each operations sub-tab can be activated."""
+    page.goto(base_url)
+    page.wait_for_load_state("networkidle")
+
+    page.locator(".main-tab-button[data-tab='tab-operations']").click()
+
+    for tab in ["tab-task-management", "tab-source-management"]:
+        page.locator(f"#tab-operations .workspace-tab-button[data-tab='{tab}']").click()
+        expect(page.locator(f"#{tab}")).to_have_class(re.compile(r"\bactive\b"))
+
+
+def test_sources_and_tasks_are_not_in_configuration(page: Page, base_url: str):
+    """Sources and Tasks moved to Operations; Configuration keeps 5 setup sub-tabs."""
+    page.goto(base_url)
+    page.wait_for_load_state("networkidle")
+
+    page.locator(".main-tab-button[data-tab='tab-configuration']").click()
+
+    header = page.locator("#tab-configuration .workspace-tab-header")
+    expect(header.locator(".workspace-tab-button")).to_have_count(5)
+    for tab in ["tab-source-management", "tab-task-management"]:
+        expect(header.locator(f".workspace-tab-button[data-tab='{tab}']")).to_have_count(0)
 
 
 def test_labels_api_called_when_entering_configuration(page: Page, base_url: str):
@@ -164,7 +205,7 @@ def test_no_console_errors_switching_tabs(page: Page, base_url: str):
     page.goto(base_url)
     page.wait_for_load_state("networkidle")
 
-    for tab in ["tab-configuration", "tab-review", "tab-image-tagging"]:
+    for tab in ["tab-configuration", "tab-review", "tab-operations", "tab-image-tagging"]:
         page.locator(f".main-tab-button[data-tab='{tab}']").click()
         page.wait_for_load_state("networkidle")
 
