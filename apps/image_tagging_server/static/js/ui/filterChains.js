@@ -1,12 +1,11 @@
 import { fetchLabels } from '/app-static/js/shared/api/labels.js';
-import { installUnsavedNavGuard } from '/app-static/js/ui/utils/unsavedNavGuard.js';
 import { fetchTags } from '/app-static/js/shared/api/tags.js';
 import { fetchModelsList } from '/app-static/js/shared/api/models.js';
 import {
   fetchFilterChains, createFilterChain, updateFilterChain, deleteFilterChain,
 } from '/app-static/js/shared/api/filterChains.js';
 import { toast, makeFieldRow, buildPanelEditorBar } from '/app-static/js/ui/utils/index.js';
-import { showUnsavedConfigChangesModal } from '/app-static/js/ui/utils/confirmModal.js';
+import { createListEditorScreen } from '/app-static/js/ui/utils/listEditorScreen.js';
 import { DropDownField } from '/app-static/js/ui/utils/fields/index.js';
 
 let _rendering = false;
@@ -327,86 +326,36 @@ export async function renderFilterChainManager({ target = 'filter-chain-manageme
     const tagItems = Array.from(tagsMap.values()).map(t => ({ key: t.uuid, text: t.name, color: t.color || '#cccccc' }));
     const pickerData = { modelNames, tagItems, labelItems };
 
-    const split = document.createElement('div');
-    split.style.cssText = 'display: flex; gap: 1em; align-items: flex-start;';
-    container.appendChild(split);
-
-    const listPanel = document.createElement('div');
-    listPanel.className = 'panel-box fc-list-panel';
-    split.appendChild(listPanel);
-
-    const listBar = document.createElement('div');
-    listBar.className = 'panel-box__bar';
-    const listTitle = document.createElement('span');
-    listTitle.className = 'panel-box__title';
-    listTitle.textContent = 'Filter Chains';
-    listBar.appendChild(listTitle);
-    listPanel.appendChild(listBar);
-
-    const listBody = document.createElement('div');
-    listBody.className = 'panel-box__body';
-    listPanel.appendChild(listBody);
-
-    const listFooter = document.createElement('div');
-    listFooter.className = 'panel-box__footer';
-    listPanel.appendChild(listFooter);
-
-    const newBtn = document.createElement('button');
-    newBtn.type = 'button';
-    newBtn.textContent = '+ New';
-    newBtn.className = 'panel-btn';
-    newBtn.style.cssText = 'width: 100%; margin-bottom: 0;';
-    newBtn.addEventListener('click', () => _showForm(null));
-    listFooter.appendChild(newBtn);
-
-    const editorPanel = document.createElement('div');
-    editorPanel.className = 'panel-box fc-editor';
-    split.appendChild(editorPanel);
-
-    const editorBar = document.createElement('div');
-    editorBar.className = 'panel-box__bar';
-    editorPanel.appendChild(editorBar);
-
-    const editorBody = document.createElement('div');
-    editorBody.className = 'panel-box__body';
-    editorPanel.appendChild(editorBody);
-
-    const editorFooter = document.createElement('div');
-    editorFooter.className = 'panel-box__footer';
-    editorPanel.appendChild(editorFooter);
+    const screen = createListEditorScreen({
+      container,
+      prefix: 'fc',
+      title: 'Filter Chains',
+      itemUuidAttr: 'chainUuid',
+      withEditorFooter: true,
+      onNew: () => _showForm(null),
+      ownTabId: 'tab-filterchain-management',
+      navGuardSignal: _navGuardController.signal,
+    });
+    const { listBody, editorBar, editorBody, editorFooter } = screen;
+    const _confirmIfDirty = screen.confirmIfDirty;
+    const _updateListSelection = screen.updateListSelection;
 
     let _selectedUuid = null;
-    let _barHandle = null;
-    let _currentDoSave = null;
     let _switching = false;
-
-    async function _confirmIfDirty() {
-      if (!_barHandle?.getDirty()) return true;
-      const result = await showUnsavedConfigChangesModal();
-      if (result === 'cancel') return false;
-      if (result === 'save') return await (_currentDoSave?.() ?? false);
-      return true;
-    }
-
-    function _updateListSelection(uuid) {
-      for (const item of listBody.querySelectorAll('.fc-list-item')) {
-        item.classList.toggle('active', item.dataset.chainUuid === uuid);
-      }
-    }
 
     async function _showForm(chain, { force = false } = {}) {
       if (_switching && !force) return;
       _switching = true;
       try {
         if (!force && !await _confirmIfDirty()) return;
-        _barHandle = null;
-        _currentDoSave = null;
+        screen.setBarHandle(null);
+        screen.setDoSave(null);
         _selectedUuid = chain?.uuid ?? null;
 
         editorBody.innerHTML = '';
         editorFooter.innerHTML = '';
 
-        _barHandle = buildPanelEditorBar({
+        const barHandle = buildPanelEditorBar({
           container: editorBar,
           item: chain,
           newTitle: 'New Filter Chain',
@@ -419,7 +368,8 @@ export async function renderFilterChainManager({ target = 'filter-chain-manageme
             await _showForm(null, { force: true });
           } : undefined,
         });
-        const { setDirty, setSaving, updateTitle } = _barHandle;
+        screen.setBarHandle(barHandle);
+        const { setDirty, setSaving, updateTitle } = barHandle;
 
         const formHandle = buildChainForm(
           editorBody,
@@ -480,7 +430,7 @@ export async function renderFilterChainManager({ target = 'filter-chain-manageme
           }
         }
 
-        _currentDoSave = () => _doSave(false);
+        screen.setDoSave(() => _doSave(false));
         _updateListSelection(chain?.uuid ?? null);
       } finally {
         _switching = false;
@@ -520,14 +470,6 @@ export async function renderFilterChainManager({ target = 'filter-chain-manageme
 
       _updateListSelection(_selectedUuid);
     }
-
-    installUnsavedNavGuard({
-      ownTabId: 'tab-filterchain-management',
-      signal: _navGuardController.signal,
-      isDirty: () => !!_barHandle?.getDirty(),
-      save: () => _currentDoSave?.(),
-      markClean: () => _barHandle?.setDirty(false),
-    });
 
     await refreshList();
     await _showForm(null, { force: true });

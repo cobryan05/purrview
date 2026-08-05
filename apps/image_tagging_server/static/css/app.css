@@ -2524,6 +2524,20 @@ button.filter-active {
   min-height: unset !important;
 }
 
+/* Full-width variant, for a footer's single primary action (e.g. "+ New"). */
+.panel-btn--block { width: 100%; }
+
+/* The list-beside-editor screen layout (ui/utils/listEditorScreen.js) —
+   shared by Datasets, Model Blueprints, Training Runs and Filter Chains.
+   Column widths stay with each screen's own <prefix>-list-panel/-editor rules. */
+.list-editor-split {
+  display: flex;
+  /* `1em`, not --space-4 (1rem): a like-for-like move of the inline style the
+     four screens carried. Switching to the token is a separate, deliberate call. */
+  gap: 1em;
+  align-items: flex-start;
+}
+
 /* Dirty-state indicator: small colored dot shown when there are unsaved changes */
 .panel-dirty-dot {
   width: 7px;

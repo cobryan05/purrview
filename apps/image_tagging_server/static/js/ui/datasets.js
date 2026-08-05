@@ -1,12 +1,12 @@
 import { fetchLabels } from '/app-static/js/shared/api/labels.js';
-import { installUnsavedNavGuard } from '/app-static/js/ui/utils/unsavedNavGuard.js';
 import { fetchTags } from '/app-static/js/shared/api/tags.js';
 import {
   fetchDatasets, fetchDatasetsAndViews, createDataset, updateDataset, deleteDataset,
 } from '/app-static/js/shared/api/datasets.js';
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
 import { toast, makeFieldRow, buildPanelEditorBar } from '/app-static/js/ui/utils/index.js';
-import { showUnsavedConfigChangesModal, showConfirmModal } from '/app-static/js/ui/utils/confirmModal.js';
+import { showConfirmModal } from '/app-static/js/ui/utils/confirmModal.js';
+import { createListEditorScreen } from '/app-static/js/ui/utils/listEditorScreen.js';
 import { createFilterPanel } from '/app-static/js/app/review/filters.js';
 import { reviewStateToDatasetForm, datasetFormToReviewState } from '/app-static/js/shared/filterUtils.js';
 
@@ -132,78 +132,24 @@ export async function renderDatasetManager({ target = 'dataset-management-box' }
     // Warm all three caches in parallel so first panel open is near-instant
     await Promise.all([fetchLabels(), fetchTags(), fetchDatasetsAndViews()]);
 
-    const split = document.createElement('div');
-    split.style.cssText = 'display: flex; gap: 1em; align-items: flex-start;';
-    container.appendChild(split);
-
-    // ── Left: list panel ──────────────────────────────────────────────────
-    const listPanel = document.createElement('div');
-    listPanel.className = 'panel-box ds-list-panel';
-    split.appendChild(listPanel);
-
-    const listBar = document.createElement('div');
-    listBar.className = 'panel-box__bar';
-    const listTitle = document.createElement('span');
-    listTitle.className = 'panel-box__title';
-    listTitle.textContent = 'Datasets & Views';
-    listBar.appendChild(listTitle);
-    listPanel.appendChild(listBar);
-
-    const listBody = document.createElement('div');
-    listBody.className = 'panel-box__body';
-    listPanel.appendChild(listBody);
-
-    const listFooter = document.createElement('div');
-    listFooter.className = 'panel-box__footer';
-    listPanel.appendChild(listFooter);
-
-    // Footer "+ New" button is static — created once here, not on every refreshList.
-    const newBtn = document.createElement('button');
-    newBtn.type = 'button';
-    newBtn.textContent = '+ New';
-    newBtn.className = 'panel-btn';
-    newBtn.style.cssText = 'width: 100%; margin-bottom: 0;';
-    newBtn.addEventListener('click', () => _showForm(null));
-    listFooter.appendChild(newBtn);
-
-    // ── Right: editor panel ───────────────────────────────────────────────
-    const editorPanel = document.createElement('div');
-    editorPanel.className = 'panel-box ds-editor';
-    split.appendChild(editorPanel);
-
-    const editorBar = document.createElement('div');
-    editorBar.className = 'panel-box__bar';
-    editorPanel.appendChild(editorBar);
-
-    const editorBody = document.createElement('div');
-    editorBody.className = 'panel-box__body';
-    editorPanel.appendChild(editorBody);
-
-    // Sticky footer: always-visible action buttons regardless of scroll position
-    const editorFooter = document.createElement('div');
-    editorFooter.className = 'panel-box__footer';
-    editorPanel.appendChild(editorFooter);
+    const screen = createListEditorScreen({
+      container,
+      prefix: 'ds',
+      title: 'Datasets & Views',
+      itemUuidAttr: 'datasetUuid',
+      withEditorFooter: true,
+      onNew: () => _showForm(null),
+      ownTabId: 'tab-dataset-management',
+      navGuardSignal: _navGuardController.signal,
+    });
+    const { listBody, editorBar, editorBody, editorFooter } = screen;
+    const _confirmIfDirty = screen.confirmIfDirty;
+    const _updateListSelection = screen.updateListSelection;
 
     // ── Shared state ──────────────────────────────────────────────────────
     let _selectedUuid = null;
-    let _barHandle = null; // set by _showForm; tracks dirty state via getDirty()/setDirty()
-    let _currentDoSave = null;
     let _switching = false;
     let _formDestroyFn = null; // cleanup for active-filter subscription in current form
-
-    async function _confirmIfDirty() {
-      if (!_barHandle?.getDirty()) return true;
-      const result = await showUnsavedConfigChangesModal();
-      if (result === 'cancel') return false;
-      if (result === 'save') return await (_currentDoSave?.() ?? false);
-      return true; // 'discard'
-    }
-
-    function _updateListSelection(uuid) {
-      for (const item of listBody.querySelectorAll('.ds-list-item')) {
-        item.classList.toggle('active', item.dataset.datasetUuid === uuid);
-      }
-    }
 
     // Single entry point for both edit (dataset != null) and create (dataset == null).
     async function _showForm(dataset, { force = false } = {}) {
@@ -213,8 +159,8 @@ export async function renderDatasetManager({ target = 'dataset-management-box' }
         if (!force && !await _confirmIfDirty()) return;
         _formDestroyFn?.();
         _formDestroyFn = null;
-        _barHandle = null; // mark clean while async fetches are in flight
-        _currentDoSave = null;
+        screen.setBarHandle(null); // mark clean while async fetches are in flight
+        screen.setDoSave(null);
         _selectedUuid = dataset?.uuid ?? null;
 
         // Re-fetch so pickers always reflect current data
@@ -227,7 +173,7 @@ export async function renderDatasetManager({ target = 'dataset-management-box' }
         const isView = dataset ? !dataset.promoted : false;
         const kindNoun = isView ? 'View' : 'Dataset';
 
-        _barHandle = buildPanelEditorBar({
+        const barHandle = buildPanelEditorBar({
           container: editorBar,
           item: dataset,
           newTitle: 'New Dataset',
@@ -240,7 +186,8 @@ export async function renderDatasetManager({ target = 'dataset-management-box' }
             await _showForm(null, { force: true });
           } : undefined,
         });
-        const { setDirty, setSaving, updateTitle, getDirty } = _barHandle;
+        screen.setBarHandle(barHandle);
+        const { setDirty, setSaving, updateTitle, getDirty } = barHandle;
 
         // Render form fields into editorBody (destroy cleans up active-filter subscription)
         const prefill = dataset ? null : _pendingPrefill;
@@ -353,7 +300,7 @@ export async function renderDatasetManager({ target = 'dataset-management-box' }
         }
 
         // Shared save logic used by both the Save button (navigateAfterCreate=true)
-        // and the nav-guard (_currentDoSave, navigateAfterCreate=false).
+        // and the nav-guard (screen.setDoSave, navigateAfterCreate=false).
         async function _doSave(navigateAfterCreate = false) {
           const name = formHandle.getName();
           if (!name) { toast('Name is required', 3000, 'error'); return false; }
@@ -401,7 +348,7 @@ export async function renderDatasetManager({ target = 'dataset-management-box' }
           }
         }
 
-        _currentDoSave = () => _doSave(false);
+        screen.setDoSave(() => _doSave(false));
         _updateListSelection(dataset?.uuid ?? null);
       } finally {
         _switching = false;
@@ -466,16 +413,6 @@ export async function renderDatasetManager({ target = 'dataset-management-box' }
 
       _updateListSelection(_selectedUuid);
     }
-
-    // ── Navigation guard ─────────────────────────────────────────────────
-    // Intercept workspace-tab and main-tab clicks while there are unsaved changes.
-    installUnsavedNavGuard({
-      ownTabId: 'tab-dataset-management',
-      signal: _navGuardController.signal,
-      isDirty: () => !!_barHandle?.getDirty(),
-      save: () => _currentDoSave?.(),
-      markClean: () => _barHandle?.setDirty(false),
-    });
 
     // Replace any previous subscription so we don't double-refresh on tab re-activation
     _unsubDatasets?.();

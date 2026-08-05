@@ -15,7 +15,6 @@
  */
 
 import { fetchDatasets } from '/app-static/js/shared/api/datasets.js';
-import { installUnsavedNavGuard } from '/app-static/js/ui/utils/unsavedNavGuard.js';
 import { fetchModelConfigs } from '/app-static/js/shared/api/modelConfigs.js';
 import { fetchLabels } from '/app-static/js/shared/api/labels.js';
 import {
@@ -35,7 +34,7 @@ import { createTaskRunnerSection } from '/app-static/js/ui/utils/taskRunnerSecti
 import { createHyperparamsFieldset } from '/app-static/js/ui/utils/hyperparamsFieldset.js';
 import { createDatasetChecklist } from '/app-static/js/ui/utils/datasetChecklist.js';
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
-import { showUnsavedConfigChangesModal } from '/app-static/js/ui/utils/confirmModal.js';
+import { createListEditorScreen } from '/app-static/js/ui/utils/listEditorScreen.js';
 import { renderModelTreePanel } from '/app-static/js/ui/modelTreePanel.js';
 
 let _rendering = false;
@@ -370,72 +369,25 @@ export async function renderTrainingConfigManager({ target = 'training-config-bo
   container.innerHTML = '';
 
   try {
-    const split = document.createElement('div');
-    split.style.cssText = 'display: flex; gap: 1em; align-items: flex-start;';
-    container.appendChild(split);
-
-    // ── Left: list panel ──────────────────────────────────────────────────
-    const listPanel = document.createElement('div');
-    listPanel.className = 'panel-box mc-list-panel';
-    split.appendChild(listPanel);
-
-    const listBar = document.createElement('div');
-    listBar.className = 'panel-box__bar';
-    const listTitle = document.createElement('span');
-    listTitle.className = 'panel-box__title';
-    listTitle.textContent = 'Training Runs';
-    listBar.appendChild(listTitle);
-    listPanel.appendChild(listBar);
-
-    const listBody = document.createElement('div');
-    listBody.className = 'panel-box__body';
-    listPanel.appendChild(listBody);
-
-    const listFooter = document.createElement('div');
-    listFooter.className = 'panel-box__footer';
-    listPanel.appendChild(listFooter);
-
-    const newBtn = document.createElement('button');
-    newBtn.type = 'button';
-    newBtn.textContent = '+ New';
-    newBtn.className = 'panel-btn';
-    newBtn.style.cssText = 'width: 100%; margin-bottom: 0;';
-    newBtn.addEventListener('click', () => _showForm(null));
-    listFooter.appendChild(newBtn);
-
-    // ── Right: editor panel ───────────────────────────────────────────────
-    const editorPanel = document.createElement('div');
-    editorPanel.className = 'panel-box mc-editor';
-    split.appendChild(editorPanel);
-
-    const editorBar = document.createElement('div');
-    editorBar.className = 'panel-box__bar';
-    editorPanel.appendChild(editorBar);
-
-    const editorBody = document.createElement('div');
-    editorBody.className = 'panel-box__body';
-    editorPanel.appendChild(editorBody);
+    // Training Runs deliberately reuses the `mc-*` classes: it shares Model
+    // Blueprints' list/editor CSS rather than duplicating it under an `tc-` prefix.
+    const screen = createListEditorScreen({
+      container,
+      prefix: 'mc',
+      title: 'Training Runs',
+      itemUuidAttr: 'configUuid',
+      onNew: () => _showForm(null),
+      ownTabId: 'tab-training-management',
+      navGuardSignal: _navGuardController.signal,
+    });
+    const { listBody, editorBar, editorBody } = screen;
+    const _confirmIfDirty = screen.confirmIfDirty;
+    const _updateListSelection = screen.updateListSelection;
 
     // ── Shared state ──────────────────────────────────────────────────────
     let _selectedUuid = null;
-    let _barHandle = null;
     let _currentFormHandle = null;
-    let _currentDoSave = null;
     let _switching = false;
-
-    async function _confirmIfDirty() {
-      if (!_barHandle?.getDirty()) return true;
-      const result = await showUnsavedConfigChangesModal();
-      if (result === 'cancel') return false;
-      if (result === 'save') return await (_currentDoSave?.() ?? false);
-      return true;
-    }
-
-    function _updateListSelection(uuid) {
-      for (const item of listBody.querySelectorAll('.mc-list-item')) {
-        item.classList.toggle('active', item.dataset.configUuid === uuid);
-      }
-    }
 
     async function _showForm(config, { force = false } = {}) {
       if (_switching && !force) return;
@@ -444,8 +396,8 @@ export async function renderTrainingConfigManager({ target = 'training-config-bo
         if (!force && !await _confirmIfDirty()) return;
         _currentFormHandle?.destroy();
         _currentFormHandle = null;
-        _currentDoSave = null;
-        _barHandle = null;
+        screen.setDoSave(null);
+        screen.setBarHandle(null);
         _selectedUuid = config?.uuid ?? null;
         _lastSelectedUuid = _selectedUuid;
 
@@ -456,7 +408,7 @@ export async function renderTrainingConfigManager({ target = 'training-config-bo
         ]);
         editorBody.innerHTML = '';
 
-        _barHandle = buildPanelEditorBar({
+        const barHandle = buildPanelEditorBar({
           container: editorBar,
           item: config,
           newTitle: 'New Training Run',
@@ -494,7 +446,8 @@ export async function renderTrainingConfigManager({ target = 'training-config-bo
             await _showForm(null, { force: true });
           } : undefined,
         });
-        const { setDirty, setSaving } = _barHandle;
+        screen.setBarHandle(barHandle);
+        const { setDirty, setSaving } = barHandle;
 
         const formHandle = renderTrainingConfigForm({
           config,
@@ -569,7 +522,7 @@ export async function renderTrainingConfigManager({ target = 'training-config-bo
           editorBody.appendChild(trainSection);
         }
 
-        _currentDoSave = async () => {
+        screen.setDoSave(async () => {
           const data = formHandle.getSaveData();
           if (!data.name) { toast('Name is required', 3000, 'error'); return false; }
           if (!data.modelConfigNodeUuid) { toast('A model blueprint node is required', 3000, 'error'); return false; }
@@ -594,7 +547,7 @@ export async function renderTrainingConfigManager({ target = 'training-config-bo
             setSaving(false);
             return false;
           }
-        };
+        });
 
         _updateListSelection(config?.uuid ?? null);
       } finally {
@@ -639,15 +592,6 @@ export async function renderTrainingConfigManager({ target = 'training-config-bo
       _updateListSelection(_selectedUuid);
       return configsMap;
     }
-
-    // ── Navigation guard ──────────────────────────────────────────────────
-    installUnsavedNavGuard({
-      ownTabId: 'tab-training-management',
-      signal: _navGuardController.signal,
-      isDirty: () => !!_barHandle?.getDirty(),
-      save: () => _currentDoSave?.(),
-      markClean: () => _barHandle?.setDirty(false),
-    });
 
     const configsMap = await refreshList();
     const autoConfig = _lastSelectedUuid ? configsMap.get(_lastSelectedUuid) ?? null : null;

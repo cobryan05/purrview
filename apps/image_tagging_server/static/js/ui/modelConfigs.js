@@ -1,5 +1,4 @@
 import { fetchLabels } from '/app-static/js/shared/api/labels.js';
-import { installUnsavedNavGuard } from '/app-static/js/ui/utils/unsavedNavGuard.js';
 import { createLabelList } from '/app-static/js/ui/labelList.js';
 import {
   createModelConfig,
@@ -10,7 +9,7 @@ import {
 } from '/app-static/js/shared/api/modelConfigs.js';
 import { fetchDatasets } from '/app-static/js/shared/api/datasets.js';
 import { TaskStatus } from '/app-static/js/shared/api/tasks.js';
-import { showUnsavedConfigChangesModal } from '/app-static/js/ui/utils/confirmModal.js';
+import { createListEditorScreen } from '/app-static/js/ui/utils/listEditorScreen.js';
 import { toast, makeFieldRow, buildPanelEditorBar } from '/app-static/js/ui/utils/index.js';
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
 import { MODEL_SPEC, scopeForModelType, parseNodes, computeNodes } from '/app-static/js/ui/modelSpec.js';
@@ -665,73 +664,23 @@ export async function renderModelConfigManager({ target = 'model-config-box' } =
   container.innerHTML = '';
 
   try {
-    const split = document.createElement('div');
-    split.style.cssText = 'display: flex; gap: 1em; align-items: flex-start;';
-    container.appendChild(split);
-
-    // ── Left: list panel ──────────────────────────────────────────────────
-    const listPanel = document.createElement('div');
-    listPanel.className = 'panel-box mc-list-panel';
-    split.appendChild(listPanel);
-
-    const listBar = document.createElement('div');
-    listBar.className = 'panel-box__bar';
-    const listTitle = document.createElement('span');
-    listTitle.className = 'panel-box__title';
-    listTitle.textContent = 'Model Blueprints';
-    listBar.appendChild(listTitle);
-    listPanel.appendChild(listBar);
-
-    const listBody = document.createElement('div');
-    listBody.className = 'panel-box__body';
-    listPanel.appendChild(listBody);
-
-    const listFooter = document.createElement('div');
-    listFooter.className = 'panel-box__footer';
-    listPanel.appendChild(listFooter);
-
-    // Footer "+ New" button is static — created once here, not on every refreshList.
-    const newBtn = document.createElement('button');
-    newBtn.type = 'button';
-    newBtn.textContent = '+ New';
-    newBtn.className = 'panel-btn';
-    newBtn.style.cssText = 'width: 100%; margin-bottom: 0;';
-    newBtn.addEventListener('click', () => _showForm(null));
-    listFooter.appendChild(newBtn);
-
-    // ── Right: editor panel ───────────────────────────────────────────────
-    const editorPanel = document.createElement('div');
-    editorPanel.className = 'panel-box mc-editor';
-    split.appendChild(editorPanel);
-
-    const editorBar = document.createElement('div');
-    editorBar.className = 'panel-box__bar';
-    editorPanel.appendChild(editorBar);
-
-    const editorBody = document.createElement('div');
-    editorBody.className = 'panel-box__body';
-    editorPanel.appendChild(editorBody);
+    const screen = createListEditorScreen({
+      container,
+      prefix: 'mc',
+      title: 'Model Blueprints',
+      itemUuidAttr: 'configUuid',
+      onNew: () => _showForm(null),
+      ownTabId: 'tab-model-management',
+      navGuardSignal: _navGuardController.signal,
+    });
+    const { listBody, editorBar, editorBody } = screen;
+    const _confirmIfDirty = screen.confirmIfDirty;
+    const _updateListSelection = screen.updateListSelection;
 
     // ── Shared state ──────────────────────────────────────────────────────
     let _selectedUuid = null;
-    let _barHandle = null; // set by _showForm; tracks dirty state via getDirty()/setDirty()
     let _currentFormHandle = null;
-    let _currentDoSave = null; // async () => boolean — current form's save-only fn (no re-render)
     let _switching = false; // true while a showEdit/showCreate transition is in progress
-
-    async function _confirmIfDirty() {
-      if (!_barHandle?.getDirty()) return true;
-      const result = await showUnsavedConfigChangesModal();
-      if (result === 'cancel') return false;
-      if (result === 'save') return await (_currentDoSave?.() ?? false);
-      return true; // 'discard'
-    }
-
-    function _updateListSelection(uuid) {
-      for (const item of listBody.querySelectorAll('.mc-list-item')) {
-        item.classList.toggle('active', item.dataset.configUuid === uuid);
-      }
-    }
 
     /**
      * Rebuild the editor header bar. Returns handles to update dynamic parts.
@@ -745,14 +694,14 @@ export async function renderModelConfigManager({ target = 'model-config-box' } =
         if (!force && !await _confirmIfDirty()) return;
         _currentFormHandle?.destroy();
         _currentFormHandle = null;
-        _currentDoSave = null;
-        _barHandle = null; // mark clean while async fetches are in flight
+        screen.setDoSave(null);
+        screen.setBarHandle(null); // mark clean while async fetches are in flight
         _selectedUuid = config?.uuid ?? null;
 
         const labelsMap = await fetchLabels();
         editorBody.innerHTML = '';
 
-        _barHandle = buildPanelEditorBar({
+        const barHandle = buildPanelEditorBar({
           container: editorBar,
           item: config,
           newTitle: 'New Model Blueprint',
@@ -789,7 +738,8 @@ export async function renderModelConfigManager({ target = 'model-config-box' } =
             await _showForm(null, { force: true });
           } : undefined,
         });
-        const { setDirty, setSaving } = _barHandle;
+        screen.setBarHandle(barHandle);
+        const { setDirty, setSaving } = barHandle;
 
         const formHandle = renderConfigForm({
           config, labelsMap,
@@ -799,7 +749,7 @@ export async function renderModelConfigManager({ target = 'model-config-box' } =
         editorBody.appendChild(formHandle.el);
 
         // Save-only function for the dirty-navigation guard (no re-render after save).
-        _currentDoSave = async () => {
+        screen.setDoSave(async () => {
           const { name, description, nodes } = formHandle.getSaveData();
           if (!name) { toast('Name is required', 3000, 'error'); return false; }
           if (!nodes[0]?.modelType) { toast('Root model type is required', 3000, 'error'); return false; }
@@ -824,7 +774,7 @@ export async function renderModelConfigManager({ target = 'model-config-box' } =
             setSaving(false);
             return false;
           }
-        };
+        });
 
         _updateListSelection(config?.uuid ?? null);
       } finally {
@@ -874,19 +824,6 @@ export async function renderModelConfigManager({ target = 'model-config-box' } =
 
       _updateListSelection(_selectedUuid);
     }
-
-    // ── Navigation guard ─────────────────────────────────────────────────
-    // Intercept workspace-tab and main-tab clicks while there are unsaved changes.
-    // Uses capture phase so we can stop propagation before the tab system sees it.
-    // guardSignal is captured now so the async continuation can detect if this guard
-    // has been superseded by a re-render (signal.aborted → stale, don't act).
-    installUnsavedNavGuard({
-      ownTabId: 'tab-model-management',
-      signal: _navGuardController.signal,
-      isDirty: () => !!_barHandle?.getDirty(),
-      save: () => _currentDoSave?.(),
-      markClean: () => _barHandle?.setDirty(false),
-    });
 
     await refreshList();
     await _showForm(null, { force: true });
