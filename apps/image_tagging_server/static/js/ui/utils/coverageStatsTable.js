@@ -194,7 +194,7 @@ export function renderCoverageStats(content, { config, labelStats, totalImages, 
   if (labelStats.length === 0) {
     const none = document.createElement('div');
     none.style.cssText = 'color: var(--pico-muted-color, #888); font-style: italic;';
-    none.textContent = 'No relevant labels found for this model blueprint / dataset combination.';
+    none.textContent = 'No relevant labels found for this model shape / dataset combination.';
     content.appendChild(none);
     return;
   }
@@ -453,11 +453,11 @@ export function renderCoverageStats(content, { config, labelStats, totalImages, 
       { header: 'Unverified', key: 'unverifiedBboxCount', title: 'Unverified boxes — bounding boxes still marked Unverified — click to review images', warnIf: s => s.unverifiedBboxCount > 0,
         browseFn: (stat) => openBboxNeedsReviewModal(config, stat.labelUuid, `${_labelName(stat.labelUuid)} — unverified boxes (${config.name})`, stat.hasRollup ? _rollupChildUuids(stat.labelUuid) : []) },
       { header: 'All clear', key: 'coLabelsCoveredCount',
-        title: 'Imgs all clear — images with a verified box for this label where every other label in the model blueprint is accounted for (verified present or marked absent) — click to browse',
+        title: 'Imgs all clear — images with a verified box for this label where every other label in the model shape is accounted for (verified present or marked absent) — click to browse',
         goodIf: s => s.coLabelGapsCount === 0 && s.coLabelsCoveredCount > 0,
         browseStatus: 'co_labels_covered' },
       { header: 'Gaps', key: 'coLabelGapsCount', breakdownKey: 'coLabelGapBreakdown',
-        title: 'Co-label gaps — images with a verified box for this label but where one or more other model-blueprint labels are not yet verified or marked absent — click the number to review all, or ▾ to see which labels are driving the gaps',
+        title: 'Co-label gaps — images with a verified box for this label but where one or more other model-shape labels are not yet verified or marked absent — click the number to review all, or ▾ to see which labels are driving the gaps',
         warnIf: s => s.coLabelGapsCount > 0,
         browseStatus: 'co_label_gaps' },
     ]));

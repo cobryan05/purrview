@@ -114,11 +114,11 @@ function renderTrainingConfigForm({ config, datasetsMap, modelConfigsMap, labels
     configSel.appendChild(o);
   }
   configSel.addEventListener('change', () => { refreshNodeSel(); refreshTreePreview(); _markDirty(); _refreshHyperparamsArchitecture(); });
-  el.appendChild(makeFieldRow('Model Blueprint', configSel));
+  el.appendChild(makeFieldRow('Model Shape', configSel));
   if (modelConfigsMap.size === 0) {
     el.appendChild(makeNavHint(
-      'No model blueprints exist yet — a training run needs one.',
-      'Create one in the Model Blueprints tab →', 'tab-model-management'));
+      'No model shapes exist yet — a training run needs one.',
+      'Create one in the Model Shapes tab →', 'tab-model-management'));
   }
 
   // Step 2: pick the node within that config
@@ -370,7 +370,7 @@ export async function renderTrainingConfigManager({ target = 'training-config-bo
 
   try {
     // Training Runs deliberately reuses the `mc-*` classes: it shares Model
-    // Blueprints' list/editor CSS rather than duplicating it under an `tc-` prefix.
+    // Model Shapes' list/editor CSS rather than duplicating it under an `tc-` prefix.
     const screen = createListEditorScreen({
       container,
       prefix: 'mc',
@@ -416,7 +416,7 @@ export async function renderTrainingConfigManager({ target = 'training-config-bo
           onSave: async () => {
             const data = _currentFormHandle.getSaveData();
             if (!data.name) { toast('Name is required', 3000, 'error'); return; }
-            if (!data.modelConfigNodeUuid) { toast('A model blueprint node is required', 3000, 'error'); return; }
+            if (!data.modelConfigNodeUuid) { toast('A model shape node is required', 3000, 'error'); return; }
             if (!data.datasetUuids?.length) { toast('At least one dataset is required', 3000, 'error'); return; }
             setSaving(true);
             try {
@@ -525,7 +525,7 @@ export async function renderTrainingConfigManager({ target = 'training-config-bo
         screen.setDoSave(async () => {
           const data = formHandle.getSaveData();
           if (!data.name) { toast('Name is required', 3000, 'error'); return false; }
-          if (!data.modelConfigNodeUuid) { toast('A model blueprint node is required', 3000, 'error'); return false; }
+          if (!data.modelConfigNodeUuid) { toast('A model shape node is required', 3000, 'error'); return false; }
           if (!data.datasetUuids?.length) { toast('At least one dataset is required', 3000, 'error'); return false; }
           setSaving(true);
           try {

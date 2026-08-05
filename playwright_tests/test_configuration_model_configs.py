@@ -128,7 +128,7 @@ class TestModelConfigPaneStructure:
         expect(page.locator("#model-config-box .mc-list-panel button", has_text="+ New")).to_be_visible()
 
         # Right panel defaults to the "create" form; title is in the panel bar span
-        expect(_editor_bar(page)).to_contain_text("New Model Blueprint")
+        expect(_editor_bar(page)).to_contain_text("New Model Shape")
 
         for lbl in (LABEL_CAT, LABEL_KITTEN, LABEL_DOG):
             row = _label_row(page, lbl["uuid"])
@@ -573,7 +573,7 @@ class TestModelTreePanel:
         page.wait_for_timeout(500)
 
         expect(page.locator("#model-config-box .mtp-bundles")).to_contain_text(
-            "No bundles trained from this blueprint yet"
+            "No bundles trained from this model shape yet"
         )
 
 

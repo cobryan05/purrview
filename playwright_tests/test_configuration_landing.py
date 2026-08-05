@@ -135,7 +135,7 @@ class TestConfigLandingCounts:
         assert _count_text(page, "tab-tag-management", "Labels") == "3"
         assert _count_text(page, "tab-tag-management", "Tags") == "2"
         assert _count_text(page, "tab-tag-management", "Inference Class Map") == "4"
-        assert _count_text(page, "tab-model-management", "Model Blueprints") == "7"
+        assert _count_text(page, "tab-model-management", "Model Shapes") == "7"
         assert _count_text(page, "tab-training-management", "Training Runs") == "9"
         assert _count_text(page, "tab-filterchain-management", "Filter Chains") == "1"
 
@@ -150,13 +150,13 @@ class TestConfigLandingCounts:
         _navigate_to_landing(page, base_url, break_labels=True)
         assert _count_text(page, "tab-tag-management", "Labels") == "—"
         # every other count still renders
-        assert _count_text(page, "tab-model-management", "Model Blueprints") == "7"
+        assert _count_text(page, "tab-model-management", "Model Shapes") == "7"
 
 
 class TestConfigLandingNavigation:
     def test_entry_navigates_to_its_subtab(self, page: Page, base_url: str):
         _navigate_to_landing(page, base_url)
-        _entry(page, "tab-model-management", "Model Blueprints").click()
+        _entry(page, "tab-model-management", "Model Shapes").click()
         expect(page.locator("#tab-model-management")).to_have_class(re.compile(r"\bactive\b"))
 
     def test_views_entry_navigates_to_the_dataset_pane(self, page: Page, base_url: str):

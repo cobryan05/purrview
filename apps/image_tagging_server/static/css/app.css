@@ -2528,7 +2528,7 @@ button.filter-active {
 .panel-btn--block { width: 100%; }
 
 /* The list-beside-editor screen layout (ui/utils/listEditorScreen.js) —
-   shared by Datasets, Model Blueprints, Training Runs and Filter Chains.
+   shared by Datasets, Model Shapes, Training Runs and Filter Chains.
    Column widths stay with each screen's own <prefix>-list-panel/-editor rules. */
 .list-editor-split {
   display: flex;

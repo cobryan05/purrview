@@ -179,7 +179,7 @@ function renderBundlesSection({ config, labelsMap, onComposeClick }) {
       const bundles = await fetchModelBundlesForConfig(config.uuid);
       bundlesBox.innerHTML = '';
       if (bundles.length === 0) {
-        bundlesBox.textContent = 'No bundles trained from this blueprint yet.';
+        bundlesBox.textContent = 'No bundles trained from this model shape yet.';
         return;
       }
       for (const b of bundles) {
@@ -268,7 +268,7 @@ function renderComposeBundlePanel({ config, labelsMap, onCreated }) {
     body.innerHTML = '';
 
     if (targets.length === 0) {
-      body.textContent = 'No training targets for this blueprint yet (add a root model first).';
+      body.textContent = 'No training targets for this model shape yet (add a root model first).';
       return;
     }
 
@@ -667,7 +667,7 @@ export async function renderModelConfigManager({ target = 'model-config-box' } =
     const screen = createListEditorScreen({
       container,
       prefix: 'mc',
-      title: 'Model Blueprints',
+      title: 'Model Shapes',
       itemUuidAttr: 'configUuid',
       onNew: () => _showForm(null),
       ownTabId: 'tab-model-management',
@@ -704,8 +704,8 @@ export async function renderModelConfigManager({ target = 'model-config-box' } =
         const barHandle = buildPanelEditorBar({
           container: editorBar,
           item: config,
-          newTitle: 'New Model Blueprint',
-          deleteTitle: 'Delete model blueprint',
+          newTitle: 'New Model Shape',
+          deleteTitle: 'Delete model shape',
           onSave: async () => {
             const { name, description, nodes } = _currentFormHandle.getSaveData();
             if (!name) { toast('Name is required', 3000, 'error'); return; }
@@ -790,7 +790,7 @@ export async function renderModelConfigManager({ target = 'model-config-box' } =
       if (configsMap.size === 0) {
         const empty = document.createElement('p');
         empty.style.cssText = 'color: var(--pico-muted-color, #888); font-style: italic; font-size: 0.85em; padding: 0.5em 0.75em; margin: 0;';
-        empty.textContent = 'No model blueprints yet — use the form on the right to create your first one.';
+        empty.textContent = 'No model shapes yet — use the form on the right to create your first one.';
         listBody.appendChild(empty);
       }
 
@@ -830,7 +830,7 @@ export async function renderModelConfigManager({ target = 'model-config-box' } =
   } catch (err) {
     const errMsg = document.createElement('p');
     errMsg.style.color = 'red';
-    errMsg.textContent = `Error loading model blueprints: ${err.message}`;
+    errMsg.textContent = `Error loading model shapes: ${err.message}`;
     container.appendChild(errMsg);
   } finally {
     _rendering = false;

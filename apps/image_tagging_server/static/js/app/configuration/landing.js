@@ -46,7 +46,7 @@ async function fetchCounts() {
     }
   };
 
-  const [labels, tags, models, rows, blueprints, trainingRuns, filterChains] = await Promise.all([
+  const [labels, tags, models, rows, modelShapes, trainingRuns, filterChains] = await Promise.all([
     settle(fetchLabels),
     settle(fetchTags),
     settle(fetchModelsList),
@@ -64,7 +64,7 @@ async function fetchCounts() {
     models,
     datasets: rows ? rows.filter(r => r.promoted).length : null,
     views: rows ? rows.filter(r => !r.promoted).length : null,
-    blueprints,
+    modelShapes,
     trainingRuns,
     filterChains,
   };
@@ -110,7 +110,7 @@ function buildGroups(counts) {
       title: 'Models',
       entries: [
         {
-          name: 'Model Blueprints', count: counts.blueprints, tab: 'tab-model-management',
+          name: 'Model Shapes', count: counts.modelShapes, tab: 'tab-model-management',
           hint: 'Which model handles which label, hierarchically',
         },
         {

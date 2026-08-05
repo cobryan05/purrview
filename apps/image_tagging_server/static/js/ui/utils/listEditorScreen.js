@@ -2,7 +2,7 @@ import { showUnsavedConfigChangesModal } from '/app-static/js/ui/utils/confirmMo
 import { installUnsavedNavGuard } from '/app-static/js/ui/utils/unsavedNavGuard.js';
 
 /**
- * Assemble the list-beside-editor screen shared by Datasets, Model Blueprints,
+ * Assemble the list-beside-editor screen shared by Datasets, Model Shapes,
  * Training Runs and Filter Chains.
  *
  * All four hand-built the identical structure — a `panel-box <prefix>-list-panel`
@@ -19,7 +19,7 @@ import { installUnsavedNavGuard } from '/app-static/js/ui/utils/unsavedNavGuard.
  * @param {Object} opts
  * @param {HTMLElement} opts.container - emptied by the caller; the split is appended to it.
  * @param {string} opts.prefix - class prefix, e.g. `'ds'` → `.ds-list-panel` / `.ds-editor`.
- *   Training Runs deliberately passes `'mc'`: it shares Model Blueprints' CSS.
+ *   Training Runs deliberately passes `'mc'`: it shares Model Shapes' CSS.
  * @param {string} opts.title - list panel title.
  * @param {string} opts.itemUuidAttr - the `dataset.*` key list rows carry their uuid in,
  *   e.g. `'datasetUuid'` — read by `updateListSelection`.
