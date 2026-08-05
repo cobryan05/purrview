@@ -65,6 +65,48 @@
         }
       }
     },
+    "/api/training/trainers/{trainer_type}/hyperparams": {
+      "get": {
+        "tags": [
+          "training"
+        ],
+        "summary": "Get Trainer Hyperparam Defaults",
+        "operationId": "get_trainer_hyperparam_defaults",
+        "parameters": [
+          {
+            "name": "trainer_type",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Trainer Type"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HyperparamDefaultsResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/training/jobs/{job_id}": {
       "get": {
         "tags": [
@@ -216,6 +258,49 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/IngestImagesResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/training/jobs/{job_id}/source-model": {
+      "post": {
+        "tags": [
+          "training"
+        ],
+        "summary": "Ingest Source Model",
+        "description": "Accept the raw bytes of a source .pt checkpoint for a convert_model job.",
+        "operationId": "ingest_source_model",
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Job Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IngestSourceModelResponse"
                 }
               }
             }
@@ -483,6 +568,27 @@
         "type": "object",
         "title": "HTTPValidationError"
       },
+      "HyperparamDefaultsResponse": {
+        "properties": {
+          "trainer_type": {
+            "type": "string",
+            "title": "Trainer Type"
+          },
+          "defaults": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": "object",
+            "title": "Defaults"
+          }
+        },
+        "type": "object",
+        "required": [
+          "trainer_type",
+          "defaults"
+        ],
+        "title": "HyperparamDefaultsResponse"
+      },
       "IngestImagesResponse": {
         "properties": {
           "received": {
@@ -500,6 +606,19 @@
           "cached_total"
         ],
         "title": "IngestImagesResponse"
+      },
+      "IngestSourceModelResponse": {
+        "properties": {
+          "received": {
+            "type": "integer",
+            "title": "Received"
+          }
+        },
+        "type": "object",
+        "required": [
+          "received"
+        ],
+        "title": "IngestSourceModelResponse"
       },
       "JobInfo": {
         "properties": {
@@ -678,19 +797,37 @@
             "title": "Hyperparams"
           },
           "max_epochs": {
-            "type": "integer",
-            "title": "Max Epochs",
-            "default": 50
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Epochs"
           },
           "batch_size": {
-            "type": "integer",
-            "title": "Batch Size",
-            "default": 32
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Batch Size"
           },
           "early_stopping_patience": {
-            "type": "integer",
-            "title": "Early Stopping Patience",
-            "default": 10
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Early Stopping Patience"
           },
           "manifest": {
             "items": {

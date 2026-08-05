@@ -278,6 +278,90 @@
         }
       }
     },
+    "/api/models/detect": {
+      "post": {
+        "tags": [
+          "models"
+        ],
+        "summary": "Detect Model Format Api",
+        "description": "Detect a model file's format from its filename + leading bytes (torch-free).",
+        "operationId": "detect_model_format",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ImportModelDetectPayload"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ImportModelDetectResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/models/import/stage": {
+      "post": {
+        "tags": [
+          "models"
+        ],
+        "summary": "Stage Source Model Api",
+        "description": "Stage raw uploaded model bytes to a shared dir for later conversion (e.g. pytorch->onnx).",
+        "operationId": "stage_source_model",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StageSourceModelPayload"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StageSourceModelResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/models/{model_name}/training-images": {
       "get": {
         "tags": [
@@ -563,6 +647,48 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/StatusResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/models/{model_name}": {
+      "delete": {
+        "tags": [
+          "models"
+        ],
+        "summary": "Delete Model Api",
+        "operationId": "delete_model",
+        "parameters": [
+          {
+            "name": "model_name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Model Name"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeleteModelResponse"
                 }
               }
             }
@@ -892,6 +1018,39 @@
         "type": "object",
         "title": "CuratedModelsResponse"
       },
+      "DeleteModelResponse": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "title": "Status",
+            "default": "success"
+          },
+          "message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Message"
+          },
+          "modelName": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Modelname"
+          }
+        },
+        "type": "object",
+        "title": "DeleteModelResponse"
+      },
       "DetectionResultModel": {
         "properties": {
           "bbox": {
@@ -921,6 +1080,67 @@
         },
         "type": "object",
         "title": "HTTPValidationError"
+      },
+      "ImportModelDetectPayload": {
+        "properties": {
+          "filename": {
+            "type": "string",
+            "title": "Filename"
+          },
+          "headerBase64": {
+            "type": "string",
+            "title": "Headerbase64"
+          }
+        },
+        "type": "object",
+        "required": [
+          "filename",
+          "headerBase64"
+        ],
+        "title": "ImportModelDetectPayload"
+      },
+      "ImportModelDetectResponse": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "title": "Status",
+            "default": "success"
+          },
+          "message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Message"
+          },
+          "format": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Format"
+          },
+          "isOnnx": {
+            "type": "boolean",
+            "title": "Isonnx",
+            "default": false
+          },
+          "conversionSupported": {
+            "type": "boolean",
+            "title": "Conversionsupported",
+            "default": false
+          }
+        },
+        "type": "object",
+        "title": "ImportModelDetectResponse"
       },
       "ImportModelUploadPayload": {
         "properties": {
@@ -1436,6 +1656,52 @@
         },
         "type": "object",
         "title": "SetModelDeviceResponse"
+      },
+      "StageSourceModelPayload": {
+        "properties": {
+          "sourceBase64": {
+            "type": "string",
+            "title": "Sourcebase64"
+          }
+        },
+        "type": "object",
+        "required": [
+          "sourceBase64"
+        ],
+        "title": "StageSourceModelPayload"
+      },
+      "StageSourceModelResponse": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "title": "Status",
+            "default": "success"
+          },
+          "message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Message"
+          },
+          "stagingId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stagingid"
+          }
+        },
+        "type": "object",
+        "title": "StageSourceModelResponse"
       },
       "StatusResponse": {
         "properties": {
