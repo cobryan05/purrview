@@ -2498,8 +2498,8 @@ class Manager:
     # Dataset management
     # ─────────────────────────────────────────────────────────────────────────
 
-    async def list_datasets(self) -> List[DatasetRead]:
-        return await self._db_client.list_datasets()
+    async def list_datasets(self, include_views: bool = False) -> List[DatasetRead]:
+        return await self._db_client.list_datasets(include_views=include_views)
 
     async def get_dataset(self, uuid: str) -> Optional[DatasetRead]:
         return await self._db_client.get_dataset(uuid)

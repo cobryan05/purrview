@@ -3340,7 +3340,20 @@
           "datasets"
         ],
         "summary": "List Datasets",
+        "description": "List Datasets. Saved Views are excluded unless include_views=true.\n\nDefaulting to promoted rows keeps every existing caller correct: the\ntraining-config picker, the model-config picker and the dataset\nchecklist all mean \"a trainable Dataset\", and would silently start\noffering Views if this defaulted the other way.",
         "operationId": "list_datasets",
+        "parameters": [
+          {
+            "name": "include_views",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false,
+              "title": "Include Views"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Successful Response",
@@ -3348,6 +3361,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ListDatasetsResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
                 }
               }
             }
@@ -3361,14 +3384,14 @@
         "summary": "Create Dataset",
         "operationId": "create_dataset",
         "requestBody": {
+          "required": true,
           "content": {
             "application/json": {
               "schema": {
                 "$ref": "#/components/schemas/DatasetCreate"
               }
             }
-          },
-          "required": true
+          }
         },
         "responses": {
           "200": {
@@ -6452,6 +6475,11 @@
             },
             "type": "array",
             "title": "Labeluuids"
+          },
+          "promoted": {
+            "type": "boolean",
+            "title": "Promoted",
+            "default": true
           }
         },
         "type": "object",
@@ -6689,6 +6717,11 @@
             "type": "array",
             "title": "Labeluuids"
           },
+          "promoted": {
+            "type": "boolean",
+            "title": "Promoted",
+            "default": false
+          },
           "createdAt": {
             "anyOf": [
               {
@@ -6800,6 +6833,17 @@
               }
             ],
             "title": "Labeluuids"
+          },
+          "promoted": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Promoted"
           }
         },
         "type": "object",

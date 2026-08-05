@@ -918,3 +918,99 @@ async def test_get_dataset_image_uuids_spans_multiple_pages(http_client, files_r
     assert body["status"] == "success", body.get("message")
     returned_uuids = body["imageUuids"]
     assert len(returned_uuids) == 5
+
+
+class TestViewsAndPromotion:
+    """Views and Datasets share the datasets table, separated by `promoted`.
+
+    Decision register #10: "Dataset = promoted View, one record + flag."
+    """
+
+    async def _list(self, http_client, **params) -> list:
+        r = await http_client.get("/api/datasets", params=params)
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["status"] == "success", body
+        return body["datasets"]
+
+    async def test_create_defaults_to_promoted(self, http_client):
+        """POST /api/datasets creates a Dataset, not a View — existing callers
+        of this endpoint all mean to create something training can consume."""
+        ds = await _create_dataset(http_client, "defaults-promoted")
+        assert ds["promoted"] is True
+
+    async def test_views_are_excluded_from_the_default_listing(self, http_client):
+        await _create_dataset(http_client, "a-real-dataset")
+        r = await http_client.post(
+            "/api/datasets",
+            json={"name": "a-saved-view", "filter_json": {}, "label_uuids": [], "promoted": False},
+        )
+        assert r.status_code == 200, r.text
+
+        names = {d["name"] for d in await self._list(http_client)}
+        assert "a-real-dataset" in names
+        assert "a-saved-view" not in names, (
+            "A View leaked into the default dataset listing — the training-config "
+            "and model-config pickers would offer it as trainable"
+        )
+
+    async def test_include_views_opts_the_view_back_in(self, http_client):
+        await _create_dataset(http_client, "ds-for-optin")
+        r = await http_client.post(
+            "/api/datasets",
+            json={"name": "view-for-optin", "filter_json": {}, "label_uuids": [], "promoted": False},
+        )
+        assert r.status_code == 200, r.text
+
+        names = {d["name"] for d in await self._list(http_client, include_views="true")}
+        assert {"ds-for-optin", "view-for-optin"} <= names
+
+    async def test_promotion_round_trips(self, http_client):
+        """Promotion is a flag flip on one record, and reverses."""
+        r = await http_client.post(
+            "/api/datasets",
+            json={"name": "promote-me", "filter_json": {}, "label_uuids": [], "promoted": False},
+        )
+        uuid = r.json()["dataset"]["uuid"]
+        assert "promote-me" not in {d["name"] for d in await self._list(http_client)}
+
+        r = await http_client.patch(f"/api/datasets/{uuid}", json={"promoted": True})
+        assert r.status_code == 200, r.text
+        assert r.json()["dataset"]["promoted"] is True
+        assert "promote-me" in {d["name"] for d in await self._list(http_client)}
+
+        # ...and demote again
+        r = await http_client.patch(f"/api/datasets/{uuid}", json={"promoted": False})
+        assert r.status_code == 200, r.text
+        assert r.json()["dataset"]["promoted"] is False
+        assert "promote-me" not in {d["name"] for d in await self._list(http_client)}
+
+    async def test_patching_other_fields_leaves_promoted_alone(self, http_client):
+        """`promoted` is omitted from most PATCHes; exclude_unset must not reset it."""
+        ds = await _create_dataset(http_client, "keep-promoted")
+        r = await http_client.patch(f"/api/datasets/{ds['uuid']}", json={"description": "unrelated edit"})
+        assert r.status_code == 200, r.text
+        assert r.json()["dataset"]["promoted"] is True
+
+    async def test_seeded_whole_database_dataset_is_promoted(self, http_client):
+        """The seeded system dataset must be a Dataset, not a View.
+
+        Regression guard: the table defaults to promoted=False, so the seed has
+        to opt in explicitly. If it doesn't, "Whole Database" disappears from
+        every training/model picker on any fresh database.
+        """
+        names = {d["name"] for d in await self._list(http_client)}
+        assert "Whole Database" in names
+
+    async def test_sidecar_roundtrip_keeps_datasets_promoted(self, http_client, db_client):
+        """Restoring from datasets.json must not demote datasets to Views.
+
+        The dump excludes Views, so everything in the sidecar is by definition a
+        Dataset; a restore that dropped the flag would make them all invisible.
+        """
+        await _create_dataset(http_client, "sidecar-promoted")
+        await db_client.sync_datasets_from_json()
+
+        restored = {d.name: d for d in await db_client.list_datasets()}
+        assert "sidecar-promoted" in restored
+        assert restored["sidecar-promoted"].promoted is True

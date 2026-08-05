@@ -665,6 +665,9 @@ class DbClient:
                         name="Whole Database",
                         description="All images in the database (no filters applied).",
                         filter_json=DatasetFilterCriteria().model_dump(mode="json"),
+                        # Explicit: the table defaults to a View, and a system
+                        # dataset that trainers cannot see is useless.
+                        promoted=True,
                     )
                 )
                 await session.commit()
@@ -2789,19 +2792,34 @@ class DbClient:
             description=d.description,
             filter_json=d.filter_json or {},
             label_uuids=[link.label_uuid for link in (d.label_links or [])],
+            promoted=d.promoted,
             created_at=d.created_at,
             updated_at=d.updated_at,
         )
 
-    async def list_datasets(self) -> List[DatasetRead]:
+    async def list_datasets(self, include_views: bool = False) -> List[DatasetRead]:
+        """List Datasets, excluding Views unless asked.
+
+        Views and Datasets share this table (decision register #10). Callers
+        overwhelmingly mean "a real, trainable Dataset" — the training-config
+        picker, the model-config picker and the dataset checklist all do — so
+        unpromoted rows are excluded by default. Only the Views UI passes
+        include_views=True.
+        """
         async with self._async_session_maker() as session:
             stmt = select(Dataset).options(selectinload(Dataset.label_links))
+            if not include_views:
+                stmt = stmt.where(Dataset.promoted.is_(True))
             result = await session.exec(stmt)
             return [self._dataset_to_read(d) for d in result.all()]
 
     async def _sync_datasets_to_json(self) -> None:
-        """Dump the current datasets table to datasets.json."""
-        datasets = await self.list_datasets()
+        """Dump the current datasets to datasets.json.
+
+        Promoted rows only — this file is a *dataset* export, so saved Views
+        deliberately do not appear in it.
+        """
+        datasets = await self.list_datasets(include_views=False)
         rows = [
             {
                 "uuid": d.uuid,
@@ -2809,6 +2827,7 @@ class DbClient:
                 "description": d.description,
                 "filter_json": d.filter_json.model_dump(mode="json"),
                 "label_uuids": d.label_uuids,
+                "promoted": d.promoted,
             }
             for d in datasets
         ]
@@ -2885,6 +2904,12 @@ class DbClient:
                         name=name,
                         description=item.get("description"),
                         filter_json=item.get("filter_json") or {},
+                        # datasets.json is a *dataset* export (Views are excluded
+                        # from the dump), so anything in it is promoted. Sidecar
+                        # files written before this column existed carry no key —
+                        # default True, or a restore would silently demote every
+                        # dataset to an invisible View.
+                        promoted=bool(item.get("promoted", True)),
                     )
                     session.add(ds)
                     await session.flush()
@@ -2912,6 +2937,7 @@ class DbClient:
                 name=data.name,
                 description=data.description,
                 filter_json=data.filter_json.model_dump(mode="json"),
+                promoted=data.promoted,
             )
             session.add(dataset)
             await session.flush()

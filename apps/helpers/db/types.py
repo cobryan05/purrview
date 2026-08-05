@@ -748,6 +748,16 @@ class DatasetBase(SQLModel):
     name: str = Field(unique=True, index=True)
     description: Optional[str] = None
     filter_json: Dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    # Views and Datasets share this table (decision register #10: "Dataset =
+    # promoted View, one record + flag"). A View is a saved search; promoting it
+    # makes a Dataset that training runs consume.
+    #
+    # ⚠️ Rows default to promoted=False, i.e. a View. list_datasets() therefore
+    # filters to promoted rows *by default* — five callers of fetchDatasets()
+    # (the dataset manager, training configs, model configs, dataset checklist)
+    # all mean "a real, trainable Dataset", and would silently start offering
+    # Views if the default leaked. Pass include_views=True to opt in.
+    promoted: bool = Field(default=False, index=True)
 
 
 class Dataset(DatasetBase, TimestampModel, table=True):
@@ -772,6 +782,7 @@ class DatasetRead(OrmModel):
     description: Optional[str] = None
     filter_json: DatasetFilterCriteria = Field(default_factory=DatasetFilterCriteria)
     label_uuids: List[str] = Field(default_factory=list)
+    promoted: bool = False
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 
@@ -781,6 +792,11 @@ class DatasetCreate(ApiModel):
     description: Optional[str] = None
     filter_json: DatasetFilterCriteria = Field(default_factory=DatasetFilterCriteria)
     label_uuids: List[str] = Field(default_factory=list)
+    # Deliberately True here while the *table* default is False. A bare row is a
+    # View, but this endpoint is /api/datasets and its existing callers (the
+    # Datasets manager, the review tab's "Open in Datasets Tab" export) all mean
+    # to create a real Dataset. The Views UI is the one caller that passes False.
+    promoted: bool = True
 
 
 class DatasetUpdate(ApiModel):
@@ -788,6 +804,7 @@ class DatasetUpdate(ApiModel):
     description: Optional[str] = None
     filter_json: Optional[DatasetFilterCriteria] = None
     label_uuids: Optional[List[str]] = None  # None = no change; [] = remove all
+    promoted: Optional[bool] = None  # None = no change; promotion is a flag flip
 
 
 # ─── Model Configurations ────────────────────────────────────────────────────

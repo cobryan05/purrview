@@ -2591,9 +2591,16 @@ class WebApp:
             tags=[ApiTags.DATASETS],
             operation_id="list_datasets",
         )
-        async def list_datasets() -> ListDatasetsResponse:
+        async def list_datasets(include_views: bool = False) -> ListDatasetsResponse:
+            """List Datasets. Saved Views are excluded unless include_views=true.
+
+            Defaulting to promoted rows keeps every existing caller correct: the
+            training-config picker, the model-config picker and the dataset
+            checklist all mean "a trainable Dataset", and would silently start
+            offering Views if this defaulted the other way.
+            """
             try:
-                datasets = await self._manager.list_datasets()
+                datasets = await self._manager.list_datasets(include_views=include_views)
                 return ListDatasetsResponse(status=JsonValues.SUCCESS, datasets=datasets)
             except Exception as e:
                 logger.error(e, exc_info=True)
