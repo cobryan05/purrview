@@ -564,6 +564,117 @@ class TestIgnoreKeyReturn:
 
 
 # ---------------------------------------------------------------------------
+# shared/prefs.js — parse-safe storage wrappers
+# ---------------------------------------------------------------------------
+
+
+class TestPrefs:
+    """The point of the helper is that a value a *previous* version of the app
+    wrote in a different shape can never throw at a call site. Every module used
+    to hand-roll this; these tests pin the one implementation."""
+
+    # The shared_page is module-scoped, so each test cleans up its scratch key
+    # rather than relying on a fresh store.
+
+    def test_read_returns_fallback_when_absent(self, shared_page: Page):
+        result = shared_page.evaluate("""async () => {
+            const { prefs } = await import('/app-static/js/shared/prefs.js');
+            localStorage.removeItem('ww_test_pref');
+            return prefs.read('ww_test_pref', { fallback: true });
+        }""")
+        assert result == {"fallback": True}
+
+    def test_read_returns_fallback_on_corrupt_json(self, shared_page: Page):
+        """The hazard the helper exists for: a key written in an older shape."""
+        result = shared_page.evaluate("""async () => {
+            const { prefs } = await import('/app-static/js/shared/prefs.js');
+            localStorage.setItem('ww_test_pref', 'not{valid]json');
+            const out = prefs.read('ww_test_pref', ['safe']);
+            localStorage.removeItem('ww_test_pref');
+            return out;
+        }""")
+        assert result == ["safe"]
+
+    def test_read_returns_fallback_for_stored_null(self, shared_page: Page):
+        result = shared_page.evaluate("""async () => {
+            const { prefs } = await import('/app-static/js/shared/prefs.js');
+            localStorage.setItem('ww_test_pref', 'null');
+            const out = prefs.read('ww_test_pref', 'fb');
+            localStorage.removeItem('ww_test_pref');
+            return out;
+        }""")
+        assert result == "fb"
+
+    def test_write_read_round_trip(self, shared_page: Page):
+        result = shared_page.evaluate("""async () => {
+            const { prefs } = await import('/app-static/js/shared/prefs.js');
+            prefs.write('ww_test_pref', { a: [1, 2], b: false });
+            const out = prefs.read('ww_test_pref', null);
+            prefs.remove('ww_test_pref');
+            return { out, afterRemove: prefs.read('ww_test_pref', 'gone') };
+        }""")
+        assert result["out"] == {"a": [1, 2], "b": False}
+        assert result["afterRemove"] == "gone"
+
+    def test_write_reports_failure_instead_of_throwing(self, shared_page: Page):
+        """A circular structure is unstorable — the caller gets false, not an
+        exception that takes down whatever it was called from."""
+        result = shared_page.evaluate("""async () => {
+            const { prefs } = await import('/app-static/js/shared/prefs.js');
+            const circular = {}; circular.self = circular;
+            const ok = prefs.write('ww_test_pref', circular);
+            prefs.remove('ww_test_pref');
+            return ok;
+        }""")
+        assert result is False
+
+    def test_raw_read_write_bypasses_json(self, shared_page: Page):
+        """Keys whose stored format predates the helper stay byte-compatible:
+        a sidebar width is `240`, not `"240"`."""
+        result = shared_page.evaluate("""async () => {
+            const { prefs } = await import('/app-static/js/shared/prefs.js');
+            prefs.writeRaw('ww_test_pref', 240);
+            const stored = localStorage.getItem('ww_test_pref');
+            const out = prefs.readRaw('ww_test_pref');
+            prefs.remove('ww_test_pref');
+            return { stored, out, missing: prefs.readRaw('ww_test_pref') };
+        }""")
+        assert result["stored"] == "240"
+        assert result["out"] == "240"
+        assert result["missing"] is None
+
+    def test_boolean_write_stays_compatible_with_the_old_string_format(self, shared_page: Page):
+        """activeModel used to write `String(bool)`. JSON booleans serialise
+        identically, so previously-stored values still read back correctly."""
+        result = shared_page.evaluate("""async () => {
+            const { prefs } = await import('/app-static/js/shared/prefs.js');
+            localStorage.setItem('ww_test_pref', String(true));   // legacy write
+            const out = prefs.read('ww_test_pref', false);
+            prefs.write('ww_test_pref', false);
+            const reWritten = localStorage.getItem('ww_test_pref');
+            prefs.remove('ww_test_pref');
+            return { out, reWritten };
+        }""")
+        assert result["out"] is True
+        assert result["reWritten"] == "false"
+
+    def test_local_and_session_are_separate_stores(self, shared_page: Page):
+        result = shared_page.evaluate("""async () => {
+            const { prefs, sessionPrefs } = await import('/app-static/js/shared/prefs.js');
+            prefs.write('ww_test_pref', 'local');
+            sessionPrefs.write('ww_test_pref', 'session');
+            const out = {
+                local: prefs.read('ww_test_pref', null),
+                session: sessionPrefs.read('ww_test_pref', null),
+            };
+            prefs.remove('ww_test_pref');
+            sessionPrefs.remove('ww_test_pref');
+            return out;
+        }""")
+        assert result == {"local": "local", "session": "session"}
+
+
+# ---------------------------------------------------------------------------
 # ui/labelList.js — buildHierarchy (pure function, exported separately)
 # ---------------------------------------------------------------------------
 

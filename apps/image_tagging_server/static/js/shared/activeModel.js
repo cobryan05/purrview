@@ -13,6 +13,7 @@
  */
 
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
+import { sessionPrefs } from '/app-static/js/shared/prefs.js';
 
 const SESSION_DYNAMIC_LABELS_KEY = 'wtch_show_dynamic_labels';
 const SESSION_TAG_VISIBILITY_KEY = 'wtch_tag_kind_visible';
@@ -24,11 +25,9 @@ let _tagKindVisible = { system: false, task_generated: true };
 
 /** Initialise from sessionStorage. Call once at app startup before other modules read state. */
 export function init() {
-  _showDynamicLabels = sessionStorage.getItem(SESSION_DYNAMIC_LABELS_KEY) === 'true';
-  try {
-    const savedVis = JSON.parse(sessionStorage.getItem(SESSION_TAG_VISIBILITY_KEY) || 'null');
-    if (savedVis && typeof savedVis === 'object') _tagKindVisible = { ..._tagKindVisible, ...savedVis };
-  } catch { /* ignore parse errors */ }
+  _showDynamicLabels = sessionPrefs.read(SESSION_DYNAMIC_LABELS_KEY, false) === true;
+  const savedVis = sessionPrefs.read(SESSION_TAG_VISIBILITY_KEY, null);
+  if (savedVis && typeof savedVis === 'object') _tagKindVisible = { ..._tagKindVisible, ...savedVis };
 }
 
 /** @returns {boolean} */
@@ -39,7 +38,9 @@ export function isDynamicLabelsVisible() {
 /** @param {boolean} visible */
 export function setDynamicLabelsVisible(visible) {
   _showDynamicLabels = !!visible;
-  sessionStorage.setItem(SESSION_DYNAMIC_LABELS_KEY, String(_showDynamicLabels));
+  // JSON booleans serialise to the same "true"/"false" the old String() write
+  // produced, so previously-stored values still read back correctly.
+  sessionPrefs.write(SESSION_DYNAMIC_LABELS_KEY, _showDynamicLabels);
   events.publish(EventTypes.DYNAMIC_LABELS_VISIBILITY_CHANGED, _showDynamicLabels);
 }
 
@@ -105,7 +106,7 @@ export function groupTagsByKind(tags, order = ['system', 'task_generated', 'gene
  */
 export function setTagKindVisible(kind, visible) {
   _tagKindVisible = { ..._tagKindVisible, [kind]: !!visible };
-  sessionStorage.setItem(SESSION_TAG_VISIBILITY_KEY, JSON.stringify(_tagKindVisible));
+  sessionPrefs.write(SESSION_TAG_VISIBILITY_KEY, _tagKindVisible);
   events.publish(EventTypes.TAG_KIND_VISIBILITY_CHANGED, { kind, visible: !!visible });
 }
 

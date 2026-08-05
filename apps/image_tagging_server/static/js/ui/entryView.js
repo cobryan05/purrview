@@ -1,3 +1,5 @@
+import { prefs } from '/app-static/js/shared/prefs.js';
+
 /**
  * Presentation-only shared scaffold for grid/list entry views.
  *
@@ -41,7 +43,7 @@ export function createEntryView({
   onToggle,
   onBeforeRender,
 }) {
-  const stored = localStorage.getItem(storageKey);
+  const stored = prefs.readRaw(storageKey);
   let _view = (stored === 'list' || stored === 'grid') ? stored : defaultView;
   let _entries = [];
   let _emptyText = '';
@@ -84,7 +86,7 @@ export function createEntryView({
   function setView(view) {
     if (view !== 'list' && view !== 'grid') return;
     _view = view;
-    localStorage.setItem(storageKey, view);
+    prefs.writeRaw(storageKey, view);
     _updateToggleActive();
     rerender();
     onToggle?.(view);

@@ -7,6 +7,7 @@ import { expandModelGroupMembers } from '/app-static/js/shared/modelGroups/expan
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
 import { Logger } from '/app-static/js/ui/utils/index.js';
 import { createModalShell } from '/app-static/js/ui/utils/modalShell.js';
+import { sessionPrefs } from '/app-static/js/shared/prefs.js';
 import { clearUnmatched, verifyAllBboxes } from './canvas/image.js';
 
 const SESSION_SELECTED_DETECTORS_KEY = 'wtch_inference_selected_detectors';
@@ -143,17 +144,15 @@ export async function createInferencePanel(runtime, container) {
   // ── Persistence ───────────────────────────────────────────────────
 
   function _loadPersistedSelection() {
-    try {
-      const arr = JSON.parse(sessionStorage.getItem(SESSION_SELECTED_DETECTORS_KEY) || '[]');
-      if (Array.isArray(arr)) _selectedItems = new Set(arr);
-    } catch { /* ignore parse errors */ }
-    _selectedClassifier = sessionStorage.getItem(SESSION_SELECTED_CLASSIFIER_KEY) || null;
+    const arr = sessionPrefs.read(SESSION_SELECTED_DETECTORS_KEY, []);
+    if (Array.isArray(arr)) _selectedItems = new Set(arr);
+    _selectedClassifier = sessionPrefs.readRaw(SESSION_SELECTED_CLASSIFIER_KEY) || null;
   }
 
   function _persistSelection() {
-    sessionStorage.setItem(SESSION_SELECTED_DETECTORS_KEY, JSON.stringify([..._selectedItems]));
-    if (_selectedClassifier) sessionStorage.setItem(SESSION_SELECTED_CLASSIFIER_KEY, _selectedClassifier);
-    else sessionStorage.removeItem(SESSION_SELECTED_CLASSIFIER_KEY);
+    sessionPrefs.write(SESSION_SELECTED_DETECTORS_KEY, [..._selectedItems]);
+    if (_selectedClassifier) sessionPrefs.writeRaw(SESSION_SELECTED_CLASSIFIER_KEY, _selectedClassifier);
+    else sessionPrefs.remove(SESSION_SELECTED_CLASSIFIER_KEY);
   }
 
   // ── Helpers ───────────────────────────────────────────────────────

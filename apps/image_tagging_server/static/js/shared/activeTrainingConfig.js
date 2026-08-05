@@ -21,6 +21,7 @@
  */
 
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
+import { sessionPrefs } from '/app-static/js/shared/prefs.js';
 import {
   fetchTrainingConfigs,
   fetchTrainingConfigLabelStats,
@@ -128,33 +129,32 @@ function _publish({ statsUpdated = false } = {}) {
 
 /** Initialise from sessionStorage. Call once at app startup before rendering. */
 export async function init() {
-  const savedVis = sessionStorage.getItem(SESSION_VIS_KEY);
-  const savedTarget = sessionStorage.getItem(SESSION_TARGET_KEY);
+  // Presets are stored as bare strings ('all', 'training-run', …), not JSON.
+  const savedVis = sessionPrefs.readRaw(SESSION_VIS_KEY);
+  const savedTarget = sessionPrefs.readRaw(SESSION_TARGET_KEY);
   if (VISIBILITY_PRESETS.includes(savedVis) && TARGET_PRESETS.includes(savedTarget)) {
     _visibilityPreset = savedVis;
     _targetPreset = savedTarget;
     if (_targetPreset === 'custom') {
-      try {
-        const arr = JSON.parse(sessionStorage.getItem(SESSION_CUSTOM_KEY) || '[]');
-        if (Array.isArray(arr)) _customTargeted = new Set(arr);
-      } catch { _customTargeted = new Set(); }
+      const arr = sessionPrefs.read(SESSION_CUSTOM_KEY, []);
+      _customTargeted = Array.isArray(arr) ? new Set(arr) : new Set();
     }
   } else {
     // Migrate from the legacy 3-mode toggle (all | focus | filtered, plus the
     // even-older true/false boolean). Decompose it into the two new axes.
-    const legacy = sessionStorage.getItem(SESSION_FILTER_KEY);
+    const legacy = sessionPrefs.readRaw(SESSION_FILTER_KEY);
     const mode = legacy === 'true' ? 'filtered' : legacy === 'false' ? 'all' : legacy;
     if (mode === 'filtered') { _visibilityPreset = 'training-run'; _targetPreset = 'training-run'; }
     else if (mode === 'focus') { _visibilityPreset = 'all'; _targetPreset = 'training-run'; }
     else { _visibilityPreset = 'all'; _targetPreset = 'all'; }
   }
-  const savedUuid = sessionStorage.getItem(SESSION_UUID_KEY);
+  const savedUuid = sessionPrefs.readRaw(SESSION_UUID_KEY);
   if (savedUuid) {
     try {
       const configsMap = await fetchTrainingConfigs();
       _config = configsMap.get(savedUuid) ?? null;
       if (!_config) {
-        sessionStorage.removeItem(SESSION_UUID_KEY);
+        sessionPrefs.remove(SESSION_UUID_KEY);
       } else {
         _labelUuids = await _computeLabelUuids(_config);
         // Kick off stats fetch in the background after init
@@ -182,13 +182,13 @@ export async function setActive(tcOrNull) {
   _readiness = null;
   _readinessFailed = false;
   if (_config) {
-    sessionStorage.setItem(SESSION_UUID_KEY, _config.uuid);
+    sessionPrefs.writeRaw(SESSION_UUID_KEY, _config.uuid);
     _labelUuids = await _computeLabelUuids(_config);
     _publish();
     _doFetchStats(); // fire-and-forget; will publish again when done
   } else {
     _labelUuids = new Set();
-    sessionStorage.removeItem(SESSION_UUID_KEY);
+    sessionPrefs.remove(SESSION_UUID_KEY);
     _publish();
   }
 }
@@ -200,7 +200,7 @@ export function getVisibilityPreset() { return _visibilityPreset; }
 export function setVisibilityPreset(preset) {
   if (!VISIBILITY_PRESETS.includes(preset)) return;
   _visibilityPreset = preset;
-  sessionStorage.setItem(SESSION_VIS_KEY, preset);
+  sessionPrefs.writeRaw(SESSION_VIS_KEY, preset);
   _publish();
 }
 
@@ -211,11 +211,11 @@ export function getTargetPreset() { return _targetPreset; }
 export function setTargetPreset(preset) {
   if (!TARGET_PRESETS.includes(preset)) return;
   _targetPreset = preset;
-  sessionStorage.setItem(SESSION_TARGET_KEY, preset);
+  sessionPrefs.writeRaw(SESSION_TARGET_KEY, preset);
   // Picking any named preset discards a prior hand-picked selection.
   if (preset !== 'custom') {
     _customTargeted = new Set();
-    sessionStorage.removeItem(SESSION_CUSTOM_KEY);
+    sessionPrefs.remove(SESSION_CUSTOM_KEY);
   }
   _publish();
 }
@@ -233,8 +233,8 @@ export function getCustomTargeted() { return new Set(_customTargeted); }
 export function applyCustomTargeting(uuids) {
   _customTargeted = new Set(uuids);
   _targetPreset = 'custom';
-  sessionStorage.setItem(SESSION_TARGET_KEY, 'custom');
-  sessionStorage.setItem(SESSION_CUSTOM_KEY, JSON.stringify([..._customTargeted]));
+  sessionPrefs.writeRaw(SESSION_TARGET_KEY, 'custom');
+  sessionPrefs.write(SESSION_CUSTOM_KEY, [..._customTargeted]);
 }
 
 /** Returns cached label stats, or null if not yet fetched. */

@@ -9,6 +9,7 @@
 //   'tag:<uuid>'     selects that tag's apply tool ('tag:<uuid>')
 
 import { getSetting, setSetting } from '/app-static/js/shared/api/settings.js';
+import { prefs } from '/app-static/js/shared/prefs.js';
 
 const STORAGE_KEY = 'ww_hotkey_bindings';   // localStorage fallback key
 const DB_SETTING_KEY = 'hotkey_bindings';   // user_settings DB key
@@ -49,18 +50,13 @@ let _initPromise = null;
 // ─── Sync localStorage helpers ────────────────────────────────────────────────
 
 function _loadFromLocalStorage() {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    return raw ? JSON.parse(raw) : { ...DEFAULT_BINDINGS };
-  } catch {
-    return { ...DEFAULT_BINDINGS };
-  }
+  return prefs.read(STORAGE_KEY, { ...DEFAULT_BINDINGS });
 }
 
 function _saveToLocalStorage() {
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(_bindings));
-  } catch { /* storage unavailable — keep in-memory copy */ }
+  // A rejected write (quota/storage disabled) is fine — the in-memory copy and
+  // the DB mirror both still hold the bindings.
+  prefs.write(STORAGE_KEY, _bindings);
 }
 
 // ─── Async DB persistence ─────────────────────────────────────────────────────

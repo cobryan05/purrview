@@ -1,3 +1,5 @@
+import { prefs } from '/app-static/js/shared/prefs.js';
+
 /**
  * Attaches a drag-resize handler to handleEl that controls the width of sidebarEl.
  * The sidebar is assumed to be on the RIGHT side of the layout (dragging left = wider).
@@ -20,7 +22,7 @@ export function initSplitResize(handleEl, sidebarEl, {
   max = 600,
 } = {}) {
   // Restore persisted width, falling back to defaultWidth.
-  const stored = storageKey ? localStorage.getItem(storageKey) : null;
+  const stored = storageKey ? prefs.readRaw(storageKey) : null;
   const initWidth = stored ? parseInt(stored, 10) : defaultWidth;
   sidebarEl.style.width = `${Math.min(max, Math.max(min, initWidth))}px`;
 
@@ -53,7 +55,7 @@ export function initSplitResize(handleEl, sidebarEl, {
     document.body.style.cursor = '';
     document.body.style.userSelect = '';
     if (storageKey) {
-      localStorage.setItem(storageKey, String(Math.round(parseFloat(sidebarEl.style.width))));
+      prefs.writeRaw(storageKey, Math.round(parseFloat(sidebarEl.style.width)));
     }
   }
 

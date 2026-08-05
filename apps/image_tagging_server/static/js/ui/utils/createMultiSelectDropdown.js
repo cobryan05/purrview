@@ -1,3 +1,5 @@
+import { prefs } from '/app-static/js/shared/prefs.js';
+
 /**
  * createMultiSelectDropdown — a compact trigger button that opens a dropdown
  * panel with optional "Any of / All of" mode toggle, an optional hierarchy
@@ -92,11 +94,9 @@ export function createMultiSelectDropdown({
   if (defaultWidth)  panelEl.style.width  = defaultWidth;
   if (defaultHeight) panelEl.style.height = defaultHeight;
   if (_sizeKey) {
-    try {
-      const saved = JSON.parse(localStorage.getItem(_sizeKey) || 'null');
-      if (saved?.width)  panelEl.style.width  = saved.width;
-      if (saved?.height) panelEl.style.height = saved.height;
-    } catch { /* ignore quota / parse errors */ }
+    const saved = prefs.read(_sizeKey, null);
+    if (saved?.width)  panelEl.style.width  = saved.width;
+    if (saved?.height) panelEl.style.height = saved.height;
   }
 
   // ── Mode toggle (Any of / All of) ──────────────────────────────────────────
@@ -321,12 +321,10 @@ export function createMultiSelectDropdown({
           _saveTimer = setTimeout(() => {
             const { width, height } = entry.contentRect;
             if (width > 0 && height > 0) {
-              try {
-                localStorage.setItem(_sizeKey, JSON.stringify({
-                  width: Math.round(width) + 'px',
-                  height: Math.round(height) + 'px',
-                }));
-              } catch { /* quota */ }
+              prefs.write(_sizeKey, {
+                width: Math.round(width) + 'px',
+                height: Math.round(height) + 'px',
+              });
             }
           }, 150);
         }
