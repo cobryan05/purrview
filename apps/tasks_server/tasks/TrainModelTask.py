@@ -313,9 +313,10 @@ class TrainModelTask(Task, TrainingJobRunnerMixin):
     ) -> tuple[str, list[dict], dict]:
         """Resolve an object_detection training config to a detection training job.
 
-        Uses the same bundle-target detection-dataset endpoint (and the same
-        ``bundle_label_uuids`` ordering) as TrainBundleTask, so the class index
-        assigned to each label here is guaranteed to match the order the sidecar's
+        Uses the bundle-target detection-dataset endpoint (and its
+        ``bundle_label_uuids`` ordering — the endpoint keeps the "bundle" name
+        after TrainBundleTask's removal), so the class index assigned to each
+        label here is guaranteed to match the order the sidecar's
         ``label_uuids`` are written in — the two must agree, or the label-matchup
         UI pairs the wrong name with the wrong label UUID.
         """

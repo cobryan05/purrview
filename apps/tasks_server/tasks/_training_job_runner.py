@@ -1,8 +1,9 @@
 """Shared submit/push/SSE/save routine for a single remote training job.
 
-Both TrainModelTask (one job per Task run) and TrainBundleTask (N jobs per Task
-run, one per bundle target) drive their remote training-server job through
-``TrainingJobRunnerMixin``. The host Task class must set up, before calling
+TrainModelTask (one job per Task run) drives its remote training-server job
+through ``TrainingJobRunnerMixin``. The mixin also served the since-removed
+TrainBundleTask, which ran N jobs per Task run — hence the shape.
+The host Task class must set up, before calling
 ``_run_one_job()``:
   - self._api_client, self._training_base_url — training_client wiring
   - self._cancel_flag (asyncio.Event), self._resume_data (dict)

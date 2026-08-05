@@ -1,11 +1,10 @@
 """Shared dataset assembly for classifier training jobs.
 
-Both TrainModelTask (driven by a TrainingConfig's node lookup) and
-TrainBundleTask (driven by an already-resolved bundle target) assemble the
-same (model_name, manifest, job_config) triples for binary and multi-label
-classifier jobs. Keeping the assembly here means dataset-scoping and manifest
-semantics can't drift between the "train one config" and "train all → bundle"
-paths.
+TrainModelTask (driven by a TrainingConfig's node lookup) assembles the
+(model_name, manifest, job_config) triples for binary and multi-label classifier
+jobs here. This was shared with the since-removed TrainBundleTask; it stays its
+own module because the dataset-scoping and manifest semantics are worth keeping
+in one place, independent of whichever task drives them.
 
 Callers run these in a thread (synchronous generated db_client APIs).
 """

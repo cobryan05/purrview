@@ -3732,9 +3732,9 @@ class DbClient:
         collapsing that per-TrainingConfig detection datasets don't apply.
 
         When ``label_uuids`` is given (a caller-held snapshot of that same authority,
-        e.g. TrainBundleTask's targets resolved at _init), derivation is skipped and
-        the snapshot scope is used directly — every target of a bundle run then trains
-        against one consistent snapshot even if the config is edited mid-run.
+        e.g. a caller's targets resolved at _init), derivation is skipped and the
+        snapshot scope is used directly — so a multi-target run trains against one
+        consistent snapshot even if the config is edited mid-run.
 
         Returns None if the config doesn't exist or no target matches node_uuid.
         """

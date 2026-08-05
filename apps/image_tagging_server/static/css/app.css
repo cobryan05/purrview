@@ -3132,41 +3132,6 @@ main.container {
 
 .mtp-box--preview { margin: 0.4em 0 0.2em; }
 
-.mtp-bundles { font-size: 0.85em; color: var(--pico-muted-color, #999); }
-
-.mtp-bundle-row {
-  padding: 4px;
-  border-bottom: 1px solid var(--pico-muted-border-color, #333);
-}
-
-.mtp-bundle-row:last-child { border-bottom: none; }
-
-.mtp-bundle-row__name { color: var(--pico-color, #ddd); }
-
-.mtp-bundle-artifacts {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.3em;
-  margin-top: 0.3em;
-}
-
-.mtp-bundle-artifact { font-size: 0.85em; padding: 0 0.4em; }
-
-/* ===== Compose-bundle-from-artifacts panel ===== */
-
-.mc-compose-box {
-  margin-top: 0.5em;
-  padding: 0.6em 0.75em;
-  border: 1px solid var(--pico-border-color, #444);
-  border-radius: 4px;
-}
-
-.mc-compose-warn {
-  font-size: 0.8em;
-  color: var(--pico-del-color, #d4a72c);
-  padding: 0 0.5em 0.4em;
-}
-
 /* ===== Active Training Config Bar additions ===== */
 
 .active-model-bar__filter-badge {
