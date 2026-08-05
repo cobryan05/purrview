@@ -11,6 +11,7 @@ Configuration > Labels & Tags > tags-list:
 Run with:
     pytest tests/playwright/test_configuration_tags.py -p no:xdist -v
 """
+
 import json
 
 import pytest
@@ -124,10 +125,7 @@ class TestTagListLoading:
 
     def test_multiple_tags_all_rendered(self, page: Page, base_url: str):
         """All tags returned from the API are rendered."""
-        tags = [
-            {**FAKE_TAG, "uuid": f"aaaaaaaa-0000-0000-0000-00000000000{i}", "name": f"Tag{i}"}
-            for i in range(1, 4)
-        ]
+        tags = [{**FAKE_TAG, "uuid": f"aaaaaaaa-0000-0000-0000-00000000000{i}", "name": f"Tag{i}"} for i in range(1, 4)]
         _mock_tags(page, tags)
         _navigate_to_tags(page, base_url)
         for tag in tags:
@@ -188,11 +186,17 @@ class TestTagCreate:
     def test_create_tag_empty_name_blocked(self, page: Page, base_url: str):
         """Clicking 'Add tag' with an empty name does not call /api/tags/add."""
         calls: list[bool] = []
-        page.route("**/api/tags/add", lambda route: (calls.append(True), route.fulfill(
-            status=200,
-            content_type="application/json",
-            body=json.dumps({"status": "success", "tag": FAKE_TAG}),
-        )))
+        page.route(
+            "**/api/tags/add",
+            lambda route: (
+                calls.append(True),
+                route.fulfill(
+                    status=200,
+                    content_type="application/json",
+                    body=json.dumps({"status": "success", "tag": FAKE_TAG}),
+                ),
+            ),
+        )
         _mock_tags(page, [])
 
         _navigate_to_tags(page, base_url)
@@ -302,11 +306,17 @@ class TestTagDelete:
     def test_delete_dismissed_does_not_call_api(self, page: Page, base_url: str):
         """Dismissing the confirm dialog does NOT send a delete request."""
         calls: list[bool] = []
-        page.route("**/api/tags/delete", lambda route: (calls.append(True), route.fulfill(
-            status=200,
-            content_type="application/json",
-            body=json.dumps({"status": "success"}),
-        )))
+        page.route(
+            "**/api/tags/delete",
+            lambda route: (
+                calls.append(True),
+                route.fulfill(
+                    status=200,
+                    content_type="application/json",
+                    body=json.dumps({"status": "success"}),
+                ),
+            ),
+        )
         _mock_tags(page, [FAKE_TAG])
 
         _navigate_to_tags(page, base_url)

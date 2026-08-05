@@ -8,7 +8,9 @@ matching and leaves only pure-IoU dedup — a silent correctness bug this test
 locks against.
 """
 
-from apps.tasks_server.tasks.DeduplicateOverlappingBBoxesTask import _find_redundant_bboxes
+from apps.tasks_server.tasks.DeduplicateOverlappingBBoxesTask import (
+    _find_redundant_bboxes,
+)
 
 
 def _box(uuid, label, x=0, y=0, w=10, h=10):

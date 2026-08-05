@@ -10,6 +10,7 @@ Konva runtimes don't accumulate across tests.
 Run with:
     pytest tests/playwright/test_runtime.py -p no:xdist --override-ini="addopts=" -v
 """
+
 import pytest
 from playwright.sync_api import Page
 
@@ -48,40 +49,52 @@ _RUNTIME_SETUP = """
 # pushState / undo / redo
 # ---------------------------------------------------------------------------
 
+
 class TestPushStateAndUndo:
     def test_no_undo_after_fresh_setImage(self, shared_page: Page):
         """setImage calls clearHistory+pushState; that baseline is not undoable."""
         page = shared_page
-        result = page.evaluate("""async () => {
+        result = page.evaluate(
+            """async () => {
             const { createImageTaggingRuntime } = await import('/app-static/js/app/image-tagging/runtime.js');
 
-            """ + _RUNTIME_SETUP + """
+            """
+            + _RUNTIME_SETUP
+            + """
 
             return { canUndo: runtime.canUndo, canRedo: runtime.canRedo };
-        }""")
-        assert result['canUndo'] is False
-        assert result['canRedo'] is False
+        }"""
+        )
+        assert result["canUndo"] is False
+        assert result["canRedo"] is False
 
     def test_push_state_enables_undo(self, shared_page: Page):
         page = shared_page
-        result = page.evaluate("""async () => {
+        result = page.evaluate(
+            """async () => {
             const { createImageTaggingRuntime } = await import('/app-static/js/app/image-tagging/runtime.js');
 
-            """ + _RUNTIME_SETUP + """
+            """
+            + _RUNTIME_SETUP
+            + """
 
             runtime.state.image.bboxes.set('b1', makeBbox('b1'));
             runtime.pushState();
 
             return runtime.canUndo;
-        }""")
+        }"""
+        )
         assert result is True
 
     def test_undo_restores_previous_bbox_map(self, shared_page: Page):
         page = shared_page
-        result = page.evaluate("""async () => {
+        result = page.evaluate(
+            """async () => {
             const { createImageTaggingRuntime } = await import('/app-static/js/app/image-tagging/runtime.js');
 
-            """ + _RUNTIME_SETUP + """
+            """
+            + _RUNTIME_SETUP
+            + """
 
             // Add a bbox and take a snapshot
             runtime.state.image.bboxes.set('b1', makeBbox('b1'));
@@ -93,15 +106,19 @@ class TestPushStateAndUndo:
             const afterUndo = runtime.state.image.bboxes.size;  // 0
 
             return { afterAdd, afterUndo };
-        }""")
-        assert result == {'afterAdd': 1, 'afterUndo': 0}
+        }"""
+        )
+        assert result == {"afterAdd": 1, "afterUndo": 0}
 
     def test_redo_reapplies_undone_state(self, shared_page: Page):
         page = shared_page
-        result = page.evaluate("""async () => {
+        result = page.evaluate(
+            """async () => {
             const { createImageTaggingRuntime } = await import('/app-static/js/app/image-tagging/runtime.js');
 
-            """ + _RUNTIME_SETUP + """
+            """
+            + _RUNTIME_SETUP
+            + """
 
             runtime.state.image.bboxes.set('b1', makeBbox('b1'));
             runtime.pushState();
@@ -111,15 +128,19 @@ class TestPushStateAndUndo:
             const afterRedo = runtime.state.image.bboxes.size;   // 1
 
             return { beforeRedo, afterRedo };
-        }""")
-        assert result == {'beforeRedo': 0, 'afterRedo': 1}
+        }"""
+        )
+        assert result == {"beforeRedo": 0, "afterRedo": 1}
 
     def test_push_after_undo_clears_redo_stack(self, shared_page: Page):
         page = shared_page
-        result = page.evaluate("""async () => {
+        result = page.evaluate(
+            """async () => {
             const { createImageTaggingRuntime } = await import('/app-static/js/app/image-tagging/runtime.js');
 
-            """ + _RUNTIME_SETUP + """
+            """
+            + _RUNTIME_SETUP
+            + """
 
             runtime.state.image.bboxes.set('b1', makeBbox('b1'));
             runtime.pushState();
@@ -132,17 +153,21 @@ class TestPushStateAndUndo:
             runtime.pushState();
 
             return { canRedoBefore, canRedoAfter: runtime.canRedo };
-        }""")
-        assert result['canRedoBefore'] is True
-        assert result['canRedoAfter'] is False
+        }"""
+        )
+        assert result["canRedoBefore"] is True
+        assert result["canRedoAfter"] is False
 
     def test_undo_stack_capped_at_101_entries(self, shared_page: Page):
         """After 110 pushes only 100 undos are available (stack capped at 101)."""
         page = shared_page
-        result = page.evaluate("""async () => {
+        result = page.evaluate(
+            """async () => {
             const { createImageTaggingRuntime } = await import('/app-static/js/app/image-tagging/runtime.js');
 
-            """ + _RUNTIME_SETUP + """
+            """
+            + _RUNTIME_SETUP
+            + """
 
             for (let i = 0; i < 110; i++) {
                 runtime.state.image.bboxes.set(`b${i}`, makeBbox(`b${i}`));
@@ -155,16 +180,20 @@ class TestPushStateAndUndo:
                 undoCount++;
             }
             return undoCount;
-        }""")
+        }"""
+        )
         assert result == 100  # 101-entry stack → 100 undos from the top
 
     def test_multiple_undo_steps(self, shared_page: Page):
         """Two pushes → two undos → canUndo becomes false."""
         page = shared_page
-        result = page.evaluate("""async () => {
+        result = page.evaluate(
+            """async () => {
             const { createImageTaggingRuntime } = await import('/app-static/js/app/image-tagging/runtime.js');
 
-            """ + _RUNTIME_SETUP + """
+            """
+            + _RUNTIME_SETUP
+            + """
 
             runtime.state.image.bboxes.set('b1', makeBbox('b1'));
             runtime.pushState();
@@ -178,90 +207,115 @@ class TestPushStateAndUndo:
             const after2 = runtime.state.image.bboxes.size;  // 0
 
             return { after1, after2, canUndo: runtime.canUndo };
-        }""")
-        assert result == {'after1': 1, 'after2': 0, 'canUndo': False}
+        }"""
+        )
+        assert result == {"after1": 1, "after2": 0, "canUndo": False}
 
     def test_undo_at_baseline_is_noop(self, shared_page: Page):
         """Calling undo when canUndo is false must not throw."""
         page = shared_page
-        result = page.evaluate("""async () => {
+        result = page.evaluate(
+            """async () => {
             const { createImageTaggingRuntime } = await import('/app-static/js/app/image-tagging/runtime.js');
 
-            """ + _RUNTIME_SETUP + """
+            """
+            + _RUNTIME_SETUP
+            + """
 
             let threw = false;
             try { runtime.undo(); } catch (e) { threw = true; }
             return { threw, bboxes: runtime.state.image.bboxes.size };
-        }""")
-        assert result['threw'] is False
-        assert result['bboxes'] == 0
+        }"""
+        )
+        assert result["threw"] is False
+        assert result["bboxes"] == 0
 
 
 # ---------------------------------------------------------------------------
 # Dirty state
 # ---------------------------------------------------------------------------
 
+
 class TestDirtyState:
     def test_starts_clean_after_setImage(self, shared_page: Page):
         page = shared_page
-        result = page.evaluate("""async () => {
+        result = page.evaluate(
+            """async () => {
             const { createImageTaggingRuntime } = await import('/app-static/js/app/image-tagging/runtime.js');
 
-            """ + _RUNTIME_SETUP + """
+            """
+            + _RUNTIME_SETUP
+            + """
 
             return runtime.isDirty;
-        }""")
+        }"""
+        )
         assert result is False
 
     def test_dirty_after_pushState(self, shared_page: Page):
         page = shared_page
-        result = page.evaluate("""async () => {
+        result = page.evaluate(
+            """async () => {
             const { createImageTaggingRuntime } = await import('/app-static/js/app/image-tagging/runtime.js');
 
-            """ + _RUNTIME_SETUP + """
+            """
+            + _RUNTIME_SETUP
+            + """
 
             runtime.state.image.bboxes.set('b1', makeBbox('b1'));
             runtime.pushState();
 
             return runtime.isDirty;
-        }""")
+        }"""
+        )
         assert result is True
 
     def test_markClean_clears_dirty_flag(self, shared_page: Page):
         page = shared_page
-        result = page.evaluate("""async () => {
+        result = page.evaluate(
+            """async () => {
             const { createImageTaggingRuntime } = await import('/app-static/js/app/image-tagging/runtime.js');
 
-            """ + _RUNTIME_SETUP + """
+            """
+            + _RUNTIME_SETUP
+            + """
 
             runtime.state.image.bboxes.set('b1', makeBbox('b1'));
             runtime.pushState();
             runtime.markClean();
 
             return runtime.isDirty;
-        }""")
+        }"""
+        )
         assert result is False
 
     def test_markDirty_sets_dirty_flag(self, shared_page: Page):
         page = shared_page
-        result = page.evaluate("""async () => {
+        result = page.evaluate(
+            """async () => {
             const { createImageTaggingRuntime } = await import('/app-static/js/app/image-tagging/runtime.js');
 
-            """ + _RUNTIME_SETUP + """
+            """
+            + _RUNTIME_SETUP
+            + """
 
             runtime.markDirty();
 
             return runtime.isDirty;
-        }""")
+        }"""
+        )
         assert result is True
 
     def test_dirty_after_undo(self, shared_page: Page):
         """Undo counts as a mutation — isDirty becomes true."""
         page = shared_page
-        result = page.evaluate("""async () => {
+        result = page.evaluate(
+            """async () => {
             const { createImageTaggingRuntime } = await import('/app-static/js/app/image-tagging/runtime.js');
 
-            """ + _RUNTIME_SETUP + """
+            """
+            + _RUNTIME_SETUP
+            + """
 
             runtime.state.image.bboxes.set('b1', makeBbox('b1'));
             runtime.pushState();
@@ -270,5 +324,6 @@ class TestDirtyState:
             runtime.undo();
 
             return runtime.isDirty;      // undo should have set dirty again
-        }""")
+        }"""
+        )
         assert result is True

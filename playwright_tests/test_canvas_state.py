@@ -9,12 +9,14 @@ Konva stages don't accumulate across tests.
 Run with:
     pytest tests/playwright/test_canvas_state.py -p no:xdist --override-ini="addopts=" -v
 """
+
 import pytest
 from playwright.sync_api import Page
 
 # ---------------------------------------------------------------------------
 # createCanvasState
 # ---------------------------------------------------------------------------
+
 
 class TestCreateCanvasState:
     def test_returns_required_fields(self, shared_page: Page):
@@ -38,12 +40,12 @@ class TestCreateCanvasState:
             };
         }""")
         assert result == {
-            'hasStage': True,
-            'hasLayer': True,
-            'hasTransformer': True,
-            'hasViewport': True,
-            'hasInteractionState': True,
-            'containerIsDiv': True,
+            "hasStage": True,
+            "hasLayer": True,
+            "hasTransformer": True,
+            "hasViewport": True,
+            "hasInteractionState": True,
+            "containerIsDiv": True,
         }
 
     def test_stage_sized_to_container(self, shared_page: Page):
@@ -59,8 +61,8 @@ class TestCreateCanvasState:
 
             return { w: state.stage.width(), h: state.stage.height() };
         }""")
-        assert result['w'] == 800
-        assert result['h'] == 600
+        assert result["w"] == 800
+        assert result["h"] == 600
 
     def test_transformer_config(self, shared_page: Page):
         """Transformer must never rotate, must have correct anchor/ratio settings."""
@@ -80,9 +82,9 @@ class TestCreateCanvasState:
                 keepRatio: transformer.keepRatio(),
             };
         }""")
-        assert result['rotateEnabled'] is False
-        assert result['anchorSize'] == 10
-        assert result['keepRatio'] is False
+        assert result["rotateEnabled"] is False
+        assert result["anchorSize"] == 10
+        assert result["keepRatio"] is False
 
     def test_viewport_initialized_to_zeros(self, shared_page: Page):
         page = shared_page
@@ -96,8 +98,11 @@ class TestCreateCanvasState:
             return createCanvasState(div).viewport;
         }""")
         assert result == {
-            'offsetX': 0, 'offsetY': 0, 'scale': 1.0,
-            'imageHeight': 0, 'imageWidth': 0,
+            "offsetX": 0,
+            "offsetY": 0,
+            "scale": 1.0,
+            "imageHeight": 0,
+            "imageWidth": 0,
         }
 
     def test_interaction_state_initialized_to_null_and_false(self, shared_page: Page):
@@ -122,19 +127,20 @@ class TestCreateCanvasState:
                 cycleAnchor: ist.cycleAnchor,
             };
         }""")
-        assert result['pendingDraggedBbox'] is None
-        assert result['selectedBbox'] is None
-        assert result['isPanning'] is False
-        assert result['startPos'] is None
-        assert result['lastClickTime'] == 0
-        assert result['lastWasDoubleClick'] is False
-        assert result['cycleIndex'] == 0
-        assert result['cycleAnchor'] is None
+        assert result["pendingDraggedBbox"] is None
+        assert result["selectedBbox"] is None
+        assert result["isPanning"] is False
+        assert result["startPos"] is None
+        assert result["lastClickTime"] == 0
+        assert result["lastWasDoubleClick"] is False
+        assert result["cycleIndex"] == 0
+        assert result["cycleAnchor"] is None
 
 
 # ---------------------------------------------------------------------------
 # rerenderBboxViews
 # ---------------------------------------------------------------------------
+
 
 class TestRerenderBboxViews:
     def test_creates_one_view_per_bbox(self, shared_page: Page):
@@ -192,7 +198,7 @@ class TestRerenderBboxViews:
 
             return { afterFirst, afterSecond };
         }""")
-        assert result == {'afterFirst': 2, 'afterSecond': 1}
+        assert result == {"afterFirst": 2, "afterSecond": 1}
 
     def test_empty_map_removes_all_views(self, shared_page: Page):
         page = shared_page

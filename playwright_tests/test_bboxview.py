@@ -6,6 +6,7 @@ Phase 2 canvas tests — require Konva as a global (navigate to base_url).
 Run with:
     pytest tests/playwright/test_bboxview.py -p no:xdist --override-ini="addopts=" -v
 """
+
 import pytest
 from playwright.sync_api import Page
 
@@ -27,14 +28,18 @@ _STAGE_SETUP = """
 # Constructor — position, size, name, id, stroke colour
 # ---------------------------------------------------------------------------
 
+
 class TestBboxViewConstructor:
     def test_positions_correctly_with_viewport(self, shared_page: Page):
         """x = uiBBox.x * imageWidth * scale + offsetX  (and similar for y/w/h)."""
         page = shared_page
-        result = page.evaluate("""async () => {
+        result = page.evaluate(
+            """async () => {
             const { BboxView } = await import('/app-static/js/app/image-tagging/canvas/views/bboxView.js');
 
-            """ + _STAGE_SETUP + """
+            """
+            + _STAGE_SETUP
+            + """
 
             const vp = { offsetX: 10, offsetY: 20, scale: 2, imageWidth: 400, imageHeight: 300 };
             // x = 0.25 * 400 * 2 + 10 = 210
@@ -46,34 +51,42 @@ class TestBboxViewConstructor:
             layer.add(view);
 
             return { x: view.x(), y: view.y(), w: view.width(), h: view.height() };
-        }""")
-        assert result['x'] == pytest.approx(210)
-        assert result['y'] == pytest.approx(320)
-        assert result['w'] == pytest.approx(400)
-        assert result['h'] == pytest.approx(300)
+        }"""
+        )
+        assert result["x"] == pytest.approx(210)
+        assert result["y"] == pytest.approx(320)
+        assert result["w"] == pytest.approx(400)
+        assert result["h"] == pytest.approx(300)
 
     def test_name_is_bbox_and_id_is_uuid(self, shared_page: Page):
         page = shared_page
-        result = page.evaluate("""async () => {
+        result = page.evaluate(
+            """async () => {
             const { BboxView } = await import('/app-static/js/app/image-tagging/canvas/views/bboxView.js');
 
-            """ + _STAGE_SETUP + """
+            """
+            + _STAGE_SETUP
+            + """
 
             const vp = { offsetX: 0, offsetY: 0, scale: 1, imageWidth: 400, imageHeight: 300 };
             const uiBBox = { uuid: 'my-id', x: 0, y: 0, width: 0.5, height: 0.5, label: null, tags: [] };
             const view = new BboxView(uiBBox, vp);
 
             return { name: view.name(), id: view.id() };
-        }""")
-        assert result['name'] == 'bbox'
-        assert result['id'] == 'my-id'
+        }"""
+        )
+        assert result["name"] == "bbox"
+        assert result["id"] == "my-id"
 
     def test_label_color_used_for_rect_stroke(self, shared_page: Page):
         page = shared_page
-        result = page.evaluate("""async () => {
+        result = page.evaluate(
+            """async () => {
             const { BboxView } = await import('/app-static/js/app/image-tagging/canvas/views/bboxView.js');
 
-            """ + _STAGE_SETUP + """
+            """
+            + _STAGE_SETUP
+            + """
 
             const vp = { offsetX: 0, offsetY: 0, scale: 1, imageWidth: 400, imageHeight: 300 };
             const uiBBox = {
@@ -85,15 +98,19 @@ class TestBboxViewConstructor:
             layer.add(view);
 
             return view.findOne('.box').stroke();
-        }""")
-        assert result == '#ff0000'
+        }"""
+        )
+        assert result == "#ff0000"
 
     def test_grey_stroke_when_no_label(self, shared_page: Page):
         page = shared_page
-        result = page.evaluate("""async () => {
+        result = page.evaluate(
+            """async () => {
             const { BboxView } = await import('/app-static/js/app/image-tagging/canvas/views/bboxView.js');
 
-            """ + _STAGE_SETUP + """
+            """
+            + _STAGE_SETUP
+            + """
 
             const vp = { offsetX: 0, offsetY: 0, scale: 1, imageWidth: 400, imageHeight: 300 };
             const uiBBox = { uuid: 'u', x: 0, y: 0, width: 0.5, height: 0.5, label: null, tags: [] };
@@ -101,15 +118,19 @@ class TestBboxViewConstructor:
             layer.add(view);
 
             return view.findOne('.box').stroke();
-        }""")
-        assert result == 'grey'
+        }"""
+        )
+        assert result == "grey"
 
     def test_icon_text_built_from_tags(self, shared_page: Page):
         page = shared_page
-        result = page.evaluate("""async () => {
+        result = page.evaluate(
+            """async () => {
             const { BboxView } = await import('/app-static/js/app/image-tagging/canvas/views/bboxView.js');
 
-            """ + _STAGE_SETUP + """
+            """
+            + _STAGE_SETUP
+            + """
 
             const vp = { offsetX: 0, offsetY: 0, scale: 1, imageWidth: 400, imageHeight: 300 };
             const uiBBox = {
@@ -119,15 +140,19 @@ class TestBboxViewConstructor:
             const view = new BboxView(uiBBox, vp);
 
             return view.findOne('.icon').text();
-        }""")
-        assert result == '🐈✓'
+        }"""
+        )
+        assert result == "🐈✓"
 
     def test_duplicate_icons_deduplicated(self, shared_page: Page):
         page = shared_page
-        result = page.evaluate("""async () => {
+        result = page.evaluate(
+            """async () => {
             const { BboxView } = await import('/app-static/js/app/image-tagging/canvas/views/bboxView.js');
 
-            """ + _STAGE_SETUP + """
+            """
+            + _STAGE_SETUP
+            + """
 
             const vp = { offsetX: 0, offsetY: 0, scale: 1, imageWidth: 400, imageHeight: 300 };
             const uiBBox = {
@@ -137,15 +162,19 @@ class TestBboxViewConstructor:
             const view = new BboxView(uiBBox, vp);
 
             return view.findOne('.icon').text();
-        }""")
-        assert result == '✓'
+        }"""
+        )
+        assert result == "✓"
 
     def test_null_icons_excluded_from_icon_text(self, shared_page: Page):
         page = shared_page
-        result = page.evaluate("""async () => {
+        result = page.evaluate(
+            """async () => {
             const { BboxView } = await import('/app-static/js/app/image-tagging/canvas/views/bboxView.js');
 
-            """ + _STAGE_SETUP + """
+            """
+            + _STAGE_SETUP
+            + """
 
             const vp = { offsetX: 0, offsetY: 0, scale: 1, imageWidth: 400, imageHeight: 300 };
             const uiBBox = {
@@ -155,37 +184,46 @@ class TestBboxViewConstructor:
             const view = new BboxView(uiBBox, vp);
 
             return view.findOne('.icon').text();
-        }""")
-        assert result == '✓'
+        }"""
+        )
+        assert result == "✓"
 
     def test_no_tags_gives_empty_icon_text(self, shared_page: Page):
         page = shared_page
-        result = page.evaluate("""async () => {
+        result = page.evaluate(
+            """async () => {
             const { BboxView } = await import('/app-static/js/app/image-tagging/canvas/views/bboxView.js');
 
-            """ + _STAGE_SETUP + """
+            """
+            + _STAGE_SETUP
+            + """
 
             const vp = { offsetX: 0, offsetY: 0, scale: 1, imageWidth: 400, imageHeight: 300 };
             const uiBBox = { uuid: 'u', x: 0, y: 0, width: 0.5, height: 0.5, label: null, tags: [] };
             const view = new BboxView(uiBBox, vp);
 
             return view.findOne('.icon').text();
-        }""")
-        assert result == ''
+        }"""
+        )
+        assert result == ""
 
 
 # ---------------------------------------------------------------------------
 # updateViewport
 # ---------------------------------------------------------------------------
 
+
 class TestBboxViewUpdateViewport:
     def test_repositions_to_new_viewport(self, shared_page: Page):
         """After zooming/panning the viewport, updateViewport moves the view."""
         page = shared_page
-        result = page.evaluate("""async () => {
+        result = page.evaluate(
+            """async () => {
             const { BboxView } = await import('/app-static/js/app/image-tagging/canvas/views/bboxView.js');
 
-            """ + _STAGE_SETUP + """
+            """
+            + _STAGE_SETUP
+            + """
 
             const vp1 = { offsetX: 0, offsetY: 0, scale: 1, imageWidth: 400, imageHeight: 300 };
             const uiBBox = { uuid: 'u', x: 0.25, y: 0.25, width: 0.5, height: 0.5, label: null, tags: [] };
@@ -199,17 +237,21 @@ class TestBboxViewUpdateViewport:
             view.updateViewport(vp2);
 
             return { x: view.x(), y: view.y() };
-        }""")
-        assert result['x'] == pytest.approx(300)
-        assert result['y'] == pytest.approx(200)
+        }"""
+        )
+        assert result["x"] == pytest.approx(300)
+        assert result["y"] == pytest.approx(200)
 
     def test_resizes_to_new_scale(self, shared_page: Page):
         """Dimensions scale with the viewport."""
         page = shared_page
-        result = page.evaluate("""async () => {
+        result = page.evaluate(
+            """async () => {
             const { BboxView } = await import('/app-static/js/app/image-tagging/canvas/views/bboxView.js');
 
-            """ + _STAGE_SETUP + """
+            """
+            + _STAGE_SETUP
+            + """
 
             const vp1 = { offsetX: 0, offsetY: 0, scale: 1, imageWidth: 400, imageHeight: 300 };
             const uiBBox = { uuid: 'u', x: 0, y: 0, width: 0.5, height: 0.5, label: null, tags: [] };
@@ -220,23 +262,28 @@ class TestBboxViewUpdateViewport:
             view.updateViewport(vp2);
 
             return { w: view.width(), h: view.height() };
-        }""")
+        }"""
+        )
         # w = 0.5 * 400 * 2 = 400, h = 0.5 * 300 * 2 = 300
-        assert result['w'] == pytest.approx(400)
-        assert result['h'] == pytest.approx(300)
+        assert result["w"] == pytest.approx(400)
+        assert result["h"] == pytest.approx(300)
 
 
 # ---------------------------------------------------------------------------
 # updateAppearance
 # ---------------------------------------------------------------------------
 
+
 class TestBboxViewUpdateAppearance:
     def test_updates_label_text_and_color(self, shared_page: Page):
         page = shared_page
-        result = page.evaluate("""async () => {
+        result = page.evaluate(
+            """async () => {
             const { BboxView } = await import('/app-static/js/app/image-tagging/canvas/views/bboxView.js');
 
-            """ + _STAGE_SETUP + """
+            """
+            + _STAGE_SETUP
+            + """
 
             const vp = { offsetX: 0, offsetY: 0, scale: 1, imageWidth: 400, imageHeight: 300 };
             const uiBBox = { uuid: 'u', x: 0, y: 0, width: 0.5, height: 0.5, label: null, tags: [] };
@@ -250,23 +297,28 @@ class TestBboxViewUpdateAppearance:
                 labelFill: view.findOne('.label').fill(),
                 rectStroke: view.findOne('.box').stroke(),
             };
-        }""")
-        assert result['labelText'] == 'Dog'
-        assert result['labelFill'] == '#0000ff'
-        assert result['rectStroke'] == '#0000ff'
+        }"""
+        )
+        assert result["labelText"] == "Dog"
+        assert result["labelFill"] == "#0000ff"
+        assert result["rectStroke"] == "#0000ff"
 
 
 # ---------------------------------------------------------------------------
 # refreshIcons
 # ---------------------------------------------------------------------------
 
+
 class TestBboxViewRefreshIcons:
     def test_updates_icon_text_from_new_tags(self, shared_page: Page):
         page = shared_page
-        result = page.evaluate("""async () => {
+        result = page.evaluate(
+            """async () => {
             const { BboxView } = await import('/app-static/js/app/image-tagging/canvas/views/bboxView.js');
 
-            """ + _STAGE_SETUP + """
+            """
+            + _STAGE_SETUP
+            + """
 
             const vp = { offsetX: 0, offsetY: 0, scale: 1, imageWidth: 400, imageHeight: 300 };
             const uiBBox = { uuid: 'u', x: 0, y: 0, width: 0.5, height: 0.5, label: null, tags: [] };
@@ -278,16 +330,20 @@ class TestBboxViewRefreshIcons:
             const after = view.findOne('.icon').text();
 
             return { before, after };
-        }""")
-        assert result['before'] == ''
-        assert result['after'] == '🐾'
+        }"""
+        )
+        assert result["before"] == ""
+        assert result["after"] == "🐾"
 
     def test_refreshIcons_deduplicates(self, shared_page: Page):
         page = shared_page
-        result = page.evaluate("""async () => {
+        result = page.evaluate(
+            """async () => {
             const { BboxView } = await import('/app-static/js/app/image-tagging/canvas/views/bboxView.js');
 
-            """ + _STAGE_SETUP + """
+            """
+            + _STAGE_SETUP
+            + """
 
             const vp = { offsetX: 0, offsetY: 0, scale: 1, imageWidth: 400, imageHeight: 300 };
             const uiBBox = { uuid: 'u', x: 0, y: 0, width: 0.5, height: 0.5, label: null, tags: [] };
@@ -301,22 +357,27 @@ class TestBboxViewRefreshIcons:
             ]);
 
             return view.findOne('.icon').text();
-        }""")
-        assert result == '★✓'
+        }"""
+        )
+        assert result == "★✓"
 
 
 # ---------------------------------------------------------------------------
 # Drag / transform normalization (dragend / transformend handlers)
 # ---------------------------------------------------------------------------
 
+
 class TestBboxViewDragNormalization:
     def test_drag_updates_uibbox_coordinates(self, shared_page: Page):
         """Firing 'dragend' after moving the group normalises uiBBox.x/y back to [0,1] space."""
         page = shared_page
-        result = page.evaluate("""async () => {
+        result = page.evaluate(
+            """async () => {
             const { BboxView } = await import('/app-static/js/app/image-tagging/canvas/views/bboxView.js');
 
-            """ + _STAGE_SETUP + """
+            """
+            + _STAGE_SETUP
+            + """
 
             // viewport: offsetX=0, offsetY=0, scale=1, imageWidth=400, imageHeight=300
             // sw = 400, sh = 300
@@ -332,17 +393,21 @@ class TestBboxViewDragNormalization:
 
             // Expected: uiBBox.x = (200-0)/400 = 0.5, uiBBox.y = (150-0)/300 = 0.5
             return { x: uiBBox.x, y: uiBBox.y };
-        }""")
-        assert result['x'] == pytest.approx(0.5)
-        assert result['y'] == pytest.approx(0.5)
+        }"""
+        )
+        assert result["x"] == pytest.approx(0.5)
+        assert result["y"] == pytest.approx(0.5)
 
     def test_transform_resets_scale_and_updates_size(self, shared_page: Page):
         """After transform, scaleX/Y must be reset to 1 and width/height baked in."""
         page = shared_page
-        result = page.evaluate("""async () => {
+        result = page.evaluate(
+            """async () => {
             const { BboxView } = await import('/app-static/js/app/image-tagging/canvas/views/bboxView.js');
 
-            """ + _STAGE_SETUP + """
+            """
+            + _STAGE_SETUP
+            + """
 
             const vp = { offsetX: 0, offsetY: 0, scale: 1, imageWidth: 400, imageHeight: 300 };
             const uiBBox = { uuid: 'u', x: 0, y: 0, width: 0.3, height: 0.3, label: null, tags: [] };
@@ -363,12 +428,13 @@ class TestBboxViewDragNormalization:
                 uiWidth: uiBBox.width,
                 uiHeight: uiBBox.height,
             };
-        }""")
-        assert result['scaleX'] == pytest.approx(1.0)
-        assert result['scaleY'] == pytest.approx(1.0)
+        }"""
+        )
+        assert result["scaleX"] == pytest.approx(1.0)
+        assert result["scaleY"] == pytest.approx(1.0)
         # width = 120 * 2 = 240, height = 90 * 1.5 = 135
-        assert result['width'] == pytest.approx(240)
-        assert result['height'] == pytest.approx(135)
+        assert result["width"] == pytest.approx(240)
+        assert result["height"] == pytest.approx(135)
         # normalised: 240/400 = 0.6, 135/300 = 0.45
-        assert result['uiWidth'] == pytest.approx(0.6)
-        assert result['uiHeight'] == pytest.approx(0.45)
+        assert result["uiWidth"] == pytest.approx(0.6)
+        assert result["uiHeight"] == pytest.approx(0.45)

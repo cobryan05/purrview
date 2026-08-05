@@ -20,6 +20,7 @@ Run with:
        test_run_model_on_results.py test_filter_panel.py test_review_workflow_ui.py \
        -o addopts="" -p no:xdist -q'
 """
+
 import json
 
 import pytest
@@ -39,19 +40,31 @@ REVIEWED_TAG = {"uuid": "tag-reviewed", "name": "Reviewed", "color": "#4c4", "ki
 # bbox-2: Dog, verified, "Reviewed" tag
 # bbox-3: Cat, no verification tag, no extra tag
 BBOX_1 = {
-    "uuid": "bbox-1", "x": 0.1, "y": 0.1, "width": 0.2, "height": 0.2,
+    "uuid": "bbox-1",
+    "x": 0.1,
+    "y": 0.1,
+    "width": 0.2,
+    "height": 0.2,
     "label": {"uuid": "lbl-cat", "name": "Cat", "color": "#ff0000"},
     "labelUuid": "lbl-cat",
     "tags": [UNVERIFIED_TAG],
 }
 BBOX_2 = {
-    "uuid": "bbox-2", "x": 0.3, "y": 0.3, "width": 0.1, "height": 0.1,
+    "uuid": "bbox-2",
+    "x": 0.3,
+    "y": 0.3,
+    "width": 0.1,
+    "height": 0.1,
     "label": {"uuid": "lbl-dog", "name": "Dog", "color": "#00ff00"},
     "labelUuid": "lbl-dog",
     "tags": [VERIFIED_TAG, REVIEWED_TAG],
 }
 BBOX_3 = {
-    "uuid": "bbox-3", "x": 0.5, "y": 0.5, "width": 0.1, "height": 0.1,
+    "uuid": "bbox-3",
+    "x": 0.5,
+    "y": 0.5,
+    "width": 0.1,
+    "height": 0.1,
     "label": {"uuid": "lbl-cat", "name": "Cat", "color": "#ff0000"},
     "labelUuid": "lbl-cat",
     "tags": [],
@@ -85,7 +98,9 @@ def _mock_tags(page: Page, tags: list):
 def _mock_image_labels_batch(page: Page):
     page.route(
         "**/api/images/labels/batch*",
-        lambda route: route.fulfill(status=200, content_type="application/json", body=json.dumps({"status": "success", "imageLabels": {}})),
+        lambda route: route.fulfill(
+            status=200, content_type="application/json", body=json.dumps({"status": "success", "imageLabels": {}})
+        ),
     )
 
 
@@ -195,13 +210,19 @@ class TestCuratedTagFilter:
         # Verification tags (UNVERIFIED/VERIFIED) must NOT appear in the curated
         # Tags dropdown — that is the verification control's exclusive domain
         # (V1 decision, mirrored from filters.js's _visibleTags()).
-        expect(page.locator(".ms-dropdown[data-filter-key='curated-tags'] input[value='" + VERIFIED_TAG_UUID + "']")).to_have_count(0)
-        expect(page.locator(".ms-dropdown[data-filter-key='curated-tags'] input[value='" + UNVERIFIED_TAG_UUID + "']")).to_have_count(0)
+        expect(
+            page.locator(".ms-dropdown[data-filter-key='curated-tags'] input[value='" + VERIFIED_TAG_UUID + "']")
+        ).to_have_count(0)
+        expect(
+            page.locator(".ms-dropdown[data-filter-key='curated-tags'] input[value='" + UNVERIFIED_TAG_UUID + "']")
+        ).to_have_count(0)
 
         page.locator(".ms-dropdown[data-filter-key='curated-tags'] .ms-dropdown__trigger").click()
         page.wait_for_timeout(100)
         # Click the "exclude" (NOT) toggle for the Reviewed tag row.
-        row = page.locator(".ms-dropdown[data-filter-key='curated-tags'] .ms-item", has=page.locator("input[value='tag-reviewed']"))
+        row = page.locator(
+            ".ms-dropdown[data-filter-key='curated-tags'] .ms-item", has=page.locator("input[value='tag-reviewed']")
+        )
         row.locator(".ms-item__not-btn").click()
         page.wait_for_timeout(200)
 

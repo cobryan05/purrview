@@ -2,6 +2,7 @@
 writes. GPU detection is made deterministic by shadowing `nvidia-smi` on PATH
 (exit 0 = GPU present, exit 1 = absent), so the matrix is host-independent.
 """
+
 import os
 import shutil
 import subprocess

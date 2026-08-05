@@ -16,12 +16,14 @@ Default bindings (from hotkeyBindings.js):
 Run with:
     pytest tests/playwright/test_canvas_hotkeys.py -p no:xdist --override-ini="addopts=" -v
 """
+
 import pytest
 from playwright.sync_api import Page
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _setup_runtime(page: Page, base_url: str) -> None:
     """
@@ -70,6 +72,7 @@ def _setup_runtime(page: Page, base_url: str) -> None:
 # Undo / redo via keyboard
 # ---------------------------------------------------------------------------
 
+
 class TestKeyboardUndo:
     def test_ctrl_z_triggers_undo(self, page: Page, base_url: str):
         _setup_runtime(page, base_url)
@@ -80,8 +83,8 @@ class TestKeyboardUndo:
             bboxes: window._testRuntime.state.image.bboxes.size,
             canUndo: window._testRuntime.canUndo,
         })""")
-        assert result['bboxes'] == 0
-        assert result['canUndo'] is False
+        assert result["bboxes"] == 0
+        assert result["canUndo"] is False
 
     def test_ctrl_z_does_nothing_when_nothing_to_undo(self, page: Page, base_url: str):
         _setup_runtime(page, base_url)
@@ -121,6 +124,7 @@ class TestKeyboardRedo:
 # Tool switching via keyboard
 # ---------------------------------------------------------------------------
 
+
 class TestKeyboardToolSwitch:
     def test_v_switches_to_select_tool(self, page: Page, base_url: str):
         _setup_runtime(page, base_url)
@@ -131,7 +135,7 @@ class TestKeyboardToolSwitch:
         page.keyboard.press("v")
 
         result = page.evaluate("""() => window._testRuntime.tool""")
-        assert result == 'select'
+        assert result == "select"
 
     def test_r_switches_to_bbox_tool(self, page: Page, base_url: str):
         _setup_runtime(page, base_url)
@@ -141,7 +145,7 @@ class TestKeyboardToolSwitch:
         page.keyboard.press("r")
 
         result = page.evaluate("""() => window._testRuntime.tool""")
-        assert result == 'bbox'
+        assert result == "bbox"
 
     def test_pressing_tool_key_when_already_active_is_idempotent(self, page: Page, base_url: str):
         _setup_runtime(page, base_url)
@@ -150,12 +154,13 @@ class TestKeyboardToolSwitch:
         page.keyboard.press("v")
 
         result = page.evaluate("""() => window._testRuntime.tool""")
-        assert result == 'select'
+        assert result == "select"
 
 
 # ---------------------------------------------------------------------------
 # Delete via keyboard
 # ---------------------------------------------------------------------------
+
 
 class TestKeyboardDelete:
     def test_delete_key_removes_selected_bbox(self, page: Page, base_url: str):
@@ -184,8 +189,8 @@ class TestKeyboardDelete:
             bboxes: window._testRuntime.state.image.bboxes.size,
             transformerNodes: window._testRuntime.canvas.transformer.nodes().length,
         })""")
-        assert result['bboxes'] == 0
-        assert result['transformerNodes'] == 0
+        assert result["bboxes"] == 0
+        assert result["transformerNodes"] == 0
 
     def test_backspace_key_also_deletes(self, page: Page, base_url: str):
         _setup_runtime(page, base_url)

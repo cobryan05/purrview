@@ -304,9 +304,10 @@ class TestBandNormalizationMatchesBackend:
         reading of an unparseable max is the opposite (1.0).
         """
         band = self._edit_and_save(page, base_url, 0.2, min_fill="0.3", max_fill="")
-        assert band == {"min": 0.3, "max": 1}, (
-            f"Blank max should mean unbounded (1.0), got {band} (Number('') === 0 slipping past the isFinite guard)"
-        )
+        assert band == {
+            "min": 0.3,
+            "max": 1,
+        }, f"Blank max should mean unbounded (1.0), got {band} (Number('') === 0 slipping past the isFinite guard)"
 
     def test_blank_min_saves_as_zero_disabled(self, page: Page, base_url: str):
         """Clearing min yields 0 — the backend's 'label disabled' convention,
@@ -319,9 +320,10 @@ class TestBandNormalizationMatchesBackend:
         backend corrects it (`max = min`), so the saved value and the displayed
         value both match what is enforced."""
         band = self._edit_and_save(page, base_url, 0.2, min_fill="0.9", max_fill="0.1")
-        assert band == {"min": 0.9, "max": 0.9}, (
-            f"Inverted band should collapse to max=min like the backend does, got {band}"
-        )
+        assert band == {
+            "min": 0.9,
+            "max": 0.9,
+        }, f"Inverted band should collapse to max=min like the backend does, got {band}"
 
     def test_out_of_range_band_is_clamped_on_save(self, page: Page, base_url: str):
         """Values outside [0, 1] are clamped, mirroring the backend's clamps.
@@ -344,9 +346,9 @@ class TestBandNormalizationMatchesBackend:
         number_inputs = page.locator("#task-config-list input[type='number']")
         expect(number_inputs).to_have_count(2)
         assert number_inputs.nth(0).input_value() == "0.9"
-        assert number_inputs.nth(1).input_value() == "0.9", (
-            f"Expected inverted max to display as 0.9, got {number_inputs.nth(1).input_value()!r}"
-        )
+        assert (
+            number_inputs.nth(1).input_value() == "0.9"
+        ), f"Expected inverted max to display as 0.9, got {number_inputs.nth(1).input_value()!r}"
 
     def test_saved_null_max_displays_as_one(self, page: Page, base_url: str):
         """A hand-edited or legacy config with `max: null` must load as 1.0 —
@@ -363,6 +365,5 @@ class TestBandNormalizationMatchesBackend:
         expect(number_inputs).to_have_count(2)
         assert number_inputs.nth(0).input_value() == "0.3"
         assert number_inputs.nth(1).input_value() == "1", (
-            f"Expected null max to load as 1.0, got {number_inputs.nth(1).input_value()!r} "
-            "(Number(null) === 0)"
+            f"Expected null max to load as 1.0, got {number_inputs.nth(1).input_value()!r} " "(Number(null) === 0)"
         )

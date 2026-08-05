@@ -11,6 +11,7 @@ checks survive).
 Run with:
     pytest playwright_tests/test_inference_panel_multiselect.py -p no:xdist --override-ini="addopts=" -v
 """
+
 import json
 
 import pytest
@@ -21,11 +22,15 @@ def _mock_models(page: Page, models: list, kinds: dict):
     """Mock GET /api/models and GET /api/models/<name>/meta for the given models."""
     page.route(
         lambda url: url.split("?")[0].endswith("/api/models"),
-        lambda route: route.fulfill(
-            status=200,
-            content_type="application/json",
-            body=json.dumps({"status": "success", "models": models}),
-        ) if route.request.method == "GET" else route.fallback(),
+        lambda route: (
+            route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps({"status": "success", "models": models}),
+            )
+            if route.request.method == "GET"
+            else route.fallback()
+        ),
     )
 
     def _meta_handler(route):
@@ -164,7 +169,8 @@ class TestMultiSelectDetectors:
         _click_classifier(page, "clf-a")
 
         selected_detectors = page.eval_on_selector_all(
-            "#test-inference-panel .inference-model-item input[type=checkbox]:checked", "els => els.length",
+            "#test-inference-panel .inference-model-item input[type=checkbox]:checked",
+            "els => els.length",
         )
         assert selected_detectors == 0
 
@@ -177,7 +183,8 @@ class TestVerifyAllButton:
         _make_panel(page)
 
         labels = page.eval_on_selector_all(
-            "#test-inference-panel .inference-buttons-row button", "els => els.map(el => el.textContent)",
+            "#test-inference-panel .inference-buttons-row button",
+            "els => els.map(el => el.textContent)",
         )
         assert "Verify all" in labels
 
@@ -231,7 +238,7 @@ class TestVerifyAllButton:
             return runtime.state.image.bboxes.get('b1').tags.map(t => t.uuid);
         }""")
         assert "00000000-0000-0000-0000-000000000001" not in result  # UNVERIFIED
-        assert "00000000-0000-0000-0000-000000000005" in result      # VERIFIED
+        assert "00000000-0000-0000-0000-000000000005" in result  # VERIFIED
 
 
 class TestSessionPersistence:

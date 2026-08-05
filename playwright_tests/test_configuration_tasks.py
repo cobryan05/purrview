@@ -15,6 +15,7 @@ Configuration > Task Management:
 Run with:
     pytest tests/playwright/test_configuration_tasks.py -p no:xdist -v
 """
+
 import json
 import re
 
@@ -291,9 +292,9 @@ class TestTaskTypeDropdown:
 
         # The schema has a "Remove deleted images" boolean → rendered as a checkbox with that label
         content = page.locator("#task-config-list").inner_html()
-        assert "Remove deleted images" in content or "remove_deleted" in content, (
-            f"Expected schema field label in content; got snippet: {content[:500]!r}"
-        )
+        assert (
+            "Remove deleted images" in content or "remove_deleted" in content
+        ), f"Expected schema field label in content; got snippet: {content[:500]!r}"
 
 
 # ---------------------------------------------------------------------------
@@ -339,11 +340,17 @@ class TestCreateTaskConfig:
     def test_create_requires_name(self, page: Page, base_url: str):
         """Clicking Add Config without a name does not call /api/tasks/configs/create."""
         calls: list[bool] = []
-        page.route("**/api/tasks/configs/create", lambda route: (calls.append(True), route.fulfill(
-            status=200,
-            content_type="application/json",
-            body=json.dumps({"status": "success", "configUuid": FAKE_CONFIG["uuid"]}),
-        )))
+        page.route(
+            "**/api/tasks/configs/create",
+            lambda route: (
+                calls.append(True),
+                route.fulfill(
+                    status=200,
+                    content_type="application/json",
+                    body=json.dumps({"status": "success", "configUuid": FAKE_CONFIG["uuid"]}),
+                ),
+            ),
+        )
         _setup_full_task_mocks(page, configs={}, tasks={})
 
         _navigate_to_tasks(page, base_url)
@@ -385,9 +392,7 @@ class TestCreateTaskConfig:
         payload = create_calls[0]
         assert "params" in payload, f"Payload missing 'params': {payload}"
         # Default boolean field 'remove_deleted' should be present
-        assert "remove_deleted" in payload["params"], (
-            f"'remove_deleted' not in params: {payload['params']}"
-        )
+        assert "remove_deleted" in payload["params"], f"'remove_deleted' not in params: {payload['params']}"
 
 
 # ---------------------------------------------------------------------------
@@ -481,9 +486,9 @@ class TestActiveTasksList:
         page.wait_for_timeout(1200)
 
         content = page.locator("#active-tasks-list").inner_text()
-        assert RUNNING_TASK["config"]["name"] in content or "running" in content.lower(), (
-            f"Running task not visible. Content: {content!r}"
-        )
+        assert (
+            RUNNING_TASK["config"]["name"] in content or "running" in content.lower()
+        ), f"Running task not visible. Content: {content!r}"
 
     def test_running_task_has_stop_button(self, page: Page, base_url: str):
         """A running task shows a Stop button."""

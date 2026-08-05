@@ -14,6 +14,7 @@ All tests share one pre-navigated `shared_page` (module-scoped, see
 conftest.py); each test builds and removes its own panel element so the
 shared page stays clean.
 """
+
 import json
 
 import pytest
@@ -67,6 +68,7 @@ _TEARDOWN_EXT = """
 
 # ── Helper: open a ms-dropdown by data-filter-key, interact, close ─────────
 
+
 def _open_dropdown(page, filter_key):
     """Open the named dropdown (click its trigger)."""
     page.locator(f".ms-dropdown[data-filter-key='{filter_key}'] .ms-dropdown__trigger").click()
@@ -92,6 +94,7 @@ def _uncheck_item(page, filter_key, uuid):
 
 
 # ── Default state ────────────────────────────────────────────────────────────
+
 
 class TestFilterPanelDefaults:
     def test_default_tag_uuids_empty(self, shared_page: Page):
@@ -151,6 +154,7 @@ class TestFilterPanelDefaults:
 
 
 # ── Tags dropdown ────────────────────────────────────────────────────────────
+
 
 class TestFilterPanelTagsDropdown:
     def test_unverified_tag_absent_from_tags_dropdown(self, shared_page: Page):
@@ -231,6 +235,7 @@ class TestFilterPanelTagsDropdown:
 
 # ── Labels dropdown ───────────────────────────────────────────────────────────
 
+
 class TestFilterPanelLabelsDropdown:
     def test_no_labels_selected_by_default(self, shared_page: Page):
         result = shared_page.evaluate(f"""async () => {{
@@ -302,6 +307,7 @@ class TestFilterPanelLabelsDropdown:
 
 # ── setState ──────────────────────────────────────────────────────────────────
 
+
 class TestFilterPanelSetState:
     def test_set_state_updates_tag_checkboxes(self, shared_page: Page):
         result = shared_page.evaluate(f"""async () => {{
@@ -351,6 +357,7 @@ class TestFilterPanelSetState:
 # toolbarControls[0/1] — it's rendered inside panel.element alongside the
 # existing Verification select. Locate it via its own class name, not by
 # position, so it can't collide with the toolbarControls positional contract.
+
 
 class TestFilterPanelBboxVerification:
     def test_default_is_any(self, shared_page: Page):
@@ -465,6 +472,7 @@ class TestFilterPanelBboxVerification:
 # Exercised directly (no filter panel) since it's designed to be dependency-
 # light for reuse in modals (unit M1).
 
+
 class TestBboxVerificationControlStandalone:
     _STANDALONE_SETUP = """
         const { createBboxVerificationControl } = await import('/app-static/js/app/review/bboxVerificationControl.js');
@@ -524,6 +532,7 @@ class TestBboxVerificationControlStandalone:
 # Route-intercept the review-queue endpoint to capture the outgoing request
 # body, following the test_run_model_on_results.py pattern of stubbing the
 # network boundary rather than exercising the real backend.
+
 
 class TestFetchReviewQueueBboxVerificationMapping:
     def test_any_does_not_add_tag_presence_filter(self, page: Page, base_url: str):
@@ -621,7 +630,12 @@ class TestFetchReviewQueueBboxVerificationMapping:
 # use the plain `page` fixture (not `shared_page`) and reset activeTrainingConfig
 # to null in teardown so state doesn't leak across tests.
 
-MODEL_CFG_NODE = {"uuid": "node-cat", "labelUuid": "lbl-cat", "modelType": "object_detection", "architecture": "yolo_v9_c"}
+MODEL_CFG_NODE = {
+    "uuid": "node-cat",
+    "labelUuid": "lbl-cat",
+    "modelType": "object_detection",
+    "architecture": "yolo_v9_c",
+}
 MODEL_CFG = {"uuid": "mc-1", "name": "My Model", "description": "", "nodes": [MODEL_CFG_NODE]}
 ACTIVE_TC = {
     "uuid": "tc-1",
@@ -641,11 +655,15 @@ def _mock_model_configs_and_stats(page: Page):
     and fetchTrainingConfigLabelStats() (fire-and-forget stats refresh)."""
     page.route(
         lambda url: url.split("?")[0].endswith("/api/model-configs"),
-        lambda route: route.fulfill(
-            status=200,
-            content_type="application/json",
-            body=json.dumps({"status": "success", "configs": [MODEL_CFG]}),
-        ) if route.request.method == "GET" else route.fallback(),
+        lambda route: (
+            route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps({"status": "success", "configs": [MODEL_CFG]}),
+            )
+            if route.request.method == "GET"
+            else route.fallback()
+        ),
     )
     page.route(
         "**/api/training-configs/tc-1/label-stats",
@@ -812,6 +830,7 @@ class TestConfigReadyDisabledWithoutActiveConfig:
 # API-boundary level (matches the existing TestFetchReviewQueueBboxVerificationMapping
 # pattern) since that's the shared contract main.js and runModelOnResults.js both use.
 
+
 class TestVerificationLabelUuidsMapping:
     def test_omitted_when_verification_check_unset(self, page: Page, base_url: str):
         captured = {}
@@ -922,7 +941,9 @@ class TestVerificationLabelUuidsMapping:
             "kind": "labelVerification",
             "check": "has_unverified",
             "labelUuids": ["lbl-cat"],
-        } in body["filter"]["terms"]
+        } in body[
+            "filter"
+        ]["terms"]
 
     def test_bulk_apply_all_omits_empty_verification_label_uuids(self, page: Page, base_url: str):
         captured = {}

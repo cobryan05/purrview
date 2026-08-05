@@ -55,13 +55,11 @@ class TestTabInitRace:
         page.wait_for_load_state("networkidle")
 
         # Racy: bounce back onto Review while its first init is still awaiting.
-        page.evaluate(
-            """() => {
+        page.evaluate("""() => {
             document.querySelector(".main-tab-button[data-tab='tab-review']").click();
             document.querySelector(".main-tab-button[data-tab='tab-image-tagging']").click();
             document.querySelector(".main-tab-button[data-tab='tab-review']").click();
-        }"""
-        )
+        }""")
         page.wait_for_timeout(2500)
         racy = _listener_count(page)
 
@@ -72,9 +70,9 @@ class TestTabInitRace:
         page.wait_for_timeout(2500)
         clean = _listener_count(page)
 
-        assert racy == clean, (
-            f"racy tab switching left {racy} listeners vs {clean} after a clean init — feature init() ran twice"
-        )
+        assert (
+            racy == clean
+        ), f"racy tab switching left {racy} listeners vs {clean} after a clean init — feature init() ran twice"
 
 
 class TestConfigTaskStreamLifecycle:
@@ -82,8 +80,7 @@ class TestConfigTaskStreamLifecycle:
         """The task SSE stream opened by the Task Management sub-tab must be
         closed when the user leaves the Configuration main tab — otherwise the
         server keeps pushing to a hidden tab forever."""
-        page.add_init_script(
-            """
+        page.add_init_script("""
             window.__taskStreams = [];
             const OrigES = window.EventSource;
             window.EventSource = function(url, opts) {
@@ -92,8 +89,7 @@ class TestConfigTaskStreamLifecycle:
                 return es;
             };
             window.EventSource.prototype = OrigES.prototype;
-        """
-        )
+        """)
         page.goto(base_url)
         page.wait_for_load_state("networkidle")
 
@@ -122,10 +118,22 @@ class TestAsyncRenderReentrancy:
         labels_payload = {
             "status": "success",
             "labels": [
-                {"uuid": "11111111-2222-3333-4444-000000000001", "name": "re-a", "color": "#123456",
-                 "labelType": "standard", "scope": "object", "parentUuid": None},
-                {"uuid": "11111111-2222-3333-4444-000000000002", "name": "re-b", "color": "#654321",
-                 "labelType": "standard", "scope": "object", "parentUuid": None},
+                {
+                    "uuid": "11111111-2222-3333-4444-000000000001",
+                    "name": "re-a",
+                    "color": "#123456",
+                    "labelType": "standard",
+                    "scope": "object",
+                    "parentUuid": None,
+                },
+                {
+                    "uuid": "11111111-2222-3333-4444-000000000002",
+                    "name": "re-b",
+                    "color": "#654321",
+                    "labelType": "standard",
+                    "scope": "object",
+                    "parentUuid": None,
+                },
             ],
         }
 
@@ -138,8 +146,7 @@ class TestAsyncRenderReentrancy:
         page.wait_for_load_state("networkidle")
         page.route("**/api/labels", _serve_labels)
 
-        result = page.evaluate(
-            """async () => {
+        result = page.evaluate("""async () => {
             const { createLabelList } = await import('/app-static/js/ui/labelList.js');
             const { events, EventTypes } = await import('/app-static/js/shared/events/index.js');
             const { clearLabelsCache } = await import('/app-static/js/shared/api/labels.js');
@@ -160,19 +167,17 @@ class TestAsyncRenderReentrancy:
             list.destroy();
             div.remove();
             return { single, after };
-        }"""
-        )
+        }""")
         assert result["single"] > 0, "label list rendered nothing — stubbed labels not picked up"
-        assert result["after"] == result["single"], (
-            f"double LABELS_UPDATED interleaved mounts: {result['after']} children vs {result['single']} after one"
-        )
+        assert (
+            result["after"] == result["single"]
+        ), f"double LABELS_UPDATED interleaved mounts: {result['after']} children vs {result['single']} after one"
 
     def test_tag_panel_double_tags_updated_renders_once(self, page: Page, base_url: str):
         """Same re-entrancy race on the inspector tag panel's _mount()."""
         page.goto(base_url)
         page.wait_for_load_state("networkidle")
-        result = page.evaluate(
-            """async () => {
+        result = page.evaluate("""async () => {
             const { createTagPanel } = await import('/app-static/js/ui/inspector.js');
             const { createImageTaggingRuntime } = await import('/app-static/js/app/image-tagging/runtime.js');
             const { events, EventTypes } = await import('/app-static/js/shared/events/index.js');
@@ -189,11 +194,10 @@ class TestAsyncRenderReentrancy:
             panel.destroy();
             div.remove();
             return { single, after };
-        }"""
-        )
-        assert result["after"] == result["single"], (
-            f"double TAGS_UPDATED interleaved mounts: {result['after']} children vs {result['single']} after one"
-        )
+        }""")
+        assert (
+            result["after"] == result["single"]
+        ), f"double TAGS_UPDATED interleaved mounts: {result['after']} children vs {result['single']} after one"
 
 
 class TestMergeExternalBboxChanges:
@@ -203,8 +207,7 @@ class TestMergeExternalBboxChanges:
         blank ("Loading…") after a merge."""
         page.goto(base_url)
         page.wait_for_load_state("networkidle")
-        result = page.evaluate(
-            """async () => {
+        result = page.evaluate("""async () => {
             const { _mergeExternalBboxChanges } = await import('/app-static/js/app/review/main.js');
             const { createImageTaggingRuntime } = await import('/app-static/js/app/image-tagging/runtime.js');
             const { createUIBBbox } = await import('/app-static/js/shared/domain/image/mapper.js');
@@ -225,10 +228,11 @@ class TestMergeExternalBboxChanges:
 
             const merged = runtime.state.image.bboxes.get('b1');
             return { text: merged.label.text ?? null, uuid: merged.label.uuid };
-        }"""
-        )
+        }""")
         assert result["uuid"] == "l-new"
-        assert result["text"] == "new-label", f"merged label.text is {result['text']!r} — canvas chip would render blank"
+        assert (
+            result["text"] == "new-label"
+        ), f"merged label.text is {result['text']!r} — canvas chip would render blank"
 
 
 class TestImageLabelChipsBatch:
@@ -237,18 +241,13 @@ class TestImageLabelChipsBatch:
         per page render — not one GET /api/images/<path>/labels per card."""
         import json
 
-        images = [
-            {"uuid": f"img-{i}", "filename": f"folder/im{i}.jpg", "bboxes": []}
-            for i in range(12)
-        ]
+        images = [{"uuid": f"img-{i}", "filename": f"folder/im{i}.jpg", "bboxes": []} for i in range(12)]
         page.route(
             "**/api/images/review",
             lambda route: route.fulfill(
                 status=200,
                 content_type="application/json",
-                body=json.dumps(
-                    {"status": "success", "images": images, "hasMore": False, "totalCount": len(images)}
-                ),
+                body=json.dumps({"status": "success", "images": images, "hasMore": False, "totalCount": len(images)}),
             ),
         )
         batch_calls = []

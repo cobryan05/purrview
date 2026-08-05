@@ -13,6 +13,7 @@ its top.
 Run with:
     pytest playwright_tests/test_label_panel_sticky_header.py -p no:xdist -v
 """
+
 import json
 
 import pytest

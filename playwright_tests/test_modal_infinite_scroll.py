@@ -15,6 +15,7 @@ Run with:
       'cd /project/playwright_tests && python -m pytest test_modal_infinite_scroll.py \
        -o addopts="" -p no:xdist -q'
 """
+
 import json
 import re
 
@@ -30,13 +31,18 @@ CANDIDATES = [
     {
         "uuid": f"img-{i:03d}",
         "filename": f"folder/image{i:03d}.jpg",
-        "bboxes": [{
-            "uuid": f"bbox-{i:03d}",
-            "x": 0.1, "y": 0.1, "width": 0.2, "height": 0.2,
-            "label": {"uuid": "lbl-cat", "name": "Cat", "color": "#ff0000"},
-            "labelUuid": "lbl-cat",
-            "tags": [],
-        }],
+        "bboxes": [
+            {
+                "uuid": f"bbox-{i:03d}",
+                "x": 0.1,
+                "y": 0.1,
+                "width": 0.2,
+                "height": 0.2,
+                "label": {"uuid": "lbl-cat", "name": "Cat", "color": "#ff0000"},
+                "labelUuid": "lbl-cat",
+                "tags": [],
+            }
+        ],
     }
     for i in range(N_CANDIDATES)
 ]
@@ -46,7 +52,8 @@ def _mock_labels(page: Page):
     page.route(
         lambda url: url.split("?")[0].endswith("/api/labels") and "api/labels/" not in url,
         lambda route: route.fulfill(
-            status=200, content_type="application/json",
+            status=200,
+            content_type="application/json",
             body=json.dumps({"status": "success", "labels": [LABEL_CAT]}),
         ),
     )
@@ -62,7 +69,9 @@ def _mock_tags(page: Page):
 def _mock_image_labels_batch(page: Page):
     page.route(
         "**/api/images/labels/batch*",
-        lambda route: route.fulfill(status=200, content_type="application/json", body=json.dumps({"status": "success", "imageLabels": {}})),
+        lambda route: route.fulfill(
+            status=200, content_type="application/json", body=json.dumps({"status": "success", "imageLabels": {}})
+        ),
     )
 
 
@@ -96,13 +105,11 @@ def _select_chunk_size(page: Page, value: str):
 
 
 def _scroll_content_to_bottom(page: Page):
-    page.evaluate(
-        """() => {
+    page.evaluate("""() => {
             let el = document.querySelector('.review-grid');
             while (el && getComputedStyle(el).overflow !== 'auto') el = el.parentElement;
             if (el) el.scrollTop = el.scrollHeight;
-        }"""
-    )
+        }""")
 
 
 def _scroll_until_count(page: Page, locator, target_count: int, attempts: int = 10):

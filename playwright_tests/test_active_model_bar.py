@@ -12,6 +12,7 @@ and still offers a link to the management page.
 Run with:
     pytest playwright_tests/test_active_model_bar.py -p no:xdist -p no:asyncio -v
 """
+
 import json
 import re
 
@@ -19,14 +20,24 @@ import pytest
 from playwright.sync_api import Page, expect
 
 TC_1 = {
-    "uuid": "tc-1", "name": "Cat Detector", "description": "", "datasetUuids": [],
-    "modelConfigNodeUuid": None, "hyperparamsJson": {},
-    "createdAt": "2026-01-01T00:00:00", "updatedAt": "2026-01-01T00:00:00",
+    "uuid": "tc-1",
+    "name": "Cat Detector",
+    "description": "",
+    "datasetUuids": [],
+    "modelConfigNodeUuid": None,
+    "hyperparamsJson": {},
+    "createdAt": "2026-01-01T00:00:00",
+    "updatedAt": "2026-01-01T00:00:00",
 }
 TC_2 = {
-    "uuid": "tc-2", "name": "Dog Detector", "description": "", "datasetUuids": [],
-    "modelConfigNodeUuid": None, "hyperparamsJson": {},
-    "createdAt": "2026-01-01T00:00:00", "updatedAt": "2026-01-01T00:00:00",
+    "uuid": "tc-2",
+    "name": "Dog Detector",
+    "description": "",
+    "datasetUuids": [],
+    "modelConfigNodeUuid": None,
+    "hyperparamsJson": {},
+    "createdAt": "2026-01-01T00:00:00",
+    "updatedAt": "2026-01-01T00:00:00",
 }
 
 
@@ -34,11 +45,15 @@ def _mock_training_configs(page: Page, configs: list):
     """Intercept GET /api/training-configs with a fixed list."""
     page.route(
         lambda url: url.split("?")[0].endswith("/api/training-configs"),
-        lambda route: route.fulfill(
-            status=200,
-            content_type="application/json",
-            body=json.dumps({"status": "success", "configs": configs}),
-        ) if route.request.method == "GET" else route.fallback(),
+        lambda route: (
+            route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps({"status": "success", "configs": configs}),
+            )
+            if route.request.method == "GET"
+            else route.fallback()
+        ),
     )
 
 
@@ -59,15 +74,17 @@ def _mock_readiness(page: Page, tc_uuid: str, ready=0, needs_review=0, not_start
         lambda route: route.fulfill(
             status=200,
             content_type="application/json",
-            body=json.dumps({
-                "status": "success",
-                "readyCount": ready,
-                "needsReviewCount": needs_review,
-                "notStartedCount": not_started,
-                "datasetUuids": [],
-                "labelUuids": [],
-                "rollUpActive": roll_up_active,
-            }),
+            body=json.dumps(
+                {
+                    "status": "success",
+                    "readyCount": ready,
+                    "needsReviewCount": needs_review,
+                    "notStartedCount": not_started,
+                    "datasetUuids": [],
+                    "labelUuids": [],
+                    "rollUpActive": roll_up_active,
+                }
+            ),
         ),
     )
 
@@ -75,21 +92,28 @@ def _mock_readiness(page: Page, tc_uuid: str, ready=0, needs_review=0, not_start
 def _mock_labels(page: Page, labels: list):
     page.route(
         lambda url: url.split("?")[0].endswith("/api/labels"),
-        lambda route: route.fulfill(
-            status=200,
-            content_type="application/json",
-            body=json.dumps({"status": "success", "labels": labels}),
-        ) if route.request.method == "GET" else route.fallback(),
+        lambda route: (
+            route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps({"status": "success", "labels": labels}),
+            )
+            if route.request.method == "GET"
+            else route.fallback()
+        ),
     )
 
 
 def _set_active(page: Page, tc: dict | None):
     """Drive the activeTrainingConfig singleton directly, as done elsewhere
     (test_review_workflow_ui.py) to seed bar state without a full UI flow."""
-    page.evaluate("""async (tc) => {
+    page.evaluate(
+        """async (tc) => {
         const { activeTrainingConfig } = await import('/app-static/js/shared/activeTrainingConfig.js');
         await activeTrainingConfig.setActive(tc);
-    }""", tc)
+    }""",
+        tc,
+    )
 
 
 def _navigate(page: Page, base_url: str, configs: list = ()):
@@ -208,13 +232,23 @@ class TestRunPickerAboveModals:
 
 LABEL_STATS = [
     {
-        "labelUuid": "lbl-cat", "labelScope": "image", "hasRollup": False, "rollUpParentUuid": None,
-        "presentImageCount": 12, "absentImageCount": 0, "unverifiedImageCount": 3,
+        "labelUuid": "lbl-cat",
+        "labelScope": "image",
+        "hasRollup": False,
+        "rollUpParentUuid": None,
+        "presentImageCount": 12,
+        "absentImageCount": 0,
+        "unverifiedImageCount": 3,
     },
     {
-        "labelUuid": "lbl-dog-box", "labelScope": "object", "hasRollup": False, "rollUpParentUuid": None,
-        "verifiedBboxCount": 8, "unverifiedBboxCount": 2,
-        "coLabelsCoveredCount": 6, "coLabelGapsCount": 2,
+        "labelUuid": "lbl-dog-box",
+        "labelScope": "object",
+        "hasRollup": False,
+        "rollUpParentUuid": None,
+        "verifiedBboxCount": 8,
+        "unverifiedBboxCount": 2,
+        "coLabelsCoveredCount": 6,
+        "coLabelGapsCount": 2,
         "coLabelGapBreakdown": [{"labelUuid": "lbl-other", "labelName": "Other Label", "count": 2}],
     },
 ]
@@ -235,10 +269,15 @@ class TestCoveragePopupTable:
         _mock_labels(page, LABELS)
         page.route(
             lambda url: "/api/model-configs" in url.split("?")[0],
-            lambda route: route.fulfill(
-                status=200, content_type="application/json",
-                body=json.dumps({"status": "success", "configs": []}),
-            ) if route.request.method == "GET" else route.fallback(),
+            lambda route: (
+                route.fulfill(
+                    status=200,
+                    content_type="application/json",
+                    body=json.dumps({"status": "success", "configs": []}),
+                )
+                if route.request.method == "GET"
+                else route.fallback()
+            ),
         )
         _set_active(page, TC_1)
         page.locator(".active-model-bar__name").click()
@@ -250,9 +289,7 @@ class TestCoveragePopupTable:
         expect(image_table_headers).to_have_text(["Label", "Positive", "Negative", "Unverified"])
 
         object_table_headers = page.locator(".tc-stats-panel table").nth(1).locator("thead th")
-        expect(object_table_headers).to_have_text(
-            ["Label", "Verified", "Unverified", "All clear", "Gaps"]
-        )
+        expect(object_table_headers).to_have_text(["Label", "Verified", "Unverified", "All clear", "Gaps"])
         # Shortened headers still carry the full explanation as a hover tooltip.
         expect(object_table_headers.nth(1)).to_have_attribute("title", re.compile(r"^Verified boxes"))
 
@@ -261,7 +298,8 @@ class TestCoveragePopupTable:
         page.route(
             "**/api/images/review*",
             lambda route: route.fulfill(
-                status=200, content_type="application/json",
+                status=200,
+                content_type="application/json",
                 body=json.dumps({"status": "success", "images": [], "hasMore": False, "totalCount": 0}),
             ),
         )
@@ -269,7 +307,9 @@ class TestCoveragePopupTable:
         cat_row = page.locator(".tc-stats-panel tr", has_text="Cat")
         cat_row.locator("td").nth(1).click()  # Positive column, value 12
 
-        expect(page.locator("[data-testid='canvas-edit-modal-title'], strong", has_text="Cat — positive (Cat Detector)")).to_be_visible()
+        expect(
+            page.locator("[data-testid='canvas-edit-modal-title'], strong", has_text="Cat — positive (Cat Detector)")
+        ).to_be_visible()
         # The popup closes itself so it doesn't sit on top of the modal it opened.
         expect(page.locator(".tc-stats-panel")).to_have_count(0)
 
@@ -292,10 +332,15 @@ class TestReadinessInPopup:
         _mock_labels(page, LABELS)
         page.route(
             lambda url: "/api/model-configs" in url.split("?")[0],
-            lambda route: route.fulfill(
-                status=200, content_type="application/json",
-                body=json.dumps({"status": "success", "configs": []}),
-            ) if route.request.method == "GET" else route.fallback(),
+            lambda route: (
+                route.fulfill(
+                    status=200,
+                    content_type="application/json",
+                    body=json.dumps({"status": "success", "configs": []}),
+                )
+                if route.request.method == "GET"
+                else route.fallback()
+            ),
         )
         _set_active(page, TC_1)
         page.locator(".active-model-bar__name").click()
@@ -314,12 +359,15 @@ class TestReadinessInPopup:
         page.route(
             "**/api/training-configs/tc-1/ready-images",
             lambda route: route.fulfill(
-                status=200, content_type="application/json",
+                status=200,
+                content_type="application/json",
                 body=json.dumps({"status": "success", "images": []}),
             ),
         )
         page.locator(".tc-stats-panel", has_text="✓ 5 ready").get_by_text("✓ 5 ready", exact=False).click()
-        expect(page.locator("[data-testid='canvas-edit-modal-title'], strong", has_text="Ready for Training")).to_be_visible()
+        expect(
+            page.locator("[data-testid='canvas-edit-modal-title'], strong", has_text="Ready for Training")
+        ).to_be_visible()
         expect(page.locator(".tc-stats-panel")).to_have_count(0)
 
 
@@ -341,10 +389,15 @@ class TestReadinessFetchFailure:
         page.route("**/api/training-configs/tc-1/readiness", _fail_readiness)
         page.route(
             lambda url: "/api/model-configs" in url.split("?")[0],
-            lambda route: route.fulfill(
-                status=200, content_type="application/json",
-                body=json.dumps({"status": "success", "configs": []}),
-            ) if route.request.method == "GET" else route.fallback(),
+            lambda route: (
+                route.fulfill(
+                    status=200,
+                    content_type="application/json",
+                    body=json.dumps({"status": "success", "configs": []}),
+                )
+                if route.request.method == "GET"
+                else route.fallback()
+            ),
         )
         _set_active(page, TC_1)
         return readiness_calls
@@ -367,7 +420,9 @@ class TestReadinessFetchFailure:
         readiness_calls = self._open_popup_with_failing_readiness(page, base_url)
         page.locator(".active-model-bar__name").click()
         page.wait_for_selector(".tc-stats-panel table")
-        expect(page.locator(".tc-stats-panel").get_by_text("Could not load training readiness", exact=False)).to_be_visible()
+        expect(
+            page.locator(".tc-stats-panel").get_by_text("Could not load training readiness", exact=False)
+        ).to_be_visible()
         page.locator(".active-model-bar__name").click()  # toggle closed
         expect(page.locator(".tc-stats-panel")).to_have_count(0)
 

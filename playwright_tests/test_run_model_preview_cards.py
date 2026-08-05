@@ -162,7 +162,9 @@ def _mock_bulk_apply_by_uuids(page: Page):
 def _mock_invalidate_thumbnails(page: Page):
     page.route(
         "**/api/images/bbox/thumbnails/invalidate",
-        lambda route: route.fulfill(status=200, content_type="application/json", body=json.dumps({"status": "success"})),
+        lambda route: route.fulfill(
+            status=200, content_type="application/json", body=json.dumps({"status": "success"})
+        ),
     )
 
 
@@ -306,8 +308,7 @@ class TestPreviewCardBehavior:
         # 'dragend' event exactly as a real drag would. The BboxView 'dragend'
         # handler recomputes uiBBox from the node position; the stage-level
         # 'dragend' listener runs pushState() (marking the runtime dirty).
-        moved = page.evaluate(
-            """() => {
+        moved = page.evaluate("""() => {
                 const stages = (window.Konva && window.Konva.stages) || [];
                 for (const stage of stages) {
                     if (!stage.container()?.closest('.canvas-modal-canvas')) continue;
@@ -325,8 +326,7 @@ class TestPreviewCardBehavior:
                     return { x: node.uiBBox.x, y: node.uiBBox.y, w: node.uiBBox.width, h: node.uiBBox.height };
                 }
                 return null;
-            }"""
-        )
+            }""")
         assert moved is not None, "modal canvas stage / bbox-1 node not found"
 
         # Save & Close persists (in-memory) and closes the editor.

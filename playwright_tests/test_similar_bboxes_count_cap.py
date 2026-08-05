@@ -28,6 +28,7 @@ Run with:
       'cd /project/playwright_tests && python -m pytest test_similar_bboxes_count_cap.py \
        -o addopts="" -p no:xdist -q'
 """
+
 import json
 
 from playwright.sync_api import Page, Route, expect
@@ -43,28 +44,33 @@ IMAGES_BY_UUID = {
     m["imageUuid"]: {
         "uuid": m["imageUuid"],
         "filename": f"folder/{m['imageUuid']}.jpg",
-        "bboxes": [{
-            "uuid": m["bboxUuid"],
-            "x": 0.1, "y": 0.1, "width": 0.2, "height": 0.2,
-            "label": {"uuid": "lbl-cat", "name": "Cat", "color": "#ff0000"},
-            "labelUuid": "lbl-cat",
-            "tags": [],
-        }],
+        "bboxes": [
+            {
+                "uuid": m["bboxUuid"],
+                "x": 0.1,
+                "y": 0.1,
+                "width": 0.2,
+                "height": 0.2,
+                "label": {"uuid": "lbl-cat", "name": "Cat", "color": "#ff0000"},
+                "labelUuid": "lbl-cat",
+                "tags": [],
+            }
+        ],
     }
     for m in MATCHES
 }
 
 
 def _mock_settings_404(page: Page):
-    page.route("**/api/settings/*", lambda route: route.fulfill(
-        status=404, content_type="application/json", body="{}"))
+    page.route("**/api/settings/*", lambda route: route.fulfill(status=404, content_type="application/json", body="{}"))
 
 
 def _mock_find_similar_bboxes(page: Page):
     page.route(
         "**/api/images/bbox/find-similar-by-bbox-uuid",
         lambda route: route.fulfill(
-            status=200, content_type="application/json",
+            status=200,
+            content_type="application/json",
             body=json.dumps({"status": "success", "matches": MATCHES}),
         ),
     )
@@ -75,7 +81,10 @@ def _mock_batch_by_uuids(page: Page):
         req = json.loads(route.request.post_data or "{}")
         uuids = req.get("imageUuids", [])
         images = [IMAGES_BY_UUID[u] for u in uuids if u in IMAGES_BY_UUID]
-        route.fulfill(status=200, content_type="application/json", body=json.dumps({"status": "success", "images": images}))
+        route.fulfill(
+            status=200, content_type="application/json", body=json.dumps({"status": "success", "images": images})
+        )
+
     page.route("**/api/images/batch-by-uuids", _handle)
 
 
@@ -83,7 +92,8 @@ def _mock_labels(page: Page):
     page.route(
         lambda url: url.split("?")[0].endswith("/api/labels") and "api/labels/" not in url,
         lambda route: route.fulfill(
-            status=200, content_type="application/json",
+            status=200,
+            content_type="application/json",
             body=json.dumps({"status": "success", "labels": [LABEL_CAT]}),
         ),
     )
@@ -99,19 +109,19 @@ def _mock_tags(page: Page):
 def _mock_image_labels_batch(page: Page):
     page.route(
         "**/api/images/labels/batch*",
-        lambda route: route.fulfill(status=200, content_type="application/json", body=json.dumps({"status": "success", "imageLabels": {}})),
+        lambda route: route.fulfill(
+            status=200, content_type="application/json", body=json.dumps({"status": "success", "imageLabels": {}})
+        ),
     )
 
 
 def _open_similar_bboxes_modal(page: Page, base_url: str):
     page.goto(base_url)
     page.wait_for_load_state("networkidle")
-    page.evaluate(
-        """async () => {
+    page.evaluate("""async () => {
             const { openSimilarBboxesModal } = await import('/app-static/js/ui/similarSearch.js');
             await openSimilarBboxesModal({ bboxes: [{ bboxUuid: 'anchor-bbox' }] });
-        }"""
-    )
+        }""")
     page.wait_for_selector(".review-grid", timeout=4000)
 
 

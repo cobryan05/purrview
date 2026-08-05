@@ -9,6 +9,7 @@ All tests share one pre-navigated `shared_page` (module-scoped, see
 conftest.py) instead of reloading the SPA per test — they only call pure
 functions and touch no DOM/SPA state, so a single navigation suffices.
 """
+
 import pytest
 from playwright.sync_api import Page
 
@@ -18,6 +19,7 @@ UNVERIFIED_TAG_UUID = "00000000-0000-0000-0000-000000000001"
 # ---------------------------------------------------------------------------
 # createUIBBbox
 # ---------------------------------------------------------------------------
+
 
 class TestCreateUIBBbox:
     def test_defaults(self, shared_page: Page):
@@ -72,13 +74,14 @@ class TestCreateUIBBbox:
             return createUIBBbox({ x: 0.5 });
         }""")
         assert result["x"] == pytest.approx(0.5)
-        assert result["y"] == 0           # default
-        assert result["tags"] == []        # default
+        assert result["y"] == 0  # default
+        assert result["tags"] == []  # default
 
 
 # ---------------------------------------------------------------------------
 # bboxReadToUI
 # ---------------------------------------------------------------------------
+
 
 class TestBboxReadToUI:
     def test_with_label_maps_fields(self, shared_page: Page):

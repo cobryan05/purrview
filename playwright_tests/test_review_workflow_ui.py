@@ -17,6 +17,7 @@ endpoints it needs via page.route().
 Run with:
     pytest playwright_tests/test_review_workflow_ui.py -p no:xdist -p no:asyncio -v
 """
+
 import base64
 import json
 import re
@@ -28,10 +29,7 @@ UNVERIFIED_TAG_UUID = "00000000-0000-0000-0000-000000000001"
 VERIFIED_TAG_UUID = "00000000-0000-0000-0000-000000000005"
 
 # A 1x1 transparent PNG, base64-encoded — small valid image for canvas loadImage().
-TINY_PNG_B64 = (
-    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk"
-    "+A8AAQUBAScY42YAAAAASUVORK5CYII="
-)
+TINY_PNG_B64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk" "+A8AAQUBAScY42YAAAAASUVORK5CYII="
 
 # ---------------------------------------------------------------------------
 # Fake data
@@ -47,21 +45,33 @@ REVIEWED_TAG = {"uuid": "tag-reviewed", "name": "Reviewed", "color": "#4c4", "ic
 # bbox-1, bbox-3: still unverified (carry the UNVERIFIED tag)
 # bbox-2: verified (carries the VERIFIED tag)
 BBOX_1 = {
-    "uuid": "bbox-1", "x": 0.1, "y": 0.1, "width": 0.2, "height": 0.2,
+    "uuid": "bbox-1",
+    "x": 0.1,
+    "y": 0.1,
+    "width": 0.2,
+    "height": 0.2,
     "label": {"uuid": "lbl-cat", "name": "Cat", "color": "#ff0000"},
     "labelUuid": "lbl-cat",
     "tags": [UNVERIFIED_TAG],
     "metadataJson": {"confidence": "0.92"},
 }
 BBOX_2 = {
-    "uuid": "bbox-2", "x": 0.3, "y": 0.3, "width": 0.1, "height": 0.1,
+    "uuid": "bbox-2",
+    "x": 0.3,
+    "y": 0.3,
+    "width": 0.1,
+    "height": 0.1,
     "label": {"uuid": "lbl-dog", "name": "Dog", "color": "#00ff00"},
     "labelUuid": "lbl-dog",
     "tags": [VERIFIED_TAG],
     "metadataJson": None,
 }
 BBOX_3 = {
-    "uuid": "bbox-3", "x": 0.2, "y": 0.2, "width": 0.15, "height": 0.15,
+    "uuid": "bbox-3",
+    "x": 0.2,
+    "y": 0.2,
+    "width": 0.15,
+    "height": 0.15,
     "label": {"uuid": "lbl-cat", "name": "Cat", "color": "#ff0000"},
     "labelUuid": "lbl-cat",
     "tags": [UNVERIFIED_TAG],
@@ -81,6 +91,7 @@ PAGE_2_IMAGES = [IMAGE_3]
 # Navigation / mocking helpers
 # ---------------------------------------------------------------------------
 
+
 def _navigate_to_review(page: Page, base_url: str):
     """Open the app and activate the Review tab."""
     page.goto(base_url)
@@ -99,18 +110,21 @@ def _mock_review_queue(page: Page, images: list, has_more: bool = False, total_c
         lambda route: route.fulfill(
             status=200,
             content_type="application/json",
-            body=json.dumps({
-                "status": "success",
-                "images": images,
-                "hasMore": has_more,
-                "totalCount": total_count,
-            }),
+            body=json.dumps(
+                {
+                    "status": "success",
+                    "images": images,
+                    "hasMore": has_more,
+                    "totalCount": total_count,
+                }
+            ),
         ),
     )
 
 
 def _mock_paged_review_queue(page: Page, page1: list, page2: list):
     """Serve `page1` for the initial fetch (after_uuid is null) and `page2` after that."""
+
     def handle(route: Route):
         body = json.loads(route.request.post_data or "{}")
         images = page2 if body.get("afterUuid") else page1
@@ -118,13 +132,16 @@ def _mock_paged_review_queue(page: Page, page1: list, page2: list):
         route.fulfill(
             status=200,
             content_type="application/json",
-            body=json.dumps({
-                "status": "success",
-                "images": images,
-                "hasMore": has_more,
-                "totalCount": len(page1) + len(page2),
-            }),
+            body=json.dumps(
+                {
+                    "status": "success",
+                    "images": images,
+                    "hasMore": has_more,
+                    "totalCount": len(page1) + len(page2),
+                }
+            ),
         )
+
     page.route("**/api/images/review", handle)
 
 
@@ -154,16 +171,23 @@ def _mock_misc_review_endpoints(page: Page):
     """Stub out side-effect endpoints (thumbnail invalidation, bbox/image updates)."""
     page.route(
         "**/api/images/bbox/thumbnails/invalidate",
-        lambda route: route.fulfill(status=200, content_type="application/json", body=json.dumps({"status": "success"})),
+        lambda route: route.fulfill(
+            status=200, content_type="application/json", body=json.dumps({"status": "success"})
+        ),
     )
     page.route(
         "**/api/images/bbox/*",
-        lambda route: route.fulfill(status=200, content_type="application/json", body=json.dumps({"status": "success"}))
-        if route.request.method in ("PATCH", "DELETE") else route.fallback(),
+        lambda route: (
+            route.fulfill(status=200, content_type="application/json", body=json.dumps({"status": "success"}))
+            if route.request.method in ("PATCH", "DELETE")
+            else route.fallback()
+        ),
     )
     page.route(
         "**/api/images/labels/set",
-        lambda route: route.fulfill(status=200, content_type="application/json", body=json.dumps({"status": "success"})),
+        lambda route: route.fulfill(
+            status=200, content_type="application/json", body=json.dumps({"status": "success"})
+        ),
     )
 
 
@@ -180,7 +204,9 @@ def _show_all_bboxes(page: Page):
     trigger.click()
     page.wait_for_timeout(150)
     # Click "Select None" to clear all tag selections (including hidden system tags).
-    page.locator("#review-root .ms-dropdown[data-filter-key='tags'] .ms-select-all-row button:text('Select None')").click()
+    page.locator(
+        "#review-root .ms-dropdown[data-filter-key='tags'] .ms-select-all-row button:text('Select None')"
+    ).click()
     # Click outside the dropdown to close it.
     page.mouse.click(0, 0)
     page.wait_for_timeout(300)
@@ -195,13 +221,23 @@ def _switch_view(page: Page, key: str):
 # 1. Queue rendering
 # ---------------------------------------------------------------------------
 
+
 class TestReviewQueueRendering:
     def test_queue_renders_one_card_per_entry(self, page: Page, base_url: str):
         """Each image gets an image-level card, plus one card per matching bbox."""
         _mock_review_queue(page, PAGE_1_IMAGES)
         _mock_labels(page, [LABEL_CAT, LABEL_DOG])
-        _mock_tags(page, [UNVERIFIED_TAG | {"name": "Unverified", "color": "#888"} if False else
-                          {**UNVERIFIED_TAG, "name": "Unverified", "color": "#888", "kind": "system"}, REVIEWED_TAG])
+        _mock_tags(
+            page,
+            [
+                (
+                    UNVERIFIED_TAG | {"name": "Unverified", "color": "#888"}
+                    if False
+                    else {**UNVERIFIED_TAG, "name": "Unverified", "color": "#888", "kind": "system"}
+                ),
+                REVIEWED_TAG,
+            ],
+        )
 
         _navigate_to_review(page, base_url)
         # Switch to 'all' to see both image-level and bbox-level cards.
@@ -221,16 +257,20 @@ class TestReviewQueueRendering:
 # 2. Verify chip
 # ---------------------------------------------------------------------------
 
+
 class TestVerifyChip:
     def test_verify_chip_reflects_bbox_state(self, page: Page, base_url: str):
         """The verify chip reads '✓ Verified' for verified bboxes and '◌ Unverified' otherwise."""
         _mock_review_queue(page, PAGE_1_IMAGES)
         _mock_labels(page, [LABEL_CAT, LABEL_DOG])
-        _mock_tags(page, [
-            {**UNVERIFIED_TAG, "name": "Unverified", "color": "#888", "kind": "system"},
-            {**VERIFIED_TAG, "name": "Verified", "color": "#27ae60", "kind": "system"},
-            REVIEWED_TAG,
-        ])
+        _mock_tags(
+            page,
+            [
+                {**UNVERIFIED_TAG, "name": "Unverified", "color": "#888", "kind": "system"},
+                {**VERIFIED_TAG, "name": "Verified", "color": "#27ae60", "kind": "system"},
+                REVIEWED_TAG,
+            ],
+        )
 
         _navigate_to_review(page, base_url)
         _show_all_bboxes(page)
@@ -253,11 +293,14 @@ class TestVerifyChip:
         """
         _mock_review_queue(page, PAGE_1_IMAGES)
         _mock_labels(page, [LABEL_CAT, LABEL_DOG])
-        _mock_tags(page, [
-            {**UNVERIFIED_TAG, "name": "Unverified", "color": "#888", "kind": "system"},
-            {**VERIFIED_TAG, "name": "Verified", "color": "#27ae60", "kind": "system"},
-            REVIEWED_TAG,
-        ])
+        _mock_tags(
+            page,
+            [
+                {**UNVERIFIED_TAG, "name": "Unverified", "color": "#888", "kind": "system"},
+                {**VERIFIED_TAG, "name": "Verified", "color": "#27ae60", "kind": "system"},
+                REVIEWED_TAG,
+            ],
+        )
         _mock_misc_review_endpoints(page)
 
         _navigate_to_review(page, base_url)
@@ -277,6 +320,7 @@ class TestVerifyChip:
 # ---------------------------------------------------------------------------
 # 3. Single checkbox selection
 # ---------------------------------------------------------------------------
+
 
 class TestSingleSelection:
     def test_single_checkbox_selection_updates_bulk_button(self, page: Page, base_url: str):
@@ -299,6 +343,7 @@ class TestSingleSelection:
 # ---------------------------------------------------------------------------
 # 4. Shift-click range selection
 # ---------------------------------------------------------------------------
+
 
 class TestShiftClickRangeSelection:
     def test_shift_click_selects_contiguous_range(self, page: Page, base_url: str):
@@ -325,6 +370,7 @@ class TestShiftClickRangeSelection:
 # ---------------------------------------------------------------------------
 # 5. Select-all
 # ---------------------------------------------------------------------------
+
 
 class TestSelectAll:
     def test_select_all_toggles_all_visible_cards(self, page: Page, base_url: str):
@@ -357,6 +403,7 @@ class TestSelectAll:
 # ---------------------------------------------------------------------------
 # 6. Bulk relabel (bbox) modal
 # ---------------------------------------------------------------------------
+
 
 class TestBulkBboxAction:
     def test_bulk_relabel_modal_fires_api_with_selected_entries(self, page: Page, base_url: str):
@@ -413,10 +460,9 @@ class TestBulkBboxAction:
 # 6b. Apply to Parent Images (bbox selection -> distinct parent images)
 # ---------------------------------------------------------------------------
 
+
 class TestBulkParentImagesAction:
-    def test_apply_to_parent_images_resolves_distinct_images_from_bbox_selection(
-        self, page: Page, base_url: str
-    ):
+    def test_apply_to_parent_images_resolves_distinct_images_from_bbox_selection(self, page: Page, base_url: str):
         """Selecting bboxes from DIFFERENT images and using 'Apply to Parent
         Images' routes the DISTINCT parent image uuids into the image-level
         bulk endpoint — not one call per bbox, and not the bbox bulk endpoint.
@@ -474,6 +520,7 @@ class TestBulkParentImagesAction:
 # 7. Bulk image action modal
 # ---------------------------------------------------------------------------
 
+
 class TestBulkImageAction:
     def test_image_bulk_action_modal_fires_api_with_selected_entries(self, page: Page, base_url: str):
         """Selecting image cards and confirming 'Mark label Absent' calls the bulk-apply-by-uuids API.
@@ -529,6 +576,7 @@ class TestBulkImageAction:
 # 8. Pagination
 # ---------------------------------------------------------------------------
 
+
 class TestPagination:
     def test_next_and_prev_advance_and_return(self, page: Page, base_url: str):
         _mock_paged_review_queue(page, PAGE_1_IMAGES, PAGE_2_IMAGES)
@@ -565,6 +613,7 @@ class TestPagination:
 # ---------------------------------------------------------------------------
 # 9. Filter toggle button
 # ---------------------------------------------------------------------------
+
 
 class TestFilterToggleButton:
     def test_filter_chip_bar_reflects_active_filters(self, page: Page, base_url: str):
@@ -616,8 +665,11 @@ VIEW_CATS_ONLY = {
     "description": "",
     "labelUuids": ["lbl-cat"],
     "filterJson": {
-        "labelExcludeUuids": [], "labelMatchMode": "any", "labelIncludeChildren": False,
-        "verificationCheck": None, "terms": [],
+        "labelExcludeUuids": [],
+        "labelMatchMode": "any",
+        "labelIncludeChildren": False,
+        "verificationCheck": None,
+        "terms": [],
     },
     "promoted": False,
 }
@@ -633,7 +685,8 @@ class TestSavedViews:
         page.route(
             lambda url: url.split("?")[0].endswith("/api/datasets") and "include_views=true" in url,
             lambda route: route.fulfill(
-                status=200, content_type="application/json",
+                status=200,
+                content_type="application/json",
                 body=json.dumps({"status": "success", "datasets": [VIEW_CATS_ONLY]}),
             ),
         )
@@ -666,12 +719,14 @@ class TestSavedViews:
             if route.request.method == "POST":
                 create_calls.append(json.loads(route.request.post_data))
                 route.fulfill(
-                    status=200, content_type="application/json",
+                    status=200,
+                    content_type="application/json",
                     body=json.dumps({"status": "success", "dataset": {**VIEW_CATS_ONLY, "name": "My View"}}),
                 )
             else:
                 route.fulfill(
-                    status=200, content_type="application/json",
+                    status=200,
+                    content_type="application/json",
                     body=json.dumps({"status": "success", "datasets": []}),
                 )
 
@@ -702,6 +757,7 @@ class TestSavedViews:
 # 11. Canvas modal round trip
 # ---------------------------------------------------------------------------
 
+
 class TestCanvasModalRoundTrip:
     def test_double_click_thumbnail_opens_canvas_modal_and_delete_round_trips(self, page: Page, base_url: str):
         """Double-clicking a bbox thumbnail opens the canvas modal; deleting the
@@ -724,12 +780,14 @@ class TestCanvasModalRoundTrip:
             lambda route: route.fulfill(
                 status=200,
                 content_type="application/json",
-                body=json.dumps({
-                    "status": "success",
-                    "imageBase64": TINY_PNG_B64,
-                    "mimeType": "image/png",
-                    "image": {"uuid": "img-1", "filename": "folder/image1.jpg", "bboxes": [BBOX_1, BBOX_2]},
-                }),
+                body=json.dumps(
+                    {
+                        "status": "success",
+                        "imageBase64": TINY_PNG_B64,
+                        "mimeType": "image/png",
+                        "image": {"uuid": "img-1", "filename": "folder/image1.jpg", "bboxes": [BBOX_1, BBOX_2]},
+                    }
+                ),
             ),
         )
         page.route(
@@ -773,6 +831,7 @@ class TestCanvasModalRoundTrip:
 # 11. Group highlight on hover
 # ---------------------------------------------------------------------------
 
+
 class TestGroupHighlight:
     def test_hovering_a_card_highlights_related_cards(self, page: Page, base_url: str):
         """Hovering a bbox card highlights itself and other cards sharing its image-uuid."""
@@ -804,6 +863,7 @@ class TestGroupHighlight:
 # ---------------------------------------------------------------------------
 # 12. List view (ui/entryView.js)
 # ---------------------------------------------------------------------------
+
 
 class TestListView:
     def test_toggle_to_list_view_renders_rows_and_persists(self, page: Page, base_url: str):
@@ -838,7 +898,6 @@ class TestListView:
         page.wait_for_selector("#review-root .review-list", timeout=4000)
         expect(page.locator("#review-root [data-testid='review-row']")).to_have_count(2)
 
-
     def test_list_view_selection_and_canvas_modal(self, page: Page, base_url: str):
         """In list view, checking a row's checkbox enables Bulk Apply (same
         `applySelect` wiring as grid cards), and double-clicking a row's
@@ -861,12 +920,14 @@ class TestListView:
             lambda route: route.fulfill(
                 status=200,
                 content_type="application/json",
-                body=json.dumps({
-                    "status": "success",
-                    "imageBase64": TINY_PNG_B64,
-                    "mimeType": "image/png",
-                    "image": {"uuid": "img-1", "filename": "folder/image1.jpg", "bboxes": [BBOX_1, BBOX_2]},
-                }),
+                body=json.dumps(
+                    {
+                        "status": "success",
+                        "imageBase64": TINY_PNG_B64,
+                        "mimeType": "image/png",
+                        "image": {"uuid": "img-1", "filename": "folder/image1.jpg", "bboxes": [BBOX_1, BBOX_2]},
+                    }
+                ),
             ),
         )
 
@@ -903,6 +964,7 @@ class TestListView:
 # back to enabled (assuming an active config) on switching away — following
 # the same _navigate_to_review / _switch_view helpers used elsewhere in this file.
 
+
 class TestConfigReadyViewGating:
     def test_disabled_in_bboxes_view(self, page: Page, base_url: str):
         _mock_review_queue(page, PAGE_1_IMAGES)
@@ -927,15 +989,34 @@ class TestConfigReadyViewGating:
         _mock_tags(page, [{**UNVERIFIED_TAG, "name": "Unverified", "color": "#888", "kind": "system"}])
         page.route(
             lambda url: url.split("?")[0].endswith("/api/model-configs"),
-            lambda route: route.fulfill(
-                status=200,
-                content_type="application/json",
-                body=json.dumps({"status": "success", "configs": [
-                    {"uuid": "mc-1", "name": "My Model", "description": "", "nodes": [
-                        {"uuid": "node-cat", "labelUuid": "lbl-cat", "modelType": "object_detection", "architecture": "yolo_v9_c"},
-                    ]},
-                ]}),
-            ) if route.request.method == "GET" else route.fallback(),
+            lambda route: (
+                route.fulfill(
+                    status=200,
+                    content_type="application/json",
+                    body=json.dumps(
+                        {
+                            "status": "success",
+                            "configs": [
+                                {
+                                    "uuid": "mc-1",
+                                    "name": "My Model",
+                                    "description": "",
+                                    "nodes": [
+                                        {
+                                            "uuid": "node-cat",
+                                            "labelUuid": "lbl-cat",
+                                            "modelType": "object_detection",
+                                            "architecture": "yolo_v9_c",
+                                        },
+                                    ],
+                                },
+                            ],
+                        }
+                    ),
+                )
+                if route.request.method == "GET"
+                else route.fallback()
+            ),
         )
         page.route(
             "**/api/training-configs/tc-1/label-stats",
@@ -982,15 +1063,34 @@ class TestConfigReadyViewGating:
         _mock_tags(page, [{**UNVERIFIED_TAG, "name": "Unverified", "color": "#888", "kind": "system"}])
         page.route(
             lambda url: url.split("?")[0].endswith("/api/model-configs"),
-            lambda route: route.fulfill(
-                status=200,
-                content_type="application/json",
-                body=json.dumps({"status": "success", "configs": [
-                    {"uuid": "mc-1", "name": "My Model", "description": "", "nodes": [
-                        {"uuid": "node-cat", "labelUuid": "lbl-cat", "modelType": "object_detection", "architecture": "yolo_v9_c"},
-                    ]},
-                ]}),
-            ) if route.request.method == "GET" else route.fallback(),
+            lambda route: (
+                route.fulfill(
+                    status=200,
+                    content_type="application/json",
+                    body=json.dumps(
+                        {
+                            "status": "success",
+                            "configs": [
+                                {
+                                    "uuid": "mc-1",
+                                    "name": "My Model",
+                                    "description": "",
+                                    "nodes": [
+                                        {
+                                            "uuid": "node-cat",
+                                            "labelUuid": "lbl-cat",
+                                            "modelType": "object_detection",
+                                            "architecture": "yolo_v9_c",
+                                        },
+                                    ],
+                                },
+                            ],
+                        }
+                    ),
+                )
+                if route.request.method == "GET"
+                else route.fallback()
+            ),
         )
         page.route(
             "**/api/training-configs/tc-1/label-stats",
@@ -1010,6 +1110,7 @@ class TestConfigReadyViewGating:
                 content_type="application/json",
                 body=json.dumps({"status": "success", "images": PAGE_1_IMAGES, "hasMore": False, "totalCount": 2}),
             )
+
         page.route("**/api/images/review", handle)
 
         _navigate_to_review(page, base_url)
@@ -1035,7 +1136,9 @@ class TestConfigReadyViewGating:
             "kind": "labelVerification",
             "check": "all_verified",
             "labelUuids": ["lbl-cat"],
-        } in captured["body"].get("terms", [])
+        } in captured[
+            "body"
+        ].get("terms", [])
 
         _switch_view(page, "bboxes")
         page.wait_for_timeout(300)

@@ -13,6 +13,7 @@ slim/CPU image build breaks (ModuleNotFound) — this test fails first instead.
 Run in a fresh interpreter (subprocess) because other tests in the session may
 have already imported torch.
 """
+
 import subprocess
 import sys
 from pathlib import Path

@@ -4,6 +4,7 @@ Playwright smoke tests for the image_tagging_server SPA.
 Run with:
     pytest tests/playwright/ -p no:xdist -v
 """
+
 import re
 
 import pytest
@@ -12,6 +13,7 @@ from playwright.sync_api import Page, expect
 # ---------------------------------------------------------------------------
 # Page load
 # ---------------------------------------------------------------------------
+
 
 def test_page_loads(page: Page, base_url: str):
     """The root URL returns HTML with the expected tab container."""
@@ -27,6 +29,7 @@ def test_page_title(page: Page, base_url: str):
 # ---------------------------------------------------------------------------
 # Main tab switching
 # ---------------------------------------------------------------------------
+
 
 def test_initial_tab_is_image_tagging(page: Page, base_url: str):
     """Image Tagging should be the active tab on first load."""
@@ -44,9 +47,7 @@ def test_switch_to_configuration_tab(page: Page, base_url: str):
 
     page.locator(".main-tab-button[data-tab='tab-configuration']").click()
 
-    expect(page.locator(".main-tab-button[data-tab='tab-configuration']")).to_have_class(
-        re.compile(r"\bactive\b")
-    )
+    expect(page.locator(".main-tab-button[data-tab='tab-configuration']")).to_have_class(re.compile(r"\bactive\b"))
     expect(page.locator("#tab-configuration")).to_have_class(re.compile(r"\bactive\b"))
     expect(page.locator("#tab-image-tagging")).not_to_have_class(re.compile(r"\bactive\b"))
 
@@ -58,9 +59,7 @@ def test_switch_to_review_tab(page: Page, base_url: str):
 
     page.locator(".main-tab-button[data-tab='tab-review']").click()
 
-    expect(page.locator(".main-tab-button[data-tab='tab-review']")).to_have_class(
-        re.compile(r"\bactive\b")
-    )
+    expect(page.locator(".main-tab-button[data-tab='tab-review']")).to_have_class(re.compile(r"\bactive\b"))
     expect(page.locator("#tab-review")).to_have_class(re.compile(r"\bactive\b"))
 
 
@@ -81,6 +80,7 @@ def test_switch_tabs_and_back(page: Page, base_url: str):
 # ---------------------------------------------------------------------------
 # Configuration tab — sub-tab and API calls
 # ---------------------------------------------------------------------------
+
 
 def test_configuration_default_subtab_is_labels(page: Page, base_url: str):
     """The Labels & Tags sub-tab should be active by default inside Configuration."""
@@ -117,6 +117,7 @@ def test_configuration_subtab_switching(page: Page, base_url: str):
 # ---------------------------------------------------------------------------
 # Operations tab — Sources and Tasks moved here out of Configuration
 # ---------------------------------------------------------------------------
+
 
 def test_operations_default_subtab_is_sources(page: Page, base_url: str):
     """The Sources sub-tab should be active by default inside Operations."""
@@ -185,6 +186,7 @@ def test_server_config_endpoint_responds(page: Page, base_url: str):
 # ---------------------------------------------------------------------------
 # No JS console errors on tab switch
 # ---------------------------------------------------------------------------
+
 
 def test_no_console_errors_on_load(page: Page, base_url: str):
     """No JS console errors (level 'error') during initial page load."""

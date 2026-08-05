@@ -14,6 +14,7 @@ test_configuration_sources.py / test_configuration_labels.py.
 Run with:
     pytest playwright_tests/test_settings.py -p no:xdist -p no:asyncio -v
 """
+
 import base64
 import json
 
@@ -336,7 +337,9 @@ def _mock_image_list(page: Page, pages_by_path: dict):
         plan = pages_by_path.get(path, [])
         idx = call_counts.get((path, offset), None)
         # Pick the page whose declared offset matches; fall back to last.
-        page_entry = next((p for p in plan if p.get("offset", 0) == offset), plan[-1] if plan else {"entries": [], "has_more": False})
+        page_entry = next(
+            (p for p in plan if p.get("offset", 0) == offset), plan[-1] if plan else {"entries": [], "has_more": False}
+        )
         call_counts[(path, offset)] = True
         route.fulfill(
             status=200,
@@ -442,12 +445,14 @@ class TestFileBrowserNavigation:
             route.fulfill(
                 status=200,
                 content_type="application/json",
-                body=json.dumps({
-                    "status": "success",
-                    "imageBase64": "",
-                    "mimeType": "image/jpeg",
-                    "image": {"uuid": "img-uuid-a", "filename": "a.jpg", "bboxes": []},
-                }),
+                body=json.dumps(
+                    {
+                        "status": "success",
+                        "imageBase64": "",
+                        "mimeType": "image/jpeg",
+                        "image": {"uuid": "img-uuid-a", "filename": "a.jpg", "bboxes": []},
+                    }
+                ),
             )
 
         page.route(lambda url: url.split("?")[0].endswith("/file") and "/api/images/" in url, handle_file)
@@ -464,10 +469,7 @@ class TestFileBrowserNavigation:
 # 8. Hover preview (ui/fileEntryHoverPreview.js)
 # ---------------------------------------------------------------------------
 
-TINY_PNG_B64 = (
-    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk"
-    "+A8AAQUBAScY42YAAAAASUVORK5CYII="
-)
+TINY_PNG_B64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk" "+A8AAQUBAScY42YAAAAASUVORK5CYII="
 
 
 class TestFileBrowserHoverPreview:
@@ -490,20 +492,26 @@ class TestFileBrowserHoverPreview:
             route.fulfill(
                 status=200,
                 content_type="application/json",
-                body=json.dumps({
-                    "status": "success",
-                    "image": {
-                        "uuid": "img-uuid-a",
-                        "filename": "a.jpg",
-                        "bboxes": [
-                            {
-                                "uuid": "bbox-1", "x": 0.1, "y": 0.1, "width": 0.2, "height": 0.2,
-                                "label": {"uuid": "label-1", "name": "Cat", "color": "#ff0000"},
-                                "tags": [],
-                            },
-                        ],
-                    },
-                }),
+                body=json.dumps(
+                    {
+                        "status": "success",
+                        "image": {
+                            "uuid": "img-uuid-a",
+                            "filename": "a.jpg",
+                            "bboxes": [
+                                {
+                                    "uuid": "bbox-1",
+                                    "x": 0.1,
+                                    "y": 0.1,
+                                    "width": 0.2,
+                                    "height": 0.2,
+                                    "label": {"uuid": "label-1", "name": "Cat", "color": "#ff0000"},
+                                    "tags": [],
+                                },
+                            ],
+                        },
+                    }
+                ),
             )
 
         page.route("**/api/images/metadata/get", handle_metadata)
@@ -537,6 +545,7 @@ class TestFileBrowserHoverPreview:
 # `showThumbnails` is never enabled on the Files tab in the live app today, so
 # the toggle is unreachable through normal navigation — instantiate FileBrowser
 # directly with `showThumbnails: true` to exercise entryView's grid/list paths.
+
 
 class TestFileBrowserViewToggle:
     def test_toggle_switches_views_and_persists(self, page: Page, base_url: str):

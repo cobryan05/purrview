@@ -8,6 +8,7 @@ The module persists to both localStorage and the DB settings API.  The DB
 settings proxy in our test server returns {"status":"success","settings":{}} so
 getSetting returns null → the module falls back to localStorage defaults.
 """
+
 import pytest
 from playwright.sync_api import Page
 
@@ -19,6 +20,7 @@ def goto(page: Page, base_url: str):
 # ---------------------------------------------------------------------------
 # eventToCombo
 # ---------------------------------------------------------------------------
+
 
 class TestEventToCombo:
     def test_bare_key(self, page: Page, base_url: str):
@@ -74,6 +76,7 @@ class TestEventToCombo:
 # comboLabel
 # ---------------------------------------------------------------------------
 
+
 class TestComboLabel:
     def test_single_lowercase_char_uppercased(self, page: Page, base_url: str):
         goto(page, base_url)
@@ -111,6 +114,7 @@ class TestComboLabel:
 # ---------------------------------------------------------------------------
 # actionForCombo / combosForAction — default bindings
 # ---------------------------------------------------------------------------
+
 
 class TestDefaultBindings:
     def test_ctrl_z_maps_to_undo(self, page: Page, base_url: str):
@@ -157,6 +161,7 @@ class TestDefaultBindings:
 # ---------------------------------------------------------------------------
 # setBinding / clearBinding / resetBindings
 # ---------------------------------------------------------------------------
+
 
 class TestSetBinding:
     def test_new_binding_registered(self, page: Page, base_url: str):

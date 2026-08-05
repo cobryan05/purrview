@@ -7,6 +7,7 @@ Each test imports a specific module inside the browser via page.evaluate so
 or call `events.clear()` for the EventBus singleton, so no module-level state
 leaks between tests.
 """
+
 import re
 
 import pytest
@@ -15,6 +16,7 @@ from playwright.sync_api import Page
 # ---------------------------------------------------------------------------
 # viewport.js — computeViewport
 # ---------------------------------------------------------------------------
+
 
 class TestComputeViewport:
     # computeViewport applies a small FIT_MARGIN (0.96) below the raw
@@ -32,8 +34,8 @@ class TestComputeViewport:
             return computeViewport(800, 600, 400, 200);
         }""")
         assert result["scale"] == pytest.approx(2.0 * self.FIT_MARGIN)
-        assert result["offsetY"] > 0   # vertically centred
-        assert result["offsetX"] > 0   # margin leaves a gap on the fitted axis too
+        assert result["offsetY"] > 0  # vertically centred
+        assert result["offsetX"] > 0  # margin leaves a gap on the fitted axis too
 
     def test_portrait_image_fits_by_height(self, shared_page: Page):
         page = shared_page
@@ -120,6 +122,7 @@ class TestScreenToImage:
 # ---------------------------------------------------------------------------
 # tools.js — isDrawTool, isTagTool, parseToolUuid
 # ---------------------------------------------------------------------------
+
 
 class TestToolPredicates:
     def test_isDrawTool_bare_bbox(self, shared_page: Page):
@@ -210,6 +213,7 @@ class TestParseToolUuid:
 # ---------------------------------------------------------------------------
 # shared/events/bus.js — EventBus
 # ---------------------------------------------------------------------------
+
 
 class TestEventBus:
     def test_subscribe_and_publish_delivers_payload(self, shared_page: Page):
@@ -306,6 +310,7 @@ class TestEventBus:
 # createCachedFetcher.js
 # ---------------------------------------------------------------------------
 
+
 class TestCreateCachedFetcher:
     def test_first_fetch_calls_fn(self, shared_page: Page):
         page = shared_page
@@ -401,6 +406,7 @@ class TestCreateCachedFetcher:
 # ---------------------------------------------------------------------------
 # fileNavigation.js — FileNavigation
 # ---------------------------------------------------------------------------
+
 
 class TestFileNavigation:
     def test_empty_navigation(self, shared_page: Page):
@@ -510,6 +516,7 @@ class TestFileNavigation:
 # ui/utils/utils.js — generateUUID
 # ---------------------------------------------------------------------------
 
+
 class TestGenerateUUID:
     def test_format_matches_rfc4122(self, shared_page: Page):
         page = shared_page
@@ -535,6 +542,7 @@ class TestGenerateUUID:
 # shared/api/apiUtils.js — ignoreKeyReturn
 # ---------------------------------------------------------------------------
 
+
 class TestIgnoreKeyReturn:
     def test_single_key_returns_value(self, shared_page: Page):
         page = shared_page
@@ -558,6 +566,7 @@ class TestIgnoreKeyReturn:
 # ---------------------------------------------------------------------------
 # ui/labelList.js — buildHierarchy (pure function, exported separately)
 # ---------------------------------------------------------------------------
+
 
 class TestBuildHierarchy:
     def test_root_and_children(self, shared_page: Page):

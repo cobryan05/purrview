@@ -16,6 +16,7 @@ Tests cover:
 Run with:
     pytest playwright_tests/test_context_menu.py -p no:xdist -p no:asyncio -v
 """
+
 import pytest
 from playwright.sync_api import Page
 
@@ -60,6 +61,7 @@ _CLEANUP = """
 # ---------------------------------------------------------------------------
 # 1. Apply label via right-click on canvas bbox
 # ---------------------------------------------------------------------------
+
 
 class TestCanvasBboxApplyLabel:
     def test_right_click_bbox_menu_opens_with_apply_label(self, shared_page: Page):
@@ -107,9 +109,10 @@ class TestCanvasBboxApplyLabel:
             {_CLEANUP}
             return {{ found: true, items }};
         }}""")
-        assert result['found'], "Context menu should appear on bbox right-click"
-        assert any('Apply label' in item for item in result['items']), \
-            f"Expected 'Apply label' in menu items, got: {result['items']}"
+        assert result["found"], "Context menu should appear on bbox right-click"
+        assert any(
+            "Apply label" in item for item in result["items"]
+        ), f"Expected 'Apply label' in menu items, got: {result['items']}"
 
     def test_apply_label_relabels_bbox_and_strips_verification(self, shared_page: Page):
         """Selecting a label from the context menu relabels the bbox and strips UNVERIFIED."""
@@ -149,14 +152,16 @@ class TestCanvasBboxApplyLabel:
                 tagUuids: (uiBbox.tags ?? []).map(t => t.uuid),
             }};
         }}""")
-        assert result['labelUuid'] == 'cat-uuid', "Bbox label should be set to cat-uuid"
-        assert UNVERIFIED_TAG_UUID not in result['tagUuids'], \
-            "UNVERIFIED tag should be stripped when a label is applied"
+        assert result["labelUuid"] == "cat-uuid", "Bbox label should be set to cat-uuid"
+        assert (
+            UNVERIFIED_TAG_UUID not in result["tagUuids"]
+        ), "UNVERIFIED tag should be stripped when a label is applied"
 
 
 # ---------------------------------------------------------------------------
 # 2. Verification → Mark Verified
 # ---------------------------------------------------------------------------
+
 
 class TestCanvasBboxVerification:
     def test_set_verified_swaps_verification_tag(self, shared_page: Page):
@@ -195,8 +200,8 @@ class TestCanvasBboxVerification:
             {_CLEANUP}
             return {{ tagUuids: (uiBbox.tags ?? []).map(t => t.uuid) }};
         }}""")
-        assert VERIFIED_TAG_UUID in result['tagUuids'], "VERIFIED tag should be present"
-        assert UNVERIFIED_TAG_UUID not in result['tagUuids'], "UNVERIFIED tag should be removed"
+        assert VERIFIED_TAG_UUID in result["tagUuids"], "VERIFIED tag should be present"
+        assert UNVERIFIED_TAG_UUID not in result["tagUuids"], "UNVERIFIED tag should be removed"
 
     def test_set_verification_null_clears_all_verification_tags(self, shared_page: Page):
         """setVerification(null) removes UNVERIFIED, VERIFIED, and REJECTION."""
@@ -233,10 +238,10 @@ class TestCanvasBboxVerification:
             {_CLEANUP}
             return {{ tagUuids: (uiBbox.tags ?? []).map(t => t.uuid) }};
         }}""")
-        assert UNVERIFIED_TAG_UUID not in result['tagUuids']
-        assert VERIFIED_TAG_UUID not in result['tagUuids']
-        assert REJECTION_TAG_UUID not in result['tagUuids']
-        assert 'other-tag' in result['tagUuids'], "Non-verification tags should be preserved"
+        assert UNVERIFIED_TAG_UUID not in result["tagUuids"]
+        assert VERIFIED_TAG_UUID not in result["tagUuids"]
+        assert REJECTION_TAG_UUID not in result["tagUuids"]
+        assert "other-tag" in result["tagUuids"], "Non-verification tags should be preserved"
 
     def test_right_click_verification_menu_opens(self, shared_page: Page):
         """Context menu contains 'Verification' item when right-clicking a bbox."""
@@ -269,13 +274,15 @@ class TestCanvasBboxVerification:
             {_CLEANUP}
             return {{ itemTexts }};
         }}""")
-        assert any('Verification' in t for t in result['itemTexts']), \
-            f"Expected 'Verification' in menu, got: {result['itemTexts']}"
+        assert any(
+            "Verification" in t for t in result["itemTexts"]
+        ), f"Expected 'Verification' in menu, got: {result['itemTexts']}"
 
 
 # ---------------------------------------------------------------------------
 # 3. Review bbox card right-click → Delete
 # ---------------------------------------------------------------------------
+
 
 class TestReviewBboxAdapterDelete:
     def test_review_bbox_adapter_remove_calls_deleteBbox(self, shared_page: Page):
@@ -349,12 +356,13 @@ class TestReviewBboxAdapterDelete:
 
             return {{ resolverCalled }};
         }}""")
-        assert result['resolverCalled'], "attachContext resolver should be called on contextmenu event"
+        assert result["resolverCalled"], "attachContext resolver should be called on contextmenu event"
 
 
 # ---------------------------------------------------------------------------
 # 4. Review image card right-click → Open on main canvas
 # ---------------------------------------------------------------------------
+
 
 class TestReviewImageAdapterOpenOnCanvas:
     def test_open_on_canvas_publishes_load_event(self, shared_page: Page):
@@ -394,15 +402,16 @@ class TestReviewImageAdapterOpenOnCanvas:
                 showCanvas: publishedEvents[0]?.showCanvas ?? null,
             }};
         }}""")
-        assert result['eventCount'] == 1
-        assert result['path'] == 'cats/photo.jpg'
-        assert result['runtimeId'] == 'primary-runtime-id'
-        assert result['showCanvas'] is True
+        assert result["eventCount"] == 1
+        assert result["path"] == "cats/photo.jpg"
+        assert result["runtimeId"] == "primary-runtime-id"
+        assert result["showCanvas"] is True
 
 
 # ---------------------------------------------------------------------------
 # 5. Multi-select intersection in the context-menu registry
 # ---------------------------------------------------------------------------
+
 
 class TestContextMenuRegistryIntersection:
     def test_common_types_only_shows_shared_actions(self, shared_page: Page):
@@ -439,10 +448,10 @@ class TestContextMenuRegistryIntersection:
                 typeBInvocations: sectionBResults,
             };
         }""")
-        assert result['opened'] is True, "Menu should open (type-A is shared)"
-        assert len(result['typeAInvocations']) == 1, "type-A provider should be called once"
-        assert result['typeAInvocations'][0] == 2, "type-A should receive 2 adapters"
-        assert len(result['typeBInvocations']) == 0, "type-B provider should NOT be called (not shared)"
+        assert result["opened"] is True, "Menu should open (type-A is shared)"
+        assert len(result["typeAInvocations"]) == 1, "type-A provider should be called once"
+        assert result["typeAInvocations"][0] == 2, "type-A should receive 2 adapters"
+        assert len(result["typeBInvocations"]) == 0, "type-B provider should NOT be called (not shared)"
 
     def test_no_common_types_returns_false(self, shared_page: Page):
         """openContextMenuForObjects with no common types returns false and opens no menu."""
@@ -460,13 +469,14 @@ class TestContextMenuRegistryIntersection:
             const menuCount = document.querySelectorAll('.ctx-menu').length;
             return { opened, menuCount };
         }""")
-        assert result['opened'] is False
-        assert result['menuCount'] == 0
+        assert result["opened"] is False
+        assert result["menuCount"] == 0
 
 
 # ---------------------------------------------------------------------------
 # 6. Fall-through: empty canvas right-click → no menu, tool toggles
 # ---------------------------------------------------------------------------
+
 
 class TestCanvasFallthrough:
     def test_empty_canvas_right_click_falls_through_to_tool_toggle(self, shared_page: Page):
@@ -507,14 +517,15 @@ class TestCanvasFallthrough:
             {_CLEANUP}
             return {{ after1, after2, menuCount }};
         }}""")
-        assert result['after1'] == 'bbox:', f"Expected 'bbox:' after first right-click, got: {result['after1']}"
-        assert result['after2'] == 'select', f"Expected 'select' after second right-click, got: {result['after2']}"
-        assert result['menuCount'] == 0, "No menu should appear on empty canvas right-click"
+        assert result["after1"] == "bbox:", f"Expected 'bbox:' after first right-click, got: {result['after1']}"
+        assert result["after2"] == "select", f"Expected 'select' after second right-click, got: {result['after2']}"
+        assert result["menuCount"] == 0, "No menu should appear on empty canvas right-click"
 
 
 # ---------------------------------------------------------------------------
 # 7. Menu engine: basic open/close behaviour
 # ---------------------------------------------------------------------------
+
 
 class TestMenuEngine:
     def test_open_menu_creates_ctx_menu_element(self, shared_page: Page):
@@ -556,11 +567,11 @@ class TestMenuEngine:
 
             return { items, dangerItems, title, triggered, closedAfterClick: !menuAfterClick };
         }""")
-        assert result['items'] == ['Item One', 'Item Two']
-        assert result['dangerItems'] == ['Item Two']
-        assert result['title'] == 'Section A'
-        assert result['triggered'] == ['one']
-        assert result['closedAfterClick'], "Menu should close after clicking an item"
+        assert result["items"] == ["Item One", "Item Two"]
+        assert result["dangerItems"] == ["Item Two"]
+        assert result["title"] == "Section A"
+        assert result["triggered"] == ["one"]
+        assert result["closedAfterClick"], "Menu should close after clicking an item"
 
     def test_escape_closes_menu(self, shared_page: Page):
         """Pressing Escape closes the active menu."""
@@ -582,8 +593,8 @@ class TestMenuEngine:
             const visibleAfter = !!document.querySelector('.ctx-menu');
             return { visibleBefore, visibleAfter };
         }""")
-        assert result['visibleBefore'] is True
-        assert result['visibleAfter'] is False
+        assert result["visibleBefore"] is True
+        assert result["visibleAfter"] is False
 
     def test_outside_click_closes_menu(self, shared_page: Page):
         """Clicking outside the menu closes it."""
@@ -605,13 +616,14 @@ class TestMenuEngine:
             const visibleAfter = !!document.querySelector('.ctx-menu');
             return { visibleBefore, visibleAfter };
         }""")
-        assert result['visibleBefore'] is True
-        assert result['visibleAfter'] is False
+        assert result["visibleBefore"] is True
+        assert result["visibleAfter"] is False
 
 
 # ---------------------------------------------------------------------------
 # 8. Canvas toolbar search button → canvas surface menu
 # ---------------------------------------------------------------------------
+
 
 class TestCanvasToolbarSearchButton:
     def test_toolbar_has_search_button(self, shared_page: Page):
@@ -633,8 +645,8 @@ class TestCanvasToolbarSearchButton:
             container.remove();
             return result;
         }}""")
-        assert result['found'], "Toolbar should render a button with data-toolbar-key='search'"
-        assert result['disabledNoImage'] is True, "Search button should be disabled with no image loaded"
+        assert result["found"], "Toolbar should render a button with data-toolbar-key='search'"
+        assert result["disabledNoImage"] is True, "Search button should be disabled with no image loaded"
 
     def test_search_button_click_opens_canvas_surface_menu(self, shared_page: Page):
         """Clicking the toolbar search button (with an image loaded) opens a menu with
@@ -666,9 +678,11 @@ class TestCanvasToolbarSearchButton:
             {_CLEANUP}
             return {{ disabledWithImage, found: !!menu, itemTexts }};
         }}""")
-        assert result['disabledWithImage'] is False, "Search button should be enabled once an image is loaded"
-        assert result['found'], "Clicking the search button should open a context menu"
-        assert any('Search for similar images' in t for t in result['itemTexts']), \
-            f"Expected similar-search entry, got: {result['itemTexts']}"
-        assert any('Search for dissimilar images' in t for t in result['itemTexts']), \
-            f"Expected dissimilar-search entry, got: {result['itemTexts']}"
+        assert result["disabledWithImage"] is False, "Search button should be enabled once an image is loaded"
+        assert result["found"], "Clicking the search button should open a context menu"
+        assert any(
+            "Search for similar images" in t for t in result["itemTexts"]
+        ), f"Expected similar-search entry, got: {result['itemTexts']}"
+        assert any(
+            "Search for dissimilar images" in t for t in result["itemTexts"]
+        ), f"Expected dissimilar-search entry, got: {result['itemTexts']}"

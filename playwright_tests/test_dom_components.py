@@ -10,6 +10,7 @@ All tests share one pre-navigated `shared_page` (module-scoped, see
 conftest.py); each test creates its own container/overlay elements scoped to
 a fresh `setupMainTabs`/`createModalShell` call and removes them afterward.
 """
+
 import pytest
 from playwright.sync_api import Page
 
@@ -156,7 +157,7 @@ class TestTabsSwitching:
             {_TAB_TEARDOWN}
             return activePanes;
         }}""")
-        assert result == 1   # tab-a still active, nothing changed
+        assert result == 1  # tab-a still active, nothing changed
 
 
 class TestWorkspaceTabs:
@@ -192,6 +193,7 @@ class TestWorkspaceTabs:
 # ---------------------------------------------------------------------------
 # Modal shell — createModalShell
 # ---------------------------------------------------------------------------
+
 
 class TestModalShell:
     def test_open_appends_overlay_to_body(self, shared_page: Page):

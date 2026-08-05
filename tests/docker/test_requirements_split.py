@@ -10,6 +10,7 @@ flavor is chosen per-tier:
 If these drift (e.g. onnxruntime creeps back into the base file, or the CPU/GPU
 pins diverge) the tier split silently breaks.
 """
+
 from pathlib import Path
 
 import pytest
@@ -70,7 +71,7 @@ def test_cpu_gpu_and_training_onnxruntime_pins_are_aligned():
         # strip the package name, keep the version spec (e.g. "<1.27")
         for pkg in ("onnxruntime-gpu", "onnxruntime"):
             if line.startswith(pkg):
-                return line[len(pkg):].strip()
+                return line[len(pkg) :].strip()
         return ""
 
     cpu = constraint(_has_pkg(_reqs("requirements-cpu.txt"), "onnxruntime")[0])

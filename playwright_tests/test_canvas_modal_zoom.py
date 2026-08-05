@@ -21,6 +21,7 @@ without needing the full review panel/queue machinery.
 Run with:
     pytest playwright_tests/test_canvas_modal_zoom.py -p no:xdist --override-ini="addopts=" -v
 """
+
 from playwright.sync_api import Page
 
 # Builds a `.canvas-modal-dialog` skeleton (header/toolbar/content/sidebar/footer)

@@ -8,6 +8,7 @@ glow to flag the outcome either way.
 Run with:
     pytest playwright_tests/test_inference_conflicts.py -p no:xdist --override-ini="addopts=" -v
 """
+
 import pytest
 from playwright.sync_api import Page
 
@@ -40,7 +41,10 @@ def _detection(uuid, x, y, width, height, label_uuid=None, class_str=None, confi
         "confidence": confidence,
         "bbox": {
             "uuid": uuid,
-            "x": x, "y": y, "width": width, "height": height,
+            "x": x,
+            "y": y,
+            "width": width,
+            "height": height,
             "labelUuid": label_uuid,
             "classStr": class_str,
             "tagUuids": [],
@@ -51,6 +55,7 @@ def _detection(uuid, x, y, width, height, label_uuid=None, class_str=None, confi
 # ---------------------------------------------------------------------------
 # computeIou / labelKey — pure logic
 # ---------------------------------------------------------------------------
+
 
 class TestComputeIou:
     def test_identical_rects_have_iou_one(self, shared_page: Page):
@@ -116,11 +121,13 @@ class TestLabelKey:
 # addInferenceResults — conflict resolution behaviour
 # ---------------------------------------------------------------------------
 
+
 class TestAddInferenceResultsConflicts:
     def test_duplicate_same_label_is_not_added(self, shared_page: Page):
         """A detection that matches an existing box's geometry and label is skipped."""
         page = shared_page
-        result = page.evaluate("""async () => {
+        result = page.evaluate(
+            """async () => {
             const { createImageTaggingRuntime } = await import('/app-static/js/app/image-tagging/runtime.js');
             const { createUIBBbox } = await import('/app-static/js/shared/domain/image/mapper.js');
             const { rerenderBboxViews } = await import('/app-static/js/app/image-tagging/canvas/manager.js');
@@ -128,7 +135,9 @@ class TestAddInferenceResultsConflicts:
             const { labelsFetcher } = await import('/app-static/js/shared/api/labels.js');
             const { tagsFetcher } = await import('/app-static/js/shared/api/tags.js');
 
-            """ + _SETUP + """
+            """
+            + _SETUP
+            + """
 
             labelsFetcher.set('labelsMap', new Map([
                 ['cat-uuid', { uuid: 'cat-uuid', name: 'Cat', color: '#ff0000' }],
@@ -158,7 +167,8 @@ class TestAddInferenceResultsConflicts:
                 hasExisting: runtime.state.image.bboxes.has('existing'),
                 hasNew: runtime.state.image.bboxes.has('new-detection'),
             };
-        }""")
+        }"""
+        )
         assert result["size"] == 1
         assert result["hasExisting"] is True
         assert result["hasNew"] is False
@@ -167,7 +177,8 @@ class TestAddInferenceResultsConflicts:
         """A detection overlapping an existing box with a *different* label is
         left alone (and not added) unless replaceExisting is set."""
         page = shared_page
-        result = page.evaluate("""async () => {
+        result = page.evaluate(
+            """async () => {
             const { createImageTaggingRuntime } = await import('/app-static/js/app/image-tagging/runtime.js');
             const { createUIBBbox } = await import('/app-static/js/shared/domain/image/mapper.js');
             const { rerenderBboxViews } = await import('/app-static/js/app/image-tagging/canvas/manager.js');
@@ -175,7 +186,9 @@ class TestAddInferenceResultsConflicts:
             const { labelsFetcher } = await import('/app-static/js/shared/api/labels.js');
             const { tagsFetcher } = await import('/app-static/js/shared/api/tags.js');
 
-            """ + _SETUP + """
+            """
+            + _SETUP
+            + """
 
             labelsFetcher.set('labelsMap', new Map([
                 ['cat-uuid', { uuid: 'cat-uuid', name: 'Cat', color: '#ff0000' }],
@@ -206,7 +219,8 @@ class TestAddInferenceResultsConflicts:
                 existingLabelUuid: runtime.state.image.bboxes.get('existing')?.label?.uuid,
                 hasNew: runtime.state.image.bboxes.has('new-detection'),
             };
-        }""")
+        }"""
+        )
         assert result["size"] == 1
         assert result["existingLabelUuid"] == "cat-uuid"
         assert result["hasNew"] is False
@@ -215,7 +229,8 @@ class TestAddInferenceResultsConflicts:
         """With replaceExisting set, an overlapping different-label detection
         removes the old box and adds the new one in its place."""
         page = shared_page
-        result = page.evaluate("""async () => {
+        result = page.evaluate(
+            """async () => {
             const { createImageTaggingRuntime } = await import('/app-static/js/app/image-tagging/runtime.js');
             const { createUIBBbox } = await import('/app-static/js/shared/domain/image/mapper.js');
             const { rerenderBboxViews } = await import('/app-static/js/app/image-tagging/canvas/manager.js');
@@ -223,7 +238,9 @@ class TestAddInferenceResultsConflicts:
             const { labelsFetcher } = await import('/app-static/js/shared/api/labels.js');
             const { tagsFetcher } = await import('/app-static/js/shared/api/tags.js');
 
-            """ + _SETUP + """
+            """
+            + _SETUP
+            + """
 
             labelsFetcher.set('labelsMap', new Map([
                 ['cat-uuid', { uuid: 'cat-uuid', name: 'Cat', color: '#ff0000' }],
@@ -254,7 +271,8 @@ class TestAddInferenceResultsConflicts:
                 hasExisting: runtime.state.image.bboxes.has('existing'),
                 newLabelUuid: runtime.state.image.bboxes.get('new-detection')?.label?.uuid,
             };
-        }""")
+        }"""
+        )
         assert result["size"] == 1
         assert result["hasExisting"] is False
         assert result["newLabelUuid"] == "dog-uuid"
@@ -268,7 +286,8 @@ class TestAddInferenceResultsConflicts:
         unmapped class for that box, silently wiping out a good label from an
         earlier model in the same run."""
         page = shared_page
-        result = page.evaluate("""async () => {
+        result = page.evaluate(
+            """async () => {
             const { createImageTaggingRuntime } = await import('/app-static/js/app/image-tagging/runtime.js');
             const { createUIBBbox } = await import('/app-static/js/shared/domain/image/mapper.js');
             const { rerenderBboxViews } = await import('/app-static/js/app/image-tagging/canvas/manager.js');
@@ -276,7 +295,9 @@ class TestAddInferenceResultsConflicts:
             const { labelsFetcher } = await import('/app-static/js/shared/api/labels.js');
             const { tagsFetcher } = await import('/app-static/js/shared/api/tags.js');
 
-            """ + _SETUP + """
+            """
+            + _SETUP
+            + """
 
             labelsFetcher.set('labelsMap', new Map([
                 ['cat-uuid', { uuid: 'cat-uuid', name: 'Cat', color: '#ff0000' }],
@@ -307,7 +328,8 @@ class TestAddInferenceResultsConflicts:
                 existingLabelUuid: runtime.state.image.bboxes.get('existing')?.label?.uuid,
                 hasNew: runtime.state.image.bboxes.has('new-detection'),
             };
-        }""")
+        }"""
+        )
         assert result["size"] == 1
         assert result["hasExisting"] is True
         assert result["existingLabelUuid"] == "cat-uuid"
@@ -316,7 +338,8 @@ class TestAddInferenceResultsConflicts:
     def test_non_overlapping_detection_is_added_alongside_existing(self, shared_page: Page):
         """Detections with no significant overlap are added normally, existing box untouched."""
         page = shared_page
-        result = page.evaluate("""async () => {
+        result = page.evaluate(
+            """async () => {
             const { createImageTaggingRuntime } = await import('/app-static/js/app/image-tagging/runtime.js');
             const { createUIBBbox } = await import('/app-static/js/shared/domain/image/mapper.js');
             const { rerenderBboxViews } = await import('/app-static/js/app/image-tagging/canvas/manager.js');
@@ -324,7 +347,9 @@ class TestAddInferenceResultsConflicts:
             const { labelsFetcher } = await import('/app-static/js/shared/api/labels.js');
             const { tagsFetcher } = await import('/app-static/js/shared/api/tags.js');
 
-            """ + _SETUP + """
+            """
+            + _SETUP
+            + """
 
             labelsFetcher.set('labelsMap', new Map([
                 ['cat-uuid', { uuid: 'cat-uuid', name: 'Cat', color: '#ff0000' }],
@@ -354,7 +379,8 @@ class TestAddInferenceResultsConflicts:
                 hasExisting: runtime.state.image.bboxes.has('existing'),
                 hasNew: runtime.state.image.bboxes.has('new-detection'),
             };
-        }""")
+        }"""
+        )
         assert result["size"] == 2
         assert result["hasExisting"] is True
         assert result["hasNew"] is True
@@ -365,7 +391,8 @@ class TestAddInferenceResultsConflicts:
         cleared) rather than left pointing at a destroyed Konva node — otherwise
         the dotted selection rectangle stays rendered at the old box's position."""
         page = shared_page
-        result = page.evaluate("""async () => {
+        result = page.evaluate(
+            """async () => {
             const { createImageTaggingRuntime } = await import('/app-static/js/app/image-tagging/runtime.js');
             const { createUIBBbox } = await import('/app-static/js/shared/domain/image/mapper.js');
             const { rerenderBboxViews } = await import('/app-static/js/app/image-tagging/canvas/manager.js');
@@ -373,7 +400,9 @@ class TestAddInferenceResultsConflicts:
             const { labelsFetcher } = await import('/app-static/js/shared/api/labels.js');
             const { tagsFetcher } = await import('/app-static/js/shared/api/tags.js');
 
-            """ + _SETUP + """
+            """
+            + _SETUP
+            + """
 
             labelsFetcher.set('labelsMap', new Map([
                 ['cat-uuid', { uuid: 'cat-uuid', name: 'Cat', color: '#ff0000' }],
@@ -415,7 +444,8 @@ class TestAddInferenceResultsConflicts:
                 matchViewParentAfterDestroy: matchView.getParent(),
                 selectedBboxIsDestroyedMatch: interactionState.selectedBbox === matchView,
             };
-        }""")
+        }"""
+        )
         assert result["matchViewParentAfterDestroy"] is None
         assert result["transformerHasDetachedNode"] is False
         assert result["transformerNodeCount"] == 0

@@ -33,7 +33,11 @@ from apps.helpers.inferenceProviders.ultralyticsE2eInferenceProvider import (
 from apps.helpers.inferenceProviders.ultralyticsYoloV8InferenceProvider import (
     UltralyticsYoloV8InferenceProvider,
 )
-from apps.helpers.metadataUtils import get_model_metadata, providers_for_device, resolve_legacy_model_family
+from apps.helpers.metadataUtils import (
+    get_model_metadata,
+    providers_for_device,
+    resolve_legacy_model_family,
+)
 from apps.helpers.yoloUtils import load_yolo_onnx
 
 

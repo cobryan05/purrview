@@ -7,6 +7,7 @@ manual zoom/pan.
 Run with:
     pytest playwright_tests/test_canvas_border_zoom.py -p no:xdist --override-ini="addopts=" -v
 """
+
 from playwright.sync_api import Page
 
 # Creates a runtime + canvas + blank 400x300 image loaded via setImage
