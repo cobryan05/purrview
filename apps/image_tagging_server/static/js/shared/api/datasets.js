@@ -20,12 +20,37 @@ const datasetsFetcher = createCachedFetcher(async (keys) => {
   return ignoreKeyReturn(keys, map);
 });
 
+// Separate cache for `include_views=true`, which returns Views alongside
+// promoted Datasets in one list (decision register #10: one table, one flag).
+// Kept apart from datasetsFetcher so the five "give me trainable Datasets"
+// call sites can't accidentally pick up this query's Views.
+const allRowsFetcher = createCachedFetcher(async (keys) => {
+  const res = await apiFetch('/api/datasets?include_views=true');
+  if (!res.ok) {
+    const err = await res.json();
+    throw new Error(err.message || 'Failed to fetch views');
+  }
+  const data = await res.json();
+  if (data.status !== 'success') {
+    throw new Error(data.message || 'Failed to fetch views');
+  }
+  const map = new Map(data.datasets.map(d => [d.uuid, d]));
+  return ignoreKeyReturn(keys, map);
+});
+
 export function clearDatasetsCache() {
   datasetsFetcher.clear();
+  allRowsFetcher.clear();
 }
 
 export async function fetchDatasets() {
   return datasetsFetcher.fetch('datasetsMap');
+}
+
+/** Saved Views (unpromoted rows) — for the Review tab's View picker / manager. */
+export async function fetchViews() {
+  const map = await allRowsFetcher.fetch('allRowsMap');
+  return new Map([...map].filter(([, d]) => !d.promoted));
 }
 
 export async function fetchDatasetByUuid(uuid) {
@@ -69,12 +94,14 @@ export async function fetchDatasetImages(datasetUuid, params = {}) {
   return data.images;
 }
 
-/** POST /api/datasets */
-export async function createDataset({ name, description = '', filterJson = null, labelUuids = [] }) {
+/** POST /api/datasets. `promoted: false` creates a View instead of a Dataset. */
+export async function createDataset({ name, description = '', filterJson = null, labelUuids = [], promoted } = {}) {
+  const body = { name, description, filterJson, labelUuids };
+  if (promoted !== undefined) body.promoted = promoted;
   const res = await apiFetch('/api/datasets', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name, description, filterJson, labelUuids }),
+    body: JSON.stringify(body),
   });
 
   if (!res.ok) {
@@ -86,18 +113,19 @@ export async function createDataset({ name, description = '', filterJson = null,
     throw new Error(data.message || 'Failed to create dataset');
   }
 
-  datasetsFetcher.clear();
+  clearDatasetsCache();
   events.publish(EventTypes.DATASETS_UPDATED, {});
   return data.dataset;
 }
 
-/** PATCH /api/datasets/{uuid} */
+/** PATCH /api/datasets/{uuid}. `promoted` flips a row between View and Dataset. */
 export async function updateDataset(uuid, patch) {
   const body = {};
   if (patch.name != null) body.name = patch.name;
   if (patch.description !== undefined) body.description = patch.description;
   if (patch.filterJson !== undefined) body.filterJson = patch.filterJson;
   if (patch.labelUuids != null) body.labelUuids = patch.labelUuids;
+  if (patch.promoted !== undefined) body.promoted = patch.promoted;
 
   const res = await apiFetch(`/api/datasets/${uuid}`, {
     method: 'PATCH',
@@ -114,7 +142,7 @@ export async function updateDataset(uuid, patch) {
     throw new Error(data.message || 'Failed to update dataset');
   }
 
-  datasetsFetcher.clear();
+  clearDatasetsCache();
   events.publish(EventTypes.DATASETS_UPDATED, {});
   return data.dataset;
 }
@@ -155,6 +183,6 @@ export async function deleteDataset(uuid) {
     throw new Error(err.message || 'Failed to delete dataset');
   }
 
-  datasetsFetcher.clear();
+  clearDatasetsCache();
   events.publish(EventTypes.DATASETS_UPDATED, {});
 }

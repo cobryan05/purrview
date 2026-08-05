@@ -607,7 +607,99 @@ class TestFilterToggleButton:
 
 
 # ---------------------------------------------------------------------------
-# 10. Canvas modal round trip
+# 10. Saved Views (slice 5, PR 5.2 — replaces the localStorage preset store)
+# ---------------------------------------------------------------------------
+
+VIEW_CATS_ONLY = {
+    "uuid": "view-1",
+    "name": "Cats only",
+    "description": "",
+    "labelUuids": ["lbl-cat"],
+    "filterJson": {
+        "labelExcludeUuids": [], "labelMatchMode": "any", "labelIncludeChildren": False,
+        "verificationCheck": None, "terms": [],
+    },
+    "promoted": False,
+}
+
+
+class TestSavedViews:
+    def test_view_picker_applies_saved_filter_state(self, page: Page, base_url: str):
+        """Picking a saved View from the dropdown restores its filter state
+        into the panel — shown here as a label chip in the always-visible bar."""
+        _mock_review_queue(page, PAGE_1_IMAGES)
+        _mock_labels(page, [LABEL_CAT, LABEL_DOG])
+        _mock_tags(page, [{**UNVERIFIED_TAG, "name": "Unverified", "color": "#888", "kind": "system"}])
+        page.route(
+            lambda url: url.split("?")[0].endswith("/api/datasets") and "include_views=true" in url,
+            lambda route: route.fulfill(
+                status=200, content_type="application/json",
+                body=json.dumps({"status": "success", "datasets": [VIEW_CATS_ONLY]}),
+            ),
+        )
+
+        _navigate_to_review(page, base_url)
+        views_select = page.get_by_test_id("review-views-select")
+        expect(views_select).to_be_visible()
+        # The dropdown populates from an async fetch that must not block the
+        # rest of toolbar setup — wait for the option rather than assuming
+        # it's there the instant the select renders.
+        expect(views_select.locator("option", has_text="Cats only")).to_have_count(1)
+        views_select.select_option(label="Cats only")
+        page.wait_for_timeout(300)
+
+        chips = page.get_by_test_id("review-filter-chip-bar").locator(".review-filter-chip")
+        expect(chips).to_have_count(1)
+        expect(chips.first).to_contain_text("Cat")
+
+    def test_save_as_view_posts_promoted_false(self, page: Page, base_url: str):
+        """Save as View must create an *unpromoted* dataset row — a View, not
+        a trainable Dataset (decision register #10, one table + flag) — from
+        whatever filters are currently active."""
+        _mock_review_queue(page, PAGE_1_IMAGES)
+        _mock_labels(page, [LABEL_CAT, LABEL_DOG])
+        _mock_tags(page, [{**UNVERIFIED_TAG, "name": "Unverified", "color": "#888", "kind": "system"}])
+
+        create_calls: list[dict] = []
+
+        def handle_datasets(route: Route):
+            if route.request.method == "POST":
+                create_calls.append(json.loads(route.request.post_data))
+                route.fulfill(
+                    status=200, content_type="application/json",
+                    body=json.dumps({"status": "success", "dataset": {**VIEW_CATS_ONLY, "name": "My View"}}),
+                )
+            else:
+                route.fulfill(
+                    status=200, content_type="application/json",
+                    body=json.dumps({"status": "success", "datasets": []}),
+                )
+
+        page.route(lambda url: url.split("?")[0].endswith("/api/datasets"), handle_datasets)
+
+        _navigate_to_review(page, base_url)
+
+        # Select 'Cat' via the Labels dropdown so the saved View isn't empty.
+        labels_trigger = page.locator("#review-root .ms-dropdown[data-filter-key='labels-v2'] .ms-dropdown__trigger")
+        labels_trigger.wait_for(state="visible", timeout=5000)
+        labels_trigger.click()
+        page.locator("#review-root .ms-dropdown[data-filter-key='labels-v2'] input[value='lbl-cat']").check()
+        page.mouse.click(0, 0)
+        page.wait_for_timeout(300)
+
+        page.once("dialog", lambda dialog: dialog.accept("My View"))
+        page.get_by_test_id("review-save-as-view").click()
+        page.wait_for_timeout(400)
+
+        assert create_calls, "Expected POST to /api/datasets"
+        payload = create_calls[0]
+        assert payload.get("name") == "My View"
+        assert payload.get("promoted") is False
+        assert payload.get("labelUuids") == ["lbl-cat"]
+
+
+# ---------------------------------------------------------------------------
+# 11. Canvas modal round trip
 # ---------------------------------------------------------------------------
 
 class TestCanvasModalRoundTrip:

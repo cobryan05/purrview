@@ -749,7 +749,7 @@ main.container {
 .filter-sort-by    { max-width: 115px; }
 .filter-sort-dir   { max-width: 105px; }
 .filter-page-size  { width: auto; }
-.filter-presets-select { max-width: 140px; }
+.filter-views-select { max-width: 140px; }
 
 /* Shown whenever the training-config label filter is hiding labels from a picker or list */
 .label-filter-notice {

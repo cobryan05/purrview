@@ -56,6 +56,7 @@ import { createHoverPreview } from '/app-static/js/ui/thumbnailHoverPreview.js';
 import { drawLetterboxedBboxes } from '/app-static/js/ui/utils/bboxThumbOverlay.js';
 import { createEntryView } from '/app-static/js/ui/entryView.js';
 import { reviewStateToDatasetForm, datasetFormToReviewState } from '/app-static/js/shared/filterUtils.js';
+import { fetchViews, createDataset, updateDataset } from '/app-static/js/shared/api/datasets.js';
 import { openDissimilarGlobalModal } from '/app-static/js/ui/dissimilarSearch.js';
 import { runModelOnResultsFlow, makeBboxFilterPredicate } from '/app-static/js/app/review/runModelOnResults.js';
 import { runFilterChainOnResultsFlow } from '/app-static/js/app/review/runFilterChainOnResults.js';
@@ -568,58 +569,79 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
     toolbar.insertBefore(filterControlsGroup, toolbar.firstChild);
     toolbar.insertBefore(makeToolbarSep(), toolbar.children[1]);
 
-    // ── Filter presets + dataset export (hidden in modal/preview contexts) ──
+    // ── Views (server-backed saved searches) + dataset export (hidden in
+    // modal/preview contexts) — UI_REDESIGN_PLAN.md slice 5, PR 5.2. Replaces
+    // the old per-browser `localStorage['review-filter-presets']` store: a
+    // "preset" was already exactly a View (name + full filter state), just
+    // stored client-side. Views are unpromoted rows in the `datasets` table
+    // (decision register #10) — createDataset/updateDataset default to
+    // `promoted: true`, so every write here passes `promoted: false` explicitly.
     if (datasetActions) {
-    const _PRESETS_KEY = 'review-filter-presets';
-    const _loadPresets = () => {
-      try { return JSON.parse(localStorage.getItem(_PRESETS_KEY) ?? '[]'); } catch { return []; }
-    };
-    const _savePresets = (list) => localStorage.setItem(_PRESETS_KEY, JSON.stringify(list));
+    let _viewsByName = new Map();
 
-    const presetsSelect = document.createElement('select');
-    presetsSelect.className = 'filter-presets-select';
-    presetsSelect.title = 'Apply a saved filter preset';
+    const viewsSelect = document.createElement('select');
+    viewsSelect.className = 'filter-views-select';
+    viewsSelect.title = 'Apply a saved View';
+    viewsSelect.dataset.testid = 'review-views-select';
 
-    function _rebuildPresetsDropdown() {
-      presetsSelect.innerHTML = '';
+    // Fetching Views must never block the rest of toolbar setup below (Unique
+    // First, Open in Datasets Tab) — an unhandled rejection here previously
+    // aborted the whole synchronous setup function partway through, silently
+    // dropping every control appended after it.
+    async function _rebuildViewsDropdown() {
+      let viewsMap;
+      try {
+        viewsMap = await fetchViews();
+      } catch (err) {
+        toast(err.message || 'Failed to load Views', 5000, 'error');
+        return;
+      }
+      _viewsByName = new Map([...viewsMap.values()].map(v => [v.name, v]));
+      viewsSelect.innerHTML = '';
       const ph = document.createElement('option');
       ph.value = '';
-      ph.textContent = '— Presets —';
-      presetsSelect.appendChild(ph);
-      for (const p of _loadPresets()) {
+      ph.textContent = '— Views —';
+      viewsSelect.appendChild(ph);
+      for (const name of _viewsByName.keys()) {
         const opt = document.createElement('option');
-        opt.value = p.name;
-        opt.textContent = p.name;
-        presetsSelect.appendChild(opt);
+        opt.value = name;
+        opt.textContent = name;
+        viewsSelect.appendChild(opt);
       }
-      presetsSelect.value = '';
+      viewsSelect.value = '';
     }
-    _rebuildPresetsDropdown();
+    _rebuildViewsDropdown(); // fire-and-forget; toolbar setup continues synchronously below
 
-    presetsSelect.addEventListener('change', () => {
-      const name = presetsSelect.value;
+    viewsSelect.addEventListener('change', () => {
+      const name = viewsSelect.value;
       if (!name) return;
-      const preset = _loadPresets().find(p => p.name === name);
-      if (preset) filterPanel.setState(preset.state);
-      presetsSelect.value = '';
+      const view = _viewsByName.get(name);
+      if (view) filterPanel.setState(datasetFormToReviewState(view.filterJson, view.labelUuids));
+      viewsSelect.value = '';
     });
 
-    const savePresetBtn = document.createElement('button');
-    savePresetBtn.className = 'review-toolbar__btn';
-    savePresetBtn.textContent = '⊙ Save Filter Preset';
-    savePresetBtn.title = 'Save current filters as a named preset';
-    savePresetBtn.addEventListener('click', () => {
-      const name = prompt('Preset name:');
+    const saveAsViewBtn = document.createElement('button');
+    saveAsViewBtn.className = 'review-toolbar__btn';
+    saveAsViewBtn.textContent = '⊙ Save as View';
+    saveAsViewBtn.title = 'Save current filters as a named View';
+    saveAsViewBtn.dataset.testid = 'review-save-as-view';
+    saveAsViewBtn.addEventListener('click', async () => {
+      const name = prompt('View name:');
       if (!name?.trim()) return;
       const trimmed = name.trim();
-      const presets = _loadPresets();
-      const idx = presets.findIndex(p => p.name === trimmed);
-      const state = filterPanel.getState();
-      if (idx !== -1) presets[idx].state = state;
-      else presets.push({ name: trimmed, state });
-      _savePresets(presets);
-      _rebuildPresetsDropdown();
-      toast(`Preset "${trimmed}" saved`, 3000);
+      const { filterJson, labelUuids } = reviewStateToDatasetForm(filterPanel.getState());
+      try {
+        const existing = _viewsByName.get(trimmed);
+        if (existing) {
+          await updateDataset(existing.uuid, { filterJson, labelUuids });
+        } else {
+          await createDataset({ name: trimmed, filterJson, labelUuids, promoted: false });
+        }
+        await _rebuildViewsDropdown();
+        toast(`View "${trimmed}" saved`, 3000);
+      } catch (err) {
+        toast(err.message || 'Failed to save View', 5000, 'error');
+      }
     });
 
     // ── Export to Datasets ────────────────────────────────────────────
@@ -633,7 +655,7 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
       toast('Opening Datasets editor…', 2000);
     });
 
-    toolbar.append(makeToolbarSep(), makeToolbarGroup(presetsSelect, savePresetBtn));
+    toolbar.append(makeToolbarSep(), makeToolbarGroup(viewsSelect, saveAsViewBtn));
     // Joins the persistent utility group (Refresh, ★ Most Unique First) rather
     // than its own toolbar row — see the group's definition above.
     persistentUtilityGroup.appendChild(exportToDatasetBtn);
