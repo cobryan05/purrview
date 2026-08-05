@@ -13,6 +13,12 @@
  * same value so it works regardless of which trainer ends up consuming it;
  * each trainer ignores keys it doesn't read.
  *
+ * The "Remember exact image list" tickbox is the one field here that is NOT a
+ * hyperparameter — it rides hyperparams_json only because that is the training
+ * config's sole free-form blob. TrainModelTask pops it back out and threads it
+ * explicitly (see its `record_image_manifest` handling); the trainers read it in
+ * exactly one place, `trainers/base.py:image_manifest_fields`.
+ *
  * VRAM-aware suggestions: when the caller knows the target architecture
  * (object-detection only — see vramHyperparams.js), an extra "GPU VRAM"
  * select appears above Batch size / Image size. Choosing a tier PREFILLS
@@ -40,7 +46,8 @@ function _numInput({ placeholder, initial, min = 1, title }) {
 /**
  * @param {Object} [opts]
  * @param {Object} [opts.initial] - snake_case hyperparams_json to prefill from
- *   (batch_size, imgsz, max_epochs, early_stopping_patience|patience).
+ *   (batch_size, imgsz, max_epochs, early_stopping_patience|patience,
+ *   record_image_manifest).
  * @param {() => void} [opts.onChange] - fired on any field's `input` event.
  * @param {?string} [opts.architecture] - object-detection architecture string
  *   (e.g. 'yolov8s', 'yolo_v9_c') used to look up the VRAM suggestion table.
@@ -71,10 +78,22 @@ export function createHyperparamsFieldset({ initial = {}, onChange, architecture
     title: 'Stop early after this many epochs without improvement.',
   });
 
+  // Opt-OUT, not opt-in: every model trained so far records which images it saw,
+  // and the key is absent from every existing hyperparams_json, so anything other
+  // than "absent means on" would silently strip the capability from saved configs.
+  const recordManifestInput = document.createElement('input');
+  recordManifestInput.type = 'checkbox';
+  recordManifestInput.checked = initial.record_image_manifest !== false;
+  recordManifestInput.dataset.testid = 'hyperparams-record-image-manifest';
+  recordManifestInput.title =
+    'Write the exact train/validation image lists into the trained model’s sidecar JSON, '
+    + 'so you can see later which images produced it. Untick to keep the list out of the artifact.';
+
   if (onChange) {
     for (const input of [batchSizeInput, imgszInput, maxEpochsInput, patienceInput]) {
       input.addEventListener('input', onChange);
     }
+    recordManifestInput.addEventListener('change', onChange);
   }
 
   // ── VRAM tier select (prefill-only; never disables the fields above) ──────
@@ -127,6 +146,7 @@ export function createHyperparamsFieldset({ initial = {}, onChange, architecture
     makeFieldRow('Image size', imgszInput),
     makeFieldRow('Max epochs', maxEpochsInput),
     makeFieldRow('Early stopping patience', patienceInput),
+    makeFieldRow('Remember exact image list', recordManifestInput),
   ];
 
   function getHyperparamsJson() {
@@ -142,6 +162,9 @@ export function createHyperparamsFieldset({ initial = {}, onChange, architecture
       hyperparamsJson.early_stopping_patience = patience;
       hyperparamsJson.patience = patience;
     }
+    // Only written when opting OUT — an absent key means "record", which is what
+    // every already-saved config (and the trainers' own default) means today.
+    if (!recordManifestInput.checked) hyperparamsJson.record_image_manifest = false;
     return hyperparamsJson;
   }
 

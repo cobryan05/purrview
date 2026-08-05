@@ -23,7 +23,7 @@ from typing import Any, Callable
 
 from ..dataset import build_yolo_detection_dataset
 from . import register_trainer
-from .base import Trainer
+from .base import Trainer, image_manifest_fields
 
 logger = logging.getLogger(__name__)
 
@@ -207,8 +207,7 @@ class ObjectDetectionTrainer(Trainer):
                 "model_family": "libreyolo9",
                 "val_accuracy": best_map50,
                 "trained_at": datetime.now(timezone.utc).isoformat(),
-                "train_image_uuids": train_uuids,
-                "val_image_uuids": val_uuids,
+                **image_manifest_fields(config, train_uuids, val_uuids),
                 "role": role,
                 "model_config_uuid": model_config_uuid,
                 "model_config_node_uuid": model_config_node_uuid,

@@ -35,6 +35,7 @@ def build_binary_classifier_job(
     hyperparams: dict,
     dataset_uuids: list[str],
     dataset_uuids_set: set[str],
+    record_image_manifest: bool = True,
 ) -> tuple[str, list[dict], dict]:
     """Assemble a binary-classifier job from one label's present/absent rows."""
     all_rows_resp = img_api.list_images_for_label(
@@ -80,6 +81,9 @@ def build_binary_classifier_job(
         "model_config_uuid": model_config_uuid,
         "model_config_node_uuid": model_config_node_uuid,
         **hyperparams,
+        # After the splat: threaded explicitly, so a stale copy left in
+        # hyperparams_json can never win over the caller's resolved value.
+        "record_image_manifest": record_image_manifest,
     }
     return model_name, manifest, job_config
 
@@ -96,6 +100,7 @@ def build_multi_label_classifier_job(
     hyperparams: dict,
     dataset_uuids: list[str],
     dataset_uuids_set: set[str],
+    record_image_manifest: bool = True,
 ) -> tuple[str, list[dict], dict]:
     """Assemble a multi-label classifier job from several labels' rows.
 
@@ -145,5 +150,6 @@ def build_multi_label_classifier_job(
         "model_config_uuid": model_config_uuid,
         "model_config_node_uuid": model_config_node_uuid,
         **hyperparams,
+        "record_image_manifest": record_image_manifest,
     }
     return model_name, manifest, job_config

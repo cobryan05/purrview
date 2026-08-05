@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 from . import register_trainer
-from .base import Trainer
+from .base import Trainer, image_manifest_fields
 from .onnx_validation import export_and_validate_onnx
 
 logger = logging.getLogger(__name__)
@@ -287,8 +287,7 @@ class BinaryImageClassifier(Trainer):
             "model_name": model_name,
             "val_accuracy": round(best_val_acc, 4),
             "trained_at": datetime.now(timezone.utc).isoformat(),
-            "train_image_uuids": train_image_uuids,
-            "val_image_uuids": val_image_uuids,
+            **image_manifest_fields(config, train_image_uuids, val_image_uuids),
             "role": role,
             "model_config_uuid": model_config_uuid,
             "model_config_node_uuid": model_config_node_uuid,

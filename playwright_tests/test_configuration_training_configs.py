@@ -428,6 +428,83 @@ class TestTrainingSettingsFieldset:
         assert hyperparams.get("patience") == 15
 
 
+class TestRecordImageManifestOptOut:
+    """ "Remember exact image list" is an opt-OUT: ticked by default, and the key
+    only appears in hyperparamsJson when the user unticks it (no saved config
+    carries the key, and absent must keep meaning "record")."""
+
+    def _manifest_checkbox(self, page: Page):
+        return _editor_body(page).locator("input[data-testid='hyperparams-record-image-manifest']")
+
+    def _create_and_capture(self, page: Page, base_url: str, untick: bool):
+        _mock_datasets(page, [DATASET_ALPHA])
+        _mock_model_configs(page, [MODEL_CFG])
+        _mock_training_configs_list(page, [])
+
+        captured = []
+
+        def handle_create(route: Route):
+            captured.append(json.loads(route.request.post_data))
+            route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps({"status": "success", "config": {**EXISTING_TC, "uuid": "tc-new", "name": "My Run"}}),
+            )
+
+        page.route(
+            "**/api/training-configs", lambda r: handle_create(r) if r.request.method == "POST" else r.fallback()
+        )
+
+        _navigate_to_training_configs(page, base_url)
+        _editor_body(page).locator("input[placeholder='Required']").first.fill("My Run")
+        _editor_body(page).locator("select").first.select_option("mc-1")
+        page.wait_for_timeout(200)
+        _editor_body(page).locator("select").nth(1).select_option("node-root")
+
+        if untick:
+            self._manifest_checkbox(page).uncheck()
+
+        _box(page).locator("input[type='checkbox'][value='ds-alpha']").check()
+        _editor_bar(page).locator("button", has_text="Create").or_(
+            _editor_bar(page).locator("button", has_text="Save")
+        ).click()
+        page.wait_for_timeout(800)
+
+        assert len(captured) == 1, f"Expected 1 POST, got {len(captured)}"
+        return captured[0].get("hyperparamsJson", {})
+
+    def test_checked_by_default(self, page: Page, base_url: str):
+        _mock_datasets(page, [DATASET_ALPHA])
+        _mock_model_configs(page, [MODEL_CFG])
+        _mock_training_configs_list(page, [])
+
+        _navigate_to_training_configs(page, base_url)
+        expect(self._manifest_checkbox(page)).to_be_checked()
+
+    def test_leaving_it_ticked_writes_no_key(self, page: Page, base_url: str):
+        hyperparams = self._create_and_capture(page, base_url, untick=False)
+        assert "record_image_manifest" not in hyperparams
+
+    def test_unticking_writes_false(self, page: Page, base_url: str):
+        hyperparams = self._create_and_capture(page, base_url, untick=True)
+        assert hyperparams.get("record_image_manifest") is False
+
+    def test_prefilled_unticked_from_existing_config(self, page: Page, base_url: str):
+        tc_opted_out = {**EXISTING_TC, "hyperparamsJson": {"record_image_manifest": False}}
+        _mock_datasets(page, [DATASET_ALPHA])
+        _mock_model_configs(page, [MODEL_CFG])
+        _mock_training_configs_list(page, [tc_opted_out])
+        _mock_training_config_get(page, tc_opted_out)
+        _mock_readiness(page, "tc-1")
+        _mock_label_stats(page, "tc-1")
+
+        _navigate_to_training_configs(page, base_url)
+        _list_item(page, "tc-1").click()
+        page.wait_for_timeout(400)
+
+        expect(self._manifest_checkbox(page)).not_to_be_checked()
+
+
 # ---------------------------------------------------------------------------
 # 2c. VRAM-tiered hyperparameter suggestions
 # ---------------------------------------------------------------------------

@@ -332,6 +332,30 @@ class TestTrainHappyPath:
         assert sidecar["model_family"] == "ultralytics_e2e"
         assert sidecar["architecture"] == "yolo26n"
 
+    async def test_record_image_manifest_false_omits_the_uuid_lists(self, trainer, base_config):
+        """The per-training-run opt-out reaches the sidecar. Keys are omitted,
+        not emptied, so "not recorded" stays distinguishable from "empty"."""
+        base_config["record_image_manifest"] = False
+        artifact_dir = base_config["artifact_dir"]
+        fake_exported = f"{artifact_dir}/exported_no_manifest.onnx"
+        with open(fake_exported, "wb") as f:
+            f.write(b"fake onnx bytes")
+
+        fake_ultralytics = _make_fake_ultralytics_module(
+            fake_results_dict={"metrics/mAP50(B)": 0.7},
+            exported_path=fake_exported,
+        )
+        with patch.dict(sys.modules, {"ultralytics": fake_ultralytics}):
+            await trainer.train(base_config, progress_cb=lambda e: None, cancel_event=asyncio.Event())
+
+        with open(f"{artifact_dir}/test_model.json") as f:
+            sidecar = json.load(f)
+        assert "train_image_uuids" not in sidecar
+        assert "val_image_uuids" not in sidecar
+        # Everything else the sidecar carries is untouched by the opt-out.
+        assert sidecar["label_uuids"] == ["label-1", "label-2"]
+        assert sidecar["architecture"] == "yolov8n"
+
     async def test_sidecar_has_no_libreyolo_only_keys(self, trainer, base_config):
         """Sanity guard: this trainer's sidecar must not carry the LibreYOLO9-
         specific "yolo": 9 legacy key — model_family alone must resolve the

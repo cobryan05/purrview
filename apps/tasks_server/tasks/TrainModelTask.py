@@ -123,6 +123,14 @@ class TrainModelTask(Task, TrainingJobRunnerMixin):
         node_uuid: Optional[str] = tc_data.model_config_node_uuid
         model_name: str = hyperparams.pop("model_name", None) or tc_data.name.replace(" ", "_").lower()
 
+        # "Remember exact image list" opt-out. Stored in hyperparams_json (that's
+        # the training config's only free-form blob) but popped out and threaded as
+        # a named argument rather than riding the **hyperparams merge — see
+        # NOTES.md on trainers silently disagreeing over merged key names. Absent
+        # means ON: recording the manifest is what every trained model has always
+        # done, and an opt-out must not change that by default.
+        record_image_manifest: bool = bool(hyperparams.pop("record_image_manifest", True))
+
         if not node_uuid:
             raise RuntimeError(f"TrainingConfig {training_config_uuid!r} has no model_config_node_uuid")
 
@@ -160,6 +168,7 @@ class TrainModelTask(Task, TrainingJobRunnerMixin):
                 bundle_label_uuids=bundle_label_uuids,
                 class_remap=class_remap,
                 dataset_uuids=dataset_uuids,
+                record_image_manifest=record_image_manifest,
             )
 
         # Get dataset image UUID set once (shared by both paths below).
@@ -184,6 +193,7 @@ class TrainModelTask(Task, TrainingJobRunnerMixin):
                 role=role,
                 model_config_uuid=model_config_uuid,
                 model_config_node_uuid=node_uuid,
+                record_image_manifest=record_image_manifest,
             )
 
         # Single labeled node → binary classifier.
@@ -201,6 +211,7 @@ class TrainModelTask(Task, TrainingJobRunnerMixin):
             hyperparams=hyperparams,
             dataset_uuids=dataset_uuids,
             dataset_uuids_set=dataset_uuids_set,
+            record_image_manifest=record_image_manifest,
         )
         self.log(
             f"Resolved training config: label={label_uuid} arch={architecture} "
@@ -252,6 +263,7 @@ class TrainModelTask(Task, TrainingJobRunnerMixin):
         role: str,
         model_config_uuid: str,
         model_config_node_uuid: str,
+        record_image_manifest: bool = True,
     ) -> tuple[str, list[dict], dict]:
         """Resolve a root node to a multi-label training job.
 
@@ -290,6 +302,7 @@ class TrainModelTask(Task, TrainingJobRunnerMixin):
             hyperparams=hyperparams,
             dataset_uuids=dataset_uuids,
             dataset_uuids_set=dataset_uuids_set,
+            record_image_manifest=record_image_manifest,
         )
         self.log(
             f"Resolved root node: {len(labeled_nodes)} labels "
@@ -310,6 +323,7 @@ class TrainModelTask(Task, TrainingJobRunnerMixin):
         bundle_label_uuids: list[str],
         class_remap: dict[str, str],
         dataset_uuids: list[str],
+        record_image_manifest: bool = True,
     ) -> tuple[str, list[dict], dict]:
         """Resolve an object_detection training config to a detection training job.
 
@@ -360,6 +374,7 @@ class TrainModelTask(Task, TrainingJobRunnerMixin):
             "model_config_node_uuid": node_uuid,
             "label_uuids": bundle_label_uuids,
             **hyperparams,
+            "record_image_manifest": record_image_manifest,
         }
         return model_name, manifest, job_config
 

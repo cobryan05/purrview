@@ -290,6 +290,147 @@ class TestJobConfigBundleFields:
         assert call_args[2].dataset_uuids == ["ds-1"]
 
 
+class TestRecordImageManifestFlag:
+    """The "remember exact image list" opt-out reaches every trainer path.
+
+    It is stored in hyperparams_json (the training config's only free-form blob)
+    but must NOT ride the ``**hyperparams`` merge — see NOTES.md on trainers
+    silently disagreeing about merged key names.
+    """
+
+    def _resolve_with_hyperparams(self, hyperparams_json: dict):
+        """Drive the binary-classifier path end-to-end through the public entry
+        point with a given hyperparams_json, returning its job_config."""
+        task = _make_task({})
+        task.log = MagicMock()
+        task._db_api_client = MagicMock()
+
+        tc_data = MagicMock(
+            status="success",
+            dataset_uuids=[],
+            hyperparams_json=hyperparams_json,
+            model_config_node_uuid="node-1",
+            name="My Config",
+        )
+        tc_api = MagicMock()
+        tc_api.get_training_config.return_value = tc_data
+
+        node_data = MagicMock(
+            model_type="image_classifier",
+            architecture="mobilenet_v3_small",
+            label_uuid="lbl-a",
+            model_config_uuid="cfg-uuid",
+        )
+        mc_api = MagicMock()
+        mc_api.get_model_config_node.return_value = node_data
+        target = MagicMock(node_uuid="node-1", role="submodel", label_uuids=["lbl-a"], class_remap={})
+        mc_api.get_model_config_training_targets.return_value = MagicMock(targets=[target])
+
+        row = MagicMock(image_uuid="img-1", filename="a.jpg", status=MagicMock(value="present"))
+        img_api = MagicMock()
+        img_api.list_images_for_label.return_value = MagicMock(images=[row])
+
+        with (
+            patch("apps.tasks_server.tasks.TrainModelTask.TrainingConfigsApi", return_value=tc_api),
+            patch("apps.tasks_server.tasks.TrainModelTask.ModelConfigsApi", return_value=mc_api),
+            patch("apps.tasks_server.tasks.TrainModelTask.ImagesApi", return_value=img_api),
+            patch("apps.tasks_server.tasks.TrainModelTask.DatasetsApi"),
+        ):
+            _, _, job_config = task._resolve_training_config("tc-1")
+        return job_config
+
+    def test_defaults_to_true_when_absent_from_hyperparams(self):
+        """No existing training config carries the key; they must keep recording."""
+        assert self._resolve_with_hyperparams({})["record_image_manifest"] is True
+
+    def test_false_in_hyperparams_reaches_job_config(self):
+        assert self._resolve_with_hyperparams({"record_image_manifest": False})["record_image_manifest"] is False
+
+    def test_true_in_hyperparams_reaches_job_config(self):
+        assert self._resolve_with_hyperparams({"record_image_manifest": True})["record_image_manifest"] is True
+
+    def test_root_node_path_carries_the_flag(self):
+        task = _make_task({})
+        task.log = MagicMock()
+
+        node = MagicMock(uuid="node-1", label_uuid="lbl-a")
+        cfg = MagicMock(nodes=[MagicMock(uuid="root-node", label_uuid=None), node])
+        mc_api = MagicMock()
+        mc_api.list_model_configs.return_value = MagicMock(configs=[cfg])
+
+        img_api = MagicMock()
+        row = MagicMock(image_uuid="img-1", filename="a.jpg", status=MagicMock(value="present"))
+        img_api.list_images_for_label.return_value = MagicMock(images=[row])
+
+        _, _, job_config = task._resolve_root_node(
+            node_uuid="root-node",
+            mc_api=mc_api,
+            img_api=img_api,
+            dataset_uuids=[],
+            dataset_uuids_set=set(),
+            model_name="m1",
+            architecture="mobilenet_v3_small",
+            hyperparams={},
+            role="top",
+            model_config_uuid="cfg-uuid",
+            model_config_node_uuid="root-node",
+            record_image_manifest=False,
+        )
+        assert job_config["record_image_manifest"] is False
+
+    def test_object_detection_path_carries_the_flag(self):
+        task = _make_task({})
+        task.log = MagicMock()
+
+        img = MagicMock(image_uuid="img-1", filename="a.jpg", annotations=[])
+        mc_api = MagicMock()
+        mc_api.get_bundle_target_detection_dataset.return_value = MagicMock(
+            status="success", class_names=["cat"], images=[img]
+        )
+
+        _, _, job_config = task._resolve_object_detection(
+            mc_api=mc_api,
+            model_name="m1",
+            architecture="yolo_v9_c",
+            hyperparams={},
+            role="submodel",
+            model_config_uuid="cfg-uuid",
+            node_uuid="node-uuid",
+            bundle_label_uuids=["lbl-a"],
+            class_remap={},
+            dataset_uuids=["ds-1"],
+            record_image_manifest=False,
+        )
+        assert job_config["record_image_manifest"] is False
+
+    def test_explicit_flag_wins_over_a_stale_hyperparams_copy(self):
+        """The key is threaded AFTER the ``**hyperparams`` splat, so a copy left
+        behind in hyperparams_json can never override the resolved value."""
+        task = _make_task({})
+        task.log = MagicMock()
+
+        img = MagicMock(image_uuid="img-1", filename="a.jpg", annotations=[])
+        mc_api = MagicMock()
+        mc_api.get_bundle_target_detection_dataset.return_value = MagicMock(
+            status="success", class_names=["cat"], images=[img]
+        )
+
+        _, _, job_config = task._resolve_object_detection(
+            mc_api=mc_api,
+            model_name="m1",
+            architecture="yolo_v9_c",
+            hyperparams={"record_image_manifest": True},
+            role="submodel",
+            model_config_uuid="cfg-uuid",
+            node_uuid="node-uuid",
+            bundle_label_uuids=["lbl-a"],
+            class_remap={},
+            dataset_uuids=["ds-1"],
+            record_image_manifest=False,
+        )
+        assert job_config["record_image_manifest"] is False
+
+
 class TestRun:
     """Tests for _run and _consume_sse using mocked HTTP calls."""
 

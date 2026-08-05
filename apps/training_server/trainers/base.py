@@ -5,6 +5,34 @@ import logging
 from abc import ABC, abstractmethod
 from typing import Any, Callable
 
+#: Job-config key for the per-training-run "remember exact image list" opt-out.
+#: Absent means ON — every trainer has always recorded the manifest, so the
+#: default must preserve that. Threaded explicitly by TrainModelTask rather than
+#: left to the ``**hyperparams`` merge; see NOTES.md on trainers disagreeing over
+#: hyperparam key names. One key, read in exactly one place: ``image_manifest_fields``.
+RECORD_IMAGE_MANIFEST_KEY = "record_image_manifest"
+
+
+def image_manifest_fields(
+    config: dict[str, Any],
+    train_image_uuids: list[str],
+    val_image_uuids: list[str],
+) -> dict[str, list[str]]:
+    """Return the sidecar's train/val image-uuid fields, or ``{}`` if opted out.
+
+    Every trainer splats this into its sidecar dict instead of writing
+    ``train_image_uuids``/``val_image_uuids`` directly, so the opt-out cannot be
+    honoured by three trainers and silently ignored by the fourth. Opting out
+    omits the keys entirely rather than writing empty lists — a reader can then
+    tell "not recorded" from "recorded, and it was empty".
+    """
+    if not config.get(RECORD_IMAGE_MANIFEST_KEY, True):
+        return {}
+    return {
+        "train_image_uuids": list(train_image_uuids),
+        "val_image_uuids": list(val_image_uuids),
+    }
+
 
 class Trainer(ABC):
     # Single source of truth for this trainer's hyperparam defaults — the
