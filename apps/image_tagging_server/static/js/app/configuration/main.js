@@ -1,4 +1,5 @@
 import { setupWorkspaceTabs } from '/app-static/js/app/utils/tabs.js';
+import { renderConfigLanding } from '/app-static/js/ui/configLanding.js';
 import { renderLabelList } from '/app-static/js/ui/labels.js';
 import { renderModelLabelAssignments } from '/app-static/js/ui/models.js';
 import { renderModelConfigManager } from '/app-static/js/ui/modelConfigs.js';
@@ -9,7 +10,9 @@ import { renderFilterChainManager } from '/app-static/js/ui/filterChains.js';
 
 export async function init() {
   const { container } = setupWorkspaceTabs("#tab-configuration", async (tabName, button, pane) => {
-    if (tabName === 'tab-tag-management') {
+    if (tabName === 'tab-config-overview') {
+      await renderConfigLanding({ target: 'config-overview-box' });
+    } else if (tabName === 'tab-tag-management') {
       renderLabelList({ target: "labels-list" });
       renderTagList({ target: "tags-list" });
       renderModelLabelAssignments({ target: "model-labels-box" });

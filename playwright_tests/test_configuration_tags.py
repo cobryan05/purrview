@@ -48,7 +48,9 @@ def _navigate_to_tags(page: Page, base_url: str):
     page.wait_for_load_state("networkidle")
     page.locator(".main-tab-button[data-tab='tab-configuration']").click()
     page.wait_for_load_state("networkidle")
-    # Labels & Tags is the default workspace sub-tab — already active.
+    # Overview is the default sub-tab (PR 5.4) — click through to Labels & Tags.
+    page.locator("#tab-configuration .workspace-tab-button[data-tab='tab-tag-management']").click()
+    page.wait_for_load_state("networkidle")
 
 
 def _mock_tags(page: Page, tags: list):

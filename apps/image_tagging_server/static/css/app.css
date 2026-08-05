@@ -2371,6 +2371,86 @@ button.filter-active {
 }
 
 
+/* ===== Configuration → Overview landing =====
+   Wayfinding cards, one per purpose group, each entry showing a live count.
+   Built on the slice-2 tokens so it inherits both themes for free. */
+.config-landing__grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: var(--space-4);
+  align-items: start;
+}
+
+.config-landing__group {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  padding: var(--space-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.config-landing__group-title {
+  margin: 0 0 var(--space-1) 0;
+  font-size: var(--text-sm);
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.config-landing__entry {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-3);
+  width: 100%;
+  margin: 0;
+  padding: var(--space-2);
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+
+.config-landing__entry:hover,
+.config-landing__entry:focus-visible {
+  background: var(--surface-raised);
+  border-color: var(--border-strong);
+}
+
+.config-landing__count {
+  flex: 0 0 auto;
+  min-width: 2.2rem;
+  font-size: var(--text-lg);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  color: var(--color-accent);
+}
+
+.config-landing__count--error {
+  color: var(--text-faint);
+}
+
+.config-landing__entry-text {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-0);
+  min-width: 0;
+}
+
+.config-landing__entry-name {
+  font-size: var(--text-base);
+}
+
+.config-landing__entry-hint {
+  font-size: var(--text-2xs);
+  color: var(--text-muted);
+}
+
 /* ===== Configuration ===== */
 .config-panel {
   display: flex;

@@ -82,17 +82,17 @@ def test_switch_tabs_and_back(page: Page, base_url: str):
 # ---------------------------------------------------------------------------
 
 
-def test_configuration_default_subtab_is_labels(page: Page, base_url: str):
-    """The Labels & Tags sub-tab should be active by default inside Configuration."""
+def test_configuration_default_subtab_is_overview(page: Page, base_url: str):
+    """The Overview landing should be active by default inside Configuration."""
     page.goto(base_url)
     page.wait_for_load_state("networkidle")
 
     page.locator(".main-tab-button[data-tab='tab-configuration']").click()
 
     # Wait for the sub-tab header to appear
-    labels_btn = page.locator(".workspace-tab-button[data-tab='tab-tag-management']")
-    expect(labels_btn).to_have_class(re.compile(r"\bactive\b"))
-    expect(page.locator("#tab-tag-management")).to_have_class(re.compile(r"\bactive\b"))
+    overview_btn = page.locator(".workspace-tab-button[data-tab='tab-config-overview']")
+    expect(overview_btn).to_have_class(re.compile(r"\bactive\b"))
+    expect(page.locator("#tab-config-overview")).to_have_class(re.compile(r"\bactive\b"))
 
 
 def test_configuration_subtab_switching(page: Page, base_url: str):
@@ -108,6 +108,7 @@ def test_configuration_subtab_switching(page: Page, base_url: str):
         "tab-training-management",
         "tab-filterchain-management",
         "tab-tag-management",
+        "tab-config-overview",
     ]
     for tab in sub_tabs:
         page.locator(f"#tab-configuration .workspace-tab-button[data-tab='{tab}']").click()
@@ -144,14 +145,17 @@ def test_operations_subtab_switching(page: Page, base_url: str):
 
 
 def test_sources_and_tasks_are_not_in_configuration(page: Page, base_url: str):
-    """Sources and Tasks moved to Operations; Configuration keeps 5 setup sub-tabs."""
+    """Sources and Tasks moved to Operations; Configuration keeps its setup sub-tabs.
+
+    5 setup panes plus the Overview landing added in PR 5.4.
+    """
     page.goto(base_url)
     page.wait_for_load_state("networkidle")
 
     page.locator(".main-tab-button[data-tab='tab-configuration']").click()
 
     header = page.locator("#tab-configuration .workspace-tab-header")
-    expect(header.locator(".workspace-tab-button")).to_have_count(5)
+    expect(header.locator(".workspace-tab-button")).to_have_count(6)
     for tab in ["tab-source-management", "tab-task-management"]:
         expect(header.locator(f".workspace-tab-button[data-tab='{tab}']")).to_have_count(0)
 
