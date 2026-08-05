@@ -2629,6 +2629,13 @@ button.filter-active {
   max-height: 55vh;
   padding: 0;
 }
+/* "Datasets & Views" is two nouns and doesn't fit this panel's 220px at the
+   shared title's uppercase letter-spacing — it ellipsised to "DATASETS & VIE…".
+   Drop the tracking here rather than shortening the title: both nouns have to
+   stay visible, that pairing is the whole point of the screen. */
+.ds-list-panel .panel-box__bar .panel-box__title {
+  letter-spacing: 0;
+}
 /* ===== Dataset config: editor panel (right column) ===== */
 .ds-editor {
   flex: 1;

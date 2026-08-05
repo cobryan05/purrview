@@ -389,3 +389,142 @@ class TestPerformanceIndexes:
             images_idx = _indexes(engine, "images")
             assert "ix_images_created_at_uuid" in images_idx, f"created_at sort index missing on {origin}"
             assert "ix_images_updated_at_uuid" in images_idx, f"updated_at sort index missing on {origin}"
+
+
+class TestLegacyDatasetFilterJson:
+    """b7d31c904ae2 converts pre-1.4b flat filter_json into the term list.
+
+    PR 1.4b made DatasetFilterCriteria extra="forbid" without migrating stored
+    rows, and DatasetRead validates filter_json on read — so a single legacy row
+    (every install has one: the seeded "Whole Database" dataset) fails the whole
+    GET /api/datasets listing, not just that row, and every dataset picker in
+    the app goes with it.
+    """
+
+    LEGACY = {
+        "tag_uuids": ["tag-a", "tag-b"],
+        "tag_exclude_uuids": ["tag-x"],
+        "tag_match_mode": "all",
+        "label_exclude_uuids": ["lbl-x"],
+        "label_match_mode": "all",
+        "label_include_children": True,
+        "date_from": "2026-01-01T00:00:00+00:00",
+        "date_to": None,
+        "filename_search": "cam3",
+        "verification_check": "has_unverified",
+        "image_tag_conditions": [{"tag_uuid": "tag-c", "state": "unset"}],
+        "image_label_conditions": [{"label_uuid": "lbl-c", "state": "uncertain"}],
+    }
+
+    def _insert(self, engine, uuid: str, filter_json: dict) -> None:
+        import json as _json
+
+        with engine.connect() as conn:
+            conn.exec_driver_sql(
+                "INSERT INTO datasets (uuid, name, description, filter_json, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, '2026-01-01 00:00:00', '2026-01-01 00:00:00')",
+                (uuid, f"ds-{uuid}", None, _json.dumps(filter_json)),
+            )
+            conn.commit()
+
+    def _filter_json(self, engine, uuid: str) -> dict:
+        import json as _json
+
+        with engine.connect() as conn:
+            raw = conn.exec_driver_sql("SELECT filter_json FROM datasets WHERE uuid = ?", (uuid,)).scalar()
+        return _json.loads(raw) if isinstance(raw, str) else raw
+
+    def test_legacy_row_validates_against_the_current_model_after_upgrade(self, pre_redesign_copy):
+        """The bug itself: before this migration the row 500s every listing."""
+        from apps.helpers.db.types import DatasetFilterCriteria
+
+        self._insert(pre_redesign_copy, "legacy-1", self.LEGACY)
+        _run_migrations(pre_redesign_copy)
+
+        # Must not raise — this is exactly what DatasetRead does on every read.
+        DatasetFilterCriteria(**self._filter_json(pre_redesign_copy, "legacy-1"))
+
+    def test_flat_fields_become_equivalent_terms(self, pre_redesign_copy):
+        self._insert(pre_redesign_copy, "legacy-2", self.LEGACY)
+        _run_migrations(pre_redesign_copy)
+        fj = self._filter_json(pre_redesign_copy, "legacy-2")
+
+        by_kind: dict[str, list] = {}
+        for term in fj["terms"]:
+            by_kind.setdefault(term["kind"], []).append(term)
+
+        # Included tags keep their match mode; each excluded tag is its own negated term.
+        included = [t for t in by_kind["bboxTag"] if not t["negate"]]
+        excluded = [t for t in by_kind["bboxTag"] if t["negate"]]
+        assert included[0]["tag_uuids"] == ["tag-a", "tag-b"]
+        assert included[0]["match_mode"] == "all"
+        assert [t["tag_uuids"] for t in excluded] == [["tag-x"]]
+
+        assert by_kind["date"][0]["field"] == "created"
+        assert by_kind["date"][0]["from_"] == "2026-01-01T00:00:00+00:00"
+        assert by_kind["filename"][0]["patterns"] == ["cam3"]
+
+        # The two "never assessed" spellings both become 'unreviewed'.
+        assert by_kind["imageTag"][0] == {
+            "kind": "imageTag",
+            "tag_uuid": "tag-c",
+            "state": "unreviewed",
+            "negate": False,
+        }
+        assert by_kind["imageLabel"][0]["label_uuid"] == "lbl-c"
+        assert by_kind["imageLabel"][0]["state"] == "unreviewed"
+        # Pre-1.4b conditions meant "this exact label", so roll-up must stay off
+        # or a migrated filter silently starts matching more images than before.
+        assert by_kind["imageLabel"][0]["roll_up"] is False
+
+    def test_label_modifier_fields_survive(self, pre_redesign_copy):
+        """These are not legacy — they modify Dataset.label_uuids, a separate column."""
+        self._insert(pre_redesign_copy, "legacy-3", self.LEGACY)
+        _run_migrations(pre_redesign_copy)
+        fj = self._filter_json(pre_redesign_copy, "legacy-3")
+
+        assert fj["label_exclude_uuids"] == ["lbl-x"]
+        assert fj["label_match_mode"] == "all"
+        assert fj["label_include_children"] is True
+        assert fj["verification_check"] == "has_unverified"
+
+    def test_vacuous_legacy_row_becomes_an_empty_filter(self, pre_redesign_copy):
+        """The seeded "Whole Database" row: all-empty flat fields, no filters."""
+        vacuous = {
+            "tag_uuids": [],
+            "tag_exclude_uuids": [],
+            "tag_match_mode": "any",
+            "label_exclude_uuids": [],
+            "label_match_mode": "any",
+            "label_include_children": False,
+            "date_from": None,
+            "date_to": None,
+            "filename_search": None,
+            "verification_check": None,
+            "image_tag_conditions": [],
+            "image_label_conditions": [],
+        }
+        self._insert(pre_redesign_copy, "legacy-whole-db", vacuous)
+        _run_migrations(pre_redesign_copy)
+
+        fj = self._filter_json(pre_redesign_copy, "legacy-whole-db")
+        assert fj["terms"] == []
+        assert not any(k in fj for k in ("tag_uuids", "date_from", "image_label_conditions"))
+
+    def test_already_migrated_rows_are_left_alone(self, pre_redesign_copy):
+        current = {
+            "label_exclude_uuids": [],
+            "label_match_mode": "any",
+            "label_include_children": False,
+            "verification_check": None,
+            "terms": [{"kind": "filename", "patterns": ["already"], "negate": False}],
+        }
+        self._insert(pre_redesign_copy, "current-1", current)
+        _run_migrations(pre_redesign_copy)
+
+        assert self._filter_json(pre_redesign_copy, "current-1") == current
+
+    def test_empty_filter_json_is_untouched(self, pre_redesign_copy):
+        self._insert(pre_redesign_copy, "empty-1", {})
+        _run_migrations(pre_redesign_copy)
+        assert self._filter_json(pre_redesign_copy, "empty-1") == {}
