@@ -46,8 +46,6 @@ from apps.helpers.db.types import (
     Label,
     LabelScope,
     LabelType,
-    ModelBundleCreate,
-    ModelBundleUpdate,
     ModelConfigCreate,
     ModelConfigNodeWrite,
     ModelConfigRead,
@@ -2782,20 +2780,3 @@ class Manager:
             record.filename = self._image_rel_path(img.filename)
             results.append(record)
         return results, has_more
-
-    # ── Model Bundles ─────────────────────────────────────────────────────────
-
-    async def create_bundle(self, data: ModelBundleCreate):
-        return await self._db_client.create_bundle(data)
-
-    async def list_bundles(self):
-        return await self._db_client.list_bundles()
-
-    async def get_bundle(self, uuid: str):
-        return await self._db_client.get_bundle(uuid)
-
-    async def update_bundle(self, uuid: str, data: ModelBundleUpdate):
-        return await self._db_client.update_bundle(uuid, data)
-
-    async def delete_bundle(self, uuid: str) -> bool:
-        return await self._db_client.delete_bundle(uuid)

@@ -67,10 +67,6 @@ from .types import (
     LabelScope,
     LabelType,
     LabelVerificationTerm,
-    ModelBundle,
-    ModelBundleCreate,
-    ModelBundleRead,
-    ModelBundleUpdate,
     ModelConfig,
     ModelConfigCreate,
     ModelConfigNode,
@@ -4654,58 +4650,6 @@ class DbClient:
                     label_stats[lbl_uuid]["co_label_gap_breakdown"] = breakdown
 
         return {"label_stats": list(label_stats.values()), "total_images": total_images}
-
-    # ── Model Bundles ─────────────────────────────────────────────────────────
-
-    async def create_bundle(self, data: ModelBundleCreate) -> ModelBundle:
-        async with self._async_session_maker() as session:
-            bundle = ModelBundle(
-                name=data.name,
-                description=data.description,
-                model_config_uuid=data.model_config_uuid,
-                bundle_path=data.bundle_path,
-                manifest_json=data.manifest_json or {},
-                training_config_uuids=data.training_config_uuids or [],
-            )
-            session.add(bundle)
-            await session.commit()
-            await session.refresh(bundle)
-            return bundle
-
-    async def list_bundles(self) -> list[ModelBundleRead]:
-        async with self._async_session_maker() as session:
-            result = await session.exec(select(ModelBundle))
-            return [ModelBundleRead.model_validate(b) for b in result.all()]
-
-    async def get_bundle(self, uuid: str) -> Optional[ModelBundleRead]:
-        async with self._async_session_maker() as session:
-            bundle = await session.get(ModelBundle, uuid)
-            if bundle is None:
-                return None
-            return ModelBundleRead.model_validate(bundle)
-
-    async def update_bundle(self, uuid: str, data: ModelBundleUpdate) -> Optional[ModelBundleRead]:
-        async with self._async_session_maker() as session:
-            bundle = await session.get(ModelBundle, uuid)
-            if bundle is None:
-                return None
-            if data.name is not None:
-                bundle.name = data.name
-            if data.description is not None:
-                bundle.description = data.description
-            bundle.updated_at = datetime.now(timezone.utc)
-            await session.commit()
-            await session.refresh(bundle)
-            return ModelBundleRead.model_validate(bundle)
-
-    async def delete_bundle(self, uuid: str) -> bool:
-        async with self._async_session_maker() as session:
-            bundle = await session.get(ModelBundle, uuid)
-            if bundle is None:
-                return False
-            await session.delete(bundle)
-            await session.commit()
-        return True
 
     async def preview_dataset_images(
         self,

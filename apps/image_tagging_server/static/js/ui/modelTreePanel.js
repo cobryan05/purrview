@@ -141,7 +141,7 @@ export function renderModelTreePanel({ nodes, labelsMap, compact = false, highli
   const artifactCount = 1 + submodels.size;
   footer.textContent = submodels.size === 0
     ? 'A full training run produces 1 model artifact.'
-    : `A full training run produces ${artifactCount} model artifacts (1 top model + ${submodels.size} sub-model${submodels.size === 1 ? '' : 's'}), recorded together as a bundle.`;
+    : `A full training run produces ${artifactCount} model artifacts (1 top model + ${submodels.size} sub-model${submodels.size === 1 ? '' : 's'}), each trained separately.`;
   panel.appendChild(footer);
 
   return panel;

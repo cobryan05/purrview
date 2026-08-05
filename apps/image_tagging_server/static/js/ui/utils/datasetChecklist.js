@@ -1,7 +1,9 @@
 /**
- * Shared dataset-selection checklist used by the Training Configs form and the
- * Model Configs "Train all → bundle" section, so the two Configuration-tab
- * dataset pickers can't drift in markup or behavior.
+ * Dataset-selection checklist for the Training Configs form. Extracted to be
+ * shared with the Model Configs "Train all → bundle" section so the two
+ * Configuration-tab dataset pickers couldn't drift; that section has since
+ * been removed, leaving this single-consumer (see taskRunnerSection.js for
+ * why it stays extracted anyway).
  *
  * Synchronous: callers hand in an already-fetched datasetsMap
  * (`fetchDatasets()` returns a Map).

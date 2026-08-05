@@ -61,6 +61,28 @@ def _run_migrations(engine, target: str = "head") -> None:
                 env_ctx.run_migrations()
 
 
+def _run_downgrade(engine, target: str) -> None:
+    """Run alembic downgrades back to *target* — the mirror of _run_migrations,
+    which only ever moves forward (``_upgrade_revs`` silently no-ops when asked
+    to go backwards)."""
+    cfg = AlembicConfig(str(ALEMBIC_INI))
+    script = ScriptDirectory.from_config(cfg)
+
+    def downgrade_fn(rev, ctx):
+        return script._downgrade_revs(target, rev)
+
+    with engine.connect() as conn:
+        with EnvironmentContext(cfg, script, fn=downgrade_fn) as env_ctx:
+            env_ctx.configure(
+                conn,
+                target_metadata=SQLModel.metadata,
+                render_as_batch=True,
+                compare_type=True,
+            )
+            with env_ctx.begin_transaction():
+                env_ctx.run_migrations()
+
+
 def _backup(src_engine, dst_engine) -> None:
     """Copy the entire in-memory DB from src to dst via sqlite3.backup()."""
     sp = src_engine.raw_connection()
@@ -191,15 +213,25 @@ class TestPartialMigrationRecovery:
         assert "model_config_uuid" not in tc_cols
 
     def test_upgrade_from_partial_preserves_model_bundles(self, pre_redesign_copy):
-        """model_bundles must exist and be intact after recovery."""
+        """model_bundles must survive the f93545d9a50b recovery intact.
+
+        It does not survive to head — 9c62f3502b03 drops the table once the
+        bundle concept was removed — so this stops at f93545d9a50b, which is
+        the revision whose recovery behaviour is actually under test here.
+        """
         engine = pre_redesign_copy
         _run_migrations(engine, "e1a2b3c4d5e6")
         self._partial_state(engine)
-        _run_migrations(engine, "head")
+        _run_migrations(engine, "f93545d9a50b")
         assert "model_bundles" in _tables(engine)
 
     def test_upgrade_from_minimal_partial_only_model_bundles(self, pre_redesign_copy):
-        """Even if only model_bundles was pre-created the migration must succeed."""
+        """Even if only model_bundles was pre-created the migration must succeed.
+
+        Runs all the way to head, so it also covers 9c62f3502b03 dropping a
+        table that arrived via the partial-recovery path rather than a clean
+        create.
+        """
         engine = pre_redesign_copy
         _run_migrations(engine, "e1a2b3c4d5e6")
         with engine.begin() as conn:
@@ -214,7 +246,7 @@ class TestPartialMigrationRecovery:
                 )
             """)
         _run_migrations(engine, "head")
-        assert "model_bundles" in _tables(engine)
+        assert "model_bundles" not in _tables(engine)
 
     def test_upgrade_with_tmp_model_config_nodes_and_original_present(self, pre_redesign_copy):
         """_alembic_tmp_model_config_nodes left behind alongside the original.
@@ -290,12 +322,46 @@ class TestPartialMigrationRecovery:
         assert "_alembic_tmp_training_configs" not in _tables(engine)
 
 
+class TestDropModelBundles:
+    """9c62f3502b03 removes the dead model_bundles table.
+
+    SQLite's DDL is non-transactional, so a half-applied run can leave the
+    table already gone; re-running must not raise (same reason f93545d9a50b
+    guards every one of its steps).
+    """
+
+    def test_table_is_gone_at_head(self, pre_redesign_copy):
+        engine = pre_redesign_copy
+        _run_migrations(engine, "head")
+        assert "model_bundles" not in _tables(engine)
+
+    def test_drop_is_safe_when_the_table_is_already_absent(self, pre_redesign_copy):
+        engine = pre_redesign_copy
+        _run_migrations(engine, "c1e5a83f7d92")
+        assert "model_bundles" in _tables(engine)
+        with engine.begin() as conn:
+            conn.exec_driver_sql("DROP TABLE model_bundles")
+        # Must not raise OperationalError: no such table
+        _run_migrations(engine, "head")
+        assert "model_bundles" not in _tables(engine)
+
+    def test_downgrade_recreates_the_table(self, pre_redesign_copy):
+        """The downgrade is the only way back; it must actually rebuild the
+        table rather than silently no-op."""
+        engine = pre_redesign_copy
+        _run_migrations(engine, "head")
+        assert "model_bundles" not in _tables(engine)
+        _run_downgrade(engine, "c1e5a83f7d92")
+        assert "model_bundles" in _tables(engine)
+        assert "bundle_path" in _columns(engine, "model_bundles")
+
+
 class TestMigrationPath:
     def test_upgrade_from_pre_redesign_adds_new_columns(self, pre_redesign_copy):
         """Running migrations from 307a345162a9 → head must:
         - add model_type + architecture to model_config_nodes (drop model_typename)
         - add model_config_node_uuid to training_configs (drop trainer_type + model_config_uuid)
-        - create model_bundles table
+        - create model_bundles table, then drop it again in 9c62f3502b03
         - drop training_config_label_links
 
         The session fixture validated the full chain from an empty DB up to
@@ -330,7 +396,9 @@ class TestMigrationPath:
         assert "trainer_type" not in new_tc_cols, "Deprecated trainer_type still present"
         assert "model_config_uuid" not in new_tc_cols, "Deprecated model_config_uuid still present"
 
-        assert "model_bundles" in _tables(engine), "model_bundles table was not created"
+        # Created by f93545d9a50b, dropped again by 9c62f3502b03 — at head the
+        # bundle concept is gone entirely.
+        assert "model_bundles" not in _tables(engine), "model_bundles table should have been dropped"
         assert "training_config_label_links" not in _tables(
             engine
         ), "training_config_label_links should have been dropped"

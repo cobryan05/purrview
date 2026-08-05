@@ -2,9 +2,14 @@
  * Reusable "start a task, stream its progress via SSE, allow cancel" section.
  *
  * Extracted from the Training Config "Start Training" button (originally
- * inline in ui/trainingConfigs.js) so ui/modelConfigs.js's "Train all →
- * bundle" button can drive the same start/stream/cancel/render sequence
- * against a different task typename without duplicating the SSE plumbing.
+ * inline in ui/trainingConfigs.js) so a second caller could drive the same
+ * start/stream/cancel/render sequence against a different task typename
+ * without duplicating the SSE plumbing.
+ *
+ * That second caller — Model Configs' "Train all → bundle" — has since been
+ * removed, so this is single-consumer today. Kept as its own module anyway:
+ * the SSE plumbing is worth having in one place, and re-inlining it would be
+ * a refactor riding along with an unrelated removal.
  */
 
 import { TaskStatus, cancelTasks, createTaskConfig, startTask } from '/app-static/js/shared/api/tasks.js';

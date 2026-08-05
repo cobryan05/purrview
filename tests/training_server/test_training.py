@@ -257,11 +257,11 @@ async def test_submit_job_endpoint(http_client, manager):
 
 
 async def test_submit_job_endpoint_merges_hyperparams_into_trainer_config(http_client, manager):
-    """Contract pin: task runners ship bundle-target identity fields (role,
+    """Contract pin: task runners ship training-target identity fields (role,
     model_config_uuid, model_config_node_uuid, label_uuids) inside
     ``hyperparams``; the submit endpoint MUST merge them into the trainer
-    config. If this test breaks, sidecar.json loses bundle identity and
-    ModelBundle composition silently stops working — see
+    config. If this test breaks, sidecar.json loses the identity that places a
+    trained artifact in its model tree — see
     tasks_server/tasks/_training_job_runner.py's SubmitJobPayload build."""
     manager.start()
     resp = await http_client.post(

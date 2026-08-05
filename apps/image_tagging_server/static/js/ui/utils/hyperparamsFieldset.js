@@ -1,11 +1,10 @@
 /**
  * Batch size / image size / max epochs / early stopping patience fields.
  *
- * Shared by the Training Config form (ui/trainingConfigs.js, per-target
- * training) and the Model Config "Train all → bundle" flow
- * (ui/modelConfigs.js, TrainBundleTask), both of which write into a flat
- * hyperparams_json blob that's merged straight into whichever trainer's
- * job_config.
+ * Used by the Training Config form (ui/trainingConfigs.js, per-target
+ * training), which writes into a flat hyperparams_json blob that's merged
+ * straight into whichever trainer's job_config. It was shared with the Model
+ * Config "Train all → bundle" flow until that was removed.
  *
  * Gotcha (do not "simplify" away): the object-detection trainer reads the
  * hyperparam key `patience`, but the classifier trainers (binary/multi-label)
@@ -24,9 +23,8 @@
  * select appears above Batch size / Image size. Choosing a tier PREFILLS
  * (never locks) those two inputs from the per-architecture table; fields
  * stay fully editable afterward, same as manual entry. If no architecture is
- * known (e.g. the bundle "train all" flow spans multiple targets/arches) or
- * the architecture has no table entry (classifiers), the select is omitted
- * entirely rather than guessing.
+ * known (no node selected yet) or the architecture has no table entry
+ * (classifiers), the select is omitted entirely rather than guessing.
  */
 
 import { makeFieldRow } from '/app-static/js/ui/utils/index.js';
@@ -52,8 +50,7 @@ function _numInput({ placeholder, initial, min = 1, title }) {
  * @param {?string} [opts.architecture] - object-detection architecture string
  *   (e.g. 'yolov8s', 'yolo_v9_c') used to look up the VRAM suggestion table.
  *   Pass null/omit when the architecture isn't known yet (e.g. no node
- *   selected) or spans multiple targets (bundle "train all" flow) — the VRAM
- *   select is hidden rather than guessing.
+ *   selected) — the VRAM select is hidden rather than guessing.
  * @returns {{ rows: HTMLElement[], getHyperparamsJson: () => object,
  *             setArchitecture: (architecture: ?string) => void }}
  *   `rows` are ready-made field rows (label + input) to append in order;
