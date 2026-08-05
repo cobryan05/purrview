@@ -1,5 +1,9 @@
-black
-isort
+# Pinned exactly: formatters must not drift with the image. Unpinned, a rebuild
+# picks up a newer style and `black apps/ tests/` then reformats files nobody
+# touched, so unrelated churn rides along with the next feature commit.
+# Bumping either pin is its own commit: bump, reformat, nothing else.
+black==26.5.1
+isort==8.0.1
 # Same package/extra the `builder` stage installs (bundled JDK — no system Java needed)
 openapi-generator-cli[jdk4py]
 pytest>=8
