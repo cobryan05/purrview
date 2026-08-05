@@ -1,15 +1,15 @@
-import { parseToolUuid } from './canvas/tools.js';
 import { createInferencePanel } from './inferencePanel.js';
+import { createSidebarPanels, wireSidebarTabRules } from './canvasWiring.js';
 import { setupSidebarTabs } from '/app-static/js/app/utils/tabs.js';
-import { events, EventTypes } from '/app-static/js/shared/events/index.js';
-import { createLabelList } from '/app-static/js/ui/labelList.js';
-import { createTagPanel } from '/app-static/js/ui/inspector.js';
+
+// Module-level so a repeat init() can tear down the previous mounting's panels
+// and subscriptions rather than stacking a second set on top.
+let _panels = null;
+let _unsubTabRules = null;
 
 /**
  * @param {import('@image_tagging_types').ImageTaggingRuntime} runtime
  */
-let _tagPanel = null;
-
 export async function init(runtime) {
   let _inferenceInit = false;
 
@@ -25,20 +25,16 @@ export async function init(runtime) {
     }
   });
 
-  // ── Eager init: label list ────────────────────────────────────────────────
-  // Must be alive before the first CANVAS_TOOL_CHANGED event so the label
-  // panel's own "auto-select first label on bare bbox tool" logic fires.
-  const listEl = document.getElementById('labels-tool-list');
-  if (listEl) await createLabelList(listEl, { mode: 'select', runtime });
-
-  // ── Eager init: tags / bbox info panel ────────────────────────────────────
-  // Must be alive before the first CANVAS_BBOX_CLICKED or CANVAS_TOOL_CHANGED
-  // event so single-click updates and tag-tool highlights work immediately.
-  const paneEl = document.getElementById('tab-inspector');
-  if (paneEl) {
-    _tagPanel?.destroy();  // clean up any prior instance if init() is called again
-    _tagPanel = createTagPanel(paneEl, runtime);
-  }
+  // ── Eager init: label list + tags/bbox info panel ─────────────────────────
+  // Both must be alive before the first tool/bbox event — see createSidebarPanels.
+  // Clean up any prior instances if init() is called again. (This now tears down
+  // the label list too, where it previously leaked its three event subscriptions
+  // on every re-init; only the tag panel was being destroyed.)
+  _panels?.destroy();
+  _panels = await createSidebarPanels(runtime, {
+    labelsListEl: document.getElementById('labels-tool-list'),
+    tagsPaneEl: document.getElementById('tab-inspector'),
+  });
 
   // ── Default tab ───────────────────────────────────────────────────────────
   if (container) {
@@ -46,19 +42,10 @@ export async function init(runtime) {
   }
 
   // ── Tab switching rules ───────────────────────────────────────────────────
-
-  // Bbox tool → Labels tab; tag tool → Tags tab (where their pickers live).
-  events.subscribeToCanvas(runtime.id, EventTypes.CANVAS_TOOL_CHANGED, ({ tool }) => {
-    const { tool: kind } = parseToolUuid(tool);
-    if (kind === 'bbox') {
-      activateTab('tab-labels-tool');
-    } else if (kind === 'tag') {
-      activateTab('tab-inspector');
-    }
-  });
-
-  // Double-clicking a bbox in select mode → switch to Tags tab.
-  events.subscribeToCanvas(runtime.id, EventTypes.CANVAS_BBOX_DOUBLE_CLICKED, () => {
-    activateTab('tab-inspector');
+  _unsubTabRules?.();
+  _unsubTabRules = wireSidebarTabRules(runtime, {
+    activateTab,
+    labelsTabId: 'tab-labels-tool',
+    tagsTabId: 'tab-inspector',
   });
 }

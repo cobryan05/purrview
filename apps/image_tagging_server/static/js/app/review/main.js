@@ -11,7 +11,7 @@ import {
   buildBboxRow,
   buildImageRow,
 } from '/app-static/js/app/review/cardGrid.js';
-import { expandWithDescendants, createLabelList } from '/app-static/js/ui/labelList.js';
+import { expandWithDescendants } from '/app-static/js/ui/labelList.js';
 import {
   fetchReviewQueue,
   bulkApplyAll,
@@ -42,15 +42,17 @@ import { rerenderBboxViews, resetCanvasZoom } from '/app-static/js/app/image-tag
 import { acquireModalLayer, applyModalCascade, registerEscHandler, unregisterEscHandler } from '/app-static/js/ui/utils/modalZIndex.js';
 import { CheckboxField } from '/app-static/js/ui/utils/fields/CheckboxField.js';
 import { createCanvasInstance } from '/app-static/js/app/image-tagging/canvas/instance.js';
-import { saveAnnotations, addInferenceResults, seedRuntimeBboxes } from '/app-static/js/app/image-tagging/canvas/image.js';
+import { saveAnnotations, seedRuntimeBboxes } from '/app-static/js/app/image-tagging/canvas/image.js';
 import { createInferencePanel } from '/app-static/js/app/image-tagging/inferencePanel.js';
-import { runDetection } from '/app-static/js/shared/api/inference.js';
+import {
+  wireInferenceRunner,
+  createSidebarPanels,
+  wireSidebarTabRules,
+} from '/app-static/js/app/image-tagging/canvasWiring.js';
 import { initSplitResize } from '/app-static/js/ui/utils/splitResize.js';
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
 import { init as initToolbar } from '/app-static/js/app/image-tagging/toolbar.js';
-import { createTagPanel } from '/app-static/js/ui/inspector.js';
 import { setupSidebarTabs } from '/app-static/js/app/utils/tabs.js';
-import { parseToolUuid } from '/app-static/js/app/image-tagging/canvas/tools.js';
 import { createHoverPreview } from '/app-static/js/ui/thumbnailHoverPreview.js';
 import { drawLetterboxedBboxes } from '/app-static/js/ui/utils/bboxThumbOverlay.js';
 import { createEntryView } from '/app-static/js/ui/entryView.js';
@@ -2739,12 +2741,10 @@ export async function showCanvasModal(bbox, img, labels, onSaved, navContext = n
   // ── Create canvas instance ─────────────────────────────────────────
   let instance;
   let toolbarHandle    = { destroy: () => {} };
-  let labelHandle      = { destroy: () => {} };
-  let tagPanelHandle   = { destroy: () => {} };
+  let sidebarPanelsHandle = { destroy: () => {} };
   let inferencePanelHandle = { destroy: () => {} };
   let modalResizeHandle = { destroy: () => {} };
-  let unsubToolChanged = () => {};
-  let unsubDblClick    = () => {};
+  let unsubTabRules    = () => {};
   let unsubBboxChanged = () => {};
   let unsubInference   = () => {};
 
@@ -2786,11 +2786,11 @@ export async function showCanvasModal(bbox, img, labels, onSaved, navContext = n
   // that the modal chrome has settled.
   resetCanvasZoom(instance.runtime.canvas);
 
-  // ── Wire label list ────────────────────────────────────────────────
-  labelHandle = await createLabelList(labelListEl, { mode: 'select', runtime: instance.runtime });
-
-  // ── Wire tag panel (class + tag toggles, responds to bbox clicks) ──
-  tagPanelHandle = createTagPanel(paneTags, instance.runtime);
+  // ── Wire label list + tag panel ────────────────────────────────────
+  sidebarPanelsHandle = await createSidebarPanels(instance.runtime, {
+    labelsListEl: labelListEl,
+    tagsPaneEl: paneTags,
+  });
 
   // ── Wire inference panel (model list, Run/Refresh/Clear-Grey, confidence) ──
   // Use a child wrapper, not paneInference itself: createInferencePanel adds the
@@ -2799,36 +2799,13 @@ export async function showCanvasModal(bbox, img, labels, onSaved, navContext = n
   const inferencePanelContentEl = document.createElement('div');
   paneInference.appendChild(inferencePanelContentEl);
   inferencePanelHandle = await createInferencePanel(instance.runtime, inferencePanelContentEl);
-  unsubInference = events.subscribeToCanvas(
-    instance.runtime.id, EventTypes.RUN_INFERENCE_ON_CANVAS,
-    async ({ modelNames, confThresh, replaceExisting }) => {
-      const image = instance.runtime.state?.image?.img;
-      if (!image) { Logger.error('Canvas modal: failed to run inference: no image loaded'); return; }
-      // Models run sequentially; each one applies `replaceExisting` independently against
-      // whatever the canvas looks like when it finishes, so the combined result depends on
-      // run order. That's an accepted tradeoff for letting users multi-select models.
-      for (const modelName of modelNames) {
-        try {
-          const result = await runDetection(modelName, image, confThresh);
-          await addInferenceResults(instance.runtime, result, { replaceExisting });
-        } catch (err) {
-          Logger.error(`Canvas modal: failed to run inference (${modelName})`, err);
-        }
-      }
-    },
-  );
+  unsubInference = wireInferenceRunner(instance.runtime, { logPrefix: 'Canvas modal: ' });
 
   // ── Sidebar tab-switching rules ────────────────────────────────────
-  // BBox tool → Labels tab; tag tool → Tags tab (mirrors main canvas sidebar).
-  unsubToolChanged = events.subscribeToCanvas(instance.runtime.id, EventTypes.CANVAS_TOOL_CHANGED, ({ tool }) => {
-    const { tool: kind } = parseToolUuid(tool);
-    if (kind === 'bbox') activateSidebarTab(MODAL_TABS.labels);
-    else if (kind === 'tag') activateSidebarTab(MODAL_TABS.tags);
-  });
-
-  // Double-clicking a bbox → switch to Tags tab.
-  unsubDblClick = events.subscribeToCanvas(instance.runtime.id, EventTypes.CANVAS_BBOX_DOUBLE_CLICKED, () => {
-    activateSidebarTab(MODAL_TABS.tags);
+  unsubTabRules = wireSidebarTabRules(instance.runtime, {
+    activateTab: activateSidebarTab,
+    labelsTabId: MODAL_TABS.labels,
+    tagsTabId: MODAL_TABS.tags,
   });
 
   // Highlight the initially-opened bbox
@@ -2979,13 +2956,11 @@ export async function showCanvasModal(bbox, img, labels, onSaved, navContext = n
     unsubBboxChanged();
     unsubDirty();
     if (unsubNavLoad) unsubNavLoad();
-    unsubToolChanged();
-    unsubDblClick();
+    unsubTabRules();
     unsubInference();
-    tagPanelHandle.destroy();
+    sidebarPanelsHandle.destroy();
     inferencePanelHandle.destroy();
     toolbarHandle.destroy();
-    labelHandle.destroy();
     modalResizeHandle.destroy();
     instance.destroy();
     overlay.remove();

@@ -1,14 +1,13 @@
 import { FileNavigation } from '../../ui/utils/fileNavigation.js';
 import { createCanvasInstance } from './canvas/instance.js';
-import { addInferenceResults, loadImageOntoCanvas } from './canvas/image.js';
+import { loadImageOntoCanvas } from './canvas/image.js';
+import { wireInferenceRunner } from './canvasWiring.js';
 import { init as initFiles } from './files.js';
 import { init as initSidebar } from './sidebar.js';
 import { init as initToolbar } from './toolbar.js';
 import { initHotkeyBindings } from './hotkeyBindings.js';
 import { setupWorkspaceTabs } from '/app-static/js/app/utils/tabs.js';
-import { runDetection } from '/app-static/js/shared/api/inference.js';
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
-import { Logger } from '/app-static/js/ui/utils/index.js';
 import { initSplitResize } from '/app-static/js/ui/utils/splitResize.js';
 
 
@@ -33,21 +32,7 @@ export async function init(runtime, tab_pane) {
   await createCanvasInstance(canvasContainer, { runtime });
 
   // App-specific event subscriptions scoped to this canvas's runtime.
-  events.subscribeToCanvas(runtime.id, EventTypes.RUN_INFERENCE_ON_CANVAS, async ({ modelNames, confThresh, replaceExisting }) => {
-    const img = runtime.state?.image?.img;
-    if (!img) { Logger.error('Failed to run inference: no image loaded'); return; }
-    // Models run sequentially; each one applies `replaceExisting` independently against
-    // whatever the canvas looks like when it finishes, so the combined result depends on
-    // run order. That's an accepted tradeoff for letting users multi-select models.
-    for (const modelName of modelNames) {
-      try {
-        const result = await runDetection(modelName, img, confThresh);
-        await addInferenceResults(runtime, result, { replaceExisting });
-      } catch (err) {
-        Logger.error(`Failed to run inference (${modelName}):`, err);
-      }
-    }
-  });
+  wireInferenceRunner(runtime);
 
   events.subscribeToCanvas(runtime.id, EventTypes.LOAD_IMAGE_ONTO_CANVAS, ({ path, showCanvas }) => {
     loadImageOntoCanvas(runtime, path);
