@@ -2968,6 +2968,22 @@ class DbClient:
             changes = data.model_dump(exclude_unset=True, mode="json")
             label_uuids = changes.pop("label_uuids", None)
 
+            # Refuse to demote a Dataset a training config still depends on.
+            # The link row is ON DELETE RESTRICT and survives the flip, but an
+            # unpromoted row drops out of the default listing — so the Dataset
+            # would silently disappear from every training/model picker and the
+            # next save of that training config would drop the link. Mirrors the
+            # same check in delete_dataset().
+            if changes.get("promoted") is False and dataset.promoted:
+                link_result = await session.exec(
+                    select(TrainingConfigDatasetLink).where(TrainingConfigDatasetLink.dataset_uuid == uuid)
+                )
+                if link_result.first() is not None:
+                    raise ValueError(
+                        f'Dataset "{dataset.name}" is referenced by one or more training configs '
+                        f"and cannot be demoted to a View"
+                    )
+
             for key, value in changes.items():
                 if hasattr(dataset, key):
                     setattr(dataset, key, value)

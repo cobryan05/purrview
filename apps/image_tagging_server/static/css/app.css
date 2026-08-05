@@ -2568,6 +2568,27 @@ button.filter-active {
   margin-top: 1px;
 }
 
+/* Section headers inside the Datasets & Views list — the two nouns share one
+   table (and one editor), so the list groups them rather than splitting the
+   screen in two. */
+.ds-list-section__header {
+  padding: var(--space-2) var(--space-3) var(--space-1);
+  font-size: var(--text-2xs);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted, #9d9caa);
+  background: var(--surface-sunken, transparent);
+  border-bottom: 1px solid var(--border, rgba(0, 0, 0, 0.07));
+}
+.ds-list-empty {
+  padding: var(--space-2) var(--space-3);
+  margin: 0;
+  font-size: var(--text-xs);
+  font-style: italic;
+  color: var(--text-muted, #888);
+}
+
 /* ===== Model config: editor panel (right column) ===== */
 .mc-editor {
   flex: 1;

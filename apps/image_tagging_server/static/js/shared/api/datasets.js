@@ -53,6 +53,17 @@ export async function fetchViews() {
   return new Map([...map].filter(([, d]) => !d.promoted));
 }
 
+/**
+ * Datasets *and* Views in one map — for the management surface, which is the
+ * only screen that shows both and is where promotion happens.
+ *
+ * ⚠️ Never substitute this for fetchDatasets() in a training/model picker:
+ * those five call sites all mean "a real, trainable Dataset".
+ */
+export async function fetchDatasetsAndViews() {
+  return allRowsFetcher.fetch('allRowsMap');
+}
+
 export async function fetchDatasetByUuid(uuid) {
   const map = await fetchDatasets();
   return map.get(uuid) ?? null;

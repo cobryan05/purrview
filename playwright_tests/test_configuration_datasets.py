@@ -12,6 +12,7 @@ Configuration > Dataset Management > #dataset-management-box:
 Run with:
     pytest playwright_tests/test_configuration_datasets.py -p no:xdist -p no:asyncio -v
 """
+
 import json
 
 import pytest
@@ -27,6 +28,16 @@ FAKE_DATASET = {
     "description": "Main training dataset",
     "labelUuids": [],
     "filterJson": {"conditions": []},
+    "promoted": True,
+}
+
+FAKE_VIEW = {
+    "uuid": "22222222-bbbb-0000-0000-000000000001",
+    "name": "Unreviewed Cats",
+    "description": "Saved search from the Review tab",
+    "labelUuids": [],
+    "filterJson": {"conditions": []},
+    "promoted": False,
 }
 
 ROOT_LABEL = {
@@ -57,16 +68,17 @@ def _mock_datasets(page: Page, datasets: list | None = None):
     """Intercept GET /api/datasets to return the given datasets list."""
     datasets = datasets or []
     page.route(
-        lambda url: url.split("?")[0].endswith("/api/datasets") and not any(
-            s in url for s in ["/images", "/labels", "/preview"]
+        lambda url: url.split("?")[0].endswith("/api/datasets")
+        and not any(s in url for s in ["/images", "/labels", "/preview"]),
+        lambda route: (
+            route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps({"status": "success", "datasets": datasets}),
+            )
+            if route.request.method == "GET"
+            else route.continue_()
         ),
-        lambda route: route.fulfill(
-            status=200,
-            content_type="application/json",
-            body=json.dumps({"status": "success", "datasets": datasets}),
-        )
-        if route.request.method == "GET"
-        else route.continue_(),
     )
 
 
@@ -74,13 +86,15 @@ def _mock_labels(page: Page, labels: list | None = None):
     """Intercept GET /api/labels."""
     page.route(
         lambda url: url.split("?")[0].endswith("/api/labels") and "/api/labels/" not in url,
-        lambda route: route.fulfill(
-            status=200,
-            content_type="application/json",
-            body=json.dumps({"status": "success", "labels": labels or []}),
-        )
-        if route.request.method == "GET"
-        else route.continue_(),
+        lambda route: (
+            route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps({"status": "success", "labels": labels or []}),
+            )
+            if route.request.method == "GET"
+            else route.continue_()
+        ),
     )
 
 
@@ -361,8 +375,7 @@ class TestDeleteDataset:
         def handle_delete(route: Route):
             if route.request.method == "DELETE":
                 calls.append(True)
-                route.fulfill(status=200, content_type="application/json",
-                              body=json.dumps({"status": "success"}))
+                route.fulfill(status=200, content_type="application/json", body=json.dumps({"status": "success"}))
             else:
                 route.continue_()
 
@@ -382,3 +395,148 @@ class TestDeleteDataset:
         page.wait_for_timeout(500)
 
         assert not calls, "API must NOT be called when delete is cancelled"
+
+
+# ---------------------------------------------------------------------------
+# Views + promotion (slice 5, PR 5.3)
+# ---------------------------------------------------------------------------
+
+
+def _promote_btn(page: Page):
+    return page.get_by_test_id("dataset-promote-toggle")
+
+
+class TestViewsAndPromotion:
+    """Views and Datasets are one table separated by `promoted`, and this pane is
+    the only screen that shows both — so grouping and the promote/demote flip
+    both live here."""
+
+    def _setup(self, page: Page, base_url: str, rows: list):
+        _mock_datasets(page, rows)
+        _mock_labels(page, [])
+        _mock_tags_empty(page)
+        _navigate_to_datasets(page, base_url)
+        page.wait_for_timeout(900)
+
+    def test_views_render_in_their_own_section(self, page: Page, base_url: str):
+        self._setup(page, base_url, [FAKE_DATASET, FAKE_VIEW])
+
+        expect(page.get_by_test_id("dataset-section-datasets")).to_contain_text("(1)")
+        expect(page.get_by_test_id("dataset-section-views")).to_contain_text("(1)")
+
+        dataset_item = page.locator("#dataset-management-box [data-dataset-uuid='%s']" % FAKE_DATASET["uuid"])
+        view_item = page.locator("#dataset-management-box [data-dataset-uuid='%s']" % FAKE_VIEW["uuid"])
+        expect(dataset_item).to_have_attribute("data-promoted", "true")
+        expect(view_item).to_have_attribute("data-promoted", "false")
+
+    def test_empty_views_section_still_renders(self, page: Page, base_url: str):
+        """The Views section is a permanent affordance — its absence when empty
+        would hide that saved searches exist at all."""
+        self._setup(page, base_url, [FAKE_DATASET])
+        expect(page.get_by_test_id("dataset-section-views")).to_contain_text("(0)")
+        expect(page.locator("#dataset-management-box .ds-list-empty")).to_be_visible()
+
+    def test_promote_button_reflects_the_selected_row_kind(self, page: Page, base_url: str):
+        self._setup(page, base_url, [FAKE_DATASET, FAKE_VIEW])
+
+        page.get_by_text(FAKE_VIEW["name"], exact=True).first.click()
+        page.wait_for_timeout(600)
+        expect(_promote_btn(page)).to_contain_text("Promote to Dataset")
+
+        page.get_by_text(FAKE_DATASET["name"], exact=True).first.click()
+        page.wait_for_timeout(600)
+        expect(_promote_btn(page)).to_contain_text("Demote to View")
+
+    def test_new_form_has_no_promote_button(self, page: Page, base_url: str):
+        """Promotion is meaningless before the row exists."""
+        self._setup(page, base_url, [FAKE_DATASET])
+        expect(_promote_btn(page)).to_have_count(0)
+
+    def test_promoting_a_view_patches_promoted_true(self, page: Page, base_url: str):
+        patches: list[dict] = []
+
+        def handle_patch(route: Route):
+            if route.request.method == "PATCH":
+                patches.append(json.loads(route.request.post_data))
+                route.fulfill(
+                    status=200,
+                    content_type="application/json",
+                    body=json.dumps({"status": "success", "dataset": {**FAKE_VIEW, "promoted": True}}),
+                )
+            else:
+                route.continue_()
+
+        self._setup(page, base_url, [FAKE_DATASET, FAKE_VIEW])
+        page.route("**/api/datasets/**", handle_patch)
+
+        page.get_by_text(FAKE_VIEW["name"], exact=True).first.click()
+        page.wait_for_timeout(600)
+        _promote_btn(page).click()
+        page.wait_for_timeout(300)
+
+        modal = page.get_by_test_id("modal-shell-dialog")
+        expect(modal).to_contain_text(FAKE_VIEW["name"])
+        modal.locator("button", has_text="Promote").click()
+        page.wait_for_timeout(700)
+
+        assert patches, "Expected a PATCH to /api/datasets/{uuid}"
+        assert patches[0].get("promoted") is True, patches[0]
+
+    def test_cancelling_the_confirm_does_not_patch(self, page: Page, base_url: str):
+        """Promotion changes what training can consume, so it is always confirmed."""
+        patches: list[dict] = []
+
+        def handle_patch(route: Route):
+            if route.request.method == "PATCH":
+                patches.append(json.loads(route.request.post_data))
+                route.fulfill(
+                    status=200,
+                    content_type="application/json",
+                    body=json.dumps({"status": "success", "dataset": FAKE_VIEW}),
+                )
+            else:
+                route.continue_()
+
+        self._setup(page, base_url, [FAKE_DATASET, FAKE_VIEW])
+        page.route("**/api/datasets/**", handle_patch)
+
+        page.get_by_text(FAKE_VIEW["name"], exact=True).first.click()
+        page.wait_for_timeout(600)
+        _promote_btn(page).click()
+        page.wait_for_timeout(300)
+        page.get_by_test_id("modal-shell-dialog").locator("button", has_text="Cancel").click()
+        page.wait_for_timeout(500)
+
+        assert not patches, "Promotion must not fire when the confirm is cancelled"
+
+    def test_demotion_refused_by_server_surfaces_the_reason(self, page: Page, base_url: str):
+        """The server refuses demoting a Dataset a training config references;
+        that reason must reach the user, not a generic failure."""
+
+        def handle_patch(route: Route):
+            if route.request.method == "PATCH":
+                route.fulfill(
+                    status=200,
+                    content_type="application/json",
+                    body=json.dumps(
+                        {
+                            "status": "failure",
+                            "message": 'Dataset "Training Set Alpha" is referenced by one or more '
+                            "training configs and cannot be demoted to a View",
+                        }
+                    ),
+                )
+            else:
+                route.continue_()
+
+        self._setup(page, base_url, [FAKE_DATASET, FAKE_VIEW])
+        page.route("**/api/datasets/**", handle_patch)
+
+        page.get_by_text(FAKE_DATASET["name"], exact=True).first.click()
+        page.wait_for_timeout(600)
+        _promote_btn(page).click()
+        page.wait_for_timeout(300)
+        page.get_by_test_id("modal-shell-dialog").locator("button", has_text="Demote").click()
+        page.wait_for_timeout(700)
+
+        expect(page.locator("body")).to_contain_text("referenced by one or more training configs")

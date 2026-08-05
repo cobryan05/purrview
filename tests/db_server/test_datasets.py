@@ -1014,3 +1014,53 @@ class TestViewsAndPromotion:
         restored = {d.name: d for d in await db_client.list_datasets()}
         assert "sidecar-promoted" in restored
         assert restored["sidecar-promoted"].promoted is True
+
+
+class TestDemotionGuard:
+    """A Dataset a training config depends on must not be demotable to a View.
+
+    `TrainingConfigDatasetLink` is ON DELETE RESTRICT and `delete_dataset`
+    already refuses while links exist. Demotion had no such guard: the link row
+    survives, but the row drops out of `GET /api/datasets`, so it silently
+    vanishes from every training/model picker and the next save of that training
+    config drops the link. Same silent-disappearance failure mode the rest of
+    slice 5 guards against.
+    """
+
+    async def _link_training_config(self, http_client, dataset_uuid: str, name: str) -> str:
+        r = await http_client.post(
+            "/api/training-configs",
+            json={"name": name, "datasetUuids": [dataset_uuid]},
+        )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["status"] == "success", body
+        return body["config"]["uuid"]
+
+    async def test_demoting_a_referenced_dataset_is_refused(self, http_client):
+        ds = await _create_dataset(http_client, "referenced-dataset")
+        await self._link_training_config(http_client, ds["uuid"], "tc-holding-a-reference")
+
+        r = await http_client.patch(f"/api/datasets/{ds['uuid']}", json={"promoted": False})
+        body = r.json()
+        assert body["status"] == "failure", body
+        assert "training config" in (body.get("message") or "").lower(), body
+
+        # ...and it is still a Dataset.
+        r = await http_client.get("/api/datasets")
+        assert "referenced-dataset" in {d["name"] for d in r.json()["datasets"]}
+
+    async def test_demoting_an_unreferenced_dataset_still_works(self, http_client):
+        ds = await _create_dataset(http_client, "unreferenced-dataset")
+        r = await http_client.patch(f"/api/datasets/{ds['uuid']}", json={"promoted": False})
+        assert r.status_code == 200, r.text
+        assert r.json()["dataset"]["promoted"] is False
+
+    async def test_other_edits_to_a_referenced_dataset_still_work(self, http_client):
+        """The guard keys off the promoted flip, not off having links at all."""
+        ds = await _create_dataset(http_client, "referenced-but-editable")
+        await self._link_training_config(http_client, ds["uuid"], "tc-editable-ref")
+
+        r = await http_client.patch(f"/api/datasets/{ds['uuid']}", json={"description": "still fine"})
+        assert r.status_code == 200, r.text
+        assert r.json()["dataset"]["description"] == "still fine"

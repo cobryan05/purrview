@@ -1,11 +1,11 @@
 import { fetchLabels } from '/app-static/js/shared/api/labels.js';
 import { fetchTags } from '/app-static/js/shared/api/tags.js';
 import {
-  fetchDatasets, createDataset, updateDataset, deleteDataset,
+  fetchDatasets, fetchDatasetsAndViews, createDataset, updateDataset, deleteDataset,
 } from '/app-static/js/shared/api/datasets.js';
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
 import { toast, makeFieldRow, buildPanelEditorBar } from '/app-static/js/ui/utils/index.js';
-import { showUnsavedConfigChangesModal } from '/app-static/js/ui/utils/confirmModal.js';
+import { showUnsavedConfigChangesModal, showConfirmModal } from '/app-static/js/ui/utils/confirmModal.js';
 import { createFilterPanel } from '/app-static/js/app/review/filters.js';
 import { reviewStateToDatasetForm, datasetFormToReviewState } from '/app-static/js/shared/filterUtils.js';
 
@@ -129,7 +129,7 @@ export async function renderDatasetManager({ target = 'dataset-management-box' }
 
   try {
     // Warm all three caches in parallel so first panel open is near-instant
-    await Promise.all([fetchLabels(), fetchTags(), fetchDatasets()]);
+    await Promise.all([fetchLabels(), fetchTags(), fetchDatasetsAndViews()]);
 
     const split = document.createElement('div');
     split.style.cssText = 'display: flex; gap: 1em; align-items: flex-start;';
@@ -144,7 +144,7 @@ export async function renderDatasetManager({ target = 'dataset-management-box' }
     listBar.className = 'panel-box__bar';
     const listTitle = document.createElement('span');
     listTitle.className = 'panel-box__title';
-    listTitle.textContent = 'Datasets';
+    listTitle.textContent = 'Datasets & Views';
     listBar.appendChild(listTitle);
     listPanel.appendChild(listBar);
 
@@ -221,15 +221,20 @@ export async function renderDatasetManager({ target = 'dataset-management-box' }
         editorBody.innerHTML = '';
         editorFooter.innerHTML = '';
 
+        // A row is a Dataset or a View depending on `promoted`; the editor is
+        // shared, only its vocabulary and the promote control differ.
+        const isView = dataset ? !dataset.promoted : false;
+        const kindNoun = isView ? 'View' : 'Dataset';
+
         _barHandle = buildPanelEditorBar({
           container: editorBar,
           item: dataset,
           newTitle: 'New Dataset',
-          deleteTitle: 'Delete dataset',
+          deleteTitle: `Delete ${kindNoun.toLowerCase()}`,
           onSave: () => _doSave(true),
           onDelete: dataset ? async () => {
             await deleteDataset(dataset.uuid);
-            toast('Dataset deleted', 3000);
+            toast(`${kindNoun} deleted`, 3000);
             // deleteDataset() fires DATASETS_UPDATED → subscription calls refreshList(); no need to call it again.
             await _showForm(null, { force: true });
           } : undefined,
@@ -296,6 +301,56 @@ export async function renderDatasetManager({ target = 'dataset-management-box' }
         });
         editorFooter.appendChild(previewBtn);
 
+        // Promote / demote — the flag flip that turns a saved search into
+        // something training can consume, and back. Only meaningful on a saved
+        // row, so it is absent on the new-item form.
+        if (dataset) {
+          const promoteBtn = document.createElement('button');
+          promoteBtn.type = 'button';
+          promoteBtn.className = 'panel-btn secondary';
+          promoteBtn.style.marginBottom = '0';
+          promoteBtn.dataset.testid = 'dataset-promote-toggle';
+          promoteBtn.textContent = isView ? '▲ Promote to Dataset' : '▼ Demote to View';
+          promoteBtn.title = isView
+            ? 'Make this View available to training configs and model pickers'
+            : 'Remove this Dataset from training configs and model pickers';
+
+          promoteBtn.addEventListener('click', async () => {
+            // Promotion is a consequential action (decision #2) — it changes
+            // what training is allowed to consume — so it is always confirmed.
+            const ok = await showConfirmModal({
+              title: isView ? 'Promote to Dataset' : 'Demote to View',
+              message: isView
+                ? `Promote "${dataset.name}" to a Dataset? It becomes selectable in training `
+                  + 'configs and model pickers.'
+                : `Demote "${dataset.name}" to a View? It stays saved and editable, but `
+                  + 'training configs and model pickers will no longer offer it.',
+              confirmText: isView ? 'Promote' : 'Demote',
+              danger: !isView,
+            });
+            if (!ok) return;
+
+            // Unsaved form edits are unrelated to the flag and would be lost on
+            // the re-render below, so settle them the same way tab navigation does.
+            if (!await _confirmIfDirty()) return;
+
+            promoteBtn.disabled = true;
+            try {
+              const updated = await updateDataset(dataset.uuid, { promoted: isView });
+              toast(isView ? `"${updated.name}" promoted to Dataset` : `"${updated.name}" demoted to View`, 3000);
+              // Re-open on the updated record so the editor's vocabulary, the
+              // promote button and the list section all reflect the new kind.
+              await _showForm(updated, { force: true });
+            } catch (err) {
+              // The server refuses demotion while a training config references
+              // the row — surface that reason rather than a generic failure.
+              toast(err.message || 'Failed to change promotion', 6000, 'error');
+              promoteBtn.disabled = false;
+            }
+          });
+          editorFooter.appendChild(promoteBtn);
+        }
+
         // Shared save logic used by both the Save button (navigateAfterCreate=true)
         // and the nav-guard (_currentDoSave, navigateAfterCreate=false).
         async function _doSave(navigateAfterCreate = false) {
@@ -313,7 +368,7 @@ export async function renderDatasetManager({ target = 'dataset-management-box' }
               setDirty(false);
               setSaving(false);
               updateTitle(updated.name);
-              toast('Dataset saved', 3000);
+              toast(`${kindNoun} saved`, 3000);
               const nameEl = listBody.querySelector(`[data-dataset-uuid="${dataset.uuid}"] .ds-list-item__name`);
               if (nameEl) nameEl.textContent = updated.name;
             } else {
@@ -322,6 +377,10 @@ export async function renderDatasetManager({ target = 'dataset-management-box' }
                 description: formHandle.getDescription(),
                 filterJson: formHandle.getFilterJson(),
                 labelUuids: formHandle.getLabelUuids(),
+                // "+ New" on this screen means a Dataset. Stated explicitly
+                // rather than leaning on the server default: with one table and
+                // two nouns, every creating path must name the flag (PR 5.1).
+                promoted: true,
               });
               setDirty(false);
               toast(`Dataset "${created.name}" created`, 3000);
@@ -348,22 +407,26 @@ export async function renderDatasetManager({ target = 'dataset-management-box' }
       }
     }
 
-    async function refreshList() {
-      listBody.innerHTML = '';
+    function _renderListSection(title, rows, emptyText) {
+      const header = document.createElement('div');
+      header.className = 'ds-list-section__header';
+      header.textContent = `${title} (${rows.length})`;
+      header.dataset.testid = `dataset-section-${title.toLowerCase()}`;
+      listBody.appendChild(header);
 
-      const datasetsMap = await fetchDatasets();
-
-      if (datasetsMap.size === 0) {
+      if (rows.length === 0) {
         const empty = document.createElement('p');
-        empty.style.cssText = 'color: var(--pico-muted-color, #888); font-style: italic; font-size: 0.85em; padding: 0.5em 0.75em; margin: 0;';
-        empty.textContent = 'No datasets yet.';
+        empty.className = 'ds-list-empty';
+        empty.textContent = emptyText;
         listBody.appendChild(empty);
+        return;
       }
 
-      for (const dataset of datasetsMap.values()) {
+      for (const dataset of rows) {
         const item = document.createElement('div');
         item.className = 'ds-list-item';
         item.dataset.datasetUuid = dataset.uuid;
+        item.dataset.promoted = String(!!dataset.promoted);
 
         const nameLine = document.createElement('div');
         nameLine.className = 'ds-list-item__name';
@@ -385,6 +448,20 @@ export async function renderDatasetManager({ target = 'dataset-management-box' }
         item.addEventListener('click', () => _showForm(dataset));
         listBody.appendChild(item);
       }
+    }
+
+    async function refreshList() {
+      listBody.innerHTML = '';
+
+      // Both nouns live in one table separated by `promoted` (decision #10), and
+      // this is the one screen that shows both — promotion is meaningless if you
+      // can't see what you're promoting from.
+      const allRows = await fetchDatasetsAndViews();
+      const datasets = [...allRows.values()].filter(d => d.promoted);
+      const views = [...allRows.values()].filter(d => !d.promoted);
+
+      _renderListSection('Datasets', datasets, 'No datasets yet.');
+      _renderListSection('Views', views, 'No saved Views yet — save one from the Review tab.');
 
       _updateListSelection(_selectedUuid);
     }
