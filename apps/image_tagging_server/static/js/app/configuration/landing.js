@@ -18,6 +18,7 @@ import { fetchDatasetsAndViews } from '/app-static/js/shared/api/datasets.js';
 import { fetchFilterChains } from '/app-static/js/shared/api/filterChains.js';
 import { fetchLabels } from '/app-static/js/shared/api/labels.js';
 import { fetchModelConfigs } from '/app-static/js/shared/api/modelConfigs.js';
+import { fetchModelGroups } from '/app-static/js/shared/api/modelGroups.js';
 import { fetchModelsList } from '/app-static/js/shared/api/models.js';
 import { fetchTags } from '/app-static/js/shared/api/tags.js';
 import { fetchTrainingConfigs } from '/app-static/js/shared/api/trainingConfigs.js';
@@ -46,7 +47,7 @@ async function fetchCounts() {
     }
   };
 
-  const [labels, tags, models, rows, modelShapes, trainingRuns, filterChains] = await Promise.all([
+  const [labels, tags, models, rows, modelShapes, modelStacks, trainingRuns, filterChains] = await Promise.all([
     settle(fetchLabels),
     settle(fetchTags),
     settle(fetchModelsList),
@@ -54,6 +55,7 @@ async function fetchCounts() {
     // fetchLabels — see CLAUDE.md "Key Gotchas").
     settle(fetchDatasetsAndViews, m => [...m.values()]),
     settle(fetchModelConfigs),
+    settle(fetchModelGroups),
     settle(fetchTrainingConfigs),
     settle(fetchFilterChains),
   ]);
@@ -65,6 +67,7 @@ async function fetchCounts() {
     datasets: rows ? rows.filter(r => r.promoted).length : null,
     views: rows ? rows.filter(r => !r.promoted).length : null,
     modelShapes,
+    modelStacks,
     trainingRuns,
     filterChains,
   };
@@ -112,6 +115,10 @@ function buildGroups(counts) {
         {
           name: 'Model Shapes', count: counts.modelShapes, tab: 'tab-model-management',
           hint: 'Which model handles which label, hierarchically',
+        },
+        {
+          name: 'Model Stacks', count: counts.modelStacks, tab: 'tab-modelstack-management',
+          hint: 'Reusable ordered detector lists, nestable',
         },
         {
           name: 'Training Runs', count: counts.trainingRuns, tab: 'tab-training-management',

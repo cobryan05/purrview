@@ -169,7 +169,7 @@ class TestSaveAndRunModelGroup:
         _check_item(page, "det-b")
 
         page.once("dialog", lambda dialog: dialog.accept("MyGroup"))
-        page.click("#test-inference-panel button:has-text('Save as group')")
+        page.click("#test-inference-panel button:has-text('Save as stack')")
         page.wait_for_timeout(300)  # let the async create + re-fetch settle
 
         assert len(groups_state["groups"]) == 1

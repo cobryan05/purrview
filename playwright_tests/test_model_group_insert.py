@@ -1,5 +1,5 @@
 """
-Tests for the "Insert models from group" control on the `model_label_config`
+Tests for the "Insert models from stack" control on the `model_label_config`
 array field (apps/image_tagging_server/static/js/ui/utils/fields/ArrayField.js).
 
 Phase 5C of LIVE_COLLECTION_PLAN.md: `CollectTrainingImagesTask.params_schema()`
@@ -201,7 +201,7 @@ class TestGroupInsertAppendsInOrder:
         _navigate_to_tasks(page, base_url)
         _open_edit(page)
 
-        insert_btn = page.locator("#task-config-list button", has_text="Insert models from group")
+        insert_btn = page.locator("#task-config-list button", has_text="Insert models from stack")
         expect(insert_btn).to_be_visible(timeout=5000)
 
         group_select = insert_btn.locator("xpath=preceding-sibling::select[1]")
@@ -220,7 +220,7 @@ class TestGroupInsertAppendsInOrder:
         _navigate_to_tasks(page, base_url)
         _open_edit(page)
 
-        insert_btn = page.locator("#task-config-list button", has_text="Insert models from group")
+        insert_btn = page.locator("#task-config-list button", has_text="Insert models from stack")
         expect(insert_btn).to_be_visible(timeout=5000)
         group_select = insert_btn.locator("xpath=preceding-sibling::select[1]")
         group_select.select_option(GROUP_UUID)
@@ -252,7 +252,7 @@ class TestGroupInsertAppendsInOrder:
         _navigate_to_tasks(page, base_url)
         _open_edit(page)
 
-        insert_btn = page.locator("#task-config-list button", has_text="Insert models from group")
+        insert_btn = page.locator("#task-config-list button", has_text="Insert models from stack")
         expect(insert_btn).to_be_visible(timeout=5000)
         group_select = insert_btn.locator("xpath=preceding-sibling::select[1]")
         group_select.select_option(GROUP_UUID)
@@ -260,7 +260,7 @@ class TestGroupInsertAppendsInOrder:
         page.wait_for_timeout(300)
 
         # Re-fetch the (rebuilt) button/select after the rerender.
-        insert_btn = page.locator("#task-config-list button", has_text="Insert models from group")
+        insert_btn = page.locator("#task-config-list button", has_text="Insert models from stack")
         expect(insert_btn).to_be_visible(timeout=5000)
         group_select = insert_btn.locator("xpath=preceding-sibling::select[1]")
         expect(group_select).to_have_value(GROUP_UUID)
@@ -278,7 +278,7 @@ class TestGroupInsertAppendsInOrder:
         )
         expect(merge_policy_select).to_have_value("last_wins")
 
-        insert_btn = page.locator("#task-config-list button", has_text="Insert models from group")
+        insert_btn = page.locator("#task-config-list button", has_text="Insert models from stack")
         expect(insert_btn).to_be_visible(timeout=5000)
         group_select = insert_btn.locator("xpath=preceding-sibling::select[1]")
         group_select.select_option(GROUP_UUID)
@@ -294,7 +294,7 @@ class TestGroupInsertEdgeCases:
         _navigate_to_tasks(page, base_url)
         _open_edit(page)
 
-        insert_btn = page.locator("#task-config-list button", has_text="Insert models from group")
+        insert_btn = page.locator("#task-config-list button", has_text="Insert models from stack")
         expect(insert_btn).to_be_visible(timeout=5000)
         expect(insert_btn).to_be_disabled()
 
@@ -304,7 +304,7 @@ class TestGroupInsertEdgeCases:
         _navigate_to_tasks(page, base_url)
         _open_edit(page)
 
-        insert_btn = page.locator("#task-config-list button", has_text="Insert models from group")
+        insert_btn = page.locator("#task-config-list button", has_text="Insert models from stack")
         expect(insert_btn).to_be_visible(timeout=5000)
         group_select = insert_btn.locator("xpath=preceding-sibling::select[1]")
         group_select.select_option(EMPTY_GROUP_UUID)
@@ -321,7 +321,7 @@ class TestGroupInsertEdgeCases:
         _navigate_to_tasks(page, base_url)
         _open_edit(page)
 
-        # Exactly one "Insert models from group" button should exist (on
+        # Exactly one "Insert models from stack" button should exist (on
         # model_label_config), not one per array field.
-        insert_btns = page.locator("#task-config-list button", has_text="Insert models from group")
+        insert_btns = page.locator("#task-config-list button", has_text="Insert models from stack")
         expect(insert_btns).to_have_count(1, timeout=5000)

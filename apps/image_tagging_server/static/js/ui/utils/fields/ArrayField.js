@@ -145,7 +145,7 @@ export class ArrayField extends Field {
     const select = document.createElement('select');
     if (groupsMap.size === 0) {
       const opt = document.createElement('option');
-      opt.textContent = 'No model groups configured';
+      opt.textContent = 'No model stacks configured';
       opt.value = '';
       select.appendChild(opt);
       select.disabled = true;
@@ -173,7 +173,7 @@ export class ArrayField extends Field {
 
     const insertBtn = document.createElement('button');
     insertBtn.type = 'button';
-    insertBtn.textContent = 'Insert models from group';
+    insertBtn.textContent = 'Insert models from stack';
     insertBtn.disabled = groupsMap.size === 0;
 
     const statusEl = document.createElement('span');

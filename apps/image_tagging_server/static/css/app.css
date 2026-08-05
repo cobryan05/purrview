@@ -3270,3 +3270,25 @@ progress.progress-indeterminate:indeterminate {
 }
 
 
+
+/* ── Model Stacks pane ──────────────────────────────────────────────────────
+   The list/editor shell reuses `.mc-*` (see ui/modelStacks.js); only the
+   member rows are new. */
+.mstack-member-row {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+  margin-bottom: var(--space-2);
+}
+.mstack-member-row__select {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+}
+.mstack-empty {
+  color: var(--text-muted);
+  font-style: italic;
+  font-size: var(--text-sm);
+  padding: var(--space-2) var(--space-3);
+  margin: 0;
+}

@@ -19,14 +19,15 @@ const GROUP_ID_PREFIX = 'group:';
 /**
  * Creates a self-contained inference panel: detector + classifier model lists and Run button.
  *
- * Detectors and saved model groups support multi-select (checkboxes) so several can be run
+ * Detectors and saved model stacks support multi-select (checkboxes) so several can be run
  * back-to-back; classifiers stay single-select since a match opens a review modal for that
- * one model. The detector/group selection is a single ordered `Set` of tagged ids
- * (`model:<name>` / `group:<uuid>`) — `Set` preserves insertion order, so a mix of raw
- * models and groups still runs in the order they were checked, and a saved group expands to
- * its member models (recursively, for nested groups) at Run time.
- * Selections persist in sessionStorage and are reconciled against the live model/group list
- * on every load/refresh, so models or groups that disappear are silently dropped and new
+ * one model. The detector/stack selection is a single ordered `Set` of tagged ids
+ * (`model:<name>` / `group:<uuid>` — the wire entity is still `model_groups`, "stack" is
+ * only the display noun) — `Set` preserves insertion order, so a mix of raw models and
+ * stacks still runs in the order they were checked, and a saved stack expands to its
+ * member models (recursively, for nested stacks) at Run time.
+ * Selections persist in sessionStorage and are reconciled against the live model/stack list
+ * on every load/refresh, so models or stacks that disappear are silently dropped and new
  * ones simply arrive unchecked.
  *
  * @param {import('../image-tagging/runtime.js').ImageTaggingRuntime} runtime
@@ -78,8 +79,8 @@ export async function createInferencePanel(runtime, container) {
 
   const saveGroupBtn = document.createElement('button');
   saveGroupBtn.className = 'secondary';
-  saveGroupBtn.textContent = 'Save as group';
-  saveGroupBtn.title = 'Save the currently checked detectors/groups, in their current order, as a reusable named group';
+  saveGroupBtn.textContent = 'Save as stack';
+  saveGroupBtn.title = 'Save the currently checked detectors/stacks, in their current order, as a reusable named model stack';
   saveGroupBtn.addEventListener('click', handleSaveAsGroup);
 
   buttonsRow.append(runBtn, refreshBtn, clearGreyBtn, verifyAllBtn, saveGroupBtn);
@@ -174,7 +175,7 @@ export async function createInferencePanel(runtime, container) {
       clearGreyBtn.style.display = '';
       replaceRow.style.display = '';
     } else {
-      runBtn.title = 'Select one or more models/groups below first';
+      runBtn.title = 'Select one or more models/stacks below first';
       clearGreyBtn.style.display = '';
       replaceRow.style.display = '';
     }
@@ -215,7 +216,7 @@ export async function createInferencePanel(runtime, container) {
   }
 
   function _makeGroupItem(group) {
-    return _makeToggleItem({ id: GROUP_ID_PREFIX + group.uuid, label: group.name, badgeText: 'group' });
+    return _makeToggleItem({ id: GROUP_ID_PREFIX + group.uuid, label: group.name, badgeText: 'stack' });
   }
 
   function _makeClassifierItem(model, kind) {
@@ -354,7 +355,7 @@ export async function createInferencePanel(runtime, container) {
       await handleClassify();
       return;
     }
-    if (_selectedItems.size === 0) { alert('Please select at least one model or group first'); return; }
+    if (_selectedItems.size === 0) { alert('Please select at least one model or stack first'); return; }
 
     events.publish(EventTypes.RUN_INFERENCE_ON_CANVAS, {
       modelNames: _resolveSelectedModelNames(),
@@ -366,7 +367,7 @@ export async function createInferencePanel(runtime, container) {
 
   async function handleSaveAsGroup() {
     if (_selectedItems.size === 0) return;
-    const name = prompt('Model group name:');
+    const name = prompt('Model stack name:');
     if (!name?.trim()) return;
 
     const members = [..._selectedItems].map((id, order) =>
@@ -383,8 +384,8 @@ export async function createInferencePanel(runtime, container) {
       renderList();
       _updateRunBtn();
     } catch (err) {
-      Logger.error('Failed to save model group:', err);
-      alert(`Failed to save group: ${err.message}`);
+      Logger.error('Failed to save model stack:', err);
+      alert(`Failed to save stack: ${err.message}`);
     } finally {
       saveGroupBtn.disabled = false;
     }
