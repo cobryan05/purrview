@@ -291,7 +291,7 @@ main.container {
   padding: 4px 0;
   min-width: 240px;
   box-shadow: 0 4px 14px rgba(0, 0, 0, .4);
-  z-index: 10001;
+  z-index: var(--layer-bottom-bars-menu);
   font-size: 0.8em;
 }
 
@@ -1063,7 +1063,7 @@ button.filter-active {
   position: absolute;
   top: calc(100% + 3px);
   left: 0;
-  z-index: 200;
+  z-index: var(--layer-dropdown);
   min-width: 160px;
   min-height: 60px;
   background: var(--pico-card-background-color, #1a1a2e);
@@ -1559,7 +1559,7 @@ button.filter-active {
    rule-sets (which previously sized the popover differently). */
 .thumb-hover-popover {
   position: fixed;
-  z-index: 1200;
+  z-index: var(--layer-hover-popover);
   background: #1a1a1a;
   border: 2px solid #aaa;
   border-radius: 6px;
@@ -1599,7 +1599,7 @@ button.filter-active {
   display: flex;
   align-items: center;
   justify-content: center;
-  z-index: 9999;
+  z-index: var(--layer-modal-base); /* overridden inline by nextModalZIndex() on open */
 }
 
 .app-modal-dialog {
@@ -1847,7 +1847,7 @@ button.filter-active {
   display: flex;
   align-items: center;
   justify-content: center;
-  z-index: 2000;
+  z-index: var(--layer-modal-base); /* overridden inline by nextModalZIndex() on open */
 }
 
 .canvas-modal-dialog {
@@ -2912,7 +2912,7 @@ button.filter-active {
   bottom: 0;
   left: 0;
   right: 0;
-  z-index: 10000; /* above all modals (app-modal-overlay max ~9999) */
+  z-index: var(--layer-bottom-bars); /* above the whole modal band, which is bounded */
   display: flex;
   flex-direction: column;
 }

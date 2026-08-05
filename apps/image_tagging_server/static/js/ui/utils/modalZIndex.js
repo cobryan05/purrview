@@ -1,18 +1,46 @@
 /**
- * Shared modal z-index manager and ESC-key close stack.
+ * Shared overlay z-index manager and ESC-key close stack.
  *
- * nextModalZIndex()        — returns a z-index strictly above all currently open modals.
+ * nextModalZIndex()        — returns a z-index strictly above all currently open overlays.
  * registerEscHandler(fn)  — push a close function onto the ESC stack.
- * unregisterEscHandler(fn) — remove it (call when the modal closes).
+ * unregisterEscHandler(fn) — remove it (call when the overlay closes).
  *
- * ESC always closes only the topmost (last-registered) modal.
+ * ESC always closes only the topmost (last-registered) overlay — modals,
+ * anchored popups and context menus all share this one stack, so their
+ * relative order is defined rather than incidental.
+ *
+ * ⚠️ The counter is **bounded and self-resetting**. It used to increment
+ * forever, which made `#bottom-bars`' documented "above all modals (max
+ * ~9999)" arithmetic rather than an invariant: ~900 opens in one session
+ * inverted it. Allocation is now clamped to [base, max] from the --layer-*
+ * tokens, and rewinds to base whenever the last overlay closes.
  */
 
-let _zIndex = 1000;
+/** Layer scale, read from tokens.css so the order lives in exactly one place. */
+function _token(name, fallback) {
+  const raw = getComputedStyle(document.documentElement).getPropertyValue(name);
+  const n = parseInt(raw, 10);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+export const LAYERS = {
+  dropdown: _token('--layer-dropdown', 200),
+  modalBase: _token('--layer-modal-base', 1000),
+  modalMax: _token('--layer-modal-max', 1890),
+  hoverPopover: _token('--layer-hover-popover', 1900),
+  bottomBars: _token('--layer-bottom-bars', 2000),
+};
+
+const _STEP = 10;
+
+let _zIndex = LAYERS.modalBase;
 const _escStack = [];
 
 export function nextModalZIndex() {
-  _zIndex += 10;
+  // Clamp rather than wrap: at the top of the band successive overlays share
+  // the ceiling, so DOM order decides. That is a cosmetic tie at absurd
+  // nesting depth; escaping the band would put overlays over the bottom bars.
+  _zIndex = Math.min(_zIndex + _STEP, LAYERS.modalMax);
   return _zIndex;
 }
 
@@ -55,6 +83,10 @@ export function registerEscHandler(fn) {
 export function unregisterEscHandler(fn) {
   const idx = _escStack.lastIndexOf(fn);
   if (idx !== -1) _escStack.splice(idx, 1);
+  // Nothing is open, so the band can start over — this is what keeps the
+  // allocation bounded across a long session rather than only within one
+  // nesting chain.
+  if (_escStack.length === 0) _zIndex = LAYERS.modalBase;
 }
 
 // One global listener in capture phase so it fires before any element's own keydown handlers.

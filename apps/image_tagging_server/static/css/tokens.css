@@ -37,6 +37,27 @@
   --radius-lg: 6px;
   --radius-full: 999px;
 
+  /* ---- layer scale (z-index) ----
+   * The single place the stacking order is decided (slice 6, PR 6.1). Before
+   * this, six selectors each picked a number independently and the order was
+   * already wrong: modal overlays take their z-index *inline* from
+   * nextModalZIndex(), so the 9999 on .app-modal-overlay was dead, and the
+   * canvas modal's static 2000 sat above every app modal opened on top of it.
+   *
+   * These values preserve the ordering that was *intended*, and make the one
+   * relationship #bottom-bars documented ("above all modals") an actual
+   * invariant: modals are allocated inside [modal-base, modal-max] and the
+   * counter resets when the last one closes, so the band cannot be exhausted.
+   *
+   * ⚠️ modalZIndex.js reads --layer-modal-* and --layer-bottom-bars at load.
+   * Renaming or removing them silently falls back to the JS defaults. */
+  --layer-dropdown: 200;
+  --layer-modal-base: 1000;
+  --layer-modal-max: 1890;
+  --layer-hover-popover: 1900;
+  --layer-bottom-bars: 2000;
+  --layer-bottom-bars-menu: 2100;
+
   /* ---- color: dark (de-facto current theme) ---- */
   --bg: #14141c;
   --surface: #1c1c28;

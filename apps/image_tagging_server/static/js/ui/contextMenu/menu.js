@@ -1,3 +1,5 @@
+import { nextModalZIndex, registerEscHandler, unregisterEscHandler } from '/app-static/js/ui/utils/modalZIndex.js';
+
 /**
  * Floating context-menu engine.
  *
@@ -166,7 +168,12 @@ function _buildItemRows(container, items, menuCtx, registerEl, unregisterEl) {
 
           const flyoutEl = document.createElement('div');
           flyoutEl.className = 'ctx-menu';
-          flyoutEl.style.cssText = 'position:fixed;';
+          // Sit one step above the menu this row belongs to. Read from the DOM
+          // rather than taking a fresh band slot, so hovering submenus repeatedly
+          // can't walk the shared counter up to its ceiling.
+          const _parentZ = parseInt(row.closest('.ctx-menu')?.style.zIndex, 10);
+          const _flyoutZ = Number.isFinite(_parentZ) ? _parentZ + 1 : '';
+          flyoutEl.style.cssText = `position:fixed;${_flyoutZ === '' ? '' : `z-index:${_flyoutZ};`}`;
           registerEl(flyoutEl);
 
           const sub = item.submenu();
@@ -271,7 +278,7 @@ export function openMenu({ x, y, sections, onClose }) {
     _allEls.forEach(el => el.parentNode && el.remove());
     _allEls.length = 0;
     document.removeEventListener('mousedown', _onMouseDown, true);
-    document.removeEventListener('keydown', _onKeyDown);
+    unregisterEscHandler(close);
     _activeMenu = null;
     onClose?.();
   };
@@ -280,7 +287,11 @@ export function openMenu({ x, y, sections, onClose }) {
 
   const root = document.createElement('div');
   root.className = 'ctx-menu';
-  root.style.cssText = 'position:fixed;';
+  // .ctx-menu carries no z-index in CSS, so layering used to fall to DOM order
+  // alone. Take one slot from the shared band (PR 6.1); flyouts sit just above
+  // their own menu rather than burning a slot on every hover.
+  const _menuZ = nextModalZIndex();
+  root.style.cssText = `position:fixed;z-index:${_menuZ};`;
   registerEl(root);
 
   let firstSection = true;
@@ -316,12 +327,10 @@ export function openMenu({ x, y, sections, onClose }) {
     const isInside = _allEls.some(el => el.contains(e.target));
     if (!isInside) close();
   };
-  const _onKeyDown = e => {
-    if (e.key === 'Escape') close();
-  };
-
   document.addEventListener('mousedown', _onMouseDown, true);
-  document.addEventListener('keydown', _onKeyDown);
+  // Shared ESC stack (PR 6.1) — a menu opened over a modal now closes before
+  // the modal, instead of both racing on their own keydown listeners.
+  registerEscHandler(close);
 
   _activeMenu = { close };
   return { close };

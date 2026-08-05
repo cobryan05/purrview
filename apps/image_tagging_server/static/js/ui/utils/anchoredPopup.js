@@ -1,6 +1,8 @@
+import { nextModalZIndex, registerEscHandler, unregisterEscHandler } from './modalZIndex.js';
+
 /**
  * A floating popup anchored above-right of a trigger element, dismissed by an
- * outside click. Shared by call sites that need a simple flyout (e.g. a
+ * outside click or ESC. Shared by call sites that need a simple flyout (e.g. a
  * checkbox/options menu) without the full context-menu engine in
  * ui/contextMenu/menu.js (sections/submenus/keyboard nav).
  *
@@ -22,6 +24,9 @@ export function openAnchoredPopup(anchorEl, contentEl) {
   // actual rendered size before we know where to position it.
   contentEl.style.visibility = 'hidden';
   contentEl.style.position = 'fixed';
+  // Share the overlay band so a popup opened from inside a modal lands above
+  // it (PR 6.1) — this used to be left entirely to whatever CSS the caller had.
+  contentEl.style.zIndex = nextModalZIndex();
   document.body.appendChild(contentEl);
 
   const rect = anchorEl.getBoundingClientRect();
@@ -43,7 +48,11 @@ export function openAnchoredPopup(anchorEl, contentEl) {
   contentEl.style.top = topPos + 'px';
   contentEl.style.visibility = '';
 
+  let _closed = false;
   function close() {
+    if (_closed) return;
+    _closed = true;
+    unregisterEscHandler(close);
     contentEl.remove();
     document.removeEventListener('mousedown', outsideListener, true);
   }
@@ -52,6 +61,9 @@ export function openAnchoredPopup(anchorEl, contentEl) {
     if (!contentEl.contains(e.target) && e.target !== anchorEl) close();
   }
   document.addEventListener('mousedown', outsideListener, true);
+  // Join the shared ESC stack so a popup over a modal closes first, instead of
+  // ESC falling through to whatever happened to be listening.
+  registerEscHandler(close);
 
   return { close };
 }
