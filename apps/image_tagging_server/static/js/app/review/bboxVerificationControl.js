@@ -1,14 +1,13 @@
 /**
- * Shared bbox-verification tri-state control — V1 of the "unify Review
- * filters" plan.
+ * Shared bbox-verification control — V1 of the "unify Review filters" plan.
  *
- * Renders a labeled `<select>` with options Any / Verified / Unverified /
- * False-Pos, mapped to the same `bboxVerification` state vocabulary consumed
- * by `filterPredicate.js` (`'any' | 'verified' | 'unverified' | 'false_pos'`).
+ * Renders a labeled `<select>` with options Any / Verified / Unverified,
+ * mapped to the same `bboxVerification` state vocabulary consumed by
+ * `filterPredicate.js` (`'any' | 'verified' | 'unverified'`).
  *
  * This is distinct from the whole-image "Config Ready" label-completeness
  * check (a separate control) — this one filters bboxes by their verification
- * TAG (`VERIFIED_TAG_UUID` / `UNVERIFIED_TAG_UUID` / `FALSE_POS_TAG_UUID`).
+ * TAG (`VERIFIED_TAG_UUID` / `UNVERIFIED_TAG_UUID`).
  *
  * Deliberately dependency-light (no filter-panel coupling, no CSS import
  * beyond a couple of shared class names already defined in app.css) so it can
@@ -20,7 +19,7 @@
  *     onChange: (value) => { ... },
  *   });
  *   container.appendChild(ctl.element);
- *   ctl.getValue();       // 'any' | 'verified' | 'unverified' | 'false_pos'
+ *   ctl.getValue();       // 'any' | 'verified' | 'unverified'
  *   ctl.setValue('verified');
  */
 
@@ -28,13 +27,12 @@ const OPTIONS = [
   ['any', 'Any'],
   ['verified', 'Verified'],
   ['unverified', 'Unverified'],
-  ['false_pos', 'False-Pos'],
 ];
 
 /**
  * @param {{
- *   value?: 'any'|'verified'|'unverified'|'false_pos',
- *   onChange: (value: 'any'|'verified'|'unverified'|'false_pos') => void,
+ *   value?: 'any'|'verified'|'unverified',
+ *   onChange: (value: 'any'|'verified'|'unverified') => void,
  *   label?: string,
  * }} opts
  * @returns {{

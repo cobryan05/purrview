@@ -2,12 +2,11 @@ import { apiFetch } from './apiUtils.js';
 // System tag UUIDs (must match constants in apps/helpers/db/types.py)
 export const UNVERIFIED_TAG_UUID = '00000000-0000-0000-0000-000000000001';
 // Keep in sync with apps/helpers/db/types.py
-export const FALSE_POS_TAG_UUID = '00000000-0000-0000-0000-000000000003';
 export const REJECTION_TAG_UUID = '00000000-0000-0000-0000-000000000004';
 export const VERIFIED_TAG_UUID = '00000000-0000-0000-0000-000000000005';
 
-// All three are in the verification exclusive group — mutually exclusive per bbox
-export const VERIFICATION_TAG_UUIDS = new Set([UNVERIFIED_TAG_UUID, FALSE_POS_TAG_UUID, VERIFIED_TAG_UUID]);
+// Both are in the verification exclusive group — mutually exclusive per bbox
+export const VERIFICATION_TAG_UUIDS = new Set([UNVERIFIED_TAG_UUID, VERIFIED_TAG_UUID]);
 
 // Maps the bbox-verification tri-state filter's state values ('any' is a
 // no-op with no entry here) to the tag UUID that must be present on the bbox.
@@ -18,15 +17,6 @@ export const VERIFICATION_TAG_UUIDS = new Set([UNVERIFIED_TAG_UUID, FALSE_POS_TA
 export const VERIFICATION_TAG_BY_STATE = {
   verified: VERIFIED_TAG_UUID,
   unverified: UNVERIFIED_TAG_UUID,
-  false_pos: FALSE_POS_TAG_UUID,
-};
-
-// Maps the legacy 'false_pos' bboxVerification state value to the term
-// model's 'false_positive' BBoxVerificationTerm.state literal.
-const BBOX_VERIFICATION_STATE_TO_TERM_STATE = {
-  verified: 'verified',
-  unverified: 'unverified',
-  false_pos: 'false_positive',
 };
 
 /**
@@ -92,8 +82,8 @@ function buildReviewFilterBody({
     terms.push({ kind: 'bboxTag', tagUuids: [uuid], negate: true });
   }
   if (bboxVerification && bboxVerification !== 'any') {
-    const state = BBOX_VERIFICATION_STATE_TO_TERM_STATE[bboxVerification];
-    if (state) terms.push({ kind: 'bboxVerification', state });
+    // 'verified'/'unverified' are the BBoxVerificationTerm.state literals verbatim.
+    terms.push({ kind: 'bboxVerification', state: bboxVerification });
   }
 
   if (labelUuids.length > 0) {
@@ -170,7 +160,7 @@ function buildReviewFilterBody({
  *   afterSortValue?: string|null,  // ISO datetime of last image's sort field (when sortBy != 'uuid')
  *   imageLabelFilters?: Array<{labelUuid: string, status: string, exclude: boolean}>,
  *   imageLabelConditions?: {labelUuid: string, state: 'present'|'absent'|'uncertain'}[],
- *   bboxVerification?: 'any'|'verified'|'unverified'|'false_pos',  // V1 tri-state; 'any' is a no-op
+ *   bboxVerification?: 'any'|'verified'|'unverified',  // 'any' is a no-op
  *   verificationLabelUuids?: string[],  // V2: active training config's target labels,
  *                                        // overrides labelUuids as the verificationCheck target
  *   limit?: number,

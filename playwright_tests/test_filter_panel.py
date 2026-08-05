@@ -382,7 +382,7 @@ class TestFilterPanelBboxVerification:
             {_TEARDOWN}
             return texts;
         }}""")
-        assert result == ["Any", "Verified", "Unverified", "False-Pos"]
+        assert result == ["Any", "Verified", "Unverified"]
 
     def test_control_label_is_distinct_from_config_ready(self, shared_page: Page):
         result = shared_page.evaluate(f"""async () => {{
@@ -423,11 +423,11 @@ class TestFilterPanelBboxVerification:
         assert result["before"] == 0
         assert result["after"] == 1
 
-    def test_selecting_false_pos_makes_not_default(self, shared_page: Page):
+    def test_selecting_unverified_makes_not_default(self, shared_page: Page):
         result = shared_page.evaluate(f"""async () => {{
             {_SETUP}
             const select = panel.element.querySelector('.bbox-verification-select');
-            select.value = 'false_pos';
+            select.value = 'unverified';
             select.dispatchEvent(new Event('change'));
             const d = panel.isDefault();
             {_TEARDOWN}
@@ -438,12 +438,12 @@ class TestFilterPanelBboxVerification:
     def test_set_state_syncs_control(self, shared_page: Page):
         result = shared_page.evaluate(f"""async () => {{
             {_SETUP}
-            panel.setState({{ bboxVerification: 'false_pos' }});
+            panel.setState({{ bboxVerification: 'unverified' }});
             const select = panel.element.querySelector('.bbox-verification-select');
             {_TEARDOWN}
             return select.value;
         }}""")
-        assert result == "false_pos"
+        assert result == "unverified"
 
     def test_verification_tags_absent_from_tags_dropdown(self, shared_page: Page):
         """
@@ -510,13 +510,13 @@ class TestBboxVerificationControlStandalone:
         result = shared_page.evaluate(f"""async () => {{
             {self._STANDALONE_SETUP}
             const select = ctl.element.querySelector('.bbox-verification-select');
-            select.value = 'false_pos';
+            select.value = 'unverified';
             select.dispatchEvent(new Event('change'));
             const captured = calls.slice();
             {self._STANDALONE_TEARDOWN}
             return captured;
         }}""")
-        assert result == ["false_pos"]
+        assert result == ["unverified"]
 
 
 # ── fetchReviewQueue request mapping (bboxVerification -> tagPresenceFilters) ──
@@ -578,7 +578,6 @@ class TestFetchReviewQueueBboxVerificationMapping:
         independent terms — one doesn't overwrite the other.
         """
         captured = {}
-        FALSE_POS_UUID = "00000000-0000-0000-0000-000000000003"
 
         def handle(route):
             captured["body"] = route.request.post_data_json
@@ -597,13 +596,13 @@ class TestFetchReviewQueueBboxVerificationMapping:
                 tagUuids: [],
                 showAllBboxes: true,
                 tagExcludeUuids: ['some-other-tag'],
-                bboxVerification: 'false_pos',
+                bboxVerification: 'unverified',
             });
         }""")
 
         body = captured["body"]
         assert {"kind": "bboxTag", "tagUuids": ["some-other-tag"], "negate": True} in body["terms"]
-        assert {"kind": "bboxVerification", "state": "false_positive"} in body["terms"]
+        assert {"kind": "bboxVerification", "state": "unverified"} in body["terms"]
 
 
 # ── "Config Ready" (V2) — Verification select renamed + repointed ──────────

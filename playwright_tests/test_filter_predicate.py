@@ -12,14 +12,12 @@ pure (no DOM, no network), so these are true unit tests.
 Verification tag UUIDs (must match shared/api/review.js):
   VERIFIED    = 00000000-0000-0000-0000-000000000005
   UNVERIFIED  = 00000000-0000-0000-0000-000000000001
-  FALSE_POS   = 00000000-0000-0000-0000-000000000003
 """
 import pytest
 from playwright.sync_api import Page
 
 VERIFIED = "00000000-0000-0000-0000-000000000005"
 UNVERIFIED = "00000000-0000-0000-0000-000000000001"
-FALSE_POS = "00000000-0000-0000-0000-000000000003"
 
 # A small JS preamble shared by every test: imports the module and defines
 # fixtures (a label hierarchy + helpers to build bboxes/images) so the actual
@@ -31,7 +29,6 @@ const { defaultCuratedFilterState, bboxMatchesFilter, imageMatchesFilter } = M;
 // can reference them as bare identifiers.
 const VERIFIED   = '00000000-0000-0000-0000-000000000005';
 const UNVERIFIED = '00000000-0000-0000-0000-000000000001';
-const FALSE_POS  = '00000000-0000-0000-0000-000000000003';
 // Label hierarchy:  animal -> cat -> kitten ;  animal -> dog ;  vehicle
 const labels = new Map([
   ['animal',  { uuid: 'animal',  name: 'Animal',  parentUuid: null }],
@@ -135,14 +132,10 @@ class TestVerification:
         assert _eval(shared_page, "bboxMatchesFilter(bbox('cat', UNVERIFIED), st({bboxVerification:'unverified'}), labels)") is True
         assert _eval(shared_page, "bboxMatchesFilter(bbox('cat', VERIFIED), st({bboxVerification:'unverified'}), labels)") is False
 
-    def test_false_pos_requires_false_pos_tag(self, shared_page: Page):
-        assert _eval(shared_page, "bboxMatchesFilter(bbox('cat', FALSE_POS), st({bboxVerification:'false_pos'}), labels)") is True
-        assert _eval(shared_page, "bboxMatchesFilter(bbox('cat', VERIFIED), st({bboxVerification:'false_pos'}), labels)") is False
-
-    def test_tristate_is_exclusive(self, shared_page: Page):
-        # A bbox with VERIFIED does not satisfy 'unverified'/'false_pos'.
+    def test_states_are_exclusive(self, shared_page: Page):
+        # A bbox with VERIFIED does not satisfy 'unverified', and vice versa.
         assert _eval(shared_page, "bboxMatchesFilter(bbox('cat', VERIFIED), st({bboxVerification:'unverified'}), labels)") is False
-        assert _eval(shared_page, "bboxMatchesFilter(bbox('cat', VERIFIED), st({bboxVerification:'false_pos'}), labels)") is False
+        assert _eval(shared_page, "bboxMatchesFilter(bbox('cat', UNVERIFIED), st({bboxVerification:'verified'}), labels)") is False
 
 
 # ---------------------------------------------------------------------------

@@ -20,7 +20,6 @@ import uuid
 import pytest
 
 from apps.helpers.db.types import (
-    FALSE_POS_TAG_UUID,
     UNVERIFIED_TAG_UUID,
     VERIFIED_TAG_UUID,
     DateTerm,
@@ -535,15 +534,13 @@ class TestBBoxVerificationTerm:
     _STATE_FILES = {
         "verified": "state-ok.png",
         "unverified": "state-pending.png",
-        "false_positive": "state-rejected.png",
     }
     _STATE_TAGS = {
         "verified": VERIFIED_TAG_UUID,
         "unverified": UNVERIFIED_TAG_UUID,
-        "false_positive": FALSE_POS_TAG_UUID,
     }
 
-    @pytest.mark.parametrize("state", ["verified", "unverified", "false_positive"])
+    @pytest.mark.parametrize("state", ["verified", "unverified"])
     async def test_matches_state(self, http_client, files_root, label_uuid, state):
         own_file = self._STATE_FILES[state]
         other_state = "verified" if state != "verified" else "unverified"

@@ -26,7 +26,6 @@ import {
   invalidateBboxThumbnails,
   UNVERIFIED_TAG_UUID,
   VERIFIED_TAG_UUID,
-  FALSE_POS_TAG_UUID,
   REJECTION_TAG_UUID,
   VERIFICATION_TAG_UUIDS,
   swapVerificationTag,
@@ -693,7 +692,7 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
       render();
     }
 
-    // Bbox verification tri-state (V1) — Any/Verified/Unverified/False-Pos.
+    // Bbox verification filter — Any/Verified/Unverified.
     const verificationControl = createBboxVerificationControl({
       value: _curated.bboxVerification,
       onChange: (value) => {
@@ -995,7 +994,7 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
           // REJECTION has no exclusive group — just add
           newTagUuids = tags.includes(uuid) ? tags : [...tags, uuid];
         } else {
-          // Swap within verification exclusive group (UNVERIFIED ↔ FALSE_POS)
+          // Swap within verification exclusive group (UNVERIFIED ↔ VERIFIED)
           newTagUuids = swapVerificationTag(tags, uuid);
         }
         const labelUuid = bbox.labelUuid ?? bbox.label?.uuid;
@@ -2137,7 +2136,6 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
       { value: 'relabel', label: 'Change Label' },
       { value: 'markVerified', label: '✓ Mark Verified' },
       { value: 'markUnverified', label: '? Mark Unverified' },
-      { value: 'markFalsePos', label: '✗ Mark False Positive' },
       { value: 'addTags', label: 'Add Tags' },
       { value: 'removeTags', label: 'Remove Tags' },
       { value: 'delete', label: 'Delete Bboxes' },
@@ -2476,7 +2474,6 @@ export async function showReviewModal({ title = 'Browse Images', fetchImages, ed
 const _VERIF_TAG_MAP = {
   markVerified: VERIFIED_TAG_UUID,
   markUnverified: UNVERIFIED_TAG_UUID,
-  markFalsePos: FALSE_POS_TAG_UUID,
 };
 
 async function executeBulkAction(action, entries, newLabelUuid, selectedTagUuids = [], tagsMap = new Map()) {
@@ -2492,7 +2489,7 @@ async function executeBulkAction(action, entries, newLabelUuid, selectedTagUuids
       } else if (action === 'addTags') {
         const currentTagUuids = (bbox.tags || []).map(t => t.uuid);
         // For tags in an exclusive group: remove any existing tags from the same group
-        // before adding the new one (e.g. adding FALSE_POS must remove UNVERIFIED).
+        // before adding the new one (e.g. adding VERIFIED must remove UNVERIFIED).
         let base = [...currentTagUuids];
         for (const tagUuid of selectedTagUuids) {
           const tag = tagsMap.get(tagUuid);
@@ -3199,7 +3196,6 @@ async function showBulkActionModal(entries, labels, onConfirm, titleText = null,
     { value: 'relabel', label: 'Change Label' },
     { value: 'markVerified', label: '✓ Mark Verified' },
     { value: 'markUnverified', label: '? Mark Unverified' },
-    { value: 'markFalsePos', label: '✗ Mark False Positive' },
     { value: 'addTags', label: 'Add Tags' },
     { value: 'removeTags', label: 'Remove Tags' },
     { value: 'delete', label: 'Delete Bboxes' },

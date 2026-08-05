@@ -3,7 +3,7 @@ Context-menu system tests.
 
 Tests cover:
   1. Canvas bbox right-click → Apply label flyout → label applied + verification tag stripped
-  2. Canvas right-click → Verification → Mark False Positive → tag added
+  2. Canvas right-click → Verification → Mark Verified → tag added
   3. Review bbox card right-click → Delete → card shows deleted-state badge
   4. Review image card right-click → Open on main canvas → LOAD_IMAGE_ONTO_CANVAS published
   5. Multi-select: two bbox cards selected, right-click → actions on both
@@ -20,7 +20,7 @@ import pytest
 from playwright.sync_api import Page
 
 UNVERIFIED_TAG_UUID = "00000000-0000-0000-0000-000000000001"
-FALSE_POS_TAG_UUID = "00000000-0000-0000-0000-000000000003"
+VERIFIED_TAG_UUID = "00000000-0000-0000-0000-000000000005"
 REJECTION_TAG_UUID = "00000000-0000-0000-0000-000000000004"
 
 # ---------------------------------------------------------------------------
@@ -155,12 +155,12 @@ class TestCanvasBboxApplyLabel:
 
 
 # ---------------------------------------------------------------------------
-# 2. Verification → Mark False Positive
+# 2. Verification → Mark Verified
 # ---------------------------------------------------------------------------
 
 class TestCanvasBboxVerification:
-    def test_set_false_positive_swaps_verification_tag(self, shared_page: Page):
-        """setVerification(FALSE_POS) removes UNVERIFIED and adds FALSE_POS."""
+    def test_set_verified_swaps_verification_tag(self, shared_page: Page):
+        """setVerification(VERIFIED) removes UNVERIFIED and adds VERIFIED."""
         page = shared_page
         result = page.evaluate(f"""async () => {{
             const {{ createImageTaggingRuntime }} = await import('/app-static/js/app/image-tagging/runtime.js');
@@ -172,11 +172,11 @@ class TestCanvasBboxVerification:
             {_CANVAS_SETUP}
 
             const UNVERIFIED = '{UNVERIFIED_TAG_UUID}';
-            const FALSE_POS = '{FALSE_POS_TAG_UUID}';
+            const VERIFIED = '{VERIFIED_TAG_UUID}';
 
             tagsFetcher.set('tagsMap', new Map([
                 [UNVERIFIED, {{ uuid: UNVERIFIED, name: 'Unverified', icon: '?', exclusiveGroup: 'verification' }}],
-                [FALSE_POS, {{ uuid: FALSE_POS, name: 'False Positive', icon: '✗', exclusiveGroup: 'verification' }}],
+                [VERIFIED, {{ uuid: VERIFIED, name: 'Verified', icon: '✓', exclusiveGroup: 'verification' }}],
             ]));
 
             const b = createUIBBbox({{
@@ -189,17 +189,17 @@ class TestCanvasBboxVerification:
 
             const bboxView = runtime.canvas.stage.findOne('#bx3');
             const adapter = makeCanvasBboxAdapter(bboxView, runtime);
-            await adapter.setVerification(FALSE_POS);
+            await adapter.setVerification(VERIFIED);
 
             const uiBbox = runtime.state.image.bboxes.get('bx3');
             {_CLEANUP}
             return {{ tagUuids: (uiBbox.tags ?? []).map(t => t.uuid) }};
         }}""")
-        assert FALSE_POS_TAG_UUID in result['tagUuids'], "FALSE_POS tag should be present"
+        assert VERIFIED_TAG_UUID in result['tagUuids'], "VERIFIED tag should be present"
         assert UNVERIFIED_TAG_UUID not in result['tagUuids'], "UNVERIFIED tag should be removed"
 
     def test_set_verification_null_clears_all_verification_tags(self, shared_page: Page):
-        """setVerification(null) removes UNVERIFIED, FALSE_POS, and REJECTION."""
+        """setVerification(null) removes UNVERIFIED, VERIFIED, and REJECTION."""
         page = shared_page
         result = page.evaluate(f"""async () => {{
             const {{ createImageTaggingRuntime }} = await import('/app-static/js/app/image-tagging/runtime.js');
@@ -210,14 +210,14 @@ class TestCanvasBboxVerification:
             {_CANVAS_SETUP}
 
             const UNVERIFIED = '{UNVERIFIED_TAG_UUID}';
-            const FALSE_POS = '{FALSE_POS_TAG_UUID}';
+            const VERIFIED = '{VERIFIED_TAG_UUID}';
             const REJECTION = '{REJECTION_TAG_UUID}';
 
             const b = createUIBBbox({{
                 uuid: 'bx4', x: 0.1, y: 0.1, width: 0.2, height: 0.2,
                 tags: [
                     {{ uuid: UNVERIFIED, icon: '?' }},
-                    {{ uuid: FALSE_POS, icon: '✗' }},
+                    {{ uuid: VERIFIED, icon: '✓' }},
                     {{ uuid: REJECTION, icon: '⊗' }},
                     {{ uuid: 'other-tag', icon: null }},
                 ],
@@ -234,7 +234,7 @@ class TestCanvasBboxVerification:
             return {{ tagUuids: (uiBbox.tags ?? []).map(t => t.uuid) }};
         }}""")
         assert UNVERIFIED_TAG_UUID not in result['tagUuids']
-        assert FALSE_POS_TAG_UUID not in result['tagUuids']
+        assert VERIFIED_TAG_UUID not in result['tagUuids']
         assert REJECTION_TAG_UUID not in result['tagUuids']
         assert 'other-tag' in result['tagUuids'], "Non-verification tags should be preserved"
 

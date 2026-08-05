@@ -29,7 +29,6 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 from apps.helpers.consts import TaskStatus
 
 from .types import (
-    FALSE_POS_TAG_UUID,
     MODEL_TYPE_ARCHITECTURES,
     REJECTION_TAG_UUID,
     UNVERIFIED_TAG_UUID,
@@ -107,15 +106,6 @@ _SYSTEM_TAGS = [
         exclusive_group="verification",
         protected=True,
         icon="?",
-    ),
-    Tag(
-        uuid=FALSE_POS_TAG_UUID,
-        name="False Positive",
-        color="#c0392b",
-        kind=TagKind.SYSTEM,
-        exclusive_group="verification",
-        protected=True,
-        icon="✗",
     ),
     Tag(
         uuid=VERIFIED_TAG_UUID,
@@ -247,7 +237,6 @@ def _apply_image_search_filters(stmt: Select, params: ImageSearchParams, *, use_
 _BBOX_VERIFICATION_STATE_TO_TAG_UUID = {
     "verified": VERIFIED_TAG_UUID,
     "unverified": UNVERIFIED_TAG_UUID,
-    "false_positive": FALSE_POS_TAG_UUID,
 }
 
 

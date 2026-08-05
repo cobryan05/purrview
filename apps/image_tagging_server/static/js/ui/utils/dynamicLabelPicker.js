@@ -4,7 +4,7 @@ import { createNewLabel } from '/app-static/js/shared/api/labels.js';
  * Creates a combobox-style label picker that:
  *  - Filters all labels (standard + dynamic) as the user types
  *  - Offers a "Create as dynamic label" option for unmatched names
- *  - Offers a "No label" option for generic false positives
+ *  - Offers a "No label" option for boxes with no applicable label
  *
  * @param {Map<string, object>} allLabels - Map of uuid → LabelRead (ALL labels, not pre-filtered)
  * @param {{ onSelect?: (uuid: string|null) => void }} [opts]
@@ -82,7 +82,7 @@ export function createDynamicLabelPicker(allLabels, { onSelect } = {}) {
     // "No label" option
     results.appendChild(
       _makeRow(
-        '— No label / generic false positive —',
+        '— No label —',
         () => _selectLabel(null, ''),
         'color:var(--pico-muted-color, #888);font-style:italic;'
       )

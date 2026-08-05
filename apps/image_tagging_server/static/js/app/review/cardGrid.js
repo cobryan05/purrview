@@ -1,44 +1,40 @@
 import {
   UNVERIFIED_TAG_UUID,
   VERIFIED_TAG_UUID,
-  FALSE_POS_TAG_UUID,
   getBboxThumbnailUrl,
   getImageThumbnailUrl,
 } from '/app-static/js/shared/api/review.js';
 import { attachContext } from '/app-static/js/ui/contextMenu/index.js';
 import { drawLetterboxedBboxes } from '/app-static/js/ui/utils/bboxThumbOverlay.js';
 
-// Verification cycle advanced by double-clicking a card's verify chip:
-// Unverified → Verified → False-Pos → Unverified. Keyed by the chip's current
-// verification tag so the next state derives purely from what's rendered.
+// Verification toggle advanced by double-clicking a card's verify chip:
+// Unverified ↔ Verified. Keyed by the chip's current verification tag so the
+// next state derives purely from what's rendered.
 const VERIFY_CYCLE_NEXT = {
   [UNVERIFIED_TAG_UUID]: VERIFIED_TAG_UUID,
-  [VERIFIED_TAG_UUID]: FALSE_POS_TAG_UUID,
-  [FALSE_POS_TAG_UUID]: UNVERIFIED_TAG_UUID,
+  [VERIFIED_TAG_UUID]: UNVERIFIED_TAG_UUID,
 };
 
 /**
  * Build and return a verify-status chip span for a bbox's tag UUIDs.
  *
- * When `onToggle` is supplied, a `dblclick` handler advances the verification
- * state in the cycle Unverified → Verified → False-Pos → Unverified (based on
- * the chip's current verification tag) and calls `onToggle(nextUuid)`. Without
- * `onToggle` the chip is display-only, exactly as before.
+ * When `onToggle` is supplied, a `dblclick` handler flips the verification
+ * state between Unverified and Verified (based on the chip's current
+ * verification tag) and calls `onToggle(nextUuid)`. Without `onToggle` the
+ * chip is display-only, exactly as before.
  *
  * @param {string[]} tagUuids
  * @param {{ onToggle?: (nextUuid: string) => void }} [opts]
  */
 export function buildVerifyChip(tagUuids, { onToggle } = {}) {
-  const isFalsePos = tagUuids.includes(FALSE_POS_TAG_UUID);
   const isVerified = tagUuids.includes(VERIFIED_TAG_UUID);
   const chip = document.createElement('span');
   chip.className = 'verify-chip';
-  chip.textContent = isFalsePos ? '✗ False Pos.' : isVerified ? '✓ Verified' : '◌ Unverified';
+  chip.textContent = isVerified ? '✓ Verified' : '◌ Unverified';
   chip.classList.toggle('verify-chip--verified', isVerified);
-  chip.classList.toggle('verify-chip--false-pos', isFalsePos);
-  chip.title = isFalsePos ? 'False Positive' : isVerified ? 'Verified' : 'Not yet verified';
+  chip.title = isVerified ? 'Verified' : 'Not yet verified';
   if (onToggle) {
-    const currentUuid = isFalsePos ? FALSE_POS_TAG_UUID : isVerified ? VERIFIED_TAG_UUID : UNVERIFIED_TAG_UUID;
+    const currentUuid = isVerified ? VERIFIED_TAG_UUID : UNVERIFIED_TAG_UUID;
     chip.addEventListener('dblclick', ev => {
       ev.stopPropagation();
       onToggle(VERIFY_CYCLE_NEXT[currentUuid]);
@@ -100,11 +96,10 @@ export function createCardGrid(gridEl, ctx) {
 
   function markCardStale(card, state) {
     card.querySelector('.card-state-badge')?.remove();
-    card.classList.remove('stale-verified', 'stale-false-positive', 'stale-relabeled', 'stale-deleted', 'stale-tagged');
+    card.classList.remove('stale-verified', 'stale-relabeled', 'stale-deleted', 'stale-tagged');
     card.classList.add(`stale-${state}`);
     const stateLabels = {
       verified: '✓ Verified',
-      'false-positive': '✗ False Pos.',
       relabeled: '⤴ Relabeled',
       deleted: '🗑 Deleted',
       tagged: '🏷 Tagged',

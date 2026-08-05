@@ -1286,9 +1286,6 @@ button.filter-active {
 .card-state-badge.state-verified {
   background: #00b45018; border: 1px solid #00b450; color: #4dffa0;
 }
-.card-state-badge.state-false-positive {
-  background: #ff880018; border: 1px solid #ff8800; color: #ffbb66;
-}
 .card-state-badge.state-relabeled {
   background: #2288ff18; border: 1px solid #2288ff; color: #88bbff;
 }
@@ -1355,12 +1352,6 @@ button.filter-active {
   border-color: #3fb95055;
   background: #3fb95018;
 }
-.verify-chip--false-pos {
-  color: #e05c5c;
-  border-color: #e05c5c55;
-  background: #e05c5c18;
-}
-
 /* ===== Review: View Filter Toggle ===== */
 .review-view-toggle {
   display: flex;

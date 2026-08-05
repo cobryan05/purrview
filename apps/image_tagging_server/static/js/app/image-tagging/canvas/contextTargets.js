@@ -126,7 +126,7 @@ export function makeCanvasBboxAdapter(bboxView, runtime) {
         const has = tags.some(t => t.uuid === uuid);
         next = has ? tags : [...tags, { uuid, icon: tag?.icon ?? null }];
       } else {
-        // UNVERIFIED or FALSE_POS — swap within verification exclusive group
+        // UNVERIFIED or VERIFIED — swap within verification exclusive group
         const tag = await fetchTagByUuid(uuid);
         const base = tags.filter(t => !VERIFICATION_TAG_UUIDS.has(t.uuid));
         next = [...base, { uuid, icon: tag?.icon ?? null }];

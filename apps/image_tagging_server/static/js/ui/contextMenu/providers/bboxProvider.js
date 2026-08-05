@@ -18,7 +18,6 @@ import { showConfirmModal } from '/app-static/js/ui/utils/confirmModal.js';
 import { openSimilarImagesModal, openSimilarBboxesModal } from '/app-static/js/ui/similarSearch.js';
 import { openDissimilarImagesModal, openDissimilarBboxesModal } from '/app-static/js/ui/dissimilarSearch.js';
 import {
-  FALSE_POS_TAG_UUID,
   REJECTION_TAG_UUID,
   UNVERIFIED_TAG_UUID,
   VERIFIED_TAG_UUID,
@@ -138,10 +137,6 @@ registerContextProvider('bbox', async (adapters, ctx) => {
         {
           label: 'Mark Unverified',
           onSelect: async () => { await runAll(adapters, a => a.setVerification(UNVERIFIED_TAG_UUID)); ctx.close(); },
-        },
-        {
-          label: 'Mark False Positive',
-          onSelect: async () => { await runAll(adapters, a => a.setVerification(FALSE_POS_TAG_UUID)); ctx.close(); },
         },
         {
           label: 'Mark Rejection',

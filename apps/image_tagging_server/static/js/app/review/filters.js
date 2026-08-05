@@ -44,7 +44,7 @@ const DEFAULT_STATE = () => ({
   dateTo: null,
   verificationCheck: null,
   // Bbox verification tri-state (V1) — filters bboxes by their VERIFIED /
-  // UNVERIFIED / FALSE_POS tag. Distinct from `verificationCheck` above,
+  // UNVERIFIED tag. Distinct from `verificationCheck` above,
   // which is the whole-image label-completeness check. 'any' = no-op, same
   // as filterPredicate.js's defaultCuratedFilterState().
   bboxVerification: 'any',
@@ -64,7 +64,7 @@ export function createFilterPanel(labels, tags, onFilterChange, { inlineControls
   // Tags whose kind is globally hidden don't appear in the picker.
   // Icon-less system tags are always excluded (they're used only via presets).
   function _visibleTags() {
-    // Verification tags (VERIFIED/UNVERIFIED/FALSE_POS) are owned exclusively
+    // Verification tags (VERIFIED/UNVERIFIED) are owned exclusively
     // by the bbox-verification tri-state control below — excluded here so
     // there's only one way to filter by verification status (V1 decision).
     return filterVisibleTags(tags.values()).filter(t => !VERIFICATION_TAG_UUIDS.has(t.uuid));
@@ -386,8 +386,8 @@ export function createFilterPanel(labels, tags, onFilterChange, { inlineControls
   }
   _updateConfigReadyEnabled();
 
-  // Bbox verification tri-state control (V1) — Any/Verified/Unverified/False-Pos,
-  // filtering bboxes by their VERIFIED/UNVERIFIED/FALSE_POS tag. Placed next to
+  // Bbox verification control — Any/Verified/Unverified, filtering bboxes by
+  // their VERIFIED/UNVERIFIED tag. Placed next to
   // the whole-image Verification select since both live in the "verification"
   // area of the panel, but they are deliberately distinct filters (see
   // filterPredicate.js's defaultCuratedFilterState doc comment).

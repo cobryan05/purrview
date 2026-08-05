@@ -5650,8 +5650,7 @@
             "type": "string",
             "enum": [
               "verified",
-              "unverified",
-              "false_positive"
+              "unverified"
             ],
             "title": "State"
           },
@@ -5666,7 +5665,7 @@
           "state"
         ],
         "title": "BBoxVerificationTerm",
-        "description": "Matches images having a BBOX in the given verification state.\n\nBacked by the system verification tags (UNVERIFIED / FALSE_POS / VERIFIED),\nwhich are mutually exclusive per bbox via exclusive_group=\"verification\"."
+        "description": "Matches images having a BBOX in the given verification state.\n\nBacked by the system verification tags (UNVERIFIED / VERIFIED), which are\nmutually exclusive per bbox via exclusive_group=\"verification\"."
       },
       "BatchByUuidsPayload": {
         "properties": {

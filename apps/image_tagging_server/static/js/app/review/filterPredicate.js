@@ -40,7 +40,7 @@ export { VERIFICATION_TAG_BY_STATE };
  */
 export function defaultCuratedFilterState() {
   return {
-    bboxVerification: 'any', // 'any' | 'verified' | 'unverified' | 'false_pos'
+    bboxVerification: 'any', // 'any' | 'verified' | 'unverified'
     labelUuids: [],
     labelExcludeUuids: [],
     labelMatchMode: 'any', // 'any' | 'all'

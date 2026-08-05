@@ -18,7 +18,6 @@ class ImageItemStatus(str, Enum):
 
 # System tag UUIDs — keep in sync with static/js/shared/api/review.js
 UNVERIFIED_TAG_UUID = "00000000-0000-0000-0000-000000000001"
-FALSE_POS_TAG_UUID = "00000000-0000-0000-0000-000000000003"
 REJECTION_TAG_UUID = "00000000-0000-0000-0000-000000000004"
 VERIFIED_TAG_UUID = "00000000-0000-0000-0000-000000000005"
 
@@ -352,12 +351,12 @@ class ImageTagTerm(ApiModel):
 class BBoxVerificationTerm(ApiModel):
     """Matches images having a BBOX in the given verification state.
 
-    Backed by the system verification tags (UNVERIFIED / FALSE_POS / VERIFIED),
-    which are mutually exclusive per bbox via exclusive_group="verification".
+    Backed by the system verification tags (UNVERIFIED / VERIFIED), which are
+    mutually exclusive per bbox via exclusive_group="verification".
     """
 
     kind: Literal["bboxVerification"] = "bboxVerification"
-    state: Literal["verified", "unverified", "false_positive"]
+    state: Literal["verified", "unverified"]
     negate: bool = False
 
 

@@ -24,7 +24,6 @@ from apps.db_server.hash_index import HashIndex
 from apps.helpers.consts import TaskStatus
 from apps.helpers.db.db_client import DbClient, TagKind
 from apps.helpers.db.types import (
-    FALSE_POS_TAG_UUID,
     MODEL_TYPE_ARCHITECTURES,
     UNVERIFIED_TAG_UUID,
     VERIFIED_TAG_UUID,
@@ -838,7 +837,7 @@ class Manager:
         points can't drift. Raises on failure — caller is responsible for
         catching and counting it.
         """
-        _VERIFICATION_UUIDS: Set[str] = {UNVERIFIED_TAG_UUID, FALSE_POS_TAG_UUID}
+        _VERIFICATION_UUIDS: Set[str] = {UNVERIFIED_TAG_UUID}
         current_tags = [t.uuid for t in bbox.tags or []]
         if action == "delete":
             if bbox.label_uuid:
@@ -1132,8 +1131,8 @@ class Manager:
         Only PRESENT rows are written/deleted here.  ABSENT rows are always
         set explicitly by the user via set_image_label_status and are never touched.
 
-        Bboxes tagged UNVERIFIED or FALSE_POSITIVE are excluded from PRESENT tracking,
-        as they have not been confirmed as true positive annotations.
+        Bboxes tagged UNVERIFIED are excluded from PRESENT tracking, as they have
+        not been confirmed as true annotations.
 
         The stale-PRESENT sweep below only applies to object-scope labels, whose
         PRESENT state is owned by bbox sync (derived from verified bboxes). Image-scope
