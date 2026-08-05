@@ -1,5 +1,13 @@
 import { nextModalZIndex, applyModalCascade, registerEscHandler, unregisterEscHandler } from './modalZIndex.js';
 
+// Elements that can hold focus. Ordered as the DOM presents them, which is the
+// order Tab already follows, so the trap doesn't reorder anything.
+const FOCUSABLE = [
+  'a[href]', 'button:not([disabled])', 'input:not([disabled])',
+  'select:not([disabled])', 'textarea:not([disabled])',
+  '[tabindex]:not([tabindex="-1"])',
+].join(',');
+
 /**
  * Build the shared overlay + dialog scaffold used by app modals. Backdrop click
  * and a programmatic close() both tear the modal down and run onClose exactly once.
@@ -19,14 +27,6 @@ export function createModalShell({ onClose } = {}) {
   dialog.className = 'app-modal-dialog';
   dialog.dataset.testid = 'modal-shell-dialog';
   overlay.appendChild(dialog);
-
-  // Elements that can hold focus. Ordered as the DOM presents them, which is
-  // the order Tab already follows, so the trap doesn't reorder anything.
-  const FOCUSABLE = [
-    'a[href]', 'button:not([disabled])', 'input:not([disabled])',
-    'select:not([disabled])', 'textarea:not([disabled])',
-    '[tabindex]:not([tabindex="-1"])',
-  ].join(',');
 
   function _focusable() {
     return [...dialog.querySelectorAll(FOCUSABLE)]

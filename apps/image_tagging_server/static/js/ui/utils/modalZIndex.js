@@ -23,11 +23,13 @@ function _token(name, fallback) {
   return Number.isFinite(n) ? n : fallback;
 }
 
+/** Only the layers JS actually allocates within or asserts against live here —
+ *  --layer-dropdown and --layer-hover-popover are consumed from CSS alone, so
+ *  duplicating their values in JS would be two more constants to keep in sync
+ *  for no consumer. */
 export const LAYERS = {
-  dropdown: _token('--layer-dropdown', 200),
   modalBase: _token('--layer-modal-base', 1000),
   modalMax: _token('--layer-modal-max', 1890),
-  hoverPopover: _token('--layer-hover-popover', 1900),
   bottomBars: _token('--layer-bottom-bars', 2000),
 };
 

@@ -1,4 +1,4 @@
-import { nextModalZIndex, registerEscHandler, unregisterEscHandler } from '/app-static/js/ui/utils/modalZIndex.js';
+import { LAYERS, nextModalZIndex, registerEscHandler, unregisterEscHandler } from '/app-static/js/ui/utils/modalZIndex.js';
 
 /**
  * Floating context-menu engine.
@@ -63,7 +63,9 @@ function _ensureStyles() {
   style.textContent = `
     .ctx-menu {
       position: fixed;
-      z-index: 2000;
+      /* Overridden inline from the shared band on open; kept pointing at the
+         token so this injected sheet can't drift out of the scale. */
+      z-index: var(--layer-modal-base);
       min-width: 180px;
       background: var(--pico-card-background-color, #1a1a1a);
       border: 1px solid var(--pico-muted-border-color, #444);
@@ -168,12 +170,13 @@ function _buildItemRows(container, items, menuCtx, registerEl, unregisterEl) {
 
           const flyoutEl = document.createElement('div');
           flyoutEl.className = 'ctx-menu';
-          // Sit one step above the menu this row belongs to. Read from the DOM
-          // rather than taking a fresh band slot, so hovering submenus repeatedly
-          // can't walk the shared counter up to its ceiling.
-          const _parentZ = parseInt(row.closest('.ctx-menu')?.style.zIndex, 10);
-          const _flyoutZ = Number.isFinite(_parentZ) ? _parentZ + 1 : '';
-          flyoutEl.style.cssText = `position:fixed;${_flyoutZ === '' ? '' : `z-index:${_flyoutZ};`}`;
+          // Sit one step above the menu this row belongs to, clamped so deep
+          // submenu nesting can't walk out of the shared overlay band. The
+          // value is threaded through menuCtx rather than read back off the
+          // parent's inline style, so it survives .ctx-menu ever getting its
+          // z-index from CSS.
+          const _flyoutZ = Math.min(menuCtx.zIndex + 1, LAYERS.modalMax);
+          flyoutEl.style.cssText = `position:fixed;z-index:${_flyoutZ};`;
           registerEl(flyoutEl);
 
           const sub = item.submenu();
@@ -283,15 +286,13 @@ export function openMenu({ x, y, sections, onClose }) {
     onClose?.();
   };
 
-  const menuCtx = { close };
+  // zIndex is threaded to flyouts through here (see _buildItemRows) so they
+  // stack above their own menu without each hover burning a band slot.
+  const menuCtx = { close, zIndex: nextModalZIndex() };
 
   const root = document.createElement('div');
   root.className = 'ctx-menu';
-  // .ctx-menu carries no z-index in CSS, so layering used to fall to DOM order
-  // alone. Take one slot from the shared band (PR 6.1); flyouts sit just above
-  // their own menu rather than burning a slot on every hover.
-  const _menuZ = nextModalZIndex();
-  root.style.cssText = `position:fixed;z-index:${_menuZ};`;
+  root.style.cssText = `position:fixed;z-index:${menuCtx.zIndex};`;
   registerEl(root);
 
   let firstSection = true;

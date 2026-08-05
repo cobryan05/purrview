@@ -21,12 +21,12 @@ import { fetchModelConfigs } from '/app-static/js/shared/api/modelConfigs.js';
 import { fetchModelsList } from '/app-static/js/shared/api/models.js';
 import { fetchTags } from '/app-static/js/shared/api/tags.js';
 import { fetchTrainingConfigs } from '/app-static/js/shared/api/trainingConfigs.js';
-import { Logger, showPaneError } from '/app-static/js/ui/utils/index.js';
+import { Logger } from '/app-static/js/ui/utils/index.js';
 
 /** Count of a fetcher result that may be an Array or a Map (fetchLabels returns a Map). */
 function sizeOf(result) {
   if (!result) return 0;
-  if (result instanceof Map || result instanceof Set) return result.size;
+  if (result instanceof Map) return result.size;
   if (Array.isArray(result)) return result.length;
   return 0;
 }
@@ -37,33 +37,22 @@ function sizeOf(result) {
  * @returns {Promise<Record<string, number|null>>}
  */
 async function fetchCounts() {
-  const settle = async (fn) => {
+  const settle = async (fn, map = sizeOf) => {
     try {
-      return sizeOf(await fn());
+      return map(await fn());
     } catch (err) {
       Logger.warn('configLanding: count fetch failed', err);
       return null;
     }
   };
 
-  const [labels, tags, models, datasetsAndViews, blueprints, trainingRuns, filterChains] = await Promise.all([
+  const [labels, tags, models, rows, blueprints, trainingRuns, filterChains] = await Promise.all([
     settle(fetchLabels),
     settle(fetchTags),
     settle(fetchModelsList),
-    (async () => {
-      try {
-        // ⚠️ Returns a Map keyed by uuid, not an array (same shape trap as
-        // fetchLabels — see CLAUDE.md "Key Gotchas").
-        const rows = [...(await fetchDatasetsAndViews()).values()];
-        return {
-          datasets: rows.filter(r => r.promoted).length,
-          views: rows.filter(r => !r.promoted).length,
-        };
-      } catch (err) {
-        Logger.warn('configLanding: dataset/view count fetch failed', err);
-        return { datasets: null, views: null };
-      }
-    })(),
+    // ⚠️ Returns a Map keyed by uuid, not an array (same shape trap as
+    // fetchLabels — see CLAUDE.md "Key Gotchas").
+    settle(fetchDatasetsAndViews, m => [...m.values()]),
     settle(fetchModelConfigs),
     settle(fetchTrainingConfigs),
     settle(fetchFilterChains),
@@ -73,8 +62,8 @@ async function fetchCounts() {
     labels,
     tags,
     models,
-    datasets: datasetsAndViews.datasets,
-    views: datasetsAndViews.views,
+    datasets: rows ? rows.filter(r => r.promoted).length : null,
+    views: rows ? rows.filter(r => !r.promoted).length : null,
     blueprints,
     trainingRuns,
     filterChains,
@@ -83,7 +72,7 @@ async function fetchCounts() {
 
 /**
  * @param {Record<string, number|null>} counts
- * @returns {Array<{title: string, entries: Array<{name: string, count: number|null, unit: string, tab: string, hint: string}>}>}
+ * @returns {Array<{title: string, entries: Array<{name: string, count: number|null, tab: string, hint: string}>}>}
  */
 function buildGroups(counts) {
   return [
@@ -91,16 +80,16 @@ function buildGroups(counts) {
       title: 'Vocabulary',
       entries: [
         {
-          name: 'Labels', count: counts.labels, unit: 'labels',
-          tab: 'tab-tag-management', hint: 'What you can annotate — hierarchical, object- or image-scoped',
+          name: 'Labels', count: counts.labels, tab: 'tab-tag-management',
+          hint: 'What you can annotate — hierarchical, object- or image-scoped',
         },
         {
-          name: 'Tags', count: counts.tags, unit: 'tags',
-          tab: 'tab-tag-management', hint: 'Free-form and system markers applied to boxes',
+          name: 'Tags', count: counts.tags, tab: 'tab-tag-management',
+          hint: 'Free-form and system markers applied to boxes',
         },
         {
-          name: 'Inference Class Map', count: counts.models, unit: 'models',
-          tab: 'tab-tag-management', hint: "Maps each model's output class IDs onto labels",
+          name: 'Inference Class Map', count: counts.models, tab: 'tab-tag-management',
+          hint: "Maps each model's output class IDs onto labels",
         },
       ],
     },
@@ -108,12 +97,12 @@ function buildGroups(counts) {
       title: 'Data',
       entries: [
         {
-          name: 'Datasets', count: counts.datasets, unit: 'datasets',
-          tab: 'tab-dataset-management', hint: 'Promoted image collections that training consumes',
+          name: 'Datasets', count: counts.datasets, tab: 'tab-dataset-management',
+          hint: 'Promoted image collections that training consumes',
         },
         {
-          name: 'Views', count: counts.views, unit: 'views',
-          tab: 'tab-dataset-management', hint: 'Saved searches — promote one to make it a Dataset',
+          name: 'Views', count: counts.views, tab: 'tab-dataset-management',
+          hint: 'Saved searches — promote one to make it a Dataset',
         },
       ],
     },
@@ -121,12 +110,12 @@ function buildGroups(counts) {
       title: 'Models',
       entries: [
         {
-          name: 'Model Blueprints', count: counts.blueprints, unit: 'blueprints',
-          tab: 'tab-model-management', hint: 'Which model handles which label, hierarchically',
+          name: 'Model Blueprints', count: counts.blueprints, tab: 'tab-model-management',
+          hint: 'Which model handles which label, hierarchically',
         },
         {
-          name: 'Training Runs', count: counts.trainingRuns, unit: 'runs',
-          tab: 'tab-training-management', hint: 'Reusable training definitions and their datasets',
+          name: 'Training Runs', count: counts.trainingRuns, tab: 'tab-training-management',
+          hint: 'Reusable training definitions and their datasets',
         },
       ],
     },
@@ -134,25 +123,19 @@ function buildGroups(counts) {
       title: 'Automation',
       entries: [
         {
-          name: 'Filter Chains', count: counts.filterChains, unit: 'chains',
-          tab: 'tab-filterchain-management', hint: 'Ordered filter steps runnable over search results',
+          name: 'Filter Chains', count: counts.filterChains, tab: 'tab-filterchain-management',
+          hint: 'Ordered filter steps runnable over search results',
         },
       ],
     },
   ];
 }
 
-/** Navigate to a Configuration sub-tab by clicking its workspace tab button. */
-function goToTab(tabName) {
-  document.querySelector(`#tab-configuration .workspace-tab-button[data-tab="${tabName}"]`)?.click();
-}
-
-function buildEntry(entry) {
+function buildEntry(entry, activateTab) {
   const el = document.createElement('button');
   el.type = 'button';
   el.className = 'config-landing__entry';
   el.dataset.testid = `config-landing-entry-${entry.tab}-${entry.name.toLowerCase().replace(/\s+/g, '-')}`;
-  el.title = entry.hint;
 
   const count = document.createElement('span');
   count.className = 'config-landing__count';
@@ -168,17 +151,19 @@ function buildEntry(entry) {
   name.textContent = entry.name;
   text.appendChild(name);
 
+  // The hint is permanently visible, so no title attribute — it would both
+  // duplicate the tooltip and make screen readers announce the string twice.
   const hint = document.createElement('span');
   hint.className = 'config-landing__entry-hint';
   hint.textContent = entry.hint;
   text.appendChild(hint);
 
   el.appendChild(text);
-  el.addEventListener('click', () => goToTab(entry.tab));
+  el.addEventListener('click', () => activateTab(entry.tab));
   return el;
 }
 
-function buildGroupCard(group) {
+function buildGroupCard(group, activateTab) {
   const card = document.createElement('section');
   card.className = 'config-landing__group';
   card.dataset.testid = `config-landing-group-${group.title.toLowerCase()}`;
@@ -188,33 +173,39 @@ function buildGroupCard(group) {
   heading.textContent = group.title;
   card.appendChild(heading);
 
-  group.entries.forEach(entry => card.appendChild(buildEntry(entry)));
+  group.entries.forEach(entry => card.appendChild(buildEntry(entry, activateTab)));
   return card;
 }
 
+// Re-entrancy guard (CLAUDE.md "Key Gotchas") — the container is cleared before
+// an await, so a fast tab bounce could otherwise interleave two renders.
+let _rendering = false;
+
 /**
  * Render the Configuration overview landing.
- * @param {{target?: string}} [options]
+ * @param {Object} [options]
+ * @param {string} [options.target] - id of the container element
+ * @param {(tabName: string) => void} options.activateTab - the owning tab
+ *   controller's activator, from setupWorkspaceTabs. Passed in rather than
+ *   re-deriving the tab DOM here, so navigation stays the controller's job.
  */
-export async function renderConfigLanding({ target = 'config-overview-box' } = {}) {
+export async function renderConfigLanding({ target = 'config-overview-box', activateTab } = {}) {
   const container = document.getElementById(target);
-  if (!container) return;
+  if (!container || _rendering) return;
+  _rendering = true;
 
-  container.innerHTML = '';
-  container.className = 'config-landing';
-  container.dataset.testid = 'config-landing';
-
-  let counts;
   try {
-    counts = await fetchCounts();
-  } catch (err) {
-    Logger.error('configLanding: failed to build overview', err);
-    showPaneError(container, 'Could not load the configuration overview.');
-    return;
-  }
+    const counts = await fetchCounts();
 
-  const grid = document.createElement('div');
-  grid.className = 'config-landing__grid';
-  buildGroups(counts).forEach(group => grid.appendChild(buildGroupCard(group)));
-  container.appendChild(grid);
+    container.innerHTML = '';
+    container.className = 'config-landing';
+    container.dataset.testid = 'config-landing';
+
+    const grid = document.createElement('div');
+    grid.className = 'config-landing__grid';
+    buildGroups(counts).forEach(group => grid.appendChild(buildGroupCard(group, activateTab)));
+    container.appendChild(grid);
+  } finally {
+    _rendering = false;
+  }
 }
