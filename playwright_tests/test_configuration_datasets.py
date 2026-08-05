@@ -14,6 +14,7 @@ Run with:
 """
 
 import json
+import re
 
 import pytest
 from playwright.sync_api import Page, Route, expect
@@ -540,3 +541,79 @@ class TestViewsAndPromotion:
         page.wait_for_timeout(700)
 
         expect(page.locator("body")).to_contain_text("referenced by one or more training configs")
+
+
+# ---------------------------------------------------------------------------
+# Unsaved-changes navigation guard
+#
+# Shared by all four list-editor screens via ui/utils/unsavedNavGuard.js. It had
+# no coverage at all before that extraction, so these pin the behaviour the four
+# duplicated copies used to provide.
+# ---------------------------------------------------------------------------
+
+
+class TestUnsavedNavGuard:
+    def _make_dirty(self, page: Page):
+        _editor_body(page).locator("input[placeholder='Required']").fill("Half-typed name")
+
+    def test_navigating_away_with_unsaved_changes_prompts(self, page: Page, base_url: str):
+        _mock_labels(page, [ROOT_LABEL])
+        _mock_tags_empty(page)
+        _mock_datasets(page, [FAKE_DATASET])
+        _navigate_to_datasets(page, base_url)
+
+        self._make_dirty(page)
+        page.locator("#tab-configuration .workspace-tab-button[data-tab='tab-model-management']").click()
+
+        modal = page.get_by_test_id("modal-shell-dialog")
+        expect(modal).to_be_visible()
+        expect(modal).to_contain_text("unsaved changes")
+        modal.locator("button", has_text="Cancel").click()
+
+    def test_cancel_keeps_you_on_the_pane(self, page: Page, base_url: str):
+        _mock_labels(page, [ROOT_LABEL])
+        _mock_tags_empty(page)
+        _mock_datasets(page, [FAKE_DATASET])
+        _navigate_to_datasets(page, base_url)
+
+        self._make_dirty(page)
+        page.locator("#tab-configuration .workspace-tab-button[data-tab='tab-model-management']").click()
+        page.get_by_test_id("modal-shell-dialog").locator("button", has_text="Cancel").click()
+
+        expect(page.locator("#tab-dataset-management")).to_have_class(re.compile(r"\bactive\b"))
+
+    def test_discard_lets_navigation_through(self, page: Page, base_url: str):
+        _mock_labels(page, [ROOT_LABEL])
+        _mock_tags_empty(page)
+        _mock_datasets(page, [FAKE_DATASET])
+        _navigate_to_datasets(page, base_url)
+
+        self._make_dirty(page)
+        page.locator("#tab-configuration .workspace-tab-button[data-tab='tab-model-management']").click()
+        page.get_by_test_id("modal-shell-dialog").locator("button", has_text="Don't save & continue").click()
+
+        expect(page.locator("#tab-model-management")).to_have_class(re.compile(r"\bactive\b"))
+
+    def test_clean_editor_navigates_without_prompting(self, page: Page, base_url: str):
+        """The guard must not fire when there is nothing to lose."""
+        _mock_labels(page, [ROOT_LABEL])
+        _mock_tags_empty(page)
+        _mock_datasets(page, [FAKE_DATASET])
+        _navigate_to_datasets(page, base_url)
+
+        page.locator("#tab-configuration .workspace-tab-button[data-tab='tab-model-management']").click()
+
+        expect(page.locator("#tab-model-management")).to_have_class(re.compile(r"\bactive\b"))
+        expect(page.get_by_test_id("modal-shell-dialog")).to_have_count(0)
+
+    def test_own_subtab_is_not_treated_as_navigating_away(self, page: Page, base_url: str):
+        """Clicking the pane you are already on must not prompt (ownTabId)."""
+        _mock_labels(page, [ROOT_LABEL])
+        _mock_tags_empty(page)
+        _mock_datasets(page, [FAKE_DATASET])
+        _navigate_to_datasets(page, base_url)
+
+        self._make_dirty(page)
+        page.locator("#tab-configuration .workspace-tab-button[data-tab='tab-dataset-management']").click()
+
+        expect(page.get_by_test_id("modal-shell-dialog")).to_have_count(0)

@@ -1,4 +1,5 @@
 import { fetchLabels } from '/app-static/js/shared/api/labels.js';
+import { installUnsavedNavGuard } from '/app-static/js/ui/utils/unsavedNavGuard.js';
 import { fetchTags } from '/app-static/js/shared/api/tags.js';
 import {
   fetchDatasets, fetchDatasetsAndViews, createDataset, updateDataset, deleteDataset,
@@ -468,26 +469,13 @@ export async function renderDatasetManager({ target = 'dataset-management-box' }
 
     // ── Navigation guard ─────────────────────────────────────────────────
     // Intercept workspace-tab and main-tab clicks while there are unsaved changes.
-    const guardSignal = _navGuardController.signal;
-    document.addEventListener('click', async (e) => {
-      const btn = e.target.closest('.workspace-tab-button, .main-tab-button');
-      if (!btn) return;
-      const targetTab = btn.dataset.tab;
-      // Allow clicking the Datasets tab itself or the Configuration main tab (no navigation away)
-      if (targetTab === 'tab-dataset-management' || targetTab === 'tab-configuration') return;
-      if (!_barHandle?.getDirty()) return;
-
-      e.stopPropagation();
-      const result = await showUnsavedConfigChangesModal();
-      if (result === 'cancel') return;
-      if (result === 'save') {
-        const ok = await _currentDoSave?.();
-        if (!ok) return;
-      }
-      if (guardSignal.aborted) return; // guard superseded by a re-render; discard is stale
-      _barHandle?.setDirty(false);
-      btn.click(); // re-fire now that guard is satisfied
-    }, { capture: true, signal: guardSignal });
+    installUnsavedNavGuard({
+      ownTabId: 'tab-dataset-management',
+      signal: _navGuardController.signal,
+      isDirty: () => !!_barHandle?.getDirty(),
+      save: () => _currentDoSave?.(),
+      markClean: () => _barHandle?.setDirty(false),
+    });
 
     // Replace any previous subscription so we don't double-refresh on tab re-activation
     _unsubDatasets?.();

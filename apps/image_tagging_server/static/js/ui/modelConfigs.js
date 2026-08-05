@@ -1,4 +1,5 @@
 import { fetchLabels } from '/app-static/js/shared/api/labels.js';
+import { installUnsavedNavGuard } from '/app-static/js/ui/utils/unsavedNavGuard.js';
 import { createLabelList } from '/app-static/js/ui/labelList.js';
 import {
   createModelConfig,
@@ -879,26 +880,13 @@ export async function renderModelConfigManager({ target = 'model-config-box' } =
     // Uses capture phase so we can stop propagation before the tab system sees it.
     // guardSignal is captured now so the async continuation can detect if this guard
     // has been superseded by a re-render (signal.aborted → stale, don't act).
-    const guardSignal = _navGuardController.signal;
-    document.addEventListener('click', async (e) => {
-      const btn = e.target.closest('.workspace-tab-button, .main-tab-button');
-      if (!btn) return;
-      const targetTab = btn.dataset.tab;
-      // Allow clicking the Models tab itself or the Configuration main tab (no navigation away)
-      if (targetTab === 'tab-model-management' || targetTab === 'tab-configuration') return;
-      if (!_barHandle?.getDirty()) return;
-
-      e.stopPropagation();
-      const result = await showUnsavedConfigChangesModal();
-      if (result === 'cancel') return;
-      if (result === 'save') {
-        const ok = await _currentDoSave?.();
-        if (!ok) return;
-      }
-      if (guardSignal.aborted) return; // guard superseded by a re-render; discard is stale
-      _barHandle?.setDirty(false);
-      btn.click(); // re-fire now that guard is satisfied
-    }, { capture: true, signal: guardSignal });
+    installUnsavedNavGuard({
+      ownTabId: 'tab-model-management',
+      signal: _navGuardController.signal,
+      isDirty: () => !!_barHandle?.getDirty(),
+      save: () => _currentDoSave?.(),
+      markClean: () => _barHandle?.setDirty(false),
+    });
 
     await refreshList();
     await _showForm(null, { force: true });

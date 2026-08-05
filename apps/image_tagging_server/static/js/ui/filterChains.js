@@ -1,4 +1,5 @@
 import { fetchLabels } from '/app-static/js/shared/api/labels.js';
+import { installUnsavedNavGuard } from '/app-static/js/ui/utils/unsavedNavGuard.js';
 import { fetchTags } from '/app-static/js/shared/api/tags.js';
 import { fetchModelsList } from '/app-static/js/shared/api/models.js';
 import {
@@ -520,25 +521,13 @@ export async function renderFilterChainManager({ target = 'filter-chain-manageme
       _updateListSelection(_selectedUuid);
     }
 
-    const guardSignal = _navGuardController.signal;
-    document.addEventListener('click', async (e) => {
-      const btn = e.target.closest('.workspace-tab-button, .main-tab-button');
-      if (!btn) return;
-      const targetTab = btn.dataset.tab;
-      if (targetTab === 'tab-filterchain-management' || targetTab === 'tab-configuration') return;
-      if (!_barHandle?.getDirty()) return;
-
-      e.stopPropagation();
-      const result = await showUnsavedConfigChangesModal();
-      if (result === 'cancel') return;
-      if (result === 'save') {
-        const ok = await _currentDoSave?.();
-        if (!ok) return;
-      }
-      if (guardSignal.aborted) return;
-      _barHandle?.setDirty(false);
-      btn.click();
-    }, { capture: true, signal: guardSignal });
+    installUnsavedNavGuard({
+      ownTabId: 'tab-filterchain-management',
+      signal: _navGuardController.signal,
+      isDirty: () => !!_barHandle?.getDirty(),
+      save: () => _currentDoSave?.(),
+      markClean: () => _barHandle?.setDirty(false),
+    });
 
     await refreshList();
     await _showForm(null, { force: true });

@@ -15,6 +15,7 @@
  */
 
 import { fetchDatasets } from '/app-static/js/shared/api/datasets.js';
+import { installUnsavedNavGuard } from '/app-static/js/ui/utils/unsavedNavGuard.js';
 import { fetchModelConfigs } from '/app-static/js/shared/api/modelConfigs.js';
 import { fetchLabels } from '/app-static/js/shared/api/labels.js';
 import {
@@ -640,25 +641,13 @@ export async function renderTrainingConfigManager({ target = 'training-config-bo
     }
 
     // ── Navigation guard ──────────────────────────────────────────────────
-    const guardSignal = _navGuardController.signal;
-    document.addEventListener('click', async (e) => {
-      const btn = e.target.closest('.workspace-tab-button, .main-tab-button');
-      if (!btn) return;
-      const targetTab = btn.dataset.tab;
-      if (targetTab === 'tab-training-management' || targetTab === 'tab-configuration') return;
-      if (!_barHandle?.getDirty()) return;
-
-      e.stopPropagation();
-      const result = await showUnsavedConfigChangesModal();
-      if (result === 'cancel') return;
-      if (result === 'save') {
-        const ok = await _currentDoSave?.();
-        if (!ok) return;
-      }
-      if (guardSignal.aborted) return;
-      _barHandle?.setDirty(false);
-      btn.click();
-    }, { capture: true, signal: guardSignal });
+    installUnsavedNavGuard({
+      ownTabId: 'tab-training-management',
+      signal: _navGuardController.signal,
+      isDirty: () => !!_barHandle?.getDirty(),
+      save: () => _currentDoSave?.(),
+      markClean: () => _barHandle?.setDirty(false),
+    });
 
     const configsMap = await refreshList();
     const autoConfig = _lastSelectedUuid ? configsMap.get(_lastSelectedUuid) ?? null : null;
