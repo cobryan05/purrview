@@ -11,7 +11,7 @@ import { fetchTags } from '/app-static/js/shared/api/tags.js';
 import { filterVisibleTags } from '/app-static/js/shared/activeModel.js';
 import { bulkApplyImagesByUuids } from '/app-static/js/shared/api/review.js';
 import { Logger, toast } from '/app-static/js/ui/utils/logging.js';
-import { nextModalZIndex, applyModalCascade, registerEscHandler, unregisterEscHandler } from '/app-static/js/ui/utils/modalZIndex.js';
+import { acquireModalLayer, applyModalCascade, registerEscHandler, unregisterEscHandler } from '/app-static/js/ui/utils/modalZIndex.js';
 import { CheckboxField } from '/app-static/js/ui/utils/fields/CheckboxField.js';
 
 export const TAG_ACTIONS = ['addTags', 'removeTags', 'setTagAbsent', 'setTagUncertain'];
@@ -19,9 +19,10 @@ export const TAG_ACTIONS = ['addTags', 'removeTags', 'setTagAbsent', 'setTagUnce
 export async function showImageBulkActionModal(entries, labels, onConfirm, titleText = null) {
   const tags = await fetchTags().catch(() => new Map());
 
+  const _layer = acquireModalLayer({ dialog: true });
   const overlay = document.createElement('div');
   overlay.style.cssText = `position:fixed;inset:0;background:#0008;display:flex;
-    align-items:center;justify-content:center;z-index:${nextModalZIndex()};`;
+    align-items:center;justify-content:center;z-index:${_layer.zIndex};`;
 
   const dialog = document.createElement('div');
   dialog.style.cssText = `background:#222;border:1px solid #555;border-radius:6px;
@@ -89,7 +90,7 @@ export async function showImageBulkActionModal(entries, labels, onConfirm, title
   const btnRow = document.createElement('div');
   btnRow.style.cssText = 'display:flex;gap:0.5em;justify-content:flex-end;';
 
-  function closeImageBulk() { unregisterEscHandler(closeImageBulk); overlay.remove(); }
+  function closeImageBulk() { unregisterEscHandler(closeImageBulk); _layer.release(); overlay.remove(); }
 
   const cancelBtn = document.createElement('button');
   cancelBtn.textContent = 'Cancel';
@@ -114,7 +115,7 @@ export async function showImageBulkActionModal(entries, labels, onConfirm, title
   dialog.append(title, radioGroup, labelPickerRow, tagPickerRow, btnRow);
   overlay.appendChild(dialog);
   document.body.appendChild(overlay);
-  applyModalCascade(dialog);
+  applyModalCascade(dialog, _layer.depth);
   registerEscHandler(closeImageBulk);
 
   overlay.addEventListener('click', e => { if (e.target === overlay) closeImageBulk(); });

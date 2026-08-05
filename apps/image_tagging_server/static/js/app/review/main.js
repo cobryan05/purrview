@@ -39,7 +39,7 @@ import { Logger, toast } from '/app-static/js/ui/utils/logging.js';
 import { showUnsavedChangesModal, showExternalChangesModal, showConfirmModal } from '/app-static/js/ui/utils/confirmModal.js';
 import { deleteImage } from '/app-static/js/shared/api/images.js';
 import { rerenderBboxViews, resetCanvasZoom } from '/app-static/js/app/image-tagging/canvas/manager.js';
-import { nextModalZIndex, applyModalCascade, registerEscHandler, unregisterEscHandler } from '/app-static/js/ui/utils/modalZIndex.js';
+import { acquireModalLayer, applyModalCascade, registerEscHandler, unregisterEscHandler } from '/app-static/js/ui/utils/modalZIndex.js';
 import { CheckboxField } from '/app-static/js/ui/utils/fields/CheckboxField.js';
 import { createCanvasInstance } from '/app-static/js/app/image-tagging/canvas/instance.js';
 import { saveAnnotations, addInferenceResults, seedRuntimeBboxes } from '/app-static/js/app/image-tagging/canvas/image.js';
@@ -2103,9 +2103,10 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
     ]);
 
     // ── Build modal shell ────────────────────────────────────────────────
+    const _layer = acquireModalLayer({ dialog: true });
     const overlay = document.createElement('div');
     overlay.className = 'bulk-modal-overlay';
-    overlay.style.zIndex = nextModalZIndex();
+    overlay.style.zIndex = _layer.zIndex;
 
     const dialog = document.createElement('div');
     dialog.className = 'bulk-modal-dialog bulk-modal-dialog--wide';
@@ -2190,7 +2191,7 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
     const btnRow = document.createElement('div');
     btnRow.className = 'bulk-modal-btn-row';
 
-    function close() { unregisterEscHandler(close); dynPicker.destroy(); overlay.remove(); }
+    function close() { unregisterEscHandler(close); _layer.release(); dynPicker.destroy(); overlay.remove(); }
 
     const cancelBtn = document.createElement('button');
     cancelBtn.textContent = 'Cancel';
@@ -2256,7 +2257,7 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
     dialog.append(title, previewSection, radioGroup, labelPickerRow, tagPickerRow, warning, btnRow);
     overlay.appendChild(dialog);
     document.body.appendChild(overlay);
-    applyModalCascade(dialog);
+    applyModalCascade(dialog, _layer.depth);
     registerEscHandler(close);
     overlay.addEventListener('click', e => { if (e.target === overlay) close(); });
 
@@ -2376,9 +2377,9 @@ export async function init() {
  */
 export async function showReviewModal({ title = 'Browse Images', fetchImages, editableDataset, toolbarControls, referenceBboxUuids = new Set(), referenceImageUuids = new Set(), initialViewFilter = 'images', bboxFilterFn = null } = {}) {
   const overlay = document.createElement('div');
-  const _modalZ = nextModalZIndex();
+  const _layer = acquireModalLayer({ dialog: true });
   overlay.className = 'compare-modal-overlay';
-  overlay.style.zIndex = _modalZ;
+  overlay.style.zIndex = _layer.zIndex;
 
   const dialog = document.createElement('div');
   dialog.className = 'compare-modal-dialog';
@@ -2420,11 +2421,11 @@ export async function showReviewModal({ title = 'Browse Images', fetchImages, ed
   dialog.append(header, content);
   overlay.appendChild(dialog);
   document.body.appendChild(overlay);
-  applyModalCascade(dialog);
+  applyModalCascade(dialog, _layer.depth);
 
   // Use a ref so close() can call panel.destroy() even though panel is assigned below.
   const panelRef = { current: null };
-  function close() { unregisterEscHandler(close); panelRef.current?.destroy(); overlay.remove(); }
+  function close() { unregisterEscHandler(close); _layer.release(); panelRef.current?.destroy(); overlay.remove(); }
   registerEscHandler(close);
   closeBtn.addEventListener('click', close);
   overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
@@ -2727,9 +2728,13 @@ export async function showCanvasModal(bbox, img, labels, onSaved, navContext = n
 
   dialog.append(header, toolbarEl, contentArea, footer);
   overlay.appendChild(dialog);
-  overlay.style.zIndex = nextModalZIndex();
+  // Held from here until closeModal (or the load-failure path below). The ESC
+  // handler is not registered until well after the awaits that follow, so the
+  // layer — not the ESC stack — is what marks this modal as on screen.
+  const _layer = acquireModalLayer({ dialog: true });
+  overlay.style.zIndex = _layer.zIndex;
   document.body.appendChild(overlay);
-  applyModalCascade(dialog);
+  applyModalCascade(dialog, _layer.depth);
 
   // ── Create canvas instance ─────────────────────────────────────────
   let instance;
@@ -2752,6 +2757,7 @@ export async function showCanvasModal(bbox, img, labels, onSaved, navContext = n
   } catch (err) {
     Logger.error('Canvas modal: failed to load image', err);
     instance?.destroy();
+    _layer.release();
     overlay.remove();
     _modalOpen = false;
     return;
@@ -2969,6 +2975,7 @@ export async function showCanvasModal(bbox, img, labels, onSaved, navContext = n
   let _canvasEscClose = null;
   function closeModal() {
     if (_canvasEscClose) unregisterEscHandler(_canvasEscClose);
+    _layer.release();
     unsubBboxChanged();
     unsubDirty();
     if (unsubNavLoad) unsubNavLoad();
@@ -3159,9 +3166,10 @@ async function showBulkActionModal(entries, labels, onConfirm, titleText = null,
     fetchLabels().catch(() => new Map()),
   ]);
 
+  const _layer = acquireModalLayer({ dialog: true });
   const overlay = document.createElement('div');
   overlay.className = 'bulk-modal-overlay';
-  overlay.style.zIndex = nextModalZIndex();
+  overlay.style.zIndex = _layer.zIndex;
 
   const dialog = document.createElement('div');
   dialog.className = 'bulk-modal-dialog';
@@ -3251,7 +3259,7 @@ async function showBulkActionModal(entries, labels, onConfirm, titleText = null,
   const btnRow = document.createElement('div');
   btnRow.className = 'bulk-modal-btn-row';
 
-  function close() { unregisterEscHandler(close); dynPicker.destroy(); overlay.remove(); }
+  function close() { unregisterEscHandler(close); _layer.release(); dynPicker.destroy(); overlay.remove(); }
 
   const cancelBtn = document.createElement('button');
   cancelBtn.textContent = 'Cancel';
@@ -3277,7 +3285,7 @@ async function showBulkActionModal(entries, labels, onConfirm, titleText = null,
   dialog.append(radioGroup, labelPickerRow, tagPickerRow, btnRow);
   overlay.appendChild(dialog);
   document.body.appendChild(overlay);
-  applyModalCascade(dialog);
+  applyModalCascade(dialog, _layer.depth);
   registerEscHandler(close);
 
   overlay.addEventListener('click', e => { if (e.target === overlay) close(); });

@@ -1599,7 +1599,7 @@ button.filter-active {
   display: flex;
   align-items: center;
   justify-content: center;
-  z-index: var(--layer-modal-base); /* overridden inline by nextModalZIndex() on open */
+  z-index: var(--layer-modal-base); /* overridden inline by acquireModalLayer() on open */
 }
 
 .app-modal-dialog {
@@ -1847,7 +1847,7 @@ button.filter-active {
   display: flex;
   align-items: center;
   justify-content: center;
-  z-index: var(--layer-modal-base); /* overridden inline by nextModalZIndex() on open */
+  z-index: var(--layer-modal-base); /* overridden inline by acquireModalLayer() on open */
 }
 
 .canvas-modal-dialog {

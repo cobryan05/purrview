@@ -1,4 +1,4 @@
-import { nextModalZIndex, registerEscHandler, unregisterEscHandler } from './modalZIndex.js';
+import { acquireModalLayer, registerEscHandler, unregisterEscHandler } from './modalZIndex.js';
 
 /**
  * A floating popup anchored above-right of a trigger element, dismissed by an
@@ -24,10 +24,20 @@ export function openAnchoredPopup(anchorEl, contentEl) {
   // actual rendered size before we know where to position it.
   contentEl.style.visibility = 'hidden';
   contentEl.style.position = 'fixed';
-  // Share the overlay band so a popup opened from inside a modal lands above
-  // it (PR 6.1) — this used to be left entirely to whatever CSS the caller had.
-  contentEl.style.zIndex = nextModalZIndex();
   document.body.appendChild(contentEl);
+
+  // Share the overlay band so a popup opened from inside a modal lands above it
+  // (PR 6.1) — but only when the caller has no opinion. Popups anchored to
+  // controls *inside* #bottom-bars (--layer-bottom-bars) must sit above that
+  // bar, i.e. outside the modal band entirely; they say so with an inline
+  // z-index or a class rule, and overwriting it dropped them behind their own
+  // anchor. Read the computed value so a class rule counts, not just inline.
+  // Appended first so that rule has actually matched.
+  let layer = null;
+  if (getComputedStyle(contentEl).zIndex === 'auto') {
+    layer = acquireModalLayer();
+    contentEl.style.zIndex = layer.zIndex;
+  }
 
   const rect = anchorEl.getBoundingClientRect();
   const popupRect = contentEl.getBoundingClientRect();
@@ -53,6 +63,7 @@ export function openAnchoredPopup(anchorEl, contentEl) {
     if (_closed) return;
     _closed = true;
     unregisterEscHandler(close);
+    layer?.release();
     contentEl.remove();
     document.removeEventListener('mousedown', outsideListener, true);
   }

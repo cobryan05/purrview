@@ -44,7 +44,10 @@ export function mountActiveModelBar(containerId = 'active-model-bar') {
     const popup = document.createElement('div');
     popup.className = 'vis-popup';
     popup.style.cssText = [
-      'z-index:10001',
+      // Above #bottom-bars, which this popup is anchored inside of. openAnchoredPopup
+      // leaves a caller-set z-index alone; without one it would allocate in the
+      // modal band (≤ --layer-modal-max) and render behind the bar.
+      'z-index:var(--layer-bottom-bars-menu)',
       'background:var(--pico-card-background-color,#1e1e2e)',
       'border:1px solid var(--pico-muted-border-color,#444)',
       'border-radius:6px', 'padding:6px 0', 'min-width:220px',
@@ -150,8 +153,8 @@ export function mountActiveModelBar(containerId = 'active-model-bar') {
 
   // ── Run picker popup (switch/clear active training run) ──────────────────
   // Uses openAnchoredPopup (caller-owned z-index) rather than the shared
-  // ui/contextMenu/menu.js engine, because that engine's z-index (2000) sits
-  // below open modals (~9999) — this bar must stay usable while a modal is up.
+  // ui/contextMenu/menu.js engine, whose menus allocate inside the modal band —
+  // this bar sits above that band and must stay usable while a modal is up.
   function _openRunPicker(anchorEl) {
     _closeRunPickerPopup();
     _closeStatsPopup();
@@ -160,7 +163,7 @@ export function mountActiveModelBar(containerId = 'active-model-bar') {
     const popup = document.createElement('div');
     popup.className = 'tc-run-picker';
     popup.style.cssText = [
-      'z-index:10001',
+      'z-index:var(--layer-bottom-bars-menu)', // see _openVisPopup
       'background:var(--pico-card-background-color,#1e1e2e)',
       'border:1px solid var(--pico-muted-border-color,#444)',
       'border-radius:6px', 'padding:6px 0', 'min-width:220px', 'max-width:320px',

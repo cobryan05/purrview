@@ -1,4 +1,4 @@
-import { LAYERS, nextModalZIndex, registerEscHandler, unregisterEscHandler } from '/app-static/js/ui/utils/modalZIndex.js';
+import { LAYERS, acquireModalLayer, registerEscHandler, unregisterEscHandler } from '/app-static/js/ui/utils/modalZIndex.js';
 
 /**
  * Floating context-menu engine.
@@ -282,13 +282,17 @@ export function openMenu({ x, y, sections, onClose }) {
     _allEls.length = 0;
     document.removeEventListener('mousedown', _onMouseDown, true);
     unregisterEscHandler(close);
+    _layer.release(); // declared below; close only ever runs after it is bound
     _activeMenu = null;
     onClose?.();
   };
 
   // zIndex is threaded to flyouts through here (see _buildItemRows) so they
   // stack above their own menu without each hover burning a band slot.
-  const menuCtx = { close, zIndex: nextModalZIndex() };
+  // Not a dialog: menus are anchored to a trigger and must not push centred
+  // dialogs down the cascade staircase.
+  const _layer = acquireModalLayer();
+  const menuCtx = { close, zIndex: _layer.zIndex };
 
   const root = document.createElement('div');
   root.className = 'ctx-menu';
