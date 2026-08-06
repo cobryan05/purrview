@@ -4,7 +4,11 @@
  * Adapter interface (CtxImageAdapter):
  *   getPath()                           → string
  *   openOnCanvas()                      → void
- *   setLabelPresence(uuid, status)      → Promise<void>  status = 'present'|'absent'|'uncertain'
+ *   setLabelPresence(uuid, status)      → Promise<{ skipped?: boolean }|void>
+ *                                          status = 'present'|'absent'|'uncertain'
+ *                                          `skipped: true` = the server deliberately
+ *                                          refused the write (verified-bbox conflict);
+ *                                          not an error, but the state did not change.
  *   getTagUuids()                       → string[]        whole-image tags
  *   toggleTag(uuid)                     → Promise<void>
  *   setTagStatus(uuid, status)          → Promise<void>  status = 'present'|'absent'|'uncertain'
@@ -16,6 +20,39 @@ import { fetchLabels } from '/app-static/js/shared/api/labels.js';
 import { openSimilarImagesModal } from '/app-static/js/ui/similarSearch.js';
 import { openDissimilarImagesModal } from '/app-static/js/ui/dissimilarSearch.js';
 import { buildTagPanel } from '../tagPanelBuilder.js';
+import { toast } from '/app-static/js/ui/utils/logging.js';
+
+/**
+ * Apply a label presence status across every selected image and report the
+ * server's deliberate refusals.
+ *
+ * POST /api/images/labels/set answers `status: success, skipped: true` when it
+ * declines the write (marking a label ABSENT on an image that has a verified
+ * bbox for that label). That is a success response, so nothing throws and the
+ * menu just closes — without this the user gets no feedback at all and the
+ * label silently stays as it was. Mirrors ui/labelList.js's aggregate info
+ * toast for the same server contract.
+ *
+ * @param {object[]} adapters
+ * @param {string} uuid
+ * @param {'present'|'absent'|'uncertain'} status
+ */
+async function _applyLabelPresence(adapters, uuid, status) {
+  let skipped = 0;
+  for (const a of adapters) {
+    const res = await a.setLabelPresence(uuid, status);
+    if (res?.skipped) skipped += 1;
+  }
+  if (skipped) {
+    toast(
+      skipped === 1
+        ? 'Label left unchanged: image has a verified bbox for it'
+        : `${skipped} image(s) left unchanged: verified bboxes exist`,
+      4000,
+      'info'
+    );
+  }
+}
 
 /**
  * Build the "search all images" / "search with current filters" submenu for a
@@ -102,7 +139,7 @@ registerContextProvider('image', async (adapters, ctx) => {
     {
       label: 'Mark label present',
       submenu: () => asyncPanel('200px', () => _buildLabelListPanel(async uuid => {
-        for (const a of adapters) await a.setLabelPresence(uuid, 'present');
+        await _applyLabelPresence(adapters, uuid, 'present');
         ctx.close();
       })),
     },
@@ -111,7 +148,7 @@ registerContextProvider('image', async (adapters, ctx) => {
     {
       label: 'Mark label absent',
       submenu: () => asyncPanel('200px', () => _buildLabelListPanel(async uuid => {
-        for (const a of adapters) await a.setLabelPresence(uuid, 'absent');
+        await _applyLabelPresence(adapters, uuid, 'absent');
         ctx.close();
       })),
     },
@@ -120,7 +157,7 @@ registerContextProvider('image', async (adapters, ctx) => {
     {
       label: 'Clear label status (unreviewed)',
       submenu: () => asyncPanel('200px', () => _buildLabelListPanel(async uuid => {
-        for (const a of adapters) await a.setLabelPresence(uuid, 'uncertain');
+        await _applyLabelPresence(adapters, uuid, 'uncertain');
         ctx.close();
       })),
     },

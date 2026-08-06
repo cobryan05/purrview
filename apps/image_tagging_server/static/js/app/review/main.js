@@ -1039,8 +1039,13 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
       },
 
       async setLabelPresence(uuid, status) {
-        await setImageLabel(img.filename, uuid, status);
+        const res = await setImageLabel(img.filename, uuid, status);
+        // Published even when `res.skipped` — the write was refused, so the UI
+        // may be showing a state the server never accepted and needs to re-sync
+        // to the stored truth. The caller (contextMenu/providers/imageProvider.js)
+        // surfaces the refusal itself; returning `res` is what makes that possible.
         events.publish(EventTypes.IMAGE_LABELS_CHANGED, { imageUuid: img.uuid, imagePath: img.filename });
+        return res;
       },
 
       getTagUuids() { return (img.tags ?? []).map(t => t.uuid); },

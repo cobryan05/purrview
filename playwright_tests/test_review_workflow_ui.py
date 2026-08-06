@@ -1251,3 +1251,71 @@ class TestConfigReadyViewGating:
             const { activeTrainingConfig } = await import('/app-static/js/shared/activeTrainingConfig.js');
             await activeTrainingConfig.setActive(null);
         }""")
+
+
+# ---------------------------------------------------------------------------
+# 13. Image context menu — server-refused label writes
+# ---------------------------------------------------------------------------
+
+# Image-scope label — only these appear in the Mark-label flyout.
+LABEL_INDOOR = {
+    "uuid": "lbl-indoor",
+    "name": "Indoor",
+    "color": "#3388ff",
+    "parentUuid": None,
+    "scope": "image",
+}
+
+
+def _pick_label_from_flyout(page: Page, item_label: str, label_name: str):
+    """Right-click the first image card, open `item_label`'s flyout, pick a label."""
+    page.locator("#review-root [data-image-uuid='img-1'][data-kind='image']").click(button="right")
+    page.locator(".ctx-menu-item", has_text=item_label).first.click()
+    page.locator(".ctx-menu div", has_text=re.compile(f"^{label_name}$")).last.dispatch_event("mousedown")
+
+
+class TestImageContextMenuLabelRefusal:
+    """POST /api/images/labels/set answers `status: success, skipped: true` when
+    it declines a write (ABSENT blocked by a verified bbox carrying that label).
+    Nothing throws, so the Review adapter used to await-and-discard the response
+    and the menu just closed — no toast, no change, no explanation. This drives
+    the real grid so the adapter in app/review/main.js is what's under test, not
+    a stand-in (contextMenu/providers/imageProvider.js's own handling is covered
+    by test_context_menu_label_skipped.py)."""
+
+    def _setup(self, page: Page, base_url: str, skipped: bool):
+        _mock_review_queue(page, PAGE_1_IMAGES)
+        _mock_labels(page, [LABEL_CAT, LABEL_DOG, LABEL_INDOOR])
+        _mock_tags(page, [{**UNVERIFIED_TAG, "name": "Unverified", "color": "#888", "kind": "system"}])
+        _mock_misc_review_endpoints(page)
+
+        body = {"status": "success"}
+        if skipped:
+            body["skipped"] = True
+            body["message"] = "Cannot mark label absent: the image has a verified bbox with this label"
+        # Registered after _mock_misc_review_endpoints so this handler wins.
+        page.route(
+            "**/api/images/labels/set",
+            lambda route: route.fulfill(status=200, content_type="application/json", body=json.dumps(body)),
+        )
+
+        _navigate_to_review(page, base_url)
+        _switch_view(page, "images")
+        expect(page.locator("#review-root [data-testid='review-card']")).to_have_count(2)
+
+    def test_refused_absent_write_tells_the_user_nothing_changed(self, page: Page, base_url: str):
+        self._setup(page, base_url, skipped=True)
+        _pick_label_from_flyout(page, "Mark label absent", "Indoor")
+
+        toast = page.locator("#toast-container", has_text="left unchanged")
+        expect(toast).to_be_visible(timeout=3000)
+        expect(toast).to_contain_text("verified bbox")
+
+    def test_accepted_write_shows_no_toast(self, page: Page, base_url: str):
+        """The control case — an ordinary write must stay silent, so the toast
+        above is proof of the refusal and not of any label write at all."""
+        self._setup(page, base_url, skipped=False)
+        _pick_label_from_flyout(page, "Mark label absent", "Indoor")
+
+        page.wait_for_timeout(500)
+        assert page.locator("#toast-container", has_text="left unchanged").count() == 0
