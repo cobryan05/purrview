@@ -116,7 +116,19 @@ function buildReviewFilterBody({
   // Explicit imageLabelFilters (direct format) take precedence over conditions.
   // imageLabelConditions (from the filter panel) are mapped to the same term kind.
   for (const f of imageLabelFilters) {
-    terms.push({ kind: 'imageLabel', labelUuid: f.labelUuid, state: f.status, negate: f.exclude ?? false });
+    // Same two corrections as the imageLabelConditions loop below, for the same
+    // reasons: 'uncertain' is the term model's 'unreviewed' (passing the raw
+    // ImageItemStatus value into an ImageLabelState slot 422s), and rollUp must
+    // be explicit — the pre-1.4b flat ImageLabelFilter was an exact-label
+    // predicate, whereas ImageLabelTerm.roll_up defaults true server-side.
+    const state = f.status === 'uncertain' ? 'unreviewed' : f.status;
+    terms.push({
+      kind: 'imageLabel',
+      labelUuid: f.labelUuid,
+      state,
+      rollUp: f.rollUp ?? false,
+      negate: f.exclude ?? false,
+    });
   }
   for (const c of imageLabelConditions) {
     // 'uncertain' (the condition-panel's "never assessed" state) maps to the
@@ -158,8 +170,10 @@ function buildReviewFilterBody({
  *   dateTo?: string|null,
  *   afterUuid?: string|null,       // keyset cursor: UUID of last image on previous page
  *   afterSortValue?: string|null,  // ISO datetime of last image's sort field (when sortBy != 'uuid')
- *   imageLabelFilters?: Array<{labelUuid: string, status: string, exclude: boolean}>,
- *   imageLabelConditions?: {labelUuid: string, state: 'present'|'absent'|'uncertain'}[],
+ *   imageLabelFilters?: Array<{labelUuid: string, status: 'present'|'absent'|'uncertain',
+ *                              exclude?: boolean, rollUp?: boolean}>,  // rollUp defaults false
+ *   imageLabelConditions?: {labelUuid: string, state: 'present'|'absent'|'uncertain',
+ *                           rollUp?: boolean, negate?: boolean}[],  // rollUp defaults true
  *   bboxVerification?: 'any'|'verified'|'unverified',  // 'any' is a no-op
  *   verificationLabelUuids?: string[],  // V2: active training config's target labels,
  *                                        // overrides labelUuids as the verificationCheck target

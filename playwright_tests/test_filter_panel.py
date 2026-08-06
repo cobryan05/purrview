@@ -1073,3 +1073,68 @@ class TestBulkApplyFilterParity:
 
         terms = captured["body"]["filter"]["terms"]
         assert {"kind": "bboxVerification", "state": "verified"} in terms
+
+
+# ── fetchReviewQueue: imageLabelFilters → imageLabel term mapping ──────────────
+#
+# `imageLabelFilters` is the direct-format option on buildReviewFilterBody (the
+# pre-1.4b flat ImageLabelFilter shape), kept alongside the panel's own
+# `imageLabelConditions`. Its term conversion was not semantics-preserving:
+# 'uncertain' was passed through as an ImageLabelState (which the server rejects
+# — the term model spells it 'unreviewed'), and rollUp was left off entirely, so
+# ImageLabelTerm.roll_up's server-side default of true silently widened what had
+# been an exact-label predicate. No in-repo caller passes the option today, so
+# these guard a documented public option that nothing else would catch.
+
+
+class TestFetchReviewQueueImageLabelFilterMapping:
+    @staticmethod
+    def _capture(page: Page, base_url: str, image_label_filters: list) -> dict:
+        captured = {}
+
+        def handle(route):
+            captured["body"] = route.request.post_data_json
+            route.fulfill(
+                status=200,
+                content_type="application/json",
+                body='{"status": "success", "images": [], "hasMore": false, "totalCount": 0}',
+            )
+
+        page.goto(base_url)
+        page.route("**/api/images/review", handle)
+        page.evaluate(
+            """async (filters) => {
+                const { fetchReviewQueue } = await import('/app-static/js/shared/api/review.js');
+                await fetchReviewQueue({ tagUuids: [], showAllBboxes: true, imageLabelFilters: filters });
+            }""",
+            image_label_filters,
+        )
+        terms = [t for t in captured["body"].get("terms", []) if t.get("kind") == "imageLabel"]
+        assert len(terms) == 1, captured["body"]
+        return terms[0]
+
+    def test_uncertain_maps_to_unreviewed(self, page: Page, base_url: str):
+        """'uncertain' is the ImageItemStatus spelling; the term model's
+        equivalent is 'unreviewed'. Passing it through raw 422s server-side."""
+        term = self._capture(page, base_url, [{"labelUuid": "lbl-1", "status": "uncertain"}])
+        assert term["state"] == "unreviewed"
+
+    @pytest.mark.parametrize("status", ["present", "absent"])
+    def test_other_states_pass_through(self, page: Page, base_url: str, status: str):
+        term = self._capture(page, base_url, [{"labelUuid": "lbl-1", "status": status}])
+        assert term["state"] == status
+
+    def test_roll_up_defaults_to_false(self, page: Page, base_url: str):
+        """Matches the deliberate rollUp: false on labelExcludeUuids — the flat
+        field this option preserves was never child-expanded, and the server
+        default is true, so it has to be explicit."""
+        term = self._capture(page, base_url, [{"labelUuid": "lbl-1", "status": "present"}])
+        assert term["rollUp"] is False
+
+    def test_explicit_roll_up_is_honoured(self, page: Page, base_url: str):
+        term = self._capture(page, base_url, [{"labelUuid": "lbl-1", "status": "present", "rollUp": True}])
+        assert term["rollUp"] is True
+
+    def test_exclude_maps_to_negate(self, page: Page, base_url: str):
+        term = self._capture(page, base_url, [{"labelUuid": "lbl-1", "status": "present", "exclude": True}])
+        assert term["negate"] is True
