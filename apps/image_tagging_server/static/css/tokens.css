@@ -1,8 +1,13 @@
 /* Design tokens — spacing / type / radius / color.
- * Values chosen to match the modal value already dominant in app.css usage
- * (see UI_REDESIGN_PLAN.md, Slice 2), so migrating existing rules onto these
- * is a like-for-like swap. Dark is the app's de-facto current theme; light is
- * a new, deliberately-designed variant.
+ *
+ * ⚠️ The dark colour values are a DELIBERATE PALETTE, user-picked 2026-08-06
+ * from four candidates screenshotted against the live Review tab. They are no
+ * longer the slice-2 values derived from existing app.css usage — that earlier
+ * scale was chosen to make adoption a like-for-like swap, which is exactly why
+ * adopting it changed almost nothing. Do not "restore" values to match some
+ * hardcoded colour you find in app.css; the tokens are the source of truth now.
+ *
+ * Dark is the ONLY supported theme — see the light block's warning below.
  *
  * app.css consumes these throughout as of the token-adoption pass: the greys,
  * borders, surfaces, brand red and status colours it used to hardcode now
@@ -71,17 +76,17 @@
   --layer-bottom-bars: 2000;
   --layer-bottom-bars-menu: 2100;
 
-  /* ---- color: dark (de-facto current theme) ---- */
-  --bg: #14141c;
-  --surface: #1c1c28;
-  --surface-raised: #22222f;
-  --surface-sunken: #101017;
-  --surface-elevated: #3a3850;
-  --border: #302f40;
-  --border-strong: #423f56;
-  --text: #ececf2;
-  --text-muted: #9d9caa;
-  --text-faint: #6f6e7c;
+  /* ---- color: dark (palette C — "deep navy, more contrast", user-picked) ---- */
+  --bg: #0f1219;
+  --surface: #171b24;
+  --surface-raised: #1f2530;
+  --surface-sunken: #0a0c11;
+  --surface-elevated: #374050;
+  --border: #28303d;
+  --border-strong: #3d4859;
+  --text: #f2f4f8;
+  --text-muted: #a8b0bf;
+  --text-faint: #6e7686;
   --text-on-solid: #ffffff;
   --color-accent: #ff3d5c;
   --color-accent-fg: #1a0508;
@@ -197,16 +202,16 @@
  * future in-app theme toggle (none exists yet as of Slice 2 — checked
  * settings/main.js and index.html). */
 :root[data-theme="dark"] {
-  --bg: #14141c;
-  --surface: #1c1c28;
-  --surface-raised: #22222f;
-  --surface-sunken: #101017;
-  --surface-elevated: #3a3850;
-  --border: #302f40;
-  --border-strong: #423f56;
-  --text: #ececf2;
-  --text-muted: #9d9caa;
-  --text-faint: #6f6e7c;
+  --bg: #0f1219;
+  --surface: #171b24;
+  --surface-raised: #1f2530;
+  --surface-sunken: #0a0c11;
+  --surface-elevated: #374050;
+  --border: #28303d;
+  --border-strong: #3d4859;
+  --text: #f2f4f8;
+  --text-muted: #a8b0bf;
+  --text-faint: #6e7686;
   --text-on-solid: #ffffff;
   --color-accent: #ff3d5c;
   --color-accent-fg: #1a0508;
