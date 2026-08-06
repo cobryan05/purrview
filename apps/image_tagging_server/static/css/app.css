@@ -1400,15 +1400,18 @@ button.filter-active {
   border: none;
 }
 
-/* ===== Review: Image-mode card ===== */
+/* ===== Review: Image-mode card =====
+   Image cards read one step brighter than bbox cards (which use --surface).
+   This used to be a navy (#141e2e) that clashed with the purple-grey palette
+   everywhere else; the distinction is kept, the off-palette hue is not. */
 .review-card--image {
-  background: #141e2e;
-  border-left: 3px solid #3366aa55;
+  background: var(--surface-raised);
+  border-left: 3px solid var(--color-info);
 }
 .review-card--image .thumb {
   aspect-ratio: 4/3 !important;
   object-fit: contain !important;
-  background: #0d1520;
+  background: var(--surface-sunken);
 }
 .review-card--image .thumb-overlay {
   position: absolute;

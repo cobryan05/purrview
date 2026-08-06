@@ -94,7 +94,80 @@
   --shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 8px 24px rgba(0, 0, 0, 0.4);
 }
 
-/* ---- color: light (new — see PR 2.2 note in UI_REDESIGN_PLAN.md) ---- */
+/* ---- Pico bridge ----------------------------------------------------------
+ * Pico paints the app's dominant surfaces, NOT app.css. Verified by probing
+ * computed styles: body, main.container, .main-tab-header and .card-info are
+ * all `background: transparent` — the page colour is --pico-background-color,
+ * and body text is Pico's #c2c7d0, not our --text.
+ *
+ * So migrating more app.css rules onto tokens cannot change how the app looks;
+ * only this block can. It makes Pico take its palette from the tokens, so there
+ * is ONE palette instead of two independent theme systems that merely happened
+ * to both be dark.
+ *
+ * ⚠️ Scope of the brand red is deliberate. --pico-primary drives accents (active
+ * tab, links, focus rings, sub-tab underlines) and gets --color-accent. The
+ * *fills* (--pico-primary-background) deliberately do NOT: Pico uses "primary"
+ * for every default button, so mapping the fill to red turns the Sources tab's
+ * 🗑/✏️ icon rows into a wall of red that reads as destructive. Red stays for
+ * accents and genuinely destructive actions.
+ */
+:root[data-theme="dark"] {
+  /* surfaces + text */
+  --pico-background-color: var(--bg);
+  --pico-card-background-color: var(--surface);
+  --pico-card-sectioning-background-color: var(--surface-raised);
+  --pico-color: var(--text);
+  --pico-h1-color: var(--text);
+  --pico-h2-color: var(--text);
+  --pico-h3-color: var(--text);
+  --pico-h4-color: var(--text);
+  --pico-h5-color: var(--text);
+  --pico-h6-color: var(--text);
+  --pico-muted-color: var(--text-muted);
+  --pico-muted-border-color: var(--border);
+  --pico-border-color: var(--border);
+
+  /* accents — colour only, not fills (see note above) */
+  --pico-primary: var(--color-accent);
+  --pico-primary-hover: var(--color-accent);
+  --pico-primary-focus: var(--color-accent-soft);
+  --pico-primary-underline: var(--color-accent);
+
+  /* button fills stay neutral */
+  --pico-primary-background: var(--surface-elevated);
+  --pico-primary-hover-background: var(--border-strong);
+  --pico-primary-border: var(--border-strong);
+  --pico-primary-hover-border: var(--border-strong);
+  --pico-primary-inverse: var(--text);
+
+  --pico-secondary: var(--text-muted);
+  --pico-secondary-background: var(--surface-raised);
+  --pico-secondary-hover-background: var(--surface-elevated);
+  --pico-secondary-border: var(--border);
+  --pico-secondary-inverse: var(--text);
+
+  /* form controls */
+  --pico-form-element-background-color: var(--surface-sunken);
+  --pico-form-element-border-color: var(--border-strong);
+  --pico-form-element-color: var(--text);
+  --pico-form-element-placeholder-color: var(--text-faint);
+  --pico-form-element-active-border-color: var(--color-accent);
+  --pico-form-element-focus-color: var(--color-accent);
+
+  --pico-del-color: var(--color-danger);
+  --pico-ins-color: var(--color-success);
+}
+
+/* ---- color: light ----
+ * ⚠️ DORMANT AND UNSUPPORTED. Dark is the only theme the app supports, and
+ * index.html pins <html data-theme="dark"> so this block never applies in
+ * practice. It is kept as a starting point, not a working theme: the review
+ * cards and canvas chrome are painted from JS inline styles and per-label
+ * colours that ignore the theme entirely, so light renders as a broken hybrid.
+ * Making light real is a JS problem, not a CSS one — do not assume these
+ * values work.
+ */
 @media (prefers-color-scheme: light) {
   :root {
     --bg: #f7f7f9;

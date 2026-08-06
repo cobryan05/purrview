@@ -1,5 +1,10 @@
 <!DOCTYPE html>
-<html lang="en">
+<!-- data-theme pins BOTH theme systems (Pico's and tokens.css's) to dark.
+     Dark is the only supported theme. Without this, each independently follows
+     prefers-color-scheme, and a light-mode OS renders a broken hybrid: Pico's
+     shell goes light while the hand-authored components and the JS-painted
+     review cards stay dark. -->
+<html lang="en" data-theme="dark">
 <head>
   <meta charset="UTF-8" />
   <title>Annotation Tool</title>
