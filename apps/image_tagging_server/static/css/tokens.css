@@ -4,8 +4,21 @@
  * is a like-for-like swap. Dark is the app's de-facto current theme; light is
  * a new, deliberately-designed variant.
  *
- * Nothing in app.css consumes these yet (PR 2.1) — this file is a no-op until
- * later PRs migrate rules onto it.
+ * app.css consumes these throughout as of the token-adoption pass: the greys,
+ * borders, surfaces, brand red and status colours it used to hardcode now
+ * resolve here, so the whole app re-themes from this one file.
+ *
+ * `--surface-elevated` and `--color-info` were added by that pass — the scale
+ * had no home for the `#444` raised-control background tier, nor for the blues
+ * used by links/info states.
+ *
+ * ⚠️ `--text-on-solid` is deliberately the SAME in every theme. It is the
+ * foreground for chips whose background does not follow the theme — either a
+ * fixed dark alpha wash (`.bbox-count-badge`, `background: #000a`) or a
+ * saturated semantic fill (`--color-success`, Pico's primary). Those started as
+ * hardcoded `#fff`; mapping them to `--text` made them near-black on an
+ * unchanged dark background in light mode. If you add a chip on a fixed or
+ * saturated background, use this, not `--text`.
  */
 
 :root {
@@ -63,11 +76,13 @@
   --surface: #1c1c28;
   --surface-raised: #22222f;
   --surface-sunken: #101017;
+  --surface-elevated: #3a3850;
   --border: #302f40;
   --border-strong: #423f56;
   --text: #ececf2;
   --text-muted: #9d9caa;
   --text-faint: #6f6e7c;
+  --text-on-solid: #ffffff;
   --color-accent: #ff3d5c;
   --color-accent-fg: #1a0508;
   --color-accent-soft: #3a1420;
@@ -75,6 +90,7 @@
   --color-warning: #e0c14f;
   --color-danger: #ff7a5c;
   --color-danger-soft: #3a1c14;
+  --color-info: #6ea8ff;
   --shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 8px 24px rgba(0, 0, 0, 0.4);
 }
 
@@ -85,11 +101,13 @@
     --surface: #ffffff;
     --surface-raised: #ffffff;
     --surface-sunken: #eeeef1;
+    --surface-elevated: #dcdce4;
     --border: #dddde3;
     --border-strong: #c7c7cf;
     --text: #1b1b21;
     --text-muted: #66666f;
     --text-faint: #8d8d96;
+    --text-on-solid: #ffffff;
     --color-accent: #ff0033;
     --color-accent-fg: #ffffff;
     --color-accent-soft: #ffe4ea;
@@ -97,6 +115,7 @@
     --color-warning: #a8790c;
     --color-danger: #c93a24;
     --color-danger-soft: #fbe4de;
+    --color-info: #0b62d6;
     --shadow: 0 1px 2px rgba(20, 20, 30, 0.06), 0 4px 16px rgba(20, 20, 30, 0.08);
   }
 }
@@ -109,11 +128,13 @@
   --surface: #1c1c28;
   --surface-raised: #22222f;
   --surface-sunken: #101017;
+  --surface-elevated: #3a3850;
   --border: #302f40;
   --border-strong: #423f56;
   --text: #ececf2;
   --text-muted: #9d9caa;
   --text-faint: #6f6e7c;
+  --text-on-solid: #ffffff;
   --color-accent: #ff3d5c;
   --color-accent-fg: #1a0508;
   --color-accent-soft: #3a1420;
@@ -121,6 +142,7 @@
   --color-warning: #e0c14f;
   --color-danger: #ff7a5c;
   --color-danger-soft: #3a1c14;
+  --color-info: #6ea8ff;
   --shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 8px 24px rgba(0, 0, 0, 0.4);
 }
 
@@ -129,11 +151,13 @@
   --surface: #ffffff;
   --surface-raised: #ffffff;
   --surface-sunken: #eeeef1;
+  --surface-elevated: #dcdce4;
   --border: #dddde3;
   --border-strong: #c7c7cf;
   --text: #1b1b21;
   --text-muted: #66666f;
   --text-faint: #8d8d96;
+  --text-on-solid: #ffffff;
   --color-accent: #ff0033;
   --color-accent-fg: #ffffff;
   --color-accent-soft: #ffe4ea;
@@ -141,5 +165,6 @@
   --color-warning: #a8790c;
   --color-danger: #c93a24;
   --color-danger-soft: #fbe4de;
+  --color-info: #0b62d6;
   --shadow: 0 1px 2px rgba(20, 20, 30, 0.06), 0 4px 16px rgba(20, 20, 30, 0.08);
 }
