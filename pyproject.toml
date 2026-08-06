@@ -3,3 +3,7 @@ line-length = 120
 
 [tool.isort]
 profile = "black"
+# profile="black" defaults line_length to 88, not to black's setting, so an
+# import between 88 and 120 chars is left alone by black and wrapped by isort.
+# Every `black ... && isort ...` pass then reformats a file nobody touched.
+line_length = 120

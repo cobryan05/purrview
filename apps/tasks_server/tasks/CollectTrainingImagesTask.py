@@ -23,9 +23,7 @@ from db_client.api.tags_api import TagsApi
 from db_client.models.add_tag_payload import AddTagPayload
 from db_client.models.bounding_box_metadata_model import BoundingBoxMetadataModel
 from db_client.models.set_image_tag_payload import SetImageTagPayload
-from db_client.models.tag_kind import (  # noqa: F401 (used as ApiTagKind.TASK_GENERATED)
-    TagKind as ApiTagKind,
-)
+from db_client.models.tag_kind import TagKind as ApiTagKind  # noqa: F401 (used as ApiTagKind.TASK_GENERATED)
 from db_client.models.update_metadata_payload import UpdateMetadataPayload
 from inference_client.api.inference_api import InferenceApi
 from inference_client.api.models_api import ModelsApi
