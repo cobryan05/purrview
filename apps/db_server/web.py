@@ -640,9 +640,9 @@ class ReadyImagesPayload(Payload):
     limit: int = 50
 
 
-class BundleTargetDetectionDatasetPayload(Payload):
+class TrainingTargetDetectionDatasetPayload(Payload):
     dataset_uuids: List[str] = Field(default_factory=list)
-    # Optional pre-resolved target scope — a bundle run snapshots its targets from
+    # Optional pre-resolved target scope — a training run snapshots its targets from
     # /training-targets at _init, so passing that snapshot here keeps every target
     # of the run consistent with it (a config edit mid-run can't shift the class
     # set) and skips re-deriving all targets on each per-target request.
@@ -690,9 +690,9 @@ class ModelGroupResponse(StatusResponse):
     group: Optional[ModelGroupRead] = None
 
 
-class BundleTrainingTarget(ApiModel):
-    """One artifact a full bundle training run must produce (see
-    DbClient.derive_bundle_training_targets for the derivation semantics)."""
+class TrainingTarget(ApiModel):
+    """One artifact a full training run must produce (see
+    DbClient.derive_training_targets for the derivation semantics)."""
 
     node_uuid: str
     role: Literal["top", "submodel"]
@@ -705,7 +705,7 @@ class BundleTrainingTarget(ApiModel):
 
 
 class TrainingTargetsResponse(StatusResponse):
-    targets: List[BundleTrainingTarget] = Field(default_factory=list)
+    targets: List[TrainingTarget] = Field(default_factory=list)
 
 
 ########
@@ -2835,12 +2835,12 @@ class WebApp:
         )
         async def get_model_config_training_targets(uuid: str) -> TrainingTargetsResponse:
             try:
-                targets = await self._manager.derive_bundle_training_targets(uuid)
+                targets = await self._manager.derive_training_targets(uuid)
                 if targets is None:
                     return TrainingTargetsResponse(status=JsonValues.FAILURE, message="Model config not found")
                 return TrainingTargetsResponse(
                     status=JsonValues.SUCCESS,
-                    targets=[BundleTrainingTarget(**t) for t in targets],
+                    targets=[TrainingTarget(**t) for t in targets],
                 )
             except Exception as e:
                 logger.error(e, exc_info=True)
@@ -2850,15 +2850,15 @@ class WebApp:
             "/api/model-configs/{uuid}/training-targets/{node_uuid}/detection-dataset",
             response_model=DetectionDatasetResponse,
             tags=[ApiTags.MODEL_CONFIGS],
-            operation_id="get_bundle_target_detection_dataset",
+            operation_id="get_training_target_detection_dataset",
         )
-        async def get_bundle_target_detection_dataset(
+        async def get_training_target_detection_dataset(
             uuid: str,
             node_uuid: str,
-            payload: BundleTargetDetectionDatasetPayload,
+            payload: TrainingTargetDetectionDatasetPayload,
         ) -> DetectionDatasetResponse:
             try:
-                result = await self._manager.get_bundle_target_detection_dataset(
+                result = await self._manager.get_training_target_detection_dataset(
                     uuid,
                     node_uuid,
                     payload.dataset_uuids,
@@ -2867,7 +2867,7 @@ class WebApp:
                 )
                 if result is None:
                     return DetectionDatasetResponse(
-                        status=JsonValues.FAILURE, message="Model config or bundle target not found"
+                        status=JsonValues.FAILURE, message="Model config or training target not found"
                     )
                 return DetectionDatasetResponse(
                     status=JsonValues.SUCCESS,

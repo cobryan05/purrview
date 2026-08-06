@@ -590,4 +590,4 @@ async def test_targets_childless_boundary_has_empty_classes(http_client):
 
 
 async def test_targets_db_client_returns_none_for_missing_config(db_client):
-    assert await db_client.derive_bundle_training_targets("no-such-uuid") is None
+    assert await db_client.derive_training_targets("no-such-uuid") is None

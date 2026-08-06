@@ -1572,76 +1572,6 @@
           }
         }
       },
-      "post": {
-        "summary": "Proxy Images",
-        "operationId": "proxy_images_api_images__path__get",
-        "parameters": [
-          {
-            "name": "path",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Path"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      },
-      "patch": {
-        "summary": "Proxy Images",
-        "operationId": "proxy_images_api_images__path__get",
-        "parameters": [
-          {
-            "name": "path",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Path"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      },
       "delete": {
         "summary": "Proxy Images",
         "operationId": "proxy_images_api_images__path__get",
@@ -1678,6 +1608,76 @@
         }
       },
       "put": {
+        "summary": "Proxy Images",
+        "operationId": "proxy_images_api_images__path__get",
+        "parameters": [
+          {
+            "name": "path",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Path"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "summary": "Proxy Images",
+        "operationId": "proxy_images_api_images__path__get",
+        "parameters": [
+          {
+            "name": "path",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Path"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
         "summary": "Proxy Images",
         "operationId": "proxy_images_api_images__path__get",
         "parameters": [
@@ -1749,76 +1749,6 @@
           }
         }
       },
-      "post": {
-        "summary": "Proxy Labels",
-        "operationId": "proxy_labels_api_labels__path__get",
-        "parameters": [
-          {
-            "name": "path",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Path"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      },
-      "patch": {
-        "summary": "Proxy Labels",
-        "operationId": "proxy_labels_api_labels__path__get",
-        "parameters": [
-          {
-            "name": "path",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Path"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      },
       "delete": {
         "summary": "Proxy Labels",
         "operationId": "proxy_labels_api_labels__path__get",
@@ -1855,6 +1785,76 @@
         }
       },
       "put": {
+        "summary": "Proxy Labels",
+        "operationId": "proxy_labels_api_labels__path__get",
+        "parameters": [
+          {
+            "name": "path",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Path"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "summary": "Proxy Labels",
+        "operationId": "proxy_labels_api_labels__path__get",
+        "parameters": [
+          {
+            "name": "path",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Path"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
         "summary": "Proxy Labels",
         "operationId": "proxy_labels_api_labels__path__get",
         "parameters": [
@@ -1926,76 +1926,6 @@
           }
         }
       },
-      "post": {
-        "summary": "Proxy Models",
-        "operationId": "proxy_models_api_models__path__get",
-        "parameters": [
-          {
-            "name": "path",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Path"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      },
-      "patch": {
-        "summary": "Proxy Models",
-        "operationId": "proxy_models_api_models__path__get",
-        "parameters": [
-          {
-            "name": "path",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Path"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      },
       "delete": {
         "summary": "Proxy Models",
         "operationId": "proxy_models_api_models__path__get",
@@ -2032,6 +1962,76 @@
         }
       },
       "put": {
+        "summary": "Proxy Models",
+        "operationId": "proxy_models_api_models__path__get",
+        "parameters": [
+          {
+            "name": "path",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Path"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "summary": "Proxy Models",
+        "operationId": "proxy_models_api_models__path__get",
+        "parameters": [
+          {
+            "name": "path",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Path"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
         "summary": "Proxy Models",
         "operationId": "proxy_models_api_models__path__get",
         "parameters": [
@@ -2103,76 +2103,6 @@
           }
         }
       },
-      "post": {
-        "summary": "Proxy Sources",
-        "operationId": "proxy_sources_api_sources__path__get",
-        "parameters": [
-          {
-            "name": "path",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Path"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      },
-      "patch": {
-        "summary": "Proxy Sources",
-        "operationId": "proxy_sources_api_sources__path__get",
-        "parameters": [
-          {
-            "name": "path",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Path"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      },
       "delete": {
         "summary": "Proxy Sources",
         "operationId": "proxy_sources_api_sources__path__get",
@@ -2209,6 +2139,76 @@
         }
       },
       "put": {
+        "summary": "Proxy Sources",
+        "operationId": "proxy_sources_api_sources__path__get",
+        "parameters": [
+          {
+            "name": "path",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Path"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "summary": "Proxy Sources",
+        "operationId": "proxy_sources_api_sources__path__get",
+        "parameters": [
+          {
+            "name": "path",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Path"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
         "summary": "Proxy Sources",
         "operationId": "proxy_sources_api_sources__path__get",
         "parameters": [
@@ -2280,76 +2280,6 @@
           }
         }
       },
-      "post": {
-        "summary": "Proxy Tags",
-        "operationId": "proxy_tags_api_tags__path__get",
-        "parameters": [
-          {
-            "name": "path",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Path"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      },
-      "patch": {
-        "summary": "Proxy Tags",
-        "operationId": "proxy_tags_api_tags__path__get",
-        "parameters": [
-          {
-            "name": "path",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Path"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      },
       "delete": {
         "summary": "Proxy Tags",
         "operationId": "proxy_tags_api_tags__path__get",
@@ -2419,29 +2349,10 @@
             }
           }
         }
-      }
-    },
-    "/api/tasks/stream": {
-      "get": {
-        "summary": "Tasks Stream",
-        "description": "SSE stream \u2014 pushes a data frame whenever task state changes.",
-        "operationId": "tasks_stream_api_tasks_stream_get",
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/tasks/{path}": {
-      "get": {
-        "summary": "Proxy Tasks",
-        "operationId": "proxy_tasks_api_tasks__path__get",
+      },
+      "post": {
+        "summary": "Proxy Tags",
+        "operationId": "proxy_tags_api_tags__path__get",
         "parameters": [
           {
             "name": "path",
@@ -2474,9 +2385,63 @@
           }
         }
       },
-      "post": {
+      "patch": {
+        "summary": "Proxy Tags",
+        "operationId": "proxy_tags_api_tags__path__get",
+        "parameters": [
+          {
+            "name": "path",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Path"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/tasks/stream": {
+      "get": {
+        "summary": "Tasks Stream",
+        "description": "SSE stream \u2014 pushes a data frame whenever task state changes.",
+        "operationId": "tasks_stream_api_tasks_stream_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/tasks/{path}": {
+      "patch": {
         "summary": "Proxy Tasks",
-        "operationId": "proxy_tasks_api_tasks__path__get",
+        "operationId": "proxy_tasks_api_tasks__path__patch",
         "parameters": [
           {
             "name": "path",
@@ -2511,7 +2476,7 @@
       },
       "delete": {
         "summary": "Proxy Tasks",
-        "operationId": "proxy_tasks_api_tasks__path__get",
+        "operationId": "proxy_tasks_api_tasks__path__patch",
         "parameters": [
           {
             "name": "path",
@@ -2544,9 +2509,44 @@
           }
         }
       },
-      "patch": {
+      "get": {
         "summary": "Proxy Tasks",
-        "operationId": "proxy_tasks_api_tasks__path__get",
+        "operationId": "proxy_tasks_api_tasks__path__patch",
+        "parameters": [
+          {
+            "name": "path",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Path"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "summary": "Proxy Tasks",
+        "operationId": "proxy_tasks_api_tasks__path__patch",
         "parameters": [
           {
             "name": "path",
@@ -2616,76 +2616,6 @@
           }
         }
       },
-      "post": {
-        "summary": "Proxy Datasets",
-        "operationId": "proxy_datasets_api_datasets__path__get",
-        "parameters": [
-          {
-            "name": "path",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Path"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      },
-      "patch": {
-        "summary": "Proxy Datasets",
-        "operationId": "proxy_datasets_api_datasets__path__get",
-        "parameters": [
-          {
-            "name": "path",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Path"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      },
       "delete": {
         "summary": "Proxy Datasets",
         "operationId": "proxy_datasets_api_datasets__path__get",
@@ -2722,6 +2652,76 @@
         }
       },
       "put": {
+        "summary": "Proxy Datasets",
+        "operationId": "proxy_datasets_api_datasets__path__get",
+        "parameters": [
+          {
+            "name": "path",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Path"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "summary": "Proxy Datasets",
+        "operationId": "proxy_datasets_api_datasets__path__get",
+        "parameters": [
+          {
+            "name": "path",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Path"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
         "summary": "Proxy Datasets",
         "operationId": "proxy_datasets_api_datasets__path__get",
         "parameters": [
@@ -2793,76 +2793,6 @@
           }
         }
       },
-      "post": {
-        "summary": "Proxy Model Configs",
-        "operationId": "proxy_model_configs_api_model_configs__path__get",
-        "parameters": [
-          {
-            "name": "path",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Path"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      },
-      "patch": {
-        "summary": "Proxy Model Configs",
-        "operationId": "proxy_model_configs_api_model_configs__path__get",
-        "parameters": [
-          {
-            "name": "path",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Path"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      },
       "delete": {
         "summary": "Proxy Model Configs",
         "operationId": "proxy_model_configs_api_model_configs__path__get",
@@ -2899,6 +2829,76 @@
         }
       },
       "put": {
+        "summary": "Proxy Model Configs",
+        "operationId": "proxy_model_configs_api_model_configs__path__get",
+        "parameters": [
+          {
+            "name": "path",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Path"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "summary": "Proxy Model Configs",
+        "operationId": "proxy_model_configs_api_model_configs__path__get",
+        "parameters": [
+          {
+            "name": "path",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Path"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
         "summary": "Proxy Model Configs",
         "operationId": "proxy_model_configs_api_model_configs__path__get",
         "parameters": [
@@ -2970,76 +2970,6 @@
           }
         }
       },
-      "post": {
-        "summary": "Proxy Training Configs",
-        "operationId": "proxy_training_configs_api_training_configs__path__get",
-        "parameters": [
-          {
-            "name": "path",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Path"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      },
-      "patch": {
-        "summary": "Proxy Training Configs",
-        "operationId": "proxy_training_configs_api_training_configs__path__get",
-        "parameters": [
-          {
-            "name": "path",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Path"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      },
       "delete": {
         "summary": "Proxy Training Configs",
         "operationId": "proxy_training_configs_api_training_configs__path__get",
@@ -3076,6 +3006,76 @@
         }
       },
       "put": {
+        "summary": "Proxy Training Configs",
+        "operationId": "proxy_training_configs_api_training_configs__path__get",
+        "parameters": [
+          {
+            "name": "path",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Path"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "summary": "Proxy Training Configs",
+        "operationId": "proxy_training_configs_api_training_configs__path__get",
+        "parameters": [
+          {
+            "name": "path",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Path"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
         "summary": "Proxy Training Configs",
         "operationId": "proxy_training_configs_api_training_configs__path__get",
         "parameters": [
@@ -3147,76 +3147,6 @@
           }
         }
       },
-      "post": {
-        "summary": "Proxy Filter Chains",
-        "operationId": "proxy_filter_chains_api_filter_chains__path__get",
-        "parameters": [
-          {
-            "name": "path",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Path"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      },
-      "patch": {
-        "summary": "Proxy Filter Chains",
-        "operationId": "proxy_filter_chains_api_filter_chains__path__get",
-        "parameters": [
-          {
-            "name": "path",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Path"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      },
       "delete": {
         "summary": "Proxy Filter Chains",
         "operationId": "proxy_filter_chains_api_filter_chains__path__get",
@@ -3253,6 +3183,76 @@
         }
       },
       "put": {
+        "summary": "Proxy Filter Chains",
+        "operationId": "proxy_filter_chains_api_filter_chains__path__get",
+        "parameters": [
+          {
+            "name": "path",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Path"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "summary": "Proxy Filter Chains",
+        "operationId": "proxy_filter_chains_api_filter_chains__path__get",
+        "parameters": [
+          {
+            "name": "path",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Path"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
         "summary": "Proxy Filter Chains",
         "operationId": "proxy_filter_chains_api_filter_chains__path__get",
         "parameters": [
@@ -3324,76 +3324,6 @@
           }
         }
       },
-      "post": {
-        "summary": "Proxy Model Groups",
-        "operationId": "proxy_model_groups_api_model_groups__path__get",
-        "parameters": [
-          {
-            "name": "path",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Path"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      },
-      "patch": {
-        "summary": "Proxy Model Groups",
-        "operationId": "proxy_model_groups_api_model_groups__path__get",
-        "parameters": [
-          {
-            "name": "path",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Path"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      },
       "delete": {
         "summary": "Proxy Model Groups",
         "operationId": "proxy_model_groups_api_model_groups__path__get",
@@ -3430,6 +3360,76 @@
         }
       },
       "put": {
+        "summary": "Proxy Model Groups",
+        "operationId": "proxy_model_groups_api_model_groups__path__get",
+        "parameters": [
+          {
+            "name": "path",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Path"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "summary": "Proxy Model Groups",
+        "operationId": "proxy_model_groups_api_model_groups__path__get",
+        "parameters": [
+          {
+            "name": "path",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Path"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
         "summary": "Proxy Model Groups",
         "operationId": "proxy_model_groups_api_model_groups__path__get",
         "parameters": [
@@ -3573,76 +3573,6 @@
           }
         }
       },
-      "post": {
-        "summary": "Proxy Training",
-        "operationId": "proxy_training_api_training__path__get",
-        "parameters": [
-          {
-            "name": "path",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Path"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      },
-      "patch": {
-        "summary": "Proxy Training",
-        "operationId": "proxy_training_api_training__path__get",
-        "parameters": [
-          {
-            "name": "path",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Path"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      },
       "delete": {
         "summary": "Proxy Training",
         "operationId": "proxy_training_api_training__path__get",
@@ -3679,6 +3609,76 @@
         }
       },
       "put": {
+        "summary": "Proxy Training",
+        "operationId": "proxy_training_api_training__path__get",
+        "parameters": [
+          {
+            "name": "path",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Path"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "summary": "Proxy Training",
+        "operationId": "proxy_training_api_training__path__get",
+        "parameters": [
+          {
+            "name": "path",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Path"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
         "summary": "Proxy Training",
         "operationId": "proxy_training_api_training__path__get",
         "parameters": [
@@ -8319,8 +8319,8 @@
         "tags": [
           "model_configs"
         ],
-        "summary": "Get Bundle Target Detection Dataset",
-        "operationId": "get_bundle_target_detection_dataset",
+        "summary": "Get Training Target Detection Dataset",
+        "operationId": "get_training_target_detection_dataset",
         "parameters": [
           {
             "name": "uuid",
@@ -8346,7 +8346,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/BundleTargetDetectionDatasetPayload"
+                "$ref": "#/components/schemas/TrainingTargetDetectionDatasetPayload"
               }
             }
           }
@@ -12743,105 +12743,6 @@
           "action"
         ],
         "title": "BulkApplyImagesPayload"
-      },
-      "BundleTargetDetectionDatasetPayload": {
-        "properties": {
-          "datasetUuids": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "title": "Datasetuuids"
-          },
-          "labelUuids": {
-            "anyOf": [
-              {
-                "items": {
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Labeluuids"
-          },
-          "classRemap": {
-            "additionalProperties": {
-              "type": "string"
-            },
-            "type": "object",
-            "title": "Classremap"
-          }
-        },
-        "type": "object",
-        "title": "BundleTargetDetectionDatasetPayload"
-      },
-      "BundleTrainingTarget": {
-        "properties": {
-          "nodeUuid": {
-            "type": "string",
-            "title": "Nodeuuid"
-          },
-          "role": {
-            "type": "string",
-            "enum": [
-              "top",
-              "submodel"
-            ],
-            "title": "Role"
-          },
-          "labelUuid": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Labeluuid"
-          },
-          "modelType": {
-            "type": "string",
-            "title": "Modeltype"
-          },
-          "architecture": {
-            "type": "string",
-            "title": "Architecture"
-          },
-          "labelUuids": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "title": "Labeluuids"
-          },
-          "classNames": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "title": "Classnames"
-          },
-          "classRemap": {
-            "additionalProperties": {
-              "type": "string"
-            },
-            "type": "object",
-            "title": "Classremap"
-          }
-        },
-        "type": "object",
-        "required": [
-          "nodeUuid",
-          "role",
-          "modelType",
-          "architecture"
-        ],
-        "title": "BundleTrainingTarget",
-        "description": "One artifact a full bundle training run must produce (see\nDbClient.derive_bundle_training_targets for the derivation semantics)."
       },
       "CheckDedupBulkPayload": {
         "properties": {
@@ -17716,6 +17617,105 @@
         "type": "object",
         "title": "TrainingConfigUpdate"
       },
+      "TrainingTarget": {
+        "properties": {
+          "nodeUuid": {
+            "type": "string",
+            "title": "Nodeuuid"
+          },
+          "role": {
+            "type": "string",
+            "enum": [
+              "top",
+              "submodel"
+            ],
+            "title": "Role"
+          },
+          "labelUuid": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Labeluuid"
+          },
+          "modelType": {
+            "type": "string",
+            "title": "Modeltype"
+          },
+          "architecture": {
+            "type": "string",
+            "title": "Architecture"
+          },
+          "labelUuids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Labeluuids"
+          },
+          "classNames": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Classnames"
+          },
+          "classRemap": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object",
+            "title": "Classremap"
+          }
+        },
+        "type": "object",
+        "required": [
+          "nodeUuid",
+          "role",
+          "modelType",
+          "architecture"
+        ],
+        "title": "TrainingTarget",
+        "description": "One artifact a full training run must produce (see\nDbClient.derive_training_targets for the derivation semantics)."
+      },
+      "TrainingTargetDetectionDatasetPayload": {
+        "properties": {
+          "datasetUuids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Datasetuuids"
+          },
+          "labelUuids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Labeluuids"
+          },
+          "classRemap": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object",
+            "title": "Classremap"
+          }
+        },
+        "type": "object",
+        "title": "TrainingTargetDetectionDatasetPayload"
+      },
       "TrainingTargetsResponse": {
         "properties": {
           "status": {
@@ -17736,7 +17736,7 @@
           },
           "targets": {
             "items": {
-              "$ref": "#/components/schemas/BundleTrainingTarget"
+              "$ref": "#/components/schemas/TrainingTarget"
             },
             "type": "array",
             "title": "Targets"

@@ -2610,10 +2610,10 @@ class Manager:
     async def get_model_config_node(self, node_uuid: str) -> Optional["ModelConfigNodeRead"]:
         return await self._db_client.get_model_config_node(node_uuid)
 
-    async def derive_bundle_training_targets(self, model_config_uuid: str) -> Optional[list]:
-        return await self._db_client.derive_bundle_training_targets(model_config_uuid)
+    async def derive_training_targets(self, model_config_uuid: str) -> Optional[list]:
+        return await self._db_client.derive_training_targets(model_config_uuid)
 
-    async def get_bundle_target_detection_dataset(
+    async def get_training_target_detection_dataset(
         self,
         model_config_uuid: str,
         node_uuid: str,
@@ -2621,7 +2621,7 @@ class Manager:
         label_uuids: Optional[list[str]] = None,
         class_remap: Optional[dict[str, str]] = None,
     ) -> Optional[dict]:
-        return await self._db_client.get_bundle_target_detection_dataset(
+        return await self._db_client.get_training_target_detection_dataset(
             model_config_uuid, node_uuid, dataset_uuids, label_uuids=label_uuids, class_remap=class_remap
         )
 

@@ -4040,8 +4040,8 @@
         "tags": [
           "model_configs"
         ],
-        "summary": "Get Bundle Target Detection Dataset",
-        "operationId": "get_bundle_target_detection_dataset",
+        "summary": "Get Training Target Detection Dataset",
+        "operationId": "get_training_target_detection_dataset",
         "parameters": [
           {
             "name": "uuid",
@@ -4067,7 +4067,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/BundleTargetDetectionDatasetPayload"
+                "$ref": "#/components/schemas/TrainingTargetDetectionDatasetPayload"
               }
             }
           }
@@ -5931,105 +5931,6 @@
           "action"
         ],
         "title": "BulkApplyImagesPayload"
-      },
-      "BundleTargetDetectionDatasetPayload": {
-        "properties": {
-          "datasetUuids": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "title": "Datasetuuids"
-          },
-          "labelUuids": {
-            "anyOf": [
-              {
-                "items": {
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Labeluuids"
-          },
-          "classRemap": {
-            "additionalProperties": {
-              "type": "string"
-            },
-            "type": "object",
-            "title": "Classremap"
-          }
-        },
-        "type": "object",
-        "title": "BundleTargetDetectionDatasetPayload"
-      },
-      "BundleTrainingTarget": {
-        "properties": {
-          "nodeUuid": {
-            "type": "string",
-            "title": "Nodeuuid"
-          },
-          "role": {
-            "type": "string",
-            "enum": [
-              "top",
-              "submodel"
-            ],
-            "title": "Role"
-          },
-          "labelUuid": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Labeluuid"
-          },
-          "modelType": {
-            "type": "string",
-            "title": "Modeltype"
-          },
-          "architecture": {
-            "type": "string",
-            "title": "Architecture"
-          },
-          "labelUuids": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "title": "Labeluuids"
-          },
-          "classNames": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "title": "Classnames"
-          },
-          "classRemap": {
-            "additionalProperties": {
-              "type": "string"
-            },
-            "type": "object",
-            "title": "Classremap"
-          }
-        },
-        "type": "object",
-        "required": [
-          "nodeUuid",
-          "role",
-          "modelType",
-          "architecture"
-        ],
-        "title": "BundleTrainingTarget",
-        "description": "One artifact a full bundle training run must produce (see\nDbClient.derive_bundle_training_targets for the derivation semantics)."
       },
       "CheckDedupBulkPayload": {
         "properties": {
@@ -11170,6 +11071,105 @@
         "type": "object",
         "title": "TrainingConfigUpdate"
       },
+      "TrainingTarget": {
+        "properties": {
+          "nodeUuid": {
+            "type": "string",
+            "title": "Nodeuuid"
+          },
+          "role": {
+            "type": "string",
+            "enum": [
+              "top",
+              "submodel"
+            ],
+            "title": "Role"
+          },
+          "labelUuid": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Labeluuid"
+          },
+          "modelType": {
+            "type": "string",
+            "title": "Modeltype"
+          },
+          "architecture": {
+            "type": "string",
+            "title": "Architecture"
+          },
+          "labelUuids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Labeluuids"
+          },
+          "classNames": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Classnames"
+          },
+          "classRemap": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object",
+            "title": "Classremap"
+          }
+        },
+        "type": "object",
+        "required": [
+          "nodeUuid",
+          "role",
+          "modelType",
+          "architecture"
+        ],
+        "title": "TrainingTarget",
+        "description": "One artifact a full training run must produce (see\nDbClient.derive_training_targets for the derivation semantics)."
+      },
+      "TrainingTargetDetectionDatasetPayload": {
+        "properties": {
+          "datasetUuids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Datasetuuids"
+          },
+          "labelUuids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Labeluuids"
+          },
+          "classRemap": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object",
+            "title": "Classremap"
+          }
+        },
+        "type": "object",
+        "title": "TrainingTargetDetectionDatasetPayload"
+      },
       "TrainingTargetsResponse": {
         "properties": {
           "status": {
@@ -11190,7 +11190,7 @@
           },
           "targets": {
             "items": {
-              "$ref": "#/components/schemas/BundleTrainingTarget"
+              "$ref": "#/components/schemas/TrainingTarget"
             },
             "type": "array",
             "title": "Targets"

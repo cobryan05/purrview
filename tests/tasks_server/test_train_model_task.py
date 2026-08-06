@@ -118,7 +118,7 @@ class TestInit:
 
 
 class TestResolveBundleTargetFields:
-    """_resolve_bundle_target_fields — role/label_uuids lookup for sidecar enrichment."""
+    """_resolve_training_target_fields — role/label_uuids lookup for sidecar enrichment."""
 
     def _task(self) -> TrainModelTask:
         return _make_task({})
@@ -132,7 +132,7 @@ class TestResolveBundleTargetFields:
         mc_api = MagicMock()
         mc_api.get_model_config_training_targets.return_value = MagicMock(targets=[other, target])
 
-        role, label_uuids, class_remap = task._resolve_bundle_target_fields(mc_api, "cfg-1", "node-1", "lbl-a")
+        role, label_uuids, class_remap = task._resolve_training_target_fields(mc_api, "cfg-1", "node-1", "lbl-a")
 
         mc_api.get_model_config_training_targets.assert_called_once_with("cfg-1")
         assert role == "submodel"
@@ -146,7 +146,7 @@ class TestResolveBundleTargetFields:
         mc_api = MagicMock()
         mc_api.get_model_config_training_targets.return_value = MagicMock(targets=[])
 
-        role, label_uuids, class_remap = task._resolve_bundle_target_fields(mc_api, "cfg-1", "node-1", "lbl-a")
+        role, label_uuids, class_remap = task._resolve_training_target_fields(mc_api, "cfg-1", "node-1", "lbl-a")
 
         assert role == "submodel"
         assert label_uuids == ["lbl-a"]
@@ -157,7 +157,7 @@ class TestResolveBundleTargetFields:
         mc_api = MagicMock()
         mc_api.get_model_config_training_targets.return_value = MagicMock(targets=[])
 
-        role, label_uuids, class_remap = task._resolve_bundle_target_fields(mc_api, "cfg-1", "root-node", "")
+        role, label_uuids, class_remap = task._resolve_training_target_fields(mc_api, "cfg-1", "root-node", "")
 
         assert role == "top"
         assert label_uuids == []
@@ -168,7 +168,7 @@ class TestResolveBundleTargetFields:
         mc_api = MagicMock()
         mc_api.get_model_config_training_targets.side_effect = RuntimeError("db_server unreachable")
 
-        role, label_uuids, class_remap = task._resolve_bundle_target_fields(mc_api, "cfg-1", "node-1", "lbl-a")
+        role, label_uuids, class_remap = task._resolve_training_target_fields(mc_api, "cfg-1", "node-1", "lbl-a")
 
         assert role == "submodel"
         assert label_uuids == ["lbl-a"]
@@ -261,7 +261,7 @@ class TestJobConfigBundleFields:
 
         img = MagicMock(image_uuid="img-1", filename="a.jpg", annotations=[])
         mc_api = MagicMock()
-        mc_api.get_bundle_target_detection_dataset.return_value = MagicMock(
+        mc_api.get_training_target_detection_dataset.return_value = MagicMock(
             status="success", class_names=["cat", "dog"], images=[img]
         )
 
@@ -273,7 +273,7 @@ class TestJobConfigBundleFields:
             role="submodel",
             model_config_uuid="cfg-uuid",
             node_uuid="node-uuid",
-            bundle_label_uuids=["lbl-a", "lbl-b"],
+            target_label_uuids=["lbl-a", "lbl-b"],
             class_remap={},
             dataset_uuids=["ds-1"],
         )
@@ -282,8 +282,8 @@ class TestJobConfigBundleFields:
         assert job_config["model_config_uuid"] == "cfg-uuid"
         assert job_config["model_config_node_uuid"] == "node-uuid"
         assert job_config["label_uuids"] == ["lbl-a", "lbl-b"]
-        mc_api.get_bundle_target_detection_dataset.assert_called_once()
-        call_args = mc_api.get_bundle_target_detection_dataset.call_args[0]
+        mc_api.get_training_target_detection_dataset.assert_called_once()
+        call_args = mc_api.get_training_target_detection_dataset.call_args[0]
         assert call_args[0] == "cfg-uuid"
         assert call_args[1] == "node-uuid"
         assert call_args[2].label_uuids == ["lbl-a", "lbl-b"]
@@ -384,7 +384,7 @@ class TestRecordImageManifestFlag:
 
         img = MagicMock(image_uuid="img-1", filename="a.jpg", annotations=[])
         mc_api = MagicMock()
-        mc_api.get_bundle_target_detection_dataset.return_value = MagicMock(
+        mc_api.get_training_target_detection_dataset.return_value = MagicMock(
             status="success", class_names=["cat"], images=[img]
         )
 
@@ -396,7 +396,7 @@ class TestRecordImageManifestFlag:
             role="submodel",
             model_config_uuid="cfg-uuid",
             node_uuid="node-uuid",
-            bundle_label_uuids=["lbl-a"],
+            target_label_uuids=["lbl-a"],
             class_remap={},
             dataset_uuids=["ds-1"],
             record_image_manifest=False,
@@ -411,7 +411,7 @@ class TestRecordImageManifestFlag:
 
         img = MagicMock(image_uuid="img-1", filename="a.jpg", annotations=[])
         mc_api = MagicMock()
-        mc_api.get_bundle_target_detection_dataset.return_value = MagicMock(
+        mc_api.get_training_target_detection_dataset.return_value = MagicMock(
             status="success", class_names=["cat"], images=[img]
         )
 
@@ -423,7 +423,7 @@ class TestRecordImageManifestFlag:
             role="submodel",
             model_config_uuid="cfg-uuid",
             node_uuid="node-uuid",
-            bundle_label_uuids=["lbl-a"],
+            target_label_uuids=["lbl-a"],
             class_remap={},
             dataset_uuids=["ds-1"],
             record_image_manifest=False,

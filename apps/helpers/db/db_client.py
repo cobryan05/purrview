@@ -3603,8 +3603,8 @@ class DbClient:
             rollup_map = {node.label_uuid: [u for u in all_uuids if u != node.label_uuid]}
             return all_uuids, rollup_map
 
-    async def derive_bundle_training_targets(self, model_config_uuid: str) -> Optional[list[dict]]:
-        """Derive the ordered list of training targets a full bundle run must produce.
+    async def derive_training_targets(self, model_config_uuid: str) -> Optional[list[dict]]:
+        """Derive the ordered list of training targets a full training run must produce.
 
         Single authority on sub-model boundaries and per-target label scope /
         class remapping (the frontend heuristic in ``ui/modelSpec.js`` mirrors the
@@ -3848,7 +3848,7 @@ class DbClient:
 
         return await self._assemble_detection_dataset(class_label_uuids, child_to_parent, tc.dataset_uuids)
 
-    async def get_bundle_target_detection_dataset(
+    async def get_training_target_detection_dataset(
         self,
         model_config_uuid: str,
         node_uuid: str,
@@ -3856,12 +3856,12 @@ class DbClient:
         label_uuids: Optional[list[str]] = None,
         class_remap: Optional[dict[str, str]] = None,
     ) -> Optional[dict]:
-        """Assemble a YOLO-format detection dataset for one bundle training target.
+        """Assemble a YOLO-format detection dataset for one training target.
 
         Same output shape as ``get_training_config_detection_dataset``, but scoped by
-        ``derive_bundle_training_targets`` (the single authority on sub-model boundaries
+        ``derive_training_targets`` (the single authority on sub-model boundaries
         and class remapping) rather than a TrainingConfig's own node lookup — so a
-        bundle run's object-detection sub-models get exactly the classes/remap shown
+        training run's object-detection sub-models get exactly the classes/remap shown
         in the model tree preview, including the outermost-boundary top-model
         collapsing that per-TrainingConfig detection datasets don't apply.
 
@@ -3875,7 +3875,7 @@ class DbClient:
         if label_uuids is not None:
             return await self._assemble_detection_dataset(label_uuids, dict(class_remap or {}), dataset_uuids)
 
-        targets = await self.derive_bundle_training_targets(model_config_uuid)
+        targets = await self.derive_training_targets(model_config_uuid)
         if targets is None:
             return None
         target = next((t for t in targets if t["node_uuid"] == node_uuid), None)
