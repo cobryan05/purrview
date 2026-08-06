@@ -79,7 +79,7 @@ class TrainingJobRunnerMixin:
             architecture=self._config.get("architecture", ""),
             class_names=self._config.get("class_names") or ["absent", "present"],
             # Everything not a typed SubmitJobPayload field rides in
-            # hyperparams — including bundle-target identity keys (role,
+            # hyperparams — including training-target identity keys (role,
             # model_config_uuid, model_config_node_uuid, label_uuids) that the
             # training server merges back into the trainer config
             # (web.py: config.update(payload.hyperparams)). That merge is a
@@ -323,7 +323,7 @@ class TrainingJobRunnerMixin:
                 if fobj:
                     if dest.exists():
                         # Expected on retrain of the same model name; anything
-                        # else (e.g. two bundles sharing a name) is a silent
+                        # else (e.g. two configs sharing a model name) is a silent
                         # clobber — leave a trace either way.
                         logger.warning("Overwriting existing model artifact %s", dest)
                     dest.write_bytes(fobj.read())

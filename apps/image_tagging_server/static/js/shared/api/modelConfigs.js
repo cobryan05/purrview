@@ -75,9 +75,8 @@ export async function deleteModelConfig(uuid) {
 
 /**
  * The authoritative list of training targets (top model + each sub-model) for
- * a model config. The endpoint keeps its "bundle-target" name from the removed
- * TrainBundleTask; the derivation is unchanged and still the single authority
- * on sub-model boundaries.
+ * a model config. Single authority on sub-model boundaries — ui/modelSpec.js
+ * mirrors the boundary rule for display only.
  * Not cached: callers use this right before a train action where freshness
  * matters more than avoiding a refetch.
  * @returns {Promise<Array<{nodeUuid:string, role:'top'|'submodel', labelUuid:?string,

@@ -146,10 +146,10 @@ class WebApp:
             manifest = [e.model_dump() for e in payload.manifest]
             # Build config dict from payload, merging nested hyperparams with
             # top-level hyperparams fields (nested take precedence).
-            # Load-bearing: task runners smuggle bundle-target identity keys
-            # (role, model_config_uuid, model_config_node_uuid, label_uuids)
-            # inside hyperparams — this update() must keep running after
-            # model_dump(), or sidecar.json loses bundle identity. Pinned by
+            # Load-bearing: task runners smuggle training-target identity
+            # keys (role, model_config_uuid, model_config_node_uuid,
+            # label_uuids) inside hyperparams — this update() must keep running
+            # after model_dump(), or sidecar.json loses that identity. Pinned by
             # test_submit_job_endpoint_merges_hyperparams_into_trainer_config.
             config = payload.model_dump(exclude={"manifest", "hyperparams"}, exclude_none=True)
             config.update(payload.hyperparams)
