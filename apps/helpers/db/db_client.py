@@ -2808,12 +2808,15 @@ class DbClient:
             return [self._dataset_to_read(d) for d in result.all()]
 
     async def _sync_datasets_to_json(self) -> None:
-        """Dump the current datasets to datasets.json.
+        """Dump the current datasets to datasets.json — Views included.
 
-        Promoted rows only — this file is a *dataset* export, so saved Views
-        deliberately do not appear in it.
+        Views share this table with Datasets (see NOTES.md) and are just as
+        much user-authored data: they replaced the per-browser filter presets.
+        This file is the restore path for the table, not a "trainable Datasets"
+        export, so excluding unpromoted rows would silently lose every saved
+        View on a rebuild. `promoted` is written per row and honoured on load.
         """
-        datasets = await self.list_datasets(include_views=False)
+        datasets = await self.list_datasets(include_views=True)
         rows = [
             {
                 "uuid": d.uuid,
@@ -2898,8 +2901,8 @@ class DbClient:
                         name=name,
                         description=item.get("description"),
                         filter_json=item.get("filter_json") or {},
-                        # datasets.json is a *dataset* export (Views are excluded
-                        # from the dump), so anything in it is promoted. Sidecar
+                        # The dump writes `promoted` per row (Views included), so
+                        # normally this key is present and authoritative. Sidecar
                         # files written before this column existed carry no key —
                         # default True, or a restore would silently demote every
                         # dataset to an invisible View.

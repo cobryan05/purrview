@@ -317,3 +317,55 @@ async def test_no_sidecar_is_noop(tmp_path):
     assert user_datasets == []
 
     await client.close()
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 3. Views (unpromoted rows)
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+async def test_sidecar_includes_views(tmp_path):
+    """Views are user-authored data (they replaced the per-browser filter
+    presets), so they must be exported like any other row."""
+    client = DbClient(db_dir=tmp_path, memory=True)
+    await client.init_db()
+
+    view = await client.create_dataset(DatasetCreate(name="my-view", promoted=False))
+
+    rows = await _read_sidecar(tmp_path)
+    row = next((r for r in rows if r["uuid"] == view.uuid), None)
+    assert row is not None, "a View must appear in datasets.json"
+    assert row["promoted"] is False, "the View must round-trip as unpromoted"
+
+    await client.close()
+
+
+async def test_view_survives_rebuild_from_sidecar(tmp_path):
+    """A DB rebuilt from datasets.json keeps its Views, still unpromoted."""
+    db_dir1 = tmp_path / "db1"
+    db_dir1.mkdir()
+    client1 = DbClient(db_dir=db_dir1, memory=True)
+    await client1.init_db()
+    view = await client1.create_dataset(DatasetCreate(name="saved-view", promoted=False))
+    dataset_uuid = await _create(client1, "real-dataset")
+    await client1.close()
+
+    db_dir2 = tmp_path / "db2"
+    db_dir2.mkdir()
+    (db_dir2 / DATASETS_JSON).write_text((db_dir1 / DATASETS_JSON).read_text())
+
+    client2 = DbClient(db_dir=db_dir2, memory=True)
+    await client2.init_db()
+
+    with_views = await client2.list_datasets(include_views=True)
+    by_uuid = {d.uuid: d for d in with_views}
+    assert view.uuid in by_uuid, "the View must survive a rebuild from the sidecar"
+    assert by_uuid[view.uuid].promoted is False, "a restored View must not be promoted to a Dataset"
+    assert by_uuid[dataset_uuid].promoted is True
+
+    # And it must stay out of the default (trainable-Datasets-only) listing.
+    default_uuids = {d.uuid for d in await client2.list_datasets()}
+    assert view.uuid not in default_uuids
+    assert dataset_uuid in default_uuids
+
+    await client2.close()
