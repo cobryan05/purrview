@@ -1063,16 +1063,112 @@ class DbClient:
     async def _should_use_exists_dispatch(self, params: ImageSearchParams) -> bool:
         """Decide IN vs correlated-EXISTS for the bbox tag/label search filters.
 
-        PR 1.4b deleted the flat ImageSearchParams filter fields (tag_uuids,
-        label_uuids, label_uuid, label_match_mode, label_include_children, …)
-        that this selectivity-probing dispatch used to estimate against —
-        `terms` is now the only filter surface, and it has no selectivity
-        estimation yet (deliberately out of scope for 1.4b; see NOTES.md /
-        the 1.4b PR description). So this always bails to the safe IN path.
-        A future PR can reintroduce EXISTS dispatch by probing term
-        selectivity the same way this used to probe the flat fields.
+        The EXISTS shape only wins when SQLite can scan the (sort_col, uuid)
+        index and stop after LIMIT rows pass the filter — which requires the
+        CONJUNCTION of every restrictive predicate to be common. A single rare
+        (or unestimatable) predicate turns the ordered scan into a full-table
+        scan, so this is deliberately all-or-nothing:
+
+        - Bail out on any term we cannot cheaply estimate, and on any negated
+          term (a negated common predicate is not a common predicate).
+        - Probe each remaining term with an indexed COUNT (cached, see
+          _selectivity_count) and require *every* term's estimated
+          matched-image fraction to clear the threshold.
+
+        Only three term kinds have an EXISTS branch at all
+        (`_apply_filter_terms`'s `_tag_predicate`/`_label_predicate`:
+        objectLabel, bboxTag, bboxVerification) — but the bail-out list is
+        wider than that on purpose. imageLabel/imageTag/labelVerification are
+        already correlated EXISTS regardless of this flag, and date/filename
+        are plain column predicates; none of them changes shape here, yet a
+        rare one still destroys the ordered scan the flag exists to enable. So
+        their mere presence keeps the IN shape.
+
+        The probes count bbox/link rows rather than distinct images (a COUNT on
+        a covering index, ~1ms, vs an expensive DISTINCT join), which
+        overestimates the fraction — the safe error direction: wrongly picking
+        EXISTS near the threshold costs 10s of ms, while a zero/near-zero count
+        always keeps IN and avoids the catastrophic full-scan case.
+
+        Restores the dispatch PR 1.4b had to disable when the flat fields it
+        probed were deleted (follow-up C). `test_exists_in_parity.py` proves
+        the two shapes return identical result sets; this only picks between
+        them, so a wrong answer is slow, never incorrect.
         """
-        return False
+        estimates: List[int] = []
+
+        for term in params.terms:
+            # Negation inverts selectivity: "not the common tag" is a
+            # different, un-probed predicate, so don't reason about it.
+            if getattr(term, "negate", False):
+                return False
+
+            if isinstance(term, BBoxTagTerm):
+                if not term.tag_uuids:
+                    # any → matches nothing; all → matches everything. Neither
+                    # is worth probing, and guessing wrong is the full-scan case.
+                    return False
+                counts = await asyncio.gather(
+                    *(
+                        self._selectivity_count(
+                            f"tag:{tag_uuid}",
+                            select(func.count()).select_from(BBoxTagLink).where(BBoxTagLink.tag_uuid == tag_uuid),
+                        )
+                        for tag_uuid in term.tag_uuids
+                    )
+                )
+                # "any" matches the union (bounded below by the biggest member);
+                # "all" matches at most the smallest.
+                estimates.append(max(counts) if term.match_mode == "any" else min(counts))
+
+            elif isinstance(term, BBoxVerificationTerm):
+                tag_uuid = BBOX_VERIFICATION_STATE_TO_TAG_UUID[term.state]
+                estimates.append(
+                    await self._selectivity_count(
+                        f"tag:{tag_uuid}",
+                        select(func.count()).select_from(BBoxTagLink).where(BBoxTagLink.tag_uuid == tag_uuid),
+                    )
+                )
+
+            elif isinstance(term, ObjectLabelTerm):
+                if not term.label_uuids:
+                    return False
+                if term.match_mode == "all":
+                    counts = await asyncio.gather(
+                        *(self._object_label_count([lu], term.roll_up) for lu in term.label_uuids)
+                    )
+                    estimates.append(min(counts))
+                else:
+                    estimates.append(await self._object_label_count(term.label_uuids, term.roll_up))
+
+            else:
+                # imageLabel / imageTag / labelVerification / date / filename —
+                # no cheap COUNT probe for these. See the docstring.
+                return False
+
+        if not estimates or min(estimates) == 0:
+            return False
+        total_images = await self._selectivity_count("images:total", select(func.count()).select_from(ImageRecord))
+        if total_images == 0:
+            return False
+        return (min(estimates) / total_images) >= _EXISTS_DISPATCH_MIN_FRACTION
+
+    async def _object_label_count(self, label_uuids: List[str], roll_up: bool) -> int:
+        """Cached COUNT of bboxes carrying any of *label_uuids*.
+
+        Must expand descendants exactly when the query does: a parent label
+        with no bboxes of its own is rare on its own and common rolled up, and
+        probing the unexpanded set would keep IN for the most common filter in
+        the app.
+        """
+        key = "label:" + ",".join(sorted(label_uuids)) + (":tree" if roll_up else "")
+        if roll_up:
+            condition = BBox.label_uuid.in_(_label_uuids_with_descendants(label_uuids, cte_name="label_desc_probe"))
+        elif len(label_uuids) == 1:
+            condition = BBox.label_uuid == label_uuids[0]
+        else:
+            condition = BBox.label_uuid.in_(label_uuids)
+        return await self._selectivity_count(key, select(func.count()).select_from(BBox).where(condition))
 
     async def list_images_search(self, params: ImageSearchParams) -> List[ImageRecord]:
         """Flexible image search used by the review queue.
