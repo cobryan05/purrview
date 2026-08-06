@@ -91,3 +91,81 @@ class TestBBoxVerificationRoundTrip:
         assert restored["filenameSearch"] == "cat"
         assert restored["labelUuids"] == ["lbl-1"]
         assert restored["labelMatchMode"] == "all"
+
+
+class TestImageLabelConditionRoundTrip:
+    """`rollUp` (+sub) and `negate` (¬) are per-condition controls on the image
+    label filter rows (ui/imageTagConditions.js) and are rendered into the chip
+    bar (review/filters.js), so they are user-visible filter state. The server
+    defaults them to roll_up=true / negate=false, which means omitting them on
+    save does not "keep the default" — it saves the *complement* of a negated
+    condition and re-widens an exact-label one."""
+
+    def test_negate_is_serialized(self, shared_page: Page):
+        form = _to_form(
+            shared_page,
+            {"imageLabelConditions": [{"labelUuid": "lbl-1", "state": "present", "negate": True}]},
+        )
+        term = [t for t in form["filterJson"]["terms"] if t.get("kind") == "imageLabel"][0]
+        assert term["negate"] is True, "a negated condition saved without negate matches the opposite images"
+
+    def test_roll_up_false_is_serialized(self, shared_page: Page):
+        form = _to_form(
+            shared_page,
+            {"imageLabelConditions": [{"labelUuid": "lbl-1", "state": "present", "rollUp": False}]},
+        )
+        term = [t for t in form["filterJson"]["terms"] if t.get("kind") == "imageLabel"][0]
+        assert term["rollUp"] is False
+
+    def test_defaults_match_the_server_defaults(self, shared_page: Page):
+        """A condition predating the UI controls must serialize to the server's
+        own defaults, so older saved Views keep behaving exactly as before."""
+        form = _to_form(shared_page, {"imageLabelConditions": [{"labelUuid": "lbl-1", "state": "present"}]})
+        term = [t for t in form["filterJson"]["terms"] if t.get("kind") == "imageLabel"][0]
+        assert term["rollUp"] is True
+        assert term["negate"] is False
+
+    def test_negate_is_restored(self, shared_page: Page):
+        restored = _to_state(
+            shared_page,
+            {"terms": [{"kind": "imageLabel", "labelUuid": "lbl-1", "state": "present", "negate": True}]},
+        )
+        assert restored["imageLabelConditions"][0]["negate"] is True
+
+    def test_roll_up_false_is_restored(self, shared_page: Page):
+        restored = _to_state(
+            shared_page,
+            {"terms": [{"kind": "imageLabel", "labelUuid": "lbl-1", "state": "present", "rollUp": False}]},
+        )
+        assert restored["imageLabelConditions"][0]["rollUp"] is False
+
+    def test_restored_defaults_match_the_server_defaults(self, shared_page: Page):
+        """imageTagConditions.setState() re-defaults any key it isn't given, so
+        a term stored before these fields existed must read back as the server
+        defaults rather than as undefined."""
+        restored = _to_state(
+            shared_page,
+            {"terms": [{"kind": "imageLabel", "labelUuid": "lbl-1", "state": "present"}]},
+        )
+        cond = restored["imageLabelConditions"][0]
+        assert cond["rollUp"] is True
+        assert cond["negate"] is False
+
+    @pytest.mark.parametrize("negate", [True, False])
+    @pytest.mark.parametrize("roll_up", [True, False])
+    @pytest.mark.parametrize("state", ["present", "absent", "uncertain"])
+    def test_full_round_trip(self, shared_page: Page, state: str, roll_up: bool, negate: bool):
+        """Save → load must be the identity on every combination. Fixing only one
+        side of the conversion leaves the round trip passing while a real save
+        still filters wrongly, so this asserts both halves at once."""
+        original = {
+            "imageLabelConditions": [
+                {"labelUuid": "lbl-1", "state": state, "rollUp": roll_up, "negate": negate},
+            ],
+        }
+        form = _to_form(shared_page, original)
+        restored = _to_state(shared_page, form["filterJson"], form["labelUuids"])
+
+        assert restored["imageLabelConditions"] == [
+            {"labelUuid": "lbl-1", "state": state, "rollUp": roll_up, "negate": negate},
+        ]

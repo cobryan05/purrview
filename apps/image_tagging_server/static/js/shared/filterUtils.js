@@ -48,7 +48,19 @@ export function reviewStateToDatasetForm(reviewState) {
     // 'uncertain' (never assessed) is the term model's 'unreviewed' — see
     // shared/api/review.js's buildReviewFilterBody for the same mapping.
     const state = c.state === 'uncertain' ? 'unreviewed' : c.state;
-    terms.push({ kind: 'imageLabel', labelUuid: c.labelUuid, state });
+    // rollUp/negate must be written explicitly. The server-side defaults
+    // (roll_up: true, negate: false — ImageLabelTerm in apps/helpers/db/types.py)
+    // are not the panel's values, so omitting them doesn't "keep the default",
+    // it *inverts* a negated condition and re-widens an exact-label one. Fall
+    // back to those same server defaults for conditions that predate the UI
+    // controls, so older saved Views keep behaving as before.
+    terms.push({
+      kind: 'imageLabel',
+      labelUuid: c.labelUuid,
+      state,
+      rollUp: c.rollUp ?? true,
+      negate: c.negate ?? false,
+    });
   }
 
   return {
@@ -84,7 +96,15 @@ export function datasetFormToReviewState(filterJson, labelUuids) {
   const bboxVerificationTerm = terms.find(t => t.kind === 'bboxVerification' && !t.negate);
   const imageLabelConditions = terms
     .filter(t => t.kind === 'imageLabel')
-    .map(t => ({ labelUuid: t.labelUuid, state: t.state === 'unreviewed' ? 'uncertain' : t.state }));
+    .map(t => ({
+      labelUuid: t.labelUuid,
+      state: t.state === 'unreviewed' ? 'uncertain' : t.state,
+      // Mirror of the write side above: imageTagConditions.setState() re-defaults
+      // any key it isn't given, so dropping these here loses them on load even
+      // when they were stored correctly.
+      rollUp: t.rollUp ?? true,
+      negate: t.negate ?? false,
+    }));
 
   return {
     tagUuids: tagTerm?.tagUuids ?? [],
