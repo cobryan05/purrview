@@ -11,7 +11,10 @@ from pathlib import Path
 
 import pytest
 
-from apps.training_server.trainers.base import RECORD_IMAGE_MANIFEST_KEY, image_manifest_fields
+from apps.training_server.trainers.base import (
+    RECORD_IMAGE_MANIFEST_KEY,
+    image_manifest_fields,
+)
 
 TRAINERS_DIR = Path(__file__).resolve().parents[2] / "apps" / "training_server" / "trainers"
 
