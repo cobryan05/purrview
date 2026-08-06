@@ -31,6 +31,7 @@ from apps.helpers.consts import TaskStatus
 from .types import (
     MODEL_TYPE_ARCHITECTURES,
     REJECTION_TAG_UUID,
+    RETIRED_TAG_UUIDS,
     UNVERIFIED_TAG_UUID,
     VERIFIED_TAG_UUID,
     WHOLE_DATABASE_DATASET_UUID,
@@ -1959,6 +1960,10 @@ class DbClient:
         1. UUID match  → update the existing DB record in-place.
         2. Name match  → reuse the existing DB record (avoids unique-name IntegrityError).
         3. No match    → insert a new record with the UUID from the JSON.
+
+        Entries whose UUID is in RETIRED_TAG_UUIDS are dropped outright — a
+        sidecar dumped before the removing migration ran still lists them, and
+        this is exactly the rebuild path that would resurrect one.
         """
         if not self._tags_json_path.exists():
             return
@@ -1978,6 +1983,10 @@ class DbClient:
             for item in json_data:
                 json_uuid = item.get("uuid")
                 name = item.get("name")
+
+                if json_uuid in RETIRED_TAG_UUIDS:
+                    logger.info("Skipping retired tag '%s' (UUID %s) from tags.json", name, json_uuid)
+                    continue
 
                 if json_uuid and json_uuid in tags_by_uuid:
                     # 1. UUID match — update in-place.

@@ -21,6 +21,13 @@ UNVERIFIED_TAG_UUID = "00000000-0000-0000-0000-000000000001"
 REJECTION_TAG_UUID = "00000000-0000-0000-0000-000000000004"
 VERIFIED_TAG_UUID = "00000000-0000-0000-0000-000000000005"
 
+# System tags that used to exist and must never come back. A tags.json dumped
+# before the removing migration ran still lists them, and sync_tags_from_json()
+# runs on exactly the rebuild/restore path those sidecars exist for — without
+# this denylist the tag is re-inserted by the "no match → insert new" branch.
+# 000...003 is the old False Positive verification tag (migration c1e5a83f7d92).
+RETIRED_TAG_UUIDS = frozenset({"00000000-0000-0000-0000-000000000003"})
+
 # System dataset UUIDs
 WHOLE_DATABASE_DATASET_UUID = "00000000-0000-0000-0000-000000000002"
 
