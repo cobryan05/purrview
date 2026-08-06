@@ -491,8 +491,11 @@ class TestModelTreePanel:
         # Kitten isn't assigned, so the sub-model has nothing to distinguish
         expect(sub_row.locator(".mtp-detail--warn")).to_contain_text("nothing to distinguish")
 
-        # One run = top model + 1 sub-model
+        # One run = top model + 1 sub-model, each trained on its own. (No live
+        # model shape has sub-models today, so this mocked case is the only
+        # coverage the multi-artifact wording gets.)
         expect(panel.locator(".mtp-footer")).to_contain_text("2 model artifacts")
+        expect(panel.locator(".mtp-footer")).to_contain_text("each trained separately")
 
     def test_tree_updates_live_when_child_label_checked(self, page: Page, base_url: str):
         """Checking Kitten in the label tree immediately replaces the sub-model warning

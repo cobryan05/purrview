@@ -2572,6 +2572,14 @@ button.filter-active {
   --pico-form-element-spacing-vertical: 0.3em;
   --pico-form-element-spacing-horizontal: 0.5em;
 }
+/* Checkboxes and radios are intrinsically sized — the flex:1 above stretches
+   them across the whole row, and Pico fills a checked one, so it renders as a
+   solid bar rather than a box. Same family as the `select { width: 100% }`
+   trap noted in hyperparamsFieldset.js. */
+.panel-field-row > input[type='checkbox'],
+.panel-field-row > input[type='radio'] {
+  flex: 0 0 auto;
+}
 
 /* Resizable scrollable tree/list box embedded in a form.
    User can drag the bottom edge to adjust height. */
