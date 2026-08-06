@@ -304,6 +304,7 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
   const bulkAllBtn = document.createElement('button');
   bulkAllBtn.className = 'review-toolbar__btn review-toolbar__btn--primary';
   bulkAllBtn.textContent = 'Apply to All';
+  bulkAllBtn.dataset.testid = 'review-bulk-apply-all';
   bulkAllBtn.disabled = true;
 
   // Apply to All Matching Images — filter-mode only sibling of bulkAllBtn.
@@ -318,6 +319,7 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
   const bulkAllImagesBtn = document.createElement('button');
   bulkAllImagesBtn.className = 'review-toolbar__btn';
   bulkAllImagesBtn.textContent = 'Apply to Filtered Images';
+  bulkAllImagesBtn.dataset.testid = 'review-bulk-apply-filtered-images';
   bulkAllImagesBtn.hidden = !!fetchImages;
 
   // Run Model on Results — proposes relabels for the current selection/filter
@@ -1947,13 +1949,6 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
       statusMsg.classList.add('review-toolbar__status--loading');
       statusMsg.textContent = 'Applying to all matching images…';
       try {
-        // bulkApplyImages doesn't accept bboxVerification (no such param on
-        // that function). _baseReviewFilterOpts includes it, but bulkApplyImages
-        // destructures its params explicitly with no rest spread, so the extra
-        // key is dropped and never reaches the request body.
-        // NOTE: this means "Apply to All Images" ignores the bbox-verification
-        // tri-state that the visible grid IS filtered by. Pre-existing, not
-        // introduced here — see the bulkApplyAll site below for the same gap.
         const { modifiedCount, failCount, skippedCount } = await bulkApplyImages({
           ..._baseReviewFilterOpts(fs),
           requireBboxes: _viewFilter === 'bboxes',
@@ -2221,22 +2216,15 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
       statusMsg.classList.add('review-toolbar__status--loading');
       try {
         const { modifiedCount, failCount } = await bulkApplyAll({
-          tagUuids: fs.showAllBboxes ? [] : (fs.tagUuids ?? []),
-          tagExcludeUuids: fs.tagExcludeUuids ?? [],
-          showAllBboxes: fs.showAllBboxes,
-          tagMatchMode: fs.tagMatchMode,
-          labelUuids: fs.labelUuids ?? [],
-          labelExcludeUuids: fs.labelExcludeUuids ?? [],
-          labelMatchMode: fs.labelMatchMode,
-          labelIncludeChildren: fs.labelIncludeChildren,
+          // Spread the shared opts rather than re-listing them: this call site
+          // used to spell out its own subset and had silently fallen behind
+          // _baseReviewFilterOpts by two dimensions the grid IS filtered by
+          // (bboxVerification, imageLabelConditions), so Apply to All modified
+          // more than it showed.
+          ..._baseReviewFilterOpts(fs),
           requireBboxes: _viewFilter === 'bboxes',
           sortBy,
           sortOrder,
-          filenameSearch: fs.filenameSearch || undefined,
-          dateFrom: fs.dateFrom || undefined,
-          dateTo: fs.dateTo || undefined,
-          verificationCheck: _verificationCheckFor(fs),
-          verificationLabelUuids: _verificationLabelUuidsFor(fs),
           bboxTagFilter,
           bboxLabelFilter,
           action: resolvedAction,

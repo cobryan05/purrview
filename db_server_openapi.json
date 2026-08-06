@@ -5745,6 +5745,17 @@
             "type": "boolean",
             "title": "Showallbboxes",
             "default": false
+          },
+          "bboxVerification": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bboxverification"
           }
         },
         "type": "object",

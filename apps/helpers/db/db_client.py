@@ -231,7 +231,7 @@ def _apply_image_search_filters(stmt: Select, params: ImageSearchParams, *, use_
 
 # Maps BBoxVerificationTerm.state to the system verification tag UUIDs. These
 # tags are mutually exclusive per bbox (exclusive_group="verification").
-_BBOX_VERIFICATION_STATE_TO_TAG_UUID = {
+BBOX_VERIFICATION_STATE_TO_TAG_UUID = {
     "verified": VERIFIED_TAG_UUID,
     "unverified": UNVERIFIED_TAG_UUID,
 }
@@ -385,7 +385,7 @@ def _apply_filter_terms(stmt: Select, params: ImageSearchParams, *, use_exists: 
 
         elif isinstance(term, BBoxVerificationTerm):
             term_implies_bbox = True
-            tag_uuid = _BBOX_VERIFICATION_STATE_TO_TAG_UUID[term.state]
+            tag_uuid = BBOX_VERIFICATION_STATE_TO_TAG_UUID[term.state]
             expr = _tag_predicate(BBoxTagLink.tag_uuid == tag_uuid)
 
         elif isinstance(term, LabelVerificationTerm):

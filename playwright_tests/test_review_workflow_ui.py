@@ -492,6 +492,56 @@ class TestBulkBboxAction:
             assert VERIFIED_TAG_UUID in call["body"]["tagUuids"]
 
 
+class TestBulkApplyAllScope:
+    """ "Apply to All" must send the same filter the grid is showing.
+
+    The call site used to spell out its own subset of the filter opts and had
+    fallen two dimensions behind _baseReviewFilterOpts — bboxVerification and
+    imageLabelConditions — so filtering to "Unverified only" and applying to
+    all also hit verified bboxes, with nothing in the UI saying so.
+    Follow-up PR A, UI_REDESIGN §32.5.
+    """
+
+    def test_apply_to_all_carries_the_bbox_verification_filter(self, page: Page, base_url: str):
+        _mock_review_queue(page, PAGE_1_IMAGES)
+        _mock_labels(page, [LABEL_CAT, LABEL_DOG])
+        _mock_tags(page, [{**UNVERIFIED_TAG, "name": "Unverified", "color": "#888", "kind": "system"}])
+        _mock_misc_review_endpoints(page)
+
+        calls = []
+
+        def handle_bulk(route: Route):
+            calls.append(json.loads(route.request.post_data))
+            route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps({"status": "success", "modifiedCount": 1, "failCount": 0}),
+            )
+
+        page.route("**/api/images/bbox/bulk-apply", handle_bulk)
+
+        _navigate_to_review(page, base_url)
+        _switch_view(page, "bboxes")
+
+        # Narrow the grid to verified bboxes only, via the filter popover.
+        page.get_by_test_id("review-filter-toggle").click()
+        page.locator("#review-root .bbox-verification-select").select_option("verified")
+        page.get_by_test_id("review-filter-toggle").click()  # close the popover
+
+        page.get_by_test_id("review-bulk-apply-all").click()
+        page.locator("input[type=radio][name='bulk-all-action'][value='markVerified']").click()
+        page.locator("button", has_text="Apply to All").last.click()
+
+        wait_until(page, lambda: calls, lambda: f"Expected POST to bulk-apply, got {calls}")
+        body = calls[0]
+        # Bbox-level: without this the action reaches the unverified bboxes
+        # sharing those images, which the grid does not show.
+        assert body.get("bboxVerification") == "verified", body
+        # Image-level: the same predicate as a filter term, so paging skips
+        # images with no verified bbox at all.
+        assert {"kind": "bboxVerification", "state": "verified"} in body["filter"]["terms"], body
+
+
 # ---------------------------------------------------------------------------
 # 6b. Apply to Parent Images (bbox selection -> distinct parent images)
 # ---------------------------------------------------------------------------

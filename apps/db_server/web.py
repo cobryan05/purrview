@@ -110,6 +110,13 @@ class BulkApplyAllPayload(ApiPayload):
     bbox_tag_filter: List[str] = Field(default_factory=list)
     bbox_label_filter: List[str] = Field(default_factory=list)
     show_all_bboxes: bool = False
+    # The review grid's bbox-verification tri-state, as a bbox-level predicate.
+    # `filter` may also carry a BBoxVerificationTerm, but that one only selects
+    # *images* having such a bbox — it cannot stop the action from also hitting
+    # the other-state bboxes on those images, which is what the grid hides.
+    # None means "no narrowing"; 'any' is the UI's no-op value and is accepted
+    # as the same thing.
+    bbox_verification: Optional[str] = None  # verified | unverified
 
 
 class BulkApplyAllResponse(StatusResponse):
@@ -1713,6 +1720,7 @@ class WebApp:
                     bbox_tag_filter=payload.bbox_tag_filter,
                     bbox_label_filter=payload.bbox_label_filter,
                     show_all_bboxes=payload.show_all_bboxes,
+                    bbox_verification=payload.bbox_verification,
                 )
                 return BulkApplyAllResponse(modified_count=modified_count, fail_count=fail_count)
             except Exception as e:

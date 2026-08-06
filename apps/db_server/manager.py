@@ -22,7 +22,7 @@ from sqlalchemy.orm import make_transient
 from apps import CACHE_DIR, THUMB_CACHE_MAX_MB
 from apps.db_server.hash_index import HashIndex
 from apps.helpers.consts import TaskStatus
-from apps.helpers.db.db_client import DbClient, TagKind
+from apps.helpers.db.db_client import BBOX_VERIFICATION_STATE_TO_TAG_UUID, DbClient, TagKind
 from apps.helpers.db.types import (
     MODEL_TYPE_ARCHITECTURES,
     UNVERIFIED_TAG_UUID,
@@ -726,17 +726,23 @@ class Manager:
         bbox_tag_filter: List[str],
         bbox_label_filter: List[str],
         show_all_bboxes: bool = False,
+        bbox_verification: Optional[str] = None,
     ) -> Tuple[int, int]:
         """Apply action to every bbox matching the filter, across all pages.
 
         Pages through list_images_search in batches of 200, applies the requested
         action to each matching bbox, and calls _sync_image_state once per image.
 
-        bbox_tag_filter / bbox_label_filter mirror the client-side bbox subset logic:
+        bbox_tag_filter / bbox_label_filter / bbox_verification mirror the
+        client-side bbox subset logic:
           - bbox_tag_filter: bbox must carry at least one of these tag UUIDs
             (ignored when show_all_bboxes is True or the list is empty)
           - bbox_label_filter: bbox label_uuid must be in this set
             (ignored when the list is empty)
+          - bbox_verification: bbox must carry the matching system verification
+            tag. ANDed with bbox_tag_filter rather than folded into it — that
+            list is OR-semantics, so merging the verification tag in would
+            widen the scope instead of narrowing it.
 
         Returns (modified_count, fail_count).
         """
@@ -744,6 +750,10 @@ class Manager:
             None if show_all_bboxes else (set(bbox_tag_filter) if bbox_tag_filter else None)
         )
         label_filter_set: Optional[Set[str]] = set(bbox_label_filter) if bbox_label_filter else None
+        # 'any' is the UI's no-op tri-state value; treat it like an omitted filter.
+        verification_tag_uuid: Optional[str] = (
+            BBOX_VERIFICATION_STATE_TO_TAG_UUID.get(bbox_verification) if bbox_verification else None
+        )
 
         # Paginate by uuid regardless of the caller's requested sort. The action
         # mutates image.updated_at, so keyset-paginating by updated_at (asc) would
@@ -780,6 +790,10 @@ class Manager:
                     if tag_filter_set is not None and not any(t.uuid in tag_filter_set for t in bbox.tags or []):
                         continue
                     if label_filter_set is not None and bbox.label_uuid not in label_filter_set:
+                        continue
+                    if verification_tag_uuid is not None and not any(
+                        t.uuid == verification_tag_uuid for t in bbox.tags or []
+                    ):
                         continue
                     matching.append(bbox)
 

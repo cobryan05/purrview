@@ -358,8 +358,10 @@ export async function bulkApplyAll({
   dateFrom = null,
   dateTo = null,
   imageLabelFilters = [],
+  imageLabelConditions = [],
   verificationCheck = null,
   verificationLabelUuids = [],
+  bboxVerification = null,
   requireBboxes = false,
   // Bbox-level subset filters (client-computed)
   bboxTagFilter = [],
@@ -369,8 +371,6 @@ export async function bulkApplyAll({
   labelUuid = null,
   selectedTagUuids = [],
 } = {}) {
-  // Note: bulkApplyAll never accepted bboxVerification or imageLabelConditions
-  // params (unlike fetchReviewQueue) — preserved as-is here; see PR 1.5 report.
   const filterBody = buildReviewFilterBody({
     tagUuids,
     tagExcludeUuids,
@@ -388,8 +388,10 @@ export async function bulkApplyAll({
     dateFrom,
     dateTo,
     imageLabelFilters,
+    imageLabelConditions,
     verificationCheck,
     verificationLabelUuids,
+    bboxVerification,
   });
 
   const res = await apiFetch('/api/images/bbox/bulk-apply', {
@@ -403,6 +405,11 @@ export async function bulkApplyAll({
       bboxTagFilter,
       bboxLabelFilter,
       showAllBboxes,
+      // Sent as its own bbox-level field, not only as a filter term: the term
+      // selects images that HAVE a bbox in this state, which would still let
+      // the action hit the other-state bboxes sharing those images — exactly
+      // what the grid hides. The server ANDs this per bbox.
+      bboxVerification: bboxVerification && bboxVerification !== 'any' ? bboxVerification : null,
     }),
   });
   const data = await res.json();
@@ -482,14 +489,16 @@ export async function bulkApplyImages({
   imageLabelConditions = [],
   verificationCheck = null,
   verificationLabelUuids = [],
+  bboxVerification = null,
   requireBboxes = false,
   // Action params
   action,
   labelUuid = null,
   selectedTagUuids = [],
 } = {}) {
-  // Note: bulkApplyImages never accepted bboxVerification (unlike
-  // fetchReviewQueue) — preserved as-is here; see PR 1.5 report.
+  // The action here is image-level, so bboxVerification needs no bbox-level
+  // counterpart (unlike bulkApplyAll) — as a filter term it selects exactly
+  // the images the grid shows, which is the whole scope.
   // imageLabelConditions is new here (additive): callers used to have to
   // pre-map fs.imageLabelConditions to imageLabelFilters themselves before
   // this shared builder existed; now the builder does that merge for them,
@@ -513,6 +522,7 @@ export async function bulkApplyImages({
     imageLabelConditions,
     verificationCheck,
     verificationLabelUuids,
+    bboxVerification,
   });
 
   const res = await apiFetch('/api/images/bulk-apply', {

@@ -276,6 +276,180 @@ async def test_bulk_apply_bboxes_relabel(http_client, image_file, label_uuid):
     assert UNVERIFIED_TAG_UUID not in tag_uuids
 
 
+async def _two_bboxes_one_verified(http_client, label_uuid):
+    """One image carrying a VERIFIED bbox and an UNVERIFIED one. Returns
+    (verified_uuid, unverified_uuid)."""
+    verified_id = str(uuid.uuid4())
+    unverified_id = str(uuid.uuid4())
+    await http_client.post(
+        "/api/images/metadata/update",
+        json={
+            "imagePath": "bbox_test.png",
+            "boxes": [
+                {
+                    "uuid": verified_id,
+                    "labelUuid": label_uuid,
+                    "x": 0.1,
+                    "y": 0.1,
+                    "width": 0.2,
+                    "height": 0.2,
+                    "tagUuids": [VERIFIED_TAG_UUID],
+                },
+                {
+                    "uuid": unverified_id,
+                    "labelUuid": label_uuid,
+                    "x": 0.5,
+                    "y": 0.5,
+                    "width": 0.2,
+                    "height": 0.2,
+                    "tagUuids": [UNVERIFIED_TAG_UUID],
+                },
+            ],
+        },
+    )
+    return verified_id, unverified_id
+
+
+class TestBulkApplyBboxVerificationScope:
+    """bulk-apply must narrow to the same *bboxes* the review grid shows.
+
+    The grid's bbox-verification tri-state is a per-bbox predicate
+    (makeBboxFilterPredicate's verificationMatch), not merely an image-level
+    "has a bbox in this state" match. Without a bbox-level equivalent here,
+    filtering to "Unverified only" and clicking Apply to All also hit the
+    verified bboxes sharing those images — silently modifying more than the
+    grid showed. Follow-up PR A, UI_REDESIGN §32.5.
+    """
+
+    async def test_unverified_scope_skips_verified_bboxes(self, http_client, image_file, label_uuid):
+        verified_id, unverified_id = await _two_bboxes_one_verified(http_client, label_uuid)
+
+        r = await http_client.post(
+            "/api/images/bbox/bulk-apply",
+            json={
+                "filter": {"showAllBboxes": True, "limit": 50},
+                "action": "delete",
+                "tagUuids": [],
+                "bboxTagFilter": [],
+                "bboxLabelFilter": [],
+                "showAllBboxes": True,
+                "bboxVerification": "unverified",
+            },
+        )
+        assert r.status_code == 200
+        assert r.json()["modifiedCount"] == 1, r.json()
+
+        meta_r = await http_client.post("/api/images/metadata/get", json={"imagePath": "bbox_test.png"})
+        remaining = [b["uuid"] for b in meta_r.json()["image"]["bboxes"]]
+        assert remaining == [verified_id], f"only the unverified bbox should be gone, got {remaining}"
+        assert unverified_id not in remaining
+
+    async def test_verified_scope_skips_unverified_bboxes(self, http_client, image_file, label_uuid):
+        verified_id, unverified_id = await _two_bboxes_one_verified(http_client, label_uuid)
+
+        r = await http_client.post(
+            "/api/images/bbox/bulk-apply",
+            json={
+                "filter": {"showAllBboxes": True, "limit": 50},
+                "action": "delete",
+                "tagUuids": [],
+                "bboxTagFilter": [],
+                "bboxLabelFilter": [],
+                "showAllBboxes": True,
+                "bboxVerification": "verified",
+            },
+        )
+        assert r.status_code == 200
+        assert r.json()["modifiedCount"] == 1, r.json()
+
+        meta_r = await http_client.post("/api/images/metadata/get", json={"imagePath": "bbox_test.png"})
+        remaining = [b["uuid"] for b in meta_r.json()["image"]["bboxes"]]
+        assert remaining == [unverified_id], f"only the verified bbox should be gone, got {remaining}"
+
+    async def test_omitted_scope_hits_every_bbox(self, http_client, image_file, label_uuid):
+        """The narrowing is opt-in: no bboxVerification means today's behaviour."""
+        await _two_bboxes_one_verified(http_client, label_uuid)
+
+        r = await http_client.post(
+            "/api/images/bbox/bulk-apply",
+            json={
+                "filter": {"showAllBboxes": True, "limit": 50},
+                "action": "delete",
+                "tagUuids": [],
+                "bboxTagFilter": [],
+                "bboxLabelFilter": [],
+                "showAllBboxes": True,
+            },
+        )
+        assert r.status_code == 200
+        assert r.json()["modifiedCount"] == 2, r.json()
+
+    async def test_verification_scope_ands_with_bbox_tag_filter(self, http_client, image_file, label_uuid):
+        """bboxTagFilter is OR-semantics across its own list; the verification
+        scope must AND with it, not join that OR. Merging the verification tag
+        into bboxTagFilter would widen the scope instead of narrowing it."""
+        r_tag = await http_client.post("/api/tags/add", json={"name": "review-me", "color": "#abcabc"})
+        review_tag = r_tag.json()["tag"]["uuid"]
+
+        tagged_verified = str(uuid.uuid4())
+        tagged_unverified = str(uuid.uuid4())
+        untagged_unverified = str(uuid.uuid4())
+        await http_client.post(
+            "/api/images/metadata/update",
+            json={
+                "imagePath": "bbox_test.png",
+                "boxes": [
+                    {
+                        "uuid": tagged_verified,
+                        "labelUuid": label_uuid,
+                        "x": 0.1,
+                        "y": 0.1,
+                        "width": 0.1,
+                        "height": 0.1,
+                        "tagUuids": [VERIFIED_TAG_UUID, review_tag],
+                    },
+                    {
+                        "uuid": tagged_unverified,
+                        "labelUuid": label_uuid,
+                        "x": 0.3,
+                        "y": 0.3,
+                        "width": 0.1,
+                        "height": 0.1,
+                        "tagUuids": [UNVERIFIED_TAG_UUID, review_tag],
+                    },
+                    {
+                        "uuid": untagged_unverified,
+                        "labelUuid": label_uuid,
+                        "x": 0.6,
+                        "y": 0.6,
+                        "width": 0.1,
+                        "height": 0.1,
+                        "tagUuids": [UNVERIFIED_TAG_UUID],
+                    },
+                ],
+            },
+        )
+
+        r = await http_client.post(
+            "/api/images/bbox/bulk-apply",
+            json={
+                "filter": {"showAllBboxes": True, "limit": 50},
+                "action": "delete",
+                "tagUuids": [],
+                "bboxTagFilter": [review_tag],
+                "bboxLabelFilter": [],
+                "showAllBboxes": False,
+                "bboxVerification": "unverified",
+            },
+        )
+        assert r.status_code == 200
+        assert r.json()["modifiedCount"] == 1, r.json()
+
+        meta_r = await http_client.post("/api/images/metadata/get", json={"imagePath": "bbox_test.png"})
+        remaining = sorted(b["uuid"] for b in meta_r.json()["image"]["bboxes"])
+        assert remaining == sorted([tagged_verified, untagged_unverified])
+
+
 async def test_manual_relabel_clears_filter_chain_revert_stash(http_client, image_file, label_uuid):
     """A manual relabel of a filter-chain-relabeled bbox must drop the stashed
     relabel_prev_label_uuid, so a later revertRelabel can't silently restore the
