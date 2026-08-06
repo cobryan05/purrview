@@ -77,7 +77,7 @@ def test_verified_bbox_conflict_shows_info_not_error_and_is_not_requeued(page: P
         await new Promise(r => setTimeout(r, 300));
 
         const row = div.querySelector('.label-panel-row');
-        row.querySelector('button').click(); // uncertain -> absent
+        row.querySelector('.label-status-btn').click(); // uncertain -> absent
 
         events.publish(EventTypes.CANVAS_ANNOTATIONS_SAVED, { runtimeId: runtime.id });
         await new Promise(r => setTimeout(r, 300));

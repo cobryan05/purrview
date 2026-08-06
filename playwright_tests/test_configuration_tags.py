@@ -324,3 +324,33 @@ class TestTagDelete:
         page.wait_for_timeout(500)
 
         assert not calls, "API must NOT be called when delete is cancelled"
+
+
+# ---------------------------------------------------------------------------
+# Compact row affordances
+# ---------------------------------------------------------------------------
+
+
+class TestTagRowChrome:
+    def test_system_tags_are_marked_locked(self, page: Page, base_url: str):
+        """A system tag shows a 'locked' chip instead of an empty action gutter,
+        so the missing Edit/Delete reads as deliberate rather than broken."""
+        _mock_tags(page, [SYSTEM_TAG])
+        _navigate_to_tags(page, base_url)
+        row = page.locator(f"#tags-list [data-uuid='{SYSTEM_TAG['uuid']}']")
+        expect(row.locator(".lt-locked")).to_have_text("locked")
+        expect(row.locator("button[title='Edit']")).to_have_count(0)
+
+    def test_user_tags_have_an_edit_button_opening_an_inline_editor(self, page: Page, base_url: str):
+        """Edit swaps the row into a name input seeded with the current name."""
+        _mock_tags(page, [FAKE_TAG])
+        _navigate_to_tags(page, base_url)
+        row = page.locator(f"#tags-list [data-uuid='{FAKE_TAG['uuid']}']")
+        expect(row).to_be_visible()
+
+        row.locator("button[title='Edit']").click()
+        editor = row.locator(".lt-editor input[type='text']")
+        expect(editor).to_be_visible()
+        expect(editor).to_have_value(FAKE_TAG["name"])
+        expect(row.locator("button[title='Save']")).to_be_visible()
+        expect(row.locator(".lt-locked")).to_have_count(0)

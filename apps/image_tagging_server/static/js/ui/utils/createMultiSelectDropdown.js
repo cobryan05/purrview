@@ -239,15 +239,13 @@ export function createMultiSelectDropdown({
     lbl.className = 'ms-item';
     // Indent child items using the depth field from flattenHierarchy
     const depth = item.depth ?? 0;
-    if (depth > 0) lbl.style.paddingLeft = `${0.4 + depth * 1.1}em`;
-
-    if (item.color) {
-      const swatch = document.createElement('span');
-      swatch.className = 'ms-item__swatch';
-      swatch.style.background = item.color;
-      lbl.appendChild(swatch);
+    if (depth > 0) {
+      lbl.style.paddingLeft = `${0.35 + depth * 0.9}rem`;
+      lbl.classList.add('ms-item--child');
     }
 
+    // Checkbox first, then swatch: the click targets line up in one column
+    // instead of alternating position with whether an item has a colour.
     const cb = document.createElement('input');
     cb.type = 'checkbox';
     cb.value = item.uuid;
@@ -255,6 +253,13 @@ export function createMultiSelectDropdown({
     checkboxMap.set(item.uuid, cb);
     itemElMap.set(item.uuid, lbl);
     lbl.appendChild(cb);
+
+    if (item.color) {
+      const swatch = document.createElement('span');
+      swatch.className = 'ms-item__swatch';
+      swatch.style.background = item.color;
+      lbl.appendChild(swatch);
+    }
 
     const nameSpan = document.createElement('span');
     nameSpan.className = 'ms-item__name';

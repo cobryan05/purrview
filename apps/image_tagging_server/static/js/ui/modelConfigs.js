@@ -175,26 +175,15 @@ function renderConfigForm({ config, labelsMap, onDirtyChange }) {
       scopeFilter: scope,
       onSubmodelsChanged: (submodels) => { refreshPanels(submodels); _markDirty(); },
       onRollUpUncheckedChanged: (set) => { currentRollUpUnchecked = set; _markDirty(); },
-      onLabelsChanged: onLabelsMoved,
     });
     treeHandle = handle;
     refreshPanels(new Map(initialSubmodels));
     refreshTreeSummary();
   }
 
-  // A re-parent moved a label in the hierarchy: `labelsMap` (closed over by
-  // refreshPanels/treeSummary/getSaveData) is a snapshot taken when the form
-  // opened, so it must be refreshed before rebuilding the tree — otherwise the
-  // rebuild would just redraw the old hierarchy shape. ModelConfigNode is
-  // keyed by label_uuid, so selection/submodel/roll-up state (all keyed the
-  // same way) survives the rebuild untouched.
-  async function onLabelsMoved() {
-    labelsMap = await fetchLabels();
-    // The move itself is already persisted server-side (a direct PATCH), and
-    // ModelConfigNode is keyed by label_uuid, so this config's own save data
-    // (nodes list) is unaffected — don't mark the form dirty over it.
-    await buildLabelTree(currentScope, treeHandle?.getSelected() ?? new Set(), currentSubmodels, currentRollUpUnchecked);
-  }
+  // The label tree here is read-only with respect to the hierarchy: re-parenting
+  // lives solely on Configuration › Labels & Tags, so there is no in-form move
+  // that could invalidate the `labelsMap` snapshot this form closed over.
 
   const rootSpecHandle = makeModelSpecSelectors(initRootSpec, (newSpec) => {
     _markDirty();

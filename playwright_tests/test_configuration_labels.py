@@ -568,10 +568,10 @@ class TestLabelScopeSelectMode:
             document.body.appendChild(container);
             const handle = await createLabelList(container, {{ mode: 'select', runtime, filter: null }});
 
-            // Find the "Image Classification" section header by its text content.
-            // (Object.assign on element.style normalizes hex colors to rgb(), so
-            //  a style-attribute selector like [style*="88aaff"] won't match.)
-            const header = Array.from(container.querySelectorAll('div'))
+            // Section headers carry the title in a dedicated element — the
+            // header div itself also holds the count and the section controls,
+            // so an exact-textContent match on it would never hit.
+            const header = Array.from(container.querySelectorAll('[data-testid="lt-section-title"]'))
                 .find(d => d.textContent.trim() === 'Image Classification') ?? null;
             const imgRow = container.querySelector('[data-uuid="img-lbl-2"]');
             const objRow = container.querySelector('[data-uuid="obj-lbl-2"]');
@@ -657,9 +657,11 @@ class TestLabelApplyToAllTargeting:
     def _status_helpers_js(self) -> str:
         """JS helpers (closure over `container`) for reading row state."""
         return """
+            // .label-status-btn, not "the first button" — the disclosure caret
+            // is also a <button> and precedes it in the row.
             const statusOf = (uuid) => {
                 const row = container.querySelector('[data-uuid="'+uuid+'"]');
-                return row ? row.querySelector('button').textContent : null;
+                return row ? row.querySelector('.label-status-btn').textContent : null;
             };
             const targetIconOf = (uuid) => {
                 const row = container.querySelector('[data-uuid="'+uuid+'"]');
@@ -1000,3 +1002,158 @@ class TestReparentLabel:
         root_a_row = page.locator(f"#labels-list [data-uuid='{ROOT_A['uuid']}']")
         expect(root_a_row).to_be_visible()
         assert state["labels"][2]["parentUuid"] == ROOT_B["uuid"]
+
+
+# ---------------------------------------------------------------------------
+# Collapsible tree (compact label list)
+# ---------------------------------------------------------------------------
+
+
+class TestCollapsibleTree:
+    """The label list renders a disclosure caret on every parent; collapsing a
+    branch hides its descendants and reports how many were folded away."""
+
+    def _clear_collapse_state(self, page: Page):
+        """Collapse state is persisted in localStorage and would leak between tests."""
+        page.evaluate(
+            "() => Object.keys(localStorage)"
+            ".filter(k => k.startsWith('ww_label_tree_collapsed_'))"
+            ".forEach(k => localStorage.removeItem(k))"
+        )
+
+    def test_parent_has_caret_and_leaf_does_not(self, page: Page, base_url: str):
+        """Only labels with children get an operable caret; leaves keep the
+        column (so names stay aligned) but it is inert and aria-hidden."""
+        _mock_labels(page, [ROOT_LABEL, CHILD_LABEL])
+        _navigate_to_labels(page, base_url)
+        self._clear_collapse_state(page)
+        page.reload()
+        page.wait_for_load_state("networkidle")
+        _navigate_to_labels(page, base_url)
+
+        parent_caret = page.locator(f"#labels-list [data-uuid='{ROOT_LABEL['uuid']}'] .lt-caret")
+        expect(parent_caret).to_have_attribute("aria-expanded", "true")
+        expect(parent_caret).not_to_have_class("lt-caret--leaf")
+
+        child_caret = page.locator(f"#labels-list [data-uuid='{CHILD_LABEL['uuid']}'] .lt-caret")
+        expect(child_caret).to_have_attribute("aria-hidden", "true")
+
+    def test_collapsing_hides_children_and_shows_count(self, page: Page, base_url: str):
+        """Clicking a parent's caret removes its descendants from the DOM and
+        puts the hidden count on the parent row."""
+        _mock_labels(page, [ROOT_LABEL, CHILD_LABEL])
+        _navigate_to_labels(page, base_url)
+        self._clear_collapse_state(page)
+        page.reload()
+        page.wait_for_load_state("networkidle")
+        _navigate_to_labels(page, base_url)
+
+        parent = page.locator(f"#labels-list [data-uuid='{ROOT_LABEL['uuid']}']")
+        child = page.locator(f"#labels-list [data-uuid='{CHILD_LABEL['uuid']}']")
+        expect(child).to_be_visible()
+
+        parent.locator(".lt-caret").click()
+        expect(child).to_have_count(0)
+        expect(parent.locator(".lt-kids")).to_have_text("1")
+
+        # Expanding brings it back.
+        page.locator(f"#labels-list [data-uuid='{ROOT_LABEL['uuid']}'] .lt-caret").click()
+        expect(page.locator(f"#labels-list [data-uuid='{CHILD_LABEL['uuid']}']")).to_be_visible()
+
+    def test_collapse_state_survives_a_reload(self, page: Page, base_url: str):
+        """Collapse is persisted, so a folded tree stays folded across reloads."""
+        _mock_labels(page, [ROOT_LABEL, CHILD_LABEL])
+        _navigate_to_labels(page, base_url)
+        self._clear_collapse_state(page)
+        page.reload()
+        page.wait_for_load_state("networkidle")
+        _navigate_to_labels(page, base_url)
+
+        page.locator(f"#labels-list [data-uuid='{ROOT_LABEL['uuid']}'] .lt-caret").click()
+        expect(page.locator(f"#labels-list [data-uuid='{CHILD_LABEL['uuid']}']")).to_have_count(0)
+
+        _navigate_to_labels(page, base_url)
+        expect(page.locator(f"#labels-list [data-uuid='{ROOT_LABEL['uuid']}']")).to_be_visible()
+        expect(page.locator(f"#labels-list [data-uuid='{CHILD_LABEL['uuid']}']")).to_have_count(0)
+        self._clear_collapse_state(page)
+
+
+# ---------------------------------------------------------------------------
+# Inline rename
+# ---------------------------------------------------------------------------
+
+
+class TestInlineRename:
+    def test_edit_opens_inline_editor_prefilled(self, page: Page, base_url: str):
+        """Edit swaps the row into a name input seeded with the current name."""
+        _mock_labels(page, [ROOT_LABEL])
+        _navigate_to_labels(page, base_url)
+        row = page.locator(f"#labels-list [data-uuid='{ROOT_LABEL['uuid']}']")
+        expect(row).to_be_visible()
+
+        row.locator("button[title='Edit']").click()
+        editor = row.locator(".lt-editor input[type='text']")
+        expect(editor).to_be_visible()
+        expect(editor).to_have_value(ROOT_LABEL["name"])
+        # The UUID is shown while editing, not as a permanent second line.
+        expect(row.locator(".lt-hint")).to_have_text(ROOT_LABEL["uuid"])
+
+    def test_rename_saves_new_name(self, page: Page, base_url: str):
+        """Saving the inline editor PATCHes the label with the typed name."""
+        calls: list[dict] = []
+
+        def handle(route: Route):
+            if route.request.method == "PATCH":
+                calls.append(json.loads(route.request.post_data))
+                route.fulfill(
+                    status=200,
+                    content_type="application/json",
+                    body=json.dumps({"status": "success", "label": ROOT_LABEL}),
+                )
+            else:
+                route.fulfill(
+                    status=200,
+                    content_type="application/json",
+                    body=json.dumps({"status": "success", "labels": [ROOT_LABEL]}),
+                )
+
+        _mock_labels(page, [ROOT_LABEL])
+        page.route("**/api/labels/**", handle)
+
+        _navigate_to_labels(page, base_url)
+        row = page.locator(f"#labels-list [data-uuid='{ROOT_LABEL['uuid']}']")
+        expect(row).to_be_visible()
+
+        row.locator("button[title='Edit']").click()
+        row.locator(".lt-editor input[type='text']").fill("Feline")
+        row.locator("button[title='Save']").click()
+        wait_until(page, lambda: calls, "Expected PATCH to /api/labels/{uuid}")
+        assert calls[0]["name"] == "Feline"
+
+    def test_cancel_discards_the_edit(self, page: Page, base_url: str):
+        """Cancel closes the editor without calling the API."""
+        calls: list[bool] = []
+
+        def handle(route: Route):
+            if route.request.method == "PATCH":
+                calls.append(True)
+            route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps({"status": "success", "labels": [ROOT_LABEL]}),
+            )
+
+        _mock_labels(page, [ROOT_LABEL])
+        page.route("**/api/labels/**", handle)
+
+        _navigate_to_labels(page, base_url)
+        row = page.locator(f"#labels-list [data-uuid='{ROOT_LABEL['uuid']}']")
+        expect(row).to_be_visible()
+
+        row.locator("button[title='Edit']").click()
+        row.locator(".lt-editor input[type='text']").fill("Feline")
+        row.locator("button[title='Cancel']").click()
+        page.wait_for_timeout(500)
+
+        assert not calls, "Cancel must NOT PATCH"
+        expect(page.locator(f"#labels-list [data-uuid='{ROOT_LABEL['uuid']}']")).to_contain_text(ROOT_LABEL["name"])

@@ -143,6 +143,39 @@ class TestModelConfigPaneStructure:
         expect(_label_row(page, "lbl-dog").locator("label", has_text="sub model")).to_have_count(0)
         expect(_label_row(page, "lbl-kitten").locator("label", has_text="sub model")).to_have_count(0)
 
+    def test_label_tree_has_no_reparent_control(self, page: Page, base_url: str):
+        """Re-parenting belongs to Configuration > Labels & Tags only. A model
+        shape assigns models to labels; it must not be able to reshape the label
+        hierarchy that every other screen depends on."""
+        _mock_model_configs(page, [])
+        _mock_labels(page, [LABEL_CAT, LABEL_KITTEN, LABEL_DOG])
+
+        _navigate_to_model_configs(page, base_url)
+
+        expect(_label_row(page, "lbl-cat")).to_be_visible()
+        expect(page.locator("#model-config-box button[title='Move']")).to_have_count(0)
+        expect(page.locator("#model-config-box .label-move-row")).to_have_count(0)
+
+    def test_label_tree_parents_are_collapsible(self, page: Page, base_url: str):
+        """Parents carry a disclosure caret; collapsing removes their children."""
+        _mock_model_configs(page, [])
+        _mock_labels(page, [LABEL_CAT, LABEL_KITTEN, LABEL_DOG])
+
+        _navigate_to_model_configs(page, base_url)
+        page.evaluate(
+            "() => Object.keys(localStorage)"
+            ".filter(k => k.startsWith('ww_label_tree_collapsed_'))"
+            ".forEach(k => localStorage.removeItem(k))"
+        )
+        _navigate_to_model_configs(page, base_url)
+
+        expect(_label_row(page, "lbl-kitten")).to_be_visible()
+        _label_row(page, "lbl-cat").locator(".lt-caret").click()
+        expect(_label_row(page, "lbl-kitten")).to_have_count(0)
+
+        _label_row(page, "lbl-cat").locator(".lt-caret").click()
+        expect(_label_row(page, "lbl-kitten")).to_be_visible()
+
     def test_root_model_shows_type_and_architecture_selects(self, page: Page, base_url: str):
         """The 'Root model' row has two linked selects: model type and architecture."""
         _mock_model_configs(page, [])

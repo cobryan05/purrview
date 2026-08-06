@@ -245,42 +245,37 @@ main.container {
 /* Static styles pulled out of ui/labelList.js's `el.style.cssText = '...'`
    assignments. State-dependent styling stays inline (see labelList.js). */
 
-/* "Move to…" picker row (edit mode + model-config mode, shared via toggleMovePicker) */
+/* "Move to…" picker row — edit mode only. It's opened by toggleMovePicker and
+ * inserted as a sibling directly beneath the row being re-parented, so it is
+ * indented by an inline margin-left rather than padding. */
+.label-move-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin: 2px 0;
+  padding: 3px 6px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-sunken);
+  border: 1px solid var(--border-strong);
+  border-left: 2px solid var(--color-info);
+  font-size: 0.82em;
+}
+
 .label-move-select {
-  font-size: 0.78em;
-  max-width: 220px;
+  font-size: inherit;
+  max-width: 190px;
+  height: auto;
+  margin: 0;
+  padding: 1px 4px;
+  background-position: right 4px center;
 }
 
 .label-move-apply,
 .label-move-cancel {
-  font-size: 0.75em;
-  padding: 1px 6px;
-}
-
-.label-move-trigger {
-  font-size: 0.72em;
-  padding: 1px 6px;
-  flex-shrink: 0;
-  cursor: pointer;
-  border-radius: var(--radius-sm);
-  border: 1px solid var(--pico-border-color);
-  background: transparent;
-  color: var(--pico-muted-color);
-}
-
-/* Edit mode: refresh row at the bottom of the label list */
-.label-refresh-wrap {
-  padding: 6px 2px 2px;
-}
-
-.label-refresh-btn {
-  font-size: 0.78em;
-  padding: 2px 8px;
-  background: var(--surface);
-  color: var(--text-faint);
-  border: 1px solid var(--border-strong);
-  border-radius: var(--radius-sm);
-  cursor: pointer;
+  font-size: inherit;
+  margin: 0;
+  padding: 1px 8px;
+  width: auto;
 }
 
 /* Visibility / Apply-to-all target preset menu (openAnchoredPopup content) */
@@ -393,41 +388,485 @@ main.container {
   color: var(--text-muted);
 }
 
+/* ===== Label tree: the shared compact row =====================================
+ * One row grammar for all three modes of ui/labelList.js (edit / model-config /
+ * select) plus ui/tags.js: [rails][caret][swatch][name][…mode extras][actions].
+ *
+ * The rows it replaced were built from createGenericRow + EditableField, which
+ * put four bordered 28px emoji buttons ahead of every name — ~32px per row, and
+ * no column for the eye to follow because the name started at a different x
+ * depending on depth. Here the actions are icon-only, right-aligned, and hidden
+ * until hover/focus, so at rest the list is a column of names.
+ *
+ * ⚠️ Action buttons keep their `title` attributes ("Add Child", "Move", "Edit",
+ * "Delete", "Save", "Cancel", "Add label", "Refresh") — playwright_tests select
+ * on those, not on classes.
+ */
+.label-tree {
+  --lt-indent: 14px;
+  --lt-row-h: 24px;
+  font-size: 0.82em;
+  user-select: none;
+}
+
+/* Section header — "OBJECT LABELS ····· 22 ↻" */
+.lt-section {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-3) 6px 2px;
+  font-size: 0.82em;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--text-faint);
+}
+
+.lt-section:first-child {
+  padding-top: 0;
+}
+
+/* Hairline that runs out to the right edge, so sections read as bands without
+   costing a separate <hr> row. A real element, not ::after — the count and the
+   section's controls have to sit on the far side of it. */
+.lt-section__rule {
+  flex: 1;
+  height: 1px;
+  background: var(--border);
+}
+
+.lt-section__count {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Buttons in a section header are the same glyph size as row actions, but
+   always visible — there's no row to hover. */
+.lt-section .lt-act {
+  opacity: 1;
+}
+
+.lt-empty {
+  padding: 3px 6px 3px calc(6px + var(--lt-indent));
+  color: var(--text-faint);
+  font-style: italic;
+}
+
+/* ---- the row ---- */
+.lt-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: var(--lt-row-h);
+  padding: 0 4px 0 6px;
+  border-radius: var(--radius-sm);
+}
+
+.lt-row:hover {
+  background: color-mix(in srgb, var(--text) 7%, transparent);
+}
+
+/* ---- indent rails ---- */
+.lt-rails {
+  flex-shrink: 0;
+  align-self: stretch;
+  display: flex;
+}
+
+.lt-rail {
+  position: relative;
+  width: var(--lt-indent);
+  flex-shrink: 0;
+}
+
+/* An ancestor that still has siblings below: full-height vertical hairline. */
+.lt-rail--line::before {
+  content: "";
+  position: absolute;
+  left: 6px;
+  top: 0;
+  bottom: 0;
+  border-left: 1px solid var(--border);
+}
+
+/* The row's own level: an elbow into the name. */
+.lt-rail--elbow::before {
+  content: "";
+  position: absolute;
+  left: 6px;
+  top: 0;
+  height: 50%;
+  width: 6px;
+  border-left: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  border-bottom-left-radius: 3px;
+}
+
+/* …continuing downward when this row has siblings after it. */
+.lt-rail--elbow.lt-rail--cont::after {
+  content: "";
+  position: absolute;
+  left: 6px;
+  top: 50%;
+  bottom: 0;
+  border-left: 1px solid var(--border);
+}
+
+/* ---- disclosure caret ---- */
+.lt-caret {
+  flex-shrink: 0;
+  width: 13px;
+  height: 13px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  margin: 0;
+  border: 0;
+  background: none;
+  cursor: pointer;
+  color: var(--text-faint);
+  line-height: 1;
+  transition: transform 0.12s ease, color 0.12s ease;
+}
+
+.lt-caret:hover {
+  color: var(--text);
+}
+
+.lt-caret[aria-expanded="false"] {
+  transform: rotate(-90deg);
+}
+
+/* Leaves keep the caret's width so names stay in one column. */
+.lt-caret--leaf {
+  visibility: hidden;
+  cursor: default;
+}
+
+.lt-caret svg {
+  width: 9px;
+  height: 9px;
+  display: block;
+}
+
+/* ---- swatch + name ---- */
+.lt-swatch {
+  flex-shrink: 0;
+  width: 9px;
+  height: 9px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-full);
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.35);
+}
+
+button.lt-swatch {
+  cursor: pointer;
+}
+
+button.lt-swatch:hover {
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--text) 30%, transparent);
+}
+
+.lt-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+}
+
+.lt-name--action {
+  cursor: text;
+}
+
+.lt-name--muted {
+  color: var(--text-muted);
+}
+
+/* Descendant count shown on a collapsed parent, so folding never hides how
+   much was folded. */
+.lt-kids {
+  flex-shrink: 0;
+  font-size: 0.78em;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-faint);
+  background: var(--surface-sunken);
+  padding: 0 4px;
+  border-radius: var(--radius-full);
+}
+
+/* ---- hover-revealed action cluster ---- */
+.lt-acts {
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  flex-shrink: 0;
+  margin-left: auto;
+  opacity: 0;
+  transition: opacity 0.1s ease;
+}
+
+.lt-row:hover .lt-acts,
+.lt-row:focus-within .lt-acts {
+  opacity: 1;
+}
+
+/* Save/Cancel on a row that's open for editing — never hidden. */
+.lt-acts--open {
+  opacity: 1;
+}
+
+/* Keyboard and coarse-pointer users never get :hover — always show there. */
+@media (hover: none) {
+  .lt-acts { opacity: 1; }
+}
+
+.lt-act {
+  width: 20px;
+  height: 20px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  margin: 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: none;
+  cursor: pointer;
+  color: var(--text-faint);
+  line-height: 1;
+}
+
+.lt-act:hover {
+  background: var(--surface-elevated);
+  color: var(--text);
+}
+
+.lt-act--danger:hover {
+  background: var(--color-danger-soft);
+  color: var(--color-danger);
+}
+
+.lt-act[disabled] {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.lt-act svg {
+  width: 13px;
+  height: 13px;
+  display: block;
+}
+
+/* Collapse-all / expand-all in a section header reuses the caret glyph and
+   points the way the click will move the tree. */
+.lt-act--collapsed svg {
+  transform: rotate(-90deg);
+}
+
+/* ---- inline editor (rename / create) ---- */
+.lt-editor {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex: 1;
+  min-width: 0;
+}
+
+.lt-editor input[type="text"] {
+  flex: 1;
+  min-width: 0;
+  height: calc(var(--lt-row-h) - 4px);
+  margin: 0;
+  padding: 1px 5px;
+  font-size: inherit;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--pico-primary, var(--color-accent));
+  background: var(--surface-sunken);
+  color: var(--text);
+}
+
+/* Pico gives form controls a bottom margin and a tall min-height; neither
+   survives contact with a 24px row. */
+.lt-editor input[type="text"]:focus {
+  box-shadow: none;
+}
+
+.lt-color-well {
+  position: relative;
+  flex-shrink: 0;
+  width: 13px;
+  height: 13px;
+  border-radius: var(--radius-full);
+  cursor: pointer;
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.35);
+}
+
+.lt-color-well input[type="color"] {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+/* UUID hint — was a permanent second line under every row in edit mode; now it
+   only appears while that row is open for editing. */
+.lt-hint {
+  flex-shrink: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.75em;
+  color: var(--text-faint);
+  white-space: nowrap;
+  user-select: text;
+}
+
+/* ---- create row ---- */
+.lt-newrow {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: var(--lt-row-h);
+  margin-top: 2px;
+  padding: 0 4px 0 6px;
+}
+
+.lt-newrow input[type="text"] {
+  flex: 1;
+  min-width: 0;
+  max-width: 190px;
+  height: calc(var(--lt-row-h) - 4px);
+  margin: 0;
+  padding: 1px 5px;
+  font-size: inherit;
+  border-radius: var(--radius-sm);
+  border: 1px dashed var(--border-strong);
+  background: transparent;
+  color: var(--text);
+}
+
+.lt-newrow input[type="text"]:focus {
+  border-style: solid;
+  border-color: var(--pico-primary, var(--color-accent));
+  box-shadow: none;
+}
+
+/* ---- tag-specific ---- */
+/* Fixed-width column so names stay aligned whether or not a tag has an icon. */
+.lt-tagicon {
+  flex-shrink: 0;
+  width: 13px;
+  text-align: center;
+  font-weight: 700;
+  font-size: 0.9em;
+  color: var(--text-muted);
+}
+
+/* System tags can't be edited or deleted. Saying so beats an empty gutter. */
+.lt-locked {
+  flex-shrink: 0;
+  font-size: 0.78em;
+  letter-spacing: 0.06em;
+  color: var(--text-faint);
+}
+
+/* Icon picker (tag editor + create row) */
+.lt-icon-trigger {
+  flex-shrink: 0;
+  min-width: 22px;
+  height: calc(var(--lt-row-h) - 4px);
+  margin: 0;
+  padding: 0 4px;
+  font-size: inherit;
+  line-height: 1;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-strong);
+  background: var(--surface-sunken);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.lt-icon-menu {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 7px;
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--border-strong);
+  background: var(--surface-raised);
+  box-shadow: var(--shadow);
+  z-index: var(--layer-bottom-bars-menu);
+}
+
+.lt-icon-option {
+  min-width: 24px;
+  margin: 0;
+  padding: 2px 5px;
+  font-size: 0.9em;
+  line-height: 1.2;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-strong);
+  background: var(--surface-sunken);
+  color: var(--text);
+  cursor: pointer;
+  width: auto;
+}
+
+.lt-icon-option:hover {
+  border-color: var(--text-faint);
+}
+
+.lt-icon-custom {
+  width: 4em;
+  margin: 0;
+  padding: 2px 4px;
+  font-size: 0.85em;
+  text-align: center;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-strong);
+  background: var(--surface-sunken);
+  color: var(--text);
+}
+
 /* Model-config mode: row checkbox + roll-up/sub-model toggle badges */
 .label-row-checkbox {
   margin: 0;
   flex-shrink: 0;
+  width: 12px;
+  height: 12px;
+  min-width: 12px;
+  border-radius: 3px;
 }
 
 .label-toggle-badge {
   display: inline-flex;
   align-items: center;
   gap: 3px;
-  font-size: 0.72em;
+  font-size: 0.78em;
   cursor: pointer;
   margin: 0;
-  padding: 1px 5px;
-  border-radius: var(--radius-sm);
+  padding: 0 5px;
+  border-radius: var(--radius-full);
   border: 1px solid var(--pico-border-color);
   color: var(--pico-muted-color);
   white-space: nowrap;
   flex-shrink: 0;
 }
 
+.label-toggle-badge:hover {
+  border-color: var(--text-faint);
+  color: var(--text-muted);
+}
+
 .label-toggle-checkbox {
   margin: 0;
-}
-
-/* Model-config mode: Dynamic Labels section divider + heading */
-.label-dynamic-hr {
-  margin: 0.5em 0;
-  opacity: 0.3;
-}
-
-.label-dynamic-header {
-  margin: 0.3em 0 0.2em;
-  font-style: italic;
-  color: var(--pico-muted-color);
+  width: 10px;
+  height: 10px;
 }
 
 /* ===== Review: Query toolbar ===== */
@@ -1085,16 +1524,21 @@ button.filter-active {
   max-height: none;
 }
 
-/* "Any of / All of" toggle row */
+/* "Any of / All of" toggle row.
+ * As with .ms-item, the `margin: 0` / `width: auto` / explicit checkbox size in
+ * this group are all cancelling Pico defaults (full-width buttons with a bottom
+ * margin, 1.25em checkboxes) that otherwise cost ~90px of panel height before a
+ * single label is drawn. */
 .ms-hierarchy-toggle {
   display: flex;
   align-items: center;
   gap: 0.3rem;
   font-size: 0.75em;
+  font-weight: normal;
   color: var(--pico-muted-color, var(--text-muted));
   cursor: pointer;
-  padding: 0.2rem 0;
-  margin-bottom: 0.3rem;
+  padding: 0.15rem 0;
+  margin: 0 0 0.3rem;
   border-bottom: 1px solid var(--pico-muted-border-color, var(--border));
   white-space: nowrap;
   user-select: none;
@@ -1102,19 +1546,30 @@ button.filter-active {
 
 .ms-hierarchy-toggle input[type="checkbox"] {
   flex-shrink: 0;
+  width: 12px;
+  height: 12px;
+  min-width: 12px;
   margin: 0;
+  padding: 0;
+  border-radius: 3px;
 }
 
-.ms-mode-row {
+.ms-mode-row,
+.ms-select-all-row {
   display: flex;
   gap: 0.25rem;
-  margin-bottom: 0.4rem;
+  margin-bottom: 0.3rem;
 }
 
-.ms-mode-btn {
+.ms-mode-btn,
+.ms-select-all-btn {
   flex: 1;
-  padding: 0.15rem 0.3rem;
+  width: auto;
+  height: auto;
+  margin: 0;
+  padding: 0.1rem 0.3rem;
   font-size: 0.75em;
+  line-height: 1.5;
   background: none;
   border: 1px solid var(--pico-muted-border-color, var(--border-strong));
   border-radius: 3px;
@@ -1129,24 +1584,6 @@ button.filter-active {
   color: var(--pico-primary, var(--color-info));
 }
 
-.ms-select-all-row {
-  display: flex;
-  gap: 0.25rem;
-  margin-bottom: 0.4rem;
-}
-
-.ms-select-all-btn {
-  flex: 1;
-  padding: 0.15rem 0.3rem;
-  font-size: 0.75em;
-  background: none;
-  border: 1px solid var(--pico-muted-border-color, var(--border-strong));
-  border-radius: 3px;
-  cursor: pointer;
-  color: var(--pico-muted-color, var(--text-muted));
-  white-space: nowrap;
-}
-
 .ms-select-all-btn:hover {
   border-color: var(--pico-primary, var(--color-info));
   color: var(--pico-color, var(--text-muted));
@@ -1156,20 +1593,28 @@ button.filter-active {
 .ms-dropdown__items {
   display: flex;
   flex-direction: column;
-  gap: 0.1rem;
-  max-height: 220px;
+  gap: 0;
+  max-height: 260px;
   overflow-y: auto;
 }
 
+/* ⚠️ Every rule here that zeroes a margin or pins a size is undoing Pico, not
+ * styling from scratch. `.ms-item` is a <label>, so it inherits Pico's
+ * `margin-bottom` and its 1.25em checkbox — together those made each item 58px
+ * tall and fit four labels in a 400px panel. Removing them is the whole reason
+ * the list got dense; don't "simplify" them away. */
 .ms-item {
   display: flex;
   align-items: center;
   gap: 0.4rem;
   cursor: pointer;
-  padding: 0.18rem 0.25rem;
+  min-height: 22px;
+  margin: 0;
+  padding: 0 0.35rem;
   border-radius: 3px;
   white-space: nowrap;
   font-size: 0.82em;
+  font-weight: normal;
 }
 
 .ms-item:hover {
@@ -1178,7 +1623,30 @@ button.filter-active {
 
 .ms-item input[type="checkbox"] {
   flex-shrink: 0;
+  width: 12px;
+  height: 12px;
+  min-width: 12px;
   margin: 0;
+  padding: 0;
+  /* Pico rounds small checkboxes enough that at 12px they read as radios. */
+  border-radius: 3px;
+  --pico-form-element-spacing-vertical: 0;
+  --pico-form-element-spacing-horizontal: 0;
+}
+
+/* Hierarchy guide — depth indentation is applied inline by
+   createMultiSelectDropdown; this draws the rail it indents past. */
+.ms-item--child {
+  position: relative;
+}
+
+.ms-item--child::before {
+  content: "";
+  position: absolute;
+  left: calc(0.35rem + 5px);
+  top: 0;
+  bottom: 0;
+  border-left: 1px solid var(--border);
 }
 
 .ms-item__swatch {
@@ -1189,15 +1657,25 @@ button.filter-active {
   flex-shrink: 0;
 }
 
-/* Items whose ancestor is selected and "Include children" is on */
+/* Items whose ancestor is selected and "Include children" is on.
+ * The old treatment was a 2px left border, which now collides with the
+ * hierarchy rail (.ms-item--child::before) and can't be told apart from it.
+ * A trailing "via parent" marker says the same thing unambiguously. */
 .ms-item--implied {
-  opacity: 0.6;
   background: rgba(99, 102, 241, 0.10);
-  border-left: 2px solid rgba(99, 102, 241, 0.45);
-  padding-left: calc(0.25rem - 2px); /* compensate for border */
+  color: var(--text-muted);
 }
+
 .ms-item--implied:hover {
   background: rgba(99, 102, 241, 0.18);
+}
+
+.ms-item--implied .ms-item__name::after {
+  content: "via parent";
+  margin-left: 0.5em;
+  font-size: 0.82em;
+  letter-spacing: 0.04em;
+  color: var(--color-info);
 }
 
 .ms-item__name {
@@ -1210,22 +1688,37 @@ button.filter-active {
 
 .ms-item__not-btn {
   flex-shrink: 0;
-  padding: 0 4px;
+  width: 17px;
+  height: 17px;
+  display: grid;
+  place-items: center;
+  padding: 0;
   font-size: 0.75em;
   border: 1px solid transparent;
   border-radius: 3px;
   cursor: pointer;
   background: none;
   color: var(--pico-muted-color, var(--text-muted));
-  opacity: 0.35;
-  line-height: 1.4;
+  opacity: 0;
+  line-height: 1;
   margin-left: auto;
+}
+
+/* Revealed on hover so the resting list is just checkboxes and names; the
+   active state stays visible regardless (see .ms-item__not-btn.active below). */
+.ms-item:hover .ms-item__not-btn,
+.ms-item:focus-within .ms-item__not-btn {
+  opacity: 0.5;
 }
 
 .ms-item__not-btn:hover {
   opacity: 1;
   color: var(--color-danger);
   border-color: var(--color-danger);
+}
+
+@media (hover: none) {
+  .ms-item__not-btn { opacity: 0.5; }
 }
 
 .ms-item__not-btn.active {

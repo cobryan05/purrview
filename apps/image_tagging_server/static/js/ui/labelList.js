@@ -20,11 +20,19 @@ import {
 import { fetchImageLabels, setImageLabel } from '/app-static/js/shared/api/imageLabels.js';
 import { VERIFIED_TAG_UUID, UNVERIFIED_TAG_UUID } from '/app-static/js/shared/api/review.js';
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
+import { prefs } from '/app-static/js/shared/prefs.js';
 import { setTool } from '../app/image-tagging/canvas/tools.js';
 import { verifyAllBboxes } from '../app/image-tagging/canvas/image.js';
-import { EditableField, TextBoxColorField } from '/app-static/js/ui/utils/fields/index.js';
-import { createGenericRow, toast, makeLabelFilterNotice } from '/app-static/js/ui/utils/index.js';
+import { toast, makeLabelFilterNotice } from '/app-static/js/ui/utils/index.js';
 import { openAnchoredPopup } from '/app-static/js/ui/utils/anchoredPopup.js';
+import {
+  ICONS,
+  iconAction,
+  makeColorWell,
+  makeRails,
+  makeSectionHeader,
+  openRowEditor,
+} from '/app-static/js/ui/utils/treeRow.js';
 
 const DEFAULT_COLOR = '#cccccc';
 
@@ -194,13 +202,7 @@ function toggleMovePicker(anchorRow, { label, labelsMap, indentLevel, onMove }) 
   const moveRow = document.createElement('div');
   moveRow.className = 'label-move-row';
   moveRow.dataset.moveRowFor = label.uuid;
-  Object.assign(moveRow.style, {
-    display: 'flex',
-    alignItems: 'center',
-    gap: '0.4em',
-    padding: '3px 5px',
-    paddingLeft: `${6 + (indentLevel + 1) * 14}px`,
-  });
+  moveRow.style.marginLeft = `${indentLevel * 14}px`;
 
   const select = buildMoveTargetSelect(labelsMap, invalidMoveTargets(labelsMap, label.uuid), label.parentUuid ?? null);
   moveRow.appendChild(select);
@@ -232,89 +234,291 @@ function toggleMovePicker(anchorRow, { label, labelsMap, indentLevel, onMove }) 
 }
 
 // ─── Shared row builder ──────────────────────────────────────────────────────
+//
+// One compact row shape for every mode:
+//
+//     [rails][caret][swatch][name][kids?] ……… [mode extras][hover actions]
+//
+// The rows this replaced were assembled from createGenericRow + EditableField,
+// which put four bordered 28px emoji buttons *before* the name — ~32px of height
+// per row, and a name whose x position moved with depth, so there was no column
+// to scan. Actions are now icon-only, right-aligned and revealed on hover; depth
+// is carried by hairline rails instead of raw padding.
 
-/**
- * Builds a base label row: a flex div with an indent, a color swatch, and a name span.
- * Callers may prepend leading controls (row.prepend) and append trailing controls (row.appendChild).
- *
- * @param {object} label
- * @param {number} indent
- * @param {{ padding?: string }} [opts]
- * @returns {{ row: HTMLDivElement, swatch: HTMLSpanElement, nameEl: HTMLSpanElement }}
- */
-export function buildLabelRow(label, indent, { padding = '3px 5px' } = {}) {
-  const row = document.createElement('div');
-  row.dataset.uuid = label.uuid;
-  row.dataset.testid = 'label-list-row';
-  Object.assign(row.style, {
-    display: 'flex',
-    alignItems: 'center',
-    gap: '0.4em',
-    padding,
-    paddingLeft: `${6 + indent * 14}px`,
-    borderRadius: '3px',
-    userSelect: 'none',
-  });
+// ── Collapse state ──────────────────────────────────────────────────────────
+// Kept outside the component because every mutation re-mounts the whole list
+// (mount() tears the container down), so component-local state would reset on
+// the very next save. Persisted so a folded tree stays folded across reloads.
 
-  const swatch = document.createElement('span');
-  Object.assign(swatch.style, {
-    width: '10px',
-    height: '10px',
-    borderRadius: '50%',
-    flexShrink: '0',
-    background: label.color ?? '#888',
-    display: 'inline-block',
-  });
+const COLLAPSE_PREF = 'ww_label_tree_collapsed_';
+/** @type {Map<string, Set<string>>} tree key → collapsed label UUIDs */
+const _collapsed = new Map();
 
-  const nameEl = document.createElement('span');
-  nameEl.dataset.testid = 'label-list-row-name';
-  nameEl.textContent = label.name;
-  nameEl.style.fontSize = '0.82em';
-
-  row.appendChild(swatch);
-  row.appendChild(nameEl);
-
-  return { row, swatch, nameEl };
+/** @param {string} key @returns {Set<string>} */
+function collapsedSet(key) {
+  if (!_collapsed.has(key)) {
+    const stored = prefs.read(COLLAPSE_PREF + key, []);
+    _collapsed.set(key, new Set(Array.isArray(stored) ? stored : []));
+  }
+  return _collapsed.get(key);
 }
 
-// ─── Edit mode ───────────────────────────────────────────────────────────────
+/** @param {string} key @param {string} uuid */
+function toggleCollapsed(key, uuid) {
+  const set = collapsedSet(key);
+  if (set.has(uuid)) set.delete(uuid);
+  else set.add(uuid);
+  prefs.write(COLLAPSE_PREF + key, [...set]);
+}
 
+/**
+ * Collapse or expand every parent in `byParent` at once.
+ * @param {string} key
+ * @param {Map<string|null, object[]>} byParent
+ * @param {boolean} collapse
+ */
+function setAllCollapsed(key, byParent, collapse) {
+  const set = collapsedSet(key);
+  for (const [parentUuid, children] of byParent) {
+    if (parentUuid === null || !children.length) continue;
+    if (collapse) set.add(parentUuid);
+    else set.delete(parentUuid);
+  }
+  prefs.write(COLLAPSE_PREF + key, [...set]);
+}
 
-function renderEditRows(byParent, container, parentUuid, indentLevel, onRerender, labelsMap) {
+/** True when at least one parent in `byParent` is currently expanded. */
+function anyExpanded(key, byParent) {
+  const set = collapsedSet(key);
+  for (const [parentUuid, children] of byParent) {
+    if (parentUuid !== null && children.length && !set.has(parentUuid)) return true;
+  }
+  return false;
+}
+
+// ── Rails ────────────────────────────────────────────────────────────────────
+
+/**
+ * Derive the rail kinds for `label` by walking up to the root.
+ *
+ * Labels whose parent was filtered out of `labelsMap` (a different scope, a
+ * dynamic label hidden from this tree) stop the walk there and render at the
+ * depth they're actually drawn at, matching how buildHierarchy groups them.
+ *
+ * @param {object} label
+ * @param {Map<string|null, object[]>} byParent
+ * @param {Map<string, object>} labelsMap
+ * @returns {string[]}
+ */
+function railKindsFor(label, byParent, labelsMap) {
+  const chain = [];
+  let cur = label;
+  while (cur?.parentUuid && labelsMap.has(cur.parentUuid)) {
+    chain.unshift(cur);
+    cur = labelsMap.get(cur.parentUuid);
+  }
+  return chain.map((node, i) => {
+    const siblings = byParent.get(node.parentUuid ?? null) ?? [];
+    const hasNext = siblings.length > 0 && siblings[siblings.length - 1].uuid !== node.uuid;
+    if (i === chain.length - 1) return hasNext ? 'elbow-cont' : 'elbow';
+    return hasNext ? 'line' : 'blank';
+  });
+}
+
+/** Total number of labels nested under `uuid`, at any depth. */
+function countDescendants(uuid, byParent) {
+  let total = 0;
+  const queue = [uuid];
+  while (queue.length > 0) {
+    for (const child of byParent.get(queue.shift()) ?? []) {
+      total += 1;
+      queue.push(child.uuid);
+    }
+  }
+  return total;
+}
+
+/**
+ * Build the shared compact row. Callers add their own mode-specific controls by
+ * inserting around the returned `swatch` / `nameEl` and appending to `row`.
+ *
+ * @param {object} label
+ * @param {{
+ *   byParent: Map<string|null, object[]>,
+ *   labelsMap: Map<string, object>,
+ *   collapseKey?: string|null,   omit to render a permanently-expanded tree
+ *   onToggle?: (() => void)|null,
+ *   showCaret?: boolean,
+ *   flat?: boolean,              skip rails entirely (dynamic-label sections)
+ * }} opts
+ * @returns {{ row: HTMLDivElement, swatch: HTMLSpanElement, nameEl: HTMLSpanElement,
+ *            collapsed: boolean, hasChildren: boolean }}
+ */
+export function buildLabelRow(label, {
+  byParent,
+  labelsMap,
+  collapseKey = null,
+  onToggle = null,
+  showCaret = true,
+  flat = false,
+} = {}) {
+  const row = document.createElement('div');
+  row.className = 'lt-row';
+  row.dataset.uuid = label.uuid;
+  row.dataset.testid = 'label-list-row';
+
+  row.appendChild(makeRails(flat ? [] : railKindsFor(label, byParent, labelsMap)));
+
+  const hasChildren = (byParent.get(label.uuid) ?? []).length > 0;
+  const collapsed = Boolean(collapseKey) && collapsedSet(collapseKey).has(label.uuid);
+
+  if (showCaret) {
+    const caret = document.createElement('button');
+    caret.type = 'button';
+    caret.className = `lt-caret${hasChildren && collapseKey ? '' : ' lt-caret--leaf'}`;
+    caret.innerHTML = ICONS.caret;
+    caret.setAttribute('aria-expanded', String(!collapsed));
+    if (hasChildren && collapseKey) {
+      caret.title = `${collapsed ? 'Expand' : 'Collapse'} ${label.name}`;
+      caret.setAttribute('aria-label', caret.title);
+      caret.addEventListener('click', (e) => { e.stopPropagation(); onToggle?.(); });
+    } else {
+      // Leaves keep the caret's width so names stay in one column, but must not
+      // be reachable by keyboard or announced.
+      caret.tabIndex = -1;
+      caret.setAttribute('aria-hidden', 'true');
+    }
+    row.appendChild(caret);
+  }
+
+  const swatch = document.createElement('span');
+  swatch.className = 'lt-swatch';
+  swatch.style.background = label.color ?? '#888';
+  row.appendChild(swatch);
+
+  const nameEl = document.createElement('span');
+  nameEl.className = 'lt-name';
+  nameEl.dataset.testid = 'label-list-row-name';
+  nameEl.textContent = label.name;
+  row.appendChild(nameEl);
+
+  if (collapsed && hasChildren) {
+    const kids = document.createElement('span');
+    kids.className = 'lt-kids';
+    const n = countDescendants(label.uuid, byParent);
+    kids.textContent = String(n);
+    kids.title = `${n} nested label${n === 1 ? '' : 's'} hidden — expand to see them`;
+    row.appendChild(kids);
+  }
+
+  return { row, swatch, nameEl, collapsed, hasChildren };
+}
+
+/**
+ * Insert an inline create form directly beneath `anchorRow`, one level deeper.
+ *
+ * @param {HTMLElement} anchorRow
+ * @param {{ parentUuid: string, railKinds: string[], onRerender: () => void }} opts
+ */
+function openInlineCreate(anchorRow, { parentUuid, railKinds, onRerender }) {
+  // Only one create form open at a time within this tree.
+  anchorRow.parentElement?.querySelectorAll('[data-create-row]').forEach((el) => el.remove());
+
+  const row = document.createElement('div');
+  row.className = 'lt-row';
+  row.dataset.createRow = parentUuid;
+  row.appendChild(makeRails(railKinds));
+
+  // Occupy the caret column so the new name lines up with its future siblings.
+  const spacer = document.createElement('span');
+  spacer.className = 'lt-caret lt-caret--leaf';
+  spacer.setAttribute('aria-hidden', 'true');
+  row.appendChild(spacer);
+
+  anchorRow.after(row);
+  openRowEditor(row, {
+    color: DEFAULT_COLOR,
+    placeholder: 'New Label Name',
+    onSave: async ({ name, color }) => {
+      if (!name) { toast('Error: Name required', 5000, 'error'); return; }
+      try {
+        await createNewLabel(name, color, parentUuid);
+        onRerender();
+      } catch (err) {
+        toast(err.message, 5000, 'error');
+      }
+    },
+    onCancel: () => row.remove(),
+  });
+}
+
+function renderEditRows(byParent, container, parentUuid, indentLevel, onRerender, labelsMap, collapseKey) {
   const children = byParent.get(parentUuid ?? null) ?? [];
   for (const label of children) {
     const { name, color, uuid } = label;
 
-    const addChildButton = {
-      text: 'Add Child',
-      emoji: '➕',
-      onClick: ({ row }) => {
-        const childRow = createGenericRow({
-          field: new EditableField({
-            buttonsLast: true,
-            field: new TextBoxColorField({ placeholder: 'New Label Name', color: DEFAULT_COLOR }),
-            editMode: true,
-            onSave: async ({ text: newText, color: newColor }) => {
-              try {
-                await createNewLabel(newText, newColor, uuid);
-                onRerender();
-              } catch (err) {
-                toast(err.message, 5000, 'error');
-              }
-            },
-            onCancel: () => onRerender(),
-          }),
-          indentLevel: indentLevel + 1,
-        });
-        row.after(childRow);
-      },
-    };
+    const { row, swatch, nameEl, collapsed } = buildLabelRow(label, {
+      byParent,
+      labelsMap,
+      collapseKey,
+      onToggle: () => { toggleCollapsed(collapseKey, uuid); onRerender(); },
+    });
+    row.dataset.testid = 'label-list-row-edit';
 
-    const moveButton = {
-      text: 'Move',
-      emoji: '↕️',
-      onClick: ({ row }) => {
-        toggleMovePicker(row, {
+    // The swatch *is* the colour picker — recolouring no longer requires
+    // entering edit mode first. Committing the OS picker PATCHes immediately.
+    const well = makeColorWell(color ?? DEFAULT_COLOR, async (newColor) => {
+      try {
+        await updateLabel(uuid, name, newColor);
+        onRerender();
+      } catch (err) {
+        toast(err.message, 5000, 'error');
+      }
+    });
+    swatch.replaceWith(well);
+
+    const startRename = () => openRowEditor(row, {
+      name,
+      color: color ?? DEFAULT_COLOR,
+      uuid,
+      placeholder: 'Label name',
+      onSave: async ({ name: newName, color: newColor }) => {
+        if (!newName) { toast('Error: Name required', 5000, 'error'); return; }
+        try {
+          await updateLabel(uuid, newName, newColor);
+          onRerender();
+        } catch (err) {
+          toast(err.message, 5000, 'error');
+        }
+      },
+      onCancel: () => onRerender(),
+    });
+
+    nameEl.classList.add('lt-name--action');
+    nameEl.title = 'Click to rename';
+    nameEl.addEventListener('click', startRename);
+
+    const acts = document.createElement('div');
+    acts.className = 'lt-acts';
+    acts.append(
+      iconAction('addChild', 'Add Child', {
+        onClick: () => {
+          // A new child is always the last one, so its own rail is a plain
+          // elbow; the ancestors above it keep whatever they already had.
+          const parentRails = railKindsFor(label, byParent, labelsMap);
+          const railKinds = [
+            ...parentRails.map((k) => (k === 'elbow-cont' ? 'line' : k === 'elbow' ? 'blank' : k)),
+            'elbow',
+          ];
+          // Adding to a collapsed parent expands it in state but doesn't
+          // re-render — a re-render here would throw away the form we're about
+          // to open. The row's caret catches up on the save that follows.
+          if (collapsed) toggleCollapsed(collapseKey, uuid);
+          openInlineCreate(row, { parentUuid: uuid, railKinds, onRerender });
+        },
+      }),
+      iconAction('move', 'Move', {
+        onClick: () => toggleMovePicker(row, {
           label,
           labelsMap,
           indentLevel,
@@ -322,60 +526,34 @@ function renderEditRows(byParent, container, parentUuid, indentLevel, onRerender
             await updateLabel(uuid, name, color, { parentUuid: newParentUuid });
             onRerender();
           },
-        });
-      },
-    };
-
-    const deleteButton = {
-      text: 'Delete',
-      emoji: '🗑️',
-      onClick: async () => {
-        if (!window.confirm(`Delete label "${name}"?`)) return;
-        try {
-          await deleteLabel(uuid);
-          onRerender();
-        } catch (err) {
-          toast(err.message, 5000, 'error');
-        }
-      },
-    };
-
-    const labelRow = createGenericRow({
-      field: new EditableField({
-        buttonsLast: true,
-        field: new TextBoxColorField({ text: name, uuid, placeholder: 'New Label Name', color }),
-        onSave: async ({ text: newText, color: newColor }) => {
+        }),
+      }),
+      iconAction('edit', 'Edit', { onClick: startRename }),
+      iconAction('trash', 'Delete', {
+        className: 'lt-act--danger',
+        onClick: async () => {
+          if (!window.confirm(`Delete label "${name}"?`)) return;
           try {
-            await updateLabel(uuid, newText, newColor);
+            await deleteLabel(uuid);
             onRerender();
           } catch (err) {
             toast(err.message, 5000, 'error');
           }
         },
-        onCancel: () => onRerender(),
       }),
-      indentLevel,
-      alignLeftButtons: true,
-      leftButtons: [addChildButton, moveButton, deleteButton],
-      rightButtons: [],
-    });
+    );
+    row.appendChild(acts);
+    container.appendChild(row);
 
-    labelRow.dataset.uuid = uuid;
-    labelRow.dataset.testid = 'label-list-row-edit';
-    container.appendChild(labelRow);
-
-    renderEditRows(byParent, container, uuid, indentLevel + 1, onRerender, labelsMap);
+    if (!collapsed) {
+      renderEditRows(byParent, container, uuid, indentLevel + 1, onRerender, labelsMap, collapseKey);
+    }
   }
 }
 
 async function mountEditMode(container, { filter, onRerender }) {
   const inner = document.createElement('div');
-  Object.assign(inner.style, {
-    display: 'inline-block',
-    verticalAlign: 'top',
-    width: 'max-content',
-    minWidth: '0',
-  });
+  inner.className = 'label-tree';
   container.appendChild(inner);
 
   const allLabels = await fetchLabels();
@@ -383,85 +561,74 @@ async function mountEditMode(container, { filter, onRerender }) {
   const composedFilter = filter ? (label) => hideDynamic(label) && filter(label) : hideDynamic;
   const labelsMap = new Map([...allLabels].filter(([, l]) => composedFilter(l)));
 
-  function addSectionHeader(text) {
-    const hdr = document.createElement('div');
-    hdr.textContent = text;
-    Object.assign(hdr.style, {
-      fontSize: '0.72em',
-      fontWeight: 'bold',
-      color: '#777',
-      textTransform: 'uppercase',
-      letterSpacing: '0.06em',
-      padding: '4px 6px 2px',
-    });
-    inner.appendChild(hdr);
-  }
-
   function addCreateRow(scopeValue) {
     const placeholder = scopeValue === 'object' ? 'New Object Label' : 'New Image Label';
-    const row = createGenericRow({
-      field: new EditableField({
-        buttonsLast: true,
-        field: new TextBoxColorField({ text: '', placeholder, color: DEFAULT_COLOR }),
-        editMode: true,
-      }),
-      indentLevel: 0,
-      leftButtons: [
-        {
-          text: 'Add label',
-          emoji: '➕',
-          onClick: async ({ field }) => {
-            const val = field.getValue();
-            const name = val.text?.trim();
-            const color = val.color || DEFAULT_COLOR;
-            if (!name) { toast('Error: Name required', 5000, 'error'); return; }
-            try {
-              await createNewLabel(name, color, null, 'standard', scopeValue);
-              onRerender();
-            } catch (err) {
-              toast(err.message, 5000, 'error');
-            }
-          },
-        },
-      ],
-      rightButtons: [],
-    });
+    const row = document.createElement('div');
+    row.className = 'lt-newrow';
     row.dataset.testid = scopeValue === 'object' ? 'label-list-new-object-row' : 'label-list-new-image-row';
+
+    const well = makeColorWell(DEFAULT_COLOR);
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.placeholder = placeholder;
+    input.setAttribute('aria-label', placeholder);
+
+    const submit = async () => {
+      const name = input.value.trim();
+      if (!name) { toast('Error: Name required', 5000, 'error'); return; }
+      try {
+        await createNewLabel(name, well.getValue() || DEFAULT_COLOR, null, 'standard', scopeValue);
+        onRerender();
+      } catch (err) {
+        toast(err.message, 5000, 'error');
+      }
+    };
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); submit(); }
+    });
+
+    row.append(well, input, iconAction('add', 'Add label', { onClick: submit }));
     inner.appendChild(row);
   }
 
-  // Object Labels section
-  // Scoped to a per-section labelsMap (not just a filtered byParent view) so
-  // the Move picker's target list only ever offers same-scope labels — the
-  // two sections are already rendered as separate trees, so this just keeps
-  // "Move to…" consistent with what's on screen.
-  const objLabelsMap = new Map([...labelsMap].filter(([, l]) => l.scope === 'object'));
-  addSectionHeader('Object Labels');
-  const byParentObj = buildHierarchy(objLabelsMap, null);
-  renderEditRows(byParentObj, inner, null, 0, onRerender, objLabelsMap);
-  addCreateRow('object');
+  /**
+   * Render one scope section: header (with count + collapse-all) then its tree.
+   *
+   * Each section is scoped to its own labelsMap — not just a filtered byParent
+   * view — so the Move picker's target list only ever offers same-scope labels.
+   * The two sections are already separate trees on screen; this keeps "Move to…"
+   * consistent with what's visible.
+   */
+  function addSection({ scope, title, collapseKey, extraControls = [] }) {
+    const scopedMap = new Map([...labelsMap].filter(([, l]) => l.scope === scope));
+    const byParent = buildHierarchy(scopedMap, null);
 
-  // Spacer between sections
-  const spacer = document.createElement('div');
-  spacer.style.height = '16px';
-  inner.appendChild(spacer);
+    const expanded = anyExpanded(collapseKey, byParent);
+    const hasParents = [...byParent.keys()].some((k) => k !== null);
+    const collapseAll = hasParents
+      ? iconAction('caret', expanded ? 'Collapse all' : 'Expand all', {
+        className: expanded ? '' : 'lt-act--collapsed',
+        onClick: () => { setAllCollapsed(collapseKey, byParent, expanded); onRerender(); },
+      })
+      : null;
 
-  // Image Labels section
-  const imgLabelsMap = new Map([...labelsMap].filter(([, l]) => l.scope === 'image'));
-  addSectionHeader('Image Labels');
-  const byParentImg = buildHierarchy(imgLabelsMap, null);
-  renderEditRows(byParentImg, inner, null, 0, onRerender, imgLabelsMap);
-  addCreateRow('image');
+    inner.appendChild(makeSectionHeader(title, scopedMap.size, collapseAll, ...extraControls));
+    renderEditRows(byParent, inner, null, 0, onRerender, scopedMap, collapseKey);
+    if (scopedMap.size === 0) {
+      const empty = document.createElement('div');
+      empty.className = 'lt-empty';
+      empty.textContent = `No ${title.toLowerCase()} yet`;
+      inner.appendChild(empty);
+    }
+    addCreateRow(scope);
+  }
 
-  // Refresh button
-  const refreshWrap = document.createElement('div');
-  refreshWrap.className = 'label-refresh-wrap';
-  const refreshBtn = document.createElement('button');
-  refreshBtn.textContent = '🔄 Refresh';
-  refreshBtn.className = 'label-refresh-btn';
-  refreshBtn.onclick = () => { clearLabelsCache(); onRerender(); };
-  refreshWrap.appendChild(refreshBtn);
-  inner.appendChild(refreshWrap);
+  const refreshBtn = iconAction('refresh', 'Refresh', {
+    onClick: () => { clearLabelsCache(); onRerender(); },
+  });
+
+  addSection({ scope: 'object', title: 'Object Labels', collapseKey: 'edit-object', extraControls: [refreshBtn] });
+  addSection({ scope: 'image', title: 'Image Labels', collapseKey: 'edit-image' });
 
   return { destroy() {} };
 }
@@ -701,6 +868,11 @@ async function mountSelectMode(container, { runtime, filter }) {
   const dynamicMap = new Map([...filteredMap].filter(([, l]) => l.labelType === 'dynamic'));
   const filterNotice = makeLabelFilterNotice(rawLabelsMap.size - regularMap.size - imageClassMap.size - dynamicMap.size);
   if (filterNotice) container.appendChild(filterNotice);
+  // Rows live in their own element so remount() can rebuild them without
+  // touching the sticky header (or the listeners wired to its buttons).
+  const listEl = document.createElement('div');
+  listEl.className = 'label-tree';
+  container.appendChild(listEl);
   // Labels outside the active TC — used only as the baseline for the
   // 'training-run' target preset (they stay visible but start untargeted).
   const excludedUuids = tc ? activeTrainingConfig.getExcludedUuids(rawLabelsMap) : new Set();
@@ -806,12 +978,18 @@ async function mountSelectMode(container, { runtime, filter }) {
     activeTrainingConfig.applyCustomTargeting(targetedUuids());
   }
 
-  function renderSelectRows(parentUuid, indent, bp = byParent) {
+  function renderSelectRows(parentUuid, indent, bp = byParent, opts = {}) {
+    const { labelsMap: sectionMap = regularMap, collapseKey = null } = opts;
     const children = bp.get(parentUuid ?? null) ?? [];
     for (const label of children) {
       labelByUuid.set(label.uuid, label);
-      const { row, nameEl } = buildLabelRow(label, indent);
-      row.className = 'label-panel-row';
+      const { row, swatch, nameEl, collapsed } = buildLabelRow(label, {
+        byParent: bp,
+        labelsMap: sectionMap,
+        collapseKey,
+        onToggle: () => { toggleCollapsed(collapseKey, label.uuid); remount(); },
+      });
+      row.classList.add('label-panel-row');
       row.style.cursor = 'pointer';
 
       // Right-aligned row accessories: coverage badges + Apply-to-all target toggle.
@@ -971,6 +1149,10 @@ async function mountSelectMode(container, { runtime, filter }) {
       nameEl.after(rightWrap);
 
       const btn = document.createElement('button');
+      // Named, not "the first button in the row" — the disclosure caret is now
+      // also a <button> and sits ahead of this one.
+      btn.className = 'label-status-btn';
+      btn.type = 'button';
       Object.assign(btn.style, {
         flexShrink: '0',
         width: '22px',
@@ -1013,7 +1195,9 @@ async function mountSelectMode(container, { runtime, filter }) {
         runtime?.markDirty?.();
       });
 
-      row.prepend(btn);
+      // Between the caret and the swatch, so the presence buttons line up in a
+      // column instead of shifting right with each level of nesting.
+      swatch.before(btn);
 
       row.addEventListener('click', () => {
         // Image-scope labels have no bboxes — don't arm the bbox draw tool.
@@ -1022,8 +1206,8 @@ async function mountSelectMode(container, { runtime, filter }) {
         setTool(runtime, `bbox:${label.uuid}`);
       });
 
-      container.appendChild(row);
-      renderSelectRows(label.uuid, indent + 1, bp);
+      listEl.appendChild(row);
+      if (!collapsed) renderSelectRows(label.uuid, indent + 1, bp, opts);
     }
   }
 
@@ -1053,25 +1237,17 @@ async function mountSelectMode(container, { runtime, filter }) {
    * control is wired to the UUIDs that appeared during this section's render.
    * @param {string} title
    * @param {Map<string|null, object[]>} bp
-   * @param {{ color: string, italic?: boolean, rule?: boolean }} opts
+   * @param {{ color: string, italic?: boolean, labelsMap: Map<string,object>, collapseKey: string }} opts
    */
-  function renderSection(title, bp, { color, italic = false, rule = false }) {
-    if (rule) {
-      const hr = document.createElement('hr');
-      Object.assign(hr.style, { margin: '6px 4px', borderColor: '#444' });
-      container.appendChild(hr);
-    }
-
-    const headerWrap = document.createElement('div');
-    Object.assign(headerWrap.style, { display: 'flex', alignItems: 'center', gap: '6px', padding: '2px 6px 4px' });
-
-    const titleEl = document.createElement('div');
-    titleEl.textContent = title;
-    Object.assign(titleEl.style, {
-      fontWeight: 'bold', fontSize: '0.8em', textTransform: 'uppercase',
-      letterSpacing: '0.05em', color, ...(italic ? { fontStyle: 'italic' } : {}),
-    });
-    headerWrap.appendChild(titleEl);
+  function renderSection(title, bp, { color, italic = false, labelsMap: sectionMap, collapseKey }) {
+    const expanded = anyExpanded(collapseKey, bp);
+    const hasParents = [...bp.keys()].some((k) => k !== null);
+    const collapseAll = hasParents
+      ? iconAction('caret', expanded ? 'Collapse all' : 'Expand all', {
+        className: expanded ? '' : 'lt-act--collapsed',
+        onClick: () => { setAllCollapsed(collapseKey, bp, expanded); remount(); },
+      })
+      : null;
 
     const master = document.createElement('span');
     master.className = 'label-section-master';
@@ -1086,34 +1262,62 @@ async function mountSelectMode(container, { runtime, filter }) {
     noneBtn.className = 'label-section-none';
     noneBtn.textContent = '⊘ none';
     noneBtn.title = 'Exclude every label in this section from Apply-to-all';
-    master.appendChild(allBtn);
-    master.appendChild(sep);
-    master.appendChild(noneBtn);
-    headerWrap.appendChild(master);
-    container.appendChild(headerWrap);
+    master.append(allBtn, sep, noneBtn);
+
+    const header = makeSectionHeader(title, null, collapseAll, master);
+    header.style.color = color;
+    if (italic) header.style.fontStyle = 'italic';
+    listEl.appendChild(header);
 
     // Capture which UUIDs this section contributes so the master targets them.
     const before = new Set(labelByUuid.keys());
-    renderSelectRows(null, 0, bp);
+    renderSelectRows(null, 0, bp, { labelsMap: sectionMap, collapseKey });
     const sectionUuids = [...labelByUuid.keys()].filter(u => !before.has(u));
     allBtn.addEventListener('click', () => setTargetedMany(sectionUuids, true));
     noneBtn.addEventListener('click', () => setTargetedMany(sectionUuids, false));
   }
 
-  // Object Labels are the primary section; Image Classification and Dynamic
-  // Labels follow, each preceded by a divider. Empty sections are omitted.
-  if (regularMap.size > 0) {
-    renderSection('Object Labels', byParent, { color: '#aaa' });
-  }
-  if (imageClassMap.size > 0) {
-    renderSection('Image Classification', byParentImageClass, { color: '#88aaff', rule: regularMap.size > 0 });
-  }
-  if (dynamicMap.size > 0) {
-    renderSection('Dynamic Labels', byParentDynamic, {
-      color: '#888', italic: true, rule: regularMap.size > 0 || imageClassMap.size > 0,
-    });
+  /**
+   * Redraw just the rows.
+   *
+   * Collapsing must NOT go through createLabelList's mount(): that re-runs this
+   * whole function, and `pendingFlush` (presence changes not yet written to the
+   * server) lives in this closure. Rebuilding only `listEl` keeps every piece of
+   * unsaved state — pendingFlush, serverStates, targetOverrides — intact.
+   */
+  function remount() {
+    listEl.innerHTML = '';
+    labelByUuid.clear();
+    rowUpdaters.clear();
+    targetUpdaters.clear();
+    renderSections();
+    refreshStatusButtons();
+    const tool = runtime?.tool ?? '';
+    syncHighlight(tool.startsWith('bbox:') ? tool.slice(5) : null);
+    updateBulkLabel();
   }
 
+  // Object Labels are the primary section; Image Classification and Dynamic
+  // Labels follow. Empty sections are omitted.
+  function renderSections() {
+    if (regularMap.size > 0) {
+      renderSection('Object Labels', byParent, {
+        color: '#aaa', labelsMap: regularMap, collapseKey: 'select-object',
+      });
+    }
+    if (imageClassMap.size > 0) {
+      renderSection('Image Classification', byParentImageClass, {
+        color: '#88aaff', labelsMap: imageClassMap, collapseKey: 'select-image',
+      });
+    }
+    if (dynamicMap.size > 0) {
+      renderSection('Dynamic Labels', byParentDynamic, {
+        color: '#888', italic: true, labelsMap: dynamicMap, collapseKey: 'select-dynamic',
+      });
+    }
+  }
+
+  renderSections();
   updateBulkLabel();
 
   function refreshStatusButtons() {
@@ -1321,10 +1525,12 @@ async function mountModelConfigMode(container, {
   defaultSpec = null,
   onSubmodelsChanged = () => {},
   onRollUpUncheckedChanged = () => {},
-  onLabelsChanged = () => {},
   scopeFilter = null,  // 'object' | 'image' | null (null = show all)
 } = {}) {
   const rawMap = preloaded ?? await fetchLabels();
+  container.classList.add('label-tree');
+  // Per-scope so folding the object tree doesn't fold the image one.
+  const collapseKey = `modelconfig-${scopeFilter ?? 'all'}`;
 
   // Filter to the relevant scope, then remap orphaned parents to root so every
   // filtered label is reachable in the hierarchy tree.
@@ -1364,21 +1570,29 @@ async function mountModelConfigMode(container, {
       const isParent = childCountMap.has(label.uuid);
       const showSubmodel = isParent && allowSubmodels;
 
-      const { row, nameEl } = buildLabelRow(label, indent, { padding: '3px 6px' });
+      const { row, swatch, nameEl, collapsed } = buildLabelRow(label, {
+        byParent,
+        labelsMap: displayMap,
+        collapseKey,
+        onToggle: () => { toggleCollapsed(collapseKey, label.uuid); rerender(); },
+      });
 
       const cb = document.createElement('input');
       cb.type = 'checkbox';
       cb.checked = selected.has(label.uuid);
       cb.className = 'label-row-checkbox';
+      cb.setAttribute('aria-label', label.name);
 
+      nameEl.classList.add('lt-name--action');
       nameEl.style.cursor = 'pointer';
-      nameEl.style.whiteSpace = 'nowrap';
       nameEl.addEventListener('click', () => {
         cb.checked = !cb.checked;
         cb.dispatchEvent(new Event('change'));
       });
 
-      row.prepend(cb);
+      // Checkbox goes between the caret and the swatch, so the boxes form a
+      // column of their own rather than shifting with depth.
+      swatch.before(cb);
 
       // "roll-up" badge — only for labels with children
       let rollUpToggle = null;
@@ -1414,27 +1628,10 @@ async function mountModelConfigMode(container, {
         row.appendChild(badge);
       }
 
-      // "move" control — reachable regardless of parent/child status; keyed
-      // entirely by label_uuid downstream (ModelConfigNode), so re-parenting
-      // here never disturbs the selection/submodel/roll-up state above.
-      const moveBtn = document.createElement('button');
-      moveBtn.type = 'button';
-      moveBtn.className = 'label-move-trigger';
-      moveBtn.title = 'Move to a different parent';
-      moveBtn.textContent = '↕️ Move';
-      moveBtn.addEventListener('click', (e) => {
-        e.stopPropagation();
-        toggleMovePicker(row, {
-          label,
-          labelsMap: displayMap,
-          indentLevel: indent,
-          onMove: async (newParentUuid) => {
-            await updateLabel(label.uuid, label.name, label.color, { parentUuid: newParentUuid });
-            await onLabelsChanged?.();
-          },
-        });
-      });
-      row.appendChild(moveBtn);
+      // No re-parent control here. Editing the label hierarchy belongs on
+      // Configuration › Labels & Tags — that is the one screen whose job is
+      // editing labels, and having a second entry point meant a model config
+      // could silently reshape the vocabulary every other screen depends on.
 
       // ---- Checkbox event -------------------------------------------------
       cb.addEventListener('change', () => {
@@ -1488,54 +1685,84 @@ async function mountModelConfigMode(container, {
 
       container.appendChild(row);
 
-      if (isParent) appendRows(label.uuid, indent + 1);
+      if (isParent && !collapsed) appendRows(label.uuid, indent + 1);
     }
   }
 
-  appendRows(null, 0);
+  /**
+   * Redraw in place. Collapsing can't go through createLabelList's mount(),
+   * because that re-seeds the tree from the caller's `initialSelected` /
+   * `initialSubmodels` snapshot and would throw away every checkbox the user
+   * has ticked since the form opened. `selected` / `submodels` /
+   * `rollUpUnchecked` are the live sets, so re-rendering from them is lossless.
+   */
+  function rerender() {
+    container.innerHTML = '';
+    render();
+  }
 
-  // ── Dynamic Labels section ────────────────────────────────────────────────
-  // Rendered as a flat list with checkboxes only — no sub-model or roll-up
-  // toggles since dynamic labels don't have a structured parent/child hierarchy.
-  if (dynamicMap.size > 0) {
-    const hr = document.createElement('hr');
-    hr.className = 'label-dynamic-hr';
-    container.appendChild(hr);
+  function render() {
+    const emptyByParent = new Map();
 
-    const dynHdr = document.createElement('p');
-    dynHdr.className = 'panel-section-label';
-    dynHdr.classList.add('label-dynamic-header');
-    dynHdr.textContent = 'Dynamic Labels';
-    container.appendChild(dynHdr);
+    if (displayMap.size > 0) {
+      const expanded = anyExpanded(collapseKey, byParent);
+      const hasParents = childCountMap.size > 0;
+      container.appendChild(makeSectionHeader(
+        scopeFilter === 'image' ? 'Image Labels' : 'Object Labels',
+        displayMap.size,
+        hasParents
+          ? iconAction('caret', expanded ? 'Collapse all' : 'Expand all', {
+            className: expanded ? '' : 'lt-act--collapsed',
+            onClick: () => { setAllCollapsed(collapseKey, byParent, expanded); rerender(); },
+          })
+          : null,
+      ));
+    }
 
-    for (const label of dynamicMap.values()) {
-      const { row, nameEl } = buildLabelRow(label, 0, { padding: '3px 6px' });
+    appendRows(null, 0);
 
-      const cb = document.createElement('input');
-      cb.type = 'checkbox';
-      cb.checked = selected.has(label.uuid);
-      cb.className = 'label-row-checkbox';
+    // ── Dynamic Labels section ──────────────────────────────────────────────
+    // A flat list with checkboxes only — no sub-model or roll-up toggles, since
+    // dynamic labels have no structured parent/child hierarchy to roll up.
+    if (dynamicMap.size > 0) {
+      container.appendChild(makeSectionHeader('Dynamic Labels', dynamicMap.size));
 
-      nameEl.style.cursor = 'pointer';
-      nameEl.style.whiteSpace = 'nowrap';
-      nameEl.addEventListener('click', () => {
-        cb.checked = !cb.checked;
-        cb.dispatchEvent(new Event('change'));
-      });
+      for (const label of dynamicMap.values()) {
+        const { row, swatch, nameEl } = buildLabelRow(label, {
+          byParent: emptyByParent,
+          labelsMap: dynamicMap,
+          flat: true,
+        });
 
-      row.prepend(cb);
+        const cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.checked = selected.has(label.uuid);
+        cb.className = 'label-row-checkbox';
+        cb.setAttribute('aria-label', label.name);
 
-      cb.addEventListener('change', () => {
-        if (cb.checked) {
-          selected.add(label.uuid);
-        } else {
-          selected.delete(label.uuid);
-        }
-      });
+        nameEl.classList.add('lt-name--action');
+        nameEl.style.cursor = 'pointer';
+        nameEl.addEventListener('click', () => {
+          cb.checked = !cb.checked;
+          cb.dispatchEvent(new Event('change'));
+        });
 
-      container.appendChild(row);
+        swatch.before(cb);
+
+        cb.addEventListener('change', () => {
+          if (cb.checked) {
+            selected.add(label.uuid);
+          } else {
+            selected.delete(label.uuid);
+          }
+        });
+
+        container.appendChild(row);
+      }
     }
   }
+
+  render();
 
   return {
     getSelected: () => new Set(selected),
@@ -1560,9 +1787,6 @@ async function mountModelConfigMode(container, {
  *   initialSubmodels?: Map<string,string>, model-config mode
  *   defaultSpec?: {modelType:string,architecture:string}|null,                  model-config mode
  *   onSubmodelsChanged?: function,         model-config mode
- *   onLabelsChanged?: () => (void|Promise<void>), model-config mode; called after
- *     a re-parent ("Move to…") succeeds, so callers can refetch labels and
- *     rebuild both the tree and the sub-model panels derived from it.
  * }} options
  * @returns {Promise<{
  *   destroy(): void,
@@ -1583,7 +1807,6 @@ export async function createLabelList(container, options = {}) {
     defaultSpec = null,
     onSubmodelsChanged = () => {},
     onRollUpUncheckedChanged = () => {},
-    onLabelsChanged = () => {},
     scopeFilter = null,
   } = options;
 
@@ -1614,7 +1837,7 @@ export async function createLabelList(container, options = {}) {
         } else if (mode === 'model-config') {
           handle = await mountModelConfigMode(container, {
             labelsMap, initialSelected, initialSubmodels, initialRollUpUnchecked,
-            defaultSpec, onSubmodelsChanged, onRollUpUncheckedChanged, onLabelsChanged, scopeFilter,
+            defaultSpec, onSubmodelsChanged, onRollUpUncheckedChanged, scopeFilter,
           });
         } else {
           handle = await mountSelectMode(container, { runtime, filter });
