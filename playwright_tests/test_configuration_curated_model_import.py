@@ -19,6 +19,8 @@ import re
 import pytest
 from playwright.sync_api import Page, Route, expect
 
+from playwright_tests.waits import wait_until
+
 _DOWNLOAD_BUTTON_TEXT = re.compile(r"^Download & Import$")
 
 _CURATED_MODELS_RESPONSE = {
@@ -155,7 +157,11 @@ class TestCuratedFormConversionBadgeAndHealthGate:
         page.locator("#model-labels-box input[type=text]").first.fill("my-converted-model")
 
         page.locator("#model-labels-box button", has_text=_DOWNLOAD_BUTTON_TEXT).click()
-        page.wait_for_timeout(700)
+        wait_until(
+            page,
+            lambda: len(create_calls) >= 1,
+            lambda: f"Expected 1 POST to /api/tasks/configs/create, got {len(create_calls)}",
+        )
 
         assert len(create_calls) == 1, f"Expected 1 POST to /api/tasks/configs/create, got {len(create_calls)}"
         payload = create_calls[0]

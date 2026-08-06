@@ -21,6 +21,8 @@ import json
 import pytest
 from playwright.sync_api import Page, Route, expect
 
+from playwright_tests.waits import wait_until
+
 # ---------------------------------------------------------------------------
 # Navigation helpers
 # ---------------------------------------------------------------------------
@@ -181,13 +183,13 @@ class TestSaveOverride:
         inf_row = page.locator("#tab-settings .settings-server-row").nth(0)
         inf_row.locator(".settings-server-input").fill("http://override.example.com:9999")
         inf_row.locator("button", has_text="Save").click()
-        page.wait_for_timeout(700)
-
-        assert put_calls, "Expected PUT to /api/settings/{key}"
+        wait_until(page, lambda: put_calls, "Expected PUT to /api/settings/{key}")
         url, body = put_calls[0]
         assert url.rstrip("/").endswith("/inference_server_url")
         assert body == {"value": "http://override.example.com:9999"}
-        assert reload_calls, "Expected POST to /api/reload-server-config"
+        # The reload POST is fired *after* the PUT resolves, so it needs its own
+        # wait — arriving at the PUT says nothing about the reload having landed.
+        wait_until(page, lambda: reload_calls, "Expected POST to /api/reload-server-config")
 
         expect(inf_row.locator(".settings-server-status")).to_have_text("Using: http://override.example.com:9999")
         expect(inf_row.locator(".settings-server-status")).to_have_attribute("data-state", "info")
@@ -214,9 +216,7 @@ class TestSaveOverride:
         inf_row = page.locator("#tab-settings .settings-server-row").nth(0)
         inf_row.locator(".settings-server-input").fill("")
         inf_row.locator("button", has_text="Save").click()
-        page.wait_for_timeout(700)
-
-        assert put_calls, "Expected PUT to /api/settings/{key}"
+        wait_until(page, lambda: put_calls, "Expected PUT to /api/settings/{key}")
         _, body = put_calls[0]
         assert body == {"value": ""}
         expect(inf_row.locator(".settings-server-status")).to_have_text("Using default: http://localhost:8001")
@@ -239,9 +239,7 @@ class TestTestConnection:
         train_row = page.locator("#tab-settings .settings-server-row").nth(1)
         train_row.locator(".settings-server-input").fill("http://my-training:7777")
         train_row.locator("button", has_text="Test").click()
-        page.wait_for_timeout(500)
-
-        assert calls, "Expected POST to /api/test-server"
+        wait_until(page, lambda: calls, "Expected POST to /api/test-server")
         assert calls[0] == {"url": "http://my-training:7777", "server_type": "training_server"}
         expect(train_row.locator(".settings-server-status")).to_have_text("✓ Connected OK")
         expect(train_row.locator(".settings-server-status")).to_have_attribute("data-state", "ok")
@@ -459,9 +457,9 @@ class TestFileBrowserNavigation:
 
         _navigate_to_files(page, base_url)
         page.locator("#tab-files .fb-entry", has_text="a.jpg").click()
-        page.wait_for_timeout(800)
-
-        assert file_calls, "Expected a fetch to /api/images/{path}/file after clicking the file entry"
+        wait_until(
+            page, lambda: file_calls, "Expected a fetch to /api/images/{path}/file after clicking the file entry"
+        )
         assert "a.jpg" in file_calls[0]
 
 

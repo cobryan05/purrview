@@ -19,6 +19,8 @@ import json
 
 from playwright.sync_api import Page, expect
 
+from playwright_tests.waits import wait_until
+
 FAKE_STACK = {
     "uuid": "33333333-cccc-0000-0000-000000000001",
     "name": "Cats then Litter",
@@ -210,9 +212,7 @@ class TestModelStackEditing:
         body.locator(".mstack-member-row select").nth(1).select_option("model:laundry")
 
         _editor_bar(page).locator("button", has_text="Create").click()
-        page.wait_for_timeout(800)
-
-        assert posted, "no POST to /api/model-groups was made"
+        wait_until(page, lambda: posted, "no POST to /api/model-groups was made")
         members = posted[-1].get("members", [])
         # Members go out in the wire shape the server takes (snake_case
         # `model_name`), matching what the Inference panel's save already sends.

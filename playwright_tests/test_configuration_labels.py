@@ -20,6 +20,8 @@ import json
 import pytest
 from playwright.sync_api import Page, Route, expect
 
+from playwright_tests.waits import wait_until
+
 # ---------------------------------------------------------------------------
 # Fake data
 # ---------------------------------------------------------------------------
@@ -202,9 +204,7 @@ class TestCreateRootLabel:
         add_row = _obj_add_row(page)
         add_row.locator("input[placeholder='New Object Label']").fill("Dog")
         add_row.locator("button[title='Add label']").click()
-        page.wait_for_timeout(600)
-
-        assert calls, "Expected POST to /api/labels"
+        wait_until(page, lambda: calls, "Expected POST to /api/labels")
         assert calls[0]["name"] == "Dog"
         assert calls[0].get("parentUuid") is None
 
@@ -287,9 +287,7 @@ class TestAddChildLabel:
         page.wait_for_selector("#labels-list input[placeholder='New Label Name']", timeout=3000)
         page.locator("#labels-list input[placeholder='New Label Name']").fill("Kitten")
         page.locator("#labels-list button[title='Save']").first.click()
-        page.wait_for_timeout(600)
-
-        assert calls, "Expected POST to /api/labels"
+        wait_until(page, lambda: calls, "Expected POST to /api/labels")
         assert calls[0].get("parentUuid") == ROOT_LABEL["uuid"]
         assert calls[0]["name"] == "Kitten"
 
@@ -310,9 +308,7 @@ class TestDeleteLabel:
         dialogs: list[str] = []
         page.on("dialog", lambda d: (dialogs.append(d.message), d.dismiss()))
         row.locator("button[title='Delete']").click()
-        page.wait_for_timeout(400)
-
-        assert dialogs, "Expected a confirm() dialog"
+        wait_until(page, lambda: dialogs, "Expected a confirm() dialog")
 
     def test_delete_accepted_calls_api(self, page: Page, base_url: str):
         """Accepting delete sends a DELETE request to /api/labels/{uuid}."""
@@ -342,9 +338,7 @@ class TestDeleteLabel:
 
         page.on("dialog", lambda d: d.accept())
         row.locator("button[title='Delete']").click()
-        page.wait_for_timeout(600)
-
-        assert calls, "Expected DELETE request to /api/labels/{uuid}"
+        wait_until(page, lambda: calls, "Expected DELETE request to /api/labels/{uuid}")
         assert ROOT_LABEL["uuid"] in calls[0]
 
     def test_delete_dismissed_does_not_call_api(self, page: Page, base_url: str):
@@ -434,9 +428,7 @@ class TestLabelScopeEditMode:
         add_row = _obj_add_row(page)
         add_row.locator("input[placeholder='New Object Label']").fill("Cat")
         add_row.locator("button[title='Add label']").click()
-        page.wait_for_timeout(600)
-
-        assert calls, "Expected POST to /api/labels"
+        wait_until(page, lambda: calls, "Expected POST to /api/labels")
         assert calls[0].get("scope") == "object", f"Expected scope='object' in POST payload; got: {calls[0]}"
 
     def test_create_image_scope_label_sends_scope_in_payload(self, page: Page, base_url: str):
@@ -466,9 +458,7 @@ class TestLabelScopeEditMode:
         add_row = _img_add_row(page)
         add_row.locator("input[placeholder='New Image Label']").fill("Corrupt")
         add_row.locator("button[title='Add label']").click()
-        page.wait_for_timeout(600)
-
-        assert calls, "Expected POST to /api/labels"
+        wait_until(page, lambda: calls, "Expected POST to /api/labels")
         assert calls[0].get("scope") == "image", f"Expected scope='image' in POST payload; got: {calls[0]}"
 
 
@@ -922,9 +912,7 @@ class TestReparentLabel:
         select = page.locator(".label-move-select").first
         select.select_option("")  # "(root)"
         page.locator(".label-move-apply").first.click()
-        page.wait_for_timeout(600)
-
-        assert calls, "Expected a PATCH to /api/labels/{uuid}"
+        wait_until(page, lambda: calls, "Expected a PATCH to /api/labels/{uuid}")
         assert calls[0].get("parentUuid") is None
         assert "parentUuid" in calls[0]
 
@@ -955,9 +943,7 @@ class TestReparentLabel:
         select = page.locator(".label-move-select").first
         select.select_option(ROOT_B["uuid"])
         page.locator(".label-move-apply").first.click()
-        page.wait_for_timeout(600)
-
-        assert calls, "Expected a PATCH to /api/labels/{uuid}"
+        wait_until(page, lambda: calls, "Expected a PATCH to /api/labels/{uuid}")
         assert calls[0].get("parentUuid") == ROOT_B["uuid"]
 
     def test_move_rerenders_tree_with_new_hierarchy(self, page: Page, base_url: str):

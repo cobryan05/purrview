@@ -23,6 +23,8 @@ import json
 import pytest
 from playwright.sync_api import Page, Route, expect
 
+from playwright_tests.waits import wait_until
+
 # ---------------------------------------------------------------------------
 # Fake data
 # ---------------------------------------------------------------------------
@@ -212,9 +214,7 @@ class TestCreateModelConfig:
         _label_row(page, "lbl-dog").locator("input[type=checkbox]").first.click()
 
         _editor_bar(page).locator("button", has_text="Create").click()
-        page.wait_for_timeout(700)
-
-        assert calls, "Expected POST to /api/model-configs"
+        wait_until(page, lambda: calls, "Expected POST to /api/model-configs")
         payload = calls[0]
         assert payload["name"] == "My Config"
 
@@ -305,9 +305,7 @@ class TestEditModelConfig:
         page.locator("#model-config-box select").nth(3).select_option("resnet_50")
 
         _editor_bar(page).locator("button", has_text="Save").click()
-        page.wait_for_timeout(700)
-
-        assert calls, "Expected PATCH to /api/model-configs/cfg-1"
+        wait_until(page, lambda: calls, "Expected PATCH to /api/model-configs/cfg-1")
         payload = calls[0]
         assert payload["name"] == "Animal Detector v2"
         nodes_by_label = {n["labelUuid"]: n for n in payload["nodes"]}
@@ -355,9 +353,7 @@ class TestClearAssignment:
         expect(page.locator("#model-config-box .panel-section-label", has_text="Sub-model overrides")).to_have_count(0)
 
         _editor_bar(page).locator("button", has_text="Save").click()
-        page.wait_for_timeout(700)
-
-        assert calls, "Expected PATCH to /api/model-configs/cfg-1"
+        wait_until(page, lambda: calls, "Expected PATCH to /api/model-configs/cfg-1")
         payload = calls[0]
         labels_in_payload = {n["labelUuid"] for n in payload["nodes"]}
         assert "lbl-cat" not in labels_in_payload
@@ -410,9 +406,7 @@ class TestDeleteModelConfig:
         page.wait_for_timeout(300)
 
         page.get_by_test_id("modal-shell-dialog").locator("button", has_text="Delete").click()
-        page.wait_for_timeout(600)
-
-        assert calls, "Expected DELETE to /api/model-configs/cfg-1"
+        wait_until(page, lambda: calls, "Expected DELETE to /api/model-configs/cfg-1")
         assert calls[0].rstrip("/").endswith("/cfg-1")
 
     def test_delete_dismissed_does_not_call_api(self, page: Page, base_url: str):

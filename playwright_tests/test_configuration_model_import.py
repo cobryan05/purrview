@@ -18,6 +18,8 @@ import re
 import pytest
 from playwright.sync_api import Page, Route, expect
 
+from playwright_tests.waits import wait_until
+
 _IMPORT_BUTTON_TEXT = re.compile(r"^Import$")
 
 # ---------------------------------------------------------------------------
@@ -154,7 +156,11 @@ class TestImportModelConversion:
         page.locator("#model-labels-box input[type=text]").first.fill("converted-model")
 
         page.locator("#model-labels-box button", has_text=_IMPORT_BUTTON_TEXT).click()
-        page.wait_for_timeout(700)
+        wait_until(
+            page,
+            lambda: len(stage_calls) >= 1,
+            lambda: f"Expected 1 POST to /api/models/import/stage, got {len(stage_calls)}",
+        )
 
         assert len(stage_calls) == 1, f"Expected 1 POST to /api/models/import/stage, got {len(stage_calls)}"
         assert "sourceBase64" in stage_calls[0]

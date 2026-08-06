@@ -19,6 +19,8 @@ import re
 import pytest
 from playwright.sync_api import Page, Route, expect
 
+from playwright_tests.waits import wait_until
+
 # ---------------------------------------------------------------------------
 # Fake data
 # ---------------------------------------------------------------------------
@@ -251,9 +253,7 @@ class TestCreateDataset:
 
         # Click Create in the sticky editor header bar
         _editor_bar(page).locator("button", has_text="Create").click()
-        page.wait_for_timeout(800)
-
-        assert create_calls, "Expected POST to /api/datasets"
+        wait_until(page, lambda: create_calls, "Expected POST to /api/datasets")
         payload = create_calls[0]
         assert payload.get("name") == "My New Dataset"
 
@@ -364,9 +364,7 @@ class TestDeleteDataset:
 
         # Confirm by clicking "Delete" inside the modal
         page.get_by_test_id("modal-shell-dialog").locator("button", has_text="Delete").click()
-        page.wait_for_timeout(600)
-
-        assert delete_calls, "Expected DELETE request to /api/datasets/{uuid}"
+        wait_until(page, lambda: delete_calls, "Expected DELETE request to /api/datasets/{uuid}")
         assert FAKE_DATASET["uuid"] in delete_calls[0]
 
     def test_delete_dismissed_does_not_call_api(self, page: Page, base_url: str):
@@ -478,9 +476,7 @@ class TestViewsAndPromotion:
         modal = page.get_by_test_id("modal-shell-dialog")
         expect(modal).to_contain_text(FAKE_VIEW["name"])
         modal.locator("button", has_text="Promote").click()
-        page.wait_for_timeout(700)
-
-        assert patches, "Expected a PATCH to /api/datasets/{uuid}"
+        wait_until(page, lambda: patches, "Expected a PATCH to /api/datasets/{uuid}")
         assert patches[0].get("promoted") is True, patches[0]
 
     def test_cancelling_the_confirm_does_not_patch(self, page: Page, base_url: str):

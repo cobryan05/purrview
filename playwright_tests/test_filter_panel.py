@@ -971,3 +971,105 @@ class TestVerificationLabelUuidsMapping:
 
         body = captured["body"]
         assert "verificationLabelUuids" not in body["filter"]
+
+
+# ── Bulk-apply must scope to the SAME filter the grid shows ────────────────
+#
+# Follow-up PR A (UI_REDESIGN §32.5): bulkApplyAll and bulkApplyImages
+# destructure their params explicitly, and both dropped filter dimensions the
+# visible grid IS filtered by — bulkApplyAll dropped bboxVerification *and*
+# imageLabelConditions, bulkApplyImages dropped bboxVerification. The result
+# was a silent over-apply: "filter to Unverified only, click Apply to All" hit
+# verified bboxes too. These pin every dimension _baseReviewFilterOpts sends.
+
+
+class TestBulkApplyFilterParity:
+    def _route(self, page: Page, url: str, captured: dict):
+        def handle(route):
+            captured["body"] = route.request.post_data_json
+            route.fulfill(
+                status=200,
+                content_type="application/json",
+                body='{"status": "success", "modifiedCount": 0, "failCount": 0, "skippedCount": 0}',
+            )
+
+        page.route(url, handle)
+
+    def test_bulk_apply_all_sends_bbox_verification(self, page: Page, base_url: str):
+        captured = {}
+        page.goto(base_url)
+        self._route(page, "**/api/images/bbox/bulk-apply", captured)
+
+        page.evaluate("""async () => {
+            const { bulkApplyAll } = await import('/app-static/js/shared/api/review.js');
+            await bulkApplyAll({
+                tagUuids: [],
+                showAllBboxes: true,
+                bboxVerification: 'unverified',
+                action: 'markVerified',
+            });
+        }""")
+
+        terms = captured["body"]["filter"]["terms"]
+        assert {"kind": "bboxVerification", "state": "unverified"} in terms
+
+    def test_bulk_apply_all_ignores_bbox_verification_any(self, page: Page, base_url: str):
+        captured = {}
+        page.goto(base_url)
+        self._route(page, "**/api/images/bbox/bulk-apply", captured)
+
+        page.evaluate("""async () => {
+            const { bulkApplyAll } = await import('/app-static/js/shared/api/review.js');
+            await bulkApplyAll({
+                tagUuids: [],
+                showAllBboxes: true,
+                bboxVerification: 'any',
+                action: 'markVerified',
+            });
+        }""")
+
+        terms = captured["body"]["filter"].get("terms", [])
+        assert not any(t.get("kind") == "bboxVerification" for t in terms)
+
+    def test_bulk_apply_all_sends_image_label_conditions(self, page: Page, base_url: str):
+        captured = {}
+        page.goto(base_url)
+        self._route(page, "**/api/images/bbox/bulk-apply", captured)
+
+        page.evaluate("""async () => {
+            const { bulkApplyAll } = await import('/app-static/js/shared/api/review.js');
+            await bulkApplyAll({
+                tagUuids: [],
+                showAllBboxes: true,
+                imageLabelConditions: [{ labelUuid: 'lbl-cat', state: 'present', rollUp: false, negate: true }],
+                action: 'markVerified',
+            });
+        }""")
+
+        terms = captured["body"]["filter"]["terms"]
+        assert {
+            "kind": "imageLabel",
+            "labelUuid": "lbl-cat",
+            "state": "present",
+            "rollUp": False,
+            "negate": True,
+        } in terms
+
+    def test_bulk_apply_images_sends_bbox_verification(self, page: Page, base_url: str):
+        captured = {}
+        page.goto(base_url)
+        self._route(page, "**/api/images/bulk-apply", captured)
+
+        page.evaluate("""async () => {
+            const { bulkApplyImages } = await import('/app-static/js/shared/api/review.js');
+            await bulkApplyImages({
+                tagUuids: [],
+                showAllBboxes: true,
+                bboxVerification: 'verified',
+                action: 'setAbsent',
+                labelUuid: 'lbl-cat',
+            });
+        }""")
+
+        terms = captured["body"]["filter"]["terms"]
+        assert {"kind": "bboxVerification", "state": "verified"} in terms

@@ -22,6 +22,8 @@ import re
 import pytest
 from playwright.sync_api import Page, Route, expect
 
+from playwright_tests.waits import wait_until
+
 # ---------------------------------------------------------------------------
 # Fake data
 # ---------------------------------------------------------------------------
@@ -276,9 +278,7 @@ class TestTaskTypeDropdown:
         _navigate_to_tasks(page, base_url)
         page.wait_for_selector("#task-config-list select", timeout=5000)
         page.locator("#task-config-list select").last.select_option(TASK_TYPE)
-        page.wait_for_timeout(800)
-
-        assert schema_calls, "Expected /api/tasks/types/schema to be called after type selection"
+        wait_until(page, lambda: schema_calls, "Expected /api/tasks/types/schema to be called after type selection")
         assert TASK_TYPE in schema_calls[0]
 
     def test_schema_fields_appear_after_type_selection(self, page: Page, base_url: str):
@@ -330,9 +330,7 @@ class TestCreateTaskConfig:
 
         # 3. Click Add Config
         page.locator("#task-config-list button[title='Add Config']").click()
-        page.wait_for_timeout(800)
-
-        assert create_calls, "Expected POST to /api/tasks/configs/create"
+        wait_until(page, lambda: create_calls, "Expected POST to /api/tasks/configs/create")
         payload = create_calls[0]
         assert payload.get("name") == "My Refresh Job"
         assert payload.get("typename") == TASK_TYPE
@@ -386,9 +384,7 @@ class TestCreateTaskConfig:
 
         page.locator("#task-config-list input[placeholder='Enter new config name']").fill("Refresh Job")
         page.locator("#task-config-list button[title='Add Config']").click()
-        page.wait_for_timeout(800)
-
-        assert create_calls, "Expected POST to /api/tasks/configs/create"
+        wait_until(page, lambda: create_calls, "Expected POST to /api/tasks/configs/create")
         payload = create_calls[0]
         assert "params" in payload, f"Payload missing 'params': {payload}"
         # Default boolean field 'remove_deleted' should be present
@@ -434,9 +430,7 @@ class TestPersistentFlag:
         page.wait_for_timeout(800)
         page.locator("#task-config-list input[placeholder='Enter new config name']").fill("Persist Test")
         page.locator("#task-config-list button[title='Add Config']").click()
-        page.wait_for_timeout(800)
-
-        assert create_calls, "Expected POST to /api/tasks/configs/create"
+        wait_until(page, lambda: create_calls, "Expected POST to /api/tasks/configs/create")
         payload = create_calls[0]
         assert payload.get("persistent") is False, f"Expected persistent=False by default, got: {payload}"
         assert payload["params"].get("_persistent") is False
@@ -463,9 +457,7 @@ class TestPersistentFlag:
         page.locator("#task-config-list input[placeholder='Enter new config name']").fill("Persist Test")
         page.locator("#task-config-list").get_by_label("Restart automatically after a server restart").check()
         page.locator("#task-config-list button[title='Add Config']").click()
-        page.wait_for_timeout(800)
-
-        assert create_calls, "Expected POST to /api/tasks/configs/create"
+        wait_until(page, lambda: create_calls, "Expected POST to /api/tasks/configs/create")
         payload = create_calls[0]
         assert payload.get("persistent") is True, f"Expected persistent=True after checking box, got: {payload}"
         assert payload["params"].get("_persistent") is True
@@ -606,9 +598,7 @@ class TestTaskLifecycleButtons:
         _navigate_to_tasks(page, base_url)
         page.wait_for_selector("#task-config-list button[title='Start']", timeout=5000)
         page.locator("#task-config-list button[title='Start']").first.click()
-        page.wait_for_timeout(600)
-
-        assert start_calls, "Expected POST to /api/tasks/instances/start"
+        wait_until(page, lambda: start_calls, "Expected POST to /api/tasks/instances/start")
         assert start_calls[0].get("configUuid") == FAKE_CONFIG["uuid"]
 
     def test_stop_running_task_calls_cancel(self, page: Page, base_url: str):
@@ -630,9 +620,7 @@ class TestTaskLifecycleButtons:
         _navigate_to_tasks(page, base_url)
         page.wait_for_selector("#active-tasks-list button[title='Stop']", timeout=5000)
         page.locator("#active-tasks-list button[title='Stop']").first.click()
-        page.wait_for_timeout(600)
-
-        assert cancel_calls, "Expected POST to /api/tasks/instances/cancel"
+        wait_until(page, lambda: cancel_calls, "Expected POST to /api/tasks/instances/cancel")
         assert task_id in cancel_calls[0].get("taskUuids", [])
 
     def test_delete_completed_task_shows_confirm(self, page: Page, base_url: str):
@@ -646,9 +634,7 @@ class TestTaskLifecycleButtons:
         dialogs: list[str] = []
         page.on("dialog", lambda d: (dialogs.append(d.message), d.dismiss()))
         page.locator("#active-tasks-list button[title='Delete']").first.click()
-        page.wait_for_timeout(400)
-
-        assert dialogs, "Expected a confirm() dialog"
+        wait_until(page, lambda: dialogs, "Expected a confirm() dialog")
 
     def test_delete_completed_task_accepted_calls_api(self, page: Page, base_url: str):
         """Accepting delete on a completed task POSTs to /api/tasks/instances/delete."""
@@ -671,9 +657,7 @@ class TestTaskLifecycleButtons:
 
         page.on("dialog", lambda d: d.accept())
         page.locator("#active-tasks-list button[title='Delete']").first.click()
-        page.wait_for_timeout(600)
-
-        assert delete_calls, "Expected POST to /api/tasks/instances/delete"
+        wait_until(page, lambda: delete_calls, "Expected POST to /api/tasks/instances/delete")
         assert task_id in delete_calls[0].get("taskUuids", [])
 
 
@@ -693,9 +677,7 @@ class TestDeleteTaskConfig:
         dialogs: list[str] = []
         page.on("dialog", lambda d: (dialogs.append(d.message), d.dismiss()))
         page.locator("#task-config-list button[title='Delete']").first.click()
-        page.wait_for_timeout(400)
-
-        assert dialogs, "Expected a confirm() dialog"
+        wait_until(page, lambda: dialogs, "Expected a confirm() dialog")
         assert FAKE_CONFIG["name"] in dialogs[0], "Dialog should mention the config name"
 
     def test_delete_config_accepted_calls_api(self, page: Page, base_url: str):
@@ -718,7 +700,5 @@ class TestDeleteTaskConfig:
 
         page.on("dialog", lambda d: d.accept())
         page.locator("#task-config-list button[title='Delete']").first.click()
-        page.wait_for_timeout(600)
-
-        assert delete_calls, "Expected POST to /api/tasks/configs/delete"
+        wait_until(page, lambda: delete_calls, "Expected POST to /api/tasks/configs/delete")
         assert FAKE_CONFIG["uuid"] in delete_calls[0].get("configUuids", [])

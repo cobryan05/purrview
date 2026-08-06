@@ -20,6 +20,8 @@ import json
 import pytest
 from playwright.sync_api import Page, Route, expect
 
+from playwright_tests.waits import wait_until
+
 TASK_TYPE = "FakeCollectorTask"
 MODEL_NAME = "yolo-fake-model"
 CAT_UUID = "11111111-0000-0000-0000-000000000001"
@@ -206,9 +208,7 @@ class TestEditingBandWritesToConfig:
         number_inputs.nth(1).fill("0.9")
 
         page.locator("#task-config-list button[title='Save']").first.click()
-        page.wait_for_timeout(600)
-
-        assert update_calls, "Expected POST to /api/tasks/configs/update"
+        wait_until(page, lambda: update_calls, "Expected POST to /api/tasks/configs/update")
         payload = update_calls[0]
         band = payload["params"]["model_label_config"]["labelValues"][CAT_UUID]
         assert band == {"min": 0.3, "max": 0.9}, f"Unexpected band payload: {band}"
@@ -246,9 +246,7 @@ class TestEditingBandWritesToConfig:
 
         page.locator("#task-config-list input[placeholder='Enter new config name']").fill("Band Config")
         page.locator("#task-config-list button[title='Add Config']").click()
-        page.wait_for_timeout(600)
-
-        assert create_calls, "Expected POST to /api/tasks/configs/create"
+        wait_until(page, lambda: create_calls, "Expected POST to /api/tasks/configs/create")
         payload = create_calls[0]
         band = payload["params"]["model_label_config"]["labelValues"][CAT_UUID]
         assert band == {"min": 0.4, "max": 0.8}, f"Unexpected band payload: {band}"
@@ -290,9 +288,7 @@ class TestBandNormalizationMatchesBackend:
         number_inputs.nth(1).fill(max_fill)
 
         page.locator("#task-config-list button[title='Save']").first.click()
-        page.wait_for_timeout(600)
-
-        assert update_calls, "Expected POST to /api/tasks/configs/update"
+        wait_until(page, lambda: update_calls, "Expected POST to /api/tasks/configs/update")
         return update_calls[0]["params"]["model_label_config"]["labelValues"][CAT_UUID]
 
     def test_blank_max_saves_as_unbounded_one(self, page: Page, base_url: str):

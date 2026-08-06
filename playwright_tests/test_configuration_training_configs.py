@@ -23,6 +23,8 @@ import re
 import pytest
 from playwright.sync_api import Page, Route, expect
 
+from playwright_tests.waits import wait_until
+
 # ---------------------------------------------------------------------------
 # Fake data
 # ---------------------------------------------------------------------------
@@ -299,7 +301,7 @@ class TestCreateTrainingConfig:
         _editor_bar(page).locator("button", has_text="Create").or_(
             _editor_bar(page).locator("button", has_text="Save")
         ).click()
-        page.wait_for_timeout(800)
+        wait_until(page, lambda: len(captured) >= 1, lambda: f"Expected 1 POST, got {len(captured)}")
 
         assert len(captured) == 1, f"Expected 1 POST, got {len(captured)}"
         payload = captured[0]
@@ -417,7 +419,7 @@ class TestTrainingSettingsFieldset:
         _editor_bar(page).locator("button", has_text="Create").or_(
             _editor_bar(page).locator("button", has_text="Save")
         ).click()
-        page.wait_for_timeout(800)
+        wait_until(page, lambda: len(captured) >= 1, lambda: f"Expected 1 POST, got {len(captured)}")
 
         assert len(captured) == 1, f"Expected 1 POST, got {len(captured)}"
         hyperparams = captured[0].get("hyperparamsJson", {})
@@ -468,7 +470,7 @@ class TestRecordImageManifestOptOut:
         _editor_bar(page).locator("button", has_text="Create").or_(
             _editor_bar(page).locator("button", has_text="Save")
         ).click()
-        page.wait_for_timeout(800)
+        wait_until(page, lambda: len(captured) >= 1, lambda: f"Expected 1 POST, got {len(captured)}")
 
         assert len(captured) == 1, f"Expected 1 POST, got {len(captured)}"
         return captured[0].get("hyperparamsJson", {})
@@ -684,8 +686,7 @@ class TestReadinessPanel:
         modal_title = page.locator("strong", has_text="Needs Review")
         expect(modal_title).to_be_visible(timeout=4000)
 
-        page.wait_for_timeout(400)
-        assert len(captured_requests) >= 1, "partial-review-images endpoint was not called"
+        wait_until(page, lambda: len(captured_requests) >= 1, "partial-review-images endpoint was not called")
 
 
 # ---------------------------------------------------------------------------
@@ -780,8 +781,7 @@ class TestLabelStatsPanelBboxColumns:
         ):
             verified_cell.click()
 
-        page.wait_for_timeout(400)
-        assert len(captured) >= 1, "images-by-label-status was not called"
+        wait_until(page, lambda: len(captured) >= 1, "images-by-label-status was not called")
         assert (
             captured[0].get("status") == "has_verified_bbox"
         ), f"Expected status=has_verified_bbox, got: {captured[0].get('status')}"
@@ -823,8 +823,7 @@ class TestLabelStatsPanelBboxColumns:
         ):
             clear_cell.click()
 
-        page.wait_for_timeout(400)
-        assert len(captured) >= 1, "images-by-label-status was not called"
+        wait_until(page, lambda: len(captured) >= 1, "images-by-label-status was not called")
         assert (
             captured[0].get("status") == "co_labels_covered"
         ), f"Expected status=co_labels_covered, got: {captured[0].get('status')}"

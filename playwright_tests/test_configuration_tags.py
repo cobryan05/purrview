@@ -17,6 +17,8 @@ import json
 import pytest
 from playwright.sync_api import Page, Route, expect
 
+from playwright_tests.waits import wait_until
+
 # ---------------------------------------------------------------------------
 # Fake data
 # ---------------------------------------------------------------------------
@@ -180,9 +182,7 @@ class TestTagCreate:
 
         page.locator("#tags-list input[placeholder='New Tag Name']").fill("Whiskers")
         page.locator("#tags-list button[title='Add tag']").click()
-        page.wait_for_timeout(600)
-
-        assert calls, "Expected POST to /api/tags/add"
+        wait_until(page, lambda: calls, "Expected POST to /api/tags/add")
         assert calls[0]["name"] == "Whiskers"
 
     def test_create_tag_empty_name_blocked(self, page: Page, base_url: str):
@@ -230,9 +230,7 @@ class TestTagCreate:
         page.wait_for_selector("#tags-list input[placeholder='New Tag Name']", timeout=4000)
         page.locator("#tags-list input[placeholder='New Tag Name']").fill("Mittens")
         page.locator("#tags-list button[title='Add tag']").click()
-        page.wait_for_timeout(600)
-
-        assert calls, "Expected POST to /api/tags/add"
+        wait_until(page, lambda: calls, "Expected POST to /api/tags/add")
         assert "color" in calls[0], "Payload must include 'color'"
 
     def test_refresh_button_clears_cache_and_rerenders(self, page: Page, base_url: str):
@@ -274,9 +272,7 @@ class TestTagDelete:
         dialogs: list[str] = []
         page.on("dialog", lambda d: (dialogs.append(d.message), d.dismiss()))
         row.locator("button[title='Delete']").click()
-        page.wait_for_timeout(400)
-
-        assert dialogs, "Expected a confirm() dialog"
+        wait_until(page, lambda: dialogs, "Expected a confirm() dialog")
         assert FAKE_TAG["name"] in dialogs[0], "Dialog should mention the tag name"
 
     def test_delete_accepted_calls_api(self, page: Page, base_url: str):
@@ -300,9 +296,7 @@ class TestTagDelete:
 
         page.on("dialog", lambda d: d.accept())
         row.locator("button[title='Delete']").click()
-        page.wait_for_timeout(600)
-
-        assert calls, "Expected POST to /api/tags/delete"
+        wait_until(page, lambda: calls, "Expected POST to /api/tags/delete")
         assert calls[0].get("tagUuid") == FAKE_TAG["uuid"]
 
     def test_delete_dismissed_does_not_call_api(self, page: Page, base_url: str):

@@ -16,6 +16,8 @@ import json
 import pytest
 from playwright.sync_api import Page, Route, expect
 
+from playwright_tests.waits import wait_until
+
 FAKE_CHAIN = {
     "uuid": "22222222-bbbb-0000-0000-000000000001",
     "name": "Corrupt Image Cleanup",
@@ -200,7 +202,7 @@ class TestFilterChainListLoading:
         desc_input = _editor_body(page).locator("input").nth(1)
         desc_input.fill("updated description")
         _editor_bar(page).locator("button", has_text="Save").click()
-        page.wait_for_timeout(800)
+        wait_until(page, lambda: len(patched_payloads) >= 1, "Expected a PATCH to /api/filter-chains")
 
         assert len(patched_payloads) == 1
         assert len(patched_payloads[0]["steps"]) == 1
@@ -237,7 +239,7 @@ class TestFilterChainCreateFlow:
 
         _editor_body(page).locator("input[placeholder='Required']").fill("New Chain")
         _editor_bar(page).locator("button", has_text="Create").click()
-        page.wait_for_timeout(800)
+        wait_until(page, lambda: len(created_payloads) >= 1, "Expected a POST to /api/filter-chains")
 
         assert len(created_payloads) == 1
         assert created_payloads[0]["name"] == "New Chain"

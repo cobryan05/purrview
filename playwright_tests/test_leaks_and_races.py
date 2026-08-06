@@ -9,6 +9,8 @@ import re
 
 from playwright.sync_api import Page
 
+from playwright_tests.waits import wait_until
+
 _COUNT_LISTENERS = """async () => {
     const { events } = await import('/app-static/js/shared/events/bus.js');
     let n = 0;
@@ -281,7 +283,9 @@ class TestImageLabelChipsBatch:
         page.wait_for_load_state("networkidle")
         page.locator(".main-tab-button[data-tab='tab-review']").click()
         page.wait_for_selector("#review-root .review-grid", timeout=5000)
-        page.wait_for_timeout(800)
+        wait_until(
+            page, lambda: len(batch_calls) >= 1, lambda: f"expected exactly one batch call, got {len(batch_calls)}"
+        )
 
         assert len(batch_calls) == 1, f"expected exactly one batch call, got {len(batch_calls)}"
         assert set(batch_calls[0]["imageUuids"]) == {img["uuid"] for img in images}

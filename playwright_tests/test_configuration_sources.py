@@ -18,6 +18,8 @@ import json
 import pytest
 from playwright.sync_api import Page, Route, expect
 
+from playwright_tests.waits import wait_until
+
 # ---------------------------------------------------------------------------
 # Fake data
 # ---------------------------------------------------------------------------
@@ -215,9 +217,7 @@ class TestProviderDropdown:
 
         # Select the provider in the last dropdown (the create-form one)
         page.locator("#source-management-box select").last.select_option("UrlImageProvider")
-        page.wait_for_timeout(600)
-
-        assert schema_calls, "Expected /api/sources/image-providers/schema to be called"
+        wait_until(page, lambda: schema_calls, "Expected /api/sources/image-providers/schema to be called")
         assert "UrlImageProvider" in schema_calls[0]
 
     def test_schema_fields_appear_after_provider_selection(self, page: Page, base_url: str):
@@ -290,9 +290,7 @@ class TestCreateSource:
 
         # 4. Click Save
         page.locator("#source-management-box button[title='Save']").first.click()
-        page.wait_for_timeout(800)
-
-        assert create_calls, "Expected POST to /api/sources/create"
+        wait_until(page, lambda: create_calls, "Expected POST to /api/sources/create")
         payload = create_calls[0]
         assert payload.get("sourceName") == "My New Camera"
         assert payload.get("imageProvider") == "UrlImageProvider"
@@ -354,9 +352,7 @@ class TestNumericSchemaFieldCoercion:
         page.locator("#source-management-box input[type='text']").last.fill("http://camera.example.com/snap.jpg")
 
         page.locator("#source-management-box button[title='Save']").first.click()
-        page.wait_for_timeout(800)
-
-        assert create_calls, "Expected POST to /api/sources/create"
+        wait_until(page, lambda: create_calls, "Expected POST to /api/sources/create")
         interval = create_calls[0]["providerParams"]["min_capture_interval"]
         assert interval == 0 and isinstance(interval, (int, float)), (
             f"Expected numeric 0 for untouched default, got {interval!r} "
@@ -392,9 +388,7 @@ class TestNumericSchemaFieldCoercion:
         page.locator("#source-management-box input[type='number']").first.fill("2.5")
 
         page.locator("#source-management-box button[title='Save']").first.click()
-        page.wait_for_timeout(800)
-
-        assert create_calls, "Expected POST to /api/sources/create"
+        wait_until(page, lambda: create_calls, "Expected POST to /api/sources/create")
         interval = create_calls[0]["providerParams"]["min_capture_interval"]
         assert interval == 2.5 and isinstance(
             interval, (int, float)
@@ -418,9 +412,7 @@ class TestDeleteSource:
         dialogs: list[str] = []
         page.on("dialog", lambda d: (dialogs.append(d.message), d.dismiss()))
         page.locator("#source-management-box button[title='Delete']").first.click()
-        page.wait_for_timeout(400)
-
-        assert dialogs, "Expected a confirm() dialog"
+        wait_until(page, lambda: dialogs, "Expected a confirm() dialog")
         assert FAKE_SOURCE["name"] in dialogs[0], "Dialog should mention the source name"
 
     def test_delete_accepted_calls_api(self, page: Page, base_url: str):
@@ -445,9 +437,7 @@ class TestDeleteSource:
 
         page.on("dialog", lambda d: d.accept())
         page.locator("#source-management-box button[title='Delete']").first.click()
-        page.wait_for_timeout(600)
-
-        assert calls, "Expected POST to /api/sources/delete"
+        wait_until(page, lambda: calls, "Expected POST to /api/sources/delete")
         assert FAKE_SOURCE["uuid"] in calls[0].get("sourceUuids", [])
 
     def test_delete_dismissed_does_not_call_api(self, page: Page, base_url: str):

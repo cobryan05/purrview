@@ -22,6 +22,8 @@ import numpy as np
 import pytest
 from playwright.sync_api import Page, Route, expect
 
+from playwright_tests.waits import wait_until
+
 TASK_TYPE = "CollectTrainingImagesTask"
 
 # A 1x1 transparent PNG, base64-encoded — small valid image for canvas loadImage().
@@ -176,9 +178,7 @@ class TestStatusDataFetchGating:
         _navigate_to_tasks(page, base_url)
         page.wait_for_selector(f"[data-task-uuid='{task_id}'] summary", timeout=5000)
         page.locator(f"[data-task-uuid='{task_id}'] summary").click()
-        page.wait_for_timeout(800)
-
-        assert calls, "Expected a POST to /api/tasks/instances/status-data after expanding the card"
+        wait_until(page, lambda: calls, "Expected a POST to /api/tasks/instances/status-data after expanding the card")
         assert task_id in calls[0].get("taskUuids", [])
 
     def test_collapsed_card_does_not_fetch_status_data(self, page: Page, base_url: str):
@@ -209,8 +209,7 @@ class TestStatusDataFetchGating:
         page.wait_for_selector(f"[data-task-uuid='{task_id}'] summary", timeout=5000)
         summary = page.locator(f"[data-task-uuid='{task_id}'] summary")
         summary.click()  # open
-        page.wait_for_timeout(500)
-        assert calls, "Expected at least one fetch while expanded"
+        wait_until(page, lambda: calls, "Expected at least one fetch while expanded")
 
         summary.click()  # close
         calls.clear()
@@ -503,9 +502,7 @@ class TestTaskCommandAction:
         btn = page.locator(f"[data-task-uuid='{task_id}'] button", has_text="Capture now")
         expect(btn).to_be_visible(timeout=5000)
         btn.click()
-        page.wait_for_timeout(600)
-
-        assert command_calls, "Expected a POST to /api/tasks/instances/command"
+        wait_until(page, lambda: command_calls, "Expected a POST to /api/tasks/instances/command")
         payload = command_calls[0]
         assert payload.get("taskUuid") == task_id
         assert payload.get("command") == "capture_now"
