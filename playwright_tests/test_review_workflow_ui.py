@@ -25,6 +25,8 @@ import re
 import pytest
 from playwright.sync_api import Page, Route, expect
 
+from playwright_tests.waits import wait_until
+
 UNVERIFIED_TAG_UUID = "00000000-0000-0000-0000-000000000001"
 VERIFIED_TAG_UUID = "00000000-0000-0000-0000-000000000005"
 
@@ -187,6 +189,40 @@ def _mock_misc_review_endpoints(page: Page):
         "**/api/images/labels/set",
         lambda route: route.fulfill(
             status=200, content_type="application/json", body=json.dumps({"status": "success"})
+        ),
+    )
+
+
+def _mock_canvas_modal_image(page: Page):
+    """Serve everything the canvas modal needs for img-1: thumbnails (fetched as
+    raw bytes via fetch().blob(), so they need a real PNG to have nonzero size and
+    be double-clickable), the image file itself, and the metadata-update save."""
+    png_bytes = base64.b64decode(TINY_PNG_B64)
+    page.route(
+        "**/thumbnail?*",
+        lambda route: route.fulfill(status=200, content_type="image/png", body=png_bytes),
+    )
+    page.route(
+        "**/api/images/*/file",
+        lambda route: route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps(
+                {
+                    "status": "success",
+                    "imageBase64": TINY_PNG_B64,
+                    "mimeType": "image/png",
+                    "image": {"uuid": "img-1", "filename": "folder/image1.jpg", "bboxes": [BBOX_1, BBOX_2]},
+                }
+            ),
+        ),
+    )
+    page.route(
+        "**/api/images/metadata/update",
+        lambda route: route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps({"status": "success"}),
         ),
     )
 
@@ -446,7 +482,7 @@ class TestBulkBboxAction:
         # The results dropdown appears; click the result row for Dog scoped to the modal.
         modal_locator.get_by_text("Dog", exact=True).click()
         page.locator("div:has(> strong:text-is('Apply to 2 selected bboxes')) button", has_text="Apply").click()
-        page.wait_for_timeout(600)
+        wait_until(page, lambda: len(calls) >= 2, lambda: f"Expected 2 PATCH calls, got {calls}")
 
         assert len(calls) == 2, f"Expected 2 PATCH calls, got {calls}"
         for call in calls:
@@ -507,7 +543,7 @@ class TestBulkParentImagesAction:
         modal_locator = page.locator("div:has(> strong:has-text('distinct image'))")
         modal_locator.locator("select").select_option("lbl-cat")
         modal_locator.locator("button", has_text="Apply").click()
-        page.wait_for_timeout(600)
+        wait_until(page, lambda: len(calls) >= 1, lambda: f"Expected 1 batched bulk-apply-by-uuids call, got {calls}")
 
         assert len(calls) == 1, f"Expected 1 batched bulk-apply-by-uuids call, got {calls}"
         call = calls[0]
@@ -563,7 +599,7 @@ class TestBulkImageAction:
         page.locator("input[type=radio][value=setAbsent]").click()
         page.locator("div:has(> strong:text-is('Apply to 2 selected images')) select").select_option("lbl-cat")
         page.locator("div:has(> strong:text-is('Apply to 2 selected images')) button", has_text="Apply").click()
-        page.wait_for_timeout(600)
+        wait_until(page, lambda: len(calls) >= 1, lambda: f"Expected 1 batched bulk-apply-by-uuids call, got {calls}")
 
         assert len(calls) == 1, f"Expected 1 batched bulk-apply-by-uuids call, got {calls}"
         call = calls[0]
@@ -744,9 +780,7 @@ class TestSavedViews:
 
         page.once("dialog", lambda dialog: dialog.accept("My View"))
         page.get_by_test_id("review-save-as-view").click()
-        page.wait_for_timeout(400)
-
-        assert create_calls, "Expected POST to /api/datasets"
+        wait_until(page, lambda: create_calls, "Expected POST to /api/datasets")
         payload = create_calls[0]
         assert payload.get("name") == "My View"
         assert payload.get("promoted") is False
@@ -767,37 +801,7 @@ class TestCanvasModalRoundTrip:
         _mock_labels(page, [LABEL_CAT, LABEL_DOG])
         _mock_tags(page, [{**UNVERIFIED_TAG, "name": "Unverified", "color": "#888", "kind": "system"}])
         _mock_misc_review_endpoints(page)
-
-        # Thumbnails are fetched as raw bytes via fetch().blob() — serve a tiny real PNG
-        # so the <img class="thumb"> has nonzero size and can be double-clicked.
-        png_bytes = base64.b64decode(TINY_PNG_B64)
-        page.route(
-            "**/thumbnail?*",
-            lambda route: route.fulfill(status=200, content_type="image/png", body=png_bytes),
-        )
-        page.route(
-            "**/api/images/*/file",
-            lambda route: route.fulfill(
-                status=200,
-                content_type="application/json",
-                body=json.dumps(
-                    {
-                        "status": "success",
-                        "imageBase64": TINY_PNG_B64,
-                        "mimeType": "image/png",
-                        "image": {"uuid": "img-1", "filename": "folder/image1.jpg", "bboxes": [BBOX_1, BBOX_2]},
-                    }
-                ),
-            ),
-        )
-        page.route(
-            "**/api/images/metadata/update",
-            lambda route: route.fulfill(
-                status=200,
-                content_type="application/json",
-                body=json.dumps({"status": "success"}),
-            ),
-        )
+        _mock_canvas_modal_image(page)
 
         _navigate_to_review(page, base_url)
         _switch_view(page, "bboxes")
@@ -810,9 +814,12 @@ class TestCanvasModalRoundTrip:
         expect(modal.get_by_test_id("canvas-edit-modal-title")).to_have_text("Edit: folder/image1.jpg")
 
         # Delete the highlighted (originally-opened) bbox, then Save & Close.
+        # Assert the delete actually took (canvas went dirty, so Save lights up)
+        # rather than sleeping and hoping — a no-op delete would otherwise sail
+        # through to a no-op save and only fail at the very last assertion.
         modal.locator("button[data-toolbar-key='delete']").click()
-        page.wait_for_timeout(300)
         save_btn = modal.locator("button", has_text="Save & Close")
+        expect(save_btn).to_have_class("save-btn--dirty")
         save_btn.click()
 
         # Don't blind-sleep then hard-assert: let Playwright's auto-retrying expect
@@ -825,6 +832,51 @@ class TestCanvasModalRoundTrip:
         expect(card).to_have_class("review-card stale-deleted")
         expect(card.locator(".card-state-badge")).to_have_text("🗑 Deleted")
         expect(card.locator("input[type=checkbox]")).to_be_disabled()
+
+    def test_delete_works_as_soon_as_the_toolbar_is_clickable(self, page: Page, base_url: str):
+        """Regression: showCanvasModal appends the overlay (and, right after
+        loadImage, the toolbar) well before it highlights the opened bbox —
+        `_highlightBbox` used to run only after `createSidebarPanels` and
+        `createInferencePanel` had both been awaited, and the latter awaits three
+        cold model fetches. Throughout that window the Delete button is present
+        and enabled, but `deleteSelected` is a silent no-op with nothing selected,
+        so a fast click deleted nothing and the card never went stale.
+
+        Delaying the model fetches widens that window deterministically. The delay
+        is applied in-page rather than via `page.route` + `time.sleep`: the sync
+        Playwright API runs route handlers on the same thread that drives the
+        click, so a sleeping handler would stall the click too and hide the race."""
+        _mock_review_queue(page, PAGE_1_IMAGES)
+        _mock_labels(page, [LABEL_CAT, LABEL_DOG])
+        _mock_tags(page, [{**UNVERIFIED_TAG, "name": "Unverified", "color": "#888", "kind": "system"}])
+        _mock_misc_review_endpoints(page)
+        _mock_canvas_modal_image(page)
+
+        _navigate_to_review(page, base_url)
+        _switch_view(page, "bboxes")
+
+        # Patched after the review panel has loaded so only the modal's own
+        # (cold) model fetches are slowed.
+        page.evaluate("""() => {
+                const orig = window.fetch;
+                window.fetch = (input, init) => {
+                    const url = String(input?.url ?? input);
+                    if (!/model/i.test(url)) return orig(input, init);
+                    return new Promise(r => setTimeout(r, 1500)).then(() => orig(input, init));
+                };
+            }""")
+
+        card = page.locator("#review-root [data-bbox-uuid='bbox-1']")
+        card.locator("img.thumb").dblclick()
+
+        modal = page.get_by_test_id("canvas-edit-modal")
+        # Click Delete the instant Playwright considers the button actionable —
+        # i.e. exactly what a fast machine (or a fast test) does.
+        modal.locator("button[data-toolbar-key='delete']").click(timeout=8000)
+        modal.locator("button", has_text="Save & Close").click()
+
+        expect(modal).to_have_count(0, timeout=8000)
+        expect(card).to_have_class("review-card stale-deleted")
 
 
 # ---------------------------------------------------------------------------

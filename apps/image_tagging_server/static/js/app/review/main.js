@@ -2728,6 +2728,16 @@ export async function showCanvasModal(bbox, img, labels, onSaved, navContext = n
   saveBtn.className = 'save-btn--clean';
   footer.append(cancelBtn, saveOnlyBtn, saveBtn);
 
+  // The overlay goes into the DOM immediately below, but these buttons' click
+  // handlers aren't attached until the very end of this function — after the
+  // canvas load and the awaited sidebar/inference panel fetches. Start them
+  // disabled so a click landing in that window can't hit a dead button; the
+  // final wiring step re-enables them.
+  closeBtn.disabled = true;
+  cancelBtn.disabled = true;
+  saveOnlyBtn.disabled = true;
+  saveBtn.disabled = true;
+
   dialog.append(header, toolbarEl, contentArea, footer);
   overlay.appendChild(dialog);
   // Held from here until closeModal (or the load-failure path below). The ESC
@@ -2786,6 +2796,24 @@ export async function showCanvasModal(bbox, img, labels, onSaved, navContext = n
   // that the modal chrome has settled.
   resetCanvasZoom(instance.runtime.canvas);
 
+  // Highlight the initially-opened bbox.
+  //
+  // This must happen before the awaited panel setup below, not after it: the
+  // toolbar is live from here on, and its Delete button acts on the current
+  // selection via deleteSelected(), which is a silent no-op when nothing is
+  // selected. Highlighting only after createSidebarPanels/createInferencePanel
+  // (the latter awaits three cold model fetches) left a window in which Delete
+  // was clickable but did nothing.
+  function _highlightBbox(bboxUuid) {
+    const layer = instance.runtime.canvas.layer;
+    const view = layer.findOne('#' + bboxUuid);
+    if (view) {
+      instance.runtime.canvas.transformer.nodes([view]);
+      layer.draw();
+    }
+  }
+  _highlightBbox(bbox.uuid);
+
   // ── Wire label list + tag panel ────────────────────────────────────
   sidebarPanelsHandle = await createSidebarPanels(instance.runtime, {
     labelsListEl: labelListEl,
@@ -2807,17 +2835,6 @@ export async function showCanvasModal(bbox, img, labels, onSaved, navContext = n
     labelsTabId: MODAL_TABS.labels,
     tagsTabId: MODAL_TABS.tags,
   });
-
-  // Highlight the initially-opened bbox
-  function _highlightBbox(bboxUuid) {
-    const layer = instance.runtime.canvas.layer;
-    const view = layer.findOne('#' + bboxUuid);
-    if (view) {
-      instance.runtime.canvas.transformer.nodes([view]);
-      layer.draw();
-    }
-  }
-  _highlightBbox(bbox.uuid);
 
   // ── Save button state: highlight only when there are unsaved changes ──
   function _updateSaveBtn() {
@@ -3086,6 +3103,10 @@ export async function showCanvasModal(bbox, img, labels, onSaved, navContext = n
       saveBtn.textContent = 'Save & Close';
     }
   });
+
+  // Every handler is attached — release the buttons disabled at build time.
+  _setAllButtonsDisabled(false);
+  _updateSaveBtn();
 }
 
 // ── Shared preview helpers ────────────────────────────────────────────
