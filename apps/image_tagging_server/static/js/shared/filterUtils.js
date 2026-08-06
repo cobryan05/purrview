@@ -29,8 +29,12 @@ export function reviewStateToDatasetForm(reviewState) {
   const dateTo = reviewState.dateTo ?? null;
   const filenameSearch = reviewState.filenameSearch ?? '';
   const imageLabelConditions = reviewState.imageLabelConditions ?? [];
+  // 'any' (and a missing key) is the no-op default — see review/filters.js's
+  // DEFAULT_STATE — so it must not produce a term.
+  const bboxVerification = reviewState.bboxVerification ?? 'any';
 
   const terms = [];
+  if (bboxVerification !== 'any') terms.push({ kind: 'bboxVerification', state: bboxVerification });
   if (tagUuids.length > 0) terms.push({ kind: 'bboxTag', tagUuids, matchMode: tagMatchMode });
   for (const uuid of tagExcludeUuids) terms.push({ kind: 'bboxTag', tagUuids: [uuid], negate: true });
   if (dateFrom || dateTo) {
@@ -77,6 +81,7 @@ export function datasetFormToReviewState(filterJson, labelUuids) {
     .flatMap(t => t.tagUuids ?? []);
   const dateTerm = terms.find(t => t.kind === 'date' && t.field === 'created');
   const filenameTerm = terms.find(t => t.kind === 'filename');
+  const bboxVerificationTerm = terms.find(t => t.kind === 'bboxVerification' && !t.negate);
   const imageLabelConditions = terms
     .filter(t => t.kind === 'imageLabel')
     .map(t => ({ labelUuid: t.labelUuid, state: t.state === 'unreviewed' ? 'uncertain' : t.state }));
@@ -94,5 +99,9 @@ export function datasetFormToReviewState(filterJson, labelUuids) {
     dateFrom: dateTerm?.from ?? null,
     dateTo: dateTerm?.to ?? null,
     verificationCheck: f.verificationCheck ?? null,
+    // Always present: filterPanel.setState is partial, so omitting the key on
+    // a filter that carries no term would leave the previous value in place
+    // and silently apply a filter the saved View never had.
+    bboxVerification: bboxVerificationTerm?.state ?? 'any',
   };
 }
