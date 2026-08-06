@@ -369,3 +369,50 @@ async def test_view_survives_rebuild_from_sidecar(tmp_path):
     assert dataset_uuid in default_uuids
 
     await client2.close()
+
+
+async def test_sidecar_preserves_a_row_whose_filter_json_no_longer_validates(tmp_path):
+    """The sidecar is the restore path for the table, so it must round-trip a
+    row the *reader* can no longer validate.
+
+    list_datasets skips such rows so one of them can't 500 every dataset picker
+    in the app. Dumping through that same skip would quietly drop the row from
+    datasets.json, and the next rebuild would lose it for good — trading a loud
+    outage for silent data loss. The dump therefore reads raw rows.
+    """
+    from sqlmodel import select
+
+    from apps.helpers.db.types import Dataset
+
+    client = DbClient(db_dir=tmp_path, memory=True)
+    await client.init_db()
+
+    broken_uuid = await _create(client, "broken-row")
+    async with client._async_session_maker() as session:
+        row = (await session.exec(select(Dataset).where(Dataset.uuid == broken_uuid))).one()
+        row.filter_json = {"terms": [{"kind": "no_such_term_kind"}]}
+        session.add(row)
+        await session.commit()
+
+    # Any later mutation rewrites the sidecar — the moment the row could vanish.
+    await _create(client, "unrelated-later-dataset")
+
+    rows = await _read_sidecar(tmp_path)
+    by_uuid = {r["uuid"]: r for r in rows}
+    assert broken_uuid in by_uuid, f"the unconvertible row must survive the dump, got {list(by_uuid)}"
+    assert by_uuid[broken_uuid]["filter_json"] == {
+        "terms": [{"kind": "no_such_term_kind"}]
+    }, "its filter_json must be preserved verbatim, not normalised away"
+
+    await client.close()
+
+    # And it must survive the restore leg too, or "preserved in the file" would
+    # still mean "lost on rebuild". The read side writes the raw dict onto the
+    # row, so nothing revalidates it on the way in.
+    restored = DbClient(db_dir=tmp_path, memory=True)
+    await restored.init_db()
+    async with restored._async_session_maker() as session:
+        row = (await session.exec(select(Dataset).where(Dataset.uuid == broken_uuid))).one_or_none()
+    assert row is not None, "the unconvertible row must come back on restore"
+    assert row.filter_json == {"terms": [{"kind": "no_such_term_kind"}]}
+    await restored.close()

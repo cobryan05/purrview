@@ -2799,13 +2799,34 @@ class DbClient:
         picker, the model-config picker and the dataset checklist all do — so
         unpromoted rows are excluded by default. Only the Views UI passes
         include_views=True.
+
+        A row whose filter_json no longer validates is **skipped, not raised**.
+        filter_json is validated on read, and this listing feeds every dataset
+        picker in the app, so one unconvertible row would otherwise 500 the
+        whole response and take training configs, model configs and the dataset
+        checklist down with it — which is exactly what a pre-1.4b `filter_json`
+        did before migration b7d31c904ae2. Skipping loses one row loudly rather
+        than every row silently. It is deliberately not coerced to a default
+        filter: that would present a row as editable and overwrite the user's
+        real (recoverable) filter on the next save.
         """
         async with self._async_session_maker() as session:
             stmt = select(Dataset).options(selectinload(Dataset.label_links))
             if not include_views:
                 stmt = stmt.where(Dataset.promoted.is_(True))
             result = await session.exec(stmt)
-            return [self._dataset_to_read(d) for d in result.all()]
+            out: List[DatasetRead] = []
+            for d in result.all():
+                try:
+                    out.append(self._dataset_to_read(d))
+                except Exception as e:
+                    logger.error(
+                        "list_datasets: skipping dataset %s (%s) — filter_json does not validate: %s",
+                        d.uuid,
+                        d.name,
+                        e,
+                    )
+            return out
 
     async def _sync_datasets_to_json(self) -> None:
         """Dump the current datasets to datasets.json — Views included.
@@ -2815,19 +2836,28 @@ class DbClient:
         This file is the restore path for the table, not a "trainable Datasets"
         export, so excluding unpromoted rows would silently lose every saved
         View on a rebuild. `promoted` is written per row and honoured on load.
+
+        Reads **raw rows**, not list_datasets(): that skips rows whose
+        filter_json no longer validates, so dumping through it would drop such
+        a row from the restore file and lose it on the next rebuild — trading
+        a loud outage for silent data loss. filter_json is written back
+        verbatim, so a row the reader can't yet understand survives until
+        something migrates it.
         """
-        datasets = await self.list_datasets(include_views=True)
-        rows = [
-            {
-                "uuid": d.uuid,
-                "name": d.name,
-                "description": d.description,
-                "filter_json": d.filter_json.model_dump(mode="json"),
-                "label_uuids": d.label_uuids,
-                "promoted": d.promoted,
-            }
-            for d in datasets
-        ]
+        async with self._async_session_maker() as session:
+            stmt = select(Dataset).options(selectinload(Dataset.label_links))
+            datasets = (await session.exec(stmt)).all()
+            rows = [
+                {
+                    "uuid": d.uuid,
+                    "name": d.name,
+                    "description": d.description,
+                    "filter_json": d.filter_json or {},
+                    "label_uuids": [link.label_uuid for link in (d.label_links or [])],
+                    "promoted": d.promoted,
+                }
+                for d in datasets
+            ]
         self._datasets_json_path.write_text(json.dumps(rows, indent=2))
 
     async def sync_datasets_from_json(self) -> None:

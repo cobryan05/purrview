@@ -289,6 +289,45 @@ async def test_filter_json_unknown_fields_rejected(http_client):
     assert r.status_code == 422
 
 
+async def _corrupt_filter_json(db_client, dataset_uuid: str) -> None:
+    """Write a filter_json no DatasetFilterCriteria can validate, bypassing the
+    API's own validation — the shape a future schema change leaves behind."""
+    from apps.helpers.db.types import Dataset
+
+    async with db_client._async_session_maker() as session:
+        row = (await session.exec(select(Dataset).where(Dataset.uuid == dataset_uuid))).one()
+        row.filter_json = {"terms": [{"kind": "no_such_term_kind"}]}
+        session.add(row)
+        await session.commit()
+
+
+async def test_unconvertible_row_does_not_take_down_the_listing(http_client, db_client):
+    """One row too broken to validate must not 500 the whole listing.
+
+    filter_json is validated on read, so a single bad row used to fail the
+    entire GET /api/datasets response — and that listing feeds every dataset
+    picker in the app, so one row took out training configs, model configs and
+    the dataset checklist at once. PR 5.3b migrated the legacy shapes that
+    caused this in practice; this is the defensive half that was left unbuilt
+    (follow-up E), for the shapes a *future* schema change leaves behind.
+    """
+    good = await _create_dataset(http_client, "still-listable")
+    bad = await _create_dataset(http_client, "broken-row")
+    await _corrupt_filter_json(db_client, bad["uuid"])
+
+    r = await http_client.get("/api/datasets")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["status"] == "success", body
+
+    names = [d["name"] for d in body["datasets"]]
+    assert "still-listable" in names, f"the healthy row must survive, got {names}"
+    # Skipped, not silently coerced into something that would look editable and
+    # then overwrite the user's real filter on the next save.
+    assert "broken-row" not in names, f"the unconvertible row must be skipped, got {names}"
+    assert good["uuid"] in [d["uuid"] for d in body["datasets"]]
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # verificationCheck — all_verified with label_uuids
 # ─────────────────────────────────────────────────────────────────────────────
