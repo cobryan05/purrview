@@ -137,6 +137,18 @@ class Task(ABC):
                        when absent.
             - plus arbitrary widget-specific config keys (label, lines, columns, ...).
 
+        One widget type is structural rather than a data view:
+
+            {"id": ..., "type": "group", "label": ..., "collapsed": True,
+             "widgets": [ ...nested descriptors, groups included... ]}
+
+        A group holds no data and never appears in get_status_data() — its child
+        ids remain the payload keys. Use it to fold a long diagnostic block down
+        to one line: `collapsed: True` starts it closed, and the frontend builds
+        a closed group's children only when it is first opened (so nothing inside
+        one costs anything until asked for). The user's open/closed choice
+        survives the card rebuilds that a running task triggers constantly.
+
         The base implementation reproduces today's card exactly (progress bar +
         status message + log tail) so every existing task is unaffected unless it
         overrides this.

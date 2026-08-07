@@ -2115,6 +2115,21 @@ class TestBuildLabelAncestryMap:
 # ─── Phase 4: live collection status panel ─────────────────────────────────────
 
 
+def _leaf_widgets(widgets):
+    """Flatten `group` widgets away.
+
+    A group is layout, not a data view: it holds no value of its own and never
+    appears in get_status_data(). Every id <-> data invariant below is therefore
+    about the leaves, at whatever depth the schema chooses to nest them."""
+    leaves = []
+    for widget in widgets:
+        if widget.get("type") == "group":
+            leaves.extend(_leaf_widgets(widget.get("widgets", [])))
+        else:
+            leaves.append(widget)
+    return leaves
+
+
 class TestStatusSchema:
     """status_schema() ids must match the keys get_status_data() returns — a
     silent rename of one side without the other would break the id <-> data
@@ -2135,8 +2150,34 @@ class TestStatusSchema:
     }
 
     def test_schema_declares_every_widget_id(self):
-        schema_ids = {w["id"] for w in CollectTrainingImagesTask.status_schema()}
+        schema_ids = {w["id"] for w in _leaf_widgets(CollectTrainingImagesTask.status_schema())}
         assert schema_ids == self._ALWAYS | self._DEDUP_ONLY
+
+    def test_dedup_calibration_is_a_collapsed_nested_group(self):
+        """Four charts and tables is the right detail while reading a threshold
+        off them and far too much to scroll past otherwise, so the block is one
+        collapsed group with the image and bbox halves nested inside it."""
+        top = {w["id"]: w for w in CollectTrainingImagesTask.status_schema()}
+        group = top["dedup_calibration"]
+        assert group["type"] == "group"
+        assert group["collapsed"] is True
+        # A group carries no data, so it must not claim a source.
+        assert "source" not in group
+
+        inner = {w["id"]: w for w in group["widgets"] if w.get("type") == "group"}
+        assert set(inner) == {"dedup_image_group", "dedup_bbox_group"}
+        assert {w["id"] for w in inner["dedup_image_group"]["widgets"]} == {
+            "dedup_image_hist",
+            "dedup_image_sweep",
+        }
+        assert {w["id"] for w in inner["dedup_bbox_group"]["widgets"]} == {
+            "dedup_bbox_hist",
+            "dedup_bbox_sweep",
+        }
+        # The inner ones open with their parent — a second click to see anything
+        # would defeat the point of opening the outer group.
+        assert inner["dedup_image_group"].get("collapsed", False) is False
+        assert inner["dedup_bbox_group"].get("collapsed", False) is False
 
     def test_unconditional_keys_present_before_init(self):
         task = _make_task()
@@ -2148,7 +2189,7 @@ class TestStatusSchema:
 
     async def test_every_emitted_key_is_declared_in_the_schema(self):
         """Both with dedup off and on — no key may appear that no widget renders."""
-        schema_ids = {w["id"] for w in CollectTrainingImagesTask.status_schema()}
+        schema_ids = {w["id"] for w in _leaf_widgets(CollectTrainingImagesTask.status_schema())}
         for enable_dedup in (False, True):
             params = {**_PARAMS, "enable_dedup": enable_dedup}
             task = _make_task(params=params)
@@ -2160,7 +2201,7 @@ class TestStatusSchema:
             assert data_keys & self._DEDUP_ONLY == expected_dedup
 
     def test_schema_entries_are_status_sourced_with_expected_types(self):
-        schema = {w["id"]: w for w in CollectTrainingImagesTask.status_schema()}
+        schema = {w["id"]: w for w in _leaf_widgets(CollectTrainingImagesTask.status_schema())}
         assert schema["last_capture"]["type"] == "annotated_image"
         assert schema["stats"]["type"] == "stat_grid"
         assert schema["sources"]["type"] == "table"
@@ -2168,7 +2209,7 @@ class TestStatusSchema:
             assert widget.get("source", "status") == "status"
 
     def test_sources_table_columns_include_health(self):
-        schema = {w["id"]: w for w in CollectTrainingImagesTask.status_schema()}
+        schema = {w["id"]: w for w in _leaf_widgets(CollectTrainingImagesTask.status_schema())}
         col_keys = {c["key"] for c in schema["sources"]["columns"]}
         assert {"name", "type", "interval", "last_frame", "health"} <= col_keys
 

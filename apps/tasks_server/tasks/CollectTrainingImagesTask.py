@@ -1189,46 +1189,73 @@ class CollectTrainingImagesTask(Task):
             # ── Dedup threshold calibration ──────────────────────────────────
             # Only populated when dedup is enabled; get_status_data() omits these
             # keys otherwise and the widgets render their own empty state.
+            #
+            # Collapsed by default, and nested one level deeper: four charts and
+            # tables is the right amount of detail while you are actually reading
+            # a threshold off them, and far too much to scroll past every other
+            # time. `group` carries no data of its own — the child ids are still
+            # what get_status_data() keys its payload by, unchanged.
             {
-                "id": "dedup_hint",
-                "type": "text",
-                "source": "status",
+                "id": "dedup_calibration",
+                "type": "group",
                 "label": "Duplicate threshold calibration",
-            },
-            {
-                "id": "dedup_image_hist",
-                "type": "histogram",
-                "source": "status",
-                "label": "Image: distance to nearest stored image",
-            },
-            {
-                "id": "dedup_image_sweep",
-                "type": "table",
-                "source": "status",
-                "label": "Image threshold sweep (what each value would have done)",
-                "columns": [
-                    {"key": "threshold", "label": "Image threshold"},
-                    {"key": "matched", "label": "Frames matching"},
-                    {"key": "discarded", "label": "Would discard"},
-                    {"key": "kept", "label": "Would keep"},
-                ],
-            },
-            {
-                "id": "dedup_bbox_hist",
-                "type": "histogram",
-                "source": "status",
-                "label": "BBox: distance to nearest same-label crop",
-            },
-            {
-                "id": "dedup_bbox_sweep",
-                "type": "table",
-                "source": "status",
-                "label": "BBox threshold sweep (what each value would have done)",
-                "columns": [
-                    {"key": "threshold", "label": "BBox threshold"},
-                    {"key": "matched", "label": "BBoxes matching"},
-                    {"key": "discarded", "label": "Would discard"},
-                    {"key": "kept", "label": "Would keep"},
+                "collapsed": True,
+                "widgets": [
+                    {
+                        "id": "dedup_hint",
+                        "type": "text",
+                        "source": "status",
+                    },
+                    {
+                        "id": "dedup_image_group",
+                        "type": "group",
+                        "label": "Image distance",
+                        "widgets": [
+                            {
+                                "id": "dedup_image_hist",
+                                "type": "histogram",
+                                "source": "status",
+                                "label": "Distance to nearest stored image",
+                            },
+                            {
+                                "id": "dedup_image_sweep",
+                                "type": "table",
+                                "source": "status",
+                                "label": "Image threshold sweep (what each value would have done)",
+                                "columns": [
+                                    {"key": "threshold", "label": "Image threshold"},
+                                    {"key": "matched", "label": "Frames matching"},
+                                    {"key": "discarded", "label": "Would discard"},
+                                    {"key": "kept", "label": "Would keep"},
+                                ],
+                            },
+                        ],
+                    },
+                    {
+                        "id": "dedup_bbox_group",
+                        "type": "group",
+                        "label": "BBox distance",
+                        "widgets": [
+                            {
+                                "id": "dedup_bbox_hist",
+                                "type": "histogram",
+                                "source": "status",
+                                "label": "Distance to nearest same-label crop",
+                            },
+                            {
+                                "id": "dedup_bbox_sweep",
+                                "type": "table",
+                                "source": "status",
+                                "label": "BBox threshold sweep (what each value would have done)",
+                                "columns": [
+                                    {"key": "threshold", "label": "BBox threshold"},
+                                    {"key": "matched", "label": "BBoxes matching"},
+                                    {"key": "discarded", "label": "Would discard"},
+                                    {"key": "kept", "label": "Would keep"},
+                                ],
+                            },
+                        ],
+                    },
                 ],
             },
             {

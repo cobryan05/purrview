@@ -52,6 +52,45 @@ function _rememberStatusData(uuid, data) {
   }
 }
 
+/**
+ * Which status-widget groups the user has opened, keyed `${taskUuid}::${groupId}`.
+ *
+ * A group's open state cannot live in the DOM alone: renderActiveTasks rebuilds
+ * the entire card whenever the poll fingerprint changes — which, for a running
+ * task, is every few seconds — so a group the user opened would snap shut under
+ * them mid-read. tasks.js already restores the card-level <details>, but it
+ * cannot know about widget groups, let alone nested ones.
+ */
+const _groupOpenByKey = new Map();
+const _GROUP_OPEN_CACHE_MAX = 200;
+
+function _rememberGroupOpen(key, open) {
+  _groupOpenByKey.delete(key); // re-insert so iteration order is LRU
+  _groupOpenByKey.set(key, open);
+  while (_groupOpenByKey.size > _GROUP_OPEN_CACHE_MAX) {
+    _groupOpenByKey.delete(_groupOpenByKey.keys().next().value);
+  }
+}
+
+/**
+ * Does this schema contain any `source: "status"` widget, at any nesting depth?
+ *
+ * Groups build their children lazily (see _buildGroup), so the flat slot list is
+ * empty at the point the poller is wired up when every status widget happens to
+ * sit inside a collapsed group. Asking the schema instead of the slot list is
+ * what keeps such a card polling once the user opens the group.
+ */
+function _schemaHasStatusWidgets(widgets) {
+  for (const widget of widgets ?? []) {
+    if (widget.type === 'group') {
+      if (_schemaHasStatusWidgets(widget.widgets)) return true;
+      continue;
+    }
+    if ((widget.source ?? 'status') !== 'summary') return true;
+  }
+  return false;
+}
+
 /** Module-level, per-typename schema cache (parallels fetchTaskStatusSchemas'
  * own createCachedFetcher, but also memoizes the "which fallback did we use"
  * decision so repeated failures don't reissue requests every render). */
@@ -238,29 +277,93 @@ export class ActiveTaskField extends Field {
 
     // status-source widgets are fetched only while expanded; summary-source
     // widgets render immediately from the already-polled payload we have.
-    const statusSlots = []; // { widget, slot }
-    for (const widget of (this._schema || [])) {
-      const slot = document.createElement('div');
-      widgetsHost.appendChild(slot);
+    const statusSlots = []; // { widget, slot } — groups may append to this later
+    // Assigned once refresh() exists below; a group opened after the initial
+    // build needs to pull data for the widgets it has just created rather than
+    // sitting empty until the next 5s tick.
+    let requestRefresh = () => {};
 
-      const source = widget.source ?? 'status';
-      if (source === 'summary') {
-        const value = this._getSummaryValue(widget);
-        const rendered = await renderStatusWidget(widget, value, ctx);
-        if (rendered) {
-          slot.appendChild(rendered.el);
-          // mount() runs post-attach layout (e.g. sizing a canvas) — some widget
-          // factories (annotated_image) defer their real setup to it, so it must
-          // run regardless of which source the widget is configured with.
-          await rendered.mount?.();
-        }
-        // Summary widgets never own a resource that needs teardown.
-      } else {
-        statusSlots.push({ widget, slot });
+    /**
+     * A `group` widget: a nestable <details> holding other widgets. It has no
+     * data of its own and never appears in get_status_data() — it is pure
+     * layout, which is why it is handled here rather than as a factory in
+     * statusWidgets (its children need this method's slot/poll/teardown
+     * bookkeeping, which a factory has no access to).
+     */
+    const buildGroup = async (widget) => {
+      const key = `${this._uuid}::${widget.id}`;
+      const details = document.createElement('details');
+      details.className = 'status-group';
+      details.dataset.statusGroupId = widget.id;
+
+      const groupSummary = document.createElement('summary');
+      groupSummary.className = 'status-group__summary';
+      groupSummary.textContent = widget.label || widget.id;
+      details.appendChild(groupSummary);
+
+      const groupBody = document.createElement('div');
+      groupBody.className = 'status-group__body';
+      details.appendChild(groupBody);
+
+      // Children are built on first open, not up front. A collapsed group then
+      // costs nothing — and, more importantly, an annotated_image inside one
+      // would otherwise mount its canvas into a zero-height box and fit every
+      // bbox to (0,0), the same failure the top-level card avoids by deferring
+      // its own mounts until it is expanded.
+      let built = false;
+      const build = async () => {
+        if (built) return;
+        built = true;
+        await buildWidgets(widget.widgets, groupBody);
+      };
+
+      const remembered = _groupOpenByKey.get(key);
+      if (remembered ?? widget.collapsed !== true) {
+        details.open = true;
+        await build();
       }
-    }
 
-    if (statusSlots.length > 0 && this._uuid) {
+      details.addEventListener('toggle', async () => {
+        _rememberGroupOpen(key, details.open);
+        if (!details.open) return;
+        await build();
+        requestRefresh();
+      });
+
+      return details;
+    };
+
+    const buildWidgets = async (widgets, host) => {
+      for (const widget of widgets ?? []) {
+        if (widget.type === 'group') {
+          host.appendChild(await buildGroup(widget));
+          continue;
+        }
+
+        const slot = document.createElement('div');
+        host.appendChild(slot);
+
+        const source = widget.source ?? 'status';
+        if (source === 'summary') {
+          const value = this._getSummaryValue(widget);
+          const rendered = await renderStatusWidget(widget, value, ctx);
+          if (rendered) {
+            slot.appendChild(rendered.el);
+            // mount() runs post-attach layout (e.g. sizing a canvas) — some widget
+            // factories (annotated_image) defer their real setup to it, so it must
+            // run regardless of which source the widget is configured with.
+            await rendered.mount?.();
+          }
+          // Summary widgets never own a resource that needs teardown.
+        } else {
+          statusSlots.push({ widget, slot });
+        }
+      }
+    };
+
+    await buildWidgets(this._schema || [], widgetsHost);
+
+    if (_schemaHasStatusWidgets(this._schema) && this._uuid) {
       let pollTimer = null;
       let refreshing = false; // re-entrancy guard
       // Per-widget (not global) teardown + last-seen-data tracking: a poll tick
@@ -337,6 +440,7 @@ export class ActiveTaskField extends Field {
           refreshing = false;
         }
       };
+      requestRefresh = refresh;
 
       // Seed this card from the last payload its predecessor saw, so a rebuild
       // reuses the previous height instead of momentarily rendering empty (see

@@ -809,3 +809,182 @@ class TestScrollPreservedAcrossRerender:
         )
 
         expect(card).to_contain_text("4242")
+
+
+# ---------------------------------------------------------------------------
+# `group` — nestable collapsible sections inside a task card
+# ---------------------------------------------------------------------------
+
+
+class TestStatusWidgetGroups:
+    """The dedup calibration block (two histograms + two sweep tables) made a
+    running card several screens tall, so scrolling past it in the Activity list
+    was a chore. `group` folds it to one line — and, being lazy, a closed group
+    renders nothing at all until it is opened."""
+
+    _SCHEMA = [
+        {"id": "phase", "type": "text", "source": "status", "label": "Phase"},
+        {
+            "id": "calibration",
+            "type": "group",
+            "label": "Duplicate threshold calibration",
+            "collapsed": True,
+            "widgets": [
+                {"id": "hint", "type": "text", "source": "status"},
+                {
+                    "id": "image_group",
+                    "type": "group",
+                    "label": "Image distance",
+                    "widgets": [
+                        {"id": "dist", "type": "histogram", "source": "status", "label": "Nearest distance"},
+                    ],
+                },
+            ],
+        },
+    ]
+
+    _DATA = {
+        "phase": "capturing",
+        "hint": "Measuring only — nothing discarded.",
+        "dist": {"bins": [{"label": "0", "count": 3, "marked": True}], "total": 3},
+    }
+
+    def _open_card(self, page: Page, base_url: str, task_id: str):
+        _mock_status_schema(page, self._SCHEMA)
+        calls = _mock_status_data(page, {task_id: self._DATA})
+        _setup_base_mocks(page, {task_id: _make_task(task_id)})
+        _navigate_to_tasks(page, base_url)
+        page.wait_for_selector(f"[data-task-uuid='{task_id}'] summary", timeout=5000)
+        page.locator(f"[data-task-uuid='{task_id}'] summary").first.click()
+        return calls
+
+    def _group(self, page: Page, task_id: str, group_id: str):
+        return page.locator(f"[data-task-uuid='{task_id}'] [data-status-group-id='{group_id}']")
+
+    def test_collapsed_group_hides_its_contents_but_shows_its_label(self, page: Page, base_url: str):
+        task_id = "task-group-1"
+        self._open_card(page, base_url, task_id)
+        card = page.locator(f"[data-task-uuid='{task_id}']")
+        # Sibling widgets outside the group are unaffected.
+        expect(card).to_contain_text("capturing")
+        expect(card).to_contain_text("Duplicate threshold calibration")
+        expect(card).not_to_contain_text("Measuring only")
+
+    def test_closed_group_renders_no_children_at_all(self, page: Page, base_url: str):
+        """Lazy, not merely hidden — nothing inside a closed group is built."""
+        task_id = "task-group-2"
+        self._open_card(page, base_url, task_id)
+        body = self._group(page, task_id, "calibration").locator(".status-group__body")
+        wait_until(page, lambda: body.count() == 1, "Expected the group to render")
+        assert body.evaluate("el => el.children.length") == 0
+
+    def test_opening_the_group_reveals_nested_content(self, page: Page, base_url: str):
+        task_id = "task-group-3"
+        self._open_card(page, base_url, task_id)
+        self._group(page, task_id, "calibration").locator("> summary").click()
+        card = page.locator(f"[data-task-uuid='{task_id}']")
+        expect(card).to_contain_text("Measuring only")
+        # The nested group is present and, not being marked collapsed, open —
+        # so its histogram is on screen without a second click.
+        expect(self._group(page, task_id, "image_group")).to_be_visible()
+        expect(card).to_contain_text("Nearest distance")
+        expect(card).to_contain_text("3 sample(s)")
+
+    def test_nested_group_can_be_closed_independently(self, page: Page, base_url: str):
+        task_id = "task-group-4"
+        self._open_card(page, base_url, task_id)
+        self._group(page, task_id, "calibration").locator("> summary").click()
+        inner_body = self._group(page, task_id, "image_group").locator("> .status-group__body")
+        expect(inner_body).to_be_visible()
+        expect(inner_body).to_contain_text("Nearest distance")
+
+        # Assert on visibility, not on the card's text: once built, a group's
+        # children stay in the DOM when it is closed (only the *first* open pays
+        # to build them), so textContent still carries them.
+        self._group(page, task_id, "image_group").locator("> summary").click()
+        expect(inner_body).to_be_hidden()
+        # Closing the inner one leaves the outer one — and its own text — alone.
+        expect(self._group(page, task_id, "calibration").locator("> .status-group__body")).to_be_visible()
+        expect(page.locator(f"[data-task-uuid='{task_id}']")).to_contain_text("Measuring only")
+
+    def test_group_open_state_survives_a_card_rebuild(self, page: Page, base_url: str):
+        """A running task rebuilds its card on every poll tick; a group the user
+        opened must not snap shut under them mid-read."""
+        task_id = "task-group-5"
+        # A log_tail is what makes the rebuild observable at all: the pushed
+        # update differs only in its log line, and the schema's other widgets
+        # would render identically either side of the swap.
+        _mock_status_schema(page, [*self._SCHEMA, {"id": "logLines", "type": "log_tail", "source": "summary"}])
+        _mock_status_data(page, {task_id: self._DATA})
+        _mock_task_types(page)
+        _mock_task_configs(page)
+
+        def _payload(log_suffix: str):
+            task = _make_task(task_id)
+            task["logLines"] = [f"frame {log_suffix} saved"]
+            return {task_id: task}
+
+        _mock_active_tasks(page, _payload("one"))
+        page.add_init_script("""
+            const Orig = window.EventSource;
+            window.__streams = [];
+            window.EventSource = function (url, cfg) {
+                const es = new Orig(url, cfg);
+                window.__streams.push({ url: String(url), es });
+                return es;
+            };
+            window.EventSource.prototype = Orig.prototype;
+            """)
+
+        _navigate_to_tasks(page, base_url)
+        page.wait_for_selector(f"[data-task-uuid='{task_id}'] summary", timeout=5000)
+        page.locator(f"[data-task-uuid='{task_id}'] summary").first.click()
+        self._group(page, task_id, "calibration").locator("> summary").click()
+        card = page.locator(f"[data-task-uuid='{task_id}']")
+        expect(card).to_contain_text("Measuring only")
+
+        delivered = page.evaluate(
+            """payload => {
+                const s = (window.__streams || []).find(x => x.url.includes('/api/tasks/stream'));
+                if (!s || typeof s.es.onmessage !== 'function') return false;
+                s.es.onmessage({ data: JSON.stringify(payload) });
+                return true;
+            }""",
+            {"tasks": _payload("two")},
+        )
+        assert delivered, "app did not open a task stream to push an update through"
+
+        wait_until(
+            page,
+            lambda: "frame two saved" in (page.locator("#active-tasks-list").text_content() or ""),
+            "Expected the pushed payload to trigger a re-render",
+            timeout=8000,
+        )
+        # The rebuilt card must come back with the group still open.
+        expect(self._group(page, task_id, "calibration")).to_have_attribute("open", "")
+        expect(card).to_contain_text("Measuring only")
+
+    def test_group_widgets_still_poll_when_all_are_grouped(self, page: Page, base_url: str):
+        """Every status widget behind a collapsed group would leave the flat slot
+        list empty at wire-up time — the poller has to be started off the schema,
+        not off that list, or opening the group shows permanently blank widgets."""
+        task_id = "task-group-6"
+        schema = [
+            {
+                "id": "only_group",
+                "type": "group",
+                "label": "Everything",
+                "collapsed": True,
+                "widgets": [{"id": "phase", "type": "text", "source": "status", "label": "Phase"}],
+            }
+        ]
+        _mock_status_schema(page, schema)
+        calls = _mock_status_data(page, {task_id: {"phase": "capturing"}})
+        _setup_base_mocks(page, {task_id: _make_task(task_id)})
+        _navigate_to_tasks(page, base_url)
+        page.wait_for_selector(f"[data-task-uuid='{task_id}'] summary", timeout=5000)
+        page.locator(f"[data-task-uuid='{task_id}'] summary").first.click()
+        wait_until(page, lambda: calls, "Expected status-data polling even with every widget grouped")
+
+        self._group(page, task_id, "only_group").locator("> summary").click()
+        expect(page.locator(f"[data-task-uuid='{task_id}']")).to_contain_text("capturing")

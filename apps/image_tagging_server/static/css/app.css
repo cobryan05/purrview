@@ -3384,11 +3384,33 @@ button.filter-active {
 /* Visible explanatory prose under a field (schema `help`), as opposed to
    `description`, which is only a tooltip on the label. Sized well below the
    control so it reads as guidance rather than as another field. */
+/* Help is a disclosure (see SchemaField), so the box itself must stay as small
+   as the toggle line when closed — no border or padding that would reintroduce
+   the vertical bulk collapsing it was meant to remove. */
 .schema-field__help {
   font-size: var(--text-2xs);
   color: var(--text-muted);
   max-width: 46rem;
   margin-top: 2px;
+}
+
+.schema-field__help-toggle {
+  cursor: pointer;
+  user-select: none;
+  width: fit-content;
+  color: var(--text-faint);
+  text-decoration: underline dotted;
+  text-underline-offset: 2px;
+}
+
+.schema-field__help-toggle:hover {
+  color: var(--text-muted);
+}
+
+.schema-field__help-body {
+  margin-top: 0.25em;
+  padding-left: 0.6em;
+  border-left: 2px solid var(--border);
 }
 
 .schema-field__help p {
@@ -3871,6 +3893,32 @@ button.filter-active {
   border-radius: var(--radius-md);
   padding: var(--space-2);
   min-width: 0;
+}
+
+/* A `group` status widget (ActiveTaskField): a nestable section inside a task
+   card, so a long diagnostic block — the dedup histograms and sweep tables —
+   folds down to one line when you are only trying to scroll past the card.
+   Nesting is by plain descent, so an inner group indents against its parent. */
+.status-group {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  margin: 0.35em 0;
+}
+
+.status-group__summary {
+  cursor: pointer;
+  user-select: none;
+  padding: 0.25em 0.5em;
+  color: var(--text-muted);
+  font-weight: 600;
+}
+
+.status-group__summary:hover {
+  color: var(--text);
+}
+
+.status-group__body {
+  padding: 0.15em 0.5em 0.45em;
 }
 
 /* Active vs Completed task sections (ui/tasks.js) */

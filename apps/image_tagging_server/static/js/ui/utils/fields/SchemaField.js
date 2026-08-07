@@ -131,17 +131,32 @@ export class SchemaField extends Field {
       const node = await fieldRenderCallback(fieldInstance);
       fieldContainer.appendChild(node);
 
-      // `help` is the visible counterpart to `description`'s tooltip: prose that
-      // has to be readable without hovering (e.g. "how do I choose this value?").
+      // `help` is the discoverable counterpart to `description`'s tooltip: prose
+      // that has to be readable without hovering (e.g. "how do I choose this
+      // value?"). It is a *disclosure*, closed by default — the calibration help
+      // on the dedup fields runs to two paragraphs, and rendering it inline meant
+      // scrolling past the same wall of text on every visit to the form. A schema
+      // may set `help_open: true` (camelCase accepted too) for the rare case where
+      // the prose has to be read before the field can be answered at all.
       // Blank lines in the source string become paragraph breaks.
       if (meta.help) {
-        const help = document.createElement('div');
+        const help = document.createElement('details');
         help.className = 'schema-field__help';
+        if (meta.help_open === true || meta.helpOpen === true) help.open = true;
+
+        const summary = document.createElement('summary');
+        summary.className = 'schema-field__help-toggle';
+        summary.textContent = 'Help';
+        help.appendChild(summary);
+
+        const helpBody = document.createElement('div');
+        helpBody.className = 'schema-field__help-body';
         for (const para of String(meta.help).split(/\n\s*\n/)) {
           const p = document.createElement('p');
           p.textContent = para.trim();
-          help.appendChild(p);
+          helpBody.appendChild(p);
         }
+        help.appendChild(helpBody);
         fieldContainer.appendChild(help);
       }
 
