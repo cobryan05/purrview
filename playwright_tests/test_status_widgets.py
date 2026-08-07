@@ -988,3 +988,92 @@ class TestStatusWidgetGroups:
 
         self._group(page, task_id, "only_group").locator("> summary").click()
         expect(page.locator(f"[data-task-uuid='{task_id}']")).to_contain_text("capturing")
+
+
+class TestExpandedCardFitsItsBox:
+    """A running task's card carries action buttons either side of its content
+    (pause/suspend left, stop right). The content column is a flex item, and a
+    flex item defaults to `min-width: auto` — it refuses to shrink below its own
+    content — so once the buttons had taken their share the widgets pushed the
+    row wider than the card, and the histogram/tables spilled past the border."""
+
+    _SCHEMA = [
+        {"id": "stats", "type": "stat_grid", "source": "status", "label": "Collection stats",
+         "fields": {f"k{i}": f"Field number {i}" for i in range(6)}},
+        {
+            "id": "calibration",
+            "type": "group",
+            "label": "Duplicate threshold calibration",
+            "widgets": [
+                {
+                    "id": "image_group",
+                    "type": "group",
+                    "label": "Image distance",
+                    "widgets": [
+                        {"id": "dist", "type": "histogram", "source": "status",
+                         "label": "Distance to nearest stored image"},
+                        {"id": "sweep", "type": "table", "source": "status",
+                         "label": "Image threshold sweep (what each value would have done)",
+                         "columns": [
+                             {"key": "threshold", "label": "Image threshold"},
+                             {"key": "matched", "label": "Frames matching"},
+                             {"key": "discarded", "label": "Would discard"},
+                             {"key": "kept", "label": "Would keep"},
+                         ]},
+                    ],
+                },
+            ],
+        },
+    ]
+
+    _DATA = {
+        "stats": {f"k{i}": i * 1000 for i in range(6)},
+        "dist": {"bins": [{"label": str(i), "count": i, "marked": i == 2} for i in range(6)], "total": 15},
+        "sweep": [{"threshold": str(i), "matched": "120", "discarded": "34", "kept": "86"} for i in range(6)],
+    }
+
+    def test_expanded_card_does_not_overflow_its_border(self, page: Page, base_url: str):
+        task_id = "task-fit-1"
+        # Narrow enough that the grid lays out a single ~340px column — the width
+        # the card actually gets in the Activity list on a normal window.
+        page.set_viewport_size({"width": 760, "height": 900})
+        _mock_status_schema(page, self._SCHEMA)
+        _mock_status_data(page, {task_id: self._DATA})
+        # Running, so the card gets pause + suspend on the left and stop on the right.
+        _setup_base_mocks(page, {task_id: _make_task(task_id)})
+
+        _navigate_to_tasks(page, base_url)
+        page.wait_for_selector(f"[data-task-uuid='{task_id}'] summary", timeout=5000)
+        page.locator(f"[data-task-uuid='{task_id}'] summary").first.click()
+        card = page.locator(f"[data-task-uuid='{task_id}']")
+        expect(card).to_contain_text("sample(s)")
+
+        overflow = card.evaluate("el => el.scrollWidth - el.clientWidth")
+        assert overflow <= 1, f"expanded card overflows its box by {overflow}px"
+
+    def test_widget_content_stays_inside_the_card(self, page: Page, base_url: str):
+        """Not just the card's own scrollWidth: the widgets' painted boxes must
+        sit inside the card's border, which is what the user actually sees."""
+        task_id = "task-fit-2"
+        page.set_viewport_size({"width": 760, "height": 900})
+        _mock_status_schema(page, self._SCHEMA)
+        _mock_status_data(page, {task_id: self._DATA})
+        _setup_base_mocks(page, {task_id: _make_task(task_id)})
+
+        _navigate_to_tasks(page, base_url)
+        page.wait_for_selector(f"[data-task-uuid='{task_id}'] summary", timeout=5000)
+        page.locator(f"[data-task-uuid='{task_id}'] summary").first.click()
+        card = page.locator(f"[data-task-uuid='{task_id}']")
+        expect(card).to_contain_text("sample(s)")
+
+        spill = card.evaluate(
+            """el => {
+                const right = el.getBoundingClientRect().right;
+                let worst = 0;
+                for (const node of el.querySelectorAll('.status-group, table, .status-histogram__track')) {
+                    worst = Math.max(worst, node.getBoundingClientRect().right - right);
+                }
+                return Math.round(worst);
+            }"""
+        )
+        assert spill <= 1, f"widget content spills {spill}px past the card's right edge"

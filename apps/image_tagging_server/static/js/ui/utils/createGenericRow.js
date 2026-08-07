@@ -32,6 +32,8 @@ export function createGenericRow({
     container.style.flexDirection = 'row';
     container.style.alignItems = 'flex-start';
     container.style.gap = '0.25em';
+    // Buttons keep their size; the field column is what gives way (see below).
+    container.style.flexShrink = '0';
 
     btns.forEach(({ text, emoji, onClick }) => {
       const btn = createEmojiButton({ text, emoji });
@@ -60,6 +62,7 @@ export function createGenericRow({
   indentContainer.style.alignItems = 'flex-start';
   indentContainer.style.gap = '0.25em';
   indentContainer.style.flex = '1';
+  indentContainer.style.minWidth = '0';
   indentContainer.style.paddingLeft = `${indentLevel * 1.5}em`;
 
   // Add left buttons: either flush left or indented with field
@@ -70,7 +73,15 @@ export function createGenericRow({
   }
 
   // Add field
+  // A flex item defaults to `min-width: auto`, i.e. "never shrink below my own
+  // content". With buttons either side taking their share first, a wide field —
+  // an expanded task card's histogram, sweep table and stat grid — had nowhere
+  // to give and pushed the row out past the card's border instead. `0` lets the
+  // column shrink to the space actually left over; nothing changes when the
+  // content already fits, so the other callers (labels, models, inspector) lay
+  // out exactly as before.
   const fieldDiv = document.createElement("div");
+  fieldDiv.style.minWidth = '0';
   const renderPromise = field.getEditMode() ? field.renderEdit() : field.renderView();
   renderPromise.then(renderedField => {
     fieldDiv.appendChild(renderedField);
