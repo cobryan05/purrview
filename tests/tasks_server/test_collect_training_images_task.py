@@ -3041,3 +3041,100 @@ class TestDedupWorkerRecordsDistances:
         assert save.call_count == 1
         assert list(task._dedup_samples) == []
         assert task._dedup_frames_checked == 0
+
+
+class TestSweepModelsADiscardAction:
+    """The sweep answers "what would threshold N have discarded?" — so it must
+    model a *discard* action even when the task is running in calibration mode.
+
+    Reading the configured action directly meant "Measure only" (which never
+    discards) pinned the whole "Would discard" column at 0, in precisely the mode
+    the sweep exists to serve."""
+
+    async def _task(self, action, samples):
+        params = {
+            **_PARAMS,
+            "enable_dedup": True,
+            "duplicate_action": action,
+            "image_dup_threshold": 5,
+            "bbox_dup_threshold": 8,
+        }
+        task = _make_task(params=params)
+        await task._init(params, resume_data=None)
+        for s in samples:
+            task._dedup_samples.append(s)
+        return task
+
+    @staticmethod
+    def _discarded(row):
+        return int(row["discarded"].split(" ")[0])
+
+    async def test_measure_mode_still_reports_would_be_discards(self):
+        """The reported regression: 25 frames match at threshold 0, 0 discarded."""
+        samples = [(0, [0])] * 25 + [(30, [30])] * 7
+        task = await self._task("measure", samples)
+        rows = task._dedup_sweep_rows((0, 40), "image")
+        assert self._discarded(rows[0]) == 25, "matching frames must be counted as discards"
+        # At image threshold 40 all 32 frames match on the image, but the modelled
+        # rule is "keep if any unique": the 7 frames whose bbox distance is 30 sit
+        # above the bbox threshold of 8, so they survive. Discards track the rule,
+        # not the image match count.
+        assert self._discarded(rows[-1]) == 25
+
+    async def test_ignore_mode_also_reports_would_be_discards(self):
+        task = await self._task("ignore", [(0, [0])] * 4)
+        assert self._discarded(task._dedup_sweep_rows((0,), "image")[0]) == 4
+
+    async def test_discard_image_matched_equals_discarded(self):
+        """Under discard_image the user's intuition holds exactly."""
+        samples = [(0, [99])] * 5 + [(30, [0])] * 3
+        task = await self._task("discard_image", samples)
+        for row in task._dedup_sweep_rows((0, 5, 40), "image"):
+            assert row["matched"] == str(self._discarded(row))
+
+    async def test_configured_discard_action_is_preserved(self):
+        """A task already set to 'discard' must keep that rule, not be coerced."""
+        # Image is a duplicate but one bbox is unique → 'discard' keeps the frame,
+        # while 'discard_image' would drop it.
+        samples = [(0, [0, 99])]
+        keep = await self._task("discard", samples)
+        drop = await self._task("discard_image", samples)
+        assert self._discarded(keep._dedup_sweep_rows((0,), "image")[0]) == 0
+        assert self._discarded(drop._dedup_sweep_rows((0,), "image")[0]) == 1
+
+    async def test_hint_names_the_action_being_modelled(self):
+        """Under 'discard', matched and discarded legitimately differ — the user
+        must be told which rule the table is applying rather than left to guess."""
+        task = await self._task("measure", [(0, [0])])
+        hint = task._dedup_hint_text()
+        assert "keep if any unique" in hint.lower() or "discard" in hint.lower()
+
+
+class TestHintDirectionIsUnambiguous:
+    """The histogram lists distance 0 first and counts upward, so "below" is
+    ambiguous in the one sentence that matters: a row further down the list is a
+    *bigger* number. The guidance must not lean on that word."""
+
+    async def _hint(self, action="measure"):
+        params = {**_PARAMS, "enable_dedup": True, "duplicate_action": action}
+        task = _make_task(params=params)
+        await task._init(params, resume_data=None)
+        task._dedup_samples.append((1, [1]))
+        return task._dedup_hint_text()
+
+    async def test_threshold_advice_avoids_directional_words(self):
+        hint = await self._hint()
+        advice = hint.split("To choose one,")[1].split(rest := "The sweep applies")[0]
+        for word in (" below ", " above ", " down ", " up the "):
+            assert word not in advice.lower(), f"ambiguous direction word {word!r} in: {advice}"
+
+    async def test_threshold_advice_names_the_row_to_pick(self):
+        """Ambiguity is only removed if it says *which* row concretely."""
+        hint = await self._hint()
+        assert "largest distance" in hint
+        assert "last populated row" in hint
+
+    async def test_hint_covers_the_no_gap_case(self):
+        """A continuously-changing scene has no gap; silence there reads as
+        'the tool is broken' rather than 'this is a judgement call'."""
+        assert "no clear empty stretch" in await self._hint()

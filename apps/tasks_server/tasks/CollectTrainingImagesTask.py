@@ -986,18 +986,48 @@ class CollectTrainingImagesTask(Task):
         idx = min(len(ordered) - 1, max(0, int(round(pct / 100.0 * (len(ordered) - 1)))))
         return ordered[idx]
 
-    def _would_discard(self, image_dist: Optional[int], bbox_dists: list, image_t: int, bbox_t: int) -> bool:
-        """Replay the configured duplicate action against one sampled frame.
+    # Actions that actually drop frames. "ignore" and "measure" are pass-through.
+    _DISCARD_ACTIONS: tuple[str, ...] = ("discard", "discard_image")
+
+    def _sweep_action(self) -> str:
+        """Which discard rule the sweep tables model.
+
+        The sweep answers a counterfactual — "what would threshold N have
+        discarded?" — so it cannot use the configured action when that action is
+        a pass-through one: "measure" never discards, which pinned the entire
+        "Would discard" column at 0 in exactly the calibration mode the sweep
+        exists to serve. When the task is only measuring, model the schema's
+        default discard rule instead; _dedup_hint_text() names whichever is used
+        so the numbers are never unattributed.
+        """
+        if self._duplicate_action in self._DISCARD_ACTIONS:
+            return self._duplicate_action
+        return "discard"
+
+    def _would_discard(
+        self,
+        image_dist: Optional[int],
+        bbox_dists: list,
+        image_t: int,
+        bbox_t: int,
+        action: Optional[str] = None,
+    ) -> bool:
+        """Replay a duplicate action against one sampled frame.
+
+        *action* defaults to the configured one (what _dedup_worker is doing right
+        now); the sweep passes _sweep_action() to model a discard rule even while
+        the task is merely measuring.
 
         Mirrors the branch structure in _dedup_worker exactly — including the fact
         that the 'discard' (keep-if-any-unique) action gates on image_is_dup as well
         as on every bbox being a duplicate. If those rules ever diverge the sweep
         silently starts lying, so they are asserted together in the unit tests.
         """
+        action = action if action is not None else self._duplicate_action
         image_is_dup = image_dist is not None and image_dist <= image_t
-        if self._duplicate_action == "discard_image":
+        if action == "discard_image":
             return image_is_dup
-        if self._duplicate_action == "discard":
+        if action == "discard":
             # A frame with no detections can't have "all detections duplicated";
             # _dedup_worker's all([]) == True would discard it, so match that.
             all_bbox_dup = all(d is not None and d <= bbox_t for d in bbox_dists)
@@ -1035,11 +1065,12 @@ class CollectTrainingImagesTask(Task):
         samples = list(self._dedup_samples)
         if not samples:
             return []
+        action = self._sweep_action()
         rows: list[dict[str, Any]] = []
         for t in thresholds:
             image_t = t if vary == "image" else self._image_dup_threshold
             bbox_t = t if vary == "bbox" else self._bbox_dup_threshold
-            discarded = sum(1 for img, bbs in samples if self._would_discard(img, bbs, image_t, bbox_t))
+            discarded = sum(1 for img, bbs in samples if self._would_discard(img, bbs, image_t, bbox_t, action))
             if vary == "image":
                 matched = sum(1 for img, _ in samples if img is not None and img <= t)
             else:
@@ -1063,15 +1094,40 @@ class CollectTrainingImagesTask(Task):
                 "No frames measured yet. Once frames start arriving, the tables below show what "
                 "each candidate threshold would have done to them."
             )
+        action = self._sweep_action()
+        if action == "discard_image":
+            rule = (
+                'The sweep applies "Discard if image matches", so every matching frame is a '
+                "discard — the two columns agree by definition."
+            )
+        else:
+            rule = (
+                'The sweep applies "Keep if any unique", which drops a frame only when the image '
+                "matches AND every detection in it also matches. That is why "
+                '"Would discard" can be lower than "Frames matching".'
+            )
         base = (
             f"Based on the last {sample_n} checked frame(s). Distance is Hamming distance to the "
             "closest already-stored image (or same-label bbox crop): 0 means pixel-identical after "
-            "hashing, larger means more different. A threshold treats everything at or below it as a "
-            "duplicate. Pick the value just below the gap in the histogram — that gap separates "
-            '"same scene again" from "genuinely new".'
+            "hashing, and bigger numbers mean more different. A threshold counts every frame at that "
+            "distance or less as a duplicate. "
+            # Deliberately no "above"/"below": the histogram runs 0 upward, so
+            # "below" means a smaller number but a row further down the list —
+            # the two readings point in opposite directions.
+            "To choose one, find the stretch of empty or near-empty rows in the histogram. Small "
+            "distances on the 0 side of that stretch are repeats of scenes already collected; the "
+            "bigger distances past it are genuinely new. Set the threshold to the largest distance "
+            "that is still on the repeats side — the last populated row before the empty stretch. "
+            "If there is no clear empty stretch, the scene is changing continuously and any cut-off "
+            "is a judgement call: start low and raise it until the discard rate looks right. " + rule
         )
         if self._duplicate_action == "measure":
-            return base + " Calibration mode is on: nothing is being discarded, so this sample is unbiased."
+            return (
+                base + " Calibration mode is on: nothing is actually being discarded, so this sample "
+                "is unbiased and the discard columns are hypothetical."
+            )
+        if self._duplicate_action == "ignore":
+            return base + " Duplicates are being ignored, so the discard columns are hypothetical."
         if self._duplicate_action in ("discard", "discard_image"):
             return (
                 base + " Note: frames are currently being discarded, so discarded frames never entered "
