@@ -296,7 +296,7 @@ class TestReviewQueueRendering:
 
 class TestVerifyChip:
     def test_verify_chip_reflects_bbox_state(self, page: Page, base_url: str):
-        """The verify chip reads '✓ Verified' for verified bboxes and '◌ Unverified' otherwise."""
+        """The verify chip reads '✓ Verified' for verified bboxes and '? Unverified' otherwise."""
         _mock_review_queue(page, PAGE_1_IMAGES)
         _mock_labels(page, [LABEL_CAT, LABEL_DOG])
         _mock_tags(
@@ -315,7 +315,7 @@ class TestVerifyChip:
         unverified_chip = page.locator("#review-root [data-bbox-uuid='bbox-1'] .verify-chip")
         verified_chip = page.locator("#review-root [data-bbox-uuid='bbox-2'] .verify-chip")
 
-        expect(unverified_chip).to_have_text("◌ Unverified")
+        expect(unverified_chip).to_have_text("? Unverified")
         expect(unverified_chip).to_have_class("verify-chip")
         expect(verified_chip).to_have_text("✓ Verified")
         expect(verified_chip).to_have_class("verify-chip verify-chip--verified")
@@ -344,13 +344,100 @@ class TestVerifyChip:
         _switch_view(page, "bboxes")
 
         chip = page.locator("#review-root [data-bbox-uuid='bbox-1'] .verify-chip")
-        expect(chip).to_have_text("◌ Unverified")
+        expect(chip).to_have_text("? Unverified")
 
         # Re-query after each toggle: setVerification replaces the chip element.
         chip.dblclick()
         chip = page.locator("#review-root [data-bbox-uuid='bbox-1'] .verify-chip")
         expect(chip).to_have_text("✓ Verified")
         expect(chip).to_have_class("verify-chip verify-chip--verified")
+
+
+class TestImageCardLabelChipVerifyMarks:
+    """Image-card label chips carry a ✓/? verification marker per label."""
+
+    def _setup(self, page: Page, base_url: str, images: list):
+        _mock_review_queue(page, images)
+        _mock_labels(page, [LABEL_CAT, LABEL_DOG])
+        _mock_tags(
+            page,
+            [
+                {**UNVERIFIED_TAG, "name": "Unverified", "color": "#888", "kind": "system"},
+                {**VERIFIED_TAG, "name": "Verified", "color": "#27ae60", "kind": "system"},
+                REVIEWED_TAG,
+            ],
+        )
+        _navigate_to_review(page, base_url)
+        _show_all_bboxes(page)
+        _switch_view(page, "images")
+
+    def test_chip_marks_reflect_per_label_verification(self, page: Page, base_url: str):
+        """img-1 holds an unverified Cat and a verified Dog — each chip marks its own state."""
+        self._setup(page, base_url, PAGE_1_IMAGES)
+
+        chips = page.locator("#review-root [data-image-uuid='img-1'][data-kind='image'] .label-chip")
+        expect(chips).to_have_count(2)
+        expect(chips.nth(0)).to_have_text("Cat?")
+        expect(chips.nth(0).locator(".label-chip__verify--unverified")).to_have_count(1)
+        expect(chips.nth(1)).to_have_text("Dog✓")
+        expect(chips.nth(1).locator(".label-chip__verify--verified")).to_have_count(1)
+
+    def test_whole_image_chip_suppressed_when_a_bbox_shows_the_label(self, page: Page, base_url: str):
+        """Image-label presence is derived from verified bboxes, so a label with a box
+        on the image must not also render a dashed whole-image chip. Only image labels
+        with no box of their own stay dashed."""
+        page.route(
+            "**/api/images/labels/batch",
+            lambda route: route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps(
+                    {
+                        "status": "success",
+                        # Cat has boxes on img-1 → duplicate. Dog has none → genuine image label.
+                        "imageLabels": {
+                            "img-1": [
+                                {"labelUuid": "lbl-cat", "status": "present"},
+                                {"labelUuid": "lbl-dog", "status": "present"},
+                            ]
+                        },
+                    }
+                ),
+            ),
+        )
+        cat_only_image = {"uuid": "img-1", "filename": "folder/image1.jpg", "bboxes": [BBOX_1]}
+        self._setup(page, base_url, [cat_only_image])
+
+        card = page.locator("#review-root [data-image-uuid='img-1'][data-kind='image']")
+        expect(card.locator(".label-chip")).to_have_text(["Cat?"])
+        expect(card.locator(".image-label-chip")).to_have_text(["Dog"])
+
+    def test_mixed_label_shows_both_counts(self, page: Page, base_url: str):
+        """Two Cat boxes with differing verification collapse to one chip reading '✓1 ?1'."""
+        verified_cat = {**BBOX_1, "uuid": "bbox-cat-verified", "tags": [VERIFIED_TAG]}
+        mixed_image = {"uuid": "img-mixed", "filename": "folder/mixed.jpg", "bboxes": [BBOX_1, verified_cat]}
+        self._setup(page, base_url, [mixed_image])
+
+        chip = page.locator("#review-root [data-image-uuid='img-mixed'][data-kind='image'] .label-chip")
+        expect(chip).to_have_count(1)
+        expect(chip).to_have_text("Cat✓1 ?1")
+
+    def test_double_click_mark_verifies_every_box_behind_the_chip(self, page: Page, base_url: str):
+        """A mixed chip resolves upward in one gesture: both Cat boxes go Verified."""
+        _mock_misc_review_endpoints(page)
+        verified_cat = {**BBOX_1, "uuid": "bbox-cat-verified", "tags": [VERIFIED_TAG]}
+        mixed_image = {"uuid": "img-mixed", "filename": "folder/mixed.jpg", "bboxes": [BBOX_1, verified_cat]}
+        self._setup(page, base_url, [mixed_image])
+
+        card = page.locator("#review-root [data-image-uuid='img-mixed'][data-kind='image']")
+        card.locator(".label-chip__verify").dblclick()
+        expect(card.locator(".label-chip")).to_have_text(["Cat✓"])
+        # The card is flagged as touched on this page.
+        expect(card.locator(".card-state-badge.state-verified")).to_have_count(1)
+
+        # Fully verified → the next double-click sends them all back to Unverified.
+        card.locator(".label-chip__verify").dblclick()
+        expect(card.locator(".label-chip")).to_have_text(["Cat?"])
 
 
 # ---------------------------------------------------------------------------
@@ -882,6 +969,48 @@ class TestCanvasModalRoundTrip:
         expect(card).to_have_class("review-card stale-deleted")
         expect(card.locator(".card-state-badge")).to_have_text("🗑 Deleted")
         expect(card.locator("input[type=checkbox]")).to_be_disabled()
+
+    def test_save_from_image_card_updates_that_card(self, page: Page, base_url: str):
+        """Regression: opening the canvas from an IMAGE card and hitting Save & Close
+        left the card showing its pre-save boxes. IMAGE_ANNOTATIONS_SAVED fired and
+        the panel heard it, but the card's refresher only redrew the bbox overlay —
+        and did so from the stale in-memory `img.bboxes`, so the count badge and
+        label chips never moved. Deleting one of img-1's two boxes must drop the
+        badge to '1 box' and leave only the Dog chip."""
+        _mock_review_queue(page, PAGE_1_IMAGES)
+        _mock_labels(page, [LABEL_CAT, LABEL_DOG])
+        _mock_tags(
+            page,
+            [
+                {**UNVERIFIED_TAG, "name": "Unverified", "color": "#888", "kind": "system"},
+                {**VERIFIED_TAG, "name": "Verified", "color": "#27ae60", "kind": "system"},
+            ],
+        )
+        _mock_misc_review_endpoints(page)
+        _mock_canvas_modal_image(page)
+
+        _navigate_to_review(page, base_url)
+        _show_all_bboxes(page)
+        _switch_view(page, "images")
+
+        card = page.locator("#review-root [data-image-uuid='img-1'][data-kind='image']")
+        expect(card.locator(".bbox-count-badge")).to_have_text("2 boxes")
+        expect(card.locator(".label-chip")).to_have_text(["Cat?", "Dog✓"])
+
+        # Double-clicking an image thumbnail opens the canvas on its first bbox.
+        card.locator("img.thumb").dblclick()
+        modal = page.get_by_test_id("canvas-edit-modal")
+        expect(modal).to_be_visible(timeout=8000)
+
+        modal.locator("button[data-toolbar-key='delete']").click()
+        save_btn = modal.locator("button", has_text="Save & Close")
+        expect(save_btn).to_have_class("save-btn--dirty")
+        save_btn.click()
+        expect(modal).to_have_count(0, timeout=8000)
+
+        # The card reflects the save without a re-fetch.
+        expect(card.locator(".bbox-count-badge")).to_have_text("1 box")
+        expect(card.locator(".label-chip")).to_have_text(["Dog✓"])
 
     def test_delete_works_as_soon_as_the_toolbar_is_clickable(self, page: Page, base_url: str):
         """Regression: showCanvasModal appends the overlay (and, right after

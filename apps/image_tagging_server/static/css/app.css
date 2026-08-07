@@ -1821,6 +1821,28 @@ button.filter-active {
   font-size: 0.85em;
 }
 
+/* Verified / unverified marker rendered inside a bbox label chip. Same glyph
+   vocabulary and colours as the standalone .verify-chip on bbox cards. */
+.label-chip__verify {
+  margin-left: 0.35em;
+  font-size: 0.9em;
+}
+.label-chip__verify--verified {
+  color: var(--color-success);
+}
+.label-chip__verify--unverified {
+  color: var(--color-warning);
+}
+/* Double-click target: flips every box behind the chip. */
+.label-chip__verify--clickable {
+  cursor: pointer;
+  border-radius: 3px;
+  padding: 0 2px;
+}
+.label-chip__verify--clickable:hover {
+  background: #ffffff1f;
+}
+
 /* Whole-image label chips — dashed border + pill shape to distinguish from bbox chips */
 .image-label-chip {
   display: inline-block;

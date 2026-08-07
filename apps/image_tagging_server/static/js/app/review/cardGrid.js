@@ -30,7 +30,7 @@ export function buildVerifyChip(tagUuids, { onToggle } = {}) {
   const isVerified = tagUuids.includes(VERIFIED_TAG_UUID);
   const chip = document.createElement('span');
   chip.className = 'verify-chip';
-  chip.textContent = isVerified ? '✓ Verified' : '◌ Unverified';
+  chip.textContent = isVerified ? '✓ Verified' : '? Unverified';
   chip.classList.toggle('verify-chip--verified', isVerified);
   chip.title = isVerified ? 'Verified' : 'Not yet verified';
   if (onToggle) {
@@ -275,28 +275,103 @@ export function attachGroupHighlight(gridEl, card, imageUuid) {
  * Populate `container` with deduplicated label chips for `bboxes`.
  * Falls back to an "unlabeled" chip when boxes exist but none have a label.
  * `labels` is the fetchLabels() Map (uuid → {name,color}).
+ *
+ * With `onToggleVerify(labelBboxes, nextUuid)`, each chip's ✓/? mark becomes a
+ * double-click target that flips every box behind that chip — mirroring the
+ * per-bbox `.verify-chip`. Without it the marks are display-only.
+ *
+ * @param {HTMLElement} container
+ * @param {object[]} bboxes
+ * @param {Map<string, {name: string, color: string}>} labels
+ * @param {{ onToggleVerify?: (labelBboxes: object[], nextUuid: string) => void }} [opts]
  */
-export function appendLabelChips(container, bboxes, labels) {
-  const seen = new Set();
+export function appendLabelChips(container, bboxes, labels, { onToggleVerify } = {}) {
+  // Group first: a chip is per-label, but its verify marker summarises every
+  // box carrying that label, so we can't emit on first sight of the label.
+  const byLabel = new Map();
   for (const bbox of bboxes) {
     const luuid = bbox.labelUuid;
-    if (!luuid || seen.has(luuid)) continue;
-    seen.add(luuid);
+    if (!luuid) continue;
+    if (!byLabel.has(luuid)) byLabel.set(luuid, []);
+    byLabel.get(luuid).push(bbox);
+  }
+
+  let emitted = 0;
+  for (const [luuid, labelBboxes] of byLabel) {
     const lbl = labels.get(luuid);
     if (!lbl) continue;
+    emitted++;
     const chip = document.createElement('span');
     chip.className = 'label-chip';
     chip.textContent = lbl.name;
     chip.style.cssText = `background:${lbl.color}33;border:1px solid ${lbl.color};`;
+    appendChipVerifyMark(chip, labelBboxes, lbl.name, onToggleVerify);
     container.appendChild(chip);
   }
-  if (seen.size === 0 && bboxes.length > 0) {
+  if (emitted === 0 && bboxes.length > 0) {
     const chip = document.createElement('span');
     chip.className = 'label-chip';
     chip.textContent = 'unlabeled';
     chip.style.cssText = 'background:#88888833;border:1px solid #888;';
+    appendChipVerifyMark(chip, bboxes, 'unlabeled', onToggleVerify);
     container.appendChild(chip);
   }
+}
+
+/**
+ * Append the verified/unverified marker to a label chip, summarising the
+ * verification state of every box that carries that label:
+ *   all verified → ✓ · none verified → ? · mixed → ✓n ?m
+ * Uses the same glyph vocabulary and colours as the per-bbox `.verify-chip`.
+ *
+ * When `onToggleVerify` is supplied the mark becomes a double-click target:
+ * anything not fully verified goes Verified, fully verified goes back to
+ * Unverified — so the mixed state resolves upward in one gesture rather than
+ * needing a pass per box.
+ */
+function appendChipVerifyMark(chip, labelBboxes, labelName, onToggleVerify) {
+  let verified = 0;
+  for (const bbox of labelBboxes) {
+    if ((bbox.tags ?? []).some(t => t.uuid === VERIFIED_TAG_UUID)) verified++;
+  }
+  const unverified = labelBboxes.length - verified;
+
+  const mark = document.createElement('span');
+  mark.className = 'label-chip__verify';
+  if (unverified === 0) {
+    mark.classList.add('label-chip__verify--verified');
+    mark.textContent = '✓';
+    chip.title = `${labelName}: all ${verified} box${verified !== 1 ? 'es' : ''} verified`;
+  } else if (verified === 0) {
+    mark.classList.add('label-chip__verify--unverified');
+    mark.textContent = '?';
+    chip.title = `${labelName}: ${unverified} box${unverified !== 1 ? 'es' : ''} not yet verified`;
+  } else {
+    mark.classList.add('label-chip__verify--mixed');
+    const ok = document.createElement('span');
+    ok.className = 'label-chip__verify--verified';
+    ok.textContent = `✓${verified}`;
+    const bad = document.createElement('span');
+    bad.className = 'label-chip__verify--unverified';
+    bad.textContent = `?${unverified}`;
+    mark.append(ok, ' ', bad);
+    chip.title = `${labelName}: ${verified} verified, ${unverified} not yet verified`;
+  }
+  if (onToggleVerify) {
+    const nextUuid = unverified === 0 ? UNVERIFIED_TAG_UUID : VERIFIED_TAG_UUID;
+    mark.classList.add('label-chip__verify--clickable');
+    chip.title += nextUuid === VERIFIED_TAG_UUID
+      ? ' — double-click the mark to verify all'
+      : ' — double-click the mark to un-verify all';
+    mark.addEventListener('dblclick', ev => {
+      ev.stopPropagation();
+      onToggleVerify(labelBboxes, nextUuid);
+    });
+    // The card's own click handler toggles selection; a double-click on the
+    // mark must not also select the card.
+    mark.addEventListener('click', ev => ev.stopPropagation());
+  }
+  chip.appendChild(mark);
 }
 
 /**
@@ -419,9 +494,14 @@ export function buildImageCard(controller, entry, opts) {
   const { img } = entry;
   const {
     gridEl, labels, index, referenceImageUuids, hoverPreview, thumbLoader,
-    resolveContext, onOpenEditor,
+    makeAdapter, resolveContext, onOpenEditor,
     registerImageRefresher, getPageImageLabels, subscribeImageLabelChanges,
   } = opts;
+
+  // Read `img.bboxes` fresh on every render rather than snapshotting it: a save
+  // from the canvas modal REPLACES the array on the entry, so a captured
+  // reference would keep rendering the pre-save boxes.
+  const currentBboxes = () => img.bboxes ?? [];
 
   const card = document.createElement('div');
   card.className = 'review-card review-card--image';
@@ -450,7 +530,7 @@ export function buildImageCard(controller, entry, opts) {
   thumbCanvas.className = 'thumb-overlay';
 
   function drawBboxOverlay() {
-    drawLetterboxedBboxes(thumbImg, thumbCanvas, (img.bboxes ?? []).map(bbox => ({
+    drawLetterboxedBboxes(thumbImg, thumbCanvas, currentBboxes().map(bbox => ({
       x: bbox.x, y: bbox.y, width: bbox.width, height: bbox.height, color: bbox.label?.color,
     })));
   }
@@ -461,14 +541,15 @@ export function buildImageCard(controller, entry, opts) {
     thumbImg.onload = drawBboxOverlay;
   }
 
-  // Register so bulk bbox actions can trigger a redraw
-  registerImageRefresher(img.uuid, drawBboxOverlay);
-
   // Bbox count badge
   const countBadge = document.createElement('div');
   countBadge.className = 'bbox-count-badge';
-  const bc = (img.bboxes ?? []).length;
-  countBadge.textContent = `${bc} box${bc !== 1 ? 'es' : ''}`;
+
+  function renderCountBadge() {
+    const bc = currentBboxes().length;
+    countBadge.textContent = `${bc} box${bc !== 1 ? 'es' : ''}`;
+  }
+  renderCountBadge();
 
   const thumbWrap = document.createElement('div');
   thumbWrap.style.cssText = 'position:relative;';
@@ -488,24 +569,64 @@ export function buildImageCard(controller, entry, opts) {
   }
 
   // Deduplicated label chips (bbox-level)
-  const bboxes = img.bboxes ?? [];
   const chipsRow = document.createElement('div');
   chipsRow.style.cssText = 'display:flex;flex-wrap:wrap;gap:2px;margin-bottom:0.2em;';
-  appendLabelChips(chipsRow, bboxes, labels);
 
-  // Whole-image label chips — fetched async, distinct from bbox chips
+  // Double-clicking a chip's ✓/? mark flips every box behind that chip through
+  // the same adapter the right-click menu uses. The adapter mutates the bbox
+  // objects in place, so re-rendering from `bboxes` picks up the new state.
+  //
+  // The adapter is built for BBOX cards: it refreshes `card.querySelector(
+  // '.thumb')` with a bbox-crop URL. On an image card `.thumb` is the whole
+  // image, so hand it a detached node and let that refresh no-op — the overlay
+  // redraw it triggers via _imageCardRefreshers covers this card anyway.
+  async function _toggleChipVerification(labelBboxes, nextUuid) {
+    const scratch = document.createElement('div');
+    for (const b of labelBboxes) {
+      await makeAdapter({ bbox: b, img }, scratch).setVerification(nextUuid);
+    }
+    // Only the verify direction earns the "✓ Verified" badge; un-verifying has
+    // no honest badge state, and the chip already shows the new state.
+    if (nextUuid === VERIFIED_TAG_UUID) controller.markCardStale(card, 'verified');
+    renderChips();
+    renderStatusRow();
+  }
+
+  function renderChips() {
+    chipsRow.innerHTML = '';
+    appendLabelChips(chipsRow, currentBboxes(), labels, {
+      onToggleVerify: makeAdapter ? _toggleChipVerification : undefined,
+    });
+  }
+  renderChips();
+
+  // Whole-image label chips — fetched async, distinct from bbox chips.
+  // Image-label presence is largely DERIVED from verified bboxes (see
+  // computeDerivedPresent in ui/labelList.js), so a label with boxes on this
+  // image would otherwise render twice: once solid, once dashed. Suppress the
+  // dashed duplicate — the solid chip already carries the ✓/? verify mark. Only
+  // image labels with no box on this image (true whole-image classification)
+  // still get a dashed chip.
   const imageLabelChipsRow = document.createElement('div');
   imageLabelChipsRow.style.cssText = 'display:flex;flex-wrap:wrap;gap:2px;margin-bottom:0.2em;';
 
+  // Remembered so a bbox-side refresh can re-run the dedup against the new
+  // boxes without re-fetching the image labels.
+  let _lastImageLabelMap = null;
+
   function _renderImageLabelChips(labelMap) {
+    _lastImageLabelMap = labelMap ?? _lastImageLabelMap;
+    const bboxLabelUuids = new Set(currentBboxes().map(b => b.labelUuid).filter(Boolean));
     imageLabelChipsRow.innerHTML = '';
-    for (const [luuid, status] of (labelMap ?? [])) {
+    for (const [luuid, status] of (_lastImageLabelMap ?? [])) {
       if (status !== 'present') continue;
+      if (bboxLabelUuids.has(luuid)) continue;
       const lbl = labels.get(luuid);
       if (!lbl) continue;
       const chip = document.createElement('span');
       chip.className = 'image-label-chip';
       chip.textContent = lbl.name;
+      chip.title = `Whole-image label "${lbl.name}" — present on the image with no bounding box of its own`;
       chip.style.cssText = `background:${lbl.color}22;border:1px dashed ${lbl.color};color:${lbl.color};`;
       imageLabelChipsRow.appendChild(chip);
     }
@@ -522,10 +643,11 @@ export function buildImageCard(controller, entry, opts) {
   // Verification status line (verified / unverified counts).
   const statusRow = document.createElement('div');
   statusRow.style.cssText = 'color:#aaa;font-size:0.75em;margin-bottom:0.15em;';
-  if (bboxes.length > 0) {
+
+  function renderStatusRow() {
     let verified = 0;
     let unverified = 0;
-    for (const bbox of bboxes) {
+    for (const bbox of currentBboxes()) {
       const bboxTags = bbox.tags ?? [];
       if (bboxTags.some(t => t.uuid === VERIFIED_TAG_UUID)) verified++;
       else if (bboxTags.some(t => t.uuid === UNVERIFIED_TAG_UUID)) unverified++;
@@ -534,15 +656,33 @@ export function buildImageCard(controller, entry, opts) {
     if (verified > 0) parts.push(`✓ ${verified}`);
     if (unverified > 0) parts.push(`? ${unverified}`);
     statusRow.textContent = parts.join('  ');
+    // Always in the DOM (hidden when empty) so a save that adds the first box
+    // to a previously empty image can fill it in without a re-render.
+    statusRow.hidden = parts.length === 0;
   }
+  renderStatusRow();
 
   const meta = document.createElement('div');
   meta.style.cssText = 'color:#aaa;font-size:0.75em;';
   meta.textContent = img.filename.split('/').slice(-2).join('/');
 
+  // Full card refresh — everything that reads `img.bboxes`. Registered below so
+  // bulk actions AND canvas-modal saves bring the whole card up to date, not
+  // just the overlay.
+  function refreshCard() {
+    drawBboxOverlay();
+    renderCountBadge();
+    renderChips();
+    _renderImageLabelChips(null);
+    renderStatusRow();
+  }
+
+  // Register so bulk bbox actions and canvas saves can refresh this card.
+  registerImageRefresher(img.uuid, refreshCard);
+
   info.appendChild(chipsRow);
   info.appendChild(imageLabelChipsRow);
-  if (bboxes.length > 0) info.appendChild(statusRow);
+  info.appendChild(statusRow);
   info.appendChild(meta);
   card.appendChild(cb);
   card.appendChild(thumbWrap);
@@ -650,8 +790,11 @@ export function buildImageRow(controller, entry, opts) {
   const { img } = entry;
   const {
     gridEl, labels, index, referenceImageUuids, hoverPreview, thumbLoader,
-    onOpenEditor,
+    makeAdapter, onOpenEditor, registerImageRefresher,
   } = opts;
+
+  // See buildImageCard — reads fresh so a canvas save is picked up.
+  const currentBboxes = () => img.bboxes ?? [];
 
   const row = document.createElement('li');
   row.className = 'review-row review-card review-card--image';
@@ -676,12 +819,16 @@ export function buildImageRow(controller, entry, opts) {
   });
 
   // Bbox count badge — list rows skip the per-row overlay canvas to stay light
-  // (hover preview still shows annotations), so this row is NOT registered in
-  // _imageCardRefreshers; bulk overlay redraws simply no-op for it.
+  // (hover preview still shows annotations), so a refresh here is just the
+  // count + chips, no overlay redraw.
   const countBadge = document.createElement('span');
   countBadge.className = 'bbox-count-badge';
-  const bc = (img.bboxes ?? []).length;
-  countBadge.textContent = `${bc} box${bc !== 1 ? 'es' : ''}`;
+
+  function renderCountBadge() {
+    const bc = currentBboxes().length;
+    countBadge.textContent = `${bc} box${bc !== 1 ? 'es' : ''}`;
+  }
+  renderCountBadge();
 
   const info = document.createElement('div');
   info.className = 'card-info';
@@ -694,11 +841,34 @@ export function buildImageRow(controller, entry, opts) {
     info.appendChild(refBadge);
   }
 
-  // Deduplicated label chips
-  const bboxes = img.bboxes ?? [];
+  // Deduplicated label chips — same double-click-to-verify affordance as the
+  // image card; see _toggleChipVerification there.
   const chipsRow = document.createElement('span');
   chipsRow.className = 'review-row__chips';
-  appendLabelChips(chipsRow, bboxes, labels);
+
+  async function _toggleChipVerification(labelBboxes, nextUuid) {
+    const scratch = document.createElement('div');
+    for (const b of labelBboxes) {
+      await makeAdapter({ bbox: b, img }, scratch).setVerification(nextUuid);
+    }
+    if (nextUuid === VERIFIED_TAG_UUID) controller.markCardStale(row, 'verified');
+    renderChips();
+  }
+
+  function renderChips() {
+    chipsRow.innerHTML = '';
+    appendLabelChips(chipsRow, currentBboxes(), labels, {
+      onToggleVerify: makeAdapter ? _toggleChipVerification : undefined,
+    });
+  }
+  renderChips();
+
+  // Same registry the image card uses, so canvas saves and bulk actions land
+  // on list rows too.
+  registerImageRefresher?.(img.uuid, () => {
+    renderCountBadge();
+    renderChips();
+  });
 
   const meta = document.createElement('span');
   meta.className = 'review-row__meta';

@@ -1997,15 +1997,65 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
     resetAndRender();
   });
 
+  /**
+   * Convert a canvas UIBbox into the API-shaped bbox the review entries hold.
+   * UIBbox labels are `{uuid, text, color}`; entry bboxes carry `{uuid, name,
+   * color}` plus a flat `labelUuid`, which is what the cards and adapters read.
+   */
+  function _uiBboxToEntryBbox(uiBbox) {
+    const label = uiBbox.label
+      ? { uuid: uiBbox.label.uuid, name: uiBbox.label.text ?? uiBbox.label.name, color: uiBbox.label.color }
+      : null;
+    return {
+      uuid: uiBbox.uuid,
+      x: uiBbox.x,
+      y: uiBbox.y,
+      width: uiBbox.width,
+      height: uiBbox.height,
+      label,
+      labelUuid: label?.uuid ?? null,
+      tags: uiBbox.tags ?? [],
+      metadataJson: uiBbox.metadataJson ?? null,
+    };
+  }
+
   // Subscribe to IMAGE_ANNOTATIONS_SAVED so saves from any nested canvas modal
   // (or any other panel) propagate back to this panel's cards automatically.
+  //
+  // The payload's `bboxes` is the AUTHORITATIVE post-save set for the image, so
+  // the in-memory entry is resynced from it wholesale — that is what makes
+  // added and deleted boxes show up. Without this the image card re-rendered
+  // from its pre-save `img.bboxes` and looked unchanged.
   const _unsubImageSaved = events.subscribe(EventTypes.IMAGE_ANNOTATIONS_SAVED, ({ imageUuid, imageFilename, bboxes } = {}) => {
-    if (!bboxes?.size || !imageUuid) return;
+    // NB: no `!bboxes.size` guard — deleting every box on an image is a real
+    // save that the card must reflect.
+    if (!imageUuid || !bboxes) return;
+
     for (const [bboxUuid, uiBbox] of bboxes) {
       const card = grid.querySelector(`[data-bbox-uuid="${bboxUuid}"]`);
       if (card) _refreshBboxCard(card, uiBbox, imageFilename, bboxUuid);
     }
+
+    const saved = [...bboxes.values()].map(_uiBboxToEntryBbox);
+    for (const entry of _allEntries) {
+      if (entry.img?.uuid !== imageUuid) continue;
+      // Mutate in place: the image card's hover-preview meta and the hover
+      // thumbnail cache both hold this array by reference.
+      if (Array.isArray(entry.img.bboxes)) {
+        entry.img.bboxes.length = 0;
+        entry.img.bboxes.push(...saved);
+      } else {
+        entry.img.bboxes = saved;
+      }
+      // A bbox entry whose box no longer exists was deleted in the canvas.
+      if (entry.kind === 'bbox' && entry.bbox && !bboxes.has(entry.bbox.uuid)) {
+        const bboxCard = grid.querySelector(`[data-bbox-uuid="${entry.bbox.uuid}"]`);
+        if (bboxCard) markCardStale(bboxCard, 'deleted');
+      }
+    }
+
     _imageCardRefreshers.get(imageUuid)?.();
+    updateStatusMsg();
   });
 
   // Mark image cards stale-deleted when an image is deleted from any panel.
