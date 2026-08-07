@@ -15,6 +15,7 @@ Run with:
 
 import base64
 import json
+import pathlib
 import re
 
 import cv2
@@ -585,3 +586,57 @@ class TestHistogramWidget:
         task_id = "task-hist-5"
         self._open(page, base_url, task_id, {})
         expect(page.locator(f"[data-task-uuid='{task_id}']")).to_contain_text("No measurements yet.")
+
+
+class TestStatusWidgetContrast:
+    """These widgets predate the dark-only theme and hardcoded light surfaces
+    (#f5f5f5 cells, #f0f0f0 tracks) while their text inherits the themed --text,
+    which is near-white in dark — stat_grid values rendered white on white and
+    were unreadable. Every colour must come from a token so the two sides move
+    together."""
+
+    def test_factories_declare_no_hardcoded_hex_colours(self):
+        """A unit-style guard: cheaper and more complete than probing each widget."""
+        src = (
+            pathlib.Path(__file__).resolve().parents[1]
+            / "apps/image_tagging_server/static/js/ui/utils/statusWidgets/Factories.js"
+        ).read_text()
+        leftover = re.findall(r"#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})\b", src)
+        assert leftover == [], f"hardcoded colours must use tokens instead: {leftover}"
+
+    def test_stat_grid_value_contrasts_with_its_cell(self, page: Page, base_url: str):
+        """The actual regression: value text must not match its own background."""
+        task_id = "task-contrast-1"
+        schema = [{"id": "stats", "type": "stat_grid", "source": "status", "fields": {"saved": "Saved"}}]
+        _mock_status_schema(page, schema)
+        _mock_status_data(page, {task_id: {"stats": {"saved": 42}}})
+        _setup_base_mocks(page, {task_id: _make_task(task_id)})
+        _navigate_to_tasks(page, base_url)
+        page.wait_for_selector(f"[data-task-uuid='{task_id}'] summary", timeout=5000)
+        page.locator(f"[data-task-uuid='{task_id}'] summary").click()
+
+        card = page.locator(f"[data-task-uuid='{task_id}']")
+        expect(card).to_contain_text("42")
+        value = card.get_by_text("42", exact=True).first
+        # Measure real contrast, not mere inequality: the broken version rendered
+        # near-white #f2f4f8 text on a near-white #f5f5f5 cell, which is unreadable
+        # but not *equal*, so an equality check sails straight past the bug.
+        ratio = value.evaluate("""el => {
+                const parse = c => c.match(/[\\d.]+/g).slice(0, 3).map(Number);
+                const lum = ([r, g, b]) => {
+                    const f = v => {
+                        v /= 255;
+                        return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4);
+                    };
+                    return 0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(b);
+                };
+                const fg = getComputedStyle(el).color;
+                let n = el, bg = 'rgba(0, 0, 0, 0)';
+                while (n && (bg === 'rgba(0, 0, 0, 0)' || bg === 'transparent')) {
+                    bg = getComputedStyle(n).backgroundColor;
+                    n = n.parentElement;
+                }
+                const [a, b] = [lum(parse(fg)), lum(parse(bg))].sort((x, y) => y - x);
+                return (a + 0.05) / (b + 0.05);
+            }""")
+        assert ratio >= 3.0, f"stat_grid value is unreadable against its cell (contrast {ratio:.2f}:1)"

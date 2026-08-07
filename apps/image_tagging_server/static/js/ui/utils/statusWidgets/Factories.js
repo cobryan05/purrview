@@ -35,7 +35,7 @@ function labelWrap(label) {
   if (label) {
     const labelEl = document.createElement('div');
     labelEl.textContent = label;
-    labelEl.style.cssText = 'color:#888; margin-bottom:0.15em; font-size:0.9em;';
+    labelEl.style.cssText = 'color:var(--text-muted); margin-bottom:0.15em; font-size:0.9em;';
     div.appendChild(labelEl);
   }
   return div;
@@ -84,7 +84,7 @@ export const statusWidgets = {
     const wrap = labelWrap(config.label);
     const msgDiv = document.createElement('div');
     msgDiv.textContent = String(data);
-    msgDiv.style.cssText = 'color:#555; margin-bottom:0.3em;';
+    msgDiv.style.cssText = 'color:var(--text); margin-bottom:0.3em;';
     wrap.appendChild(msgDiv);
     return wrap;
   },
@@ -102,17 +102,17 @@ export const statusWidgets = {
         ? `Error log (${lines.length} lines):`
         : `Logs (${lines.length} lines):`;
       logLabel.textContent = config.label || defaultLabel;
-      logLabel.style.cssText = 'color:#888; margin-bottom:0.15em;';
+      logLabel.style.cssText = 'color:var(--text-muted); margin-bottom:0.15em;';
       wrap.appendChild(logLabel);
 
       const pre = document.createElement('pre');
-      pre.style.cssText = 'margin:0; padding:0.4em; background:#f5f5f5; border-radius:3px; max-height:10em; overflow-y:auto; white-space:pre-wrap; word-break:break-all; font-size:0.9em;';
+      pre.style.cssText = 'margin:0; padding:0.4em; background:var(--surface-sunken); color:var(--text); border-radius:3px; max-height:10em; overflow-y:auto; white-space:pre-wrap; word-break:break-all; font-size:0.9em;';
       pre.textContent = lines.join('\n');
       wrap.appendChild(pre);
     } else {
       const noLog = document.createElement('div');
       noLog.textContent = 'No log output.';
-      noLog.style.cssText = 'color:#bbb;';
+      noLog.style.cssText = 'color:var(--text-faint);';
       wrap.appendChild(noLog);
     }
     return wrap;
@@ -133,13 +133,13 @@ export const statusWidgets = {
     const values = data || {};
     for (const [key, fieldLabel] of entries) {
       const cell = document.createElement('div');
-      cell.style.cssText = 'background:#f5f5f5; border-radius:3px; padding:0.3em 0.5em;';
+      cell.style.cssText = 'background:var(--surface-raised); color:var(--text); border-radius:3px; padding:0.3em 0.5em;';
       const valEl = document.createElement('div');
       valEl.textContent = values[key] ?? '—';
       valEl.style.cssText = 'font-weight:bold; font-size:1.05em;';
       const labelEl = document.createElement('div');
       labelEl.textContent = fieldLabel;
-      labelEl.style.cssText = 'color:#888; font-size:0.75em;';
+      labelEl.style.cssText = 'color:var(--text-muted); font-size:0.75em;';
       cell.append(valEl, labelEl);
       grid.appendChild(cell);
     }
@@ -160,7 +160,7 @@ export const statusWidgets = {
     if (bins.length === 0) {
       const empty = document.createElement('div');
       empty.textContent = 'No measurements yet.';
-      empty.style.cssText = 'color:#bbb;';
+      empty.style.cssText = 'color:var(--text-faint);';
       wrap.appendChild(empty);
       return wrap;
     }
@@ -177,22 +177,22 @@ export const statusWidgets = {
       const tick = document.createElement('span');
       tick.textContent = bin.marked ? `${bin.label} ◀` : String(bin.label);
       tick.style.cssText = `min-width:4.5em; text-align:right; font-variant-numeric:tabular-nums; ${
-        bin.marked ? 'font-weight:bold;' : 'color:#888;'
+        bin.marked ? 'font-weight:bold; color:var(--text);' : 'color:var(--text-muted);'
       }`;
 
       const track = document.createElement('div');
       track.className = 'status-histogram__track';
-      track.style.cssText = 'flex:1; min-width:0; height:0.9em; background:#f0f0f0; border-radius:2px;';
+      track.style.cssText = 'flex:1; min-width:0; height:0.9em; background:var(--surface-sunken); border-radius:2px;';
       const fill = document.createElement('div');
       fill.className = 'status-histogram__fill';
       fill.style.cssText = `width:${(100 * count) / max}%; height:100%; border-radius:2px; background:${
-        bin.marked ? '#e8833a' : '#7aa6d6'
+        bin.marked ? 'var(--color-warning)' : 'var(--color-info)'
       };`;
       track.appendChild(fill);
 
       const value = document.createElement('span');
       value.textContent = String(count);
-      value.style.cssText = 'min-width:2.5em; color:#888; font-variant-numeric:tabular-nums;';
+      value.style.cssText = 'min-width:2.5em; color:var(--text-muted); font-variant-numeric:tabular-nums;';
 
       row.append(tick, track, value);
       chart.appendChild(row);
@@ -204,7 +204,7 @@ export const statusWidgets = {
     caption.textContent = marked
       ? `${data.total} sample(s) · ◀ marks the current threshold (${marked.label})`
       : `${data.total} sample(s)`;
-    caption.style.cssText = 'color:#888; font-size:0.75em;';
+    caption.style.cssText = 'color:var(--text-muted); font-size:0.75em;';
     wrap.appendChild(caption);
     return wrap;
   },
@@ -226,7 +226,7 @@ export const statusWidgets = {
     for (const col of cols) {
       const th = document.createElement('th');
       th.textContent = col.label;
-      th.style.cssText = 'text-align:left; color:#888; font-weight:normal; border-bottom:1px solid #e0e0e0; padding:2px 6px;';
+      th.style.cssText = 'text-align:left; color:var(--text-muted); font-weight:normal; border-bottom:1px solid var(--border-strong); padding:2px 6px;';
       headRow.appendChild(th);
     }
     thead.appendChild(headRow);
@@ -238,7 +238,7 @@ export const statusWidgets = {
       for (const col of cols) {
         const td = document.createElement('td');
         td.textContent = row?.[col.key] ?? '';
-        td.style.cssText = 'padding:2px 6px; border-bottom:1px solid #f0f0f0;';
+        td.style.cssText = 'padding:2px 6px; border-bottom:1px solid var(--border);';
         tr.appendChild(td);
       }
       tbody.appendChild(tr);
@@ -249,7 +249,7 @@ export const statusWidgets = {
     if (rows.length === 0) {
       const empty = document.createElement('div');
       empty.textContent = 'No data.';
-      empty.style.cssText = 'color:#bbb;';
+      empty.style.cssText = 'color:var(--text-faint);';
       wrap.appendChild(empty);
     }
     return wrap;
@@ -265,14 +265,14 @@ export const statusWidgets = {
     if (!data?.path) {
       const placeholder = document.createElement('div');
       placeholder.textContent = 'No image yet.';
-      placeholder.style.cssText = 'color:#bbb;';
+      placeholder.style.cssText = 'color:var(--text-faint);';
       wrap.appendChild(placeholder);
       return wrap;
     }
 
     const height = config.height || '16em';
     const canvasContainer = document.createElement('div');
-    canvasContainer.style.cssText = `width:100%; height:${height}; position:relative; background:#111; border-radius:3px; overflow:hidden;`;
+    canvasContainer.style.cssText = `width:100%; height:${height}; position:relative; background:var(--surface-sunken); border-radius:3px; overflow:hidden;`;
     wrap.appendChild(canvasContainer);
 
     let instance = null;
@@ -293,7 +293,7 @@ export const statusWidgets = {
         instance = null;
         const errEl = document.createElement('div');
         errEl.textContent = 'Failed to load image.';
-        errEl.style.cssText = 'color:#f44336; padding:0.5em;';
+        errEl.style.cssText = 'color:var(--color-danger); padding:0.5em;';
         canvasContainer.replaceWith(errEl);
       }
     };
