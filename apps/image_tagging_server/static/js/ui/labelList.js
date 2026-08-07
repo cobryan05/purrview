@@ -1161,6 +1161,13 @@ async function mountSelectMode(container, { runtime, filter }) {
         border: '1px solid #444',
         borderRadius: '3px',
         padding: '0',
+        // Pico puts `margin-bottom: var(--pico-spacing)` (1rem = 16px) on every
+        // bare <button>. On a flex row that margin is part of the item's margin
+        // box, so it sets the flex line's height: these rows measured 36px
+        // against their own `min-height: 24px`, wasting ~12px on every label.
+        // The explicit width/height above do NOT suppress it. Same trap as the
+        // bare-<label> one in NOTES.md — this reset is load-bearing.
+        margin: '0',
         lineHeight: '1',
         background: 'transparent',
       });

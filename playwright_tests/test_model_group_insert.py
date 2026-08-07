@@ -190,8 +190,14 @@ def _group(uuid: str, name: str, member_model_names: list) -> dict:
 
 
 def _open_edit(page: Page):
-    page.wait_for_selector("#task-config-list button[title='Edit']", timeout=5000)
-    page.locator("#task-config-list button[title='Edit']").first.click()
+    """Load the first task config into the editor.
+
+    Task configs moved to a list-beside-editor screen: selecting the row *is*
+    opening it for editing, so there is no longer a per-row Edit button.
+    """
+    page.wait_for_selector("#task-config-list .le-list-item", timeout=5000)
+    page.locator("#task-config-list .le-list-item").first.click()
+    page.wait_for_timeout(700)
 
 
 class TestGroupInsertAppendsInOrder:

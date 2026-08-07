@@ -117,10 +117,15 @@ export class TaskConfigField extends Field {
 
     // Row 1: dropdown + text
     const topRow = document.createElement('div');
-    topRow.style.display = 'flex';
-    topRow.style.gap = '0.5em';
-    topRow.appendChild(await this._dropDownField.renderEdit());
-    topRow.appendChild(await this._textField.renderEdit());
+    topRow.className = 'tcf-top-row';
+    // Named hook, not a positional `select` query: the schema form below adds
+    // its own <select>s, so "the task type dropdown" has no stable index.
+    const typeSelect = await this._dropDownField.renderEdit();
+    typeSelect.dataset.testid = 'task-type-select';
+    topRow.appendChild(typeSelect);
+    const nameInput = await this._textField.renderEdit();
+    nameInput.dataset.testid = 'task-name-input';
+    topRow.appendChild(nameInput);
 
     const uuidInfo = document.createElement('div');
     uuidInfo.textContent = `UUID: ${this._uuid || '(none)'}`;
@@ -136,10 +141,13 @@ export class TaskConfigField extends Field {
     await this._rerenderSchema();
 
     // Persistent (auto-restart-after-reboot) opt-in checkbox.
+    // The explanation is a tooltip rather than a permanent two-line paragraph:
+    // it is background detail for a setting most configs leave alone, and at the
+    // bottom of a schema form those two lines were pure scroll.
     const persistentRow = document.createElement('div');
-    persistentRow.style.cssText = 'margin:0.5em 0; font-size:0.85em;';
+    persistentRow.className = 'tcf-persistent-row';
     const persistentLabel = document.createElement('label');
-    persistentLabel.style.cssText = 'display:flex; align-items:center; gap:0.4em; cursor:pointer;';
+    persistentLabel.title = 'If checked, this task resumes on its own after the container restarts (e.g. crash, redeploy). Leave unchecked for one-off or transient runs.';
     const persistentChk = document.createElement('input');
     persistentChk.type = 'checkbox';
     persistentChk.checked = this._persistent === true;
@@ -148,10 +156,6 @@ export class TaskConfigField extends Field {
     });
     persistentLabel.append(persistentChk, 'Restart automatically after a server restart');
     persistentRow.appendChild(persistentLabel);
-    const persistentHelp = document.createElement('div');
-    persistentHelp.textContent = 'If checked, this task resumes on its own after the container restarts (e.g. crash, redeploy). Leave unchecked for one-off or transient runs.';
-    persistentHelp.style.cssText = 'color:#888; margin-left:1.5em;';
-    persistentRow.appendChild(persistentHelp);
     this._persistentChk = persistentChk;
 
     container.appendChild(topRow);

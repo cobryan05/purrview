@@ -121,16 +121,16 @@ def test_configuration_subtab_switching(page: Page, base_url: str):
 # ---------------------------------------------------------------------------
 
 
-def test_operations_default_subtab_is_sources(page: Page, base_url: str):
-    """The Sources sub-tab should be active by default inside Operations."""
+def test_operations_default_subtab_is_tasks(page: Page, base_url: str):
+    """Tasks is the first Operations sub-tab, so it is the one active on arrival."""
     page.goto(base_url)
     page.wait_for_load_state("networkidle")
 
     page.locator(".main-tab-button[data-tab='tab-operations']").click()
 
-    sources_btn = page.locator("#tab-operations .workspace-tab-button[data-tab='tab-source-management']")
-    expect(sources_btn).to_have_class(re.compile(r"\bactive\b"))
-    expect(page.locator("#tab-source-management")).to_have_class(re.compile(r"\bactive\b"))
+    tasks_btn = page.locator("#tab-operations .workspace-tab-button[data-tab='tab-task-management']")
+    expect(tasks_btn).to_have_class(re.compile(r"\bactive\b"))
+    expect(page.locator("#tab-task-management")).to_have_class(re.compile(r"\bactive\b"))
 
 
 def test_operations_subtab_switching(page: Page, base_url: str):
@@ -140,7 +140,7 @@ def test_operations_subtab_switching(page: Page, base_url: str):
 
     page.locator(".main-tab-button[data-tab='tab-operations']").click()
 
-    for tab in ["tab-task-management", "tab-source-management"]:
+    for tab in ["tab-task-management", "tab-task-activity", "tab-source-management"]:
         page.locator(f"#tab-operations .workspace-tab-button[data-tab='{tab}']").click()
         expect(page.locator(f"#{tab}")).to_have_class(re.compile(r"\bactive\b"))
 

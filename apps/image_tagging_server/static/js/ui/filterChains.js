@@ -332,6 +332,8 @@ export async function renderFilterChainManager({ target = 'filter-chain-manageme
       title: 'Filter Chains',
       itemUuidAttr: 'chainUuid',
       withEditorFooter: true,
+      searchable: true,
+      searchPlaceholder: 'Filter chains…',
       onNew: () => _showForm(null),
       ownTabId: 'tab-filterchain-management',
       navGuardSignal: _navGuardController.signal,
@@ -440,34 +442,23 @@ export async function renderFilterChainManager({ target = 'filter-chain-manageme
     async function refreshList() {
       listBody.innerHTML = '';
       const chainsMap = await fetchFilterChains();
+      screen.setCount(chainsMap.size);
 
       if (chainsMap.size === 0) {
-        const empty = document.createElement('p');
-        empty.style.cssText = 'color: var(--pico-muted-color, #888); font-style: italic; font-size: 0.85em; padding: 0.5em 0.75em; margin: 0;';
-        empty.textContent = 'No filter chains yet.';
-        listBody.appendChild(empty);
+        listBody.appendChild(screen.createListEmpty('No filter chains yet.'));
       }
 
       for (const chain of chainsMap.values()) {
-        const item = document.createElement('div');
-        item.className = 'fc-list-item';
-        item.dataset.chainUuid = chain.uuid;
-
-        const nameLine = document.createElement('div');
-        nameLine.className = 'fc-list-item__name';
-        nameLine.textContent = chain.name;
-        item.appendChild(nameLine);
-
-        const metaLine = document.createElement('div');
-        metaLine.className = 'fc-list-item__meta';
         const stepCount = chain.steps?.length ?? 0;
-        metaLine.textContent = `${stepCount} step${stepCount !== 1 ? 's' : ''}`;
-        item.appendChild(metaLine);
-
-        item.addEventListener('click', () => _showForm(chain));
-        listBody.appendChild(item);
+        listBody.appendChild(screen.createListItem({
+          uuid: chain.uuid,
+          name: chain.name,
+          meta: `${stepCount} step${stepCount !== 1 ? 's' : ''}`,
+          onClick: () => _showForm(chain),
+        }));
       }
 
+      screen.applyFilter();
       _updateListSelection(_selectedUuid);
     }
 

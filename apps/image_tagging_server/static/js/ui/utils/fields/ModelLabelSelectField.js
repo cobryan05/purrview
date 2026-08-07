@@ -3,7 +3,6 @@ import { Field } from './Field.js';
 import { LabelNumberField } from './LabelNumberField.js';
 import { fetchLabelByUuid } from '/app-static/js/shared/api/labels.js';
 import { fetchModelsLabelMappings, fetchModelsList } from '/app-static/js/shared/api/models.js';
-import { createGenericRow } from '/app-static/js/ui/utils/index.js';
 export class ModelLabelSelectField extends Field {
   static DEFAULT_CONFIDENCE = 0.25;
 
@@ -57,57 +56,76 @@ export class ModelLabelSelectField extends Field {
     await this._renderLabelList();
   }
 
+  /**
+   * Fills the band table: one header row, then one `display: contents` row per
+   * label. The header carries the "Min"/"Max" wording that used to be repeated
+   * as a tag beside every single input — with the inputs actually in columns,
+   * naming them once is both shorter and clearer.
+   */
   async _renderLabelList() {
     if (!this._labelsContainer) {
       return;
     }
 
     this._labelsContainer.innerHTML = '';
-    for (const [labelName, field] of this._fields) {
-      const row = createGenericRow({ field });
-      this._labelsContainer.appendChild(row);
+
+    if (this._fields.size === 0) {
+      this._labelsContainer.classList.add('mlsf-bands--empty');
+      const empty = document.createElement('div');
+      empty.className = 'mlsf-bands__empty';
+      empty.textContent = 'No labels mapped for this model.';
+      this._labelsContainer.appendChild(empty);
+      return;
+    }
+
+    this._labelsContainer.classList.remove('mlsf-bands--empty');
+    // The header is emitted twice. A wide enough pane lays the table out as two
+    // side-by-side Label/Min/Max groups (see the `@container` rule in app.css),
+    // and the second group needs its own header; a narrow one hides the copy.
+    // Whether there is room is a pure layout question, so CSS decides it — JS
+    // would have to duplicate the breakpoint and watch the pane for resizes.
+    for (const pass of [0, 1]) {
+      // `--value` marks the two numeric columns, which are right-aligned over
+      // right-aligned digits. Positional selectors would do it, but they'd break
+      // the moment the header count changed.
+      for (const [text, kind] of [['Label', 'name'], ['Min', 'value'], ['Max', 'value']]) {
+        const head = document.createElement('div');
+        head.className = `mlsf-bands__head mlsf-bands__head--${kind}`;
+        if (pass) head.classList.add('mlsf-bands__head--second');
+        head.textContent = text;
+        this._labelsContainer.appendChild(head);
+      }
+    }
+
+    // Rendered sequentially rather than via Promise.all: the rows are grid
+    // children in DOM order, so an out-of-order append would scramble the table.
+    for (const field of this._fields.values()) {
+      this._labelsContainer.appendChild(await field.renderView());
     }
   }
 
   async renderEdit() {
     const container = document.createElement('div');
-    container.style.display = 'inline-flex';
-    container.style.flexDirection = 'column';
-    container.style.border = '1px dotted #fff8';
-    container.style.padding = '0.5em';
-    container.style.gap = '0.5em';
-    container.style.alignItems = 'flex-start';
+    container.className = 'mlsf';
 
     // Row with model dropdown + help text
     const modelRow = document.createElement('div');
-    modelRow.style.display = 'grid';
-    modelRow.style.gridTemplateColumns = 'auto 1fr';
-    modelRow.style.alignItems = 'center';
-    modelRow.style.gap = '1em';
+    modelRow.className = 'mlsf__model-row';
 
-    // Left column: dropdown
     const dropDown = await this._dropDownField.renderEdit();
-    dropDown.style.minWidth = '10em'; // keep it readable
+    dropDown.classList.add('mlsf__model-select');
     modelRow.appendChild(dropDown);
 
-    // Right column: help text
     const helpText = document.createElement('div');
+    helpText.className = 'mlsf__help';
     helpText.textContent =
       'Select a model, then set a min/max confidence band to enable labels (min > 0 enables; min = 0 disables)';
-    helpText.style.fontSize = '0.85em';
-    helpText.style.color = '#aaa';
-    helpText.style.fontStyle = 'italic';
-    helpText.style.whiteSpace = 'normal'; // allow wrapping
-    helpText.style.lineHeight = '1.2em'; // make wrapped text look good
-    helpText.style.alignSelf = 'start'; // align text nicely when multi-line
     modelRow.appendChild(helpText);
 
-    // Labels grid
+    // Labels grid — three real columns, so every row's min/max inputs line up
+    // no matter how wide the label names are.
     this._labelsContainer = document.createElement('div');
-    this._labelsContainer.style.display = 'grid';
-    this._labelsContainer.style.gridTemplateColumns = 'auto auto auto';
-    this._labelsContainer.style.gap = '0.25em 1em';
-    this._labelsContainer.style.alignItems = 'center';
+    this._labelsContainer.className = 'mlsf-bands';
 
     await this._renderLabelList();
 

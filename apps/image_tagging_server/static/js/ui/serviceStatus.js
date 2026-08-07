@@ -1,13 +1,23 @@
 import { apiFetch } from '/app-static/js/shared/api/apiUtils.js';
+import { prefs } from '/app-static/js/shared/prefs.js';
 import { showTrainingServerModal } from '/app-static/js/ui/trainingServerModal.js';
 
 /**
  * Live service-health panel for the Operations tab.
  *
- * This is pure monitoring — it persists nothing — which is why it lives here
- * rather than in Settings (UI_REDESIGN §12: its presence in Settings was the
- * original miscategorisation).
+ * This is pure monitoring — it persists nothing about the *services* — which is
+ * why it lives here rather than in Settings (UI_REDESIGN §12: its presence in
+ * Settings was the original miscategorisation).
+ *
+ * It is collapsed by default. Expanded it is five rows plus a heading — about
+ * 38% of a 950px viewport — sitting above every Operations sub-tab, and the
+ * answer it gives is almost always "everything is green". The collapsed summary
+ * carries the part worth a permanent slot (are all services up, and the few
+ * live counters), and the rows are one click away. Whether it is open is a user
+ * preference and survives a reload.
  */
+
+const EXPANDED_PREF_KEY = 'ww.operations.serviceStatusExpanded';
 
 const SERVICE_DISPLAY = {
   db_server:           { label: 'DB Server',          icon: '🗄' },
@@ -82,34 +92,83 @@ function _renderServiceRow(svc) {
 }
 
 /**
+ * The one-line state shown while the panel is collapsed: overall health, plus
+ * the handful of counters that are worth a permanent slot.
+ *
+ * @param {Array<object>} services
+ * @returns {{ text: string, tone: 'ok' | 'warn' | 'bad' }}
+ */
+function _summarize(services) {
+  if (!services.length) return { text: 'No services found', tone: 'warn' };
+
+  const bad = services.filter(s => s.status !== 'ok' && s.status !== 'unreachable');
+  const unreachable = services.filter(s => s.status === 'unreachable');
+
+  const counters = [];
+  for (const svc of services) {
+    if (svc.tasks?.running) counters.push(`${svc.tasks.running} running`);
+    if (svc.models?.loaded) counters.push(`${svc.models.loaded} model${svc.models.loaded === 1 ? '' : 's'} loaded`);
+    if (svc.streams?.active) counters.push(`${svc.streams.active} stream${svc.streams.active === 1 ? '' : 's'}`);
+    if (svc.hash_index?.needs_rebuild) counters.push('index needs rebuild');
+  }
+
+  // Name the broken services rather than just counting them — "1 service down"
+  // sends you into the list to find out which, defeating the collapse.
+  const nameOf = (s) => SERVICE_DISPLAY[s.service]?.label ?? s.service;
+  let head;
+  let tone;
+  if (bad.length) {
+    head = `${bad.map(nameOf).join(', ')} down`;
+    tone = 'bad';
+  } else if (unreachable.length) {
+    head = `${unreachable.map(nameOf).join(', ')} unreachable`;
+    tone = 'warn';
+  } else {
+    head = `All ${services.length} services OK`;
+    tone = 'ok';
+  }
+
+  return { text: [head, ...counters].join('  ·  '), tone };
+}
+
+/**
  * Build the service-status panel element.
  *
- * @returns {HTMLElement} a detached <section>; the first refresh is already in
+ * @returns {HTMLElement} a detached <details>; the first refresh is already in
  *   flight so the caller can append immediately.
  */
 export function createServiceStatusPanel() {
-  const section = document.createElement('section');
+  const section = document.createElement('details');
   section.className = 'service-status-panel';
   section.dataset.testid = 'service-status-panel';
+  section.open = prefs.read(EXPANDED_PREF_KEY, false) === true;
+  section.addEventListener('toggle', () => prefs.write(EXPANDED_PREF_KEY, section.open));
 
-  const header = document.createElement('div');
+  const header = document.createElement('summary');
   header.className = 'service-status-panel__header';
 
-  const title = document.createElement('h4');
+  const title = document.createElement('span');
+  title.className = 'service-status-panel__title';
   title.textContent = 'Service Status';
-  title.style.margin = '0';
+
+  const summary = document.createElement('span');
+  summary.className = 'service-status-panel__summary';
+  summary.dataset.testid = 'service-status-summary';
+  summary.textContent = 'checking…';
 
   const refreshBtn = document.createElement('button');
+  refreshBtn.type = 'button';
   refreshBtn.textContent = '↻ Refresh';
-  refreshBtn.className = 'secondary';
+  refreshBtn.className = 'panel-btn secondary';
   refreshBtn.dataset.testid = 'service-status-refresh';
-  refreshBtn.style.cssText = 'font-size:0.8em;padding:0.2em 0.6em;margin-left:auto;';
+  // Inside a <summary>, a click would also toggle the disclosure.
+  refreshBtn.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); refresh(); });
 
-  header.append(title, refreshBtn);
+  header.append(title, summary, refreshBtn);
   section.appendChild(header);
 
   const body = document.createElement('div');
-  body.style.cssText = 'margin-top:6px;';
+  body.className = 'service-status-panel__body';
   section.appendChild(body);
 
   async function refresh() {
@@ -127,16 +186,20 @@ export function createServiceStatusPanel() {
         body.textContent = 'No services found.';
         body.style.color = 'var(--pico-muted-color,#888)';
       }
+      const { text, tone } = _summarize(services);
+      summary.textContent = text;
+      summary.dataset.tone = tone;
     } catch (e) {
       body.textContent = `Error: ${e.message}`;
       body.style.color = 'var(--pico-del-color,#e55)';
+      summary.textContent = `Error: ${e.message}`;
+      summary.dataset.tone = 'bad';
     } finally {
       refreshBtn.disabled = false;
       refreshBtn.textContent = '↻ Refresh';
     }
   }
 
-  refreshBtn.addEventListener('click', refresh);
   // Fire-and-forget so the rest of the pane renders immediately.
   refresh();
   return section;

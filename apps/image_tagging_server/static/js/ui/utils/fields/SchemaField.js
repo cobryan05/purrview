@@ -45,14 +45,42 @@ export class SchemaField extends Field {
   }
 
   /**
-   * Renders the form children using the callback for each item
+   * Field types whose control needs the full width of the form to be usable —
+   * multi-row lists, nested forms, checkbox grids, path pickers. Everything else
+   * (text boxes, numbers, selects) is a single control that reads fine in a
+   * ~240px grid cell, so the form flows them two-or-more across instead of
+   * stacking every field down one long column.
+   */
+  static FULL_WIDTH_TYPES = new Set([
+    'array', 'tags', 'group', 'source_config', 'bbox_info', 'directory',
+    // model_label renders a grid of per-label min/max confidence bands — it is
+    // the widest control in any schema and overflows a grid track visibly.
+    'model_label',
+  ]);
+
+  /**
+   * Types that render their own visible label as part of the control, so the
+   * form must not add a second one above it. `boolean` is the case that
+   * mattered: its factory passes `label: description || fieldName` into
+   * BooleanCheckboxField, which draws that text beside the checkbox — the
+   * schema-level label above it was a duplicate, and turned every one-line
+   * toggle into a three-line block.
+   */
+  static SELF_LABELLING_TYPES = new Set(['boolean', 'bbox_info']);
+
+  /**
+   * Renders the form children using the callback for each item.
+   *
+   * Emits semantic classes and lets `.schema-form` in app.css own the layout,
+   * rather than the inline flex-column this used to hard-code. That column was
+   * the main reason a task or source form scrolled: every field became two full
+   * rows (bold label, then a 100%-wide input) no matter how small the control.
+   *
    * @returns {HTMLElement} The form container.
    */
   async _renderFieldsWith(fieldRenderCallback) {
     const container = document.createElement('div');
-    container.style.display = 'flex';
-    container.style.flexDirection = 'column';
-    container.style.gap = '0.5em';
+    container.className = 'schema-form';
 
     const order = this._schema.meta?.order;
     let fieldEntries;
@@ -75,18 +103,30 @@ export class SchemaField extends Field {
       if (fieldInstance.flattenIntoParent()) {
         // The group renders its own <details><summary> header — no outer wrapper needed.
         const node = await fieldRenderCallback(fieldInstance);
+        node.classList.add('schema-field--full');
         container.appendChild(node);
         continue;
       }
 
-      const fieldContainer = document.createElement('div');
-      fieldContainer.style.display = 'flex';
-      fieldContainer.style.flexDirection = 'column';
+      const meta = this._schema[fieldName] ?? {};
+      const type = meta.type;
+      const isFullWidth = SchemaField.FULL_WIDTH_TYPES.has(type);
+      const selfLabels = SchemaField.SELF_LABELLING_TYPES.has(type);
 
-      const label = document.createElement('label');
-      label.textContent = this._schema[fieldName].label || fieldName;
-      label.style.fontWeight = 'bold';
-      fieldContainer.appendChild(label);
+      const fieldContainer = document.createElement('div');
+      fieldContainer.className = 'schema-field';
+      if (isFullWidth || selfLabels) fieldContainer.classList.add('schema-field--full');
+      if (selfLabels) fieldContainer.classList.add('schema-field--self-labelled');
+
+      if (!selfLabels) {
+        const label = document.createElement('label');
+        label.className = 'schema-field__label';
+        label.textContent = meta.label || fieldName;
+        // `description` is already consumed as the placeholder for text/number
+        // fields, so surface it here as a tooltip rather than another line.
+        if (meta.description) label.title = meta.description;
+        fieldContainer.appendChild(label);
+      }
 
       const node = await fieldRenderCallback(fieldInstance);
       fieldContainer.appendChild(node);

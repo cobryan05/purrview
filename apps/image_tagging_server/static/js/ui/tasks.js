@@ -1,137 +1,243 @@
-import { cancelTasks, createTaskConfig, deleteTaskConfigs, deleteTasks, fetchTaskConfigs, fetchTasksStatus, pauseTasks, pauseTasksInPlace, resumeTasks, resumeTasksInPlace, startTask, updateTaskConfig } from '/app-static/js/shared/api/tasks.js';
-import { ActiveTaskField, EditableField, TaskConfigField } from '/app-static/js/ui/utils/fields/index.js';
+import {
+  cancelTasks, createTaskConfig, deleteTaskConfigs, deleteTasks, fetchTaskConfigs, fetchTasksStatus,
+  pauseTasks, pauseTasksInPlace, resumeTasks, resumeTasksInPlace, startTask, updateTaskConfig,
+} from '/app-static/js/shared/api/tasks.js';
+import { ActiveTaskField, TaskConfigField } from '/app-static/js/ui/utils/fields/index.js';
 import { createGenericRow, Logger, showPaneError, toast } from '/app-static/js/ui/utils/index.js';
+import { buildPanelEditorBar } from '/app-static/js/ui/utils/panelEditorBar.js';
+import { createListEditorScreen } from '/app-static/js/ui/utils/listEditorScreen.js';
+
+/** Sub-tab that hosts the config list-editor; used by the nav guard. */
+const CONFIG_TAB_ID = 'tab-task-management';
+/** Sub-tab that hosts the running/completed instances. */
+export const ACTIVITY_TAB_ID = 'tab-task-activity';
+
+let _rendering = false;
+let _navGuardController = null;
 
 /**
- * Renders the task configs (left column).
+ * Mark the form dirty on any edit anywhere inside it.
+ *
+ * See the identical helper in ui/sources.js for why this is delegation rather
+ * than a callback threaded through TaskConfigField → SchemaField → each field:
+ * there is no single hook that fires for all of them, and the task-type dropdown
+ * swaps the whole schema form out mid-edit.
+ *
+ * @param {HTMLElement} root
+ * @param {() => void} onEdit
  */
-export function renderTaskConfigs({ target = 'task-config-list', onEdit, onDelete, onCreateTask, refresh = null }) {
+function watchForEdits(root, onEdit) {
+  root.addEventListener('input', onEdit);
+  root.addEventListener('change', onEdit);
+}
+
+/**
+ * Renders the task-config manager as a list-beside-editor screen.
+ *
+ * Previously this was a `.config-column` holding the config list, a
+ * permanently-expanded "Create New Task Config" form, and inline row editing —
+ * inside one half of a two-column split, so a task schema was rendered into a
+ * quarter of the window and could not be seen without scrolling. Now the list is
+ * a narrow column and the schema form owns the rest of the pane.
+ *
+ * @param {{ target?: string, refresh?: (() => void) | null }} opts
+ */
+export async function renderTaskConfigs({ target = 'task-config-list', refresh = null } = {}) {
+  if (_rendering) return;
+  _rendering = true;
+
+  _navGuardController?.abort();
+  _navGuardController = new AbortController();
+
   const container = document.getElementById(target);
-  if (!container) return;
+  if (!container) { _rendering = false; return; }
   container.innerHTML = '';
 
-  // Toggle: hide temporary/system configs by default
+  // Temporary/system configs are machinery (preview runs, one-off internal
+  // jobs), not things a user maintains — hidden unless asked for.
   let showTemporary = false;
-  const toggleRow = document.createElement('div');
-  toggleRow.style.cssText = 'display:flex;align-items:center;gap:0.5em;margin-bottom:0.5em;font-size:0.875em;';
-  const toggleLabel = document.createElement('label');
-  toggleLabel.style.cssText = 'display:flex;align-items:center;gap:0.4em;cursor:pointer;';
-  const toggleChk = document.createElement('input');
-  toggleChk.type = 'checkbox';
-  toggleChk.checked = showTemporary;
-  toggleLabel.append(toggleChk, 'Show system/temporary configs');
-  toggleRow.appendChild(toggleLabel);
-  container.appendChild(toggleRow);
 
-  const configListDiv = document.createElement('div');
-  container.appendChild(configListDiv);
-
-  function loadConfigs() {
-    configListDiv.innerHTML = '';
-    fetchTaskConfigs(null, { excludeTemporary: !showTemporary }).then(response => {
-      if (response.size === 0) {
-        const empty = document.createElement('p');
-        empty.textContent = showTemporary ? 'No task configs.' : 'No user-created task configs.';
-        empty.style.cssText = 'color:#888;font-style:italic;';
-        configListDiv.appendChild(empty);
-        return;
-      }
-      response.forEach(((config, configUuid) => {
-      const deleteButton = {
-        text: 'Delete',
-        emoji: '🗑️',
-        onClick: async ({ field }) => {
-          if (!window.confirm(`Are you sure you want to delete "${field.getValue().name}"?`)) return;
-          try {
-            await deleteTaskConfigs({ uuids: [configUuid] });
-            onDelete?.();
-            refresh?.();
-          } catch (error) {
-            toast(error.message || 'Failed to delete task config', 5000, 'error');
-          }
-        }
-      };
-      const startButton = {
-        text: 'Start',
-        emoji: '▶️',
-        onClick: async () => {
-          try {
-            await startTask({ configUuid });
-            toast('Task started', 2000);
-            refresh?.();
-          } catch (error) {
-            toast(error.message || 'Failed to start task', 5000, 'error');
-          }
-        }
-      };
-      TaskConfigField.create({ value: config.params, ...config }).then(fieldInstance => {
-        const row = createGenericRow({
-          field: new EditableField({
-            field: fieldInstance,
-            onSave: async ({ name, typename, params }) => {
-              await updateTaskConfig({ uuid: configUuid, name, typename, params });
-              refresh?.();
-            },
-            onCancel: () => {
-              refresh?.();
-            },
-          }),
-          leftButtons: [deleteButton],
-          rightButtons: [startButton]
-        })
-        row.dataset.testid = 'task-row';
-        row.dataset.configUuid = configUuid;
-        configListDiv.appendChild(row);
-      }).catch(err => {
-        Logger.error('Failed to render task config row:', err);
-      });
-    }));
-    }).catch(err => {
-      showPaneError(configListDiv, err.message);
+  try {
+    const screen = createListEditorScreen({
+      container,
+      prefix: 'tc',
+      title: 'Task Configs',
+      itemUuidAttr: 'configUuid',
+      withEditorFooter: true,
+      searchable: true,
+      searchPlaceholder: 'Filter configs…',
+      newLabel: '+ New Config',
+      onNew: () => _showForm(null),
+      ownTabId: CONFIG_TAB_ID,
+      navGuardSignal: _navGuardController.signal,
     });
-  }
+    const { listBody, editorBar, editorBody, editorFooter } = screen;
 
-  toggleChk.addEventListener('change', () => {
-    showTemporary = toggleChk.checked;
-    loadConfigs();
-  });
+    // System/temporary toggle sits with the list it filters, between the search
+    // box and the rows.
+    const toggleRow = document.createElement('label');
+    toggleRow.className = 'tc-system-toggle';
+    const toggleChk = document.createElement('input');
+    toggleChk.type = 'checkbox';
+    toggleChk.checked = showTemporary;
+    // Short label: the list panel is 240px and the long form wrapped to two lines.
+    toggleRow.title = 'Show configs created by the app for preview runs and other internal jobs';
+    toggleRow.append(toggleChk, document.createTextNode('Show system'));
+    toggleChk.addEventListener('change', () => {
+      showTemporary = toggleChk.checked;
+      refreshList();
+    });
+    screen.listPanel.insertBefore(toggleRow, listBody);
 
-  loadConfigs();
+    let _selectedUuid = null;
+    let _switching = false;
 
-  container.appendChild(document.createElement('hr'));
-  const createHeader = document.createElement('h3');
-  createHeader.textContent = 'Create New Task Config';
-  container.appendChild(createHeader);
-
-  const newConfigDiv = document.createElement('div');
-  container.appendChild(newConfigDiv);
-
-  const saveButton = {
-    text: 'Add Config',
-    emoji: '✅',
-    onClick: async ({ field }) => {
+    async function _showForm(config, { force = false } = {}) {
+      if (_switching && !force) return;
+      _switching = true;
       try {
-        const { name, typename, params, persistent } = field.getValue();
-        if (!name) {
-          toast('Error: Name required', 5000, "error");
-          return;
+        if (!force && !await screen.confirmIfDirty()) return;
+        screen.setBarHandle(null);
+        screen.setDoSave(null);
+        _selectedUuid = config?.uuid ?? null;
+
+        editorBody.innerHTML = '';
+        editorFooter.innerHTML = '';
+
+        const barHandle = buildPanelEditorBar({
+          container: editorBar,
+          item: config,
+          newTitle: 'New Task Config',
+          deleteTitle: 'Delete task config',
+          onSave: () => _doSave(true),
+          onDelete: config ? async () => {
+            await deleteTaskConfigs({ uuids: [config.uuid] });
+            toast('Task config deleted', 3000);
+            await refreshList();
+            await _showForm(null, { force: true });
+          } : undefined,
+        });
+        screen.setBarHandle(barHandle);
+        const { setDirty, setSaving, updateTitle } = barHandle;
+
+        const field = await TaskConfigField.create(
+          config
+            ? { value: config.params, name: config.name, typename: config.typename, uuid: config.uuid, editMode: true }
+            : { editMode: true },
+        );
+
+        const formWrap = document.createElement('div');
+        formWrap.className = 'tc-form';
+        formWrap.appendChild(await field.renderEdit());
+        editorBody.appendChild(formWrap);
+        watchForEdits(formWrap, () => setDirty(true));
+        setDirty(false);
+
+        // Start is only meaningful for a config that exists server-side; on a new
+        // one there is nothing to launch until it has been created.
+        if (config) {
+          const startBtn = document.createElement('button');
+          startBtn.type = 'button';
+          startBtn.textContent = '▶ Start';
+          startBtn.title = 'Start';
+          startBtn.className = 'panel-btn';
+          startBtn.addEventListener('click', async () => {
+            startBtn.disabled = true;
+            try {
+              await startTask({ configUuid: config.uuid });
+              toast('Task started — see the Activity tab', 3000);
+              refresh?.();
+            } catch (error) {
+              toast(error.message || 'Failed to start task', 5000, 'error');
+            } finally {
+              startBtn.disabled = false;
+            }
+          });
+          editorFooter.appendChild(startBtn);
         }
-        await createTaskConfig({ name, typename, params, persistent });
-        refresh?.();
-      } catch (err) {
-        Logger.error('Error creating task config:', err);
+
+        async function _doSave(navigateAfterCreate = false) {
+          const { name, typename, params, persistent } = field.getValue();
+          if (!name) { toast('Name is required', 3000, 'error'); return false; }
+          if (!typename) { toast('Task type is required', 3000, 'error'); return false; }
+          setSaving(true);
+          try {
+            if (config) {
+              await updateTaskConfig({ uuid: config.uuid, name, typename, params });
+              setDirty(false);
+              setSaving(false);
+              updateTitle(name);
+              toast('Task config saved', 3000);
+              await refreshList();
+            } else {
+              await createTaskConfig({ name, typename, params, persistent });
+              setDirty(false);
+              toast(`Task config "${name}" created`, 3000);
+              const configs = await refreshList();
+              if (navigateAfterCreate) {
+                // The create endpoint's response shape isn't a full config
+                // record, so re-select from the freshly fetched list by name.
+                const created = [...configs.values()].find(c => c.name === name) ?? null;
+                await _showForm(created, { force: true });
+              } else {
+                setSaving(false);
+              }
+            }
+            return true;
+          } catch (err) {
+            toast(err.message || 'Failed to save task config', 5000, 'error');
+            setSaving(false);
+            return false;
+          }
+        }
+
+        screen.setDoSave(() => _doSave(false));
+        screen.updateListSelection(config?.uuid ?? null);
+      } finally {
+        _switching = false;
       }
     }
-  };
 
-  TaskConfigField.create({ editMode: true }).then(fieldInstance => {
-    const row = createGenericRow({
-      field: fieldInstance,
-      editMode: true,
-      rightButtons: [saveButton],
-    })
-    newConfigDiv.appendChild(row);
-  });
+    /** @returns {Promise<Map<string, any>>} the configs just rendered */
+    async function refreshList() {
+      listBody.innerHTML = '';
+      const configs = await fetchTaskConfigs(null, { excludeTemporary: !showTemporary });
+      screen.setCount(configs.size);
+
+      if (configs.size === 0) {
+        listBody.appendChild(screen.createListEmpty(
+          showTemporary ? 'No task configs.' : 'No user-created task configs.',
+        ));
+      }
+
+      configs.forEach((config, configUuid) => {
+        const chips = [];
+        if (config.params?._persistent === true) {
+          chips.push({ text: 'persistent', title: 'Restarts automatically after a server restart', variant: 'accent' });
+        }
+        const item = screen.createListItem({
+          uuid: configUuid,
+          name: config.name,
+          meta: config.typename ?? '',
+          chips,
+          onClick: () => _showForm({ ...config, uuid: configUuid }),
+        });
+        item.dataset.testid = 'task-row';
+        listBody.appendChild(item);
+      });
+
+      screen.applyFilter();
+      screen.updateListSelection(_selectedUuid);
+      return configs;
+    }
+
+    await refreshList();
+    await _showForm(null, { force: true });
+  } catch (err) {
+    showPaneError(container, err.message);
+  } finally {
+    _rendering = false;
+  }
 }
 
 /**
@@ -152,8 +258,22 @@ function _taskFingerprint(tasks) {
     .join('|');
 }
 
+/** Statuses that mean "this task is no longer doing anything". */
+const TERMINAL_STATUSES = new Set(['completed', 'error']);
+
 /**
- * Renders the active tasks (right column).
+ * Count tasks that are still live, for the Activity tab's badge.
+ * @param {Record<string, any>} tasks
+ * @returns {number}
+ */
+export function countRunningTasks(tasks) {
+  return Object.values(tasks || {})
+    .filter(t => !TERMINAL_STATUSES.has(t.instance?.status))
+    .length;
+}
+
+/**
+ * Renders the task instances (its own full-width Activity sub-tab).
  *
  * Flash-free strategy:
  *   1. Fetch + build all new rows in a detached div while old DOM stays visible.
@@ -168,9 +288,9 @@ export function renderActiveTasks({ target = 'active-tasks-list', refresh = null
   const container = document.getElementById(target);
   if (!container) return;
 
-  // Skip when the Operations main tab or Task Management sub-tab is not visible.
+  // Skip when the Operations main tab or the Activity sub-tab is not visible.
   if (!document.getElementById('tab-operations')?.classList.contains('active') ||
-      !document.getElementById('tab-task-management')?.classList.contains('active')) {
+      !document.getElementById(ACTIVITY_TAB_ID)?.classList.contains('active')) {
     return;
   }
 
@@ -317,10 +437,11 @@ export function renderActiveTasks({ target = 'active-tasks-list', refresh = null
         };
 
         const row = createGenericRow({ field: preRendered, leftButtons, rightButtons });
+        row.classList.add('task-instance-card');
         row.dataset.taskUuid = taskId;
         return {
           row,
-          isCompleted: status === 'completed' || status === 'error',
+          isCompleted: TERMINAL_STATUSES.has(status),
           endedAt: task.instance?.endedAt ?? null,
         };
       }));
@@ -334,6 +455,13 @@ export function renderActiveTasks({ target = 'active-tasks-list', refresh = null
         .sort((a, b) => new Date(b.endedAt ?? 0) - new Date(a.endedAt ?? 0))
         .map(b => b.row);
 
+      if (!activeRows.length && !completedRows.length) {
+        const empty = document.createElement('p');
+        empty.className = 'le-list-empty';
+        empty.textContent = 'No tasks have run yet. Start one from the Tasks tab.';
+        newListDiv.appendChild(empty);
+      }
+
       const appendSection = (title, rows, actionEl = null) => {
         if (!rows.length) return;
         const h4 = document.createElement('h4');
@@ -343,20 +471,26 @@ export function renderActiveTasks({ target = 'active-tasks-list', refresh = null
           const headerRow = document.createElement('div');
           Object.assign(headerRow.style, { display: 'flex', alignItems: 'center', gap: '0.5em' });
           h4.style.margin = '0';
+          h4.style.flex = '1';
           headerRow.appendChild(h4);
           headerRow.appendChild(actionEl);
           newListDiv.appendChild(headerRow);
         } else {
           newListDiv.appendChild(h4);
         }
-        rows.forEach(row => newListDiv.appendChild(row));
+        // Cards flow into as many columns as the (now full-width) pane fits,
+        // instead of one per row down half a split.
+        const grid = document.createElement('div');
+        grid.className = 'task-instance-grid';
+        rows.forEach(row => grid.appendChild(row));
+        newListDiv.appendChild(grid);
       };
       appendSection('Active', activeRows);
 
       if (completedRows.length) {
         const clearBtn = document.createElement('button');
         clearBtn.textContent = 'Clear completed';
-        Object.assign(clearBtn.style, { fontSize: '0.75em', padding: '2px 8px' });
+        clearBtn.className = 'panel-btn secondary';
         clearBtn.addEventListener('click', async () => {
           const completedIds = completedRows.map(row => row.dataset.taskUuid).filter(Boolean);
           if (!completedIds.length) return;

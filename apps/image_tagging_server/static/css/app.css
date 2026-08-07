@@ -3024,14 +3024,214 @@ button.filter-active {
 .panel-btn--block { width: 100%; }
 
 /* The list-beside-editor screen layout (ui/utils/listEditorScreen.js) —
-   shared by Datasets, Model Shapes, Training Runs and Filter Chains.
-   Column widths stay with each screen's own <prefix>-list-panel/-editor rules. */
+   shared by Datasets, Model Shapes, Training Runs, Filter Chains, Sources and
+   Task Configs. Appearance lives on the `.le-*` classes below; each screen's own
+   <prefix>-list-panel/-editor rules carry only column width / max-height. */
 .list-editor-split {
   display: flex;
   /* `1em`, not --space-4 (1rem): a like-for-like move of the inline style the
      four screens carried. Switching to the token is a separate, deliberate call. */
   gap: 1em;
-  align-items: flex-start;
+  align-items: stretch;
+  /* Fill the pane instead of hugging content, so the editor body — not the page —
+     is what scrolls. Before this the whole tab scrolled and the Save button in the
+     editor bar could be pushed off-screen by a long schema form. */
+  height: calc(100vh - var(--le-chrome-h, 190px));
+  min-height: 380px;
+}
+
+/* ===== Shared list-editor appearance ======================================
+ * Every screen built by createListEditorScreen gets these. Previously each
+ * screen re-declared them under its own prefix; `fc` never did, so Filter
+ * Chains' rows had no padding, no hover and no selected state at all. */
+/* `flex: 0 0 auto` (not a fixed basis) so the inline width initSplitResize sets
+   actually governs — a `flex-basis` in px silently wins over it. */
+.le-list-panel {
+  flex: 0 0 auto;
+  width: 260px;
+  min-width: 170px;
+  max-height: 100%;
+}
+
+/* The handle spans the full height of the split rather than the 5px-wide strip
+   the sidebar version sits in, so give it a visible hit area on hover. */
+.le-resize-handle {
+  align-self: stretch;
+  border-radius: var(--radius-sm);
+}
+
+.le-list-panel .panel-box__body {
+  padding: 0;
+}
+
+/* The body takes the slack so the "+ New" footer sits at the bottom of the
+   panel rather than floating directly under the last row. */
+.le-list-body {
+  flex: 1;
+  min-height: 0;
+}
+
+.le-editor {
+  flex: 1;
+  min-width: 0;
+  max-height: 100%;
+}
+
+/* Editor bar title is the active item's name, not a section label. */
+.le-editor .panel-box__title {
+  font-size: 0.95em;
+  font-weight: 600;
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--pico-color, inherit);
+}
+
+/* The body is the only scroll container, so the bar and footer stay pinned. */
+.le-editor-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.le-editor-footer {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+/* Item count in the list bar */
+.le-list-count {
+  font-size: var(--text-2xs);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-faint);
+  flex-shrink: 0;
+}
+
+/* Filter box, between the bar and the body */
+.le-list-search {
+  padding: var(--space-1) var(--space-2);
+  border-bottom: 1px solid var(--pico-muted-border-color, var(--border));
+  flex-shrink: 0;
+}
+
+.le-list-search input {
+  width: 100%;
+  margin-bottom: 0;
+  font-size: var(--text-xs);
+  --pico-form-element-spacing-vertical: 0.25em;
+  --pico-form-element-spacing-horizontal: 0.5em;
+}
+
+/* ---- rows ----
+   `.le-list-item` is what createListItem() emits. The prefixed selectors are
+   for the screens that still build rows by hand (Datasets, Model Shapes/Stacks,
+   Training Runs, Filter Chains) — without them those rows render unstyled, which
+   is exactly the bug `.fc-list-item` shipped with. */
+.le-list-item,
+.mc-list-item,
+.ds-list-item,
+.fc-list-item {
+  padding: 0.4em 0.7em;
+  cursor: pointer;
+  border-bottom: 1px solid var(--pico-muted-border-color, rgba(0, 0, 0, 0.07));
+  transition: background 0.1s;
+}
+
+.le-list-item:last-child,
+.mc-list-item:last-child,
+.ds-list-item:last-child,
+.fc-list-item:last-child { border-bottom: none; }
+
+.le-list-item:hover,
+.mc-list-item:hover,
+.ds-list-item:hover,
+.fc-list-item:hover {
+  background: var(--pico-card-sectioning-background-color, rgba(0, 0, 0, 0.05));
+}
+
+.le-list-item.active,
+.mc-list-item.active,
+.ds-list-item.active,
+.fc-list-item.active {
+  background: var(--pico-primary-background, #e8eeff);
+  padding-left: calc(0.7em - 2px);
+  border-left: 2px solid var(--pico-primary, var(--color-info));
+}
+
+.le-list-item__name,
+.mc-list-item__name,
+.ds-list-item__name,
+.fc-list-item__name {
+  font-size: 0.88em;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.le-list-item__meta,
+.mc-list-item__meta,
+.ds-list-item__meta,
+.fc-list-item__meta {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  font-size: var(--text-2xs);
+  color: var(--pico-muted-color, var(--text-muted));
+  margin-top: 1px;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.le-list-item__meta > span:first-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.le-list-section {
+  padding: var(--space-2) var(--space-3) var(--space-1);
+  font-size: var(--text-2xs);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+  background: var(--surface-sunken, transparent);
+  border-bottom: 1px solid var(--border, rgba(0, 0, 0, 0.07));
+}
+
+.le-list-empty {
+  padding: var(--space-2) var(--space-3);
+  margin: 0;
+  font-size: var(--text-xs);
+  font-style: italic;
+  color: var(--text-muted);
+}
+
+/* Small status chip used in a row's meta line (e.g. "persistent", "running"). */
+.le-chip {
+  flex-shrink: 0;
+  padding: 0 0.4em;
+  border-radius: var(--radius-full);
+  border: 1px solid var(--border-strong);
+  font-size: var(--text-2xs);
+  line-height: 1.5;
+  color: var(--text-muted);
+}
+
+.le-chip--accent {
+  border-color: var(--color-accent);
+  color: var(--color-accent);
+}
+
+.le-chip--running {
+  border-color: var(--color-info);
+  color: var(--color-info);
+}
+
+.le-chip--warn {
+  border-color: var(--app-warning-border);
+  color: var(--app-warning-color);
 }
 
 /* Dirty-state indicator: small colored dot shown when there are unsaved changes */
@@ -3077,6 +3277,274 @@ button.filter-active {
   flex: 0 0 auto;
 }
 
+/* ===== Schema-driven form (ui/utils/fields/SchemaField.js) =================
+ * Every task-config and source form on the Operations tab, plus any other
+ * schema-rendered form, is laid out by these rules.
+ *
+ * The previous inline layout was a flex column: bold label, then a 100%-wide
+ * control, for every field regardless of size. A six-field task config was
+ * twelve full-width rows and needed scrolling in a pane that had room for all
+ * of it. Here narrow controls flow into as many ~230px columns as fit, and only
+ * the controls that genuinely need the width (lists, nested groups, checkbox
+ * grids) span the row.
+ */
+.schema-form {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+  gap: var(--space-2) var(--space-3);
+  align-items: start;
+}
+
+/* Cap the *controls*, not the form.
+   Capping the form was the first attempt and it squeezed the genuinely wide
+   widgets (the per-label confidence-band grid) that need the whole pane. A
+   plain text or number box, on the other hand, gains nothing past ~26rem — so
+   the limit belongs on the input. Complex full-width widgets are untouched. */
+.schema-field:not(.schema-field--full) input,
+.schema-field:not(.schema-field--full) select,
+.schema-field--full > input[type='text'],
+.schema-field--full > input[type='number'] {
+  max-width: 26rem;
+}
+
+.schema-field {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+/* Spans every column of the grid, whatever the current column count. */
+.schema-field--full {
+  grid-column: 1 / -1;
+}
+
+.schema-field__label {
+  font-size: var(--text-2xs);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+  margin-bottom: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Controls inside a schema form: drop Pico's generous form-element spacing and
+   its 100%-width + bottom-margin defaults, which are what made these forms tall. */
+.schema-form input,
+.schema-form select,
+.schema-form textarea {
+  margin-bottom: 0;
+  font-size: var(--text-xs);
+  --pico-form-element-spacing-vertical: 0.3em;
+  --pico-form-element-spacing-horizontal: 0.5em;
+}
+
+.schema-form select {
+  width: 100%;
+}
+
+/* Checkboxes/radios must not be stretched by the surrounding layout — Pico fills
+   a checked one, so a stretched box renders as a solid bar. But `width: auto` is
+   *not* the fix: Pico draws these with `appearance: none`, so their only size is
+   the `width`/`height` it sets, and `auto` collapses them to a zero-width sliver.
+   Give them an explicit box, matching `.tc-system-toggle` / `.tcf-persistent-row`. */
+.schema-form input[type='checkbox'],
+.schema-form input[type='radio'] {
+  width: 14px;
+  height: 14px;
+  min-width: 14px;
+  flex: 0 0 auto;
+  margin: 0;
+  --pico-form-element-spacing-vertical: 0;
+  --pico-form-element-spacing-horizontal: 0;
+}
+
+.schema-form input[type='checkbox'] {
+  border-radius: var(--radius-sm);
+}
+
+/* A self-labelling field (a boolean) is one line: checkbox then its text. */
+.schema-field--self-labelled > div > label,
+.schema-field--self-labelled > label {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: 0;
+  font-size: var(--text-xs);
+  cursor: pointer;
+}
+
+/* Nested <details> groups sit flush in the grid rather than carrying the extra
+   padding they used when they were children of a flex column. */
+.schema-form > details {
+  margin: 0;
+}
+
+/* ===== Model / label confidence bands (fields/ModelLabelSelectField.js) =====
+ * The `model_label` schema field: pick a model, then set a min/max confidence
+ * band per label the model maps to.
+ *
+ * It used to be a stack of self-contained rows — each one "name  min [ ] max [ ]"
+ * laid out with its own flex box — so the inputs started wherever that row's
+ * label name happened to end and no two rows lined up. Here the widget owns a
+ * three-column grid and the rows are `display: contents`, so the numbers sit in
+ * real columns under a single Min/Max header instead of repeating the words on
+ * every line.
+ */
+.mlsf {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  align-items: flex-start;
+  padding: var(--space-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface-sunken);
+  /* Query target for the one/two-column switch below. The editor pane is
+     user-resizable (splitResize.js), so the question is "how wide is this pane",
+     not "how wide is the window" — a viewport @media would answer the wrong one.
+
+     `inline-size` containment computes this element's width as if it had no
+     content, so it MUST get its width from its parent or it collapses. The two
+     rules below are what guarantee that in both places the widget is used:
+     stretched in the schema field's column flex (a bare `model_label` field),
+     and flexed to fill the line inside ArrayField's row flex (`model_label`
+     wrapped in an array, which is what CollectTrainingImagesTask actually uses).
+     Without the `flex` rule the array case collapsed to 18px and the grid spilled
+     out over the rest of the form. */
+  container-type: inline-size;
+  align-self: stretch;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.mlsf__model-row {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: center;
+  gap: var(--space-3);
+  width: 100%;
+}
+
+/* Two class selectors, deliberately: this has to outrank `.schema-form select`
+   above, which is what sets the 100% width these two rules are undoing. */
+.mlsf .mlsf__model-select {
+  min-width: 12em;
+  width: auto;      /* Pico's `select { width: 100% }` would eat the whole row. */
+  margin-bottom: 0;
+}
+
+.mlsf__help {
+  font-size: var(--text-2xs);
+  font-style: italic;
+  line-height: 1.3;
+  color: var(--text-muted);
+}
+
+.mlsf-bands {
+  display: grid;
+  /* Name column takes what it needs (capped, so one long label can't push the
+     numbers off the pane); the two value columns are identical fixed widths so
+     the inputs and their headers share the same edges. */
+  grid-template-columns: minmax(4em, 18em) 5.5em 5.5em;
+  gap: var(--space-1) var(--space-3);
+  align-items: center;
+}
+
+/* One header group by default; the second is revealed only in two-column mode. */
+.mlsf-bands__head--second {
+  display: none;
+}
+
+/* Two labels per line once the pane can hold both groups at their full width.
+   52rem is that width, computed from the tracks below rather than guessed: two
+   groups of (12em name + 1.5rem gutter + 2 × 5.5em values) plus three 0.5rem
+   column gaps is 50.5rem, so 52rem clears it and the table can never overflow
+   the pane it just qualified for. Rows are `display: contents` and auto-place in
+   DOM order, so labels read left-to-right then down. */
+@container (min-width: 52rem) {
+  .mlsf-bands {
+    /* `fit-content`, deliberately not `1fr`. An `fr` name track soaks up every
+       spare pixel in the pane, which strands each label at the far left of a
+       wide empty gap with its own Min/Max sitting way over on the right — hard
+       against the *next* group's label, so the numbers read as belonging to the
+       wrong row. Sizing to content keeps each label glued to its own values and
+       leaves the slack outside the table instead. The 12em cap is what bare
+       `max-content` lacks: one pathological label name would otherwise widen the
+       track until the table overflowed. Past the cap the name ellipsises, and
+       its full text is in the cell's `title`. */
+    grid-template-columns: repeat(2, fit-content(12em) 5.5em 5.5em);
+    column-gap: var(--space-2);
+  }
+
+  /* ...and the slack that would have gone inside a group becomes a gutter in
+     front of every label, so the widest space on the line is the one separating
+     the two groups. Applied to the header cell too, to keep it over its column. */
+  .mlsf-bands .mlsf-band-row__name,
+  .mlsf-bands .mlsf-bands__head--name {
+    padding-left: var(--space-5);
+  }
+
+  .mlsf-bands__head--second {
+    display: block;
+  }
+}
+
+.mlsf-bands--empty {
+  display: block;
+}
+
+.mlsf-bands__empty {
+  font-size: var(--text-xs);
+  color: var(--text-faint);
+}
+
+.mlsf-bands__head {
+  font-size: var(--text-2xs);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+  padding-bottom: var(--space-0);
+  border-bottom: 1px solid var(--border);
+}
+
+/* Right-aligned over right-aligned numbers — the value headers sit on the same
+   edge as the digits below them. Keyed off the kind rather than the position,
+   because in two-column mode the second group's Label header is a middle child
+   and must still be left-aligned. */
+.mlsf-bands__head--value {
+  text-align: right;
+}
+
+/* The row is a pass-through: its three children are the grid's cells. */
+.mlsf-band-row {
+  display: contents;
+}
+
+.mlsf-band-row__name {
+  font-weight: 600;
+  font-size: var(--text-xs);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Two classes again, to outrank `.schema-form input` and its spacing vars. */
+.mlsf-bands .mlsf-band-input {
+  width: 100%;
+  margin-bottom: 0;
+  font-size: var(--text-xs);
+  text-align: right;
+  /* Digits share a width, so the columns stay visually straight as values change. */
+  font-variant-numeric: tabular-nums;
+  --pico-form-element-spacing-vertical: 0.25em;
+  --pico-form-element-spacing-horizontal: 0.4em;
+}
+
 /* Resizable scrollable tree/list box embedded in a form.
    User can drag the bottom edge to adjust height. */
 .panel-tree-box {
@@ -3102,45 +3570,15 @@ button.filter-active {
   color: var(--pico-muted-color, var(--text-muted));
 }
 
-/* ===== Model config: list panel (left column) ===== */
-.mc-list-panel {
-  flex: 0 0 200px;
-  min-width: 160px;
-}
-.mc-list-panel .panel-box__body {
-  max-height: 55vh;
-  padding: 0;
-}
-/* Shared with .ds-list-item* (Dataset config's list panel is the same
-   layout) — see the Dataset config section below, which re-declares only
-   its own panel width/max-height, not these list-item rules. */
-.mc-list-item,
-.ds-list-item {
-  padding: 0.45em 0.75em;
-  cursor: pointer;
-  border-bottom: 1px solid var(--pico-muted-border-color, rgba(0, 0, 0, 0.07));
-  transition: background 0.1s;
-}
-.mc-list-item:last-child,
-.ds-list-item:last-child { border-bottom: none; }
-.mc-list-item:hover,
-.ds-list-item:hover {
-  background: var(--pico-card-sectioning-background-color, rgba(0, 0, 0, 0.05));
-}
-.mc-list-item.active,
-.ds-list-item.active {
-  background: var(--pico-primary-background, #e8eeff);
-  padding-left: calc(0.75em - 2px);
-  border-left: 2px solid var(--pico-primary, var(--color-info));
-}
-.mc-list-item__name,
-.ds-list-item__name {
-  font-size: 0.88em;
-  font-weight: 600;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
+/* ===== Model config: list panel (left column) =====
+   Appearance comes from the shared `.le-*` rules above. Width is no longer set
+   per screen either: the panel is drag-resizable and each screen persists its
+   own width under `ww.listEditor.<prefix>.width`, so a fixed `flex`/`width`
+   here would just override the user's choice on this one screen. */
+
+/* A one-line description between the name and the meta line. Only Model Shapes
+   and Datasets carry one, so it stays a per-screen rule rather than joining the
+   shared row grammar. */
 .mc-list-item__desc,
 .ds-list-item__desc {
   font-size: 0.76em;
@@ -3150,16 +3588,11 @@ button.filter-active {
   white-space: nowrap;
   margin-top: 1px;
 }
-.mc-list-item__meta,
-.ds-list-item__meta {
-  font-size: 0.72em;
-  color: var(--pico-muted-color, var(--text-muted));
-  margin-top: 1px;
-}
 
 /* Section headers inside the Datasets & Views list — the two nouns share one
    table (and one editor), so the list groups them rather than splitting the
-   screen in two. */
+   screen in two. Matches `.le-list-section`; kept as its own selector because
+   datasets.js builds these rows by hand. */
 .ds-list-section__header {
   padding: var(--space-2) var(--space-3) var(--space-1);
   font-size: var(--text-2xs);
@@ -3178,22 +3611,6 @@ button.filter-active {
   color: var(--text-muted, var(--text-muted));
 }
 
-/* ===== Model config: editor panel (right column) ===== */
-.mc-editor {
-  flex: 1;
-  min-width: 0;
-}
-/* Editor bar title is the active config/dataset name, not a section label —
-   shared with .ds-editor .panel-box__title below */
-.mc-editor .panel-box__title,
-.ds-editor .panel-box__title {
-  font-size: 0.95em;
-  font-weight: 600;
-  text-transform: none;
-  letter-spacing: 0;
-  color: var(--pico-color, inherit);
-}
-
 /* Submodel override cards — one per enabled submodel label */
 .mc-submodel-card {
   display: flex;
@@ -3209,15 +3626,8 @@ button.filter-active {
 .mc-submodel-swatch { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
 .mc-submodel-name { font-weight: 600; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-/* ===== Dataset config: list panel (left column) ===== */
-.ds-list-panel {
-  flex: 0 0 220px;
-  min-width: 170px;
-}
-.ds-list-panel .panel-box__body {
-  max-height: 55vh;
-  padding: 0;
-}
+/* ===== Dataset config: list panel (left column) =====
+   Width only — see the shared `.le-*` rules for everything else. */
 /* "Datasets & Views" is two nouns and doesn't fit this panel's 220px at the
    shared title's uppercase letter-spacing — it ellipsised to "DATASETS & VIE…".
    Drop the tracking here rather than shortening the title: both nouns have to
@@ -3225,27 +3635,173 @@ button.filter-active {
 .ds-list-panel .panel-box__bar .panel-box__title {
   letter-spacing: 0;
 }
-/* ===== Dataset config: editor panel (right column) ===== */
-.ds-editor {
-  flex: 1;
-  min-width: 0;
-  /* Bound height so the body scrolls and the sticky footer stays in view */
-  max-height: 82vh;
-}
-
-/* Make the body fill remaining panel height and scroll */
-.ds-editor .panel-box__body {
-  flex: 1;
-  min-height: 0;
-  overflow-y: auto;
-}
-/* .panel-box__title rule shared with .mc-editor, see above */
 
 /* Annotation JSON */
 #annotation-json {
   max-height: 40vh;
   overflow-y: auto;
   font-size: 0.8em;
+}
+
+/* ===== Operations: Sources / Tasks / Activity =============================
+ *
+ * Sources and Task Configs were the last two screens still built as
+ * `.config-panel > .config-column` pairs — two independently scrolling 70vh
+ * boxes, each holding a list *and* a permanently-expanded create form. A task
+ * schema therefore rendered into a quarter of the window. Both are now
+ * list-editor screens (see `.le-*` above) occupying the whole pane.
+ */
+
+/* How much vertical chrome sits above a list-editor split, per host tab.
+ * The tab panes are `display: block` rather than a flex column — making them
+ * flex would change how the Canvas and Review panes size themselves too, which
+ * is a much larger blast radius than this screen needs. So the split takes its
+ * height from the viewport minus the chrome it knows is above it.
+ * Operations is taller: it carries the service-status strip above its tabs. */
+/* Measured, not estimated: chrome = the split's offset from the top of the
+   viewport + the height of the fixed #bottom-bars strip it must not run under.
+   Configuration = 107 + 32; Operations = 163 + 32, the extra 56px being the
+   collapsed service-status strip above its sub-tabs. Expanding that strip
+   pushes the split down and the page scrolls, which is the old behaviour and
+   only applies while it is deliberately open.
+
+   ⚠️ Re-measure these if the root font size changes: the headers above the
+   split are em/rem-sized, so pinning --pico-font-size (tokens.css) from Pico's
+   131.25% to 100% moved these from 180/253 to the values below. */
+#tab-configuration { --le-chrome-h: 139px; }
+#tab-operations { --le-chrome-h: 195px; }
+
+/* Count badge on the Activity sub-tab button */
+.tab-badge {
+  display: inline-block;
+  margin-left: var(--space-2);
+  min-width: 1.4em;
+  padding: 0 0.35em;
+  border-radius: var(--radius-full);
+  background: var(--color-info);
+  color: var(--text-on-solid);
+  font-size: var(--text-2xs);
+  font-weight: 700;
+  line-height: 1.5;
+  font-variant-numeric: tabular-nums;
+  vertical-align: middle;
+}
+
+/* "Show system/temporary" toggle, between the config list's filter box and its
+   rows. Pico gives a bare <label> a bottom margin and a 1.25em checkbox, both of
+   which make a 3-line control out of one line — reset them here (same family as
+   the `.ms-item` note in NOTES.md). */
+.tc-system-toggle {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin: 0;
+  padding: var(--space-1) var(--space-2);
+  border-bottom: 1px solid var(--pico-muted-border-color, var(--border));
+  font-size: var(--text-2xs);
+  color: var(--text-muted);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.tc-system-toggle input[type='checkbox'] {
+  width: 13px;
+  height: 13px;
+  min-width: 13px;
+  margin: 0;
+  border-radius: var(--radius-sm);
+  --pico-form-element-spacing-vertical: 0;
+  --pico-form-element-spacing-horizontal: 0;
+}
+
+/* The schema form inside a source/task editor */
+.src-form,
+.tc-form {
+  margin-bottom: var(--space-3);
+}
+
+/* Type/provider dropdown beside the name box, above the schema form.
+   The name gets the slack because it's free text; the type list is bounded. */
+.tcf-top-row {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+  margin-bottom: var(--space-2);
+  max-width: 860px;
+}
+
+.tcf-top-row select,
+.tcf-top-row input {
+  /* Match the schema form below; Pico's default form-element spacing makes
+     these two controls nearly twice the height of everything under them. */
+  font-size: var(--text-xs);
+  --pico-form-element-spacing-vertical: 0.35em;
+  --pico-form-element-spacing-horizontal: 0.5em;
+}
+
+.tcf-top-row select {
+  /* Pico sets `select { width: 100% }`; inside a flex row that resolves to the
+     whole line and squeezes the name input to zero. See NOTES.md. */
+  width: auto;
+  flex-shrink: 0;
+  max-width: 45%;
+  margin-bottom: 0;
+}
+
+.tcf-top-row input {
+  flex: 1;
+  min-width: 0;
+  margin-bottom: 0;
+}
+
+/* One-line "restart automatically" opt-in; the rationale is the label's title. */
+.tcf-persistent-row {
+  margin-top: var(--space-3);
+  padding-top: var(--space-2);
+  border-top: 1px solid var(--border);
+}
+
+.tcf-persistent-row label {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin: 0;
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.tcf-persistent-row input[type='checkbox'] {
+  width: 13px;
+  height: 13px;
+  min-width: 13px;
+  margin: 0;
+  border-radius: var(--radius-sm);
+  --pico-form-element-spacing-vertical: 0;
+  --pico-form-element-spacing-horizontal: 0;
+}
+
+/* "Test Source" output, under the form it belongs to. Empty until a test runs,
+   so it must not reserve space. */
+.src-preview:not(:empty) {
+  margin-top: var(--space-3);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--border);
+}
+
+/* Task instance cards flow into as many columns as the full-width pane fits. */
+.task-instance-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+  gap: var(--space-2);
+  align-items: start;
+}
+
+.task-instance-card {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: var(--space-2);
+  min-width: 0;
 }
 
 /* Active vs Completed task sections (ui/tasks.js) */
@@ -3262,20 +3818,68 @@ button.filter-active {
   margin-top: 0;
 }
 
-/* ===== Operations tab — service health ===== */
+/* ===== Operations tab — service health =====
+   A <details>: collapsed it is a single strip, expanded it is the per-service
+   rows. See the comment at the top of ui/serviceStatus.js for why. */
 .service-status-panel {
-  display: flex;
-  flex-direction: column;
-  gap: 0.75em;
-  padding: 0.75em 0.5em 0;
+  padding: var(--space-1) 0 0;
 }
 
 .service-status-panel__header {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-2);
   border-bottom: 1px solid var(--pico-muted-border-color, var(--border-strong));
-  padding-bottom: 0.4em;
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+}
+
+/* Hide the native marker in both engines; the caret is drawn below. */
+.service-status-panel__header::-webkit-details-marker { display: none; }
+
+.service-status-panel__header::before {
+  content: '▸';
+  flex-shrink: 0;
+  font-size: var(--text-2xs);
+  color: var(--text-faint);
+  transition: transform 0.12s;
+}
+
+.service-status-panel[open] .service-status-panel__header::before {
+  transform: rotate(90deg);
+}
+
+.service-status-panel__title {
+  flex-shrink: 0;
+  font-size: var(--text-2xs);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-faint);
+}
+
+.service-status-panel__summary {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* A dot ahead of the summary carries overall health at a glance. */
+.service-status-panel__summary::before {
+  content: '● ';
+  color: var(--color-success, #4b8);
+}
+.service-status-panel__summary[data-tone='warn']::before { color: var(--app-warning-color); }
+.service-status-panel__summary[data-tone='bad']::before { color: var(--color-danger, #e55); }
+
+.service-status-panel__body {
+  padding: var(--space-2) var(--space-2) var(--space-1);
 }
 
 /* ===== Settings tab ===== */

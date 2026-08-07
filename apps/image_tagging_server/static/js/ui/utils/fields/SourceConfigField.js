@@ -92,10 +92,14 @@ export class SourceConfigField extends Field {
 
     // Row 1: dropdown + text
     const row1 = document.createElement('div');
-    row1.style.display = 'flex';
-    row1.style.gap = '0.5em';
-    row1.appendChild(await this._dropDownField.renderEdit());
-    row1.appendChild(await this._textField.renderEdit());
+    row1.className = 'tcf-top-row';
+    // Named hook, not a positional `select` query — see TaskConfigField.
+    const providerSelect = await this._dropDownField.renderEdit();
+    providerSelect.dataset.testid = 'source-provider-select';
+    row1.appendChild(providerSelect);
+    const nameInput = await this._textField.renderEdit();
+    nameInput.dataset.testid = 'source-name-input';
+    row1.appendChild(nameInput);
 
     const uuidInfo = document.createElement('div');
     uuidInfo.textContent = `UUID: ${this._uuid || '(none)'}`;

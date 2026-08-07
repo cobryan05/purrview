@@ -117,6 +117,34 @@
  * 🗑/✏️ icon rows into a wall of red that reads as destructive. Red stays for
  * accents and genuinely destructive actions.
  */
+/* ---- Root type scale ------------------------------------------------------
+ *
+ * Pico ships a *viewport-width-dependent* root font size, stepping 100% →
+ * 106.25% → … → 131.25% at its breakpoints:
+ *
+ *   @media (min-width:1536px){:host,:root{--pico-font-size:131.25%}}
+ *
+ * On a 1600px-wide window that makes the root 21px, not 16px, and since
+ * --text-* and --space-* are all rem, the entire UI inflates ~31%. Worse, it
+ * *changes as you resize the window* — cross 1536px and every panel, row and
+ * control jumps a size. Browser zoom is a fixed multiplier and so cannot
+ * compensate for a breakpoint jump; only pinning the value removes it.
+ *
+ * Pinned at Pico's own unscaled 100% (16px), the conventional web base. Density
+ * beyond that is left to browser zoom, which scales px and rem alike — an
+ * in-app font-size control would scale only the rem-derived half (--radius-*,
+ * border widths, --le-chrome-h and the canvas are px) and drift the two apart.
+ *
+ * This lives in a bare `:root` rather than the themed block below on purpose:
+ * it is theme-independent, and it must stay a plain `:root` (specificity 0,1,0)
+ * so it ties with Pico's `:host,:root` and wins on source order — tokens.css is
+ * linked after pico.min.css in index.html. Media queries add no specificity, so
+ * this single declaration overrides every breakpoint above.
+ */
+:root {
+  --pico-font-size: 100%;
+}
+
 :root[data-theme="dark"] {
   /* surfaces + text */
   --pico-background-color: var(--bg);

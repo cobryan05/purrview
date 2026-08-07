@@ -45,8 +45,18 @@ function normalizeBand(value) {
   return { min, max };
 }
 
+/**
+ * One "label — min — max" line of the model's confidence-band table.
+ *
+ * Renders as a `display: contents` wrapper rather than a self-contained box, so
+ * its three cells become cells of the *parent* grid in ModelLabelSelectField.
+ * That is what keeps every model's min/max inputs on the same two vertical
+ * lines regardless of how long the label names are; a wrapper box would only
+ * align each row against itself. The trade-off is that these rows are only
+ * meaningful inside `.mlsf-bands` — they are not a general-purpose field.
+ */
 export class LabelNumberField extends Field {
-  constructor({ label, min = null, max = null, step = null, color = "#cccc", ...rest }) {
+  constructor({ label, min = null, max = null, step = null, color = '#cccc', ...rest }) {
     super(rest);
     this._labelText = label;
     this._labelColor = color;
@@ -73,72 +83,36 @@ export class LabelNumberField extends Field {
     });
   }
 
-  async _renderFields() {
-    const container = document.createElement('div');
-    container.style.display = 'flex';
-    container.style.alignItems = 'center';
-    container.style.gap = '0.35em';
+  async _renderRow() {
+    const row = document.createElement('div');
+    row.className = 'mlsf-band-row';
 
-    const minWrap = document.createElement('label');
-    minWrap.style.display = 'flex';
-    minWrap.style.alignItems = 'center';
-    minWrap.style.gap = '0.25em';
-    const minTag = document.createElement('span');
-    minTag.textContent = 'min';
-    minTag.style.fontSize = '0.8em';
-    minTag.style.color = '#aaa';
-    minWrap.appendChild(minTag);
-    const minInput = await this._minField.renderEdit();
-    minInput.style.width = '4.5em';
-    minWrap.appendChild(minInput);
+    const name = document.createElement('span');
+    name.className = 'mlsf-band-row__name';
+    name.textContent = this._labelText;
+    name.title = this._labelText;
+    // The label's own colour is the only thing tying a row back to the label
+    // list, so it stays on both the view and edit renderings.
+    name.style.color = this._labelColor;
+    row.appendChild(name);
 
-    const maxWrap = document.createElement('label');
-    maxWrap.style.display = 'flex';
-    maxWrap.style.alignItems = 'center';
-    maxWrap.style.gap = '0.25em';
-    const maxTag = document.createElement('span');
-    maxTag.textContent = 'max';
-    maxTag.style.fontSize = '0.8em';
-    maxTag.style.color = '#aaa';
-    maxWrap.appendChild(maxTag);
-    const maxInput = await this._maxField.renderEdit();
-    maxInput.style.width = '4.5em';
-    maxWrap.appendChild(maxInput);
+    // Min before max, in DOM order: the column headers, the saved band and the
+    // Playwright coverage all index these two inputs positionally.
+    for (const field of [this._minField, this._maxField]) {
+      const input = await field.renderEdit();
+      input.classList.add('mlsf-band-input');
+      row.appendChild(input);
+    }
 
-    container.appendChild(minWrap);
-    container.appendChild(maxWrap);
-    return container;
+    return row;
   }
 
   async renderEdit() {
-    const container = document.createElement('div');
-    container.style.display = 'flex';
-    container.style.alignItems = 'center';
-    container.style.gap = '0.5em';
-
-    const classSpan = document.createElement('span');
-    classSpan.textContent = this._labelText;
-    classSpan.style.fontWeight = 'bold';
-    container.appendChild(classSpan);
-
-    container.appendChild(await this._renderFields());
-    return container;
+    return this._renderRow();
   }
 
   async renderView() {
-    const container = document.createElement('div');
-    container.style.display = 'flex';
-    container.style.alignItems = 'center';
-    container.style.gap = '0.5em';
-
-    const labelSpan = document.createElement('span');
-    labelSpan.textContent = this._labelText;
-    labelSpan.style.fontWeight = 'bold';
-    labelSpan.style.color = this._labelColor;
-    container.appendChild(labelSpan);
-    container.appendChild(await this._renderFields());
-
-    return container;
+    return this._renderRow();
   }
 
   getValue() {

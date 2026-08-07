@@ -136,32 +136,27 @@
       <div id="service-status-box"></div>
 
       <div class="workspace-tab-header">
-        <span class="workspace-tab-button" data-tab="tab-source-management">Sources</span>
         <span class="workspace-tab-button" data-tab="tab-task-management">Tasks</span>
-      </div>
-
-      <div id="tab-source-management" class="workspace-tab-pane">
-        <div class="config-panel">
-          <div class="config-column">
-            <div id="source-management-box"></div>
-          </div>
-          <div class="config-column">
-            <div id="source-preview-box"></div>
-          </div>
-        </div>
+        <span class="workspace-tab-button" data-tab="tab-source-management">Sources</span>
+        <!-- Task instances get their own pane rather than sharing the Tasks split:
+             a running task's card carries a progress bar and a log tail, and the
+             config editor beside it needs the full width for its schema form.
+             The badge reports live task count so leaving this pane doesn't mean
+             losing sight of what's running. -->
+        <span class="workspace-tab-button" data-tab="tab-task-activity">Activity<span
+            id="task-activity-badge" class="tab-badge" hidden></span></span>
       </div>
 
       <div id="tab-task-management" class="workspace-tab-pane">
-        <div class="config-panel">
-          <div class="config-column">
-            <h4>Task Configs</h4>
-            <div id="task-config-list"></div>
-          </div>
-          <div class="config-column">
-            <h4>Task Instances</h4>
-            <div id="active-tasks-list"></div>
-          </div>
-        </div>
+        <div id="task-config-list"></div>
+      </div>
+
+      <div id="tab-source-management" class="workspace-tab-pane">
+        <div id="source-management-box"></div>
+      </div>
+
+      <div id="tab-task-activity" class="workspace-tab-pane">
+        <div id="active-tasks-list"></div>
       </div>
     </div>
 
