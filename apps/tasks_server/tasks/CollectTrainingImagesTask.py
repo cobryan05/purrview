@@ -162,6 +162,17 @@ class CollectTrainingImagesTask(Task):
     _STALE_NOTICE_INFO_MULTIPLE: float = 3.0
     _STALE_NOTICE_WARNING_MULTIPLE: float = 10.0
     _STALE_NOTICE_ERROR_MULTIPLE: float = 30.0
+    # A source that fails to yield a frame is retried on a doubling backoff rather
+    # than dropped: a camera that drops its TLS handshake for a minute is a normal
+    # event on a long collection run, and losing that source silently for the rest
+    # of the run (or, worse, killing the whole task) throws away everything the
+    # other sources would still have produced.
+    _SOURCE_RETRY_BACKOFF_S: float = 5.0
+    _SOURCE_RETRY_BACKOFF_MAX_S: float = 300.0
+    # The task only gives up when EVERY source has been failing continuously for
+    # this long — with nothing to capture from, there is no work left to do. Kept
+    # generous: the point is to outlast router reboots and camera power-cycles.
+    _ALL_SOURCES_FAILING_GRACE_S: float = 900.0
     # Rolling window of per-frame nearest-neighbour distances used to build the
     # threshold-calibration widgets. Deliberately in-memory only (not checkpointed):
     # it's a "what is the stream doing right now" sample, and replaying distances
@@ -195,6 +206,10 @@ class CollectTrainingImagesTask(Task):
         self._source_types: dict[str, str] = {}
         self._source_intervals: dict[str, float] = {}
         self._last_fetch_by_source: dict[str, float] = {}
+        # source name → {"consecutive": int, "error": str, "since": float, "retry_at": float}.
+        # Present only while a source is failing; cleared outright on its next good frame.
+        self._source_failures: dict[str, dict[str, Any]] = {}
+        self._last_any_success_at: float = time.perf_counter()
 
     async def _init(self, params: dict[str, Any], resume_data: Optional[dict[str, Any]]) -> None:
         self._status_msg: str = "Initializing"
@@ -700,8 +715,15 @@ class CollectTrainingImagesTask(Task):
                         if time.perf_counter() - last_fetch.get(id(provider), 0) < interval:
                             continue
 
+                    # A failing source waits out its backoff instead of being retried
+                    # every pass (and instead of being dropped for good).
+                    source_key = self._source_key(provider)
+                    if self._source_in_backoff(source_key, time.perf_counter()):
+                        continue
+
                     t0 = time.perf_counter()  # PERF
                     provided = None
+                    fetch_error: Optional[str] = None
                     # A self-pacing provider sleeps for up to min_capture_interval *inside*
                     # getNextImage() before it even starts fetching. That scheduled wait is not
                     # a stall, so the fetch budget has to sit on top of it — otherwise any
@@ -712,24 +734,50 @@ class CollectTrainingImagesTask(Task):
                     for _attempt in range(self._MAX_RETRIES):
                         try:
                             provided = await asyncio.wait_for(provider.getNextImage(), timeout=fetch_timeout)
+                            fetch_error = None
                             break
                         except asyncio.TimeoutError:
-                            if _attempt < self._MAX_RETRIES - 1:
-                                logger.warning(
-                                    "Fetch timeout on attempt %d/%d, retrying",
-                                    _attempt + 1,
-                                    self._MAX_RETRIES,
-                                )
-                            else:
-                                self.log(f"Provider timed out {self._MAX_RETRIES} times — removing from active sources")
-                                logger.warning(
-                                    "Removing provider after %d consecutive fetch timeouts",
-                                    self._MAX_RETRIES,
-                                )
+                            fetch_error = f"timed out after {fetch_timeout:.0f}s"
+                        # Anything the provider raises is a failure of THIS source, not of
+                        # the run: a camera's TLS handshake timing out (urllib raises
+                        # URLError, which asyncio.wait_for does not convert) used to escape
+                        # to _execute and kill a collection that every other source was
+                        # still feeding. Note this deliberately doesn't catch
+                        # asyncio.CancelledError (BaseException) — cancellation must
+                        # continue to propagate.
+                        except Exception as e:
+                            fetch_error = f"{type(e).__name__}: {e}"
+                            logger.warning(
+                                "Fetch from '%s' failed on attempt %d/%d: %s",
+                                source_key,
+                                _attempt + 1,
+                                self._MAX_RETRIES,
+                                fetch_error,
+                            )
+                        if _attempt < self._MAX_RETRIES - 1:
+                            logger.warning("Retrying '%s' (attempt %d/%d)", source_key, _attempt + 2, self._MAX_RETRIES)
                     t_fetch = time.perf_counter()
-                    if provided is None:
-                        active.discard(provider)
+
+                    if fetch_error is not None:
+                        # Kept in `active` — it gets another go once its backoff expires.
+                        consecutive = self._record_source_failure(source_key, fetch_error, t_fetch)
+                        if consecutive == 1 or consecutive % 10 == 0:
+                            # Log the first failure and then every tenth, so a source that
+                            # is down for hours doesn't drown the log it shares with the
+                            # sources that are still working.
+                            self.log(f"Source '{source_key}' failing ({consecutive}×): {fetch_error}")
                         continue
+
+                    if provided is None:
+                        # Not a failure: the provider ran out of frames (FIXED sources
+                        # finish this way), so it leaves the rotation for good.
+                        active.discard(provider)
+                        self._source_failures.pop(source_key, None)
+                        continue
+
+                    if self._source_failures.pop(source_key, None) is not None:
+                        self.log(f"Source '{source_key}' recovered")
+                    self._record_source_success(source_key, t_fetch)
                     any_fetched = True
                     last_fetch[id(provider)] = t_fetch
                     if provider.source_name:
@@ -847,6 +895,21 @@ class CollectTrainingImagesTask(Task):
                 # yield briefly to avoid busy-spinning.
                 if not any_fetched:
                     await asyncio.sleep(0.05)
+
+                # Give up only when there is nothing left that could produce a frame:
+                # every remaining source failing, and none of them having succeeded for
+                # the whole grace window. One working source is enough to keep going —
+                # the failing ones stay in the rotation, warned about via get_notices().
+                _now = time.perf_counter()
+                if active and all(self._source_key(p) in self._source_failures for p in active):
+                    down_for = _now - self._last_any_success_at
+                    if down_for >= self._ALL_SOURCES_FAILING_GRACE_S:
+                        detail = "; ".join(
+                            f"{name}: {entry['error']}" for name, entry in sorted(self._source_failures.items())
+                        )
+                        raise RuntimeError(
+                            f"All {len(active)} capture source(s) have been failing for {down_for:.0f}s — {detail}"
+                        )
 
                 # Heartbeat: log current status every 30 s so the task doesn't look stuck
                 # when providers deliver frames but none match the detection criteria.
@@ -1269,6 +1332,7 @@ class CollectTrainingImagesTask(Task):
                     {"key": "interval", "label": "Interval"},
                     {"key": "last_frame", "label": "Last frame"},
                     {"key": "health", "label": "Health"},
+                    {"key": "last_error", "label": "Last error"},
                 ],
             },
         ]
@@ -1336,6 +1400,14 @@ class CollectTrainingImagesTask(Task):
                 # no staleness baseline — mirror get_notices(), which never tracks them.
                 health = "n/a"
                 interval_str = "—"
+            # A source we know is failing reports that outright. Staleness is inferred
+            # from silence; this is the actual reason, so it wins over "stale".
+            failure = self._source_failures.get(name)
+            if failure is not None:
+                health = "failing"
+                last_error = f"{failure['error']} ({failure['consecutive']}× over {now - failure['since']:.0f}s)"
+            else:
+                last_error = "—"
             rows.append(
                 {
                     "name": name,
@@ -1343,6 +1415,7 @@ class CollectTrainingImagesTask(Task):
                     "interval": interval_str,
                     "last_frame": last_frame,
                     "health": health,
+                    "last_error": last_error,
                 }
             )
 
@@ -1956,6 +2029,44 @@ class CollectTrainingImagesTask(Task):
             level = "ok"
         return level, elapsed
 
+    @staticmethod
+    def _source_key(provider) -> str:
+        """The name a provider is tracked under. Matches how _source_names is built,
+        so the failure map and the status table can never key on different things."""
+        return provider.source_name or "unknown"
+
+    def _record_source_failure(self, source_name: str, error: str, now: float) -> int:
+        """Note a failed fetch and schedule the source's next attempt.
+
+        Backoff doubles from _SOURCE_RETRY_BACKOFF_S per consecutive failure, capped
+        at _SOURCE_RETRY_BACKOFF_MAX_S, so a source that is down for hours costs a
+        couple of attempts an hour instead of hammering it every loop pass.
+        Returns the new consecutive-failure count.
+        """
+        entry = self._source_failures.get(source_name)
+        consecutive = (entry["consecutive"] + 1) if entry else 1
+        backoff = min(self._SOURCE_RETRY_BACKOFF_S * (2 ** (consecutive - 1)), self._SOURCE_RETRY_BACKOFF_MAX_S)
+        self._source_failures[source_name] = {
+            "consecutive": consecutive,
+            "error": error,
+            "since": entry["since"] if entry else now,
+            "retry_at": now + backoff,
+        }
+        return consecutive
+
+    def _record_source_success(self, source_name: str, now: float) -> None:
+        """Clear a source's failure state after a good frame.
+
+        Recovery needs no bookkeeping of its own — the entry simply goes away, which
+        is what makes the notice and the table's health cell clear themselves.
+        """
+        self._source_failures.pop(source_name, None)
+        self._last_any_success_at = now
+
+    def _source_in_backoff(self, source_name: str, now: float) -> bool:
+        entry = self._source_failures.get(source_name)
+        return entry is not None and now < entry["retry_at"]
+
     def get_notices(self) -> list[dict]:
         """Advisory notices for sources that have gone quiet.
 
@@ -1979,6 +2090,22 @@ class CollectTrainingImagesTask(Task):
                     "level": level,
                     "message": (
                         f"No frames from '{source_name}' in {elapsed:.0f}s " f"(expected every {interval:.0f}s)"
+                    ),
+                }
+            )
+        # Staleness only says a source went quiet. When we know *why* — it raised or
+        # timed out — say so, and cover FIXED sources too (they have no interval, so
+        # the staleness pass above never speaks for them).
+        now = time.perf_counter()
+        for source_name, entry in getattr(self, "_source_failures", {}).items():
+            down_for = now - entry["since"]
+            notices.append(
+                {
+                    "key": f"failing_source_{source_name}",
+                    "level": "error",
+                    "message": (
+                        f"'{source_name}' has failed {entry['consecutive']}× over {down_for:.0f}s "
+                        f"— still retrying. Last error: {entry['error']}"
                     ),
                 }
             )

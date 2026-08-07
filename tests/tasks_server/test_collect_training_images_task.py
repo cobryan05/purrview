@@ -22,6 +22,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 from unittest.mock import AsyncMock, MagicMock, patch
+from urllib.error import URLError
 
 import numpy as np
 import pytest
@@ -183,8 +184,12 @@ async def _run_task(
     detect: bool = True,
     tmp_path: Path = None,
     provider: Optional[ImageProvider] = None,
+    providers: Optional[list] = None,
 ) -> CollectTrainingImagesTask:
     """Run a CollectTrainingImagesTask against a fake provider with all I/O mocked.
+
+    Pass `providers` (and matching source_uuids in `params`) to run against more than
+    one source — needed to show that one failing source doesn't take the run with it.
 
     Returns the completed task for assertion.
     """
@@ -207,7 +212,10 @@ async def _run_task(
         patch("apps.tasks_server.tasks.CollectTrainingImagesTask.ImagesApi") as mock_img_cls,
         patch.dict(os.environ, {"FILES_ROOT": files_root}),
     ):
-        mock_sh.return_value.get_image_provider.return_value = provider
+        if providers is not None:
+            mock_sh.return_value.get_image_provider.side_effect = list(providers)
+        else:
+            mock_sh.return_value.get_image_provider.return_value = provider
         mock_models_cls.return_value.pin_model_api_api_models_model_name_pin_post.return_value = pin_resp
         mock_inf_cls.return_value.detect.return_value = inf_result
         mock_img_cls.return_value.update_image_metadata.return_value = MagicMock()
@@ -3179,3 +3187,155 @@ class TestHintDirectionIsUnambiguous:
         """A continuously-changing scene has no gap; silence there reads as
         'the tool is broken' rather than 'this is a judgement call'."""
         assert "no clear empty stretch" in await self._hint()
+
+
+# ─── Per-source failure isolation ─────────────────────────────────────────────
+
+
+class _FailingProvider(ImageProvider):
+    """A live source that raises on every fetch, like a camera whose TLS handshake
+    times out (urllib raises URLError — NOT an asyncio.TimeoutError, so wait_for
+    passes it straight through)."""
+
+    def __init__(self, name: str = "dead-cam", exc: Optional[Exception] = None, fail_times: Optional[int] = None):
+        self._ptype = ImageProviderType.LIVE_SNAPSHOT
+        self.source_name = name
+        self._exc = exc or URLError("_ssl.c:999: The handshake operation timed out")
+        self._fail_times = fail_times
+        self.calls = 0
+        self._idx = itertools.count()
+
+    def provider_type(self) -> ImageProviderType:
+        return self._ptype
+
+    async def start(self) -> None:
+        pass
+
+    async def stop(self) -> None:
+        pass
+
+    async def getNextImage(self) -> Optional[ImageWithProviderMetadata]:
+        self.calls += 1
+        if self._fail_times is not None and self.calls > self._fail_times:
+            return ImageWithProviderMetadata(
+                image=np.zeros((8, 8, 3), dtype=np.uint8),
+                metadata=ImageProviderMetadata(source=self.source_name, frame_idx=next(self._idx)),
+            )
+        raise self._exc
+
+
+class TestOneFailingSourceDoesNotKillTheRun:
+    """A raising provider used to escape the fetch loop entirely (only
+    asyncio.TimeoutError was caught), propagate to Task._execute and end the whole
+    collection — throwing away every other source's frames. One camera going down
+    is a routine event on a multi-hour run; the run must survive it."""
+
+    async def test_run_continues_and_saves_from_the_healthy_source(self, tmp_path):
+        good = _InfiniteLiveProvider(source="good-cam")
+        good.source_name = "good-cam"
+        bad = _FailingProvider(name="bad-cam")
+        params = {**_NO_RATE_LIMIT_PARAMS, "source_uuids": ["src-good", "src-bad"], "max_images": 3}
+
+        with patch.object(CollectTrainingImagesTask, "_SOURCE_RETRY_BACKOFF_S", 0.0):
+            task = await _run_task([], params=params, detect=True, tmp_path=tmp_path, providers=[good, bad])
+
+        # Stopped on max_images, not on the failure.
+        assert task.get_status() == TaskStatus.COMPLETED
+        assert task.get_error_message() is None
+        # >= because saves are pipelined: the stop condition can be crossed while a
+        # frame is already in flight (same reason the max_images test uses >=).
+        assert task._images_saved >= 3
+        # The bad source was actually exercised, and is remembered as failing.
+        assert bad.calls > 0
+        assert "bad-cam" in task._source_failures
+        assert "handshake operation timed out" in task._source_failures["bad-cam"]["error"]
+
+    async def test_failing_source_is_retried_not_dropped(self, tmp_path):
+        """The old timeout path discarded a source for good after _MAX_RETRIES, so a
+        camera that blipped was lost for the rest of the run even once it came back."""
+        good = _InfiniteLiveProvider(source="good-cam")
+        good.source_name = "good-cam"
+        # Fails its first burst of attempts, then serves frames normally.
+        flaky = _FailingProvider(name="flaky-cam", fail_times=CollectTrainingImagesTask._MAX_RETRIES)
+        params = {**_NO_RATE_LIMIT_PARAMS, "source_uuids": ["src-good", "src-flaky"], "max_images": 12}
+
+        with patch.object(CollectTrainingImagesTask, "_SOURCE_RETRY_BACKOFF_S", 0.0):
+            task = await _run_task([], params=params, detect=True, tmp_path=tmp_path, providers=[good, flaky])
+
+        # It was tried again after its failures and recovered, clearing its entry.
+        assert flaky.calls > CollectTrainingImagesTask._MAX_RETRIES
+        assert "flaky-cam" not in task._source_failures
+
+    async def test_a_failing_source_is_reported_as_a_notice_with_its_error(self, tmp_path):
+        good = _InfiniteLiveProvider(source="good-cam")
+        good.source_name = "good-cam"
+        bad = _FailingProvider(name="bad-cam")
+        params = {**_NO_RATE_LIMIT_PARAMS, "source_uuids": ["src-good", "src-bad"], "max_images": 2}
+
+        with patch.object(CollectTrainingImagesTask, "_SOURCE_RETRY_BACKOFF_S", 0.0):
+            task = await _run_task([], params=params, detect=True, tmp_path=tmp_path, providers=[good, bad])
+
+        # get_notices() only speaks while running/paused, so assert against the
+        # state it reads rather than restarting the task.
+        task._status = TaskStatus.RUNNING
+        notices = task.get_notices()
+        failing = [n for n in notices if n["key"] == "failing_source_bad-cam"]
+        assert failing, f"expected a notice for the failing source, got {notices}"
+        assert failing[0]["level"] == "error"
+        assert "handshake operation timed out" in failing[0]["message"]
+
+    async def test_sources_table_shows_the_failure(self, tmp_path):
+        good = _InfiniteLiveProvider(source="good-cam")
+        good.source_name = "good-cam"
+        bad = _FailingProvider(name="bad-cam")
+        params = {**_NO_RATE_LIMIT_PARAMS, "source_uuids": ["src-good", "src-bad"], "max_images": 2}
+
+        with patch.object(CollectTrainingImagesTask, "_SOURCE_RETRY_BACKOFF_S", 0.0):
+            task = await _run_task([], params=params, detect=True, tmp_path=tmp_path, providers=[good, bad])
+
+        rows = {r["name"]: r for r in task.get_status_data()["sources"]}
+        assert rows["bad-cam"]["health"] == "failing"
+        assert "handshake operation timed out" in rows["bad-cam"]["last_error"]
+        assert rows["good-cam"]["health"] != "failing"
+        assert rows["good-cam"]["last_error"] == "—"
+
+
+class TestAllSourcesFailingStopsTheRun:
+    """The other half of the contract: with nothing left that can produce a frame,
+    spinning forever would be worse than stopping. It stops with an error that names
+    what failed (persisted to task_instances.error_message)."""
+
+    async def test_every_source_failing_past_the_grace_ends_the_task(self, tmp_path):
+        bad_a = _FailingProvider(name="cam-a")
+        bad_b = _FailingProvider(name="cam-b", exc=OSError("Network is unreachable"))
+        params = {**_NO_RATE_LIMIT_PARAMS, "source_uuids": ["src-a", "src-b"]}
+
+        with (
+            patch.object(CollectTrainingImagesTask, "_SOURCE_RETRY_BACKOFF_S", 0.0),
+            patch.object(CollectTrainingImagesTask, "_ALL_SOURCES_FAILING_GRACE_S", 0.0),
+        ):
+            task = await _run_task([], params=params, detect=True, tmp_path=tmp_path, providers=[bad_a, bad_b])
+
+        assert task.get_status() == TaskStatus.ERROR
+        message = task.get_error_message()
+        assert message is not None
+        assert "All 2 capture source(s) have been failing" in message
+        # Names each source and its own reason, so the card explains itself.
+        assert "cam-a" in message and "handshake operation timed out" in message
+        assert "cam-b" in message and "Network is unreachable" in message
+
+    async def test_does_not_stop_while_one_source_still_works(self, tmp_path):
+        """Same zero grace, but one healthy source — the run must NOT end in error."""
+        good = _InfiniteLiveProvider(source="good-cam")
+        good.source_name = "good-cam"
+        bad = _FailingProvider(name="bad-cam")
+        params = {**_NO_RATE_LIMIT_PARAMS, "source_uuids": ["src-good", "src-bad"], "max_images": 3}
+
+        with (
+            patch.object(CollectTrainingImagesTask, "_SOURCE_RETRY_BACKOFF_S", 0.0),
+            patch.object(CollectTrainingImagesTask, "_ALL_SOURCES_FAILING_GRACE_S", 0.0),
+        ):
+            task = await _run_task([], params=params, detect=True, tmp_path=tmp_path, providers=[good, bad])
+
+        assert task.get_status() == TaskStatus.COMPLETED
+        assert task._images_saved >= 3
