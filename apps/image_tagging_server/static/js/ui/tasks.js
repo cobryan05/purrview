@@ -258,6 +258,22 @@ function _taskFingerprint(tasks) {
     .join('|');
 }
 
+/**
+ * The element that actually scrolls around `el` — an overflow ancestor if there
+ * is one, otherwise null meaning "the page itself".
+ *
+ * Must be called BEFORE the container is emptied: once its content is gone the
+ * ancestor is no longer taller than its box, so the search would find nothing
+ * and the scroll position would be dropped exactly when it needs restoring.
+ */
+function _scrollParent(el) {
+  for (let n = el?.parentElement; n; n = n.parentElement) {
+    const overflowY = getComputedStyle(n).overflowY;
+    if ((overflowY === 'auto' || overflowY === 'scroll') && n.scrollHeight > n.clientHeight) return n;
+  }
+  return null;
+}
+
 /** Statuses that mean "this task is no longer doing anything". */
 const TERMINAL_STATUSES = new Set(['completed', 'error']);
 
@@ -310,6 +326,15 @@ export function renderActiveTasks({ target = 'active-tasks-list', refresh = null
       // Skip re-render entirely when nothing meaningful changed.
       const fingerprint = _taskFingerprint(tasks);
       if (container._lastFingerprint === fingerprint) return;
+
+      // Snapshot the page scroll too. A running task appends log lines, which
+      // changes the fingerprint and rebuilds every card; emptying the container
+      // collapses the document height, so the browser clamps the scroll offset
+      // to 0 and the user is thrown back to the top mid-read. Restoring it after
+      // the swap is what makes a long expanded card (progress, log tail, dedup
+      // calibration tables) readable while the task is actually running.
+      const scroller = _scrollParent(container);
+      const savedScroll = scroller ? scroller.scrollTop : window.scrollY;
 
       // Snapshot open/scroll state from the *current* live DOM before we touch it.
       const openState = {};
@@ -397,7 +422,13 @@ export function renderActiveTasks({ target = 'active-tasks-list', refresh = null
         // Pre-render field content so we get a direct DOM handle for state
         // restoration, and so createGenericRow gets an already-resolved Promise
         // (avoids timing uncertainty about when fieldDiv content is populated).
-        const fieldInstance = await ActiveTaskField.create({ value: { ...task } });
+        const fieldInstance = await ActiveTaskField.create({
+          value: { ...task },
+          // Lets the field pre-render its status widgets from cached data when
+          // it is replacing a card the user had open, so the rebuild doesn't
+          // briefly shrink the page and lose their scroll position.
+          expanded: openState[taskId]?.detailsOpen === true,
+        });
         const content = await fieldInstance.renderView();
 
         // Restore open/scroll state directly on the pre-rendered content node.
@@ -507,6 +538,15 @@ export function renderActiveTasks({ target = 'active-tasks-list', refresh = null
       // Atomic swap: old content stays visible until this exact line.
       container.innerHTML = '';
       container.appendChild(newListDiv);
+
+      // Restore the scroll offset synchronously, in the same frame as the swap,
+      // so the jump is never painted. Assigning scrollTop/scrollTo forces the
+      // layout the new content needs, and the browser clamps for us if the list
+      // genuinely got shorter (a task finished and its card collapsed).
+      if (savedScroll) {
+        if (scroller) scroller.scrollTop = savedScroll;
+        else window.scrollTo(0, savedScroll);
+      }
 
       // Record fingerprint only after a successful swap.
       container._lastFingerprint = fingerprint;

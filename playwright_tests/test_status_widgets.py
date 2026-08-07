@@ -640,3 +640,172 @@ class TestStatusWidgetContrast:
                 return (a + 0.05) / (b + 0.05);
             }""")
         assert ratio >= 3.0, f"stat_grid value is unreadable against its cell (contrast {ratio:.2f}:1)"
+
+
+class TestScrollPreservedAcrossRerender:
+    """A running collection task appends log lines, which changes the render
+    fingerprint and rebuilds every card. The rebuilt card starts with empty
+    status-widget slots and only fills them once its own status-data fetch
+    returns, so an expanded card briefly collapsed to a fraction of its height;
+    the browser clamped the page scroll to the shorter document and the user was
+    thrown to the top mid-read — which made the dedup calibration tables at the
+    bottom of a card unreadable while the task was running."""
+
+    _SCHEMA = [
+        {
+            "id": "stats",
+            "type": "stat_grid",
+            "source": "status",
+            "label": "Collection stats",
+            "fields": {f"k{i}": f"Field {i}" for i in range(8)},
+        },
+        {
+            "id": "sweep",
+            "type": "table",
+            "source": "status",
+            "label": "Sweep",
+            "columns": [{"key": "a", "label": "T"}, {"key": "b", "label": "M"}],
+        },
+        # Needed to observe the rebuild at all: the pushed update differs only in
+        # its log line, so without a log_tail widget it is invisible to the test.
+        {"id": "logLines", "type": "log_tail", "source": "summary"},
+    ]
+
+    @staticmethod
+    def _payload(log_suffix: str):
+        task = _make_task("task-scroll-0", name="Collector")
+        task["logLines"] = [f"frame {log_suffix} saved"]
+        return {"task-scroll-0": task}
+
+    def test_expanded_card_rebuild_keeps_the_page_scrolled(self, page: Page, base_url: str):
+        # Short viewport so the one expanded card overflows and the page scrolls.
+        page.set_viewport_size({"width": 900, "height": 500})
+        _mock_status_schema(page, self._SCHEMA)
+        _mock_status_data(
+            page,
+            {
+                "task-scroll-0": {
+                    "stats": {f"k{i}": i for i in range(8)},
+                    "sweep": [{"a": str(i), "b": str(i * 2)} for i in range(12)],
+                }
+            },
+        )
+        _mock_task_types(page)
+        _mock_task_configs(page)
+        _mock_active_tasks(page, self._payload("one"))
+        # Drive the update through the app's own EventSource handler: fulfilling
+        # the SSE route instead means waiting on reconnect timing, which is slow
+        # and flaky for no added coverage.
+        page.add_init_script("""
+            const Orig = window.EventSource;
+            window.__streams = [];
+            window.EventSource = function (url, cfg) {
+                const es = new Orig(url, cfg);
+                window.__streams.push({ url: String(url), es });
+                return es;
+            };
+            window.EventSource.prototype = Orig.prototype;
+            """)
+
+        _navigate_to_tasks(page, base_url)
+        page.wait_for_selector("[data-task-uuid='task-scroll-0'] summary", timeout=5000)
+        page.locator("[data-task-uuid='task-scroll-0'] summary").click()
+        # Let the first status-data fetch land so the card reaches full height.
+        wait_until(
+            page,
+            lambda: page.evaluate("document.scrollingElement.scrollHeight") > page.evaluate("window.innerHeight"),
+            "Expected the expanded card to make the page scrollable",
+        )
+
+        page.evaluate("() => window.scrollTo(0, 300)")
+        before = page.evaluate("window.scrollY")
+        assert before > 0, "test setup failed to scroll the page"
+
+        delivered = page.evaluate(
+            """payload => {
+                const s = (window.__streams || []).find(x => x.url.includes('/api/tasks/stream'));
+                if (!s || typeof s.es.onmessage !== 'function') return false;
+                s.es.onmessage({ data: JSON.stringify(payload) });
+                return true;
+            }""",
+            {"tasks": self._payload("two")},
+        )
+        assert delivered, "app did not open a task stream to push an update through"
+
+        wait_until(
+            page,
+            # text_content(), not inner_text(): the log tail lives inside a
+            # collapsed <details>, so it is in the DOM but not always rendered.
+            lambda: "frame two saved" in (page.locator("#active-tasks-list").text_content() or ""),
+            "Expected the pushed payload to trigger a re-render",
+            timeout=8000,
+        )
+        page.wait_for_timeout(400)  # allow any late clamp to show up
+
+        after = page.evaluate("window.scrollY")
+        assert after == before, f"re-render jumped the page to {after} (was {before})"
+
+    def test_rebuilt_card_keeps_showing_its_status_data(self, page: Page, base_url: str):
+        """The seeding must carry real values across, not just reserve height.
+
+        Status-data requests fail from the moment the rebuild is pushed. A failed
+        fetch leaves existing widget DOM untouched, so the value can only still
+        be on screen if the new card was seeded from the old one — otherwise the
+        widgets sit empty, which is exactly the flash of blank tables being fixed
+        here. (Returning *empty* data instead would prove nothing: the app would
+        rightly render that as empty.)
+        """
+        page.set_viewport_size({"width": 900, "height": 500})
+        _mock_status_schema(page, self._SCHEMA)
+        _mock_task_types(page)
+        _mock_task_configs(page)
+        _mock_active_tasks(page, self._payload("one"))
+
+        blocked = {"on": False}
+
+        def status_data(route: Route):
+            if blocked["on"]:
+                route.abort()
+                return
+            route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps(
+                    {"status": "success", "statusData": {"task-scroll-0": {"stats": {"k0": 4242}, "sweep": []}}}
+                ),
+            )
+
+        page.route("**/api/tasks/instances/status-data", status_data)
+        page.add_init_script("""
+            const Orig = window.EventSource;
+            window.__streams = [];
+            window.EventSource = function (url, cfg) {
+                const es = new Orig(url, cfg);
+                window.__streams.push({ url: String(url), es });
+                return es;
+            };
+            window.EventSource.prototype = Orig.prototype;
+            """)
+
+        _navigate_to_tasks(page, base_url)
+        page.wait_for_selector("[data-task-uuid='task-scroll-0'] summary", timeout=5000)
+        page.locator("[data-task-uuid='task-scroll-0'] summary").click()
+        card = page.locator("[data-task-uuid='task-scroll-0']")
+        expect(card).to_contain_text("4242")
+
+        blocked["on"] = True
+        page.evaluate(
+            """payload => {
+                const s = (window.__streams || []).find(x => x.url.includes('/api/tasks/stream'));
+                s.es.onmessage({ data: JSON.stringify(payload) });
+            }""",
+            {"tasks": self._payload("two")},
+        )
+        wait_until(
+            page,
+            lambda: "frame two saved" in (page.locator("#active-tasks-list").text_content() or ""),
+            "Expected the pushed payload to trigger a re-render",
+            timeout=8000,
+        )
+
+        expect(card).to_contain_text("4242")

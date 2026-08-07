@@ -26,6 +26,32 @@ const DEFAULT_STATUS_SCHEMA = [
 // SSE-driven all-tasks poll (which intentionally never carries status-data).
 const STATUS_DATA_POLL_MS = 5000;
 
+/**
+ * Last status-data payload seen per task uuid.
+ *
+ * renderActiveTasks rebuilds every card whenever the poll fingerprint changes,
+ * and a running task changes it constantly (each new log line). A freshly built
+ * card starts with empty widget slots and only fills them once its own
+ * status-data fetch returns — so an expanded card briefly collapses to a
+ * fraction of its height, the browser clamps the page scroll to the shorter
+ * document, and the user is thrown to the top mid-read. Seeding the rebuilt card
+ * from this cache keeps its height stable across the swap (and stops the widgets
+ * flashing empty every few seconds).
+ */
+const _lastStatusDataByTask = new Map();
+// Rebuilt cards are keyed by uuid, so the map would otherwise grow for the life
+// of the session on a long-lived tab. Only expanded cards ever write to it.
+const _STATUS_DATA_CACHE_MAX = 50;
+
+function _rememberStatusData(uuid, data) {
+  if (!uuid) return;
+  _lastStatusDataByTask.delete(uuid); // re-insert so iteration order is LRU
+  _lastStatusDataByTask.set(uuid, data);
+  while (_lastStatusDataByTask.size > _STATUS_DATA_CACHE_MAX) {
+    _lastStatusDataByTask.delete(_lastStatusDataByTask.keys().next().value);
+  }
+}
+
 /** Module-level, per-typename schema cache (parallels fetchTaskStatusSchemas'
  * own createCachedFetcher, but also memoizes the "which fallback did we use"
  * decision so repeated failures don't reissue requests every render). */
@@ -90,6 +116,11 @@ export class ActiveTaskField extends Field {
     instance._progress = instance._value.progress ?? 0;
     instance._statusMessage = instance._value.statusMessage ?? '';
     instance._isPausedInPlace = instance._value.isPausedInPlace === true;
+    // Set by renderActiveTasks when it is rebuilding a card the user had open,
+    // so the new card can be seeded to its predecessor's height (see
+    // _lastStatusDataByTask). Defaults false: a first-time card has nothing to
+    // restore and must not pre-render widgets it may never show.
+    instance._expanded = rest.expanded === true;
     // For active tasks use the live ring-buffer (may be empty on first poll).
     // For finished/suspended tasks fall back to the persisted logLines field.
     // Checking status rather than log length avoids showing a previous run's
@@ -275,6 +306,7 @@ export class ActiveTaskField extends Field {
           }
           // Card may have collapsed / been removed while the fetch was in flight.
           if (!details.open || !details.isConnected) return;
+          _rememberStatusData(this._uuid, dataForTask);
 
           for (const { widget, slot } of statusSlots) {
             const data = dataForTask[widget.id];
@@ -306,8 +338,37 @@ export class ActiveTaskField extends Field {
         }
       };
 
+      // Seed this card from the last payload its predecessor saw, so a rebuild
+      // reuses the previous height instead of momentarily rendering empty (see
+      // _lastStatusDataByTask). Only for a card that is being rebuilt expanded:
+      // a collapsed one is not visible, so pre-rendering it — including spinning
+      // up an annotated_image canvas — would be pure waste.
+      const pendingMounts = [];
+      if (this._expanded) {
+        const seed = _lastStatusDataByTask.get(this._uuid);
+        if (seed) {
+          for (const { widget, slot } of statusSlots) {
+            const data = seed[widget.id];
+            // Record what was rendered so the first refresh() skips widgets whose
+            // data has not moved on, rather than tearing them straight back down.
+            lastDataJsonByWidget.set(widget.id, JSON.stringify(data ?? null));
+            const rendered = await renderStatusWidget(widget, data, ctx);
+            if (!rendered) continue;
+            slot.appendChild(rendered.el);
+            // mount() measures real layout, so it must wait until this card is
+            // attached to the document — which happens after renderView returns.
+            if (rendered.mount) pendingMounts.push(rendered.mount);
+            if (rendered.destroy) cleanupFnsByWidget.set(widget.id, rendered.destroy);
+          }
+        }
+      }
+
       details.addEventListener('toggle', () => {
         if (details.open) {
+          while (pendingMounts.length) {
+            Promise.resolve(pendingMounts.shift()()).catch(err =>
+              console.error('Status widget mount failed:', err));
+          }
           refresh();
           if (pollTimer === null) pollTimer = setInterval(refresh, STATUS_DATA_POLL_MS);
         } else {
